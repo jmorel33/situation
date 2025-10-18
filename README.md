@@ -1,4 +1,4 @@
-# -- The "Situation" Advanced Platform Awareness, Control, and Timing --
+# The "Situation" Advanced Platform Awareness, Control, and Timing
 
 _Core API library v2.3.1_
 
