@@ -1,0 +1,31 @@
+{
+    "required": [
+        {
+            "name": "glfw",
+            "url": "https://github.com/glfw/glfw/releases/tag/3.4"
+        },
+        {
+            "name": "cglm",
+            "url": "https://github.com/recp/cglm/releases/tag/v0.9.6"
+        },
+        {
+            "name": "miniaudio",
+            "url": "https://github.com/mackron/miniaudio/releases/tag/v0.11.23"
+        }
+    ],
+    "optional": [
+        {
+            "name": "glad",
+            "url": "https://github.com/Dav1dde/glad/releases/tag/v2.0.8"
+        },
+        {
+            "name": "Vulkan SDK",
+            "url": "https://vulkan.lunarg.com/",
+            "note": "Official download page, not a GitHub repository."
+        },
+        {
+            "name": "stb",
+            "url": "https://github.com/nothings/stb/commit/fede005abaf93d9d7f3a679d1999b2db341b360f"
+        }
+    ]
+}
