@@ -6,7 +6,15 @@ _(c) 2025 Jacques Morel_
 
 _MIT Licenced_
 
-A single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software.
+Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools. We are actively seeking contributions from the community to help us build a truly exceptional and robust platform.
+
+Our immediate development roadmap is focused on several key areas:
+*   **Full Thread-Safety**: We are working towards making the entire library thread-safe, which will allow for even greater performance and scalability in multi-threaded applications.
+*   **OpenGL Command Buffer Enhancement**: We are committed to ensuring the proper functioning of OpenGL within our command buffer system, providing a seamless and efficient rendering experience.
+*   **Comprehensive Vulkan Abstraction**: Our goal is to provide a full-featured, high-level wrapper for the Vulkan API, simplifying its complexity while retaining its power and performance.
+*   **Robust Virtual Display and Windows Integration**: We are continuously improving our virtual display system and its integration with Windows to ensure bullet-proof stability across diverse hardware configurations, including multi-monitor setups and various application states (e.g., switching, pausing).
+
+"Situation" is an ambitious project that aims to become a premier, go-to solution for developers seeking a reliable and powerful platform layer. We encourage you to explore the library, challenge its capabilities, and contribute to its evolution.
 
 The library's philosophy is reflected in its name, granting developers complete situational "Awareness," precise "Control," and fine-grained "Timing."
 
@@ -2017,6 +2025,11 @@ This bridges the gap between the existing separate compute and graphics examples
 
 ---
 ## License (MIT)
+
+"Situation" is licensed under the permissive MIT License. In simple terms, this means you are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software for both commercial and private projects. The only requirement is that you include the original copyright and license notice in any substantial portion of the software or derivative work you distribute. This library is provided "as is", without any warranty.
+
+---
+
 Copyright (c) 2025 Jacques Morel
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:

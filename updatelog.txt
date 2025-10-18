@@ -1,0 +1,36 @@
+Date: 2025-10-18
+Version: 2.3.1 "Base"
+
+## Description
+
+Version 2.3.1, designated as the "Base" version, establishes the foundational public API for the "Situation" library. This release provides a single-file, cross-platform C/C++ library designed to abstract low-level system interactions for windowing, graphics, audio, and input. The primary goal of this version is to offer a stable, lean, and powerful foundation for building sophisticated, high-performance software, such as games, creative coding projects, and data visualization tools.
+
+## Scope & Key Features
+
+This version includes a comprehensive feature set across several core domains:
+
+*   **Lifecycle & Windowing:** Full application lifecycle management (`SituationInit`, `SituationShutdown`) and robust window controls (fullscreen, borderless, multi-monitor awareness) via a GLFW3 backend.
+*   **Dual Graphics Backend:** A unified graphics API with compile-time support for both modern OpenGL (4.6+ Core) and Vulkan (1.1+). This includes abstractions for shaders, meshes, textures, and generic buffers.
+*   **Command Buffer Model:** A core architectural feature for recording rendering and compute commands. This provides a modern, explicit model for GPU interaction, inspired by Vulkan.
+*   **Compute Shaders:** A unified API for GPGPU tasks, supporting both OpenGL Compute Shaders and Vulkan Compute Pipelines, with runtime GLSL-to-SPIR-V compilation via `shaderc`.
+*   **2D & 3D Rendering:** High-level helpers for drawing 2D primitives (quads) and textured sprites, alongside a robust system for rendering 3D meshes. Includes a Virtual Display system for off-screen rendering, UI layering, and post-processing.
+*   **Audio System:** A full-featured audio engine powered by `miniaudio`, supporting playback, capture, device enumeration, and a real-time effects chain (Filters, Echo, Reverb) with support for custom DSP callbacks.
+*   **Input Handling:** Unified polling and event-based handling for keyboard, mouse, and gamepads.
+*   **Timing System:** Includes high-resolution timers, FPS management, and an advanced "Temporal Oscillator System" for creating rhythmically synchronized events.
+*   **Filesystem Utilities:** A cross-platform API for path manipulation and file I/O, including access to standard application directories.
+
+## Implementation Details
+
+*   **Header-Only Library:** The library is distributed as a single header file (`situation.h`). The implementation is included by defining `SITUATION_IMPLEMENTATION` in one C/C++ file.
+*   **Dependencies:**
+    *   **Required:** GLFW3, cglm.
+    *   **Optional (Backend-Specific):** GLAD (for OpenGL), Vulkan SDK (for Vulkan).
+    *   **Optional (Features):** `stb_image`, `stb_truetype`, `miniaudio`.
+*   **Resource Management:** The library follows an explicit, manual resource management philosophy. All resources created with `SituationCreate*` or `SituationLoad*` functions must be manually destroyed with their corresponding `SituationDestroy*` or `SituationUnload*` functions. The library includes leak detection at shutdown to assist developers.
+
+## Quirks & Notable Design Decisions
+
+*   **[CRITICAL] Single-Threaded API:** All `SITAPI` functions **must** be called from the main thread (the thread that called `SituationInit`). The library is not internally synchronized, and calling API functions from other threads will lead to undefined behavior and likely crashes. Any multithreading must be managed by the client application, with communication back to the main thread for any API calls.
+*   **[CRITICAL] Emulated OpenGL Command Buffer:** While the API presents a unified command buffer model, its execution differs significantly between backends. On Vulkan, commands are deferred and executed upon `SituationEndFrame()`. On OpenGL, the command buffer is an *emulation*, and `SituationCmd*` calls often translate to immediate OpenGL API calls. Developers must not write code that depends on the deferred execution of commands when using the OpenGL backend.
+*   **Explicit Backend Selection:** The graphics backend (OpenGL or Vulkan) must be selected at compile time by defining either `SITUATION_USE_OPENGL` or `SITUATION_USE_VULKAN`.
+*   **Manual Memory Management for Returned Data:** Functions that return dynamically allocated data (e.g., `SituationGetLastErrorMsg()`, `SituationGetDisplays()`) explicitly state that the caller is responsible for freeing the memory to prevent leaks.
