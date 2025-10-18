@@ -16,108 +16,109 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 ---
 
 ## Table of Contents:
-- 1.  Introduction & Overview
-    - 1.1 Purpose & Scope
-    - 1.2 Key Features & Capabilities
-    - 1.3 Target Audience & Use Cases
-- 2.  Getting Started
-    - 2.1 Integration Models (Header-Only vs. Shared Library)
-    - 2.2 Project Structure Recommendations
-    - 2.3 Compilation Requirements & Dependencies
-    - 2.4 Basic Initialization & Shutdown Sequence
-    - 2.5 Core Application Loop Structure
-- 3.  Core Concepts & Architecture
-    - 3.1 Single-Threaded Design & Thread Safety
-    - 3.2 Backend Abstraction (OpenGL / Vulkan)
-    - 3.3 Resource Management Philosophy
-    - 3.4 Error Handling Strategy
-    - 3.5 Command Buffer Model
-    - 3.6 Virtual Displays System
-- 4.  Detailed API Reference
-    - 4.1  Core Lifecycle Management
-        - 4.1.1  SituationInit
-        - 4.1.2  SituationShutdown
-        - 4.1.3  SituationIsInitialized
-        - 4.1.4  Error Handling Functions (SituationGetLastErrorMsg, etc.)
-    - 4.2  Window & Display Management
-        - 4.2.1  Configuration (SituationInitInfo)
-        - 4.2.2  State Control (Fullscreen, Borderless, Position, etc.)
-        - 4.2.3  Display Queries & Multi-Monitor Support
-        - 4.2.4  Window Events & Callbacks
-    - 4.3  Input Handling
-        - 4.3.1  Keyboard State & Events (SituationGetKey, SituationIsKeyPressed)
-        - 4.3.2  Mouse State & Events (SituationGetMousePosition, SituationIsMouseButtonPressed)
-        - 4.3.3  Gamepad Support (Joystick API)
-        - 4.3.4  Character Input & Text Entry
-        - 4.3.5  File Drop Events
-    - 4.4  Timing & Performance
-        - 4.4.1  Core Frame Timing
-        - 4.4.2  The Temporal Oscillator System
-        - 4.4.3  Frame Delta Time
-    - 4.5  Filesystem Utilities
-        - 4.5.1  Path Handling & Standard Directories
-        - 4.5.2  File Operations (Load, Exists, Modification Time)
-    - 4.6  Graphics API Abstraction Layer
-        - 4.6.1  Shaders
-        - 4.6.2  Meshes
-        - 4.6.3  Textures
-        - 4.6.4  Buffers (Vertex, Index, Uniform, Storage)
-        - 4.6.5  Virtual Displays (Off-Screen Rendering Layers)
-        - 4.6.6  Command Buffers
-        - 4.6.7  Render Passes
-        - 4.6.8  Dynamic Pipeline State
-        - 4.6.9  Instanced & Indirect Drawing
-    - 4.7  Compute Shaders
-        - 4.7.1  Overview & Capabilities
-        - 4.7.2  Initialization Prerequisites
-        - 4.7.3  Creating Compute Pipelines
-        - 4.7.4  Using Compute Pipelines
-        - 4.7.5  Synchronization & Memory Barriers
-        - 4.7.6  Destroying Compute Pipelines (SituationDestroyComputePipeline)
-    - 4.8  Audio System
-        - 4.8.1  Device Enumeration (SituationGetAudioDevices)
-        - 4.8.2  Audio Playback
-        - 4.8.3  Audio Capture (Recording)
-        - 4.8.4  Destroying Sounds (SituationDestroySound)
-        - 4.8.5  Audio Effects & Custom Processing
-    - 4.9  Text Rendering
-        - 4.9.1  Simple Text Drawing (SituationDrawTextSimple)
-        - 4.9.2  Styled Text Rendering (SituationDrawTextStyled)
-        - 4.9.3  Font Loading & Management
-    - 4.10 2D Rendering & Drawing
-        - 4.10.1  2D Coordinate System & Camera
-        - 4.10.2  Drawing Basic Shapes
-        - 4.10.3  Drawing Textures (Sprites)
-        - 4.10.4  Text Rendering
-        - 4.10.5  UI & Layer Management
-- 5.  Building & Configuration
-    - 5.1  Backend Selection Defines (SITUATION_USE_OPENGL, SITUATION_USE_VULKAN)
-    - 5.2  Feature Enablement Defines (SITUATION_ENABLE_SHADER_COMPILER, etc.)
-    - 5.3  Shared Library Support (SITUATION_BUILD_SHARED, SITUATION_USE_SHARED)
-    - 5.4  Compiler & Linker Flags
-- 6.  Examples & Tutorials
-    - 6.1  Basic Triangle Rendering
-    - 6.2  Loading and Rendering a 3D Model
-    - 6.3  Playing Background Music
-    - 6.4  Handling Keyboard and Mouse Input
-    - 6.5  Compute Shader Example: Image Processing
-        - 6.5.1 Problem Definition (e.g., Grayscale Filter)
-        - 6.5.2 Shader Code (GLSL Compute)
-        - 6.5.3 Host Code Walkthrough (Init, Create, Bind, Dispatch, Sync, Destroy)
-    - 6.6  GPU Particle Simulation and Rendering (Concept)
-        - 6.6.1 Scenario
-        - 6.6.2 Key APIs Demonstrated
-        - 6.6.3 Purpose
-- 7.  Frequently Asked Questions (FAQ) & Troubleshooting
-    - 7.1  Common Initialization Failures
-    - 7.2  "Resource Invalid" Errors
-    - 7.3  Performance Considerations
-    - 7.4  Backend-Specific Issues (OpenGL vs. Vulkan)
-    - 7.5  Debugging Tips (Validation Layers, Error Messages)
+- [1.  Introduction & Overview](#1-introduction--overview)
+    - [1.1 Purpose & Scope](#11-purpose--scope)
+    - [1.2 Key Features & Capabilities](#12-key-features--capabilities)
+    - [1.3 Target Audience & Use Cases](#13-target-audience--use-cases)
+- [2.  Getting Started](#2-getting-started)
+    - [2.1 Integration Models (Header-Only vs. Shared Library)](#21-integration-models-header-only-vs-shared-library)
+    - [2.2 Project Structure Recommendations](#22-project-structure-recommendations)
+    - [2.3 Compilation Requirements & Dependencies](#23-compilation-requirements--dependencies)
+    - [2.4 Basic Initialization & Shutdown Sequence](#24-basic-initialization--shutdown-sequence)
+    - [2.5 Core Application Loop Structure](#25-core-application-loop-structure)
+- [3.  Core Concepts & Architecture](#3-core-concepts--architecture)
+    - [3.1 Single-Threaded Design & Thread Safety](#31-single-threaded-design--thread-safety)
+    - [3.2 Backend Abstraction (OpenGL / Vulkan)](#32-backend-abstraction-opengl--vulkan)
+    - [3.3 Resource Management Philosophy](#33-resource-management-philosophy)
+    - [3.4 Error Handling Strategy](#34-error-handling-strategy)
+    - [3.5 Command Buffer Model](#35-command-buffer-model)
+    - [3.6 Virtual Displays System](#36-virtual-displays-system)
+- [4.  Detailed API Reference](#4-detailed-api-reference)
+    - [4.1  Core Lifecycle Management](#41-core-lifecycle-management)
+        - [4.1.1  SituationInit](#411-situationinit)
+        - [4.1.2  SituationShutdown](#412-situationshutdown)
+        - [4.1.3  SituationIsInitialized](#413-situationisinitialized)
+        - [4.1.4  Error Handling Functions (SituationGetLastErrorMsg, etc.)](#414-error-handling-functions-situationgetlasterrormsg-etc)
+    - [4.2  Window & Display Management](#42-window--display-management)
+        - [4.2.1  Configuration (SituationInitInfo)](#421-configuration-situationinitinfo)
+        - [4.2.2  State Control (Fullscreen, Borderless, Position, etc.)](#422-state-control-fullscreen-borderless-position-etc)
+        - [4.2.3  Display Queries & Multi-Monitor Support](#423-display-queries--multi-monitor-support)
+        - [4.2.4  Window Events & Callbacks](#424-window-events--callbacks)
+    - [4.3  Input Handling](#43-input-handling)
+        - [4.3.1  Keyboard State & Events (SituationGetKey, SituationIsKeyPressed)](#431-keyboard-state--events-situationgetkey-situationiskeypressed)
+        - [4.3.2  Mouse State & Events (SituationGetMousePosition, SituationIsMouseButtonPressed)](#432-mouse-state--events-situationgetmouseposition-situationismousebuttonpressed)
+        - [4.3.3  Gamepad Support (Joystick API)](#433-gamepad-support-joystick-api)
+        - [4.3.4  Character Input & Text Entry](#434-character-input--text-entry)
+        - [4.3.5  File Drop Events](#435-file-drop-events)
+    - [4.4  Timing & Performance](#44-timing--performance)
+        - [4.4.1  Core Frame Timing](#441-core-frame-timing)
+        - [4.4.2  The Temporal Oscillator System](#442-the-temporal-oscillator-system)
+        - [4.4.3  Frame Delta Time](#443-frame-delta-time)
+    - [4.5  Filesystem Utilities](#45-filesystem-utilities)
+        - [4.5.1  Path Handling & Standard Directories](#451-path-handling--standard-directories)
+        - [4.5.2  File Operations (Load, Exists, Modification Time)](#452-file-operations-load-exists-modification-time)
+    - [4.6  Graphics API Abstraction Layer](#46-graphics-api-abstraction-layer)
+        - [4.6.1  Shaders](#461-shaders)
+        - [4.6.2  Meshes](#462-meshes)
+        - [4.6.3  Textures](#463-textures)
+        - [4.6.4  Buffers (Vertex, Index, Uniform, Storage)](#464-buffers-vertex-index-uniform-storage)
+        - [4.6.5  Virtual Displays (Off-Screen Rendering Layers)](#465-virtual-displays-off-screen-rendering-layers)
+        - [4.6.6  Command Buffers](#466-command-buffers)
+        - [4.6.7  Render Passes](#467-render-passes)
+        - [4.6.8  Dynamic Pipeline State](#468-dynamic-pipeline-state)
+        - [4.6.9  Instanced & Indirect Drawing](#469-instanced--indirect-drawing)
+    - [4.7  Compute Shaders](#47-compute-shaders)
+        - [4.7.1  Overview & Capabilities](#471-overview--capabilities)
+        - [4.7.2  Initialization Prerequisites](#472-initialization-prerequisites)
+        - [4.7.3  Creating Compute Pipelines](#473-creating-compute-pipelines)
+        - [4.7.4  Using Compute Pipelines](#474-using-compute-pipelines)
+        - [4.7.5  Synchronization & Memory Barriers](#475-synchronization--memory-barriers)
+        - [4.7.6  Destroying Compute Pipelines (SituationDestroyComputePipeline)](#476-destroying-compute-pipelines-situationdestroycomputepipeline)
+    - [4.8  Audio System](#48-audio-system)
+        - [4.8.1  Device Enumeration (SituationGetAudioDevices)](#481-device-enumeration-situationgetaudiodevices)
+        - [4.8.2  Audio Playback](#482-audio-playback)
+        - [4.8.3  Audio Capture (Recording)](#483-audio-capture-recording)
+        - [4.8.4  Destroying Sounds (SituationDestroySound)](#484-destroying-sounds-situationdestroysound)
+        - [4.8.5  Audio Effects & Custom Processing](#485-audio-effects--custom-processing)
+    - [4.9  Text Rendering](#49-text-rendering)
+        - [4.9.1  Simple Text Drawing (SituationDrawTextSimple)](#491-simple-text-drawing-situationdrawtextsimple)
+        - [4.9.2  Styled Text Rendering (SituationDrawTextStyled)](#492-styled-text-rendering-situationdrawtextstyled)
+        - [4.9.3  Font Loading & Management](#493-font-loading--management)
+    - [4.10 2D Rendering & Drawing](#410-2d-rendering--drawing)
+        - [4.10.1  2D Coordinate System & Camera](#4101-2d-coordinate-system--camera)
+        - [4.10.2  Drawing Basic Shapes](#4102-drawing-basic-shapes)
+        - [4.10.3  Drawing Textures (Sprites)](#4103-drawing-textures-sprites)
+        - [4.10.4  Text Rendering](#4104-text-rendering)
+        - [4.10.5  UI & Layer Management](#4105-ui--layer-management)
+- [5.  Building & Configuration](#5-building--configuration)
+    - [5.1  Backend Selection Defines (SITUATION_USE_OPENGL, SITUATION_USE_VULKAN)](#51-backend-selection-defines-situation_use_opengl-situation_use_vulkan)
+    - [5.2  Feature Enablement Defines (SITUATION_ENABLE_SHADER_COMPILER, etc.)](#52-feature-enablement-defines-situation_enable_shader_compiler-etc)
+    - [5.3  Shared Library Support (SITUATION_BUILD_SHARED, SITUATION_USE_SHARED)](#53-shared-library-support-situation_build_shared-situation_use_shared)
+    - [5.4  Compiler & Linker Flags](#54-compiler--linker-flags)
+- [6.  Examples & Tutorials](#6-examples--tutorials)
+    - [6.1  Basic Triangle Rendering](#61-basic-triangle-rendering)
+    - [6.2  Loading and Rendering a 3D Model](#62-loading-and-rendering-a-3d-model)
+    - [6.3  Playing Background Music](#63-playing-background-music)
+    - [6.4  Handling Keyboard and Mouse Input](#64-handling-keyboard-and-mouse-input)
+    - [6.5  Compute Shader Example: Image Processing](#65-compute-shader-example-image-processing)
+        - [6.5.1 Problem Definition (e.g., Grayscale Filter)](#651-problem-definition-eg-grayscale-filter)
+        - [6.5.2 Shader Code (GLSL Compute)](#652-shader-code-glsl-compute)
+        - [6.5.3 Host Code Walkthrough (Init, Create, Bind, Dispatch, Sync, Destroy)](#653-host-code-walkthrough-init-create-bind-dispatch-sync-destroy)
+    - [6.6  GPU Particle Simulation and Rendering (Concept)](#66-gpu-particle-simulation-and-rendering-concept)
+        - [6.6.1 Scenario](#661-scenario)
+        - [6.6.2 Key APIs Demonstrated](#662-key-apis-demonstrated)
+        - [6.6.3 Purpose](#663-purpose)
+- [7.  Frequently Asked Questions (FAQ) & Troubleshooting](#7-frequently-asked-questions-faq--troubleshooting)
+    - [7.1  Common Initialization Failures](#71-common-initialization-failures)
+    - [7.2  "Resource Invalid" Errors](#72-resource-invalid-errors)
+    - [7.3  Performance Considerations](#73-performance-considerations)
+    - [7.4  Backend-Specific Issues (OpenGL vs. Vulkan)](#74-backend-specific-issues-opengl-vs-vulkan)
+    - [7.5  Debugging Tips (Validation Layers, Error Messages)](#75-debugging-tips-validation-layers-error-messages)
 
 ---
+<details>
+<summary><h2>1. Introduction & Overview</h2></summary>
 
-## 1. Introduction & Overview
 ### 1.1 Purpose & Scope
 `situation.h` is a single-header C library designed to provide a robust, cross-platform foundation for developing graphical applications and games. It abstracts the complexities of underlying system APIs like windowing (GLFW), graphics (OpenGL/Vulkan), and audio (miniaudio) into a cohesive and simplified interface. Its primary goal is to offer developers "situational awareness" of the platform and precise control over core application subsystems.
 
@@ -136,10 +137,12 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 ### 1.3 Target Audience & Use Cases
 This library is intended for C/C++ developers building cross-platform graphical applications, tools, demos, or lightweight games. It is particularly useful for those who want to avoid the boilerplate of setting up windowing, graphics contexts, and basic I/O but still need control and performance. It serves as an excellent foundation for custom engines or rapid prototyping.
+</details>
 
 ---
+<details>
+<summary><h2>2. Getting Started</h2></summary>
 
-## 2. Getting Started
 ### 2.1 Integration Models (Header-Only vs. Shared Library)
 **A) Header-Only:**
 - Add `situation.h` to your project.
@@ -294,9 +297,12 @@ while (!SituationWindowShouldClose()) {
     }
 }
 ```
----
+</details>
 
-## 3. Core Concepts & Architecture
+---
+<details>
+<summary><h2>3. Core Concepts & Architecture</h2></summary>
+
 ### 3.1 Single-Threaded Design & Thread Safety
 `situation.h` is explicitly designed as a **single-threaded library**. This architectural choice is fundamental to its API design and usage.
 
@@ -340,10 +346,12 @@ While the API is unified, the underlying execution timing differs significantly 
 
 ### 3.6 Virtual Displays System
 Virtual Displays (VDs) are off-screen rendering targets. They allow rendering scenes or UI elements to a texture, which can then be composited onto the main window or other VDs. This is useful for UI layers, post-processing effects, or rendering multiple views. VDs have properties like resolution, position, opacity, and z-order for compositing.
+</details>
 
 ---
+<details>
+<summary><h2>4. Detailed API Reference</h2></summary>
 
-## 4. Detailed API Reference
 This section provides a comprehensive reference for every major function and concept in the "Situation" library. Each entry includes the function's purpose, signature, parameter descriptions, return values, and important usage notes.
 
 ### 4.1 Core Lifecycle Management
@@ -1116,9 +1124,12 @@ The Virtual Display system (see `4.6.5`) is a perfect tool for 2D layer manageme
 - Apply shaders and post-processing effects to the entire UI layer at once.
 - Scale a low-resolution UI to a high-resolution screen with pixel-perfect filtering (`SITUATION_SCALING_INTEGER`).
 - Easily manage render order using the `z_order` property when compositing the layers back to the main window.
+</details>
 
 ---
-## 5. Building & Configuration
+<details>
+<summary><h2>5. Building & Configuration</h2></summary>
+
 ### 5.1 Backend Selection Defines (SITUATION_USE_OPENGL, SITUATION_USE_VULKAN)
 - Define **exactly one** of these before including `situation.h` in the implementation file.
 - `SITUATION_USE_OPENGL`: Enables the OpenGL rendering backend. Requires `GLAD` for OpenGL function loading.
@@ -1138,9 +1149,12 @@ The Virtual Display system (see `4.6.5`) is a perfect tool for 2D layer manageme
 - **OpenGL:** Link against system OpenGL library (e.g., `-lGL` on Linux, `-framework OpenGL` on macOS). Include GLAD source.
 - **Vulkan:** Link against the Vulkan loader library (e.g., `-lvulkan`). Include Vulkan SDK headers, shaderc, VMA source.
 - **miniaudio:** Include `miniaudio.h` and define `MINIAUDIO_IMPLEMENTATION` in one source file. May require linking against system audio APIs (e.g., `-ldsound`/`-lole32`/`-lksuser` on Windows, `-framework CoreAudio`/`-framework CoreFoundation` on macOS).
+</details>
 
 ---
-## 6. Examples & Tutorials
+<details>
+<summary><h2>6. Examples & Tutorials</h2></summary>
+
 ### 6.1 Basic Triangle Rendering
 This example demonstrates the minimal steps required to render a single, colored triangle using `situation.h`. It covers window setup, shader creation, mesh definition, and the core rendering loop.
 ```c
@@ -1935,29 +1949,44 @@ This example concept demonstrates a fundamental and powerful technique: combinin
 #### 6.6.1 Scenario
 The core idea is to perform calculations on the GPU (using a compute shader) and then visualize the results (using a graphics shader) without stalling the pipeline or introducing race conditions.
 
-1. **Compute Shader:** A compute shader operates on a buffer of particle data (e.g., struct { vec2 position; vec2 velocity; }). It reads the current state, applies simulation logic (e.g., physics updates like velocity integration, applying forces), and writes the new state back to the same or a different buffer.
-2. **Graphics Shader:** A vertex shader (potentially using instancing) reads the updated particle data from the buffer and uses it to position geometry (e.g., a quad or sprite) for each particle on the screen.
-3. **Synchronization:** The critical aspect is ensuring the compute shader's writes are globally visible and finished before the vertex shader attempts to read that data. This requires explicit synchronization.
+1. **Compute Shader:** A compute shader operates on a buffer of particle data (e.g., struct { vec2 position; vec2 velocity; }). It reads the current state,
+applies simulation logic (e.g., physics updates like velocity integration, applying forces), and writes the new state back to the same or a different buffer.
+2. **Graphics Shader:** A vertex shader (potentially using instancing) reads the updated particle data from the buffer and uses it to position geometry
+(e.g., a quad or sprite) for each particle on the screen.
+3. **Synchronization:** The critical aspect is ensuring the compute shader's writes are globally visible and finished before the vertex shader attempts
+to read that data. This requires explicit synchronization.
 
 #### 6.6.2 Key APIs Demonstrated
 This example concept highlights the interaction between several situation.h APIs:
 
-- **SituationCreateBuffer / SituationDestroyBuffer:** Used to create the GPU buffer(s) that will store the particle simulation data (positions, velocities). These buffers must be created with appropriate usage flags (e.g., SITUATION_BUFFER_USAGE_STORAGE_BUFFER for compute read/write, potentially SITUATION_BUFFER_USAGE_VERTEX_BUFFER if used as such in the graphics pipeline, or bound via SituationCmdBindUniformBuffer if accessed as an SSBO).
-- **SituationCreateComputePipelineFromMemory / SituationDestroyComputePipeline:** Used to create the compute pipeline that will execute the particle update logic.
+- **SituationCreateBuffer / SituationDestroyBuffer:** Used to create the GPU buffer(s) that will store the particle simulation data (positions, velocities).
+These buffers must be created with appropriate usage flags (e.g., SITUATION_BUFFER_USAGE_STORAGE_BUFFER for compute read/write, potentially
+SITUATION_BUFFER_USAGE_VERTEX_BUFFER if used as such in the graphics pipeline, or bound via SituationCmdBindUniformBuffer if accessed as an SSBO).
+- **SituationCreateComputePipelineFromMemory / SituationDestroyComputePipeline:**
+Used to create the compute pipeline that will execute the particle update logic.
 - **SituationCmdBindComputePipeline:** Binds the compute pipeline for subsequent dispatch commands.
 - **SituationCmdBindComputeBuffer:** Binds the particle data buffer to a specific binding point within the compute shader's descriptor set.
 - **SituationCmdDispatch:** Launches the compute shader work groups to perform the particle simulation update.
-- **SituationMemoryBarrier:** Crucially, this function is used after the compute dispatch and before the graphics draw call. It inserts a memory and execution barrier to ensure all compute shader invocations have completed their writes (SITUATION_BARRIER_COMPUTE_SHADER_STORAGE_WRITE) and that these writes are visible to the subsequent graphics pipeline stages that will read the data (SITUATION_BARRIER_VERTEX_SHADER_STORAGE_READ or similar). Without this barrier, the graphics pipeline might read stale or partially updated data.
+- **SituationMemoryBarrier:** Crucially, this function is used after the compute dispatch and before the graphics draw call. It inserts a memory and execution
+barrier to ensure all compute shader invocations have completed their writes (SITUATION_BARRIER_COMPUTE_SHADER_STORAGE_WRITE) and that these writes are
+visible to the subsequent graphics pipeline stages that will read the data (SITUATION_BARRIER_VERTEX_SHADER_STORAGE_READ or similar). Without this
+barrier, the graphics pipeline might read stale or partially updated data.
 - **SituationCmdBindPipeline (Graphics):** Binds the graphics pipeline used for rendering the particles.
 - **SituationCmdBindVertexBuffer / SituationCmdBindIndexBuffer:** Binds the mesh data (e.g., a simple quad) used for instanced rendering of particles.
 - **SituationCmdBindUniformBuffer / SituationCmdBindTexture:** Binds resources needed by the graphics shaders (e.g., the particle data buffer if accessed as an SSBO, textures for particle appearance).
-- **SituationCmdDrawIndexedInstanced / SituationCmdDrawInstanced:** Renders the particle geometry, typically using instancing where the instance count equals the number of particles, and the instance ID is used in the vertex shader to fetch data from the particle buffer.
+- **SituationCmdDrawIndexedInstanced / SituationCmdDrawInstanced:** Renders the particle geometry, typically using instancing where the instance count equals
+the number of particles, and the instance ID is used in the vertex shader to fetch data from the particle buffer.
 
 #### 6.6.3 Purpose
-This conceptual example should clarify the intended workflow for integrating compute-generated data into subsequent graphics rendering passes. It emphasizes the essential role of SituationMemoryBarrier for correctness when sharing data between different pipeline types within the same command stream. This bridges the gap between the existing separate compute and graphics examples, showing how they can be combined effectively.
+This conceptual example should clarify the intended workflow for integrating compute-generated data into subsequent graphics rendering passes.
+It emphasizes the essential role of SituationMemoryBarrier for correctness when sharing data between different pipeline types within the same command stream.
+This bridges the gap between the existing separate compute and graphics examples, showing how they can be combined effectively.
+</details>
 
 ---
-## 7. Frequently Asked Questions (FAQ) & Troubleshooting
+<details>
+<summary><h2>7. Frequently Asked Questions (FAQ) & Troubleshooting</h2></summary>
+
 ### 7.1 Common Initialization Failures
 - **GLFW Init Failed:** Check GLFW installation, system libraries (X11 on Linux).
 - **OpenGL Loader Failed:** Ensure `GLAD` is compiled and linked correctly when using `SITUATION_USE_OPENGL`.
@@ -1981,6 +2010,7 @@ This conceptual example should clarify the intended workflow for integrating com
 - Always check the return value of `SituationInit` and resource creation functions.
 - Use `SituationGetLastErrorMsg()` to get detailed error descriptions.
 - For Vulkan, enable validation layers during development (`init_info.enable_vulkan_validation = true;`) to catch API misuse.
+</details>
 
 ---
 ## License (MIT)
