@@ -1,6 +1,9 @@
 # -- The "Situation" Advanced Platform Awareness, Control, and Timing --
+
 _Core API library v2.3.1_
+
 _(c) 2025 Jacques Morel_
+
 _MIT Licenced_
 
 A single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software.
