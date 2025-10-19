@@ -34,7 +34,7 @@
 *   copies of the Software, and to permit persons to whom the Software is
 *   furnished to do so, subject to the following conditions:
 *
-*   The above copyright notice and this permission *otice shall be included in all
+*   The above copyright notice and this permission notice shall be included in all
 *   copies or substantial portions of the Software.
 *
 *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -121,6 +121,7 @@ Bash
 #include <stdlib.h>
 #include <string.h>
 #include <math.h> // For fmodf, fmaxf, fminf
+#include <float.h> // For FLT_MAX
 #ifndef M_PI // Define M_PI if not already defined (common for MSVC)
     #define M_PI 3.14159265358979323846
 #endif
@@ -5374,11 +5375,11 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
             vkDestroyShaderModule(sit_gs.vk.device, fs_module, NULL);
         }
         // Clean up pipeline layout if it was created (NEW FIX)
-        if (pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(sit_gs.vk.device, pipeline_layout, NULL);
+        if (shader.pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(sit_gs.vk.device, shader.pipeline_layout, NULL);
         }
-        // shader.id should still be 0 from initialization
         if (error_code) *error_code = SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
+        // shader.id should still be 0 from initialization
         return shader; // Return invalid shader
     }
 }
@@ -8433,7 +8434,7 @@ static void _SituationVulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buff
     region.imageOffset = (VkOffset3D){0, 0, 0};
     region.imageExtent = (VkExtent3D){width, height, 1};
 
-    vkCmdCopyBufferToImage(cmd, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, ®ion);
+    vkCmdCopyBufferToImage(cmd, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
 /**
@@ -9626,11 +9627,15 @@ SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd,
     }
 
     // Bind the pre-cached descriptor set.
+    // NOTE/BUG: The 'binding' parameter is intended to be the binding point within a set,
+    // but the current architecture pre-caches descriptor sets with a fixed binding of 0.
+    // This function is temporarily corrected to assume resources are in set 0, but a
+    // larger refactor of descriptor set management is needed to correctly use the 'binding' parameter.
     vkCmdBindDescriptorSets(
         (VkCommandBuffer)cmd,
         VK_PIPELINE_BIND_POINT_COMPUTE, // Bind for compute pipeline
         sit_gs.vk.current_compute_pipeline_layout,
-        binding,  // The 'binding' parameter maps to the descriptor SET index.
+        0,  // Assume compute resources are in set 0.
         1,
         &texture.descriptor_set, // Use the pre-cached set from the texture struct.
         0, NULL
@@ -17638,10 +17643,18 @@ SITAPI void SituationImageDraw(SituationImage *dst, SituationImage src, Rectangl
     int srcClipW = (srcRect.x + srcRect.width > src.width) ? (src.width - srcRect.x) : srcRect.width;
     int srcClipH = (srcRect.y + srcRect.height > src.height) ? (src.height - srcRect.y) : srcRect.height;
     
+    // --- [INTEGER CONVERSION] ---
+    // All pixel calculations must use integers. Round the float inputs ONCE.
+    int i_dstX = (int)roundf(dstPos.x);
+    int i_dstY = (int)roundf(dstPos.y);
+    int i_srcX = (int)roundf(srcRect.x);
+    int i_srcY = (int)roundf(srcRect.y);
+    int i_srcW = (int)roundf(srcRect.width);
+    int i_srcH = (int)roundf(srcRect.height);
+
     // Adjust destination position if source rectangle was clipped from the top-left.
-    // CHANGED: Use dstPos.x and dstPos.y, casting the floats to ints.
-    int dstClipX = (int)dstPos.x + (srcClipX - srcRect.x);
-    int dstClipY = (int)dstPos.y + (srcClipY - srcRect.y);
+    int dstClipX = i_dstX + (srcClipX - i_srcX);
+    int dstClipY = i_dstY + (srcClipY - i_srcY);
 
     // Now, clip the destination rectangle to the destination image's bounds.
     if (dstClipX < 0) {
@@ -18550,8 +18563,8 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
                             }
                         }
                     }
+                    free(sdfBitmap);
                 }
-                free(sdfBitmap); // BUG FIX: Moved free() outside the loop
             }
         }
         return; // End of fast path
