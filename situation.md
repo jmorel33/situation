@@ -1,0 +1,712 @@
+# Situation API Programming Guide
+
+This document provides a comprehensive guide to the "Situation" library API, organized by functional modules. Each section offers an overview of the module's purpose and a detailed reference for all its functions.
+
+## Table of Contents
+
+1.  [API Usage Guide](#api-usage-guide)
+2.  [Core Module: Application Lifecycle and System](#core-module-application-lifecycle-and-system)
+3.  [Window and Display Module](#window-and-display-module)
+4.  [Image Module: CPU-side Image and Font Manipulation](#image-module-cpu-side-image-and-font-manipulation)
+5.  [Graphics Module: Rendering, Shaders, and GPU Resources](#graphics-module-rendering-shaders-and-gpu-resources)
+6.  [Input Module: Keyboard, Mouse, and Gamepad](#input-module-keyboard-mouse-and-gamepad)
+7.  [Audio Module](#audio-module)
+8.  [Filesystem Module](#filesystem-module)
+9.  [Miscellaneous Module](#miscellaneous-module)
+
+---
+
+## API Usage Guide
+
+**1. Lifecycle**
+The library follows a strict lifecycle:
+- Call `SituationInit()` once at the start of your application.
+- Enter a main loop that runs until `SituationWindowShouldClose()` returns true.
+- Call `SituationShutdown()` once before your application exits.
+All API functions (except where noted) must be called between `SituationInit()` and `SituationShutdown()`.
+
+**2. Main Loop Structure**
+A correct "Situation" main loop has three distinct phases per frame:
+1.  **Input:** Call `SituationPollInputEvents()` to gather all OS events.
+2.  **Update:** Call `SituationUpdateTimers()` to calculate delta time, then run your application logic.
+3.  **Render:** Call `SituationAcquireFrameCommandBuffer()`, record all your drawing commands using `SituationCmd*` functions, and finish with `SituationEndFrame()`.
+
+**3. Resource Management (CRITICAL)**
+The library uses explicit, manual resource management. This is a core design principle.
+- Any resource created with a `SituationCreate*` or `SituationLoad*` function (e.g., `SituationCreateMesh`, `SituationLoadTexture`) **MUST** be explicitly freed with its corresponding `SituationDestroy*` or `SituationUnload*` function.
+- Any function that returns a `char*` (e.g., `SituationGetLastErrorMsg`, `SituationGetBasePath`) returns a new block of memory. The **caller is responsible for freeing this memory** using `free()`.
+- Failure to follow these rules will result in GPU and CPU memory leaks. The library will print warnings for leaked GPU resources at shutdown.
+
+**4. Handles vs. Pointers**
+The API uses two patterns for interacting with objects:
+- **Handles (by value):** Opaque structs like `SituationMesh` or `SituationShader` are typically passed by value to drawing or binding functions (e.g., `SituationCmdDrawMesh(my_mesh)`).
+- **Pointers (for modification):** When a function needs to modify or destroy a resource, you must pass a pointer to its handle (e.g., `SituationDestroyMesh(&my_mesh)`). This allows the function to invalidate the handle by setting its internal ID to 0.
+
+**5. Thread Safety**
+The library is **strictly single-threaded**. All `SITAPI` functions must be called from the same thread that called `SituationInit()`. Asynchronous operations (like asset loading) must be handled by the user, ensuring that no `SITAPI` calls are made from worker threads.
+
+---
+*   [Core Module: Application Lifecycle and System](#core-module)
+*   [Window and Display Module](#window-and-display-module)
+*   [Image Module: CPU-side Image and Font Loading and Manipulation](#image-module)
+*   [Graphics Module: Rendering, Shaders, and GPU Resources](#graphics-module)
+*   [Input Module: Keyboard, Mouse, and Gamepad](#input-module)
+*   [Audio Module](#audio-module)
+*   [Filesystem Module](#filesystem-module)
+*   [Miscellaneous Module](#miscellaneous-module)
+
+---
+
+## Detailed API Reference
+
+This section provides a complete list of all functions available in the "Situation" library, organized by module.
+
+<details>
+<summary>Core Module</summary>
+
+**Overview:** The Core module manages the fundamental lifecycle of the application, provides access to system-level information, and handles frame timing.
+
+#### Application Lifecycle & State
+
+*   `SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info)`
+    *   Initializes the library, creates the main window, and sets up the graphics context. This must be the first function called.
+*   `void SituationPollInputEvents(void)`
+    *   Polls for all pending input and window events from the operating system. Call this once at the beginning of every frame.
+*   `void SituationUpdateTimers(void)`
+    *   Updates all internal timers, including the main frame timer (`deltaTime`) and the Temporal Oscillator System. Call this once per frame, after polling events.
+*   `void SituationShutdown(void)`
+    *   Shuts down all library subsystems, releases all resources, and closes the application window. This should be the last function called.
+*   `bool SituationIsInitialized(void)`
+    *   Checks if the library has been successfully initialized.
+*   `bool SituationWindowShouldClose(void)`
+    *   Returns `true` if the user has attempted to close the window (e.g., by clicking the 'X' button or pressing Alt+F4).
+*   `void SituationPauseApp(void)`
+    *   Pauses the library's internal, time-dependent subsystems, primarily the audio device.
+*   `void SituationResumeApp(void)`
+    *   Resumes the library's subsystems from a paused state.
+*   `bool SituationIsAppPaused(void)`
+    *   Checks if the application is currently in an internally-paused state.
+
+#### Frame Timing & FPS Management
+
+*   `void SituationSetTargetFPS(int fps)`
+    *   Sets a target frame rate for the application. The main loop will sleep to avoid exceeding this rate. Pass `0` to uncap the frame rate.
+*   `float SituationGetFrameTime(void)`
+    *   Gets the time in seconds that the previous frame took to complete (also known as `deltaTime`). Essential for frame-rate-independent logic.
+*   `int SituationGetFPS(void)`
+    *   Gets the current frames-per-second, calculated periodically by the library.
+
+#### Callbacks and Event Handling
+
+*   `char* SituationGetLastErrorMsg(void)`
+    *   Retrieves a copy of the last error message generated by the library. The caller is responsible for freeing this memory with `SituationFreeString()`.
+*   `void SituationSetExitCallback(void (*callback)(void* user_data), void* user_data)`
+    *   Registers a callback function to be executed just before the library shuts down.
+*   `void SituationSetResizeCallback(void (*callback)(int width, int height, void* user_data), void* user_data)`
+    *   Registers a callback function to be executed whenever the window's framebuffer is resized.
+*   `void SituationSetFocusCallback(SituationFocusCallback callback, void* user_data)`
+    *   Registers a callback function to be executed when the window gains or loses input focus.
+*   `void SituationSetFileDropCallback(SituationFileDropCallback callback, void* user_data)`
+    *   Registers a callback function to be executed when files are dragged and dropped onto the window.
+
+#### Command-Line Argument Queries
+
+*   `bool SituationIsArgumentPresent(const char* arg_name)`
+    *   Checks if a specific command-line argument flag (e.g., `"-server"`) was provided when the application was launched.
+*   `const char* SituationGetArgumentValue(const char* arg_name)`
+    *   Gets the value of a command-line argument (e.g., gets `"jungle"` from `"-level:jungle"` or `"-level jungle"`).
+
+#### System & Hardware Information
+
+*   `SituationDeviceInfo SituationGetDeviceInfo(void)`
+    *   Gathers and returns a comprehensive snapshot of the host system's hardware, including CPU, GPU, RAM, and storage.
+*   `char* SituationGetUserDirectory(void)`
+    *   Gets the full path to the current user's home or profile directory (e.g., `C:\Users\YourUser`). The caller must free the returned string.
+*   `char SituationGetCurrentDriveLetter(void)`
+    *   (Windows only) Gets the drive letter of the logical volume where the running executable is located.
+*   `bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacity_bytes, uint64_t* out_free_space_bytes, char* out_volume_name, int volume_name_len)`
+    *   (Windows only) Retrieves information about a specific logical drive, including its capacity, free space, and volume name.
+*   `void SituationOpenFile(const char* filePath)`
+    *   Asks the operating system to open a file, folder, or URL with its default application.
+</details>
+<details>
+<summary>Window and Display Module</summary>
+**Overview:** This module provides comprehensive control over the application window and detailed information about the physical display hardware.
+
+#### Window State Management
+
+*   `void SituationSetWindowState(uint32_t flags)`
+    *   Sets one or more window state flags (e.g., `SITUATION_FLAG_WINDOW_TOPMOST`) for the current focus profile and applies the change.
+*   `void SituationClearWindowState(uint32_t flags)`
+    *   Clears one or more window state flags from the current focus profile and applies the change.
+*   `void SituationToggleFullscreen(void)`
+    *   Toggles the window between exclusive fullscreen and windowed mode.
+*   `void SituationToggleBorderlessWindowed(void)`
+    *   Toggles the window between a standard decorated style and a borderless, fullscreen-windowed style.
+*   `void SituationMaximizeWindow(void)`
+    *   Maximizes the application window to fill the available work area.
+*   `void SituationMinimizeWindow(void)`
+    *   Minimizes (iconifies) the application window.
+*   `void SituationRestoreWindow(void)`
+    *   Restores a minimized or maximized window to its normal, windowed state.
+*   `void SituationSetWindowFocused(void)`
+    *   Attempts to bring the application window to the foreground and give it input focus.
+
+#### Window Property Management
+
+*   `void SituationSetWindowTitle(const char *title)`
+    *   Sets the text that appears in the window's title bar.
+*   `void SituationSetWindowIcon(SituationImage image)`
+    *   Sets a single image as the application's icon.
+*   `void SituationSetWindowIcons(SituationImage *images, int count)`
+    *   Sets multiple images of different sizes as the application's icon.
+*   `void SituationSetWindowPosition(int x, int y)`
+    *   Sets the position of the top-left corner of the window on the desktop.
+*   `void SituationSetWindowSize(int width, int height)`
+    *   Sets the dimensions of the window's client area (the drawable region).
+*   `void SituationSetWindowMinSize(int width, int height)`
+    *   Sets the minimum allowed size for the window's client area.
+*   `void SituationSetWindowMaxSize(int width, int height)`
+    *   Sets the maximum allowed size for the window's client area.
+*   `void SituationSetWindowOpacity(float opacity)`
+    *   Sets the opacity of the entire window, from `0.0` (transparent) to `1.0` (opaque).
+
+#### Window State Queries
+
+*   `bool SituationIsWindowState(uint32_t flag)`
+    *   Checks if a specific window state (e.g., `SITUATION_FLAG_WINDOW_MAXIMIZED`) is currently active.
+*   `bool SituationIsWindowFullscreen(void)`
+    *   Checks if the window is currently in exclusive fullscreen mode.
+*   `bool SituationIsWindowHidden(void)`
+    *   Checks if the window is currently hidden (not visible).
+*   `bool SituationIsWindowMinimized(void)`
+    *   Checks if the window is currently minimized (iconified).
+*   `bool SituationIsWindowMaximized(void)`
+    *   Checks if the window is currently maximized.
+*   `bool SituationHasWindowFocus(void)`
+    *   Checks if the window currently has input focus.
+*   `bool SituationIsWindowResized(void)`
+    *   Checks if the window was resized during the last frame's event polling (a single-frame event flag).
+
+#### Window & Screen Dimension Queries
+
+*   `int SituationGetScreenWidth(void)`
+    *   Gets the current width of the window in screen coordinates (logical size).
+*   `int SituationGetScreenHeight(void)`
+    *   Gets the current height of the window in screen coordinates (logical size).
+*   `int SituationGetRenderWidth(void)`
+    *   Gets the current width of the rendering framebuffer in pixels (HiDPI-aware).
+*   `int SituationGetRenderHeight(void)`
+    *   Gets the current height of the rendering framebuffer in pixels (HiDPI-aware).
+*   `void SituationGetWindowSize(int* width, int* height)`
+    *   Gets both the width and height of the window in screen coordinates in a single call.
+*   `Vector2 SituationGetWindowPosition(void)`
+    *   Gets the window's top-left position on the virtual desktop.
+*   `Vector2 SituationGetWindowScaleDPI(void)`
+    *   Gets the DPI scaling factor for the window (e.g., `(2.0, 2.0)` on a 200% scaled display).
+
+#### Physical Display (Monitor) Management
+
+*   `int SituationGetMonitorCount(void)`
+    *   Gets the number of connected monitors.
+*   `int SituationGetCurrentMonitor(void)`
+    *   Gets the index of the monitor the window is currently on.
+*   `SituationDisplayInfo* SituationGetDisplays(int* count)`
+    *   Retrieves detailed information for all connected displays. The caller is responsible for freeing the returned array.
+*   `void SituationRefreshDisplays(void)`
+    *   Forces a refresh of the cached display information.
+*   `SituationError SituationSetDisplayMode(int monitor_id, const SituationDisplayMode* mode, bool fullscreen)`
+    *   Sets the display mode for a specific monitor.
+*   `void SituationSetWindowMonitor(int monitor_id)`
+    *   Sets the window to be fullscreen on a specific monitor.
+*   `const char* SituationGetMonitorName(int monitor_id)`
+    *   Gets the human-readable name of a monitor (e.g., "Generic PnP Monitor").
+*   `int SituationGetMonitorWidth(int monitor_id)`
+    *   Gets the width of the monitor's current video mode in pixels.
+*   `int SituationGetMonitorHeight(int monitor_id)`
+    *   Gets the height of the monitor's current video mode in pixels.
+*   `int SituationGetMonitorPhysicalWidth(int monitor_id)`
+    *   Gets the physical width of the monitor in millimeters.
+*   `int SituationGetMonitorPhysicalHeight(int monitor_id)`
+    *   Gets the physical height of the monitor in millimeters.
+*   `int SituationGetMonitorRefreshRate(int monitor_id)`
+    *   Gets the current refresh rate of a monitor in Hz.
+*   `Vector2 SituationGetMonitorPosition(int monitor_id)`
+    *   Gets the position of the specified monitor on the desktop.
+
+#### Cursor, Clipboard and File Drops
+
+*   `void SituationSetCursor(SituationCursor cursor)`
+    *   Sets the appearance of the mouse cursor to a standard system shape (e.g., arrow, hand, I-beam).
+*   `void SituationShowCursor(void)`
+    *   Makes the mouse cursor visible and behave normally.
+*   `void SituationHideCursor(void)`
+    *   Makes the mouse cursor invisible while it is over the window.
+*   `void SituationDisableCursor(void)`
+    *   Hides and locks the cursor to the window, providing unbounded movement for 3D camera controls.
+*   `const char* SituationGetClipboardText(void)`
+    *   Retrieves text from the system clipboard. The memory is managed by the library.
+*   `void SituationSetClipboardText(const char* text)`
+    *   Sets the system clipboard to the specified text.
+*   `bool SituationIsFileDropped(void)`
+    *   Checks if a file was dropped into the window this frame.
+*   `char** SituationLoadDroppedFiles(int* count)`
+    *   Get the paths of dropped files. The caller is responsible for freeing this memory with `SituationUnloadDroppedFiles()`.
+*   `void SituationUnloadDroppedFiles(char** paths, int count)`
+    *   Frees the memory for the file path list returned by `SituationLoadDroppedFiles`.
+
+#### Advanced Window Profile Management
+
+*   `SituationError SituationSetWindowStateProfiles(uint32_t active_flags, uint32_t inactive_flags)`
+    *   Sets profiles for window behavior when it is focused (active) versus unfocused (inactive).
+*   `SituationError SituationApplyCurrentProfileWindowState(void)`
+    *   Manually applies the appropriate window state profile based on the current focus.
+*   `SituationError SituationToggleWindowStateFlags(SituationWindowStateFlags flags_to_toggle)`
+    *   Toggles one or more flags in the current profile and applies the result.
+*   `uint32_t SituationGetCurrentActualWindowStateFlags(void)`
+    *   Gets a bitmask representing the window's actual, current state from the OS.
+</details>
+<details>
+<summary>Image Module</summary>
+**Overview:** This module provides a suite of functions for loading, manipulating, and saving images on the CPU. These `SituationImage` objects can then be used to create GPU textures.
+
+#### Image Loading and Unloading
+*   `SituationImage SituationLoadImage(const char *fileName)`
+    *   Loads an image from a file into CPU memory (RAM).
+*   `SituationImage SituationLoadImageFromMemory(const char *fileType, const unsigned char *fileData, int dataSize)`
+    *   Loads an image from a memory buffer.
+*   `void SituationUnloadImage(SituationImage image)`
+    *   Unloads an image's pixel data from memory.
+*   `bool SituationIsImageValid(SituationImage image)`
+    *   Checks if an image has been loaded successfully and has valid data.
+
+#### Image Exporting
+*   `bool SituationExportImage(SituationImage image, const char *fileName)`
+    *   Exports image data to a file (PNG or BMP supported).
+
+#### Image Generation & Copying
+*   `SituationImage SituationImageCopy(SituationImage image)`
+    *   Creates a new image by making a deep copy of another.
+*   `void SituationImageDraw(SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos)`
+    *   Draws a portion of a source image onto a destination image (opaque blit).
+*   `void SituationImageDrawAlpha(SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos, ColorRGBA tint)`
+    *   Draws a portion of a source image onto a destination with alpha blending and tinting.
+*   `SituationImage SituationGenImageColor(int width, int height, ColorRGBA color)`
+    *   Generates a new image filled with a single, solid color.
+*   `SituationImage SituationGenImageGradient(int width, int height, ColorRGBA tl, ColorRGBA tr, ColorRGBA bl, ColorRGBA br)`
+    *   Generates a new image with a 4-corner color gradient.
+
+#### Image Manipulation
+*   `void SituationImageCrop(SituationImage *image, Rectangle crop)`
+    *   Crops an image in-place to a specific rectangle.
+*   `void SituationImageResize(SituationImage *image, int newWidth, int newHeight)`
+    *   Resizes an image in-place using sRGB-correct scaling.
+*   `void SituationImageFlip(SituationImage *image, SituationImageFlipMode mode)`
+    *   Flips an image in-place either vertically, horizontally, or both.
+*   `void SituationImageAdjustHSV(SituationImage *image, float hue_shift, float sat_factor, float val_factor, float mix)`
+    *   Adjusts the Hue, Saturation, and Value (Brightness) of an image.
+
+#### Font Management
+*   `SituationFont SituationLoadFont(const char *fileName)`
+    *   Loads a font from a TTF/OTF file for CPU-side rendering.
+*   `void SituationUnloadFont(SituationFont font)`
+    *   Unloads a CPU-side font and frees its memory.
+*   `Rectangle SituationMeasureText(SituationFont font, const char *text, float fontSize)`
+    *   Calculates the bounding box of a text string without rendering it.
+*   `void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font, int codepoint, Vector2 position, float fontSize, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness)`
+    *   Draws a single character with advanced styling (rotation, skew, outline).
+*   `void SituationImageDrawText(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, ColorRGBA tint )`
+    *   Draws a simple, tinted text string onto an image.
+*   `void SituationImageDrawTextEx(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness)`
+    *   Draws a text string with advanced styling and transformations.
+</details>
+<details>
+<summary>Graphics Module</summary>
+**Overview:** The Graphics module is the heart of the rendering engine, providing a unified API over OpenGL and Vulkan for managing GPU resources and recording drawing commands.
+
+#### Frame Lifecycle & Command Buffer
+*   `bool SituationAcquireFrameCommandBuffer(void)`
+    *   Prepares the backend for a new frame of rendering, acquiring the next available render target. Must be called before any drawing commands.
+*   `SituationCommandBuffer SituationGetMainCommandBuffer(void)`
+    *   Gets the primary command buffer for the current frame (Vulkan only; returns `NULL` on OpenGL).
+*   `SituationError SituationEndFrame(void)`
+    *   Submits all recorded commands for the frame and presents the result to the screen.
+
+#### Abstracted Rendering Commands
+*   `SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info)`
+    *   Begins a render pass on a target with detailed configuration for attachments (color/depth), load/store operations, and clear values.
+*   `void SituationCmdEndRenderPass(SituationCommandBuffer cmd)`
+    *   Ends the current render pass.
+*   `void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height)`
+    *   Sets the dynamic viewport and scissor for the current render pass.
+*   `void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height)`
+    *   Sets the dynamic scissor rectangle to clip rendering.
+*   `SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader)`
+    *   Binds a graphics pipeline (shader program) for subsequent draws.
+*   `SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh)`
+    *   Records a command to draw a complete, pre-configured mesh.
+*   `void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color)`
+    *   Records a command to draw a simple, colored, and transformed 2D quad.
+*   `void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size)`
+    *   Sets a small block of per-draw uniform data (push constant).
+*   `SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer)`
+    *   Binds a buffer's pre-packaged descriptor set (UBO/SSBO) to a set index.
+*   `SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture)`
+    *   Binds a texture's pre-packaged descriptor set to a set index.
+*   `SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture)`
+    *   Binds a texture as a storage image for compute shaders.
+*   `void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset)`
+    *   Defines the format of a vertex attribute for the active vertex buffer.
+*   `void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance)`
+    *   Records a non-indexed draw call.
+*   `void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance)`
+    *   Records an indexed draw call.
+
+#### Graphics Resource Management
+*   `SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count)`
+    *   Creates a self-contained GPU mesh from vertex and index data.
+*   `void SituationDestroyMesh(SituationMesh* mesh)`
+    *   Unloads a mesh from GPU memory.
+
+#### Shader Management
+*   `SituationShader SituationLoadShader(const char* vs_path, const char* fs_path)`
+    *   Loads, compiles, and links a graphics shader pipeline from vertex and fragment shader files.
+*   `SituationShader SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code)`
+    *   Creates a graphics shader pipeline from in-memory GLSL source code.
+*   `void SituationUnloadShader(SituationShader* shader)`
+    *   Unloads a graphics shader pipeline and frees its GPU resources.
+
+#### Shader Interaction & Synchronization
+*   `SituationError SituationSetShaderUniform(SituationShader shader, const char* uniform_name, const void* data, SituationUniformType type)`
+    *   (OpenGL only) Sets a standalone uniform value by name, using an internal cache for performance.
+*   `void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags)`
+    *   Inserts a fine-grained pipeline memory barrier for synchronization between pipeline stages.
+
+#### Texture Management
+*   `SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps)`
+    *   Creates a GPU texture from a CPU-side `SituationImage`.
+*   `void SituationDestroyTexture(SituationTexture* texture)`
+    *   Unloads a texture from GPU memory.
+
+#### Compute Shader Pipeline
+*   `SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type)`
+    *   Creates a compute pipeline from a GLSL shader file.
+*   `SituationComputePipeline SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type)`
+    *   Creates a compute pipeline from in-memory GLSL source code.
+*   `void SituationDestroyComputePipeline(SituationComputePipeline* pipeline)`
+    *   Destroys a compute pipeline and frees its GPU resources.
+*   `void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline)`
+    *   Binds a compute pipeline for a subsequent dispatch.
+*   `void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z)`
+    *   Records a command to execute a compute shader.
+
+#### GPU Buffer Management
+*   `SituationBuffer SituationCreateBuffer(size_t size, const void* initial_data, SituationBufferUsageFlags usage_flags)`
+    *   Creates a general-purpose GPU data buffer (e.g., for vertices, indices, UBOs, or SSBOs).
+*   `void SituationDestroyBuffer(SituationBuffer* buffer)`
+    *   Destroys a GPU buffer and frees its memory.
+*   `SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offset, size_t size, const void* data)`
+    *   Updates a region of data within an existing GPU buffer.
+*   `SituationError SituationGetBufferData(SituationBuffer buffer, size_t offset, size_t size, void* out_data)`
+    *   Reads data back from a GPU buffer to host (CPU) memory.
+
+#### Virtual Displays (Render Targets)
+*   `int SituationCreateVirtualDisplay(vec2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode)`
+    *   Creates an off-screen render target (framebuffer object).
+*   `SituationError SituationDestroyVirtualDisplay(int display_id)`
+    *   Destroys a virtual display and its associated resources.
+*   `void SituationRenderVirtualDisplays(SituationCommandBuffer cmd)`
+    *   Composites all visible virtual displays onto the current render target.
+*   `SituationError SituationConfigureVirtualDisplay(int display_id, vec2 offset, float opacity, int z_order, bool visible, double frame_time_mult, SituationBlendMode blend_mode)`
+    *   Configures a virtual display's properties for compositing (position, opacity, etc.).
+*   `SituationVirtualDisplay* SituationGetVirtualDisplay(int display_id)`
+    *   Retrieves a pointer to the internal state structure of a virtual display.
+*   `SituationError SituationSetVirtualDisplayScalingMode(int display_id, SituationScalingMode scaling_mode)`
+    *   Sets the scaling and filtering mode for a virtual display.
+*   `void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty)`
+    *   Manually marks a virtual display as needing to be re-rendered.
+*   `bool SituationIsVirtualDisplayDirty(int display_id)`
+    *   Checks if a virtual display is marked as dirty.
+*   `double SituationGetLastVDCompositeTimeMS(void)`
+    *   Gets the time taken (in milliseconds) for the last virtual display composite pass.
+*   `void SituationGetVirtualDisplaySize(int display_id, int* width, int* height)`
+    *   Gets the internal resolution of a virtual display.
+
+#### 3D Model Utilities
+*   `SituationModel SituationLoadModel(const char* file_path)`
+    *   Loads a complete 3D model and its materials/textures from a GLTF file.
+*   `void SituationUnloadModel(SituationModel* model)`
+    *   Frees all GPU and CPU resources associated with a loaded model.
+*   `void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform)`
+    *   Draws all sub-meshes of a model with a single root transformation, binding materials automatically.
+*   `bool SituationSaveModelAsGltf(SituationModel model, const char* file_path)`
+    *   Exports a model to a human-readable .gltf and a .bin file.
+
+#### Image & Screenshot Utilities
+*   `SituationImage SituationLoadImageFromScreen(void)`
+    *   Captures the current contents of the main window's backbuffer into a CPU-side image.
+*   `bool SituationTakeScreenshot(const char *fileName)`
+    *   Takes a screenshot and saves it to a PNG or BMP file.
+
+#### Backend-Specific Accessors
+*   `SituationRendererType SituationGetRendererType(void)`
+    *   Gets the graphics backend renderer type that the library was compiled with (`SIT_RENDERER_OPENGL` or `SIT_RENDERER_VULKAN`).
+*   `GLFWwindow* SituationGetGLFWwindow(void)`
+    *   Gets the raw, underlying GLFW window handle for advanced, direct use of the GLFW API.
+*   `VkInstance SituationGetVulkanInstance(void)`
+    *   (Vulkan only) Gets the raw Vulkan instance handle.
+*   `VkDevice SituationGetVulkanDevice(void)`
+    *   (Vulkan only) Gets the raw Vulkan logical device handle.
+*   `VkPhysicalDevice SituationGetVulkanPhysicalDevice(void)`
+    *   (Vulkan only) Gets the raw Vulkan physical device handle.
+*   `VkRenderPass SituationGetMainWindowRenderPass(void)`
+    *   (Vulkan only) Gets the render pass for the main window.
+</details>
+<details>
+<summary>Input Module</summary>
+**Overview:** This module provides a comprehensive API for handling input from the keyboard, mouse, and gamepads, supporting both state polling and event-driven callbacks.
+
+#### Keyboard Input
+*   `bool SituationIsKeyDown(int key)`
+    *   Checks if a key is currently held down (a continuous state).
+*   `bool SituationIsKeyUp(int key)`
+    *   Checks if a key is currently up (a continuous state).
+*   `bool SituationIsKeyPressed(int key)`
+    *   Checks if a key was pressed down this frame (a single-trigger event).
+*   `bool SituationIsKeyReleased(int key)`
+    *   Checks if a key was released this frame (a single-trigger event).
+*   `int SituationGetKeyPressed(void)`
+    *   Gets the next key from the press queue, consuming it. Returns 0 if empty.
+*   `int SituationPeekKeyPressed(void)`
+    *   Peeks at the next key in the press queue without consuming it.
+*   `unsigned int SituationGetCharPressed(void)`
+    *   Gets the next Unicode character from the text input queue.
+*   `bool SituationIsLockKeyPressed(int lock_key_mod)`
+    *   Checks if a lock key (Caps Lock or Num Lock) is currently active.
+*   `bool SituationIsScrollLockOn(void)`
+    *   Checks if Scroll Lock is currently toggled on.
+*   `bool SituationIsModifierPressed(int modifier)`
+    *   Checks if a modifier key (Shift, Ctrl, Alt) is pressed.
+*   `void SituationSetKeyCallback(SituationKeyCallback callback, void* user_data)`
+    *   Sets a callback function for all keyboard key events.
+
+#### Mouse Input
+*   `vec2 SituationGetMousePosition(void)`
+    *   Gets the mouse position within the window.
+*   `vec2 SituationGetMouseDelta(void)`
+    *   Gets the mouse movement since the last frame.
+*   `float SituationGetMouseWheelMove(void)`
+    *   Gets vertical mouse wheel movement.
+*   `vec2 SituationGetMouseWheelMoveV(void)`
+    *   Gets both vertical and horizontal mouse wheel movement.
+*   `bool SituationIsMouseButtonDown(int button)`
+    *   Checks if a mouse button is currently held down (a state).
+*   `bool SituationIsMouseButtonPressed(int button)`
+    *   Checks if a mouse button was pressed down this frame (an event).
+*   `bool SituationIsMouseButtonReleased(int button)`
+    *   Checks if a mouse button was released this frame (an event).
+*   `void SituationSetMousePosition(vec2 pos)`
+    *   Sets the mouse position within the window.
+*   `void SituationSetMouseOffset(vec2 offset)`
+    *   Sets a virtual offset for the mouse coordinate system.
+*   `void SituationSetMouseScale(vec2 scale)`
+    *   Sets a virtual scale for the mouse coordinate system.
+*   `void SituationSetMouseButtonCallback(SituationMouseButtonCallback callback, void* user_data)`
+    *   Sets a callback for mouse button events.
+*   `void SituationSetCursorPosCallback(SituationCursorPosCallback callback, void* user_data)`
+    *   Sets a callback for mouse movement events.
+*   `void SituationSetScrollCallback(SituationScrollCallback callback, void* user_data)`
+    *   Sets a callback for mouse scroll events.
+
+#### Gamepad Input
+*   `bool SituationIsJoystickPresent(int jid)`
+    *   Checks if a joystick or gamepad is connected at a specific slot.
+*   `bool SituationIsGamepad(int jid)`
+    *   Checks if a connected joystick has a standard gamepad mapping.
+*   `const char* SituationGetJoystickName(int jid)`
+    *   Gets the human-readable name of a joystick or gamepad.
+*   `void SituationSetJoystickCallback(SituationJoystickCallback callback, void* user_data)`
+    *   Sets a callback for joystick connection and disconnection events.
+*   `int SituationSetGamepadMappings(const char *mappings)`
+    *   Loads a new set of gamepad mappings from an SDL2-compatible string.
+*   `int SituationGetGamepadButtonPressed(void)`
+    *   Gets the next gamepad button from the global press queue.
+*   `bool SituationIsGamepadButtonDown(int jid, int button)`
+    *   Checks if a gamepad button is currently held down (a state).
+*   `bool SituationIsGamepadButtonPressed(int jid, int button)`
+    *   Checks if a gamepad button was pressed down this frame (an event).
+*   `bool SituationIsGamepadButtonReleased(int jid, int button)`
+    *   Checks if a gamepad button was released this frame (an event).
+*   `int SituationGetGamepadAxisCount(int jid)`
+    *   Gets the number of axes for a gamepad.
+*   `float SituationGetGamepadAxisValue(int jid, int axis)`
+    *   Gets the value of a gamepad axis, with deadzone applied.
+*   `void SituationSetGamepadVibration(int jid, float left_motor, float right_motor)`
+    *   (Windows only) Sets gamepad vibration/rumble intensity.
+</details>
+<details>
+<summary>Audio Module</summary>
+**Overview:** This module provides a complete audio solution, from device management and sound loading to real-time effects and custom processing.
+
+#### Audio Device Management
+*   `SituationAudioDeviceInfo* SituationGetAudioDevices(int* count)`
+    *   Enumerates all available audio playback devices on the system.
+*   `SituationError SituationSetAudioDevice(int internal_id, const SituationAudioFormat* format)`
+    *   Switches the active audio output to a specific device.
+*   `int SituationGetAudioPlaybackSampleRate(void)`
+    *   Gets the sample rate of the currently active audio playback device.
+*   `SituationError SituationSetAudioPlaybackSampleRate(int sample_rate)`
+    *   Re-initializes the active audio device with a new sample rate.
+*   `float SituationGetAudioMasterVolume(void)`
+    *   Gets the current master volume of the audio device.
+*   `SituationError SituationSetAudioMasterVolume(float volume)`
+    *   Sets the master volume for the entire audio device.
+*   `bool SituationIsAudioDevicePlaying(void)`
+    *   Checks if the audio device is currently active and playing sound.
+*   `SituationError SituationPauseAudioDevice(void)`
+    *   Pauses all audio output by stopping the audio device.
+*   `SituationError SituationResumeAudioDevice(void)`
+    *   Resumes audio output by restarting a paused audio device.
+
+#### Sound Loading and Management
+*   `SituationError SituationLoadSoundFromFile(const char* file_path, bool looping, SituationSound* out_sound)`
+    *   Loads and decodes an audio file (WAV, MP3, OGG, FLAC) into memory for playback.
+*   `SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound)`
+    *   Initializes a sound for playback from a custom, user-defined data stream.
+*   `void SituationUnloadSound(SituationSound* sound)`
+    *   Unloads a sound and frees all of its associated memory and resources.
+*   `SituationError SituationPlayLoadedSound(SituationSound* sound)`
+    *   Begins playback of a loaded sound, restarting it if already playing.
+*   `SituationError SituationStopLoadedSound(SituationSound* sound)`
+    *   Stops a specific sound from playing and removes it from the mixing queue.
+*   `SituationError SituationStopAllLoadedSounds(void)`
+    *   Stops all currently playing sounds and clears the mixing queue.
+
+#### Sound Data Manipulation
+*   `SituationError SituationSoundCopy(const SituationSound* source, SituationSound* out_destination)`
+    *   Creates a new sound by making a deep copy of a source sound's decoded PCM data.
+*   `SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame)`
+    *   Modifies a sound in-place to contain only a specific range of its audio data.
+*   `bool SituationSoundExportAsWav(const SituationSound* sound, const char* fileName)`
+    *   Exports the raw PCM data of a sound to a new WAV file.
+
+#### Sound Parameters and Effects
+*   `SituationError SituationSetSoundVolume(SituationSound* sound, float volume)`
+    *   Sets the volume for a specific, individual sound.
+*   `float SituationGetSoundVolume(SituationSound* sound)`
+    *   Gets the current volume of a specific sound.
+*   `SituationError SituationSetSoundPan(SituationSound* sound, float pan)`
+    *   Sets the stereo panning for a sound (`-1.0` left, `1.0` right).
+*   `float SituationGetSoundPan(SituationSound* sound)`
+    *   Gets the current stereo panning of a sound.
+*   `SituationError SituationSetSoundPitch(SituationSound* sound, float pitch)`
+    *   Sets the playback pitch for a sound by resampling (`1.0` is normal pitch).
+*   `float SituationGetSoundPitch(SituationSound* sound)`
+    *   Gets the current pitch multiplier of a sound.
+*   `SituationError SituationSetSoundFilter(SituationSound* sound, SituationFilterType type, float cutoff_hz, float q_factor)`
+    *   Applies a low-pass or high-pass filter to a sound's effects chain.
+*   `SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled, float delay_sec, float feedback, float wet_mix)`
+    *   Applies a simple echo (delay) effect to a sound.
+*   `SituationError SituationSetSoundReverb(SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix)`
+    *   Applies a reverb effect to a sound.
+
+#### Custom Audio Processing
+*   `SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* userData)`
+    *   Attaches a custom DSP processor to a sound's effect chain for real-time processing.
+*   `SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* userData)`
+    *   Detaches a custom DSP processor from a sound.
+</details>
+<details>
+<summary>Filesystem Module</summary>
+**Overview:** This module provides a cross-platform, UTF-8 aware API for common file and directory operations.
+
+#### Path Management & Special Directories
+*   `char* SituationGetAppSavePath(const char* app_name)`
+    *   Gets a safe, persistent path for saving application data (e.g., `%APPDATA%/AppName`).
+*   `char* SituationGetBasePath(void)`
+    *   Gets the path to the directory containing the executable.
+*   `char* SituationJoinPath(const char* base_path, const char* file_or_dir_name)`
+    *   Joins two path components with the correct OS separator.
+*   `const char* SituationGetFileName(const char* full_path)`
+    *   Extracts the file name (including extension) from a full path.
+*   `const char* SituationGetFileExtension(const char* file_path)`
+    *   Extracts the file extension from a path.
+
+#### File & Directory Queries
+*   `bool SituationFileExists(const char* file_path)`
+    *   Checks if a file exists at the given path.
+*   `bool SituationDirectoryExists(const char* dir_path)`
+    *   Checks if a directory exists at the given path.
+*   `long SituationGetFileModTime(const char* file_path)`
+    *   Gets the last modification time of a file as a Unix timestamp.
+
+#### File Operations
+*   `unsigned char* SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read)`
+    *   Loads an entire file into a memory buffer.
+*   `bool SituationSaveFileData(const char* file_path, const void* data, unsigned int bytes_to_write)`
+    *   Saves a block of memory to a file.
+*   `char* SituationLoadFileText(const char* file_path)`
+    *   Loads a text file into a null-terminated string.
+*   `bool SituationSaveFileText(const char* file_path, const char* text)`
+    *   Saves a null-terminated string to a text file.
+*   `bool SituationCopyFile(const char* source_path, const char* dest_path)`
+    *   Copies a file, overwriting the destination if it exists.
+*   `bool SituationDeleteFile(const char* file_path)`
+    *   Deletes a file from the file system.
+*   `bool SituationMoveFile(const char* old_path, const char* new_path)`
+    *   Renames or moves a file or directory, even across drives on Windows.
+*   `bool SituationRenameFile(const char* old_path, const char* new_path)`
+    *   An alias for `SituationMoveFile`.
+
+#### Directory Operations
+*   `bool SituationCreateDirectory(const char* dir_path, bool create_parents)`
+    *   Creates a directory, optionally creating all parent directories in the path.
+*   `bool SituationDeleteDirectory(const char* dir_path, bool recursive)`
+    *   Deletes a directory. If `recursive` is true, it deletes all contents first.
+*   `char** SituationListDirectoryFiles(const char* dir_path, int* out_count)`
+    *   Lists files and subdirectories in a path.
+*   `void SituationFreeDirectoryFileList(char** file_list, int count)`
+    *   Frees the memory for the list returned by `SituationListDirectoryFiles`.
+</details>
+<details>
+<summary>Miscellaneous Module</summary>
+**Overview:** This module contains various utility systems, including the Temporal Oscillator System for rhythmic timing and color space conversion functions.
+
+#### Temporal Oscillator System
+*   `bool SituationTimerGetOscillatorState(int oscillator_id)`
+    *   Gets the current binary state (`0` or `1`) of a temporal oscillator.
+*   `bool SituationTimerGetPreviousOscillatorState(int oscillator_id)`
+    *   Gets the binary state of an oscillator from the previous frame.
+*   `bool SituationTimerHasOscillatorUpdated(int oscillator_id)`
+    *   Checks if an oscillator's state has changed this frame (a single-trigger event).
+*   `bool SituationTimerPingOscillator(int oscillator_id)`
+    *   Checks if an oscillator's period has elapsed since the last successful "ping" of this function.
+*   `uint64_t SituationTimerGetOscillatorTriggerCount(int oscillator_id)`
+    *   Gets the total number of times an oscillator has flipped its state.
+*   `double SituationTimerGetOscillatorPeriod(int oscillator_id)`
+    *   Gets the current period of an oscillator in seconds.
+*   `SituationError SituationSetTimerOscillatorPeriod(int oscillator_id, double period_seconds)`
+    *   Sets a new period for an oscillator at runtime.
+*   `double SituationTimerGetPingProgress(int oscillator_id)`
+    *   Gets the progress [0.0 to 1.0+] of the interval since the last successful ping.
+*   `double SituationTimerGetTime(void)`
+    *   Gets the total time elapsed since the library was initialized.
+
+#### Color Space Conversions
+*   `void SituationConvertColorToVec4(ColorRGBA c, vec4 out_normalized_color)`
+    *   Converts an 8-bit RGBA color struct to a normalized floating-point `vec4`.
+*   `ColorHSV SituationRgbToHsv(ColorRGBA rgb)`
+    *   Converts a color from RGB to HSV color space.
+*   `ColorRGBA SituationHsvToRgb(ColorHSV hsv)`
+    *   Converts a color from HSV to RGB color space.
+*   `ColorYPQA SituationColorToYPQ(ColorRGBA color)`
+    *   Converts a color from RGBA to the YPQA (Luma, Phase, Quadrature) color space.
+*   `ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color)`
+    *   Converts a color from YPQA back to the RGBA color space.
+
+#### Memory Management Helpers
+*   `void SituationFreeString(char* str)`
+    *   Frees the memory for a string allocated and returned by the library.
+*   `void SituationFreeDisplays(SituationDisplayInfo* displays, int count)`
+    *   Frees the memory for the array of display information returned by `SituationGetDisplays`.
+</details>
