@@ -1,10 +1,36 @@
 # Situation API Programming Guide
 
-This document provides a comprehensive guide to the "Situation" library API, organized by functional modules. Each section offers an overview of the module's purpose and a detailed reference for all its functions.
+"Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
+
+The library is engineered around several core principles to ensure ease of use, portability, and power:
+
+<details>
+<summary><h2>Introduction and Core Concepts</h2></summary>
+
+### 1. Philosophy: Immediate Mode and Explicit Control
+The library favors a mostly **"immediate mode"** style API. This means that for many operations, you call a function and it takes effect immediately within the current frame. For example, `SituationCmdDrawQuad()` directly records a draw command into the current frame's command buffer. This approach is designed to be simple, intuitive, and easy to debug, contrasting with "retained mode" systems where you would build a scene graph of objects that is then rendered by the engine.
+
+Complementing this is a philosophy of **explicit resource management**. Any resource you create (a texture, a mesh, a sound) must be explicitly destroyed by you using its corresponding `SituationDestroy...()` or `SituationUnload...()` function. This design choice avoids the complexities and performance overhead of automatic garbage collection and puts you in full control of resource lifecycles. To aid in debugging, the library will warn you at shutdown if you've leaked any GPU resources.
+
+### 2. Architecture: C-Style, Single-File, and Backend-Agnostic
+- **C-Style, Data-Oriented API:** The API is pure C, promoting maximum portability and interoperability. It uses handles (structs passed by value) to represent opaque resources and pointers for functions that need to modify or destroy those resources. This approach is data-oriented, focusing on transforming data (e.g., vertex data into a mesh, image data into a texture) rather than on object-oriented hierarchies.
+
+- **Single-File, Header-Only Distribution:** "Situation" is distributed as a single header file (`situation.h`), making it incredibly easy to integrate into your projects. To use it, you simply `#include "situation.h"` in your source files. In exactly one C or C++ file, you must first define `SITUATION_IMPLEMENTATION` before the include to create the implementation.
+  ```c
+  // In one C/C++ file
+  #define SITUATION_IMPLEMENTATION
+  #include "situation.h"
+  ```
+
+- **Backend Abstraction:** The library provides a unified API that works over different graphics backends (currently OpenGL and Vulkan). You choose the backend at compile time by defining either `SITUATION_USE_OPENGL` or `SITUATION_USE_VULKAN`. This allows you to write your application code once and have it run on a wide range of hardware and platforms, from high-end desktops to older, legacy systems.
+
+### 3. Threading Model: Strictly Single-Threaded
+The library is **strictly single-threaded**. All API functions must be called from the same thread that called `SituationInit()`. Asynchronous operations, such as asset loading on a worker thread, must be handled by the user with care, ensuring that no `SITAPI` calls are made from outside the main thread.
+
+</details>
 
 ## Table of Contents
 
-- [Grand Concepts](#grand-concepts)
 - [Getting Started](#getting-started)
 - [API Usage Guide](#api-usage-guide)
 - [Detailed API Reference](#detailed-api-reference)
@@ -16,40 +42,6 @@ This document provides a comprehensive guide to the "Situation" library API, org
   - [Audio Module](#audio-module)
   - [Filesystem Module](#filesystem-module)
   - [Miscellaneous Module](#miscellaneous-module)
-
----
-
-<details>
-<summary><h2>Grand Concepts</h2></summary>
-
-The "Situation" library is built on a few core principles that inform its design and API. Understanding these concepts will help you use the library effectively and avoid common pitfalls.
-
-### 1. Immediate Mode API Philosophy
-The library favors a mostly "immediate mode" style API. This means that, for many operations, you call a function and it takes effect immediately within the current frame. For example, `SituationCmdDrawQuad()` directly records a draw command into the current frame's command buffer. This approach is designed to be simple, intuitive, and easy to debug. It contrasts with "retained mode" systems where you would create a scene graph of objects that is then rendered by the engine.
-
-### 2. Explicit Resource Management
-"Situation" puts you in full control of resource lifecycles. Any resource you create (a texture, a mesh, a sound) must be explicitly destroyed by you.
-- **Creation:** `SituationCreate...()`, `SituationLoad...()`
-- **Destruction:** `SituationDestroy...()`, `SituationUnload...()`
-
-This design choice avoids the complexities and performance overhead of automatic garbage collection. The library will warn you at shutdown if you've leaked any GPU resources, helping you catch memory management bugs early.
-
-### 3. C-Style, Data-Oriented API
-The API is pure C, promoting portability and interoperability. It uses handles (structs passed by value) to represent opaque resources and pointers for functions that need to modify or destroy those resources. This approach is data-oriented, focusing on transforming data (e.g., vertex data into a mesh, image data into a texture) rather than on object-oriented hierarchies.
-
-### 4. Single-File, Header-Only Philosophy
-"Situation" is distributed as a single header file (`situation.h`), which makes it incredibly easy to integrate into your projects. To use it, you simply `#include "situation.h"` in your source files. In exactly one C or C++ file, you must first define `SITUATION_IMPLEMENTATION` before the include to create the implementation.
-
-```c
-// In one C/C++ file
-#define SITUATION_IMPLEMENTATION
-#include "situation.h"
-```
-
-### 5. Backend Abstraction
-The library provides a unified API that works over different graphics backends (OpenGL and Vulkan). You choose the backend at compile time by defining either `SITUATION_USE_OPENGL` or `SITUATION_USE_VULKAN`. This allows you to write your application code once and have it run on a wide range of hardware and platforms, from high-end desktops to older, legacy systems.
-
-</details>
 
 <details>
 <summary><h2>Getting Started</h2></summary>
@@ -242,8 +234,6 @@ The library is **strictly single-threaded**. All `SITAPI` functions must be call
 *   [Filesystem Module](#filesystem-module)
 *   [Miscellaneous Module](#miscellaneous-module)
 
----
-
 ## Detailed API Reference
 
 This section provides a complete list of all functions available in the "Situation" library, organized by module.
@@ -252,6 +242,22 @@ This section provides a complete list of all functions available in the "Situati
 <summary>Core Module</summary>
 
 **Overview:** The Core module is the heart of the "Situation" library, providing the essential functions for application lifecycle management. It handles initialization (`SituationInit`) and shutdown (`SituationShutdown`), processes the main event loop, and manages frame timing and rate control. This module also serves as a gateway to crucial system information, offering functions to query hardware details like CPU and GPU specifications, manage command-line arguments, and set up critical application-wide callbacks for events like window resizing or exit requests. Mastering the Core module is the first step to building any application with the library.
+
+### Core Concepts
+
+#### Application Lifecycle
+The library enforces a strict and predictable lifecycle that must be followed for any application to function correctly:
+1.  **Initialization:** Your application must call `SituationInit()` exactly once at the very beginning. This function sets up all necessary subsystems, including windowing, graphics, audio, and input. No other library functions (except for a few noted exceptions) can be called before `SituationInit()` has successfully returned.
+2.  **Main Loop:** After initialization, your application enters a main loop that continues as long as `SituationWindowShouldClose()` returns `false`. This loop is where all real-time processing, logic, and rendering occurs.
+3.  **Shutdown:** When the main loop terminates, you must call `SituationShutdown()` exactly once. This function is responsible for gracefully tearing down all subsystems, freeing all allocated resources, and closing the application window.
+
+#### The Three-Phase Frame
+To ensure stable and predictable behavior, every iteration of the main loop must be divided into three distinct phases, executed in a specific order:
+1.  **Input Phase:** At the very beginning of the frame, call `SituationPollInputEvents()`. This function gathers all pending input from the operating system (keyboard, mouse, window events, etc.) and updates the library's internal state. Polling this once at the start of the frame ensures that all subsequent logic in the frame operates on the same consistent snapshot of input.
+2.  **Update Phase:** Next, call `SituationUpdateTimers()` to calculate the time elapsed since the last frame (`deltaTime`). Immediately after, execute all of your application's logic, such as physics calculations, AI, player movement, and other state changes. Using `deltaTime` for time-based calculations is crucial for creating frame-rate-independent behavior.
+3.  **Render Phase:** Finally, perform all rendering. This phase begins with a call to `SituationAcquireFrameCommandBuffer()`, which prepares the GPU for drawing. You then record all of your drawing commands for the frame and conclude by calling `SituationEndFrame()`, which submits the work to the GPU and presents the final image to the screen.
+
+Adhering to this `Input -> Update -> Render` structure is critical for avoiding common bugs like off-by-one input errors or visual stuttering.
 
 ### Core Structs
 
@@ -378,6 +384,20 @@ typedef struct SituationDeviceInfo {
 <summary>Window and Display Module</summary>
 
 **Overview:** This module provides an exhaustive suite of tools for managing the application's window and querying the properties of physical display devices. It handles everything from basic window creation and state changes (fullscreen, minimized, borderless) to more advanced features like DPI scaling, opacity, and clipboard access. Furthermore, it allows you to enumerate all connected monitors, query their resolutions, refresh rates, and physical dimensions, and even change their display modes. This powerful combination of window and display control enables sophisticated, multi-monitor applications and fine-tuned user experiences.
+
+### Window and Display Concepts
+
+#### Logical vs. Physical Coordinates (High-DPI)
+Modern displays often have a very high pixel density (High-DPI or "Retina"). Operating systems handle this by scaling the UI, so a "point" or "screen coordinate" may not correspond to a single physical pixel. The library abstracts this for you:
+-   **Logical Size (Screen Coordinates):** Dimensions used by the OS for window sizing and positioning. Functions like `SituationGetScreenWidth()` and `SituationGetMousePosition()` operate in this space. This is the coordinate system you should generally use for UI layout and logic.
+-   **Physical Size (Render Pixels):** The actual number of pixels in the framebuffer. `SituationGetRenderWidth()` returns this value. This is the resolution the GPU actually renders to.
+The library automatically handles this scaling when you create render targets. You can query the scaling factor at any time using `SituationGetWindowScaleDPI()`.
+
+#### Window State Flags
+The appearance and behavior of the window are controlled by a set of bitmask flags (`SituationWindowStateFlags`). Instead of separate functions for every state (e.g., `SetBorderless()`, `SetResizable()`), you use a single pair of functions, `SituationSetWindowState(flags)` and `SituationClearWindowState(flags)`, to add or remove properties. This provides a flexible and consistent way to manage the window's configuration.
+
+#### Multi-Monitor Environments
+The library fully supports multi-monitor setups. It represents the user's desktop as a single large "virtual desktop" where each monitor has a specific position and resolution. `SituationGetDisplays()` allows you to enumerate all connected monitors and retrieve their properties, including their position on this virtual desktop. This enables you to, for example, place the window on a specific monitor or create fullscreen applications on non-primary displays.
 
 ### Window and Display Structs and Flags
 
@@ -579,6 +599,18 @@ These flags are used with `SituationSetWindowState()` and `SituationClearWindowS
 
 **Overview:** The Image module is a comprehensive, CPU-side toolkit for all forms of image and font manipulation. It allows you to load images from various formats, generate new images programmatically (e.g., with solid colors or gradients), and perform a wide range of transformations like resizing, cropping, flipping, and color adjustment (HSV). Crucially, this module also provides a powerful text rendering engine, enabling you to load TTF/OTF fonts and draw styled text directly onto your images. The `SituationImage` and `SituationFont` objects produced by this module are the primary source for creating GPU-side textures and font atlases used by the Graphics module.
 
+### Image Concepts
+
+#### CPU-Side Operations
+It is critical to understand that the Image module operates **entirely on the CPU**. A `SituationImage` is a block of pixel data stored in system RAM, not in VRAM. This design allows for flexible and powerful image manipulation (resizing, drawing text, etc.) without incurring the performance cost of GPU-CPU synchronization for every operation.
+
+The typical workflow is:
+1.  Load or generate a `SituationImage` using this module's functions.
+2.  Perform any desired manipulations (cropping, drawing text, etc.) on the `SituationImage` data.
+3.  Once the image is in its final desired state, upload it to the GPU to create a `SituationTexture` using `SituationCreateTexture()` from the Graphics module.
+
+This separation of concerns—CPU-side manipulation and GPU-side resources—is a key architectural pattern of the library.
+
 ### Image Structs
 
 #### `SituationImage`
@@ -662,6 +694,27 @@ typedef struct SituationFont {
 <summary>Graphics Module</summary>
 
 **Overview:** The Graphics module forms the core of the rendering pipeline, offering a powerful, backend-agnostic API for interacting with the GPU. It abstracts the complexities of OpenGL and Vulkan into a single, cohesive set of commands. This module is responsible for all GPU resource management, including the creation and destruction of meshes, shaders, textures, and data buffers. Its command-buffer-centric design (`SituationCmd...`) allows you to precisely record and sequence drawing operations, manage rendering passes, and dispatch compute shaders. It also features a "Virtual Display" system, a powerful tool for creating and compositing off-screen render targets, enabling sophisticated post-processing effects and UI layering.
+
+### Graphics Concepts
+
+#### The Command Buffer
+At the core of the rendering system is the **command buffer**. Rather than telling the GPU to "draw this now," you record a series of commands (e.g., bind this shader, draw this mesh, set this viewport) into a buffer. These commands are prefixed with `SituationCmd...`. Once all commands for a frame have been recorded, `SituationEndFrame()` submits the entire buffer to the GPU for execution. This batching approach is far more efficient and is central to how modern graphics APIs like Vulkan operate. (Note: While this is explicit in Vulkan, the library uses the same command-list-style API for OpenGL to maintain consistency).
+
+#### GPU Resources: Meshes, Shaders, and Textures
+These three resource types are the fundamental building blocks of any rendered scene:
+-   `SituationMesh`: A GPU resource containing vertex data (position, color, UVs) and optionally index data. It represents the *shape* of an object.
+-   `SituationShader`: A program that runs on the GPU, defining *how* an object should be drawn. It takes vertex data from a mesh, processes it, and determines the final color of each pixel.
+-   `SituationTexture`: A GPU-side image, typically created from a CPU-side `SituationImage`. It provides the pixel data that a shader can sample from to give an object its *surface appearance*.
+
+A typical draw call involves binding a shader, binding any required textures, and then issuing a command to draw a mesh.
+
+#### The Virtual Display System
+A "Virtual Display" is an **off-screen render target** (also known as a framebuffer object). Instead of drawing directly to the main window, you can create a virtual display and render a scene into it. This is incredibly powerful for several reasons:
+-   **Post-processing:** You can render your main scene to a virtual display, and then render that virtual display to the screen using a special shader that applies effects like bloom, blur, or color grading.
+-   **UI Layering:** You can render your UI to a separate, lower-resolution virtual display and then scale it up and composite it over the main scene. This ensures your UI remains sharp and performant regardless of the 3D scene's complexity.
+-   **Caching:** For parts of a scene that don't change often, you can render them once to a virtual display and then just re-draw that display's texture each frame, saving significant performance.
+
+The library allows you to create multiple virtual displays and composite them together with configurable blend modes, scaling, and ordering.
 
 ### Graphics Structs and Enums
 
@@ -855,6 +908,18 @@ Defines the descriptor set layout for a compute pipeline.
 
 **Overview:** The Input module provides a flexible and comprehensive interface for handling user input from various devices. It supports keyboard, mouse, and gamepads, offering two distinct interaction models: state polling and event-driven callbacks. You can use polling functions (e.g., `SituationIsKeyDown()`) to check the current state of a button or axis within your main update loop, which is ideal for continuous actions like player movement. Alternatively, you can register callback functions (e.g., `SituationSetKeyCallback()`) to be notified of input events the moment they occur, which is perfect for handling discrete events like UI clicks or weapon firing. This dual approach allows you to choose the best input handling strategy for each part of your application.
 
+### Input Concepts
+
+The library offers two complementary models for handling input, which can be mixed and matched as needed.
+
+#### 1. State Polling
+This is the most common approach for real-time applications. Within your main `Update` phase, you can query the current state of any key, button, or axis.
+-   **State Functions (`SituationIs...Down`)**: Check if a button is *currently* being held down. These are ideal for continuous actions that should happen every frame a button is held, like character movement (`if (SituationIsKeyDown(SIT_KEY_W)) { move_forward(); }`).
+-   **Event Functions (`SituationIs...Pressed`, `SituationIs...Released`)**: Check if a button was just pressed or released *on this frame*. These are "single-trigger" events, perfect for discrete actions like jumping, shooting, or opening a menu, as they only return `true` on the exact frame the action occurred.
+
+#### 2. Event-Driven Callbacks
+For certain types of input, particularly for UI, it can be more efficient to be notified of an event the moment it happens, rather than checking for it every frame. The library allows you to register callback functions for events like key presses, mouse clicks, and mouse movement. The OS will then invoke your function directly when the event occurs. This is the preferred model for handling text input or reacting to mouse clicks on UI elements, as it's often cleaner and more performant than polling.
+
 ### Input Callbacks
 
 The input module allows you to register callback functions to be notified of input events as they happen, as an alternative to polling for state each frame.
@@ -968,6 +1033,21 @@ The input module allows you to register callback functions to be notified of inp
 <summary>Audio Module</summary>
 
 **Overview:** The Audio module offers a full-featured audio engine capable of handling everything from simple sound playback to complex, real-time digital signal processing (DSP). It begins with robust device management, allowing you to enumerate and select audio output devices. The module supports loading and streaming common audio formats (WAV, MP3, OGG, FLAC) and provides fine-grained control over individual sounds, including volume, panning, and pitch shifting. Beyond basic playback, it includes a built-in effects chain with filters (low-pass, high-pass), echo, and reverb. For advanced users, the module allows you to attach custom callback-based processors to any sound, enabling the implementation of unique, real-time audio effects and analysis.
+
+### Audio Concepts
+
+#### The Audio Pipeline
+When you play a `SituationSound`, its audio data passes through a processing pipeline before being sent to the audio device. This happens in a dedicated audio thread, separate from your main application thread. For each block of audio, the pipeline performs the following steps:
+1.  **Resampling:** The sound's raw data is resampled to match the pitch set by `SituationSetSoundPitch()`.
+2.  **Volume and Pan:** The volume (`SituationSetSoundVolume()`) and stereo pan (`SituationSetSoundPan()`) are applied.
+3.  **Built-in Effects Chain:** The audio is processed by any active built-in effects, such as filters, echo, or reverb.
+4.  **Custom Processors:** If you have attached any custom processors with `SituationAttachAudioProcessor()`, they are executed in the order they were attached. This is where you can implement your own unique DSP effects.
+5.  **Mixing:** Finally, the processed audio for this sound is mixed with all other active sounds and sent to the master output, which has its own master volume control.
+
+#### Sounds vs. Streams
+The library supports two ways of loading audio:
+-   **Loaded Sounds (`SituationLoadSoundFromFile`):** This decodes the entire audio file and stores the raw PCM data in memory. It is ideal for sound effects and short music loops that need to be played with low latency.
+-   **Streamed Sounds (`SituationLoadSoundFromStream`):** This is intended for longer audio files, like background music. The library only keeps a small buffer of decoded data in memory at any given time, reading more from the source stream as needed. This has a slightly higher latency but uses significantly less memory.
 
 ### Audio Structs and Enums
 
@@ -1090,6 +1170,18 @@ Specifies the type of filter to apply to a sound.
 
 **Overview:** The Filesystem module provides a robust, cross-platform, and UTF-8 aware API for interacting with the host's file system. It abstracts away OS-specific differences, offering a unified set of functions for common file and directory operations. This includes essentials like checking for file/directory existence, reading and writing entire files to/from memory, and directory traversal. The module also includes convenient path manipulation utilities for joining paths, extracting filenames, and locating special directories like the application's base path or a safe location for user data. These features simplify the process of asset loading, data saving, and other file-related tasks.
 
+### Filesystem Concepts
+
+#### Cross-Platform and UTF-8 Aware
+Interacting with the filesystem is notoriously platform-dependent. This module abstracts away those differences, providing a single API that works consistently across Windows, macOS, and Linux. All path strings are expected to be encoded in **UTF-8**, which the library handles correctly on all platforms, even on Windows where the native filesystem API uses UTF-16. This ensures that your application can handle international characters in file paths without issue.
+
+#### Special Path Helpers
+You should avoid making assumptions about the directory structure on the user's machine. Instead of hardcoding paths like `C:\Users\Username\AppData`, use the provided helper functions:
+-   `SituationGetBasePath()`: Returns the directory containing your executable. This is the ideal location to build relative paths from for reading your application's own asset files.
+-   `SituationGetAppSavePath()`: Returns a platform-appropriate, user-specific directory for saving configuration files, save games, and other user data. This function ensures you are writing to a location that is guaranteed to be writable and conforms to the operating system's standards (e.g., `%APPDATA%` on Windows, `~/.local/share` on Linux).
+
+Using these functions makes your application more robust and portable.
+
 #### Path Management & Special Directories
 *   `char* SituationGetAppSavePath(const char* app_name)`
     *   Gets a safe, persistent path for saving application data (e.g., `%APPDATA%/AppName`).
@@ -1143,16 +1235,21 @@ Specifies the type of filter to apply to a sound.
 
 **Overview:** The Miscellaneous module is a collection of powerful utility systems that don't fit into the other main categories but provide significant value. Its flagship feature is the Temporal Oscillator System, a unique and powerful tool for creating rhythmic, periodic events and synchronizing application logic to a musical beat. This module also provides a suite of robust color space conversion functions, allowing for easy translation between RGBA, HSV, and the broadcast-safe YPQA color spaces. Finally, it includes essential memory management helpers for freeing strings and other data structures allocated by the library, ensuring proper resource cleanup.
 
-### Miscellaneous Concepts & Structs
+### Miscellaneous Concepts
 
 #### The Temporal Oscillator System
-This is a high-level timing utility designed to create rhythmic, periodic events in your application. You create a number of oscillators during `SituationInit()`, each with a specific period (e.g., 0.5 seconds). The library then updates these timers every frame.
+This is a high-level timing utility designed to create rhythmic, periodic events in your application. You create a number of oscillators when you call `SituationInit()`, each with a specific period (e.g., 0.5 seconds for a 120 BPM rhythm). The library automatically updates these timers every frame in a way that is decoupled from the frame rate.
 
-You can query an oscillator's state (`0` or `1`), which flips every time its period elapses. This is useful for creating blinking effects, triggering animations on a beat, or synchronizing game logic to a fixed time step.
+An oscillator can be thought of as a simple clock that "ticks" every time its period elapses. On each tick, its internal binary state flips between `0` and `1`. This provides a powerful and easy way to synchronize animations, game logic, or visual effects to a steady, musical beat.
 
--   `SituationTimerGetOscillatorState()`: Gets the current binary state.
--   `SituationTimerHasOscillatorUpdated()`: A single-frame trigger that returns `true` only on the frame the state flips.
--   `SituationTimerPingOscillator()`: A "metronome" function that returns `true` once per period.
+There are three main ways to interact with an oscillator:
+-   **State (`SituationTimerGetOscillatorState`)**: Query the current binary state (`0` or `1`). This is useful for creating effects that have two distinct states, like a blinking light.
+-   **Update Event (`SituationTimerHasOscillatorUpdated`)**: This is a single-frame trigger that returns `true` only on the exact frame that the oscillator's state flips. It's the most common way to trigger a discrete event (like a sound effect) precisely on the beat.
+-   **Ping (`SituationTimerPingOscillator`)**: This acts like a metronome. It returns `true` once per period, but only on the first frame it is called after the period has elapsed. This is useful for logic that should run once per beat but might be inside a conditional block that isn't executed every frame.
+
+By combining multiple oscillators with different periods (e.g., one for quarter notes, another for whole notes), you can build complex, rhythm-based systems.
+
+### Miscellaneous Structs
 
 #### Color-Space Structs
 
