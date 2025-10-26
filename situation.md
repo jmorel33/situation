@@ -66,6 +66,64 @@ This section provides a complete list of all functions available in the "Situati
 
 **Overview:** The Core module manages the fundamental lifecycle of the application, provides access to system-level information, and handles frame timing.
 
+### Core Structs
+
+#### `SituationInitInfo`
+This struct is passed to `SituationInit()` to configure the application at startup.
+
+```c
+typedef struct SituationInitInfo {
+    const char* app_name;
+    const char* app_version;
+    int initial_width;
+    int initial_height;
+    uint32_t window_flags;
+    int target_fps;
+    int oscillator_count;
+    const double* oscillator_periods;
+    bool headless;
+} SituationInitInfo;
+```
+-   `app_name`: The name of your application, used for window titles and save paths.
+-   `app_version`: The version of your application.
+-   `initial_width`, `initial_height`: The desired dimensions for the main window when it is first created.
+-   `window_flags`: A bitmask of `SituationWindowStateFlags` to set the initial state of the window (e.g., `SITUATION_FLAG_WINDOW_RESIZABLE`).
+-   `target_fps`: The desired target frame rate. The library will sleep to avoid exceeding this. Use `0` for uncapped FPS.
+-   `oscillator_count`: The number of temporal oscillators to create for rhythmic timing.
+-   `oscillator_periods`: An array of `double`s specifying the initial period (in seconds) for each oscillator.
+-   `headless`: If `true`, the library will initialize without creating a window or graphics context. Useful for server-side applications or command-line tools.
+
+#### `SituationDeviceInfo`
+This struct, returned by `SituationGetDeviceInfo()`, provides a snapshot of the host system's hardware.
+
+```c
+typedef struct SituationDeviceInfo {
+    char cpu_brand[49];
+    int cpu_core_count;
+    int cpu_thread_count;
+    uint64_t system_ram_bytes;
+    char gpu_brand[128];
+    uint64_t gpu_vram_bytes;
+    int display_count;
+    char os_name[32];
+    char os_version[32];
+    uint64_t total_storage_bytes;
+    uint64_t free_storage_bytes;
+} SituationDeviceInfo;
+```
+-   `cpu_brand`: The full brand string of the CPU (e.g., "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz").
+-   `cpu_core_count`: The number of physical CPU cores.
+-   `cpu_thread_count`: The number of logical CPU threads.
+-   `system_ram_bytes`: The total amount of physical system RAM in bytes.
+-   `gpu_brand`: The brand string of the primary GPU.
+-   `gpu_vram_bytes`: The total amount of dedicated video memory (VRAM) in bytes.
+-   `display_count`: The number of connected displays (monitors).
+-   `os_name`: The name of the operating system (e.g., "Windows").
+-   `os_version`: The version of the operating system (e.g., "10.0.19042").
+-   `total_storage_bytes`, `free_storage_bytes`: The total and free space on the logical drive where the executable is located.
+
+### Functions
+
 #### Application Lifecycle & State
 
 *   `SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info)`
@@ -132,6 +190,68 @@ This section provides a complete list of all functions available in the "Situati
 <details>
 <summary>Window and Display Module</summary>
 **Overview:** This module provides comprehensive control over the application window and detailed information about the physical display hardware.
+
+### Window and Display Structs and Flags
+
+#### `SituationDisplayInfo`
+Returned by `SituationGetDisplays()`, this struct contains detailed information about a connected monitor.
+
+```c
+typedef struct SituationDisplayInfo {
+    int id;
+    char name[128];
+    int current_mode;
+    int mode_count;
+    SituationDisplayMode* modes;
+    vec2 position;
+    vec2 physical_size;
+} SituationDisplayInfo;
+```
+-   `id`: The internal ID of the monitor.
+-   `name`: The human-readable name of the monitor.
+-   `current_mode`: The index of the display's current mode in the `modes` array.
+-   `mode_count`: The number of available display modes.
+-   `modes`: A pointer to an array of `SituationDisplayMode` structs, detailing all supported resolutions and refresh rates.
+-   `position`: The physical position of the monitor's top-left corner on the virtual desktop.
+-   `physical_size`: The physical size of the display in millimeters.
+
+#### `SituationDisplayMode`
+Represents a single supported display mode (resolution, refresh rate, etc.) for a monitor.
+
+```c
+typedef struct SituationDisplayMode {
+    int width;
+    int height;
+    int refresh_rate;
+    int red_bits;
+    int green_bits;
+    int blue_bits;
+} SituationDisplayMode;
+```
+-   `width`, `height`: The resolution of the display mode in pixels.
+-   `refresh_rate`: The refresh rate in Hertz (Hz).
+-   `red_bits`, `green_bits`, `blue_bits`: The color depth (bit depth) for each color channel.
+
+#### `SituationWindowStateFlags`
+These flags are used with `SituationSetWindowState()` and `SituationClearWindowState()` to control the window's appearance and behavior.
+
+| Flag                                | Description                                                                                                   |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `SITUATION_FLAG_VSYNC_HINT`         | Suggests that the graphics backend should wait for vertical sync, reducing screen tearing.                      |
+| `SITUATION_FLAG_FULLSCREEN_MODE`    | Enables exclusive fullscreen mode.                                                                            |
+| `SITUATION_FLAG_WINDOW_RESIZABLE`   | Allows the user to resize the window.                                                                         |
+| `SITUATION_FLAG_WINDOW_UNDECORATED` | Removes the window's border, title bar, and other decorations.                                                |
+| `SITUATION_FLAG_WINDOW_HIDDEN`      | Hides the window from view.                                                                                   |
+| `SITUATION_FLAG_WINDOW_MINIMIZED`   | Minimizes the window to the taskbar.                                                                          |
+| `SITUATION_FLAG_WINDOW_MAXIMIZED`   | Maximizes the window to fill the work area.                                                                   |
+| `SITUATION_FLAG_WINDOW_UNFOCUSED`   | Prevents the window from gaining focus when created.                                                          |
+| `SITUATION_FLAG_WINDOW_TOPMOST`     | Keeps the window on top of all other windows.                                                                 |
+| `SITUATION_FLAG_WINDOW_ALWAYS_RUN`  | Allows the application to continue running even when the window is minimized or out of focus.                 |
+| `SITUATION_FLAG_WINDOW_TRANSPARENT` | Enables a transparent framebuffer, allowing for non-rectangular window shapes (requires OS compositor support). |
+| `SITUATION_FLAG_HIGHDPI_HINT`       | Requests a high-DPI framebuffer on platforms that support it (e.g., macOS Retina displays).                 |
+| `SITUATION_FLAG_MSAA_4X_HINT`       | Suggests that the graphics backend should use 4x multisample anti-aliasing.                                     |
+
+### API Reference
 
 #### Window State Management
 
@@ -270,6 +390,35 @@ This section provides a complete list of all functions available in the "Situati
 <summary>Image Module</summary>
 **Overview:** This module provides a suite of functions for loading, manipulating, and saving images on the CPU. These `SituationImage` objects can then be used to create GPU textures.
 
+### Image Structs
+
+#### `SituationImage`
+A handle representing a CPU-side image. All pixel data is stored in uncompressed 32-bit RGBA format.
+
+```c
+typedef struct SituationImage {
+    void *data;
+    int width;
+    int height;
+} SituationImage;
+```
+-   `data`: A pointer to the raw pixel data.
+-   `width`, `height`: The dimensions of the image in pixels.
+
+#### `SituationFont`
+A handle representing a CPU-side font, loaded from a TTF or OTF file. This is used for rendering text onto `SituationImage` objects.
+
+```c
+typedef struct SituationFont {
+    void *fontData;
+    void *stbFontInfo;
+} SituationFont;
+```
+-   `fontData`: A pointer to the raw data of the font file.
+-   `stbFontInfo`: A pointer to the internal `stbtt_fontinfo` struct used by the font rendering backend.
+
+### API Reference
+
 #### Image Loading and Unloading
 *   `SituationImage SituationLoadImage(const char *fileName)`
     *   Loads an image from a file into CPU memory (RAM).
@@ -323,6 +472,55 @@ This section provides a complete list of all functions available in the "Situati
 <details>
 <summary>Graphics Module</summary>
 **Overview:** The Graphics module is the heart of the rendering engine, providing a unified API over OpenGL and Vulkan for managing GPU resources and recording drawing commands.
+
+### Graphics Structs and Enums
+
+#### `SituationRenderPassInfo`
+Configures a rendering pass. Used with `SituationCmdBeginRenderPass()`.
+
+```c
+typedef struct SituationRenderPassInfo {
+    SituationLoadAction color_load_action;
+    SituationStoreAction color_store_action;
+    ColorRGBA clear_color;
+    SituationLoadAction depth_load_action;
+    SituationStoreAction depth_store_action;
+    float clear_depth;
+    int virtual_display_id;
+} SituationRenderPassInfo;
+```
+-   `color_load_action`, `depth_load_action`: What to do with the color/depth buffer at the start of the pass (`SIT_LOAD_ACTION_LOAD`, `_CLEAR`, or `_DONT_CARE`).
+-   `color_store_action`, `depth_store_action`: What to do with the buffer at the end of the pass (`SIT_STORE_ACTION_STORE` or `_DONT_CARE`).
+-   `clear_color`, `clear_depth`: The values to use if the load action is `_CLEAR`.
+-   `virtual_display_id`: The ID of a virtual display to render to. Use `-1` to target the main window.
+
+#### `SituationMesh`, `SituationShader`, `SituationTexture`, `SituationBuffer`, `SituationModel`
+These are opaque handles to GPU resources. Their internal structure is not exposed to the user.
+
+#### `SituationBufferUsageFlags`
+Specifies how a `SituationBuffer` will be used. This helps the driver place the buffer in the most optimal memory.
+
+| Flag                          | Description                                                                 |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| `SIT_BUFFER_USAGE_VERTEX`     | The buffer will be used as a vertex buffer.                                 |
+| `SIT_BUFFER_USAGE_INDEX`      | The buffer will be used as an index buffer.                                 |
+| `SIT_BUFFER_USAGE_UNIFORM`    | The buffer will be used as a Uniform Buffer Object (UBO).                   |
+| `SIT_BUFFER_USAGE_STORAGE`    | The buffer will be used as a Shader Storage Buffer Object (SSBO).           |
+| `SIT_BUFFER_USAGE_INDIRECT`   | The buffer will be used for indirect drawing commands.                      |
+| `SIT_BUFFER_USAGE_TRANSFER_SRC`| The buffer can be used as a source for a copy operation.                  |
+| `SIT_BUFFER_USAGE_TRANSFER_DST`| The buffer can be used as a destination for a copy operation.             |
+
+#### `SituationComputeLayoutType`
+Defines the descriptor set layout for a compute pipeline.
+
+| Type                      | Description                                                                                               |
+| ------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `SIT_COMPUTE_LAYOUT_EMPTY`| The compute shader does not use any resources.                                                            |
+| `SIT_COMPUTE_LAYOUT_IMAGE`| The pipeline expects a single storage image to be bound at binding 0.                                       |
+| `SIT_COMPUTE_LAYOUT_BUFFER`| The pipeline expects a single storage buffer to be bound at binding 0.                                    |
+| `SIT_COMPUTE_LAYOUT_BUFFER_X2`| The pipeline expects two storage buffers to be bound at bindings 0 and 1.                                 |
+
+### API Reference
 
 #### Frame Lifecycle & Command Buffer
 *   `bool SituationAcquireFrameCommandBuffer(void)`
@@ -466,6 +664,37 @@ This section provides a complete list of all functions available in the "Situati
 <summary>Input Module</summary>
 **Overview:** This module provides a comprehensive API for handling input from the keyboard, mouse, and gamepads, supporting both state polling and event-driven callbacks.
 
+### Input Callbacks
+
+The input module allows you to register callback functions to be notified of input events as they happen, as an alternative to polling for state each frame.
+
+#### `SituationKeyCallback`
+`typedef void (*SituationKeyCallback)(int key, int scancode, int action, int mods, void* user_data);`
+-   `key`: The keyboard key that was pressed or released (e.g., `SIT_KEY_A`).
+-   `scancode`: The system-specific scancode of the key.
+-   `action`: The key action (`SIT_PRESS`, `SIT_RELEASE`, or `SIT_REPEAT`).
+-   `mods`: A bitmask of modifier keys that were held down (`SIT_MOD_SHIFT`, `SIT_MOD_CONTROL`, etc.).
+-   `user_data`: The custom user data pointer you provided when setting the callback.
+
+#### `SituationMouseButtonCallback`
+`typedef void (*SituationMouseButtonCallback)(int button, int action, int mods, void* user_data);`
+-   `button`: The mouse button that was pressed or released (e.g., `SIT_MOUSE_BUTTON_LEFT`).
+-   `action`: The button action (`SIT_PRESS` or `SIT_RELEASE`).
+-   `mods`: A bitmask of modifier keys.
+-   `user_data`: Custom user data.
+
+#### `SituationCursorPosCallback`
+`typedef void (*SituationCursorPosCallback)(double xpos, double ypos, void* user_data);`
+-   `xpos`, `ypos`: The new cursor position in screen coordinates.
+-   `user_data`: Custom user data.
+
+#### `SituationScrollCallback`
+`typedef void (*SituationScrollCallback)(double xoffset, double yoffset, void* user_data);`
+-   `xoffset`, `yoffset`: The scroll offset.
+-   `user_data`: Custom user data.
+
+### API Reference
+
 #### Keyboard Input
 *   `bool SituationIsKeyDown(int key)`
     *   Checks if a key is currently held down (a continuous state).
@@ -547,6 +776,54 @@ This section provides a complete list of all functions available in the "Situati
 <details>
 <summary>Audio Module</summary>
 **Overview:** This module provides a complete audio solution, from device management and sound loading to real-time effects and custom processing.
+
+### Audio Structs and Enums
+
+#### `SituationAudioDeviceInfo`
+Contains information about a single audio playback device available on the system.
+
+```c
+typedef struct SituationAudioDeviceInfo {
+    int internal_id;
+    char name[SITUATION_MAX_DEVICE_NAME_LEN];
+    bool is_default;
+    int min_channels, max_channels;
+    int min_sample_rate, max_sample_rate;
+} SituationAudioDeviceInfo;
+```
+-   `internal_id`: The ID used to select this device with `SituationSetAudioDevice()`.
+-   `name`: The human-readable name of the device.
+-   `is_default`: `true` if this is the operating system's default audio device.
+-   `min_channels`, `max_channels`: The supported range of audio channels.
+-   `min_sample_rate`, `max_sample_rate`: The supported range of sample rates.
+
+#### `SituationAudioFormat`
+Describes the format of audio data.
+
+```c
+typedef struct SituationAudioFormat {
+    int channels;
+    int sample_rate;
+    int bit_depth;
+} SituationAudioFormat;
+```
+-   `channels`: The number of audio channels (e.g., 1 for mono, 2 for stereo).
+-   `sample_rate`: The number of samples per second (e.g., 44100).
+-   `bit_depth`: The number of bits per sample (e.g., 16).
+
+#### `SituationSound`
+An opaque handle to a loaded sound, either fully in memory or streamed.
+
+#### `SituationFilterType`
+Specifies the type of filter to apply to a sound.
+
+| Type                      | Description                               |
+| ------------------------- | ----------------------------------------- |
+| `SIT_FILTER_NONE`         | No filter is applied.                     |
+| `SIT_FILTER_LOW_PASS`     | Allows low frequencies to pass through.   |
+| `SIT_FILTER_HIGH_PASS`    | Allows high frequencies to pass through.  |
+
+### API Reference
 
 #### Audio Device Management
 *   `SituationAudioDeviceInfo* SituationGetAudioDevices(int* count)`
@@ -671,6 +948,42 @@ This section provides a complete list of all functions available in the "Situati
 <details>
 <summary>Miscellaneous Module</summary>
 **Overview:** This module contains various utility systems, including the Temporal Oscillator System for rhythmic timing and color space conversion functions.
+
+### Miscellaneous Concepts & Structs
+
+#### The Temporal Oscillator System
+This is a high-level timing utility designed to create rhythmic, periodic events in your application. You create a number of oscillators during `SituationInit()`, each with a specific period (e.g., 0.5 seconds). The library then updates these timers every frame.
+
+You can query an oscillator's state (`0` or `1`), which flips every time its period elapses. This is useful for creating blinking effects, triggering animations on a beat, or synchronizing game logic to a fixed time step.
+
+-   `SituationTimerGetOscillatorState()`: Gets the current binary state.
+-   `SituationTimerHasOscillatorUpdated()`: A single-frame trigger that returns `true` only on the frame the state flips.
+-   `SituationTimerPingOscillator()`: A "metronome" function that returns `true` once per period.
+
+#### Color-Space Structs
+
+`ColorRGBA`: The standard 8-bit per channel color representation.
+```c
+typedef struct ColorRGBA { unsigned char r, g, b, a; } ColorRGBA;
+```
+
+`ColorHSV`: Represents a color in Hue-Saturation-Value format.
+```c
+typedef struct ColorHSV { float h, s, v; } ColorHSV;
+```
+-   `h`: Hue, in degrees (0-360).
+-   `s`: Saturation (0.0 for grayscale, 1.0 for full color).
+-   `v`: Value/Brightness (0.0 for black, 1.0 for full brightness).
+
+`ColorYPQA`: A broadcast-safe color format separating luma from chroma.
+```c
+typedef struct ColorYPQA { unsigned char y, p, q, a; } ColorYPQA;
+```
+-   `y`: Luminance (brightness).
+-   `p`, `q`: Phase and Quadrature (chroma components).
+-   `a`: Alpha.
+
+### API Reference
 
 #### Temporal Oscillator System
 *   `bool SituationTimerGetOscillatorState(int oscillator_id)`
