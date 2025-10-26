@@ -221,6 +221,75 @@ int main(int argc, char** argv) {
 }
 ```
 
+---
+#### Legacy Shader Uniforms
+---
+#### `SituationSetShaderValue`
+Sets a uniform value in a shader.
+```c
+void SituationSetShaderValue(SituationShader shader, int locIndex, const void* value, int uniformType);
+```
+**Usage Example:**
+```c
+int time_loc = SituationGetShaderLocation(my_shader, "u_time");
+float current_time = (float)SituationGetTime();
+// Note: This is a legacy way to set uniforms. Using UBOs with SituationCmdBindShaderBuffer is preferred.
+SituationSetShaderValue(my_shader, time_loc, &current_time, SIT_UNIFORM_FLOAT);
+```
+
+---
+#### `SituationSetShaderValueMatrix`
+Sets a matrix uniform value in a shader.
+```c
+void SituationSetShaderValueMatrix(SituationShader shader, int locIndex, mat4 mat);
+```
+**Usage Example:**
+```c
+int mvp_loc = SituationGetShaderLocation(my_shader, "u_mvp");
+mat4 mvp_matrix = /* ... calculate matrix ... */;
+SituationSetShaderValueMatrix(my_shader, mvp_loc, mvp_matrix);
+```
+
+---
+#### `SituationSetShaderValueTexture`
+Sets a texture uniform value in a shader.
+```c
+void SituationSetShaderValueTexture(SituationShader shader, int locIndex, SituationTexture texture);
+```
+**Usage Example:**
+```c
+int albedo_loc = SituationGetShaderLocation(my_shader, "u_albedo_texture");
+// This tells the shader to use my_texture for the texture sampler at `albedo_loc`.
+SituationSetShaderValueTexture(my_shader, albedo_loc, my_texture);
+```
+
+---
+#### Logging
+---
+#### `SituationLog`
+Prints a log message.
+```c
+void SituationLog(int msgType, const char* text, ...);
+```
+**Usage Example:**
+```c
+int score = 100;
+SituationLog(SIT_LOG_INFO, "Player reached a score of %d", score);
+```
+
+---
+#### `SituationSetTraceLogLevel`
+Sets the current threshold for trace log messages.
+```c
+void SituationSetTraceLogLevel(int logType);
+```
+**Usage Example:**
+```c
+// Show all logs including debug and trace messages
+SituationSetTraceLogLevel(SIT_LOG_ALL);
+// Later, reduce verbosity to only show warnings and errors
+SituationSetTraceLogLevel(SIT_LOG_WARNING);
+```
 </details>
 
 ---
@@ -554,6 +623,48 @@ void SituationOpenURL(const char* url);
 SituationOpenURL("https://www.github.com");
 ```
 
+---
+#### `SituationSetErrorCallback`
+Sets a callback for handling library errors.
+```c
+void SituationSetErrorCallback(SituationErrorCallback callback);
+```
+**Usage Example:**
+```c
+void my_error_logger(int error_code, const char* message) {
+    fprintf(stderr, "Situation Error [%d]: %s\n", error_code, message);
+}
+
+// In main, after Init
+SituationSetErrorCallback(my_error_logger);
+```
+
+---
+#### `SituationSetVSync`
+Enables or disables VSync.
+```c
+void SituationSetVSync(bool enabled);
+```
+**Usage Example:**
+```c
+// Disable VSync for performance testing
+SituationSetVSync(false);
+```
+
+---
+#### `SituationGetPlatform`
+Gets the current platform.
+```c
+int SituationGetPlatform(void);
+```
+**Usage Example:**
+```c
+int platform = SituationGetPlatform();
+#if defined(PLATFORM_DESKTOP)
+    if (platform == PLATFORM_DESKTOP) printf("Running on a desktop platform.\n");
+#endif
+```
+
 </details>
 <details>
 <summary><h3>Window and Display Module</h3></summary>
@@ -694,6 +805,18 @@ SituationSetWindowSize(800, 600);
 vec2 size;
 glm_vec2_copy(SituationGetWindowSize(), size);
 printf("Window size is now: %.0fx%.0f\n", size[0], size[1]);
+```
+
+---
+#### `SituationSetWindowSizeLimits`
+Sets the minimum and maximum size for a resizable window.
+```c
+void SituationSetWindowSizeLimits(int min_width, int min_height, int max_width, int max_height);
+```
+**Usage Example:**
+```c
+// Ensure the window is never smaller than 640x480 or larger than 1920x1080
+SituationSetWindowSizeLimits(640, 480, 1920, 1080);
 ```
 
 ---
@@ -883,6 +1006,13 @@ const char* clipboard = SituationGetClipboardText();
 if (clipboard) {
     printf("Clipboard contains: %s\n", clipboard);
 }
+```
+
+---
+#### `SituationIsFileDropped`
+Checks if files were dropped onto the window this frame.
+```c
+bool SituationIsFileDropped(void);
 ```
 
 ---
@@ -1171,6 +1301,38 @@ SituationImageDrawText(&canvas, my_font, "Hello, World!", (vec2){50, 50}, 40, 1,
 SituationUnloadFont(my_font);
 SituationUnloadImage(canvas);
 ```
+
+---
+#### Pixel-Level Access
+---
+#### `SituationGetPixelColor`
+Gets the color of a single pixel from an image.
+```c
+ColorRGBA SituationGetPixelColor(SituationImage image, int x, int y);
+```
+**Usage Example:**
+```c
+SituationImage my_image = SituationLoadImage("assets/my_image.png");
+ColorRGBA top_left_pixel = SituationGetPixelColor(my_image, 0, 0);
+printf("Top-left pixel color: R%d G%d B%d A%d\n",
+       top_left_pixel.r, top_left_pixel.g, top_left_pixel.b, top_left_pixel.a);
+SituationUnloadImage(my_image);
+```
+
+---
+#### `SituationSetPixelColor`
+Sets the color of a single pixel in an image.
+```c
+void SituationSetPixelColor(SituationImage* image, int x, int y, ColorRGBA color);
+```
+**Usage Example:**
+```c
+SituationImage canvas = SituationGenImageColor(10, 10, (ColorRGBA){0, 0, 0, 255});
+// Draw a red pixel in the center
+SituationSetPixelColor(&canvas, 5, 5, (ColorRGBA){255, 0, 0, 255});
+// ... use the canvas ...
+SituationUnloadImage(canvas);
+```
 </details>
 <details>
 <summary><h3>Graphics Module</h3></summary>
@@ -1442,6 +1604,38 @@ SituationDestroyTexture(&g_my_texture);
 ```
 
 ---
+#### `SituationUpdateTexture`
+Updates a texture with new pixel data from a `SituationImage`.
+```c
+void SituationUpdateTexture(SituationTexture texture, SituationImage image);
+```
+**Usage Example:**
+```c
+// Create a blank texture
+SituationImage blank = SituationGenImageColor(256, 256, (ColorRGBA){0,0,0,255});
+SituationTexture dynamic_texture = SituationCreateTexture(blank, false);
+SituationUnloadImage(blank);
+
+// Later, in the update loop, generate new image data
+SituationImage new_data = generate_procedural_image();
+SituationUpdateTexture(dynamic_texture, new_data);
+SituationUnloadImage(new_data);
+```
+
+---
+#### `SituationGetTextureFormat`
+Gets the internal GPU format of a texture.
+```c
+int SituationGetTextureFormat(SituationTexture texture);
+```
+**Usage Example:**
+```c
+int format = SituationGetTextureFormat(my_texture);
+// The format will be one of the backend-specific pixel format enums (e.g., GL_RGBA8)
+printf("Texture format ID: %d\n", format);
+```
+
+---
 #### `SituationLoadModel` / `SituationUnloadModel`
 Loads a 3D model (including meshes and materials) from a file (GLTF, OBJ), and later unloads it.
 ```c
@@ -1669,6 +1863,21 @@ if (SituationIsKeyPressed(SIT_KEY_SPACE)) {
     player.velocity_y = JUMP_FORCE;
 }
 ```
+
+---
+#### `SituationGetKeyPressed`
+Gets the last key pressed.
+```c
+int SituationGetKeyPressed(void);
+```
+**Usage Example:**
+```c
+int last_key = SituationGetKeyPressed();
+if (last_key > 0) {
+    // A key was pressed this frame, you can use it for text input or debug commands.
+    printf("Key pressed: %c\n", (char)last_key);
+}
+```
 ---
 #### `SituationSetKeyCallback`
 Sets a callback function for all keyboard key events.
@@ -1787,6 +1996,21 @@ bool SituationIsGamepadButtonPressed(int jid, int button);
 ```c
 if (SituationIsGamepadButtonPressed(GAMEPAD_ID, SIT_GAMEPAD_BUTTON_A)) {
     // Jump
+}
+```
+
+---
+#### `SituationGetGamepadButtonPressed`
+Gets the last gamepad button pressed.
+```c
+int SituationGetGamepadButtonPressed(void);
+```
+**Usage Example:**
+```c
+int last_button = SituationGetGamepadButtonPressed();
+if (last_button != SIT_GAMEPAD_BUTTON_UNKNOWN) {
+    // A button was pressed this frame
+    printf("Gamepad button pressed: %d\n", last_button);
 }
 ```
 ---
@@ -1981,6 +2205,57 @@ float random_pitch = 1.0f + ((rand() % 200) - 100) / 1000.0f; // Range 0.9 to 1.
 SituationSetSoundPitch(&jump_sound, random_pitch);
 SituationPlayLoadedSound(&jump_sound);
 ```
+
+---
+#### Querying Sound State
+---
+#### `SituationIsSoundLooping`
+Checks if a sound is set to loop.
+```c
+bool SituationIsSoundLooping(SituationSound* sound);
+```
+**Usage Example:**
+```c
+if (SituationIsSoundLooping(&music)) {
+    printf("The music track is set to loop.\n");
+}
+```
+
+---
+#### `SituationGetSoundLength`
+Gets the total length of a sound in seconds.
+```c
+double SituationGetSoundLength(SituationSound* sound);
+```
+**Usage Example:**
+```c
+double length = SituationGetSoundLength(&music);
+printf("Music track length: %.2f seconds\n", length);
+```
+
+---
+#### `SituationGetSoundCursor`
+Gets the current playback position of a sound in seconds.
+```c
+double SituationGetSoundCursor(SituationSound* sound);
+```
+**Usage Example:**
+```c
+double position = SituationGetSoundCursor(&music);
+printf("Music is currently at %.2f seconds\n", position);
+```
+
+---
+#### `SituationSetSoundCursor`
+Sets the current playback position of a sound in seconds.
+```c
+void SituationSetSoundCursor(SituationSound* sound, double seconds);
+```
+**Usage Example:**
+```c
+// Skip 30 seconds into the music track
+SituationSetSoundCursor(&music, 30.0);
+```
 ---
 #### Effects and Custom Processing
 ---
@@ -2084,6 +2359,20 @@ bool SituationDirectoryExists(const char* dir_path);
 ```
 
 ---
+#### `SituationIsPathFile`
+Checks if a path is a file.
+```c
+bool SituationIsPathFile(const char* path);
+```
+**Usage Example:**
+```c
+if (SituationIsPathFile("assets/player.png")) {
+    // It's a file
+} else if (SituationDirectoryExists("assets")) {
+    // It's a directory
+}
+```
+---
 #### `SituationGetFileModTime`
 Gets the last modification time of a file.
 ```c
@@ -2161,6 +2450,20 @@ if (SituationChangeDirectory("assets")) {
 }
 SituationChangeDirectory(initial_dir); // Change back
 SituationFreeString(initial_dir);
+```
+
+---
+#### `SituationGetDirectoryPath`
+Gets the directory path for a file path.
+```c
+char* SituationGetDirectoryPath(const char* file_path);
+```
+**Usage Example:**
+```c
+char* dir_path = SituationGetDirectoryPath("C:/assets/models/player.gltf");
+// dir_path is now "C:/assets/models"
+printf("The model's directory is: %s\n", dir_path);
+SituationFreeString(dir_path);
 ```
 </details>
 <details>
