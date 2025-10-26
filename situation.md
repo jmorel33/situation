@@ -317,6 +317,66 @@ typedef struct SituationDeviceInfo {
 
 ### Functions
 
+Usage Example
+The following snippet demonstrates a complete, minimal application lifecycle, including initialization, a main loop, and shutdown. It also shows how to query device info and set an exit callback.
+
+```c
+#include <stdio.h>
+
+// A callback function to be executed just before shutdown.
+void on_exit_callback(void* user_data) {
+    // You can pass custom data to your callbacks.
+    const char* message = (const char*)user_data;
+    printf("Application is shutting down. Message: %s\n", message);
+    // Note: Do not call any Situation API functions here other than freeing resources.
+}
+
+int main(int argc, char* argv[]) {
+    // 1. Configure and Initialize the Library
+    SituationInitInfo init_info = {
+        .app_name = "Core Module Example",
+        .initial_width = 1024,
+        .initial_height = 768,
+        .target_fps = 60
+    };
+
+    if (SituationInit(argc, argv, &init_info) != SIT_SUCCESS) {
+        fprintf(stderr, "Failed to initialize: %s\n", SituationGetLastErrorMsg());
+        return -1;
+    }
+
+    // 2. Set Callbacks (Optional)
+    const char* exit_message = "Cleanup can happen here.";
+    SituationSetExitCallback(on_exit_callback, (void*)exit_message);
+
+    // 3. Query System Information
+    SituationDeviceInfo device = SituationGetDeviceInfo();
+    printf("Running on GPU: %s\n", device.gpu_brand);
+    printf("CPU Cores: %d\n", device.cpu_core_count);
+
+    // 4. Main Application Loop
+    while (!SituationWindowShouldClose()) {
+        SituationPollInputEvents();
+        SituationUpdateTimers();
+
+        // (Your application logic and rendering would go here)
+
+        if (SituationAcquireFrameCommandBuffer()) {
+            SituationRenderPassInfo pass = { .color_load_action = SIT_LOAD_ACTION_CLEAR };
+            SituationCmdBeginRenderPass(SituationGetMainCommandBuffer(), &pass);
+            SituationCmdEndRenderPass(SituationGetMainCommandBuffer());
+            SituationEndFrame();
+        }
+    }
+
+    // 5. Shutdown
+    // The exit callback will be automatically invoked during this call.
+    SituationShutdown();
+
+    return 0;
+}
+```
+
 #### Application Lifecycle & State
 
 *   `SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info)`
@@ -463,6 +523,32 @@ These flags are used with `SituationSetWindowState()` and `SituationClearWindowS
 
 #### Window State Management
 
+**Usage Example:**
+```c
+// Inside your main loop's update phase:
+if (SituationIsKeyPressed(SIT_KEY_F11)) {
+    // Toggle between exclusive fullscreen and windowed mode.
+    SituationToggleFullscreen();
+}
+
+if (SituationIsKeyPressed(SIT_KEY_F10)) {
+    // This provides a "borderless fullscreen windowed" mode, which is often
+    // preferred for multi-monitor setups as it doesn't disrupt other displays.
+    SituationToggleBorderlessWindowed();
+}
+
+// You can also manage states directly.
+if (SituationIsKeyPressed(SIT_KEY_T)) {
+    if (SituationIsWindowState(SITUATION_FLAG_WINDOW_TOPMOST)) {
+        // Clear the "always on top" flag.
+        SituationClearWindowState(SITUATION_FLAG_WINDOW_TOPMOST);
+    } else {
+        // Set the "always on top" flag.
+        SituationSetWindowState(SITUATION_FLAG_WINDOW_TOPMOST);
+    }
+}
+```
+
 *   `void SituationSetWindowState(uint32_t flags)`
     *   Sets one or more window state flags (e.g., `SITUATION_FLAG_WINDOW_TOPMOST`) for the current focus profile and applies the change.
 *   `void SituationClearWindowState(uint32_t flags)`
@@ -534,6 +620,31 @@ These flags are used with `SituationSetWindowState()` and `SituationClearWindowS
     *   Gets the DPI scaling factor for the window (e.g., `(2.0, 2.0)` on a 200% scaled display).
 
 #### Physical Display (Monitor) Management
+
+**Usage Example:**
+```c
+// This can be called once at startup or whenever you need to refresh display info.
+void log_display_information() {
+    int display_count = 0;
+    // SituationGetDisplays allocates memory for the info array.
+    SituationDisplayInfo* displays = SituationGetDisplays(&display_count);
+
+    printf("Found %d displays:\n", display_count);
+
+    for (int i = 0; i < display_count; ++i) {
+        SituationDisplayInfo* d = &displays[i];
+        SituationDisplayMode mode = d->modes[d->current_mode]; // Get the current mode
+
+        printf("  - Display %d: %s\n", d->id, d->name);
+        printf("    Resolution: %d x %d @ %d Hz\n", mode.width, mode.height, mode.refresh_rate);
+        printf("    Position on virtual desktop: (%.0f, %.0f)\n", d->position[0], d->position[1]);
+        printf("    Physical size: %.0fmm x %.0fmm\n", d->physical_size[0], d->physical_size[1]);
+    }
+
+    // CRITICAL: You must free the memory allocated by SituationGetDisplays.
+    SituationFreeDisplays(displays, display_count);
+}
+```
 
 *   `int SituationGetMonitorCount(void)`
     *   Gets the number of connected monitors.
@@ -766,6 +877,42 @@ Defines the descriptor set layout for a compute pipeline.
 ### API Reference
 
 #### Frame Lifecycle & Command Buffer
+
+**Usage Example:**
+```c
+// This function would be called every frame inside your main loop.
+void render_scene(SituationMesh mesh, SituationShader shader) {
+    // 1. Acquire Command Buffer
+    // This syncs with the GPU and prepares for a new frame. If it fails,
+    // it usually means the window is minimized or not ready; skip rendering.
+    if (!SituationAcquireFrameCommandBuffer()) {
+        return;
+    }
+
+    // 2. Begin Render Pass
+    // This command clears the screen and sets up the render target.
+    SituationRenderPassInfo pass_info = {
+        .color_load_action = SIT_LOAD_ACTION_CLEAR,
+        .clear_color = {20, 30, 40, 255}, // Dark blue
+        .color_store_action = SIT_STORE_ACTION_STORE,
+        .virtual_display_id = -1 // Target the main window
+    };
+    SituationCmdBeginRenderPass(SituationGetMainCommandBuffer(), &pass_info);
+
+    // 3. Record Drawing Commands
+    SituationCmdBindPipeline(SituationGetMainCommandBuffer(), shader);
+    SituationCmdDrawMesh(SituationGetMainCommandBuffer(), mesh);
+    // ... record other draw calls ...
+
+    // 4. End Render Pass
+    SituationCmdEndRenderPass(SituationGetMainCommandBuffer());
+
+    // 5. Submit Frame
+    // This submits all recorded commands to the GPU and presents the frame.
+    SituationEndFrame();
+}
+```
+
 *   `bool SituationAcquireFrameCommandBuffer(void)`
     *   Prepares the backend for a new frame of rendering, acquiring the next available render target. Must be called before any drawing commands.
 *   `SituationCommandBuffer SituationGetMainCommandBuffer(void)`
@@ -804,6 +951,52 @@ Defines the descriptor set layout for a compute pipeline.
     *   Records an indexed draw call.
 
 #### Graphics Resource Management
+
+**Usage Example:**
+```c
+// Define a simple vertex structure.
+typedef struct {
+    float pos[2]; // Position (x, y)
+    float uv[2];  // Texture coordinates (u, v)
+} MyVertex;
+
+// --- Resource Creation (typically at initialization) ---
+SituationMesh create_quad_mesh() {
+    // Define the vertices for a quad that covers the screen in NDC (-1 to 1).
+    MyVertex vertices[] = {
+        {{-1.0f, -1.0f}, {0.0f, 0.0f}}, // Bottom-left
+        {{ 1.0f, -1.0f}, {1.0f, 0.0f}}, // Bottom-right
+        {{ 1.0f,  1.0f}, {1.0f, 1.0f}}, // Top-right
+        {{-1.0f,  1.0f}, {0.0f, 1.0f}}, // Top-left
+    };
+    // Use an index buffer to define the two triangles that make up the quad.
+    uint32_t indices[] = {0, 1, 2, 2, 3, 0};
+
+    return SituationCreateMesh(vertices, 4, sizeof(MyVertex), indices, 6);
+}
+
+SituationTexture create_checkerboard_texture() {
+    // 1. Create a CPU-side image.
+    SituationImage cpu_image = SituationGenImageColor(256, 256, (ColorRGBA){255, 0, 255, 255});
+    // (In a real app, you'd load an image or draw a real pattern here)
+
+    // 2. Upload it to the GPU to create a texture.
+    SituationTexture gpu_texture = SituationCreateTexture(cpu_image, true);
+
+    // 3. The CPU-side image can now be freed as the data is on the GPU.
+    SituationUnloadImage(cpu_image);
+
+    return gpu_texture;
+}
+
+// --- Resource Destruction (typically at shutdown) ---
+void cleanup(SituationMesh* mesh, SituationShader* shader, SituationTexture* tex) {
+    SituationDestroyMesh(mesh);
+    SituationUnloadShader(shader);
+    SituationDestroyTexture(tex);
+}
+```
+
 *   `SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count)`
     *   Creates a self-contained GPU mesh from vertex and index data.
 *   `void SituationDestroyMesh(SituationMesh* mesh)`
@@ -952,6 +1145,41 @@ The input module allows you to register callback functions to be notified of inp
 ### API Reference
 
 #### Keyboard Input
+
+**Usage Example (Polling):**
+This is the most common method for handling continuous input, like movement.
+```c
+// Inside your main loop's update phase:
+vec2 player_velocity = {0};
+if (SituationIsKeyDown(SIT_KEY_W)) {
+    player_velocity[1] -= 1.0f; // Move up
+}
+if (SituationIsKeyDown(SIT_KEY_S)) {
+    player_velocity[1] += 1.0f; // Move down
+}
+
+// For single-trigger events, like jumping or shooting.
+if (SituationIsKeyPressed(SIT_KEY_SPACE)) {
+    player_jump();
+}
+```
+
+**Usage Example (Event-Driven):**
+This is useful for UI, text input, or logging, where you want to react to an event the moment it happens.
+```c
+// Define your callback function.
+void my_key_callback(int key, int scancode, int action, int mods, void* user_data) {
+    if (action == SIT_PRESS) {
+        printf("Key pressed: %d\n", key);
+    } else if (action == SIT_RELEASE) {
+        printf("Key released: %d\n", key);
+    }
+}
+
+// Register the callback, typically once after SituationInit().
+SituationSetKeyCallback(my_key_callback, NULL);
+```
+
 *   `bool SituationIsKeyDown(int key)`
     *   Checks if a key is currently held down (a continuous state).
 *   `bool SituationIsKeyUp(int key)`
@@ -976,6 +1204,32 @@ The input module allows you to register callback functions to be notified of inp
     *   Sets a callback function for all keyboard key events.
 
 #### Mouse Input
+
+**Usage Example:**
+```c
+// Inside your main loop's update phase:
+
+// Get the current mouse position.
+vec2 mouse_pos;
+SituationGetMousePosition(mouse_pos);
+printf("Mouse is at: (%.1f, %.1f)\n", mouse_pos[0], mouse_pos[1]);
+
+// Get mouse movement since the last frame. This is useful for camera controls.
+vec2 mouse_delta;
+SituationGetMouseDelta(mouse_delta);
+if (mouse_delta[0] != 0 || mouse_delta[1] != 0) {
+    // Rotate camera based on delta...
+}
+
+// Check for button presses.
+if (SituationIsMouseButtonPressed(SIT_MOUSE_BUTTON_LEFT)) {
+    // Fire weapon, select UI element, etc.
+}
+if (SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_RIGHT)) {
+    // Aim down sights, show context menu, etc.
+}
+```
+
 *   `vec2 SituationGetMousePosition(void)`
     *   Gets the mouse position within the window.
 *   `vec2 SituationGetMouseDelta(void)`
@@ -1118,10 +1372,75 @@ Specifies the type of filter to apply to a sound.
     *   Resumes audio output by restarting a paused audio device.
 
 #### Sound Loading and Management
+
+**Usage Example (Loading a Sound Effect):**
+This approach loads the entire sound into memory, which is ideal for short, low-latency sounds like UI feedback or weapon fire.
+```c
+SituationSound g_ui_click_sound;
+
+void init_audio() {
+    if (SituationLoadSoundFromFile("sounds/ui_click.wav", false, &g_ui_click_sound) != SIT_SUCCESS) {
+        fprintf(stderr, "Failed to load sound effect.\n");
+    }
+}
+
+void on_button_click() {
+    // Play the sound. If it's already playing, this will restart it.
+    SituationPlayLoadedSound(&g_ui_click_sound);
+}
+
+void cleanup_audio() {
+    SituationUnloadSound(&g_ui_click_sound);
+}
+```
+
 *   `SituationError SituationLoadSoundFromFile(const char* file_path, bool looping, SituationSound* out_sound)`
     *   Loads and decodes an audio file (WAV, MP3, OGG, FLAC) into memory for playback.
 *   `SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound)`
     *   Initializes a sound for playback from a custom, user-defined data stream.
+
+**Usage Example (Streaming Background Music):**
+This is the preferred method for long audio files, as it only decodes small chunks at a time, saving memory.
+```c
+#include <stdio.h> // For FILE*, fopen, etc.
+
+// --- Stream Callback Functions ---
+// This function is called by the audio engine when it needs more data.
+size_t on_read_music(void* buffer, size_t bytes_to_read, void* user_data) {
+    FILE* music_file = (FILE*)user_data;
+    return fread(buffer, 1, bytes_to_read, music_file);
+}
+
+// This function is called when the engine needs to seek to a different part of the stream.
+void on_seek_music(int offset, int origin, void* user_data) {
+    FILE* music_file = (FILE*)user_data;
+    fseek(music_file, offset, origin);
+}
+
+// --- Main Application Logic ---
+SituationSound g_background_music;
+FILE* g_music_file_handle;
+
+void start_music() {
+    g_music_file_handle = fopen("music/theme.ogg", "rb");
+    if (!g_music_file_handle) return;
+
+    // The format must match the source file.
+    SituationAudioFormat format = {.channels = 2, .sample_rate = 44100, .bit_depth = 16};
+
+    if (SituationLoadSoundFromStream(on_read_music, on_seek_music, g_music_file_handle, &format, true, &g_background_music) == SIT_SUCCESS) {
+        SituationPlayLoadedSound(&g_background_music);
+    }
+}
+
+void stop_music() {
+    SituationUnloadSound(&g_background_music);
+    if (g_music_file_handle) {
+        fclose(g_music_file_handle);
+    }
+}
+```
+
 *   `void SituationUnloadSound(SituationSound* sound)`
     *   Unloads a sound and frees all of its associated memory and resources.
 *   `SituationError SituationPlayLoadedSound(SituationSound* sound)`
@@ -1183,6 +1502,37 @@ You should avoid making assumptions about the directory structure on the user's 
 Using these functions makes your application more robust and portable.
 
 #### Path Management & Special Directories
+
+**Usage Example (Saving and Loading Data):**
+This example shows the best practice for creating a path to a configuration file in a safe, platform-appropriate location.
+```c
+void save_settings(int volume, int difficulty) {
+    // 1. Get the application's save directory.
+    char* save_path = SituationGetAppSavePath("MyCoolGame");
+    if (!save_path) return;
+
+    // 2. Ensure the directory exists.
+    SituationCreateDirectory(save_path, true);
+
+    // 3. Join the path with your desired filename.
+    char* config_file_path = SituationJoinPath(save_path, "settings.ini");
+    if (!config_file_path) {
+        SituationFreeString(save_path);
+        return;
+    }
+
+    // 4. Create the content and save it.
+    char buffer[128];
+    sprintf(buffer, "volume=%d\ndifficulty=%d\n", volume, difficulty);
+    SituationSaveFileText(config_file_path, buffer);
+
+    // 5. Clean up allocated path strings.
+    printf("Settings saved to: %s\n", config_file_path);
+    SituationFreeString(save_path);
+    SituationFreeString(config_file_path);
+}
+```
+
 *   `char* SituationGetAppSavePath(const char* app_name)`
     *   Gets a safe, persistent path for saving application data (e.g., `%APPDATA%/AppName`).
 *   `char* SituationGetBasePath(void)`
@@ -1229,6 +1579,26 @@ Using these functions makes your application more robust and portable.
     *   Lists files and subdirectories in a path.
 *   `void SituationFreeDirectoryFileList(char** file_list, int count)`
     *   Frees the memory for the list returned by `SituationListDirectoryFiles`.
+
+**Usage Example (Listing Files):**
+```c
+void print_files_in_directory(const char* path) {
+    int file_count = 0;
+    char** files = SituationListDirectoryFiles(path, &file_count);
+    if (!files) {
+        printf("Failed to list files in '%s'\n", path);
+        return;
+    }
+
+    printf("Files in '%s':\n", path);
+    for (int i = 0; i < file_count; ++i) {
+        printf("  - %s\n", files[i]);
+    }
+
+    // CRITICAL: You must free the list and the strings it contains.
+    SituationFreeDirectoryFileList(files, file_count);
+}
+```
 </details>
 <details>
 <summary>Miscellaneous Module</summary>
