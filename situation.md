@@ -4,19 +4,204 @@ This document provides a comprehensive guide to the "Situation" library API, org
 
 ## Table of Contents
 
-1.  [API Usage Guide](#api-usage-guide)
-2.  [Core Module: Application Lifecycle and System](#core-module-application-lifecycle-and-system)
-3.  [Window and Display Module](#window-and-display-module)
-4.  [Image Module: CPU-side Image and Font Manipulation](#image-module-cpu-side-image-and-font-manipulation)
-5.  [Graphics Module: Rendering, Shaders, and GPU Resources](#graphics-module-rendering-shaders-and-gpu-resources)
-6.  [Input Module: Keyboard, Mouse, and Gamepad](#input-module-keyboard-mouse-and-gamepad)
-7.  [Audio Module](#audio-module)
-8.  [Filesystem Module](#filesystem-module)
-9.  [Miscellaneous Module](#miscellaneous-module)
+- [Grand Concepts](#grand-concepts)
+- [Getting Started](#getting-started)
+- [API Usage Guide](#api-usage-guide)
+- [Detailed API Reference](#detailed-api-reference)
+  - [Core Module](#core-module)
+  - [Window and Display Module](#window-and-display-module)
+  - [Image Module](#image-module)
+  - [Graphics Module](#graphics-module)
+  - [Input Module](#input-module)
+  - [Audio Module](#audio-module)
+  - [Filesystem Module](#filesystem-module)
+  - [Miscellaneous Module](#miscellaneous-module)
 
 ---
 
-## API Usage Guide
+<details>
+<summary><h2>Grand Concepts</h2></summary>
+
+The "Situation" library is built on a few core principles that inform its design and API. Understanding these concepts will help you use the library effectively and avoid common pitfalls.
+
+### 1. Immediate Mode API Philosophy
+The library favors a mostly "immediate mode" style API. This means that, for many operations, you call a function and it takes effect immediately within the current frame. For example, `SituationCmdDrawQuad()` directly records a draw command into the current frame's command buffer. This approach is designed to be simple, intuitive, and easy to debug. It contrasts with "retained mode" systems where you would create a scene graph of objects that is then rendered by the engine.
+
+### 2. Explicit Resource Management
+"Situation" puts you in full control of resource lifecycles. Any resource you create (a texture, a mesh, a sound) must be explicitly destroyed by you.
+- **Creation:** `SituationCreate...()`, `SituationLoad...()`
+- **Destruction:** `SituationDestroy...()`, `SituationUnload...()`
+
+This design choice avoids the complexities and performance overhead of automatic garbage collection. The library will warn you at shutdown if you've leaked any GPU resources, helping you catch memory management bugs early.
+
+### 3. C-Style, Data-Oriented API
+The API is pure C, promoting portability and interoperability. It uses handles (structs passed by value) to represent opaque resources and pointers for functions that need to modify or destroy those resources. This approach is data-oriented, focusing on transforming data (e.g., vertex data into a mesh, image data into a texture) rather than on object-oriented hierarchies.
+
+### 4. Single-File, Header-Only Philosophy
+"Situation" is distributed as a single header file (`situation.h`), which makes it incredibly easy to integrate into your projects. To use it, you simply `#include "situation.h"` in your source files. In exactly one C or C++ file, you must first define `SITUATION_IMPLEMENTATION` before the include to create the implementation.
+
+```c
+// In one C/C++ file
+#define SITUATION_IMPLEMENTATION
+#include "situation.h"
+```
+
+### 5. Backend Abstraction
+The library provides a unified API that works over different graphics backends (OpenGL and Vulkan). You choose the backend at compile time by defining either `SITUATION_USE_OPENGL` or `SITUATION_USE_VULKAN`. This allows you to write your application code once and have it run on a wide range of hardware and platforms, from high-end desktops to older, legacy systems.
+
+</details>
+
+<details>
+<summary><h2>Getting Started</h2></summary>
+
+Here is a minimal, complete example of a "Situation" application that opens a window, clears it to a blue color, and runs until the user closes it.
+
+### Step 1: Include the Library
+First, make sure `situation.h` is in your project's include path. In your main C file, define `SITUATION_IMPLEMENTATION` and include the header.
+
+```c
+#define SITUATION_IMPLEMENTATION
+// Define a graphics backend before including the library
+#define SITUATION_USE_OPENGL // or SITUATION_USE_VULKAN
+#include "situation.h"
+
+#include <stdio.h> // For printf
+```
+
+### Step 2: Initialize the Library
+In your `main` function, you need to initialize the library. Create a `SituationInitInfo` struct to configure your application's startup properties, such as the window title and initial dimensions. Then, call `SituationInit()`.
+
+```c
+int main(int argc, char** argv) {
+    SituationInitInfo init_info = {
+        .app_name = "My First Situation App",
+        .app_version = "1.0",
+        .initial_width = 1280,
+        .initial_height = 720,
+        .window_flags = SITUATION_FLAG_WINDOW_RESIZABLE | SITUATION_FLAG_VSYNC_HINT,
+        .target_fps = 60,
+        .headless = false
+    };
+
+    if (SituationInit(argc, argv, &init_info) != SIT_SUCCESS) {
+        printf("Failed to initialize Situation: %s\n", SituationGetLastErrorMsg());
+        return -1;
+    }
+```
+
+### Step 3: The Main Loop
+The heart of your application is the main loop. This loop continues as long as the user has not tried to close the window (`!SituationWindowShouldClose()`). Inside the loop, you follow a strict three-phase structure: Input, Update, and Render.
+
+```c
+    while (!SituationWindowShouldClose()) {
+        // --- 1. Input ---
+        SituationPollInputEvents();
+
+        // --- 2. Update ---
+        SituationUpdateTimers();
+        // Your application logic, physics, etc. would go here.
+        // For this example, we'll just check for the ESC key to close.
+        if (SituationIsKeyPressed(SIT_KEY_ESCAPE)) {
+            break; // Exit the loop
+        }
+
+        // --- 3. Render ---
+        if (SituationAcquireFrameCommandBuffer()) {
+            SituationRenderPassInfo pass_info = {
+                .color_load_action = SIT_LOAD_ACTION_CLEAR,
+                .clear_color = { .r = 0, .g = 12, .b = 24, .a = 255 }, // A dark blue
+                .color_store_action = SIT_STORE_ACTION_STORE,
+            };
+
+            // Begin the render pass for the main window
+            SituationCmdBeginRenderPass(SituationGetMainCommandBuffer(), &pass_info);
+
+            // You would record all your drawing commands here
+            // e.g., SituationCmdDrawMesh(...)
+
+            // End the render pass
+            SituationCmdEndRenderPass(SituationGetMainCommandBuffer());
+
+            // Submit the frame to be presented
+            SituationEndFrame();
+        }
+    }
+```
+
+### Step 4: Shutdown
+After the main loop finishes, it is critical to call `SituationShutdown()` to clean up all resources, close the window, and terminate all subsystems gracefully.
+
+```c
+    SituationShutdown();
+    return 0;
+}
+```
+
+### Full Example Code
+
+```c
+#define SITUATION_IMPLEMENTATION
+#define SITUATION_USE_OPENGL // Or SITUATION_USE_VULKAN
+#include "situation.h"
+
+#include <stdio.h>
+
+int main(int argc, char** argv) {
+    // 1. Configure and Initialize
+    SituationInitInfo init_info = {
+        .app_name = "My First Situation App",
+        .app_version = "1.0",
+        .initial_width = 1280,
+        .initial_height = 720,
+        .window_flags = SITUATION_FLAG_WINDOW_RESIZABLE | SITUATION_FLAG_VSYNC_HINT,
+        .target_fps = 60,
+        .headless = false
+    };
+
+    if (SituationInit(argc, argv, &init_info) != SIT_SUCCESS) {
+        printf("Failed to initialize Situation: %s\n", SituationGetLastErrorMsg());
+        return -1;
+    }
+
+    // 2. Main Loop
+    while (!SituationWindowShouldClose()) {
+        // --- Input Phase ---
+        SituationPollInputEvents();
+
+        // --- Update Phase ---
+        SituationUpdateTimers();
+        if (SituationIsKeyPressed(SIT_KEY_ESCAPE)) {
+            break;
+        }
+
+        // --- Render Phase ---
+        if (SituationAcquireFrameCommandBuffer()) {
+            SituationRenderPassInfo pass_info = {
+                .color_load_action = SIT_LOAD_ACTION_CLEAR,
+                .clear_color = { .r = 0, .g = 12, .b = 24, .a = 255 },
+                .color_store_action = SIT_STORE_ACTION_STORE,
+            };
+
+            SituationCmdBeginRenderPass(SituationGetMainCommandBuffer(), &pass_info);
+            // Drawing commands go here
+            SituationCmdEndRenderPass(SituationGetMainCommandBuffer());
+
+            SituationEndFrame();
+        }
+    }
+
+    // 3. Shutdown
+    SituationShutdown();
+    return 0;
+}
+```
+
+</details>
+
+---
+
+<details>
+<summary><h2>API Usage Guide</h2></summary>
 
 **1. Lifecycle**
 The library follows a strict lifecycle:
@@ -45,6 +230,8 @@ The API uses two patterns for interacting with objects:
 **5. Thread Safety**
 The library is **strictly single-threaded**. All `SITAPI` functions must be called from the same thread that called `SituationInit()`. Asynchronous operations (like asset loading) must be handled by the user, ensuring that no `SITAPI` calls are made from worker threads.
 
+</details>
+
 ---
 *   [Core Module: Application Lifecycle and System](#core-module)
 *   [Window and Display Module](#window-and-display-module)
@@ -64,7 +251,7 @@ This section provides a complete list of all functions available in the "Situati
 <details>
 <summary>Core Module</summary>
 
-**Overview:** The Core module manages the fundamental lifecycle of the application, provides access to system-level information, and handles frame timing.
+**Overview:** The Core module is the heart of the "Situation" library, providing the essential functions for application lifecycle management. It handles initialization (`SituationInit`) and shutdown (`SituationShutdown`), processes the main event loop, and manages frame timing and rate control. This module also serves as a gateway to crucial system information, offering functions to query hardware details like CPU and GPU specifications, manage command-line arguments, and set up critical application-wide callbacks for events like window resizing or exit requests. Mastering the Core module is the first step to building any application with the library.
 
 ### Core Structs
 
@@ -189,7 +376,8 @@ typedef struct SituationDeviceInfo {
 </details>
 <details>
 <summary>Window and Display Module</summary>
-**Overview:** This module provides comprehensive control over the application window and detailed information about the physical display hardware.
+
+**Overview:** This module provides an exhaustive suite of tools for managing the application's window and querying the properties of physical display devices. It handles everything from basic window creation and state changes (fullscreen, minimized, borderless) to more advanced features like DPI scaling, opacity, and clipboard access. Furthermore, it allows you to enumerate all connected monitors, query their resolutions, refresh rates, and physical dimensions, and even change their display modes. This powerful combination of window and display control enables sophisticated, multi-monitor applications and fine-tuned user experiences.
 
 ### Window and Display Structs and Flags
 
@@ -388,7 +576,8 @@ These flags are used with `SituationSetWindowState()` and `SituationClearWindowS
 </details>
 <details>
 <summary>Image Module</summary>
-**Overview:** This module provides a suite of functions for loading, manipulating, and saving images on the CPU. These `SituationImage` objects can then be used to create GPU textures.
+
+**Overview:** The Image module is a comprehensive, CPU-side toolkit for all forms of image and font manipulation. It allows you to load images from various formats, generate new images programmatically (e.g., with solid colors or gradients), and perform a wide range of transformations like resizing, cropping, flipping, and color adjustment (HSV). Crucially, this module also provides a powerful text rendering engine, enabling you to load TTF/OTF fonts and draw styled text directly onto your images. The `SituationImage` and `SituationFont` objects produced by this module are the primary source for creating GPU-side textures and font atlases used by the Graphics module.
 
 ### Image Structs
 
@@ -471,7 +660,8 @@ typedef struct SituationFont {
 </details>
 <details>
 <summary>Graphics Module</summary>
-**Overview:** The Graphics module is the heart of the rendering engine, providing a unified API over OpenGL and Vulkan for managing GPU resources and recording drawing commands.
+
+**Overview:** The Graphics module forms the core of the rendering pipeline, offering a powerful, backend-agnostic API for interacting with the GPU. It abstracts the complexities of OpenGL and Vulkan into a single, cohesive set of commands. This module is responsible for all GPU resource management, including the creation and destruction of meshes, shaders, textures, and data buffers. Its command-buffer-centric design (`SituationCmd...`) allows you to precisely record and sequence drawing operations, manage rendering passes, and dispatch compute shaders. It also features a "Virtual Display" system, a powerful tool for creating and compositing off-screen render targets, enabling sophisticated post-processing effects and UI layering.
 
 ### Graphics Structs and Enums
 
@@ -662,7 +852,8 @@ Defines the descriptor set layout for a compute pipeline.
 </details>
 <details>
 <summary>Input Module</summary>
-**Overview:** This module provides a comprehensive API for handling input from the keyboard, mouse, and gamepads, supporting both state polling and event-driven callbacks.
+
+**Overview:** The Input module provides a flexible and comprehensive interface for handling user input from various devices. It supports keyboard, mouse, and gamepads, offering two distinct interaction models: state polling and event-driven callbacks. You can use polling functions (e.g., `SituationIsKeyDown()`) to check the current state of a button or axis within your main update loop, which is ideal for continuous actions like player movement. Alternatively, you can register callback functions (e.g., `SituationSetKeyCallback()`) to be notified of input events the moment they occur, which is perfect for handling discrete events like UI clicks or weapon firing. This dual approach allows you to choose the best input handling strategy for each part of your application.
 
 ### Input Callbacks
 
@@ -775,7 +966,8 @@ The input module allows you to register callback functions to be notified of inp
 </details>
 <details>
 <summary>Audio Module</summary>
-**Overview:** This module provides a complete audio solution, from device management and sound loading to real-time effects and custom processing.
+
+**Overview:** The Audio module offers a full-featured audio engine capable of handling everything from simple sound playback to complex, real-time digital signal processing (DSP). It begins with robust device management, allowing you to enumerate and select audio output devices. The module supports loading and streaming common audio formats (WAV, MP3, OGG, FLAC) and provides fine-grained control over individual sounds, including volume, panning, and pitch shifting. Beyond basic playback, it includes a built-in effects chain with filters (low-pass, high-pass), echo, and reverb. For advanced users, the module allows you to attach custom callback-based processors to any sound, enabling the implementation of unique, real-time audio effects and analysis.
 
 ### Audio Structs and Enums
 
@@ -895,7 +1087,8 @@ Specifies the type of filter to apply to a sound.
 </details>
 <details>
 <summary>Filesystem Module</summary>
-**Overview:** This module provides a cross-platform, UTF-8 aware API for common file and directory operations.
+
+**Overview:** The Filesystem module provides a robust, cross-platform, and UTF-8 aware API for interacting with the host's file system. It abstracts away OS-specific differences, offering a unified set of functions for common file and directory operations. This includes essentials like checking for file/directory existence, reading and writing entire files to/from memory, and directory traversal. The module also includes convenient path manipulation utilities for joining paths, extracting filenames, and locating special directories like the application's base path or a safe location for user data. These features simplify the process of asset loading, data saving, and other file-related tasks.
 
 #### Path Management & Special Directories
 *   `char* SituationGetAppSavePath(const char* app_name)`
@@ -947,7 +1140,8 @@ Specifies the type of filter to apply to a sound.
 </details>
 <details>
 <summary>Miscellaneous Module</summary>
-**Overview:** This module contains various utility systems, including the Temporal Oscillator System for rhythmic timing and color space conversion functions.
+
+**Overview:** The Miscellaneous module is a collection of powerful utility systems that don't fit into the other main categories but provide significant value. Its flagship feature is the Temporal Oscillator System, a unique and powerful tool for creating rhythmic, periodic events and synchronizing application logic to a musical beat. This module also provides a suite of robust color space conversion functions, allowing for easy translation between RGBA, HSV, and the broadcast-safe YPQA color spaces. Finally, it includes essential memory management helpers for freeing strings and other data structures allocated by the library, ensuring proper resource cleanup.
 
 ### Miscellaneous Concepts & Structs
 
