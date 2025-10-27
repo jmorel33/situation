@@ -176,6 +176,89 @@ After the main loop finishes, it is critical to call `SituationShutdown()` to cl
 ```
 
 ---
+---
+---
+
+#### `SituationIsAppPaused`
+
+Checks if the application is currently paused.
+
+```c
+SITAPI bool SituationIsAppPaused(void);
+```
+
+**Usage Example:**
+```c
+if (SituationIsAppPaused()) {
+    printf("Application is paused.\n");
+}
+```
+
+---
+
+#### `SituationResumeApp`
+
+Resumes the application.
+
+```c
+SITAPI void SituationResumeApp(void);
+```
+
+**Usage Example:**
+```c
+SituationResumeApp();
+```
+
+---
+---
+
+#### `SituationGetWindowScaleDPI`
+
+Gets the DPI scaling factor for the window.
+
+```c
+SITAPI Vector2 SituationGetWindowScaleDPI(void);
+```
+
+**Usage Example:**
+```c
+Vector2 dpi_scale = SituationGetWindowScaleDPI();
+printf("DPI scale: x=%.2f, y=%.2f\n", dpi_scale.x, dpi_scale.y);
+```
+
+---
+
+#### `SituationGetWindowPosition`
+
+Gets the position of the top-left corner of the window in screen coordinates.
+
+```c
+SITAPI Vector2 SituationGetWindowPosition(void);
+```
+
+**Usage Example:**
+```c
+Vector2 window_pos = SituationGetWindowPosition();
+printf("Window position: x=%.0f, y=%.0f\n", window_pos.x, window_pos.y);
+```
+
+---
+
+#### `SituationGetMonitorName`
+
+Gets the human-readable name of a monitor.
+
+```c
+SITAPI const char* SituationGetMonitorName(int monitor_id);
+```
+
+**Usage Example:**
+```c
+const char* monitor_name = SituationGetMonitorName(0);
+printf("Primary monitor name: %s\n", monitor_name);
+```
+
+---
 #### `SituationUnloadDroppedFiles`
 Unloads the file paths list loaded by `SituationLoadDroppedFiles`.
 ```c
@@ -423,6 +506,23 @@ if (!SituationIsInitialized()) {
 ```
 
 ---
+
+#### `SituationWindowShouldClose`
+
+Checks if the window has been flagged to close (e.g., by the user clicking the close button).
+
+```c
+SITAPI bool SituationWindowShouldClose(void);
+```
+
+**Usage Example:**
+```c
+while (!SituationWindowShouldClose()) {
+    // Main loop
+}
+```
+
+---
 #### `SituationWindowShouldClose`
 Returns `true` if the user has attempted to close the window (e.g., by clicking the 'X' button or pressing Alt+F4).
 ```c
@@ -434,6 +534,52 @@ bool SituationWindowShouldClose(void);
 while (!SituationWindowShouldClose()) {
     // ...
 }
+```
+
+---
+#### `SituationSetTargetFPS`
+
+Sets the target frames-per-second (FPS).
+
+```c
+SITAPI void SituationSetTargetFPS(int fps);
+```
+
+**Usage Example:**
+```c
+SituationSetTargetFPS(60);
+```
+
+---
+
+#### `SituationGetFrameTime`
+
+Gets the time in seconds for the last frame.
+
+```c
+SITAPI float SituationGetFrameTime(void);
+```
+
+**Usage Example:**
+```c
+float frame_time = SituationGetFrameTime();
+printf("Last frame time: %f seconds\n", frame_time);
+```
+
+---
+
+#### `SituationGetFPS`
+
+Gets the current frames-per-second.
+
+```c
+SITAPI int SituationGetFPS(void);
+```
+
+**Usage Example:**
+```c
+int fps = SituationGetFPS();
+printf("Current FPS: %d\n", fps);
 ```
 
 ---
@@ -661,47 +807,29 @@ void SituationUpdate(void);
 ```
 
 ---
-#### `SituationPauseApp`
-Pauses the application's main loop. This is useful for when the application loses focus, allowing you to halt updates and rendering to conserve system resources.
-```c
-void SituationPauseApp(void);
-```
-**Usage Example:**
-```c
-// A window focus callback is a good place to use this.
-void on_focus_change(bool focused, void* user_data) {
-    if (!focused) {
-        SituationPauseApp();
-    } else {
-        SituationResumeApp();
-    }
-}
-```
-
----
-#### `SituationResumeApp`
-Resumes the application's main loop after it has been paused.
-```c
-void SituationResumeApp(void);
-```
-**Usage Example:**
-```c
-// See the example for SituationPauseApp. When the window regains focus,
-// this function is called to resume normal operation.
-```
-
----
-#### `SituationIsAppPaused`
-Checks if the application is currently paused.
-```c
-bool SituationIsAppPaused(void);
-```
-
----
 #### `SituationSetResizeCallback`
 Sets a callback function for window framebuffer resize events.
 ```c
 void SituationSetResizeCallback(void (*callback)(int width, int height, void* user_data), void* user_data);
+```
+
+---
+
+#### `SituationSetFocusCallback`
+
+Sets a callback function to be called when the window gains or loses focus.
+
+```c
+SITAPI void SituationSetFocusCallback(SituationFocusCallback callback, void* user_data);
+```
+
+**Usage Example:**
+```c
+void OnFocusChanged(bool focused, void* user_data) {
+    printf("Window focus changed: %d\n", focused);
+}
+
+SituationSetFocusCallback(OnFocusChanged, NULL);
 ```
 
 ---
@@ -779,6 +907,43 @@ VkPhysicalDevice SituationGetVulkanPhysicalDevice(void);
 Gets the render pass for the main window.
 ```c
 VkRenderPass SituationGetMainWindowRenderPass(void);
+```
+
+---
+#### `SituationPauseApp`
+Pauses the application's main loop. This is useful for when the application loses focus, allowing you to halt updates and rendering to conserve system resources.
+```c
+void SituationPauseApp(void);
+```
+**Usage Example:**
+```c
+// A window focus callback is a good place to use this.
+void on_focus_change(bool focused, void* user_data) {
+    if (!focused) {
+        SituationPauseApp();
+    } else {
+        SituationResumeApp();
+    }
+}
+```
+
+---
+#### `SituationResumeApp`
+Resumes the application's main loop after it has been paused.
+```c
+void SituationResumeApp(void);
+```
+**Usage Example:**
+```c
+// See the example for SituationPauseApp. When the window regains focus,
+// this function is called to resume normal operation.
+```
+
+---
+#### `SituationIsAppPaused`
+Checks if the application is currently paused.
+```c
+bool SituationIsAppPaused(void);
 ```
 
 </details>
@@ -1145,6 +1310,50 @@ SituationFreeDisplays(displays, display_count); // Don't forget to free!
 
 ---
 #### `SituationShowCursor`
+
+Shows the cursor.
+
+```c
+SITAPI void SituationShowCursor(void);
+```
+
+**Usage Example:**
+```c
+SituationShowCursor();
+```
+
+---
+
+#### `SituationHideCursor`
+
+Hides the cursor.
+
+```c
+SITAPI void SituationHideCursor(void);
+```
+
+**Usage Example:**
+```c
+SituationHideCursor();
+```
+
+---
+
+#### `SituationDisableCursor`
+
+Disables the cursor, hiding it and providing unlimited mouse movement.
+
+```c
+SITAPI void SituationDisableCursor(void);
+```
+
+**Usage Example:**
+```c
+SituationDisableCursor();
+```
+
+---
+#### `SituationShowCursor`
 Makes the mouse cursor visible and restores its normal behavior.
 ```c
 void SituationShowCursor(void);
@@ -1425,6 +1634,22 @@ SituationError SituationToggleWindowStateFlags(SituationWindowStateFlags flags_t
 Gets flags based on current GLFW window state.
 ```c
 uint32_t SituationGetCurrentActualWindowStateFlags(void);
+```
+
+---
+
+#### `SituationGetGLFWwindow`
+
+Gets the underlying GLFW window handle.
+
+```c
+SITAPI GLFWwindow* SituationGetGLFWwindow(void);
+```
+
+**Usage Example:**
+```c
+GLFWwindow* glfw_window = SituationGetGLFWwindow();
+// Use with GLFW functions
 ```
 
 </details>
@@ -1856,6 +2081,7 @@ Defines the descriptor set layout for a compute pipeline, telling the GPU what k
 These functions control the overall rendering loop.
 
 ---
+---
 #### `SituationAcquireFrameCommandBuffer`
 Prepares the backend for a new frame of rendering, acquiring the next available render target. Must be called before any drawing commands. Returns `false` if the frame cannot be acquired (e.g., window is minimized).
 ```c
@@ -1914,6 +2140,37 @@ SituationCmdEndRenderPass(SituationGetMainCommandBuffer());
 ---
 #### Rendering Commands
 These functions record drawing and state-setting operations into the command buffer.
+
+---
+
+#### `SituationPauseApp`
+
+Pauses the application.
+
+```c
+SITAPI void SituationPauseApp(void);
+```
+
+**Usage Example:**
+```c
+SituationPauseApp();
+```
+
+---
+
+#### `SituationGetMonitorHeight`
+
+Gets the current height of a monitor in screen coordinates.
+
+```c
+SITAPI int SituationGetMonitorHeight(int monitor_id);
+```
+
+**Usage Example:**
+```c
+int primary_monitor_height = SituationGetMonitorHeight(0);
+printf("Primary monitor height: %d\n", primary_monitor_height);
+```
 
 ---
 #### `SituationCmdSetViewport` / `SituationCmdSetScissor`
@@ -2033,6 +2290,21 @@ SituationCmdDrawQuad(SituationGetMainCommandBuffer(), transform, quad_color);
 ---
 #### Resource Management
 These functions create and destroy GPU resources.
+
+---
+
+#### `SituationShowCursor`
+
+Shows the cursor.
+
+```c
+SITAPI void SituationShowCursor(void);
+```
+
+**Usage Example:**
+```c
+SituationShowCursor();
+```
 
 ---
 #### `SituationCreateMesh`
