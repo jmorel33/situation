@@ -661,11 +661,33 @@ void SituationUpdate(void);
 ```
 
 ---
-#### `SituationPauseApp` / `SituationResumeApp`
-Pauses or resumes the application. This is useful for when the application loses focus.
+#### `SituationPauseApp`
+Pauses the application's main loop. This is useful for when the application loses focus, allowing you to halt updates and rendering to conserve system resources.
 ```c
 void SituationPauseApp(void);
+```
+**Usage Example:**
+```c
+// A window focus callback is a good place to use this.
+void on_focus_change(bool focused, void* user_data) {
+    if (!focused) {
+        SituationPauseApp();
+    } else {
+        SituationResumeApp();
+    }
+}
+```
+
+---
+#### `SituationResumeApp`
+Resumes the application's main loop after it has been paused.
+```c
 void SituationResumeApp(void);
+```
+**Usage Example:**
+```c
+// See the example for SituationPauseApp. When the window regains focus,
+// this function is called to resume normal operation.
 ```
 
 ---
@@ -827,18 +849,27 @@ These flags are used with `SituationSetWindowState()` and `SituationClearWindowS
 #### Functions
 ### Functions
 
-#### `SituationSetWindowState` / `SituationClearWindowState`
-Sets or clears one or more window state flags.
+#### `SituationSetWindowState`
+Sets one or more window state flags.
 ```c
 void SituationSetWindowState(uint32_t flags);
-void SituationClearWindowState(uint32_t flags);
 ```
 **Usage Example:**
 ```c
 // Make the window resizable and always on top.
 SituationSetWindowState(SITUATION_FLAG_WINDOW_RESIZABLE | SITUATION_FLAG_WINDOW_TOPMOST);
+```
 
-// Later, remove the "always on top" state.
+---
+#### `SituationClearWindowState`
+Clears one or more window state flags.
+```c
+void SituationClearWindowState(uint32_t flags);
+```
+**Usage Example:**
+```c
+// The window was previously set to be always on top.
+// This will remove that state, allowing it to behave like a normal window again.
 SituationClearWindowState(SITUATION_FLAG_WINDOW_TOPMOST);
 ```
 
@@ -870,18 +901,29 @@ SituationSetWindowTitle(title);
 ```
 
 ---
-#### `SituationSetWindowPosition` / `SituationGetWindowPosition`
-Sets or gets the screen-space position of the top-left corner of the window's client area.
+#### `SituationSetWindowPosition`
+Sets the screen-space position of the top-left corner of the window's client area.
 ```c
 void SituationSetWindowPosition(int x, int y);
+```
+**Usage Example:**
+```c
+// Move the window to the top-left corner of the primary monitor.
+SituationSetWindowPosition(0, 0);
+```
+
+---
+#### `SituationGetWindowPosition`
+Gets the screen-space position of the top-left corner of the window's client area.
+```c
 vec2 SituationGetWindowPosition(void);
 ```
 **Usage Example:**
 ```c
-// Get the current position and move it 10 pixels to the right.
+// Get the current window position.
 vec2 current_pos;
 glm_vec2_copy(SituationGetWindowPosition(), current_pos);
-SituationSetWindowPosition(current_pos[0] + 10, current_pos[1]);
+printf("Window is at: %.0f, %.0f\n", current_pos[0], current_pos[1]);
 ```
 
 ---
@@ -967,33 +1009,55 @@ if (SituationIsWindowState(SITUATION_FLAG_FULLSCREEN_MODE)) {
 ```
 
 ---
-#### `SituationGetScreenWidth` / `SituationGetScreenHeight`
-Gets the current width/height of the window in screen coordinates (logical size).
+#### `SituationGetScreenWidth`
+Gets the current width of the window in screen coordinates (logical size). This may differ from the render width on high-DPI displays.
 ```c
 int SituationGetScreenWidth(void);
+```
+**Usage Example:**
+```c
+// Get the logical width for UI layout calculations.
+int screen_width = SituationGetScreenWidth();
+printf("The window's logical width is: %d\n", screen_width);
+```
+
+---
+#### `SituationGetScreenHeight`
+Gets the current height of the window in screen coordinates (logical size).
+```c
 int SituationGetScreenHeight(void);
 ```
 **Usage Example:**
 ```c
-int screenWidth = SituationGetScreenWidth();
-int screenHeight = SituationGetScreenHeight();
-printf("Window logical size: %dx%d\n", screenWidth, screenHeight);
+// Center an element vertically based on the logical screen height.
+int screen_height = SituationGetScreenHeight();
+float element_y = (screen_height / 2.0f) - (element_height / 2.0f);
 ```
 
 ---
-#### `SituationGetRenderWidth` / `SituationGetRenderHeight`
-Gets the current width/height of the rendering framebuffer in pixels (physical size).
+#### `SituationGetRenderWidth`
+Gets the current width of the rendering framebuffer in pixels. This is the physical size, which may differ from the logical window size on high-DPI displays.
 ```c
 int SituationGetRenderWidth(void);
+```
+**Usage Example:**
+```c
+// Use the render width to set the graphics viewport.
+int framebuffer_width = SituationGetRenderWidth();
+int framebuffer_height = SituationGetRenderHeight();
+SituationCmdSetViewport(SituationGetMainCommandBuffer(), 0, 0, framebuffer_width, framebuffer_height);
+```
+
+---
+#### `SituationGetRenderHeight`
+Gets the current height of the rendering framebuffer in pixels.
+```c
 int SituationGetRenderHeight(void);
 ```
 **Usage Example:**
 ```c
-// On a high-DPI display, this might be larger than the screen size.
-int framebufferWidth = SituationGetRenderWidth();
-int framebufferHeight = SituationGetRenderHeight();
-// Set the graphics viewport to match the framebuffer size.
-SituationCmdSetViewport(SituationGetMainCommandBuffer(), 0, 0, framebufferWidth, framebufferHeight);
+// This value is often needed for aspect ratio calculations in projection matrices.
+float aspect_ratio = (float)SituationGetRenderWidth() / (float)SituationGetRenderHeight();
 ```
 
 ---
@@ -1038,17 +1102,29 @@ for (int i = 0; i < monitor_count; i++) {
 ```
 
 ---
-#### `SituationGetMonitorWidth` / `SituationGetMonitorHeight`
-Gets the current resolution of a monitor by its index.
+#### `SituationGetMonitorWidth`
+Gets the current width of a monitor's resolution in pixels.
 ```c
 int SituationGetMonitorWidth(int monitor);
+```
+**Usage Example:**
+```c
+// Get the width of the primary monitor (index 0).
+int primary_monitor_width = SituationGetMonitorWidth(0);
+printf("Primary monitor width: %dpx\n", primary_monitor_width);
+```
+
+---
+#### `SituationGetMonitorHeight`
+Gets the current height of a monitor's resolution in pixels.
+```c
 int SituationGetMonitorHeight(int monitor);
 ```
 **Usage Example:**
 ```c
-int primary_monitor_width = SituationGetMonitorWidth(0);
+// Get the height of the primary monitor (index 0).
 int primary_monitor_height = SituationGetMonitorHeight(0);
-printf("Primary monitor resolution: %dx%d\n", primary_monitor_width, primary_monitor_height);
+printf("Primary monitor height: %dpx\n", primary_monitor_height);
 ```
 
 ---
@@ -1068,37 +1144,71 @@ SituationFreeDisplays(displays, display_count); // Don't forget to free!
 ```
 
 ---
-#### `SituationShowCursor` / `SituationHideCursor` / `SituationDisableCursor`
-Controls the visibility and behavior of the mouse cursor.
+#### `SituationShowCursor`
+Makes the mouse cursor visible and restores its normal behavior.
 ```c
-void SituationShowCursor(void);   // Normal visibility and behavior.
-void SituationHideCursor(void);   // Invisible when over the window.
-void SituationDisableCursor(void); // Hidden and locked for unbounded movement (camera controls).
+void SituationShowCursor(void);
 ```
 **Usage Example:**
 ```c
-// For a 3D game, disable the cursor.
-SituationDisableCursor();
-// For a menu, show it.
+// When returning to the main menu from gameplay, show the cursor.
 SituationShowCursor();
 ```
 
 ---
-#### `SituationGetClipboardText` / `SituationSetClipboardText`
-Gets or sets text in the system clipboard.
+#### `SituationHideCursor`
+Makes the mouse cursor invisible when it is over the application's window, but it does not lock the cursor.
+```c
+void SituationHideCursor(void);
+```
+**Usage Example:**
+```c
+// In a media player application, hide the cursor when it's over the video playback area.
+SituationHideCursor();
+```
+
+---
+#### `SituationDisableCursor`
+Hides the mouse cursor and locks it to the window, providing unbounded movement. This is ideal for 3D camera controls.
+```c
+void SituationDisableCursor(void);
+```
+**Usage Example:**
+```c
+// When entering a first-person 3D scene, disable the cursor for camera look.
+SituationDisableCursor();
+// Mouse delta can now be used to rotate the camera without the cursor leaving the window.
+```
+
+---
+#### `SituationGetClipboardText`
+Gets UTF-8 encoded text from the system clipboard. The returned pointer is managed by the library and should not be freed.
 ```c
 const char* SituationGetClipboardText(void);
+```
+**Usage Example:**
+```c
+// In an input handler for Ctrl+V
+if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_V)) {
+    const char* clipboard_text = SituationGetClipboardText();
+    if (clipboard_text) {
+        // Paste text into an input field.
+    }
+}
+```
+
+---
+#### `SituationSetClipboardText`
+Sets the system clipboard to the provided UTF-8 encoded text.
+```c
 void SituationSetClipboardText(const char* text);
 ```
 **Usage Example:**
 ```c
-// Copy "Hello" to clipboard
-SituationSetClipboardText("Hello, World!");
-
-// Paste from clipboard
-const char* clipboard = SituationGetClipboardText();
-if (clipboard) {
-    printf("Clipboard contains: %s\n", clipboard);
+// In an input handler for Ctrl+C
+if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_C)) {
+    // Copy selected text to the clipboard.
+    SituationSetClipboardText(selected_text);
 }
 ```
 
@@ -1348,19 +1458,32 @@ typedef struct SituationFont {
 
 #### Image Loading and Unloading
 ---
-#### `SituationLoadImage` / `SituationUnloadImage`
-Loads an image from a file into CPU memory (RAM), and later unloads it.
+#### `SituationLoadImage`
+Loads an image from a file into CPU memory (RAM). Supported formats include PNG, BMP, TGA, and JPEG.
 ```c
 SituationImage SituationLoadImage(const char *fileName);
-void SituationUnloadImage(SituationImage image);
 ```
 **Usage Example:**
 ```c
 SituationImage player_avatar = SituationLoadImage("avatars/player1.png");
 if (player_avatar.data) {
-    // ... use the image data ...
-    SituationUnloadImage(player_avatar);
+    // The image is now in CPU memory, ready to be used or uploaded to the GPU.
+    SituationTexture player_texture = SituationCreateTexture(player_avatar, true);
+    SituationUnloadImage(player_avatar); // Unload the CPU copy after uploading.
 }
+```
+
+---
+#### `SituationUnloadImage`
+Unloads a CPU-side image and frees its memory. This should be called after the image data is no longer needed (e.g., after it has been uploaded to a GPU texture).
+```c
+void SituationUnloadImage(SituationImage image);
+```
+**Usage Example:**
+```c
+SituationImage temp_image = SituationGenImageColor(128, 128, (ColorRGBA){255, 0, 255, 255});
+// ... perform some operations on the image ...
+SituationUnloadImage(temp_image); // Free the memory when done.
 ```
 ---
 #### `SituationLoadImageFromMemory`
@@ -1820,11 +1943,31 @@ SituationCmdDrawMesh(SituationGetMainCommandBuffer(), my_mesh);
 ```
 
 ---
-#### `SituationCmdBindVertexBuffer` / `SituationCmdBindIndexBuffer`
-Binds a vertex or index buffer for subsequent indexed draws.
+#### `SituationCmdBindVertexBuffer`
+Binds a vertex buffer for subsequent draws.
 ```c
 void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer);
+```
+**Usage Example:**
+```c
+// Before drawing, bind the vertex buffer containing your model's vertices.
+SituationCmdBindVertexBuffer(cmd, my_model_vertex_buffer);
+SituationCmdDraw(cmd, 0, 36); // Draw 36 vertices
+```
+
+---
+#### `SituationCmdBindIndexBuffer`
+Binds an index buffer for subsequent indexed draws. An index buffer tells the GPU which vertices to use from the vertex buffer, allowing for reuse of vertices and more efficient rendering.
+```c
 void SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer);
+```
+**Usage Example:**
+```c
+// Before an indexed draw, bind both the vertex and index buffers.
+SituationCmdBindVertexBuffer(cmd, my_mesh_vbo);
+SituationCmdBindIndexBuffer(cmd, my_mesh_ibo);
+// Draw using the index buffer. This will draw 12 triangles (36 indices).
+SituationCmdDrawIndexed(cmd, 0, 36, 0);
 ```
 
 ---
@@ -1892,55 +2035,92 @@ SituationCmdDrawQuad(SituationGetMainCommandBuffer(), transform, quad_color);
 These functions create and destroy GPU resources.
 
 ---
-#### `SituationCreateMesh` / `SituationDestroyMesh`
-Creates a self-contained GPU mesh from vertex and index data, and later destroys it.
+#### `SituationCreateMesh`
+Creates a self-contained GPU mesh from vertex and index data. This operation uploads the provided data to video memory.
 ```c
 SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count);
+```
+**Usage Example:**
+```c
+// Define vertex and index data for a quad.
+MyVertex vertices[] = {
+    {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
+    {{ 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f, 1.0f}},
+    {{ 0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f, 1.0f}},
+    {{-0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 0.0f, 1.0f}}
+};
+uint32_t indices[] = { 0, 1, 2, 2, 3, 0 };
+
+// Create the mesh resource.
+SituationMesh quad_mesh = SituationCreateMesh(vertices, 4, sizeof(MyVertex), indices, 6);
+```
+
+---
+#### `SituationDestroyMesh`
+Destroys a mesh and frees its associated GPU memory. The handle is invalidated after this call.
+```c
 void SituationDestroyMesh(SituationMesh* mesh);
 ```
 **Usage Example:**
 ```c
-// At init
-MyVertex vertices[] = { ... };
-uint32_t indices[] = { ... };
-g_my_mesh = SituationCreateMesh(vertices, 4, sizeof(MyVertex), indices, 6);
-
-// At shutdown
-SituationDestroyMesh(&g_my_mesh);
+// Assume quad_mesh is a valid handle created with SituationCreateMesh.
+// At application shutdown or when the mesh is no longer needed:
+SituationDestroyMesh(&quad_mesh);
+// The quad_mesh handle is now invalid.
 ```
 
 ---
-#### `SituationLoadShader` / `SituationUnloadShader`
-Loads, compiles, and links a graphics shader pipeline from GLSL files, and later unloads it.
+#### `SituationLoadShader`
+Loads, compiles, and links a graphics shader pipeline from GLSL vertex and fragment shader files.
 ```c
 SituationShader SituationLoadShader(const char* vs_path, const char* fs_path);
+```
+**Usage Example:**
+```c
+// At application startup, load the main shader.
+SituationShader main_shader = SituationLoadShader("shaders/main.vert", "shaders/main.frag");
+```
+
+---
+#### `SituationUnloadShader`
+Unloads a shader pipeline and frees its associated GPU resources.
+```c
 void SituationUnloadShader(SituationShader* shader);
 ```
 **Usage Example:**
 ```c
-// At init
-g_my_shader = SituationLoadShader("shaders/simple.vert", "shaders/simple.frag");
-
-// At shutdown
-SituationUnloadShader(&g_my_shader);
+// At application shutdown, unload the main shader.
+SituationUnloadShader(&main_shader);
 ```
 
 ---
-#### `SituationCreateTexture` / `SituationDestroyTexture`
-Creates a GPU texture from a CPU-side `SituationImage`, and later destroys it.
+#### `SituationCreateTexture`
+Creates a GPU texture from a CPU-side `SituationImage`. This involves uploading the pixel data from RAM to VRAM.
 ```c
 SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps);
+```
+**Usage Example:**
+```c
+// Load a CPU image from a file.
+SituationImage cpu_image = SituationLoadImage("textures/player_character.png");
+// Create a GPU texture from the image, generating mipmaps for better quality.
+SituationTexture player_texture = SituationCreateTexture(cpu_image, true);
+// The CPU-side image can now be unloaded as the data is on the GPU.
+SituationUnloadImage(cpu_image);
+```
+
+---
+#### `SituationDestroyTexture`
+Destroys a texture and frees its associated GPU memory. The handle is invalidated after this call.
+```c
 void SituationDestroyTexture(SituationTexture* texture);
 ```
 **Usage Example:**
 ```c
-// At init
-SituationImage cpu_image = SituationLoadImage("textures/player.png");
-g_my_texture = SituationCreateTexture(cpu_image, true);
-SituationUnloadImage(cpu_image); // CPU copy is no longer needed
-
-// At shutdown
-SituationDestroyTexture(&g_my_texture);
+// Assume player_texture is a valid handle.
+// At application shutdown or when the texture is no longer needed:
+SituationDestroyTexture(&player_texture);
+// The player_texture handle is now invalid.
 ```
 
 ---
@@ -1976,30 +2156,56 @@ printf("Texture format ID: %d\n", format);
 ```
 
 ---
-#### `SituationLoadModel` / `SituationUnloadModel`
-Loads a 3D model (including meshes and materials) from a file (GLTF, OBJ), and later unloads it.
+#### `SituationLoadModel`
+Loads a 3D model from a file (GLTF, OBJ). This function parses the model file and uploads all associated meshes and materials to the GPU.
 ```c
 SituationModel SituationLoadModel(const char* file_path);
-void SituationUnloadModel(SituationModel* model);
+```
+**Usage Example:**
+```c
+// At application startup, load the player model.
+SituationModel player_model = SituationLoadModel("models/player.gltf");
 ```
 
 ---
-#### `SituationCreateBuffer` / `SituationDestroyBuffer`
-Creates a generic GPU buffer (for vertices, indices, uniforms, etc.), and later destroys it.
+#### `SituationUnloadModel`
+Unloads a model and all of its associated resources (meshes, materials) from GPU memory.
+```c
+void SituationUnloadModel(SituationModel* model);
+```
+**Usage Example:**
+```c
+// At application shutdown, unload the player model.
+SituationUnloadModel(&player_model);
+```
+
+---
+#### `SituationCreateBuffer`
+Creates a generic GPU buffer and optionally initializes it with data. Buffers can be used for vertices, indices, uniforms (UBOs), or storage (SSBOs).
 ```c
 SituationBuffer SituationCreateBuffer(uint32_t usage_flags, const void* data, size_t size);
-void SituationDestroyBuffer(SituationBuffer* buffer);
 ```
 **Usage Example:**
 ```c
 // Create a uniform buffer for camera matrices
 mat4 proj, view;
-// ... calculate matrices ...
+// ... calculate projection and view matrices ...
 CameraMatrices ubo_data = { .projection = proj, .view = view };
-g_camera_ubo = SituationCreateBuffer(SIT_BUFFER_USAGE_UNIFORM, &ubo_data, sizeof(ubo_data));
+SituationBuffer camera_ubo = SituationCreateBuffer(SIT_BUFFER_USAGE_UNIFORM, &ubo_data, sizeof(ubo_data));
+```
 
-// At shutdown
-SituationDestroyBuffer(&g_camera_ubo);
+---
+#### `SituationDestroyBuffer`
+Destroys a GPU buffer and frees its associated video memory. The handle is invalidated after this call.
+```c
+void SituationDestroyBuffer(SituationBuffer* buffer);
+```
+**Usage Example:**
+```c
+// Assume camera_ubo is a valid SituationBuffer handle created earlier.
+// At application shutdown or when the buffer is no longer needed:
+SituationDestroyBuffer(&camera_ubo);
+// The camera_ubo handle is now invalid and should not be used.
 ```
 
 ---
@@ -2565,19 +2771,47 @@ vec2 mouse_delta = SituationGetMouseDelta();
 printf("Mouse at (%.f, %.f), moved by (%.f, %.f)\n", mouse_pos[0], mouse_pos[1], mouse_delta[0], mouse_delta[1]);
 ```
 ---
-#### `SituationIsMouseButtonDown` / `SituationIsMouseButtonPressed`
-Checks if a mouse button is currently held down (a state) or was just pressed (an event).
+#### `SituationIsMouseButtonDown`
+Checks if a mouse button is currently held down (a continuous state).
 ```c
 bool SituationIsMouseButtonDown(int button);
+```
+**Usage Example:**
+```c
+// Useful for continuous actions like aiming.
+if (SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_RIGHT)) {
+    // Zoom in with weapon sights.
+}
+```
+
+---
+#### `SituationIsMouseButtonPressed`
+Checks if a mouse button was pressed down this frame (a single-trigger event).
+```c
 bool SituationIsMouseButtonPressed(int button);
 ```
 **Usage Example:**
 ```c
+// Ideal for discrete actions like firing a weapon.
 if (SituationIsMouseButtonPressed(SIT_MOUSE_BUTTON_LEFT)) {
-    // Fire weapon
+    // Fire projectile.
 }
-if (SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_RIGHT)) {
-    // Aim down sights
+```
+
+---
+#### `SituationGetMouseButtonPressed`
+Gets the mouse button that was pressed this frame.
+```c
+int SituationGetMouseButtonPressed(void);
+```
+**Usage Example:**
+```c
+// Useful for UI interactions where you need to know which button was clicked.
+int clicked_button = SituationGetMouseButtonPressed();
+if (clicked_button == SIT_MOUSE_BUTTON_LEFT) {
+    // Handle left click on a UI element.
+} else if (clicked_button == SIT_MOUSE_BUTTON_RIGHT) {
+    // Open a context menu.
 }
 ```
 
@@ -2597,11 +2831,31 @@ void SituationSetMousePosition(int x, int y);
 ---
 #### Gamepad Input
 ---
-#### `SituationIsJoystickPresent` / `SituationIsGamepad`
-Checks if a joystick/gamepad is connected, and if it has a standard gamepad mapping.
+#### `SituationIsJoystickPresent`
+Checks if a joystick or gamepad is connected at the given joystick ID (0-15).
 ```c
 bool SituationIsJoystickPresent(int jid);
+```
+**Usage Example:**
+```c
+// Check for a joystick at the first slot.
+if (SituationIsJoystickPresent(0)) {
+    printf("A joystick/gamepad is connected at JID 0.\n");
+}
+```
+
+---
+#### `SituationIsGamepad`
+Checks if the joystick at the given ID has a standard gamepad mapping, making it compatible with the `SIT_GAMEPAD_*` enums.
+```c
 bool SituationIsGamepad(int jid);
+```
+**Usage Example:**
+```c
+// Before using gamepad-specific functions, check if the device has a standard mapping.
+if (SituationIsJoystickPresent(0) && SituationIsGamepad(0)) {
+    // Now it's safe to use functions like SituationIsGamepadButtonPressed.
+}
 ```
 
 ---
@@ -3235,25 +3489,56 @@ SituationFreeString(texture_path);
 ---
 #### File and Directory Queries
 ---
-#### `SituationGetFileName` / `SituationGetFileExtension`
-Extracts the file name or extension from a path.
+#### `SituationGetFileName`
+Extracts the file name component from a path, including the extension.
 ```c
 const char* SituationGetFileName(const char* file_path);
+```
+**Usage Example:**
+```c
+const char* path = "C:/assets/textures/player_avatar.png";
+printf("File name: %s\n", SituationGetFileName(path)); // -> "player_avatar.png"
+```
+
+---
+#### `SituationGetFileExtension`
+Extracts the extension from a path, including the leading dot (`.`).
+```c
 const char* SituationGetFileExtension(const char* file_path);
 ```
 **Usage Example:**
 ```c
-const char* path = "C:/assets/textures/player.png";
-printf("File name: %s\n", SituationGetFileName(path)); // -> "player.png"
+const char* path = "C:/assets/textures/player_avatar.png";
 printf("Extension: %s\n", SituationGetFileExtension(path)); // -> ".png"
 ```
 
 ---
-#### `SituationFileExists` / `SituationDirectoryExists`
-Checks if a file or directory exists at the given path.
+#### `SituationFileExists`
+Checks if a file exists at the given path.
 ```c
 bool SituationFileExists(const char* file_path);
+```
+**Usage Example:**
+```c
+if (SituationFileExists("settings.ini")) {
+    // Load settings from the file.
+} else {
+    // Create a default settings file.
+}
+```
+
+---
+#### `SituationDirectoryExists`
+Checks if a directory exists at the given path.
+```c
 bool SituationDirectoryExists(const char* dir_path);
+```
+**Usage Example:**
+```c
+// Check if a directory for save games exists before trying to list its files.
+if (SituationDirectoryExists("save_games")) {
+    // ... proceed to load a save file ...
+}
 ```
 
 ---
@@ -3279,29 +3564,65 @@ long SituationGetFileModTime(const char* file_path);
 ---
 #### File I/O
 ---
-#### `SituationLoadFileText` / `SituationSaveFileText`
-Loads or saves a text file as a null-terminated string.
+#### `SituationLoadFileText`
+Loads a text file as a null-terminated string. The caller is responsible for freeing the returned string with `SituationFreeString`.
 ```c
 char* SituationLoadFileText(const char* file_path);
+```
+**Usage Example:**
+```c
+char* shader_code = SituationLoadFileText("shaders/main.glsl");
+if (shader_code) {
+    // ... use the shader code ...
+    SituationFreeString(shader_code);
+}
+```
+
+---
+#### `SituationSaveFileText`
+Saves a null-terminated string to a text file.
+```c
 bool SituationSaveFileText(const char* file_path, const char* text);
 ```
 **Usage Example:**
 ```c
 const char* settings = "[Graphics]\nwidth=1920\nheight=1080";
-SituationSaveFileText("settings.ini", settings);
-
-char* loaded_settings = SituationLoadFileText("settings.ini");
-if (loaded_settings) {
-    puts(loaded_settings);
-    SituationFreeString(loaded_settings);
+bool success = SituationSaveFileText("settings.ini", settings);
+if (success) {
+    printf("Settings saved.\n");
 }
 ```
 ---
-#### `SituationLoadFileData` / `SituationSaveFileData`
-Loads an entire file into a memory buffer or saves a buffer to a file.
+#### `SituationLoadFileData`
+Loads an entire file into a memory buffer. The caller is responsible for freeing the returned buffer with `SituationFreeString`.
 ```c
 unsigned char* SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read);
+```
+**Usage Example:**
+```c
+unsigned int data_size;
+unsigned char* file_data = SituationLoadFileData("assets/level.dat", &data_size);
+if (file_data) {
+    // Process the loaded binary data.
+    SituationFreeString((char*)file_data); // Cast and free the memory.
+}
+```
+
+---
+#### `SituationSaveFileData`
+Saves a buffer of raw data to a file.
+```c
 bool SituationSaveFileData(const char* file_path, const void* data, unsigned int bytes_to_write);
+```
+**Usage Example:**
+```c
+// Assume 'player_data' is a struct containing game state.
+PlayerState player_data = { .health = 100, .score = 5000 };
+// Save the player state to a binary file.
+bool success = SituationSaveFileData("save.dat", &player_data, sizeof(PlayerState));
+if (success) {
+    printf("Game saved successfully.\n");
+}
 ```
 ---
 #### Directory Operations
