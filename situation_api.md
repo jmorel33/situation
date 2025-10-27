@@ -420,25 +420,38 @@ typedef struct SituationDeviceInfo {
 ### Functions
 
 #### `SituationInit`
-Initializes the library, creates the main window, and sets up the graphics context. This must be the first function called.
+Initializes all library subsystems. This is the entry point of the "Situation" library and **must be the first function you call**. It sets up the window, initializes the selected graphics backend (OpenGL or Vulkan), prepares the audio device, and processes any command-line arguments.
+
+The function takes a pointer to a `SituationInitInfo` struct, which allows you to configure initial properties like window size, title, and desired frame rate. Passing `NULL` will initialize the library with default settings.
 ```c
 SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info);
 ```
 **Usage Example:**
 ```c
 int main(int argc, char* argv[]) {
+    // Define the initial configuration for your application.
     SituationInitInfo init_info = {
         .app_name = "Core Example",
+        .app_version = "1.0.0",
         .initial_width = 1280,
         .initial_height = 720,
-        .window_flags = SITUATION_FLAG_WINDOW_RESIZABLE
+        .window_flags = SITUATION_FLAG_WINDOW_RESIZABLE | SITUATION_FLAG_VSYNC_HINT,
+        .target_fps = 60,
+        .headless = false
     };
 
+    // Initialize the library with the specified configuration.
     if (SituationInit(argc, argv, &init_info) != SIT_SUCCESS) {
-        // Handle initialization failure
+        // If initialization fails, retrieve and print the error message.
+        char* error_msg = SituationGetLastErrorMsg();
+        fprintf(stderr, "Failed to initialize Situation: %s\n", error_msg);
+        SituationFreeString(error_msg); // Free the error message string
         return -1;
     }
-    // ... main loop ...
+
+    // ... main application loop ...
+
+    // Shutdown the library to release all resources.
     SituationShutdown();
     return 0;
 }
@@ -446,157 +459,122 @@ int main(int argc, char* argv[]) {
 
 ---
 #### `SituationPollInputEvents`
-Polls for all pending input and window events from the operating system. Call this once at the beginning of every frame.
+Polls for all pending input and window events from the operating system. This function is the first part of the mandatory three-phase frame structure and **must be called exactly once at the beginning of every frame**. It gathers all keyboard, mouse, gamepad, and window events (like resizing or closing) and stores them in an internal state buffer. All other input and window functions in the frame will operate on this consistent snapshot of the state.
 ```c
 void SituationPollInputEvents(void);
 ```
 **Usage Example:**
 ```c
 while (!SituationWindowShouldClose()) {
+    // --- 1. Input Phase ---
     SituationPollInputEvents(); // First call in the loop
-    // ... update and render ...
+
+    // --- 2. Update Phase ---
+    SituationUpdateTimers();
+    // ... game logic that relies on input ...
+
+    // --- 3. Render Phase ---
+    // ... rendering code ...
 }
 ```
 
 ---
 #### `SituationUpdateTimers`
-Updates all internal timers, including the main frame timer (`deltaTime`) and the Temporal Oscillator System. Call this once per frame, after polling events.
+Updates all internal timers. This is the second part of the mandatory three-phase frame structure and **must be called exactly once per frame**, immediately after `SituationPollInputEvents()`. This function calculates the `deltaTime` for the previous frame (accessible via `SituationGetFrameTime()`), updates the total elapsed time, and advances the state of the Temporal Oscillator System.
 ```c
 void SituationUpdateTimers(void);
 ```
 **Usage Example:**
 ```c
 while (!SituationWindowShouldClose()) {
+    // --- 1. Input Phase ---
     SituationPollInputEvents();
+
+    // --- 2. Update Phase ---
     SituationUpdateTimers(); // Second call in the loop
-    // ... application logic using deltaTime ...
-    // ... render ...
+
+    // Now it's safe to get the frame time for physics and logic.
+    float dt = SituationGetFrameTime();
+    player_position.x += player_velocity.x * dt;
+
+    // --- 3. Render Phase ---
+    // ... rendering code ...
 }
 ```
 
 ---
 #### `SituationShutdown`
-Shuts down all library subsystems, releases all resources, and closes the application window. This should be the last function called.
+Shuts down all library subsystems, releases all GPU and CPU resources, and closes the application window. This **must be the last function called** before your application exits. It ensures a graceful cleanup and will report any leaked GPU resources (in debug mode) if you forgot to destroy them.
 ```c
 void SituationShutdown(void);
 ```
 **Usage Example:**
 ```c
 int main(int argc, char* argv[]) {
-    SituationInit(argc, argv, NULL);
-    while (!SituationWindowShouldClose()) {
-        // ...
+    // It's good practice to pair Init and Shutdown in the same scope.
+    if (SituationInit(argc, argv, NULL) != SIT_SUCCESS) {
+        return -1;
     }
-    SituationShutdown(); // Last call before exit
+
+    while (!SituationWindowShouldClose()) {
+        // Main application loop
+    }
+
+    SituationShutdown(); // The very last call.
     return 0;
 }
 ```
 
 ---
 #### `SituationIsInitialized`
-Checks if the library has been successfully initialized.
+Checks if the library has been successfully initialized. Returns `true` if `SituationInit()` has been called and completed without errors, `false` otherwise.
 ```c
 bool SituationIsInitialized(void);
 ```
 **Usage Example:**
 ```c
-if (!SituationIsInitialized()) {
-    printf("Library was not initialized, or initialization failed.\n");
-}
-```
-
----
-
-#### `SituationWindowShouldClose`
-
-Checks if the window has been flagged to close (e.g., by the user clicking the close button).
-
-```c
-SITAPI bool SituationWindowShouldClose(void);
-```
-
-**Usage Example:**
-```c
-while (!SituationWindowShouldClose()) {
-    // Main loop
+// You might use this in a helper function to ensure it's safe to call library functions.
+void UpdatePlayer() {
+    if (!SituationIsInitialized()) {
+        printf("Error: Cannot update player before the library is initialized.\n");
+        return;
+    }
+    // ... proceed with player update logic ...
 }
 ```
 
 ---
 #### `SituationWindowShouldClose`
-Returns `true` if the user has attempted to close the window (e.g., by clicking the 'X' button or pressing Alt+F4).
+Returns `true` if the user has attempted to close the window (e.g., by clicking the 'X' button, pressing Alt+F4, or sending a quit signal). This is the canonical way to control your main application loop.
 ```c
 bool SituationWindowShouldClose(void);
 ```
 **Usage Example:**
 ```c
-// The canonical main loop condition.
+// The main loop should continue as long as this function returns false.
 while (!SituationWindowShouldClose()) {
-    // ...
+    // Poll events, update logic, render frame
 }
+// Loop terminates, and the application proceeds to shutdown.
 ```
 
 ---
 #### `SituationSetTargetFPS`
-
-Sets the target frames-per-second (FPS).
-
-```c
-SITAPI void SituationSetTargetFPS(int fps);
-```
-
-**Usage Example:**
-```c
-SituationSetTargetFPS(60);
-```
-
----
-
-#### `SituationGetFrameTime`
-
-Gets the time in seconds for the last frame.
-
-```c
-SITAPI float SituationGetFrameTime(void);
-```
-
-**Usage Example:**
-```c
-float frame_time = SituationGetFrameTime();
-printf("Last frame time: %f seconds\n", frame_time);
-```
-
----
-
-#### `SituationGetFPS`
-
-Gets the current frames-per-second.
-
-```c
-SITAPI int SituationGetFPS(void);
-```
-
-**Usage Example:**
-```c
-int fps = SituationGetFPS();
-printf("Current FPS: %d\n", fps);
-```
-
----
-#### `SituationSetTargetFPS`
-Sets a target frame rate for the application. The main loop will sleep to avoid exceeding this rate. Pass `0` to uncap the frame rate.
+Sets a target frame rate for the application. The main loop will sleep to avoid exceeding this rate, reducing CPU usage.
 ```c
 void SituationSetTargetFPS(int fps);
 ```
 **Usage Example:**
 ```c
-SituationInit(argc, argv, NULL);
-SituationSetTargetFPS(60); // Cap the application at 60 FPS.
+// Cap the application at 60 FPS.
+SituationSetTargetFPS(60);
+// To uncap the frame rate, use 0.
+// SituationSetTargetFPS(0);
 ```
 
 ---
 #### `SituationGetFrameTime`
-Gets the time in seconds that the previous frame took to complete (also known as `deltaTime`). Essential for frame-rate-independent logic.
+Gets the time in seconds that the previous frame took to complete, commonly known as `deltaTime`. This value is calculated by `SituationUpdateTimers()` and is essential for creating frame-rate-independent logic for movement, physics, and animations.
 ```c
 float SituationGetFrameTime(void);
 ```
@@ -604,18 +582,21 @@ float SituationGetFrameTime(void);
 ```c
 // Inside the main loop, after SituationUpdateTimers()
 float dt = SituationGetFrameTime();
-player_position.x += player_speed * dt; // Move player based on time, not frames.
+
+// Update player position based on time, not frames, ensuring smooth movement
+// regardless of the frame rate.
+player_position.x += player_speed * dt;
 ```
 
 ---
 #### `SituationGetFPS`
-Gets the current frames-per-second, calculated periodically by the library.
+Gets the current frames-per-second, calculated periodically by the library. This is useful for displaying performance metrics to the user.
 ```c
 int SituationGetFPS(void);
 ```
 **Usage Example:**
 ```c
-// Inside the main loop
+// Inside the main loop, update the window title with the current FPS.
 int current_fps = SituationGetFPS();
 char window_title[128];
 sprintf(window_title, "My App | FPS: %d", current_fps);
@@ -624,7 +605,7 @@ SituationSetWindowTitle(window_title);
 
 ---
 #### `SituationGetLastErrorMsg`
-Retrieves a copy of the last error message generated by the library. The caller is responsible for freeing this memory with `SituationFreeString()`.
+Retrieves a copy of the last error message generated by the library. This is useful for debugging initialization failures or other runtime errors. The caller is responsible for freeing the returned string with `SituationFreeString()`.
 ```c
 char* SituationGetLastErrorMsg(void);
 ```
@@ -640,20 +621,27 @@ if (SituationInit(argc, argv, &init_info) != SIT_SUCCESS) {
 
 ---
 #### `SituationSetExitCallback`
-Registers a callback function to be executed just before the library shuts down. Useful for final cleanup.
+Registers a callback function to be executed just before the library shuts down. This is useful for performing final cleanup tasks, such as saving application state.
+```c
+typedef void (*SituationExitCallback)(void* user_data);
+void SituationSetExitCallback(SituationExitCallback callback, void* user_data);
+```
+**Usage Example:**
 ```c
 void on_exit_cleanup(void* user_data) {
-    printf("Shutting down. Custom data: %s\n", (const char*)user_data);
+    const char* message = (const char*)user_data;
+    printf("Shutting down. Custom data: %s\n", message);
+    // You could save game settings or user progress here.
 }
 
 // In main, after Init
-const char* my_data = "Saved settings.";
+const char* my_data = "Saving settings...";
 SituationSetExitCallback(on_exit_cleanup, (void*)my_data);
 ```
 
 ---
 #### `SituationIsArgumentPresent`
-Checks if a specific command-line argument flag (e.g., `"-server"`) was provided when the application was launched.
+Checks if a specific command-line argument flag (e.g., `"-server"`) was provided when the application was launched. The library automatically parses `argv` during `SituationInit`.
 ```c
 bool SituationIsArgumentPresent(const char* arg_name);
 ```
@@ -662,58 +650,78 @@ bool SituationIsArgumentPresent(const char* arg_name);
 // Run as: ./my_app -fullscreen -debug
 int main(int argc, char* argv[]) {
     SituationInit(argc, argv, NULL);
+
+    // Check for a simple flag to enable fullscreen mode at startup.
     if (SituationIsArgumentPresent("-fullscreen")) {
         SituationToggleFullscreen();
+    }
+    // Check for a debug flag.
+    if (SituationIsArgumentPresent("-debug")) {
+        g_enable_debug_mode = true;
     }
 }
 ```
 
 ---
 #### `SituationGetArgumentValue`
-Gets the value of a command-line argument (e.g., gets `"jungle"` from `"-level:jungle"` or `"-level jungle"`). Returns `NULL` if not found.
+Gets the value associated with a command-line argument. It supports both colon-separated (`-level:jungle`) and space-separated (`-level jungle`) formats. Returns `NULL` if the argument is not found.
 ```c
 const char* SituationGetArgumentValue(const char* arg_name);
 ```
 **Usage Example:**
 ```c
-// Run as: ./my_app -level:forest
+// Run as: ./my_app -level:forest -player "Jules"
 int main(int argc, char* argv[]) {
     SituationInit(argc, argv, NULL);
+
+    // Get the level name to load.
     const char* level_name = SituationGetArgumentValue("-level");
     if (level_name) {
         printf("Loading level: %s\n", level_name);
     } else {
         printf("Loading default level.\n");
     }
+
+    // Get the player's name.
+    const char* player_name = SituationGetArgumentValue("-player");
+    if (player_name) {
+        printf("Welcome, %s!\n", player_name);
+    }
 }
 ```
 
 ---
 #### `SituationGetDeviceInfo`
-Gathers and returns a comprehensive snapshot of the host system's hardware, including CPU, GPU, RAM, and storage.
+Gathers and returns a comprehensive snapshot of the host system's hardware and operating system. This is useful for logging, debugging, or adjusting application settings based on the user's hardware.
 ```c
 SituationDeviceInfo SituationGetDeviceInfo(void);
 ```
 **Usage Example:**
 ```c
+// Log device information at startup.
 SituationInit(argc, argv, NULL);
 SituationDeviceInfo device = SituationGetDeviceInfo();
+printf("--- System Information ---\n");
+printf("OS: %s %s\n", device.os_name, device.os_version);
+printf("CPU: %s (%d cores, %d threads)\n", device.cpu_brand, device.cpu_core_count, device.cpu_thread_count);
+printf("RAM: %.2f GB\n", (double)device.system_ram_bytes / (1024.0*1024.0*1024.0));
 printf("GPU: %s\n", device.gpu_brand);
-printf("CPU Cores: %d\n", device.cpu_core_count);
-printf("System RAM: %llu GB\n", device.system_ram_bytes / (1024*1024*1024));
+printf("VRAM: %.2f GB\n", (double)device.gpu_vram_bytes / (1024.0*1024.0*1024.0));
+printf("--------------------------\n");
 ```
 
 ---
 #### `SituationGetTime`
-Gets the total elapsed time in seconds since the application was initialized.
+Gets the total elapsed time in seconds since `SituationInit()` was called. This is a high-precision monotonic timer.
 ```c
 double SituationGetTime(void);
 ```
 **Usage Example:**
 ```c
-// This can be used for animations or calculating durations.
+// Use the total elapsed time to drive a continuous animation, like a rotation.
 double current_time = SituationGetTime();
-float brightness = (sin(current_time * 2.0) + 1.0) * 0.5; // Pulsating effect
+mat4 rotation_matrix;
+glm_rotate_y(model_matrix, (float)current_time * 0.5f, rotation_matrix); // Rotate over time
 ```
 
 ---
@@ -724,22 +732,24 @@ uint64_t SituationGetFrameCount(void);
 ```
 **Usage Example:**
 ```c
-// You can use the frame count for seeding random numbers or simple, periodic logic.
+// Use the frame count for simple, periodic logic that doesn't need to be tied to real time.
 if (SituationGetFrameCount() % 120 == 0) {
-    printf("Two seconds have passed (at 60 FPS).\n");
+    printf("120 frames have passed.\n");
 }
 ```
 
 ---
 #### `SituationWaitTime`
-Pauses the application thread for a specified duration in seconds. This is a simple wrapper over the system's sleep function.
+Pauses the application thread for a specified duration in seconds. This is a simple wrapper over the system's sleep function and can be useful for debugging or simple timing.
 ```c
 void SituationWaitTime(double seconds);
 ```
 **Usage Example:**
 ```c
-// Wait for 500 milliseconds before proceeding.
+printf("Preparing to load assets...\n");
+// Wait for 500 milliseconds before proceeding to give the user time to read the message.
 SituationWaitTime(0.5);
+printf("Loading...\n");
 ```
 
 ---
@@ -1056,7 +1066,7 @@ These flags are used with `SituationSetWindowState()` and `SituationClearWindowS
 ### Functions
 
 #### `SituationSetWindowState`
-Sets one or more window state flags.
+Sets one or more window state flags, such as `SITUATION_FLAG_WINDOW_RESIZABLE` or `SITUATION_FLAG_WINDOW_TOPMOST`. You can combine multiple flags using the bitwise OR `|` operator.
 ```c
 void SituationSetWindowState(uint32_t flags);
 ```
@@ -1068,7 +1078,7 @@ SituationSetWindowState(SITUATION_FLAG_WINDOW_RESIZABLE | SITUATION_FLAG_WINDOW_
 
 ---
 #### `SituationClearWindowState`
-Clears one or more window state flags.
+Clears one or more window state flags, reverting them to their default behavior.
 ```c
 void SituationClearWindowState(uint32_t flags);
 ```
@@ -1081,7 +1091,7 @@ SituationClearWindowState(SITUATION_FLAG_WINDOW_TOPMOST);
 
 ---
 #### `SituationToggleFullscreen`
-Toggles the window between exclusive fullscreen and windowed mode.
+Toggles the window between exclusive fullscreen and windowed mode. This is a convenient wrapper around `SituationSetWindowState` and `SituationClearWindowState` for the `SITUATION_FLAG_FULLSCREEN_MODE` flag.
 ```c
 void SituationToggleFullscreen(void);
 ```
@@ -1101,8 +1111,9 @@ void SituationSetWindowTitle(const char *title);
 ```
 **Usage Example:**
 ```c
-char title[100];
-sprintf(title, "My Game | Score: %d", playerScore);
+// You can dynamically update the title to show game state or performance info.
+char title[128];
+sprintf(title, "My Game | Score: %d | FPS: %d", g_player_score, SituationGetFPS());
 SituationSetWindowTitle(title);
 ```
 
@@ -1114,8 +1125,14 @@ void SituationSetWindowPosition(int x, int y);
 ```
 **Usage Example:**
 ```c
-// Move the window to the top-left corner of the primary monitor.
-SituationSetWindowPosition(0, 0);
+// Center the window on the primary monitor.
+int monitor_width = SituationGetMonitorWidth(0);
+int monitor_height = SituationGetMonitorHeight(0);
+int window_width = SituationGetScreenWidth();
+int window_height = SituationGetScreenHeight();
+int x_pos = (monitor_width / 2) - (window_width / 2);
+int y_pos = (monitor_height / 2) - (window_height / 2);
+SituationSetWindowPosition(x_pos, y_pos);
 ```
 
 ---
@@ -1129,7 +1146,7 @@ vec2 SituationGetWindowPosition(void);
 // Get the current window position.
 vec2 current_pos;
 glm_vec2_copy(SituationGetWindowPosition(), current_pos);
-printf("Window is at: %.0f, %.0f\n", current_pos[0], current_pos[1]);
+printf("Window is at: (%.0f, %.0f)\n", current_pos[0], current_pos[1]);
 ```
 
 ---
@@ -1143,6 +1160,7 @@ vec2 SituationGetWindowSize(void);
 ```c
 // Set the window to a fixed 800x600 size
 SituationSetWindowSize(800, 600);
+
 // Verify the size
 vec2 size;
 glm_vec2_copy(SituationGetWindowSize(), size);
@@ -1157,47 +1175,51 @@ void SituationSetWindowSizeLimits(int min_width, int min_height, int max_width, 
 ```
 **Usage Example:**
 ```c
-// Ensure the window is never smaller than 640x480 or larger than 1920x1080
-SituationSetWindowSizeLimits(640, 480, 1920, 1080);
+// Ensure the window is never smaller than 640x480 or larger than the primary monitor's resolution.
+int max_w = SituationGetMonitorWidth(0);
+int max_h = SituationGetMonitorHeight(0);
+SituationSetWindowSizeLimits(640, 480, max_w, max_h);
 ```
 
 ---
 #### `SituationSetWindowOpacity`
-Sets the opacity of the entire window.
+Sets the opacity of the entire window, where `1.0` is fully opaque and `0.0` is fully transparent.
 ```c
 void SituationSetWindowOpacity(float opacity);
 ```
 **Usage Example:**
 ```c
-// Make the window semi-transparent
+// Make the window semi-transparent.
 SituationSetWindowOpacity(0.5f);
 ```
 
 ---
 #### `SituationSetWindowIcon`
-Sets a custom icon for the window from a `SituationImage`.
+Sets a custom icon for the window from a `SituationImage`. The library handles the conversion to the platform's native icon format. For best results, provide a square image (e.g., 256x256).
 ```c
 void SituationSetWindowIcon(SituationImage image);
 ```
 **Usage Example:**
 ```c
-// During initialization
+// During initialization, load an icon from a file.
 SituationImage icon = SituationLoadImage("assets/icon.png");
 if (icon.data) {
     SituationSetWindowIcon(icon);
+    // The icon data is copied by the system, so we can unload the CPU image.
     SituationUnloadImage(icon);
 }
 ```
 
 ---
 #### `SituationRequestWindowAttention`
-Requests the user's attention by making the window's icon flash or bounce in the taskbar.
+Requests the user's attention by making the window's icon flash or bounce in the taskbar. This is a non-intrusive way to signal that a long-running task has completed or that user input is required.
 ```c
 void SituationRequestWindowAttention(void);
 ```
 **Usage Example:**
 ```c
-// When a long background task is complete
+// When a file export or level loading process is complete:
+printf("Export complete!\n");
 SituationRequestWindowAttention();
 ```
 
@@ -1212,11 +1234,14 @@ bool SituationIsWindowState(uint32_t flag);
 if (SituationIsWindowState(SITUATION_FLAG_FULLSCREEN_MODE)) {
     printf("Application is in fullscreen mode.\n");
 }
+if (SituationIsWindowState(SITUATION_FLAG_WINDOW_MINIMIZED)) {
+    printf("Application is minimized.\n");
+}
 ```
 
 ---
 #### `SituationGetScreenWidth`
-Gets the current width of the window in screen coordinates (logical size). This may differ from the render width on high-DPI displays.
+Gets the current width of the window in screen coordinates (logical size). This may differ from the render width on high-DPI displays. Use this for UI layout and mouse coordinate calculations.
 ```c
 int SituationGetScreenWidth(void);
 ```
@@ -1224,7 +1249,8 @@ int SituationGetScreenWidth(void);
 ```c
 // Get the logical width for UI layout calculations.
 int screen_width = SituationGetScreenWidth();
-printf("The window's logical width is: %d\n", screen_width);
+// Position a UI element 10 pixels from the right edge of the window.
+float element_x = screen_width - element_width - 10;
 ```
 
 ---
@@ -1242,7 +1268,7 @@ float element_y = (screen_height / 2.0f) - (element_height / 2.0f);
 
 ---
 #### `SituationGetRenderWidth`
-Gets the current width of the rendering framebuffer in pixels. This is the physical size, which may differ from the logical window size on high-DPI displays.
+Gets the current width of the rendering framebuffer in pixels. This is the physical size, which may be larger than the logical window size on high-DPI displays. Use this for graphics calculations like setting the viewport.
 ```c
 int SituationGetRenderWidth(void);
 ```
@@ -1739,23 +1765,25 @@ typedef struct SituationFont {
 #### Image Loading and Unloading
 ---
 #### `SituationLoadImage`
-Loads an image from a file into CPU memory (RAM). Supported formats include PNG, BMP, TGA, and JPEG.
+Loads an image from a file into CPU memory (RAM). Supported formats include PNG, BMP, TGA, and JPEG. All loaded images are converted to a 32-bit RGBA format.
 ```c
 SituationImage SituationLoadImage(const char *fileName);
 ```
 **Usage Example:**
 ```c
-SituationImage player_avatar = SituationLoadImage("avatars/player1.png");
+// Load an image to be used for a player sprite.
+SituationImage player_avatar = SituationLoadImage("assets/sprites/player.png");
 if (player_avatar.data) {
-    // The image is now in CPU memory, ready to be used or uploaded to the GPU.
+    // The image is now in CPU memory, ready to be manipulated or uploaded to the GPU.
     SituationTexture player_texture = SituationCreateTexture(player_avatar, true);
-    SituationUnloadImage(player_avatar); // Unload the CPU copy after uploading.
+    // Once uploaded to a texture, the CPU-side copy can often be safely unloaded.
+    SituationUnloadImage(player_avatar);
 }
 ```
 
 ---
 #### `SituationUnloadImage`
-Unloads a CPU-side image and frees its memory. This should be called after the image data is no longer needed (e.g., after it has been uploaded to a GPU texture).
+Unloads a CPU-side image and frees its associated memory.
 ```c
 void SituationUnloadImage(SituationImage image);
 ```
@@ -1767,14 +1795,14 @@ SituationUnloadImage(temp_image); // Free the memory when done.
 ```
 ---
 #### `SituationLoadImageFromMemory`
-Loads an image from a buffer in memory.
+Loads an image from a data buffer in memory. The `fileType` parameter must include the leading dot (e.g., `.png`).
 ```c
 SituationImage SituationLoadImageFromMemory(const char *fileType, const unsigned char *fileData, int dataSize);
 ```
 **Usage Example:**
 ```c
-// Assume 'g_embedded_player_png' is a byte array with an embedded PNG file.
-// Assume 'g_embedded_player_png_len' is its size.
+// Assume 'g_embedded_player_png' is a byte array with an embedded PNG file,
+// and 'g_embedded_player_png_len' is its size.
 SituationImage player_img = SituationLoadImageFromMemory(".png", g_embedded_player_png, g_embedded_player_png_len);
 // ... use player_img ...
 SituationUnloadImage(player_img);
@@ -1782,23 +1810,35 @@ SituationUnloadImage(player_img);
 
 ---
 #### `SituationLoadImageFromTexture`
-Creates a CPU-side `SituationImage` by reading back data from a GPU `SituationTexture`.
+Creates a CPU-side `SituationImage` by reading back pixel data from a GPU `SituationTexture`. This can be a slow operation and should be used sparingly.
 ```c
 SituationImage SituationLoadImageFromTexture(SituationTexture texture);
 ```
 
 ---
 #### `SituationExportImage`
-Exports image data to a file (PNG or BMP supported).
+Exports the pixel data of a `SituationImage` to a file. The file format is determined by the extension. Currently, `.png` and `.bmp` are supported.
 ```c
 bool SituationExportImage(SituationImage image, const char *fileName);
 ```
+**Usage Example:**
+```c
+// Take a screenshot and save it as a PNG.
+SituationImage screenshot = SituationLoadImageFromScreen();
+if (screenshot.data) {
+    SituationExportImage(screenshot, "screenshots/capture.png");
+    SituationUnloadImage(screenshot);
+}
+```
+
+---
+#### Image Generation and Manipulation
 
 ---
 #### Image Generation and Manipulation
 ---
 #### `SituationImageFromImage`
-Creates a new `SituationImage` from a sub-rectangle of another image.
+Creates a new `SituationImage` by copying a sub-rectangle from a source image. This is useful for extracting sprites from a spritesheet.
 ```c
 SituationImage SituationImageFromImage(SituationImage image, Rectangle rect);
 ```
@@ -1808,6 +1848,7 @@ SituationImage SituationImageFromImage(SituationImage image, Rectangle rect);
 SituationImage spritesheet = SituationLoadImage("assets/sprites.png");
 Rectangle sprite_rect = { .x = 32, .y = 16, .width = 16, .height = 16 };
 SituationImage single_sprite = SituationImageFromImage(spritesheet, sprite_rect);
+// 'single_sprite' is now a new 16x16 image that can be used independently.
 // ... use single_sprite ...
 SituationUnloadImage(single_sprite);
 SituationUnloadImage(spritesheet);
@@ -1815,7 +1856,7 @@ SituationUnloadImage(spritesheet);
 
 ---
 #### `SituationImageCopy`
-Creates a new image by making a deep copy of another.
+Creates a new image by making a deep copy of another. This is useful when you need to modify an image while preserving the original.
 ```c
 SituationImage SituationImageCopy(SituationImage image);
 ```
@@ -1827,9 +1868,10 @@ SituationImage SituationGenImageColor(int width, int height, ColorRGBA color);
 ```
 **Usage Example:**
 ```c
-SituationImage blue_square = SituationGenImageColor(128, 128, (ColorRGBA){0, 0, 255, 255});
-// ... use the blue square image ...
-SituationUnloadImage(blue_square);
+// Create a solid red 1x1 pixel image to use as a default texture.
+SituationImage red_pixel = SituationGenImageColor(1, 1, (ColorRGBA){255, 0, 0, 255});
+SituationTexture default_texture = SituationCreateTexture(red_pixel, false);
+SituationUnloadImage(red_pixel);
 ```
 
 ---
@@ -1848,30 +1890,31 @@ SituationUnloadImage(background);
 
 ---
 #### `SituationImageClearBackground`
-Clears an image to a specific color.
+Fills the entire destination image with a specified color.
 ```c
 void SituationImageClearBackground(SituationImage *dst, ColorRGBA color);
 ```
 
 ---
 #### `SituationImageDraw`
-Draws a source image onto a destination image.
+Draws a source image (or a sub-rectangle of it) onto a destination image, with scaling and tinting.
 ```c
 void SituationImageDraw(SituationImage *dst, SituationImage src, Rectangle srcRect, Rectangle dstRect, ColorRGBA tint);
 ```
 
 ---
 #### `SituationImageDrawRectangle` / `SituationImageDrawLine`
-Draws a colored rectangle or line onto an image.
+Draws a colored rectangle or line directly onto an image's pixel data.
 ```c
 void SituationImageDrawRectangle(SituationImage *dst, Rectangle rect, ColorRGBA color);
 void SituationImageDrawLine(SituationImage *dst, Vector2 start, Vector2 end, ColorRGBA color);
 ```
 **Usage Example:**
 ```c
+// Create a canvas and draw a red border around it.
 SituationImage canvas = SituationGenImageColor(256, 256, (ColorRGBA){255,255,255,255});
-Rectangle red_box = { .x = 50, .y = 50, .width = 156, .height = 156 };
-SituationImageDrawRectangle(&canvas, red_box, (ColorRGBA){255,0,0,255});
+Rectangle border = { .x = 0, .y = 0, .width = 256, .height = 256 };
+SituationImageDrawRectangleLines(&canvas, border, 4, (ColorRGBA){255,0,0,255});
 ```
 
 ---
@@ -2188,7 +2231,7 @@ These functions control the overall rendering loop.
 ---
 ---
 #### `SituationAcquireFrameCommandBuffer`
-Prepares the backend for a new frame of rendering, acquiring the next available render target. Must be called before any drawing commands. Returns `false` if the frame cannot be acquired (e.g., window is minimized).
+Prepares the backend for a new frame of rendering, acquiring the next available render target from the swap chain. This is the first function to call in the render phase and it must be guarded by a conditional check. It returns `false` if the frame cannot be acquired (e.g., because the window is minimized), in which case you should skip all rendering for that frame.
 ```c
 bool SituationAcquireFrameCommandBuffer(void);
 ```
@@ -2196,14 +2239,17 @@ bool SituationAcquireFrameCommandBuffer(void);
 ```c
 // At the start of the rendering phase
 if (SituationAcquireFrameCommandBuffer()) {
-    // ... record rendering commands ...
+    // It's safe to record rendering commands now.
+    // ...
     SituationEndFrame();
+} else {
+    // Skip rendering for this frame.
 }
 ```
 
 ---
 #### `SituationEndFrame`
-Submits all recorded commands for the frame and presents the result to the screen.
+Submits all recorded commands for the frame to the GPU for execution and presents the final rendered image to the screen. This is the last function to call in the render phase.
 ```c
 SituationError SituationEndFrame(void);
 ```
@@ -2211,34 +2257,40 @@ SituationError SituationEndFrame(void);
 ```c
 // At the very end of the rendering phase
 if (SituationAcquireFrameCommandBuffer()) {
-    // ... record rendering commands ...
+    // ... record all rendering commands ...
+
+    // Finally, submit and present the frame.
     SituationEndFrame();
 }
 ```
 
 ---
 #### `SituationGetMainCommandBuffer`
-Gets a handle to the main command buffer used for rendering to the window.
+Gets a handle to the main command buffer. This command buffer is used for all rendering that targets the main window.
 ```c
 SituationCommandBuffer SituationGetMainCommandBuffer(void);
 ```
 
 ---
 #### `SituationCmdBeginRenderPass` / `SituationCmdEndRenderPass`
-Begins and ends a render pass. All drawing commands must be recorded between these two calls.
+Begins and ends a render pass. A render pass defines the render target (e.g., the main window or a virtual display) and how its attachments (color, depth) should be handled. All drawing commands must be recorded between these two calls.
 ```c
 SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);
 void SituationCmdEndRenderPass(SituationCommandBuffer cmd);
 ```
 **Usage Example:**
 ```c
+// Define a render pass that clears the screen to a dark blue color.
 SituationRenderPassInfo pass_info = {
     .color_load_action = SIT_LOAD_ACTION_CLEAR,
-    .clear_color = {20, 30, 40, 255}, // Dark blue
+    .clear_color = {20, 30, 40, 255},
     .color_store_action = SIT_STORE_ACTION_STORE,
+    .virtual_display_id = -1 // Target the main window
 };
 SituationCmdBeginRenderPass(SituationGetMainCommandBuffer(), &pass_info);
-// ... draw calls ...
+
+// ... All your drawing commands for this pass go here ...
+
 SituationCmdEndRenderPass(SituationGetMainCommandBuffer());
 ```
 
@@ -2279,34 +2331,40 @@ printf("Primary monitor height: %d\n", primary_monitor_height);
 
 ---
 #### `SituationCmdSetViewport` / `SituationCmdSetScissor`
-Sets the dynamic viewport or scissor rectangle for the current render pass.
+Sets the dynamic viewport or scissor rectangle for the current render pass. The viewport transforms the normalized device coordinates to window coordinates, while the scissor rectangle discards fragments outside its bounds.
 ```c
 void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height);
 void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);
 ```
 **Usage Example:**
 ```c
-// Render to the left half of the screen
+// Render to the left half of the screen for a split-screen effect.
 int w = SituationGetRenderWidth();
 int h = SituationGetRenderHeight();
 SituationCmdSetViewport(SituationGetMainCommandBuffer(), 0, 0, w / 2.0f, h);
+SituationCmdSetScissor(SituationGetMainCommandBuffer(), 0, 0, w / 2, h);
 ```
 
 ---
 #### `SituationCmdBindPipeline`
-Binds a graphics pipeline (shader program) for subsequent draws.
+Binds a graphics pipeline (which includes the shader program and its state) for subsequent drawing commands. All draws following this call will use this pipeline until a new one is bound.
 ```c
 SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader);
 ```
 **Usage Example:**
 ```c
-SituationCmdBindPipeline(SituationGetMainCommandBuffer(), my_shader);
-SituationCmdDrawMesh(SituationGetMainCommandBuffer(), my_mesh);
+// Bind the main shader for drawing the 3D scene.
+SituationCmdBindPipeline(SituationGetMainCommandBuffer(), my_3d_shader);
+SituationCmdDrawMesh(SituationGetMainCommandBuffer(), my_scene_mesh);
+
+// Bind a different shader for drawing the UI.
+SituationCmdBindPipeline(SituationGetMainCommandBuffer(), my_ui_shader);
+SituationCmdDrawMesh(SituationGetMainCommandBuffer(), my_ui_mesh);
 ```
 
 ---
 #### `SituationCmdBindVertexBuffer`
-Binds a vertex buffer for subsequent draws.
+Binds a vertex buffer for subsequent drawing commands. The bound vertex buffer provides the vertex data (position, color, normals, etc.) for the draws that follow.
 ```c
 void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer);
 ```
@@ -2314,12 +2372,12 @@ void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, SituationBuffer bu
 ```c
 // Before drawing, bind the vertex buffer containing your model's vertices.
 SituationCmdBindVertexBuffer(cmd, my_model_vertex_buffer);
-SituationCmdDraw(cmd, 0, 36); // Draw 36 vertices
+SituationCmdDraw(cmd, 0, 36); // Draw 36 vertices from the bound buffer.
 ```
 
 ---
 #### `SituationCmdBindIndexBuffer`
-Binds an index buffer for subsequent indexed draws. An index buffer tells the GPU which vertices to use from the vertex buffer, allowing for reuse of vertices and more efficient rendering.
+Binds an index buffer for subsequent indexed drawing commands (`SituationCmdDrawIndexed`). An index buffer tells the GPU the order in which to draw vertices from the vertex buffer, allowing for the reuse of vertices and more efficient rendering of complex meshes.
 ```c
 void SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer);
 ```
@@ -2334,25 +2392,29 @@ SituationCmdDrawIndexed(cmd, 0, 36, 0);
 
 ---
 #### `SituationCmdBindShaderBuffer` / `SituationCmdBindShaderTexture`
-Binds a uniform/storage buffer or texture to a specific binding point for use in a shader.
+Binds a uniform/storage buffer or a texture to a specific binding point, making it accessible to the currently bound shader. The `binding` index corresponds to the `binding = N` layout qualifier in the GLSL shader code.
 ```c
 void SituationCmdBindShaderBuffer(SituationCommandBuffer cmd, int binding, SituationBuffer buffer);
 void SituationCmdBindShaderTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture);
 ```
 **Usage Example:**
 ```c
-// In GLSL: layout(binding = 0) uniform sampler2D u_albedo;
-// In C:
-SituationCmdBindShaderTexture(cmd, 0, my_albedo_texture);
+/* GLSL Shader Code:
+layout(binding = 0) uniform sampler2D u_albedo;
+layout(binding = 1) uniform SceneData {
+    mat4 view;
+    mat4 proj;
+} u_scene;
+*/
 
-// In GLSL: layout(binding = 1) uniform SceneData { mat4 view; mat4 proj; }; u_scene;
-// In C:
+// In C, bind the corresponding resources to the correct binding points:
+SituationCmdBindShaderTexture(cmd, 0, my_albedo_texture);
 SituationCmdBindShaderBuffer(cmd, 1, my_scene_ubo);
 ```
 
 ---
 #### `SituationCmdDraw` / `SituationCmdDrawIndexed`
-Records a non-indexed or indexed drawing command.
+Records a non-indexed or indexed drawing command into the command buffer. `SituationCmdDraw` draws vertices sequentially from the bound vertex buffer, while `SituationCmdDrawIndexed` uses the bound index buffer to determine the order of vertices.
 ```c
 void SituationCmdDraw(SituationCommandBuffer cmd, int first_vertex, int vertex_count);
 void SituationCmdDrawIndexed(SituationCommandBuffer cmd, int first_index, int index_count, int vertex_offset);
@@ -2362,33 +2424,41 @@ void SituationCmdDrawIndexed(SituationCommandBuffer cmd, int first_index, int in
 // Draw a mesh using previously bound vertex and index buffers.
 SituationCmdBindVertexBuffer(cmd, my_vbo);
 SituationCmdBindIndexBuffer(cmd, my_ibo);
-SituationCmdDrawIndexed(cmd, 0, 36, 0); // Draw 36 indices
+// Draw 36 indices, starting from the beginning of the index buffer.
+SituationCmdDrawIndexed(cmd, 0, 36, 0);
 ```
 
 ---
 #### `SituationCmdDrawMesh`
-Records a command to draw a complete, pre-configured mesh.
+A high-level drawing command that records a command to draw a complete, pre-configured `SituationMesh` object. This is often more convenient than binding vertex and index buffers manually.
 ```c
 SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh);
 ```
 **Usage Example:**
 ```c
+// Bind the shader you want to use for this mesh.
 SituationCmdBindPipeline(SituationGetMainCommandBuffer(), my_shader);
-// This mesh has its own vertex and index buffers.
+// The mesh object contains its own vertex and index buffers, which are automatically used.
 SituationCmdDrawMesh(SituationGetMainCommandBuffer(), my_complex_model_mesh);
 ```
 
 ---
 #### `SituationCmdDrawQuad`
-Records a command to draw a simple, colored, and transformed 2D quad using an internally managed mesh.
+Records a command to draw a simple, colored, and transformed 2D quad. This uses an internally managed quad mesh, so you don't need to create your own. It's useful for debug rendering, particles, or simple UI elements.
 ```c
 void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color);
 ```
 **Usage Example:**
 ```c
+// Create a transformation matrix to position and scale the quad.
 mat4 transform;
 glm_translate_make(transform, (vec3){100.0f, 200.0f, 0.0f});
-vec4 quad_color = {1.0f, 0.0f, 1.0f, 1.0f}; // Magenta
+glm_scale_uni(transform, 50.0f); // Make it 50x50 pixels
+
+// Define a color (in this case, magenta).
+vec4 quad_color = {1.0f, 0.0f, 1.0f, 1.0f};
+
+// Record the draw command.
 SituationCmdDrawQuad(SituationGetMainCommandBuffer(), transform, quad_color);
 ```
 
@@ -3052,30 +3122,38 @@ The input module allows you to register callback functions to be notified of inp
 #### Keyboard Input
 ---
 #### `SituationIsKeyDown` / `SituationIsKeyUp`
-Checks if a key is currently held down or up (a continuous state).
+Checks if a key is currently being held down or is up. This checks the *state* of the key and will return `true` for every frame the key is held. It is ideal for continuous actions like character movement.
 ```c
 bool SituationIsKeyDown(int key);
 bool SituationIsKeyUp(int key);
 ```
 **Usage Example:**
 ```c
-// For continuous movement
+// For continuous movement, check the key state every frame.
 if (SituationIsKeyDown(SIT_KEY_W)) {
     player.y -= PLAYER_SPEED * SituationGetFrameTime();
+}
+if (SituationIsKeyDown(SIT_KEY_S)) {
+    player.y += PLAYER_SPEED * SituationGetFrameTime();
 }
 ```
 ---
 #### `SituationIsKeyPressed` / `SituationIsKeyReleased`
-Checks if a key was pressed down or released this frame (a single-trigger event).
+Checks if a key was just pressed down or released in the current frame. This is a single-trigger *event* and will only return `true` for the exact frame the action occurred. It is ideal for discrete actions like jumping or opening a menu.
 ```c
 bool SituationIsKeyPressed(int key);
 bool SituationIsKeyReleased(int key);
 ```
 **Usage Example:**
 ```c
-// For discrete actions like jumping
+// For a discrete action like jumping, use the key pressed event.
 if (SituationIsKeyPressed(SIT_KEY_SPACE)) {
     player.velocity_y = JUMP_FORCE;
+}
+
+// Toggling a menu is another good use case for a single-trigger event.
+if (SituationIsKeyPressed(SIT_KEY_ESCAPE)) {
+    g_is_menu_open = !g_is_menu_open;
 }
 ```
 
@@ -3168,26 +3246,29 @@ if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_C)
 #### Mouse Input
 ---
 #### `SituationGetMousePosition` / `SituationGetMouseDelta`
-Gets the mouse position within the window, or the mouse movement since the last frame.
+Gets the mouse cursor position in screen coordinates, or the mouse movement since the last frame. `SituationGetMouseDelta` is particularly useful for implementing camera controls when the cursor is disabled.
 ```c
 vec2 SituationGetMousePosition(void);
 vec2 SituationGetMouseDelta(void);
 ```
 **Usage Example:**
 ```c
-vec2 mouse_pos = SituationGetMousePosition();
-vec2 mouse_delta = SituationGetMouseDelta();
-printf("Mouse at (%.f, %.f), moved by (%.f, %.f)\n", mouse_pos[0], mouse_pos[1], mouse_delta[0], mouse_delta[1]);
+// For a 3D camera, use the mouse delta to control pitch and yaw.
+if (IsCursorDisabled()) { // Assuming you have a check for this state
+    vec2 mouse_delta = SituationGetMouseDelta();
+    camera.yaw   += mouse_delta[0] * MOUSE_SENSITIVITY;
+    camera.pitch -= mouse_delta[1] * MOUSE_SENSITIVITY;
+}
 ```
 ---
 #### `SituationIsMouseButtonDown`
-Checks if a mouse button is currently held down (a continuous state).
+Checks if a mouse button is currently being held down. This is a *state* check and is suitable for continuous actions like dragging or aiming.
 ```c
 bool SituationIsMouseButtonDown(int button);
 ```
 **Usage Example:**
 ```c
-// Useful for continuous actions like aiming.
+// Useful for continuous actions like aiming down sights.
 if (SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_RIGHT)) {
     // Zoom in with weapon sights.
 }
@@ -3195,7 +3276,7 @@ if (SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_RIGHT)) {
 
 ---
 #### `SituationIsMouseButtonPressed`
-Checks if a mouse button was pressed down this frame (a single-trigger event).
+Checks if a mouse button was just pressed down in the current frame. This is a single-trigger *event*, ideal for discrete actions like clicking a button or firing a weapon.
 ```c
 bool SituationIsMouseButtonPressed(int button);
 ```
@@ -3203,7 +3284,7 @@ bool SituationIsMouseButtonPressed(int button);
 ```c
 // Ideal for discrete actions like firing a weapon.
 if (SituationIsMouseButtonPressed(SIT_MOUSE_BUTTON_LEFT)) {
-    // Fire projectile.
+    FireProjectile();
 }
 ```
 
@@ -3545,14 +3626,14 @@ Specifies the type of filter to apply to a sound.
 #### Audio Device Management
 ---
 #### `SituationIsAudioDeviceReady`
-Checks if the audio device has been successfully initialized.
+Checks if the audio device has been successfully initialized via `SituationInit`.
 ```c
 bool SituationIsAudioDeviceReady(void);
 ```
 
 ---
 #### `SituationGetAudioDevices`
-Enumerates all available audio playback devices on the system.
+Enumerates all available audio playback devices on the system. This is useful for providing the user with a choice of audio output devices.
 ```c
 SituationAudioDeviceInfo* SituationGetAudioDevices(int* count);
 ```
@@ -3560,15 +3641,16 @@ SituationAudioDeviceInfo* SituationGetAudioDevices(int* count);
 ```c
 int device_count;
 SituationAudioDeviceInfo* devices = SituationGetAudioDevices(&device_count);
+printf("Available Audio Devices:\n");
 for (int i = 0; i < device_count; i++) {
-    printf("Device %d: %s %s\n", i, devices[i].name, devices[i].is_default ? "(Default)" : "");
+    printf("- %s %s\n", devices[i].name, devices[i].is_default ? "(Default)" : "");
 }
-// Note: The returned array's memory is managed by the library.
+// Note: The returned array's memory is managed by the library and should not be freed.
 ```
 
 ---
 #### `SituationSetAudioDevice`
-Sets the active audio playback device by its ID.
+Sets the active audio playback device by its ID. This should be called before loading any sounds.
 ```c
 SituationError SituationSetAudioDevice(int device_id);
 ```
@@ -3591,22 +3673,28 @@ SituationError SituationResumeAudioContext(void);
 #### Sound Loading and Management
 ---
 #### `SituationLoadSoundFromFile` / `SituationUnloadSound`
-Loads a sound from a file (WAV, MP3, OGG, FLAC) into memory, and later unloads it.
+Loads a sound from a file (WAV, MP3, OGG, FLAC) entirely into memory for low-latency playback. This is ideal for sound effects. `SituationUnloadSound` frees the sound's memory.
 ```c
 SituationError SituationLoadSoundFromFile(const char* file_path, bool looping, SituationSound* out_sound);
 void SituationUnloadSound(SituationSound* sound);
 ```
 **Usage Example:**
 ```c
-SituationSound jump_sound;
 // At init:
+SituationSound jump_sound;
 SituationLoadSoundFromFile("sounds/jump.wav", false, &jump_sound);
+
+// During gameplay:
+if (SituationIsKeyPressed(SIT_KEY_SPACE)) {
+    SituationPlayLoadedSound(&jump_sound);
+}
+
 // At shutdown:
 SituationUnloadSound(&jump_sound);
 ```
 ---
 #### `SituationLoadSoundFromStream`
-Initializes a sound for playback from a custom, user-defined data stream. Ideal for large music files.
+Initializes a sound for playback by streaming it from a custom data source. This is highly memory-efficient and is the preferred method for long music tracks. You provide callbacks to read and seek in your custom data stream.
 ```c
 SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound);
 ```
@@ -3908,13 +3996,13 @@ SituationPlayLoadedSound(&my_sound);
 #### Path Management & Special Directories
 ---
 #### `SituationGetBasePath`
-Gets the path to the directory containing the executable. Ideal for locating asset files.
+Gets the full, absolute path to the directory containing the application's executable. This is the recommended way to locate asset files, as it is not affected by the working directory. The returned string must be freed with `SituationFreeString`.
 ```c
 char* SituationGetBasePath(void);
 ```
 ---
 #### `SituationGetAppSavePath`
-Gets a safe, persistent path for saving application data (e.g., `%APPDATA%/AppName`).
+Gets a platform-appropriate, user-specific directory for saving configuration files, save games, and other user data. For example, on Windows, this typically resolves to `%APPDATA%/YourAppName`. The returned string must be freed with `SituationFreeString`.
 ```c
 char* SituationGetAppSavePath(const char* app_name);
 ```
@@ -3922,7 +4010,10 @@ char* SituationGetAppSavePath(const char* app_name);
 ```c
 char* save_path = SituationGetAppSavePath("MyCoolGame");
 if (save_path) {
-    printf("Saving config to: %s\n", save_path);
+    char* config_file_path = SituationJoinPath(save_path, "config.ini");
+    printf("Saving config to: %s\n", config_file_path);
+    // ... save file ...
+    SituationFreeString(config_file_path);
     SituationFreeString(save_path);
 }
 ```
@@ -3997,22 +4088,23 @@ if (SituationIsFileExtension("my_archive.ZIP", ".zip")) {
 
 ---
 #### `SituationFileExists`
-Checks if a file exists at the given path.
+Checks if a file exists at the given path and is accessible.
 ```c
 bool SituationFileExists(const char* file_path);
 ```
 **Usage Example:**
 ```c
+// Before attempting to load a file, check if it exists.
 if (SituationFileExists("settings.ini")) {
-    // Load settings from the file.
+    LoadSettingsFromFile("settings.ini");
 } else {
-    // Create a default settings file.
+    CreateDefaultSettings();
 }
 ```
 
 ---
 #### `SituationDirectoryExists`
-Checks if a directory exists at the given path.
+Checks if a directory exists at the given path and is accessible.
 ```c
 bool SituationDirectoryExists(const char* dir_path);
 ```
@@ -4026,30 +4118,35 @@ if (SituationDirectoryExists("save_games")) {
 
 ---
 #### `SituationIsPathFile`
-Checks if a path is a file.
+Checks if a given path points to a file.
 ```c
 bool SituationIsPathFile(const char* path);
 ```
 **Usage Example:**
 ```c
-if (SituationIsPathFile("assets/player.png")) {
-    // It's a file
-} else if (SituationDirectoryExists("assets")) {
-    // It's a directory
+// Differentiate between a file and a directory.
+const char* path = "assets/player.png";
+if (SituationIsPathFile(path)) {
+    printf("%s is a file.\n", path);
+} else if (SituationDirectoryExists(path)) {
+    printf("%s is a directory.\n", path);
 }
 ```
 ---
 #### `SituationGetFileModTime`
-Gets the last modification time of a file.
+Gets the last modification time of a file, returned as a Unix timestamp. Returns `-1` if the file does not exist. This is useful for hot-reloading assets.
 ```c
 long SituationGetFileModTime(const char* file_path);
 ```
 **Usage Example:**
 ```c
-// Check if a config file is newer than the cached version.
-long mod_time = SituationGetFileModTime("config.json");
-if (mod_time > g_last_config_load_time) {
-    // Reload config file.
+// In the update loop, check if a shader file has changed.
+long mod_time = SituationGetFileModTime("shaders/main.frag");
+if (mod_time > g_last_shader_load_time) {
+    // Reload the shader.
+    SituationUnloadShader(&g_main_shader);
+    g_main_shader = SituationLoadShader("shaders/main.vert", "shaders/main.frag");
+    g_last_shader_load_time = mod_time;
 }
 ```
 ---
@@ -4260,26 +4357,26 @@ SituationFreeDirectoryFileList(files, file_count);
 #### Temporal Oscillator System
 ---
 #### `SituationTimerHasOscillatorUpdated`
-Checks if an oscillator's state has changed this frame. This is a single-frame trigger, ideal for synchronizing events to a beat.
+Checks if an oscillator has just completed a cycle in the current frame. This is a single-frame trigger, ideal for synchronizing events to a rhythmic beat.
 ```c
 bool SituationTimerHasOscillatorUpdated(int oscillator_id);
 ```
 **Usage Example:**
 ```c
-// In Init, create an oscillator with a 0.5s period (120 BPM)
+// In Init, create an oscillator with a 0.5s period (120 BPM).
 double period = 0.5;
 init_info.oscillator_count = 1;
 init_info.oscillator_periods = &period;
 
-// In Update loop
+// In the Update loop, check for the beat.
 if (SituationTimerHasOscillatorUpdated(0)) {
     printf("Beat!\n");
-    // Play a drum sound, flash a light, etc.
+    // Play a drum sound, flash a light, or trigger a game event.
 }
 ```
 ---
 #### `SituationSetTimerOscillatorPeriod`
-Sets a new period for an oscillator at runtime.
+Sets a new period for an oscillator at runtime, allowing you to change the tempo of rhythmic events dynamically.
 ```c
 SituationError SituationSetTimerOscillatorPeriod(int oscillator_id, double period_seconds);
 ```
@@ -4433,7 +4530,7 @@ void SituationFreeDirectoryFileList(char** files, int count);
 
 ---
 #### `SituationLog`
-Prints a log message with a specified type (e.g., INFO, WARNING, ERROR). It uses a `printf`-style format string.
+Prints a formatted log message to the console with a specified log level (e.g., `SIT_LOG_INFO`, `SIT_LOG_WARNING`, `SIT_LOG_ERROR`). It uses a `printf`-style format string.
 ```c
 void SituationLog(int msgType, const char* text, ...);
 ```
@@ -4443,7 +4540,7 @@ int score = 100;
 // Logs an informational message.
 SituationLog(SIT_LOG_INFO, "Player reached a score of %d", score);
 
-// Logs a warning.
+// Logs a warning if a value is unexpected.
 if (score > 9000) {
     SituationLog(SIT_LOG_WARNING, "Score is over 9000!");
 }
@@ -4451,7 +4548,7 @@ if (score > 9000) {
 
 ---
 #### `SituationSetTraceLogLevel`
-Sets the minimum log level to be displayed. Any message with a lower severity will be ignored.
+Sets the minimum log level to be displayed. Any message with a lower severity will be ignored. For example, setting the level to `SIT_LOG_WARNING` will show warnings, errors, and fatal messages, but hide info, debug, and trace messages.
 ```c
 void SituationSetTraceLogLevel(int logType);
 ```
@@ -4461,6 +4558,8 @@ void SituationSetTraceLogLevel(int logType);
 SituationSetTraceLogLevel(SIT_LOG_ALL);
 
 // For a release build, only show warnings and errors to reduce noise.
-SituationSetTraceLogLevel(SIT_LOG_WARNING);
+#ifdef NDEBUG
+    SituationSetTraceLogLevel(SIT_LOG_WARNING);
+#endif
 ```
 </details>
