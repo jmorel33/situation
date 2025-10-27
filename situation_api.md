@@ -14,6 +14,7 @@
   - [Audio Module](#audio-module)
   - [Filesystem Module](#filesystem-module)
   - [Miscellaneous Module](#miscellaneous-module)
+  - [Logging Module](#logging-module)
 
 ---
 
@@ -174,6 +175,60 @@ After the main loop finishes, it is critical to call `SituationShutdown()` to cl
 }
 ```
 
+---
+#### `SituationUnloadDroppedFiles`
+Unloads the file paths list loaded by `SituationLoadDroppedFiles`.
+```c
+void SituationUnloadDroppedFiles(char** files, int count);
+```
+**Usage Example:**
+```c
+// In the update loop
+if (SituationIsFileDropped()) {
+    int file_count;
+    char** files = SituationLoadDroppedFiles(&file_count);
+    for (int i = 0; i < file_count; i++) {
+        printf("Dropped file: %s\n", files[i]);
+    }
+    // IMPORTANT: Always free the memory after you're done with the file list.
+    SituationUnloadDroppedFiles(files, file_count);
+}
+```
+
+---
+#### `SituationSetWindowMonitor`
+Sets the monitor that the window should be on. This is useful for multi-monitor setups.
+```c
+void SituationSetWindowMonitor(int monitor);
+```
+**Usage Example:**
+```c
+// Get the number of connected monitors
+int monitor_count;
+SituationGetDisplays(&monitor_count);
+
+// If there is a second monitor, move the window to it.
+if (monitor_count > 1) {
+    SituationSetWindowMonitor(1); // Monitor indices are 0-based
+}
+```
+
+---
+#### `SituationGetWindowHandle`
+Gets the native, platform-specific window handle.
+```c
+void* SituationGetWindowHandle(void);
+```
+**Usage Example:**
+```c
+// On Windows, this would return an HWND. On macOS, an NSWindow*.
+// This is useful for interoperability with other libraries.
+void* native_handle = SituationGetWindowHandle();
+if (native_handle) {
+    // Pass the handle to a library that needs it, e.g., an external UI toolkit.
+}
+```
+
 ### Full Example Code
 
 ```c
@@ -222,74 +277,7 @@ int main(int argc, char** argv) {
 ```
 
 ---
-#### Legacy Shader Uniforms
 ---
-#### `SituationSetShaderValue`
-Sets a uniform value in a shader.
-```c
-void SituationSetShaderValue(SituationShader shader, int locIndex, const void* value, int uniformType);
-```
-**Usage Example:**
-```c
-int time_loc = SituationGetShaderLocation(my_shader, "u_time");
-float current_time = (float)SituationGetTime();
-// Note: This is a legacy way to set uniforms. Using UBOs with SituationCmdBindShaderBuffer is preferred.
-SituationSetShaderValue(my_shader, time_loc, &current_time, SIT_UNIFORM_FLOAT);
-```
-
----
-#### `SituationSetShaderValueMatrix`
-Sets a matrix uniform value in a shader.
-```c
-void SituationSetShaderValueMatrix(SituationShader shader, int locIndex, mat4 mat);
-```
-**Usage Example:**
-```c
-int mvp_loc = SituationGetShaderLocation(my_shader, "u_mvp");
-mat4 mvp_matrix = /* ... calculate matrix ... */;
-SituationSetShaderValueMatrix(my_shader, mvp_loc, mvp_matrix);
-```
-
----
-#### `SituationSetShaderValueTexture`
-Sets a texture uniform value in a shader.
-```c
-void SituationSetShaderValueTexture(SituationShader shader, int locIndex, SituationTexture texture);
-```
-**Usage Example:**
-```c
-int albedo_loc = SituationGetShaderLocation(my_shader, "u_albedo_texture");
-// This tells the shader to use my_texture for the texture sampler at `albedo_loc`.
-SituationSetShaderValueTexture(my_shader, albedo_loc, my_texture);
-```
-
----
-#### Logging
----
-#### `SituationLog`
-Prints a log message.
-```c
-void SituationLog(int msgType, const char* text, ...);
-```
-**Usage Example:**
-```c
-int score = 100;
-SituationLog(SIT_LOG_INFO, "Player reached a score of %d", score);
-```
-
----
-#### `SituationSetTraceLogLevel`
-Sets the current threshold for trace log messages.
-```c
-void SituationSetTraceLogLevel(int logType);
-```
-**Usage Example:**
-```c
-// Show all logs including debug and trace messages
-SituationSetTraceLogLevel(SIT_LOG_ALL);
-// Later, reduce verbosity to only show warnings and errors
-SituationSetTraceLogLevel(SIT_LOG_WARNING);
-```
 </details>
 
 ---
@@ -1777,6 +1765,74 @@ SituationCmdEndRenderPass(cmd);
 ```
 
 ---
+#### Legacy Shader Uniforms
+---
+#### `SituationGetShaderLocation`
+Gets the location of a uniform variable in a shader by name.
+```c
+int SituationGetShaderLocation(SituationShader shader, const char* uniformName);
+```
+**Usage Example:**
+```c
+// Get the location of the "u_time" uniform in the shader.
+int time_uniform_loc = SituationGetShaderLocation(my_shader, "u_time");
+// This location can then be used with SituationSetShaderValue.
+```
+
+---
+#### `SituationGetShaderLocationAttrib`
+Gets the location of a vertex attribute in a shader by name.
+```c
+int SituationGetShaderLocationAttrib(SituationShader shader, const char* attribName);
+```
+**Usage Example:**
+```c
+// Get the location of the "a_color" vertex attribute.
+int color_attrib_loc = SituationGetShaderLocationAttrib(my_shader, "a_color");
+// This is useful for advanced, custom vertex buffer layouts.
+```
+
+---
+#### `SituationSetShaderValue`
+Sets a uniform value in a shader.
+```c
+void SituationSetShaderValue(SituationShader shader, int locIndex, const void* value, int uniformType);
+```
+**Usage Example:**
+```c
+int time_loc = SituationGetShaderLocation(my_shader, "u_time");
+float current_time = (float)SituationGetTime();
+// Note: This is a legacy way to set uniforms. Using UBOs with SituationCmdBindShaderBuffer is preferred.
+SituationSetShaderValue(my_shader, time_loc, &current_time, SIT_UNIFORM_FLOAT);
+```
+
+---
+#### `SituationSetShaderValueMatrix`
+Sets a matrix uniform value in a shader.
+```c
+void SituationSetShaderValueMatrix(SituationShader shader, int locIndex, mat4 mat);
+```
+**Usage Example:**
+```c
+int mvp_loc = SituationGetShaderLocation(my_shader, "u_mvp");
+mat4 mvp_matrix = /* ... calculate matrix ... */;
+SituationSetShaderValueMatrix(my_shader, mvp_loc, mvp_matrix);
+```
+
+---
+#### `SituationSetShaderValueTexture`
+Sets a texture uniform value in a shader.
+```c
+void SituationSetShaderValueTexture(SituationShader shader, int locIndex, SituationTexture texture);
+```
+**Usage Example:**
+```c
+int albedo_loc = SituationGetShaderLocation(my_shader, "u_albedo_texture");
+// This tells the shader to use my_texture for the texture sampler at `albedo_loc`.
+SituationSetShaderValueTexture(my_shader, albedo_loc, my_texture);
+```
+
+---
 #### Miscellaneous
 
 ---
@@ -2516,10 +2572,17 @@ float scale = 1.0f + (float)pulse * 0.2f;
 
 ---
 #### `SituationTimerGetTime`
-Gets the total time elapsed in seconds since `SituationInit()` was called.
+`double SituationTimerGetTime(void);`
+Gets the total time elapsed since the library was initialized. This function returns the master application time, updated once per frame by `SituationUpdateTimers()`. It serves as the high-resolution monotonic clock for the entire application and is the basis for all other timing functions, including the Temporal Oscillator system.
+
+**Usage Example:**
 ```c
-double SituationTimerGetTime(void);
+// Get the total elapsed time to drive a procedural animation.
+double totalTime = SituationTimerGetTime();
+float pulse = sinf((float)totalTime * 2.0f); // A simple pulsing effect over time.
+// Use 'pulse' to modify an object's color, size, etc.
 ```
+
 ---
 #### Color Space Conversions
 ---
@@ -2562,5 +2625,45 @@ void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 Frees the memory for the list of file paths returned by `SituationListDirectoryFiles`.
 ```c
 void SituationFreeDirectoryFileList(char** files, int count);
+```
+</details>
+<details>
+<summary><h3>Logging Module</h3></summary>
+
+**Overview:** This module provides simple and direct functions for logging messages to the console. It allows for different log levels, enabling you to control the verbosity of the output for debugging and informational purposes.
+
+### Functions
+
+---
+#### `SituationLog`
+Prints a log message with a specified type (e.g., INFO, WARNING, ERROR). It uses a `printf`-style format string.
+```c
+void SituationLog(int msgType, const char* text, ...);
+```
+**Usage Example:**
+```c
+int score = 100;
+// Logs an informational message.
+SituationLog(SIT_LOG_INFO, "Player reached a score of %d", score);
+
+// Logs a warning.
+if (score > 9000) {
+    SituationLog(SIT_LOG_WARNING, "Score is over 9000!");
+}
+```
+
+---
+#### `SituationSetTraceLogLevel`
+Sets the minimum log level to be displayed. Any message with a lower severity will be ignored.
+```c
+void SituationSetTraceLogLevel(int logType);
+```
+**Usage Example:**
+```c
+// During development, show all log messages for detailed debugging.
+SituationSetTraceLogLevel(SIT_LOG_ALL);
+
+// For a release build, only show warnings and errors to reduce noise.
+SituationSetTraceLogLevel(SIT_LOG_WARNING);
 ```
 </details>
