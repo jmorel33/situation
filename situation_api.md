@@ -3081,6 +3081,144 @@ void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_bits);
 
 **Overview:** The Input module provides a flexible interface for handling user input from keyboards, mice, and gamepads. It supports both state polling (e.g., `SituationIsKeyDown()`) for continuous actions and event-driven callbacks (e.g., `SituationSetKeyCallback()`) for discrete events.
 
+### Key Codes
+The library defines a comprehensive set of key codes for use with keyboard input functions.
+
+| Key Code | Value | Description |
+|---|---|---|
+| `SIT_KEY_SPACE` | 32 | Spacebar |
+| `SIT_KEY_APOSTROPHE` | 39 | ' |
+| `SIT_KEY_COMMA` | 44 | , |
+| `SIT_KEY_MINUS` | 45 | - |
+| `SIT_KEY_PERIOD` | 46 | . |
+| `SIT_KEY_SLASH` | 47 | / |
+| `SIT_KEY_0` | 48 | 0 |
+| `SIT_KEY_1` | 49 | 1 |
+| `SIT_KEY_2` | 50 | 2 |
+| `SIT_KEY_3` | 51 | 3 |
+| `SIT_KEY_4` | 52 | 4 |
+| `SIT_KEY_5` | 53 | 5 |
+| `SIT_KEY_6` | 54 | 6 |
+| `SIT_KEY_7` | 55 | 7 |
+| `SIT_KEY_8` | 56 | 8 |
+| `SIT_KEY_9` | 57 | 9 |
+| `SIT_KEY_SEMICOLON` | 59 | ; |
+| `SIT_KEY_EQUAL` | 61 | = |
+| `SIT_KEY_A` | 65 | A |
+| `SIT_KEY_B` | 66 | B |
+| `SIT_KEY_C` | 67 | C |
+| `SIT_KEY_D` | 68 | D |
+| `SIT_KEY_E` | 69 | E |
+| `SIT_KEY_F` | 70 | F |
+| `SIT_KEY_G` | 71 | G |
+| `SIT_KEY_H` | 72 | H |
+| `SIT_KEY_I` | 73 | I |
+| `SIT_KEY_J` | 74 | J |
+| `SIT_KEY_K` | 75 | K |
+| `SIT_KEY_L` | 76 | L |
+| `SIT_KEY_M` | 77 | M |
+| `SIT_KEY_N` | 78 | N |
+| `SIT_KEY_O` | 79 | O |
+| `SIT_KEY_P` | 80 | P |
+| `SIT_KEY_Q` | 81 | Q |
+| `SIT_KEY_R` | 82 | R |
+| `SIT_KEY_S` | 83 | S |
+| `SIT_KEY_T` | 84 | T |
+| `SIT_KEY_U` | 85 | U |
+| `SIT_KEY_V` | 86 | V |
+| `SIT_KEY_W` | 87 | W |
+| `SIT_KEY_X` | 88 | X |
+| `SIT_KEY_Y` | 89 | Y |
+| `SIT_KEY_Z` | 90 | Z |
+| `SIT_KEY_LEFT_BRACKET` | 91 | [ |
+| `SIT_KEY_BACKSLASH` | 92 | \ |
+| `SIT_KEY_RIGHT_BRACKET` | 93 | ] |
+| `SIT_KEY_GRAVE_ACCENT` | 96 | ` |
+| `SIT_KEY_WORLD_1` | 161 | non-US #1 |
+| `SIT_KEY_WORLD_2` | 162 | non-US #2 |
+| `SIT_KEY_ESCAPE` | 256 | Escape |
+| `SIT_KEY_ENTER` | 257 | Enter |
+| `SIT_KEY_TAB` | 258 | Tab |
+| `SIT_KEY_BACKSPACE` | 259 | Backspace |
+| `SIT_KEY_INSERT` | 260 | Insert |
+| `SIT_KEY_DELETE` | 261 | Delete |
+| `SIT_KEY_RIGHT` | 262 | Right Arrow |
+| `SIT_KEY_LEFT` | 263 | Left Arrow |
+| `SIT_KEY_DOWN` | 264 | Down Arrow |
+| `SIT_KEY_UP` | 265 | Up Arrow |
+| `SIT_KEY_PAGE_UP` | 266 | Page Up |
+| `SIT_KEY_PAGE_DOWN` | 267 | Page Down |
+| `SIT_KEY_HOME` | 268 | Home |
+| `SIT_KEY_END` | 269 | End |
+| `SIT_KEY_CAPS_LOCK` | 280 | Caps Lock |
+| `SIT_KEY_SCROLL_LOCK` | 281 | Scroll Lock |
+| `SIT_KEY_NUM_LOCK` | 282 | Num Lock |
+| `SIT_KEY_PRINT_SCREEN` | 283 | Print Screen |
+| `SIT_KEY_PAUSE` | 284 | Pause |
+| `SIT_KEY_F1` | 290 | F1 |
+| `SIT_KEY_F2` | 291 | F2 |
+| `SIT_KEY_F3` | 292 | F3 |
+| `SIT_KEY_F4` | 293 | F4 |
+| `SIT_KEY_F5` | 294 | F5 |
+| `SIT_KEY_F6` | 295 | F6 |
+| `SIT_KEY_F7` | 296 | F7 |
+| `SIT_KEY_F8` | 297 | F8 |
+| `SIT_KEY_F9` | 298 | F9 |
+| `SIT_KEY_F10` | 299 | F10 |
+| `SIT_KEY_F11` | 300 | F11 |
+| `SIT_KEY_F12` | 301 | F12 |
+| `SIT_KEY_F13` | 302 | F13 |
+| `SIT_KEY_F14` | 303 | F14 |
+| `SIT_KEY_F15` | 304 | F15 |
+| `SIT_KEY_F16` | 305 | F16 |
+| `SIT_KEY_F17` | 306 | F17 |
+| `SIT_KEY_F18` | 307 | F18 |
+| `SIT_KEY_F19` | 308 | F19 |
+| `SIT_KEY_F20` | 309 | F20 |
+| `SIT_KEY_F21` | 310 | F21 |
+| `SIT_KEY_F22` | 311 | F22 |
+| `SIT_KEY_F23` | 312 | F23 |
+| `SIT_KEY_F24` | 313 | F24 |
+| `SIT_KEY_F25` | 314 | F25 |
+| `SIT_KEY_KP_0` | 320 | Keypad 0 |
+| `SIT_KEY_KP_1` | 321 | Keypad 1 |
+| `SIT_KEY_KP_2` | 322 | Keypad 2 |
+| `SIT_KEY_KP_3` | 323 | Keypad 3 |
+| `SIT_KEY_KP_4` | 324 | Keypad 4 |
+| `SIT_KEY_KP_5` | 325 | Keypad 5 |
+| `SIT_KEY_KP_6` | 326 | Keypad 6 |
+| `SIT_KEY_KP_7` | 327 | Keypad 7 |
+| `SIT_KEY_KP_8` | 328 | Keypad 8 |
+| `SIT_KEY_KP_9` | 329 | Keypad 9 |
+| `SIT_KEY_KP_DECIMAL` | 330 | Keypad . |
+| `SIT_KEY_KP_DIVIDE` | 331 | Keypad / |
+| `SIT_KEY_KP_MULTIPLY` | 332 | Keypad * |
+| `SIT_KEY_KP_SUBTRACT` | 333 | Keypad - |
+| `SIT_KEY_KP_ADD` | 334 | Keypad + |
+| `SIT_KEY_KP_ENTER` | 335 | Keypad Enter |
+| `SIT_KEY_KP_EQUAL` | 336 | Keypad = |
+| `SIT_KEY_LEFT_SHIFT` | 340 | Left Shift |
+| `SIT_KEY_LEFT_CONTROL` | 341 | Left Control |
+| `SIT_KEY_LEFT_ALT` | 342 | Left Alt |
+| `SIT_KEY_LEFT_SUPER` | 343 | Left Super/Windows/Command |
+| `SIT_KEY_RIGHT_SHIFT` | 344 | Right Shift |
+| `SIT_KEY_RIGHT_CONTROL` | 345 | Right Control |
+| `SIT_KEY_RIGHT_ALT` | 346 | Right Alt |
+| `SIT_KEY_RIGHT_SUPER` | 347 | Right Super/Windows/Command |
+| `SIT_KEY_MENU` | 348 | Menu |
+
+### Modifier Bitmasks
+These bitmasks are used in callback functions to check for modifier key states.
+
+| Bitmask | Value |
+|---|---|
+| `SIT_MOD_SHIFT` | 0x0001 |
+| `SIT_MOD_CONTROL` | 0x0002 |
+| `SIT_MOD_ALT` | 0x0004 |
+| `SIT_MOD_SUPER` | 0x0008 |
+| `SIT_MOD_CAPS_LOCK` | 0x0010 |
+| `SIT_MOD_NUM_LOCK` | 0x0020 |
+
 ### Callbacks
 The input module allows you to register callback functions to be notified of input events as they happen, as an alternative to polling for state each frame.
 
