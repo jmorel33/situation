@@ -2021,6 +2021,56 @@ Draws a text string with advanced styling (rotation, outline) onto an image.
 void SituationImageDrawTextEx(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness);
 ```
 
+---
+
+#### `SituationImageDraw`
+Draws a source image onto a destination image.
+```c
+SITAPI void SituationImageDraw(SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos);
+```
+**Usage Example:**
+```c
+SituationImage canvas = SituationGenImageColor(256, 26, (ColorRGBA){255, 255, 255, 255});
+SituationImage sprite = SituationLoadImage("assets/sprite.png");
+Rectangle sprite_rect = { .x = 0, .y = 0, .width = 16, .height = 16 };
+Vector2 position = { .x = 120, .y = 120 };
+SituationImageDraw(&canvas, sprite, sprite_rect, position);
+SituationUnloadImage(sprite);
+// ... use canvas ...
+SituationUnloadImage(canvas);
+```
+
+---
+
+#### `SituationGenImageGradient`
+Generates an image with a linear gradient.
+```c
+SITAPI SituationImage SituationGenImageGradient(int width, int height, ColorRGBA tl, ColorRGBA tr, ColorRGBA bl, ColorRGBA br);
+```
+**Usage Example:**
+```c
+// Create a vertical gradient from red to black
+SituationImage background = SituationGenImageGradient(1280, 720, (ColorRGBA){255,0,0,255}, (ColorRGBA){255,0,0,255}, (ColorRGBA){0,0,0,255}, (ColorRGBA){0,0,0,255});
+// ... use background ...
+SituationUnloadImage(background);
+```
+
+---
+
+#### `SituationMeasureText`
+Measures the dimensions of a string of text if it were to be rendered with a specific font and size.
+```c
+SITAPI Rectangle SituationMeasureText(SituationFont font, const char *text, float fontSize);
+```
+**Usage Example:**
+```c
+const char* button_text = "Click Me!";
+SituationFont my_font = SituationLoadFont("fonts/my_font.ttf");
+Rectangle text_bounds = SituationMeasureText(my_font, button_text, 20);
+// Now you can create a button rectangle that perfectly fits the text.
+Rectangle button_rect = { .x = 100, .y = 100, .width = text_bounds.width + 20, .height = text_bounds.height + 10 };
+SituationUnloadFont(my_font);
+```
 </details>
 <details>
 <summary><h3>Graphics Module</h3></summary>
@@ -3339,6 +3389,19 @@ Sets gamepad vibration/rumble (Windows only).
 void SituationSetGamepadVibration(int jid, float left_motor, float right_motor);
 ```
 
+---
+
+#### `SituationSetMousePosition`
+Sets the mouse cursor position within the window.
+```c
+SITAPI void SituationSetMousePosition(Vector2 pos);
+```
+**Usage Example:**
+```c
+// Center the mouse cursor in a 1280x720 window
+Vector2 center = { .x = 1280 / 2.0f, .y = 720 / 2.0f };
+SituationSetMousePosition(center);
+```
 </details>
 <details>
 <summary><h3>Audio Module</h3></summary>
@@ -3715,6 +3778,38 @@ Unloads a sound and frees its resources.
 void SituationUnloadSound(SituationSound* sound);
 ```
 
+---
+
+#### `SituationSetAudioDevice`
+Sets the active audio playback device by its ID and format.
+```c
+SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const SituationAudioFormat* format);
+```
+**Usage Example:**
+```c
+int device_count;
+SituationAudioDeviceInfo* devices = SituationGetAudioDevices(&device_count);
+if (device_count > 0) {
+    SituationAudioFormat format = { .channels = 2, .sample_rate = 44100, .bit_depth = 16 };
+    SituationSetAudioDevice(devices[0].internal_id, &format);
+}
+```
+
+---
+
+#### `SituationSetSoundReverb`
+Applies a reverb effect to a sound.
+```c
+SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix);
+```
+**Usage Example:**
+```c
+SituationSound my_sound;
+SituationLoadSoundFromFile("sounds/footstep.wav", false, &my_sound);
+// Apply a reverb to simulate a large room
+SituationSetSoundReverb(&my_sound, true, 0.8f, 0.5f, 0.6f, 0.4f);
+SituationPlayLoadedSound(&my_sound);
+```
 </details>
 <details>
 <summary><h3>Filesystem Module</h3></summary>
@@ -3992,6 +4087,22 @@ Deletes a directory, optionally deleting all its contents.
 bool SituationDeleteDirectory(const char* dir_path, bool recursive);
 ```
 
+---
+
+#### `SituationFreeDirectoryFileList`
+Frees the memory for the list of file paths returned by `SituationListDirectoryFiles`.
+```c
+SITAPI void SituationFreeDirectoryFileList(char** files, int count);
+```
+**Usage Example:**
+```c
+int file_count = 0;
+char** files = SituationListDirectoryFiles("assets", &file_count);
+for (int i = 0; i < file_count; ++i) {
+    printf("Found file: %s\n", files[i]);
+}
+SituationFreeDirectoryFileList(files, file_count);
+```
 </details>
 <details>
 <summary><h3>Miscellaneous Module</h3></summary>
