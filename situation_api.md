@@ -99,6 +99,83 @@ This is a high-level timing utility for creating rhythmic, periodic events. You 
 ---
 
 <details>
+<summary><h2>Building the Library</h2></summary>
+
+### 2.1 Integration Models (Header-Only vs. Shared Library)
+**A) Header-Only:**
+- Add `situation.h` to your project.
+- In *one* C/C++ source file (e.g., `sit_lib.c`), define `SITUATION_IMPLEMENTATION` *before* including `situation.h`.
+```c
+#define SITUATION_IMPLEMENTATION
+#include "situation.h"
+```
+- Compile this source file with your project.
+
+**B) Shared Library (DLL):**
+- Create a separate source file (e.g., `sit_dll.c`).
+- Define `SITUATION_IMPLEMENTATION` and `SITUATION_BUILD_SHARED`.
+```c
+#define SITUATION_IMPLEMENTATION
+#define SITUATION_BUILD_SHARED
+#include "situation.h"
+```
+- Compile this into a shared library (DLL/.so).
+- In your main application, define `SITUATION_USE_SHARED` and include `situation.h`.
+```c
+#define SITUATION_USE_SHARED
+#include "situation.h"
+```
+- Link your application against the generated library.
+
+### 2.2 Project Structure Recommendations
+```
+your_project/
+├── src/
+│   ├── main.c              // Your application entry point
+│   └── (other .c files)    // Your application logic
+├── lib/
+│   └── situation.h         // This library header
+├── ext/                    // External dependencies (if not system-installed)
+│   ├── glad/               // For OpenGL (if SITUATION_USE_OPENGL)
+│   │   ├── glad.c
+│   │   └── glad.h
+│   ├── cglm/               // For math (if used)
+│   │   └── ...             // cglm headers
+│   ├── stb/                // For image loading (stb_image.h, etc.)
+│   │   └── ...             // stb headers (define STB_IMAGE_IMPLEMENTATION in one .c file)
+│   └── miniaudio/          // Audio library (miniaudio.h)
+│       └── miniaudio.h     // (define MINIAUDIO_IMPLEMENTATION in one .c file)
+├── assets/                 // Your application's assets
+│   ├── models/
+│   │   └── cube.obj
+│   ├── textures/
+│   │   └── diffuse.png
+│   ├── shaders/
+│   │   ├── basic.vert
+│   │   ├── basic.frag
+│   │   └── compute_filter.comp
+│   └── audio/
+│       └── background_music.wav
+└── build/                  // Build output directory
+```
+
+### 2.3 Compilation Requirements & Dependencies
+- A C99 or C++ compiler.
+- **Required Dependencies (provided or system-installed):**
+    - **GLFW3:** For windowing and input. Headers and library linking required.
+    - **OpenGL Context Loader (e.g., GLAD):** If using `SITUATION_USE_OPENGL`. `glad.c` must be compiled.
+    - **Vulkan SDK:** If using `SITUATION_USE_VULKAN`. Headers and linking required. Includes shaderc, VMA.
+    - **cglm:** For math types and functions (vec3, mat4, etc.). Headers needed.
+- **Optional Dependencies (for extra features):**
+    - **stb_image.h, stb_image_write.h, stb_image_resize.h:** For image loading/saving/resizing. Define `STB_IMAGE_IMPLEMENTATION` etc. in one .c file.
+    - **stb_truetype.h:** For styled text rendering (SDF generation). Define `STB_TRUETYPE_IMPLEMENTATION`.
+    - **miniaudio.h:** For audio. Define `MINIAUDIO_IMPLEMENTATION` in one .c file.
+
+</details>
+
+---
+
+<details>
 <summary><h2>Getting Started</h2></summary>
 
 Here is a minimal, complete example of a "Situation" application that opens a window, clears it to a blue color, and runs until the user closes it.
