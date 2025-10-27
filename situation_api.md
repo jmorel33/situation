@@ -731,6 +731,47 @@ if (SituationGetFrameCount() % 120 == 0) {
 ```
 
 ---
+#### `SituationWaitTime`
+Pauses the application thread for a specified duration in seconds. This is a simple wrapper over the system's sleep function.
+```c
+void SituationWaitTime(double seconds);
+```
+**Usage Example:**
+```c
+// Wait for 500 milliseconds before proceeding.
+SituationWaitTime(0.5);
+```
+
+---
+#### `SituationEnableEventWaiting`
+Enables event waiting. When enabled, `SituationPollInputEvents()` will wait for new events instead of immediately returning, putting the application to sleep and saving CPU cycles when idle. This is ideal for tools and non-game applications.
+```c
+void SituationEnableEventWaiting(void);
+```
+**Usage Example:**
+```c
+// In an editor or tool, enable event waiting to reduce resource usage.
+SituationEnableEventWaiting();
+while (!SituationWindowShouldClose()) {
+    SituationPollInputEvents(); // This will now block until an event occurs.
+    // ... update UI or process data only when there are new events ...
+    // ... render ...
+}
+```
+
+---
+#### `SituationDisableEventWaiting`
+Disables event waiting, restoring the default behavior where `SituationPollInputEvents()` returns immediately. This is necessary for real-time applications like games that need to run the update loop continuously.
+```c
+void SituationDisableEventWaiting(void);
+```
+**Usage Example:**
+```c
+// When switching from an editor mode to a real-time game simulation.
+SituationDisableEventWaiting();
+```
+
+---
 #### `SituationOpenFile`
 Asks the operating system to open a file or folder with its default application.
 ```c
@@ -1306,6 +1347,20 @@ for (int i = 0; i < display_count; i++) {
     printf("Display %d: %s\n", i, displays[i].name);
 }
 SituationFreeDisplays(displays, display_count); // Don't forget to free!
+```
+
+---
+#### `SituationFreeDisplays`
+Frees the memory allocated for the display list returned by `SituationGetDisplays`.
+```c
+void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
+```
+**Usage Example:**
+```c
+int display_count;
+SituationDisplayInfo* displays = SituationGetDisplays(&display_count);
+// ... use the display info ...
+SituationFreeDisplays(displays, display_count); // Free the memory.
 ```
 
 ---
@@ -3078,6 +3133,38 @@ void SituationSetDropCallback(SituationDropCallback callback, void* user_data);
 ```
 
 ---
+#### Clipboard
+---
+#### `SituationGetClipboardText`
+Gets UTF-8 encoded text from the system clipboard. The returned pointer is managed by the library and should not be freed.
+```c
+const char* SituationGetClipboardText(void);
+```
+**Usage Example:**
+```c
+// In an input handler for Ctrl+V
+if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_V)) {
+    const char* clipboard_text = SituationGetClipboardText();
+    if (clipboard_text) {
+        // Paste text into an input field.
+    }
+}
+```
+---
+#### `SituationSetClipboardText`
+Sets the system clipboard to the provided UTF-8 encoded text.
+```c
+void SituationSetClipboardText(const char* text);
+```
+**Usage Example:**
+```c
+// In an input handler for Ctrl+C
+if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_C)) {
+    // Copy selected text to the clipboard.
+    SituationSetClipboardText(selected_text);
+}
+```
+---
 #### Mouse Input
 ---
 #### `SituationGetMousePosition` / `SituationGetMouseDelta`
@@ -3880,6 +3967,35 @@ printf("Extension: %s\n", SituationGetFileExtension(path)); // -> ".png"
 ```
 
 ---
+#### `SituationGetFileNameWithoutExt`
+Extracts the file name from a path, excluding the extension. The caller is responsible for freeing the returned string with `SituationFreeString`.
+```c
+char* SituationGetFileNameWithoutExt(const char* file_path);
+```
+**Usage Example:**
+```c
+const char* path = "C:/assets/textures/player_avatar.png";
+char* filename = SituationGetFileNameWithoutExt(path);
+if (filename) {
+    printf("File name without ext: %s\n", filename); // -> "player_avatar"
+    SituationFreeString(filename);
+}
+```
+
+---
+#### `SituationIsFileExtension`
+Checks if a file path has a specific extension (case-insensitive).
+```c
+bool SituationIsFileExtension(const char* file_path, const char* ext);
+```
+**Usage Example:**
+```c
+if (SituationIsFileExtension("my_archive.ZIP", ".zip")) {
+    printf("This is a zip archive.\n");
+}
+```
+
+---
 #### `SituationFileExists`
 Checks if a file exists at the given path.
 ```c
@@ -3927,6 +4043,14 @@ if (SituationIsPathFile("assets/player.png")) {
 Gets the last modification time of a file.
 ```c
 long SituationGetFileModTime(const char* file_path);
+```
+**Usage Example:**
+```c
+// Check if a config file is newer than the cached version.
+long mod_time = SituationGetFileModTime("config.json");
+if (mod_time > g_last_config_load_time) {
+    // Reload config file.
+}
 ```
 ---
 #### File I/O
@@ -3989,6 +4113,21 @@ PlayerState player_data = { .health = 100, .score = 5000 };
 bool success = SituationSaveFileData("save.dat", &player_data, sizeof(PlayerState));
 if (success) {
     printf("Game saved successfully.\n");
+}
+```
+---
+#### `SituationFreeFileData`
+Frees the memory for a data buffer returned by `SituationLoadFileData`.
+```c
+void SituationFreeFileData(unsigned char* data);
+```
+**Usage Example:**
+```c
+unsigned int data_size;
+unsigned char* file_data = SituationLoadFileData("assets/level.dat", &data_size);
+if (file_data) {
+    // ... process data ...
+    SituationFreeFileData(file_data); // Free the memory.
 }
 ```
 ---
@@ -4086,6 +4225,13 @@ Deletes a directory, optionally deleting all its contents.
 ```c
 bool SituationDeleteDirectory(const char* dir_path, bool recursive);
 ```
+**Usage Example:**
+```c
+// Delete the "temp_files" directory and everything inside it.
+if (SituationDirectoryExists("temp_files")) {
+    SituationDeleteDirectory("temp_files", true);
+}
+```
 
 ---
 
@@ -4164,7 +4310,6 @@ double totalTime = SituationTimerGetTime();
 float pulse = sinf((float)totalTime * 2.0f); // A simple pulsing effect over time.
 // Use 'pulse' to modify an object's color, size, etc.
 ```
-
 ---
 #### Color Space Conversions
 ---
