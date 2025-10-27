@@ -1,4 +1,4 @@
-# Situation API Programming Guide
+# Situation v2.3.1 API Programming Guide
 
 "Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
 
@@ -176,8 +176,6 @@ After the main loop finishes, it is critical to call `SituationShutdown()` to cl
 ```
 
 ---
----
----
 
 #### `SituationIsAppPaused`
 
@@ -209,7 +207,6 @@ SITAPI void SituationResumeApp(void);
 SituationResumeApp();
 ```
 
----
 ---
 
 #### `SituationGetWindowScaleDPI`
@@ -359,7 +356,6 @@ int main(int argc, char** argv) {
 }
 ```
 
----
 ---
 </details>
 
