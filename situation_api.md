@@ -494,6 +494,24 @@ typedef struct SituationTimerSystem {
 -   `oscillators`: A pointer to the internal array of oscillator states.
 
 ---
+#### `SituationTimerOscillator`
+Represents the internal state of a single temporal oscillator. This struct is managed by the library as part of the `SituationTimerSystem` and is not typically interacted with directly. Its properties are exposed through functions like `SituationTimerHasOscillatorUpdated()` and `SituationTimerGetOscillatorValue()`.
+```c
+typedef struct SituationTimerOscillator {
+    double period;
+    bool state;
+    bool previous_state;
+    double last_ping_time;
+    uint64_t trigger_count;
+} SituationTimerOscillator;
+```
+-   `period`: The duration of one full cycle of the oscillator in seconds.
+-   `state`: The current binary state of the oscillator (`true` or `false`). This flips each time half of the `period` elapses.
+-   `previous_state`: The state of the oscillator in the previous frame. Used to detect when the state has changed.
+-   `last_ping_time`: An internal timestamp used by `SituationTimerPingOscillator()` to track time since the last successful "ping".
+-   `trigger_count`: The total number of times the oscillator has flipped its state since initialization.
+
+---
 ### Functions
 
 #### `SituationInit`
@@ -1908,6 +1926,23 @@ typedef struct SituationFont {
 -   `recs`: A pointer to an array of `Rectangle` structs, defining the source rectangle for each glyph within the texture atlas.
 -   `glyphs`: A pointer to an array of internal `GlyphInfo` structs, containing the character code, advance width, and offset for each glyph. This data is used for positioning characters correctly when rendering text.
 
+---
+#### `GlyphInfo`
+Contains the rendering metrics for a single character glyph within a `SituationFont`. This struct is managed by the library and is used internally to calculate the correct position and spacing for each character when drawing text.
+```c
+typedef struct GlyphInfo {
+    int value;
+    int offsetX;
+    int offsetY;
+    int advanceX;
+    SituationImage image;
+} GlyphInfo;
+```
+-   `value`: The Unicode codepoint for the character (e.g., `65` for 'A').
+-   `offsetX`, `offsetY`: The offset from the cursor position to the top-left corner of the glyph image when rendering.
+-   `advanceX`: The horizontal distance to advance the cursor after rendering this glyph.
+-   `image`: A CPU-side `SituationImage` containing the pixel data for the glyph. This is primarily used during the font atlas generation process.
+
 ### Functions
 
 #### Image Loading and Unloading
@@ -2349,6 +2384,23 @@ typedef struct SituationAttachmentInfo {
     -   `SIT_STORE_OP_STORE`: Store the rendered contents to memory.
     -   `SIT_STORE_OP_DONT_CARE`: The rendered contents may be discarded.
 -   `clear`: A struct containing the color or depth/stencil values to use if `loadOp` is `SIT_LOAD_OP_CLEAR`.
+
+---
+#### `SituationClearValue`
+A union that specifies the clear values for color and depth/stencil attachments. It is used within the `SituationAttachmentInfo` struct to define what value an attachment should be cleared to at the start of a render pass.
+```c
+typedef union SituationClearValue {
+    ColorRGBA color;
+    struct {
+        double depth;
+        int32_t stencil;
+    } depth_stencil;
+} SituationClearValue;
+```
+-   `color`: The RGBA color value to clear a color attachment to.
+-   `depth_stencil`: A struct containing the depth and stencil values to clear a depth/stencil attachment to.
+    -   `depth`: The depth value, typically `1.0` for clearing.
+    -   `stencil`: The stencil value, typically `0`.
 
 ---
 #### `SituationRenderPassInfo`
@@ -3036,6 +3088,55 @@ void SituationCmdPipelineBarrier(SituationCommandBuffer cmd);
 #### Virtual Displays
 
 ---
+#### `SituationVirtualDisplay`
+Represents a complete off-screen rendering target, often called a framebuffer object (FBO). It encapsulates not only the GPU resources (like color and depth textures) but also the state required to manage and composite it, such as its resolution, visibility, and blend mode. This is the core struct for implementing post-processing effects, rendering UI at a fixed resolution, or caching complex scenes.
+```c
+typedef struct SituationVirtualDisplay {
+    // Core Properties
+    int id;
+    bool visible;
+    bool is_dirty;
+    vec2 resolution;
+    vec2 offset;
+    float opacity;
+    int z_order;
+
+    // Behavior
+    double frame_time_multiplier;
+    SituationScalingMode scaling_mode;
+    SituationBlendMode blend_mode;
+
+    // Backend-Specific GPU Resources
+    union {
+        struct {
+            // OpenGL-specific handles
+            uint32_t fbo_id;
+            uint32_t texture_id;
+            uint32_t rbo_id;
+        } gl;
+        struct {
+            // Vulkan-specific handles
+            VkFramebuffer framebuffer;
+            VkRenderPass render_pass;
+            VkSampler sampler;
+            SituationTexture texture; // The texture containing the rendered output
+        } vk;
+    };
+} SituationVirtualDisplay;
+```
+-   `id`: The unique identifier for the virtual display, used to reference it in API calls.
+-   `visible`: If `true`, the display will be automatically drawn to the main window during the compositing phase (`SituationRenderVirtualDisplays`).
+-   `is_dirty`: A flag used with time-multiplied displays. If `true`, the display is re-rendered; if `false`, the previous frame's content is reused, saving performance.
+-   `resolution`: The internal width and height of the display's render textures in pixels.
+-   `offset`: The top-left position (in screen coordinates) where the display will be drawn during compositing.
+-   `opacity`: The opacity (0.0 to 1.0) of the display when it is blended onto the target.
+-   `z_order`: An integer used to sort visible displays before compositing. Lower numbers are drawn first (further back).
+-   `frame_time_multiplier`: Controls the update rate. `1.0` updates every frame, `0.5` every other frame, `0.0` only when marked dirty.
+-   `scaling_mode`: An enum (`SituationScalingMode`) that determines how the display's texture is scaled if its resolution differs from its target area (e.g., `SITUATION_SCALING_STRETCH`, `SITUATION_SCALING_LETTERBOX`).
+-   `blend_mode`: An enum (`SituationBlendMode`) that defines how the display is blended during compositing (e.g., `SITUATION_BLEND_ALPHA`, `SITUATION_BLEND_ADDITIVE`).
+-   `gl`, `vk`: A union containing backend-specific handles to the underlying GPU resources. These are managed internally by the library.
+---
+
 #### `SituationCreateVirtualDisplay`
 Creates an off-screen render target (framebuffer object).
 ```c
