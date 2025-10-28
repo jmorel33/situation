@@ -450,7 +450,7 @@ This section provides a complete list of all functions available in the "Situati
 ### Core Structs
 
 #### `SituationInitInfo`
-This struct is passed to `SituationInit()` to configure the application at startup.
+This struct is passed to `SituationInit()` to configure the application at startup. It allows for detailed control over the initial state of the window, rendering backend, and timing systems.
 ```c
 typedef struct SituationInitInfo {
     const char* app_name;
@@ -462,34 +462,38 @@ typedef struct SituationInitInfo {
     int oscillator_count;
     const double* oscillator_periods;
     bool headless;
+    bool enable_validation;
 } SituationInitInfo;
 ```
--   `app_name`, `app_version`: The name and version of your application.
--   `initial_width`, `initial_height`: The desired initial dimensions for the main window.
--   `window_flags`: A bitmask of `SituationWindowStateFlags` to set the initial state of the window.
--   `target_fps`: The desired target frame rate. Use `0` for uncapped FPS.
--   `oscillator_count`, `oscillator_periods`: The number and initial periods (in seconds) for the Temporal Oscillator System.
--   `headless`: If `true`, the library initializes without a window or graphics context.
+-   `app_name`, `app_version`: The name and version of your application. Used by the backend where appropriate (e.g., Vulkan instance).
+-   `initial_width`, `initial_height`: The desired initial dimensions for the main window's client area.
+-   `window_flags`: A bitmask of `SituationWindowStateFlags` to set the initial state of the window (e.g., resizable, fullscreen).
+-   `target_fps`: The desired target frame rate. The library will sleep to avoid exceeding this rate. Use `0` for an uncapped frame rate.
+-   `oscillator_count`: The number of temporal oscillators to create at startup.
+-   `oscillator_periods`: A pointer to an array of `double`s, where each element is the initial period (in seconds) for an oscillator. The array must have `oscillator_count` elements.
+-   `headless`: If `true`, the library initializes without creating a window or graphics context. Useful for server-side applications or command-line tools.
+-   `enable_validation`: If `true`, enables backend-specific validation layers (e.g., Vulkan validation layers) for enhanced debugging. This may impact performance and should typically be disabled in release builds.
 
 ---
-#### `SituationDeviceInfo`
-This struct, returned by `SituationGetDeviceInfo()`, provides a snapshot of the host system's hardware.
+#### `SituationTimerSystem`
+Manages all timing-related functionality for the application, including frame time (`deltaTime`), total elapsed time, and the Temporal Oscillator System. This struct is managed internally by the library; you interact with it through functions like `SituationGetFrameTime()` and `SituationTimerHasOscillatorUpdated()`.
 ```c
-typedef struct SituationDeviceInfo {
-    char cpu_brand[49];
-    int cpu_core_count;
-    int cpu_thread_count;
-    uint64_t system_ram_bytes;
-    char gpu_brand[128];
-    uint64_t gpu_vram_bytes;
-    int display_count;
-    char os_name[32];
-    char os_version[32];
-    uint64_t total_storage_bytes;
-    uint64_t free_storage_bytes;
-} SituationDeviceInfo;
+typedef struct SituationTimerSystem {
+    double current_time;
+    double previous_time;
+    float frame_time;
+    int target_fps;
+    int oscillator_count;
+    SituationTimerOscillator* oscillators;
+} SituationTimerSystem;
 ```
+-   `current_time`, `previous_time`: Internal timestamps used to calculate `frame_time`.
+-   `frame_time`: The duration of the last frame in seconds (`deltaTime`).
+-   `target_fps`: The current target frame rate.
+-   `oscillator_count`: The number of active oscillators.
+-   `oscillators`: A pointer to the internal array of oscillator states.
 
+---
 ### Functions
 
 #### `SituationInit`
@@ -1078,6 +1082,33 @@ bool SituationIsAppPaused(void);
 
 ### Structs and Flags
 
+#### `SituationDeviceInfo`
+This struct, returned by `SituationGetDeviceInfo()`, provides a snapshot of the host system's hardware.
+```c
+typedef struct SituationDeviceInfo {
+    char cpu_brand[49];
+    int cpu_core_count;
+    int cpu_thread_count;
+    uint64_t system_ram_bytes;
+    char gpu_brand[128];
+    uint64_t gpu_vram_bytes;
+    int display_count;
+    char os_name[32];
+    char os_version[32];
+    uint64_t total_storage_bytes;
+    uint64_t free_storage_bytes;
+} SituationDeviceInfo;
+```
+-   `cpu_brand`: The brand and model of the CPU.
+-   `cpu_core_count`, `cpu_thread_count`: The number of physical cores and logical threads.
+-   `system_ram_bytes`: Total system RAM in bytes.
+-   `gpu_brand`: The brand and model of the GPU.
+-   `gpu_vram_bytes`: Total dedicated video RAM in bytes.
+-   `display_count`: The number of connected displays.
+-   `os_name`, `os_version`: The name and version of the operating system.
+-   `total_storage_bytes`, `free_storage_bytes`: The total and free space on the primary storage device.
+
+---
 #### `SituationDisplayInfo`
 Returned by `SituationGetDisplays()`, this struct contains detailed information about a connected monitor.
 ```c
@@ -1812,26 +1843,70 @@ GLFWwindow* glfw_window = SituationGetGLFWwindow();
 
 **Overview:** The Image module is a comprehensive, CPU-side toolkit for all forms of image and font manipulation. It allows you to load images, generate new images programmatically, perform transformations, and render text. The `SituationImage` objects produced by this module are the primary source for creating GPU-side `SituationTexture`s.
 
-### Structs
+### Structs and Enums
 
+#### `Vector2`
+A simple 2D vector, used for positions, sizes, and other 2D coordinates.
+```c
+typedef struct Vector2 {
+    float x;
+    float y;
+} Vector2;
+```
+-   `x`: The x-component of the vector.
+-   `y`: The y-component of the vector.
+
+---
+#### `Rectangle`
+Represents a rectangle with a position (x, y) and dimensions (width, height).
+```c
+typedef struct Rectangle {
+    float x;
+    float y;
+    float width;
+    float height;
+} Rectangle;
+```
+-   `x`, `y`: The screen coordinates of the top-left corner.
+-   `width`, `height`: The dimensions of the rectangle.
+
+---
 #### `SituationImage`
-A handle representing a CPU-side image. All pixel data is stored in uncompressed 32-bit RGBA format.
+A handle representing a CPU-side image. It contains the raw pixel data and metadata. All pixel data is stored in uncompressed 32-bit RGBA format unless otherwise specified. This struct is the primary source for creating GPU-side `SituationTexture`s.
 ```c
 typedef struct SituationImage {
     void *data;
     int width;
     int height;
+    int mipmaps;
+    int format;
 } SituationImage;
 ```
+-   `data`: A pointer to the raw pixel data in system memory (RAM).
+-   `width`: The width of the image in pixels.
+-   `height`: The height of the image in pixels.
+-   `mipmaps`: The number of mipmap levels generated for the image. `1` means no mipmaps.
+-   `format`: The pixel format of the data (e.g., `SIT_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8`).
+
 ---
 #### `SituationFont`
-A handle representing a CPU-side font, loaded from a TTF or OTF file.
+A handle representing a font, which includes a texture atlas of its characters (glyphs) and the data needed to render them. Fonts are typically loaded from TTF/OTF files and are used for both CPU-side (`SituationImageDrawText`) and GPU-side rendering.
 ```c
 typedef struct SituationFont {
-    void *fontData;
-    void *stbFontInfo;
+    int baseSize;
+    int glyphCount;
+    int glyphPadding;
+    SituationTexture texture;
+    Rectangle *recs;
+    GlyphInfo *glyphs;
 } SituationFont;
 ```
+-   `baseSize`: The base font size (in pixels) that the font atlas was generated with.
+-   `glyphCount`: The number of character glyphs packed into the texture atlas.
+-   `glyphPadding`: The padding (in pixels) around each glyph in the atlas to prevent texture bleeding.
+-   `texture`: The GPU `SituationTexture` handle for the font atlas image.
+-   `recs`: A pointer to an array of `Rectangle` structs, defining the source rectangle for each glyph within the texture atlas.
+-   `glyphs`: A pointer to an array of internal `GlyphInfo` structs, containing the character code, advance width, and offset for each glyph. This data is used for positioning characters correctly when rendering text.
 
 ### Functions
 
@@ -2250,23 +2325,196 @@ SituationUnloadFont(my_font);
 
 ### Structs, Enums, and Handles
 
+#### `SituationCommandBuffer`
+An opaque handle representing a command buffer, which is a list of rendering commands to be executed by the GPU. The main command buffer for the window is retrieved via `SituationGetMainCommandBuffer()`. All rendering commands (`SituationCmd...`) are recorded into a command buffer.
+```c
+typedef struct SituationCommandBuffer_t* SituationCommandBuffer;
+```
+
+---
+#### `SituationAttachmentInfo`
+Describes a single attachment (like a color or depth buffer) for a render pass. It specifies how the attachment's contents should be handled at the beginning and end of the pass.
+```c
+typedef struct SituationAttachmentInfo {
+    SituationAttachmentLoadOp  loadOp;
+    SituationAttachmentStoreOp storeOp;
+    SituationClearValue        clear;
+} SituationAttachmentInfo;
+```
+-   `loadOp`: The action to take at the beginning of the render pass.
+    -   `SIT_LOAD_OP_LOAD`: Preserve the existing contents of the attachment.
+    -   `SIT_LOAD_OP_CLEAR`: Clear the attachment to the value specified in `clear`.
+    -   `SIT_LOAD_OP_DONT_CARE`: The existing contents are undefined and can be discarded.
+-   `storeOp`: The action to take at the end of the render pass.
+    -   `SIT_STORE_OP_STORE`: Store the rendered contents to memory.
+    -   `SIT_STORE_OP_DONT_CARE`: The rendered contents may be discarded.
+-   `clear`: A struct containing the color or depth/stencil values to use if `loadOp` is `SIT_LOAD_OP_CLEAR`.
+
+---
 #### `SituationRenderPassInfo`
-Configures a rendering pass. Used with `SituationCmdBeginRenderPass()`.
+Configures a rendering pass. This is a crucial struct used with `SituationCmdBeginRenderPass()` to define the render target and its initial state.
 ```c
 typedef struct SituationRenderPassInfo {
-    SituationLoadAction color_load_action;
-    SituationStoreAction color_store_action;
-    ColorRGBA clear_color;
-    SituationLoadAction depth_load_action;
-    SituationStoreAction depth_store_action;
-    float clear_depth;
-    int virtual_display_id;
+    int                     display_id;
+    SituationAttachmentInfo color_attachment;
+    SituationAttachmentInfo depth_attachment;
 } SituationRenderPassInfo;
 ```
--   `color_load_action`, `depth_load_action`: What to do with the buffer at the start of the pass (`SIT_LOAD_ACTION_LOAD`, `_CLEAR`, or `_DONT_CARE`).
--   `color_store_action`, `depth_store_action`: What to do with the buffer at the end of the pass (`SIT_STORE_ACTION_STORE` or `_DONT_CARE`).
--   `clear_color`, `clear_depth`: The values to use if the load action is `_CLEAR`.
--   `virtual_display_id`: The ID of a virtual display to render to. Use `-1` to target the main window.
+-   `display_id`: The ID of a `SituationVirtualDisplay` to render to. Use `-1` to target the main window's backbuffer.
+-   `color_attachment`: Configuration for the color buffer, including load/store operations and clear color.
+-   `depth_attachment`: Configuration for the depth buffer, including load/store operations and clear value.
+
+---
+#### `ViewDataUBO`
+Defines the standard memory layout for a Uniform Buffer Object (UBO) containing camera projection and view matrices. You don't typically create this struct directly; rather, you should structure your GLSL uniform blocks to match this layout to be compatible with the library's default scene data.
+```c
+typedef struct ViewDataUBO {
+    mat4 view;
+    mat4 projection;
+} ViewDataUBO;
+```
+-   `view`: The view matrix, which transforms world-space coordinates to view-space (camera) coordinates.
+-   `projection`: The projection matrix, which transforms view-space coordinates to clip-space coordinates.
+
+---
+#### Resource Handles
+The following are opaque handles to GPU resources. Their internal structure is not exposed to the user. You create them with `SituationCreate...` or `SituationLoad...` functions and free them with their corresponding `SituationDestroy...` or `SituationUnload...` functions.
+
+#### `SituationMesh`
+An opaque handle to a self-contained GPU resource representing a drawable mesh. A mesh bundles a vertex buffer and an optional index buffer, representing a complete piece of geometry that can be rendered with a single command.
+```c
+typedef struct SituationMesh {
+    uint64_t id;
+    int index_count;
+} SituationMesh;
+```
+- **Creation:** `SituationCreateMesh()`
+- **Usage:** `SituationCmdDrawMesh()`
+- **Destruction:** `SituationDestroyMesh()`
+
+---
+#### `SituationBuffer`
+An opaque handle to a generic region of GPU memory. Buffers are highly versatile and can be used to store vertex data, index data, uniform data for shaders (UBOs), or general-purpose storage data (SSBOs). The intended usage is specified on creation using `SituationBufferUsageFlags`.
+```c
+typedef struct SituationBuffer {
+    uint64_t id;
+    size_t size_in_bytes;
+} SituationBuffer;
+```
+- **Creation:** `SituationCreateBuffer()`
+- **Usage:** `SituationUpdateBuffer()`, `SituationCmdBindVertexBuffer()`, `SituationCmdBindIndexBuffer()`, `SituationCmdBindDescriptorSet()`
+- **Destruction:** `SituationDestroyBuffer()`
+
+---
+#### `SituationComputePipeline`
+An opaque handle representing a compiled compute shader program. It encapsulates a single compute shader stage and its resource layout, ready to be dispatched for general-purpose GPU computation.
+```c
+typedef struct SituationComputePipeline {
+    uint64_t id;
+} SituationComputePipeline;
+```
+- **Creation:** `SituationCreateComputePipeline()`
+- **Usage:** `SituationCmdBindComputePipeline()`, `SituationCmdDispatch()`
+- **Destruction:** `SituationDestroyComputePipeline()`
+
+---
+#### `SituationShader`
+An opaque handle representing a compiled graphics shader pipeline. It encapsulates a vertex shader, a fragment shader, and the state required to use them for rendering (like vertex input layout and descriptor set layouts).
+```c
+typedef struct SituationShader {
+    uint64_t id;
+} SituationShader;
+```
+- **Creation:** `SituationLoadShader()`, `SituationLoadShaderFromMemory()`
+- **Usage:** `SituationCmdBindPipeline()`
+- **Destruction:** `SituationUnloadShader()`
+
+---
+#### `SituationTexture`
+An opaque handle to a GPU texture resource. Textures are created by uploading `SituationImage` data from the CPU. They are used by shaders for sampling colors (e.g., albedo maps) or as storage images for compute operations.
+```c
+typedef struct SituationTexture {
+    uint64_t id;
+    int width;
+    int height;
+    int mipmaps;
+} SituationTexture;
+```
+-   `width`, `height`: The dimensions of the texture in pixels.
+-   `mipmaps`: The number of mipmap levels in the texture.
+- **Creation:** `SituationCreateTexture()`
+- **Usage:** `SituationCmdBindShaderTexture()`, `SituationCmdBindComputeTexture()`
+- **Destruction:** `SituationDestroyTexture()`
+
+---
+#### `SituationModelMesh`
+Represents a single drawable sub-mesh within a larger `SituationModel`. It combines the raw geometry (`SituationMesh`) with a full PBR (Physically-Based Rendering) material definition, including color factors and texture maps.
+```c
+typedef struct SituationModelMesh {
+    SituationMesh mesh;
+    // Material Data
+    int material_id;
+    char material_name[SITUATION_MAX_NAME_LEN];
+    ColorRGBA base_color_factor;
+    float metallic_factor;
+    float roughness_factor;
+    vec3 emissive_factor;
+    float alpha_cutoff;
+    bool double_sided;
+    // Texture Maps (if available)
+    SituationTexture base_color_texture;
+    SituationTexture metallic_roughness_texture;
+    SituationTexture normal_texture;
+    SituationTexture occlusion_texture;
+    SituationTexture emissive_texture;
+} SituationModelMesh;
+```
+-   `mesh`: The `SituationMesh` handle containing the vertex and index buffers for this part of the model.
+-   `material_name`: The name of the material.
+-   `base_color_factor`, `metallic_factor`, `roughness_factor`: PBR material parameters.
+-   `base_color_texture`, `metallic_roughness_texture`, etc.: Handles to the GPU textures used by this material.
+
+---
+#### `SituationModel`
+A handle representing a complete 3D model, loaded from a file (e.g., GLTF). It acts as a container for all the `SituationModelMesh` and `SituationTexture` resources that make up the model.
+```c
+typedef struct SituationModel {
+    SituationModelMesh* meshes;
+    SituationTexture* all_model_textures;
+    int mesh_count;
+    int texture_count;
+} SituationModel;
+```
+-   `meshes`: A pointer to an array of the model's sub-meshes.
+-   `all_model_textures`: A pointer to an array of all unique textures used by the model.
+-   `mesh_count`, `texture_count`: The number of meshes and textures in their respective arrays.
+- **Creation:** `SituationLoadModel()`
+- **Usage:** `SituationDrawModel()`
+- **Destruction:** `SituationUnloadModel()`
+
+---
+#### `SituationBufferUsageFlags`
+Specifies how a `SituationBuffer` will be used. This helps the driver place the buffer in the most optimal memory. Combine flags using the bitwise `|` operator.
+| Flag | Description |
+|---|---|
+| `SITUATION_BUFFER_USAGE_VERTEX_BUFFER` | The buffer will be used as a source of vertex data. |
+| `SITUATION_BUFFER_USAGE_INDEX_BUFFER` | The buffer will be used as a source of index data. |
+| `SITUATION_BUFFER_USAGE_UNIFORM_BUFFER` | The buffer will be used as a Uniform Buffer Object (UBO). |
+| `SITUATION_BUFFER_USAGE_STORAGE_BUFFER` | The buffer will be used as a Shader Storage Buffer Object (SSBO). |
+| `SITUATION_BUFFER_USAGE_INDIRECT_BUFFER`| The buffer will be used for indirect drawing commands. |
+| `SITUATION_BUFFER_USAGE_TRANSFER_SRC`| The buffer can be used as a source for a copy operation. |
+| `SITUATION_BUFFER_USAGE_TRANSFER_DST`| The buffer can be used as a destination for a copy operation. |
+
+---
+#### `SituationComputeLayoutType`
+Defines a set of common, pre-configured layouts for compute pipelines, telling the GPU what kind of resources the shader expects.
+| Type | Description |
+|---|---|
+| `SIT_COMPUTE_LAYOUT_ONE_SSBO`| The pipeline expects a single Shader Storage Buffer Object (SSBO) at set 0. |
+| `SIT_COMPUTE_LAYOUT_TWO_SSBOS`| The pipeline expects two SSBOs at sets 0 and 1. |
+| `SIT_COMPUTE_LAYOUT_IMAGE_AND_SSBO`| The pipeline expects one Storage Image at set 0 and one SSBO at set 1. |
+| `SIT_COMPUTE_LAYOUT_PUSH_CONSTANT`| The pipeline uses a 64-byte push constant for small, high-frequency data. |
+| `SIT_COMPUTE_LAYOUT_EMPTY`| The pipeline does not take any external resources. |
 
 ---
 #### Resource Handles
@@ -3803,10 +4051,12 @@ typedef struct SituationAudioDeviceInfo {
 -   `internal_id`: The ID used to select this device with `SituationSetAudioDevice()`.
 -   `name`: The human-readable name of the device.
 -   `is_default`: `true` if this is the operating system's default audio device.
+-   `min_channels`, `max_channels`: The minimum and maximum number of channels supported by the device.
+-   `min_sample_rate`, `max_sample_rate`: The minimum and maximum sample rates supported by the device.
 
 ---
 #### `SituationAudioFormat`
-Describes the format of audio data.
+Describes the format of audio data, used when initializing the audio device or loading sounds from custom streams.
 ```c
 typedef struct SituationAudioFormat {
     int channels;
@@ -3815,12 +4065,21 @@ typedef struct SituationAudioFormat {
 } SituationAudioFormat;
 ```
 -   `channels`: Number of audio channels (e.g., 1 for mono, 2 for stereo).
--   `sample_rate`: Number of samples per second (e.g., 44100).
--   `bit_depth`: Number of bits per sample (e.g., 16).
+-   `sample_rate`: Number of samples per second (e.g., 44100 Hz).
+-   `bit_depth`: Number of bits per sample (e.g., 16-bit).
 
 ---
 #### `SituationSound`
-An opaque handle to a loaded sound, either fully in memory or streamed.
+An opaque handle to a sound resource. This handle encapsulates all the necessary internal state for a sound, whether it's fully loaded into memory or streamed from a source. It is initialized by `SituationLoadSoundFromFile()` or `SituationLoadSoundFromStream()` and must be cleaned up with `SituationUnloadSound()`.
+```c
+typedef struct SituationSound {
+    uint64_t id; // Internal unique ID
+    // Internal data is not exposed to the user
+} SituationSound;
+```
+- **Creation:** `SituationLoadSoundFromFile()`, `SituationLoadSoundFromStream()`
+- **Usage:** `SituationPlayLoadedSound()`, `SituationSetSoundVolume()`
+- **Destruction:** `SituationUnloadSound()`
 
 ---
 #### `SituationFilterType`
@@ -4562,6 +4821,43 @@ SituationFreeDirectoryFileList(files, file_count);
 <summary><h3>Miscellaneous Module</h3></summary>
 
 **Overview:** This module includes powerful utilities like the Temporal Oscillator System for rhythmic timing, a suite of color space conversion functions (RGBA, HSV, YPQA), and essential memory management helpers for data allocated by the library.
+
+### Structs and Enums
+
+#### `ColorRGBA`
+Represents a color in the Red, Green, Blue, Alpha color space. Each component is an 8-bit unsigned integer (0-255).
+```c
+typedef struct ColorRGBA {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+    uint8_t a;
+} ColorRGBA;
+```
+
+---
+#### `ColorHSVA`
+Represents a color in the Hue, Saturation, Value, Alpha color space.
+```c
+typedef struct ColorHSVA {
+    float h; // Hue (0-360)
+    float s; // Saturation (0-1)
+    float v; // Value (0-1)
+    float a; // Alpha (0-1)
+} ColorHSVA;
+```
+
+---
+#### `ColorYPQA`
+Represents a color in a custom YPQA color space (Luma, Phase, Quadrature, Alpha).
+```c
+typedef struct ColorYPQA {
+    float y; // Luma
+    float p; // Phase
+    float q; // Quadrature
+    float a; // Alpha
+} ColorYPQA;
+```
 
 ### Functions
 
