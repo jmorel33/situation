@@ -1,3 +1,31 @@
+# The "Situation" Advanced Platform Awareness, Control, and Timing
+
+_Core API library v2.3.1_
+
+_(c) 2025 Jacques Morel_
+
+_MIT Licenced_
+
+Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools. We are actively seeking contributions from the community to help us build a truly exceptional and robust platform.
+
+Our immediate development roadmap is focused on several key areas:
+*   **Full Thread-Safety**: We are working towards making the entire library thread-safe, which will allow for even greater performance and scalability in multi-threaded applications.
+*   **OpenGL Command Buffer Enhancement**: We are committed to ensuring the proper functioning of OpenGL within our command buffer system, providing a seamless and efficient rendering experience.
+*   **Comprehensive Vulkan Abstraction**: Our goal is to provide a full-featured, high-level wrapper for the Vulkan API, simplifying its complexity while retaining its power and performance.
+*   **Robust Virtual Display and Windows Integration**: We are continuously improving our virtual display system and its integration with Windows to ensure bullet-proof stability across diverse hardware configurations, including multi-monitor setups and various application states (e.g., switching, pausing).
+
+"Situation" is an ambitious project that aims to become a premier, go-to solution for developers seeking a reliable and powerful platform layer. We encourage you to explore the library, challenge its capabilities, and contribute to its evolution.
+
+The library's philosophy is reflected in its name, granting developers complete situational "Awareness," precise "Control," and fine-grained "Timing."
+
+It provides deep **Awareness** of the host system through APIs for querying hardware and multi-monitor display information, and by handling operating system events like window focus and file drops.
+
+This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, capture, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model. It offers simplified management of GPU resources—such as shaders, meshes, and textures—and includes powerful utilities for high-quality text rendering and robust filesystem I/O.
+
+Finally, its **Timing** capabilities range from high-resolution performance measurement and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
+
+---
+
 # Situation v2.3.1 API Programming Guide
 
 "Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
@@ -170,6 +198,20 @@ your_project/
     - **stb_image.h, stb_image_write.h, stb_image_resize.h:** For image loading/saving/resizing. Define `STB_IMAGE_IMPLEMENTATION` etc. in one .c file.
     - **stb_truetype.h:** For styled text rendering (SDF generation). Define `STB_TRUETYPE_IMPLEMENTATION`.
     - **miniaudio.h:** For audio. Define `MINIAUDIO_IMPLEMENTATION` in one .c file.
+
+### 2.4 Build & Feature Defines
+This section details the preprocessor defines that control the library's features and build configuration.
+
+#### Backend Selection
+- **`SITUATION_USE_OPENGL`**: Enables the modern OpenGL backend. Must be defined before including `situation.h`.
+- **`SITUATION_USE_VULKAN`**: Enables the explicit Vulkan backend. Must be defined before including `situation.h`.
+
+#### Shared Library Support
+- **`SITUATION_BUILD_SHARED`**: Must be defined when compiling the library as a shared object (DLL). This controls symbol visibility for export.
+- **`SITUATION_USE_SHARED`**: Must be defined in the application code when linking against the shared library to control symbol import.
+
+#### Feature Enablement
+- **`SITUATION_ENABLE_SHADER_COMPILER`**: Mandatory for using compute shaders with the Vulkan backend as it enables runtime compilation of GLSL to SPIR-V.
 
 </details>
 
@@ -5170,4 +5212,359 @@ SituationSetTraceLogLevel(SIT_LOG_ALL);
     SituationSetTraceLogLevel(SIT_LOG_WARNING);
 #endif
 ```
+</details>
+
+<details>
+<summary><h3>Compute Shaders</h3></summary>
+
+### 4.7 Compute Shaders
+#### 4.7.1 Overview & Capabilities
+Compute shaders enable developers to harness the parallel processing power of the GPU for general-purpose computations that are independent of the traditional graphics rendering pipeline. This includes tasks like physics simulations, AI calculations, image/video processing, procedural generation, and more. `situation.h` provides a unified, backend-agnostic API to create, manage, and execute compute shaders using either OpenGL Compute Shaders or Vulkan Compute Pipelines.
+
+#### 4.7.2 Initialization Prerequisites
+- The core `situation.h` library must be successfully initialized using `SituationInit`.
+- Define `SITUATION_ENABLE_SHADER_COMPILER` in your build. This is **mandatory** for the Vulkan backend and highly recommended for OpenGL if you are providing GLSL source code. It enables the inclusion and use of the `shaderc` library for runtime compilation of GLSL to SPIR-V bytecode.
+- For Vulkan: Ensure that the selected physical device (GPU) supports compute capabilities. This is checked during `SituationInit` if a Vulkan backend is chosen.
+
+#### 4.7.3 Creating Compute Pipelines
+##### 4.7.3.1 From GLSL Source Code (SituationCreateComputePipelineFromMemory)
+This is the primary function for creating a compute pipeline.
+- **Signature:** `SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const char* compute_shader_source);`
+- **Parameters:**
+    - `compute_shader_source`: A null-terminated string containing the GLSL compute shader source code.
+- **Process:**
+    1.  Validates that the library is initialized and the source is not NULL.
+    2.  If `SITUATION_ENABLE_SHADER_COMPILER` is defined:
+        a.  Invokes `shaderc` to compile the provided GLSL source into SPIR-V bytecode.
+        b.  Handles compilation errors and reports them via the error system.
+    3.  Backend-Specific Creation:
+        - **OpenGL**: Uses the SPIR-V (if compiled) or directly the GLSL source (if `ARB_gl_spirv` is not used/available) to create and link an OpenGL Compute Program (`glCreateProgram`, `glCreateShader(GL_COMPUTE_SHADER)`, `glLinkProgram`).
+        - **Vulkan**: Uses the compiled SPIR-V bytecode to create a `VkShaderModule`, then a `VkPipelineLayout` (handling push constants), and finally the `VkComputePipeline` object.
+    4.  Generates a unique `id` for the `SituationComputePipeline` handle.
+    5.  Stores backend-specific handles internally (e.g., `gl_program_id`, `vk_pipeline`, `vk_pipeline_layout`).
+    6.  Adds the pipeline to an internal tracking list for resource management and leak detection.
+- **Return Value:**
+    - Returns a `SituationComputePipeline` struct.
+    - On success, `pipeline.id` will be a non-zero value.
+    - On failure, `pipeline.id` will be 0. Use `SituationGetLastErrorMsg()` to get a detailed error description.
+
+##### 4.7.3.2 Backend Compilation (OpenGL SPIR-V, Vulkan Runtime)
+- The use of `shaderc` via `SITUATION_ENABLE_SHADER_COMPILER` standardizes the input (GLSL) and the intermediate representation (SPIR-V) for both backends, making the API consistent.
+- OpenGL traditionally uses GLSL directly, but `ARB_gl_spirv` allows using SPIR-V. The library abstracts this choice.
+- Vulkan *requires* SPIR-V, making runtime compilation with `shaderc` essential unless pre-compiled SPIR-V is used (which this function doesn't directly support, but the underlying Vulkan creation could be adapted).
+
+#### 4.7.4 Using Compute Pipelines
+Once a `SituationComputePipeline` is created, it can be used within a command buffer to perform computations.
+
+##### 4.7.4.1 Binding a Compute Pipeline (SituationCmdBindComputePipeline)
+- **Signature:** `SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline);`
+- **Parameters:**
+    - `cmd`: The command buffer obtained from `SituationAcquireFrameCommandBuffer` or `SituationBeginVirtualDisplayFrame`.
+    - `pipeline`: The `SituationComputePipeline` handle returned by `SituationCreateComputePipelineFromMemory`.
+- **Process:**
+    1.  Validates the command buffer and pipeline handle.
+    2.  Records the command to bind the pipeline state (program/pipeline object) to the command buffer for subsequent compute operations.
+    3.  Backend-Specific:
+        - **OpenGL**: Calls `glUseProgram(pipeline.gl_program_id)`.
+        - **Vulkan**: Calls `vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.vk_pipeline)`.
+
+##### 4.7.4.2 Binding Resources (Buffers, Images)
+Compute shaders often read from and write to GPU resources like Shader Storage Buffer Objects (SSBOs) or Images.
+- `SITAPI void SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, SituationBuffer buffer, uint32_t binding);`
+    - Binds a `SituationBuffer` (created with appropriate usage flags like `SITUATION_BUFFER_USAGE_STORAGE_BUFFER`) to a specific binding point in the currently bound compute shader.
+    - **Backend-Specific:**
+        - **OpenGL**: Calls `glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, buffer.gl_buffer_id)`.
+        - **Vulkan**: Allocates a temporary descriptor set (or uses a pre-allocated one) that describes the buffer binding, then records `vkCmdBindDescriptorSets` for that set.
+
+##### 4.7.4.3 Dispatching Work (SituationCmdDispatch)
+- **Signature:** `SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);`
+- **Parameters:**
+    - `cmd`: The command buffer.
+    - `group_count_x/y/z`: The number of local work groups to dispatch in each dimension. The total number of invocations is `group_count_x * group_count_y * group_count_z * local_size_x * local_size_y * local_size_z` (where local size is defined in the shader).
+- **Process:**
+    1.  Validates the command buffer.
+    2.  Records the command to dispatch the compute work.
+    3.  Backend-Specific:
+        - **OpenGL**: Calls `glDispatchCompute(group_count_x, group_count_y, group_count_z)`.
+        - **Vulkan**: Calls `vkCmdDispatch(cmd, group_count_x, group_count_y, group_count_z)`.
+
+#### 4.7.5 Synchronization & Memory Barriers
+##### 4.7.5.1 Importance of Synchronization in Compute
+GPU operations, including compute shaders, can execute asynchronously and out-of-order relative to CPU commands and other GPU operations. Memory barriers are crucial to ensure that reads happen after writes, and that dependencies between operations are correctly observed.
+
+##### 4.7.5.2 Using SituationCmdPipelineBarrier
+The primary tool for synchronization is `SituationCmdPipelineBarrier`. It provides fine-grained control by explicitly defining the source of a memory dependency (the producer stage) and the destination (the consumer stage). This allows the driver to create a much more efficient barrier than a coarse, "sledgehammer" approach.
+
+- **Signature:** `SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags);`
+- **Parameters:**
+    - `cmd`: The command buffer to record the barrier into.
+    - `src_flags`: A bitmask of `SituationBarrierSrcFlags` indicating the pipeline stage(s) that **WROTE** the data. For compute, this is typically `SITUATION_BARRIER_COMPUTE_SHADER_WRITE`.
+    - `dst_flags`: A bitmask of `SituationBarrierDstFlags` indicating the pipeline stage(s) that will **READ** the data. If a vertex shader will read the results (e.g., from an SSBO used as a vertex buffer), this would be `SITUATION_BARRIER_VERTEX_SHADER_READ`.
+- **Process:** This function maps the abstract source and destination flags to the precise stage and access masks required by the underlying API (`vkCmdPipelineBarrier` in Vulkan or a combination of flags for `glMemoryBarrier` in OpenGL).
+- **Example: GPU Particle Simulation**
+A common use case is updating particle positions in a compute shader and then immediately rendering them. A barrier is required between the dispatch and the draw call.
+```c
+// 1. Dispatch compute shader to update particle data in an SSBO
+SituationCmdBindComputePipeline(cmd, particle_update_pipeline);
+SituationCmdBindComputeBuffer(cmd, 0, particle_data_ssbo);
+SituationCmdDispatch(cmd, PARTICLE_GROUPS, 1, 1);
+
+// 2. *** CRITICAL BARRIER ***
+//    Ensure the compute shader's writes to the SSBO are finished and visible
+//    before the vertex shader stage attempts to read that data as vertex attributes.
+SituationCmdPipelineBarrier(cmd,
+                          SITUATION_BARRIER_COMPUTE_SHADER_WRITE,
+                          SITUATION_BARRIER_VERTEX_SHADER_READ);
+
+// 3. Draw the particles using a graphics pipeline
+SituationCmdBindPipeline(cmd, particle_render_pipeline);
+// The same SSBO is now used as the source for vertex data
+SituationCmdBindVertexBuffer(cmd, particle_data_ssbo);
+SituationCmdDraw(cmd, PARTICLE_COUNT, 1, 0, 0);
+```
+- **Note on `SituationMemoryBarrier`:**
+The library also provides a simpler, deprecated function `SituationMemoryBarrier(cmd, barrier_bits)`. This function is less optimal as it creates a very coarse barrier. It is provided for backward compatibility or extremely simple cases. For all new development, **`SituationCmdPipelineBarrier` is strongly recommended.**
+
+#### 4.7.6 Destroying Compute Pipelines (SituationDestroyComputePipeline)
+- **Signature:** `SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline);`
+- **Parameters:**
+    - `pipeline`: A pointer to the `SituationComputePipeline` handle to be destroyed. The handle's `id` field will be set to 0 upon successful destruction.
+- **Process:**
+    1.  Validates the input pointer and that the pipeline has a non-zero `id`.
+    2.  Removes the pipeline from the internal tracking list.
+    3.  Backend-Specific Cleanup:
+        - **OpenGL**: Calls `glDeleteProgram(pipeline->gl_program_id)`.
+        - **Vulkan**:
+            a. Waits for the device to be idle (`vkDeviceWaitIdle`) to ensure no commands using the pipeline are pending.
+            b. Destroys the Vulkan objects: `vkDestroyPipeline`, `vkDestroyPipelineLayout`.
+    4.  Invalidates the handle by setting `pipeline->id = 0`.
+
+</details>
+<details>
+<summary><h3>Text Rendering</h3></summary>
+
+### 4.9 Text Rendering
+#### 4.9.1 Simple Text Drawing (SituationDrawTextSimple)
+- **Signature:** `SITAPI void SituationDrawTextSimple(const char* text, float x, float y, float scale, ColorRGBA color);`
+- Draws text character by character using a simple, built-in font (often 8x8 or similar bitmap).
+- Parameters define position (`x`, `y`), size (`scale`), and color.
+- **Note:** As indicated in the library code comments, this method is intentionally slow and intended for debugging or simple UI elements where performance is not critical.
+
+#### 4.9.2 Styled Text Rendering (SituationDrawTextStyled)
+- **Signature:** `SITAPI void SituationDrawTextStyled(SituationFont font, const char* text, float x, float y, float font_size, ColorRGBA color);`
+- Draws high-quality text using pre-rendered font atlases (textures) and Signed Distance Fields (SDF).
+- Requires a `SituationFont` handle, obtained via font loading functions.
+- Offers superior performance and visual quality (smooth scaling, sharp edges) compared to `SituationDrawTextSimple`.
+- Parameters define the font, text string, position, size (`font_size`), and color.
+
+#### 4.9.3 Font Loading & Management
+- `SITAPI SituationFont SituationLoadFontFromFile(const char* filepath);`
+    - Loads a TrueType Font (TTF) file.
+    - Internally uses `stb_truetype` to parse the font and generate SDF data for an atlas texture.
+    - Returns a `SituationFont` handle. Check `font.id != 0`.
+- `SITAPI void SituationDestroyFont(SituationFont* font);`
+    - Destroys a loaded font, freeing the associated atlas texture and `stbtt_fontinfo` data.
+    - Invalidates the handle.
+
+</details>
+<details>
+<summary><h3>2D Rendering & Drawing</h3></summary>
+
+### 4.10 2D Rendering & Drawing
+While "Situation" is a powerful 3D rendering library, it also provides a comprehensive and high-performance suite of tools specifically for classic 2D drawing. This is ideal for building user interfaces, debugging overlays, data visualizations, or complete 2D games. All 2D drawing functions operate within the Command Buffer model.
+
+#### 4.10.1  2D Coordinate System & Camera
+For all 2D drawing commands, "Situation" automatically establishes a 2D orthographic coordinate system. The origin (0, 0) is at the **top-left** corner of the current render target (either the main window or a Virtual Display). The X-axis increases to the right, and the Y-axis increases downwards. You do not need to set up a 3D camera or projection matrix; the library manages this internally for all `SituationCmdDraw*` 2D functions.
+
+#### 4.10.2  Drawing Basic Shapes
+The library provides commands for rendering primitive geometric shapes, which form the building blocks of any 2D scene.
+
+##### 4.10.2.1 Rectangles (SituationCmdDrawQuad)
+This is the primary function for drawing solid-colored rectangles. It uses the library's internal, optimized quad renderer.
+- **Signature:** `SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color);`
+- `model`: A `mat4` transformation matrix used to set the rectangle's position, size, and rotation. Use `cglm` helpers (`glm_translate`, `glm_scale`, `glm_rotate`) to build this matrix.
+- `color`: A normalized `vec4` representing the RGBA color of the quad.
+
+##### 4.10.2.2 Lines & Circles (Concept)
+While not yet implemented, the API is designed to easily accommodate high-level commands for drawing other primitives like lines (`SituationCmdDrawLine`), circles (`SituationCmdDrawCircle`), and polygons.
+
+#### 4.10.3  Drawing Textures (Sprites)
+This is the core of 2D rendering, allowing you to draw images and sprite sheets to the screen.
+
+##### 4.10.3.1 Loading Textures
+First, load your image file into a `SituationTexture` handle using the functions described in section `4.6.3`.
+- `SituationTexture my_sprite = SituationCreateTexture(SituationLoadImage("assets/player.png"), true);`
+
+##### 4.10.3.2 Drawing a Full Texture (SituationCmdDrawTexture)
+This high-level command draws a texture with transformations and a color tint.
+- **Signature:** `SITAPI void SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, vec2 position, vec4 tint);`
+- `texture`: The `SituationTexture` to draw.
+- `position`: The top-left destination coordinate `(x, y)` on the render target.
+- `tint`: A `vec4` color multiplier. White `{1,1,1,1}` draws the texture with its original colors.
+
+##### 4.10.3.3 Advanced Sprite Drawing (SituationCmdDrawTextureEx)
+For sprite sheets, rotation, and scaling, an extended version provides more control.
+- **Signature:** `SITAPI void SituationCmdDrawTextureEx(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source_rect, Rectangle dest_rect, vec2 origin, float rotation, vec4 tint);`
+- `source_rect`: The rectangular region of the texture to draw (for sprite sheets).
+- `dest_rect`: The destination rectangle on the screen, defining position and size.
+- `origin`: The rotation pivot point, relative to the top-left of the destination rectangle. `(0,0)` pivots from the top-left corner.
+- `rotation`: The rotation in degrees.
+- `tint`: The color tint.
+
+#### 4.10.4  Text Rendering
+The library includes a powerful text rendering system suitable for UI, HUDs, and any in-game text. For a full API reference, see section `4.9`.
+- **High-Quality Styled Text:** Use `SituationDrawTextStyled` for crisp, anti-aliased text with support for TrueType fonts (.ttf). This is the recommended function for all user-facing text.
+- **Simple Debug Text:** Use `SituationDrawTextSimple` for quick, unstyled text output, ideal for debugging information where performance and visual quality are not critical.
+
+#### 4.10.5  UI & Layer Management
+"Situation" provides two key features that are essential for building complex 2D UIs and managing render layers.
+
+##### 4.10.5.1 Scissor/Clipping (SituationCmdSetScissor)
+The scissor command restricts all subsequent drawing to a specific rectangular area on the screen. This is indispensable for creating UI elements like scrollable lists, text boxes, or windows where content must be clipped to a boundary.
+- See section `4.6.8.5` for the full API reference.
+- **Example workflow:**
+  1. Call `SituationCmdSetScissor(cmd, panel_x, panel_y, panel_width, panel_height);`
+  2. Draw all content that should appear inside the panel.
+  3. Disable the scissor by setting it to the full screen size.
+
+##### 4.10.5.2 Virtual Displays as UI Layers
+The Virtual Display system (see `4.6.5`) is a perfect tool for 2D layer management. You can render an entire UI screen or game layer to an off-screen Virtual Display first. This allows you to:
+- Apply shaders and post-processing effects to the entire UI layer at once.
+- Scale a low-resolution UI to a high-resolution screen with pixel-perfect filtering (`SITUATION_SCALING_INTEGER`).
+- Easily manage render order using the `z_order` property when compositing the layers back to the main window.
+</details>
+
+</details>
+
+
+
+
+
+---
+## License (MIT)
+
+"Situation" is licensed under the permissive MIT License. In simple terms, this means you are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software for both commercial and private projects. The only requirement is that you include the original copyright and license notice in any substantial portion of the software or derivative work you distribute. This library is provided "as is", without any warranty.
+
+---
+
+Copyright (c) 2025 Jacques Morel
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+<details>
+<summary><h3>Examples & Tutorials</h3></summary>
+
+### 6.1 Basic Triangle Rendering
+This example demonstrates the minimal steps required to render a single, colored triangle using `situation.h`. It covers window setup, shader creation, mesh definition, and the core rendering loop.
+
+The full source code for this example can be found in `examples/basic_triangle.c`.
+
+### 6.2 Loading and Rendering a 3D Model
+This example shows how to load a 3D model from a file (e.g., Wavefront .OBJ) and render it using `situation.h`. It assumes the existence of a function like `SituationLoadModelFromObj` (based on library snippets) or a similar model loading mechanism.
+
+The full source code for this example can be found in `examples/loading_and_rendering_a_3d_model.c`.
+
+### 6.3 Playing Background Music
+This example demonstrates how to load and play a sound file (e.g., WAV, OGG) in a continuous loop using the audio capabilities of `situation.h`.
+
+The full source code for this example can be found in `examples/playing_background_music.c`.
+
+### 6.4 Handling Keyboard and Mouse Input
+This example shows how to query the state of keyboard keys and the mouse position within the main application loop, and how to use this input to control simple application behavior (e.g., moving an on-screen element or closing the window).
+
+The full source code for this example can be found in `examples/handling_keyboard_and_mouse_input.c`.
+
+### 6.5 Compute Shader Example: Image Processing (SSBO Version - Updated for Persistent Descriptor Sets)
+This example demonstrates using compute shaders with `situation.h` to perform a simple image processing task (inverting colors) by reading from and writing to Shader Storage Buffer Objects (SSBOs). This approach uses the confirmed API function `SituationCmdBindComputeBuffer`, which now correctly implements the high-performance, persistent descriptor set model for Vulkan.
+
+The full source code for this example can be found in `examples/compute_shader_image_processing.c`.
+
+#### 6.5.1 Problem Definition (Updated)
+We want to take the pixel data of an image (already loaded into a `SituationBuffer` configured as an SSBO) and invert its colors using the GPU compute shader. The result will be written to another `SituationBuffer`.
+**Crucial Note on Performance:** The library now ensures that binding these buffers for the compute shader is highly efficient. When a `SituationBuffer` is created using `SituationCreateBuffer`, the Vulkan backend internally:
+1.  Allocates a `VkBuffer` and `VmaAllocation`.
+2.  **Crucially:** Allocates a *persistent* `VkDescriptorSet` from a dedicated pool (`sit_gs.vk.persistent_descriptor_pool`).
+3.  Immediately populates this descriptor set with the buffer's `VkBuffer` handle.
+4.  Stores this `VkDescriptorSet` within the `SituationBuffer` struct (`buffer.descriptor_set`).
+This means that subsequent binding operations are extremely fast, as they do not involve any runtime allocation or update of descriptor sets.
+
+#### 6.5.2 Compute Shader Code (GLSL using SSBOs)
+The shader reads RGBA values from an input SSBO, inverts them, and writes the result to an output SSBO. Each invocation processes one pixel.
+
+#### 6.5.3 Host Code Walkthrough (Init, Create, Bind Buffers, Dispatch, Sync, Destroy)
+This C code shows how to prepare data, create buffers, load the shader, bind resources, dispatch the compute job, synchronize, and clean up using the *existing* `situation.h` API.
+
+### 6.6 Example: GPU Particle Simulation and Rendering (Concept)
+This example concept demonstrates a fundamental and powerful technique: combining compute and graphics pipelines within a single frame. It illustrates how to use a compute shader to update simulation data (like particle positions and velocities) stored in GPU buffers, and then immediately use a standard graphics pipeline to render the results in the same frame.
+
+A conceptual implementation for this example can be found in `examples/gpu_particle_simulation.c`.
+
+#### 6.6.1 Scenario
+The core idea is to perform calculations on the GPU (using a compute shader) and then visualize the results (using a graphics shader) without stalling the pipeline or introducing race conditions.
+
+1. **Compute Shader:** A compute shader operates on a buffer of particle data (e.g., struct { vec2 position; vec2 velocity; }). It reads the current state,
+applies simulation logic (e.g., physics updates like velocity integration, applying forces), and writes the new state back to the same or a different buffer.
+2. **Graphics Shader:** A vertex shader (potentially using instancing) reads the updated particle data from the buffer and uses it to position geometry
+(e.g., a quad or sprite) for each particle on the screen.
+3. **Synchronization:** The critical aspect is ensuring the compute shader's writes are globally visible and finished before the vertex shader attempts
+to read that data. This requires explicit synchronization.
+
+#### 6.6.2 Key APIs Demonstrated
+This example concept highlights the interaction between several situation.h APIs:
+
+- **SituationCreateBuffer / SituationDestroyBuffer:** Used to create the GPU buffer(s) that will store the particle simulation data (positions, velocities).
+These buffers must be created with appropriate usage flags (e.g., SITUATION_BUFFER_USAGE_STORAGE_BUFFER for compute read/write, potentially
+SITUATION_BUFFER_USAGE_VERTEX_BUFFER if used as such in the graphics pipeline, or bound via SituationCmdBindUniformBuffer if accessed as an SSBO).
+- **SituationCreateComputePipelineFromMemory / SituationDestroyComputePipeline:**
+Used to create the compute pipeline that will execute the particle update logic.
+- **SituationCmdBindComputePipeline:** Binds the compute pipeline for subsequent dispatch commands.
+- **SituationCmdBindComputeBuffer:** Binds the particle data buffer to a specific binding point within the compute shader's descriptor set.
+- **SituationCmdDispatch:** Launches the compute shader work groups to perform the particle simulation update.
+- **SituationMemoryBarrier:** Crucially, this function is used after the compute dispatch and before the graphics draw call. It inserts a memory and execution
+barrier to ensure all compute shader invocations have completed their writes (SITUATION_BARRIER_COMPUTE_SHADER_STORAGE_WRITE) and that these writes are
+visible to the subsequent graphics pipeline stages that will read the data (SITUATION_BARRIER_VERTEX_SHADER_STORAGE_READ or similar). Without this
+barrier, the graphics pipeline might read stale or partially updated data.
+- **SituationCmdBindPipeline (Graphics):** Binds the graphics pipeline used for rendering the particles.
+- **SituationCmdBindVertexBuffer / SituationCmdBindIndexBuffer:** Binds the mesh data (e.g., a simple quad) used for instanced rendering of particles.
+- **SituationCmdBindUniformBuffer / SituationCmdBindTexture:** Binds resources needed by the graphics shaders (e.g., the particle data buffer if accessed as an SSBO, textures for particle appearance).
+- **SituationCmdDrawIndexedInstanced / SituationCmdDrawInstanced:** Renders the particle geometry, typically using instancing where the instance count equals
+the number of particles, and the instance ID is used in the vertex shader to fetch data from the particle buffer.
+
+#### 6.6.3 Purpose
+This conceptual example should clarify the intended workflow for integrating compute-generated data into subsequent graphics rendering passes.
+It emphasizes the essential role of SituationMemoryBarrier for correctness when sharing data between different pipeline types within the same command stream.
+This bridges the gap between the existing separate compute and graphics examples, showing how they can be combined effectively.
+</details>
+
+
+<details>
+<summary><h3>Frequently Asked Questions (FAQ) & Troubleshooting</h3></summary>
+
+### 7.1 Common Initialization Failures
+- **GLFW Init Failed:** Check GLFW installation, system libraries (X11 on Linux).
+- **OpenGL Loader Failed:** Ensure \`GLAD\` is compiled and linked correctly when using \`SITUATION_USE_OPENGL\`.
+- **Vulkan Instance/Device Failed:** Verify Vulkan SDK installation, compatible driver. Enable validation layers (\`init_info.enable_vulkan_validation = true;\`) for detailed errors.
+- **Audio Device Failed:** Check system audio settings, permissions.
+
+### 7.2 "Resource Invalid" Errors
+- Occur when trying to use a resource handle (Shader, Mesh, Texture, Buffer, ComputePipeline) that hasn't been created successfully (\`id == 0\`) or has already been destroyed.
+
+### 7.3 Performance Considerations
+- Minimize state changes (binding different shaders, textures) within a single command buffer recording.
+- Batch similar draw calls.
+- Use \`SituationDrawTextStyled\` instead of \`SituationDrawTextSimple\` for significant text rendering.
+- Profile your application to identify bottlenecks.
+
+### 7.4 Backend-Specific Issues (OpenGL vs. Vulkan)
+- OpenGL might be easier to set up initially but can have driver-specific quirks.
+- Vulkan offers more explicit control and potentially better performance but has a steeper learning curve and more verbose setup.
+
+### 7.5 Debugging Tips (Validation Layers, Error Messages)
+- Always check the return value of \`SituationInit\` and resource creation functions.
+- Use \`SituationGetLastErrorMsg()\` to get detailed error descriptions.
+- For Vulkan, enable validation layers during development (\`init_info.enable_vulkan_validation = true;\`) to catch API misuse.
 </details>
