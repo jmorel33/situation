@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.1
+*   Core API library v2.3.1A
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -1822,6 +1822,7 @@ typedef struct {
         void* cursor_pos_callback_user_data;
         SituationScrollCallback scroll_callback;
         void* scroll_callback_user_data;
+        ma_mutex mutex;
     } mouse;
     
     // --- Cursor Management ---
@@ -5379,8 +5380,8 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
             vkDestroyPipelineLayout(sit_gs.vk.device, shader.pipeline_layout, NULL);
         }
         if (error_code) *error_code = SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
-        // shader.id should still be 0 from initialization
-        return shader; // Return invalid shader
+
+        return (SituationShader){0}; // Return invalid shader
     }
 }
 
@@ -7455,42 +7456,33 @@ SITAPI void SituationUpdateTimers(void) {
 
 /**
  * @brief [DEPRECATED] Polls for input events and updates all internal timers.
- * @details This function was the original main loop helper, combining event polling and timer updates into a single call. It has been deprecated in favor of calling `SituationPollInputEvents()` and `SituationUpdateTimers()` separately.
+ * @details This function is deprecated and will be removed in a future version.
+ *          It combines event polling and timer updates, which is less explicit and can lead to off-by-one-frame bugs.
+ *          Please update your main loop to use `SituationPollInputEvents()` and `SituationUpdateTimers()` separately for a clearer and more robust structure.
  *
- * @deprecated This function is deprecated as of v2.x and will be removed in a future version. Please update your main loop to use the new, more explicit workflow.
- *
- * @par Reason for Deprecation & New Workflow
- *   The single `SituationUpdate()` call was found to be too monolithic and hid the logical separation between two distinct phases of a frame: gathering input and updating state. The new workflow provides clearer intent and more control over the main loop structure.
- *
- *   **Old Workflow (Deprecated):**
- *   ```c
- *   while (!SituationWindowShouldClose()) {
- *       SituationUpdate(); // Does everything at once.
- *       // ... game logic ...
- *       // ... rendering ...
- *   }
- *   ```
- *
- *   **New Workflow (Correct):**
+ * @par New Workflow (Correct):
  *   The recommended main loop structure is now:
  *   ```c
  *   while (!SituationWindowShouldClose()) {
- *       // 1. GATHER INPUT: Poll all OS events. This updates the state for IsKeyPressed, GetMousePosition, etc.
+ *       // 1. GATHER INPUT: Poll all OS events.
  *       SituationPollInputEvents();
  *
- *       // 2. UPDATE STATE: Update all internal timers and calculate delta time for the current frame.
+ *       // 2. UPDATE STATE: Update all internal timers and calculate delta time.
  *       SituationUpdateTimers();
  *       float delta_time = SituationGetFrameTime();
  *
- *       // 3. YOUR LOGIC: Use the fresh input state and delta time to update your application.
+ *       // 3. YOUR LOGIC: Use fresh input and delta time to update your application.
  *       UpdatePlayer(delta_time);
  *
  *       // 4. RENDER: Draw the new state of your application.
- *       RenderScene();
+ *       if (SituationAcquireFrameCommandBuffer()) {
+ *           SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+ *           // ... record your drawing commands ...
+ *           SituationEndFrame();
+ *       }
  *   }
  *   ```
- *   This explicit separation ensures that input is always processed before logic, and that logic is always updated before rendering, which prevents a class of common off-by-one-frame bugs and makes the application flow easier to reason about.
- *
+ * @deprecated Use `SituationPollInputEvents()` followed by `SituationUpdateTimers()`.
  * @see SituationPollInputEvents(), SituationUpdateTimers()
  */
 SITAPI void SituationUpdate(void) {
@@ -14978,18 +14970,23 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
 /**
  * @brief Creates a new virtual display (an off-screen framebuffer).
  *
- * @details Allocates necessary graphics resources (FBO/Texture for OpenGL, Image/View/RenderPass for Vulkan) for a new virtual display. It serves as an off-screen rendering target for a scene or UI layer.
- *          The display is initially marked as dirty, meaning it should be rendered to before compositing.
+ * @details Allocates all necessary graphics resources for a new virtual display, which serves as an independent, off-screen rendering target. The created display can be rendered to and then composited onto another target (like the main window) using `SituationRenderVirtualDisplays`.
+ *
+ * @par Backend-Specific Behavior
+ * - **OpenGL:** Creates a Framebuffer Object (FBO), a color texture attachment (`GL_TEXTURE_2D`), and a depth renderbuffer attachment (`GL_RENDERBUFFER`). The texture's filtering mode is set based on the `scaling_mode`.
+ * - **Vulkan:** Creates a comprehensive set of resources: a `VkImage` with `VmaAllocation` for color, another for depth, a `VkImageView` for each, a dedicated `VkRenderPass`, a `VkFramebuffer` to connect them, and a `VkSampler` configured for the specified `scaling_mode`.
+ *   **Critically, it also pre-allocates and caches a persistent `VkDescriptorSet`** within the returned handle. This makes compositing this display in Vulkan an extremely high-performance operation, as no descriptor sets need to be allocated or updated in the main render loop.
  *
  * @param resolution The internal resolution of the virtual display (e.g., {320.0f, 240.0f}).
- *                   Width and height will be clamped to a minimum of 1.0f.
- * @param frame_time_mult A multiplier for this display's internal clock, used for slow-motion or fast-forward effects during compositing. Default is 1.0.
+ * @param frame_time_mult A multiplier for this display's internal clock, used for slow-motion or fast-forward effects.
  * @param z_order The rendering order during compositing. Lower numbers are drawn first (further back).
- * @param scaling_mode The desired scaling and filtering method when compositing this display onto a target of a different size (e.g., main window).
- * @param blend_mode The desired blend mode for compositing this display over/under others.
+ * @param scaling_mode The desired scaling and filtering method for compositing.
+ * @param blend_mode The desired blend mode for compositing.
+ *
  * @return The integer ID (>= 0) of the newly created virtual display.
- *         Returns -1 if creation fails (e.g., limit reached, resource allocation failed).
- *         Check `SituationGetLastErrorMsg()` for details on failure.
+ * @return -1 if creation fails (e.g., limit reached, resource allocation failed). Check `SituationGetLastErrorMsg()` for details.
+ *
+ * @note The caller is **responsible** for destroying the virtual display using `SituationDestroyVirtualDisplay()` to prevent GPU memory leaks.
  */
 SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode) {
     if (!sit_gs.is_initialized) {
@@ -15122,28 +15119,33 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
     framebuffer_info.layers = 1;
     if (vkCreateFramebuffer(sit_gs.vk.device, &framebuffer_info, NULL, &vd->framebuffer) != VK_SUCCESS) goto cleanup_vulkan;
 
-    // --- 6. Create the Descriptor Set ---
-    // This assumes a layout for `sampler2D` has been created during main init.
+    // --- 6. Create the Persistent Descriptor Set for this VD ---
     VkDescriptorSetAllocateInfo alloc_info_desc = {};
     alloc_info_desc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info_desc.descriptorPool = sit_gs.vk.descriptor_pool;
+    alloc_info_desc.descriptorPool = sit_gs.vk.descriptor_pool; // Use the main pool
     alloc_info_desc.descriptorSetCount = 1;
-    alloc_info_desc.pSetLayouts = &sit_gs.vk.image_sampler_layout;
-    if (vkAllocateDescriptorSets(sit_gs.vk.device, &alloc_info_desc, &vd->descriptor_set) != VK_SUCCESS) goto cleanup_vulkan;
-    
+    alloc_info_desc.pSetLayouts = &sit_gs.vk.image_sampler_layout; // The layout for a single sampler
+
+    // This descriptor set will now live with the VD for its entire lifetime
+    if (vkAllocateDescriptorSets(sit_gs.vk.device, &alloc_info_desc, &vd->vk.descriptor_set) != VK_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for VD.");
+        goto cleanup_vulkan; // Use your existing cleanup path
+    }
+
     VkDescriptorImageInfo image_desc_info = {};
-    image_desc_info.sampler = vd->sampler;
-    image_desc_info.imageView = vd->image_view;
+    image_desc_info.sampler = vd->vk.sampler;
+    image_desc_info.imageView = vd->vk.image_view;
     image_desc_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkWriteDescriptorSet write_set = {};
     write_set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write_set.dstSet = vd->descriptor_set;
-    write_set.dstBinding = 0;
+    write_set.dstSet = vd->vk.descriptor_set;
+    write_set.dstBinding = SIT_SAMPLER_BINDING_VD_SOURCE; // Use the contract
     write_set.dstArrayElement = 0;
     write_set.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write_set.descriptorCount = 1;
     write_set.pImageInfo = &image_desc_info;
+
     vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write_set, 0, NULL);
     
     goto end_create;
@@ -15214,13 +15216,16 @@ end_create:
 /**
  * @brief Destroys a virtual display and frees its associated graphics resources.
  *
- * @details Cleans up all backend-specific resources (FBO, textures, renderbuffers for OpenGL, Images, Views, RenderPasses, Samplers for Vulkan) associated with the virtual display.
- *          The ID becomes invalid after this call.
+ * @details Cleans up all backend-specific resources associated with the virtual display and marks its ID as available. This is the only correct way to release a virtual display.
+ *
+ * @par Backend-Specific Behavior
+ * - **OpenGL:** Deletes the FBO, color texture, and depth renderbuffer.
+ * - **Vulkan:** Waits for the device to be idle to ensure resources are not in use, then destroys the `VkFramebuffer`, `VkRenderPass`, `VkSampler`, `VkImageView`s, and the underlying `VkImage`s and their memory allocations. It also **frees the persistent `VkDescriptorSet`** back to its pool.
  *
  * @param display_id The ID of the virtual display to destroy.
  * @return SITUATION_SUCCESS on successful destruction.
- *         Returns SITUATION_ERROR_NOT_INITIALIZED if the library isn't initialized.
- *         Returns SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID if the ID is invalid or not in use.
+ * @return SITUATION_ERROR_NOT_INITIALIZED if the library isn't initialized.
+ * @return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID if the ID is invalid or not in use.
  */
 SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
     if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
@@ -15232,6 +15237,11 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
 #if defined(SITUATION_USE_VULKAN)
     // IMPORTANT: Wait for the GPU to finish all work before destroying resources it might be using.
     vkDeviceWaitIdle(sit_gs.vk.device);
+    
+    // This assumes the pool was created with VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
+    if (vd->vk.descriptor_set != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(sit_gs.vk.device, sit_gs.vk.descriptor_pool, 1, &vd->vk.descriptor_set);
+    }
     
     // Destroy Vulkan resources in the reverse order of their creation.
     // Descriptor sets are freed with their pool, so we don't free it individually here.
@@ -15258,14 +15268,17 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
 /**
  * @brief Changes the scaling and filtering mode for a virtual display at runtime.
  *
- * @details Updates how the virtual display's internal texture is sampled and scaled when rendered to a target of a different size during compositing.
- *          For OpenGL, updates texture parameters. For Vulkan, recreates the sampler and updates descriptors.
+ * @details Updates how the virtual display's internal texture is sampled when rendered during compositing. This allows switching between blurry (linear) and sharp (nearest-neighbor) scaling on the fly.
+ *
+ * @par Backend-Specific Behavior
+ * - **OpenGL:** Directly updates the `GL_TEXTURE_MIN_FILTER` and `GL_TEXTURE_MAG_FILTER` parameters of the existing texture object.
+ * - **Vulkan:** This is a more involved operation. It destroys the old `VkSampler`, creates a new one with the desired filter mode, and then updates the virtual display's persistent descriptor set to point to the new sampler.
  *
  * @param display_id The ID of the virtual display to configure.
- * @param scaling_mode The new scaling mode to apply.
+ * @param scaling_mode The new scaling mode to apply (`SITUATION_SCALING_STRETCH`, `SITUATION_SCALING_FIT`, `SITUATION_SCALING_INTEGER`).
  * @return SITUATION_SUCCESS on successful update.
- *         Returns SITUATION_ERROR_NOT_INITIALIZED if the library isn't initialized.
- *         Returns SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID if the ID is invalid or not in use.
+ * @return SITUATION_ERROR_NOT_INITIALIZED if the library isn't initialized.
+ * @return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID if the ID is invalid or not in use.
  */
 SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, SituationScalingMode scaling_mode) {
     if (!sit_gs.is_initialized) {
@@ -15364,38 +15377,35 @@ static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
 }
 
 /**
- * @brief Composites all currently visible virtual displays onto the main window's framebuffer.
+ * @brief Composites all visible virtual displays onto the current render target.
  *
- * @details This function iterates through all virtual displays marked as `visible`.
- *          For each, it draws a screen-space quad (using the display's internal texture) to the main window's framebuffer (ID 0). The position, size, opacity, and blending are controlled by the properties set via `SituationConfigureVirtualDisplay`.
+ * @details This function iterates through all virtual displays marked as `visible`, sorts them by their `z_order`, and draws them as textured quads. The final position, size, opacity, and blending are controlled by the properties set via `SituationConfigureVirtualDisplay`. This function is typically called once per frame, after all individual VDs have been rendered to, to combine them into a final image.
  *
- * @b Backend-Specific @b Behavior
- * - @b OpenGL:
- *   - Assumes the main window framebuffer (ID 0) is the target. The caller is responsible for ensuring this (e.g., by ending any Virtual Display render pass or binding framebuffer 0).
- *   - Performs a critical @b VAO @b swap: It temporarily binds its own private  VAO (`sit_gs.vd_quad_vao`), which is pre-configured for drawing simple textured screen-space quads. This isolates the internal rendering state from the user's `global_vao_id`.
- *   - Uses the internal shader program (`sit_gs.vd_shader_program_id` or `sit_gs.composite_shader_program_id` depending on blend mode) for compositing.
- *   - After drawing all VDs, it restores the OpenGL state:
- *     - Re-binds the user's `global_vao_id`.
- *     - Re-binds the shader program that was active before this function was called.
- *     - Leaves other state (like framebuffer binding, viewport) as it was found.
- * - @b Vulkan:
- *   - Records draw commands into the provided `cmd` buffer.
- *   - Uses the appropriate graphics pipeline and descriptor sets for compositing.
- *   - Handles synchronization as needed within the command buffer.
+ * @par Backend-Specific Behavior & Feature Status
  *
- * @b Usage @b Notes
- * - This function is typically called once per frame, after all Virtual Display content has been rendered (via `SituationCmdBeginRenderToDisplay`/ `SituationCmdEndRender`) and before the final `SituationEndFrame`.
- * - It is designed to be efficient by sorting VDs by Z-order and potentially skipping invisible or fully transparent ones.
- * - The rendering order respects the `z_order` property of each virtual display.
+ * @b OpenGL (Fully Featured):
+ *   - **State Management:** Performs a critical state save-and-restore. It remembers the user's currently bound shader program and Vertex Array Object (VAO), performs its work with its own private resources, and then restores the user's state, guaranteeing a non-destructive operation.
+ *   - **Rendering Isolation:** It binds its own private VAO (`sit_gs.gl.vd_quad_vao`), which is pre-configured for drawing textured screen-space quads. This isolates the compositing process from any vertex state the user has configured on their main VAO.
+ *   - **Advanced Blending:** Fully supports all `SituationBlendMode` enums. For simple modes (Alpha, Additive, etc.), it uses fixed-function `glBlendFunc`. For advanced Photoshop-style modes (Overlay, Soft Light, etc.), it automatically switches to a specialized shader, copies the current framebuffer content to a temporary texture using `glCopyTexSubImage2D`, and performs the blend in the shader.
+ *
+ * @b Vulkan (High-Performance, Lacks Advanced Blending):
+ *   - **Performance Model:** Implements a high-performance rendering path. It binds the compositing pipeline and the per-frame projection UBO only once before the loop.
+ *   - **Persistent Descriptors:** For each virtual display, it leverages the persistent descriptor set model by recording a fast `vkCmdBindDescriptorSets` command using the VD's pre-cached `descriptor_set`. This avoids costly runtime descriptor allocation and is the optimal way to handle texture binding in Vulkan.
+ *   - **Push Constants:** Per-display transformation data (model matrix) and opacity are sent efficiently via push constants, minimizing per-draw overhead.
+ *   - **Feature Limitation:** The current Vulkan implementation **only supports simple blend modes** (Alpha, Additive, etc.) via its single compositing pipeline. The complex logic required for advanced, multi-pass blend modes (which involves copying the swapchain image and using multiple descriptor sets) is **not yet implemented**. Calling this function with an advanced blend mode on Vulkan will currently fall back to simple alpha blending.
+ *
+ * @par Usage Notes
+ * - This function is typically called once per frame, after all Virtual Display content has been rendered and before the final `SituationEndFrame`.
+ * - The rendering order respects the `z_order` property of each virtual display, with lower numbers being drawn first (further back).
  *
  * @param cmd The command buffer to record rendering commands into.
- *            - For @b OpenGL: This parameter is @b ignored because OpenGL is immediate-mode. Commands are executed directly. The state swap mechanism handles context isolation.
- *            - For @b Vulkan: This must be a valid `VkCommandBuffer` in the recording state. The function records draw commands into it.
+ *            - For **OpenGL:** This parameter is **ignored** as it is an immediate-mode API.
+ *            - For **Vulkan:** This must be a valid `VkCommandBuffer` in the recording state.
  *
  * @note This function requires the library to be initialized (`SituationInit` must have been called successfully).
- * @warning This function modifies internal renderer state (e.g., VAO, program binding for OpenGL). The state restoration logic (especially for OpenGL) ensures the user's context is preserved, but it relies on
- *          correct implementation of the VAO abstraction.
- * @see SituationCreateVirtualDisplay(), SituationConfigureVirtualDisplay(), SituationCmdBeginRenderToDisplay(), SituationCmdEndRender(), SituationEndFrame()
+ * @warning This function modifies internal renderer state. The state restoration logic (especially for OpenGL) ensures the user's context is preserved, but it is a critical part of the function's contract.
+ *
+ * @see SituationCreateVirtualDisplay(), SituationConfigureVirtualDisplay(), SituationCmdBeginRenderPass(), SituationCmdEndRenderPass(), SituationEndFrame()
  */
 SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     // --- Initial Checks ---
@@ -15663,31 +15673,20 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
         }
         // --- End Matrix Calculation ---
 
-        // 5. Dynamically allocate and bind this VD's descriptor set for its texture.
-        VkDescriptorSetAllocateInfo alloc_info = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = sit_gs.vk.descriptor_pool, .descriptorSetCount = 1, .pSetLayouts = &sit_gs.vk.image_sampler_layout };
-        VkDescriptorSet temp_vd_set;
-        if (vkAllocateDescriptorSets(sit_gs.vk.device, &alloc_info, &temp_vd_set) != VK_SUCCESS) {
-            continue; // Skip rendering this VD if allocation fails
-        }
-
-        VkDescriptorImageInfo image_info = { .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, .imageView = vd->vk.image_view, .sampler = vd->vk.sampler };
-        VkWriteDescriptorSet write = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = temp_vd_set, .dstBinding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .pImageInfo = &image_info };
-        vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write, 0, NULL);
+        // 5. Bind the VD's pre-cached descriptor set for its texture (Set 1).
+        // This is extremely fast as it's just recording a command. No allocation, no updates.
+        vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline_layout, 1, 1, &vd->vk.descriptor_set, 0, NULL);
         
-        vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline_layout, 1, 1, &temp_vd_set, 0, NULL);
-        
-        // 6. Use push constants to send per-draw data (model matrix, opacity, blend mode)
+        // 6. Use push constants for per-draw data (model matrix and opacity).
         struct {
             mat4 model;
             float opacity;
-            int blend_mode; // Corresponds to SituationBlendMode enum
         } push_data;
 
         glm_mat4_copy(model_matrix, push_data.model);
         push_data.opacity = vd->opacity;
-        push_data.blend_mode = vd->blend_mode;
 
-        vkCmdPushConstants(vk_cmd, sit_gs.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(push_data), &push_data);
+        vkCmdPushConstants(vk_cmd, sit_gs.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
 
         // 7. Draw the quad
         vkCmdDraw(vk_cmd, 4, 1, 0, 0);
@@ -17620,7 +17619,7 @@ SITAPI SituationImage SituationImageCopy(SituationImage image) {
  * @details This function performs a fast, direct memory copy of a rectangular region of pixels from a source image to a destination image. It does not perform any alpha blending; the source pixels completely overwrite the destination pixels.
  *
  * @par Boundary Handling
- *   The function is robust against invalid coordinates. It automatically calculates the intersection of the source and destination rectangles and will only copy the overlapping area, preventing any out-of-bounds memory access.
+ *   The function is robust against invalid coordinates. It automatically calculates the intersection of the source rectangle (clamped to the source image's bounds) and the destination area (clamped to the destination image's bounds) and will only copy the overlapping region. This prevents any out-of-bounds memory access.
  *
  * @param[in,out] dst A pointer to the destination `SituationImage` to be modified.
  * @param src The source `SituationImage` to draw from.
@@ -17835,11 +17834,20 @@ SITAPI void SituationImageCrop(SituationImage *image, Rectangle crop) {
 }
 
 /**
- * @brief Resizes an image in-place to new dimensions.
- * This function uses sRGB-correct resizing for the highest visual quality.
- * @param image A pointer to the SituationImage to be modified.
- * @param newWidth The target width of the image.
- * @param newHeight The target height of the image.
+ * @brief Resizes an image in-place to new dimensions using a high-quality algorithm.
+ * @details This is a destructive operation that modifies the provided `SituationImage` struct. It allocates a new memory buffer for the resized pixel data, performs the scaling, frees the old image data, and then updates the image's `data`, `width`, and `height` members.
+ *
+ * @par Resizing Algorithm
+ *   This function uses the `stb_image_resize` library, specifically the `stbir_resize_uint8_srgb` function. This ensures a high-quality, perceptually correct resize by operating in a linear color space, which is the proper way to handle sRGB images. This prevents the common issue of resized images appearing too dark or having incorrect color tones.
+ *
+ * @warning This function requires the `stb_image_resize.h` implementation to be included in the project. If not available, the function will do nothing and set an error.
+ * @warning If the resize operation fails (e.g., due to a memory allocation error), the original image is left unmodified.
+ *
+ * @param[in,out] image A pointer to the `SituationImage` to be modified.
+ * @param newWidth The target width of the image in pixels. Must be greater than 0.
+ * @param newHeight The target height of the image in pixels. Must be greater than 0.
+ *
+ * @see SituationImageCrop(), SituationImageCopy()
  */
 SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHeight) {
     // 1. --- Validation ---
@@ -17887,8 +17895,15 @@ SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHei
 
 /**
  * @brief Flips an image in-place either vertically, horizontally, or both.
- * @param image A pointer to the SituationImage to be modified.
- * @param mode The type of flip to perform (SIT_FLIP_VERTICAL, SIT_FLIP_HORIZONTAL, SIT_FLIP_BOTH).
+ * @details This is a destructive operation that directly modifies the pixel data of the provided `SituationImage`. The function uses optimized memory operations to perform the flip efficiently.
+ *
+ * @par Flip Modes
+ *   - **`SIT_FLIP_VERTICAL`:** Flips the image top-to-bottom. The top row of pixels becomes the bottom row, and so on. This is commonly needed to correct the orientation of images read from GPU framebuffers (like with `glReadPixels`).
+ *   - **`SIT_FLIP_HORIZONTAL`:** Flips the image left-to-right, creating a mirror image.
+ *   - **`SIT_FLIP_BOTH`:** Performs both a vertical and a horizontal flip. This is equivalent to rotating the image by 180 degrees.
+ *
+ * @param[in,out] image A pointer to the `SituationImage` to be modified.
+ * @param mode The `SituationImageFlipMode` enum specifying the type of flip to perform.
  */
 SITAPI void SituationImageFlip(SituationImage *image, SituationImageFlipMode mode) {
     if (!image || !SituationIsImageValid(*image)) {
@@ -17950,9 +17965,20 @@ SITAPI void SituationImageFlip(SituationImage *image, SituationImageFlipMode mod
 }
 
 /**
- * @brief Converts a color from RGB to HSV color space.
- * @param rgb The input color in RGBA format.
- * @return The converted color in HSV format.
+ * @brief Converts a color from the standard RGBA color space to the HSV (Hue, Saturation, Value) color space.
+ * @details This function transforms a color from its red, green, and blue components into a more intuitive cylindrical-coordinate representation. This is extremely useful for programmatic color manipulation, such as shifting hues, desaturating, or brightening/darkening colors.
+ *
+ * @par Color Space Details
+ *   - **Hue (H):** Represents the pure color (e.g., red, yellow, green). It is returned as an angle from `0.0f` to `360.0f` degrees.
+ *   - **Saturation (S):** Represents the intensity or purity of the color. It ranges from `0.0f` (grayscale/achromatic) to `1.0f` (fully saturated, pure color).
+ *   - **Value (V):** Represents the brightness of the color. It ranges from `0.0f` (black) to `1.0f` (full brightness).
+ *
+ * @param rgb The source `ColorRGBA` struct to convert. The alpha component is ignored.
+ * @return A `ColorHSV` struct containing the equivalent H, S, and V values.
+ *
+ * @note The alpha component of the input `ColorRGBA` is not used in this conversion.
+ *
+ * @see SituationHsvToRgb(), SituationImageAdjustHSV()
  */
 SITAPI ColorHSV SituationRgbToHsv(ColorRGBA rgb) {
     ColorHSV hsv;
@@ -17982,9 +18008,16 @@ SITAPI ColorHSV SituationRgbToHsv(ColorRGBA rgb) {
 }
 
 /**
- * @brief Converts a color from HSV to RGB color space.
- * @param hsv The input color in HSV format.
- * @return The converted color in RGBA format (alpha is set to 255).
+ * @brief Converts a color from the HSV (Hue, Saturation, Value) color space back to the standard RGBA color space.
+ * @details This is the inverse operation of `SituationRgbToHsv`. It transforms a color defined by its hue, saturation, and brightness back into its red, green, and blue components, which are required for display on a screen.
+ *
+ * @param hsv The source `ColorHSV` struct to convert.
+ *            - `h` (Hue) is expected to be in the range [0.0, 360.0]. Values outside this range will be wrapped.
+ *            - `s` (Saturation) and `v` (Value) are expected to be in the range [0.0, 1.0]. Values outside this range will be clamped.
+ *
+ * @return A `ColorRGBA` struct containing the equivalent R, G, and B values. The alpha component is always set to `255` (fully opaque).
+ *
+ * @see SituationRgbToHsv(), SituationImageAdjustHSV()
  */
 SITAPI ColorRGBA SituationHsvToRgb(ColorHSV hsv) {
     ColorRGBA rgb;
@@ -18010,10 +18043,14 @@ SITAPI ColorRGBA SituationHsvToRgb(ColorHSV hsv) {
 
 
 /**
- * @brief Converts a color from a YPQA struct to the RGBA color space.
- * @details This is the primary conversion function. It transforms a color defined by its Luma (Y), Phase (P), and Chroma (Q) into the standard Red, Green, Blue format, and correctly preserves the alpha channel.
- * @param ypq_color The source `ColorYPQA` struct.
- * @return A `ColorRGBA` struct containing the equivalent RGBA values.
+ * @brief Converts a color from the YPQA (Luma, Phase, Quadrature, Alpha) color space back to the standard RGBA color space.
+ * @details This is the inverse operation of `SituationColorToYPQ`. It reconstructs the red, green, and blue components from the color's brightness (Y) and its chroma information (P and Q), and preserves the alpha channel. The conversion uses the standard NTSC YIQ-to-RGB matrix.
+ *
+ * @param ypq_color The source `ColorYPQA` struct to convert.
+ *
+ * @return A `ColorRGBA` struct containing the equivalent R, G, B, and A values. The function includes clamping to ensure the resulting RGB values are within the valid [0-255] range, as certain YPQ combinations can represent out-of-gamut colors.
+ *
+ * @see SituationColorToYPQ()
  */
 SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color) {
     // 1. Map YPQ parameters to YIQ components based on 8-8-8 bit ranges
@@ -18070,11 +18107,19 @@ SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color) {
 }
 
 /**
- * @brief Converts a color from the RGBA color space to the YPQA color space.
- * @details This function transforms a standard Red, Green, Blue color into its equivalent Luma (Y), Phase (P), and Chroma (Q) components, preserving the alpha channel.
- *          The conversion uses the NTSC YIQ matrix to derive the Y, I, and Q components, then converts the I and Q chroma components into polar coordinates to get Phase (angle) and Chroma (amplitude/saturation).
- * @param color The source `ColorRGBA` struct in RGBA format.
- * @return A `ColorYPQA` struct containing the equivalent YPQA values.
+ * @brief Converts a color from the standard RGBA color space to the YPQA (Luma, Phase, Quadrature, Alpha) color space.
+ * @details This function transforms a color into a representation that separates brightness (luma) from color information (chroma). This is analogous to the YIQ color space used in NTSC television broadcasting. This separation is highly useful for effects that modify brightness independently of color, or for creating unique procedural color palettes.
+ *
+ * @par Color Space Details
+ *   - **Y (Luma):** Represents the brightness or grayscale intensity of the color. Stored as an `unsigned char` [0-255].
+ *   - **P (Phase):** Represents the hue of the color as an angle on the chroma plane. Stored as an `unsigned char` [0-255], mapping to a full 360-degree rotation.
+ *   - **Q (Quadrature):** Represents the saturation or intensity of the color as the distance from the grayscale center on the chroma plane. Stored as an `unsigned char` [0-255].
+ *   - **A (Alpha):** The original alpha channel is preserved directly.
+ *
+ * @param color The source `ColorRGBA` struct to convert.
+ * @return A `ColorYPQA` struct containing the equivalent Y, P, Q, and A values.
+ *
+ * @see SituationColorFromYPQ()
  */
 SITAPI ColorYPQA SituationColorToYPQ(ColorRGBA color) {
     // 1. Convert source RGBA (0-255) to normalized floating point (0.0-1.0).
@@ -18116,13 +18161,25 @@ SITAPI ColorYPQA SituationColorToYPQ(ColorRGBA color) {
 }
 
 /**
- * @brief Adjusts the Hue, Saturation, and Value (Brightness) of an image.
- * 
- * @param image A pointer to the SituationImage to be modified.
- * @param hue_shift The amount to shift the hue by, in degrees (-360 to 360).
- * @param sat_factor A multiplier for saturation (1.0 is no change, 0.5 is 50% less, 1.5 is 50% more).
- * @param val_factor A multiplier for value/brightness (1.0 is no change).
- * @param mix The blend factor between the original and adjusted image (0.0 for original, 1.0 for fully adjusted).
+ * @brief Adjusts the Hue, Saturation, and Value (Brightness) of an entire image in-place.
+ * @details This function iterates through every pixel of an image, converts it to the HSV color space, applies the specified transformations, and converts it back to RGBA. This provides a powerful and intuitive way to perform color correction and grading on CPU-side images.
+ *
+ * @param[in,out] image A pointer to the `SituationImage` to be modified.
+ * @param hue_shift The amount to shift the hue of every pixel, in degrees. This value is added to the existing hue, wrapping around the 360-degree color wheel (e.g., a shift of 30 will turn red into orange).
+ * @param sat_factor A multiplier for the saturation of every pixel.
+ *                   - `1.0f` = No change.
+ *                   - `0.0f` = Fully desaturate the image (grayscale).
+ *                   - `2.0f` = Double the saturation (more vivid colors).
+ * @param val_factor A multiplier for the value (brightness) of every pixel.
+ *                   - `1.0f` = No change.
+ *                   - `0.5f` = Halve the brightness.
+ *                   - `1.5f` = Increase brightness by 50%.
+ * @param mix The blend factor between the original and the fully adjusted color, from `0.0f` (no change) to `1.0f` (fully adjusted). This allows you to fade the effect in or out.
+ *
+ * @note This is a destructive operation that modifies the image's pixel data directly.
+ * @note The alpha channel of the image is preserved and not affected by this function.
+ *
+ * @see SituationRgbToHsv(), SituationHsvToRgb()
  */
 SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, float sat_factor, float val_factor, float mix) {
     if (!SituationIsImageValid(*image)) return;
@@ -18370,13 +18427,25 @@ static inline ColorRGBA _SituationColorAlphaBlend(ColorRGBA dst, ColorRGBA src, 
 }
 
 /**
- * @brief Draws a source image onto a destination image with alpha blending and tinting.
+ * @brief Draws a portion of a source image onto a destination image with alpha blending and tinting.
+ * @details This function composites a rectangular region from a source image onto a destination image, respecting the alpha channel of both the source pixels and the provided `tint` color. This is the primary function for drawing sprites or UI elements with transparency.
  *
- * @param dst The destination image to draw onto.
- * @param src The source image to draw from.
- * @param srcRect The rectangular region within the source image to copy.
- * @param dstPos The top-left position on the destination image where drawing should start.
- * @param tint The color to tint the source image with as it's drawn. White (255,255,255,255) means no color change.
+ * @par Blending Formula
+ *   The function uses a standard "Normal" blend mode (SRC over DST). The final color is calculated pixel by pixel:
+ *   - `FinalColor.rgb = TintedSrc.rgb * FinalAlpha + Dst.rgb * (1 - FinalAlpha)`
+ *   - `TintedSrc.rgb = (Src.rgb / 255) * (Tint.rgb / 255)`
+ *   - `FinalAlpha = (Src.a / 255) * (Tint.a / 255)`
+ *
+ * @par Boundary Handling
+ *   Like `SituationImageDraw`, this function is robust against invalid coordinates and will only draw the overlapping area between the source and destination rectangles, preventing out-of-bounds memory access.
+ *
+ * @param[in,out] dst A pointer to the destination `SituationImage` to be modified.
+ * @param src The source `SituationImage` to draw from.
+ * @param srcRect The rectangular region within the source image to use.
+ * @param dstPos The top-left `(x, y)` position on the destination image where drawing should start.
+ * @param tint The color to modulate the source image with as it's drawn. White `{255,255,255,255}` results in no color change.
+ *
+ * @see SituationImageDraw()
  */
 SITAPI void SituationImageDrawAlpha(SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos, ColorRGBA tint) {
     // 1. --- Validation and Intersection Calculation ---
@@ -18480,19 +18549,27 @@ static unsigned char _SituationBilinearSample(const unsigned char *bitmap, int w
 
 /**
  * @brief Draws a single character (codepoint) onto a SituationImage with advanced styling.
- * @details This function can render a character with fill, outline, rotation, and horizontal skew.
- *          It uses a high-quality Signed Distance Field (SDF) method for rendering outlines, and a simpler bitmap method when no outline is requested. For transformations (rotation/skew),
- *          it uses an inverse mapping algorithm with bilinear filtering to ensure smooth, anti-aliased results.
- * @param dst The destination image to draw on.
- * @param font The font to use.
+ * @details This is a powerful, low-level function for high-quality text rendering. It can render a single character with fill, outline, rotation, and horizontal skew.
+ *
+ * @par Rendering Method
+ *   - **With Outline:** Uses a high-quality Signed Distance Field (SDF) method to render smooth, scalable outlines of a precise thickness.
+ *   - **Without Outline:** Uses a simpler, faster anti-aliased bitmap rendering path.
+ *   - **With Transformations:** For rotation or skew, it uses an inverse mapping algorithm with bilinear filtering to sample the glyph, ensuring smooth, high-quality results without aliasing ("jaggies").
+ *
+ * @param[in,out] dst A pointer to the destination `SituationImage` to draw on.
+ * @param font The `SituationFont` to use for rendering.
  * @param codepoint The Unicode codepoint of the character to draw.
- * @param position The top-left position to start drawing (baseline).
+ * @param position The top-left position for the character's baseline.
  * @param fontSize The desired font size in pixels.
- * @param rotationDegrees The rotation of the character in degrees. 0 is no rotation. Positive values rotate counter-clockwise.
- * @param skewFactor A factor for horizontal shearing. 0 is no skew. 0.5 will skew the top of the character 50% of its height to the right.
+ * @param rotationDegrees The rotation of the character in degrees, pivoting around its baseline start. Positive values rotate counter-clockwise.
+ * @param skewFactor A factor for horizontal shearing. `0.0` is no skew. `0.5` will skew the top of the character 50% of its height to the right.
  * @param fillColor The color for the character's interior.
  * @param outlineColor The color for the character's outline.
- * @param outlineThickness The thickness of the outline in pixels. A value of 0 means no outline.
+ * @param outlineThickness The thickness of the outline in pixels. A value of `0.0f` or less disables the outline and uses the faster non-SDF rendering path.
+ *
+ * @note This function is the building block for `SituationImageDrawTextEx`. It is generally more convenient to use the higher-level functions unless you need to control the placement and rendering of each character individually.
+ *
+ * @see SituationImageDrawTextEx()
  */
 SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font, int codepoint, Vector2 position, float fontSize, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness) {
     if (!SituationIsImageValid(*dst) || !font.stbFontInfo) return;
@@ -18638,22 +18715,25 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
 }
 
 /**
- * @brief Draws text onto an image with advanced options for styling, transformation, and spacing.
- * @details This is the recommended function for all stylistic text rendering. It orchestrates calls to the internal `SituationImageDrawCodepoint` function to render each character of a string.
- *          The rotation and skew are applied to the entire line of text, pivoting from the initial `position`.
- *          It correctly handles kerning and character spacing along the transformed baseline, ensuring that rotated or skewed text still flows naturally.
- * @note This function uses a Signed Distance Field (SDF) rendering path to achieve high-quality outlines and smooth anti-aliasing, even when transformed.
- * @param dst The destination image to draw on.
- * @param font The font to use.
+ * @brief Draws a string of text onto an image with advanced options for styling and transformation.
+ * @details This is the recommended function for all stylistic text rendering. It orchestrates calls to the internal `SituationImageDrawCodepoint` function to render each character of a string, correctly handling kerning and character spacing along the transformed baseline.
+ *
+ * @par Rendering Method
+ *   This function uses a Signed Distance Field (SDF) rendering path via `SituationImageDrawCodepoint` to achieve high-quality, anti-aliased outlines and smooth rendering, even when rotated or skewed. For non-rotated text without an outline, it uses a faster, optimized path.
+ *
+ * @param[in,out] dst The destination image to draw on.
+ * @param font The `SituationFont` to use for rendering.
  * @param text The null-terminated string to draw.
- * @param position The top-left anchor position for the text. The transformations pivot around this point.
+ * @param position The top-left anchor position for the text. Transformations pivot around this point.
  * @param fontSize The desired font size in pixels.
- * @param spacing The additional spacing between characters in pixels. This spacing is applied along the text's baseline.
- * @param rotationDegrees The rotation of the entire text block in degrees. 0 is no rotation. Positive values rotate counter-clockwise.
- * @param skewFactor A factor for horizontal shearing applied to each character. 0 is no skew.
+ * @param spacing Additional spacing between characters in pixels, applied along the text's baseline.
+ * @param rotationDegrees The rotation of the entire text block in degrees. `0` is no rotation. Positive values rotate counter-clockwise.
+ * @param skewFactor A factor for horizontal shearing applied to each character. `0.0` is no skew.
  * @param fillColor The color for the characters' interior.
  * @param outlineColor The color for the characters' outline.
- * @param outlineThickness The thickness of the outline in pixels. A value of 0 means no outline.
+ * @param outlineThickness The thickness of the outline in pixels. A value of `0.0f` or less disables the outline.
+ *
+ * @see SituationImageDrawText(), SituationImageDrawCodepoint(), SituationMeasureText()
  */
 SITAPI void SituationImageDrawTextEx(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness) {
     if (!SituationIsImageValid(*dst) || !font.stbFontInfo || !text) return;
