@@ -1,3 +1,53 @@
+Date: 2025-10-31
+Version: 2.3.1A "Refinement"
+
+## DESCRIPTION
+
+Version 2.3.1A is a significant quality-of-life and performance refinement of the "Base" API. This update focuses on improving API safety, enhancing performance on the Vulkan backend, achieving greater feature parity between backends, and improving documentation clarity. While introducing no new major features, this release makes the existing API more robust, efficient, and easier to use correctly.
+
+## CHANGES & IMPROVEMENTS
+
+### [CRITICAL] API & Main Loop Refinement
+
+*   **Deprecated SituationUpdate():** The monolithic SituationUpdate() function has been deprecated. It encouraged a main loop structure that was less explicit and prone to off-by-one-frame input bugs.
+
+*   **New Main Loop Workflow:** Introduced two new core functions, SituationPollInputEvents() and SituationUpdateTimers().
+    -   SituationPollInputEvents() is now the dedicated function for gathering all OS events and updating input state for the current frame.
+    -   SituationUpdateTimers() is the dedicated function for advancing all internal clocks, calculating delta time, and updating joystick/gamepad state.
+
+*   **Updated Documentation:** The API documentation has been updated to reflect this new, clearer main loop structure, providing a best-practice example to guide users.
+
+### [PERFORMANCE] Vulkan Backend Enhancements
+
+*   **High-Performance Virtual Display Compositing:** The SituationRenderVirtualDisplays() function on the Vulkan backend has been completely overhauled. It now uses the "Persistent Descriptor Set" pattern, pre-allocating a descriptor set for each virtual display at creation time. This eliminates all runtime descriptor allocation and updates from the main render loop, resulting in a massive performance improvement when compositing many virtual displays.
+
+*   **Unified & Performant Resource Binding:**
+    -   Introduced SituationCmdBindDescriptorSet() and SituationCmdBindTextureSet() as the new, primary API for binding buffers and textures.
+    -   Deprecated the older, less explicit SituationCmdBindUniformBuffer, SituationCmdBindTexture, and SituationCmdBindComputeBuffer functions, which now wrap the new API.
+    -   This change leverages the persistent descriptor set model for ALL buffers and textures, making resource binding a consistently fast, low-overhead operation on Vulkan.
+
+### [BUG FIXES & STABILITY]
+
+*   **Fixed Input System Crash:** Resolved a critical bug where the mouse input callbacks would attempt to use an uninitialized mutex, leading to a crash. The mouse state struct now correctly contains and initializes its mutex, ensuring thread-safe event handling.
+
+*   **Fixed Vulkan Resource Leak:** Corrected a resource leak in the internal Vulkan pipeline creation logic. The VkPipelineLayout is now properly destroyed if the subsequent vkCreateGraphicsPipelines call fails, preventing leaks on shader compilation or linking errors.
+
+### [DOCUMENTATION & API CLARITY]
+
+*   **Detailed Color Function Docs:** The documentation for all color conversion functions (SituationRgbToHsv, SituationColorToYPQ, etc.) and SituationImageAdjustHSV has been significantly expanded to explain the color spaces, parameter ranges, and algorithms used.
+
+*   **Improved Image Drawing Docs:** The documentation for all SituationImageDraw...() functions has been updated to clarify their distinct rendering methods (bitmap vs. SDF), performance characteristics, boundary handling, and alpha blending formulas.
+
+*   **Added API Safety Functions:** Introduced new helper functions to make the library's manual memory management safer and more explicit:
+    -   SituationFreeDisplays() for correctly deallocating the complex SituationDisplayInfo array.
+    -   SituationFreeString() as the designated function for freeing strings returned by the library.
+    -   Documentation for all functions that return heap-allocated data now explicitly points to these new, safe deallocation functions.
+
+## KNOWN ISSUES & FEATURE GAPS
+
+*   **Vulkan Advanced Blending:** The Vulkan backend's SituationRenderVirtualDisplays function currently only supports simple blend modes (Alpha, Additive, etc.). The complex, multi-pass logic required for advanced Photoshop-style blend modes (Overlay, Soft Light), which is fully implemented in the OpenGL backend, remains a feature gap. This will be addressed in a future update.
+
+
 Date: 2025-10-18
 Version: 2.3.1 "Base"
 
