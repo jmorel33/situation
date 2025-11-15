@@ -30,8 +30,11 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 "Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
 
-## Table of Contents
+<details>
+<summary><h2>Table of Contents</h2></summary>
+
 - [Introduction and Core Concepts](#introduction-and-core-concepts)
+- [Building the Library](#building-the-library)
 - [Getting Started](#getting-started)
 - [Detailed API Reference](#detailed-api-reference)
   - [Core Module](#core-module)
@@ -43,6 +46,14 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
   - [Filesystem Module](#filesystem-module)
   - [Miscellaneous Module](#miscellaneous-module)
   - [Logging Module](#logging-module)
+- [Compute Shaders](#compute-shaders)
+- [Text Rendering](#text-rendering)
+- [2D Rendering & Drawing](#2d-rendering--drawing)
+- [License (MIT)](#license-mit)
+- [Examples & Tutorials](#examples--tutorials)
+- [Frequently Asked Questions (FAQ) & Troubleshooting](#frequently-asked-questions-faq--troubleshooting)
+
+</details>
 
 ---
 
