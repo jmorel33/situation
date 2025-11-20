@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.1_
+_Core API library v2.3.2 "Parity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,11 +8,12 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools. We are actively seeking contributions from the community to help us build a truly exceptional and robust platform.
 
+**Version 2.3.2 "Parity"** marks a major milestone, achieving feature parity between OpenGL and Vulkan backends (specifically regarding advanced blending), adding audio capture capabilities, and finalizing 3D model exporting tools.
+
 Our immediate development roadmap is focused on several key areas:
-*   **Full Thread-Safety**: We are working towards making the entire library thread-safe, which will allow for even greater performance and scalability in multi-threaded applications.
-*   **OpenGL Command Buffer Enhancement**: We are committed to ensuring the proper functioning of OpenGL within our command buffer system, providing a seamless and efficient rendering experience.
-*   **Comprehensive Vulkan Abstraction**: Our goal is to provide a full-featured, high-level wrapper for the Vulkan API, simplifying its complexity while retaining its power and performance.
-*   **Robust Virtual Display and Windows Integration**: We are continuously improving our virtual display system and its integration with Windows to ensure bullet-proof stability across diverse hardware configurations, including multi-monitor setups and various application states (e.g., switching, pausing).
+*   **Full Thread-Safety**: We are working towards making the entire library thread-safe, allowing for even greater performance and scalability in multi-threaded applications.
+*   **Vulkan Optimization**: Continuing to refine the persistent descriptor set model for maximum throughput.
+*   **Robust Virtual Display and Windows Integration**: Continuously improving our virtual display system to ensure bullet-proof stability across diverse hardware configurations.
 
 "Situation" is an ambitious project that aims to become a premier, go-to solution for developers seeking a reliable and powerful platform layer. We encourage you to explore the library, challenge its capabilities, and contribute to its evolution.
 
@@ -20,7 +21,7 @@ The library's philosophy is reflected in its name, granting developers complete 
 
 It provides deep **Awareness** of the host system through APIs for querying hardware and multi-monitor display information, and by handling operating system events like window focus and file drops.
 
-This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, capture, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model. It offers simplified management of GPU resources—such as shaders, meshes, and textures—and includes powerful utilities for high-quality text rendering and robust filesystem I/O.
+This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, **capture (recording)**, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model. It offers simplified management of GPU resources—such as shaders, meshes, and textures—and includes powerful utilities for high-quality text rendering, robust filesystem I/O, and **3D model exporting**.
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
 
@@ -31,7 +32,6 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
     - [1.1 Purpose & Scope](#11-purpose--scope)
     - [1.2 Key Features & Capabilities](#12-key-features--capabilities)
     - [1.3 Target Audience & Use Cases](#13-target-audience--use-cases)
-- [1.  Introduction & Overview](#1-introduction--overview)
 - [2.  Getting Started](#2-getting-started)
 - [3.  Core Concepts & Architecture](#3-core-concepts--architecture)
 - [4.  Building & Configuration](#4-building--configuration)
@@ -48,12 +48,12 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 Key features include:
 - **Cross-Platform Windowing & Input:** Create and manage windows, handle keyboard, mouse, and gamepad input.
-- **Dual Graphics Backend Support:** Seamless abstraction over modern OpenGL (3.3+ Core) and Vulkan (1.0+).
+- **Dual Graphics Backend Support:** Seamless abstraction over modern OpenGL (4.6+ Core) and Vulkan (1.1+).
 - **Compute Shader Support:** A unified API for leveraging GPU compute power.
 - **Comprehensive Resource Management:** Simplified loading and management of shaders, meshes, textures, and buffers.
 - **Advanced Rendering Features:** Includes a Virtual Display System for off-screen rendering, high-performance text rendering, and a command buffer abstraction.
-- **Audio System:** Playback and recording capabilities via the miniaudio library.
-- **Utility Functions:** High-resolution timers, FPS calculation, filesystem path utilities, and more.
+- **Audio System:** Full playback and **recording/capture** capabilities via the miniaudio library.
+- **Utility Functions:** High-resolution timers, FPS calculation, filesystem path utilities, and model exporting (.gltf).
 
 </details>
 
@@ -67,7 +67,7 @@ A minimal application involves:
 1.  Defining `SITUATION_IMPLEMENTATION` and the desired backend (`SITUATION_USE_OPENGL` or `SITUATION_USE_VULKAN`) in one C/C++ file.
 2.  Including `situation.h`.
 3.  Calling `SituationInit()` at the start of your application.
-4.  Running a main loop controlled by `!SituationWindowShouldClose()`.
+4.  Running a main loop that calls `SituationPollInputEvents()`, then `SituationUpdateTimers()`, and finally renders the frame.
 5.  Calling `SituationShutdown()` before exiting.
 
 </details>
@@ -80,7 +80,7 @@ The library is built on several core principles to ensure a simple and predictab
 
 -   **Single-Threaded Design:** All `SITAPI` functions must be called from the main thread.
 -   **Explicit Resource Management:** Resources created with `SituationCreate...` or `SituationLoad...` must be manually destroyed.
--   **Three-Phase Frame:** Each frame in the main loop should follow a strict `Input -> Update -> Render` sequence.
+-   **Three-Phase Frame:** Each frame in the main loop should follow a strict `Input (Poll) -> Update (Timers/Logic) -> Render` sequence.
 -   **Command Buffer Model:** Rendering and compute operations are recorded into a command buffer and submitted to the GPU, a model that aligns with modern graphics APIs like Vulkan.
 
 </details>
