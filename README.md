@@ -27,17 +27,14 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 ---
 
-## Table of Contents:
-- [1.  Introduction & Overview](#1-introduction--overview)
-    - [1.1 Purpose & Scope](#11-purpose--scope)
-    - [1.2 Key Features & Capabilities](#12-key-features--capabilities)
-    - [1.3 Target Audience & Use Cases](#13-target-audience--use-cases)
-- [2.  Getting Started](#2-getting-started)
-- [3.  Core Concepts & Architecture](#3-core-concepts--architecture)
-- [4.  Building & Configuration](#4-building--configuration)
-- [5.  Examples & Tutorials](#5-examples--tutorials)
-- [6.  Frequently Asked Questions (FAQ) & Troubleshooting](#6-frequently-asked-questions-faq--troubleshooting)
-- [7.  API Reference](#7-api-reference)
+## Table of Contents
+- [1. Introduction & Overview](#1-introduction--overview)
+- [2. Getting Started](#2-getting-started)
+- [3. Core Concepts & Architecture](#3-core-concepts--architecture)
+- [4. Building & Configuration](#4-building--configuration)
+- [5. Examples & Tutorials](#5-examples--tutorials)
+- [6. Frequently Asked Questions (FAQ) & Troubleshooting](#6-frequently-asked-questions-faq--troubleshooting)
+- [7. API Reference](#7-api-reference)
 
 ---
 
