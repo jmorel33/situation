@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.1A
+*   Core API library v2.3.2
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -728,7 +728,9 @@ typedef struct {
 typedef struct {
     uint64_t id; // Internal identifier or handle
     int index_count;
-
+    int vertex_count;       // [NEW] Needed for readback
+    size_t vertex_stride;   // [NEW] Needed for readback
+	
 #if defined(SITUATION_IMPLEMENTATION)
     // Backend-specific handles, hidden from the public API user.
 #if defined(SITUATION_USE_VULKAN)
@@ -989,6 +991,25 @@ typedef struct {
 } SituationInitInfo;
 
 /**
+ * @brief Data types for vertex attributes
+ */
+typedef enum {
+    SIT_DATA_BYTE,
+    SIT_DATA_UNSIGNED_BYTE,
+    SIT_DATA_SHORT,
+    SIT_DATA_UNSIGNED_SHORT,
+    SIT_DATA_INT,
+    SIT_DATA_UNSIGNED_INT,
+    SIT_DATA_FLOAT,
+    SIT_DATA_DOUBLE
+} SituationDataType;
+
+// Internal memory macro
+#ifndef SIT_FREE
+    #define SIT_FREE(p) free(p)
+#endif
+
+/**
  * @brief Helper enum to specify the type of data provided to the GL compute program creation function.
  */
 typedef enum {
@@ -1041,6 +1062,7 @@ typedef void (*SituationFileDropCallback)(int count, const char** paths, void* u
 typedef void (*SituationFocusCallback)(bool has_focus, void* user_data);                                        // Function pointer for window focus change events.
 typedef ma_uint64 (*SituationStreamReadCallback)(void* pUserData, void* pBufferOut, ma_uint64 bytesToRead);     // Function pointer for custom audio stream "read" operations.
 typedef ma_result (*SituationStreamSeekCallback)(void* pUserData, ma_int64 byteOffset, ma_seek_origin origin);  // Function pointer for custom audio stream "seek" operations.
+typedef void (*SituationAudioCaptureCallback)(const void* data, uint32_t frame_count, void* user_data);
 typedef void (*SituationKeyCallback)(int key, int scancode, int action, int mods, void* user_data);             // Function pointer for keyboard key events.
 typedef void (*SituationMouseButtonCallback)(int button, int action, int mods, void* user_data);                // Function pointer for mouse button events.
 typedef void (*SituationCursorPosCallback)(vec2 position, void* user_data);                                     // Function pointer for mouse cursor movement events.
@@ -1300,6 +1322,7 @@ SITAPI SituationModel SituationLoadModel(const char* file_path);                
 SITAPI void SituationUnloadModel(SituationModel* model);                                // Frees all GPU and CPU resources associated with a loaded model.
 SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform); // Draws all sub-meshes of a model with a single root transformation.
 SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path);      // Exports a model to a human-readable .gltf and a .bin file for debugging.
+static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count);
 
 // --- Image & Screenshot Utilities ---
 SITAPI SituationImage SituationLoadImageFromScreen(void);                               // Get a copy of the current screen backbuffer as an image.
@@ -1383,6 +1406,10 @@ SITAPI bool SituationIsAudioDevicePlaying(void);                                
 SITAPI SituationError SituationPauseAudioDevice(void);                                  // Pause audio playback on the device.
 SITAPI SituationError SituationResumeAudioDevice(void);                                 // Resume audio playback on the device.
 
+// --- Audio Capture ---
+SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data);
+SITAPI void SituationStopAudioCapture(void);
+
 // --- Sound Loading and Management ---
 SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, bool looping, SituationSound* out_sound); // Load a sound from a file.
 SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound); // Load a sound from a custom stream.
@@ -1417,6 +1444,7 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
 // --- Path Management & Special Directories ---
 SITAPI char* SituationGetAppSavePath(const char* app_name);                             // Get a safe, persistent path for saving application data (caller must free).
 SITAPI char* SituationGetBasePath(void);                                                // Get the path to the directory containing the executable (caller must free).
+SITAPI static char* SituationGetBasePathFromFile(const char* file_path);
 SITAPI char* SituationJoinPath(const char* base_path, const char* file_or_dir_name);    // Join two path components with the correct OS separator (caller must free).
 SITAPI const char* SituationGetFileName(const char* full_path);                         // Extract the file name (including extension) from a full path.
 SITAPI const char* SituationGetFileExtension(const char* file_path);                    // Extract the file extension from a path.
@@ -1697,6 +1725,11 @@ typedef struct {
 
     VkRenderPass main_window_render_pass;
     VkFramebuffer* main_window_framebuffers;
+	
+    VkImage screen_copy_image;
+    VmaAllocation screen_copy_memory;
+    VkImageView screen_copy_view;
+    VkDescriptorSet screen_copy_descriptor_set; // To bind it to the shader
     
 } _SituationVulkanState;
 
@@ -1771,6 +1804,11 @@ typedef struct {
     bool is_sit_miniaudio_device_active;
     bool is_sit_miniaudio_device_internally_paused;
     int current_sit_miniaudio_device_sitaudioinfo_id;
+
+    ma_device sit_capture_device;
+    bool is_capture_device_active;
+    SituationAudioCaptureCallback capture_callback;
+    void* capture_user_data;
     
     SituationSound* sit_queued_sounds[SITUATION_MAX_AUDIO_SOUNDS_QUEUED];
     int sit_queued_sound_count;
@@ -2209,6 +2247,7 @@ static const char* SIT_QUAD_FRAGMENT_SHADER =
 static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info);
 static void _SituationCleanupOpenGL(void);
 static void _SituationLogGLError(const char* file, int line);
+static bool _SituationInitGLVirtualDisplayRenderer(void);
 static GLuint _SituationCreateGLShaderProgramFromSource(const char* cs_src, SituationError* error_code);
 static GLuint _SituationCompileGLShader(const char* source, GLenum type, SituationError* error_code);
 static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs_src, SituationError* error_code);
@@ -2290,9 +2329,11 @@ static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, 
 
 
 // --- Vulkan Resource Management Helpers ---
-static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation);
 static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags);
+static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation);
+static void _SituationVulkanDestroyImage(VkImage image, VmaAllocation allocation);
 static SituationError _SituationVulkanCreateAndUploadBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* out_buffer, VmaAllocation* out_allocation);
+static SituationError _SituationVulkanReadBackBuffer(VkBuffer src_buffer, VmaAllocation src_alloc, size_t size, size_t offset, void* out_data);
 static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void);
 static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer);
 static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_t code_size);
@@ -4099,6 +4140,88 @@ static SituationError _SituationInitSubsystems(void) {
 
 #if defined(SITUATION_USE_OPENGL)
 /**
+ * @brief [INTERNAL] Maps library-agnostic data types to OpenGL constants.
+ *
+ * @details Converts `SituationDataType` enums into their corresponding GLenum values (e.g., `SIT_DATA_FLOAT` -> `GL_FLOAT`). This is a utility helper used for vertex attribute configuration.
+ *
+ * @param type The generic data type enum.
+ * @return The corresponding GLenum value.
+ * @return `0` if the input type is unknown or invalid.
+ *
+ * @see SituationCmdSetVertexAttribute()
+ */
+static GLenum _SituationMapDataTypeToGL(SituationDataType type) {
+    switch (type) {
+        case SIT_DATA_BYTE: return GL_BYTE;
+        case SIT_DATA_UNSIGNED_BYTE: return GL_UNSIGNED_BYTE;
+        case SIT_DATA_SHORT: return GL_SHORT;
+        case SIT_DATA_UNSIGNED_SHORT: return GL_UNSIGNED_SHORT;
+        case SIT_DATA_INT: return GL_INT;
+        case SIT_DATA_UNSIGNED_INT: return GL_UNSIGNED_INT;
+        case SIT_DATA_FLOAT: return GL_FLOAT;
+        case SIT_DATA_DOUBLE: return GL_DOUBLE;
+        default: return 0;
+    }
+}
+
+/**
+ * @brief [INTERNAL] Initializes the internal OpenGL resources required for rendering Virtual Displays.
+ *
+ * @details This function sets up the private rendering state used by `SituationRenderVirtualDisplays` to composite off-screen framebuffers onto the main screen.
+ *          It creates a dedicated Vertex Array Object (VAO) and Vertex Buffer Object (VBO) containing a static full-screen quad (positions and UVs).
+ *
+ * @par State Isolation
+ * This function isolates the internal rendering state from the user's application state. It binds its own VAO (`sit_gs.gl.vd_quad_vao`), configures the vertex attributes (Position location 0, UV location 2), and then explicitly restores the user's global VAO (`sit_gs.gl.global_vao_id`) before returning.
+ *
+ * @return `true` on successful creation of VAO and VBO resources.
+ * @return `false` if OpenGL resource creation fails.
+ *
+ * @note This function is called once during `_SituationInitOpenGL`.
+ * @see SituationRenderVirtualDisplays()
+ */
+static bool _SituationInitGLVirtualDisplayRenderer(void) {
+    // 1. Create Private VAO/VBO for full-screen quads
+    glCreateVertexArrays(1, &sit_gs.gl.vd_quad_vao);
+    glCreateBuffers(1, &sit_gs.gl.vd_quad_vbo);
+
+    if (sit_gs.gl.vd_quad_vao == 0 || sit_gs.gl.vd_quad_vbo == 0) return false;
+
+    // Full screen quad (Clip space -1 to 1, UV 0 to 1)
+    // Format: X, Y, U, V
+    float quad_vertices[] = {
+        -1.0f, -1.0f,  0.0f, 1.0f, // Bottom-left (GL UV origin is bottom-left usually, but framebuffer textures might be flipped depending on pipeline. Adjust UV Y if upside down)
+         1.0f, -1.0f,  1.0f, 1.0f, // Bottom-right
+        -1.0f,  1.0f,  0.0f, 0.0f, // Top-left
+         1.0f,  1.0f,  1.0f, 0.0f  // Top-right
+    };
+
+    glNamedBufferStorage(sit_gs.gl.vd_quad_vbo, sizeof(quad_vertices), quad_vertices, 0);
+
+    // 2. Configure VAO
+    glBindVertexArray(sit_gs.gl.vd_quad_vao);
+    
+    // Bind VBO to binding index 0
+    glVertexArrayVertexBuffer(sit_gs.gl.vd_quad_vao, 0, sit_gs.gl.vd_quad_vbo, 0, 4 * sizeof(float));
+
+    // Pos (Location 0): 2 floats, offset 0
+    glEnableVertexArrayAttrib(sit_gs.gl.vd_quad_vao, SIT_ATTR_POSITION);
+    glVertexArrayAttribFormat(sit_gs.gl.vd_quad_vao, SIT_ATTR_POSITION, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(sit_gs.gl.vd_quad_vao, SIT_ATTR_POSITION, 0);
+
+    // UV (Location 2 as per contract): 2 floats, offset 2*float
+    glEnableVertexArrayAttrib(sit_gs.gl.vd_quad_vao, SIT_ATTR_TEXCOORD_0);
+    glVertexArrayAttribFormat(sit_gs.gl.vd_quad_vao, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float));
+    glVertexArrayAttribBinding(sit_gs.gl.vd_quad_vao, SIT_ATTR_TEXCOORD_0, 0);
+
+    glBindVertexArray(0); // Unbind private VAO
+    
+    // Restore global VAO
+    glBindVertexArray(sit_gs.gl.global_vao_id);
+    
+    return true;
+}
+
+/**
  * @brief [INTERNAL] Initializes the OpenGL rendering backend and all internal OpenGL resources.
  * @details This is the master function for setting up the OpenGL environment. It is called once during `SituationInit` after the GLFW window and an OpenGL context have been successfully created.
  *
@@ -4209,7 +4332,7 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // b. Initialize the Virtual Display Quad Renderer
     // This function is responsible for creating sit_gs.vd_quad_vao/vbo, configuring them for a simple textured quad, and unbinding them, ensuring sit_gs.gl.global_vao_id is bound again at the end.
     // You need to implement this function, similar to _SituationInitQuadRenderer.
-    if (!_SituationInitVirtualDisplayRenderer()) { // <-- You need this function
+    if (!_SituationInitGLVirtualDisplayRenderer()) { // <-- You need this function
          _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal virtual display renderer.");
          // Cleanup global VAO and shaders
         glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
@@ -4614,45 +4737,64 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     // This follows the same pattern as the simple compositor. The main difference is the fragment shader logic and potentially the descriptor set layout if it needed more resources.
     // Here we assume it reuses the same layout for simplicity.
     {
+        // 3a. Compile Shaders
         vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_COMPOSITE_VERTEX_SHADER_SRC, "internal_composite.vert", shaderc_vertex_shader);
         fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_COMPOSITE_FRAGMENT_SHADER_SRC, "internal_composite.frag", shaderc_fragment_shader);
         if (!vs_spirv.data || !fs_spirv.data) goto cleanup;
 
-        // Create a layout that can bind TWO samplers.
-        VkDescriptorSetLayoutBinding sampler_bindings[2] = {
-            { .binding = SIT_SAMPLER_BINDING_VD_SOURCE, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT },
-            { .binding = SIT_SAMPLER_BINDING_VD_DEST, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT }
+        // 3b. Create Pipeline Layout
+        // FIX: We do NOT create a custom layout. We reuse the existing 'image_sampler_layout'
+        // twice. This means the pipeline expects:
+        // Set 0: UBO
+        // Set 1: Image Sampler (Source)
+        // Set 2: Image Sampler (Destination)
+        VkDescriptorSetLayout layouts[] = { 
+            sit_gs.vk.view_data_ubo_layout, 
+            sit_gs.vk.image_sampler_layout, 
+            sit_gs.vk.image_sampler_layout 
         };
-        VkDescriptorSetLayoutCreateInfo sampler_layout_info = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = sampler_bindings };
-        VkDescriptorSetLayout two_sampler_layout; // Temporary for this pipeline
-        if (vkCreateDescriptorSetLayout(sit_gs.vk.device, &sampler_layout_info, NULL, &two_sampler_layout) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create two-sampler layout for advanced compositor.");
-            goto cleanup;
-        }
 
-        VkDescriptorSetLayout layouts[] = { sit_gs.vk.view_data_ubo_layout, two_sampler_layout };
         VkPushConstantRange push_constant_range = {
             .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
             .offset = 0,
             .size = sizeof(mat4) + sizeof(int) + sizeof(float) // Model, BlendMode, Opacity
         };
-        VkPipelineLayoutCreateInfo layout_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 2, .pSetLayouts = layouts, .pushConstantRangeCount = 1, .pPushConstantRanges = &push_constant_range };
+
+        VkPipelineLayoutCreateInfo layout_info = { 
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, 
+            .setLayoutCount = 3, // Uses 3 sets now
+            .pSetLayouts = layouts, 
+            .pushConstantRangeCount = 1, 
+            .pPushConstantRanges = &push_constant_range 
+        };
+
         if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &advanced_compositing_pipeline_layout) != VK_SUCCESS) {
-            vkDestroyDescriptorSetLayout(sit_gs.vk.device, two_sampler_layout, NULL);
+            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_FAILED, "Failed to create advanced compositing pipeline layout.");
             goto cleanup;
         }
 
-        // Create pipeline (vertex format is the same as simple compositor)
-        // ...
-        
-        // After pipeline creation, we can destroy the temporary layout
-        vkDestroyDescriptorSetLayout(sit_gs.vk.device, two_sampler_layout, NULL);
+        // 3c. Create Pipeline
+        // Use the same vertex format as the simple renderer (it's just a quad)
+        VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription attr_descs[2] = {
+            { .binding = 0, .location = SIT_ATTR_POSITION,   .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 },
+            { .binding = 0, .location = SIT_ATTR_TEXCOORD_0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 }
+        };
+
+        advanced_compositing_pipeline = _SituationVulkanCreateGraphicsPipeline(
+            vs_spirv.data, vs_spirv.size,
+            fs_spirv.data, fs_spirv.size,
+            advanced_compositing_pipeline_layout, // Use our new layout
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+            1, &binding_desc,
+            2, attr_descs
+        );
 
         _SituationFreeSpirvBlob(&vs_spirv);
         _SituationFreeSpirvBlob(&fs_spirv);
         if (advanced_compositing_pipeline == VK_NULL_HANDLE) goto cleanup;
     }
-
+	
     // --- Success: Assign created resources to the global state ---
     sit_gs.vk.quad_pipeline_layout = quad_pipeline_layout;
     sit_gs.vk.quad_pipeline = quad_pipeline;
@@ -4682,6 +4824,81 @@ cleanup:
     if (advanced_compositing_pipeline) vkDestroyPipeline(sit_gs.vk.device, advanced_compositing_pipeline, NULL);
 
     return SITUATION_ERROR_VULKAN_PIPELINE_FAILED; // Return a general failure code
+}
+
+/**
+ * @brief [INTERNAL] Allocates resources for the screen copy operation.
+ *
+ * @details Creates a `VkImage`, `VkImageView`, and a persistent `VkDescriptorSet` specifically designed to hold a copy of the swapchain's backbuffer.
+ *          This resource is used by the Advanced Compositing pipeline to read the destination color for blend modes like Overlay and Soft Light.
+ *
+ * @note This function is called automatically during swapchain creation/recreation to ensure the image dimensions match the window size.
+ */
+static void _SituationVulkanCreateScreenCopyResource(void) {
+    // 1. Create the Image (Device Local, Usage: Transfer Dst + Sampled)
+    // It needs TRANSFER_DST because we copy FROM the swapchain TO this.
+    // It needs SAMPLED because the shader reads it.
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    
+    _SituationVulkanCreateImage(
+        sit_gs.vk.swapchain_extent.width, 
+        sit_gs.vk.swapchain_extent.height, 
+        1, 
+        sit_gs.vk.swapchain_image_format, // Match swapchain format
+        VK_IMAGE_TILING_OPTIMAL, 
+        usage, 
+        VMA_MEMORY_USAGE_GPU_ONLY, 
+        &sit_gs.vk.screen_copy_image, 
+        &sit_gs.vk.screen_copy_memory
+    );
+
+    // 2. Create View
+    sit_gs.vk.screen_copy_view = _SituationVulkanCreateImageView(
+        sit_gs.vk.screen_copy_image, 
+        sit_gs.vk.swapchain_image_format, 
+        VK_IMAGE_ASPECT_COLOR_BIT
+    );
+
+    // 3. Create Persistent Descriptor Set (Using standard image_sampler_layout)
+    // We reuse the Quad/VD sampler (sit_gs.vk.vd_compositing_pipeline has a sampler we can reuse, or just make a new one if needed. Actually, we need a sampler).
+    // Let's steal the sampler from the first active VD or create a global linear sampler.
+    // For safety, let's assume sit_gs.vk.quad_pipeline_layout doesn't have one.
+    // We will use the sampler from the Virtual Display that invokes the draw, OR creates a static one.
+    // **Optimization:** Re-use the existing VD sampler logic inside the render loop.
+    
+    // Allocate Set
+    VkDescriptorSetAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = sit_gs.vk.descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &sit_gs.vk.image_sampler_layout
+    };
+    vkAllocateDescriptorSets(sit_gs.vk.device, &alloc_info, &sit_gs.vk.screen_copy_descriptor_set);
+    
+    // Note: We update this descriptor set every frame in the render loop because
+    // we might need to change samplers, but for now, we can leave it un-updated until draw time.
+}
+
+/**
+ * @brief [INTERNAL] Frees the screen copy resources.
+ *
+ * @details Destroys the image, view, and descriptor set created by `_SituationVulkanCreateScreenCopyResource`.
+ *          Called during swapchain cleanup.
+ */
+static void _SituationVulkanDestroyScreenCopyResource(void) {
+    if (sit_gs.vk.screen_copy_descriptor_set) {
+        // If pool allows freeing:
+        // vkFreeDescriptorSets(sit_gs.vk.device, sit_gs.vk.descriptor_pool, 1, &sit_gs.vk.screen_copy_descriptor_set);
+        sit_gs.vk.screen_copy_descriptor_set = VK_NULL_HANDLE;
+    }
+    if (sit_gs.vk.screen_copy_view) {
+        vkDestroyImageView(sit_gs.vk.device, sit_gs.vk.screen_copy_view, NULL);
+        sit_gs.vk.screen_copy_view = VK_NULL_HANDLE;
+    }
+    if (sit_gs.vk.screen_copy_image) {
+        vmaDestroyImage(sit_gs.vk.vma_allocator, sit_gs.vk.screen_copy_image, sit_gs.vk.screen_copy_memory);
+        sit_gs.vk.screen_copy_image = VK_NULL_HANDLE;
+    }
 }
 
 /**
@@ -6020,6 +6237,49 @@ static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInf
     // The handle is stored in sit_gs.vk.debug_messenger.
     // It will receive messages from the validation layers until it is destroyed by _SituationCleanupVulkan (which should use vkDestroyDebugUtilsMessengerEXT).
     // The next step in Vulkan initialization is typically picking a physical device.
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief [INTERNAL] Helper to create a VkImage and allocate memory via VMA.
+ *
+ * @details Wraps the complex setup of `VkImageCreateInfo` and `VmaAllocationCreateInfo`.
+ *          It ensures images are created with `VK_SHARING_MODE_EXCLUSIVE` and the specified usage flags.
+ *
+ * @param width Width of the image in pixels.
+ * @param height Height of the image in pixels.
+ * @param mipLevels Total number of mip levels (1 for base level only).
+ * @param format The Vulkan format (e.g., `VK_FORMAT_R8G8B8A8_SRGB`).
+ * @param tiling Usually `VK_IMAGE_TILING_OPTIMAL`.
+ * @param usage Bitmask of usage flags (Sampled, Storage, Transfer Dst, etc.).
+ * @param memory_usage VMA hint (e.g., `VMA_MEMORY_USAGE_GPU_ONLY`).
+ * @param[out] out_image Pointer to store the resulting VkImage handle.
+ * @param[out] out_allocation Pointer to store the resulting VMA allocation handle.
+ *
+ * @return `SITUATION_SUCCESS` on success, or `SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED`.
+ */
+static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation) {
+    VkImageCreateInfo image_info = {0};
+    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_info.imageType = VK_IMAGE_TYPE_2D;
+    image_info.extent.width = width;
+    image_info.extent.height = height;
+    image_info.extent.depth = 1;
+    image_info.mipLevels = mipLevels; // Use parameter
+    image_info.arrayLayers = 1;
+    image_info.format = format;
+    image_info.tiling = tiling;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    image_info.usage = usage;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo alloc_info = {0};
+    alloc_info.usage = memory_usage;
+
+    if (vmaCreateImage(sit_gs.vk.vma_allocator, &image_info, &alloc_info, out_image, out_allocation, NULL) != VK_SUCCESS) {
+        return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
+    }
     return SITUATION_SUCCESS;
 }
 
@@ -9595,11 +9855,18 @@ SITAPI void SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuf
 }
 
 /**
- * @brief Binds a texture as a storage image to a specific binding point for a compute shader.
- * @details This function is used to make a texture available for reading and writing (via imageLoad/imageStore in GLSL) within a compute shader.
- * @param cmd The command buffer to record the command into.
- * @param binding The binding point index within the compute shader's descriptor set.
- * @param texture The SituationTexture to bind. It must have been created with the SITUATION_TEXTURE_USAGE_STORAGE flag.
+ * @brief Binds a texture as a storage image for a compute shader.
+ *
+ * @details Associates a texture with a specific binding slot (e.g., `binding = 2` in GLSL).
+ *          - **Vulkan:** Binds the texture's pre-cached descriptor set to the specified `binding` index in the command buffer.
+ *          - **OpenGL:** Calls `glBindImageTexture`.
+ *
+ * @param cmd The current command buffer.
+ * @param binding The binding index in the shader layout.
+ * @param texture The texture to bind. Must support storage usage.
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_INVALID_PARAM` or `SITUATION_ERROR_RESOURCE_INVALID` on failure.
  */
 SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture) {
     if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
@@ -9614,22 +9881,17 @@ SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd,
 #elif defined(SITUATION_USE_VULKAN)
     if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
     if (texture.descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Texture is missing its persistent descriptor set.");
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
 
-    // Bind the pre-cached descriptor set.
-    // NOTE/BUG: The 'binding' parameter is intended to be the binding point within a set,
-    // but the current architecture pre-caches descriptor sets with a fixed binding of 0.
-    // This function is temporarily corrected to assume resources are in set 0, but a
-    // larger refactor of descriptor set management is needed to correctly use the 'binding' parameter.
+    // FIX: Use the 'binding' parameter as the set index, matching the Unified API buffer logic.
     vkCmdBindDescriptorSets(
         (VkCommandBuffer)cmd,
-        VK_PIPELINE_BIND_POINT_COMPUTE, // Bind for compute pipeline
+        VK_PIPELINE_BIND_POINT_COMPUTE,
         sit_gs.vk.current_compute_pipeline_layout,
-        0,  // Assume compute resources are in set 0.
+        binding,  // FIX: Was '0' in original code
         1,
-        &texture.descriptor_set, // Use the pre-cached set from the texture struct.
+        &texture.descriptor_set,
         0, NULL
     );
     return SITUATION_SUCCESS;
@@ -9694,26 +9956,47 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
 #endif
 }
 
-// function to set vertex attribute format
+/**
+ * @brief [Core] Define the format of a vertex attribute for the active VAO.
+ *
+ * @details Configures how vertex data is read from the bound buffer for a specific attribute location (e.g., Position at loc 0, UV at loc 1).
+ *
+ * @par Backend-Specific Behavior
+ * - **OpenGL:** Modifies the state of the currently bound Global VAO using `glVertexArrayAttribFormat`. This allows dynamic changes to vertex formats at runtime.
+ * - **Vulkan:** **Not Supported.** Returns `SITUATION_ERROR_NOT_IMPLEMENTED`.
+ *   In Vulkan, vertex input state is immutable and baked into the `VkPipeline` object at creation. You cannot change vertex attributes dynamically on a command buffer; you must create a new pipeline with the desired layout.
+ *
+ * @param cmd The command buffer (Ignored in OpenGL).
+ * @param location The shader attribute location index (e.g., `layout(location=0)`).
+ * @param size The number of components (1, 2, 3, or 4).
+ * @param type The data type of the components (e.g., `SIT_DATA_FLOAT`).
+ * @param normalized Whether fixed-point data should be normalized.
+ * @param offset The byte offset of this attribute within the vertex structure.
+ */
 SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset) {
+    if (!sit_gs.is_initialized) return;
+
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
-    GLenum gl_type = _SituationMapDataTypeToGL(type); // You need this helper
+    GLenum gl_type = _SituationMapDataTypeToGL(type);
     if (gl_type == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdSetVertexAttribute: Unsupported data type.");
         return;
     }
-    // glVertexArrayAttribFormat modifies the state of the *currently bound* VAO.
     glVertexArrayAttribFormat(sit_gs.gl.global_vao_id, location, size, gl_type, normalized ? GL_TRUE : GL_FALSE, (GLuint)offset);
-    SIT_CHECK_GL_ERROR();
-    // You still need glVertexArrayAttribBinding to link the attrib to a buffer binding point
-    // This example assumes attrib location == buffer binding index for simplicity.
+    // We assume the binding index matches the location for simplicity in this abstraction
     glVertexArrayAttribBinding(sit_gs.gl.global_vao_id, location, location);
+    glEnableVertexArrayAttrib(sit_gs.gl.global_vao_id, location);
     SIT_CHECK_GL_ERROR();
-    glEnableVertexArrayAttrib(sit_gs.gl.global_vao_id, location); // Enable the attribute
-    SIT_CHECK_GL_ERROR();
+
 #elif defined(SITUATION_USE_VULKAN)
-    // ... Vulkan implementation (likely recorded into command buffer) ...
+    // FIX: Explicitly report that this is not supported in the Vulkan backend.
+    // In Vulkan, vertex attributes are baked into the immutable VkPipeline object at creation.
+    // To change attributes, you must create a new pipeline with the desired vertex input state.
+    (void)cmd; (void)location; (void)size; (void)type; (void)normalized; (void)offset;
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, 
+        "SituationCmdSetVertexAttribute is not supported in Vulkan. "
+        "Vertex format is immutable and defined during Pipeline creation.");
 #endif
 }
 
@@ -10381,7 +10664,6 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     // --- Step 0: Calculate Mipmap Levels ---
     uint32_t mip_levels = 1;
     if (generate_mipmaps) {
-        // Calculate the number of levels needed to go down to a 1x1 texture.
         mip_levels = (uint32_t)floor(log2(fmax(image.width, image.height))) + 1;
     }
 
@@ -10389,34 +10671,20 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     VkBuffer staging_buffer;
     VmaAllocation staging_allocation;
 
-    // --- Step 1: Create Staging Buffer and Upload Image Data ---
-    // (This part is unchanged)
     if (_SituationVulkanCreateAndUploadBuffer(image.data, image_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging_buffer, &staging_allocation) != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create staging buffer for texture.");
         return texture;
     }
 
-    // --- Step 2: Create the Final GPU Image ---
-    // The image must be created with the correct number of mip levels and usage flags that allow it to be both a source and destination for blit/transfer operations.
-    VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;  // Needed for copying to it
-
-    if (usage_flags & SITUATION_TEXTURE_USAGE_SAMPLED) {
-        vk_usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
-    }
-    if (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) {
-        vk_usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-    }
-    if (usage_flags & SITUATION_TEXTURE_USAGE_COLOR_ATTACHMENT) {
-        vk_usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    }
-    if (generate_mipmaps) {
-        vk_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // Needed for blitting
-    }
+    // FIX: Added VK_IMAGE_USAGE_STORAGE_BIT. 
+    // This ensures the texture can be used in Compute Shaders via SituationCmdBindComputeTexture.
+    VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
     
-    // We need to create a new helper that can create an image with mip levels.
-    // Let's assume _SituationVulkanCreateImage is modified to take mip_levels.
+    if (generate_mipmaps) {
+        vk_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    }
+
     if (_SituationVulkanCreateImage(image.width, image.height, mip_levels, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
-                                  usage, VMA_MEMORY_USAGE_GPU_ONLY,
+                                  vk_usage, VMA_MEMORY_USAGE_GPU_ONLY,
                                   &texture.image, &texture.allocation) != SITUATION_SUCCESS) {
         vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
         return texture;
@@ -10475,6 +10743,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc_info.descriptorPool = sit_gs.vk.descriptor_pool;
     alloc_info.descriptorSetCount = 1;
+    alloc_info.pSetLayouts = &sit_gs.vk.image_sampler_layout;
 
     // Choose the correct layout and descriptor type based on primary usage
     VkDescriptorType descriptor_type;
@@ -10782,6 +11051,100 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(const void* data, Vk
     // --- 7. Success ---
     // Outputs (*out_buffer, *out_allocation) are already set by vmaCreateBuffer on success.
     return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief [INTERNAL] Reads data from a Vulkan buffer back to host memory.
+ *
+ * @details This helper abstracts the complexity of reading GPU memory. It intelligently selects the optimal path based on the buffer's memory type:
+ *          1. **Direct Map:** If the buffer's memory is `HOST_VISIBLE` and `HOST_COHERENT` (e.g., a CPU-to-GPU buffer), it maps the memory directly and copies the data.
+ *          2. **Staging Transfer:** If the buffer is `DEVICE_LOCAL` (e.g., a high-performance SSBO), it allocates a temporary host-visible staging buffer, records a GPU copy command, submits it, and waits for completion.
+ *
+ * @par Synchronization Logic
+ * This function performs critical synchronization to ensure data integrity:
+ * - **Pre-Copy Barrier:** Inserts a `vkCmdPipelineBarrier` to ensure that all previous GPU writes (from Compute Shaders, Vertex Shaders, or Transfers) are finished and flushed from cache before the copy operation begins.
+ * - **Host-Read Barrier:** Ensures the transfer write to the staging buffer is visible to the host before mapping.
+ *
+ * @param src_buffer The source `VkBuffer` handle to read from.
+ * @param src_alloc The VMA allocation handle associated with the source buffer (required to query memory flags).
+ * @param size The number of bytes to read.
+ * @param offset The byte offset within the source buffer to start reading from.
+ * @param[out] out_data Pointer to the destination CPU memory buffer. Must be pre-allocated by the caller.
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED` if the temporary staging buffer cannot be created.
+ * @return `SITUATION_ERROR_BUFFER_MAP_FAILED` if memory mapping fails.
+ *
+ * @warning This is a **synchronous** operation. It allocates a command buffer, submits it, and stalls the CPU (`vkQueueWaitIdle`) until the GPU transfer is complete.
+ */
+static SituationError _SituationVulkanReadBackBuffer(VkBuffer src_buffer, VmaAllocation src_alloc, size_t size, size_t offset, void* out_data) {
+    VkDevice device = sit_gs.vk.device;
+    VmaAllocator allocator = sit_gs.vk.vma_allocator;
+
+    // 1. Check if directly mappable
+    VmaAllocationInfo alloc_info;
+    vmaGetAllocationInfo(allocator, src_alloc, &alloc_info);
+
+    if ((alloc_info.memoryTypeBits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+        (alloc_info.memoryTypeBits & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        void* mapped_data;
+        if (vmaMapMemory(allocator, src_alloc, &mapped_data) != VK_SUCCESS) return SITUATION_ERROR_BUFFER_MAP_FAILED;
+        memcpy(out_data, (char*)mapped_data + offset, size);
+        vmaUnmapMemory(allocator, src_alloc);
+        return SITUATION_SUCCESS;
+    }
+
+    // 2. Use Staging Buffer
+    VkBuffer staging_buffer;
+    VmaAllocation staging_allocation;
+    VkBufferCreateInfo staging_info = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
+    VmaAllocationCreateInfo staging_alloc_info = { .usage = VMA_MEMORY_USAGE_CPU_TO_GPU, .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT };
+
+    if (vmaCreateBuffer(allocator, &staging_info, &staging_alloc_info, &staging_buffer, &staging_allocation, NULL) != VK_SUCCESS) {
+        return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
+    }
+
+    VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
+    
+    // Sync barrier: Wait for vertex/transfer stages to finish reading/writing before we copy
+    VkBufferMemoryBarrier barrier = { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+    barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.buffer = src_buffer;
+    barrier.offset = offset;
+    barrier.size = size;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1, &barrier, 0, NULL);
+
+    VkBufferCopy copy_region = { .srcOffset = offset, .dstOffset = 0, .size = size };
+    vkCmdCopyBuffer(cmd, src_buffer, staging_buffer, 1, &copy_region);
+    
+    // Memory barrier for host read
+    VkBufferMemoryBarrier host_barrier = { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+    host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    host_barrier.buffer = staging_buffer;
+    host_barrier.offset = 0;
+    host_barrier.size = size;
+    
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &host_barrier, 0, NULL);
+
+    _SituationVulkanEndSingleTimeCommands(cmd);
+
+    // 3. Map and Copy
+    void* mapped_data;
+    SituationError result = SITUATION_SUCCESS;
+    if (vmaMapMemory(allocator, staging_allocation, &mapped_data) == VK_SUCCESS) {
+        memcpy(out_data, mapped_data, size);
+        vmaUnmapMemory(allocator, staging_allocation);
+    } else {
+        result = SITUATION_ERROR_BUFFER_MAP_FAILED;
+    }
+
+    vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
+    return result;
 }
 #endif
 
@@ -11216,6 +11579,10 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
     mesh.id = (uint32_t)(uintptr_t)mesh.vertex_buffer;
 #endif
 
+    mesh.index_count = index_count;
+    mesh.vertex_count = vertex_count;   // [NEW]
+    mesh.vertex_stride = vertex_stride; // [NEW]
+	
     // --- Resource Manager: Add to tracking list ---
     if (mesh.id != 0) {
         _SituationMeshNode* node = (_SituationMeshNode*)malloc(sizeof(_SituationMeshNode));
@@ -11311,6 +11678,79 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
     memset(mesh, 0, sizeof(SituationMesh));
 }
 
+/**
+ * @brief Reads geometry data back from a GPU mesh into CPU memory.
+ * 
+ * @details This function performs a synchronous readback from VRAM. It allocates memory for the vertex and index buffers which **the caller must free**.
+ * 
+ * @param mesh The mesh handle.
+ * @param[out] vertex_data Pointer to receive the array of vertices. Caller must free.
+ * @param[out] vertex_count Pointer to receive the number of vertices.
+ * @param[out] vertex_stride Pointer to receive the size of a single vertex in bytes.
+ * @param[out] index_data Pointer to receive the array of indices. Caller must free.
+ * @param[out] index_count Pointer to receive the number of indices.
+ */
+static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count) {
+    // Initialize outputs to 0/NULL
+    if (vertex_data) *vertex_data = NULL;
+    if (vertex_count) *vertex_count = 0;
+    if (vertex_stride) *vertex_stride = 0;
+    if (index_data) *index_data = NULL;
+    if (index_count) *index_count = 0;
+
+    if (mesh.id == 0) return;
+
+    // Set count info
+    if (vertex_count) *vertex_count = mesh.vertex_count;
+    if (vertex_stride) *vertex_stride = (int)mesh.vertex_stride;
+    if (index_count) *index_count = mesh.index_count;
+
+    size_t v_size = mesh.vertex_count * mesh.vertex_stride;
+    size_t i_size = mesh.index_count * sizeof(uint32_t);
+
+    // Allocate CPU memory
+    void* v_ptr = NULL;
+    void* i_ptr = NULL;
+
+    if (vertex_data && v_size > 0) {
+        v_ptr = malloc(v_size);
+        if (!v_ptr) { _SituationSetError("Memory allocation failed for mesh readback"); return; }
+        *vertex_data = v_ptr;
+    }
+
+    if (index_data && i_size > 0) {
+        i_ptr = malloc(i_size);
+        if (!i_ptr) { 
+            if (v_ptr) free(v_ptr); 
+            _SituationSetError("Memory allocation failed for mesh readback"); 
+            return; 
+        }
+        *index_data = i_ptr;
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    if (v_ptr) {
+        glGetNamedBufferSubData(mesh.vbo_id, 0, v_size, v_ptr);
+    }
+    if (i_ptr) {
+        glGetNamedBufferSubData(mesh.ebo_id, 0, i_size, i_ptr);
+    }
+    SIT_CHECK_GL_ERROR();
+
+#elif defined(SITUATION_USE_VULKAN)
+    // Use our new helper
+    if (v_ptr) {
+        if (_SituationVulkanReadBackBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory, v_size, 0, v_ptr) != SITUATION_SUCCESS) {
+            _SituationSetError("Failed to read vertex buffer from Vulkan mesh");
+        }
+    }
+    if (i_ptr) {
+        if (_SituationVulkanReadBackBuffer(mesh.index_buffer, mesh.index_buffer_memory, i_size, 0, i_ptr) != SITUATION_SUCCESS) {
+            _SituationSetError("Failed to read index buffer from Vulkan mesh");
+        }
+    }
+#endif
+}
 
 #if defined(SITUATION_USE_OPENGL)
 /**
@@ -12111,8 +12551,8 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
             void* mapped_data;
             result = vmaMapMemory(allocator, staging_allocation, &mapped_data);
             if (result != VK_SUCCESS) {
-                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
-                _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to map staging buffer for buffer update.");
+                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation); // FIX: Cleanup
+                _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to map staging buffer.");
                 return SITUATION_ERROR_BUFFER_MAP_FAILED;
             }
             memcpy(mapped_data, data, size); // Copy user data to staging buffer
@@ -12129,7 +12569,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
             alloc_info_cmd.commandBufferCount = 1;
             result = vkAllocateCommandBuffers(device, &alloc_info_cmd, &transfer_cmd);
             if (result != VK_SUCCESS) {
-                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
+                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation); // FIX: Cleanup
                 _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to allocate temporary command buffer for buffer update.");
                 return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
             }
@@ -12243,184 +12683,28 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
  */
 SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offset, size_t size, void* out_data) {
     // --- 1. Pre-Operation Validation ---
-    if (!sit_gs.is_initialized) {
-        return SITUATION_ERROR_NOT_INITIALIZED;
-    }
-    if (buffer.id == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to read from an invalid buffer.");
-        return SITUATION_ERROR_RESOURCE_INVALID;
-    }
-    if (!out_data) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Output data pointer is NULL.");
-        return SITUATION_ERROR_INVALID_PARAM;
-    }
-    if (size == 0) {
-        // Reading 0 bytes is technically valid, but let's treat it as a potential logic error.
-        // Alternatively, return SITUATION_SUCCESS immediately.
-        return SITUATION_SUCCESS;
-    }
-    if ((offset + size) > buffer.size_in_bytes) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "Read range exceeds buffer size.");
-        return SITUATION_ERROR_BUFFER_INVALID_SIZE;
-    }
+    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (buffer.id == 0) return SITUATION_ERROR_RESOURCE_INVALID;
+    if (!out_data) return SITUATION_ERROR_INVALID_PARAM;
+    if (size == 0) return SITUATION_SUCCESS;
+    if ((offset + size) > buffer.size_in_bytes) return SITUATION_ERROR_BUFFER_INVALID_SIZE;
 
 #if defined(SITUATION_USE_OPENGL)
-    {
-        // --- 2. OpenGL Implementation ---
-        glGetNamedBufferSubData(buffer.gl_buffer_id, (GLintptr)offset, (GLsizeiptr)size, out_data);
-        SIT_CHECK_GL_ERROR();
-        if (sit_gs.gl.last_error != GL_NO_ERROR) {
-            // Error message likely set by SIT_CHECK_GL_ERROR
-            return SITUATION_ERROR_BUFFER_MAP_FAILED; // Or a more specific OpenGL error if available
-        }
-        return SITUATION_SUCCESS;
+    // --- 2. OpenGL Implementation ---
+    glGetNamedBufferSubData(buffer.gl_buffer_id, (GLintptr)offset, (GLsizeiptr)size, out_data);
+    SIT_CHECK_GL_ERROR();
+    if (sit_gs.gl.last_error != GL_NO_ERROR) {
+        return SITUATION_ERROR_BUFFER_MAP_FAILED;
     }
+    return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
-    {
-        // --- 2. Vulkan Implementation (Using Staging Buffer for GPU_LOCAL Memory) ---
-        VkDevice device = sit_gs.vk.device;
-        VmaAllocator allocator = sit_gs.vk.vma_allocator;
+    // --- 2. Vulkan Implementation ---
+    // Logic moved to internal helper to allow reuse by SituationGetMeshData
+    return _SituationVulkanReadBackBuffer(buffer.vk_buffer, buffer.vma_allocation, size, offset, out_data);
 
-        // 2.1. Handle Directly Mappable Buffers (e.g., CPU_TO_GPU)
-        // First, check if the buffer's memory is host-visible/coherent.
-        // This requires querying VMA allocation info.
-        VmaAllocationInfo alloc_info;
-        vmaGetAllocationInfo(allocator, buffer.vma_allocation, &alloc_info);
+#endif
 
-        if ((alloc_info.memoryTypeBits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-            (alloc_info.memoryTypeBits & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            // Memory is host-visible and coherent, we can map it directly.
-            void* mapped_data;
-            VkResult result = vmaMapMemory(allocator, buffer.vma_allocation, &mapped_data);
-            if (result != VK_SUCCESS) {
-                _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to map Vulkan buffer memory for reading.");
-                return SITUATION_ERROR_BUFFER_MAP_FAILED;
-            }
-            // Copy data from mapped GPU memory to user's host buffer
-            memcpy(out_data, (char*)mapped_data + offset, size);
-            vmaUnmapMemory(allocator, buffer.vma_allocation);
-            return SITUATION_SUCCESS;
-        } else {
-            // 2.2. Handle Non-Mappable Buffers (e.g., GPU_ONLY) - Use Staging Buffer
-            // This is the more common and robust path.
-
-            // --- a. Create Staging Buffer (Host Visible) ---
-            VkBuffer staging_buffer;
-            VmaAllocation staging_allocation;
-
-            VkBufferCreateInfo staging_buffer_info = {0};
-            staging_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-            staging_buffer_info.size = size;
-            staging_buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-            VmaAllocationCreateInfo staging_alloc_info = {0};
-            staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU; // Or CPU_ONLY if you need coherent reads
-            // Ensure it's host visible for mapping
-            staging_alloc_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-
-            VkResult result = vmaCreateBuffer(allocator, &staging_buffer_info, &staging_alloc_info, &staging_buffer, &staging_allocation, NULL);
-            if (result != VK_SUCCESS) {
-                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create staging buffer for reading data.");
-                return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
-            }
-
-            // --- b. Record Copy Command ---
-            // We need a command buffer to record the copy. Using the current graphics command buffer
-            // might be problematic if it's in use or not in the correct state.
-            // A safer approach is to use a dedicated single-use command buffer or
-            // temporarily acquire one from the pool.
-            // For simplicity here, let's assume we can use a temporary command buffer.
-            // A more robust system might have a dedicated utility command pool/buffer for such transfers.
-
-            VkCommandBuffer transfer_cmd = VK_NULL_HANDLE;
-            // --- Simple way: Allocate a one-time command buffer ---
-            VkCommandBufferAllocateInfo alloc_info_cmd = {0};
-            alloc_info_cmd.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-            alloc_info_cmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            alloc_info_cmd.commandPool = sit_gs.vk.command_pool; // Assuming main pool can be used
-            alloc_info_cmd.commandBufferCount = 1;
-            result = vkAllocateCommandBuffers(device, &alloc_info_cmd, &transfer_cmd);
-            if (result != VK_SUCCESS) {
-                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
-                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to allocate temporary command buffer for buffer readback.");
-                return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
-            }
-
-            VkCommandBufferBeginInfo begin_info = {0};
-            begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            result = vkBeginCommandBuffer(transfer_cmd, &begin_info);
-            if (result != VK_SUCCESS) {
-                vkFreeCommandBuffers(device, sit_gs.vk.command_pool, 1, &transfer_cmd);
-                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
-                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to begin temporary command buffer for buffer readback.");
-                return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
-            }
-
-            VkBufferCopy copy_region = {0};
-            copy_region.srcOffset = offset;
-            copy_region.dstOffset = 0;
-            copy_region.size = size;
-            vkCmdCopyBuffer(transfer_cmd, buffer.vk_buffer, staging_buffer, 1, &copy_region);
-
-            result = vkEndCommandBuffer(transfer_cmd);
-            if (result != VK_SUCCESS) {
-                vkFreeCommandBuffers(device, sit_gs.vk.command_pool, 1, &transfer_cmd);
-                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
-                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to end temporary command buffer for buffer readback.");
-                return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
-            }
-
-            // --- c. Submit Copy Command & Wait ---
-            VkSubmitInfo submit_info = {0};
-            submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            submit_info.commandBufferCount = 1;
-            submit_info.pCommandBuffers = &transfer_cmd;
-
-            // Submit to the graphics queue and wait for completion.
-            // This is a synchronous, blocking operation.
-            // A more advanced system might use fences for async readbacks.
-            result = vkQueueSubmit(sit_gs.vk.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
-            if (result != VK_SUCCESS) {
-                vkFreeCommandBuffers(device, sit_gs.vk.command_pool, 1, &transfer_cmd);
-                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
-                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to submit buffer readback command.");
-                return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
-            }
-
-            result = vkQueueWaitIdle(sit_gs.vk.graphics_queue); // Wait for the copy to finish
-            if (result != VK_SUCCESS) {
-                vkFreeCommandBuffers(device, sit_gs.vk.command_pool, 1, &transfer_cmd);
-                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
-                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to wait for buffer readback command to finish.");
-                return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
-            }
-
-            // Clean up the temporary command buffer
-            vkFreeCommandBuffers(device, sit_gs.vk.command_pool, 1, &transfer_cmd);
-
-            // --- d. Map Staging Buffer and Copy Data ---
-            void* mapped_data;
-            result = vmaMapMemory(allocator, staging_allocation, &mapped_data);
-            if (result != VK_SUCCESS) {
-                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
-                _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to map staging buffer for reading data.");
-                return SITUATION_ERROR_BUFFER_MAP_FAILED;
-            }
-
-            memcpy(out_data, mapped_data, size);
-            vmaUnmapMemory(allocator, staging_allocation);
-
-            // --- e. Cleanup Staging Buffer ---
-            vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
-
-            return SITUATION_SUCCESS;
-        }
-    }
-#endif // SITUATION_USE_VULKAN
-
-    // Should not be reached, but included for completeness
     return SITUATION_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -14263,6 +14547,35 @@ static void _SituationSetFilesystemError(const char* base_message, const char* p
 }
 
 /**
+ * @brief [INTERNAL] Extracts the directory component from a file path.
+ *
+ * @details Helper utility used during model loading to resolve relative paths for textures (e.g., finding "texture.png" located in the same folder as "model.gltf").
+ *          Handles both forward slash ('/') and backslash ('\') separators.
+ *
+ * @param file_path The full path to a file.
+ * @return A newly allocated string containing the directory path (e.g., "assets/models").
+ *         Returns a duplicate of "." if no directory separator is found.
+ *         Returns NULL if input is invalid.
+ *
+ * @warning The caller is responsible for freeing the returned string.
+ */
+static char* SituationGetBasePathFromFile(const char* file_path) {
+    if (!file_path) return NULL;
+    char* path_copy = strdup(file_path);
+    char* last_sep = strrchr(path_copy, '/');
+    if (!last_sep) last_sep = strrchr(path_copy, '\\');
+    
+    if (last_sep) {
+        *last_sep = '\0'; // Truncate at the separator
+    } else {
+        // No separator found, assume current directory
+        free(path_copy);
+        return strdup(".");
+    }
+    return path_copy;
+}
+
+/**
  * @brief Load an entire file into a memory buffer.
  * @warning The returned buffer is dynamically allocated. The caller is **responsible for freeing this memory** using `free()`.
  * @param file_path The path to the file to load.
@@ -14800,6 +15113,21 @@ static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t heigh
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
     }
     return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief [INTERNAL] Destroys a VkImage and frees its VMA memory allocation.
+ *
+ * @details A convenience wrapper around `vmaDestroyImage`. It safely handles `VK_NULL_HANDLE` checks for both the image and the VMA allocator.
+ *          This function is essential for the cleanup routines of swapchains, textures, and virtual displays.
+ *
+ * @param image The `VkImage` handle to destroy.
+ * @param allocation The associated `VmaAllocation` handle to free.
+ */
+static void _SituationVulkanDestroyImage(VkImage image, VmaAllocation allocation) {
+    if (image != VK_NULL_HANDLE && sit_gs.vk.vma_allocator != VK_NULL_HANDLE) {
+        vmaDestroyImage(sit_gs.vk.vma_allocator, image, allocation);
+    }
 }
 
 /**
@@ -15673,23 +16001,114 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
         }
         // --- End Matrix Calculation ---
 
-        // 5. Bind the VD's pre-cached descriptor set for its texture (Set 1).
-        // This is extremely fast as it's just recording a command. No allocation, no updates.
-        vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline_layout, 1, 1, &vd->vk.descriptor_set, 0, NULL);
-        
-        // 6. Use push constants for per-draw data (model matrix and opacity).
-        struct {
-            mat4 model;
-            float opacity;
-        } push_data;
+        bool use_advanced = (vd->blend_mode >= SITUATION_BLEND_OVERLAY);
 
-        glm_mat4_copy(model_matrix, push_data.model);
-        push_data.opacity = vd->opacity;
+        if (use_advanced) {
+            // ============================================================
+            // 1. PERFORM SCREEN COPY
+            // ============================================================
+            
+            VkImage currentSwapchainImage = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
 
-        vkCmdPushConstants(vk_cmd, sit_gs.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
+            // A. Transition Swapchain from COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL
+            _SituationVulkanTransitionImageLayout(vk_cmd, currentSwapchainImage, 1, 
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
-        // 7. Draw the quad
-        vkCmdDraw(vk_cmd, 4, 1, 0, 0);
+            // B. Transition CopyImage from UNDEFINED (or previous) -> TRANSFER_DST_OPTIMAL
+            _SituationVulkanTransitionImageLayout(vk_cmd, sit_gs.vk.screen_copy_image, 1, 
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+            // C. Copy
+            VkImageCopy copy_region = {
+                .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                .extent = { sit_gs.vk.swapchain_extent.width, sit_gs.vk.swapchain_extent.height, 1 }
+            };
+            vkCmdCopyImage(vk_cmd, 
+                currentSwapchainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                sit_gs.vk.screen_copy_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1, &copy_region);
+
+            // D. Transition Swapchain BACK to COLOR_ATTACHMENT_OPTIMAL (so we can draw on it)
+            _SituationVulkanTransitionImageLayout(vk_cmd, currentSwapchainImage, 1, 
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+            // E. Transition CopyImage to SHADER_READ_ONLY_OPTIMAL (so shader can read it)
+            _SituationVulkanTransitionImageLayout(vk_cmd, sit_gs.vk.screen_copy_image, 1, 
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+            // ============================================================
+            // 2. UPDATE DESCRIPTOR FOR COPY IMAGE
+            // ============================================================
+            // We update the descriptor set here because the sampler might depend on the VD settings
+            // (though usually we want a 1:1 pixel map for the background, so Nearest is safer).
+            // Let's reuse the VD's sampler for simplicity.
+            VkDescriptorImageInfo copy_img_info = {
+                .sampler = vd->vk.sampler, 
+                .imageView = sit_gs.vk.screen_copy_view,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            };
+            VkWriteDescriptorSet write_copy = {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = sit_gs.vk.screen_copy_descriptor_set,
+                .dstBinding = 0, // Binding 0 of Set 2
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .pImageInfo = &copy_img_info
+            };
+            vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write_copy, 0, NULL);
+
+            // ============================================================
+            // 3. BIND & DRAW ADVANCED
+            // ============================================================
+            vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline);
+            
+            // Bind Set 0 (UBO) - Was bound globally, but changing pipeline might require rebind if layout incompatible.
+            // Ideally layouts are compatible. Let's rebind to be safe.
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 0, 1, &sit_gs.vk.view_proj_ubo_descriptor_set[sit_gs.vk.current_frame_index], 0, NULL);
+
+            // Bind Set 1 (VD Source)
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 1, 1, &vd->vk.descriptor_set, 0, NULL);
+
+            // Bind Set 2 (Screen Copy)
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 2, 1, &sit_gs.vk.screen_copy_descriptor_set, 0, NULL);
+
+            // Push Constants (Larger struct for advanced)
+             struct {
+                mat4 model;
+                int blendMode;
+                float opacity;
+            } push_adv;
+            glm_mat4_copy(model_matrix, push_adv.model);
+            push_adv.blendMode = vd->blend_mode;
+            push_adv.opacity = vd->opacity;
+            
+            vkCmdPushConstants(vk_cmd, sit_gs.vk.advanced_compositing_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(push_adv), &push_adv);
+            
+            vkCmdDraw(vk_cmd, 4, 1, 0, 0);
+
+            // Restore Simple Pipeline for next iteration (optimization: verify next VD type first)
+            if (i < visible_count - 1) {
+                 vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline);
+            }
+
+        } else {
+            // ============================================================
+            // STANDARD BLEND (Existing Logic)
+            // ============================================================
+            // Ensure simple pipeline is bound (if previous was advanced)
+            vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline);
+            
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline_layout, 1, 1, &vd->vk.descriptor_set, 0, NULL);
+            
+            struct { mat4 model; float opacity; } push_simple;
+            glm_mat4_copy(model_matrix, push_simple.model);
+            push_simple.opacity = vd->opacity;
+
+            vkCmdPushConstants(vk_cmd, sit_gs.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_simple), &push_simple);
+
+            vkCmdDraw(vk_cmd, 4, 1, 0, 0);
+        }
     }
 #endif
     double end_time = glfwGetTime();
@@ -19133,6 +19552,86 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
 
 
 // --- Situation Audio Pipeline API Implementation ---
+
+/**
+ * @brief Callback function type for processing captured audio data.
+ *
+ * @param data A pointer to the buffer containing the raw audio samples. The format is always `float*` (32-bit float, mono).
+ * @param frame_count The number of frames (samples) in the buffer.
+ * @param user_data The custom pointer provided to `SituationStartAudioCapture`.
+ */
+static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
+    (void)pOutput; // Unused for capture
+    _SituationGlobalStateContainer* state = (_SituationGlobalStateContainer*)pDevice->pUserData;
+    if (state && state->capture_callback && pInput) {
+        state->capture_callback(pInput, frameCount, state->capture_user_data);
+    }
+}
+
+/**
+ * @brief Initializes and starts audio capture (recording) from the default input device.
+ *
+ * @details Opens the default microphone/input device and begins streaming raw audio data to the provided callback function.
+ *          The audio format is fixed to Mono (1 channel), 44.1kHz sample rate, and 32-bit floating point samples. This is the most versatile format for real-time processing (FFT, visualization, etc.).
+ *
+ * @par Thread Safety
+ * The provided `callback` function will be executed on a high-priority, internal audio thread.
+ * **Do not perform blocking operations** (like file I/O, large memory allocations, or heavy mutex locking) inside the callback, or you may cause audio glitches.
+ *
+ * @param callback The function to call when new audio data is available.
+ * @param user_data A custom pointer passed to the callback (e.g., for storing state).
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_AUDIO_CONTEXT` if the audio system is not initialized.
+ * @return `SITUATION_ERROR_AUDIO_DEVICE` if the input device cannot be opened or started.
+ *
+ * @see SituationStopAudioCapture(), SituationAudioCaptureCallback
+ */
+SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data) {
+    if (!sit_gs.is_sit_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
+    if (sit_gs.is_capture_device_active) SituationStopAudioCapture();
+
+    sit_gs.capture_callback = callback;
+    sit_gs.capture_user_data = user_data;
+
+    ma_device_config config = ma_device_config_init(ma_device_type_capture);
+    config.capture.format = ma_format_f32; // Standardize on Float32
+    config.capture.channels = 1;           // Mono microphone is standard
+    config.sampleRate = 44100;             // Standard rate
+    config.dataCallback = _sit_miniaudio_capture_callback;
+    config.pUserData = &sit_gs;
+
+    if (ma_device_init(&sit_gs.sit_miniaudio_context, &config, &sit_gs.sit_capture_device) != MA_SUCCESS) {
+        _SituationSetError("Failed to initialize capture device.");
+        return SITUATION_ERROR_AUDIO_DEVICE;
+    }
+
+    if (ma_device_start(&sit_gs.sit_capture_device) != MA_SUCCESS) {
+        ma_device_uninit(&sit_gs.sit_capture_device);
+        _SituationSetError("Failed to start capture device.");
+        return SITUATION_ERROR_AUDIO_DEVICE;
+    }
+
+    sit_gs.is_capture_device_active = true;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Stops audio capture and closes the input device.
+ *
+ * @details Halts the recording stream and releases the underlying audio device resources. The callback function will no longer be invoked.
+ *          It is safe to call this function even if capture is not currently active.
+ *
+ * @see SituationStartAudioCapture()
+ */
+SITAPI void SituationStopAudioCapture(void) {
+    if (sit_gs.is_capture_device_active) {
+        ma_device_uninit(&sit_gs.sit_capture_device);
+        sit_gs.is_capture_device_active = false;
+        sit_gs.capture_callback = NULL;
+    }
+}
+
 /**
  * @brief Enumerates all available audio playback devices on the system.
  * @details This function queries the underlying audio backend (MiniAudio) for a list of all devices capable of playing sound. It provides their human-readable names and internal identifiers.

@@ -1,3 +1,36 @@
+Date: 2025-11-19
+Version: 2.3.2 "Parity"
+
+## DESCRIPTION
+
+Version 2.3.2 addresses the major feature gaps identified in previous versions, achieving functional parity between the OpenGL and Vulkan backends, and introducing key new capabilities. This release enables "Advanced Blending" for Vulkan Virtual Displays, adds a complete Audio Capture (Microphone) API, and finalizes the 3D Model Exporting tools. Under the hood, it includes critical fixes for Vulkan synchronization (pipeline barriers), memory safety, and descriptor binding logic.
+
+## NEW FEATURES
+
+*   **Audio Capture API:** Added `SituationStartAudioCapture`, `SituationStopAudioCapture`, and the `SituationAudioCaptureCallback` type. This allows applications to record raw audio data (Mono, 32-bit Float, 44.1kHz) from the system's default input device for real-time processing.
+
+*   **Vulkan Advanced Blending:** Implemented the complex "Copy-Before-Draw" architecture for the Vulkan backend. `SituationRenderVirtualDisplays` now correctly handles advanced blend modes (Overlay, Soft Light, etc.) on Vulkan by copying the swapchain image to a readable texture before rendering, matching the visual fidelity of the OpenGL backend.
+
+*   **3D Model Exporting:** Finalized the `SituationSaveModelAsGltf` utility. This required implementing the previously stubbed `SituationGetMeshData` function to perform geometry readback from the GPU to CPU memory, enabling users to save runtime-generated or modified meshes to standard `.gltf` files.
+
+## IMPROVEMENTS & FIXES
+
+### [CRITICAL] Vulkan Synchronization & Stability
+*   **Fixed Buffer Readback Synchronization:** Completely refactored `SituationGetBufferData`. It now uses a new internal helper `_SituationVulkanReadBackBuffer` that correctly inserts `vkCmdPipelineBarrier` commands before and after transfers. This fixes race conditions where the CPU would read stale data before the GPU finished writing.
+*   **Fixed Texture Usage Flags:** `SituationCreateTexture` now automatically includes the `VK_IMAGE_USAGE_STORAGE_BIT`. This fixes a crash/validation error when attempting to bind textures as Storage Images in compute shaders (`SituationCmdBindComputeTexture`).
+*   **Fixed Memory Leaks in Buffer Updates:** Resolved memory leaks in `SituationUpdateBuffer` where temporary staging buffers were not freed if mapping or command allocation failed.
+
+### [BUG FIXES]
+*   **OpenGL Initialization:** Implemented the missing `_SituationInitGLVirtualDisplayRenderer` function. Previously, the OpenGL Virtual Display compositor relied on uninitialized Vertex Array Objects, leading to potential rendering failures.
+*   **Vulkan Compute Binding:** Fixed logic in `SituationCmdBindComputeTexture` that ignored the user's `binding` parameter and always bound to index 0.
+*   **API Safety:** Explicitly disabled `SituationCmdSetVertexAttribute` on the Vulkan backend (returning `SITUATION_ERROR_NOT_IMPLEMENTED`), as dynamic vertex format changes are architecturally impossible in Vulkan pipelines.
+
+### [REFACTORING]
+*   **Internal Helpers:** Refactored massive logic blocks from `SituationGetBufferData` into reusable internal helpers, which allowed `SituationGetMeshData` to share the robust memory readback logic without code duplication.
+*   **Documentation:** Added comprehensive header documentation for all new internal helpers (`_SituationVulkanCreateScreenCopyResource`, `_SituationVulkanReadBackBuffer`, etc.) and updated public API headers to reflect the new capabilities.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-10-31
 Version: 2.3.1A "Refinement"
 
@@ -47,6 +80,7 @@ Version 2.3.1A is a significant quality-of-life and performance refinement of th
 
 *   **Vulkan Advanced Blending:** The Vulkan backend's SituationRenderVirtualDisplays function currently only supports simple blend modes (Alpha, Additive, etc.). The complex, multi-pass logic required for advanced Photoshop-style blend modes (Overlay, Soft Light), which is fully implemented in the OpenGL backend, remains a feature gap. This will be addressed in a future update.
 
+--------------------------------------------------------------------------------
 
 Date: 2025-10-18
 Version: 2.3.1 "Base"
