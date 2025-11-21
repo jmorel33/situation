@@ -1,4 +1,25 @@
 Date: 2025-11-20
+Version: 2.3.2D "Integrity"
+
+## DESCRIPTION
+This is a critical stability release. It addresses a severe race condition in the audio streaming subsystem, plugs memory leaks in the Vulkan swapchain recreation logic, and ensures OpenGL state isolation.
+
+## CRITICAL FIXES
+
+*   **Audio Stream Thread-Safety:** Completely refactored `SituationLoadSoundFromStream`. Previously, a shared global vtable caused race conditions and data corruption when loading multiple streams. This has been replaced with instance-based callback storage and static thunks, ensuring complete isolation and thread safety.
+*   **Vulkan Swapchain Leak:** Fixed a memory leak where the `swapchain_images` handle array was not freed during swapchain recreation (e.g., window resize).
+*   **OpenGL State Corruption:** `SituationRenderVirtualDisplays` now correctly saves and restores the Depth Test state (`GL_DEPTH_TEST`), preventing it from accidentally enabling depth testing for subsequent 2D rendering passes.
+
+## LOGIC & SAFETY
+
+*   **Vulkan Pipeline Barriers:** Fixed logic that prevented Execution-Only barriers (barriers with 0 access masks but valid stage masks) from being recorded.
+*   **Model Loading Safety:** `SituationLoadModel` now validates texture creation. If a texture file is missing, it logs a warning instead of assigning a null ID, preventing silent rendering failures.
+*   **Shader Debugging:** Increased the internal error message buffer size (to 2048 bytes) to prevent truncation of complex GLSL compilation errors.
+*   **API Clarity:** `SituationCmdSetVertexAttribute` now returns a precise error message on Vulkan, explaining that vertex formats are immutable in that backend.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-20
 Version: 2.3.2C "Zero Friction"
 
 ## DESCRIPTION
@@ -16,6 +37,8 @@ This micro-release focuses purely on developer experience and removal of frictio
 
 ## SUMMARY
 With 2.3.2C, the "Hello World" for a graphical, audio-enabled application with font support is now literally one C file with two #defines.
+
+--------------------------------------------------------------------------------
 
 Date: 2025-11-20
 Version: 2.3.2B "Consistency"
@@ -39,6 +62,8 @@ This hotfix eliminates cross-backend inconsistencies and improves safety. The ex
 
 *   **Vulkan Pipeline Optimization:** Refactored the internal Advanced Compositing pipeline initialization. It now reuses existing descriptor set layouts instead of allocating temporary ones, reducing code size and initialization overhead.
 
+--------------------------------------------------------------------------------
+
 Date: 2025-11-20
 Version: 2.3.2A "Hotfix"
 
@@ -58,6 +83,8 @@ This is a maintenance release addressing critical issues identified in the v2.3.
 ## DOCUMENTATION
 
 *   **Execution Model Warning:** Added a critical warning to the documentation regarding the Immediate (OpenGL) vs. Deferred (Vulkan) execution models. Developers are strictly advised to update all buffer data *before* recording draw commands to ensure consistent behavior across backends.
+
+--------------------------------------------------------------------------------
 
 Date: 2025-11-19
 Version: 2.3.2 "Parity"

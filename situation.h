@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.2C "Zero Friction"
+*   Core API library v2.3.2D "Integrity"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -50,7 +50,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 2
-#define SITUATION_VERSION_REVISION "C"
+#define SITUATION_VERSION_REVISION "D"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -121,13 +121,14 @@ Bash
     #endif
 #endif
 
+#include <stddef.h> // for audio stream
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h> // For fmodf, fmaxf, fminf
-#include <float.h> // For FLT_MAX
+#include <math.h> 	// For fmodf, fmaxf, fminf
+#include <float.h> 	// For FLT_MAX
 #ifndef M_PI // Define M_PI if not already defined (common for MSVC)
     #define M_PI 3.14159265358979323846
 #endif
@@ -205,8 +206,8 @@ Bash
 #define SITUATION_MAX_CPU_NAME_LEN 64
 #define SITUATION_MAX_GPU_NAME_LEN 128
 #define SITUATION_MAX_MONITOR_NAME_LEN 128
-#define SITUATION_MAX_ERROR_MSG_LEN 512
-#define SITUATION_MAX_SHADER_LOG_LEN 1024
+#define SITUATION_MAX_ERROR_MSG_LEN 2048
+#define SITUATION_MAX_SHADER_LOG_LEN 2048
 
 #define SITUATION_MAX_VIRTUAL_DISPLAYS 16
 #define SITUATION_MAX_AUDIO_SOUNDS_QUEUED 32
@@ -929,18 +930,31 @@ typedef enum {
     SITUATION_FILTER_HIGHPASS
 } SituationFilterType;
 
+/**
+ * @brief Represents a loaded sound object (file-based or streamed).
+ * @details Holds the decoding state, playback cursor, effects chain, and configuration.
+ *          For custom streams, it now internally stores the specific read/seek callbacks to ensure thread safety.
+ */
 typedef struct {
-    ma_decoder decoder;
-    ma_data_converter converter;
-    bool is_initialized;
-    bool converter_initialized;
-    bool is_looping;
-    bool is_streamed; // Flag to indicate if sound is from a stream
-    uint64_t cursor_frames;
-    uint64_t total_frames;
-    float volume;       // Per-sound volume (0.0 to N.N, 1.0 is normal)
-    float pan;          // Stereo pan (-1.0 full left, 0.0 center, 1.0 full right)
-    float pitch;        // Pitch multiplier (1.0 is normal, > 1.0 is higher, < 1.0 is lower)
+    ma_decoder decoder;             // Internal MiniAudio decoder state
+    ma_data_converter converter;    // Internal sample rate/format converter
+    bool is_initialized;            // True if decoder is valid
+    bool converter_initialized;     // True if converter is valid
+    bool is_looping;                // True if sound should restart upon completion
+    bool is_streamed;               // True if data is pulled via callbacks (not pre-loaded)
+
+    uint64_t cursor_frames;         // Current playback position in frames
+    uint64_t total_frames;          // Total length (0 if unknown/streamed)
+    float volume;                   // Linear volume (0.0 to N.N)
+    float pan;                      // Panning (-1.0 left, 1.0 right)
+    float pitch;                    // Pitch multiplier (1.0 normal)
+	
+    // --- Custom Stream Callbacks (Instance Storage) ---
+    // These fields store the user-provided callbacks for *this specific sound instance*.
+    // They are accessed by the internal static thunks using pointer arithmetic.
+    SituationStreamReadCallback stream_read_cb; 
+    SituationStreamSeekCallback stream_seek_cb; 
+
     void* stream_user_data; // New: User data for stream callbacks
 
     // --- Effects Chain ---
@@ -2433,6 +2447,8 @@ static void _SituationSetFilesystemError(const char* base_message, const char* p
 
 // --- Audio Helpers ---
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount);
+static ma_uint64 _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, ma_uint64 bytesToRead);	// thunk to route read calls to the specific SituationSound instance
+static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin);// thunk to route seek calls to the specific SituationSound instance
 
 // --- Display Helpers ---
 static void _SituationCachePhysicalDisplays(void);
@@ -2454,7 +2470,7 @@ static inline float _SituationLerpf(float a, float b, float t) { return a + t * 
 static inline float _SituationFMin3(float a, float b, float c) { return fminf(a, fminf(b, c)); } // Find the minimum of three floats
 static inline float _SituationFMax3(float a, float b, float c) { return fmaxf(a, fmaxf(b, c)); } // Find the maximum of three floats
 
-
+static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count);
 
 // --- Simple string hashing function (djb2) ---
 static unsigned long _sit_hash_string(const char* str) {
@@ -7473,7 +7489,7 @@ static void _SituationVulkanCleanupSwapchain(void) {
     // Note: sit_gs.vk.swapchain_image_count retains its value, as it's needed by _SituationVulkanCreateFramebuffers
     // which will be called next in the recreation sequence.
 
-    // --- 5. Destroy Swapchain Image Views ---
+    // --- 5. Destroy Swapchain Image Views & Images ---
     if (sit_gs.vk.swapchain_image_views) { // Check if array was allocated
         for (uint32_t i = 0; i < sit_gs.vk.swapchain_image_count; i++) {
             if (sit_gs.vk.swapchain_image_views[i] != VK_NULL_HANDLE) {
@@ -7487,6 +7503,13 @@ static void _SituationVulkanCleanupSwapchain(void) {
         sit_gs.vk.swapchain_image_views = NULL; // Important: Nullify the pointer after freeing.
     }
 
+    // Note: We do NOT destroy the VkImages themselves here, as they are owned 
+    // by the swapchain extension, but we must free our C array holding the handles.
+    if (sit_gs.vk.swapchain_images) {
+        free(sit_gs.vk.swapchain_images);
+        sit_gs.vk.swapchain_images = NULL;
+    }
+	
     // --- 6. Destroy the Swapchain Object ---
     if (sit_gs.vk.swapchain != VK_NULL_HANDLE) {
         vkDestroySwapchainKHR(sit_gs.vk.device, sit_gs.vk.swapchain, NULL);
@@ -10056,8 +10079,9 @@ SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t 
     // To change attributes, you must create a new pipeline with the desired vertex input state.
     (void)cmd; (void)location; (void)size; (void)type; (void)normalized; (void)offset;
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, 
-        "SituationCmdSetVertexAttribute is not supported in Vulkan. "
-        "Vertex format is immutable and defined during Pipeline creation.");
+        "SituationCmdSetVertexAttribute is incompatible with Vulkan's architecture. "
+        "Vulkan Pipelines are immutable; vertex attributes must be defined at pipeline creation time "
+        "(inside SituationLoadShaderFromMemory logic), not dynamically on the command buffer.");
 #endif
 }
 
@@ -12989,7 +13013,6 @@ SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src
             // Note: glMemoryBarrier errors are rare but can occur with invalid bit combinations
             // or driver issues. SIT_CHECK_GL_ERROR handles this.
         }
-        // If no bits were set, the call is effectively a no-op, which is valid.
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -13042,8 +13065,9 @@ SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src
         if (dst_stage_mask == 0) { dst_stage_mask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT; }
         
         // --- Issue the Barrier ---
-        // Only record the barrier if there's an actual dependency to synchronize.
-        if ((src_stage_mask != 0 || dst_stage_mask != 0) && (src_access_mask != 0 || dst_access_mask != 0)) {
+        // Allow barriers where access masks are 0 (Execution-Only Dependencies)
+        // Only skip if both stage masks are 0 (which implies no dependency defined)
+        if (src_stage_mask != 0 || dst_stage_mask != 0) {
             // --- Basic Memory Barrier (No image/buffer memory transitions assumed) ---
             // For image/buffer layout transitions, VkImageMemoryBarrier or VkBufferMemoryBarrier structs would need to be set up and passed to vkCmdPipelineBarrier.
             VkMemoryBarrier memory_barrier = {0};
@@ -15865,6 +15889,8 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     GLint last_vao = 0;
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &last_vao);
     
+    GLboolean was_depth_test_enabled = glIsEnabled(GL_DEPTH_TEST); // Save Depth Test State
+
     // Get the dimensions of the current render target (the main window).
     float target_width = (float)sit_gs.main_window_width;
     float target_height = (float)sit_gs.main_window_height;
@@ -16003,6 +16029,12 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     // Note: Viewport should already be correct for the main window target.
     // Note: Active texture unit is less critical to restore unless app relies on it post-call.
     
+	if (was_depth_test_enabled) {
+        glEnable(GL_DEPTH_TEST);
+    } else {
+        glDisable(GL_DEPTH_TEST);
+    }
+	
     SIT_CHECK_GL_ERROR(); // Check for any errors during the compositing or state restore process
 #elif defined(SITUATION_USE_VULKAN)
     if (sit_gs.vk.vd_compositing_pipeline == VK_NULL_HANDLE) {
@@ -16327,13 +16359,116 @@ SITAPI void SituationGetVirtualDisplaySize(int display_id, int* width, int* heig
 }
 
 /**
- * @brief Loads a 3D model from a GLTF (.gltf, .glb) file.
- * @details This is a high-level convenience function that orchestrates the entire loading process.
- *          It parses the model file, automatically loads all associated image files as textures, creates the necessary GPU meshes for each component, and packages everything into a single, easy-to-use `SituationModel` handle.
- * @param file_path The path to the .gltf or .glb file to be loaded.
- * @return A `SituationModel` object containing all loaded resources. On failure, the `id` member of the returned struct will be 0.
- * @note This function requires the `cgltf.h` library to be included with the `CGLTF_IMPLEMENTATION` define in the user's project. If not provided, this
- *       function will fail and set an appropriate error.
+ * @brief [INTERNAL] Extracts and interleaves geometry data from a raw GLTF primitive.
+ * 
+ * @details This helper bridges the gap between the generic `cgltf` data structures and the specific 
+ *          interleaved vertex format required by the Situation engine.
+ *          
+ *          It performs the following operations:
+ *          1. Identifies accessors for Position, Normal, and TexCoord attributes.
+ *          2. Allocates a single interleaved buffer for vertices.
+ *          3. Reads and packs data into the layout: `[Px, Py, Pz, Nx, Ny, Nz, U, V]`.
+ *             - If Normals are missing, defaults to `(0, 0, 1)`.
+ *             - If UVs are missing, defaults to `(0, 0)`.
+ *          4. Extracts indices and normalizes them to `uint32_t`, generating a linear sequence 
+ *             if the primitive is non-indexed.
+ * 
+ * @param prim Pointer to the `cgltf_primitive` to process.
+ * @param[out] out_vertices Pointer to receive the allocated float array of interleaved vertex data. 
+ *                          The caller owns this memory and must `free()` it.
+ * @param[out] out_v_count Pointer to receive the total number of vertices.
+ * @param[out] out_indices Pointer to receive the allocated `uint32_t` array of indices.
+ *                          The caller owns this memory and must `free()` it.
+ * @param[out] out_i_count Pointer to receive the total number of indices.
+ * 
+ * @return `true` if extraction was successful (valid positions found, memory allocated).
+ * @return `false` if the primitive is not a triangle list or if allocation failed.
+ */
+static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count) {
+    if (prim->type != cgltf_primitive_type_triangles) return false;
+
+    // 1. Find Accessors
+    cgltf_accessor* pos_acc = NULL;
+    cgltf_accessor* norm_acc = NULL;
+    cgltf_accessor* uv_acc = NULL;
+
+    for (size_t i = 0; i < prim->attributes_count; ++i) {
+        if (prim->attributes[i].type == cgltf_attribute_type_position) pos_acc = prim->attributes[i].data;
+        if (prim->attributes[i].type == cgltf_attribute_type_normal)   norm_acc = prim->attributes[i].data;
+        if (prim->attributes[i].type == cgltf_attribute_type_texcoord) uv_acc = prim->attributes[i].data;
+    }
+
+    if (!pos_acc) return false; // Position is mandatory
+
+    *out_v_count = (int)pos_acc->count;
+    
+    // 2. Allocate Interleaved Vertex Buffer (8 floats per vertex)
+    // Layout: X, Y, Z, Nx, Ny, Nz, U, V
+    *out_vertices = (float*)malloc(*out_v_count * 8 * sizeof(float));
+    if (!*out_vertices) return false;
+
+    // 3. Interleave Data
+    for (int i = 0; i < *out_v_count; ++i) {
+        float* v_ptr = &(*out_vertices)[i * 8];
+
+        // Position
+        cgltf_accessor_read_float(pos_acc, i, v_ptr, 3);
+
+        // Normal (Default to 0,0,1 if missing)
+        if (norm_acc) {
+            cgltf_accessor_read_float(norm_acc, i, v_ptr + 3, 3);
+        } else {
+            v_ptr[3] = 0.0f; v_ptr[4] = 0.0f; v_ptr[5] = 1.0f;
+        }
+
+        // UV (Default to 0,0 if missing)
+        if (uv_acc) {
+            cgltf_accessor_read_float(uv_acc, i, v_ptr + 6, 2);
+        } else {
+            v_ptr[6] = 0.0f; v_ptr[7] = 0.0f;
+        }
+    }
+
+    // 4. Extract Indices
+    if (prim->indices) {
+        *out_i_count = (int)prim->indices->count;
+        *out_indices = (uint32_t*)malloc(*out_i_count * sizeof(uint32_t));
+        if (!*out_indices) { free(*out_vertices); return false; }
+
+        for (int k = 0; k < *out_i_count; ++k) {
+            // cgltf handles u8/u16/u32 conversion automatically here
+            (*out_indices)[k] = (uint32_t)cgltf_accessor_read_index(prim->indices, k);
+        }
+    } else {
+        // Non-indexed geometry: generate 0, 1, 2... sequence
+        *out_i_count = *out_v_count;
+        *out_indices = (uint32_t*)malloc(*out_i_count * sizeof(uint32_t));
+        if (!*out_indices) { free(*out_vertices); return false; }
+        
+        for (int k = 0; k < *out_i_count; ++k) {
+            (*out_indices)[k] = (uint32_t)k;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @brief Loads a 3D model from a GLTF/GLB file.
+ * 
+ * @details This is a comprehensive asset loader that handles the entire pipeline of importing a 3D asset:
+ *          1. **Parsing:** Uses `cgltf` to parse the file structure.
+ *          2. **Textures:** Automatically resolves and loads all referenced texture files from disk into GPU memory (`SituationTexture`).
+ *          3. **Geometry:** Iterates through meshes, extracts vertex/index data, interleaves it into the engine's format, and creates GPU resources (`SituationMesh`).
+ *          4. **Materials:** Extracts PBR material properties (Base Color, Metallic, Roughness) and binds the loaded textures to the mesh instances.
+ * 
+ * @param file_path The path to the `.gltf` or `.glb` file.
+ * 
+ * @return A valid `SituationModel` handle containing all loaded resources.
+ * @return A zeroed handle `{0}` if the file could not be found, parsed, or if `CGLTF_IMPLEMENTATION` is missing.
+ * 
+ * @note This function relies on the helper `_SituationExtractGLTFPrimitive` to handle geometry processing.
+ * @warning The caller is responsible for destroying the returned model using `SituationUnloadModel` to prevent GPU memory leaks.
  */
 SITAPI SituationModel SituationLoadModel(const char* file_path) {
 #if defined(CGLTF_IMPLEMENTATION)
@@ -16355,66 +16490,112 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
     }
 
     // 2. Load all textures referenced by the model
-    //    We need to store them in a temporary array to associate them with materials later.
-    model.texture_count = data->textures_count;
-    model.all_model_textures = calloc(model.texture_count, sizeof(SituationTexture));
-    // Get the base path of the model file to resolve relative texture paths
-    char* base_path = SituationGetBasePathFromFile(file_path); // A new filesystem helper
-    for (int i = 0; i < data->textures_count; ++i) {
-        const char* texture_uri = data->textures[i].image->uri;
-        if (texture_uri) {
-            char* full_texture_path = SituationJoinPath(base_path, texture_uri);
-            // Load texture with mipmaps enabled by default
-            model.all_model_textures[i] = SituationCreateTexture(SituationLoadImage(full_texture_path), true);
-            free(full_texture_path);
+    model.texture_count = (int)data->textures_count;
+    // Only allocate if there are textures
+    if (model.texture_count > 0) {
+        model.all_model_textures = calloc(model.texture_count, sizeof(SituationTexture));
+        
+        char* base_path = SituationGetBasePathFromFile(file_path); 
+        for (int i = 0; i < (int)data->textures_count; ++i) {
+            const char* texture_uri = data->textures[i].image->uri;
+            if (texture_uri) {
+                char* full_texture_path = SituationJoinPath(base_path, texture_uri);
+                // Load texture with mipmaps enabled
+                model.all_model_textures[i] = SituationCreateTexture(SituationLoadImage(full_texture_path), true);
+                
+                // Basic validation warning
+                if (model.all_model_textures[i].id == 0) {
+                    fprintf(stderr, "SITUATION WARNING: Model texture failed to load: %s\n", full_texture_path);
+                }
+                free(full_texture_path);
+            }
         }
+        free(base_path);
     }
-    free(base_path);
 
     // 3. Process each mesh in the GLTF file
-    model.mesh_count = data->meshes_count;
-    model.meshes = calloc(model.mesh_count, sizeof(SituationModelMesh));
-    for (int i = 0; i < data->meshes_count; ++i) {
-        cgltf_mesh* gltf_mesh = &data->meshes[i];
-        SituationModelMesh* sit_mesh = &model.meshes[i];
+    model.mesh_count = (int)data->meshes_count;
+    if (model.mesh_count > 0) {
+        model.meshes = calloc(model.mesh_count, sizeof(SituationModelMesh));
         
-        // --- For each primitive in the mesh (GLTF can have multiple primitives per mesh) ---
-        // This example simplifies and assumes one primitive per mesh.
-        cgltf_primitive* prim = &gltf_mesh->primitives[0];
-
-        // a. Extract vertex data (positions, normals, texcoords) from cgltf accessors.
-        //    This is the most complex part. You need to read data from the buffers pointed to by prim->attributes and create a single, interleaved vertex buffer.
-        float* vertex_data;
-        uint32_t* index_data;
-        int vertex_count, index_count;
-        // ... (call a helper: _SituationProcessGltfPrimitive(prim, &vertex_data, ...)) ...
-
-        // b. Create the GPU mesh resource
-        sit_mesh->gpu_mesh = SituationCreateMesh(vertex_data, vertex_count, sizeof(MyVertexFormat), index_data, index_count);
-        free(vertex_data);
-        free(index_data);
-
-        // c. Process material data
-        cgltf_material* mat = prim->material;
-        if (mat && mat->has_pbr_metallic_roughness) {
-            cgltf_pbr_metallic_roughness* pbr = &mat->pbr_metallic_roughness;
-            // Copy factors
-            memcpy(sit_mesh->base_color_factor, pbr->base_color_factor, sizeof(vec4));
-            sit_mesh->metallic_factor = pbr->metallic_factor;
-            sit_mesh->roughness_factor = pbr->roughness_factor;
+        for (int i = 0; i < (int)data->meshes_count; ++i) {
+            cgltf_mesh* gltf_mesh = &data->meshes[i];
+            SituationModelMesh* sit_mesh = &model.meshes[i];
             
-            // Assign texture handles by finding them in our pre-loaded array
-            if (pbr->base_color_texture.texture) {
-                int tex_index = pbr->base_color_texture.texture - data->textures;
-                sit_mesh->base_color_texture = model.all_model_textures[tex_index];
+            // Use name if available
+            if (gltf_mesh->name) strncpy(sit_mesh->name, gltf_mesh->name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
+
+            // --- Process Primitive ---
+            // Checks for valid primitives and extracts data using the helper
+            if (gltf_mesh->primitives_count > 0) {
+                cgltf_primitive* prim = &gltf_mesh->primitives[0];
+
+                float* vertex_data = NULL;
+                uint32_t* index_data = NULL;
+                int vertex_count = 0;
+                int index_count = 0;
+
+                // --- Extract Data using Helper ---
+                if (_SituationExtractGLTFPrimitive(prim, &vertex_data, &vertex_count, &index_data, &index_count)) {
+                    
+                    // Create GPU Mesh (Stride is 8 floats: 3 Pos + 3 Norm + 2 UV)
+                    sit_mesh->gpu_mesh = SituationCreateMesh(
+                        vertex_data, 
+                        vertex_count, 
+                        8 * sizeof(float), 
+                        index_data, 
+                        index_count
+                    );
+
+                    free(vertex_data);
+                    free(index_data);
+                }
+
+                // --- Process PBR Material Data ---
+                cgltf_material* mat = prim->material;
+                if (mat) {
+                    if (mat->has_pbr_metallic_roughness) {
+                        cgltf_pbr_metallic_roughness* pbr = &mat->pbr_metallic_roughness;
+                        
+                        // Factors
+                        memcpy(sit_mesh->base_color_factor, pbr->base_color_factor, sizeof(vec4));
+                        sit_mesh->metallic_factor = pbr->metallic_factor;
+                        sit_mesh->roughness_factor = pbr->roughness_factor;
+                        
+                        // Textures (Find by pointer index arithmetic)
+                        if (pbr->base_color_texture.texture) {
+                            ptrdiff_t idx = pbr->base_color_texture.texture - data->textures;
+                            sit_mesh->base_color_texture = model.all_model_textures[idx];
+                        }
+                        if (pbr->metallic_roughness_texture.texture) {
+                            ptrdiff_t idx = pbr->metallic_roughness_texture.texture - data->textures;
+                            sit_mesh->metallic_roughness_texture = model.all_model_textures[idx];
+                        }
+                    }
+                    
+                    // Normal Map
+                    if (mat->normal_texture.texture) {
+                        ptrdiff_t idx = mat->normal_texture.texture - data->textures;
+                        sit_mesh->normal_texture = model.all_model_textures[idx];
+                    }
+                    
+                    // Emissive
+                    memcpy(sit_mesh->emissive_factor, mat->emissive_factor, sizeof(vec3));
+                    if (mat->emissive_texture.texture) {
+                        ptrdiff_t idx = mat->emissive_texture.texture - data->textures;
+                        sit_mesh->emissive_texture = model.all_model_textures[idx];
+                    }
+                }
             }
-            // ... do the same for normal, metallic/roughness, etc. ...
         }
     }
     
-    // 4. Cleanup and return
+    // 4. Cleanup cgltf data (we have copied everything to GPU/Situation structs)
     cgltf_free(data);
-    model.id = (uint32_t)(uintptr_t)model.meshes; // Use pointer as a simple ID
+    
+    // Use the mesh array pointer as the unique ID
+    model.id = (uint64_t)(uintptr_t)model.meshes; 
+    
     return model;
 #else
     (void)file_path;
@@ -20144,76 +20325,84 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, bool loo
     return SITUATION_SUCCESS;
 }
 
-static ma_decoder_vtable g_situation_stream_vtable = {0};
+/**
+ * @brief [INTERNAL] Immutable global vtable for custom streams.
+ * @details This structure defines the interface for custom streams. Because it points to our static thunks
+ *          (which resolve context dynamically) rather than user functions directly, this vtable can be 
+ *          const and shared safely across all streamed sounds and threads.
+ */
+static ma_decoder_vtable g_situation_static_vtable = {
+    .onRead = _situation_stream_read_thunk,
+    .onSeek = _situation_stream_seek_thunk
+};
 
 /**
- * @brief [INTERNAL] Custom V-Table function to handle reading from a user-defined stream.
- * @details This function serves as the bridge between the MiniAudio decoding engine and the user's custom stream implementation provided via `SituationLoadSoundFromStream`. When the decoder needs more data, it calls this function.
- *          This function's role is to locate the user's C-style callback function (`on_read`) and its associated `user_data` pointer, and then invoke the user's callback to fill the buffer.
- *
- * @par Thread Safety
- *   This function is called directly from the high-priority audio thread. It relies on the user-provided `on_read` callback to be thread-safe and non-blocking.
- *
- * @param pDecoder A pointer to the `ma_decoder` that is requesting data.
- * @param pBufferOut The buffer to write the raw audio data into.
- * @param bytesToRead The number of bytes the decoder is requesting.
- *
- * @return The number of bytes actually written to `pBufferOut`.
- *
- * @note This function is for internal use only and is part of the v-table for custom decoders.
- *
- * @see SituationLoadSoundFromStream()
+ * @brief [INTERNAL] Static thunk for routing audio read requests.
+ * 
+ * @details This function acts as a bridge (trampoline) between the generic MiniAudio decoder logic and the 
+ *          specific `stream_read_cb` stored in a `SituationSound` instance.
+ * 
+ * @par Implementation Detail (The "Container Of" Trick)
+ *      MiniAudio passes a pointer to the `ma_decoder`. Since `ma_decoder` is a member of `SituationSound`, 
+ *      we use `offsetof` to calculate the address of the parent `SituationSound` struct.
+ *      This allows us to access the specific callbacks for *this* sound instance without using global state.
+ * 
+ * @param pDecoder The pointer to the decoder member inside a SituationSound struct.
+ * @param pBufferOut The buffer to fill with audio data.
+ * @param bytesToRead The number of bytes requested.
+ * @return The number of bytes actually read/written.
  */
-SITAPI static ma_uint64 _situation_stream_on_read(ma_decoder* pDecoder, void* pBufferOut, ma_uint64 bytesToRead) {
+static ma_uint64 _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, ma_uint64 bytesToRead) {
+    // Calculate pointer to the parent struct
     SituationSound* sound = (SituationSound*)((char*)pDecoder - offsetof(SituationSound, decoder));
-    SituationStreamReadCallback on_read = (SituationStreamReadCallback)pDecoder->pBackendVTable->onRead; // Stash callback here
-    if (on_read) return on_read(sound->stream_user_data, pBufferOut, bytesToRead);
+    
+    // Safety check and dispatch
+    if (sound && sound->stream_read_cb) {
+        return sound->stream_read_cb(sound->stream_user_data, pBufferOut, bytesToRead);
+    }
     return 0;
 }
 
 /**
- * @brief [INTERNAL] Custom V-Table function to handle seeking within a user-defined stream.
- * @details This function serves as the bridge for seeking operations, called by MiniAudio when functions like `ma_decoder_seek_to_pcm_frame` are used on a custom stream-based sound. It locates the user's `on_seek` callback and invokes it with the requested offset.
- *
- * @par Thread Safety
- *   This function is called directly from the high-priority audio thread. It relies on the user-provided `on_seek` callback to be thread-safe and non-blocking.
- *
- * @param pDecoder A pointer to the `ma_decoder` performing the seek.
- * @param byteOffset The offset in bytes to seek to.
- * @param origin The origin from which to calculate the seek (`ma_seek_origin_start` or `ma_seek_origin_current`).
- *
- * @return MA_SUCCESS on success, or an appropriate MiniAudio error code on failure.
- *
- * @note This function is for internal use only and is part of the v-table for custom decoders.
- *
- * @see SituationLoadSoundFromStream()
+ * @brief [INTERNAL] Static thunk for routing audio seek requests.
+ * 
+ * @details Similar to `_situation_stream_read_thunk`, this recovers the parent `SituationSound` instance
+ *          and dispatches the seek request to the user's specific `stream_seek_cb`.
+ * 
+ * @param pDecoder The pointer to the decoder member inside a SituationSound struct.
+ * @param byteOffset The offset to seek to.
+ * @param origin The seek origin (start or current).
+ * @return MA_SUCCESS on success, or an error code.
  */
-SITAPI static ma_result _situation_stream_on_seek(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin) {
+static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin) {
+    // Calculate pointer to the parent struct
     SituationSound* sound = (SituationSound*)((char*)pDecoder - offsetof(SituationSound, decoder));
-    SituationStreamSeekCallback on_seek = (SituationStreamSeekCallback)pDecoder->pBackendVTable->onSeek; // Stash callback here
-    if (on_seek) return on_seek(sound->stream_user_data, byteOffset, origin);
+
+    // Safety check and dispatch
+    if (sound && sound->stream_seek_cb) {
+        return sound->stream_seek_cb(sound->stream_user_data, byteOffset, origin);
+    }
     return MA_NOT_IMPLEMENTED;
 }
 
 /**
  * @brief Initializes a sound for playback from a custom, user-defined data stream.
- * @details This is an advanced function for playing audio from non-file sources, such as procedural audio generators, network streams, or custom archive formats. You provide function pointers
- *          for reading and seeking within your data source, and the audio engine will call them as needed during playback to pull in audio data.
- *
- * @par Thread Safety
- *   The `on_read` and `on_seek` callbacks will be executed on a separate, high-priority audio thread.
- *   These functions **must be thread-safe** and should not perform blocking operations like file I/O or memory allocation.
- *
- * @param on_read A function pointer that the audio engine will call to request more audio data.
- * @param on_seek A function pointer that the audio engine will call to seek to a specific position in the stream. Can be `NULL` if seeking is not supported.
- * @param user_data A custom pointer that will be passed to your `on_read` and `on_seek` callbacks.
- * @param format A pointer to a `SituationAudioFormat` struct describing the native sample rate, channel count, and bit depth of the audio data your stream provides.
- * @param looping If `true`, the engine will attempt to seek to the beginning of the stream when it ends.
- * @param[out] out_sound A pointer to a `SituationSound` struct to be initialized.
- *
- * @return SITUATION_SUCCESS on successful initialization.
- *
- * @see SituationLoadSoundFromFile(), SituationUnloadSound()
+ * @details This function configures a `SituationSound` to pull audio data on-demand using the provided callbacks.
+ *          This is essential for procedural audio, network streaming, or reading from custom archive formats.
+ * 
+ * @par Thread Safety Improvement (v2.3.2C Fix)
+ *      Previously, this function modified a global vtable, causing race conditions if multiple streams were loaded.
+ *      It now stores the `on_read` and `on_seek` pointers directly into the `out_sound` instance and uses 
+ *      a shared, read-only vtable with thunk functions to resolve the correct callback at runtime.
+ * 
+ * @param on_read The callback invoked when the audio engine needs more data. Must be thread-safe.
+ * @param on_seek The callback invoked to seek within the stream. Can be NULL.
+ * @param user_data A custom pointer passed to the callbacks (e.g., your file handle or generator state).
+ * @param format The audio format (channels, sample rate) of the incoming stream.
+ * @param looping If true, the engine will attempt to seek to 0 when the stream ends.
+ * @param[out] out_sound The sound struct to initialize.
+ * 
+ * @return SITUATION_SUCCESS on success, or an error code if initialization fails.
  */
 SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound) {
     if (!out_sound || !on_read || !format) return SITUATION_ERROR_INVALID_PARAM;
@@ -20221,7 +20410,10 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
          _SituationSetError("Audio device not active for stream loading.");
          return SITUATION_ERROR_AUDIO_DEVICE;
     }
+    
     memset(out_sound, 0, sizeof(SituationSound));
+    
+    // --- Standard Parameter Init ---
     out_sound->volume = 1.0f;
     out_sound->pan = 0.0f;
     out_sound->pitch = 1.0f;
@@ -20229,25 +20421,31 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     out_sound->processors = NULL;
     out_sound->processor_user_data = NULL;
     out_sound->processor_count = 0;
+
+    // --- CRITICAL FIX: Instance-based Callback Storage ---
+    // 1. Store the user callbacks into this specific sound instance.
+    //    The static thunks will retrieve these later.
+    out_sound->stream_read_cb = on_read;
+    out_sound->stream_seek_cb = on_seek;
     out_sound->stream_user_data = user_data;
 
-    g_situation_stream_vtable.onRead = (ma_decoder_read_proc)_situation_stream_on_read;
-    g_situation_stream_vtable.onSeek = (ma_decoder_seek_proc)_situation_stream_on_seek;
-    // Stash the user-provided callbacks in the vtable pointers MiniAudio provides for this purpose
-    g_situation_stream_vtable.pBackendVTable = (ma_decoder_backend_vtable*)on_read;
-    g_situation_stream_vtable.pBackendVTable->onSeek = (void*)on_seek;
-
-
-    ma_decoder_config decoder_config = ma_decoder_config_init_custom(&g_situation_stream_vtable, out_sound);
+    // 2. Initialize custom decoder using the SHARED CONSTANT vtable.
+    //    We do NOT modify g_situation_static_vtable anymore.
+    ma_decoder_config decoder_config = ma_decoder_config_init_custom(&g_situation_static_vtable, NULL); 
+    
     decoder_config.outputFormat = ma_format_f32;
     decoder_config.outputChannels = format->channels;
     decoder_config.outputSampleRate = format->sample_rate;
 
     ma_result res = ma_decoder_init(&decoder_config, &out_sound->decoder);
-    if (res != MA_SUCCESS) { _SituationSetError("Failed to init custom stream decoder."); return SITUATION_ERROR_AUDIO_CONTEXT; }
+    if (res != MA_SUCCESS) { 
+        _SituationSetError("Failed to init custom stream decoder."); 
+        return SITUATION_ERROR_AUDIO_CONTEXT; 
+    }
 
     out_sound->total_frames = 0; // Length is unknown for a stream unless specified
     
+    // --- Audio Converter Initialization ---
     ma_data_converter_config converter_config = ma_data_converter_config_init_default();
     converter_config.formatIn = out_sound->decoder.outputFormat;
     converter_config.channelsIn = out_sound->decoder.outputChannels;
@@ -20255,18 +20453,24 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     converter_config.formatOut = sit_gs.sit_miniaudio_device.playback.format;
     converter_config.channelsOut = sit_gs.sit_miniaudio_device.playback.channels;
     converter_config.sampleRateOut = sit_gs.sit_miniaudio_device.sampleRate;
+    
     res = ma_data_converter_init(&converter_config, NULL, &out_sound->converter);
-    if (res != MA_SUCCESS) { ma_decoder_uninit(&out_sound->decoder); return SITUATION_ERROR_AUDIO_CONVERTER; }
+    if (res != MA_SUCCESS) { 
+        ma_decoder_uninit(&out_sound->decoder); 
+        return SITUATION_ERROR_AUDIO_CONVERTER; 
+    }
     
     out_sound->converter_initialized = true;
     out_sound->is_initialized = true;
     out_sound->is_looping = looping;
 
+    // --- Effects Chain Initialization ---
     if (_SituationInitSoundEffects(out_sound) != SITUATION_SUCCESS) {
         SituationUnloadSound(out_sound);
         _SituationSetError("Failed to initialize stream sound effects.");
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
+    
     return SITUATION_SUCCESS;
 }
 

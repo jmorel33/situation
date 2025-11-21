@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.2C "Zero Friction"_
+_Core API library v2.3.2D "Integrity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools. We are actively seeking contributions from the community to help us build a truly exceptional and robust platform.
 
-**Version 2.3.2B "Consistency"** represents a significant maturity milestone. Beyond the feature parity achieved in 2.3.2, this release actively enforces architectural consistency between backends. It introduces runtime checks to prevent execution-order bugs, automatic fallback paths for Vulkan, and improved safety for cross-platform input.
+**Version 2.3.2D "Integrity"** is a critical stability release. Following the features of "Parity" and the ease-of-use of "Zero Friction," this update focuses entirely on architectural correctness. It eliminates race conditions in the audio subsystem, fixes memory leaks in the Vulkan backend, and ensures strict state isolation in OpenGL.
 
 Our immediate development roadmap is focused on several key areas:
 *   **Full Thread-Safety**: We are working towards making the entire library thread-safe, allowing for even greater performance and scalability in multi-threaded applications.
