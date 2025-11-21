@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.3A "Refinement"_
+_Core API library v2.3.3B "Refinement"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,13 +8,13 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools. We are actively seeking contributions from the community to help us build a truly exceptional and robust platform.
 
-**Version 2.3.3A "Refinement"** builds upon the "Insight" release by enforcing stricter API safety and improving developer ergonomics. While v2.3.3 introduced visibility (Profiling, VRAM tracking), this update focuses on reliability. It standardizes string handling, enforces strict file format compliance to prevent silent data loss, and expands hardware awareness across Windows (DXGI) and Linux ecosystems.
+**Version 2.3.3B "Refinement"** is a critical stabilization update. It resolves compilation issues in the Vulkan backend and solidifies the **Unified Resource Architecture**. This release ensures that all textures created via the standard API are "Compute-Ready" by default across both OpenGL and Vulkan, simplifying the workflow for high-performance compute shaders without requiring complex flag management.
 
 Our immediate development roadmap is focused on several key areas:
-*   **Built-in Debug Tools**: Leveraging the new profiling data to create an immediate-mode debug UI overlay.
+*   **Hot Reloading:** Implementing live reloading for Shaders, Textures, and Models to drastically reduce iteration times during development.
+*   **Built-in Debug Tools**: Leveraging the profiling data to create an immediate-mode debug UI overlay.
 *   **Full Thread-Safety**: We are working towards making the entire library thread-safe, allowing for even greater performance and scalability.
 *   **Vulkan Optimization**: Continuing to refine the persistent descriptor set model for maximum throughput.
-*   **Robust Virtual Display and Windows Integration**: Continuously improving our virtual display system to ensure bullet-proof stability across diverse hardware configurations.
 
 "Situation" is an ambitious project that aims to become a premier, go-to solution for developers seeking a reliable and powerful platform layer. We encourage you to explore the library, challenge its capabilities, and contribute to its evolution.
 
@@ -22,7 +22,7 @@ The library's philosophy is reflected in its name, granting developers complete 
 
 It provides deep **Awareness** of the host system through APIs for querying hardware **(GPU Name, VRAM)** and multi-monitor display information, and by handling operating system events like window focus and file drops.
 
-This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, **capture (recording)**, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model **(designed for explicit sequential execution)**. It offers simplified management of GPU resources—such as shaders, meshes, and textures—and includes powerful utilities for high-quality text rendering **(now with printf-style formatting)**, robust filesystem I/O, **memory-resident asset loading**, and **3D model exporting**.
+This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, **capture (recording)**, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model **(designed for explicit sequential execution)**. It offers simplified management of GPU resources—such as shaders, meshes, and **compute-ready textures**—and includes powerful utilities for high-quality text rendering **(now with printf-style formatting)**, robust filesystem I/O, **memory-resident asset loading**, and **3D model exporting**.
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
 

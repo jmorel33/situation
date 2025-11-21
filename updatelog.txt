@@ -1,4 +1,25 @@
 Date: 2025-11-21
+Version: 2.3.3B "Refinement"
+
+## DESCRIPTION
+This patch release resolves critical compilation errors in the Vulkan backend introduced in 2.3.3A. It solidifies the "Unified Resource" system, ensuring textures and compute pipelines are correctly configured and stable across both backends.
+
+## API CHANGES & IMPROVEMENTS
+
+*   **Unified Texture Creation:** `SituationCreateTexture()` now automatically applies `VK_IMAGE_USAGE_STORAGE_BIT` (Vulkan) and compatible storage flags (OpenGL) to all new textures.
+    *   *Impact:* All textures created via the standard API are now "Compute-Ready" by default. Users can bind any texture to a Compute Shader without needing special creation flags or distinct API calls.
+
+## BUG FIXES
+
+*   **Vulkan Compilation:** Resolved an undefined variable error (`usage_flags`) inside `SituationCreateTexture` that prevented the library from compiling when `SITUATION_USE_VULKAN` was defined.
+
+*   **Missing Definitions:** Added the missing `SituationTextureUsageFlags` enum and replaced undefined macros in `_SituationInitVulkan` with defined numeric constants for descriptor pool sizing.
+
+*   **Compute Binding Crash:** Fixed a runtime crash during Vulkan initialization by ensuring the `storage_image_layout` is correctly created. This resolves issues when attempting to bind textures to Compute Shaders.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-21
 Version: 2.3.3A "Refinement"
 
 ## DESCRIPTION
