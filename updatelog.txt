@@ -1,3 +1,27 @@
+Date: 2025-11-21
+Version: 2.3.3 "Insight"
+
+## DESCRIPTION
+Version 2.3.3 is a "quality of life" feature release that expands the developer's ability to monitor performance and embed assets. It introduces the "Small but Deadly" feature set: direct memory loading for fonts, formatted text drawing, and hardware profiling hooks.
+
+## NEW FEATURES
+
+*   **Memory Asset Loading:** Added `SituationLoadFontFromMemory`. This allows developers to embed fonts (e.g., using `xxd -i`) directly into their executable for truly single-file distribution, bypassing the filesystem.
+*   **Formatted Text:** Added `SituationImageDrawTextFormatted`. This convenience function accepts `printf`-style format strings (e.g., `"Score: %d", score`), eliminating the need for users to manually `snprintf` into temporary buffers before drawing text.
+*   **Hardware Info:** Added `SituationGetGPUName()` to retrieve the human-readable model name of the active graphics adapter.
+
+## PROFILING & DIAGNOSTICS
+
+*   **Draw Call Counting:** The engine now tracks the number of draw commands issued per frame. This data is accessible via `SituationGetDrawCallCount()`.
+*   **VRAM Monitoring:** On Vulkan, `SituationGetVRAMUsage()` now returns the precise number of bytes allocated by the engine's internal allocator (VMA), allowing for real-time memory budget monitoring.
+
+## INTERNAL IMPROVEMENTS
+
+*   **Quad Renderer Refactor:** The internal 2D quad renderer has been modernized (Phase 2.5 prep). It now supports dynamic UV coordinates via push constants, paving the way for future GPU-accelerated text rendering.
+*   **Pipeline Layout Optimization:** Vulkan internal pipelines now use more efficient layout creation strategies, reducing initialization overhead.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-20
 Version: 2.3.2D "Integrity"
 

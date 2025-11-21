@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.2D "Integrity"_
+_Core API library v2.3.3 "Insight"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,10 +8,11 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools. We are actively seeking contributions from the community to help us build a truly exceptional and robust platform.
 
-**Version 2.3.2D "Integrity"** is a critical stability release. Following the features of "Parity" and the ease-of-use of "Zero Friction," this update focuses entirely on architectural correctness. It eliminates race conditions in the audio subsystem, fixes memory leaks in the Vulkan backend, and ensures strict state isolation in OpenGL.
+**Version 2.3.3 "Insight"** brings transparency and flexibility to the platform. Building on the architectural stability established in previous releases, this update focuses on developer visibility and deployment options. It introduces built-in profiling hooks for tracking draw calls and video memory usage, adds support for loading assets directly from memory (enabling true single-file executables), and enhances utility functions for hardware awareness.
 
 Our immediate development roadmap is focused on several key areas:
-*   **Full Thread-Safety**: We are working towards making the entire library thread-safe, allowing for even greater performance and scalability in multi-threaded applications.
+*   **Built-in Debug Tools**: Leveraging the new profiling data to create an immediate-mode debug UI overlay.
+*   **Full Thread-Safety**: We are working towards making the entire library thread-safe, allowing for even greater performance and scalability.
 *   **Vulkan Optimization**: Continuing to refine the persistent descriptor set model for maximum throughput.
 *   **Robust Virtual Display and Windows Integration**: Continuously improving our virtual display system to ensure bullet-proof stability across diverse hardware configurations.
 
@@ -19,11 +20,11 @@ Our immediate development roadmap is focused on several key areas:
 
 The library's philosophy is reflected in its name, granting developers complete situational "Awareness," precise "Control," and fine-grained "Timing."
 
-It provides deep **Awareness** of the host system through APIs for querying hardware and multi-monitor display information, and by handling operating system events like window focus and file drops.
+It provides deep **Awareness** of the host system through APIs for querying hardware **(GPU Name, VRAM)** and multi-monitor display information, and by handling operating system events like window focus and file drops.
 
-This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, **capture (recording)**, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model **(designed for explicit sequential execution)**. It offers simplified management of GPU resources—such as shaders, meshes, and textures—and includes powerful utilities for high-quality text rendering, robust filesystem I/O, and **3D model exporting**.
+This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, **capture (recording)**, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model **(designed for explicit sequential execution)**. It offers simplified management of GPU resources—such as shaders, meshes, and textures—and includes powerful utilities for high-quality text rendering **(now with printf-style formatting)**, robust filesystem I/O, **memory-resident asset loading**, and **3D model exporting**.
 
-Finally, its **Timing** capabilities range from high-resolution performance measurement and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
+Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
 
 > **CRITICAL ARCHITECTURAL NOTE:** To guarantee identical behavior between OpenGL (Immediate) and Vulkan (Deferred), developers must **update all buffer data before recording draw commands** within a frame. *As of v2.3.2B, the library actively enforces this rule in debug builds and will report a runtime error if violated.*
 
@@ -53,6 +54,9 @@ Key features include:
 - **Advanced Rendering Features:** Includes a Virtual Display System for off-screen rendering, high-performance text rendering, and a command buffer abstraction.
 - **Audio System:** Full playback and **recording/capture** capabilities via the miniaudio library.
 - **Utility Functions:** High-resolution timers, FPS calculation, filesystem path utilities, and model exporting (.gltf).
+- **Resource Embedding:** Load fonts directly from memory buffers for single-file executables.
+- **Profiling & Diagnostics:** Built-in counters for Draw Calls and VRAM usage (Vulkan).
+- **Hardware Awareness:** APIs to query specific GPU names and capabilities.
 
 </details>
 

@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.2D "Integrity"
+*   Core API library v2.3.3 "Insight"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -49,8 +49,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 2
-#define SITUATION_VERSION_REVISION "D"
+#define SITUATION_VERSION_PATCH 3
+#define SITUATION_VERSION_REVISION ""
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -392,6 +392,13 @@ typedef enum SituationImageFlipMode {
 typedef struct SituationFont {
     void *fontData;                                 // The raw data buffer of the .ttf file
     void *stbFontInfo;                              // A pointer to the stbtt_fontinfo struct
+	    
+    // [NEW] GPU-side data for real-time rendering
+    SituationTexture atlas_texture;
+    void* glyph_info; // Pointer to stbtt_bakedchar array
+    int atlas_width;
+    int atlas_height;
+    float font_height_pixels; // The size this atlas was baked at
 } SituationFont;
 
 /**
@@ -1139,6 +1146,7 @@ typedef void (*SituationJoystickCallback)(int jid, int event, void* user_data); 
 //==================================================================================
 
 // --- Application Lifecycle & State ---
+SITAPI const char* SituationGetVersionString(void); 									// Returns Situation library version
 SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info); // Initialize the library, create window and graphics context.
 SITAPI void SituationPollInputEvents(void);                                             // Poll for all input events (keyboard, mouse, joystick). Call once per frame.
 SITAPI void SituationUpdateTimers(void);                                                // Update all internal timers (frame timer, temporal system). Call after polling events.
@@ -1168,7 +1176,7 @@ SITAPI const char* SituationGetArgumentValue(const char* arg_name);             
 
 // --- System & Hardware Information ---
 SITAPI SituationDeviceInfo SituationGetDeviceInfo(void);                                // Get detailed information about system hardware (CPU, GPU, RAM, etc.).
-SITAPI const char* SituationGetVersionString(void); 									// [NEW] Returns "2.3.2C"
+SITAPI const char* SituationGetGPUName(void);											// Get the name of the active GPU.
 SITAPI char* SituationGetUserDirectory(void);                                           // Get the full path to the current user's home directory (caller must free).
 SITAPI char SituationGetCurrentDriveLetter(void);                                       // Get the drive letter of the running executable (Windows only).
 SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacity_bytes, uint64_t* out_free_space_bytes, char* out_volume_name, int volume_name_len); // Get info for a specific drive (Windows only).
@@ -1274,15 +1282,23 @@ SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, floa
 
 // --- Font Management ---
 SITAPI SituationFont SituationLoadFont(const char *fileName);                           // Load a font from a TTF/OTF file for CPU rendering.
+SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize);		// Loads a font directly from a memory buffer (e.g., embedded resource).
+SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels);
 SITAPI void SituationUnloadFont(SituationFont font);                                    // Unload a CPU-side font and free its memory.
 SITAPI Rectangle SituationMeasureText(SituationFont font, const char *text, float fontSize); // Measure the pixel dimensions of a string before drawing.
 SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font, int codepoint, Vector2 position, float fontSize, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness); // Draw a single Unicode character with advanced styling onto an image.
 SITAPI void SituationImageDrawText(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, ColorRGBA tint ); // Draw a simple, tinted text string onto an image.
 SITAPI void SituationImageDrawTextEx(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness); // Draw a text string with advanced styling (rotation, outline) onto an image.
+SITAPI void SituationImageDrawTextFormatted(SituationImage *dst, SituationFont font, Vector2 position, float fontSize, float spacing, ColorRGBA tint, const char* fmt, ...);
 
 //==================================================================================
 // Graphics Module: Rendering, Shaders, and GPU Resources
 //==================================================================================
+
+// --- Profiling & Diagnostics ---
+SITAPI uint32_t SituationGetDrawCallCount(void); 										// Number of draw commands this frame
+SITAPI uint64_t SituationGetVRAMUsage(void);     										// Total GPU memory allocated (Bytes)
+
 // --- Frame Lifecycle & Command Buffer ---
 SITAPI bool SituationAcquireFrameCommandBuffer(void);                                   // Prepare the backend for a new frame of rendering commands.
 SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void);                      // Get the primary command buffer for the current frame.
@@ -1305,6 +1321,7 @@ SITAPI void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, 
 SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance); // [Core] Record an indexed draw call.
 SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);                     // Begins a render pass with detailed configuration.
 SITAPI void SituationCmdEndRenderPass(SituationCommandBuffer cmd);                                                                      // Ends the current render pass.
+SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color);		// Draws a text string using GPU-accelerated textured quads.
 
 // --- Graphics Resource Management ---
 SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count); // Create a mesh from vertex and index data.
@@ -1968,6 +1985,10 @@ typedef struct {
     double fps_last_update_time;    // Last time the FPS was calculated
     int    current_fps;             // The calculated FPS value
 
+    // --- Profiling Metrics ---
+    uint32_t frame_draw_calls;      // Number of draw commands issued this frame
+    uint32_t frame_triangle_count;  // (Optional) Approximate triangle count
+	
     // --- Application Callbacks ---
     void (*exit_callback)(void*);
     void* exit_callback_user_data;
@@ -2258,60 +2279,63 @@ static const char* SIT_COMPOSITE_FRAGMENT_SHADER_SRC =
     "    outColor = vec4(mix(dst.rgb, res, finalAlpha), 1.0);\n"
     "}\n";
 
-// Draws a simple, colored, transformed quad. Adheres to the Shader Contract.
+// Draws a simple, colored, transformed quad with dynamic UV support.
 static const char* SIT_QUAD_VERTEX_SHADER =
     "#version 450 core\n"
-    // Shader Contract: Vertex Position Attribute
+    // Shader Contract: Vertex Position Attribute (Standard Quad is 0..1)
     "layout(location = " SIT_STRINGIFY(SIT_ATTR_POSITION) ") in vec2 aPos;\n"
+    // Output UVs to fragment shader
+    "layout(location = 0) out vec2 v_TexCoord;\n"
     "\n"
     // --- Backend-Agnostic Uniform Block --- \n"
 #if defined(SITUATION_USE_VULKAN)
-    // For Vulkan, UBO is in Set 0, Binding 1. Push constants hold per-draw data.
-    "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView {\n"
-    "    mat4 view;\n"
-    "    mat4 projection;\n"
-    "} ubo;\n"
-    "\n"
-    "layout(push_constant) uniform QuadPushConstants {\n"
-    "    mat4 model;\n"
-    "    vec4 color;\n"
-    "} pc;\n"
+    "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
+    // Added uv_rect to push constants
+    "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; } pc;\n"
     "\n"
     "void main() {\n"
     "    gl_Position = ubo.projection * pc.model * vec4(aPos, 0.0, 1.0);\n"
+    "    // Calculate UV: aPos is 0..1. uv_rect is (u_off, v_off, u_scale, v_scale)\n"
+    "    v_TexCoord = pc.uv_rect.xy + (aPos * pc.uv_rect.zw);\n"
     "}\n"
 #elif defined(SITUATION_USE_OPENGL)
-    // For OpenGL, all uniforms are standalone with explicit locations from the contract.
     "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_PROJECTION_MATRIX) ") uniform mat4 u_projection;\n"
     "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_MODEL_MATRIX) ") uniform mat4 u_model;\n"
+    // Add a standalone uniform location for UV rect (Location 5)
+    "layout(location = 5) uniform vec4 u_uv_rect;\n"
     "\n"
     "void main() {\n"
     "    gl_Position = u_projection * u_model * vec4(aPos, 0.0, 1.0);\n"
+    "    v_TexCoord = u_uv_rect.xy + (aPos * u_uv_rect.zw);\n"
     "}\n"
 #endif
 ;
 
 static const char* SIT_QUAD_FRAGMENT_SHADER =
     "#version 450 core\n"
+    "layout(location = 0) in vec2 v_TexCoord;\n"
     "layout(location = 0) out vec4 outColor;\n"
     "\n"
-    // --- Backend-Agnostic Uniform Block --- \n"
-#if defined(SITUATION_USE_VULKAN)
-    // Vulkan gets the color from the same push constant block as the vertex shader.
-    "layout(push_constant) uniform QuadPushConstants {\n"
-    "    mat4 model;\n"
-    "    vec4 color;\n"
-    "} pc;\n"
+    // Standard Albedo binding
+    "layout(binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"
     "\n"
+#if defined(SITUATION_USE_VULKAN)
+    "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; int use_texture; } pc;\n"
     "void main() {\n"
-    "    outColor = pc.color;\n"
+    "    vec4 texColor = vec4(1.0);\n"
+    "    if (pc.use_texture == 1) texColor = texture(u_Texture, v_TexCoord);\n"
+    "    // For SDF fonts, we might need special handling, but for baked bitmap fonts, simple sampling works.\n"
+    "    // If it's a 1-channel bitmap font, it comes as alpha (0,0,0,A) or (1,1,1,A). \n"
+    "    // Our baker creates RGBA white with alpha.\n"
+    "    outColor = texColor * pc.color;\n"
     "}\n"
 #elif defined(SITUATION_USE_OPENGL)
-    // OpenGL gets the color from a separate standalone uniform.
     "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_OBJECT_COLOR) ") uniform vec4 u_objectColor;\n"
-    "\n"
+    "layout(location = 6) uniform int u_use_texture;\n"
     "void main() {\n"
-    "    outColor = u_objectColor;\n"
+    "    vec4 texColor = vec4(1.0);\n"
+    "    if (u_use_texture == 1) texColor = texture(u_Texture, v_TexCoord);\n"
+    "    outColor = texColor * u_objectColor;\n"
     "}\n"
 #endif
 ;
@@ -4647,46 +4671,32 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
 
 #if defined(SITUATION_USE_VULKAN)
 /**
- * @brief [INTERNAL] Initializes all internal Vulkan rendering pipelines required by the library's high-level drawing commands.
- * @details This is a master setup function called once during Vulkan initialization. It is responsible for creating all the private, pre-packaged rendering modules that the library uses to execute commands like `SituationCmdDrawQuad` and `SituationRenderVirtualDisplays`.
- *          These internal renderers are self-contained, with their own dedicated pipelines, layouts, and static buffers. This design ensures that their state does not interfere with any user-created
- *          pipelines or rendering states, providing a robust abstraction layer.
+ * @brief [INTERNAL] Initializes Vulkan pipelines for the Virtual Display Compositing system.
+ * @details This function is the second stage of internal renderer setup. It compiles and creates the specific graphics pipelines used by `SituationRenderVirtualDisplays` to draw off-screen framebuffers onto the main screen.
+ *
+ * @par Scope
+ * This function creates two distinct pipelines:
+ * 1. **Simple Compositor:** For standard blending (Alpha, Additive, Multiply). Uses a lightweight shader and single texture sampling.
+ * 2. **Advanced Compositor:** For complex "Photoshop-style" blend modes (Overlay, Soft Light, etc.). Uses a specialized shader that samples both the source Virtual Display and a copy of the destination framebuffer.
+ *
+ * @note The standard 2D Quad Renderer (`SituationCmdDrawQuad`) is **not** initialized here; it is handled by the shared `_SituationInitQuadRenderer` function before this one is called.
  *
  * @par Initialization Sequence
- *   The function systematically creates the resources for each internal renderer:
+ *   1. **Simple Compositor:**
+ *      - Compiles `SIT_VD_VERTEX_SHADER_SRC` and `SIT_VD_FRAGMENT_SHADER_SRC`.
+ *      - Creates a pipeline layout with: Set 0 (View UBO), Set 1 (Source Sampler), and Push Constants.
+ *      - Creates the `vd_compositing_pipeline`.
+ *   2. **Advanced Compositor:**
+ *      - Compiles `SIT_COMPOSITE_VERTEX_SHADER_SRC` and `SIT_COMPOSITE_FRAGMENT_SHADER_SRC`.
+ *      - Creates a pipeline layout with: Set 0 (View UBO), Set 1 (Source Sampler), Set 2 (Dest Sampler), and Push Constants.
+ *      - Creates the `advanced_compositing_pipeline`.
  *
- *   **1. Quad Renderer (for `SituationCmdDrawQuad`):**
- *      - **Shaders:** Compiles the embedded `SIT_QUAD_VERTEX_SHADER` and `SIT_QUAD_FRAGMENT_SHADER` sources into SPIR-V.
- *      - **Pipeline Layout:** Creates a `VkPipelineLayout` that defines the interface for the quad shader:
- *          - A descriptor set for the global projection UBO (at Set 0).
- *          - A push constant range to pass the per-quad model matrix and color.
- *      - **Graphics Pipeline:** Builds the `VkPipeline` object with a vertex input state for a simple `vec2` position and a `VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP` topology.
- *      - **Vertex Buffer:** Creates a static, device-local `VkBuffer` and uploads the geometry for a reusable unit quad.
+ * @return SITUATION_SUCCESS on successful initialization of both pipelines.
+ * @return SITUATION_ERROR_VULKAN_PIPELINE_FAILED if shader compilation or pipeline creation fails. Cleanup is performed automatically on failure.
  *
- *   **2. Virtual Display Compositors (for `SituationRenderVirtualDisplays`):**
- *      - **Simple Compositor:**
- *          - **Shaders:** Compiles the `SIT_VD_VERTEX_SHADER_SRC` and `SIT_VD_FRAGMENT_SHADER_SRC`.
- *          - **Pipeline Layout:** Creates a layout that accepts the global UBO (Set 0), a single texture sampler for the VD's content (Set 1), and a push constant for the model matrix and opacity.
- *          - **Pipeline:** Builds the pipeline for drawing a textured quad.
- *      - **Advanced Compositor:**
- *          - **Shaders:** Compiles the `SIT_COMPOSITE_VERTEX_SHADER_SRC` and `SIT_COMPOSITE_FRAGMENT_SHADER_SRC` for Photoshop-style blend modes.
- *          - **Pipeline Layout:** Creates a more complex layout that can bind **two** texture samplers (for the source VD and the destination framebuffer copy) and a push constant for model matrix, opacity, and blend mode.
- *          - **Pipeline:** Builds the corresponding graphics pipeline.
+ * @warning This function relies on the shader compiler being enabled (`SITUATION_ENABLE_SHADER_COMPILER`). If disabled, it returns success immediately but leaves the pipeline handles as `VK_NULL_HANDLE`, effectively disabling Virtual Displays.
  *
- * @return SITUATION_SUCCESS on successful initialization of all internal renderers.
- * @return SITUATION_ERROR_VULKAN_PIPELINE_FAILED or a related error code if any step fails (e.g., shader compilation, object creation). On failure, the function attempts to clean up any resources that were partially created to prevent leaks.
- *
- * @note This function is for internal use by `_SituationInitVulkan` only and must be called after the core Vulkan objects (device, allocator, main render pass, descriptor layouts) have been created.
- * @note All successfully created Vulkan handles are stored in the global state struct (`sit_gs.vk`) for use by the high-level drawing commands and for cleanup during shutdown.
- *
- * @warning The success of this function is mandatory for the `SituationCmdDrawQuad` and `SituationRenderVirtualDisplays` APIs to work correctly.
- * @warning This function relies on the shader compiler being enabled (`SITUATION_ENABLE_SHADER_COMPILER`).
- *
- * @see _SituationInitVulkan()
- * @see _SituationCleanupQuadRenderer()
- * @see SituationCmdDrawQuad()
- * @see SituationRenderVirtualDisplays()
- * @see _SituationVulkanCreateGraphicsPipeline()
+ * @see _SituationInitVulkan(), _SituationInitQuadRenderer(), SituationRenderVirtualDisplays()
  */
 static SituationError _SituationVulkanInitInternalRenderers(void) {
     // --- Initialize all local handles to NULL for robust cleanup ---
@@ -4714,50 +4724,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     return SITUATION_SUCCESS; 
 #else
 
-    // =================================================================================
-    // --- 1. Initialize the Simple Colored Quad Renderer ---
-    // =================================================================================
-    {
-        vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_QUAD_VERTEX_SHADER, "internal_quad.vert", shaderc_vertex_shader);
-        fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_QUAD_FRAGMENT_SHADER, "internal_quad.frag", shaderc_fragment_shader);
-        if (!vs_spirv.data || !fs_spirv.data) goto cleanup; 
-
-        VkPushConstantRange push_constant_range = {
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            .offset = 0,
-            .size = sizeof(mat4) + sizeof(vec4)
-        };
-        VkDescriptorSetLayout layouts[] = { sit_gs.vk.view_data_ubo_layout };
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 1,
-            .pSetLayouts = layouts,
-            .pushConstantRangeCount = 1,
-            .pPushConstantRanges = &push_constant_range
-        };
-        if (vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &quad_pipeline_layout) != VK_SUCCESS) goto cleanup;
-
-        VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
-        VkVertexInputAttributeDescription attr_desc = { .binding = 0, .location = SIT_ATTR_POSITION, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 };
-
-        quad_pipeline = _SituationVulkanCreateGraphicsPipeline(
-            vs_spirv.data, vs_spirv.size,
-            fs_spirv.data, fs_spirv.size,
-            quad_pipeline_layout,
-            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
-            1, &binding_desc,
-            1, &attr_desc
-        );
-        _SituationFreeSpirvBlob(&vs_spirv);
-        _SituationFreeSpirvBlob(&fs_spirv);
-        if (quad_pipeline == VK_NULL_HANDLE) goto cleanup;
-
-        float quad_vertices[] = { 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f };
-        if (_SituationVulkanCreateAndUploadBuffer(quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &quad_vertex_buffer, &quad_vertex_buffer_memory) != SITUATION_SUCCESS) goto cleanup;
-    }
-
     // ======================================================================================
-    // --- 2. Initialize the Simple VD Compositing Renderer ---
+    // --- 1. Initialize the Simple VD Compositing Renderer ---
     // ======================================================================================
     {
         vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_VD_VERTEX_SHADER_SRC, "internal_vd.vert", shaderc_vertex_shader);
@@ -4799,7 +4767,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     }
     
     // ======================================================================================
-    // --- 3. Initialize the Advanced VD Compositing Renderer ---
+    // --- 2. Initialize the Advanced VD Compositing Renderer ---
     // ======================================================================================
     {
         vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_COMPOSITE_VERTEX_SHADER_SRC, "internal_composite.vert", shaderc_vertex_shader);
@@ -5801,9 +5769,16 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         return SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
     }
 
-// FIX 2.3.2A: Only initialize internal renderers if shader compiler is available.
-    // These renderers rely on runtime compilation of embedded GLSL strings.
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
+    // 1. Initialize the Quad Renderer (Shared Function)
+    // Note: Width/Height are ignored by Vulkan path, passing 0 is safe.
+    if (!_SituationInitQuadRenderer(0, 0)) {
+        _SituationCleanupVulkan();
+        return SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
+    }
+
+    // 2. Initialize Virtual Display Renderers
+    // (We keep _SituationVulkanInitInternalRenderers for VDs, but we must strip the quad logic from it)
     if (!_SituationVulkanInitInternalRenderers()) { 
         _SituationCleanupVulkan(); 
         return SITUATION_ERROR_VULKAN_PIPELINE_FAILED; 
@@ -7640,10 +7615,14 @@ static void _SituationVulkanRecreateSwapchain(void) {
 SITAPI void SituationPollInputEvents(void) {
     if (!sit_gs.is_initialized) return;
 
-    // [NEW] Reset consistency check flag
+    // [NEW] Reset Profiler Counters
+    sit_gs.frame_draw_calls = 0;
+    sit_gs.frame_triangle_count = 0;
+	
+    // Reset consistency check flag
     sit_gs.debug_draw_command_issued_this_frame = false;
 
-    // [NEW] Process Main Thread Audio Capture
+    // Process Main Thread Audio Capture
     if (sit_gs.audio_capture_on_main_thread && sit_gs.capture_callback) {
         ma_mutex_lock(&sit_gs.audio_capture_mutex);
         // Logic to drain ring buffer and call user callback...
@@ -7998,7 +7977,7 @@ static void _SituationCleanupPlatform(void) {
 
 /**
  * @brief [INTERNAL] Initializes all backend-specific resources for the internal 2D quad renderer.
- * @details This function is a critical part of the main initialization sequence. It creates the dedicated shaders, pipeline objects, and vertex buffers required by the high-level `SituationCmdDrawQuad` command.
+ * @details This function is a critical part of the main initialization sequence. It creates the dedicated shaders, pipeline objects, and vertex buffers required by the high-level `SituationCmdDrawQuad` and `SituationCmdDrawText` commands.
  *          It is designed to be completely self-contained, ensuring that its internal state does not interfere with the user's rendering state.
  *
  * @par Backend-Specific Implementation
@@ -8011,7 +7990,9 @@ static void _SituationCleanupPlatform(void) {
  *   6.  Critically, it restores the binding of the main global VAO before returning, ensuring the user's rendering context is left undisturbed.
  * - **Vulkan:**
  *   1.  Compiles the internal GLSL shader sources into SPIR-V using `shaderc`.
- *   2.  Creates a `VkPipelineLayout` that defines the interface for the quad renderer, including a push constant range for the model matrix and color, and a descriptor set layout for the global projection UBO.
+ *   2.  Creates a `VkPipelineLayout` that defines the interface for the quad renderer. 
+ *       - **Update:** It now includes `image_sampler_layout` (Set 1) to support textured quads for fonts.
+ *       - **Update:** Push constants are expanded to include UV Rect and UseTexture flags.
  *   3.  Calls the generic `_SituationVulkanCreateGraphicsPipeline` helper to build the final `VkPipeline` object with the correct vertex input state and primitive topology (`TRIANGLE_STRIP`).
  *   4.  Creates and uploads the static vertex data to a device-local `VkBuffer` for optimal performance.
  *
@@ -8022,24 +8003,20 @@ static void _SituationCleanupPlatform(void) {
  * @return `false` if any step fails (e.g., shader compilation, object creation). On failure, an appropriate error message is set, and any partially created resources are cleaned up.
  *
  * @note This function is for internal use by `_SituationInitOpenGL` or `_SituationInitVulkan` only.
- * @warning The success of this function is mandatory for `SituationCmdDrawQuad` and other 2D drawing helpers to work.
+ * @warning The success of this function is mandatory for `SituationCmdDrawQuad` and `SituationCmdDrawText` to work.
  *
- * @see _SituationCleanupQuadRenderer(), SituationCmdDrawQuad()
+ * @see _SituationCleanupQuadRenderer(), SituationCmdDrawQuad(), SituationCmdDrawText()
  */
 static bool _SituationInitQuadRenderer(int width, int height) {
 #if defined(SITUATION_USE_OPENGL)
     // --- OpenGL Quad Renderer Initialization ---
     SituationError shader_err_code = SITUATION_SUCCESS;
-    const char* error_context = "_SituationInitQuadRenderer";
 
     // 1. Compile and link the internal quad shader program.
     sit_gs.gl.quad_shader_program = _SituationCreateGLShaderProgram(SIT_QUAD_VERTEX_SHADER, SIT_QUAD_FRAGMENT_SHADER, &shader_err_code);
+    
     if (shader_err_code != SITUATION_SUCCESS || sit_gs.gl.quad_shader_program == 0) {
         // Error message should already be set by _SituationCreateGLShaderProgram
-        // Add context if needed
-        // char full_msg[256];
-        // snprintf(full_msg, sizeof(full_msg), "%s: Failed to create quad shader program.", error_context);
-        // _SituationAppendToLastError(full_msg); // Hypothetical helper
         return false;
     }
 
@@ -8080,17 +8057,6 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     // 4. Allocate and populate the VBO's storage with the quad vertex data.
     // Using glNamedBufferStorage for DSA (Direct State Access).
     glNamedBufferStorage(sit_gs.gl.quad_vbo, sizeof(quad_vertices), quad_vertices, 0); // Static data
-    if (/* Hypothetical check for buffer storage failure, though glNamedBufferStorage rarely fails without OOM */) {
-         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitQuadRenderer: Failed to allocate/populate quad VBO storage.");
-        // Cleanup shader program, VAO, and VBO
-        glDeleteProgram(sit_gs.gl.quad_shader_program);
-        sit_gs.gl.quad_shader_program = 0;
-        glDeleteVertexArrays(1, &sit_gs.gl.quad_vao);
-        sit_gs.gl.quad_vao = 0;
-        glDeleteBuffers(1, &sit_gs.gl.quad_vbo);
-        sit_gs.gl.quad_vbo = 0;
-        return false;
-    }
     SIT_CHECK_GL_ERROR(); // Check for errors during buffer storage
 
     // 5. Temporarily bind OUR private VAO to configure it.
@@ -8102,16 +8068,15 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     glVertexArrayVertexBuffer(sit_gs.gl.quad_vao, 0, sit_gs.gl.quad_vbo, 0, 2 * sizeof(float)); // Binding index 0, stride 2 floats
     SIT_CHECK_GL_ERROR();
 
-    // Set up vertex attribute format for position (assuming layout(location = SIT_ATTR_POSITION) in vec2 in shader)
-    glVertexArrayAttribFormat(sit_gs.gl.quad_vao, SIT_ATTR_POSITION, 2, GL_FLOAT, GL_FALSE, 0); // Attrib SIT_ATTR_POSITION, 2 components, float, normalized, relative offset 0
+    // Set up vertex attribute format for position (Location 0)
+    glVertexArrayAttribFormat(sit_gs.gl.quad_vao, SIT_ATTR_POSITION, 2, GL_FLOAT, GL_FALSE, 0); 
     SIT_CHECK_GL_ERROR();
-    glVertexArrayAttribBinding(sit_gs.gl.quad_vao, SIT_ATTR_POSITION, 0); // Attrib SIT_ATTR_POSITION uses binding index 0
+    glVertexArrayAttribBinding(sit_gs.gl.quad_vao, SIT_ATTR_POSITION, 0); 
     SIT_CHECK_GL_ERROR();
-    glEnableVertexArrayAttrib(sit_gs.gl.quad_vao, SIT_ATTR_POSITION); // Enable attrib SIT_ATTR_POSITION
+    glEnableVertexArrayAttrib(sit_gs.gl.quad_vao, SIT_ATTR_POSITION); 
     SIT_CHECK_GL_ERROR();
 
     // 7. *** CRITICAL *** Unbind our private VAO.
-    // This restores the previously bound VAO (which should be sit_gs.gl.global_vao_id after _SituationInitOpenGL sets it up) as the active one for subsequent user operations.
     glBindVertexArray(0); // Explicit unbind for safety and clarity
     SIT_CHECK_GL_ERROR();
 
@@ -8125,7 +8090,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     SIT_CHECK_GL_ERROR(); // Check for errors setting the uniform
 
     // 9. CRITICAL: Ensure the global_vao_id is bound again before returning.
-    // This reinforces that the user's rendering state is ready and that our private VAO setup did not leave the context in an unexpected state.
+    // This reinforces that the user's rendering state is ready.
     glBindVertexArray(sit_gs.gl.global_vao_id);
     SIT_CHECK_GL_ERROR();
 
@@ -8135,7 +8100,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     // --- Vulkan Quad Renderer Initialization ---
 
     // 1. Compile the unified GLSL source into SPIR-V.
-    //    The compiler is mandatory for Vulkan.
+    //    The compiler is mandatory for Vulkan internal renderers.
     _SituationSpirvBlob vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_QUAD_VERTEX_SHADER, "internal_quad.vert", shaderc_vertex_shader);
     _SituationSpirvBlob fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_QUAD_FRAGMENT_SHADER, "internal_quad.frag", shaderc_fragment_shader);
     
@@ -8148,14 +8113,21 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     // 2. Create the Pipeline Layout.
     // This defines the "shape" of the uniforms (Descriptor Sets and Push Constants).
     VkPushConstantRange push_constant_range = {};
-    push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT; // Accessible by both shaders
     push_constant_range.offset = 0;
-    push_constant_range.size = sizeof(mat4) + sizeof(vec4); // Model Matrix + ColorRGBA
+    // Updated size: Model(64) + Color(16) + UVRect(16) + UseTex(4) = 100 bytes
+    push_constant_range.size = sizeof(mat4) + sizeof(vec4) + sizeof(vec4) + sizeof(int); 
+
+    // Define Layouts: Set 0 = View UBO, Set 1 = Texture Sampler (for font atlas)
+    VkDescriptorSetLayout set_layouts[] = { 
+        sit_gs.vk.view_data_ubo_layout, 
+        sit_gs.vk.image_sampler_layout 
+    };
 
     VkPipelineLayoutCreateInfo pipeline_layout_info = {};
     pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipeline_layout_info.setLayoutCount = 1;
-    pipeline_layout_info.pSetLayouts = &sit_gs.vk.view_data_ubo_layout; // Uses the global UBO layout for projection
+    pipeline_layout_info.setLayoutCount = 2;
+    pipeline_layout_info.pSetLayouts = set_layouts;
     pipeline_layout_info.pushConstantRangeCount = 1;
     pipeline_layout_info.pPushConstantRanges = &push_constant_range;
 
@@ -8186,7 +8158,13 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     if(sit_gs.vk.quad_pipeline == VK_NULL_HANDLE) return false;
     
     // 5. Create and upload the vertex buffer for the quad.
-    float quad_vertices[] = { 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f }; // Triangle Strip
+    // Unit Quad: (0,0) to (1,1)
+    float quad_vertices[] = { 
+        0.0f, 0.0f, 
+        1.0f, 0.0f, 
+        0.0f, 1.0f, 
+        1.0f, 1.0f 
+    }; 
     if (_SituationVulkanCreateAndUploadBuffer(quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &sit_gs.vk.quad_vertex_buffer, &sit_gs.vk.quad_vertex_buffer_memory) != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create quad vertex buffer.");
         return false;
@@ -8316,112 +8294,6 @@ static void _SituationCleanupVulkan(void) {
     }
     vkDestroySurfaceKHR(sit_gs.vk.instance, sit_gs.vk.surface, NULL);
     vkDestroyInstance(sit_gs.vk.instance, NULL);
-}
-
-/**
- * @brief [INTERNAL] Initializes all Vulkan resources for the internal 2D quad renderer.
- * @details This function is a critical part of the Vulkan initialization sequence. It creates the dedicated shaders, pipeline layout, graphics pipeline, and vertex buffer required by the high-level `SituationCmdDrawQuad` command.
- *          This renderer is a self-contained module designed for efficient, untextured, 2D quad rendering, which is essential for UI elements, debug overlays, and other simple geometry.
- *
- * @par Initialization Process
- *   1.  **Shader Compilation:** It compiles the internal, backend-agnostic GLSL sources (`SIT_QUAD_VERTEX_SHADER`, `SIT_QUAD_FRAGMENT_SHADER`) into SPIR-V bytecode using `shaderc`.
- *   2.  **Pipeline Layout:** It creates a `VkPipelineLayout` specifically for this renderer. This layout defines a descriptor set for the global projection UBO (at set 0) and a push constant range for passing the per-quad model matrix and color.
- *   3.  **Graphics Pipeline:** It calls the generic `_SituationVulkanCreateGraphicsPipeline` helper to build the final `VkPipeline` object. It configures the pipeline with the correct vertex input state for a 2-component vertex (`vec2`) and sets the primitive topology to `VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP`.
- *   4.  **Vertex Buffer:** It creates a static, device-local `VkBuffer` and uploads the vertex data for a unit quad (4 vertices). This buffer is created once and reused for every quad drawn.
- *
- * All created resources are stored in the global state (`sit_gs.vk`) for use by `SituationCmdDrawQuad` and for cleanup during shutdown.
- *
- * @return `SITUATION_SUCCESS` on successful initialization of all required resources.
- * @return An appropriate `SituationError` code if any step fails (e.g., shader compilation, object creation). On failure, any partially created resources are cleaned up.
- *
- * @note This function is for internal use by `_SituationVulkanInitInternalRenderers` only.
- * @warning The success of this function is mandatory for `SituationCmdDrawQuad` to work.
- *
- * @see _SituationCleanupQuadRenderer(), SituationCmdDrawQuad(), _SituationVulkanCreateGraphicsPipeline()
- */
-static SituationError _SituationVulkanInitQuadRenderer(void) {
-    // --- 1. Create the Vertex Buffer for a Unit Quad ---
-    // A simple quad with vertices at (0,0) and (1,1). We'll use a triangle strip.
-    float quad_vertices[] = {
-        0.0f, 0.0f, // Top-left
-        1.0f, 0.0f, // Top-right
-        0.0f, 1.0f, // Bottom-left
-        1.0f, 1.0f  // Bottom-right
-    };
-    if (_SituationVulkanCreateAndUploadBuffer(quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-        &sit_gs.vk.quad_vertex_buffer, &sit_gs.vk.quad_vertex_buffer_memory) != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create quad vertex buffer.");
-        return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
-    }
-
-    // --- 2. Create the Pipeline Layout with Push Constants ---
-    // Push constants are a small, fast way to send data to shaders.
-    VkPushConstantRange push_constant_range = {};
-    push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT; // Accessible by both shaders
-    push_constant_range.offset = 0;
-    push_constant_range.size = sizeof(mat4) + sizeof(vec4); // Size of our model matrix + color
-
-    VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-    pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipeline_layout_info.setLayoutCount = 0; // No descriptor sets for this simple pipeline
-    pipeline_layout_info.pushConstantRangeCount = 1;
-    pipeline_layout_info.pPushConstantRanges = &push_constant_range;
-
-    if (vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &sit_gs.vk.quad_pipeline_layout) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_FAILED, "Failed to create quad pipeline layout.");
-        return SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
-    }
-
-    // --- 3. Create the Graphics Pipeline ---
-    // You would load your quad's SPIR-V shaders here. Let's assume you have them.
-    // char* vs_code = SituationLoadFile... ; char* fs_code = ...;
-    // For this example, we'll assume they are loaded.
-    // shader = _SituationVulkanCreateGraphicsPipeline(vs_code, ..., fs_code, ...);
-    //
-    // The _SituationVulkanCreateGraphicsPipeline function needs to be slightly modified to accept a pipeline layout and vertex input info, instead of always using a global one.
-    // For now, let's build the pipeline directly here for clarity.
-
-    // This is a simplified pipeline creation for the quad.
-    // A real implementation would generalize _SituationVulkanCreateGraphicsPipeline.
-
-    // Load shaders (user must provide `quad.vert.spv` and `quad.frag.spv`)
-    unsigned int vs_size = 0;
-    unsigned char* vs_data = SituationLoadFileData("quad.vert.spv", &vs_size);
-    unsigned int fs_size = 0;
-    unsigned char* fs_data = SituationLoadFileData("quad.frag.spv", &fs_size);
-    if (!vs_data || !fs_data) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to load quad shader SPIR-V files.");
-        return SITUATION_ERROR_FILE_ACCESS;
-    }
-    VkShaderModule vs_module = _SituationVulkanCreateShaderModule(vs_data, vs_size);
-    VkShaderModule fs_module = _SituationVulkanCreateShaderModule(fs_data, fs_size);
-    free(vs_data); free(fs_data);
-
-    VkPipelineShaderStageCreateInfo vs_stage_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs_module, .pName = "main" };
-    VkPipelineShaderStageCreateInfo fs_stage_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs_module, .pName = "main" };
-    VkPipelineShaderStageCreateInfo shader_stages[] = {vs_stage_info, fs_stage_info};
-
-    // Vertex input for the quad (just one Vector2 attribute)
-    VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
-    VkVertexInputAttributeDescription attr_desc = { .binding = 0, .location = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 };
-    VkPipelineVertexInputStateCreateInfo vertex_input_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &binding_desc, .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &attr_desc };
-
-    // Use the same fixed-function states as the main pipeline creator
-    VkPipelineInputAssemblyStateCreateInfo input_assembly = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, .primitiveRestartEnable = VK_FALSE };
-    // ... (copy viewport_state, rasterizer, multisampling, depth_stencil, color_blending, dynamic_state from the other pipeline function) ...
-
-    VkGraphicsPipelineCreateInfo pipeline_info = {};
-    // ... (populate pipeline_info just like in _SituationVulkanCreateGraphicsPipeline) ...
-    pipeline_info.layout = sit_gs.vk.quad_pipeline_layout; // Use our new layout
-
-    if (vkCreateGraphicsPipelines(sit_gs.vk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &sit_gs.vk.quad_pipeline) != VK_SUCCESS) {
-        // ... cleanup and error ...
-    }
-
-    vkDestroyShaderModule(sit_gs.vk.device, vs_module, NULL);
-    vkDestroyShaderModule(sit_gs.vk.device, fs_module, NULL);
-
-    return SITUATION_SUCCESS;
 }
 
 /**
@@ -9994,6 +9866,9 @@ SITAPI void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, 
     }
     // [NEW] Mark that a draw command has happened this frame
     sit_gs.debug_draw_command_issued_this_frame = true;
+    sit_gs.frame_draw_calls++;
+    // Triangle count approximation for standard topology (Triangle List)
+    sit_gs.frame_triangle_count += (vertex_count / 3) * instance_count;
 	
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
@@ -10022,8 +9897,10 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
     if (!sit_gs.is_initialized || index_count == 0 || instance_count == 0) {
         return;
     }
-    // [NEW] Mark that a draw command has happened this frame
+    // [NEW] Update Stats
     sit_gs.debug_draw_command_issued_this_frame = true;
+    sit_gs.frame_draw_calls++;
+    sit_gs.frame_triangle_count += (index_count / 3) * instance_count;
 	
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
@@ -10038,6 +9915,90 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
     if (vk_cmd == VK_NULL_HANDLE) return;
     vkCmdDrawIndexed(vk_cmd, index_count, instance_count, first_index, vertex_offset, first_instance);
 #endif
+}
+
+/**
+ * @brief Draws a text string using GPU-accelerated textured quads.
+ * 
+ * @details Renders a string of text into the current command buffer. This function is extremely fast and suitable for real-time UIs.
+ *          It uses the internal quad renderer with a font atlas texture.
+ * 
+ * @param cmd The command buffer to record into.
+ * @param font The font to use. Must have been baked with `SituationBakeFontAtlas`.
+ * @param text The null-terminated string to draw.
+ * @param pos The screen-space position (top-left) to start drawing.
+ * @param color The color tint for the text.
+ * 
+ * @note Requires a valid orthographic projection matrix to be active in the view UBO (which `SituationAcquireFrameCommandBuffer` sets up by default).
+ */
+SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color) {
+    if (!sit_gs.is_initialized || font.atlas_texture.id == 0 || !text || !font.glyph_info) return;
+
+    // 1. Bind the Font Atlas
+    SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, font.atlas_texture);
+
+    vec4 color_vec;
+    SituationConvertColorToVec4(color, color_vec);
+    
+    float x = pos.x;
+    float y = pos.y;
+    stbtt_bakedchar* cdata = (stbtt_bakedchar*)font.glyph_info;
+
+    // Loop through string
+    while (*text) {
+        if (*text >= 32 && *text < 128) {
+            stbtt_aligned_quad q;
+            stbtt_GetBakedQuad(cdata, font.atlas_width, font.atlas_height, *text - 32, &x, &y, &q, 1);
+            
+            // Calc Quad Dims
+            float w = q.x1 - q.x0;
+            float h = q.y1 - q.y0;
+            
+            // Model Matrix for this character
+            mat4 model;
+            glm_mat4_identity(model);
+            glm_translate(model, (vec3){q.x0, q.y0, 0.0f});
+            glm_scale(model, (vec3){w, h, 1.0f});
+
+            // UV Rect calculation
+            // q.s0, q.t0 = top-left UV
+            // q.s1, q.t1 = bottom-right UV
+            // offset = (s0, t0), scale = (s1-s0, t1-t0)
+            vec4 uv_rect = { q.s0, q.t0, q.s1 - q.s0, q.t1 - q.t0 };
+            int use_texture = 1;
+
+            // Draw
+            sit_gs.debug_draw_command_issued_this_frame = true;
+            sit_gs.frame_draw_calls++;
+            sit_gs.frame_triangle_count += 2;
+
+            #if defined(SITUATION_USE_OPENGL)
+                glUseProgram(sit_gs.quad_shader_program);
+                glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model);
+                glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec);
+                glUniform4fv(5, 1, (const GLfloat*)uv_rect);
+                glUniform1i(6, use_texture);
+                glBindVertexArray(sit_gs.quad_vao);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            #elif defined(SITUATION_USE_VULKAN)
+                // Vulkan binding logic (pipeline/buffers) assumed already set by CmdBindTexture call above or reused
+                // For safety, ensure pipeline is bound:
+                VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+                vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.quad_pipeline);
+                // Vertex buffers bound...
+                
+                struct { mat4 model; vec4 color; vec4 uv_rect; int use_texture; } push_data;
+                glm_mat4_copy(model, push_data.model);
+                glm_vec4_copy(color_vec, push_data.color);
+                glm_vec4_copy(uv_rect, push_data.uv_rect);
+                push_data.use_texture = use_texture;
+                
+                vkCmdPushConstants(vk_cmd, sit_gs.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
+                vkCmdDraw(vk_cmd, 4, 1, 0, 0);
+            #endif
+        }
+        text++;
+    }
 }
 
 /**
@@ -10214,8 +10175,10 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
         _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to draw an invalid or empty mesh.");
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
-    // [NEW] Mark that a draw command has happened this frame
+    // [NEW] Update Stats
     sit_gs.debug_draw_command_issued_this_frame = true;
+    sit_gs.frame_draw_calls++;
+    sit_gs.frame_triangle_count += (mesh.index_count / 3); // Assuming non-instanced single mesh
 	
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
@@ -10282,22 +10245,25 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
  */
 SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color) {
     if (!sit_gs.is_initialized) return;
-    // [NEW] Mark that a draw command has happened this frame
     sit_gs.debug_draw_command_issued_this_frame = true;
-	
-#if defined(SITUATION_USE_OPENGL)
-    (void)cmd; // Unused
+    sit_gs.frame_draw_calls++;
+    sit_gs.frame_triangle_count += 2;
 
-    if (sit_gs.quad_shader_program == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Quad renderer not initialized");
-        return;
-    }
+    // Default UV Rect: Offset (0,0), Scale (1,1)
+    vec4 uv_rect = {0.0f, 0.0f, 1.0f, 1.0f};
+    int use_texture = 0; // False
+
+#if defined(SITUATION_USE_OPENGL)
+    (void)cmd;
+    if (sit_gs.quad_shader_program == 0) return;
 
     glUseProgram(sit_gs.quad_shader_program);
-
-    // CORRECT: Use the locations defined in the shader contract.
     glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model);
     glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color);
+    
+    // Set new uniforms
+    glUniform4fv(5, 1, (const GLfloat*)uv_rect); // Location 5 from shader
+    glUniform1i(6, use_texture);                 // Location 6 from shader
 
     glBindVertexArray(sit_gs.quad_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -10305,25 +10271,29 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 co
     glUseProgram(0);
     
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.quad_pipeline == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Quad renderer unavailable (Shader Compiler disabled).");
-        return;
-    }
+    if (sit_gs.vk.quad_pipeline == VK_NULL_HANDLE) return;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
     vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.quad_pipeline);
-
+    
     VkBuffer vertex_buffers[] = { sit_gs.vk.quad_vertex_buffer };
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
 
+    // Updated Push Constant Struct
     struct {
         mat4 model;
         vec4 color;
+        vec4 uv_rect;
+        int use_texture;
     } push_data;
+    
     glm_mat4_copy(model, push_data.model);
     glm_vec4_copy(color, push_data.color);
+    glm_vec4_copy(uv_rect, push_data.uv_rect);
+    push_data.use_texture = use_texture;
 
+    // Note: vkCmdPushConstants size must update to match the larger struct
     vkCmdPushConstants(vk_cmd, sit_gs.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
     vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 #endif
@@ -10444,6 +10414,46 @@ SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t con
 #endif
     // --- 4. Post-Operation ---
     // No general post-operation actions are required here.
+}
+
+/**
+ * @brief Gets the number of draw commands issued during the current frame.
+ * 
+ * @details This counter is incremented every time `SituationCmdDraw`, `SituationCmdDrawIndexed`, 
+ *          `SituationCmdDrawMesh`, or `SituationCmdDrawQuad` is called. 
+ *          It is automatically reset to 0 at the beginning of every frame (inside `SituationPollInputEvents`).
+ * 
+ * @return The count of draw calls recorded so far in the current frame.
+ */
+SITAPI uint32_t SituationGetDrawCallCount(void) {
+    return sit_gs.frame_draw_calls;
+}
+
+/**
+ * @brief Gets the total amount of video memory (VRAM) allocated by the application.
+ * 
+ * @details Returns the total size in bytes of all GPU buffers and textures currently managed by the library.
+ * 
+ * @par Backend Support
+ *   - **Vulkan:** Returns accurate statistics from the internal Vulkan Memory Allocator (VMA), 
+ *     accounting for all buffers, images, and internal staging allocations.
+ *   - **OpenGL:** Returns `0`. The OpenGL specification does not provide a standard, cross-vendor 
+ *     method to query per-context VRAM usage.
+ * 
+ * @return The total allocated VRAM in bytes, or 0 if the backend does not support tracking.
+ */
+SITAPI uint64_t SituationGetVRAMUsage(void) {
+    if (!sit_gs.is_initialized) return 0;
+
+#if defined(SITUATION_USE_VULKAN)
+    if (sit_gs.vk.vma_allocator) {
+        VmaTotalStatistics stats;
+        vmaCalculateStatistics(sit_gs.vk.vma_allocator, &stats);
+        return stats.total.statistics.allocationBytes;
+    }
+#endif
+    // OpenGL or fallback
+    return 0;
 }
 
 //==================================================================================
@@ -13471,6 +13481,46 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
     // RAM, Storage, Network, Input would need platform-specific non-Win32 implementations (e.g., /proc/meminfo on Linux)
     #endif
     return info;
+}
+
+/**
+ * @brief Gets the human-readable name of the active GPU.
+ * 
+ * @details Returns the renderer string provided by the active backend.
+ *          - **OpenGL:** Returns `glGetString(GL_RENDERER)`.
+ *          - **Vulkan:** Returns `VkPhysicalDeviceProperties.deviceName`.
+ * 
+ * @return A pointer to a static string containing the GPU name (e.g., "NVIDIA GeForce RTX 4090").
+ *         Do not free this string.
+ */
+SITAPI const char* SituationGetGPUName(void) {
+    if (!sit_gs.is_initialized) return "Unknown (Not Initialized)";
+
+#if defined(SITUATION_USE_OPENGL)
+    if (sit_gs.sit_glfw_window) {
+        const char* renderer = (const char*)glGetString(GL_RENDERER);
+        if (renderer) return renderer;
+    }
+    return "Unknown OpenGL Device";
+
+#elif defined(SITUATION_USE_VULKAN)
+    if (sit_gs.vk.physical_device != VK_NULL_HANDLE) {
+        // We use a static buffer to return a valid const char* pointer without malloc.
+        // This is not thread-safe if called concurrently, but getting GPU name is usually a setup-time task.
+        static char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
+        
+        // Only query if we haven't already (simple optimization)
+        if (device_name[0] == '\0') {
+            VkPhysicalDeviceProperties properties;
+            vkGetPhysicalDeviceProperties(sit_gs.vk.physical_device, &properties);
+            strncpy(device_name, properties.deviceName, VK_MAX_PHYSICAL_DEVICE_NAME_SIZE);
+        }
+        return device_name;
+    }
+    return "Unknown Vulkan Device";
+#endif
+
+    return "Unknown Backend";
 }
 
 // --- Storage Media Information Implementation ---
@@ -18967,6 +19017,130 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
 }
 
 /**
+ * @brief Loads a font directly from a memory buffer (e.g., embedded resource).
+ * 
+ * @details This function creates a copy of the provided font data, allowing the caller to free their source buffer immediately after this function returns.
+ *          This is essential for single-file applications that embed fonts as byte arrays within the executable.
+ * 
+ * @param data Pointer to the raw TTF/OTF file data in memory.
+ * @param dataSize Size of the data in bytes.
+ * @return A valid `SituationFont` handle, or a zeroed struct on failure.
+ * 
+ * @note The returned font owns its memory copy. Call `SituationUnloadFont()` to free it.
+ */
+SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize) {
+    SituationFont font = {0};
+    if (!data || dataSize <= 0) return font;
+
+    // 1. Allocate our own buffer and copy the data.
+    // This ensures SituationUnloadFont() can safely free(font.fontData) regardless of where the original data came from.
+    font.fontData = malloc(dataSize);
+    if (!font.fontData) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate buffer copy.");
+        return font;
+    }
+    memcpy(font.fontData, data, dataSize);
+
+    // 2. Allocate and initialize the stbtt_fontinfo struct.
+    font.stbFontInfo = malloc(sizeof(stbtt_fontinfo));
+    if (!font.stbFontInfo) {
+        free(font.fontData);
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate font info.");
+        return (SituationFont){0};
+    }
+
+    // 3. Initialize stb_truetype.
+    // Note: stbtt_InitFont does NOT copy the data, it stores the pointer. That is why we made our own copy above.
+    if (!stbtt_InitFont((stbtt_fontinfo*)font.stbFontInfo, (unsigned char*)font.fontData, 0)) {
+        free(font.stbFontInfo);
+        free(font.fontData);
+        _SituationSetError("SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
+        return (SituationFont){0};
+    }
+
+    return font;
+}
+
+/**
+ * @brief Generates a GPU-ready font atlas texture from a loaded font.
+ * 
+ * @details This function rasterizes a standard range of characters (ASCII 32-126) into a single 
+ *          bitmap and uploads it to the GPU as a `SituationTexture`. It also calculates and caches 
+ *          the texture coordinates (UVs) and metrics for each character.
+ *          
+ *          This step is **mandatory** for using the high-performance, real-time text rendering function 
+ *          `SituationCmdDrawText`. It is not needed for the slower, CPU-side `SituationImageDrawText` functions.
+ * 
+ * @param font A pointer to the `SituationFont` handle. The font must have been loaded with `SituationLoadFont` 
+ *             or `SituationLoadFontFromMemory`. The struct will be modified to store the atlas texture handle.
+ * @param fontSizePixels The height of the characters in pixels (e.g., 16.0f, 24.0f). This determines the 
+ *                       resolution of the rasterized glyphs.
+ * 
+ * @return `true` if the atlas was successfully generated and uploaded.
+ * @return `false` if the font data is invalid, if the requested font size is too large to fit in the 
+ *         default atlas size (512x512), or if texture creation fails.
+ * 
+ * @note The generated texture is managed by the `SituationFont` struct. Calling `SituationUnloadFont` will 
+ *       automatically destroy this texture.
+ */
+SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
+    if (!font || !font->fontData) return false;
+
+    // 1. Allocate Bitmap Memory (512x512 is usually enough for ASCII)
+    int w = 512; 
+    int h = 512;
+    unsigned char* bitmap = calloc(w * h, 1); // 1-channel alpha
+    
+    // 2. Allocate Glyph Info
+    // standard ASCII 32-126 is 96 chars
+    font->glyph_info = malloc(sizeof(stbtt_bakedchar) * 96); 
+
+    // 3. Bake using STB
+    // Returns > 0 on success (rows used), or 0 on failure (didn't fit)
+    int res = stbtt_BakeFontBitmap(
+        (unsigned char*)font->fontData, 0, 
+        fontSizePixels, 
+        bitmap, w, h, 
+        32, 96, 
+        (stbtt_bakedchar*)font->glyph_info
+    );
+
+    if (res <= 0) {
+        free(bitmap);
+        free(font->glyph_info);
+        _SituationSetError("Font atlas bake failed (texture too small?)");
+        return false;
+    }
+
+    // 4. Convert 1-channel bitmap to 4-channel RGBA for SituationCreateTexture
+    // We make it white text with alpha from the bitmap.
+    SituationImage img;
+    img.width = w;
+    img.height = h;
+    img.data = malloc(w * h * 4);
+    unsigned char* src = bitmap;
+    unsigned char* dst = (unsigned char*)img.data;
+    
+    for (int i=0; i < w*h; ++i) {
+        dst[i*4+0] = 255;
+        dst[i*4+1] = 255;
+        dst[i*4+2] = 255;
+        dst[i*4+3] = src[i];
+    }
+    free(bitmap); // Done with 1-channel
+
+    // 5. Create GPU Texture
+    font->atlas_texture = SituationCreateTexture(img, false); // No mips needed for UI text usually
+    SituationUnloadImage(img);
+    
+    font->atlas_width = w;
+    font->atlas_height = h;
+    font->font_height_pixels = fontSizePixels;
+
+    return (font->atlas_texture.id != 0);
+}
+
+/**
  * @brief Frees all CPU memory associated with a loaded `SituationFont`.
  * @details This is the designated cleanup function for a `SituationFont` handle created by `SituationLoadFont`. It safely frees both the raw font file data buffer and the `stbtt_fontinfo` context struct.
  *
@@ -19566,6 +19740,39 @@ SITAPI void SituationImageDrawText(SituationImage *dst, SituationFont font, cons
         stbtt_GetCodepointHMetrics(info, codepoint, &advanceWidth, NULL);
         x += ((float)advanceWidth * scale) + spacing;
     }
+}
+
+/**
+ * @brief Draws text onto an image using `printf`-style formatting.
+ * 
+ * @details A convenience wrapper that formats a string and then draws it using `SituationImageDrawText`.
+ *          Useful for displaying dynamic values like scores or debug info without manually managing string buffers.
+ * 
+ * @param dst The destination image.
+ * @param font The font to use.
+ * @param position The top-left position.
+ * @param fontSize Font size in pixels.
+ * @param spacing Character spacing adjustment.
+ * @param tint Color tint.
+ * @param fmt The format string (e.g., "Score: %d").
+ * @param ... Additional arguments matching the format string.
+ * 
+ * @warning Uses an internal 1024-byte stack buffer. Truncates text that exceeds this length.
+ */
+SITAPI void SituationImageDrawTextFormatted(SituationImage *dst, SituationFont font, Vector2 position, float fontSize, float spacing, ColorRGBA tint, const char* fmt, ...) {
+    if (!fmt) return;
+
+    // Create a temporary buffer for the formatted string.
+    // 1024 characters should be sufficient for any single UI label.
+    char buffer[1024]; 
+    
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+
+    // Delegate to the existing simple text drawer
+    SituationImageDrawText(dst, font, buffer, position, fontSize, spacing, tint);
 }
 
 /**
