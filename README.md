@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.2 "Parity"_
+_Core API library v2.3.2A "Hotfix"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools. We are actively seeking contributions from the community to help us build a truly exceptional and robust platform.
 
-**Version 2.3.2 "Parity"** marks a major milestone, achieving feature parity between OpenGL and Vulkan backends (specifically regarding advanced blending), adding audio capture capabilities, and finalizing 3D model exporting tools.
+**Version 2.3.2 "Parity" (updated to 2.3.2A)** marks a major milestone, achieving feature parity between OpenGL and Vulkan backends (specifically regarding advanced blending), adding audio capture capabilities, and finalizing 3D model exporting tools. *Note: This version enforces a strict data-update-then-draw execution flow to ensure consistency between the immediate-mode OpenGL and deferred Vulkan backends.*
 
 Our immediate development roadmap is focused on several key areas:
 *   **Full Thread-Safety**: We are working towards making the entire library thread-safe, allowing for even greater performance and scalability in multi-threaded applications.
@@ -21,9 +21,11 @@ The library's philosophy is reflected in its name, granting developers complete 
 
 It provides deep **Awareness** of the host system through APIs for querying hardware and multi-monitor display information, and by handling operating system events like window focus and file drops.
 
-This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, **capture (recording)**, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model. It offers simplified management of GPU resources—such as shaders, meshes, and textures—and includes powerful utilities for high-quality text rendering, robust filesystem I/O, and **3D model exporting**.
+This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, **capture (recording)**, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model **(designed for explicit sequential execution)**. It offers simplified management of GPU resources—such as shaders, meshes, and textures—and includes powerful utilities for high-quality text rendering, robust filesystem I/O, and **3D model exporting**.
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
+
+> **CRITICAL ARCHITECTURAL NOTE:** To maintain consistency across the divergent execution models of OpenGL (Immediate) and Vulkan (Deferred), developers are **strictly advised to update all buffer data before recording draw commands** within a frame.
 
 ---
 

@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.2
+*   Core API library v2.3.2A "Hotfix"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -21775,10 +21775,9 @@ SITAPI void SituationSetGamepadVibration(int jid, float left_motor, float right_
 #else
     // Vibration is not supported on non-Windows platforms via this implementation.
     // This would require platform-specific code for Linux (evdev) or macOS (ForceFeedback.h).
-    (void)jid;
-    (void)left_motor;
-    (void)right_motor;
-    _SituationSetError("Gamepad vibration is only supported on Windows (XInput).");
+    // FIX 2.3.2A: Explicitly return an error code instead of failing silently.
+    (void)jid; (void)left_motor; (void)right_motor;
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Gamepad vibration is currently only supported on Windows (XInput).");
 #endif
 }
 
@@ -21955,7 +21954,9 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
 
     // 1. Identify the source image. This is the image that was most recently acquired
     //    and rendered to. `current_image_index` holds its index in the swapchain array.
-    VkImage srcImage = sit_gs.vk.swapchain_images[sit_gs.vk.last_presented_image_index];
+    // FIX 2.3.2A: Use current_image_index to capture the frame currently being rendered/processed,
+    // rather than the one presented in the previous frame cycle.
+    VkImage srcImage = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
     if (srcImage == VK_NULL_HANDLE) { _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Cannot get screenshot, source swapchain image is invalid."); return (SituationImage){0}; }
 
     // 2. The image has been rendered to and is now in the VK_IMAGE_LAYOUT_PRESENT_SRC_KHR layout, ready to be shown on screen. We need to copy from this state.

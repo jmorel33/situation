@@ -1,3 +1,23 @@
+Date: 2025-11-20
+Version: 2.3.2A "Hotfix"
+
+## DESCRIPTION
+
+This is a maintenance release addressing critical issues identified in the v2.3.2 "Parity" release. It focuses on correcting data capture logic in Vulkan, improving cross-platform error reporting, and loosening dependency requirements.
+
+## CRITICAL FIXES
+
+*   **Fixed Vulkan Screenshot Source:** `SituationLoadImageFromScreen` (and by extension `SituationTakeScreenshot`) now captures the `current_image_index` instead of `last_presented_image_index`. Previously, taking a screenshot in Vulkan would capture the *previous* frame's output.
+
+*   **Non-Windows Gamepad Error:** `SituationSetGamepadVibration` now properly sets the `SITUATION_ERROR_NOT_IMPLEMENTED` error code on Linux and macOS, rather than failing silently.
+
+*   **Optional Shaderc Dependency:** The `#error` forcing `SITUATION_ENABLE_SHADER_COMPILER` for Vulkan has been removed. Users can now compile the Vulkan backend without `shaderc` if they provide their own pre-compiled SPIR-V pipelines.
+    *   *Note:* Disabling the compiler disables the internal 2D renderers (`SituationCmdDrawQuad` and Virtual Displays) on Vulkan, as they rely on runtime GLSL compilation.
+
+## DOCUMENTATION
+
+*   **Execution Model Warning:** Added a critical warning to the documentation regarding the Immediate (OpenGL) vs. Deferred (Vulkan) execution models. Developers are strictly advised to update all buffer data *before* recording draw commands to ensure consistent behavior across backends.
+
 Date: 2025-11-19
 Version: 2.3.2 "Parity"
 
