@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.2A "Hotfix"_
+_Core API library v2.3.2B "Consistency"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools. We are actively seeking contributions from the community to help us build a truly exceptional and robust platform.
 
-**Version 2.3.2 "Parity" (updated to 2.3.2A)** marks a major milestone, achieving feature parity between OpenGL and Vulkan backends (specifically regarding advanced blending), adding audio capture capabilities, and finalizing 3D model exporting tools. *Note: This version enforces a strict data-update-then-draw execution flow to ensure consistency between the immediate-mode OpenGL and deferred Vulkan backends.*
+**Version 2.3.2B "Consistency"** represents a significant maturity milestone. Beyond the feature parity achieved in 2.3.2, this release actively enforces architectural consistency between backends. It introduces runtime checks to prevent execution-order bugs, automatic fallback paths for Vulkan, and improved safety for cross-platform input.
 
 Our immediate development roadmap is focused on several key areas:
 *   **Full Thread-Safety**: We are working towards making the entire library thread-safe, allowing for even greater performance and scalability in multi-threaded applications.
@@ -25,7 +25,7 @@ This foundation enables precise **Control** over the entire application stack, f
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
 
-> **CRITICAL ARCHITECTURAL NOTE:** To maintain consistency across the divergent execution models of OpenGL (Immediate) and Vulkan (Deferred), developers are **strictly advised to update all buffer data before recording draw commands** within a frame.
+> **CRITICAL ARCHITECTURAL NOTE:** To guarantee identical behavior between OpenGL (Immediate) and Vulkan (Deferred), developers must **update all buffer data before recording draw commands** within a frame. *As of v2.3.2B, the library actively enforces this rule in debug builds and will report a runtime error if violated.*
 
 ---
 

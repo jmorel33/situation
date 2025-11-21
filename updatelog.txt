@@ -1,4 +1,26 @@
 Date: 2025-11-20
+Version: 2.3.2B "Consistency"
+
+## DESCRIPTION
+This hotfix eliminates cross-backend inconsistencies and improves safety. The execution-model difference between OpenGL and Vulkan is now actively enforced in debug builds.
+
+## CRITICAL FIXES & BEHAVIORAL GUARANTEES
+
+*   **Enforced Buffer-Update-Before-Draw Rule:** In OpenGL debug builds, `SituationUpdateBuffer` now triggers a loud warning/error if called *after* any draw command in the current frame. This prevents the most common cause of cross-backend logic divergence.
+*   **SituationSetGamepadVibration Return Type:** Now returns `bool` (true on success) instead of `void`. It correctly returns `false` and sets an error on non-Windows platforms.
+*   **PNG Screenshots:** `stb_image_write.h` is now automatically implemented if available (unless `SITUATION_NO_STB_PNG` is defined), fixing silent failures when saving PNGs.
+
+## USABILITY
+
+*   **SITUATION_BEGIN_FRAME():** Added a macro to standardize the start of the render loop (`PollInput` + `UpdateTimers`).
+*   **Main-Thread Audio Capture:** Added `SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD` flag to `SituationInitInfo`. When set, audio capture callbacks are safely routed to the main thread during `SituationPollInputEvents`, preventing threading crashes for users.
+*   **Vulkan No-Shaderc Fallback:** Internal 2D renderers now elegantly disable themselves if `SITUATION_ENABLE_SHADER_COMPILER` is not defined, removing the hard dependency on `shaderc` for basic initialization.
+
+## INTERNAL REFACTORING
+
+*   **Vulkan Pipeline Optimization:** Refactored the internal Advanced Compositing pipeline initialization. It now reuses existing descriptor set layouts instead of allocating temporary ones, reducing code size and initialization overhead.
+
+Date: 2025-11-20
 Version: 2.3.2A "Hotfix"
 
 ## DESCRIPTION

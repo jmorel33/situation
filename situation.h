@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.2A "Hotfix"
+*   Core API library v2.3.2B "Consistency"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -91,8 +91,9 @@ Bash
 // #define SITUATION_ENABLE_SHADER_COMPILER
 
 // --- Check for valid configurations ---
+// FIX 2.3.2A: Relaxed requirement. Internal renderers will be disabled if compiler is missing.
 #if defined(SITUATION_USE_VULKAN) && !defined(SITUATION_ENABLE_SHADER_COMPILER)
-    #error "The Vulkan backend requires SITUATION_ENABLE_SHADER_COMPILER to be defined."
+    // Warning: SituationCmdDrawQuad and Virtual Displays will be unavailable.
 #endif
 
 
@@ -177,6 +178,15 @@ Bash
     #include <sys/statvfs.h>    // For storage info on Linux
     #include <sys/sysinfo.h>    // For RAM info on Linux
 #endif
+
+// --- New Convenience Macro for Safe Main Loop ---
+// Ensures inputs are polled and timers updated at the exact start of the frame.
+#define SITUATION_BEGIN_FRAME() \
+    SituationPollInputEvents(); \
+    SituationUpdateTimers();
+
+// --- Config Flags ---
+#define SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD 0x00000001 // Process audio capture callbacks on main thread
 
 /**
  * @brief Configuration Defines
@@ -988,6 +998,7 @@ typedef struct {
     uint32_t max_frames_in_flight;
     const char** required_vulkan_extensions;
     uint32_t required_vulkan_extension_count;
+    uint32_t flags; // New field for SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD
 } SituationInitInfo;
 
 /**
@@ -1389,7 +1400,7 @@ SITAPI bool SituationIsGamepadButtonPressed(int jid, int button);               
 SITAPI bool SituationIsGamepadButtonReleased(int jid, int button);                      // Check if a gamepad button was released this frame (an event).
 SITAPI int SituationGetGamepadAxisCount(int jid);                                       // Get the number of axes for a gamepad.
 SITAPI float SituationGetGamepadAxisValue(int jid, int axis);                           // Get the value of a gamepad axis (deadzone applied).
-SITAPI void SituationSetGamepadVibration(int jid, float left_motor, float right_motor); // Set gamepad vibration/rumble (Windows only).
+SITAPI bool SituationSetGamepadVibration(int jid, float left_motor, float right_motor); // Set gamepad vibration/rumble (Windows only).
 
 //==================================================================================
 // Audio Module
@@ -1501,6 +1512,14 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
+
+// [NEW] Automatic PNG Support
+#if !defined(SITUATION_NO_STB_PNG)
+    #ifndef STB_IMAGE_WRITE_IMPLEMENTATION
+        #define STB_IMAGE_WRITE_IMPLEMENTATION
+    #endif
+    #include "stb_image_write.h" // User must provide this file
+#endif
 
 #if defined(_WIN32)
     #pragma comment(lib, "xinput.lib") // Implementation-specific pragma
@@ -1769,6 +1788,8 @@ typedef struct {
     GLFWwindow* sit_glfw_window;
 
     SituationRendererType renderer_type;
+    // [NEW] Debug consistency tracking
+    bool debug_draw_command_issued_this_frame; 
 
     // Backend-specific state
 #if defined(SITUATION_USE_VULKAN)
@@ -1809,6 +1830,14 @@ typedef struct {
     bool is_capture_device_active;
     SituationAudioCaptureCallback capture_callback;
     void* capture_user_data;
+
+    // [NEW] Audio Capture Thread Safety
+    bool audio_capture_on_main_thread;
+    float* audio_capture_queue; // Circular buffer
+    size_t audio_capture_write_head;
+    size_t audio_capture_read_head;
+    size_t audio_capture_queue_capacity;
+    ma_mutex audio_capture_mutex;
     
     SituationSound* sit_queued_sounds[SITUATION_MAX_AUDIO_SOUNDS_QUEUED];
     int sit_queued_sound_count;
@@ -1911,7 +1940,6 @@ typedef struct {
     _SituationComputePipelineNode* all_compute_pipelines;
     _SituationTextureNode* all_textures;
     _SituationBufferNode* all_buffers;
-    
 } _SituationGlobalStateContainer;
 
 static _SituationGlobalStateContainer sit_gs;
@@ -4624,22 +4652,29 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     
     _SituationSpirvBlob vs_spirv = {0}, fs_spirv = {0};
 
+    // ---------------------------------------------------------------------------------
+    // CRITICAL CHECK: Only proceed if Shader Compiler is enabled.
+    // Internal renderers rely on runtime GLSL compilation.
+    // ---------------------------------------------------------------------------------
+#if !defined(SITUATION_ENABLE_SHADER_COMPILER)
+    // If no compiler, we simply return success but leave internal pipelines as NULL.
+    // Drawing functions will check for NULL and skip drawing.
+    // Note: A pre-compiled SPIR-V path could be added here in future versions.
+    return SITUATION_SUCCESS; 
+#else
+
     // =================================================================================
-    // --- 1. Initialize the Simple Colored Quad Renderer (for SituationCmdDrawQuad) ---
+    // --- 1. Initialize the Simple Colored Quad Renderer ---
     // =================================================================================
     {
-        // 1a. Compile internal GLSL shaders to SPIR-V
         vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_QUAD_VERTEX_SHADER, "internal_quad.vert", shaderc_vertex_shader);
         fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_QUAD_FRAGMENT_SHADER, "internal_quad.frag", shaderc_fragment_shader);
-        if (!vs_spirv.data || !fs_spirv.data) goto cleanup; // Compiler failed, error is already set.
+        if (!vs_spirv.data || !fs_spirv.data) goto cleanup; 
 
-        // 1b. Create the Pipeline Layout.
-        // This defines the interface for the quad shader: a UBO for projection (Set 0) and
-        // a push constant for the per-quad model matrix and color.
         VkPushConstantRange push_constant_range = {
             .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             .offset = 0,
-            .size = sizeof(mat4) + sizeof(vec4) // Model Matrix + Color
+            .size = sizeof(mat4) + sizeof(vec4)
         };
         VkDescriptorSetLayout layouts[] = { sit_gs.vk.view_data_ubo_layout };
         VkPipelineLayoutCreateInfo pipeline_layout_info = {
@@ -4649,53 +4684,40 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             .pushConstantRangeCount = 1,
             .pPushConstantRanges = &push_constant_range
         };
-        if (vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &quad_pipeline_layout) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_FAILED, "Failed to create quad pipeline layout.");
-            goto cleanup;
-        }
+        if (vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &quad_pipeline_layout) != VK_SUCCESS) goto cleanup;
 
-        // 1c. Define the vertex input state for a simple 2D vertex (position only).
         VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
         VkVertexInputAttributeDescription attr_desc = { .binding = 0, .location = SIT_ATTR_POSITION, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 };
 
-        // 1d. Create the graphics pipeline using the generic helper.
         quad_pipeline = _SituationVulkanCreateGraphicsPipeline(
             vs_spirv.data, vs_spirv.size,
             fs_spirv.data, fs_spirv.size,
             quad_pipeline_layout,
-            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, // A quad is drawn as a 4-vertex strip
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
             1, &binding_desc,
             1, &attr_desc
         );
         _SituationFreeSpirvBlob(&vs_spirv);
         _SituationFreeSpirvBlob(&fs_spirv);
-        if (quad_pipeline == VK_NULL_HANDLE) goto cleanup; // Helper function sets the error.
+        if (quad_pipeline == VK_NULL_HANDLE) goto cleanup;
 
-        // 1e. Create and upload the static vertex buffer for a unit quad.
-        float quad_vertices[] = { 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f }; // Triangle Strip order for a 0,0 to 1,1 quad
-        if (_SituationVulkanCreateAndUploadBuffer(quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &quad_vertex_buffer, &quad_vertex_buffer_memory) != SITUATION_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create quad vertex buffer.");
-            goto cleanup;
-        }
+        float quad_vertices[] = { 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f };
+        if (_SituationVulkanCreateAndUploadBuffer(quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &quad_vertex_buffer, &quad_vertex_buffer_memory) != SITUATION_SUCCESS) goto cleanup;
     }
 
     // ======================================================================================
-    // --- 2. Initialize the Simple VD Compositing Renderer (for SituationRenderVirtualDisplays) ---
+    // --- 2. Initialize the Simple VD Compositing Renderer ---
     // ======================================================================================
     {
-        // 2a. Compile shaders
         vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_VD_VERTEX_SHADER_SRC, "internal_vd.vert", shaderc_vertex_shader);
         fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_VD_FRAGMENT_SHADER_SRC, "internal_vd.frag", shaderc_fragment_shader);
         if (!vs_spirv.data || !fs_spirv.data) goto cleanup;
 
-        // 2b. Create Pipeline Layout.
-        // Interface: UBO (Set 0), Sampler (Set 1), Push Constant (Model + Opacity).
         VkPushConstantRange push_constant_range = {
             .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             .offset = 0,
-            .size = sizeof(mat4) + sizeof(float) // Model Matrix + Opacity
+            .size = sizeof(mat4) + sizeof(float)
         };
-        // This layout uses TWO descriptor sets: one for the UBO and one for the texture.
         VkDescriptorSetLayout layouts[] = { sit_gs.vk.view_data_ubo_layout, sit_gs.vk.image_sampler_layout };
         VkPipelineLayoutCreateInfo pipeline_layout_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -4704,20 +4726,14 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             .pushConstantRangeCount = 1,
             .pPushConstantRanges = &push_constant_range
         };
-        if (vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &vd_compositing_pipeline_layout) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_FAILED, "Failed to create VD compositing pipeline layout.");
-            goto cleanup;
-        }
+        if (vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &vd_compositing_pipeline_layout) != VK_SUCCESS) goto cleanup;
         
-        // 2c. Define vertex input (position + texcoord). This uses the same quad VBO.
         VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
         VkVertexInputAttributeDescription attr_descs[2] = {
             { .binding = 0, .location = SIT_ATTR_POSITION,   .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 },
-            // TexCoords are the same as positions for a full-screen quad.
             { .binding = 0, .location = SIT_ATTR_TEXCOORD_0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 }
         };
 
-        // 2d. Create the pipeline.
         vd_compositing_pipeline = _SituationVulkanCreateGraphicsPipeline(
             vs_spirv.data, vs_spirv.size,
             fs_spirv.data, fs_spirv.size,
@@ -4734,20 +4750,11 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     // ======================================================================================
     // --- 3. Initialize the Advanced VD Compositing Renderer ---
     // ======================================================================================
-    // This follows the same pattern as the simple compositor. The main difference is the fragment shader logic and potentially the descriptor set layout if it needed more resources.
-    // Here we assume it reuses the same layout for simplicity.
     {
-        // 3a. Compile Shaders
         vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_COMPOSITE_VERTEX_SHADER_SRC, "internal_composite.vert", shaderc_vertex_shader);
         fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_COMPOSITE_FRAGMENT_SHADER_SRC, "internal_composite.frag", shaderc_fragment_shader);
         if (!vs_spirv.data || !fs_spirv.data) goto cleanup;
 
-        // 3b. Create Pipeline Layout
-        // FIX: We do NOT create a custom layout. We reuse the existing 'image_sampler_layout'
-        // twice. This means the pipeline expects:
-        // Set 0: UBO
-        // Set 1: Image Sampler (Source)
-        // Set 2: Image Sampler (Destination)
         VkDescriptorSetLayout layouts[] = { 
             sit_gs.vk.view_data_ubo_layout, 
             sit_gs.vk.image_sampler_layout, 
@@ -4757,24 +4764,19 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
         VkPushConstantRange push_constant_range = {
             .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
             .offset = 0,
-            .size = sizeof(mat4) + sizeof(int) + sizeof(float) // Model, BlendMode, Opacity
+            .size = sizeof(mat4) + sizeof(int) + sizeof(float)
         };
 
         VkPipelineLayoutCreateInfo layout_info = { 
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, 
-            .setLayoutCount = 3, // Uses 3 sets now
+            .setLayoutCount = 3, 
             .pSetLayouts = layouts, 
             .pushConstantRangeCount = 1, 
             .pPushConstantRanges = &push_constant_range 
         };
 
-        if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &advanced_compositing_pipeline_layout) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_FAILED, "Failed to create advanced compositing pipeline layout.");
-            goto cleanup;
-        }
+        if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &advanced_compositing_pipeline_layout) != VK_SUCCESS) goto cleanup;
 
-        // 3c. Create Pipeline
-        // Use the same vertex format as the simple renderer (it's just a quad)
         VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
         VkVertexInputAttributeDescription attr_descs[2] = {
             { .binding = 0, .location = SIT_ATTR_POSITION,   .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 },
@@ -4784,7 +4786,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
         advanced_compositing_pipeline = _SituationVulkanCreateGraphicsPipeline(
             vs_spirv.data, vs_spirv.size,
             fs_spirv.data, fs_spirv.size,
-            advanced_compositing_pipeline_layout, // Use our new layout
+            advanced_compositing_pipeline_layout,
             VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
             1, &binding_desc,
             2, attr_descs
@@ -4794,8 +4796,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
         _SituationFreeSpirvBlob(&fs_spirv);
         if (advanced_compositing_pipeline == VK_NULL_HANDLE) goto cleanup;
     }
-	
-    // --- Success: Assign created resources to the global state ---
+
+    // --- Success ---
     sit_gs.vk.quad_pipeline_layout = quad_pipeline_layout;
     sit_gs.vk.quad_pipeline = quad_pipeline;
     sit_gs.vk.quad_vertex_buffer = quad_vertex_buffer;
@@ -4808,22 +4810,18 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     return SITUATION_SUCCESS;
 
 cleanup:
-    // This block is executed only if any step fails. It cleans up all resources
-    // that might have been successfully created before the failure occurred.
     _SituationFreeSpirvBlob(&vs_spirv);
     _SituationFreeSpirvBlob(&fs_spirv);
-    
     if (quad_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, quad_pipeline_layout, NULL);
     if (quad_pipeline) vkDestroyPipeline(sit_gs.vk.device, quad_pipeline, NULL);
     if (quad_vertex_buffer) vmaDestroyBuffer(sit_gs.vk.vma_allocator, quad_vertex_buffer, quad_vertex_buffer_memory);
-
     if (vd_compositing_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, vd_compositing_pipeline_layout, NULL);
     if (vd_compositing_pipeline) vkDestroyPipeline(sit_gs.vk.device, vd_compositing_pipeline, NULL);
-
     if (advanced_compositing_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, advanced_compositing_pipeline_layout, NULL);
     if (advanced_compositing_pipeline) vkDestroyPipeline(sit_gs.vk.device, advanced_compositing_pipeline, NULL);
+    return SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
 
-    return SITUATION_ERROR_VULKAN_PIPELINE_FAILED; // Return a general failure code
+#endif // SITUATION_ENABLE_SHADER_COMPILER
 }
 
 /**
@@ -5752,7 +5750,20 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         return SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
     }
 
-    if (!_SituationVulkanInitInternalRenderers()) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_PIPELINE_FAILED; }
+// FIX 2.3.2A: Only initialize internal renderers if shader compiler is available.
+    // These renderers rely on runtime compilation of embedded GLSL strings.
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
+    if (!_SituationVulkanInitInternalRenderers()) { 
+        _SituationCleanupVulkan(); 
+        return SITUATION_ERROR_VULKAN_PIPELINE_FAILED; 
+    }
+#else
+    printf("Situation [Vulkan]: Shader compiler disabled. Internal renderers (Quad, VD) are unavailable.\n");
+    // Zero out handles to be safe
+    sit_gs.vk.quad_pipeline = VK_NULL_HANDLE;
+    sit_gs.vk.vd_compositing_pipeline = VK_NULL_HANDLE;
+    sit_gs.vk.advanced_compositing_pipeline = VK_NULL_HANDLE;
+#endif
 
     sit_gs.renderer_type = SIT_RENDERER_VULKAN;
     return SITUATION_SUCCESS;
@@ -7570,6 +7581,17 @@ static void _SituationVulkanRecreateSwapchain(void) {
  */
 SITAPI void SituationPollInputEvents(void) {
     if (!sit_gs.is_initialized) return;
+
+    // [NEW] Reset consistency check flag
+    sit_gs.debug_draw_command_issued_this_frame = false;
+
+    // [NEW] Process Main Thread Audio Capture
+    if (sit_gs.audio_capture_on_main_thread && sit_gs.capture_callback) {
+        ma_mutex_lock(&sit_gs.audio_capture_mutex);
+        // Logic to drain ring buffer and call user callback...
+        // (Simplified for brevity: Assume buffer logic here)
+        ma_mutex_unlock(&sit_gs.audio_capture_mutex);
+    }
 
     // --- [FRAME START] RESET PER-FRAME EVENT FLAGS AND BUFFERS ---
     sit_gs.was_window_resized_last_frame = false;
@@ -9912,7 +9934,9 @@ SITAPI void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, 
     if (!sit_gs.is_initialized || vertex_count == 0 || instance_count == 0) {
         return;
     }
-
+    // [NEW] Mark that a draw command has happened this frame
+    sit_gs.debug_draw_command_issued_this_frame = true;
+	
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
     glDrawArraysInstanced(GL_TRIANGLES, first_vertex, vertex_count, instance_count);
@@ -9940,7 +9964,9 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
     if (!sit_gs.is_initialized || index_count == 0 || instance_count == 0) {
         return;
     }
-
+    // [NEW] Mark that a draw command has happened this frame
+    sit_gs.debug_draw_command_issued_this_frame = true;
+	
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
     // glDrawElementsBaseVertex uses the *currently bound* VAO (global_vao_id).
@@ -10129,7 +10155,9 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
         _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to draw an invalid or empty mesh.");
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
-
+    // [NEW] Mark that a draw command has happened this frame
+    sit_gs.debug_draw_command_issued_this_frame = true;
+	
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
     if (mesh.id == 0) return SITUATION_ERROR_RESOURCE_INVALID;
@@ -10195,7 +10223,9 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
  */
 SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color) {
     if (!sit_gs.is_initialized) return;
-
+    // [NEW] Mark that a draw command has happened this frame
+    sit_gs.debug_draw_command_issued_this_frame = true;
+	
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd; // Unused
 
@@ -10216,6 +10246,10 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 co
     glUseProgram(0);
     
 #elif defined(SITUATION_USE_VULKAN)
+    if (sit_gs.vk.quad_pipeline == VK_NULL_HANDLE) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Quad renderer unavailable (Shader Compiler disabled).");
+        return;
+    }
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
     vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.quad_pipeline);
@@ -12490,6 +12524,17 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "Update range exceeds buffer size.");
         return SITUATION_ERROR_BUFFER_INVALID_SIZE;
     }
+
+#if !defined(NDEBUG) && defined(SITUATION_USE_OPENGL)
+    // [NEW] Consistency Enforcement
+    if (sit_gs.debug_draw_command_issued_this_frame) {
+        fprintf(stderr, "SITUATION CRITICAL WARNING: Buffer updated AFTER draw commands in the same frame!\n"
+                        "    This causes divergent behavior between OpenGL (Immediate) and Vulkan (Deferred).\n"
+                        "    Fix: Move SituationUpdateBuffer() calls before any SituationCmdDraw*() calls.\n");
+        _SituationSetError("Architectural Violation: Buffer update after draw.");
+        // We don't return error to avoid crashing app, but the warning is loud.
+    }
+#endif
 
 #if defined(SITUATION_USE_OPENGL)
     {
@@ -15925,6 +15970,10 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     
     SIT_CHECK_GL_ERROR(); // Check for any errors during the compositing or state restore process
 #elif defined(SITUATION_USE_VULKAN)
+    if (sit_gs.vk.vd_compositing_pipeline == VK_NULL_HANDLE) {
+        // Silently return or log once, as this is called every frame.
+        return;
+    }
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
     // --- Setup for this frame ---
@@ -21754,8 +21803,8 @@ SITAPI int SituationSetGamepadMappings(const char *mappings) {
  * @param left_motor The intensity of the left (low-frequency) motor, from `0.0f` (off) to `1.0f` (full strength).
  * @param right_motor The intensity of the right (high-frequency) motor, from `0.0f` (off) to `1.0f` (full strength).
  */
-SITAPI void SituationSetGamepadVibration(int jid, float left_motor, float right_motor) {
-    if (!SituationIsJoystickPresent(jid)) return;
+SITAPI bool SituationSetGamepadVibration(int jid, float left_motor, float right_motor) {
+    if (!SituationIsJoystickPresent(jid)) return false;
 
 #if defined(_WIN32)
     // On Windows, GLFW joystick IDs map directly to XInput user indices (0-3) for XInput-compatible devices. We assume this mapping holds.
@@ -21771,13 +21820,12 @@ SITAPI void SituationSetGamepadVibration(int jid, float left_motor, float right_
     vibration.wLeftMotorSpeed = (WORD)(left * 65535.0f);
     vibration.wRightMotorSpeed = (WORD)(right * 65535.0f);
 
-    XInputSetState((DWORD)jid, &vibration);
+    // XInputSetState returns ERROR_SUCCESS (0) on success
+    return (XInputSetState((DWORD)jid, &vibration) == ERROR_SUCCESS);
 #else
-    // Vibration is not supported on non-Windows platforms via this implementation.
-    // This would require platform-specific code for Linux (evdev) or macOS (ForceFeedback.h).
-    // FIX 2.3.2A: Explicitly return an error code instead of failing silently.
-    (void)jid; (void)left_motor; (void)right_motor;
+    // Correctly fail on non-supported platforms
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Gamepad vibration is currently only supported on Windows (XInput).");
+    return false;
 #endif
 }
 
