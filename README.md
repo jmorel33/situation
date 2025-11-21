@@ -60,14 +60,53 @@ Key features include:
 <details>
 <summary><h2>2. Getting Started</h2></summary>
 
-This section provides a high-level overview of how to integrate and use the "Situation" library. For a comprehensive guide, please refer to the [**Getting Started**](situation_api.md#getting-started) and [**Building the Library**](situation_api.md#building-the-library) sections in the full API documentation.
+A minimal application requires **zero configuration** beyond selecting a backend.
 
-A minimal application involves:
-1.  Defining `SITUATION_IMPLEMENTATION` and the desired backend (`SITUATION_USE_OPENGL` or `SITUATION_USE_VULKAN`) in one C/C++ file.
-2.  Including `situation.h`.
-3.  Calling `SituationInit()` at the start of your application.
-4.  Running a main loop that calls `SituationPollInputEvents()`, then `SituationUpdateTimers()`, and finally renders the frame.
-5.  Calling `SituationShutdown()` before exiting.
+1.  Download `situation.h` (and `stb_*.h` if not using the bundled single-file release).
+2.  Create `main.c`:
+
+```c
+#define SITUATION_IMPLEMENTATION
+#define SITUATION_USE_VULKAN // or SITUATION_USE_OPENGL
+#include "situation.h"
+
+int main(int argc, char** argv) {
+    // 1. Initialize
+    if (SituationInit(argc, argv, NULL) != SITUATION_SUCCESS) return -1;
+
+    // 2. Zero Friction Assets (No extra libs needed!)
+    SituationSound music;
+    SituationLoadSoundFromFile("bgm.mp3", true, &music);
+    SituationPlayLoadedSound(&music);
+    
+    SituationFont font = SituationLoadFont("font.ttf");
+
+    // 3. Main Loop
+    while (!SituationWindowShouldClose()) {
+        SITUATION_BEGIN_FRAME(); // Macro: Polls Input + Updates Timers
+
+        if (SituationAcquireFrameCommandBuffer()) {
+            SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+            
+            // Define a simple render pass (Clear screen to dark gray)
+            SituationRenderPassInfo pass = { 
+                .display_id = -1, // Main Window
+                .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = {20, 20, 20, 255} } } 
+            };
+            
+            SituationCmdBeginRenderPass(cmd, &pass); 
+            
+            // ... Record draw commands here ...
+            
+            SituationCmdEndRenderPass(cmd);
+            SituationEndFrame();
+        }
+    }
+    
+    // 4. Cleanup
+    SituationShutdown();
+    return 0;
+}```
 
 </details>
 

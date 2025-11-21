@@ -1,4 +1,23 @@
 Date: 2025-11-20
+Version: 2.3.2C "Zero Friction"
+
+## DESCRIPTION
+This micro-release focuses purely on developer experience and removal of friction. It transforms "Situation" into a true "drop-in" library where advanced features like image loading, screenshots, and text rendering work immediately without external configuration.
+
+## ZERO FRICTION UPDATES
+
+*   **Embedded STB Libraries:** `stb_image`, `stb_image_write`, and `stb_truetype` are now automatically implemented by `SITUATION_IMPLEMENTATION`.
+    *   **Impact:** `SituationLoadImage`, `SituationTakeScreenshot(.png)`, and `SituationDrawTextStyled` work out-of-the-box with zero additional defines or includes.
+    *   **Opt-Out:** Users can define `SITUATION_NO_STB` (or specific flags like `SITUATION_NO_STB_IMAGE`) to disable this if they manage dependencies externally.
+
+## API ADDITIONS
+
+*   **Version Querying:** Added `SITUATION_VERSION_MAJOR/MINOR/PATCH` macros and `SituationGetVersionString()` for runtime version checking.
+
+## SUMMARY
+With 2.3.2C, the "Hello World" for a graphical, audio-enabled application with font support is now literally one C file with two #defines.
+
+Date: 2025-11-20
 Version: 2.3.2B "Consistency"
 
 ## DESCRIPTION

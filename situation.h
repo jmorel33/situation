@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.2B "Consistency"
+*   Core API library v2.3.2C "Zero Friction"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -46,6 +46,11 @@
 *   SOFTWARE.
 *
 ***************************************************************************************************/
+// --- Version Macros ---
+#define SITUATION_VERSION_MAJOR 2
+#define SITUATION_VERSION_MINOR 3
+#define SITUATION_VERSION_PATCH 2
+#define SITUATION_VERSION_REVISION "C"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -1149,6 +1154,7 @@ SITAPI const char* SituationGetArgumentValue(const char* arg_name);             
 
 // --- System & Hardware Information ---
 SITAPI SituationDeviceInfo SituationGetDeviceInfo(void);                                // Get detailed information about system hardware (CPU, GPU, RAM, etc.).
+SITAPI const char* SituationGetVersionString(void); 									// [NEW] Returns "2.3.2C"
 SITAPI char* SituationGetUserDirectory(void);                                           // Get the full path to the current user's home directory (caller must free).
 SITAPI char SituationGetCurrentDriveLetter(void);                                       // Get the drive letter of the running executable (Windows only).
 SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacity_bytes, uint64_t* out_free_space_bytes, char* out_volume_name, int volume_name_len); // Get info for a specific drive (Windows only).
@@ -1510,16 +1516,45 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 //----------------------------------------------------------------------------------
 #ifdef SITUATION_IMPLEMENTATION
 
+// ==================================================================================
+// --- Zero Friction: Automatic Dependency Implementation ---
+// ==================================================================================
+// By default, Situation includes and implements the necessary STB libraries.
+// Define SITUATION_NO_STB (or specific SITUATION_NO_STB_*) to opt-out.
+
+#if !defined(SITUATION_NO_STB)
+
+    // --- stb_image.h (Loading) ---
+    #if !defined(SITUATION_NO_STB_IMAGE)
+        #ifndef STB_IMAGE_IMPLEMENTATION
+            #define STB_IMAGE_IMPLEMENTATION
+        #endif
+        // In the distributed single-file version, the content of stb_image.h goes here.
+        // For dev, we include it.
+        #include "stb_image.h" 
+    #endif
+
+    // --- stb_image_write.h (Screenshots/Export) ---
+    #if !defined(SITUATION_NO_STB_IMAGE_WRITE)
+        #ifndef STB_IMAGE_WRITE_IMPLEMENTATION
+            #define STB_IMAGE_WRITE_IMPLEMENTATION
+        #endif
+        #include "stb_image_write.h"
+    #endif
+
+    // --- stb_truetype.h (Text Rendering) ---
+    #if !defined(SITUATION_NO_STB_TRUETYPE)
+        #ifndef STB_TRUETYPE_IMPLEMENTATION
+            #define STB_TRUETYPE_IMPLEMENTATION
+        #endif
+        #include "stb_truetype.h"
+    #endif
+
+#endif
+// ==================================================================================
+
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
-
-// [NEW] Automatic PNG Support
-#if !defined(SITUATION_NO_STB_PNG)
-    #ifndef STB_IMAGE_WRITE_IMPLEMENTATION
-        #define STB_IMAGE_WRITE_IMPLEMENTATION
-    #endif
-    #include "stb_image_write.h" // User must provide this file
-#endif
 
 #if defined(_WIN32)
     #pragma comment(lib, "xinput.lib") // Implementation-specific pragma
