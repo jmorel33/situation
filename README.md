@@ -110,7 +110,8 @@ int main(int argc, char** argv) {
     // 4. Cleanup
     SituationShutdown();
     return 0;
-}```
+}
+```
 
 </details>
 
