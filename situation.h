@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.3A "Refinement"
+*   Core API library v2.3.3B "Refinement"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -50,7 +50,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 3
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_REVISION "B"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -421,6 +421,16 @@ typedef enum {
     SIT_COMPUTE_LAYOUT_PUSH_CONSTANT,               // A layout for shaders that use a 64-byte push constant for small data.
     SIT_COMPUTE_LAYOUT_EMPTY,                       // A layout for simple shaders that take no external resources.
 } SituationComputeLayoutType;
+
+/**
+ * @brief Flags for texture creation (used in SituationCreateTextureEx)
+ */
+typedef enum {
+    SITUATION_TEXTURE_USAGE_SAMPLED      = 1 << 0, // Standard texture
+    SITUATION_TEXTURE_USAGE_STORAGE      = 1 << 1, // Can be used with imageStore/Compute
+    SITUATION_TEXTURE_USAGE_TRANSFER_SRC = 1 << 2, // Can be copied from
+    SITUATION_TEXTURE_USAGE_TRANSFER_DST = 1 << 3  // Can be copied to
+} SituationTextureUsageFlags;
 
 /**
  * @brief Opaque handle for a command buffer
@@ -5709,7 +5719,7 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     if (_SituationVulkanCreateDepthResources() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED; }
     if (_SituationVulkanCreateFramebuffers() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED; }
 
-    // [SIMPLIFIED] Use ONE unified descriptor pool for everything.
+	// [SIMPLIFIED] Use ONE unified descriptor pool for everything.
     VkDescriptorPoolSize pool_sizes[] = {
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, SITUATION_VULKAN_UNIFORM_BUFFER_SIZE + frame_count },
         { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, SITUATION_VULKAN_STORAGE_BUFFER_SIZE },
@@ -5717,8 +5727,12 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, SITUATION_VULKAN_DEFAULT_USER_STORAGE_IMAGES } 
     };
 
-    // Update the total max sets to include the new type
-    const uint32_t total_max_sets = SITUATION_VULKAN_DEFAULT_USER_UBOS + SITUATION_VULKAN_DEFAULT_USER_SSBOS + SITUATION_VULKAN_DEFAULT_USER_SAMPLERS + SITUATION_VULKAN_DEFAULT_USER_STORAGE_IMAGES + frame_count;
+    // FIX: Use the numeric constants defined at the top of the file
+    const uint32_t total_max_sets = SITUATION_VULKAN_UNIFORM_BUFFER_SIZE + 
+                                    SITUATION_VULKAN_STORAGE_BUFFER_SIZE + 
+                                    SITUATION_VULKAN_COMBINED_IMAGE_SAMPLER + 
+                                    SITUATION_VULKAN_DEFAULT_USER_STORAGE_IMAGES + 
+                                    frame_count;
   
     VkDescriptorPoolCreateInfo pool_info = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, .maxSets = total_max_sets, .poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]), .pPoolSizes = pool_sizes };
     
@@ -5759,8 +5773,14 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     VkDescriptorSetLayoutBinding sampler_layout_binding = { SIT_SAMPLER_BINDING_VD_SOURCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo sampler_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &sampler_layout_binding };
     if (vkCreateDescriptorSetLayout(sit_gs.vk.device, &sampler_layout_info, NULL, &sit_gs.vk.image_sampler_layout) != VK_SUCCESS) {
-         _SituationCleanupVulkan();
-         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+         _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+    }
+
+    // Bindings for storage images usually happen in Compute or Fragment stages
+    VkDescriptorSetLayoutBinding storage_img_binding = { 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
+    VkDescriptorSetLayoutCreateInfo storage_img_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &storage_img_binding };
+    if (vkCreateDescriptorSetLayout(sit_gs.vk.device, &storage_img_info, NULL, &sit_gs.vk.storage_image_layout) != VK_SUCCESS) {
+         _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
     // --- Phase 5 & 6: Per-Frame Objects and Internal Renderers ---
@@ -10807,6 +10827,12 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
         return texture;
     }
 
+    // --- DEFAULT FLAGS ---
+    // Since this is the simple API, we assume generic usage. 
+    // If you want Compute write access, we default to enabling it or add a CreateTextureEx function.
+    SituationTextureUsageFlags usage_flags = SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_TRANSFER_DST;
+    if (generate_mipmaps) usage_flags |= SITUATION_TEXTURE_USAGE_TRANSFER_SRC;
+	
     texture.width = image.width;
     texture.height = image.height;
     
@@ -10863,13 +10889,11 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
         return texture;
     }
 
-    // FIX: Added VK_IMAGE_USAGE_STORAGE_BIT. 
-    // This ensures the texture can be used in Compute Shaders via SituationCmdBindComputeTexture.
-    VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
-    
-    if (generate_mipmaps) {
-        vk_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    }
+    // FIX: Map abstract flags to Vulkan flags
+    VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_DST) vk_usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_SRC) vk_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE)      vk_usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 
     if (_SituationVulkanCreateImage(image.width, image.height, mip_levels, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
                                   vk_usage, VMA_MEMORY_USAGE_GPU_ONLY,
@@ -10931,14 +10955,13 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc_info.descriptorPool = sit_gs.vk.descriptor_pool;
     alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts = &sit_gs.vk.image_sampler_layout;
-
-    // Choose the correct layout and descriptor type based on primary usage
+    
+    // FIX: Choose the correct layout and descriptor type based on LOCAL usage_flags
     VkDescriptorType descriptor_type;
     if (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) {
-        alloc_info.pSetLayouts = &sit_gs.vk.storage_image_layout;
+        alloc_info.pSetLayouts = &sit_gs.vk.storage_image_layout; // Assuming you have this layout created
         descriptor_type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    } else { // Default to sampled
+    } else { 
         alloc_info.pSetLayouts = &sit_gs.vk.image_sampler_layout;
         descriptor_type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
