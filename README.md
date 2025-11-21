@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.2B "Consistency"_
+_Core API library v2.3.2C "Zero Friction"_
 
 _(c) 2025 Jacques Morel_
 
