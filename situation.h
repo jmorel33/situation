@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.3 "Insight"
+*   Core API library v2.3.3A "Refinement"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -50,7 +50,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 3
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -1146,7 +1146,7 @@ typedef void (*SituationJoystickCallback)(int jid, int event, void* user_data); 
 //==================================================================================
 
 // --- Application Lifecycle & State ---
-SITAPI const char* SituationGetVersionString(void); 									// Returns Situation library version
+SITAPI const char* SituationGetVersionString(void); 									// Returns a read-only static string (e.g., "2.3.3A"). Do not free.
 SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info); // Initialize the library, create window and graphics context.
 SITAPI void SituationPollInputEvents(void);                                             // Poll for all input events (keyboard, mouse, joystick). Call once per frame.
 SITAPI void SituationUpdateTimers(void);                                                // Update all internal timers (frame timer, temporal system). Call after polling events.
@@ -3657,6 +3657,22 @@ static void _SituationFullCleanupOnError(void) {
     // The individual cleanup functions (_SituationCleanupPlatform in particular) should set `sit_gs.is_initialized = false;` and potentially clear the error state.
     // This function itself doesn't need to modify `sit_gs` further.
     // The library is now in an uninitialized state, ready (hopefully) for a fresh `SituationInit` attempt or safe shutdown.
+}
+
+
+SITAPI const char* SituationGetVersionString(void) {
+    static char version_str[32] = {0};
+    
+    // Generate only once
+    if (version_str[0] == '\0') {
+        snprintf(version_str, sizeof(version_str), "%d.%d.%d%s", 
+            SITUATION_VERSION_MAJOR, 
+            SITUATION_VERSION_MINOR, 
+            SITUATION_VERSION_PATCH, 
+            SITUATION_VERSION_REVISION
+        );
+    }
+    return version_str;
 }
 
 //----------------------------------------------------------------------------------------------------------
@@ -8642,23 +8658,25 @@ static void _SituationVulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buff
 }
 
 /**
- * @brief [INTERNAL] Copies a device-local VkImage to a new, CPU-readable memory buffer.
- * @details This is the core of the Vulkan screenshot implementation. It performs these steps:
- *          1. Creates a temporary, host-visible VkBuffer to serve as the copy destination.
- *          2. Records and submits a one-shot command buffer to:
- *             a. Transition the source image layout from its current layout to VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL.
- *             b. Copy the image data into the temporary buffer using vkCmdCopyImageToBuffer.
- *             c. Transition the source image layout back to its original layout so it can be presented.
- *          3. Waits for the GPU to finish the copy operation.
- *          4. Maps the temporary buffer's memory so the CPU can read it.
- *          5. Allocates a final CPU-side buffer and copies the pixel data into it for the user.
- *          6. Cleans up all temporary Vulkan resources.
- *
- * @param srcImage The source VkImage to read from (must have VK_IMAGE_USAGE_TRANSFER_SRC_BIT).
- * @param srcImageLayout The current layout of the source image (e.g., VK_IMAGE_LAYOUT_PRESENT_SRC_KHR).
- * @param width The width of the image.
- * @param height The height of the image.
- * @return A `malloc`'d buffer containing the raw RGBA pixel data. The caller is responsible for `free()`ing this buffer. Returns NULL on failure.
+ * @brief [INTERNAL] Synchronously copies a device-local VkImage to CPU-visible memory.
+ * 
+ * @details This is a heavy-weight helper used for screenshots. It performs a complex sequence:
+ *          1. Allocates a temporary host-visible buffer (`VK_BUFFER_USAGE_TRANSFER_DST_BIT`).
+ *          2. Records a one-time command buffer to:
+ *             - Transition source image layout to `TRANSFER_SRC_OPTIMAL`.
+ *             - Execute `vkCmdCopyImageToBuffer`.
+ *             - Transition source image layout back to its original state.
+ *          3. Submits and waits for the GPU to finish (`vkQueueWaitIdle`).
+ *          4. Maps the temporary buffer memory.
+ *          5. `memcpy`s the data to a new `malloc`'d pointer.
+ *          6. Destroys the temporary buffer.
+ * 
+ * @param srcImage The source image handle (must have `TRANSFER_SRC` usage).
+ * @param srcImageLayout The current layout of the source image (restored after copy).
+ * @param width Image width.
+ * @param height Image height.
+ * 
+ * @return A pointer to raw pixel data (RGBA8), or NULL on failure. Caller must `free()`.
  */
 static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkImageLayout srcImageLayout, uint32_t width, uint32_t height) {
     VkBuffer dstBuffer;
@@ -10430,21 +10448,24 @@ SITAPI uint32_t SituationGetDrawCallCount(void) {
 }
 
 /**
- * @brief Gets the total amount of video memory (VRAM) allocated by the application.
+ * @brief Gets the estimated total video memory (VRAM) allocated by the application.
  * 
- * @details Returns the total size in bytes of all GPU buffers and textures currently managed by the library.
+ * @details Returns the total size in bytes of all GPU resources currently managed by the application.
+ *          The accuracy of this value depends heavily on the underlying backend and operating system support.
  * 
- * @par Backend Support
- *   - **Vulkan:** Returns accurate statistics from the internal Vulkan Memory Allocator (VMA), 
- *     accounting for all buffers, images, and internal staging allocations.
- *   - **OpenGL:** Returns `0`. The OpenGL specification does not provide a standard, cross-vendor 
- *     method to query per-context VRAM usage.
+ * @par Backend Support Matrix
+ *   - **Vulkan:** **Exact.** Returns precise allocation statistics from the internal Memory Allocator (VMA), tracking buffers and images.
+ *   - **Windows (DXGI):** **High Accuracy.** If `SITUATION_ENABLE_DXGI` is defined, queries the OS video memory manager directly. 
+ *     This works for both OpenGL and Vulkan backends on Windows.
+ *   - **OpenGL (NVIDIA):** **Good Accuracy.** Uses `GL_NVX_gpu_memory_info` to calculate usage (Total - Available).
+ *   - **OpenGL (AMD/Intel/Other):** **Unavailable.** Returns 0, as standard OpenGL does not expose per-process memory usage.
  * 
- * @return The total allocated VRAM in bytes, or 0 if the backend does not support tracking.
+ * @return The total allocated VRAM in bytes, or 0 if the information cannot be retrieved.
  */
 SITAPI uint64_t SituationGetVRAMUsage(void) {
     if (!sit_gs.is_initialized) return 0;
 
+    // --- 1. VULKAN (Most Accurate) ---
 #if defined(SITUATION_USE_VULKAN)
     if (sit_gs.vk.vma_allocator) {
         VmaTotalStatistics stats;
@@ -10452,7 +10473,71 @@ SITAPI uint64_t SituationGetVRAMUsage(void) {
         return stats.total.statistics.allocationBytes;
     }
 #endif
-    // OpenGL or fallback
+
+    // --- 2. WINDOWS DXGI (Universal on Windows) ---
+#if defined(_WIN32) && defined(SITUATION_ENABLE_DXGI)
+    if (sit_gs.is_com_initialized) {
+        // We need IDXGIFactory4 -> EnumAdapters -> IDXGIAdapter3 -> QueryVideoMemoryInfo
+        // This is a bit heavy to create/destroy every frame. 
+        // Optimization: In a real engine, cache the IDXGIAdapter3 pointer in sit_gs.
+        // For this "Zero Friction" library, we do it safely but potentially slowly.
+        
+        IDXGIFactory4* pFactory = NULL;
+        if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory4), (void**)&pFactory)) && pFactory) {
+            IDXGIAdapter3* pAdapter3 = NULL;
+            // Enum adapter 0 (usually the primary discrete GPU)
+            IDXGIAdapter* pAdapterTemp = NULL;
+            if (SUCCEEDED(pFactory->EnumAdapters(0, &pAdapterTemp))) {
+                if (SUCCEEDED(pAdapterTemp->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&pAdapter3))) {
+                    DXGI_QUERY_VIDEO_MEMORY_INFO info = {0};
+                    if (SUCCEEDED(pAdapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
+                        pAdapter3->Release();
+                        pAdapterTemp->Release();
+                        pFactory->Release();
+                        return info.CurrentUsage; // Returns bytes directly
+                    }
+                    pAdapter3->Release();
+                }
+                pAdapterTemp->Release();
+            }
+            pFactory->Release();
+        }
+    }
+#endif
+
+    // --- 3. OPENGL EXTENSIONS (Linux / Windows without DXGI) ---
+#if defined(SITUATION_USE_OPENGL)
+    // NVIDIA Extension
+    // Returns total available memory in KB, current available in KB.
+    #define GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX    0x9048
+    #define GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX  0x9049
+    
+    // Check if extension is supported (GLAD macro)
+    if (GLAD_GL_NVX_gpu_memory_info) {
+        GLint total_kb = 0;
+        GLint current_kb = 0;
+        glGetIntegerv(GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX, &total_kb);
+        glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &current_kb);
+        // Usage = Total - Available
+        return (uint64_t)(total_kb - current_kb) * 1024;
+    }
+
+    // AMD Extension
+    // Returns: [0]=Total Free, [1]=Largest Free Block, [2]=Total Aux Free, [3]=Largest Aux Free
+    #define GL_TEXTURE_FREE_MEMORY_ATI 0x87FC
+    if (GLAD_GL_ATI_meminfo) {
+        GLint mem_info[4];
+        glGetIntegerv(GL_TEXTURE_FREE_MEMORY_ATI, mem_info);
+        // ATI only reports *Free* memory, not *Used* memory.
+        // To get Used, we need Total - Free. 
+        // Since we don't strictly know "Total" without querying OS/DXGI, this is tricky.
+        // However, we can return (TotalSystemVRAM - Free), if we cached Total in GetDeviceInfo.
+        // For now, we can't reliably return "Usage" without "Total", so we skip or return 0.
+        // Alternatively, returning the inverted value is misleading.
+        return 0; 
+    }
+#endif
+
     return 0;
 }
 
@@ -22483,57 +22568,59 @@ SITAPI void SituationUnloadImage(SituationImage image) {
 }
 
 /**
- * @brief Captures the current window content and saves it to an image file.
- * @details This is a high-level convenience function that combines `SituationLoadImageFromScreen` and `SituationExportImage`. It determines the output file format based on the provided file extension.
- *
- * @par Supported Formats
- *   - **`.png`:** Requires the `stb_image_write.h` implementation to be included in the project. Provides compressed, high-quality output.
- *   - **`.bmp`:** Uses a built-in writer as a fallback. Produces uncompressed, larger files.
- *
- * @param fileName The path and name of the file to save (e.g., "screenshots/my_game_01.png"). The directory must exist.
- *
- * @return `true` if the screenshot was successfully captured and saved, `false` otherwise.
- *
- * @note This function internally allocates and frees the memory for the screen capture, so the user does not need to call `SituationUnloadImage`.
- * @warning This can be a slow operation due to the underlying screen capture and file I/O.
- *
- * @see SituationLoadImageFromScreen(), SituationExportImage()
+ * @brief Captures the current window content and saves it to a PNG file.
+ * 
+ * @details This function reads the backbuffer pixel data and writes it to disk.
+ *          It requires `stb_image_write.h` to be implemented in your project.
+ * 
+ * @param fileName The path and name of the file to save (e.g., "screenshots/shot_01.png").
+ *                 The filename **must** end in `.png` (case-insensitive).
+ * 
+ * @return `true` if the screenshot was successfully captured and saved.
+ * @return `false` if the file extension is invalid, if the library is not initialized,
+ *         or if a file I/O error occurs.
+ * 
+ * @warning This is a synchronous operation that stalls the GPU. Do not call every frame.
  */
 SITAPI bool SituationTakeScreenshot(const char *fileName) {
     if (!SituationIsInitialized() || !fileName) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot take screenshot");
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot take screenshot: Invalid parameters.");
         return false;
     }
 
-    SituationImage image = SituationLoadImageFromScreen();
-    if (image.data == NULL) {
-        // Error is already set by SituationLoadImageFromScreen
-        return false;
-    }
-
-    bool success = false;
+    // 1. Validate Extension
     const char *ext = SituationGetFileExtension(fileName);
-
-    if (ext != NULL && (strcmp(ext, ".png") == 0 || strcmp(ext, ".PNG") == 0)) {
-        #if defined(STB_IMAGE_WRITE_IMPLEMENTATION)
-            // Use stb_image_write to save as PNG
-            int stride = image.width * 4;
-            success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, stride) != 0);
-            if (!success) _SituationSetError("Failed to write PNG file using stb_image_write.");
-        #else
-            _SituationSetError("PNG support not available. Please implement stb_image_write.h.");
-            success = false;
-        #endif
-    } else if (ext != NULL && (strcmp(ext, ".bmp") == 0 || strcmp(ext, ".BMP") == 0)) {
-        // Use our internal BMP writer
-        success = _SituationSaveImageBMP(fileName, &image);
-    } else {
-        _SituationSetError("Unsupported screenshot file format. Use .png or .bmp.");
-        success = false;
+    if (!ext || (
+#if defined(_WIN32)
+        _stricmp(ext, ".png") != 0
+#else
+        strcasecmp(ext, ".png") != 0
+#endif
+    )) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationTakeScreenshot supports only '.png' format.");
+        return false;
     }
 
-    SituationUnloadImage(image); // IMPORTANT: Free the pixel data
+    // 2. Check for STB Writer
+#if !defined(STB_IMAGE_WRITE_IMPLEMENTATION)
+    _SituationSetError("PNG support not available. Please implement stb_image_write.h.");
+    return false;
+#else
+    // 3. Capture and Save
+    SituationImage image = SituationLoadImageFromScreen();
+    if (image.data == NULL) return false; // Error already set by LoadImage
+
+    int stride = image.width * 4;
+    // stbi_write_png returns 0 on failure
+    bool success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, stride) != 0);
+    
+    if (!success) {
+        _SituationSetFilesystemError("Failed to write PNG file", fileName);
+    }
+
+    SituationUnloadImage(image);
     return success;
+#endif
 }
 
 /**

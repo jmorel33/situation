@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.3 "Insight"_
+_Core API library v2.3.3A "Refinement"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools. We are actively seeking contributions from the community to help us build a truly exceptional and robust platform.
 
-**Version 2.3.3 "Insight"** brings transparency and flexibility to the platform. Building on the architectural stability established in previous releases, this update focuses on developer visibility and deployment options. It introduces built-in profiling hooks for tracking draw calls and video memory usage, adds support for loading assets directly from memory (enabling true single-file executables), and enhances utility functions for hardware awareness.
+**Version 2.3.3A "Refinement"** builds upon the "Insight" release by enforcing stricter API safety and improving developer ergonomics. While v2.3.3 introduced visibility (Profiling, VRAM tracking), this update focuses on reliability. It standardizes string handling, enforces strict file format compliance to prevent silent data loss, and expands hardware awareness across Windows (DXGI) and Linux ecosystems.
 
 Our immediate development roadmap is focused on several key areas:
 *   **Built-in Debug Tools**: Leveraging the new profiling data to create an immediate-mode debug UI overlay.
@@ -110,8 +110,7 @@ int main(int argc, char** argv) {
     // 4. Cleanup
     SituationShutdown();
     return 0;
-}
-```
+}```
 
 </details>
 
@@ -154,11 +153,64 @@ The full source code for all examples can be found in the `/examples` directory.
 <details>
 <summary><h2>6. Frequently Asked Questions (FAQ) & Troubleshooting</h2></summary>
 
-This section addresses common issues and questions. For more detailed troubleshooting, please refer to the [**FAQ & Troubleshooting**](situation_api.md#frequently-asked-questions-faq--troubleshooting) section in the API guide.
+### **Configuration Settings (Preprocessor Macros)**
 
--   **Initialization Failures:** Often caused by missing dependencies (Vulkan SDK, GLFW) or incorrect graphics drivers. Enable validation layers for more detailed error messages.
--   **Resource Invalid Errors:** Typically occur when using a resource handle that has not been created or has already been destroyed.
--   **Performance:** Batch similar draw calls and minimize state changes to improve performance. Use `SituationDrawTextStyled` for text-intensive applications.
+"Situation" is configured via preprocessor definitions. You must define these **before** including `situation.h`.
+
+| Macro | Description |
+| :--- | :--- |
+| `SITUATION_IMPLEMENTATION` | **Required** in exactly one source file to compile the library implementation. |
+| `SITUATION_USE_VULKAN` | Selects the **Vulkan** backend. Requires the Vulkan SDK to be installed/linked. |
+| `SITUATION_USE_OPENGL` | Selects the **OpenGL** backend. Uses GLAD (included) to load GL 4.6 Core functions. |
+| `SITUATION_ENABLE_SHADER_COMPILER` | Enables runtime GLSL to SPIR-V compilation (requires `shaderc`). **Mandatory** for Vulkan if using internal renderers (Text, Virtual Displays). |
+| `SITUATION_ENABLE_DXGI` | **(Windows Only)** Enables high-precision VRAM monitoring and GPU naming using the DXGI API. Requires linking `dxgi.lib` and `ole32.lib`. |
+| `SITUATION_NO_STB` | Disables the automatic implementation of the STB libraries. Use this if your project already links `stb_image` or `stb_truetype` to avoid symbol collisions. |
+| `SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD` | Flag for `SituationInitInfo`. Routes audio microphone callbacks to the main thread (via `SituationPollInputEvents`) to ensure thread safety for user logic. |
+
+---
+
+### **Architectural Safeguards**
+
+#### 1. The "Update-Before-Draw" Rule
+To maintain consistency between the **Immediate Mode** nature of OpenGL and the **Deferred** nature of Vulkan command buffers, you must strictly adhere to this order in your render loop:
+1.  **Update Data:** Call `SituationUpdateBuffer`, `SituationCmdSetPushConstant`, or texture uploads.
+2.  **Record Commands:** Call `SituationCmdDraw*`.
+**Why?** In Vulkan, commands recorded now are executed later. If you update a buffer *after* recording a draw call but *before* the frame ends, the GPU will read the *new* data for the *old* draw call. In Debug builds, the library actively monitors this and will panic if you violate this order.
+
+#### 2. Thread Safety
+The "Situation" API is **Single-Threaded** by design. All `SITAPI` functions (Windowing, Rendering, Input) must be called from the main thread.
+*   **Exception:** Audio Stream callbacks (`on_read`, `on_seek`) run on a high-priority background thread. Do not perform memory allocation or file I/O in these callbacks.
+*   **Safeguard:** The Input and Audio subsystems use internal mutexes to safely queue events for the main thread to consume.
+
+---
+
+### **Best Practices**
+
+#### Text Rendering Strategies
+*   **Real-Time UI / HUD:** Use `SituationBakeFontAtlas()` once at startup, then use `SituationCmdDrawText()` every frame. This uses the GPU and is extremely fast.
+*   **Static Assets / Textures:** Use `SituationImageDrawTextEx()` to draw high-quality text onto a `SituationImage` in CPU memory, then upload it as a texture. This is slow and should not be done per-frame.
+
+#### Resource Lifecycle
+This library does not use garbage collection.
+*   **Create/Destroy:** Every `SituationCreate*` must be paired with a `SituationDestroy*`.
+*   **Load/Unload:** Every `SituationLoad*` must be paired with a `SituationUnload*`.
+*   **Leak Detection:** Calling `SituationShutdown()` will scan the internal tracking lists and print warnings to `stderr` for any resources you forgot to free.
+
+---
+
+### **Troubleshooting**
+
+**Q: `SituationInit` fails with `SITUATION_ERROR_VULKAN_PIPELINE_FAILED`?**
+*   **Cause:** You likely defined `SITUATION_USE_VULKAN` but did not define `SITUATION_ENABLE_SHADER_COMPILER`, or the `shaderc` library is not linked. The internal 2D renderers require runtime GLSL compilation.
+
+**Q: `SituationTakeScreenshot` returns false?**
+*   **Cause:** As of v2.3.3A, screenshots **must** use the `.png` extension. Check that your filename ends in `.png` and that you haven't disabled STB support without providing an alternative.
+
+**Q: My 3D Model renders black?**
+*   **Cause:** The model loader failed to find the texture files. Check the console output; v2.3.3+ logs warnings if a specific texture path in a GLTF file could not be resolved relative to the model file.
+
+**Q: Why does `SituationGetVRAMUsage()` return 0?**
+*   **Cause:** You are likely using OpenGL on a non-NVIDIA GPU, or on Windows without `SITUATION_ENABLE_DXGI`. Standard OpenGL does not support memory queries. Switch to Vulkan or enable DXGI for accurate tracking.
 
 </details>
 

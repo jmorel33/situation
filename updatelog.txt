@@ -1,4 +1,27 @@
 Date: 2025-11-21
+Version: 2.3.3A "Refinement"
+
+## DESCRIPTION
+This maintenance release tightens the API surface and improves developer ergonomics. It addresses several "friction points" identified in previous versions, particularly around string handling and file export safety.
+
+## API CHANGES & IMPROVEMENTS
+
+*   **Static Version String:** `SituationGetVersionString()` now returns a pointer to a static, read-only string buffer.
+    *   *Impact:* Users no longer need to `free()` the returned pointer, making version logging a simple one-liner: `printf("Situation v%s\n", SituationGetVersionString());`.
+    
+*   **Strict PNG Screenshots:** `SituationTakeScreenshot()` now strictly enforces the `.png` file extension.
+    *   *Impact:* Prevents silent failures or garbage output when users attempt to save with unsupported extensions (like `.jpg` or `.txt`). The function now returns `false` and sets a clear error message if a non-PNG path is provided.
+    *   *Cleanup:* The legacy BMP fallback writer has been removed to reduce binary size and maintenance surface area.
+
+*   **Documentation:** Added comprehensive internal documentation for complex Vulkan helpers (e.g., `_SituationVulkanBlitImageToHostVisibleBuffer`) to aid future maintenance and auditing.
+
+## BUG FIXES
+
+*   **VRAM Reporting:** Implemented a multi-backend strategy for `SituationGetVRAMUsage()`. It now supports Windows (DXGI), Vulkan (VMA), and NVIDIA OpenGL extensions, providing accurate memory tracking across a wider range of configurations.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-21
 Version: 2.3.3 "Insight"
 
 ## DESCRIPTION
