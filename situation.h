@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4C "Velocity" (Hotfix C)
+*   Core API library v2.3.4D "Velocity" (Hotfix D)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -1846,7 +1846,12 @@ typedef struct {
 #if defined(SITUATION_USE_VULKAN)
 // --- VULKAN IMPLEMENTATION SECTION ---
 
-// Internal Vulkan State Structures
+/**
+ * @brief [INTERNAL] Vulkan backend state container.
+ * @details Holds the core Vulkan handles (Instance, Device, Queue) and the memory allocator (VMA).
+ *          It also manages the swapchain, per-frame synchronization objects (Semaphores, Fences), 
+ *          and the dynamic descriptor pool manager.
+ */
 typedef struct {
     VkInstance instance;
     VkDebugUtilsMessengerEXT debug_messenger;
@@ -1930,6 +1935,12 @@ typedef struct {
 #endif // SITUATION_USE_VULKAN
 
 #elif defined(SITUATION_USE_OPENGL)
+/**
+ * @brief [INTERNAL] OpenGL backend state container.
+ * @details Holds all global OpenGL objects and state variables managed by the library.
+ *          This includes internal shaders (Quad, Virtual Display), global buffers (UBOs), 
+ *          and caching variables for optimizing state changes.
+ */
 typedef struct {
     // VD Rendering Shader and Quad
     GLuint vd_shader_program_id; // Cache the currently bound program
@@ -1958,8 +1969,102 @@ typedef struct {
     #endif
 } _SituationGLState;
 #endif // SITUATION_USE_OPENGL
-	
-// --- Static Global State ---
+
+/**
+ * @brief [INTERNAL] Keyboard state container.
+ * @details Tracks the current/previous state of all keys, handles the event-driven queue 
+ *          for polling APIs (GetKeyPressed), and manages modifier/lock key flags.
+ */
+typedef struct {
+    bool current_state[GLFW_KEY_LAST + 1];    // Current key state (pressed=true)
+    bool last_state[GLFW_KEY_LAST + 1];       // Previous frame’s state
+    bool down_this_frame[GLFW_KEY_LAST + 1];  // Pressed this frame
+    bool up_this_frame[GLFW_KEY_LAST + 1];    // Released this frame
+
+    // Keyboard Ring Buffers
+    int pressed_queue[SITUATION_KEY_QUEUE_MAX];
+    uint32_t pressed_head; // Write index
+    uint32_t pressed_tail; // Read index
+    
+    unsigned int char_queue[SITUATION_CHAR_QUEUE_MAX];
+    uint32_t char_head;
+    uint32_t char_tail;
+
+    int modifier_state;                       // Current modifier flags (GLFW_MOD_*)
+    int lock_key_state;                       // Current lock key flags (Caps, Num)
+    bool is_scroll_lock_on;                   // Track the toggle state of Scroll Lock
+    SituationKeyCallback key_callback;        // Optional user callback
+    void* key_callback_user_data;
+    
+    // Moved mutex inside for consistency with Mouse/Joystick
+    ma_mutex event_queue_mutex; 
+} _SituationKeyboardState;
+
+/**
+ * @brief [INTERNAL] Mouse state container.
+ * @details Tracks cursor position (with virtual scaling/offset), button states, and scroll wheel delta.
+ *          Includes a ring buffer for buffering rapid click events.
+ */
+typedef struct {
+    vec2 current_pos;
+    vec2 last_pos;
+    vec2 offset; // For SetMouseOffset
+    vec2 scale;  // For SetMouseScale
+    float wheel_move_y;
+    float wheel_move_x; 
+    
+    bool current_button_state[GLFW_MOUSE_BUTTON_LAST + 1];
+    bool last_button_state[GLFW_MOUSE_BUTTON_LAST + 1]; 
+    
+    bool button_down_this_frame[GLFW_MOUSE_BUTTON_LAST + 1]; 
+    bool button_up_this_frame[GLFW_MOUSE_BUTTON_LAST + 1];
+
+    // Mouse Ring Buffer
+    int button_queue[SITUATION_KEY_QUEUE_MAX];
+    uint32_t button_head;
+    uint32_t button_tail;
+    
+    SituationMouseButtonCallback button_callback;
+    void* button_callback_user_data;
+    SituationCursorPosCallback cursor_pos_callback;
+    void* cursor_pos_callback_user_data;
+    SituationScrollCallback scroll_callback;
+    void* scroll_callback_user_data;
+    ma_mutex mutex;
+} _SituationMouseState;
+
+/**
+ * @brief [INTERNAL] Joystick and Gamepad manager.
+ * @details Manages the connection state, axis values, and button states for up to 16 controllers.
+ *          Handles both raw joystick input and mapped Gamepad input (SDL2 style).
+ */
+typedef struct {
+    _SituationJoystickState state[SITUATION_MAX_JOYSTICKS];
+    SituationJoystickCallback callback;
+    void* callback_user_data; 
+    
+    // --- for thread-safe event queuing ---
+    _SituationJoystickEvent event_queue[SITUATION_MAX_JOYSTICKS]; 
+    int event_queue_count; 
+    
+    // Joystick Ring Buffer for buttons
+    int button_pressed_queue[SITUATION_KEY_QUEUE_MAX]; 
+    uint32_t button_head;
+    uint32_t button_tail;
+    
+    ma_mutex event_queue_mutex;
+} _SituationJoystickManager;
+
+/**
+ * @brief [INTERNAL] The central monolithic state container for the entire library.
+ * 
+ * @details This structure holds all global state variables required by the engine, organized by subsystem.
+ *          It is instantiated as a single static variable `sit_gs`.
+ *          
+ *          The container is designed to be zero-initialized at startup (`memset` to 0), ensuring a 
+ *          safe default state for all pointers and flags. Backend-specific state is segregated 
+ *          into `vk` (Vulkan) and `gl` (OpenGL) substructures to keep the namespace clean.
+ */
 typedef struct {
     char last_error_msg[SITUATION_MAX_ERROR_MSG_LEN];
     ma_mutex error_mutex; // MUTEX
@@ -2032,88 +2137,17 @@ typedef struct {
     float* sit_audio_callback_effects_temp_buffer;
     float* sit_audio_callback_converter_temp_buffer;
     uint32_t sit_audio_callback_temp_buffer_frames_capacity;
+
+    // --- Input Subsystems (Cleaned up!) ---
+    _SituationKeyboardState keyboard;
+    _SituationMouseState mouse;
+    _SituationJoystickManager joysticks;
     
-    struct {
-        bool current_state[GLFW_KEY_LAST + 1];    // Current key state (pressed=true)
-        bool last_state[GLFW_KEY_LAST + 1];       // Previous frame’s state
-        bool down_this_frame[GLFW_KEY_LAST + 1];  // Pressed this frame
-        bool up_this_frame[GLFW_KEY_LAST + 1];    // Released this frame
-		
-        //int pressed_queue[SITUATION_KEY_QUEUE_MAX]; // Queue of keys pressed this frame
-        //int pressed_queue_count;
-        //unsigned int char_queue[SITUATION_CHAR_QUEUE_MAX]; // Queue of characters input
-        //int char_queue_count;
-		
-        // Keyboard Ring Buffers
-        int pressed_queue[SITUATION_KEY_QUEUE_MAX];
-        uint32_t pressed_head; // Write index
-        uint32_t pressed_tail; // Read index
-        
-        unsigned int char_queue[SITUATION_CHAR_QUEUE_MAX];
-        uint32_t char_head;
-        uint32_t char_tail;
-		
-        int modifier_state;                       // Current modifier flags (GLFW_MOD_*)
-        int lock_key_state;                       // Current lock key flags (Caps, Num)
-        bool is_scroll_lock_on;                   // Track the toggle state of Scroll Lock
-        SituationKeyCallback key_callback;        // Optional user callback
-        void* key_callback_user_data;
-    } keyboard;
-    
-    ma_mutex sit_keyboard_event_queue_mutex;
-    
-    struct {
-        vec2 current_pos;
-        vec2 last_pos;
-        vec2 offset; // For SetMouseOffset
-        vec2 scale;  // For SetMouseScale
-        float wheel_move_y;
-        float wheel_move_x; 
-        
-        bool current_button_state[GLFW_MOUSE_BUTTON_LAST + 1];
-        bool last_button_state[GLFW_MOUSE_BUTTON_LAST + 1]; 
-		
-        bool button_down_this_frame[GLFW_MOUSE_BUTTON_LAST + 1]; 
-        bool button_up_this_frame[GLFW_MOUSE_BUTTON_LAST + 1];
-        //int button_queue[SITUATION_KEY_QUEUE_MAX];
-        //int button_queue_count;
-        // Mouse Ring Buffer
-        int button_queue[SITUATION_KEY_QUEUE_MAX];
-        uint32_t button_head;
-        uint32_t button_tail;
-		
-        SituationMouseButtonCallback button_callback;
-        void* button_callback_user_data;
-        SituationCursorPosCallback cursor_pos_callback;
-        void* cursor_pos_callback_user_data;
-        SituationScrollCallback scroll_callback;
-        void* scroll_callback_user_data;
-        ma_mutex mutex;
-    } mouse;
-    
+    //ma_mutex sit_keyboard_event_queue_mutex;
+   
     // --- Cursor Management ---
     GLFWcursor* cursors[16]; // Array to hold standard cursor handles
     int cursor_count;        // Number of cursors created
-    
-    // --- Joystick State ---
-    struct {
-        _SituationJoystickState state[SITUATION_MAX_JOYSTICKS];
-        SituationJoystickCallback callback;
-        void* callback_user_data; 
-        // --- for thread-safe event queuing ---
-        _SituationJoystickEvent event_queue[SITUATION_MAX_JOYSTICKS]; // Small queue
-        int event_queue_count; // Linear queue is fine here (rare events)
-		
-        //int button_pressed_queue[SITUATION_KEY_QUEUE_MAX]; // Reuse key queue size for this
-        //int button_pressed_queue_count;
-	    // Joystick Ring Buffer for buttons
-        int button_pressed_queue[SITUATION_KEY_QUEUE_MAX]; 
-        uint32_t button_head;
-        uint32_t button_tail;
-		
-        ma_mutex event_queue_mutex;
-
-    } joysticks;
 
     // --- Frame Timing & FPS Management State ---
     double current_time;            // Time at the beginning of the current frame
@@ -3327,7 +3361,7 @@ static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode,
             sit_gs.keyboard.current_state[key] = true;
             sit_gs.keyboard.down_this_frame[key] = true; // This happens before queue lock, generally fine as it's main thread context
 
-			ma_mutex_lock(&sit_gs.sit_keyboard_event_queue_mutex); // Lock for queue
+			ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex); // Lock for queue
             // Ring Buffer Push
             uint32_t next_head = (sit_gs.keyboard.pressed_head + 1) % SITUATION_KEY_QUEUE_MAX;
             if (next_head != sit_gs.keyboard.pressed_tail) {
@@ -3337,7 +3371,7 @@ static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode,
             if (key == SIT_KEY_SCROLL_LOCK) {
                 sit_gs.keyboard.is_scroll_lock_on = !sit_gs.keyboard.is_scroll_lock_on;
             }
-            ma_mutex_unlock(&sit_gs.sit_keyboard_event_queue_mutex); // Unlock queue
+            ma_mutex_unlock(&sit_gs.keyboard.event_queue_mutex); // Unlock queue
 
         } else if (action == GLFW_RELEASE) {
             sit_gs.keyboard.current_state[key] = false;
@@ -3370,14 +3404,14 @@ static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode,
 static void _SituationGLFWCharCallback(GLFWwindow* window, unsigned int codepoint) {
     (void)window; // Unused parameter
 
-	ma_mutex_lock(&sit_gs.sit_keyboard_event_queue_mutex);
+	ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
     // Ring Buffer Push
     uint32_t next_head = (sit_gs.keyboard.char_head + 1) % SITUATION_CHAR_QUEUE_MAX;
     if (next_head != sit_gs.keyboard.char_tail) {
         sit_gs.keyboard.char_queue[sit_gs.keyboard.char_head] = codepoint;
         sit_gs.keyboard.char_head = next_head;
     }
-    ma_mutex_unlock(&sit_gs.sit_keyboard_event_queue_mutex);
+    ma_mutex_unlock(&sit_gs.keyboard.event_queue_mutex);
 }
 
 /**
@@ -4370,9 +4404,8 @@ static SituationError _SituationInitSubsystems(void) {
         return SITUATION_ERROR_GENERAL;
     }
 
-    // Allocate temporary buffers used by the audio data callback for decoding, effects, and format conversion.
-    // This pre-allocation prevents needing to malloc in the real-time audio thread.
-    size_t decoder_buf_size = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES * 8 * sizeof(float); // 8 is a safe max for channels
+    // Allocate temporary buffers...
+    size_t decoder_buf_size = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES * 8 * sizeof(float);
     size_t effects_buf_size = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES * 8 * sizeof(float);
     size_t converter_buf_size = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES * MA_MAX_CHANNELS * sizeof(float);
     sit_gs.sit_audio_callback_decoder_temp_buffer = (float*)malloc(decoder_buf_size);
@@ -4389,27 +4422,21 @@ static SituationError _SituationInitSubsystems(void) {
     SituationTimerSystem* ts = &sit_gs.timer_system_instance;
     ts->current_system_time_seconds = glfwGetTime();
 
-    // Initialize the oscillator periods with a logarithmic-like distribution.
     double range_high = SITUATION_TIMER_GRID_PERIOD_EDGES;
     double range_low = 1.0 / SITUATION_TIMER_GRID_PERIOD_EDGES;
     double current_period_val = range_low;
     double increment_ratio = range_low;
 
     for (int i = 0; i < SITUATION_MAX_OSCILLATORS; i++) {
-        // The first 64 oscillators use the calculated grid.
         if (i < 64) {
             ts->period_seconds[i] = current_period_val;
-            // Clamp values to the defined range to prevent extreme periods.
             if (ts->period_seconds[i] > range_high) ts->period_seconds[i] = range_high;
             if (ts->period_seconds[i] < range_low && i > 0) ts->period_seconds[i] = range_low > 0.000001 ? range_low : 0.000001;
-
             current_period_val += (range_low * increment_ratio);
             increment_ratio *= SITUATION_TIMER_GRIDILON;
         } else {
-            // The remaining oscillators default to a 1-second period.
             ts->period_seconds[i] = 1.0;
         }
-        // Schedule the first trigger event for each oscillator.
         ts->next_trigger_time_seconds[i] = ts->current_system_time_seconds + ts->period_seconds[i];
         ts->last_ping_time_seconds[i] = ts->current_system_time_seconds;
         ts->trigger_count[i] = 0;
@@ -4421,13 +4448,20 @@ static SituationError _SituationInitSubsystems(void) {
 
     // --- 3. Input Systems Initialization ---
 
-    // Initialize mutexes for thread-safe input event queuing.
-    if (ma_mutex_init(&sit_gs.sit_keyboard_event_queue_mutex) != MA_SUCCESS || ma_mutex_init(&sit_gs.joysticks.event_queue_mutex) != MA_SUCCESS || ma_mutex_init(&sit_gs.mouse.mutex) != MA_SUCCESS) {
+    // [FIX] STEP 1: Zero out the memory structures FIRST
+    memset(&sit_gs.keyboard, 0, sizeof(sit_gs.keyboard));
+    memset(&sit_gs.mouse, 0, sizeof(sit_gs.mouse));
+    memset(&sit_gs.joysticks, 0, sizeof(sit_gs.joysticks));
+
+    // [FIX] STEP 2: Initialize mutexes AFTER memset
+    if (ma_mutex_init(&sit_gs.keyboard.event_queue_mutex) != MA_SUCCESS || 
+        ma_mutex_init(&sit_gs.joysticks.event_queue_mutex) != MA_SUCCESS || 
+        ma_mutex_init(&sit_gs.mouse.mutex) != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_GENERAL, "Failed to initialize input mutexes");
         return SITUATION_ERROR_GENERAL;
     }
 
-    // Register all necessary GLFW callbacks. These will populate our internal state.
+    // Register callbacks
     glfwSetDropCallback(sit_gs.sit_glfw_window, _SituationGLFWFileDropCallback);
     glfwSetWindowFocusCallback(sit_gs.sit_glfw_window, _SituationGLFWWindowFocusCallback);
     glfwSetWindowIconifyCallback(sit_gs.sit_glfw_window, _SituationGLFWWindowIconifyCallback);
@@ -4439,40 +4473,33 @@ static SituationError _SituationInitSubsystems(void) {
     glfwSetScrollCallback(sit_gs.sit_glfw_window, _SituationGLFWScrollCallback);
     glfwSetJoystickCallback(sit_gs.sit_glfw_window, _SituationGLFWJoystickCallback);
 
-    // Initialize internal state structures for input devices.
-    memset(&sit_gs.keyboard, 0, sizeof(sit_gs.keyboard));
-    memset(&sit_gs.mouse, 0, sizeof(sit_gs.mouse));
+    // Initialize remaining state (that isn't 0)
     glm_vec2_one(sit_gs.mouse.scale); // Default mouse scale is (1, 1).
 
-    // Get the initial mouse position to prevent a large delta on the first frame.
     double initial_mx, initial_my;
     glfwGetCursorPos(sit_gs.sit_glfw_window, &initial_mx, &initial_my);
     sit_gs.mouse.current_pos[0] = (float)initial_mx;
     sit_gs.mouse.current_pos[1] = (float)initial_my;
     glm_vec2_copy(sit_gs.mouse.current_pos, sit_gs.mouse.last_pos);
 
-    // Pre-create the standard system cursors for fast switching later.
-    sit_gs.cursors[SIT_CURSOR_DEFAULT]   = NULL; // GLFW uses NULL for the system default.
+    // Pre-create cursors
+    sit_gs.cursors[SIT_CURSOR_DEFAULT]   = NULL; 
     sit_gs.cursors[SIT_CURSOR_ARROW]     = glfwCreateStandardCursor(GLFW_ARROW_CURSOR);
     sit_gs.cursors[SIT_CURSOR_IBEAM]     = glfwCreateStandardCursor(GLFW_IBEAM_CURSOR);
     sit_gs.cursors[SIT_CURSOR_CROSSHAIR] = glfwCreateStandardCursor(GLFW_CROSSHAIR_CURSOR);
     sit_gs.cursors[SIT_CURSOR_HAND]      = glfwCreateStandardCursor(GLFW_HAND_CURSOR);
     sit_gs.cursors[SIT_CURSOR_HRESIZE]   = glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR);
     sit_gs.cursors[SIT_CURSOR_VRESIZE]   = glfwCreateStandardCursor(GLFW_VRESIZE_CURSOR);
-    sit_gs.cursor_count = 7; // The total number of cursor types defined.
+    sit_gs.cursor_count = 7; 
 
-    // Poll for any joysticks/gamepads that are already connected at startup.
-    memset(&sit_gs.joysticks, 0, sizeof(sit_gs.joysticks));
+    // Poll for existing joysticks
     for (int jid = 0; jid < SITUATION_MAX_JOYSTICKS; jid++) {
         if (glfwJoystickPresent(jid)) {
-            // The callback will handle updating the internal state.
             _SituationGLFWJoystickCallback(jid, GLFW_CONNECTED);
         }
     }
 
-    // Manually trigger the first framebuffer size callback. This is crucial to ensure
-    // the initial viewport and any projection matrices are set correctly before the
-    // first frame is ever rendered.
+    // Framebuffer size callback
     int fb_w, fb_h;
     glfwGetFramebufferSize(sit_gs.sit_glfw_window, &fb_w, &fb_h);
     _SituationGLFWFramebufferSizeCallback(sit_gs.sit_glfw_window, fb_w, fb_h);
@@ -4481,7 +4508,7 @@ static SituationError _SituationInitSubsystems(void) {
     sit_gs.previous_time = glfwGetTime();
     sit_gs.current_time = sit_gs.previous_time;
     sit_gs.frame_time = 0.0;
-    sit_gs.target_frame_time = 0.0; // Capping disabled by default
+    sit_gs.target_frame_time = 0.0;
     sit_gs.fps_frame_counter = 0;
     sit_gs.fps_last_update_time = sit_gs.previous_time;
     sit_gs.current_fps = 0;
@@ -4492,7 +4519,6 @@ static SituationError _SituationInitSubsystems(void) {
     sit_gs.resize_callback = NULL;
     sit_gs.resize_callback_user_data = NULL;
     
-    // All subsystems initialized successfully.
     return SITUATION_SUCCESS;
 }
 
@@ -8378,7 +8404,7 @@ static void _SituationCleanupSubsystems(void) {
 
     // Uninitialize mutexes.
     ma_mutex_uninit(&sit_gs.sit_audio_queue_mutex);
-    ma_mutex_uninit(&sit_gs.sit_keyboard_event_queue_mutex);
+    ma_mutex_uninit(&sit_gs.keyboard.event_queue_mutex);
     ma_mutex_uninit(&sit_gs.joysticks.event_queue_mutex);
 
     // --- Input Systems ---
@@ -22474,13 +22500,13 @@ SITAPI int SituationGetKeyPressed(void) {
     if (!sit_gs.is_initialized) return 0;
 
     int key = 0; 
-    ma_mutex_lock(&sit_gs.sit_keyboard_event_queue_mutex);
+    ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
     // Ring Buffer Pop
     if (sit_gs.keyboard.pressed_head != sit_gs.keyboard.pressed_tail) {
         key = sit_gs.keyboard.pressed_queue[sit_gs.keyboard.pressed_tail];
         sit_gs.keyboard.pressed_tail = (sit_gs.keyboard.pressed_tail + 1) % SITUATION_KEY_QUEUE_MAX;
     }
-    ma_mutex_unlock(&sit_gs.sit_keyboard_event_queue_mutex);
+    ma_mutex_unlock(&sit_gs.keyboard.event_queue_mutex);
     return key;
 }
 
@@ -22499,12 +22525,12 @@ SITAPI int SituationPeekKeyPressed(void) {
     if (!sit_gs.is_initialized) return 0;
 
     int key = 0;
-    ma_mutex_lock(&sit_gs.sit_keyboard_event_queue_mutex);
+    ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
     // Ring Buffer Peek
     if (sit_gs.keyboard.pressed_head != sit_gs.keyboard.pressed_tail) {
         key = sit_gs.keyboard.pressed_queue[sit_gs.keyboard.pressed_tail];
     }
-    ma_mutex_unlock(&sit_gs.sit_keyboard_event_queue_mutex);
+    ma_mutex_unlock(&sit_gs.keyboard.event_queue_mutex);
     return key;
 }
 
@@ -22523,13 +22549,13 @@ SITAPI unsigned int SituationGetCharPressed(void) {
     if (!sit_gs.is_initialized) return 0;
 
     unsigned int codepoint = 0; 
-    ma_mutex_lock(&sit_gs.sit_keyboard_event_queue_mutex);
+    ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
     // Ring Buffer Pop
     if (sit_gs.keyboard.char_head != sit_gs.keyboard.char_tail) {
         codepoint = sit_gs.keyboard.char_queue[sit_gs.keyboard.char_tail];
         sit_gs.keyboard.char_tail = (sit_gs.keyboard.char_tail + 1) % SITUATION_CHAR_QUEUE_MAX;
     }
-    ma_mutex_unlock(&sit_gs.sit_keyboard_event_queue_mutex);
+    ma_mutex_unlock(&sit_gs.keyboard.event_queue_mutex);
     return codepoint;
 }
 

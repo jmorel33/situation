@@ -1,3 +1,28 @@
+
+Date: 2025-11-22
+Version: 2.3.4D "Velocity" (Hotfix D)
+
+## DESCRIPTION
+This update focuses on code hygiene and architectural clarity. It refactors the internal global state container, breaking it down into distinct, self-documenting structures for each subsystem (Input, Audio, Backend). This change improves readability and maintainability without altering the public API or runtime behavior.
+
+## INTERNAL REFACTORING
+
+*   **State Container Modernization:** 
+    *   Decomposed `_SituationGlobalStateContainer` into logical sub-structures:
+        *   `_SituationKeyboardState`: Encapsulates key arrays, ring buffers, and the event mutex.
+        *   `_SituationMouseState`: Encapsulates position, buttons, and scrolling data.
+        *   `_SituationJoystickManager`: Encapsulates controller states and connection events.
+        *   `_SituationGLState` / `_SituationVulkanState`: Segregated backend-specific resources.
+    *   This grouping makes the global state definition significantly easier to parse and manage.
+
+*   **Naming Consistency:**
+    *   Moved the keyboard event mutex inside the keyboard state struct (`sit_gs.keyboard.event_queue_mutex`) to match the pattern used by the mouse and joystick subsystems.
+    *   Standardized initialization order in `_SituationInitSubsystems` to prevent mutex corruption during state zeroing.
+
+*   **Documentation:** Added comprehensive Doxygen headers to all new internal structures to explain their specific roles in the engine lifecycle.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-22
 Version: 2.3.4C "Velocity" (Hotfix C)
 
@@ -23,7 +48,7 @@ This update finalizes the strict C11 compliance overhaul and refactors the inter
     *   Replaced deprecated `usleep` with `nanosleep` for POSIX frame limiting.
 
 --------------------------------------------------------------------------------
-	
+
 Date: 2025-11-22
 Version: 2.3.4B "Velocity" (Hotfix B)
 
