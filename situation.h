@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4 "Velocity"
+*   Core API library v2.3.4A "Velocity" (Hotfix)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -16304,6 +16304,16 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
 #endif
 }
 
+/**
+ * @brief [INTERNAL] Sorting predicate for Virtual Displays.
+ * 
+ * @details Used by `qsort` to order the array of visible Virtual Displays based on their `z_order` property.
+ *          Ensures that displays with lower Z-values are processed and drawn first (background), while higher Z-values are drawn last (foreground).
+ * 
+ * @param a Pointer to the first `SituationVirtualDisplay*` pointer.
+ * @param b Pointer to the second `SituationVirtualDisplay*` pointer.
+ * @return An integer less than, equal to, or greater than zero if the Z-order of `a` is respectively less than, equal to, or greater than `b`.
+ */
 static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
     const SituationVirtualDisplay* vdA = *(const SituationVirtualDisplay**)a; // Array of pointers
     const SituationVirtualDisplay* vdB = *(const SituationVirtualDisplay**)b;
@@ -16325,6 +16335,7 @@ static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
  *
  * - **Vulkan:**
  *   Uses the high-performance persistent descriptor set model. It binds the compositing pipeline once, then iterates through visible displays, binding their pre-cached descriptor sets and pushing transformation matrices via Push Constants.
+ *   It automatically manages Render Pass state to perform legal screen grabs for advanced blending modes.
  *
  * @param cmd The command buffer (Vulkan) or ignored (OpenGL).
  */
@@ -16477,194 +16488,163 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     
     SIT_CHECK_GL_ERROR();
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.vd_compositing_pipeline == VK_NULL_HANDLE) {
-        // Silently return or log once, as this is called every frame.
-        return;
-    }
+    if (sit_gs.vk.vd_compositing_pipeline == VK_NULL_HANDLE) return;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
-    // --- Setup for this frame ---
-    // 1. Get the target dimensions. For now, we assume this is the main window.
-    // A more advanced implementation might render VDs to other VDs.
+    // --- 1. UBO Update (Same as before) ---
     float target_width = (float)sit_gs.vk.swapchain_extent.width;
     float target_height = (float)sit_gs.vk.swapchain_extent.height;
-
-    // 2. Update the UBO for this frame with the correct orthographic projection matrix for the target.
     ViewDataUBO ubo_data;
-    glm_mat4_identity(ubo_data.view); // Identity view for 2D orthographic rendering
+    glm_mat4_identity(ubo_data.view);
     glm_ortho(0.0f, target_width, target_height, 0.0f, -1.0f, 1.0f, ubo_data.projection);
-    
     void* mapped_data;
     vmaMapMemory(sit_gs.vk.vma_allocator, sit_gs.vk.view_proj_ubo_memory[sit_gs.vk.current_frame_index], &mapped_data);
     memcpy(mapped_data, &ubo_data, sizeof(ViewDataUBO));
     vmaUnmapMemory(sit_gs.vk.vma_allocator, sit_gs.vk.view_proj_ubo_memory[sit_gs.vk.current_frame_index]);
 
-    // --- Begin Rendering ---
-    // 3. Bind the pipeline for compositing and the UBO descriptor set for this frame.
-    // This is done once for all virtual displays.
-    vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline);
-    vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline_layout, 0, 1, &sit_gs.vk.view_proj_ubo_descriptor_set[sit_gs.vk.current_frame_index], 0, NULL);
-
-    // 4. Bind the screen-space quad's vertex buffer once.
+    // --- 2. Global Setup ---
     VkBuffer vertex_buffers[] = { sit_gs.vk.quad_vertex_buffer };
     VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
+    
+    // Track render pass state to minimize switching
+    bool in_render_pass = false;
+
+    // Pre-fill the RenderPassBeginInfo struct for reuse
+    VkRenderPassBeginInfo rp_info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    rp_info.renderPass = sit_gs.vk.main_window_render_pass;
+    rp_info.framebuffer = sit_gs.vk.main_window_framebuffers[sit_gs.vk.current_image_index];
+    rp_info.renderArea.extent = sit_gs.vk.swapchain_extent;
+    // Note: If main_window_render_pass was created with LOAD_OP_CLEAR, this will clear the background.
+    // To overlay without clearing, use a separate render pass with LOAD_OP_LOAD.
 
     // --- Loop and Draw Each Virtual Display ---
     for (int i = 0; i < visible_count; ++i) {
         const SituationVirtualDisplay* vd = visible_vds_to_render[i];
         
-        // --- Calculate the Model Matrix (This is the critical part you pointed out) ---
+        // --- Matrix Calculation ---
         mat4 model_matrix;
         glm_mat4_identity(model_matrix);
 
         switch (vd->scaling_mode) {
             case SITUATION_SCALING_STRETCH: {
-                mat4 T_mat, S_mat;
-                glm_translate_make(T_mat, (vec3){vd->offset[0], vd->offset[1], 0.0f});
-                glm_scale_make(S_mat, (vec3){vd->resolution[0], vd->resolution[1], 1.0f});
-                glm_mat4_mul(T_mat, S_mat, model_matrix);
+                mat4 T, S; 
+                glm_translate_make(T, (vec3){vd->offset[0], vd->offset[1], 0.0f});
+                glm_scale_make(S, (vec3){target_width, target_height, 1.0f}); 
+                glm_mat4_mul(T, S, model_matrix); 
                 break;
             }
             case SITUATION_SCALING_FIT: {
-                float scale_x = target_width / vd->resolution[0];
-                float scale_y = target_height / vd->resolution[1];
-                float final_scale = fminf(scale_x, scale_y);
-                float final_width = vd->resolution[0] * final_scale;
-                float final_height = vd->resolution[1] * final_scale;
-                float final_x = (target_width - final_width) / 2.0f;
-                float final_y = (target_height - final_height) / 2.0f;
-                mat4 T_mat, S_mat;
-                glm_translate_make(T_mat, (vec3){final_x, final_y, 0.0f});
-                glm_scale_make(S_mat, (vec3){final_width, final_height, 1.0f});
-                glm_mat4_mul(T_mat, S_mat, model_matrix);
+                float sx = target_width / vd->resolution[0];
+                float sy = target_height / vd->resolution[1];
+                float s = fminf(sx, sy);
+                float final_w = vd->resolution[0] * s;
+                float final_h = vd->resolution[1] * s;
+                float final_x = (target_width - final_w) / 2.0f;
+                float final_y = (target_height - final_h) / 2.0f;
+                mat4 T, S; 
+                glm_translate_make(T, (vec3){final_x, final_y, 0.0f});
+                glm_scale_make(S, (vec3){final_w, final_h, 1.0f});
+                glm_mat4_mul(T, S, model_matrix); 
                 break;
             }
             case SITUATION_SCALING_INTEGER: {
-                float scale_x = target_width / vd->resolution[0];
-                float scale_y = target_height / vd->resolution[1];
-                float final_scale = fmaxf(1.0f, floorf(fminf(scale_x, scale_y)));
-                float final_width = vd->resolution[0] * final_scale;
-                float final_height = vd->resolution[1] * final_scale;
-                float final_x = (target_width - final_width) / 2.0f;
-                float final_y = (target_height - final_height) / 2.0f;
-                mat4 T_mat, S_mat;
-                glm_translate_make(T_mat, (vec3){final_x, final_y, 0.0f});
-                glm_scale_make(S_mat, (vec3){final_width, final_height, 1.0f});
-                glm_mat4_mul(T_mat, S_mat, model_matrix);
+                float s = fmaxf(1.0f, floorf(fminf(target_width / vd->resolution[0], target_height / vd->resolution[1])));
+                float final_w = vd->resolution[0] * s;
+                float final_h = vd->resolution[1] * s;
+                float final_x = (target_width - final_w) / 2.0f;
+                float final_y = (target_height - final_h) / 2.0f;
+                mat4 T, S; 
+                glm_translate_make(T, (vec3){final_x, final_y, 0.0f});
+                glm_scale_make(S, (vec3){final_w, final_h, 1.0f});
+                glm_mat4_mul(T, S, model_matrix); 
                 break;
             }
         }
-        // --- End Matrix Calculation ---
 
         bool use_advanced = (vd->blend_mode >= SITUATION_BLEND_OVERLAY);
 
         if (use_advanced) {
-            // ============================================================
-            // 1. PERFORM SCREEN COPY
-            // ============================================================
+            // ---------------------------------------------------------
+            // PATH A: Advanced Blending (Requires Screen Copy)
+            // ---------------------------------------------------------
             
-            VkImage currentSwapchainImage = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
-
-            // A. Transition Swapchain from COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL
-            _SituationVulkanTransitionImageLayout(vk_cmd, currentSwapchainImage, 1, 
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-
-            // B. Transition CopyImage from UNDEFINED (or previous) -> TRANSFER_DST_OPTIMAL
-            _SituationVulkanTransitionImageLayout(vk_cmd, sit_gs.vk.screen_copy_image, 1, 
-                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-            // C. Copy
-            VkImageCopy copy_region = {
-                .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-                .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-                .extent = { sit_gs.vk.swapchain_extent.width, sit_gs.vk.swapchain_extent.height, 1 }
-            };
-            vkCmdCopyImage(vk_cmd, 
-                currentSwapchainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                sit_gs.vk.screen_copy_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                1, &copy_region);
-
-            // D. Transition Swapchain BACK to COLOR_ATTACHMENT_OPTIMAL (so we can draw on it)
-            _SituationVulkanTransitionImageLayout(vk_cmd, currentSwapchainImage, 1, 
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-            // E. Transition CopyImage to SHADER_READ_ONLY_OPTIMAL (so shader can read it)
-            _SituationVulkanTransitionImageLayout(vk_cmd, sit_gs.vk.screen_copy_image, 1, 
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-            // ============================================================
-            // 2. UPDATE DESCRIPTOR FOR COPY IMAGE
-            // ============================================================
-            // We update the descriptor set here because the sampler might depend on the VD settings
-            // (though usually we want a 1:1 pixel map for the background, so Nearest is safer).
-            // Let's reuse the VD's sampler for simplicity.
-            VkDescriptorImageInfo copy_img_info = {
-                .sampler = vd->vk.sampler, 
-                .imageView = sit_gs.vk.screen_copy_view,
-                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            };
-            VkWriteDescriptorSet write_copy = {
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = sit_gs.vk.screen_copy_descriptor_set,
-                .dstBinding = 0, // Binding 0 of Set 2
-                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .descriptorCount = 1,
-                .pImageInfo = &copy_img_info
-            };
-            vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write_copy, 0, NULL);
-
-            // ============================================================
-            // 3. BIND & DRAW ADVANCED
-            // ============================================================
-            vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline);
-            
-            // Bind Set 0 (UBO) - Was bound globally, but changing pipeline might require rebind if layout incompatible.
-            // Ideally layouts are compatible. Let's rebind to be safe.
-            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 0, 1, &sit_gs.vk.view_proj_ubo_descriptor_set[sit_gs.vk.current_frame_index], 0, NULL);
-
-            // Bind Set 1 (VD Source)
-            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 1, 1, &vd->vk.descriptor_set, 0, NULL);
-
-            // Bind Set 2 (Screen Copy)
-            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 2, 1, &sit_gs.vk.screen_copy_descriptor_set, 0, NULL);
-
-            // Push Constants (Larger struct for advanced)
-             struct {
-                mat4 model;
-                int blendMode;
-                float opacity;
-            } push_adv;
-            glm_mat4_copy(model_matrix, push_adv.model);
-            push_adv.blendMode = vd->blend_mode;
-            push_adv.opacity = vd->opacity;
-            
-            vkCmdPushConstants(vk_cmd, sit_gs.vk.advanced_compositing_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(push_adv), &push_adv);
-            
-            vkCmdDraw(vk_cmd, 4, 1, 0, 0);
-
-            // Restore Simple Pipeline for next iteration (optimization: verify next VD type first)
-            if (i < visible_count - 1) {
-                 vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline);
+            // 1. Stop Render Pass (Illegal to copy image inside RP)
+            if (is_render_pass_active) {
+                vkCmdEndRenderPass(vk_cmd);
+                is_render_pass_active = false;
             }
 
+            VkImage swapchainImg = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
+
+            // 2. Barriers: Prepare Swapchain for Read, CopyTarget for Write
+            _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            _SituationVulkanTransitionImageLayout(vk_cmd, sit_gs.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+            // 3. Perform Copy
+            VkImageCopy region = { .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .extent = {sit_gs.vk.swapchain_extent.width, sit_gs.vk.swapchain_extent.height, 1} };
+            vkCmdCopyImage(vk_cmd, swapchainImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sit_gs.vk.screen_copy_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+            // 4. Barriers: Restore Swapchain for Drawing, CopyTarget for Reading
+            _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            _SituationVulkanTransitionImageLayout(vk_cmd, sit_gs.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+            // 5. Update Descriptor for Screen Copy (Bind the texture we just filled)
+            VkDescriptorImageInfo copy_info = { .sampler = vd->vk.sampler, .imageView = sit_gs.vk.screen_copy_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet write = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = sit_gs.vk.screen_copy_descriptor_set, .dstBinding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .pImageInfo = &copy_info };
+            vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write, 0, NULL);
+
+            // 6. Restart Render Pass
+            vkCmdBeginRenderPass(vk_cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+            is_render_pass_active = true;
+
+            // 7. Draw
+            vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline);
+            vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
+            
+            // Bind Sets: 0=GlobalUBO, 1=VDSampler, 2=ScreenCopy
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 0, 1, &sit_gs.vk.view_proj_ubo_descriptor_set[sit_gs.vk.current_frame_index], 0, NULL);
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 1, 1, &vd->vk.descriptor_set, 0, NULL);
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 2, 1, &sit_gs.vk.screen_copy_descriptor_set, 0, NULL);
+
+			// Define a layout-compatible byte buffer to avoid anonymous struct issues
+            struct { mat4 m; int b; float o; } pc; 
+            glm_mat4_copy(model_matrix, pc.m);
+            pc.b = vd->blend_mode;
+            pc.o = vd->opacity;
+            
+            vkCmdPushConstants(vk_cmd, sit_gs.vk.advanced_compositing_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(pc), &pc);
+            vkCmdDraw(vk_cmd, 4, 1, 0, 0);
+
         } else {
-            // ============================================================
-            // STANDARD BLEND (Existing Logic)
-            // ============================================================
-            // Ensure simple pipeline is bound (if previous was advanced)
+            // ---------------------------------------------------------
+            // PATH B: Standard Blending (Fast Path)
+            // ---------------------------------------------------------
+            
+            // 1. Ensure Render Pass is active
+            if (!is_render_pass_active) {
+                vkCmdBeginRenderPass(vk_cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+                is_render_pass_active = true;
+            }
+
+            // 2. Draw
             vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline);
-            
+            vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
+
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline_layout, 0, 1, &sit_gs.vk.view_proj_ubo_descriptor_set[sit_gs.vk.current_frame_index], 0, NULL);
             vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline_layout, 1, 1, &vd->vk.descriptor_set, 0, NULL);
-            
-            struct { mat4 model; float opacity; } push_simple;
-            glm_mat4_copy(model_matrix, push_simple.model);
-            push_simple.opacity = vd->opacity;
 
-            vkCmdPushConstants(vk_cmd, sit_gs.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_simple), &push_simple);
+            struct { mat4 m; float o; } pc;
+            glm_mat4_copy(model_matrix, pc.m);
+            pc.o = vd->opacity;
 
+            vkCmdPushConstants(vk_cmd, sit_gs.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
             vkCmdDraw(vk_cmd, 4, 1, 0, 0);
         }
+    }
+
+    // --- Cleanup ---
+    if (is_render_pass_active) {
+        vkCmdEndRenderPass(vk_cmd);
     }
 #endif
     double end_time = glfwGetTime();

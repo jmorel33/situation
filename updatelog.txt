@@ -1,4 +1,24 @@
 Date: 2025-11-22
+Version: 2.3.4A "Velocity" (Hotfix)
+
+## DESCRIPTION
+This patch solidifies the "Velocity" feature set, addressing specific architectural constraints in the Vulkan backend and ensuring strict C standard compliance. It transforms the Virtual Display compositor into a "Titanium" grade implementation, guaranteeing validation-free operation for advanced blending modes.
+
+## CRITICAL FIXES
+
+*   **Vulkan Compositor Architecture:** Completely rewrote the `SituationRenderVirtualDisplays` logic for Vulkan. It now automatically manages Render Pass state (starting/stopping) to perform legal `vkCmdCopyImage` operations. This fixes validation errors when using "Screen Grab" blend modes (Overlay, Soft Light) and ensures correct layering over the main scene.
+
+*   **Scaling Math Correction:** Fixed the matrix calculation for `SITUATION_SCALING_STRETCH`. It now correctly scales content to fill the *target* framebuffer dimensions rather than preserving the source resolution 1:1.
+
+*   **Strict C Compliance:** Removed C++-style syntax (lambdas and anonymous struct initializers) from the implementation block. The library now compiles cleanly on strict C99/C11 compilers (MSVC/GCC/Clang) without warnings.
+
+## DOCUMENTATION
+
+*   **API Reference:** Added comprehensive Doxygen-style header documentation for the entire Hot-Reloading module (`SituationReloadShader`, `SituationReloadTexture`, etc.), detailing synchronization behavior and usage constraints.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-22
 Version: 2.3.4 "Velocity"
 
 ## DESCRIPTION
