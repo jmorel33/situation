@@ -1,3 +1,34 @@
+Date: 2025-11-23
+Version: 2.3.3C "Hardened"
+
+## DESCRIPTION
+This release is a major stability overhaul focused on thread safety, resource management, and preventing runtime crashes in long-running applications. It addresses several critical architectural flaws identified in the Audio and Vulkan backends, transforming the library from a prototype into a production-ready framework.
+
+## BREAKING API CHANGES
+
+*   **Audio Loading Strategy:** The signature of `SituationLoadSoundFromFile` has changed.
+    *   *Old:* `(path, looping, out_sound)`
+    *   *New:* `(path, mode, looping, out_sound)`
+    *   *Reason:* Users must now specify `SITUATION_AUDIO_LOAD_AUTO`, `FULL` (RAM decode), or `STREAM` (Disk I/O) to prevent the audio thread from blocking on disk operations.
+
+## CRITICAL STABILITY FIXES
+
+*   **Audio Thread "Death Spiral":** Completely rewrote the audio loading logic. Short sounds (SFX) are now decoded fully to RAM upon load. The audio callback no longer performs blocking disk I/O for these sounds, eliminating stuttering/popping during gameplay or background loading.
+
+*   **Vulkan Descriptor Exhaustion:** Replaced the fixed-size descriptor pool (limit 512) with a **Dynamic Descriptor Manager**. The engine now automatically allocates new pools as needed, allowing for an effectively infinite number of textures and materials.
+
+*   **OpenGL State Leak:** Implemented a "State Guard" in `SituationRenderVirtualDisplays`. The compositor now backs up the active Shader Program, VAO, Texture Units, and Blend Modes before rendering and restores them exactly afterwards. This prevents internal rendering passes from corrupting user rendering state.
+
+*   **Compute Pipeline Crash:** Fixed a severe memory offset bug in `SituationDestroyComputePipeline`. The function was passing a public struct pointer to an internal helper expecting a different memory layout, which would have caused heap corruption or driver crashes on cleanup.
+
+## OPTIMIZATIONS
+
+*   **O(1) Input Processing:** Replaced the `O(N)` memory-shifting queues in the Keyboard, Mouse, and Gamepad subsystems with **Ring Buffers**. Input processing time is now constant regardless of queue depth.
+
+*   **Audio Capture Logic:** Fixed a logic hole in `SituationPollInputEvents` where captured audio data was locked but never dispatched to the user. Added a thread-safe linearization step to correctly pass ring-buffer data to the user callback.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-21
 Version: 2.3.3B "Refinement"
 

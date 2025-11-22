@@ -1,20 +1,20 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.3B "Refinement"_
+_Core API library v2.3.3C "Hardened"_
 
 _(c) 2025 Jacques Morel_
 
 _MIT Licenced_
 
-Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools. We are actively seeking contributions from the community to help us build a truly exceptional and robust platform.
+Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.3B "Refinement"** is a critical stabilization update. It resolves compilation issues in the Vulkan backend and solidifies the **Unified Resource Architecture**. This release ensures that all textures created via the standard API are "Compute-Ready" by default across both OpenGL and Vulkan, simplifying the workflow for high-performance compute shaders without requiring complex flag management.
+**Version 2.3.3C "Hardened"** marks a major milestone in the library's maturity. This release transitions the framework from a prototype architecture to a production-ready foundation. It introduces a **Dynamic Resource Manager** for Vulkan (eliminating fixed asset limits), a fully **Thread-Safe Audio Engine** that decouples disk I/O from real-time mixing, and an **O(1) Input System** for consistent performance under heavy load. Furthermore, it implements robust state-guarding for OpenGL, ensuring internal rendering passes never corrupt user application state.
 
-Our immediate development roadmap is focused on several key areas:
-*   **Hot Reloading:** Implementing live reloading for Shaders, Textures, and Models to drastically reduce iteration times during development.
-*   **Built-in Debug Tools**: Leveraging the profiling data to create an immediate-mode debug UI overlay.
-*   **Full Thread-Safety**: We are working towards making the entire library thread-safe, allowing for even greater performance and scalability.
-*   **Vulkan Optimization**: Continuing to refine the persistent descriptor set model for maximum throughput.
+Our immediate development roadmap is focused on the next phase of usability:
+*   **Hot Reloading:** Implementing live reloading for Shaders and Textures to drastically reduce iteration times.
+*   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
+*   **Async Compute**: Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
+*   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
 
 "Situation" is an ambitious project that aims to become a premier, go-to solution for developers seeking a reliable and powerful platform layer. We encourage you to explore the library, challenge its capabilities, and contribute to its evolution.
 
@@ -22,11 +22,15 @@ The library's philosophy is reflected in its name, granting developers complete 
 
 It provides deep **Awareness** of the host system through APIs for querying hardware **(GPU Name, VRAM)** and multi-monitor display information, and by handling operating system events like window focus and file drops.
 
-This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, **capture (recording)**, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model **(designed for explicit sequential execution)**. It offers simplified management of GPU resources—such as shaders, meshes, and **compute-ready textures**—and includes powerful utilities for high-quality text rendering **(now with printf-style formatting)**, robust filesystem I/O, **memory-resident asset loading**, and **3D model exporting**.
+This foundation enables precise **Control** over the entire application stack:
+*   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management.
+*   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events.
+*   **Audio:** A professional-grade pipeline supporting **safe RAM preloading** for SFX, disk streaming for music, **capture (recording)**, and real-time effects (Reverb, Delay, Filter).
+*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.1**. It manages complex resources—shaders, meshes, and **dynamically allocated descriptor sets**—automatically. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering.
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
 
-> **CRITICAL ARCHITECTURAL NOTE:** To guarantee identical behavior between OpenGL (Immediate) and Vulkan (Deferred), developers must **update all buffer data before recording draw commands** within a frame. *As of v2.3.2B, the library actively enforces this rule in debug builds and will report a runtime error if violated.*
+> **CRITICAL ARCHITECTURAL NOTE:** To guarantee identical behavior between OpenGL (Immediate) and Vulkan (Deferred), developers must **update all buffer data before recording draw commands** within a frame. *The library actively enforces this rule in debug builds and will report a runtime error if violated.*
 
 ---
 
@@ -44,19 +48,19 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 <details>
 <summary><h2>1. Introduction & Overview</h2></summary>
 
-`situation.h` is a single-header C library designed to provide a robust, cross-platform foundation for developing graphical applications and games. It abstracts the complexities of underlying system APIs like windowing (GLFW), graphics (OpenGL/Vulkan), and audio (miniaudio) into a cohesive and simplified interface. Its primary goal is to offer developers "situational awareness" of the platform and precise control over core application subsystems.
+`situation.h` is a single-header C/C++ library that acts as a high-performance kernel for interactive software. It abstracts the fragmented landscape of OS APIs (Windows/Linux/macOS) and Graphics Backends (OpenGL/Vulkan) into a unified, deterministic "Situation" that you control.
 
-Key features include:
-- **Cross-Platform Windowing & Input:** Create and manage windows, handle keyboard, mouse, and gamepad input.
-- **Dual Graphics Backend Support:** Seamless abstraction over modern OpenGL (4.6+ Core) and Vulkan (1.1+).
-- **Compute Shader Support:** A unified API for leveraging GPU compute power.
-- **Comprehensive Resource Management:** Simplified loading and management of shaders, meshes, textures, and buffers.
-- **Advanced Rendering Features:** Includes a Virtual Display System for off-screen rendering, high-performance text rendering, and a command buffer abstraction.
-- **Audio System:** Full playback and **recording/capture** capabilities via the miniaudio library.
-- **Utility Functions:** High-resolution timers, FPS calculation, filesystem path utilities, and model exporting (.gltf).
-- **Resource Embedding:** Load fonts directly from memory buffers for single-file executables.
-- **Profiling & Diagnostics:** Built-in counters for Draw Calls and VRAM usage (Vulkan).
-- **Hardware Awareness:** APIs to query specific GPU names and capabilities.
+Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforces a strict separation of Update and Render phases to guarantee identical behavior across immediate-mode (OpenGL) and deferred-mode (Vulkan) drivers.
+
+### **Key Capabilities**
+
+*   **Unified Command Architecture:** Write your rendering code once using abstract `SituationCmd*` functions. The library compiles this into direct state changes for **OpenGL 4.6** or optimized command buffers for **Vulkan 1.1**.
+*   **"Hardened" Audio Engine:** A professional audio pipeline built on miniaudio. It features **thread-safe asset loading** (decoding SFX to RAM to prevent stalling), background music streaming, real-time DSP effects (Reverb/Delay), and low-latency microphone capture.
+*   **Dynamic Resource Management:** No arbitrary limits. The Vulkan backend features a **Dynamic Descriptor Manager** that automatically grows resource pools as you load assets, supporting scenes with thousands of textures and buffers.
+*   **O(1) Input System:** A lock-free, ring-buffered input architecture ensures that no keypress or mouse click is ever lost, even during frame-rate spikes.
+*   **Virtual Display Compositor:** Render your game to low-resolution off-screen targets (e.g., 320x240) and composite them to the main screen with precise control over scaling algorithms (Integer, Fit, Stretch) and blend modes.
+*   **First-Class Compute:** Compute Shaders are not an afterthought. The API treats Compute Pipelines and Storage Buffers (SSBOs) as primary citizens, enabling complex simulations and post-processing.
+*   **Deep System Awareness:** Query precise hardware details (GPU Name, dedicated VRAM usage, Monitor topology) to auto-configure your application's quality settings.
 
 </details>
 
@@ -66,24 +70,28 @@ Key features include:
 
 A minimal application requires **zero configuration** beyond selecting a backend.
 
-1.  Download `situation.h` (and `stb_*.h` if not using the bundled single-file release).
-2.  Create `main.c`:
+1.  Download `situation.h` (and ensure stb headers are available if not using the bundled release).
+2.  Create `main.c`. This example plays music and draws text using the built-in GPU text renderer.
 
 ```c
 #define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_VULKAN // or SITUATION_USE_OPENGL
+#define SITUATION_ENABLE_SHADER_COMPILER // Required for Text/Quad rendering in Vulkan
 #include "situation.h"
 
 int main(int argc, char** argv) {
-    // 1. Initialize
-    if (SituationInit(argc, argv, NULL) != SITUATION_SUCCESS) return -1;
+    // 1. Initialize with config
+    SituationInitInfo config = { .window_width = 1280, .window_height = 720, .window_title = "Hello Situation" };
+    if (SituationInit(argc, argv, &config) != SITUATION_SUCCESS) return -1;
 
-    // 2. Zero Friction Assets (No extra libs needed!)
+    // 2. Zero Friction Assets (MP3/TTF loaded directly!)
     SituationSound music;
-    SituationLoadSoundFromFile("bgm.mp3", true, &music);
+    // Use 'AUTO' mode: decodes SFX to RAM, streams long Music from disk automatically
+    SituationLoadSoundFromFile("bgm.mp3", SITUATION_AUDIO_LOAD_AUTO, true, &music);
     SituationPlayLoadedSound(&music);
     
     SituationFont font = SituationLoadFont("font.ttf");
+    SituationBakeFontAtlas(&font, 24.0f); // Create GPU texture for the font
 
     // 3. Main Loop
     while (!SituationWindowShouldClose()) {
@@ -92,26 +100,28 @@ int main(int argc, char** argv) {
         if (SituationAcquireFrameCommandBuffer()) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             
-            // Define a simple render pass (Clear screen to dark gray)
+            // Clear screen to dark slate blue
             SituationRenderPassInfo pass = { 
                 .display_id = -1, // Main Window
-                .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = {20, 20, 20, 255} } } 
+                .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = {20, 30, 40, 255} } } 
             };
             
             SituationCmdBeginRenderPass(cmd, &pass); 
             
-            // ... Record draw commands here ...
+            // Draw text directly using the internal batch renderer
+            SituationCmdDrawText(cmd, font, "Situation Engine Running...", (Vector2){50, 50}, (Color){255, 255, 255, 255});
             
             SituationCmdEndRenderPass(cmd);
             SituationEndFrame();
         }
     }
     
-    // 4. Cleanup
+    // 4. Cleanup (Automatic leak detection runs here)
+    SituationUnloadSound(&music);
+    SituationUnloadFont(font);
     SituationShutdown();
     return 0;
-}
-```
+}```
 
 </details>
 
@@ -119,12 +129,20 @@ int main(int argc, char** argv) {
 <details>
 <summary><h2>3. Core Concepts & Architecture</h2></summary>
 
-The library is built on several core principles to ensure a simple and predictable development experience. For in-depth explanations of these topics, please see the [**Introduction and Core Concepts**](situation_api.md#introduction-and-core-concepts) section of the API guide.
+The library is built on several core principles to ensure a simple, predictable, and high-performance development experience.
 
--   **Single-Threaded Design:** All `SITAPI` functions must be called from the main thread.
--   **Explicit Resource Management:** Resources created with `SituationCreate...` or `SituationLoad...` must be manually destroyed.
--   **Three-Phase Frame:** Each frame in the main loop should follow a strict `Input (Poll) -> Update (Timers/Logic) -> Render` sequence.
--   **Command Buffer Model:** Rendering and compute operations are recorded into a command buffer and submitted to the GPU, a model that aligns with modern graphics APIs like Vulkan.
+-   **Unified Command Abstraction:** The API exposes a single "Command Buffer" model for rendering.
+    -   In **Vulkan**, this maps 1:1 to hardware command buffers for deferred execution.
+    -   In **OpenGL**, this acts as a "pass-through" layer, executing commands immediately while maintaining API compatibility.
+-   **The "Update-Before-Draw" Contract:** To guarantee identical behavior across backends, you must strictly separate data updates from draw calls within a frame. Always update your buffers/constants *before* recording the draw commands that use them.
+-   **Hybrid Threading Model:**
+    -   **User Logic (Main Thread):** All Windowing, Rendering, and Event Polling calls must occur on the main thread.
+    -   **Engine Internals (Async):** Audio mixing, File Streaming, and Input accumulation occur on dedicated background threads. The API handles safe synchronization automatically (e.g., O(1) ring buffers for input, mutex-protected audio queues).
+-   **Explicit Resource Management:** There is no garbage collector. Every resource created with `SituationCreate...` or `SituationLoad...` returns an opaque handle and **must** be explicitly released with its corresponding `SituationDestroy...` or `SituationUnload...` function.
+-   **Three-Phase Frame:** The main loop follows a strict, non-blocking cadence:
+    1.  **Input:** `SituationPollInputEvents()` (Gathers OS events into thread-safe buffers).
+    2.  **Update:** `SituationUpdateTimers()` & User Logic (Physics, AI, Audio triggers).
+    3.  **Render:** `SituationAcquireFrameCommandBuffer` -> Record Commands -> `SituationEndFrame`.
 
 </details>
 
@@ -132,11 +150,34 @@ The library is built on several core principles to ensure a simple and predictab
 <details>
 <summary><h2>4. Building & Configuration</h2></summary>
 
-Configuration is managed through preprocessor defines. For detailed instructions on dependencies, compiler flags, and build configurations, refer to the [**Building the Library**](situation_api.md#building-the-library) section in the API documentation.
+"Situation" uses a **Header-Only + Implementation** pattern. Configuration is handled entirely via preprocessor macros, which must be defined **before** including `situation.h`.
 
--   **Backend Selection:** Define `SITUATION_USE_OPENGL` or `SITUATION_USE_VULKAN`.
--   **Shared Library:** Use `SITUATION_BUILD_SHARED` when compiling the library and `SITUATION_USE_SHARED` when linking against it.
--   **Feature Toggles:** Defines like `SITUATION_ENABLE_SHADER_COMPILER` enable optional features.
+### **Preprocessor Macros**
+
+| Macro | Type | Description |
+| :--- | :--- | :--- |
+| `SITUATION_IMPLEMENTATION` | **Required** | Define this in **exactly one** `.c` or `.cpp` file to compile the library's implementation code. |
+| `SITUATION_USE_VULKAN` | Backend | Selects the **Vulkan 1.1+** backend. Best for high-performance, multi-threaded asset loading, and modern GPU features. |
+| `SITUATION_USE_OPENGL` | Backend | Selects the **OpenGL 4.6** backend using GLAD (included). Best for compatibility and smaller binary sizes. |
+| `SITUATION_ENABLE_SHADER_COMPILER` | Feature | Enables runtime GLSL $\to$ SPIR-V compilation. **Mandatory for Vulkan** if you wish to use the built-in Text or Virtual Display renderers. Requires linking `shaderc`. |
+| `SITUATION_ENABLE_DXGI` | Feature | **(Windows Only)** Uses DXGI for precise VRAM usage and GPU naming. Requires linking `dxgi.lib` and `ole32.lib`. |
+| `SITUATION_NO_STB` | Integration | "Situation" embeds `stb_image`, `stb_truetype`, etc. Define this to disable them if your project already links these libraries to avoid symbol collisions. |
+| `SITUATION_BUILD_SHARED` | Build | Define this when compiling "Situation" as a standalone DLL/Shared Library (`.dll` / `.so`). |
+| `SITUATION_USE_SHARED` | Build | Define this in your application when linking against the "Situation" DLL. |
+
+---
+
+### **Linker Requirements**
+
+Depending on your configuration, you must link against specific system libraries.
+
+| Platform | Standard Links | With `SITUATION_USE_VULKAN` | With `SITUATION_ENABLE_DXGI` |
+| :--- | :--- | :--- | :--- |
+| **Windows (MSVC/MinGW)** | `kernel32`, `user32`, `shell32`, `gdi32` | `vulkan-1.lib`, `shaderc_shared.lib` | `dxgi.lib`, `ole32.lib`, `shlwapi.lib` |
+| **Linux (GCC/Clang)** | `-lm`, `-ldl`, `-lpthread`, `-lX11` | `-lvulkan`, `-lshaderc_shared` | N/A |
+| **macOS (Clang)** | `-framework Cocoa`, `-framework IOKit` | `-lvulkan`, `-lshaderc_shared` | N/A |
+
+> **Note:** If using `SITUATION_ENABLE_SHADER_COMPILER`, ensure the `shaderc` includes and libraries are in your compiler's search path.
 
 </details>
 
@@ -166,7 +207,6 @@ The full source code for all examples can be found in the `/examples` directory.
 | `SITUATION_ENABLE_SHADER_COMPILER` | Enables runtime GLSL to SPIR-V compilation (requires `shaderc`). **Mandatory** for Vulkan if using internal renderers (Text, Virtual Displays). |
 | `SITUATION_ENABLE_DXGI` | **(Windows Only)** Enables high-precision VRAM monitoring and GPU naming using the DXGI API. Requires linking `dxgi.lib` and `ole32.lib`. |
 | `SITUATION_NO_STB` | Disables the automatic implementation of the STB libraries. Use this if your project already links `stb_image` or `stb_truetype` to avoid symbol collisions. |
-| `SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD` | Flag for `SituationInitInfo`. Routes audio microphone callbacks to the main thread (via `SituationPollInputEvents`) to ensure thread safety for user logic. |
 
 ---
 
@@ -176,20 +216,20 @@ The full source code for all examples can be found in the `/examples` directory.
 To maintain consistency between the **Immediate Mode** nature of OpenGL and the **Deferred** nature of Vulkan command buffers, you must strictly adhere to this order in your render loop:
 1.  **Update Data:** Call `SituationUpdateBuffer`, `SituationCmdSetPushConstant`, or texture uploads.
 2.  **Record Commands:** Call `SituationCmdDraw*`.
-**Why?** In Vulkan, commands recorded now are executed later. If you update a buffer *after* recording a draw call but *before* the frame ends, the GPU will read the *new* data for the *old* draw call. In Debug builds, the library actively monitors this and will panic if you violate this order.
+**Why?** In Vulkan, commands recorded now are executed later. If you update a buffer *after* recording a draw call but *before* the frame ends, the GPU will read the *new* data for the *old* draw call. In Debug builds, the library actively monitors this and will report architectural violations.
 
 #### 2. Thread Safety
-The "Situation" API is **Single-Threaded** by design. All `SITAPI` functions (Windowing, Rendering, Input) must be called from the main thread.
-*   **Exception:** Audio Stream callbacks (`on_read`, `on_seek`) run on a high-priority background thread. Do not perform memory allocation or file I/O in these callbacks.
-*   **Safeguard:** The Input and Audio subsystems use internal mutexes to safely queue events for the main thread to consume.
+The "Situation" API is **Single-Threaded** by design for all Windowing and Rendering calls.
+*   **Audio:** The audio engine is multi-threaded. Playback callbacks run on a high-priority thread. As of v2.3.3C, loading sounds with `SITUATION_AUDIO_LOAD_FULL` is thread-safe and non-blocking.
+*   **Input:** The Input subsystem uses **O(1) Ring Buffers** protected by mutexes, ensuring no events are lost even if the main thread stalls.
 
 ---
 
 ### **Best Practices**
 
-#### Text Rendering Strategies
-*   **Real-Time UI / HUD:** Use `SituationBakeFontAtlas()` once at startup, then use `SituationCmdDrawText()` every frame. This uses the GPU and is extremely fast.
-*   **Static Assets / Textures:** Use `SituationImageDrawTextEx()` to draw high-quality text onto a `SituationImage` in CPU memory, then upload it as a texture. This is slow and should not be done per-frame.
+#### Audio Loading
+*   **Sound Effects:** Use `SITUATION_AUDIO_LOAD_AUTO` or `FULL`. This decodes the entire sound to RAM. It ensures instant playback with zero risk of disk-related stuttering.
+*   **Music:** Use `SITUATION_AUDIO_LOAD_STREAM`. This keeps a small buffer in RAM and streams from disk. It saves memory but relies on the OS disk cache.
 
 #### Resource Lifecycle
 This library does not use garbage collection.
@@ -202,17 +242,19 @@ This library does not use garbage collection.
 ### **Troubleshooting**
 
 **Q: `SituationInit` fails with `SITUATION_ERROR_VULKAN_PIPELINE_FAILED`?**
-*   **Cause:** You likely defined `SITUATION_USE_VULKAN` but did not define `SITUATION_ENABLE_SHADER_COMPILER`, or the `shaderc` library is not linked. The internal 2D renderers require runtime GLSL compilation.
+*   **Cause:** You defined `SITUATION_USE_VULKAN` but did not define `SITUATION_ENABLE_SHADER_COMPILER`. The internal 2D renderers (for Text and Virtual Displays) require `shaderc` to compile their GLSL source to SPIR-V at runtime.
+
+**Q: Why does my game crash after loading ~500 textures in Vulkan?**
+*   **Cause:** If you are on an older version (< v2.3.3C), you hit the fixed descriptor pool limit. **Upgrade to v2.3.3C**, which introduces the Dynamic Descriptor Manager to automatically grow the pool as needed.
 
 **Q: `SituationTakeScreenshot` returns false?**
-*   **Cause:** As of v2.3.3A, screenshots **must** use the `.png` extension. Check that your filename ends in `.png` and that you haven't disabled STB support without providing an alternative.
+*   **Cause:** Screenshots **must** use the `.png` extension. Check that your filename ends in `.png` and that you haven't disabled STB support without providing an alternative writer.
+
+**Q: Audio crackles or pops when loading a level?**
+*   **Cause:** You might be streaming too many sounds from disk at once. Switch your SFX loading mode to `SITUATION_AUDIO_LOAD_FULL` to decode them to RAM, removing the disk I/O bottleneck from the audio thread.
 
 **Q: My 3D Model renders black?**
-*   **Cause:** The model loader failed to find the texture files. Check the console output; v2.3.3+ logs warnings if a specific texture path in a GLTF file could not be resolved relative to the model file.
-
-**Q: Why does `SituationGetVRAMUsage()` return 0?**
-*   **Cause:** You are likely using OpenGL on a non-NVIDIA GPU, or on Windows without `SITUATION_ENABLE_DXGI`. Standard OpenGL does not support memory queries. Switch to Vulkan or enable DXGI for accurate tracking.
-
+*   **Cause:** The model loader likely failed to find the texture files relative to the model. Check the console output; the library logs warnings if specific texture paths in a GLTF file could not be resolved.
 </details>
 
 ---
