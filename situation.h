@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.3C "Hardened"
+*   Core API library v2.3.3D "Production"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -13,7 +13,6 @@
 *   It provides deep **Awareness** of the host system through APIs for querying hardware and multi-monitor display information, and by handling operating system events like window focus and file drops.
 *
 *   This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio
-*
 *   pipeline with playback, capture, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model.
 *   It offers simplified management of GPU resources—such as shaders, meshes, and textures—and includes powerful utilities for high-quality text rendering and robust filesystem I/O.
 *
@@ -50,7 +49,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 3
-#define SITUATION_VERSION_REVISION "C"
+#define SITUATION_VERSION_REVISION "D"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -1830,16 +1829,16 @@ typedef struct {
     VmaAllocation depth_image_memory;
     VkImageView depth_image_view;
     VkFormat depth_format;
-    VkDescriptorPool persistent_descriptor_pool;    // Pool for long-lived sets
     VkDescriptorSetLayout ubo_layout;               // Layout for a single UBO
     VkDescriptorSetLayout ssbo_layout;              // Layout for a single SSBO
-    //VkDescriptorPool descriptor_pool;               // A main pool to allocate sets from
-	struct {
-    VkDescriptorPool* pools;
-		int count;
-		int capacity;
-		int current_index;
-	} descriptor_manager;
+    VkDescriptorPool persistent_descriptor_pool;    // Pool for long-lived sets *** LEGACY***
+    VkDescriptorPool descriptor_pool;               // Current active pool
+    struct {
+        VkDescriptorPool* pools;
+        int count;
+        int capacity;
+        int current_index;
+    } descriptor_manager;
     VkDescriptorSetLayout view_data_ubo_layout;     // Layout for the UBO
     VkDescriptorSetLayout image_sampler_layout;     // Layout for a single image sampler
     VkDescriptorSetLayout storage_buffer_layout;    // For binding a single SSBO
@@ -1912,7 +1911,6 @@ typedef struct {
     SituationRendererType renderer_type;
     // [NEW] Debug consistency tracking
     bool debug_draw_command_issued_this_frame; 
-
     // Backend-specific state
 #if defined(SITUATION_USE_VULKAN)
     _SituationVulkanState vk;
@@ -2510,6 +2508,7 @@ static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, 
 
 
 // --- Vulkan Resource Management Helpers ---
+static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayout layout);
 static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags);
 static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation);
 static void _SituationVulkanDestroyImage(VkImage image, VmaAllocation allocation);
@@ -5776,6 +5775,24 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
     }
 }
 
+/**
+ * @brief [INTERNAL] Allocates a descriptor set, automatically growing the pool capacity if necessary.
+ *
+ * @details This is the core of the v2.3.3D Dynamic Descriptor System. Unlike raw `vkAllocateDescriptorSets` calls which fail when a pool fills up,
+ *          this helper manages a dynamic list of descriptor pools (`sit_gs.vk.descriptor_manager`).
+ *
+ *          1. It attempts to allocate the set from the current active pool.
+ *          2. If the pool is full (`VK_ERROR_OUT_OF_POOL_MEMORY`), it automatically creates a new, larger pool.
+ *          3. It registers the new pool with the manager and retries the allocation.
+ *
+ *          This mechanism ensures the engine can scale infinitely (within VRAM limits) to handle heavy asset streaming without requiring the user
+ *          to manually tune pool sizes.
+ *
+ * @param layout The `VkDescriptorSetLayout` that defines the structure of the set to allocate.
+ *
+ * @return A valid `VkDescriptorSet` handle on success.
+ * @return `VK_NULL_HANDLE` if a critical error occurs (e.g., OOM preventing new pool creation).
+ */
 static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayout layout) {
     VkDescriptorSetAllocateInfo alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -5784,14 +5801,15 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
     };
 
     VkResult res = VK_ERROR_OUT_OF_POOL_MEMORY;
+    VkDescriptorSet out_set = VK_NULL_HANDLE;
     
-    // Try allocating from current pool
+    // Try allocating from current active pool
     if (sit_gs.vk.descriptor_manager.count > 0) {
         alloc_info.descriptorPool = sit_gs.vk.descriptor_manager.pools[sit_gs.vk.descriptor_manager.current_index];
         res = vkAllocateDescriptorSets(sit_gs.vk.device, &alloc_info, &out_set);
     }
 
-    // If full, create new pool
+    // If failed (or no pools), create new pool and retry
     if (res != VK_SUCCESS) {
         // Define pool sizes (Big enough to avoid frequent resizing)
         VkDescriptorPoolSize pool_sizes[] = {
@@ -5804,7 +5822,7 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
         VkDescriptorPoolCreateInfo pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-            .maxSets = 1000,
+            .maxSets = 1000 * 4, // Sum of descriptors
             .poolSizeCount = 4,
             .pPoolSizes = pool_sizes
         };
@@ -5815,14 +5833,14 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
             return VK_NULL_HANDLE;
         }
 
-        // Add to manager list (dynamic array logic)
+        // Add to manager list (Dynamic array logic)
         if (sit_gs.vk.descriptor_manager.count >= sit_gs.vk.descriptor_manager.capacity) {
             int new_cap = (sit_gs.vk.descriptor_manager.capacity == 0) ? 1 : sit_gs.vk.descriptor_manager.capacity * 2;
             sit_gs.vk.descriptor_manager.pools = realloc(sit_gs.vk.descriptor_manager.pools, new_cap * sizeof(VkDescriptorPool));
             sit_gs.vk.descriptor_manager.capacity = new_cap;
         }
         sit_gs.vk.descriptor_manager.pools[sit_gs.vk.descriptor_manager.count] = new_pool;
-        sit_gs.vk.descriptor_manager.current_index = sit_gs.vk.descriptor_manager.count;
+        sit_gs.vk.descriptor_manager.current_index = sit_gs.vk.descriptor_manager.count; // Set as active
         sit_gs.vk.descriptor_manager.count++;
 
         // Try allocating again from new pool
@@ -5845,8 +5863,7 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
  *   1.  **Core API Setup:** Creates the `VkInstance`, validation layers (if enabled), `VkSurfaceKHR`, selects a suitable `VkPhysicalDevice`, and creates the `VkDevice`. It also initializes the Vulkan Memory Allocator (VMA).
  *   2.  **Framing Setup:** Determines the optimal number of in-flight frames based on swapchain capabilities and allocates the per-frame arrays for command buffers, semaphores, and fences.
  *   3.  **Frame-Independent Resources:** Creates resources that are not tied to a specific frame, including the swapchain, main render pass, and depth buffer.
- *   4.  **Descriptor Infrastructure:** Critically, it sets up the descriptor set architecture. This includes creating a dedicated descriptor pool (`persistent_descriptor_pool`) that allows
- *       individual set freeing, and the `VkDescriptorSetLayout`s that define the standard interface for binding single UBOs, SSBOs, and textures. This is the foundation of the library's efficient binding model.
+ *   4.  **Descriptor Infrastructure:** Critically, it initializes the **Dynamic Descriptor Manager**. It creates an initial "seed" `VkDescriptorPool` (`persistent_descriptor_pool`) and registers it with the manager. This allows the engine to automatically grow its descriptor capacity at runtime if the initial pool becomes full, preventing crashes during heavy asset streaming.
  *   5.  **Per-Frame Resources:** Creates the per-frame command buffers, synchronization objects (semaphores/fences), and the UBOs used for global view/projection data.
  *   6.  **Internal Renderers:** Initializes the pipelines and vertex buffers required for the library's internal rendering helpers, such as the 2D quad renderer.
  *
@@ -5906,7 +5923,7 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     if (_SituationVulkanCreateDepthResources() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED; }
     if (_SituationVulkanCreateFramebuffers() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED; }
 
-	// [SIMPLIFIED] Use ONE unified descriptor pool for everything.
+    // --- Descriptor Pool & Manager Setup ---
     VkDescriptorPoolSize pool_sizes[] = {
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, SITUATION_VULKAN_UNIFORM_BUFFER_SIZE + frame_count },
         { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, SITUATION_VULKAN_STORAGE_BUFFER_SIZE },
@@ -5914,7 +5931,6 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, SITUATION_VULKAN_DEFAULT_USER_STORAGE_IMAGES } 
     };
 
-    // FIX: Use the numeric constants defined at the top of the file
     const uint32_t total_max_sets = SITUATION_VULKAN_UNIFORM_BUFFER_SIZE + 
                                     SITUATION_VULKAN_STORAGE_BUFFER_SIZE + 
                                     SITUATION_VULKAN_COMBINED_IMAGE_SAMPLER + 
@@ -5923,16 +5939,27 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
   
     VkDescriptorPoolCreateInfo pool_info = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, .maxSets = total_max_sets, .poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]), .pPoolSizes = pool_sizes };
     
-    
-    
+    // 1. Create the initial pool
     if (vkCreateDescriptorPool(sit_gs.vk.device, &pool_info, NULL, &sit_gs.vk.persistent_descriptor_pool) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create unified descriptor pool.");
         _SituationCleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
-    sit_gs.vk.descriptor_pool = sit_gs.vk.persistent_descriptor_pool; // Point the old pool to the new unified one.
+    sit_gs.vk.descriptor_pool = sit_gs.vk.persistent_descriptor_pool;
 
-    // Create Descriptor Set Layouts for standard resource types
+    // 2. Seed the Dynamic Manager with this pool
+    // This ensures subsequent allocations use this pool instead of creating a new one immediately.
+    sit_gs.vk.descriptor_manager.capacity = 4;
+    sit_gs.vk.descriptor_manager.pools = (VkDescriptorPool*)malloc(sizeof(VkDescriptorPool) * 4);
+    if (!sit_gs.vk.descriptor_manager.pools) {
+        _SituationCleanupVulkan();
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    sit_gs.vk.descriptor_manager.pools[0] = sit_gs.vk.persistent_descriptor_pool;
+    sit_gs.vk.descriptor_manager.count = 1;
+    sit_gs.vk.descriptor_manager.current_index = 0;
+
+    // Create Descriptor Set Layouts... (Rest of function continues below)
     VkDescriptorSetLayoutBinding ubo_binding = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo ubo_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &ubo_binding };
     if (vkCreateDescriptorSetLayout(sit_gs.vk.device, &ubo_layout_info, NULL, &sit_gs.vk.ubo_layout) != VK_SUCCESS) {
@@ -8551,14 +8578,28 @@ static void _SituationCleanupVulkan(void) {
     vkDestroyDescriptorSetLayout(sit_gs.vk.device, sit_gs.vk.storage_buffer_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_gs.vk.device, sit_gs.vk.image_sampler_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_gs.vk.device, sit_gs.vk.view_data_ubo_layout, NULL);
-	// Cleanup descriptor manager pools
+
+    // --- Safe Descriptor Pool Cleanup ---
+    
+    // 1. Destroy any pools created dynamically by the Manager
     if (sit_gs.vk.descriptor_manager.pools) {
         for (int i = 0; i < sit_gs.vk.descriptor_manager.count; ++i) {
-            vkDestroyDescriptorPool(sit_gs.vk.device, sit_gs.vk.descriptor_manager.pools[i], NULL);
+            // Safety Check: Don't double-free if the persistent pool somehow ended up in this list
+            if (sit_gs.vk.descriptor_manager.pools[i] != sit_gs.vk.persistent_descriptor_pool) {
+                vkDestroyDescriptorPool(sit_gs.vk.device, sit_gs.vk.descriptor_manager.pools[i], NULL);
+            }
         }
         free(sit_gs.vk.descriptor_manager.pools);
         sit_gs.vk.descriptor_manager.pools = NULL;
     }
+
+    // 2. Destroy the initial Persistent Pool (created in Init)
+    if (sit_gs.vk.persistent_descriptor_pool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(sit_gs.vk.device, sit_gs.vk.persistent_descriptor_pool, NULL);
+        sit_gs.vk.persistent_descriptor_pool = VK_NULL_HANDLE;
+    }
+    // ------------------------------------------
+
     vkDestroyDevice(sit_gs.vk.device, NULL);
     if (sit_gs.vk.debug_messenger != VK_NULL_HANDLE) {
         PFN_vkDestroyDebugUtilsMessengerEXT func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(sit_gs.vk.instance, "vkDestroyDebugUtilsMessengerEXT");
@@ -8682,12 +8723,13 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
         snprintf(err_msg, sizeof(err_msg), "_SituationVulkanCreateComputePipeline: vkCreatePipelineLayout failed (VkResult = %d).", (int)result);
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_LAYOUT_FAILED, err_msg);
 
-        // --- Cleanup on Pipeline Layout Creation Failure ---
-        // Destroy the shader module created successfully in step 2.
-        vkDestroyShaderModule(sit_gs.vk.device, cs_module, NULL);
-        cs_module = VK_NULL_HANDLE; // Defensive clear
+        // Destroy the layout we just created
+        vkDestroyPipelineLayout(sit_gs.vk.device, pipeline_layout, NULL);
+        pipeline_layout = VK_NULL_HANDLE; 
 
-        return pipeline; // Return invalid pipeline
+        // Existing cleanup
+        vkDestroyShaderModule(sit_gs.vk.device, cs_module, NULL);
+        return pipeline; 
     }
     // pipeline_layout is now a valid VkPipelineLayout handle that needs to be destroyed later.
 
@@ -20245,11 +20287,45 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
  * @param user_data The custom pointer provided to `SituationStartAudioCapture`.
  */
 static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
-    (void)pOutput; // Unused for capture
-    _SituationGlobalStateContainer* state = (_SituationGlobalStateContainer*)pDevice->pUserData;
-    if (state && state->capture_callback && pInput) {
-        state->capture_callback(pInput, frameCount, state->capture_user_data);
+    (void)pOutput; 
+    _SituationGlobalStateContainer* pGs = (_SituationGlobalStateContainer*)pDevice->pUserData;
+    if (!pGs || !pInput) return;
+
+    // 1. If Main Thread Mode is disabled, call directly (legacy behavior)
+    if (!pGs->audio_capture_on_main_thread) {
+        if (pGs->capture_callback) pGs->capture_callback(pInput, frameCount, pGs->capture_user_data);
+        return;
     }
+
+    // 2. Main Thread Mode: Push to Ring Buffer
+    ma_mutex_lock(&pGs->audio_capture_mutex);
+    
+    size_t capacity = pGs->audio_capture_queue_capacity;
+    size_t write_head = pGs->audio_capture_write_head;
+    size_t read_head = pGs->audio_capture_read_head; // Snapshot read head
+
+    // Calculate available space
+    size_t used = (write_head >= read_head) ? (write_head - read_head) : (capacity - read_head + write_head);
+    size_t free_space = capacity - used - 1; // Keep 1 slot open to distinguish full/empty
+
+    if (free_space >= frameCount) {
+        const float* input_f32 = (const float*)pInput;
+        size_t frames_to_end = capacity - write_head;
+
+        if (frameCount <= frames_to_end) {
+            // Contiguous write
+            memcpy(&pGs->audio_capture_queue[write_head], input_f32, frameCount * sizeof(float));
+        } else {
+            // Split write (wrap around)
+            memcpy(&pGs->audio_capture_queue[write_head], input_f32, frames_to_end * sizeof(float));
+            memcpy(&pGs->audio_capture_queue[0], input_f32 + frames_to_end, (frameCount - frames_to_end) * sizeof(float));
+        }
+        pGs->audio_capture_write_head = (write_head + frameCount) % capacity;
+    } else {
+        // Buffer overrun: Drop packets or log warning in debug mode
+    }
+
+    ma_mutex_unlock(&pGs->audio_capture_mutex);
 }
 
 /**
@@ -22721,25 +22797,38 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
     // Use our new, generic utility function to correct the orientation.
     SituationImageFlip(&image, SIT_FLIP_VERTICAL);
 #elif defined(SITUATION_USE_VULKAN)
-    // To take a screenshot, we need to copy a device-local (GPU-only) swapchain image
-    // to a host-visible (CPU-readable) buffer. This is a multi-step, synchronized process.
-
-    // 1. Identify the source image. This is the image that was most recently acquired
-    //    and rendered to. `current_image_index` holds its index in the swapchain array.
-    // FIX 2.3.2A: Use current_image_index to capture the frame currently being rendered/processed,
-    // rather than the one presented in the previous frame cycle.
+    // 1. Identify the source image. 
+    // 'current_image_index' holds the index of the swapchain image we are currently drawing to.
     VkImage srcImage = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
-    if (srcImage == VK_NULL_HANDLE) { _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Cannot get screenshot, source swapchain image is invalid."); return (SituationImage){0}; }
+    
+    if (srcImage == VK_NULL_HANDLE) { 
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Cannot get screenshot, source swapchain image is invalid."); 
+        return (SituationImage){0}; 
+    }
 
-    // 2. The image has been rendered to and is now in the VK_IMAGE_LAYOUT_PRESENT_SRC_KHR layout, ready to be shown on screen. We need to copy from this state.
-    //    We will call a dedicated helper function to manage the complexity of the copy.
-    image.data = _SituationVulkanBlitImageToHostVisibleBuffer( srcImage, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, (uint32_t)width, (uint32_t)height );
+    // 2. Define the Current Layout.
+    // FIX: Since we are inside the render loop (between Acquire and EndFrame), 
+    // the image is currently being used as a Color Attachment.
+    // We must tell the helper this so it can correctly transition it away and back.
+    VkImageLayout currentLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-    // 3. Check if the helper succeeded. If it returned NULL, an error was already set inside it.
+    // 3. Perform the Copy.
+    // This helper will:
+    //   a. Transition image from COLOR_ATTACHMENT -> TRANSFER_SRC
+    //   b. Copy pixels to CPU buffer
+    //   c. Transition image back from TRANSFER_SRC -> COLOR_ATTACHMENT
+    image.data = _SituationVulkanBlitImageToHostVisibleBuffer( 
+        srcImage, 
+        currentLayout, 
+        (uint32_t)width, 
+        (uint32_t)height 
+    );
+
+    // 4. Validation
     if (image.data == NULL) { return (SituationImage){0}; }
 
-    // NOTE: Unlike OpenGL, the Vulkan copy does not result in a vertically flipped image.
-    // The blit operation respects the coordinate system, so no SituationImageFlip is needed.
+    // Note: Vulkan blits usually preserve orientation or can be flipped via coordinates.
+    // Unlike OpenGL, we usually don't need a CPU-side flip here depending on the projection matrix used.
 #endif
 
     return image;

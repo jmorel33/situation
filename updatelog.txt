@@ -1,4 +1,29 @@
-Date: 2025-11-23
+Date: 2025-11-22
+Version: 2.3.3D "Production"
+
+## DESCRIPTION
+This patch resolves three high-priority logic errors discovered in the Vulkan and Audio backends of the "Hardened" release. While 2.3.3C introduced the architecture for robustness, 2.3.3D connects the final wires to ensure those systems function correctly under real-world stress tests. It is highly recommended for all users to update to this version immediately.
+
+## CRITICAL BUG FIXES
+
+*   **Audio Capture Dispatch:** Fixed a "phantom" logic bug where the audio capture callback was executing on the high-priority audio thread, completely bypassing the thread-safe ring buffer intended for the main thread. The callback now correctly linearizes data into the ring buffer, ensuring thread safety for user logic.
+
+*   **Vulkan Screenshot Crash:** Fixed a validation error and potential device loss when calling `SituationTakeScreenshot` inside a render loop. The image layout transition was incorrectly assuming `PRESENT_SRC`, causing barriers to fail. It now correctly handles `COLOR_ATTACHMENT_OPTIMAL` transitions.
+
+*   **Pipeline Layout Leak:** Added missing cleanup logic in `_SituationVulkanCreateComputePipeline`. Previously, if shader compilation failed or the pipeline creation errored, the intermediate `VkPipelineLayout` object was leaked on the GPU.
+
+## ARCHITECTURAL IMPROVEMENTS
+
+*   **Dynamic Descriptor Manager:** Finalized the implementation of the dynamic descriptor pool system.
+    *   Added the `descriptor_manager` struct to the global Vulkan state.
+    *   Implemented `_SituationVulkanAllocateDescriptorSet` to automatically create and register new descriptor pools when the current one fills up.
+    *   Fixed initialization logic to correctly "seed" the manager with the initial persistent pool, preventing immediate duplicate pool creation on startup.
+
+*   **Backend Consistency:** Added internal state tracking (`debug_draw_command_issued_this_frame`) to detect and warn developers (in debug builds) if `SituationUpdateBuffer` is called after draw commands, preventing divergent behavior between OpenGL (Immediate) and Vulkan (Deferred) backends.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-21
 Version: 2.3.3C "Hardened"
 
 ## DESCRIPTION
