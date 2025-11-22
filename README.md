@@ -121,7 +121,8 @@ int main(int argc, char** argv) {
     SituationUnloadFont(font);
     SituationShutdown();
     return 0;
-}```
+}
+```
 
 </details>
 
