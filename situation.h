@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.3D "Production"
+*   Core API library v2.3.4 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -9,6 +9,10 @@
 *   offering a lean yet powerful API for building sophisticated, high-performance software.
 *
 *   The library's philosophy is reflected in its name, granting developers complete situational "Awareness," precise "Control," and fine-grained "Timing."
+*
+*   **New in v2.3.4 "Velocity":**
+*   This release introduces the **Hot-Reloading Module**, a development-focused toolset that allows Shaders, Compute Pipelines, Textures, and 3D Models to be reloaded from disk at runtime.
+*   This eliminates the need to restart the application to see asset changes, significantly increasing iteration speed for visual adjustments and shader programming.
 *
 *   It provides deep **Awareness** of the host system through APIs for querying hardware and multi-monitor display information, and by handling operating system events like window focus and file drops.
 *
@@ -48,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 3
-#define SITUATION_VERSION_REVISION "D"
+#define SITUATION_VERSION_PATCH 4
+#define SITUATION_VERSION_REVISION ""
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -1367,6 +1371,7 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
 SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags); // Insert a fine-grained pipeline barrier for synchronization.
 
 // --- Texture Management ---
+SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generate_mipmaps);// Loads a texture from disk and registers the path for hot-reloading.
 SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps); // Create a texture from a CPU-side image.
 SITAPI void SituationDestroyTexture(SituationTexture* texture);                         // Unload a texture from GPU memory.
 
@@ -1423,6 +1428,17 @@ SITAPI SituationError SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, 
 SITAPI SituationShader SituationLoadComputeShader(const char* cs_path);                                                                 // [DEPRECATED] Load a compute shader from a file. Use SituationCreateComputePipeline instead.
 SITAPI SituationShader SituationLoadComputeShaderFromMemory(const char* cs_code);                                                       // [DEPRECATED] Create a compute shader from memory. Use SituationCreateComputePipelineFromMemory instead.
 SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_bits);                                                  // [DEPRECATED] Insert a coarse-grained memory barrier. Use SituationCmdPipelineBarrier instead.
+
+//==================================================================================
+// Hot-Reloading Module (Development Tools)
+//==================================================================================
+// These functions allow you to reload assets from disk at runtime without restarting.
+// They handle GPU synchronization, resource destruction, and re-loading.
+// Returns true if the reload was successful. On failure, the old handle is usually invalid.
+SITAPI bool SituationReloadShader(SituationShader* shader);                             // Recompiles and links a shader from its original source files (Synchronous/Stalls GPU).
+SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline);         // Recompiles a compute pipeline from its original source file (Synchronous/Stalls GPU).
+SITAPI bool SituationReloadTexture(SituationTexture* texture);                          // Re-reads image file and recreates the GPU texture resource (Synchronous/Stalls GPU).
+SITAPI bool SituationReloadModel(SituationModel* model);                                // Re-parses GLTF/GLB file and rebuilds all meshes and textures (Synchronous/Stalls GPU).
 
 //==================================================================================
 // Input Module: Keyboard, Mouse, and Gamepad
@@ -1725,6 +1741,13 @@ typedef struct _SituationComputePipeline {
     // Add fields for descriptor set layouts, reflection info if needed for more complex systems
 } _SituationComputePipeline;
 
+// Helper struct to track memory allocated during include resolution
+typedef struct _SitIncludeResult {
+    shaderc_include_result result;
+    char* full_path; // We own this
+    char* content;   // We own this
+} _SitIncludeResult;
+
 // --- Internal Resource Tracking Node Definitions ---
 typedef struct _SituationMeshNode {
     SituationMesh mesh;
@@ -1733,16 +1756,23 @@ typedef struct _SituationMeshNode {
 
 typedef struct _SituationShaderNode {
     SituationShader shader;
+    char* vs_path; // [HOT-RELOAD] Store source path
+    char* fs_path; // [HOT-RELOAD] Store source path
     struct _SituationShaderNode* next;
 } _SituationShaderNode;
 
 typedef struct _SituationComputePipelineNode {
     SituationComputePipeline pipeline;
     struct _SituationComputePipelineNode* next;
+    
+    // [HOT-RELOAD SUPPORT]
+    char* source_path;                      // The file path on disk
+    SituationComputeLayoutType layout_type; // The layout configuration used
 } _SituationComputePipelineNode;
 
 typedef struct _SituationTextureNode {
     SituationTexture texture;
+    char* source_path; // [HOT-RELOAD] Only set if loaded via SituationLoadTexture
     struct _SituationTextureNode* next;
 } _SituationTextureNode;
 
@@ -1750,6 +1780,13 @@ typedef struct _SituationBufferNode {
     SituationBuffer buffer;
     struct _SituationBufferNode* next;
 } _SituationBufferNode;
+
+// [HOT-RELOAD] New tracker for models
+typedef struct _SituationModelNode {
+    SituationModel model;
+    char* source_path;
+    struct _SituationModelNode* next;
+} _SituationModelNode;
 
 // --- Internal Joystick State Structure ---
 typedef struct {
@@ -2086,6 +2123,7 @@ typedef struct {
     _SituationComputePipelineNode* all_compute_pipelines;
     _SituationTextureNode* all_textures;
     _SituationBufferNode* all_buffers;
+    _SituationModelNode* all_models;
 } _SituationGlobalStateContainer;
 
 static _SituationGlobalStateContainer sit_gs;
@@ -2530,6 +2568,8 @@ static SituationError _SituationVulkanInitComputeLayouts(void);
 static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint8_t* cs_spirv_data, size_t cs_spirv_size);
 static void _SituationVulkanDestroyComputePipeline(_SituationComputePipeline* pipeline);
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
+static shaderc_include_result* _SituationShaderIncluderResolve(void* user_data, const char* requested_source, int type, const char* requesting_source, size_t include_depth);// [INTERNAL] Callback for shaderc to resolve and load #include files from disk.
+static void _SituationShaderIncluderRelease(void* user_data, shaderc_include_result* include_result);// [INTERNAL] Callback for shaderc to free memory allocated during #include resolution.
 static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(const char* glsl_source, const char* source_name, shaderc_shader_kind shader_kind);
 static void _SituationFreeSpirvBlob(_SituationSpirvBlob* blob);
 #endif
@@ -5347,6 +5387,89 @@ static char* _SituationReadSpirvFile(const char* filename, size_t* out_size) {
 }
 
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
+
+/**
+ * @brief [INTERNAL] Callback for resolving `#include` directives in GLSL shaders.
+ * 
+ * @details This function is invoked by the `shaderc` compiler whenever it encounters an `#include` statement
+ *          in the shader source code. It attempts to load the requested file content from disk.
+ *          
+ *          This enables the creation of modular "Uber Shaders" where common logic (math utilities, 
+ *          struct definitions) is stored in shared `.glslh` header files.
+ * 
+ * @param user_data Optional user context (unused).
+ * @param requested_source The path string inside the include directive (e.g., "common/math.glslh").
+ * @param type The type of include (Standard vs Relative). Currently treated identically.
+ * @param requesting_source The path of the file that contains the include directive (for relative path resolution).
+ * @param include_depth The current nesting depth of includes (for recursion limits).
+ * 
+ * @return A pointer to a `shaderc_include_result` struct containing the loaded source code or error info.
+ *         The compiler will later pass this pointer to `_SituationShaderIncluderRelease`.
+ */
+static shaderc_include_result* _SituationShaderIncluderResolve(
+    void* user_data,
+    const char* requested_source,
+    int type,
+    const char* requesting_source,
+    size_t include_depth) 
+{
+    (void)user_data; (void)type; (void)include_depth; (void)requesting_source;
+
+    _SitIncludeResult* container = (_SitIncludeResult*)calloc(1, sizeof(_SitIncludeResult));
+    
+    // 1. Load the file
+    // Note: In a more complex engine, we would resolve relative paths based on 'requesting_source'.
+    // For now, we assume paths are relative to the CWD or absolute.
+    container->content = SituationLoadFileText(requested_source);
+    container->full_path = strdup(requested_source);
+
+    if (container->content) {
+        container->result.content = container->content;
+        container->result.content_length = strlen(container->content);
+        container->result.source_name = container->full_path;
+        container->result.source_name_length = strlen(container->full_path);
+    } else {
+        // Error: Provide an error message as the content
+        const char* err_msg = "Could not open included file.";
+        container->result.content = err_msg;
+        container->result.content_length = strlen(err_msg);
+        container->result.source_name = "";
+        container->result.source_name_length = 0;
+        // Empty path signals failure to shaderc? No, usually content is error msg.
+        // But standard behavior is usually just failing to load.
+    }
+
+    return &container->result;
+}
+
+/**
+ * @brief [INTERNAL] Callback for freeing memory allocated during shader inclusion.
+ * 
+ * @details This function is called by `shaderc` once it has finished processing an included file.
+ *          It is responsible for freeing the `content` buffer (loaded from disk) and the 
+ *          `shaderc_include_result` container structure itself.
+ * 
+ * @param user_data Optional user context (unused).
+ * @param include_result The pointer returned by `_SituationShaderIncluderResolve`.
+ */
+static void _SituationShaderIncluderRelease(void* user_data, shaderc_include_result* include_result) {
+    (void)user_data;
+    _SitIncludeResult* container = (_SitIncludeResult*)include_result;
+    if (container) {
+        if (container->content && container->content != container->result.content) {
+             // Handle error message case if strictly needed, but usually we just free content
+        }
+        // If content was loaded via SituationLoadFileText (malloc), free it.
+        // If it was a static error string, we shouldn't free it. 
+        // Simpler logic:
+        if (container->result.source_name_length > 0) { // Was successful load
+             free(container->content);
+        }
+        free(container->full_path);
+        free(container);
+    }
+}
+
 /**
  * @brief [INTERNAL] Compiles a GLSL source string into a SPIR-V binary blob using shaderc.
  *
@@ -5405,6 +5528,14 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
     shaderc_compiler_t compiler = shaderc_compiler_initialize();
     shaderc_compile_options_t options = shaderc_compile_options_initialize();
 
+    // Enable #include support
+    shaderc_compile_options_set_include_callbacks(
+        options,
+        _SituationShaderIncluderResolve,
+        _SituationShaderIncluderRelease,
+        NULL // user_data
+    );
+	
     // Check if initialization was successful.
     if (!compiler) {
         _SituationSetErrorFromCode( SITUATION_ERROR_GENERAL, "_SituationVulkanCompileGLSLtoSPIRV: Failed to initialize shaderc compiler." );
@@ -10396,6 +10527,10 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
     }
     if (shader.id == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to bind an invalid shader handle.");
+        // Invalidate the cached layout so subsequent PushConstant calls don't crash Vulkan
+        #if defined(SITUATION_USE_VULKAN)
+        sit_gs.vk.current_pipeline_layout_for_push_constants = VK_NULL_HANDLE; 
+        #endif
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
 
@@ -10715,6 +10850,11 @@ SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t con
         }
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
+        // Check if we have a valid layout before pushing
+        if (sit_gs.vk.current_pipeline_layout_for_push_constants == VK_NULL_HANDLE) {
+             // Silently return or log warning. The shader bind failed previously, so we can't push.
+             return;
+        }
         // --- 3. Vulkan Implementation (vkCmdPushConstants) ---
         // Assumes sit_gs.vk.current_pipeline_layout_for_push_constants is valid and corresponds to the currently bound pipeline that uses these push constants.
         // Uses VK_SHADER_STAGE_ALL_GRAPHICS for broad compatibility, though specifying exact stages is more optimal.
@@ -11031,7 +11171,7 @@ SITAPI SituationError SituationCmdBindUniformBuffer(SituationCommandBuffer cmd, 
  * - **OpenGL:** Calls `glBindTextureUnit(contract_id, texture.gl_texture_id)`.
  *   This efficiently binds the texture to the specified texture unit.
  * - **Vulkan:** This function leverages the persistent descriptor set model for textures.
- *   When the `SituationTexture` was created (e.g., via `SituationLoadTextureFromFile`), the Vulkan backend allocated a `VkDescriptorSet` (for combined image samplers) and
+ *   When the `SituationTexture` was created (e.g., via `SituationLoadTexture`), the Vulkan backend allocated a `VkDescriptorSet` (for combined image samplers) and
  *   populated it with the texture's `VkImageView` and `VkSampler`. This function records a `vkCmdBindDescriptorSets` command using this pre-cached descriptor set stored in `texture.descriptor_set`. This is a very fast operation, avoiding runtime allocation and updates of descriptor sets.
  *
  * @param cmd The command buffer into which the bind command will be recorded (Vulkan) or ignored (OpenGL).
@@ -12688,40 +12828,35 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
  *
  * @see SituationCreateComputePipelineFromMemory(), SituationDestroyComputePipeline(), SituationLoadFileText()
  */
-SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path) {
+SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type) {
     // --- 1. Input Validation ---
-    SituationComputePipeline pipeline = {0}; // Initialize to invalid state
+    SituationComputePipeline pipeline = {0}; 
 
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode( SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipeline: Cannot create pipeline, library not initialized." ); return pipeline; } // Return invalid pipeline
-    if (!compute_shader_path) { _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipeline: compute_shader_path cannot be NULL." ); return pipeline; } // Return invalid pipeline
+    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode( SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipeline: Library not initialized." ); return pipeline; }
+    if (!compute_shader_path) { _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipeline: compute_shader_path cannot be NULL." ); return pipeline; }
 
     // --- 2. Load Shader Source from File ---
-    // Use the library's built-in function to load the text content of the file.
-    // This function handles file opening, reading, and null-termination.
     char* source = SituationLoadFileText(compute_shader_path);
-
     if (!source) {
-        // SituationLoadFileText should have set a specific error message (e.g., file not found, permission denied) in sit_gs.last_error_msg.
-        // We can add a prefix to make the context clearer.
         char prefixed_error[SITUATION_MAX_ERROR_MSG_LEN];
-        snprintf( prefixed_error, sizeof(prefixed_error), "SituationCreateComputePipeline: Failed to load shader file '%s'. Reason: %s", compute_shader_path, SituationGetLastErrorMsg() ); // Get the error set by SituationLoadFileText
-        _SituationSetError(prefixed_error); // Update the global error message
-        // pipeline is already {0}, so we just return it.
+        snprintf( prefixed_error, sizeof(prefixed_error), "SituationCreateComputePipeline: Failed to load shader file '%s'. Reason: %s", compute_shader_path, SituationGetLastErrorMsg() ); 
+        _SituationSetError(prefixed_error);
         return pipeline;
     }
 
     // --- 3. Create Pipeline from Loaded Source ---
-    // Delegate the actual pipeline creation (compilation, backend object creation) to the memory-based function.
-    pipeline = SituationCreateComputePipelineFromMemory(source);
+    pipeline = SituationCreateComputePipelineFromMemory(source, layout_type);
 
-    // --- 4. Cleanup Temporary Source ---
-    // Free the memory allocated by SituationLoadFileText.
+    // --- 4. [HOT-RELOAD] Store Path and Layout in Tracking Node ---
+    // SituationCreateComputePipelineFromMemory prepends the new node to the head of sit_gs.all_compute_pipelines.
+    // We check if the ID matches to be absolutely safe.
+    if (pipeline.id != 0 && sit_gs.all_compute_pipelines && sit_gs.all_compute_pipelines->pipeline.id == pipeline.id) {
+        sit_gs.all_compute_pipelines->source_path = strdup(compute_shader_path);
+        sit_gs.all_compute_pipelines->layout_type = layout_type;
+    }
+
+    // --- 5. Cleanup ---
     free(source);
-    source = NULL; // Defensive nulling
-
-    // --- 5. Return Result ---
-    // The `pipeline` struct is returned. It will be valid (id != 0) on success, or invalid (id == 0) on failure, with the error state set appropriately
-    // by SituationCreateComputePipelineFromMemory.
     return pipeline;
 }
 
@@ -12747,34 +12882,23 @@ SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compu
 SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) {
     // --- 1. Input Validation ---
     // Check if the pipeline pointer is valid and if the pipeline has been created.
-    if (!pipeline || pipeline->id == 0) {
-        // Silently succeed if trying to destroy an invalid/null pipeline.
-        // This is a common and safe pattern.
-        return;
-    }
+    if (!pipeline || pipeline->id == 0) return;
 
-    // --- 2. Resource Manager: Remove from Tracking List ---
-    // Find and remove the node corresponding to this pipeline ID from the global linked list `sit_gs.all_compute_pipelines`.
+    // --- Resource Manager: Remove from Tracking List ---
     _SituationComputePipelineNode* current = sit_gs.all_compute_pipelines;
     _SituationComputePipelineNode* prev = NULL;
 
     while (current != NULL) {
         if (current->pipeline.id == pipeline->id) {
-            // Found the node to remove.
-            if (prev) {
-                // Node is in the middle or end of the list.
-                prev->next = current->next;
-            } else {
-                // Node is the head of the list.
-                sit_gs.all_compute_pipelines = current->next;
-            }
-            // Free the memory allocated for the tracking node itself.
+            if (prev) prev->next = current->next;
+            else sit_gs.all_compute_pipelines = current->next;
+            
+            // [HOT-RELOAD] Free the stored path string
+            if (current->source_path) free(current->source_path);
+            
             free(current);
-            current = NULL; // Defensive nulling (optional)
-            // Break after removal, assuming IDs are unique.
-            break;
+            break; 
         }
-        // Move to the next node in the list.
         prev = current;
         current = current->next;
     }
@@ -12826,6 +12950,14 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
     }
 #endif
 
+    #if defined(SITUATION_USE_VULKAN)
+    if (sit_gs.vk.device != VK_NULL_HANDLE) vkDeviceWaitIdle(sit_gs.vk.device);
+    if (pipeline->vk_pipeline != VK_NULL_HANDLE) vkDestroyPipeline(sit_gs.vk.device, pipeline->vk_pipeline, NULL);
+    if (pipeline->vk_pipeline_layout != VK_NULL_HANDLE) vkDestroyPipelineLayout(sit_gs.vk.device, pipeline->vk_pipeline_layout, NULL);
+    #elif defined(SITUATION_USE_OPENGL)
+    if (glIsProgram(pipeline->gl_program_id)) glDeleteProgram(pipeline->gl_program_id);
+    #endif
+	
     // --- 4. Invalidate the User-Facing Handle ---
     // Zero out the entire user-facing struct to invalidate it and prevent accidental reuse. This also resets the `id` to 0.
     memset(pipeline, 0, sizeof(SituationComputePipeline));
@@ -13175,6 +13307,10 @@ SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, Situatio
     }
     if (pipeline.id == 0) { // Validate the pipeline handle itself
          _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Invalid compute pipeline handle provided.");
+		// Invalidate cached layout
+        #if defined(SITUATION_USE_VULKAN)
+        sit_gs.vk.current_compute_pipeline_layout = VK_NULL_HANDLE;
+        #endif
         return;
     }
 
@@ -16758,6 +16894,34 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
 }
 
 /**
+ * @brief Loads a texture directly from a file path (Reload-Compatible).
+ * 
+ * @details This is a convenience wrapper that combines `SituationLoadImage`, `SituationCreateTexture`, 
+ *          and `SituationUnloadImage`. 
+ *          
+ *          **Crucially**, unlike `SituationCreateTexture`, this function registers the `file_path` 
+ *          with the internal resource tracker. This enables `SituationReloadTexture` to work later.
+ *
+ * @param file_path The path to the image file (PNG, JPG, BMP, TGA, etc.).
+ * @param generate_mipmaps If `true`, generates a full mipmap chain for the texture.
+ * 
+ * @return A valid `SituationTexture` handle, or `{0}` on failure.
+ */
+SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generate_mipmaps) {
+    SituationImage img = SituationLoadImage(file_path);
+    if (!SituationIsImageValid(img)) return (SituationTexture){0};
+    
+    SituationTexture tex = SituationCreateTexture(img, generate_mipmaps);
+    SituationUnloadImage(img);
+
+    // [HOT-RELOAD] Capture path
+    if (tex.id != 0 && sit_gs.all_textures && sit_gs.all_textures->texture.id == tex.id) {
+        sit_gs.all_textures->source_path = strdup(file_path);
+    }
+    return tex;
+}
+
+/**
  * @brief Loads a 3D model from a GLTF/GLB file.
  * 
  * @details This is a comprehensive asset loader that handles the entire pipeline of importing a 3D asset:
@@ -16899,7 +17063,18 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
     
     // Use the mesh array pointer as the unique ID
     model.id = (uint64_t)(uintptr_t)model.meshes; 
-    
+
+    // [HOT-RELOAD] Add to tracking list
+    if (model.id != 0) {
+        _SituationModelNode* node = (_SituationModelNode*)malloc(sizeof(_SituationModelNode));
+        if (node) {
+            node->model = model; // Copy struct by value (contains pointers to meshes)
+            node->source_path = strdup(file_path);
+            node->next = sit_gs.all_models;
+            sit_gs.all_models = node;
+        }
+    }
+	
     return model;
 #else
     (void)file_path;
@@ -16928,8 +17103,22 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
 SITAPI void SituationUnloadModel(SituationModel* model) {
     // --- 1. Validate Handle ---
     // Safely handle NULL pointers or already-invalidated handles to prevent crashes.
-    if (!model || model->id == 0) {
-        return;
+    if (!model || model->id == 0) return;
+
+    // [HOT-RELOAD] Remove from tracking list
+    _SituationModelNode* current = sit_gs.all_models;
+    _SituationModelNode* prev = NULL;
+    while (current) {
+        if (current->model.id == model->id) {
+            if (prev) prev->next = current->next;
+            else sit_gs.all_models = current->next;
+            
+            if (current->source_path) free(current->source_path);
+            free(current);
+            break;
+        }
+        prev = current;
+        current = current->next;
     }
 
     // --- 2. Unload all GPU Mesh Resources ---
@@ -17151,6 +17340,11 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
     free(fs_code);
 
     // --- 6. Return Result ---
+    // [HOT-RELOAD] Capture paths in the node
+    if (shader.id != 0 && sit_gs.all_shaders && sit_gs.all_shaders->shader.id == shader.id) {
+        sit_gs.all_shaders->vs_path = strdup(vs_path);
+        sit_gs.all_shaders->fs_path = strdup(fs_path);
+    }
     // The returned handle will be valid (id != 0) if compilation was successful, or invalid (id == 0) if it failed.
     return shader;
 }
@@ -17455,6 +17649,11 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
             } else {
                 sit_gs.all_shaders = current->next; // Unlink from the head of the list
             }
+			
+			// [HOT-RELOAD] Free paths
+			if (current->vs_path) free(current->vs_path);
+			if (current->fs_path) free(current->fs_path);
+	
             free(current); // Free the tracking node itself
             break; // Found and removed, can exit the loop
         }
@@ -17627,6 +17826,258 @@ SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_
         0, NULL
     );
 #endif
+}
+
+// ============================================================================
+// Hot Reloading Implementation
+// ============================================================================
+/**
+ * @section Hot-Reloading Overview
+ * These functions allow applications to reload assets (Shaders, Textures, Models) from disk at runtime 
+ * without restarting the application. This is intended primarily for development, tooling, and 
+ * "creative coding" workflows.
+ *
+ * @warning **Performance Impact:** All reload functions perform a synchronous GPU wait (e.g., `vkDeviceWaitIdle` or `glFinish`) 
+ * to ensure resources are not in use before destroying them. Do not call these functions in a shipping 
+ * production loop (e.g., every frame).
+ *
+ * @note **Path Tracking:** Hot-reloading only works for assets loaded from files using the high-level 
+ * `SituationLoad...` functions. Assets created from raw memory pointers cannot be hot-reloaded as 
+ * they have no associated file path.
+ */
+ 
+ /**
+ * @brief Reloads a graphics shader pipeline from its original source files.
+ * 
+ * @details This function looks up the original file paths used to create the shader, waits for the GPU to become idle,
+ *          destroys the existing pipeline resources, and attempts to compile and link a new pipeline from disk.
+ *          
+ *          If successful, the `shader` handle is updated in-place with the new ID.
+ *          If failure occurs (e.g., compilation error in the new code), the old shader is destroyed, and the handle 
+ *          becomes invalid (ID = 0). The application should check the return value and handle invalidation gracefully.
+ *
+ * @param[in,out] shader A pointer to the `SituationShader` handle to reload. 
+ *                       On success, this struct is updated with the new resource IDs.
+ *                       On failure, this struct is zeroed out.
+ * 
+ * @return `true` if the shader was successfully recompiled and linked.
+ * @return `false` if the shader could not be reloaded (e.g., file not found, GLSL syntax error). 
+ *         Check `SituationGetLastErrorMsg()` for compiler errors.
+ */
+SITAPI bool SituationReloadShader(SituationShader* shader) {
+    if (!sit_gs.is_initialized || !shader || shader->id == 0) return false;
+
+    // 1. Retrieve source paths from internal tracker
+    char* vs_path = NULL;
+    char* fs_path = NULL;
+    _SituationShaderNode* current = sit_gs.all_shaders;
+    while (current) {
+        if (current->shader.id == shader->id) {
+            if (current->vs_path && current->fs_path) {
+                vs_path = strdup(current->vs_path);
+                fs_path = strdup(current->fs_path);
+            }
+            break;
+        }
+        current = current->next;
+    }
+
+    if (!vs_path || !fs_path) {
+        _SituationSetError("Reload failed: Original file paths not found (shader loaded from memory?)");
+        if(vs_path) free(vs_path); if(fs_path) free(fs_path);
+        return false;
+    }
+
+    // 2. Sync GPU
+    #if defined(SITUATION_USE_VULKAN)
+    if (sit_gs.vk.device) vkDeviceWaitIdle(sit_gs.vk.device);
+    #elif defined(SITUATION_USE_OPENGL)
+    glFinish();
+    #endif
+
+    // 3. Destroy old, Load new
+    // SituationUnloadShader removes the old node (and frees the old path strings)
+    SituationUnloadShader(shader); 
+    
+    // SituationLoadShader creates a new node and stores the paths again
+    *shader = SituationLoadShader(vs_path, fs_path);
+
+    free(vs_path);
+    free(fs_path);
+
+    if (shader->id != 0) {
+        printf("[Situation] Hot-Reloaded Shader: %llu\n", (unsigned long long)shader->id);
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief Reloads a texture from its original image file.
+ * 
+ * @details This function destroys the existing GPU texture resources (Image, View, Sampler, Memory) and 
+ *          re-loads the image data from the original file path.
+ *          
+ *          **Requirement:** The texture must have been loaded using `SituationLoadTexture`. 
+ *          Textures created via `SituationCreateTexture` (from raw memory) cannot be reloaded.
+ *
+ * @param[in,out] texture A pointer to the `SituationTexture` handle to reload.
+ * 
+ * @return `true` if the image was successfully loaded and uploaded to the GPU.
+ * @return `false` if the file could not be loaded or if the original path was not tracked.
+ */
+SITAPI bool SituationReloadTexture(SituationTexture* texture) {
+    if (!sit_gs.is_initialized || !texture || texture->id == 0) return false;
+
+    char* path = NULL;
+    _SituationTextureNode* current = sit_gs.all_textures;
+    while (current) {
+        if (current->texture.id == texture->id) {
+            if (current->source_path) path = strdup(current->source_path);
+            break;
+        }
+        current = current->next;
+    }
+
+    if (!path) {
+        _SituationSetError("Reload failed: Texture was not loaded from file via SituationLoadTexture.");
+        return false;
+    }
+
+    #if defined(SITUATION_USE_VULKAN)
+    if (sit_gs.vk.device) vkDeviceWaitIdle(sit_gs.vk.device);
+    #else
+    glFinish();
+    #endif
+
+    SituationDestroyTexture(texture);
+    *texture = SituationLoadTexture(path, true); // Defaulting to mips enabled for reload
+
+    free(path);
+
+    if (texture->id != 0) {
+        printf("[Situation] Hot-Reloaded Texture\n");
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief Reloads a 3D model and all its dependencies.
+ * 
+ * @details This is a "heavy" operation. It unloads the entire model structure, including:
+ *          1. All sub-meshes (vertex/index buffers).
+ *          2. All associated textures (Albedo, Normal, PBR maps).
+ *          
+ *          It then re-parses the GLTF/GLB file and re-uploads all geometry and textures to the GPU.
+ *          This is useful for iterating on 3D assets (e.g., exporting from Blender and seeing updates instantly).
+ *
+ * @param[in,out] model A pointer to the `SituationModel` handle to reload.
+ * 
+ * @return `true` on success, `false` on failure.
+ */
+SITAPI bool SituationReloadModel(SituationModel* model) {
+    if (!sit_gs.is_initialized || !model || model->id == 0) return false;
+
+    char* path = NULL;
+    _SituationModelNode* current = sit_gs.all_models;
+    while (current) {
+        if (current->model.id == model->id) {
+            if (current->source_path) path = strdup(current->source_path);
+            break;
+        }
+        current = current->next;
+    }
+
+    if (!path) return false;
+
+    #if defined(SITUATION_USE_VULKAN)
+    if (sit_gs.vk.device) vkDeviceWaitIdle(sit_gs.vk.device);
+    #else
+    glFinish();
+    #endif
+
+    SituationUnloadModel(model);
+    *model = SituationLoadModel(path);
+    
+    free(path);
+
+    if (model->id != 0) {
+        printf("[Situation] Hot-Reloaded Model\n");
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief Reloads a compute pipeline from its original source file.
+ * 
+ * @details Similar to `SituationReloadShader`, but for Compute Pipelines. It recompiles the GLSL source 
+ *          (or re-reads SPIR-V) and rebuilds the `VkPipeline` (Vulkan) or `GL Program` (OpenGL).
+ *          It automatically reuses the `SituationComputeLayoutType` that was specified during the initial creation.
+ *
+ * @param[in,out] pipeline A pointer to the `SituationComputePipeline` handle to reload.
+ * 
+ * @return `true` on success, `false` on failure.
+ */
+SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
+    // 1. Validation
+    if (!sit_gs.is_initialized || !pipeline || pipeline->id == 0) return false;
+
+    // 2. Lookup the original creation info from the internal tracker
+    char* original_path = NULL;
+    SituationComputeLayoutType original_layout = SIT_COMPUTE_LAYOUT_EMPTY;
+    bool found = false;
+
+    _SituationComputePipelineNode* current = sit_gs.all_compute_pipelines;
+    while (current) {
+        if (current->pipeline.id == pipeline->id) {
+            if (current->source_path) {
+                original_path = strdup(current->source_path); // Copy because node will be destroyed
+                original_layout = current->layout_type;
+                found = true;
+            }
+            break;
+        }
+        current = current->next;
+    }
+
+    if (!found || !original_path) {
+        _SituationSetError("Reload failed: Pipeline was not loaded from a file (or path wasn't tracked).");
+        if (original_path) free(original_path);
+        return false;
+    }
+
+    // 3. Synchronize GPU (Critical for hot-swapping)
+    #if defined(SITUATION_USE_VULKAN)
+    if (sit_gs.vk.device) vkDeviceWaitIdle(sit_gs.vk.device);
+    #elif defined(SITUATION_USE_OPENGL)
+    glFinish();
+    #endif
+
+    // 4. Destroy the old pipeline
+    // This cleans up GPU resources and removes the old tracking node
+    SituationDestroyComputePipeline(pipeline);
+
+    // 5. Re-create the pipeline
+    // This loads from disk, compiles, creates GPU resources, and adds a NEW tracking node
+    SituationComputePipeline new_pipeline = SituationCreateComputePipeline(original_path, original_layout);
+
+    // 6. Cleanup temp path
+    free(original_path);
+
+    // 7. Apply result
+    if (new_pipeline.id != 0) {
+        // Success: Update the user's handle structure in-place
+        *pipeline = new_pipeline;
+        printf("[Situation] Hot-Reloaded Compute Pipeline (ID: %llu)\n", (unsigned long long)pipeline->id);
+        return true;
+    } else {
+        // Failure: The user's handle is already zeroed by SituationDestroyComputePipeline.
+        // The compiler error is in SituationGetLastErrorMsg().
+        _SituationSetError("Hot-reload failed during compilation. Previous pipeline destroyed.");
+        return false;
+    }
 }
 
 //==================================================================================

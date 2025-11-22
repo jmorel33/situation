@@ -1,4 +1,36 @@
 Date: 2025-11-22
+Version: 2.3.4 "Velocity"
+
+## DESCRIPTION
+This release transforms "Situation" from a static framework into a live development environment. The "Velocity" update introduces a comprehensive **Hot-Reloading Module**, allowing developers to modify Shaders, Compute Pipelines, Textures, and 3D Models on disk and see the changes instantly in the running application without restarting. This feature significantly accelerates the iteration loop for visual adjustments and shader programming.
+
+## NEW FEATURES
+
+*   **Hot-Reloading Module:** Added a suite of functions to safely reload assets at runtime. The engine handles the complex task of synchronizing with the GPU, ensuring the device is idle, destroying old resources, and seamlessly swapping in the new data while maintaining the original handle IDs.
+    *   `SituationReloadShader`: Recompiles and links graphics pipelines.
+    *   `SituationReloadComputePipeline`: Recompiles compute shaders, preserving the original layout configuration.
+    *   `SituationReloadTexture`: Re-uploads image data to GPU memory (requires texture to be loaded from file).
+    *   `SituationReloadModel`: Re-parses GLTF/GLB files and rebuilds all sub-meshes and material textures.
+
+*   **Texture Loading Helper:** Added `SituationLoadTexture(path, mips)`. This new high-level function combines image loading, texture creation, and cleanup into one call. Crucially, it registers the file path with the internal resource tracker, making the texture eligible for hot-reloading.
+
+*   **Shader #include Support:** The runtime GLSL compiler (`shaderc` integration) now supports `#include "filename.glsl"` directives. This allows developers to construct complex "Uber Shaders" by sharing common logic and struct definitions across multiple shader files.
+
+## CRITICAL BUG FIXES
+
+*   **Vulkan Stale Layout Crash:** Fixed a "time bomb" crash in the Vulkan backend where a failed shader hot-reload (e.g., due to syntax error) would destroy the pipeline layout but leave a dangling pointer in the global state cache. Subsequent calls to `SituationCmdSetPushConstant` would then crash the driver. The system now correctly invalidates the cached layout on binding failure.
+
+## INTERNAL IMPROVEMENTS
+
+*   **Resource Path Tracking:** The internal linked-list resource managers have been upgraded to store the source file paths of loaded assets.
+    *   Updated all `SituationLoad*` functions to capture and store these paths upon successful creation.
+    *   Updated all `SituationDestroy*` and `SituationUnload*` functions to correctly free these path strings, ensuring zero memory leaks.
+
+*   **Compute Pipeline State:** Updated `_SituationComputePipelineNode` to cache the `SituationComputeLayoutType` used during creation. This ensures that when a compute pipeline is hot-reloaded, it is rebuilt with the exact same descriptor layout as the original.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-22
 Version: 2.3.3D "Production"
 
 ## DESCRIPTION

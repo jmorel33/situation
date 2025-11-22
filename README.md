@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.3D "Production"_
+_Core API library v2.3.4 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,13 +8,13 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.3D "Production"** represents the culmination of the library's hardening phase. Building upon the architectural overhaul of the previous release, this version eliminates critical logic gaps to ensure absolute stability. It finalizes the **Dynamic Resource Manager** for Vulkan (resolving pool exhaustion scenarios), patches the **Thread-Safe Audio Capture** logic to correctly dispatch data to the main thread, and corrects image layout transitions to allow **safe runtime screenshotting**. This release is validated for long-running, asset-heavy applications.
+**Version 2.3.4 "Velocity"** marks a major milestone in the library's evolution, shifting focus from pure stability to developer efficiency. This release introduces the **Hot-Reloading Module**, a transformative feature set that allows developers to modify **Shaders, Compute Pipelines, Textures, and 3D Models** on disk and see the changes instantly in the running application. By eliminating the need to restart the app for every asset tweak, "Velocity" drastically accelerates the iteration loop for visual programming and content creation.
 
-Our immediate development roadmap is focused on the next phase of usability:
-*   **Hot Reloading:** Implementing live reloading for Shaders and Textures to drastically reduce iteration times.
+Our immediate development roadmap is focused on expanding the library's capability:
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
 *   **Async Compute**: Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
 *   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
+*   **Cross-Platform Expansion**: Formalizing support for Android and WebAssembly targets.
 
 "Situation" is an ambitious project that aims to become a premier, go-to solution for developers seeking a reliable and powerful platform layer. We encourage you to explore the library, challenge its capabilities, and contribute to its evolution.
 
@@ -26,12 +26,12 @@ This foundation enables precise **Control** over the entire application stack:
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management.
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events.
 *   **Audio:** A professional-grade pipeline supporting **safe RAM preloading** for SFX, disk streaming for music, **thread-safe capture (recording)**, and real-time effects (Reverb, Delay, Filter).
-*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.1**. It manages complex resources—shaders, meshes, and **dynamically allocated descriptor sets**—automatically. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering.
+*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.1**. It manages complex resources—shaders, meshes, and **dynamically allocated descriptor sets**—automatically. It includes high-level utilities for **Compute Shaders (with #include support)**, **Virtual Display Compositing**, and high-quality text rendering.
+*   **Hot-Reloading:** A new suite of tools for live-reloading assets at runtime, safely handling GPU synchronization and resource rebuilding.
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
 
 > **CRITICAL ARCHITECTURAL NOTE:** To guarantee identical behavior between OpenGL (Immediate) and Vulkan (Deferred), developers must **update all buffer data before recording draw commands** within a frame. *The library actively enforces this rule in debug builds and will report a runtime error if violated.*
-
 ---
 
 ## Table of Contents
