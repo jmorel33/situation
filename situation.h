@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4A "Velocity" (Hotfix)
+*   Core API library v2.3.4B "Velocity" (Hotfix B)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_REVISION "B"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -104,6 +104,21 @@ Bash
     // Warning: SituationCmdDrawQuad and Virtual Displays will be unavailable.
 #endif
 
+/*
+ * Feature Test Macros (Strict C11 Support)
+ * ----------------------------------------
+ * When compiling with strict standard flags (e.g., -std=c11), compilers like GCC and Clang disable non-standard extensions by default. This hides common OS-level functions 
+ * that are part of POSIX but not ISO C.
+ *
+ * We define these macros to explicitly request POSIX.1-2008 and X/Open 7 support.
+ * This exposes necessary APIs required by the implementation, specifically:
+ * - Filesystem queries: stat(), S_ISREG, S_ISDIR
+ * - System interaction: readlink(), nanosleep()
+ *
+ * NOTE: These must be defined before ANY system headers are included.
+ */
+#define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 
 /**
  * @brief API Declaration Control (for Shared Library / DLL support)
@@ -135,7 +150,9 @@ Bash
 #ifndef M_PI // Define M_PI if not already defined (common for MSVC)
     #define M_PI 3.14159265358979323846
 #endif
-
+#ifndef M_PI_2
+    #define M_PI_2 1.57079632679489661923
+#endif
 /**
  * @brief Core dependencies
  */
@@ -2615,6 +2632,17 @@ static inline float _SituationFMax3(float a, float b, float c) { return fmaxf(a,
 
 static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count);
 
+/**
+ * @brief [INTERNAL] Standard C11 replacement for strdup.
+ */
+static char* _sit_strdup(const char* s) {
+    if (!s) return NULL;
+    size_t len = strlen(s) + 1;
+    char* copy = (char*)malloc(len);
+    if (copy) memcpy(copy, s, len);
+    return copy;
+}
+
 // --- Simple string hashing function (djb2) ---
 static unsigned long _sit_hash_string(const char* str) {
     unsigned long hash = 5381;
@@ -2623,6 +2651,25 @@ static unsigned long _sit_hash_string(const char* str) {
         hash = ((hash << 5) + hash) + c; // hash * 33 + c
     }
     return hash;
+}
+
+/**
+ * @brief [INTERNAL] Standard C11 replacement for strcasecmp/_stricmp.
+ * @details Compares two strings ignoring case.
+ */
+static int _sit_strcasecmp(const char* s1, const char* s2) {
+    while (*s1 && *s2) {
+        // Cast to unsigned char is required by C standard for ctype functions
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2) {
+            return c1 - c2;
+        }
+        s1++;
+        s2++;
+    }
+    // Check for length differences (one string ended before the other)
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
 }
 
 /**
@@ -2826,7 +2873,7 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, GLi
     // --- 5. Initialize New Entry ---
     // Duplicate the key string. This allocates memory and copies the string.
     // The caller retains ownership of the original `key` string.
-    new_entry->key = strdup(key);
+    new_entry->key = _sit_strdup(key);
     // Check if strdup was successful.
     if (!new_entry->key) {
         // Allocation failed for duplicating the key string.
@@ -3222,7 +3269,7 @@ static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const 
         }
 
         for (int i = 0; i < count; i++) {
-            sit_gs.dropped_file_paths[i] = strdup(paths[i]);
+            sit_gs.dropped_file_paths[i] = _sit_strdup(paths[i]);
             if (sit_gs.dropped_file_paths[i] == NULL) {
                 // Allocation failed for one string, clean up what we have
                 for (int j = 0; j < i; j++) free(sit_gs.dropped_file_paths[j]);
@@ -5421,7 +5468,7 @@ static shaderc_include_result* _SituationShaderIncluderResolve(
     // Note: In a more complex engine, we would resolve relative paths based on 'requesting_source'.
     // For now, we assume paths are relative to the CWD or absolute.
     container->content = SituationLoadFileText(requested_source);
-    container->full_path = strdup(requested_source);
+    container->full_path = _sit_strdup(requested_source);
 
     if (container->content) {
         container->result.content = container->content;
@@ -6871,7 +6918,7 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
 static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInfo* init_info) {
     // --- Queue Create Info (Your existing code is good) ---
     uint32_t queue_family_indices[] = { sit_gs.vk.graphics_family_index, sit_gs.vk.present_family_index };
-    VkDeviceQueueCreateInfo queue_create_infos[2] = {};
+    VkDeviceQueueCreateInfo queue_create_infos[2] = {0};
     float queue_priority = 1.0f;
     uint32_t unique_queue_family_count = 1;
 
@@ -6889,7 +6936,7 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     }
 
     // --- Device Features (Good as is) ---
-    VkPhysicalDeviceFeatures device_features = {}; // Enable features as needed later
+    VkPhysicalDeviceFeatures device_features = {0}; // Enable features as needed later
 
     // --- Device Extensions ---
     // Use a small, manageable array to build the list of required extensions.
@@ -6905,7 +6952,7 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     #endif
 
     // --- Device Create Info ---
-    VkDeviceCreateInfo create_info = {};
+    VkDeviceCreateInfo create_info = {0};
     create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     create_info.pQueueCreateInfos = queue_create_infos;
     create_info.queueCreateInfoCount = unique_queue_family_count;
@@ -7212,7 +7259,7 @@ static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysical
  * @see _SituationVulkanQuerySwapchainSupport(), _SituationVulkanCreateImageViews(), _SituationVulkanRecreateSwapchain()
  */
 static SituationError _SituationVulkanCreateSwapchain(void) {
-    _SituationVulkanSwapchainSupportDetails swapchain_support = {};
+    _SituationVulkanSwapchainSupportDetails swapchain_support = {0};
     _SituationVulkanQuerySwapchainSupport(sit_gs.vk.physical_device, &swapchain_support);
 
     if (swapchain_support.format_count == 0 || swapchain_support.present_mode_count == 0) {
@@ -7253,7 +7300,7 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
         image_count = swapchain_support.capabilities.maxImageCount;
     }
 
-    VkSwapchainCreateInfoKHR create_info = {};
+    VkSwapchainCreateInfoKHR create_info = {0};
     create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     create_info.surface = sit_gs.vk.surface;
     create_info.minImageCount = image_count;
@@ -7349,7 +7396,7 @@ static SituationError _SituationVulkanCreateRenderPass(void) {
          return SITUATION_ERROR_VULKAN_UNSUPPORTED;
     }
 
-    VkAttachmentDescription color_attachment = {};
+    VkAttachmentDescription color_attachment = {0};
     color_attachment.format = sit_gs.vk.swapchain_image_format;
     color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
     color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -7359,7 +7406,7 @@ static SituationError _SituationVulkanCreateRenderPass(void) {
     color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
-    VkAttachmentDescription depth_attachment = {};
+    VkAttachmentDescription depth_attachment = {0};
     depth_attachment.format = sit_gs.vk.depth_format;
     depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
     depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -7372,13 +7419,13 @@ static SituationError _SituationVulkanCreateRenderPass(void) {
     VkAttachmentReference color_attachment_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkAttachmentReference depth_attachment_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
-    VkSubpassDescription subpass = {};
+    VkSubpassDescription subpass = {0};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &color_attachment_ref;
     subpass.pDepthStencilAttachment = &depth_attachment_ref;
 
-    VkSubpassDependency dependency = {};
+    VkSubpassDependency dependency = {0};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
     dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
@@ -7387,7 +7434,7 @@ static SituationError _SituationVulkanCreateRenderPass(void) {
     dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
     VkAttachmentDescription attachments[] = {color_attachment, depth_attachment};
-    VkRenderPassCreateInfo render_pass_info = {};
+    VkRenderPassCreateInfo render_pass_info = {0};
     render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     render_pass_info.attachmentCount = 2;
     render_pass_info.pAttachments = attachments;
@@ -7650,7 +7697,7 @@ static SituationError _SituationVulkanCreateCommandPool(void) {
  * @see _SituationInitVulkan(), _SituationVulkanCreateCommandPool(), SituationGetMainCommandBuffer()
  */
 static SituationError _SituationVulkanCreateCommandBuffers(void) {
-    VkCommandBufferAllocateInfo alloc_info = {};
+    VkCommandBufferAllocateInfo alloc_info = {0};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     alloc_info.commandPool = sit_gs.vk.command_pool;
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -8538,7 +8585,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 
     // 2. Create the Pipeline Layout.
     // This defines the "shape" of the uniforms (Descriptor Sets and Push Constants).
-    VkPushConstantRange push_constant_range = {};
+    VkPushConstantRange push_constant_range = {0};
     push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT; // Accessible by both shaders
     push_constant_range.offset = 0;
     // Updated size: Model(64) + Color(16) + UVRect(16) + UseTex(4) = 100 bytes
@@ -8550,7 +8597,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
         sit_gs.vk.image_sampler_layout 
     };
 
-    VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+    VkPipelineLayoutCreateInfo pipeline_layout_info = {0};
     pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipeline_layout_info.setLayoutCount = 2;
     pipeline_layout_info.pSetLayouts = set_layouts;
@@ -9011,7 +9058,7 @@ static void _SituationVulkanDestroyComputePipeline(_SituationComputePipeline* pi
  * @see _SituationVulkanCopyBufferToImage(), _SituationVulkanGenerateMipmaps(), vkCmdPipelineBarrier()
  */
 static void _SituationVulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage image, uint32_t mip_levels, VkImageLayout old_layout, VkImageLayout new_layout) {
-    VkImageMemoryBarrier barrier = {};
+    VkImageMemoryBarrier barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = old_layout;
     barrier.newLayout = new_layout;
@@ -9074,7 +9121,7 @@ static void _SituationVulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage i
  * @see SituationCreateTexture(), _SituationVulkanTransitionImageLayout(), vkCmdCopyBufferToImage()
  */
 static void _SituationVulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
-    VkBufferImageCopy region = {};
+    VkBufferImageCopy region = {0};
     region.bufferOffset = 0;
     region.bufferRowLength = 0;
     region.bufferImageHeight = 0;
@@ -9132,7 +9179,7 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
     _SituationVulkanTransitionImageLayout(cmd, srcImage, 1, srcImageLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
     // b. Record the copy command
-    VkBufferImageCopy region = {};
+    VkBufferImageCopy region = {0};
     region.bufferOffset = 0;
     region.bufferRowLength = 0;
     region.bufferImageHeight = 0;
@@ -9200,7 +9247,7 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
  */
 static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, int32_t width, int32_t height, uint32_t mip_levels) {
     // This barrier will be reused to transition each mip level
-    VkImageMemoryBarrier barrier = {};
+    VkImageMemoryBarrier barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.image = image;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -9223,7 +9270,7 @@ static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, 
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
 
         // 2. Perform the blit from the previous level to the current level.
-        VkImageBlit blit = {};
+        VkImageBlit blit = {0};
         blit.srcOffsets[0] = (VkOffset3D){0, 0, 0};
         blit.srcOffsets[1] = (VkOffset3D){mip_width, mip_height, 1};
         blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -9691,11 +9738,15 @@ SITAPI SituationError SituationEndFrame(void) {
             // Yield control to the OS briefly to avoid consuming 100% CPU.
             #if defined(_WIN32)
                 Sleep(0); // Yield the rest of the time slice
-            #elif defined(__linux__) || defined(__APPLE__)
-                // usleep can be less precise. Consider nanosleep for better control.
-                // 100 microseconds is 0.1ms. Adjust or make dynamic based on remaining time if needed.
-                usleep(100); // Sleep for 100 microseconds
-            #endif
+			#elif defined(__linux__) || defined(__APPLE__)
+				#include <time.h> // Ensure this is included
+				
+				// Inside SituationEndFrame:
+				struct timespec req = {0};
+				req.tv_sec = 0;
+				req.tv_nsec = 100 * 1000; // 100 microseconds = 100,000 nanoseconds
+				nanosleep(&req, NULL);
+			#endif
             current_time = glfwGetTime(); // Update current time for the next check
         }
     }
@@ -9910,7 +9961,7 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
     glEnable(GL_DEPTH_TEST);
 
 #elif defined(SITUATION_USE_VULKAN)
-    VkRenderPassBeginInfo render_pass_info = {};
+    VkRenderPassBeginInfo render_pass_info = {0};
     render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 
     VkClearValue clear_values[2];
@@ -10168,7 +10219,7 @@ SITAPI void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int
     // In Vulkan, this is a command recorded into the command buffer.
 
     // 1. Create the VkRect2D structure that Vulkan expects.
-    VkRect2D scissor = {};
+    VkRect2D scissor = {0};
     scissor.offset.x = x;
     scissor.offset.y = y;
     scissor.extent.width = (uint32_t)width;
@@ -11320,7 +11371,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     // The image view must now be aware of all the mip levels.
     texture.image_view = _SituationVulkanCreateImageView(texture.image, VK_FORMAT_R8G8B8A8_SRGB, mip_levels, VK_IMAGE_ASPECT_COLOR_BIT);
     
-    VkSamplerCreateInfo sampler_info = {};
+    VkSamplerCreateInfo sampler_info = {0};
     sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sampler_info.magFilter = VK_FILTER_LINEAR;
     sampler_info.minFilter = VK_FILTER_LINEAR;
@@ -11366,7 +11417,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
         return (SituationTexture){0};
     }
 
-    VkDescriptorImageInfo image_info = {};
+    VkDescriptorImageInfo image_info = {0};
     // The layout for storage images is different. It's often GENERAL or TRANSFER_DST_OPTIMAL before the compute shader runs, and the shader itself might transition it.
     // For simplicity, let's assume it should be in GENERAL layout for read/write access.
     if (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) {
@@ -11377,7 +11428,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     image_info.imageView = texture.image_view;
     image_info.sampler = (descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) ? texture.sampler : VK_NULL_HANDLE;
 
-    VkWriteDescriptorSet write = {};
+    VkWriteDescriptorSet write = {0};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write.dstSet = texture.descriptor_set;
     write.dstBinding = 0;
@@ -12851,7 +12902,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compu
     // SituationCreateComputePipelineFromMemory prepends the new node to the head of sit_gs.all_compute_pipelines.
     // We check if the ID matches to be absolutely safe.
     if (pipeline.id != 0 && sit_gs.all_compute_pipelines && sit_gs.all_compute_pipelines->pipeline.id == pipeline.id) {
-        sit_gs.all_compute_pipelines->source_path = strdup(compute_shader_path);
+        sit_gs.all_compute_pipelines->source_path = _sit_strdup(compute_shader_path);
         sit_gs.all_compute_pipelines->layout_type = layout_type;
     }
 
@@ -13158,7 +13209,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
 
             // *** CRITICAL SYNCHRONIZATION BARRIER ***
             // Insert a barrier to ensure any previous shader reads from the destination buffer are complete before we begin writing to it.
-            VkBufferMemoryBarrier barrier = {};
+            VkBufferMemoryBarrier barrier = {0};
             barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
             barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -13175,7 +13226,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
                 0, 0, NULL, 1, &barrier, 0, NULL
             );
 
-            VkBufferCopy copy_region = {};
+            VkBufferCopy copy_region = {0};
             copy_region.srcOffset = 0; // Data starts at beginning of staging buffer
             copy_region.dstOffset = offset; // Copy to specified offset in target buffer
             copy_region.size = size;
@@ -13722,7 +13773,7 @@ SITAPI char** SituationLoadDroppedFiles(int* count) {
     }
 
     for (int i = 0; i < sit_gs.dropped_file_count; i++) {
-        user_list[i] = strdup(sit_gs.dropped_file_paths[i]);
+        user_list[i] = _sit_strdup(sit_gs.dropped_file_paths[i]);
         if (user_list[i] == NULL) {
             // Allocation failed, clean up this partial list
             for (int j = 0; j < i; j++) free(user_list[j]);
@@ -14416,7 +14467,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     const char* xdg_data_home = getenv("XDG_DATA_HOME");
     char* base_path = NULL;
     if (xdg_data_home && xdg_data_home[0] != '\0') {
-        base_path = strdup(xdg_data_home);
+        base_path = _sit_strdup(xdg_data_home);
     } else {
         const char* fallback_suffix = "/.local/share";
         size_t len = strlen(home_dir) + strlen(fallback_suffix) + 1;
@@ -14477,11 +14528,11 @@ SITAPI char* SituationGetBasePath(void) {
         if (last_slash) {
             *last_slash = '\0';
         }
-        return strdup(path_buf);
+        return _sit_strdup(path_buf);
     }
     
     // Fallback for other systems or if /proc isn't available
-    return strdup("."); // Current working directory
+    return _sit_strdup("."); // Current working directory
 #endif
 }
 
@@ -14500,7 +14551,7 @@ SITAPI char* SituationJoinPath(const char* base_path, const char* file_or_dir_na
 #endif
 
     size_t base_len = strlen(base_path);
-    if (base_len == 0) return strdup(file_or_dir_name);
+    if (base_len == 0) return _sit_strdup(file_or_dir_name);
 
     // Check if the base path already ends with a separator
     bool needs_separator = (base_path[base_len - 1] != '\\' && base_path[base_len - 1] != '/');
@@ -14845,7 +14896,7 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
 #endif
     }
 
-    char* path_copy = strdup(dir_path);
+    char* path_copy = _sit_strdup(dir_path);
     if (!path_copy) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Could not duplicate path string for recursive create.");
         return false;
@@ -14998,7 +15049,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
-        new_entry_name = strdup(entry->d_name);
+        new_entry_name = _sit_strdup(entry->d_name);
 #endif
         // --- COMMON LOGIC BLOCK ---
         if (!new_entry_name) {
@@ -15176,7 +15227,7 @@ static void _SituationSetFilesystemError(const char* base_message, const char* p
  */
 static char* SituationGetBasePathFromFile(const char* file_path) {
     if (!file_path) return NULL;
-    char* path_copy = strdup(file_path);
+    char* path_copy = _sit_strdup(file_path);
     char* last_sep = strrchr(path_copy, '/');
     if (!last_sep) last_sep = strrchr(path_copy, '\\');
     
@@ -15185,7 +15236,7 @@ static char* SituationGetBasePathFromFile(const char* file_path) {
     } else {
         // No separator found, assume current directory
         free(path_copy);
-        return strdup(".");
+        return _sit_strdup(".");
     }
     return path_copy;
 }
@@ -15706,7 +15757,7 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
  * @return SITUATION_SUCCESS on success, or SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED on failure.
  */
 static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation) {
-    VkImageCreateInfo image_info = {};
+    VkImageCreateInfo image_info = {0};
     image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_info.imageType = VK_IMAGE_TYPE_2D;
     image_info.extent.width = width;
@@ -15721,7 +15772,7 @@ static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t heigh
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VmaAllocationCreateInfo alloc_info = {};
+    VmaAllocationCreateInfo alloc_info = {0};
     alloc_info.usage = memory_usage;
 
     if (vmaCreateImage(sit_gs.vk.vma_allocator, &image_info, &alloc_info, out_image, out_allocation, NULL) != VK_SUCCESS) {
@@ -15755,7 +15806,7 @@ static void _SituationVulkanDestroyImage(VkImage image, VmaAllocation allocation
  * @return A valid VkImageView handle on success, or VK_NULL_HANDLE on failure.
  */
 static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags) {
-    VkImageViewCreateInfo view_info = {};
+    VkImageViewCreateInfo view_info = {0};
     view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_info.image = image;
     view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -15845,7 +15896,7 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     VkPipelineShaderStageCreateInfo shader_stages[] = {vs_stage_info, fs_stage_info};
 
     // 2. Define the pipeline's fixed-function states.
-    VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
+    VkPipelineVertexInputStateCreateInfo vertex_input_info = {0};
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input_info.vertexBindingDescriptionCount = vertexBindingCount;
     vertex_input_info.pVertexBindingDescriptions = pVertexBindingDescriptions;
@@ -15858,7 +15909,7 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     VkPipelineMultisampleStateCreateInfo multisampling = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .sampleShadingEnable = VK_FALSE, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
     VkPipelineDepthStencilStateCreateInfo depth_stencil = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE, .depthCompareOp = VK_COMPARE_OP_LESS, .depthBoundsTestEnable = VK_FALSE, .stencilTestEnable = VK_FALSE };
     
-    VkPipelineColorBlendAttachmentState color_blend_attachment = {};
+    VkPipelineColorBlendAttachmentState color_blend_attachment = {0};
     color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     color_blend_attachment.blendEnable = VK_TRUE;
     color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -15873,7 +15924,7 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     VkPipelineDynamicStateCreateInfo dynamic_state = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dynamic_states };
 
     // 3. Assemble the pipeline create info struct.
-    VkGraphicsPipelineCreateInfo pipeline_info = {};
+    VkGraphicsPipelineCreateInfo pipeline_info = {0};
     pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipeline_info.stageCount = 2;
     pipeline_info.pStages = shader_stages;
@@ -15932,6 +15983,7 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
  * @note The caller is **responsible** for destroying the virtual display using `SituationDestroyVirtualDisplay()` to prevent GPU memory leaks.
  */
 SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode) {
+    // --- 1. Validation ---
     if (!sit_gs.is_initialized) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create virtual display");
         return -1;
@@ -15941,6 +15993,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
         return -1;
     }
 
+    // --- 2. Find Free Slot ---
     int new_id = -1;
     for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
         if (!sit_gs.virtual_display_slots_used[i]) {
@@ -15948,12 +16001,12 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
             break;
         }
     }
-    if (new_id == -1) return -1; // Should not happen
+    if (new_id == -1) return -1; // Should not happen given count check
 
+    // --- 3. Initialize Slot ---
     SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[new_id];
-    memset(vd, 0, sizeof(SituationVirtualDisplay)); // Start with a clean slate
+    memset(vd, 0, sizeof(SituationVirtualDisplay)); // Crucial: Start with clean slate for safe cleanup
 
-    // --- Common Property Initialization ---
     vd->id = new_id;
     vd->resolution[0] = (resolution[0] > 0) ? resolution[0] : 1.0f;
     vd->resolution[1] = (resolution[1] > 0) ? resolution[1] : 1.0f;
@@ -15966,186 +16019,211 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
     vd->is_dirty = true;
     vd->last_update_time_seconds = glfwGetTime();
 
+    bool success = true; // Master success flag for the chain
+
 #if defined(SITUATION_USE_VULKAN)
     // =================================================================
     // --- VULKAN IMPLEMENTATION ---
     // =================================================================
     
-    VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM; // A common format for render targets
-    VkFormat depth_format = sit_gs.vk.depth_format; // Use same depth format as main window
+    VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat depth_format = sit_gs.vk.depth_format;
     
-    // --- 1. Create ColorRGBA Image Resources ---
-    if (_SituationVulkanCreateImage((uint32_t)vd->resolution[0], (uint32_t)vd->resolution[1], color_format,
-                                    VK_IMAGE_TILING_OPTIMAL,
-                                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, // Must be both a render target AND a texture
-                                    VMA_MEMORY_USAGE_GPU_ONLY,
-                                    &vd->image, &vd->image_memory) != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create VD color image");
-        return -1; // No cleanup needed as nothing was created yet
-    }
-    vd->image_view = _SituationVulkanCreateImageView(vd->image, color_format, VK_IMAGE_ASPECT_COLOR_BIT);
-    if (vd->image_view == VK_NULL_HANDLE) goto cleanup_vulkan;
-
-    // --- 2. Create Depth Image Resources ---
-    if (_SituationVulkanCreateImage((uint32_t)vd->resolution[0], (uint32_t)vd->resolution[1], depth_format,
-                                    VK_IMAGE_TILING_OPTIMAL,
-                                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                                    VMA_MEMORY_USAGE_GPU_ONLY,
-                                    &vd->depth_image, &vd->depth_image_memory) != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create VD depth image");
-        goto cleanup_vulkan;
-    }
-    vd->depth_image_view = _SituationVulkanCreateImageView(vd->depth_image, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
-    if (vd->depth_image_view == VK_NULL_HANDLE) goto cleanup_vulkan;
-
-    // --- 3. Create a Sampler ---
-    VkSamplerCreateInfo sampler_info = {};
-    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    // Set filtering based on scaling mode
-    sampler_info.magFilter = sampler_info.minFilter = (scaling_mode == SITUATION_SCALING_STRETCH) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
-    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler_info.anisotropyEnable = VK_FALSE;
-    sampler_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    sampler_info.unnormalizedCoordinates = VK_FALSE;
-    sampler_info.compareEnable = VK_FALSE;
-    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    if (vkCreateSampler(sit_gs.vk.device, &sampler_info, NULL, &vd->sampler) != VK_SUCCESS) goto cleanup_vulkan;
-
-    // --- 4. Create a Render Pass specific to this VD ---
-    VkAttachmentDescription attachments[2] = {};
-    // ColorRGBA attachment
-    attachments[0].format = color_format;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // IMPORTANT: Must be ready to be read by a shader
-    // Depth attachment
-    attachments[1].format = depth_format;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference depth_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    VkSubpassDescription subpass = {};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &color_ref;
-    subpass.pDepthStencilAttachment = &depth_ref;
-
-    VkRenderPassCreateInfo render_pass_info = {};
-    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    render_pass_info.attachmentCount = 2;
-    render_pass_info.pAttachments = attachments;
-    render_pass_info.subpassCount = 1;
-    render_pass_info.pSubpasses = &subpass;
-    if (vkCreateRenderPass(sit_gs.vk.device, &render_pass_info, NULL, &vd->render_pass) != VK_SUCCESS) goto cleanup_vulkan;
-
-    // --- 5. Create the Framebuffer ---
-    VkImageView fb_attachments[] = {vd->image_view, vd->depth_image_view};
-    VkFramebufferCreateInfo framebuffer_info = {};
-    framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    framebuffer_info.renderPass = vd->render_pass;
-    framebuffer_info.attachmentCount = 2;
-    framebuffer_info.pAttachments = fb_attachments;
-    framebuffer_info.width = (uint32_t)vd->resolution[0];
-    framebuffer_info.height = (uint32_t)vd->resolution[1];
-    framebuffer_info.layers = 1;
-    if (vkCreateFramebuffer(sit_gs.vk.device, &framebuffer_info, NULL, &vd->framebuffer) != VK_SUCCESS) goto cleanup_vulkan;
-
-	// --- 6. Create the Persistent Descriptor Set for this VD ---
-    vd->vk.descriptor_set = _SituationVulkanAllocateDescriptorSet(sit_gs.vk.image_sampler_layout);
-
-    if (vd->vk.descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for VD.");
-        goto cleanup_vulkan; 
+    // --- Step 1: Create Color Image ---
+    if (success) {
+        if (_SituationVulkanCreateImage((uint32_t)vd->resolution[0], (uint32_t)vd->resolution[1], color_format,
+                                        VK_IMAGE_TILING_OPTIMAL,
+                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                        VMA_MEMORY_USAGE_GPU_ONLY,
+                                        &vd->image, &vd->image_memory) != SITUATION_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create VD color image");
+            success = false;
+        }
     }
 
-    VkDescriptorImageInfo image_desc_info = {};
-    image_desc_info.sampler = vd->vk.sampler;
-    image_desc_info.imageView = vd->vk.image_view;
-    image_desc_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // --- Step 2: Create Color View ---
+    if (success) {
+        vd->image_view = _SituationVulkanCreateImageView(vd->image, color_format, VK_IMAGE_ASPECT_COLOR_BIT);
+        if (vd->image_view == VK_NULL_HANDLE) success = false;
+    }
 
-    VkWriteDescriptorSet write_set = {};
-    write_set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write_set.dstSet = vd->vk.descriptor_set;
-    write_set.dstBinding = SIT_SAMPLER_BINDING_VD_SOURCE; // Use the contract
-    write_set.dstArrayElement = 0;
-    write_set.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write_set.descriptorCount = 1;
-    write_set.pImageInfo = &image_desc_info;
+    // --- Step 3: Create Depth Image ---
+    if (success) {
+        if (_SituationVulkanCreateImage((uint32_t)vd->resolution[0], (uint32_t)vd->resolution[1], depth_format,
+                                        VK_IMAGE_TILING_OPTIMAL,
+                                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                        VMA_MEMORY_USAGE_GPU_ONLY,
+                                        &vd->depth_image, &vd->depth_image_memory) != SITUATION_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create VD depth image");
+            success = false;
+        }
+    }
 
-    vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write_set, 0, NULL);
-    
-    goto end_create;
+    // --- Step 4: Create Depth View ---
+    if (success) {
+        vd->depth_image_view = _SituationVulkanCreateImageView(vd->depth_image, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
+        if (vd->depth_image_view == VK_NULL_HANDLE) success = false;
+    }
 
-cleanup_vulkan:
-    _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed during VD creation, cleaning up");
-    // This goto allows us to clean up all partially created resources on any failure.
-    if (vd->descriptor_set != VK_NULL_HANDLE) { /* Freed with pool */ }
-    if (vd->framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_gs.vk.device, vd->framebuffer, NULL);
-    if (vd->render_pass != VK_NULL_HANDLE) vkDestroyRenderPass(sit_gs.vk.device, vd->render_pass, NULL);
-    if (vd->sampler != VK_NULL_HANDLE) vkDestroySampler(sit_gs.vk.device, vd->sampler, NULL);
-    if (vd->depth_image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_gs.vk.device, vd->depth_image_view, NULL);
-    if (vd->depth_image != VK_NULL_HANDLE) vmaDestroyImage(sit_gs.vk.vma_allocator, vd->depth_image, vd->depth_image_memory);
-    if (vd->image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_gs.vk.device, vd->image_view, NULL);
-    if (vd->image != VK_NULL_HANDLE) vmaDestroyImage(sit_gs.vk.vma_allocator, vd->image, vd->image_memory);
-    return -1;
+    // --- Step 5: Create Sampler ---
+    if (success) {
+        VkSamplerCreateInfo sampler_info = {0};
+        sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter = (scaling_mode == SITUATION_SCALING_STRETCH) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+        sampler_info.minFilter = sampler_info.magFilter;
+        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+        if (vkCreateSampler(sit_gs.vk.device, &sampler_info, NULL, &vd->sampler) != VK_SUCCESS) success = false;
+    }
+
+    // --- Step 6: Create Render Pass ---
+    if (success) {
+        VkAttachmentDescription attachments[2] = {0};
+        // Color Attachment
+        attachments[0].format = color_format;
+        attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // Depth Attachment
+        attachments[1].format = depth_format;
+        attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference depth_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        
+        VkSubpassDescription subpass = {0};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &color_ref;
+        subpass.pDepthStencilAttachment = &depth_ref;
+
+        VkRenderPassCreateInfo render_pass_info = {0};
+        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        render_pass_info.attachmentCount = 2;
+        render_pass_info.pAttachments = attachments;
+        render_pass_info.subpassCount = 1;
+        render_pass_info.pSubpasses = &subpass;
+
+        if (vkCreateRenderPass(sit_gs.vk.device, &render_pass_info, NULL, &vd->render_pass) != VK_SUCCESS) success = false;
+    }
+
+    // --- Step 7: Create Framebuffer ---
+    if (success) {
+        VkImageView fb_attachments[] = {vd->image_view, vd->depth_image_view};
+        VkFramebufferCreateInfo framebuffer_info = {0};
+        framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebuffer_info.renderPass = vd->render_pass;
+        framebuffer_info.attachmentCount = 2;
+        framebuffer_info.pAttachments = fb_attachments;
+        framebuffer_info.width = (uint32_t)vd->resolution[0];
+        framebuffer_info.height = (uint32_t)vd->resolution[1];
+        framebuffer_info.layers = 1;
+
+        if (vkCreateFramebuffer(sit_gs.vk.device, &framebuffer_info, NULL, &vd->framebuffer) != VK_SUCCESS) success = false;
+    }
+
+    // --- Step 8: Allocate Descriptor Set ---
+    if (success) {
+        vd->vk.descriptor_set = _SituationVulkanAllocateDescriptorSet(sit_gs.vk.image_sampler_layout);
+        if (vd->vk.descriptor_set == VK_NULL_HANDLE) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for VD.");
+            success = false;
+        }
+    }
+
+    // --- Step 9: Update Descriptor Set ---
+    if (success) {
+        VkDescriptorImageInfo image_desc_info = {0};
+        image_desc_info.sampler = vd->vk.sampler;
+        image_desc_info.imageView = vd->vk.image_view;
+        image_desc_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write_set = {0};
+        write_set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write_set.dstSet = vd->vk.descriptor_set;
+        write_set.dstBinding = SIT_SAMPLER_BINDING_VD_SOURCE;
+        write_set.dstArrayElement = 0;
+        write_set.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write_set.descriptorCount = 1;
+        write_set.pImageInfo = &image_desc_info;
+
+        vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write_set, 0, NULL);
+    }
+
+    // --- Failure Cleanup (Vulkan) ---
+    if (!success) {
+        // Check non-null before destroying. VD is zeroed at start, so this is safe.
+        if (vd->framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_gs.vk.device, vd->framebuffer, NULL);
+        if (vd->render_pass != VK_NULL_HANDLE) vkDestroyRenderPass(sit_gs.vk.device, vd->render_pass, NULL);
+        if (vd->sampler != VK_NULL_HANDLE) vkDestroySampler(sit_gs.vk.device, vd->sampler, NULL);
+        if (vd->depth_image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_gs.vk.device, vd->depth_image_view, NULL);
+        if (vd->depth_image != VK_NULL_HANDLE) vmaDestroyImage(sit_gs.vk.vma_allocator, vd->depth_image, vd->depth_image_memory);
+        if (vd->image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_gs.vk.device, vd->image_view, NULL);
+        if (vd->image != VK_NULL_HANDLE) vmaDestroyImage(sit_gs.vk.vma_allocator, vd->image, vd->image_memory);
+        // Note: descriptor set is freed when its pool is destroyed, we don't free individual sets on failure usually
+        return -1;
+    }
 
 #elif defined(SITUATION_USE_OPENGL)
     // =================================================================
     // --- OPENGL IMPLEMENTATION ---
     // =================================================================
-    // Create all objects without binding, using Direct State Access.
+    
+    // Step 1: Create Objects
     glCreateFramebuffers(1, &vd->gl.fbo_id);
     glCreateTextures(GL_TEXTURE_2D, 1, &vd->gl.texture_id);
     glCreateRenderbuffers(1, &vd->gl.depth_rbo_id);
-    SIT_CHECK_GL_ERROR();
-
-    // Configure Texture with Immutable Storage
-    glTextureStorage2D(vd->gl.texture_id, 1, GL_RGBA8, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
-    GLenum filter_mode = (scaling_mode == SITUATION_SCALING_STRETCH) ? GL_LINEAR : GL_NEAREST;
-    glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_MIN_FILTER, filter_mode);
-    glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_MAG_FILTER, filter_mode);
-    glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    SIT_CHECK_GL_ERROR();
-
-    // Configure Renderbuffer Storage for the depth buffer
-    glNamedRenderbufferStorage(vd->gl.depth_rbo_id, GL_DEPTH_COMPONENT24, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
-    SIT_CHECK_GL_ERROR();
-
-    // Attach the texture and renderbuffer to the FBO
-    glNamedFramebufferTexture(vd->gl.fbo_id, GL_COLOR_ATTACHMENT0, vd->gl.texture_id, 0);
-    glNamedFramebufferRenderbuffer(vd->gl.fbo_id, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, vd->gl.depth_rbo_id);
-    SIT_CHECK_GL_ERROR();
-
-    // --- Check FBO completeness ---
-    GLenum status = glCheckNamedFramebufferStatus(vd->gl.fbo_id, GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_FBO_INCOMPLETE, "Failed to create a complete framebuffer for virtual display.");
+    
+    // Step 2: Configure Texture
+    if (success) {
+        glTextureStorage2D(vd->gl.texture_id, 1, GL_RGBA8, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
         
-        // Clean up the partially created GL objects to prevent leaks.
+        GLenum filter_mode = (scaling_mode == SITUATION_SCALING_STRETCH) ? GL_LINEAR : GL_NEAREST;
+        glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_MIN_FILTER, filter_mode);
+        glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_MAG_FILTER, filter_mode);
+        glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    // Step 3: Configure Renderbuffer & Attach
+    if (success) {
+        glNamedRenderbufferStorage(vd->gl.depth_rbo_id, GL_DEPTH_COMPONENT24, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
+        glNamedFramebufferTexture(vd->gl.fbo_id, GL_COLOR_ATTACHMENT0, vd->gl.texture_id, 0);
+        glNamedFramebufferRenderbuffer(vd->gl.fbo_id, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, vd->gl.depth_rbo_id);
+        
+        if (glCheckNamedFramebufferStatus(vd->gl.fbo_id, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_FBO_INCOMPLETE, "Incomplete framebuffer");
+            success = false;
+        }
+    }
+    
+    SIT_CHECK_GL_ERROR(); 
+    if (sit_gs.gl.last_error != GL_NO_ERROR) success = false;
+
+    // --- Failure Cleanup (OpenGL) ---
+    if (!success) {
         if (vd->gl.texture_id != 0) glDeleteTextures(1, &vd->gl.texture_id);
         if (vd->gl.depth_rbo_id != 0) glDeleteRenderbuffers(1, &vd->gl.depth_rbo_id);
         if (vd->gl.fbo_id != 0) glDeleteFramebuffers(1, &vd->gl.fbo_id);
-
-        // This is a failure, so we return -1 and do not mark the slot as used.
         return -1;
     }
-    SIT_CHECK_GL_ERROR(); // Final check
 #endif
 
-end_create:
+    // --- 4. Finalize ---
     sit_gs.virtual_display_slots_used[new_id] = true;
     sit_gs.active_virtual_display_count++;
     return new_id;
@@ -16264,7 +16342,7 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     vkDestroySampler(sit_gs.vk.device, vd->sampler, NULL);
 
     // 2. Create a new sampler with the correct filter mode.
-    VkSamplerCreateInfo sampler_info = {};
+    VkSamplerCreateInfo sampler_info = {0};
     sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sampler_info.magFilter = sampler_info.minFilter = (scaling_mode == SITUATION_SCALING_STRETCH) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -16283,12 +16361,12 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     }
 
     // 3. Update the existing descriptor set to point to the new sampler.
-    VkDescriptorImageInfo image_desc_info = {};
+    VkDescriptorImageInfo image_desc_info = {0};
     image_desc_info.sampler = vd->sampler; // Use the NEW sampler
     image_desc_info.imageView = vd->image_view;
     image_desc_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet write_set = {};
+    VkWriteDescriptorSet write_set = {0};
     write_set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write_set.dstSet = vd->descriptor_set; // The existing descriptor set
     write_set.dstBinding = 0;
@@ -16399,13 +16477,13 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     for (int i = 0; i < visible_count; ++i) {
         const SituationVirtualDisplay* vd = visible_vds_to_render[i];
 
-        // Calculate Model Matrix (Standard Logic - Unchanged)
+        // Calculate Model Matrix
+        mat4 T_mat, S_mat;
         mat4 model_matrix;
         glm_mat4_identity(model_matrix);
 
         switch (vd->scaling_mode) {
             case SITUATION_SCALING_STRETCH: {
-                mat4 T_mat, S_mat;
                 glm_translate_make(T_mat, (vec3){vd->offset[0], vd->offset[1], 0.0f});
                 glm_scale_make(S_mat, (vec3){vd->resolution[0], vd->resolution[1], 1.0f});
                 glm_mat4_mul(T_mat, S_mat, model_matrix);
@@ -16419,7 +16497,6 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
                 float final_height = vd->resolution[1] * final_scale;
                 float final_x = (target_width - final_width) / 2.0f;
                 float final_y = (target_height - final_height) / 2.0f;
-                mat4 T_mat, S_mat;
                 glm_translate_make(T_mat, (vec3){final_x, final_y, 0.0f});
                 glm_scale_make(S_mat, (vec3){final_width, final_height, 1.0f});
                 glm_mat4_mul(T_mat, S_mat, model_matrix);
@@ -16433,7 +16510,6 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
                 float final_height = vd->resolution[1] * final_scale;
                 float final_x = (target_width - final_width) / 2.0f;
                 float final_y = (target_height - final_height) / 2.0f;
-                mat4 T_mat, S_mat;
                 glm_translate_make(T_mat, (vec3){final_x, final_y, 0.0f});
                 glm_scale_make(S_mat, (vec3){final_width, final_height, 1.0f});
                 glm_mat4_mul(T_mat, S_mat, model_matrix);
@@ -16522,12 +16598,12 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
         const SituationVirtualDisplay* vd = visible_vds_to_render[i];
         
         // --- Matrix Calculation ---
+        mat4 T, S; 
         mat4 model_matrix;
         glm_mat4_identity(model_matrix);
 
         switch (vd->scaling_mode) {
             case SITUATION_SCALING_STRETCH: {
-                mat4 T, S; 
                 glm_translate_make(T, (vec3){vd->offset[0], vd->offset[1], 0.0f});
                 glm_scale_make(S, (vec3){target_width, target_height, 1.0f}); 
                 glm_mat4_mul(T, S, model_matrix); 
@@ -16541,7 +16617,6 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
                 float final_h = vd->resolution[1] * s;
                 float final_x = (target_width - final_w) / 2.0f;
                 float final_y = (target_height - final_h) / 2.0f;
-                mat4 T, S; 
                 glm_translate_make(T, (vec3){final_x, final_y, 0.0f});
                 glm_scale_make(S, (vec3){final_w, final_h, 1.0f});
                 glm_mat4_mul(T, S, model_matrix); 
@@ -16553,7 +16628,6 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
                 float final_h = vd->resolution[1] * s;
                 float final_x = (target_width - final_w) / 2.0f;
                 float final_y = (target_height - final_h) / 2.0f;
-                mat4 T, S; 
                 glm_translate_make(T, (vec3){final_x, final_y, 0.0f});
                 glm_scale_make(S, (vec3){final_w, final_h, 1.0f});
                 glm_mat4_mul(T, S, model_matrix); 
@@ -16896,7 +16970,7 @@ SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generat
 
     // [HOT-RELOAD] Capture path
     if (tex.id != 0 && sit_gs.all_textures && sit_gs.all_textures->texture.id == tex.id) {
-        sit_gs.all_textures->source_path = strdup(file_path);
+        sit_gs.all_textures->source_path = _sit_strdup(file_path);
     }
     return tex;
 }
@@ -17049,7 +17123,7 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
         _SituationModelNode* node = (_SituationModelNode*)malloc(sizeof(_SituationModelNode));
         if (node) {
             node->model = model; // Copy struct by value (contains pointers to meshes)
-            node->source_path = strdup(file_path);
+            node->source_path = _sit_strdup(file_path);
             node->next = sit_gs.all_models;
             sit_gs.all_models = node;
         }
@@ -17322,8 +17396,8 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
     // --- 6. Return Result ---
     // [HOT-RELOAD] Capture paths in the node
     if (shader.id != 0 && sit_gs.all_shaders && sit_gs.all_shaders->shader.id == shader.id) {
-        sit_gs.all_shaders->vs_path = strdup(vs_path);
-        sit_gs.all_shaders->fs_path = strdup(fs_path);
+        sit_gs.all_shaders->vs_path = _sit_strdup(vs_path);
+        sit_gs.all_shaders->fs_path = _sit_strdup(fs_path);
     }
     // The returned handle will be valid (id != 0) if compilation was successful, or invalid (id == 0) if it failed.
     return shader;
@@ -17854,8 +17928,8 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
     while (current) {
         if (current->shader.id == shader->id) {
             if (current->vs_path && current->fs_path) {
-                vs_path = strdup(current->vs_path);
-                fs_path = strdup(current->fs_path);
+                vs_path = _sit_strdup(current->vs_path);
+                fs_path = _sit_strdup(current->fs_path);
             }
             break;
         }
@@ -17913,7 +17987,7 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     _SituationTextureNode* current = sit_gs.all_textures;
     while (current) {
         if (current->texture.id == texture->id) {
-            if (current->source_path) path = strdup(current->source_path);
+            if (current->source_path) path = _sit_strdup(current->source_path);
             break;
         }
         current = current->next;
@@ -17963,7 +18037,7 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     _SituationModelNode* current = sit_gs.all_models;
     while (current) {
         if (current->model.id == model->id) {
-            if (current->source_path) path = strdup(current->source_path);
+            if (current->source_path) path = _sit_strdup(current->source_path);
             break;
         }
         current = current->next;
@@ -18013,7 +18087,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     while (current) {
         if (current->pipeline.id == pipeline->id) {
             if (current->source_path) {
-                original_path = strdup(current->source_path); // Copy because node will be destroyed
+                original_path = _sit_strdup(current->source_path); // Copy because node will be destroyed
                 original_layout = current->layout_type;
                 found = true;
             }
@@ -18990,14 +19064,15 @@ SITAPI bool SituationExportImage(SituationImage image, const char *fileName) {
     const char *ext = SituationGetFileExtension(fileName);
     bool success = false;
 
-    if (ext != NULL && (strcmp(ext, ".png") == 0 || strcmp(ext, ".PNG") == 0)) {
+    // Use helper here
+    if (ext != NULL && _sit_strcasecmp(ext, ".png") == 0) {
 #if defined(STB_IMAGE_WRITE_IMPLEMENTATION)
         success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, image.width * 4) != 0);
 #else
         _SituationSetError("PNG export not available. Please implement stb_image_write.h.");
 #endif
-    } else if (ext != NULL && (strcmp(ext, ".bmp") == 0 || strcmp(ext, ".BMP") == 0)) {
-        // We already have a BMP writer for screenshots, let's reuse it.
+    // Use helper here
+    } else if (ext != NULL && _sit_strcasecmp(ext, ".bmp") == 0) {
         success = _SituationSaveImageBMP(fileName, &image);
     } else {
         _SituationSetError("Unsupported image export format. Use .png or .bmp.");
@@ -23301,15 +23376,11 @@ SITAPI bool SituationTakeScreenshot(const char *fileName) {
         return false;
     }
 
-    // 1. Validate Extension
+	// 1. Validate Extension
     const char *ext = SituationGetFileExtension(fileName);
-    if (!ext || (
-#if defined(_WIN32)
-        _stricmp(ext, ".png") != 0
-#else
-        strcasecmp(ext, ".png") != 0
-#endif
-    )) {
+    
+    // Use internal helper for cross-platform C11 compliance
+    if (!ext || _sit_strcasecmp(ext, ".png") != 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationTakeScreenshot supports only '.png' format.");
         return false;
     }

@@ -1,4 +1,22 @@
 Date: 2025-11-22
+Version: 2.3.4B "Velocity" (Hotfix B)
+
+## DESCRIPTION
+This update focuses on achieving strict standard compliance and cross-platform portability. It eliminates non-standard C extensions, ensuring the library compiles cleanly under strict C11 environments (e.g., `gcc -std=c11 -pedantic`) while maintaining full backend fidelity.
+
+## CRITICAL FIXES
+
+*   **Strict C11 Syntax:** Replaced all instances of C++ style empty struct initialization (`{}`) with the universal zero initializer (`{0}`). This resolves syntax errors in strict C compilers throughout the Vulkan backend and internal structures.
+
+*   **Portability Layer:** Replaced non-standard POSIX string functions (`strdup`, `strcasecmp`) and threading calls (`usleep`) with internal, standard-compliant helper implementations (`_sit_strdup`, `_sit_strcasecmp`, `nanosleep`). Added necessary feature test macros (`_POSIX_C_SOURCE`) to correctly expose system headers on Linux/macOS.
+
+*   **Control Flow Refactoring:** Rewrote `SituationCreateVirtualDisplay` to eliminate `goto` statements and fix variable scoping issues. This prevents "jump bypasses initialization" warnings and improves code safety during resource cleanup.
+
+*   **Math Constants:** Added fallback definitions for `M_PI_2` to ensure compilation on MSVC and strict C11 math environments where non-standard constants are not defined by default.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-22
 Version: 2.3.4A "Velocity" (Hotfix)
 
 ## DESCRIPTION
