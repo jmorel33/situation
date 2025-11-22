@@ -1,186 +1,203 @@
-/*
- * GPU Particle Simulation and Rendering
- *
- * This example demonstrates a powerful technique where a compute shader is used
- * to simulate particle physics, and a traditional graphics pipeline is used to
- * render the results. The key is that both pipelines operate on the same
- * buffer of particle data on the GPU, avoiding costly CPU-GPU data transfers
- * each frame.
- */
+/***************************************************************************************************
+*   Situation Library - Example: GPU Particle System
+*   ------------------------------------------------
+*   This example demonstrates a high-performance particle system where 
+*   simulation AND rendering happen entirely on the GPU.
+*
+*   Key Concepts:
+*   1. Shared Buffer: One buffer acts as an SSBO (for Compute) and a VBO (for Drawing).
+*   2. Compute Shader: Updates physics (Gravity, Velocity, Bounds).
+*   3. Pipeline Barrier: Ensures Physics is done before Drawing starts.
+*   4. Instanced Rendering: Drawing 100,000 quads with a single draw call.
+*
+***************************************************************************************************/
 
 #define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL // Or SITUATION_USE_VULKAN
-#define SITUATION_ENABLE_SHADER_COMPILER // Required for the compute shader
-#include "../situation.h"
-
-// Standard C libraries and cglm for math.
-#include <stdio.h>
-#include <stdlib.h>
+#define SITUATION_ENABLE_SHADER_COMPILER
+#include "situation.h"
 #include <cglm/cglm.h>
 
-// --- Particle Data Structure ---
-// This struct defines the data for a single particle.
-// It will be mirrored in the GLSL shaders.
+// --- Configuration ---
+#define PARTICLE_COUNT 100000 // 100k Particles
+
+// --- Data Structures ---
+// This matches the layout in both C and GLSL.
 typedef struct {
-    vec2 position; // Current position of the particle
-    vec2 velocity; // Current velocity of the particle
-    vec4 color;    // Color of the particle (not used in this simple example)
+    vec2 pos; // Position (x, y)
+    vec2 vel; // Velocity (vx, vy)
+    vec4 col; // Color (r, g, b, a)
 } Particle;
 
-// --- Constants ---
-#define PARTICLE_COUNT 10000
-
 // --- Global Handles ---
-static SituationComputePipeline g_particle_update_pipeline = {0}; // The compute shader for physics
-static SituationShader g_particle_render_pipeline = {0};           // The graphics shader for drawing
-static SituationBuffer g_particle_buffer = {0};                    // The GPU buffer holding all particle data
-static SituationMesh g_particle_mesh = {0};                        // A simple quad mesh to represent each particle
+static SituationComputePipeline g_compute_pipeline = {0};
+static SituationShader g_render_pipeline = {0};
+static SituationBuffer g_particle_buffer = {0};
+static SituationMesh g_quad_mesh = {0};
 
-// --- GLSL Shaders ---
+// --- Shaders ---
 
-// Compute Shader: Updates particle positions and velocities based on simple physics.
-const char* particle_compute_shader_source =
-"#version 450\n"
-// The Particle struct must match the C host code for memory layout compatibility.
-"struct Particle { vec2 pos; vec2 vel; vec4 col; };\n"
-// The buffer of particles, bound at binding point 0.
-"layout(std430, binding = 0) buffer ParticleBuffer { Particle particles[]; } particle_buffer;\n"
-// Define the local workgroup size. 256 is a common choice.
-"layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;\n"
-"void main() {\n"
-"    uint index = gl_GlobalInvocationID.x; // Get the unique index for this particle.
-"
-"    if (index >= 10000) return; // Boundary check.
-"
-"    // Simple physics simulation: apply velocity and a constant downward force (gravity).
-"
-"    particle_buffer.particles[index].vel.y -= 0.0001; // Apply gravity
-"
-"    particle_buffer.particles[index].pos += particle_buffer.particles[index].vel * 0.1; // Apply velocity
-"
-"    // Simple boundary check to wrap particles around the screen.
-"
-"    if (particle_buffer.particles[index].pos.y < -1.0) particle_buffer.particles[index].pos.y = 1.0;
-"
-"}\n";
+// 1. Compute Shader (Physics)
+static const char* cs_src =
+    "#version 450\n"
+    "layout(local_size_x = 256) in;\n"
+    
+    "struct Particle { vec2 pos; vec2 vel; vec4 col; };\n"
+    
+    "layout(std430, set = 0, binding = 0) buffer PBuffer { Particle p[]; } particles;\n"
+    
+    "void main() {\n"
+    "    uint idx = gl_GlobalInvocationID.x;\n"
+    "    if (idx >= 100000) return;\n"
+    
+    "    // Apply Gravity\n"
+    "    particles.p[idx].vel.y -= 0.0005;\n"
+    
+    "    // Apply Velocity\n"
+    "    particles.p[idx].pos += particles.p[idx].vel;\n"
+    
+    "    // Bounce off floor (-1.0 is bottom of screen)\n"
+    "    if (particles.p[idx].pos.y < -1.0) {\n"
+    "        particles.p[idx].pos.y = -1.0;\n"
+    "        particles.p[idx].vel.y *= -0.8; // Lose energy\n"
+    "    }\n"
+    "}\n";
 
-// Vertex Shader: Renders the particles using instancing.
-const char* particle_vertex_shader_source =
-"#version 450\n"
-// The input is a single vertex from our quad mesh.
-"layout(location = 0) in vec2 inPosition;\n"
-// The Particle struct, matching the compute shader and C code.
-"struct Particle { vec2 pos; vec2 vel; vec4 col; };\n"
-// The same particle buffer, bound at binding point 0, but marked as read-only.
-"layout(std430, binding = 0) readonly buffer ParticleBuffer { Particle particles[]; } particle_buffer;\n"
-"void main() {\n"
-"    // `gl_InstanceID` gives us the index of the current particle we are rendering.
-"
-"    // We fetch its position from the buffer.
-"
-"    vec2 particle_pos = particle_buffer.particles[gl_InstanceID].pos;\n"
-"    // We construct the final vertex position by taking the particle's center position
-"
-"    // and adding the offset of the quad's vertex, scaled down to create a small point.
-"
-"    gl_Position = vec4(particle_pos + inPosition * 0.01, 0.0, 1.0);\n"
-"}\n";
+// 2. Vertex Shader (Rendering)
+static const char* vs_src =
+    "#version 450\n"
+    "layout(location = 0) in vec2 inQuadPos;\n" // From Mesh
+    
+    "struct Particle { vec2 pos; vec2 vel; vec4 col; };\n"
+    
+    // We bind the SAME buffer as a Storage Buffer here
+    "layout(std430, binding = 0) readonly buffer PBuffer { Particle p[]; } particles;\n"
+    
+    "layout(location = 0) out vec4 fragColor;\n"
+    
+    "void main() {\n"
+    "    // gl_InstanceID tells us which particle we are drawing\n"
+    "    Particle p = particles.p[gl_InstanceID];\n"
+    
+    "    vec2 finalPos = p.pos + (inQuadPos * 0.005); // Scale quad down\n"
+    "    gl_Position = vec4(finalPos, 0.0, 1.0);\n"
+    "    fragColor = p.col;\n"
+    "}\n";
 
-// Fragment Shader: Outputs a solid color for each particle.
-const char* particle_fragment_shader_source =
-"#version 450\n"
-"out vec4 outColor;\n"
-"void main() { outColor = vec4(1.0, 0.8, 0.4, 1.0); }\n"; // A nice orange color
+// 3. Fragment Shader (Rendering)
+static const char* fs_src =
+    "#version 450\n"
+    "layout(location = 0) in vec4 fragColor;\n"
+    "out vec4 outColor;\n"
+    "void main() { outColor = fragColor; }\n";
 
 
 // --- Initialization ---
-// Sets up all GPU resources needed for the simulation.
-void init_particle_system() {
-    // 1. Create the compute and graphics shader pipelines.
-    g_particle_update_pipeline = SituationCreateComputePipelineFromMemory(particle_compute_shader_source);
-    g_particle_render_pipeline = SituationLoadShaderFromMemory(particle_vertex_shader_source, particle_fragment_shader_source);
-
-    // 2. Create the main particle buffer on the GPU.
-    // First, we create initial data on the CPU.
-    Particle* initial_particles = malloc(PARTICLE_COUNT * sizeof(Particle));
-    for (int i = 0; i < PARTICLE_COUNT; ++i) {
-        initial_particles[i].position[0] = (rand() / (float)RAND_MAX) * 2.0f - 1.0f; // Random X
-        initial_particles[i].position[1] = (rand() / (float)RAND_MAX) * 2.0f - 1.0f; // Random Y
-        initial_particles[i].velocity[0] = ((rand() / (float)RAND_MAX) * 2.0f - 1.0f) * 0.01; // Random initial velocity
-        initial_particles[i].velocity[1] = ((rand() / (float)RAND_MAX) * 2.0f - 1.0f) * 0.01;
+int init_resources() {
+    // 1. Generate Initial Particles
+    Particle* data = (Particle*)malloc(PARTICLE_COUNT * sizeof(Particle));
+    for (int i = 0; i < PARTICLE_COUNT; i++) {
+        // Random position [-1, 1]
+        data[i].pos[0] = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+        data[i].pos[1] = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+        // Random velocity
+        data[i].vel[0] = (((float)rand() / RAND_MAX) - 0.5f) * 0.01f;
+        data[i].vel[1] = (((float)rand() / RAND_MAX) - 0.5f) * 0.01f;
+        // Color based on ID
+        data[i].col[0] = (float)(i % 255) / 255.0f; // R
+        data[i].col[1] = 0.5f;                      // G
+        data[i].col[2] = 1.0f;                      // B
+        data[i].col[3] = 1.0f;                      // A
     }
-    // Now, create the GPU buffer and upload the initial data.
-    // The buffer is marked as both a storage buffer (for compute) and a vertex buffer (for graphics).
-    g_particle_buffer = SituationCreateBuffer(PARTICLE_COUNT * sizeof(Particle), initial_particles,
-        SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_VERTEX_BUFFER);
-    free(initial_particles); // Free the CPU-side copy.
 
-    // 3. Create a simple quad mesh. We will draw this mesh once for each particle (instancing).
-    static const float quad_vertices[] = { -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0 };
-    static const uint32_t quad_indices[] = { 0, 1, 2, 0, 2, 3 };
-    g_particle_mesh = SituationCreateMesh(quad_vertices, 4, sizeof(float)*2, quad_indices, 6);
+    // 2. Create Shared Buffer
+    // This is the critical part. Usage flags allow it to be used for EVERYTHING.
+    g_particle_buffer = SituationCreateBuffer(
+        PARTICLE_COUNT * sizeof(Particle),
+        data,
+        SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_VERTEX_BUFFER
+    );
+    free(data);
+
+    // 3. Create Pipelines
+    g_compute_pipeline = SituationCreateComputePipelineFromMemory(cs_src, SIT_COMPUTE_LAYOUT_ONE_SSBO);
+    g_render_pipeline = SituationLoadShaderFromMemory(vs_src, fs_src);
+
+    // 4. Create Quad Mesh (for instancing)
+    float quad_verts[] = { -1,-1,  1,-1,  1,1,  -1,1 };
+    uint32_t quad_inds[] = { 0,1,2, 0,2,3 };
+    g_quad_mesh = SituationCreateMesh(quad_verts, 4, sizeof(float)*2, quad_inds, 6);
+
+    if (g_particle_buffer.id == 0 || g_compute_pipeline.id == 0) return -1;
+    return 0;
 }
 
-// --- Per-Frame Simulation and Rendering ---
-// This function is called every frame to update and draw the particles.
-void run_particle_simulation_frame() {
+// --- Render Loop ---
+void render_frame() {
     if (!SituationAcquireFrameCommandBuffer()) return;
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
-    // --- 1. COMPUTE PASS ---
-    // This pass updates the particle data.
-    SituationCmdBindComputePipeline(cmd, g_particle_update_pipeline);
-    SituationCmdBindComputeBuffer(cmd, 0, g_particle_buffer);
-    // Dispatch the compute shader. We calculate the number of workgroups needed.
+    // --- STEP 1: PHYSICS (Compute) ---
+    SituationCmdBindComputePipeline(cmd, g_compute_pipeline);
+    SituationCmdBindDescriptorSet(cmd, 0, g_particle_buffer);
+    
+    // 100,000 particles / 256 threads per group = ~391 groups
     SituationCmdDispatch(cmd, (PARTICLE_COUNT + 255) / 256, 1, 1);
 
-    // --- 2. SYNCHRONIZATION BARRIER ---
-    // This is a CRITICAL step. It ensures that the compute shader's writes to the
-    // particle buffer are finished and visible before the vertex shader tries to
-    // read from that same buffer in the rendering pass.
-    SituationCmdPipelineBarrier(cmd,
-        SITUATION_BARRIER_COMPUTE_SHADER_WRITE, // Source: The compute shader wrote to the buffer.
-        SITUATION_BARRIER_VERTEX_SHADER_READ);  // Destination: The vertex shader will read from it.
+    // --- STEP 2: BARRIER ---
+    // Wait for Physics (Compute Write) -> Before Drawing (Vertex Read)
+    SituationCmdPipelineBarrier(cmd, 
+        SITUATION_BARRIER_COMPUTE_SHADER_WRITE, 
+        SITUATION_BARRIER_VERTEX_SHADER_READ
+    );
 
-    // --- 3. RENDER PASS ---
-    // This pass draws the updated particles to the screen.
-    SituationCmdBeginRenderToDisplay(cmd, -1, (ColorRGBA){10, 20, 30, 255}); // Dark blue background
-    SituationCmdBindPipeline(cmd, g_particle_render_pipeline);
-    // Bind the particle buffer again, this time for the graphics pipeline.
-    SituationCmdBindStorageBuffer(cmd, 0, g_particle_buffer);
-    // Draw the quad mesh `PARTICLE_COUNT` times. The vertex shader uses `gl_InstanceID`
-    // to fetch the correct data for each instance.
-    SituationCmdDrawMeshInstanced(cmd, g_particle_mesh, PARTICLE_COUNT);
-    SituationCmdEndRender(cmd);
+    // --- STEP 3: DRAWING (Graphics) ---
+    SituationRenderPassInfo pass = {
+        .display_id = -1,
+        .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = {10, 10, 20, 255} } }
+    };
 
-    // Finalize the frame and present it.
+    SituationCmdBeginRenderPass(cmd, &pass);
+    
+    SituationCmdBindPipeline(cmd, g_render_pipeline);
+    
+    // Bind the same buffer so the Vertex Shader can read the positions
+    SituationCmdBindDescriptorSet(cmd, 0, g_particle_buffer);
+
+    // Draw the Quad Mesh 100,000 times
+    // Arg 1: Index Count (6 for a quad)
+    // Arg 2: Instance Count (100,000 particles)
+    // Arg 3: First Index
+    // Arg 4: Vertex Offset
+    // Arg 5: First Instance
+    SituationCmdDrawIndexed(cmd, 6, PARTICLE_COUNT, 0, 0, 0);
+    
+    SituationCmdEndRenderPass(cmd);
     SituationEndFrame();
 }
 
 // --- Cleanup ---
-// Releases all GPU resources.
-void cleanup_particle_system() {
-    SituationDestroyComputePipeline(&g_particle_update_pipeline);
-    SituationUnloadShader(&g_particle_render_pipeline);
-    SituationDestroyBuffer(&g_particle_buffer);
-    SituationDestroyMesh(&g_particle_mesh);
+void cleanup_resources() {
+    if (g_particle_buffer.id) SituationDestroyBuffer(&g_particle_buffer);
+    if (g_quad_mesh.id) SituationDestroyMesh(&g_quad_mesh);
+    if (g_render_pipeline.id) SituationUnloadShader(&g_render_pipeline);
+    if (g_compute_pipeline.id) SituationDestroyComputePipeline(&g_compute_pipeline);
 }
 
-// --- Main Application Entry ---
-int main(int argc, char* argv[]) {
-    SituationInitInfo init_info = { .window_title = "GPU Particles" };
-    if (SituationInit(argc, argv, &init_info) != SITUATION_SUCCESS) return -1;
+// --- Main ---
+int main(int argc, char** argv) {
+    SituationInitInfo config = { .window_title = "Situation - GPU Particles", .window_width = 1280, .window_height = 720 };
+    if (SituationInit(argc, argv, &config) != SITUATION_SUCCESS) return -1;
+    if (init_resources() != 0) return -1;
 
-    init_particle_system();
+    printf("Simulating %d Particles on GPU.\n", PARTICLE_COUNT);
 
-    // Main application loop.
-    while(!SituationWindowShouldClose()) {
-        SituationPollInputEvents();
-        SituationUpdateTimers();
-        run_particle_simulation_frame(); // Update and render particles each frame.
+    while (!SituationWindowShouldClose()) {
+        SITUATION_BEGIN_FRAME();
+        render_frame();
     }
 
-    cleanup_particle_system();
+    cleanup_resources();
     SituationShutdown();
     return 0;
 }

@@ -1,164 +1,135 @@
-// Include situation.h, defining the implementation and graphics backend.
-// This must be done in exactly one C or C++ file.
+/***************************************************************************************************
+*   Situation Library - Example: Interactive Basic Triangle
+*   -----------------------------------------------------
+*   This example demonstrates the "Low Level" API with interaction.
+*   Unlike the Quad example, here WE write the shader and WE manage the data.
+*
+*   Key Concepts:
+*   1. GLSL Uniforms: Adding variables (uOffset) to a custom shader.
+*   2. SituationSetShaderUniform: Sending CPU data to the GPU.
+*   3. Manual Geometry: Defining the triangle shape explicitly.
+*
+*   Controls:
+*   - ARROW KEYS: Move the triangle.
+*
+***************************************************************************************************/
+
 #define SITUATION_IMPLEMENTATION
-#define SITUATION_USE_OPENGL // Or SITUATION_USE_VULKAN
-#include "../situation.h"
+#define SITUATION_USE_OPENGL
+#include "situation.h"
 
-// Standard C libraries for I/O, memory allocation, and types.
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-
-// --- Vertex Data for a Simple Triangle ---
-// This struct defines the layout of our vertex data in memory.
-// Each vertex has a 3D position (x, y, z) and a 3-component color (r, g, b).
+// --- 1. The Data ---
+// We define the shape manually.
 typedef struct {
     float position[3];
     float color[3];
 } Vertex;
 
-// An array of vertices for our triangle.
-// Using an index buffer is a best practice as it reduces data duplication
-// for more complex models.
 static const Vertex triangle_vertices[] = {
-    {{ 0.0f,  0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}}, // Top vertex, red
-    {{-0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}}, // Bottom-left vertex, green
-    {{ 0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}}  // Bottom-right vertex, blue
+    {{ 0.0f,  0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}}, // Top Red
+    {{-0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}}, // Left Green
+    {{ 0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}}  // Right Blue
 };
-// The index buffer tells the GPU the order in which to draw the vertices.
 static const uint32_t triangle_indices[] = { 0, 1, 2 };
 
-// --- Simple Vertex and Fragment Shaders ---
-// GLSL shader source code, embedded as strings.
-// The vertex shader is responsible for transforming vertex positions.
-static const char* vertex_shader_source =
-"#version 450 core\n"
-"layout(location = 0) in vec3 inPosition;\n" // Corresponds to Vertex.position
-"layout(location = 1) in vec3 inColor;\n"    // Corresponds to Vertex.color
-"layout(location = 0) out vec3 fragColor;\n" // Pass color to the fragment shader
-"void main() {\n"
-"    gl_Position = vec4(inPosition, 1.0);\n" // Output the final vertex position
-"    fragColor = inColor;\n"                   // Pass the color through
-"}\n";
+// --- 2. The Shaders (Modified for Interaction) ---
+static const char* vertex_shader_src =
+    "#version 450 core\n"
+    "layout(location = 0) in vec3 inPos;\n"
+    "layout(location = 1) in vec3 inColor;\n"
+    
+    "// [NEW] A Uniform is a global variable we set from C code\n"
+    "uniform vec2 uOffset;\n" 
 
-// The fragment shader determines the final color of each pixel.
-static const char* fragment_shader_source =
-"#version 450 core\n"
-"layout(location = 0) in vec3 fragColor;\n" // Receive color from the vertex shader
-"out vec4 outColor;\n"                      // The final output color of the pixel
-"void main() {\n"
-"    outColor = vec4(fragColor, 1.0);\n"    // Output the color with full alpha
-"}\n";
+    "layout(location = 0) out vec3 fragColor;\n"
+    
+    "void main() {\n"
+    "    // Add the offset to the position\n"
+    "    vec3 finalPos = inPos + vec3(uOffset, 0.0);\n" 
+    "    gl_Position = vec4(finalPos, 1.0);\n"
+    "    fragColor = inColor;\n"
+    "}\n";
 
-// --- Global Handles ---
-// These global variables will hold the handles to our GPU resources.
-static SituationShader g_shader_pipeline = {0};
-static SituationMesh g_triangle_mesh = {0};
+static const char* fragment_shader_src =
+    "#version 450 core\n"
+    "layout(location = 0) in vec3 fragColor;\n"
+    "out vec4 outColor;\n"
+    "void main() {\n"
+    "    outColor = vec4(fragColor, 1.0);\n"
+    "}\n";
 
-// --- Initialization ---
-// This function sets up all the necessary GPU resources.
+// --- Global State ---
+static SituationShader g_pipeline = {0};
+static SituationMesh g_mesh = {0};
+static vec2 g_triangle_pos = {0.0f, 0.0f}; // CPU-side state
+
+// --- Setup ---
 int init_resources() {
-    // 1. Create the shader pipeline from our GLSL source code.
-    g_shader_pipeline = SituationLoadShaderFromMemory(vertex_shader_source, fragment_shader_source);
-    if (g_shader_pipeline.id == 0) {
-        fprintf(stderr, "Failed to load shader: %s\n", SituationGetLastErrorMsg());
-        return -1; // Return -1 to indicate failure
+    g_pipeline = SituationLoadShaderFromMemory(vertex_shader_src, fragment_shader_src);
+    if (g_pipeline.id == 0) {
+        char* err = SituationGetLastErrorMsg();
+        fprintf(stderr, "%s\n", err);
+        free(err);
+        return -1;
     }
 
-    // 2. Create the triangle mesh on the GPU.
-    g_triangle_mesh = SituationCreateMesh(
-        triangle_vertices, // Pointer to the vertex data
-        3,                 // Number of vertices
-        sizeof(Vertex),    // The size of a single vertex struct
-        triangle_indices,  // Pointer to the index data
-        3                  // Number of indices
-    );
-    if (g_triangle_mesh.id == 0) {
-        fprintf(stderr, "Failed to create mesh: %s\n", SituationGetLastErrorMsg());
-        return -1; // Return -1 to indicate failure
-    }
-
-    return 0; // Success
+    g_mesh = SituationCreateMesh(triangle_vertices, 3, sizeof(Vertex), triangle_indices, 3);
+    return (g_mesh.id != 0) ? 0 : -1;
 }
 
-// --- Cleanup ---
-// This function releases all the GPU resources that were allocated.
-void cleanup_resources() {
-    // It's good practice to check if the resource ID is non-zero before destroying.
-    if (g_triangle_mesh.id != 0) {
-        SituationDestroyMesh(&g_triangle_mesh);
-    }
-    if (g_shader_pipeline.id != 0) {
-        SituationUnloadShader(&g_shader_pipeline);
-    }
-}
-
-// --- Main Rendering Function ---
-// This function is called every frame to draw the scene.
+// --- Render Loop ---
 void render_frame() {
-    // Prepare for a new frame. This is essential for synchronization.
-    if (!SituationAcquireFrameCommandBuffer()) {
-        return; // Skip rendering if we can't acquire the command buffer
-    }
-
-    // Get the main command buffer for recording rendering commands.
+    if (!SituationAcquireFrameCommandBuffer()) return;
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
-    // Begin a rendering pass, clearing the screen to a dark blue color.
-    SituationCmdBeginRenderToDisplay(cmd, -1, (ColorRGBA){ 20, 20, 30, 255 });
+    SituationRenderPassInfo pass = {
+        .display_id = -1,
+        .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = { 20, 20, 30, 255 } } }
+    };
 
-    // Bind our shader pipeline. All subsequent draw calls will use this shader.
-    SituationCmdBindPipeline(cmd, g_shader_pipeline);
+    SituationCmdBeginRenderPass(cmd, &pass);
+    
+    // 1. Bind the pipeline (Load the shader program)
+    SituationCmdBindPipeline(cmd, g_pipeline);
 
-    // Issue the command to draw our triangle mesh.
-    SituationCmdDrawMesh(cmd, g_triangle_mesh);
+    // 2. [NEW] Update the Uniform
+    // We send our C variable 'g_triangle_pos' to the GLSL variable 'uOffset'
+    // Note: In OpenGL this happens immediately.
+    SituationSetShaderUniform(g_pipeline, "uOffset", &g_triangle_pos, SIT_UNIFORM_VEC2);
 
-    // End the rendering pass.
-    SituationCmdEndRender(cmd);
-
-    // Finalize the frame and present it to the screen.
+    // 3. Draw the mesh
+    SituationCmdDrawMesh(cmd, g_mesh);
+    
+    SituationCmdEndRenderPass(cmd);
     SituationEndFrame();
 }
 
-// --- Main Application Entry ---
-int main(int argc, char* argv[]) {
-    // Initialize the situation.h library with desired window properties.
-    SituationInitInfo init_info = {0};
-    init_info.window_title = "situation.h - Basic Triangle";
-    init_info.window_width = 800;
-    init_info.window_height = 600;
+int main(int argc, char** argv) {
+    SituationInitInfo config = {0};
+    config.window_title = "Situation - Interactive Triangle";
+    config.window_width = 800;
+    config.window_height = 600;
 
-    // SituationInit creates the window and initializes the graphics context.
-    SituationError err = SituationInit(argc, argv, &init_info);
-    if (err != SITUATION_SUCCESS) {
-        fprintf(stderr, "Failed to initialize situation.h: %s\n", SituationGetLastErrorMsg());
-        return -1;
-    }
+    if (SituationInit(argc, argv, &config) != SITUATION_SUCCESS) return -1;
+    if (init_resources() != 0) return -1;
 
-    // Create our shaders and meshes.
-    if (init_resources() != 0) {
-        SituationShutdown(); // Clean up the library if resource creation fails
-        return -1;
-    }
+    printf("Controls: ARROW KEYS to move the triangle.\n");
 
-    printf("Running... Close the window to quit.\n");
-
-    // The main application loop.
     while (!SituationWindowShouldClose()) {
-        // Process all pending window and input events.
-        SituationPollInputEvents();
+        SITUATION_BEGIN_FRAME();
 
-        // Update internal timers.
-        SituationUpdateTimers();
+        // --- Input Logic ---
+        float speed = 1.5f * SituationGetFrameTime();
+        if (SituationIsKeyDown(SIT_KEY_LEFT))  g_triangle_pos[0] -= speed;
+        if (SituationIsKeyDown(SIT_KEY_RIGHT)) g_triangle_pos[0] += speed;
+        if (SituationIsKeyDown(SIT_KEY_UP))    g_triangle_pos[1] += speed;
+        if (SituationIsKeyDown(SIT_KEY_DOWN))  g_triangle_pos[1] -= speed;
 
-        // Render the current frame.
         render_frame();
     }
 
-    // Clean up all resources before exiting.
-    cleanup_resources();
+    if (g_mesh.id) SituationDestroyMesh(&g_mesh);
+    if (g_pipeline.id) SituationUnloadShader(&g_pipeline);
     SituationShutdown();
-
     return 0;
 }

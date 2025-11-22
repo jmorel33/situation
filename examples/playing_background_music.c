@@ -1,96 +1,136 @@
-/*
- * Playing Background Music
- *
- * This example demonstrates how to load and play a sound file for background music.
- * It is designed to fail gracefully if the specified audio file is not found.
- */
+/***************************************************************************************************
+*   Situation Library - Example: Background Music & DSP
+*   ---------------------------------------------------
+*   This example demonstrates the Audio Subsystem.
+*   
+*   Key Concepts:
+*   1. Streaming vs Preloading: Using SITUATION_AUDIO_LOAD_STREAM for long music files.
+*   2. Playback Control: Play, Stop, Volume, Pitch.
+*   3. Real-Time DSP: Applying Reverb to the music.
+*
+*   Prerequisites:
+*   - "assets/audio/music.mp3" (or .wav/.ogg)
+*
+*   Controls:
+*   - UP/DOWN:   Volume
+*   - LEFT/RIGHT: Pitch (Speed)
+*   - SPACE:     Toggle Reverb
+*
+***************************************************************************************************/
 
 #define SITUATION_IMPLEMENTATION
-#define SITUATION_USE_OPENGL // Or SITUATION_USE_VULKAN
-#include "../situation.h"
-#include <stdio.h>
+#define SITUATION_USE_OPENGL
+#include "situation.h"
 
-// --- Global Sound Handle ---
-// We store the handle to our sound in a global variable.
-static SituationSound g_background_music = {0};
+// --- Configuration ---
+#define MUSIC_PATH "assets/audio/music.mp3"
 
-// --- NOTE ---
-// This example requires an audio file (e.g., in .ogg, .wav, or .mp3 format)
-// located at "assets/audio/background.ogg".
-// You will need to provide this file yourself for the audio to actually play.
-// The underlying audio engine is miniaudio, which supports many common formats.
+// --- Global State ---
+static SituationSound g_music = {0};
+static bool g_reverb_enabled = false;
 
 // --- Initialization ---
-// Loads and configures the background music.
 int init_audio() {
-    const char* music_path = "assets/audio/background.ogg";
+    // Load Sound
+    // Mode: SITUATION_AUDIO_LOAD_STREAM
+    //       This tells the engine NOT to decode the whole file to RAM.
+    //       Instead, it reads small chunks from disk as needed.
+    //       This is vital for long music tracks (saves ~50MB RAM per track).
+    // Looping: true
+    SituationError err = SituationLoadSoundFromFile(
+        MUSIC_PATH, 
+        SITUATION_AUDIO_LOAD_STREAM, 
+        true, // Loop
+        &g_music
+    );
 
-    // Load the sound from the specified file path.
-    // This function will allocate resources and decode the audio data.
-    g_background_music = SituationLoadSoundFromFile(music_path);
-
-    // Check if loading was successful. The handle's ID will be non-zero on success.
-    if (g_background_music.id == 0) {
-        fprintf(stderr, "Warning: Failed to load background music (%s): %s\n", music_path, SituationGetLastErrorMsg());
-    } else {
-        // If loaded successfully, we can configure and play it.
-        printf("Background music loaded successfully.\n");
-
-        // Set the sound to loop. This is common for background music.
-        SituationSetSoundLooping(g_background_music, true);
-
-        // Start playing the sound.
-        SituationPlaySound(g_background_music);
-    }
-    return 0;
-}
-
-// --- Cleanup ---
-// Stops and destroys the sound resources to prevent memory leaks.
-void cleanup_audio() {
-    // Only try to clean up if the sound was loaded successfully.
-    if (g_background_music.id != 0) {
-        // Stop playback before destroying the sound.
-        SituationStopSound(g_background_music);
-
-        // Release all resources associated with the sound.
-        SituationDestroySound(&g_background_music);
-    }
-}
-
-// --- Main Application Entry ---
-int main(int argc, char* argv[]) {
-    SituationInitInfo init_info = {0};
-    init_info.window_title = "situation.h - Audio Test";
-    init_info.window_width = 800;
-    init_info.window_height = 600;
-    // Initializing the library also initializes the audio engine.
-    if (SituationInit(argc, argv, &init_info) != SITUATION_SUCCESS) {
-        fprintf(stderr, "Failed to initialize situation.h: %s\n", SituationGetLastErrorMsg());
+    if (err != SITUATION_SUCCESS) {
+        fprintf(stderr, "Failed to load music: %s\n", SituationGetLastErrorMsg());
         return -1;
     }
 
-    // Load and play our audio.
-    init_audio();
+    // Start Playback
+    SituationPlayLoadedSound(&g_music);
+    
+    printf("Playing: %s\n", MUSIC_PATH);
+    return 0;
+}
 
-    printf("Audio playing (if loaded). Running... Close window to stop.\n");
+// --- Update Logic ---
+void update_audio_controls() {
+    // Volume Control
+    float vol = SituationGetSoundVolume(&g_music);
+    if (SituationIsKeyDown(SIT_KEY_UP))   vol += 0.01f;
+    if (SituationIsKeyDown(SIT_KEY_DOWN)) vol -= 0.01f;
+    
+    // Clamp 0.0 to 1.0
+    if (vol < 0.0f) vol = 0.0f;
+    if (vol > 1.0f) vol = 1.0f;
+    SituationSetSoundVolume(&g_music, vol);
 
-    // The main loop does not need any specific audio calls.
-    // The sound plays in the background on a separate thread.
+    // Pitch Control
+    float pitch = SituationGetSoundPitch(&g_music);
+    if (SituationIsKeyDown(SIT_KEY_RIGHT)) pitch += 0.01f;
+    if (SituationIsKeyDown(SIT_KEY_LEFT))  pitch -= 0.01f;
+    SituationSetSoundPitch(&g_music, pitch);
+
+    // Reverb Toggle
+    if (SituationIsKeyPressed(SIT_KEY_SPACE)) {
+        g_reverb_enabled = !g_reverb_enabled;
+        
+        // Apply Reverb Effect
+        // Room Size: 0.8 (Large Hall)
+        // Damping:   0.5 (Medium Wall Absorption)
+        // Wet Mix:   0.5 (50% Reverb sound)
+        // Dry Mix:   0.8 (80% Original sound)
+        SituationSetSoundReverb(&g_music, g_reverb_enabled, 0.8f, 0.5f, 0.5f, 0.8f);
+        
+        printf("Reverb: %s\n", g_reverb_enabled ? "ON" : "OFF");
+    }
+}
+
+// --- Cleanup ---
+void cleanup_audio() {
+    if (g_music.is_initialized) {
+        SituationStopLoadedSound(&g_music);
+        SituationUnloadSound(&g_music);
+    }
+}
+
+// --- Main ---
+int main(int argc, char** argv) {
+    SituationInitInfo config = { 
+        .window_title = "Situation - Audio Player",
+        .window_width = 600, 
+        .window_height = 400 
+    };
+
+    if (SituationInit(argc, argv, &config) != SITUATION_SUCCESS) return -1;
+
+    if (init_audio() != 0) {
+        // Don't exit, just print error, so we can see the window
+        printf("Audio failed to load. Ensure '%s' exists.\n", MUSIC_PATH);
+    }
+
+    printf("Controls:\n [UP/DOWN] Volume\n [L/R] Pitch\n [SPACE] Reverb\n");
+
     while (!SituationWindowShouldClose()) {
-        SituationPollInputEvents();
-        SituationUpdateTimers();
+        SITUATION_BEGIN_FRAME();
+        update_audio_controls();
 
-        // A minimal render loop to keep the window open and responsive.
+        // Minimal Render to keep window alive
         if (SituationAcquireFrameCommandBuffer()) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
-            SituationCmdBeginRenderToDisplay(cmd, -1, (ColorRGBA){ 40, 40, 60, 255 }); // Dark purple background
-            SituationCmdEndRender(cmd);
+            SituationRenderPassInfo pass = {
+                .display_id = -1,
+                .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = {20, 20, 20, 255} } }
+            };
+            SituationCmdBeginRenderPass(cmd, &pass);
+            SituationCmdEndRenderPass(cmd);
             SituationEndFrame();
         }
     }
 
-    // Clean up audio resources before shutting down.
     cleanup_audio();
     SituationShutdown();
     return 0;
