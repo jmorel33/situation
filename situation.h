@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4B "Velocity" (Hotfix B)
+*   Core API library v2.3.4C "Velocity" (Hotfix C)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "B"
+#define SITUATION_VERSION_REVISION "C"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -1929,6 +1929,36 @@ typedef struct {
 
 #endif // SITUATION_USE_VULKAN
 
+#elif defined(SITUATION_USE_OPENGL)
+typedef struct {
+    // VD Rendering Shader and Quad
+    GLuint vd_shader_program_id; // Cache the currently bound program
+    GLuint vd_quad_vao;
+    GLuint vd_quad_vbo;
+    mat4 vd_ortho_projection;  // Store precomputed ortho matrix for main window
+    double last_vd_composite_time_ms;  // Profiling info
+
+    // ADVANCED COMPOSITING
+    GLuint composite_shader_program_id;
+    GLuint composite_copy_texture_id;
+
+    GLuint view_data_ubo_id;
+    
+    // The "Public" VAO
+    GLuint global_vao_id;
+    
+    // Quad renderer state
+    GLuint quad_shader_program;
+    GLuint quad_vao;
+    GLuint quad_vbo;
+    GLuint current_program_id; 
+
+    #if defined(SITUATION_ENABLE_SHADER_COMPILER)
+    bool arb_spirv_available;
+    #endif
+} _SituationGLState;
+#endif // SITUATION_USE_OPENGL
+	
 // --- Static Global State ---
 typedef struct {
     char last_error_msg[SITUATION_MAX_ERROR_MSG_LEN];
@@ -1963,34 +1993,13 @@ typedef struct {
     GLFWwindow* sit_glfw_window;
 
     SituationRendererType renderer_type;
-    // [NEW] Debug consistency tracking
+    // Debug consistency tracking
     bool debug_draw_command_issued_this_frame; 
     // Backend-specific state
 #if defined(SITUATION_USE_VULKAN)
     _SituationVulkanState vk;
 #elif defined(SITUATION_USE_OPENGL)
-    // VD Rendering Shader and Quad
-    GLuint vd_shader_program_id;
-    GLuint vd_quad_vao;
-    GLuint vd_quad_vbo;
-    mat4 vd_ortho_projection; // Store precomputed ortho matrix for main window
-    double last_vd_composite_time_ms; // Profiling info
-
-    // ADVANCED COMPOSITING
-    GLuint composite_shader_program_id;
-    GLuint composite_copy_texture_id;
-
-    GLuint view_data_ubo_id;
-    
-    // The "Public" VAO for all user-driven rendering commands.
-    // This VAO is bound after initialization and remains bound during the user's render loop.
-    GLuint global_vao_id;
-    
-    // Quad renderer state
-    GLuint quad_shader_program;
-    GLuint quad_vao;
-    GLuint quad_vbo;
-    GLuint current_gl_program_id; // Cache the currently bound program
+	_SituationGLState gl;
 #endif
     
     ma_context sit_miniaudio_context;
@@ -3455,20 +3464,20 @@ static void _SituationGLFWFramebufferSizeCallback(GLFWwindow* window, int width,
     glViewport(0, 0, width, height);
 
     // Update orthographic projection matrix for Virtual Display compositing
-    glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, sit_gs.vd_ortho_projection);
+    glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, sit_gs.gl.vd_ortho_projection);
 
     // Resize the texture used for advanced compositing
-    if (sit_gs.composite_copy_texture_id != 0) {
-        glBindTexture(GL_TEXTURE_2D, sit_gs.composite_copy_texture_id);
+    if (sit_gs.gl.composite_copy_texture_id != 0) {
+        glBindTexture(GL_TEXTURE_2D, sit_gs.gl.composite_copy_texture_id);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
     // Update the projection matrix for the internal quad renderer.
-    if (sit_gs.quad_shader_program) {
+    if (sit_gs.gl.quad_shader_program) {
         mat4 proj_quad;
         glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, proj_quad);
-        glProgramUniformMatrix4fv(sit_gs.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)proj_quad);
+        glProgramUniformMatrix4fv(sit_gs.gl.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)proj_quad);
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -4620,9 +4629,9 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     // Note: Absence of ARB_gl_spirv is NOT a fatal error. It just means we must fallback to GLSL.
     // The refactored _SituationCreateGLComputeProgram handles this logic.
-    sit_gs.gl.arb_gl_spirv_available = GLAD_GL_ARB_gl_spirv;
+    sit_gs.gl.arb_spirv_available = GLAD_GL_ARB_gl_spirv;
     // Optional debug log:
-    // if (!sit_gs.gl.arb_gl_spirv_available) {
+    // if (!sit_gs.gl.arb_spirv_available) {
     //     fprintf(stdout, "INFO: GL_ARB_gl_spirv not available. OpenGL compute shaders will use standard GLSL path.\n");
     // }
 #endif // SITUATION_ENABLE_SHADER_COMPILER
@@ -4656,7 +4665,7 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     SituationError shader_err_code = SITUATION_SUCCESS;
 
     // a. Create Shaders for Virtual Display Compositing
-    sit_gs.vd_shader_program_id = _SituationCreateGLShaderProgram(SIT_VD_VERTEX_SHADER_SRC, SIT_VD_FRAGMENT_SHADER_SRC, &shader_err_code);
+    sit_gs.gl.vd_shader_program_id = _SituationCreateGLShaderProgram(SIT_VD_VERTEX_SHADER_SRC, SIT_VD_FRAGMENT_SHADER_SRC, &shader_err_code);
     if (shader_err_code != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(shader_err_code, "_SituationInitOpenGL: Failed to create standard virtual display shader.");
         // Cleanup global VAO
@@ -4666,30 +4675,30 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         return shader_err_code;
     }
 
-    sit_gs.composite_shader_program_id = _SituationCreateGLShaderProgram(SIT_COMPOSITE_VERTEX_SHADER_SRC, SIT_COMPOSITE_FRAGMENT_SHADER_SRC, &shader_err_code);
+    sit_gs.gl.composite_shader_program_id = _SituationCreateGLShaderProgram(SIT_COMPOSITE_VERTEX_SHADER_SRC, SIT_COMPOSITE_FRAGMENT_SHADER_SRC, &shader_err_code);
     if (shader_err_code != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(shader_err_code, "_SituationInitOpenGL: Failed to create advanced compositing shader.");
         // Cleanup global VAO and first shader
         glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
         sit_gs.gl.global_vao_id = 0;
-        glDeleteProgram(sit_gs.vd_shader_program_id);
-        sit_gs.vd_shader_program_id = 0;
+        glDeleteProgram(sit_gs.gl.vd_shader_program_id);
+        sit_gs.gl.vd_shader_program_id = 0;
         // Assume _SituationInitQuadRenderer cleaned up after itself on failure
         return shader_err_code;
     }
 
     // b. Initialize the Virtual Display Quad Renderer
-    // This function is responsible for creating sit_gs.vd_quad_vao/vbo, configuring them for a simple textured quad, and unbinding them, ensuring sit_gs.gl.global_vao_id is bound again at the end.
+    // This function is responsible for creating sit_gs.gl.vd_quad_vao/vbo, configuring them for a simple textured quad, and unbinding them, ensuring sit_gs.gl.global_vao_id is bound again at the end.
     // You need to implement this function, similar to _SituationInitQuadRenderer.
     if (!_SituationInitGLVirtualDisplayRenderer()) { // <-- You need this function
          _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal virtual display renderer.");
          // Cleanup global VAO and shaders
         glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
         sit_gs.gl.global_vao_id = 0;
-        glDeleteProgram(sit_gs.vd_shader_program_id);
-        sit_gs.vd_shader_program_id = 0;
-        glDeleteProgram(sit_gs.composite_shader_program_id);
-        sit_gs.composite_shader_program_id = 0;
+        glDeleteProgram(sit_gs.gl.vd_shader_program_id);
+        sit_gs.gl.vd_shader_program_id = 0;
+        glDeleteProgram(sit_gs.gl.composite_shader_program_id);
+        sit_gs.gl.composite_shader_program_id = 0;
         // Assume _SituationInitQuadRenderer cleaned up after itself on failure
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
@@ -4701,10 +4710,10 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         // Cleanup global VAO, shaders, and VD renderer resources
         glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
         sit_gs.gl.global_vao_id = 0;
-        glDeleteProgram(sit_gs.vd_shader_program_id);
-        sit_gs.vd_shader_program_id = 0;
-        glDeleteProgram(sit_gs.composite_shader_program_id);
-        sit_gs.composite_shader_program_id = 0;
+        glDeleteProgram(sit_gs.gl.vd_shader_program_id);
+        sit_gs.gl.vd_shader_program_id = 0;
+        glDeleteProgram(sit_gs.gl.composite_shader_program_id);
+        sit_gs.gl.composite_shader_program_id = 0;
         // Assume _SituationInitVirtualDisplayRenderer cleaned up after itself on failure
         // Assume _SituationInitQuadRenderer cleaned up after itself on failure
         return SITUATION_ERROR_OPENGL_GENERAL;
@@ -8663,9 +8672,9 @@ static bool _SituationInitQuadRenderer(int width, int height) {
  */
 static void _SituationCleanupQuadRenderer(void) {
 #if defined(SITUATION_USE_OPENGL)
-    if (sit_gs.quad_shader_program) { glDeleteProgram(sit_gs.quad_shader_program); sit_gs.quad_shader_program = 0; }
-    if (sit_gs.quad_vao) { glDeleteVertexArrays(1, &sit_gs.quad_vao); sit_gs.quad_vao = 0; }
-    if (sit_gs.quad_vbo) { glDeleteBuffers(1, &sit_gs.quad_vbo); sit_gs.quad_vbo = 0; }
+    if (sit_gs.gl.quad_shader_program) { glDeleteProgram(sit_gs.gl.quad_shader_program); sit_gs.gl.quad_shader_program = 0; }
+    if (sit_gs.gl.quad_vao) { glDeleteVertexArrays(1, &sit_gs.gl.quad_vao); sit_gs.gl.quad_vao = 0; }
+    if (sit_gs.gl.quad_vbo) { glDeleteBuffers(1, &sit_gs.gl.quad_vbo); sit_gs.gl.quad_vbo = 0; }
 
 #elif defined(SITUATION_USE_VULKAN)
     if (sit_gs.vk.device) {
@@ -8696,13 +8705,13 @@ static void _SituationCleanupOpenGL(void) {
     // The OpenGL context is still active here.
     // Clean up all library-managed GL objects.
     _SituationCleanupQuadRenderer();
-    if (sit_gs.vd_shader_program_id != 0) glDeleteProgram(sit_gs.vd_shader_program_id);
-    if (sit_gs.composite_shader_program_id != 0) glDeleteProgram(sit_gs.composite_shader_program_id);
-    if (sit_gs.global_vao_id != 0) { glDeleteVertexArrays(1, &sit_gs.global_vao_id); sit_gs.global_vao_id = 0; }
-    if (sit_gs.vd_quad_vao != 0) glDeleteVertexArrays(1, &sit_gs.vd_quad_vao);
-    if (sit_gs.vd_quad_vbo != 0) glDeleteBuffers(1, &sit_gs.vd_quad_vbo);
-    if (sit_gs.composite_copy_texture_id != 0) glDeleteTextures(1, &sit_gs.composite_copy_texture_id);
-    if (sit_gs.view_data_ubo_id != 0) glDeleteBuffers(1, &sit_gs.view_data_ubo_id);
+    if (sit_gs.gl.vd_shader_program_id != 0) glDeleteProgram(sit_gs.gl.vd_shader_program_id);
+    if (sit_gs.gl.composite_shader_program_id != 0) glDeleteProgram(sit_gs.gl.composite_shader_program_id);
+    if (sit_gs.gl.global_vao_id != 0) { glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id); sit_gs.gl.global_vao_id = 0; }
+    if (sit_gs.gl.vd_quad_vao != 0) glDeleteVertexArrays(1, &sit_gs.gl.vd_quad_vao);
+    if (sit_gs.gl.vd_quad_vbo != 0) glDeleteBuffers(1, &sit_gs.gl.vd_quad_vbo);
+    if (sit_gs.gl.composite_copy_texture_id != 0) glDeleteTextures(1, &sit_gs.gl.composite_copy_texture_id);
+    if (sit_gs.gl.view_data_ubo_id != 0) glDeleteBuffers(1, &sit_gs.gl.view_data_ubo_id);
 }
 #endif // SITUATION_USE_OPENGL
 
@@ -10473,12 +10482,12 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
             sit_gs.frame_triangle_count += 2;
 
             #if defined(SITUATION_USE_OPENGL)
-                glUseProgram(sit_gs.quad_shader_program);
+                glUseProgram(sit_gs.gl.quad_shader_program);
                 glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model);
                 glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec);
                 glUniform4fv(5, 1, (const GLfloat*)uv_rect);
                 glUniform1i(6, use_texture);
-                glBindVertexArray(sit_gs.quad_vao);
+                glBindVertexArray(sit_gs.gl.quad_vao);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             #elif defined(SITUATION_USE_VULKAN)
                 // Vulkan binding logic (pipeline/buffers) assumed already set by CmdBindTexture call above or reused
@@ -10759,9 +10768,9 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 co
 
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
-    if (sit_gs.quad_shader_program == 0) return;
+    if (sit_gs.gl.quad_shader_program == 0) return;
 
-    glUseProgram(sit_gs.quad_shader_program);
+    glUseProgram(sit_gs.gl.quad_shader_program);
     glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model);
     glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color);
     
@@ -10769,7 +10778,7 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 co
     glUniform4fv(5, 1, (const GLfloat*)uv_rect); // Location 5 from shader
     glUniform1i(6, use_texture);                 // Location 6 from shader
 
-    glBindVertexArray(sit_gs.quad_vao);
+    glBindVertexArray(sit_gs.gl.quad_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
     glUseProgram(0);
@@ -10968,15 +10977,9 @@ SITAPI uint64_t SituationGetVRAMUsage(void) {
     // --- 2. WINDOWS DXGI (Universal on Windows) ---
 #if defined(_WIN32) && defined(SITUATION_ENABLE_DXGI)
     if (sit_gs.is_com_initialized) {
-        // We need IDXGIFactory4 -> EnumAdapters -> IDXGIAdapter3 -> QueryVideoMemoryInfo
-        // This is a bit heavy to create/destroy every frame. 
-        // Optimization: In a real engine, cache the IDXGIAdapter3 pointer in sit_gs.
-        // For this "Zero Friction" library, we do it safely but potentially slowly.
-        
         IDXGIFactory4* pFactory = NULL;
         if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory4), (void**)&pFactory)) && pFactory) {
             IDXGIAdapter3* pAdapter3 = NULL;
-            // Enum adapter 0 (usually the primary discrete GPU)
             IDXGIAdapter* pAdapterTemp = NULL;
             if (SUCCEEDED(pFactory->EnumAdapters(0, &pAdapterTemp))) {
                 if (SUCCEEDED(pAdapterTemp->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&pAdapter3))) {
@@ -10985,7 +10988,7 @@ SITAPI uint64_t SituationGetVRAMUsage(void) {
                         pAdapter3->Release();
                         pAdapterTemp->Release();
                         pFactory->Release();
-                        return info.CurrentUsage; // Returns bytes directly
+                        return info.CurrentUsage;
                     }
                     pAdapter3->Release();
                 }
@@ -10998,35 +11001,44 @@ SITAPI uint64_t SituationGetVRAMUsage(void) {
 
     // --- 3. OPENGL EXTENSIONS (Linux / Windows without DXGI) ---
 #if defined(SITUATION_USE_OPENGL)
-    // NVIDIA Extension
-    // Returns total available memory in KB, current available in KB.
-    #define GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX    0x9048
-    #define GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX  0x9049
     
-    // Check if extension is supported (GLAD macro)
-    if (GLAD_GL_NVX_gpu_memory_info) {
-        GLint total_kb = 0;
-        GLint current_kb = 0;
-        glGetIntegerv(GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX, &total_kb);
-        glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &current_kb);
-        // Usage = Total - Available
-        return (uint64_t)(total_kb - current_kb) * 1024;
-    }
+    // NVIDIA Extension
+    // Guard: Only run this if GLAD defines the extension macro
+    #ifdef GL_NVX_gpu_memory_info
+        // Constants might not be defined if the extension isn't in headers, so define them safely
+        #ifndef GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX
+            #define GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX    0x9048
+        #endif
+        #ifndef GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
+            #define GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX  0x9049
+        #endif
+
+        if (GLAD_GL_NVX_gpu_memory_info) {
+            GLint total_kb = 0;
+            GLint current_kb = 0;
+            glGetIntegerv(GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX, &total_kb);
+            glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &current_kb);
+            // Usage = Total - Available
+            return (uint64_t)(total_kb - current_kb) * 1024;
+        }
+    #endif
 
     // AMD Extension
-    // Returns: [0]=Total Free, [1]=Largest Free Block, [2]=Total Aux Free, [3]=Largest Aux Free
-    #define GL_TEXTURE_FREE_MEMORY_ATI 0x87FC
-    if (GLAD_GL_ATI_meminfo) {
-        GLint mem_info[4];
-        glGetIntegerv(GL_TEXTURE_FREE_MEMORY_ATI, mem_info);
-        // ATI only reports *Free* memory, not *Used* memory.
-        // To get Used, we need Total - Free. 
-        // Since we don't strictly know "Total" without querying OS/DXGI, this is tricky.
-        // However, we can return (TotalSystemVRAM - Free), if we cached Total in GetDeviceInfo.
-        // For now, we can't reliably return "Usage" without "Total", so we skip or return 0.
-        // Alternatively, returning the inverted value is misleading.
-        return 0; 
-    }
+    // Guard: Only run this if GLAD defines the extension macro
+    #ifdef GL_ATI_meminfo
+        #ifndef GL_TEXTURE_FREE_MEMORY_ATI
+            #define GL_TEXTURE_FREE_MEMORY_ATI 0x87FC
+        #endif
+
+        if (GLAD_GL_ATI_meminfo) {
+            GLint mem_info[4];
+            glGetIntegerv(GL_TEXTURE_FREE_MEMORY_ATI, mem_info);
+            // ATI only reports Free memory. Without Total, we can't calc Usage accurately.
+            // Returning 0 is safer than returning a misleading number.
+            return 0; 
+        }
+    #endif
+
 #endif
 
     return 0;
@@ -12756,7 +12768,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
 
     // --- Dispatch to OpenGL Creation Helper ---
     // Pass the source and explicitly state it's GLSL.
-    // The refactored _SituationCreateGLComputeProgram handles internal logic, including checking sit_gs.gl.arb_gl_spirv_available if it receives SPIR-V internally.
+    // The refactored _SituationCreateGLComputeProgram handles internal logic, including checking sit_gs.gl.arb_spirv_available if it receives SPIR-V internally.
     pipeline.gl_program_id = _SituationCreateGLComputeProgram(
         (const void*)compute_shader_source, // Cast source string to generic pointer
         SITUATION_GL_SHADER_SOURCE_TYPE_GLSL, // Explicitly tell the function the type of data
@@ -16420,7 +16432,7 @@ static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
 SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     // --- Initial Checks ---
     if (!sit_gs.is_initialized || sit_gs.active_virtual_display_count == 0) {
-        sit_gs.last_vd_composite_time_ms = 0.0;
+        sit_gs.gl.last_vd_composite_time_ms = 0.0;
         return;
     }
 
@@ -16448,7 +16460,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
         }
     }
     if (visible_count == 0) {
-        sit_gs.last_vd_composite_time_ms = 0.0;
+        sit_gs.gl.last_vd_composite_time_ms = 0.0;
         return;
     }
 
@@ -16520,14 +16532,14 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
         bool use_advanced_shader = (vd->blend_mode >= SITUATION_BLEND_OVERLAY); 
         if (use_advanced_shader) {
             // --- ADVANCED SHADER PATH ---
-            glBindTexture(GL_TEXTURE_2D, sit_gs.composite_copy_texture_id);
+            glBindTexture(GL_TEXTURE_2D, sit_gs.gl.composite_copy_texture_id);
             glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
 
-            glUseProgram(sit_gs.composite_shader_program_id);
-            glUniformMatrix4fv(SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_gs.vd_ortho_projection);
+            glUseProgram(sit_gs.gl.composite_shader_program_id);
+            glUniformMatrix4fv(SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_gs.gl.vd_ortho_projection);
             glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
             
-            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_1, sit_gs.composite_copy_texture_id); // Destination
+            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_1, sit_gs.gl.composite_copy_texture_id); // Destination
             glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->texture_id);                  // Source
             
             glUniform1i(SIT_UNIFORM_LOC_BLEND_MODE, vd->blend_mode);
@@ -16538,8 +16550,8 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
 
         } else {
             // --- SIMPLE SHADER PATH ---
-            glUseProgram(sit_gs.vd_shader_program_id);
-            glUniformMatrix4fv(SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_gs.vd_ortho_projection);
+            glUseProgram(sit_gs.gl.vd_shader_program_id);
+            glUniformMatrix4fv(SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_gs.gl.vd_ortho_projection);
             glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
             glUniform1f(SIT_UNIFORM_LOC_OPACITY, vd->opacity);
             
@@ -16722,7 +16734,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     }
 #endif
     double end_time = glfwGetTime();
-    sit_gs.last_vd_composite_time_ms = (end_time - start_time) * 1000.0;
+    sit_gs.gl.last_vd_composite_time_ms = (end_time - start_time) * 1000.0;
 }
 
 /**
@@ -16830,7 +16842,7 @@ SITAPI bool SituationIsVirtualDisplayDirty(int display_id) {
  */
 SITAPI double SituationGetLastVDCompositeTimeMS(void) {
     if (!sit_gs.is_initialized) return 0.0;
-    return sit_gs.last_vd_composite_time_ms;
+    return sit_gs.gl.last_vd_composite_time_ms;
 }
 
 /**

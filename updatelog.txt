@@ -1,4 +1,30 @@
 Date: 2025-11-22
+Version: 2.3.4C "Velocity" (Hotfix C)
+
+## DESCRIPTION
+This update finalizes the strict C11 compliance overhaul and refactors the internal state architecture for better consistency between backends. It resolves several compilation errors related to function signatures and macro definitions that appeared when building against strict standards.
+
+## CRITICAL FIXES
+
+*   **Function Signature Mismatch:** Fixed a critical bug in `SituationCmdBindVertexBuffer` where the implementation signature did not match the header declaration, causing immediate compilation failure.
+
+*   **Extension Macro Safety:** Fixed `SituationGetVRAMUsage` to correctly guard GLAD extension macros (like `GL_NVX_gpu_memory_info`) with `#ifdef`. This prevents "undeclared identifier" errors when compiling with headers that don't include specific vendor extensions.
+
+*   **Control Flow Safety:** Refactored `SituationCreateVirtualDisplay` to replace `goto` error handling with a structured control flow. This eliminates potential "jump bypasses variable initialization" warnings in strict C modes.
+
+## INTERNAL REFACTORING
+
+*   **Global State Architecture:** Refactored the `_SituationGlobalStateContainer`. OpenGL state variables are now grouped into a dedicated `_SituationGLState` struct (`sit_gs.gl`), mirroring the Vulkan backend's structure. This improves code organization and maintainability.
+
+*   **Standard Compliance:**
+    *   Added `_POSIX_C_SOURCE` and `_XOPEN_SOURCE` feature macros to correctly expose system headers on Linux/macOS.
+    *   Replaced all C++ style empty initializers `{}` with C11 universal zero initializers `{0}`.
+    *   Implemented internal helpers `_sit_strdup` and `_sit_strcasecmp` to remove dependency on non-standard headers.
+    *   Replaced deprecated `usleep` with `nanosleep` for POSIX frame limiting.
+
+--------------------------------------------------------------------------------
+	
+Date: 2025-11-22
 Version: 2.3.4B "Velocity" (Hotfix B)
 
 ## DESCRIPTION
