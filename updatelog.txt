@@ -1,3 +1,27 @@
+
+Date: 2025-11-22
+Version: 2.3.4F "Velocity" (Hotfix F)
+
+## DESCRIPTION
+This update focuses purely on code hygiene and developer reference. It finalizes the internal state architecture by applying professional, line-by-line documentation to the global state container and its subsystems. It also adds comprehensive API documentation for several core modules.
+
+## INTERNAL REFACTORING
+
+*   **State Structure Finalization:** Completed the cleanup of `_SituationGlobalStateContainer`.
+    *   Moved all subsystem struct definitions (`_SituationKeyboardState`, `_SituationVulkanState`, etc.) outside the main container.
+    *   Applied "Professional Grade" formatting: Grouped fields by logical category and added explicit End-of-Line (EOL) comments for every single variable in the global state.
+
+## DOCUMENTATION
+
+*   **API Reference:** Added detailed Doxygen-style headers for the following functions:
+    *   **Display:** `SituationSetDisplayMode`, `SituationRefreshDisplays`, `_SituationGetCurrentDisplayIdentifier`, `_SituationCachePhysicalDisplays`.
+    *   **Filesystem:** `SituationGetUserDirectory`, `SituationLoadDroppedFiles`, `SituationUnloadDroppedFiles`.
+    *   **Input:** `SituationIsFileDropped`, `SituationSetFileDropCallback`, `SituationSetClipboardText`, `SituationGetClipboardText`.
+    *   **Lifecycle:** `SituationIsInitialized`, `_SituationCleanupDanglingResources`.
+    *   **Rendering:** `SituationCmdBeginRenderPass`, `SituationCmdEndRenderPass`.
+	
+--------------------------------------------------------------------------------
+
 Date: 2025-11-22
 Version: 2.3.4E "Velocity" (Hotfix E)
 

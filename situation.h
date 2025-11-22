@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4E "Velocity" (Hotfix E)
+*   Core API library v2.3.4E "Velocity" (Hotfix F)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "E"
+#define SITUATION_VERSION_REVISION "F"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -1852,86 +1852,109 @@ typedef struct {
  *          It also manages the swapchain, per-frame synchronization objects (Semaphores, Fences), 
  *          and the dynamic descriptor pool manager.
  */
-typedef struct {
-    VkInstance instance;
-    VkDebugUtilsMessengerEXT debug_messenger;
-    VkSurfaceKHR surface;
+ typedef struct {
+    // -------------------------------------------------------------------------
+    // Core API Objects
+    // -------------------------------------------------------------------------
+    VkInstance instance;                        // The Vulkan instance handle
+    VkDebugUtilsMessengerEXT debug_messenger;   // Handle for the debug callback (validation layers)
+    VkSurfaceKHR surface;                       // The window surface handle
+    VkPhysicalDevice physical_device;           // Handle to the selected physical GPU
+    VkDevice device;                            // The logical device handle
+    VmaAllocator vma_allocator;                 // The VMA memory allocator instance
 
-    VkPhysicalDevice physical_device;
-    VkDevice device;
-    VmaAllocator vma_allocator;
+    // -------------------------------------------------------------------------
+    // Queues
+    // -------------------------------------------------------------------------
+    VkQueue graphics_queue;                     // Queue handle for graphics/compute operations
+    VkQueue present_queue;                      // Queue handle for presentation operations
+    uint32_t graphics_family_index;             // Family index of the graphics queue
+    uint32_t present_family_index;              // Family index of the present queue
 
-    VkQueue graphics_queue;
-    VkQueue present_queue;
-    uint32_t graphics_family_index;
-    uint32_t present_family_index;
-
-    VkSwapchainKHR swapchain;
-    VkFormat swapchain_image_format;
-    VkExtent2D swapchain_extent;
-    VkImage* swapchain_images;
-    VkImageView* swapchain_image_views;
-    uint32_t swapchain_image_count;
-
-    VkCommandPool command_pool;
-    uint32_t max_frames_in_flight;
-    VkCommandBuffer* command_buffers;
-    VkSemaphore* image_available_semaphores;
-    VkSemaphore* render_finished_semaphores;
-    VkFence* in_flight_fences;
-    uint32_t current_frame_index;
-    uint32_t current_image_index;
-    uint32_t last_presented_image_index; 
-    bool framebuffer_resized;
-
-    VkImage depth_image;
-    VmaAllocation depth_image_memory;
-    VkImageView depth_image_view;
-    VkFormat depth_format;
-    VkDescriptorSetLayout ubo_layout;               // Layout for a single UBO
-    VkDescriptorSetLayout ssbo_layout;              // Layout for a single SSBO
-    VkDescriptorPool persistent_descriptor_pool;    // Pool for long-lived sets *** LEGACY***
-    VkDescriptorPool descriptor_pool;               // Current active pool
-    struct {
-        VkDescriptorPool* pools;
-        int count;
-        int capacity;
-        int current_index;
-    } descriptor_manager;
-    VkDescriptorSetLayout view_data_ubo_layout;     // Layout for the UBO
-    VkDescriptorSetLayout image_sampler_layout;     // Layout for a single image sampler
-    VkDescriptorSetLayout storage_buffer_layout;    // For binding a single SSBO
-    VkPipelineLayout current_pipeline_layout_for_push_constants; // Cache the layout of the currently bound pipeline
-    VkPipelineLayout current_compute_pipeline_layout;
-    VkPipelineLayout compute_layouts[5]; // Array to hold pre-created layouts, size matches enum
-
-    // --- Quad Renderer Resources ---
-    VkPipeline quad_pipeline;
-    VkPipelineLayout quad_pipeline_layout;
-    VkBuffer quad_vertex_buffer;
-    VmaAllocation quad_vertex_buffer_memory;
-
-    // --- VD Compositor Resources ---
-    VkPipeline vd_compositing_pipeline;
-    VkPipelineLayout vd_compositing_pipeline_layout;
-    VkPipeline advanced_compositing_pipeline;
-    VkPipelineLayout advanced_compositing_pipeline_layout;
-
-    // UBO for projection matrix for 2D renderers
-    VkBuffer* view_proj_ubo_buffer;
-    VmaAllocation* view_proj_ubo_memory;
-    VkDescriptorSet* view_proj_ubo_descriptor_set;
-
-    VkRenderPass main_window_render_pass;
-    VkFramebuffer* main_window_framebuffers;
-	
-    VkImage screen_copy_image;
-    VmaAllocation screen_copy_memory;
-    VkImageView screen_copy_view;
-    VkDescriptorSet screen_copy_descriptor_set; // To bind it to the shader
+    // -------------------------------------------------------------------------
+    // Swapchain & Presentation
+    // -------------------------------------------------------------------------
+    VkSwapchainKHR swapchain;                   // The active swapchain handle
+    VkFormat swapchain_image_format;            // The pixel format of swapchain images
+    VkExtent2D swapchain_extent;                // The resolution of swapchain images
+    VkImage* swapchain_images;                  // Array of handles to swapchain images
+    VkImageView* swapchain_image_views;         // Array of views for swapchain images
+    uint32_t swapchain_image_count;             // Number of images in the swapchain
     
-} _SituationVulkanState;
+    VkRenderPass main_window_render_pass;       // The default render pass for the window
+    VkFramebuffer* main_window_framebuffers;    // Array of framebuffers for the swapchain
 
+    VkImage depth_image;                        // The depth buffer image
+    VmaAllocation depth_image_memory;           // Memory allocation for the depth buffer
+    VkImageView depth_image_view;               // View for the depth buffer
+    VkFormat depth_format;                      // Format of the depth buffer
+
+    // -------------------------------------------------------------------------
+    // Per-Frame Synchronization & State
+    // -------------------------------------------------------------------------
+    VkCommandPool command_pool;                 // Main pool for allocating command buffers
+    uint32_t max_frames_in_flight;              // Number of frames processed concurrently (e.g., 2)
+    VkCommandBuffer* command_buffers;           // Array of per-frame command buffers
+    VkSemaphore* image_available_semaphores;    // Semaphores signaled when image is acquired
+    VkSemaphore* render_finished_semaphores;    // Semaphores signaled when rendering completes
+    VkFence* in_flight_fences;                  // Fences signaled when frame execution finishes
+    uint32_t current_frame_index;               // Index of the frame currently being recorded (0..max-1)
+    uint32_t current_image_index;               // Index of the swapchain image currently acquired
+    uint32_t last_presented_image_index;        // Index of the last presented image
+    bool framebuffer_resized;                   // Flag indicating window resize occurred
+
+    // -------------------------------------------------------------------------
+    // Descriptor Management
+    // -------------------------------------------------------------------------
+    VkDescriptorPool persistent_descriptor_pool;// Initial pool for long-lived resources
+    VkDescriptorPool descriptor_pool;           // Current active pool for allocations
+    
+    // Dynamic Pool Manager
+    struct {
+        VkDescriptorPool* pools;                // Dynamic array of descriptor pools
+        int count;                              // Number of pools created
+        int capacity;                           // Capacity of the pools array
+        int current_index;                      // Index of the currently active pool
+    } descriptor_manager;
+
+    // Standard Layouts
+    VkDescriptorSetLayout ubo_layout;           // Layout for generic UBOs
+    VkDescriptorSetLayout ssbo_layout;          // Layout for generic SSBOs
+    VkDescriptorSetLayout view_data_ubo_layout; // Layout for the global View UBO
+    VkDescriptorSetLayout image_sampler_layout; // Layout for combined image samplers
+    VkDescriptorSetLayout storage_buffer_layout;// Layout for storage buffers (redundant with ssbo?)
+    VkDescriptorSetLayout storage_image_layout; // Layout for storage images
+    
+    // Compute Pipeline Layout Cache
+    VkPipelineLayout current_pipeline_layout_for_push_constants; // Last bound graphics layout
+    VkPipelineLayout current_compute_pipeline_layout;            // Last bound compute layout
+    VkPipelineLayout compute_layouts[5];                         // Pre-created standard layouts
+
+    // -------------------------------------------------------------------------
+    // Internal Renderers Resources
+    // -------------------------------------------------------------------------
+    VkPipeline quad_pipeline;                                    // Pipeline for 2D Quad renderer
+    VkPipelineLayout quad_pipeline_layout;                       // Layout for 2D Quad renderer
+    VkBuffer quad_vertex_buffer;                                 // Vertex buffer for unit quad
+    VmaAllocation quad_vertex_buffer_memory;                     // Memory for quad vertex buffer
+
+    VkPipeline vd_compositing_pipeline;                          // Pipeline for simple VD composition
+    VkPipelineLayout vd_compositing_pipeline_layout;             // Layout for simple VD composition
+    VkPipeline advanced_compositing_pipeline;                    // Pipeline for advanced blend modes
+    VkPipelineLayout advanced_compositing_pipeline_layout;       // Layout for advanced blend modes
+
+    // Global UBOs (Per-Frame)
+    VkBuffer* view_proj_ubo_buffer;                              // Array of View UBOs
+    VmaAllocation* view_proj_ubo_memory;                         // Array of View UBO memory
+    VkDescriptorSet* view_proj_ubo_descriptor_set;               // Array of View UBO descriptor sets
+
+    // Screen Copy Resources (for advanced blending)
+    VkImage screen_copy_image;                                   // Image for copying framebuffer
+    VmaAllocation screen_copy_memory;                            // Memory for screen copy
+    VkImageView screen_copy_view;                                // View for screen copy
+    VkDescriptorSet screen_copy_descriptor_set;                  // Descriptor set for reading screen copy
+
+} _SituationVulkanState;
 #endif // SITUATION_USE_VULKAN
 
 #elif defined(SITUATION_USE_OPENGL)
@@ -1941,31 +1964,32 @@ typedef struct {
  *          This includes internal shaders (Quad, Virtual Display), global buffers (UBOs), 
  *          and caching variables for optimizing state changes.
  */
-typedef struct {
-    // VD Rendering Shader and Quad
-    GLuint vd_shader_program_id; // Cache the currently bound program
-    GLuint vd_quad_vao;
-    GLuint vd_quad_vbo;
-    mat4 vd_ortho_projection;  // Store precomputed ortho matrix for main window
-    double last_vd_composite_time_ms;  // Profiling info
+ typedef struct {
+    // -------------------------------------------------------------------------
+    // Internal Renderers (Virtual Display & Quad)
+    // -------------------------------------------------------------------------
+    GLuint vd_shader_program_id;                // Shader program for basic Virtual Display composition
+    GLuint vd_quad_vao;                         // Private VAO for full-screen quad rendering
+    GLuint vd_quad_vbo;                         // Private VBO for full-screen quad geometry
+    mat4 vd_ortho_projection;                   // Orthographic projection matrix matching the window size
+    double last_vd_composite_time_ms;           // Profiling timer for the composition pass
 
-    // ADVANCED COMPOSITING
-    GLuint composite_shader_program_id;
-    GLuint composite_copy_texture_id;
+    GLuint composite_shader_program_id;         // Shader program for advanced blending modes
+    GLuint composite_copy_texture_id;           // Texture used to copy the framebuffer for advanced blending
 
-    GLuint view_data_ubo_id;
+    GLuint quad_shader_program;                 // Shader program for the 2D Quad/Text renderer
+    GLuint quad_vao;                            // Private VAO for 2D quads
+    GLuint quad_vbo;                            // Private VBO for 2D quads
     
-    // The "Public" VAO
-    GLuint global_vao_id;
-    
-    // Quad renderer state
-    GLuint quad_shader_program;
-    GLuint quad_vao;
-    GLuint quad_vbo;
-    GLuint current_program_id; 
+    // -------------------------------------------------------------------------
+    // Global Resources & State
+    // -------------------------------------------------------------------------
+    GLuint view_data_ubo_id;                    // Handle to the global View/Projection UBO
+    GLuint global_vao_id;                       // The "Public" VAO active during user rendering commands
+    GLuint current_program_id;                  // Cache of the currently bound shader program ID
 
     #if defined(SITUATION_ENABLE_SHADER_COMPILER)
-    bool arb_spirv_available;
+    bool arb_spirv_available;                   // True if GL_ARB_gl_spirv extension is supported
     #endif
 } _SituationGLState;
 #endif // SITUATION_USE_OPENGL
@@ -1975,29 +1999,36 @@ typedef struct {
  * @details Tracks the current/previous state of all keys, handles the event-driven queue 
  *          for polling APIs (GetKeyPressed), and manages modifier/lock key flags.
  */
-typedef struct {
-    bool current_state[GLFW_KEY_LAST + 1];    // Current key state (pressed=true)
-    bool last_state[GLFW_KEY_LAST + 1];       // Previous frame’s state
-    bool down_this_frame[GLFW_KEY_LAST + 1];  // Pressed this frame
-    bool up_this_frame[GLFW_KEY_LAST + 1];    // Released this frame
+ typedef struct {
+    // -------------------------------------------------------------------------
+    // State Tracking
+    // -------------------------------------------------------------------------
+    bool current_state[GLFW_KEY_LAST + 1];      // State of each key in the current frame (true = held)
+    bool last_state[GLFW_KEY_LAST + 1];         // State of each key in the previous frame
+    bool down_this_frame[GLFW_KEY_LAST + 1];    // Flag set if key was pressed down during this frame
+    bool up_this_frame[GLFW_KEY_LAST + 1];      // Flag set if key was released during this frame
 
-    // Keyboard Ring Buffers
-    int pressed_queue[SITUATION_KEY_QUEUE_MAX];
-    uint32_t pressed_head; // Write index
-    uint32_t pressed_tail; // Read index
+    // -------------------------------------------------------------------------
+    // Event Queues (Thread-Safe Ring Buffers)
+    // -------------------------------------------------------------------------
+    int pressed_queue[SITUATION_KEY_QUEUE_MAX];             // Queue of raw key codes pressed
+    uint32_t pressed_head;                                  // Write index for key queue
+    uint32_t pressed_tail;                                  // Read index for key queue
     
-    unsigned int char_queue[SITUATION_CHAR_QUEUE_MAX];
-    uint32_t char_head;
-    uint32_t char_tail;
+    unsigned int char_queue[SITUATION_CHAR_QUEUE_MAX];      // Queue of Unicode codepoints (text input)
+    uint32_t char_head;                                     // Write index for char queue
+    uint32_t char_tail;                                     // Read index for char queue
+    
+    ma_mutex event_queue_mutex;                             // Mutex protecting concurrent access to ring buffers
 
-    int modifier_state;                       // Current modifier flags (GLFW_MOD_*)
-    int lock_key_state;                       // Current lock key flags (Caps, Num)
-    bool is_scroll_lock_on;                   // Track the toggle state of Scroll Lock
-    SituationKeyCallback key_callback;        // Optional user callback
-    void* key_callback_user_data;
-    
-    // Moved mutex inside for consistency with Mouse/Joystick
-    ma_mutex event_queue_mutex; 
+    // -------------------------------------------------------------------------
+    // Modifiers & Callbacks
+    // -------------------------------------------------------------------------
+    int modifier_state;                         // Bitmask of currently active modifier keys (Shift, Ctrl, Alt)
+    int lock_key_state;                         // Bitmask of currently active lock keys (Caps, Num)
+    bool is_scroll_lock_on;                     // Toggle state of the Scroll Lock key
+    SituationKeyCallback key_callback;          // User-defined callback invoked on key events
+    void* key_callback_user_data;               // User context pointer for the key callback
 } _SituationKeyboardState;
 
 /**
@@ -2005,32 +2036,43 @@ typedef struct {
  * @details Tracks cursor position (with virtual scaling/offset), button states, and scroll wheel delta.
  *          Includes a ring buffer for buffering rapid click events.
  */
-typedef struct {
-    vec2 current_pos;
-    vec2 last_pos;
-    vec2 offset; // For SetMouseOffset
-    vec2 scale;  // For SetMouseScale
-    float wheel_move_y;
-    float wheel_move_x; 
+ typedef struct {
+    // -------------------------------------------------------------------------
+    // Position & Movement
+    // -------------------------------------------------------------------------
+    vec2 current_pos;                           // Current cursor position in window client coordinates
+    vec2 last_pos;                              // Cursor position from the previous frame
+    vec2 offset;                                // Virtual offset applied to raw coordinates
+    vec2 scale;                                 // Virtual scale factor applied to raw coordinates
+    float wheel_move_y;                         // Vertical scroll delta for this frame
+    float wheel_move_x;                         // Horizontal scroll delta for this frame
     
-    bool current_button_state[GLFW_MOUSE_BUTTON_LAST + 1];
-    bool last_button_state[GLFW_MOUSE_BUTTON_LAST + 1]; 
-    
-    bool button_down_this_frame[GLFW_MOUSE_BUTTON_LAST + 1]; 
-    bool button_up_this_frame[GLFW_MOUSE_BUTTON_LAST + 1];
+    // -------------------------------------------------------------------------
+    // Button State
+    // -------------------------------------------------------------------------
+    bool current_button_state[GLFW_MOUSE_BUTTON_LAST + 1];  // State of each button (true = held)
+    bool last_button_state[GLFW_MOUSE_BUTTON_LAST + 1];     // State of each button in the previous frame
+    bool button_down_this_frame[GLFW_MOUSE_BUTTON_LAST + 1];// Flag set if button was pressed this frame
+    bool button_up_this_frame[GLFW_MOUSE_BUTTON_LAST + 1];  // Flag set if button was released this frame
 
-    // Mouse Ring Buffer
-    int button_queue[SITUATION_KEY_QUEUE_MAX];
-    uint32_t button_head;
-    uint32_t button_tail;
+    // -------------------------------------------------------------------------
+    // Event Queue (Thread-Safe Ring Buffer)
+    // -------------------------------------------------------------------------
+    int button_queue[SITUATION_KEY_QUEUE_MAX];  // Queue of mouse button press events
+    uint32_t button_head;                       // Write index for button queue
+    uint32_t button_tail;                       // Read index for button queue
     
-    SituationMouseButtonCallback button_callback;
-    void* button_callback_user_data;
-    SituationCursorPosCallback cursor_pos_callback;
-    void* cursor_pos_callback_user_data;
-    SituationScrollCallback scroll_callback;
-    void* scroll_callback_user_data;
-    ma_mutex mutex;
+    ma_mutex mutex;                             // Mutex protecting shared state (position, buttons, queue)
+
+    // -------------------------------------------------------------------------
+    // Callbacks
+    // -------------------------------------------------------------------------
+    SituationMouseButtonCallback button_callback;           // Callback for button press/release
+    void* button_callback_user_data;                        // Context for button callback
+    SituationCursorPosCallback cursor_pos_callback;         // Callback for cursor movement
+    void* cursor_pos_callback_user_data;                    // Context for cursor callback
+    SituationScrollCallback scroll_callback;                // Callback for scroll wheel events
+    void* scroll_callback_user_data;                        // Context for scroll callback
 } _SituationMouseState;
 
 /**
@@ -2038,21 +2080,31 @@ typedef struct {
  * @details Manages the connection state, axis values, and button states for up to 16 controllers.
  *          Handles both raw joystick input and mapped Gamepad input (SDL2 style).
  */
-typedef struct {
-    _SituationJoystickState state[SITUATION_MAX_JOYSTICKS];
-    SituationJoystickCallback callback;
-    void* callback_user_data; 
+ typedef struct {
+    // -------------------------------------------------------------------------
+    // Device State
+    // -------------------------------------------------------------------------
+    _SituationJoystickState state[SITUATION_MAX_JOYSTICKS]; // Array of state structs for each slot
     
-    // --- for thread-safe event queuing ---
-    _SituationJoystickEvent event_queue[SITUATION_MAX_JOYSTICKS]; 
-    int event_queue_count; 
+    // -------------------------------------------------------------------------
+    // Connection Event Queue (Thread-Safe)
+    // -------------------------------------------------------------------------
+    _SituationJoystickEvent event_queue[SITUATION_MAX_JOYSTICKS]; // Queue of connect/disconnect events
+    int event_queue_count;                                        // Number of pending events in the queue
+    ma_mutex event_queue_mutex;                                   // Mutex protecting the event queue
     
-    // Joystick Ring Buffer for buttons
-    int button_pressed_queue[SITUATION_KEY_QUEUE_MAX]; 
-    uint32_t button_head;
-    uint32_t button_tail;
+    // -------------------------------------------------------------------------
+    // Button Press Queue (Ring Buffer)
+    // -------------------------------------------------------------------------
+    int button_pressed_queue[SITUATION_KEY_QUEUE_MAX];      // Queue of gamepad button press events
+    uint32_t button_head;                                   // Write index for button queue
+    uint32_t button_tail;                                   // Read index for button queue
     
-    ma_mutex event_queue_mutex;
+    // -------------------------------------------------------------------------
+    // Callbacks
+    // -------------------------------------------------------------------------
+    SituationJoystickCallback callback;                     // User callback for connection events
+    void* callback_user_data;                               // User context for connection callback
 } _SituationJoystickManager;
 
 /**
@@ -2065,125 +2117,148 @@ typedef struct {
  *          safe default state for all pointers and flags. Backend-specific state is segregated 
  *          into `vk` (Vulkan) and `gl` (OpenGL) substructures to keep the namespace clean.
  */
-typedef struct {
-    char last_error_msg[SITUATION_MAX_ERROR_MSG_LEN];
-    ma_mutex error_mutex; // MUTEX
-    bool is_initialized;
-    bool is_com_initialized; // For Windows-specific features
-    
-    bool current_window_focus_state;
-    bool was_minimized_last_frame; // For minimize-based pause/resume
-    bool is_app_internally_paused;
-    bool was_window_resized_last_frame;
-    int windowed_x, windowed_y, windowed_w, windowed_h;
-    bool is_borderless_active;
-    SituationFocusCallback focus_callback_fn;
-    void* focus_callback_user_ptr;
-    uint32_t active_profile_window_flags;
-    uint32_t inactive_profile_window_flags;
+ typedef struct {
+    // -------------------------------------------------------------------------
+    // Core Lifecycle & Error Handling
+    // -------------------------------------------------------------------------
+    char last_error_msg[SITUATION_MAX_ERROR_MSG_LEN];         // Buffer for the last reported error message
+    ma_mutex error_mutex;                                     // Mutex protecting concurrent access to the error buffer
+    bool is_initialized;                                      // Flag indicating if SituationInit() has completed successfully
+    bool is_com_initialized;                                  // Flag indicating if Windows COM was initialized by this library
 
-    // --- File Drop Callback ---
-    SituationFileDropCallback file_drop_callback;
-    void* file_drop_user_data;
+    // -------------------------------------------------------------------------
+    // Window State Management
+    // -------------------------------------------------------------------------
+    GLFWwindow* sit_glfw_window;                              // The primary GLFW window handle
+    int main_window_width;                                    // Current width of the window's client area
+    int main_window_height;                                   // Current height of the window's client area
+    int windowed_x;                                           // Saved X position before entering fullscreen/borderless
+    int windowed_y;                                           // Saved Y position before entering fullscreen/borderless
+    int windowed_w;                                           // Saved width before entering fullscreen/borderless
+    int windowed_h;                                           // Saved height before entering fullscreen/borderless
     
-    SituationDisplayInfo* cached_physical_displays_array;
-    int cached_physical_display_count;
+    bool current_window_focus_state;                          // True if the window currently has input focus
+    bool was_minimized_last_frame;                            // State tracker for detecting minimize/restore transitions
+    bool is_app_internally_paused;                            // Master pause flag for suspending audio/updates
+    bool was_window_resized_last_frame;                       // Event flag indicating a resize occurred this frame
+    bool is_borderless_active;                                // True if "fake fullscreen" borderless mode is active
     
-    SituationVirtualDisplay virtual_display_slots[SITUATION_MAX_VIRTUAL_DISPLAYS];
-    int active_virtual_display_count;
-    bool virtual_display_slots_used[SITUATION_MAX_VIRTUAL_DISPLAYS];
-    
-    int main_window_width; // Store for viewport restoration, etc.
-    int main_window_height;
-    GLFWwindow* sit_glfw_window;
+    uint32_t active_profile_window_flags;                     // Target window flags to apply when focused
+    uint32_t inactive_profile_window_flags;                   // Target window flags to apply when unfocused
 
-    SituationRendererType renderer_type;
-    // Debug consistency tracking
-    bool debug_draw_command_issued_this_frame; 
-    // Backend-specific state
+    // -------------------------------------------------------------------------
+    // Graphics Backend State
+    // -------------------------------------------------------------------------
+    SituationRendererType renderer_type;                      // The active rendering API (OpenGL or Vulkan)
+    bool debug_draw_command_issued_this_frame;                // Debug flag to detect illegal state changes during a frame
+
 #if defined(SITUATION_USE_VULKAN)
-    _SituationVulkanState vk;
+    _SituationVulkanState vk;                                 // Encapsulated Vulkan-specific state handles
 #elif defined(SITUATION_USE_OPENGL)
-	_SituationGLState gl;
+    _SituationGLState gl;                                     // Encapsulated OpenGL-specific state handles
 #endif
+
+    // -------------------------------------------------------------------------
+    // Display & Virtual Display Subsystems
+    // -------------------------------------------------------------------------
+    SituationDisplayInfo* cached_physical_displays_array;     // Array of detected physical monitors
+    int cached_physical_display_count;                        // Number of valid entries in the display array
     
-    ma_context sit_miniaudio_context;
-    ma_device sit_miniaudio_device;
-    bool is_sit_miniaudio_context_initialized;
-    bool is_sit_miniaudio_device_active;
-    bool is_sit_miniaudio_device_internally_paused;
-    int current_sit_miniaudio_device_sitaudioinfo_id;
+    SituationVirtualDisplay virtual_display_slots[SITUATION_MAX_VIRTUAL_DISPLAYS]; // Static pool for virtual displays
+    bool virtual_display_slots_used[SITUATION_MAX_VIRTUAL_DISPLAYS];               // Allocation map for the virtual display pool
+    int active_virtual_display_count;                         // Count of currently allocated virtual displays
 
-    ma_device sit_capture_device;
-    bool is_capture_device_active;
-    SituationAudioCaptureCallback capture_callback;
-    void* capture_user_data;
-
-    // [NEW] Audio Capture Thread Safety
-    bool audio_capture_on_main_thread;
-    float* audio_capture_queue; // Circular buffer
-    size_t audio_capture_write_head;
-    size_t audio_capture_read_head;
-    size_t audio_capture_queue_capacity;
-    ma_mutex audio_capture_mutex;
+    // -------------------------------------------------------------------------
+    // Audio Subsystem (MiniAudio)
+    // -------------------------------------------------------------------------
+    ma_context sit_miniaudio_context;                         // The main MiniAudio context
+    ma_device sit_miniaudio_device;                           // The primary playback device
+    bool is_sit_miniaudio_context_initialized;                // True if the context was successfully created
+    bool is_sit_miniaudio_device_active;                      // True if the playback device is initialized
+    bool is_sit_miniaudio_device_internally_paused;           // True if playback is temporarily suspended (e.g. minimized)
+    int current_sit_miniaudio_device_sitaudioinfo_id;         // ID of the currently selected output device
     
-    SituationSound* sit_queued_sounds[SITUATION_MAX_AUDIO_SOUNDS_QUEUED];
-    int sit_queued_sound_count;
-    ma_mutex sit_audio_queue_mutex;
+    SituationSound* sit_queued_sounds[SITUATION_MAX_AUDIO_SOUNDS_QUEUED]; // Array of active sounds being mixed
+    int sit_queued_sound_count;                                           // Number of active sounds
+    ma_mutex sit_audio_queue_mutex;                                       // Mutex protecting the sound queue
     
-    SituationTimerSystem timer_system_instance;
+    // Pre-allocated temp buffers for the audio callback (avoids malloc on audio thread)
+    float* sit_audio_callback_decoder_temp_buffer;            // Scratch buffer for decoding PCM
+    float* sit_audio_callback_effects_temp_buffer;            // Scratch buffer for processing effects
+    float* sit_audio_callback_converter_temp_buffer;          // Scratch buffer for sample rate conversion
+    uint32_t sit_audio_callback_temp_buffer_frames_capacity;  // Size of the scratch buffers in frames
+
+    // -------------------------------------------------------------------------
+    // Audio Capture (Recording)
+    // -------------------------------------------------------------------------
+    ma_device sit_capture_device;                             // The primary recording device
+    bool is_capture_device_active;                            // True if recording is currently active
+    SituationAudioCaptureCallback capture_callback;           // User callback for processing recorded audio
+    void* capture_user_data;                                  // User context pointer for the capture callback
+
+    bool audio_capture_on_main_thread;                        // Configuration flag for main-thread dispatch
+    float* audio_capture_queue;                               // Ring buffer for transferring audio to main thread
+    size_t audio_capture_write_head;                          // Write index for the capture ring buffer
+    size_t audio_capture_read_head;                           // Read index for the capture ring buffer
+    size_t audio_capture_queue_capacity;                      // Total size of the capture ring buffer
+    ma_mutex audio_capture_mutex;                             // Mutex protecting the capture ring buffer
+
+    // -------------------------------------------------------------------------
+    // Input Subsystems
+    // -------------------------------------------------------------------------
+    _SituationKeyboardState keyboard;                         // Encapsulated keyboard state and event queue
+    _SituationMouseState mouse;                               // Encapsulated mouse state and position
+    _SituationJoystickManager joysticks;                      // Encapsulated joystick/gamepad manager
     
-    float* sit_audio_callback_decoder_temp_buffer;
-    float* sit_audio_callback_effects_temp_buffer;
-    float* sit_audio_callback_converter_temp_buffer;
-    uint32_t sit_audio_callback_temp_buffer_frames_capacity;
+    GLFWcursor* cursors[16];                                  // Array of standard system cursor handles
+    int cursor_count;                                         // Number of created cursors
 
-    // --- Input Subsystems (Cleaned up!) ---
-    _SituationKeyboardState keyboard;
-    _SituationMouseState mouse;
-    _SituationJoystickManager joysticks;
+    // -------------------------------------------------------------------------
+    // Timing & Profiling
+    // -------------------------------------------------------------------------
+    SituationTimerSystem timer_system_instance;               // The Temporal Oscillator system state
+    double current_time;                                      // Timestamp at the start of the current frame
+    double previous_time;                                     // Timestamp at the start of the previous frame
+    double frame_time;                                        // Calculated delta time (dt) for the last frame
+    double target_frame_time;                                 // Target duration per frame (1.0 / target_fps)
+    int    fps_frame_counter;                                 // Accumulator for frames rendered this second
+    double fps_last_update_time;                              // Timestamp of the last FPS calculation
+    int    current_fps;                                       // The most recently calculated FPS value
     
-    //ma_mutex sit_keyboard_event_queue_mutex;
-   
-    // --- Cursor Management ---
-    GLFWcursor* cursors[16]; // Array to hold standard cursor handles
-    int cursor_count;        // Number of cursors created
+    uint32_t frame_draw_calls;                                // Counter for draw commands issued this frame
+    uint32_t frame_triangle_count;                            // Estimate of triangles drawn this frame
 
-    // --- Frame Timing & FPS Management State ---
-    double current_time;            // Time at the beginning of the current frame
-    double previous_time;           // Time at the beginning of the previous frame
-    double frame_time;              // Time difference between current and previous frame (deltaTime)
-    double target_frame_time;       // The desired time per frame (1.0 / target_fps)
-    int    fps_frame_counter;       // Counts frames for FPS calculation
-    double fps_last_update_time;    // Last time the FPS was calculated
-    int    current_fps;             // The calculated FPS value
+    // -------------------------------------------------------------------------
+    // Application Callbacks
+    // -------------------------------------------------------------------------
+    void (*exit_callback)(void*);                             // Callback invoked just before shutdown
+    void* exit_callback_user_data;                            // User context for exit callback
+    void (*resize_callback)(int, int, void*);                 // Callback invoked on window resize
+    void* resize_callback_user_data;                          // User context for resize callback
+    SituationFocusCallback focus_callback_fn;                 // Callback invoked on window focus change
+    void* focus_callback_user_ptr;                            // User context for focus callback
+    SituationFileDropCallback file_drop_callback;             // Callback invoked on file drop
+    void* file_drop_user_data;                                // User context for file drop callback
 
-    // --- Profiling Metrics ---
-    uint32_t frame_draw_calls;      // Number of draw commands issued this frame
-    uint32_t frame_triangle_count;  // (Optional) Approximate triangle count
-	
-    // --- Application Callbacks ---
-    void (*exit_callback)(void*);
-    void* exit_callback_user_data;
-    void (*resize_callback)(int, int, void*);
-    void* resize_callback_user_data;
+    // -------------------------------------------------------------------------
+    // Environment & Filesystem
+    // -------------------------------------------------------------------------
+    int    argc;                                              // Command-line argument count
+    char** argv;                                              // Command-line argument vector
+    char** dropped_file_paths;                                // Array of paths dropped this frame (polling API)
+    int    dropped_file_count;                                // Number of paths dropped this frame
+    bool   file_was_dropped_this_frame;                       // Flag indicating if a drop event occurred
 
-    // --- Command-Line Arguments ---
-    int    argc;
-    char** argv;
-    
-    // --- File Drop State ---
-    char** dropped_file_paths;
-    int    dropped_file_count;
-    bool   file_was_dropped_this_frame;
+    // -------------------------------------------------------------------------
+    // Internal Resource Tracking (Linked Lists)
+    // -------------------------------------------------------------------------
+    _SituationMeshNode* all_meshes;                           // Head of the mesh tracking list
+    _SituationShaderNode* all_shaders;                        // Head of the shader tracking list
+    _SituationComputePipelineNode* all_compute_pipelines;     // Head of the compute pipeline tracking list
+    _SituationTextureNode* all_textures;                      // Head of the texture tracking list
+    _SituationBufferNode* all_buffers;                        // Head of the buffer tracking list
+    _SituationModelNode* all_models;                          // Head of the model tracking list
 
-    // --- Internal Resource Tracking Heads ---
-    _SituationMeshNode* all_meshes;
-    _SituationShaderNode* all_shaders;
-    _SituationComputePipelineNode* all_compute_pipelines;
-    _SituationTextureNode* all_textures;
-    _SituationBufferNode* all_buffers;
-    _SituationModelNode* all_models;
 } _SituationGlobalStateContainer;
 
 static _SituationGlobalStateContainer sit_gs;
@@ -3637,6 +3712,26 @@ static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, dou
 }
 
 #if defined(SITUATION_USE_OPENGL)
+/**
+ * @brief [INTERNAL] Snapshots specific OpenGL state variables into a backup structure.
+ *
+ * @details This function is part of the "State Hardening" mechanism. Before the library performs internal 
+ *          rendering operations (like compositing Virtual Displays), it saves the user's current OpenGL configuration.
+ *          
+ *          It captures:
+ *          - The active Shader Program and Vertex Array Object (VAO).
+ *          - The currently active Texture Unit.
+ *          - Texture bindings for Units 0, 4, and 5 (which are used by internal shaders).
+ *          - Critical capabilities: Blending, Depth Testing, Face Culling, and Scissor Testing.
+ *          - Blend functions and equations.
+ *
+ * @param s A pointer to a `_SitGLStateBackup` struct to populate with the current state.
+ *
+ * @note This is not a full context save (which would be prohibitively slow). It only backs up 
+ *       state that `SituationRenderVirtualDisplays` is known to modify.
+ *
+ * @see _SitGLRestoreState(), SituationRenderVirtualDisplays()
+ */
 static void _SitGLBackupState(_SitGLStateBackup* s) {
     glGetIntegerv(GL_CURRENT_PROGRAM, &s->program);
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &s->vao);
@@ -3667,6 +3762,21 @@ static void _SitGLBackupState(_SitGLStateBackup* s) {
     glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &s->blend_equ_alpha);
 }
 
+/**
+ * @brief [INTERNAL] Restores OpenGL state from a backup structure.
+ *
+ * @details Re-applies the state values captured by `_SitGLBackupState`. This ensures that after 
+ *          internal rendering operations complete, the OpenGL context is returned to the exact state 
+ *          the user left it in, preventing side effects (like changed blend modes or unbound shaders) 
+ *          from leaking into the main application render loop.
+ *
+ * @param s A pointer to the `_SitGLStateBackup` struct containing the state to restore.
+ *
+ * @warning The order of restoration is important. The Active Texture Unit is restored last 
+ *          to ensure subsequent user commands affect the expected unit.
+ *
+ * @see _SitGLBackupState()
+ */
 static void _SitGLRestoreState(_SitGLStateBackup* s) {
     glUseProgram(s->program);
     glBindVertexArray(s->vao);
