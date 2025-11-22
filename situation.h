@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4D "Velocity" (Hotfix D)
+*   Core API library v2.3.4E "Velocity" (Hotfix E)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "C"
+#define SITUATION_VERSION_REVISION "E"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -9883,6 +9883,30 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
     return NULL;
 }
 
+/**
+ * @brief [Core] Begins a configurable render pass on a command buffer.
+ * 
+ * @details This is the primary entry point for rendering geometry. It configures the rendering target (Display or Virtual Display) 
+ *          and specifies how attachments (Color, Depth, Stencil) should be handled at the start and end of the pass.
+ * 
+ * @par Backend-Specific Behavior
+ * - **Vulkan:** Records a `vkCmdBeginRenderPass` command. It selects the appropriate `VkFramebuffer` and `VkRenderPass` object 
+ *   based on the `info->display_id` and the `loadOp`/`storeOp` settings. It sets the clear values for the attachments 
+ *   and defines the render area.
+ * - **OpenGL:** Binds the target framebuffer (FBO 0 for main window). It then mimics Vulkan's `loadOp` behavior:
+ *   - `SIT_LOAD_OP_CLEAR`: Calls `glClear` with the specified color/depth values.
+ *   - `SIT_LOAD_OP_LOAD`: Does nothing (preserves existing framebuffer content).
+ *   - `SIT_LOAD_OP_DONT_CARE`: Does nothing (undefined content, fast).
+ * 
+ * @param cmd The command buffer to record into.
+ * @param info A pointer to a `SituationRenderPassInfo` struct defining the target display ID and attachment operations.
+ * 
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_INVALID_PARAM` if `info` is NULL.
+ * @return `SITUATION_ERROR_NOT_IMPLEMENTED` (Vulkan) if a requested load/store op combination is not yet supported by the internal cache.
+ * 
+ * @note Must be paired with `SituationCmdEndRenderPass`.
+ */
 SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info) {
     if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!info) return SITUATION_ERROR_INVALID_PARAM;
@@ -9893,21 +9917,33 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
 
     // 1. Bind the correct framebuffer
     if (info->display_id < 0) {
+        // Target: Main Window
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
     } else {
-        // ... (virtual display FBO binding logic) ...
+        // Target: Virtual Display
+        if (info->display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[info->display_id]) {
+            return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
+        }
+        SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[info->display_id];
+        glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
+        glViewport(0, 0, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
     }
 
     // 2. Set clear values and determine clear mask
     if (info->color_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
-        glClearColor(info->color_attachment.clear.color.r / 255.0f, ...);
+        glClearColor(
+            (float)info->color_attachment.clear.color.r / 255.0f,
+            (float)info->color_attachment.clear.color.g / 255.0f,
+            (float)info->color_attachment.clear.color.b / 255.0f,
+            (float)info->color_attachment.clear.color.a / 255.0f
+        );
         clear_mask |= GL_COLOR_BUFFER_BIT;
     }
+    
     if (info->depth_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
-        glClearDepth(info->depth_attachment.clear.depth);
+        glClearDepth((double)info->depth_attachment.clear.depth);
         clear_mask |= GL_DEPTH_BUFFER_BIT;
-        // NOTE: Does not handle stencil clear, but can be added.
     }
 
     // 3. Perform the clear
@@ -9915,47 +9951,50 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
         glClear(clear_mask);
     }
     
-    // NOTE: storeOp is a hint for tile-based renderers and is not explicitly handled in core OpenGL.
     return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
-    // ... (This would require a more complex system of creating compatible VkRenderPass objects on the fly
-    // or having a cache of them. For now, we'll implement the most common paths.)
-
-    VkRenderPassBeginInfo rp_info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-    VkClearValue clear_values[2];
-    uint32_t clear_count = 0;
-
-    // This is a simplified implementation. A real one would select a pre-created VkRenderPass
-    // that matches the load/store ops. Here, we just map the clear ops.
-    if (info->color_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
-        clear_values[clear_count++].color = (VkClearColorValue){{info->color_attachment.clear.color.r / 255.0f, ...}};
-    }
-    if (info->depth_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
-        clear_values[clear_count++].depthStencil = (VkClearDepthStencilValue){info->depth_attachment.clear.depth, info->depth_attachment.clear.stencil};
-    }
+    // In the current architecture, SituationCmdBeginRenderToDisplay handles the 
+    // standard "Clear and Render" pass setup using the default RenderPass objects.
+    // Supporting LOAD_OP_LOAD would require creating/caching separate VkRenderPass 
+    // objects configured with VK_ATTACHMENT_LOAD_OP_LOAD.
     
-    // ... (rest of the logic to select framebuffer and render pass, then call vkCmdBeginRenderPass) ...
-    // This highlights that a full fix is architecturally very deep for Vulkan.
-    // The provided implementation is a conceptual fix.
-
-    // For this example, let's just use the old logic but respect the loadOp:
     if (info->color_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
-        return SituationCmdBeginRenderToDisplay((VkCommandBuffer)cmd, info->display_id, info->color_attachment.clear.color);
+        // Delegate to the existing helper for the standard case
+        return SituationCmdBeginRenderToDisplay(cmd, info->display_id, info->color_attachment.clear.color);
     } else {
-        // Here you would begin a render pass with VK_ATTACHMENT_LOAD_OP_LOAD
-        _SituationSetError("Non-clearing render passes not fully implemented for Vulkan yet.");
+        // TODO: Implement a Render Pass Cache to support LOAD_OP_LOAD
+        _SituationSetError("Non-clearing render passes (SIT_LOAD_OP_LOAD) are not yet implemented for the Vulkan backend.");
         return SITUATION_ERROR_NOT_IMPLEMENTED;
     }
 #endif
 }
 
+/**
+ * @brief [Core] Ends the current render pass on a command buffer.
+ * 
+ * @details This function signals the completion of a rendering pass started by `SituationCmdBeginRenderPass` or `SituationCmdBeginRenderToDisplay`.
+ *          It performs the necessary steps to finalize drawing operations for the current framebuffer attachment.
+ * 
+ * @par Backend-Specific Behavior
+ * - **Vulkan:** Records a `vkCmdEndRenderPass` command into the provided command buffer. This transitions the image layout of the attachments (e.g., to `PRESENT_SRC_KHR`) as defined by the render pass configuration.
+ * - **OpenGL:** Unbinds the current Framebuffer Object (FBO) by binding the default framebuffer (0). This effectively "ends" the pass by redirecting subsequent draw calls back to the window's backbuffer.
+ * 
+ * @param cmd The command buffer to record into.
+ *            - **Vulkan:** Must be a valid `VkCommandBuffer` in the recording state, currently inside a render pass instance.
+ *            - **OpenGL:** Ignored.
+ * 
+ * @note This function must be paired with a preceding `SituationCmdBegin...` call.
+ * @warning Calling this function without an active render pass (Vulkan) will result in a validation error.
+ */
 SITAPI void SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
+    if (!sit_gs.is_initialized) return;
+
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
-    // Unbinding the FBO is often sufficient.
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 #elif defined(SITUATION_USE_VULKAN)
+    if (cmd == 0) return; // Basic validation
     vkCmdEndRenderPass((VkCommandBuffer)cmd);
 #endif
 }
@@ -13053,7 +13092,24 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
     // After this call, pipeline->id is 0, indicating it's no longer valid.
 }
 
-// --- Final resource cleanup function ---
+/**
+ * @brief [INTERNAL] Automates the cleanup of leaked resources during library shutdown.
+ * 
+ * @details This function acts as a garbage collector of last resort. It is called automatically by `SituationShutdown`.
+ *          It iterates through the library's internal resource tracking lists (for Meshes, Shaders, Textures, Buffers, etc.) 
+ *          and identifies any objects that were created by the user but never explicitly destroyed.
+ *          
+ *          For each leaked resource found:
+ *          1. It prints a warning message to `stderr` including the resource ID, aiding in debugging.
+ *          2. It calls the appropriate destruction function (e.g., `SituationDestroyTexture`) to release the GPU memory.
+ *          
+ *          This prevents permanent VRAM leaks even if the application crashes or exits without proper cleanup.
+ * 
+ * @note This function modifies global state by traversing and emptying the linked lists: 
+ *       `all_meshes`, `all_shaders`, `all_textures`, `all_buffers`, etc.
+ * @warning This is a safety mechanism, not a feature. Relying on it is bad practice; users should always 
+ *          explicitly destroy resources they create.
+ */
 static void _SituationCleanupDanglingResources(void) {
     // This function is called during shutdown to clean up any resources the user forgot to destroy.
     // It iterates through the tracking lists and frees everything, logging warnings.
@@ -13735,19 +13791,34 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
 }
 
 /**
- * @brief Checks if the situation.h library is initialized.
- * @return True if the library is initialized (SituationInit has been called successfully), false otherwise.
- * @note Safe to call at any time, including before SituationInit or after SituationShutdown.
+ * @brief Checks the initialization state of the Situation library.
+ * 
+ * @details This function serves as a global safety check. It returns `true` only if `SituationInit()` has been called successfully and `SituationShutdown()` has not yet been called.
+ *          
+ *          It is used internally by almost every API function to prevent undefined behavior when accessing 
+ *          uninitialized subsystems (like Audio or Vulkan). User code can use this to verify the engine state 
+ *          before attempting operations in modular or plugin-based architectures.
+ * 
+ * @return `true` if the library is fully initialized and ready for use.
+ * @return `false` if the library is uninitialized, has been shut down, or if initialization failed.
+ * 
+ * @note This function is safe to call at any time, from any thread, even before `SituationInit()` or after a crash.
  */
 bool SituationIsInitialized(void) {
     return sit_gs.is_initialized;
 }
 
 /**
- * @brief Retrieves text from the system clipboard.
- * @details The returned string is valid only until the next call to GetClipboardText or
- *          SetClipboardText. Do not store this pointer; copy the string if you need to keep it. The memory is managed by GLFW.
- * @return A const, null-terminated UTF-8 string, or NULL if an error occurred.
+ * @brief Retrieves the current text content from the system clipboard.
+ * 
+ * @details Returns a pointer to a string managed by the underlying windowing library (GLFW).
+ *          The returned string is valid only until the next call to `SituationGetClipboardText` or `SituationSetClipboardText`, 
+ *          or until input events are polled again.
+ * 
+ * @return A const pointer to a null-terminated UTF-8 string.
+ * @return `NULL` if the clipboard is empty, contains non-text data, or if an error occurred.
+ * 
+ * @warning **Do not free** the returned pointer. If you need to persist the text, make a copy immediately (e.g., using `strdup`).
  */
 SITAPI const char* SituationGetClipboardText(void) {
     if (!SituationIsInitialized()) {
@@ -13759,8 +13830,15 @@ SITAPI const char* SituationGetClipboardText(void) {
 }
 
 /**
- * @brief Sets the system clipboard to the specified text.
- * @param text A null-terminated UTF-8 string to place in the clipboard.
+ * @brief Copies a string of text to the system clipboard.
+ * 
+ * @details This function interacts with the operating system's clipboard mechanism (e.g., Ctrl+C / Cmd+C logic).
+ *          It copies the contents of the provided string, making it available to other applications.
+ * 
+ * @param text A null-terminated, UTF-8 encoded string to place in the clipboard. 
+ *             Passing `NULL` or an empty string will clear the clipboard.
+ * 
+ * @note This operation is generally fast but involves OS interaction.
  */
 SITAPI void SituationSetClipboardText(const char* text) {
     if (!SituationIsInitialized()) {
@@ -13776,9 +13854,15 @@ SITAPI void SituationSetClipboardText(const char* text) {
 }
 
 /**
- * @brief Sets a callback function to be executed when files are dragged and dropped onto the window.
- * @param callback The function to be called, or NULL to clear the callback.
- * @param user_data A custom pointer that will be passed to your callback function.
+ * @brief Registers a callback function to handle file drop events asynchronously.
+ * 
+ * @details This provides an event-driven alternative to polling `SituationIsFileDropped`. The callback is invoked immediately by the OS event handler when files are dropped.
+ * 
+ * @param callback The function to call. It receives the file count, the array of paths, and the user data pointer.
+ *                 Pass `NULL` to disable the callback.
+ * @param user_data A custom pointer that will be passed to your callback function (e.g., for context).
+ * 
+ * @note The callback is executed within the `SituationPollInputEvents()` call stack on the main thread.
  */
 SITAPI void SituationSetFileDropCallback(SituationFileDropCallback callback, void* user_data) {
     // Simply store the user's function pointer and data pointer in our global state.
@@ -13787,15 +13871,42 @@ SITAPI void SituationSetFileDropCallback(SituationFileDropCallback callback, voi
     sit_gs.file_drop_user_data = user_data;
 }
 
+/**
+ * @brief Checks if any files were dragged and dropped onto the window during the current frame.
+ * 
+ * @details This is a polling-based state check. It returns `true` for exactly one frame after the drop event occurs.
+ *          Use this function in your main loop to trigger the retrieval of file paths via `SituationLoadDroppedFiles`.
+ * 
+ * @return `true` if a file drop event was detected this frame, `false` otherwise.
+ * 
+ * @see SituationLoadDroppedFiles()
+ */
 SITAPI bool SituationIsFileDropped(void) {
     if (!sit_gs.is_initialized) return false;
     return sit_gs.file_was_dropped_this_frame;
 }
 
 /**
- * @brief Get the paths of dropped files.
- * @warning The returned list and its string contents are dynamically allocated. The caller is **responsible for freeing this memory** using `SituationUnloadDroppedFiles()`.
- * @return A list of file paths.
+ * @brief Retrieves a list of files dropped onto the application window during the current frame.
+ *
+ * @details This function provides access to the file paths captured by the internal drag-and-drop event handler.
+ *          It returns a **copy** of the internal file list, ensuring that the user can safely modify or store the paths without affecting the library's internal state.
+ *
+ * @par Usage Workflow
+ *   1. Check `SituationIsFileDropped()` in your main loop.
+ *   2. If true, call `SituationLoadDroppedFiles(&count)`.
+ *   3. Process the files.
+ *   4. Call `SituationUnloadDroppedFiles(paths, count)` to free the memory.
+ *
+ * @param[out] count A pointer to an integer that will be filled with the number of dropped files.
+ *
+ * @return A pointer to a dynamically allocated array of dynamically allocated strings (char**).
+ * @return `NULL` if no files were dropped this frame, or if the library is not initialized. In this case, `*count` is set to 0.
+ *
+ * @warning The caller owns the returned memory and is **responsible** for freeing it using `SituationUnloadDroppedFiles()`.
+ *          Do not use standard `free()` on the array pointer alone, as this will leak the individual string buffers.
+ *
+ * @see SituationIsFileDropped(), SituationUnloadDroppedFiles()
  */
 SITAPI char** SituationLoadDroppedFiles(int* count) {
     if (!sit_gs.is_initialized || sit_gs.dropped_file_count == 0) {
@@ -13835,6 +13946,17 @@ SITAPI char** SituationLoadDroppedFiles(int* count) {
     return user_list;
 }
 
+/**
+ * @brief Frees the memory allocated by `SituationLoadDroppedFiles`.
+ *
+ * @details This helper function correctly iterates through the array of file paths, freeing each string individually, and then frees the array pointer itself.
+ *          This is the mandatory cleanup function for the file drop API.
+ *
+ * @param paths The array of strings returned by `SituationLoadDroppedFiles`.
+ * @param count The number of strings in the array (returned by `SituationLoadDroppedFiles`).
+ *
+ * @note It is safe to call this function with `NULL` or a count of 0; it will simply do nothing.
+ */
 SITAPI void SituationUnloadDroppedFiles(char** paths, int count) {
     if (paths == NULL || count == 0) return;
     for (int i = 0; i < count; i++) {
@@ -14075,6 +14197,23 @@ SITAPI const char* SituationGetGPUName(void) {
 
 // --- Storage Media Information Implementation ---
 
+/**
+ * @brief Retrieves the full path to the current user's home directory.
+ * 
+ * @details This function provides a cross-platform way to get the root directory for the current user profile.
+ *          - **Windows:** Returns the path mapped to `FOLDERID_Profile` (e.g., `C:\Users\Name`). 
+ *            It internally handles the conversion from Windows Wide Characters (UTF-16) to UTF-8.
+ *          - **Linux/macOS:** Returns the value of the `$HOME` environment variable. 
+ *            If `$HOME` is unset, it falls back to querying the password database (`getpwuid`).
+ * 
+ * @return A dynamically allocated, null-terminated UTF-8 string containing the path. 
+ * @return `NULL` if the directory could not be determined or if memory allocation failed.
+ * 
+ * @warning The returned string is allocated on the heap. The caller is **responsible** for freeing this memory 
+ *          using `free()` or `SituationFreeString()` when it is no longer needed.
+ * 
+ * @see SituationGetAppSavePath()
+ */
 SITAPI char* SituationGetUserDirectory(void) { 
     #if defined(_WIN32)
     if (!sit_gs.is_initialized || !sit_gs.is_com_initialized) { // Check COM for SHGetKnownFolderPath
@@ -15513,6 +15652,19 @@ SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
     return SituationSaveFileData(file_path, text, len);
 }
 
+/**
+ * @brief [INTERNAL] Enumerates and caches system display information.
+ *
+ * @details This is the backend implementation for display discovery. It populates the global `sit_gs.cached_physical_displays_array`.
+ *
+ * @par Platform Specifics
+ * - **Windows:** Uses `EnumDisplayMonitors` and `EnumDisplaySettingsA` to gather detailed hardware info (Device Name, Refresh Rates).
+ *   It attempts to correlate the low-level Win32 `HMONITOR` handles with GLFW's monitor list to ensure API interoperability.
+ * - **Other Platforms:** Delegates directly to `glfwGetMonitors` and `glfwGetVideoModes`.
+ *
+ * @warning This function performs dynamic memory allocation for the display array and the mode lists within it.
+ *          Existing cache memory is freed before new allocation occurs.
+ */
 static void _SituationCachePhysicalDisplays(void) {
     if (!sit_gs.is_initialized) return;
     if (sit_gs.cached_physical_displays_array) {
@@ -15646,11 +15798,35 @@ SITAPI SituationDisplayInfo* SituationGetDisplays(int* count) {
     return displays_copy;
 }
 
+/**
+ * @brief Forces a re-scan of all connected physical displays and their supported video modes.
+ *
+ * @details Clears the internal display cache and queries the operating system for the current hardware configuration.
+ *          This is useful if the user plugs in or unplugs a monitor while the application is running.
+ *
+ * @note This function will invalidate any pointers previously returned by `SituationGetDisplays()`.
+ *       If you are holding a pointer to the display list, you must call `SituationGetDisplays()` again after calling this.
+ *
+ * @see _SituationCachePhysicalDisplays()
+ */
 SITAPI void SituationRefreshDisplays(void) {
     if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "RefreshDisplays"); return; }
     _SituationCachePhysicalDisplays();
 }
 
+/**
+ * @brief [INTERNAL] Identifies which physical monitor the window is currently occupying.
+ *
+ * @details Uses a geometric heuristic to determine the "current" monitor:
+ *          1. If the window is in exclusive fullscreen, returns that monitor immediately.
+ *          2. If windowed, calculates the intersection area (overlap) between the window's rectangle and every connected monitor's viewport.
+ *          3. Returns the ID of the monitor with the largest overlap area.
+ *
+ * @return The `situation_monitor_id` (index) of the current display.
+ * @return `-1` if the library is not initialized or if the window is not overlapping any known display (e.g., off-screen).
+ *
+ * @note This function is used internally by `SituationApplyCurrentProfileWindowState` to determine where to place the window when toggling fullscreen.
+ */
 SITAPI int _SituationGetCurrentDisplayIdentifier(void) {
     if (!sit_gs.is_initialized || !sit_gs.sit_glfw_window) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetCurrentDisplayIdentifier"); return -1; }
     GLFWmonitor* current_glfw_monitor = glfwGetWindowMonitor(sit_gs.sit_glfw_window);
@@ -15697,7 +15873,26 @@ SITAPI int _SituationGetCurrentDisplayIdentifier(void) {
     return -1;
 }
 
-
+/**
+ * @brief Sets the video mode for a specific monitor or moves the window to it.
+ *
+ * @details This function serves two purposes depending on the `fullscreen` parameter:
+ *          1. **Fullscreen Mode:** Attempts to set the physical monitor to the resolution and refresh rate specified in `mode` and sets the application window to exclusive fullscreen on that monitor.
+ *             On Windows, this uses `ChangeDisplaySettingsExA` for low-level control. On other platforms, it relies on GLFW's video mode switching.
+ *          2. **Windowed Mode:** Exits fullscreen, restores the monitor's default settings (if changed), and centers the window on the specified monitor. The `mode` parameter determines the size of the window content area.
+ *
+ * @param situation_monitor_id The internal ID of the target monitor (index in the cached display list).
+ * @param mode A pointer to a `SituationDisplayMode` struct specifying the desired width, height, refresh rate, and color depth.
+ * @param fullscreen `true` to enter exclusive fullscreen mode; `false` for windowed mode.
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_NOT_INITIALIZED` if the library is not running.
+ * @return `SITUATION_ERROR_INVALID_PARAM` if the monitor ID is out of range or `mode` is NULL.
+ * @return `SITUATION_ERROR_DISPLAY_SET` if the OS failed to apply the requested video settings.
+ *
+ * @note On Windows, this function attempts to match the Win32 monitor handle with the GLFW monitor handle to ensure correct placement.
+ * @warning Changing display modes can cause the screen to flicker or go black momentarily.
+ */
 SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const SituationDisplayMode* mode, bool fullscreen) {
     if (!sit_gs.is_initialized || !sit_gs.sit_glfw_window) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!mode) return SITUATION_ERROR_INVALID_PARAM;

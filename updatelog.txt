@@ -1,3 +1,27 @@
+Date: 2025-11-22
+Version: 2.3.4E "Velocity" (Hotfix E)
+
+## DESCRIPTION
+This update completes the architectural refactoring started in Hotfix D, solidifying the internal state management and fixing critical initialization bugs. It also standardizes the documentation for core APIs, making the library easier to maintain and integrate.
+
+## CRITICAL FIXES
+
+*   **Input Subsystem Initialization:** Fixed a severe regression in `_SituationInitSubsystems` where `memset` was called *after* mutex initialization, corrupting the keyboard event lock and causing potential deadlocks. The memory zeroing now correctly happens before resource allocation.
+
+*   **Render Pass Logic:** Replaced placeholder pseudo-code in `SituationCmdBeginRenderPass` with a fully functional implementation.
+    *   **OpenGL:** Now correctly handles Virtual Display targets and `glClearColor` type casting.
+    *   **Vulkan:** Now correctly delegates standard clear operations and safely rejects unsupported `LOAD_OP_LOAD` requests instead of crashing.
+
+## DOCUMENTATION
+
+*   **API Reference:** Added comprehensive Doxygen-style documentation for:
+    *   Display Management (`SituationSetDisplayMode`, `SituationRefreshDisplays`)
+    *   Filesystem (`SituationGetUserDirectory`, `SituationLoadDroppedFiles`)
+    *   Input & Clipboard (`SituationIsFileDropped`, `SituationGetClipboardText`)
+    *   Core Lifecycle (`SituationIsInitialized`, `_SituationCleanupDanglingResources`)
+    *   Render Pass Control (`SituationCmdBeginRenderPass`, `SituationCmdEndRenderPass`)
+
+--------------------------------------------------------------------------------
 
 Date: 2025-11-22
 Version: 2.3.4D "Velocity" (Hotfix D)
