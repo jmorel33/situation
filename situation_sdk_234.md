@@ -65,42 +65,62 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
     - [1.4.4 Usage Example: Auto-Config](#144-usage-example-auto-config)
 - [2.0 Windowing & Display Subsystem](#20-windowing--display-subsystem)
   - [2.1 Window State Management](#21-window-state-management)
-    - [Configuration Flags (SITUATION_FLAG_*)](#configuration-flags-situation_flag_)
-    - [Fullscreen & Borderless Modes](#fullscreen--borderless-modes)
-    - [Focus & Attention](#focus--attention)
+    - [2.1.1 Configuration Flags](#211-configuration-flags)
+    - [2.1.2 Fullscreen & Borderless](#212-fullscreen--borderless)
+    - [2.1.3 Size & Position](#213-size--position)
+    - [2.1.4 Focus & Visibility](#214-focus--visibility)
+    - [2.1.5 Icons](#215-icons)
+    - [2.1.6 State Queries](#216-state-queries)
+    - [2.1.7 Advanced: State Profiles](#217-advanced-state-profiles)
   - [2.2 Multi-Monitor Topology](#22-multi-monitor-topology)
-    - [Monitor Enumeration (SituationGetDisplays)](#monitor-enumeration-situationgetdisplays)
-    - [Video Modes & Refresh Rates](#video-modes--refresh-rates)
-    - [DPI Scaling & Coordinate Mapping](#dpi-scaling--coordinate-mapping)
+    - [2.2.1 Monitor Enumeration](#221-monitor-enumeration)
+    - [2.2.2 Display Information Structure](#222-display-information-structure)
+    - [2.2.3 Monitor Management Functions](#223-monitor-management-functions)
+    - [2.2.4 Physical Dimensions & Positioning](#224-physical-dimensions--positioning)
+    - [2.2.5 Changing Video Modes](#225-changing-video-modes)
+    - [2.2.6 Usage Example: Listing Monitors](#226-usage-example-listing-monitors)
   - [2.3 Cursor & Clipboard](#23-cursor--clipboard)
-    - [Hardware Cursor Shapes](#hardware-cursor-shapes)
-    - [Raw Motion (FPS Mode)](#raw-motion-fps-mode)
-    - [System Clipboard Access](#system-clipboard-access)
+    - [2.3.1 Cursor Visibility & Locking](#231-cursor-visibility--locking)
+    - [2.3.2 Cursor Shapes](#232-cursor-shapes)
+    - [2.3.3 Clipboard Access](#233-clipboard-access)
 - [3.0 The Graphics Pipeline](#30-the-graphics-pipeline)
   - [3.1 The Command Buffer Abstraction](#31-the-command-buffer-abstraction)
-    - [Concept: Immediate (GL) vs Deferred (VK)](#concept-immediate-gl-vs-deferred-vk)
-    - [Frame Acquisition (SituationAcquireFrameCommandBuffer)](#frame-acquisition-situationacquireframecommandbuffer)
-    - [Submission (SituationEndFrame)](#submission-situationendframe)
+    - [3.1.1 Concept: Immediate vs. Deferred](#311-concept-immediate-vs-deferred)
+    - [3.1.2 Frame Acquisition](#312-frame-acquisition)
+    - [3.1.3 The Recording Handle](#313-the-recording-handle)
+    - [3.1.4 Submission & Presentation](#314-submission--presentation)
+    - [3.1.5 Usage Pattern](#315-usage-pattern)
   - [3.2 Render Passes](#32-render-passes)
-    - [Pass Configuration (SituationRenderPassInfo)](#pass-configuration-situationrenderpassinfo)
-    - [Load/Store Operations & Clearing](#loadstore-operations--clearing)
-    - [Viewport & Scissor](#viewport--scissor)
+    - [3.2.1 Pass Configuration](#321-pass-configuration)
+    - [3.2.2 Beginning & Ending a Pass](#322-beginning--ending-a-pass)
+    - [3.2.3 Dynamic State (Viewport & Scissor)](#323-dynamic-state-viewport--scissor)
+    - [3.2.4 Example: Clearing the Screen](#324-example-clearing-the-screen)
   - [3.3 Shader Pipelines](#33-shader-pipelines)
-    - [Graphics Pipelines (SituationLoadShader)](#graphics-pipelines-situationloadshader)
-    - [Uniform Management](#uniform-management)
-    - [Hot-Reloading Shaders](#hot-reloading-shaders)
+    - [3.3.1 Loading Shaders](#331-loading-shaders)
+    - [3.3.2 Binding Pipelines](#332-binding-pipelines)
+    - [3.3.3 Uniform Management (Data)](#333-uniform-management-data)
+    - [3.3.4 Hot-Reloading Shaders](#334-hot-reloading-shaders)
+    - [3.3.5 Example: Basic Shader Workflow](#335-example-basic-shader-workflow)
   - [3.4 Geometry & Meshes](#34-geometry--meshes)
-    - [Vertex Data Layouts](#vertex-data-layouts)
-    - [Mesh Creation & Destruction](#mesh-creation--destruction)
-    - [Model Loading (GLTF)](#model-loading-gltf)
+    - [3.4.1 Vertex Data Layout](#341-vertex-data-layout)
+    - [3.4.2 Creating Meshes](#342-creating-meshes)
+    - [3.4.3 Drawing Meshes](#343-drawing-meshes)
+    - [3.4.4 Model Loading (GLTF)](#344-model-loading-gltf)
+    - [3.4.5 Readback & Exporting](#345-readback--exporting)
+    - [3.4.6 Example: Custom Triangle](#346-example-custom-triangle)
   - [3.5 Textures & Images](#35-textures--images)
-    - [Image Manipulation (CPU)](#image-manipulation-cpu)
-    - [Texture Creation (GPU)](#texture-creation-gpu)
-    - [Samplers & Mipmaps](#samplers--mipmaps)
+    - [3.5.1 Image Manipulation (CPU)](#351-image-manipulation-cpu)
+    - [3.5.2 Texture Creation (GPU)](#352-texture-creation-gpu)
+    - [3.5.3 Binding Textures](#353-binding-textures)
+    - [3.5.4 Hot-Reloading Textures](#354-hot-reloading-textures)
+    - [3.5.5 Taking Screenshots](#355-taking-screenshots)
+    - [3.5.6 Example: Loading & Using a Texture](#356-example-loading--using-a-texture)
   - [3.6 Virtual Display Compositor](#36-virtual-display-compositor)
-    - [Concept: Offscreen Rendering](#concept-offscreen-rendering)
-    - [Scaling Modes (Integer, Fit, Stretch)](#scaling-modes-integer-fit-stretch)
-    - [Blend Modes (Overlay, Soft Light, etc.)](#blend-modes-overlay-soft-light-etc)
+    - [3.6.1 Creating a Virtual Display](#361-creating-a-virtual-display)
+    - [3.6.2 Rendering To a Virtual Display](#362-rendering-to-a-virtual-display)
+    - [3.6.3 Rendering The Virtual Display (Compositing)](#363-rendering-the-virtual-display-compositing)
+    - [3.6.4 Configuration & Optimization](#364-configuration--optimization)
+    - [3.6.5 Example: Pixel Art Setup](#365-example-pixel-art-setup)
   - [3.7 Compute & GPGPU](#37-compute--gpgpu)
     - [Compute Pipelines](#compute-pipelines)
     - [Storage Buffers (SSBOs)](#storage-buffers-ssbos)
@@ -149,9 +169,11 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
 The Core module acts as the central nervous system of the library. It is responsible for initializing the platform abstraction layer, managing the application's lifecycle, enforcing the execution model, and providing high-resolution timing services.
 
 Unlike loosely coupled libraries, Situation enforces a specific initialization and shutdown sequence to ensure that subsystems (Audio, Input, Graphics) are brought online in the correct order and torn down safely.
+</details>
 
 <a id="11-lifecycle-management"></a>
-## 1.1 Lifecycle Management
+<details>
+<summary><b>1.1 Lifecycle Management</b></summary>
 
 The application lifecycle is strictly defined. All interaction with the library must occur between a successful call to `SituationInit` and a final call to `SituationShutdown`.
 
@@ -624,6 +646,1199 @@ void ConfigureQualitySettings() {
         g_texture_quality = MEDIUM;
         g_shadow_resolution = 1024;
     }
+}
+```
+</details>
+
+<a id="20-windowing--display-subsystem"></a>
+<details>
+<summary><b>2.0 Windowing & Display Subsystem</b></summary>
+
+Situation provides a windowing abstraction built on top of GLFW. It handles the creation of the OS window, manages its state (fullscreen, minimized, etc.), and provides deep integration with the physical display topology.
+</details>
+
+<a id="21-window-state-management"></a>
+<details>
+<summary><b>2.1 Window State Management</b></summary>
+
+This section covers how to manipulate the application window, covering everything from basic resizing to advanced "borderless" modes and focus handling. The window state is controlled via a set of bit-flags and explicit helper functions.
+
+<a id="211-configuration-flags"></a>
+### 2.1.1 Configuration Flags
+
+The `SituationSetWindowState` function accepts a bitmask of flags. These flags are additive.
+
+#### SituationSetWindowState / SituationClearWindowState
+
+```C
+void SituationSetWindowState(uint32_t flags);
+void SituationClearWindowState(uint32_t flags);
+```
+
+| Flag | Description |
+| :--- | :--- |
+| `SITUATION_FLAG_WINDOW_RESIZABLE` | Allows the user to resize the window manually. |
+| `SITUATION_FLAG_WINDOW_UNDECORATED` | Removes the title bar and borders. |
+| `SITUATION_FLAG_WINDOW_TOPMOST` | Forces the window to stay on top of all other windows. |
+| `SITUATION_FLAG_WINDOW_HIDDEN` | Hides the window (it still runs in the background). |
+| `SITUATION_FLAG_WINDOW_MINIMIZED` | Minimizes to the taskbar/dock. |
+| `SITUATION_FLAG_WINDOW_MAXIMIZED` | Maximizes to fill the screen. |
+| `SITUATION_FLAG_FULLSCREEN_MODE` | Switches to exclusive fullscreen mode. |
+| `SITUATION_FLAG_VSYNC_HINT` | Requests Vertical Sync (prevents tearing). |
+
+**Example:**
+
+```C
+// Make window borderless and always on top
+SituationSetWindowState(SITUATION_FLAG_WINDOW_UNDECORATED | SITUATION_FLAG_WINDOW_TOPMOST);
+```
+
+<a id="212-fullscreen--borderless"></a>
+### 2.1.2 Fullscreen & Borderless
+
+#### SituationToggleFullscreen
+
+```C
+void SituationToggleFullscreen(void);
+```
+
+**Behavior:** Toggles between Windowed mode and Exclusive Fullscreen.
+**Note:** In Exclusive Fullscreen, the application takes control of the video signal. Alt-Tab may be slower than in Borderless mode.
+
+#### SituationToggleBorderlessWindowed
+
+```C
+void SituationToggleBorderlessWindowed(void);
+```
+
+**Behavior:** Toggles between a standard decorated window and a "Borderless Window" that fills the screen.
+**Usage:** Preferred by modern games for fast Alt-Tab support.
+
+<a id="213-size--position"></a>
+### 2.1.3 Size & Position
+
+#### SituationSetWindowSize / SituationGetWindowSize
+
+```C
+void SituationSetWindowSize(int width, int height);
+void SituationGetWindowSize(int* width, int* height);
+```
+
+**Unit:** Logical Screen Coordinates.
+**Note:** On High-DPI displays (Retina/4K), the Logical size might be 1280x720, but the Render size might be 2560x1440. Always use `SituationGetRenderWidth/Height` for OpenGL/Vulkan viewports.
+
+#### SituationSetWindowPosition
+
+```C
+void SituationSetWindowPosition(int x, int y);
+```
+
+**Origin:** Top-Left of the virtual desktop.
+
+#### SituationSetWindowMinSize / SituationSetWindowMaxSize
+
+```C
+void SituationSetWindowMinSize(int width, int height);
+void SituationSetWindowMaxSize(int width, int height);
+```
+
+**Usage:** Prevents the user from shrinking the window so small that the UI breaks.
+
+<a id="214-focus--visibility"></a>
+### 2.1.4 Focus & Visibility
+
+#### SituationSetWindowFocused
+
+```C
+void SituationSetWindowFocused(void);
+```
+
+**Behavior:** Brings the window to the foreground and requests input focus.
+
+#### SituationSetWindowOpacity
+
+```C
+void SituationSetWindowOpacity(float opacity);
+```
+
+**Range:** 0.0 (Invisible) to 1.0 (Opaque).
+**Platform:** Supported on Windows, macOS, and most Linux compositors.
+
+<a id="215-icons"></a>
+### 2.1.5 Icons
+
+#### SituationSetWindowIcon
+
+```C
+void SituationSetWindowIcon(SituationImage image);
+```
+
+**Input:** A CPU-side `SituationImage` (loaded via `SituationLoadImage`).
+**Best Practice:** Provide a square image (e.g., 64x64 or 256x256).
+
+#### SituationSetWindowIcons
+
+```C
+void SituationSetWindowIcons(SituationImage *images, int count);
+```
+
+**Usage:** Provide multiple sizes (16x16, 32x32, 48x48) so the OS can choose the best one for the Taskbar vs Titlebar.
+
+<a id="216-state-queries"></a>
+### 2.1.6 State Queries
+
+You can query the current state at any time.
+
+*   `SituationIsWindowFullscreen()`
+*   `SituationIsWindowHidden()`
+*   `SituationIsWindowMinimized()`
+*   `SituationIsWindowMaximized()`
+*   `SituationHasWindowFocus()`
+*   `SituationIsWindowResized()` (True only on the frame a resize occurred)
+
+<a id="217-advanced-state-profiles"></a>
+### 2.1.7 Advanced: State Profiles
+
+You can define different behaviors for when the window is focused vs unfocused.
+
+#### SituationSetWindowStateProfiles
+
+```C
+SituationError SituationSetWindowStateProfiles(uint32_t active_flags, uint32_t inactive_flags);
+```
+
+**Example:** Limit FPS when unfocused to save battery.
+**Note:** This function sets flags, but FPS limiting logic must be implemented by the user based on `SituationHasWindowFocus()`.
+</details>
+
+<a id="22-multi-monitor-topology"></a>
+<details>
+<summary><b>2.2 Multi-Monitor Topology</b></summary>
+
+This section explains how to detect, query, and utilize multiple physical displays. This is essential for games (to select the correct gaming monitor), presentation software, and multi-window tools.
+
+Situation provides a unified interface for querying the physical display hardware connected to the system. It abstracts the OS-specific concepts (HMONITOR on Windows, RandR on Linux) into a simple list of `SituationDisplayInfo` structs.
+
+<a id="221-monitor-enumeration"></a>
+### 2.2.1 Monitor Enumeration
+
+To get information about connected screens, you retrieve the list of displays.
+
+#### SituationGetDisplays
+
+```C
+SituationDisplayInfo* SituationGetDisplays(int* count);
+```
+
+**Returns:** A pointer to an array of `SituationDisplayInfo` structs.
+**Memory:** The returned array is allocated on the heap. You must free it using `SituationFreeDisplays`.
+**Count:** The integer pointed to by `count` is updated with the number of displays found.
+
+#### SituationFreeDisplays
+
+```C
+void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
+```
+
+**Usage:** Call this immediately after you are done processing the display list.
+
+<a id="222-display-information-structure"></a>
+### 2.2.2 Display Information Structure
+
+The `SituationDisplayInfo` struct contains comprehensive data about a specific monitor.
+
+```C
+typedef struct {
+    char name[128];                 // e.g., "LG UltraGear", "Generic PnP Monitor"
+    int situation_monitor_id;       // Internal ID (0, 1, 2...)
+    bool is_primary;                // True if this is the OS "Main Display"
+
+    // --- Current Settings ---
+    SituationDisplayMode current_mode; // Resolution & Refresh Rate
+
+    // --- Capabilities ---
+    SituationDisplayMode* available_modes; // Array of supported modes
+    int available_mode_count;
+} SituationDisplayInfo;
+```
+
+#### SituationDisplayMode
+
+```C
+typedef struct {
+    int width;          // e.g., 1920
+    int height;         // e.g., 1080
+    int refresh_rate;   // e.g., 144 (Hz)
+    int color_depth;    // e.g., 24 (bits)
+} SituationDisplayMode;
+```
+
+<a id="223-monitor-management-functions"></a>
+### 2.2.3 Monitor Management Functions
+
+#### SituationGetMonitorCount
+
+```C
+int SituationGetMonitorCount(void);
+```
+
+**Returns:** The total number of active displays.
+
+#### SituationGetCurrentMonitor
+
+```C
+int SituationGetCurrentMonitor(void);
+```
+
+**Returns:** The ID of the monitor that currently contains the majority of the application window.
+
+#### SituationSetWindowMonitor
+
+```C
+void SituationSetWindowMonitor(int monitor_id);
+```
+
+**Behavior:** Moves the window to the specified monitor. If the window is in Fullscreen mode, it will make it fullscreen on that specific monitor.
+
+#### SituationGetMonitorName
+
+```C
+const char* SituationGetMonitorName(int monitor_id);
+```
+
+**Returns:** The human-readable name of the monitor.
+
+<a id="224-physical-dimensions--positioning"></a>
+### 2.2.4 Physical Dimensions & Positioning
+
+For accurate multi-monitor layouts (e.g., a window spanning two screens), you need to know where monitors are relative to each other.
+
+#### SituationGetMonitorPosition
+
+```C
+Vector2 SituationGetMonitorPosition(int monitor_id);
+```
+
+**Returns:** The virtual desktop coordinates (x, y) of the monitor's top-left corner.
+**Example:** If Monitor 0 is 1920x1080, Monitor 1 might be at (1920, 0).
+
+#### SituationGetMonitorPhysicalWidth / Height
+
+```C
+int SituationGetMonitorPhysicalWidth(int monitor_id);
+int SituationGetMonitorPhysicalHeight(int monitor_id);
+```
+
+**Returns:** The physical size of the screen panel in millimeters.
+**Usage:** Useful for calculating accurate DPI or scaling UI elements to real-world sizes (e.g., "Make this button exactly 1 inch wide").
+
+<a id="225-changing-video-modes"></a>
+### 2.2.5 Changing Video Modes
+
+You can change the resolution and refresh rate of a specific monitor.
+
+#### SituationSetDisplayMode
+
+```C
+SituationError SituationSetDisplayMode(int monitor_id, const SituationDisplayMode* mode, bool fullscreen);
+```
+
+**Parameters:**
+*   `monitor_id`: The monitor to configure.
+*   `mode`: Pointer to the desired mode (width, height, refresh rate).
+*   `fullscreen`: If true, the application window will also be set to fullscreen on this monitor.
+
+**Note:** Changing display modes is an invasive operation. It may cause the screen to flicker. Use with caution.
+
+<a id="226-usage-example-listing-monitors"></a>
+### 2.2.6 Usage Example: Listing Monitors
+
+```C
+int count = 0;
+SituationDisplayInfo* displays = SituationGetDisplays(&count);
+
+printf("Found %d monitors:\n", count);
+for (int i = 0; i < count; i++) {
+    printf("Monitor %d: %s (%dx%d @ %dHz) %s\n",
+        i,
+        displays[i].name,
+        displays[i].current_mode.width,
+        displays[i].current_mode.height,
+        displays[i].current_mode.refresh_rate,
+        displays[i].is_primary ? "[PRIMARY]" : ""
+    );
+}
+
+SituationFreeDisplays(displays, count);
+```
+</details>
+
+<a id="23-cursor--clipboard"></a>
+<details>
+<summary><b>2.3 Cursor & Clipboard</b></summary>
+
+This section covers interacting with the mouse pointer (visibility, shapes) and the operating system's clipboard (copy/paste text).
+
+Situation provides direct control over the mouse cursor's appearance and behavior, as well as access to the system-wide clipboard for text operations.
+
+<a id="231-cursor-visibility--locking"></a>
+### 2.3.1 Cursor Visibility & Locking
+
+#### SituationShowCursor
+
+```C
+void SituationShowCursor(void);
+```
+
+**Behavior:** Makes the cursor visible and allows it to leave the window boundaries. Standard behavior for desktop apps.
+
+#### SituationHideCursor
+
+```C
+void SituationHideCursor(void);
+```
+
+**Behavior:** Makes the cursor invisible while it is over the window client area. It is still tracked and can leave the window.
+
+#### SituationDisableCursor (FPS Mode)
+
+```C
+void SituationDisableCursor(void);
+```
+
+**Behavior:** Hides the cursor and locks it to the window.
+**Usage:** Use this for First-Person games or 3D cameras.
+**Input:** When disabled, `SituationGetMouseDelta()` continues to report relative motion even though the cursor position is locked.
+
+<a id="232-cursor-shapes"></a>
+### 2.3.2 Cursor Shapes
+
+You can change the system cursor icon to indicate interactivity (e.g., hovering over a button or text field).
+
+#### SituationSetCursor
+
+```C
+void SituationSetCursor(SituationCursor cursor);
+```
+
+| Enum Value | Description |
+| :--- | :--- |
+| `SIT_CURSOR_DEFAULT` | The standard OS arrow. |
+| `SIT_CURSOR_ARROW` | Explicit arrow. |
+| `SIT_CURSOR_IBEAM` | The "I" shape for text selection. |
+| `SIT_CURSOR_CROSSHAIR` | Precision crosshair. |
+| `SIT_CURSOR_HAND` | Pointing hand (for links/buttons). |
+| `SIT_CURSOR_HRESIZE` | Horizontal resize arrows (<->). |
+| `SIT_CURSOR_VRESIZE` | Vertical resize arrows. |
+
+<a id="233-clipboard-access"></a>
+### 2.3.3 Clipboard Access
+
+The library supports getting and setting UTF-8 text to/from the system clipboard.
+
+#### SituationSetClipboardText
+
+```C
+void SituationSetClipboardText(const char* text);
+```
+
+**Behavior:** Copies the provided string to the OS clipboard.
+
+#### SituationGetClipboardText
+
+```C
+const char* SituationGetClipboardText(void);
+```
+
+**Returns:** A pointer to the text currently in the clipboard.
+**Memory:** The returned string is managed internally by the library (or GLFW). Do not free it. If the clipboard is empty or does not contain text, returns NULL or an empty string.
+
+#### Example: Implementing Copy/Paste
+
+```C
+// Copy (Ctrl+C)
+if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_C)) {
+    SituationSetClipboardText("Copied Text!");
+}
+
+// Paste (Ctrl+V)
+if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_V)) {
+    const char* text = SituationGetClipboardText();
+    if (text) {
+        printf("Pasted: %s\n", text);
+    }
+}
+```
+</details>
+
+<a id="30-the-graphics-pipeline"></a>
+<details>
+<summary><b>3.0 The Graphics Pipeline</b></summary>
+
+The Graphics module is the most complex part of the library. It provides a backend-agnostic abstraction for modern GPU rendering. Whether you are drawing a single 2D sprite or a complex 3D scene with compute shaders, you interact with the GPU through a unified Command Buffer interface.
+</details>
+
+<a id="31-the-command-buffer-abstraction"></a>
+<details>
+<summary><b>3.1 The Command Buffer Abstraction</b></summary>
+
+To support both OpenGL (which is historically state-based and immediate) and Vulkan (which is command-based and deferred), "Situation" adopts the Vulkan model as the primary abstraction.
+
+<a id="311-concept-immediate-vs-deferred"></a>
+### 3.1.1 Concept: Immediate vs. Deferred
+
+**The API Contract:** You do not call functions that "draw now." Instead, you call functions that record commands into a `SituationCommandBuffer`.
+
+*   **OpenGL Backend:** The library emulates command buffers. When you call `SituationCmdDrawMesh`, it effectively translates it to `glDrawElements` immediately.
+*   **Vulkan Backend:** The library records a true `vkCmdDrawIndexed` instruction into a hardware command buffer. This buffer is not executed until `SituationEndFrame()` submits it to the queue.
+
+**Critical Safety Rule:** Because Vulkan defers execution, you must never modify a resource (like a buffer or texture) after recording a command that uses it, but before the frame ends.
+
+<a id="312-frame-acquisition"></a>
+### 3.1.2 Frame Acquisition
+
+Before you can record any rendering commands, you must acquire a target frame from the swapchain.
+
+#### SituationAcquireFrameCommandBuffer
+
+```C
+bool SituationAcquireFrameCommandBuffer(void);
+```
+
+**Returns:** `true` if a frame is ready for rendering. `false` if the window is minimized, resized (swapchain invalid), or the GPU is lost.
+**Usage:** You must wrap your entire rendering block in an if statement checking this function. If it returns false, skip rendering for that frame.
+
+<a id="313-the-recording-handle"></a>
+### 3.1.3 The Recording Handle
+
+Once a frame is acquired, you retrieve the handle to the current frame's command buffer.
+
+#### SituationGetMainCommandBuffer
+
+```C
+SituationCommandBuffer SituationGetMainCommandBuffer(void);
+```
+
+**Returns:** An opaque pointer (`SituationCommandBuffer`) used as the first argument for all `SituationCmd*` functions.
+**Scope:** This handle is valid only for the current frame. Do not store it.
+
+<a id="314-submission--presentation"></a>
+### 3.1.4 Submission & Presentation
+
+After recording all commands, you must submit them for execution and present the image to the screen.
+
+#### SituationEndFrame
+
+```C
+SituationError SituationEndFrame(void);
+```
+
+**Behavior:**
+*   **Vulkan:** Closes the command buffer, submits it to the Graphics Queue, and queues the swapchain image for presentation.
+*   **OpenGL:** Swaps the front and back buffers (`glfwSwapBuffers`).
+
+**Synchronization:** This function may block if VSync is enabled or if the GPU is heavily loaded (backpressure).
+
+<a id="315-usage-pattern"></a>
+### 3.1.5 Usage Pattern
+
+```C
+// 1. Attempt to start the frame
+if (SituationAcquireFrameCommandBuffer()) {
+
+    // 2. Get the recording handle
+    SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+
+    // 3. Record Commands (See Section 3.2 for Render Passes)
+    // ... SituationCmdBeginRenderPass(cmd, ...);
+    // ... SituationCmdDraw(cmd, ...);
+    // ... SituationCmdEndRenderPass(cmd);
+
+    // 4. Submit
+    SituationEndFrame();
+}
+```
+</details>
+
+<a id="32-render-passes"></a>
+<details>
+<summary><b>3.2 Render Passes</b></summary>
+
+This section defines where rendering happens and how the screen is cleared. It enforces the modern "Render Pass" architecture required by Vulkan and Metal, while mapping it gracefully to OpenGL framebuffers.
+
+In modern graphics, you cannot simply "draw." You must perform drawing operations inside a Render Pass. A Render Pass defines the context for a sequence of draw calls:
+*   **Target:** Where are we drawing? (Main Window or Virtual Display?)
+*   **Load Op:** What do we do with the existing pixels? (Clear them, Keep them, or Don't Care?)
+*   **Store Op:** What happens to the result? (Store to memory or Discard?)
+
+<a id="321-pass-configuration"></a>
+### 3.2.1 Pass Configuration
+
+The `SituationRenderPassInfo` structure is used to configure a pass.
+
+```C
+typedef struct {
+    // Target ID
+    // -1: The Main Window (Swapchain Backbuffer)
+    // >=0: A Virtual Display ID
+    int display_id;
+
+    // Color Attachment (The RGB image)
+    SituationAttachmentInfo color_attachment;
+
+    // Depth Attachment (The Z-buffer)
+    SituationAttachmentInfo depth_attachment;
+} SituationRenderPassInfo;
+```
+
+#### SituationAttachmentInfo
+
+```C
+typedef struct {
+    SituationAttachmentLoadOp  loadOp;  // Start of pass action
+    SituationAttachmentStoreOp storeOp; // End of pass action
+    SituationClearValue        clear;   // Clear color/depth value
+} SituationAttachmentInfo;
+```
+
+**Operations (LoadOp / StoreOp)**
+
+| Operation | Description |
+| :--- | :--- |
+| `SIT_LOAD_OP_CLEAR` | Clears the attachment to the clear value. (Most common for start of frame). |
+| `SIT_LOAD_OP_LOAD` | Preserves previous content. Use this for overlay passes (e.g., UI on top of 3D). |
+| `SIT_LOAD_OP_DONT_CARE` | Performance optimization. Contents are undefined. Use if you overwrite every pixel anyway. |
+| `SIT_STORE_OP_STORE` | Saves the result to memory so it can be displayed or sampled later. |
+| `SIT_STORE_OP_DONT_CARE` | Discards result. (e.g., Depth buffer after rendering, if not needed for post-processing). |
+
+<a id="322-beginning--ending-a-pass"></a>
+### 3.2.2 Beginning & Ending a Pass
+
+#### SituationCmdBeginRenderPass
+
+```C
+SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);
+```
+
+**Behavior:** Starts the pass. Binds the Framebuffer (FBO) and executes the specified Clear operations.
+**Restrictions:** You cannot nest render passes. You must end the current pass before starting a new one.
+
+#### SituationCmdEndRenderPass
+
+```C
+void SituationCmdEndRenderPass(SituationCommandBuffer cmd);
+```
+
+**Behavior:** Finalizes the pass. Performs Store operations and transitions image layouts if necessary (Vulkan).
+
+<a id="323-dynamic-state-viewport--scissor"></a>
+### 3.2.3 Dynamic State (Viewport & Scissor)
+
+While the Render Pass defines the target image, the Viewport and Scissor define the active region.
+
+#### SituationCmdSetViewport
+
+```C
+void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height);
+```
+
+**Usage:** Maps the normalized device coordinates (-1 to 1) to pixel coordinates.
+**Default:** Automatically set to the full size of the target when `BeginRenderPass` is called.
+
+#### SituationCmdSetScissor
+
+```C
+void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);
+```
+
+**Usage:** Discards any pixels generated outside this rectangle. Essential for UI clipping (e.g., scrolling lists).
+
+<a id="324-example-clearing-the-screen"></a>
+### 3.2.4 Example: Clearing the Screen
+
+```C
+// Define a pass that clears the screen to Dark Blue
+SituationRenderPassInfo pass = {
+    .display_id = -1, // Main Window
+    .color_attachment = {
+        .loadOp = SIT_LOAD_OP_CLEAR,
+        .storeOp = SIT_STORE_OP_STORE,
+        .clear = { .color = {20, 30, 100, 255} } // RGBA
+    },
+    .depth_attachment = {
+        .loadOp = SIT_LOAD_OP_CLEAR,
+        .storeOp = SIT_STORE_OP_DONT_CARE,
+        .clear = { .depth = 1.0f } // Max Depth
+    }
+};
+
+SituationCmdBeginRenderPass(cmd, &pass);
+// ... Draw commands ...
+SituationCmdEndRenderPass(cmd);
+```
+</details>
+
+<a id="33-shader-pipelines"></a>
+<details>
+<summary><b>3.3 Shader Pipelines</b></summary>
+
+This section explains how to load, bind, and update Shaders. It also introduces the Hot-Reloading capabilities for shaders, which is a key feature of the "Velocity" update.
+
+In Situation, a "Shader" is not just source code; it is a Pipeline State Object (PSO). It encapsulates the Vertex Shader, Fragment Shader, and all associated fixed-function state (Blending, Depth Testing, Layouts).
+
+<a id="331-loading-shaders"></a>
+### 3.3.1 Loading Shaders
+
+You can load shaders from disk files or from memory strings.
+
+#### SituationLoadShader
+
+```C
+SituationShader SituationLoadShader(const char* vs_path, const char* fs_path);
+```
+
+**Arguments:** Paths to the Vertex Shader (.vert) and Fragment Shader (.frag).
+**Behavior:**
+*   **OpenGL:** Compiles GLSL and links a Program.
+*   **Vulkan:** Compiles GLSL to SPIR-V (using shaderc), creates Shader Modules, and builds a VkPipeline.
+
+**Hot-Reloading:** Shaders loaded via this function are registered for hot-reloading. If you edit the file on disk and call `SituationReloadShader`, it will rebuild automatically.
+
+#### SituationLoadShaderFromMemory
+
+```C
+SituationShader SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code);
+```
+
+**Usage:** Useful for embedded tools, single-file examples, or procedurally generated shader code.
+**Note:** Cannot be hot-reloaded from disk.
+
+#### SituationUnloadShader
+
+```C
+void SituationUnloadShader(SituationShader* shader);
+```
+
+**Behavior:** Destroys the GPU pipeline and frees resources. Sets the handle ID to 0.
+
+<a id="332-binding-pipelines"></a>
+### 3.3.2 Binding Pipelines
+
+To use a shader for drawing, you must bind it to the command buffer.
+
+#### SituationCmdBindPipeline
+
+```C
+SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader);
+```
+
+**Scope:** The shader remains bound for all subsequent draw calls until another pipeline is bound or the render pass ends.
+
+<a id="333-uniform-management-data"></a>
+### 3.3.3 Uniform Management (Data)
+
+Shaders need data (Matrices, Colors, Time). Situation provides two ways to send data: Push Constants (fast, small) and Uniform Buffers (large, shared).
+
+#### Push Constants (SituationCmdSetPushConstant)
+
+The fastest way to send small data (like a Model Matrix or a Color tint).
+
+```C
+void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);
+```
+
+**Limit:** Guaranteed 128 bytes (e.g., two mat4 matrices).
+**GLSL Mapping:**
+
+```Glsl
+layout(push_constant) uniform Constants {
+    mat4 model;
+    vec4 color;
+} pc;
+```
+
+#### Uniform Buffers (SituationCmdBindDescriptorSet)
+
+For larger data shared across many objects (Camera View/Proj, Lights).
+
+```C
+SituationCmdBindDescriptorSet(cmd, set_index, buffer_handle);
+```
+
+See Section 3.7 for details on creating buffers.
+
+#### Legacy Uniforms (OpenGL Only)
+
+For quick prototyping on OpenGL, you can set uniforms by name. Not supported on Vulkan.
+
+```C
+SituationSetShaderUniform(shader, "uTime", &time, SIT_UNIFORM_FLOAT);
+```
+
+<a id="334-hot-reloading-shaders"></a>
+### 3.3.4 Hot-Reloading Shaders
+
+The "Velocity" feature set allows you to recompile shaders while the app is running.
+
+#### SituationReloadShader
+
+```C
+bool SituationReloadShader(SituationShader* shader);
+```
+
+**Process:**
+1.  Checks the file paths stored during `SituationLoadShader`.
+2.  Re-reads the source code from disk.
+3.  Attempts to compile.
+    *   **On Success:** Waits for GPU idle, destroys old pipeline, creates new pipeline, updates the handle.
+    *   **On Failure:** logs the compiler error to stderr and keeps the old shader active. The app does not crash.
+
+**Usage:** Bind this to a key (e.g., F5) in your development build.
+
+<a id="335-example-basic-shader-workflow"></a>
+### 3.3.5 Example: Basic Shader Workflow
+
+```C
+// 1. Load
+SituationShader shader = SituationLoadShader("assets/basic.vert", "assets/basic.frag");
+
+// 2. Render Loop
+SituationCmdBeginRenderPass(cmd, &pass);
+
+    SituationCmdBindPipeline(cmd, shader);
+
+    // Send Model Matrix via Push Constant
+    SituationCmdSetPushConstant(cmd, 0, &modelMatrix, sizeof(mat4));
+
+    SituationCmdDrawMesh(cmd, mesh);
+
+SituationCmdEndRenderPass(cmd);
+
+// 3. Reload (e.g., on F5 key press)
+if (SituationIsKeyPressed(SIT_KEY_F5)) {
+    printf("Reloading Shader...\n");
+    SituationReloadShader(&shader);
+}
+```
+</details>
+
+<a id="34-geometry--meshes"></a>
+<details>
+<summary><b>3.4 Geometry & Meshes</b></summary>
+
+This section covers how to upload vertex data to the GPU, create reusable Mesh objects, and load standard 3D model files.
+
+A Mesh is a container for geometric data. It consists of a Vertex Buffer (points in space) and an optional Index Buffer (connect-the-dots order). Situation abstracts these buffers into a single `SituationMesh` handle for ease of use.
+
+<a id="341-vertex-data-layout"></a>
+### 3.4.1 Vertex Data Layout
+
+The library expects a standard vertex layout for most helper functions (`SituationCreateMesh`, `SituationDrawModel`).
+
+**Standard Vertex Format:**
+
+```C
+typedef struct {
+    vec3 position;  // Location (x, y, z)
+    vec3 normal;    // Surface direction (nx, ny, nz)
+    vec2 uv;        // Texture coordinates (u, v)
+} SituationVertex;
+```
+
+**Stride:** sizeof(float) * 8 (32 bytes).
+**Custom Layouts:** You can use custom layouts by creating raw `SituationBuffer` objects and binding them manually, but `SituationMesh` is optimized for this standard format.
+
+<a id="342-creating-meshes"></a>
+### 3.4.2 Creating Meshes
+
+#### SituationCreateMesh
+
+```C
+SituationMesh SituationCreateMesh(const void* vertex_data,
+                                  int vertex_count,
+                                  size_t vertex_stride,
+                                  const uint32_t* index_data,
+                                  int index_count);
+```
+
+**Behavior:** Allocates GPU memory (VBO/EBO), uploads the data, and configures the input assembly state (VAO in OpenGL).
+**Return:** A ready-to-draw `SituationMesh` handle.
+
+#### SituationDestroyMesh
+
+```C
+void SituationDestroyMesh(SituationMesh* mesh);
+```
+
+**Behavior:** Frees the GPU buffers.
+
+<a id="343-drawing-meshes"></a>
+### 3.4.3 Drawing Meshes
+
+#### SituationCmdDrawMesh
+
+```C
+SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh);
+```
+
+**Behavior:** Binds the mesh's vertex and index buffers, then issues an Indexed Draw call.
+**Prerequisite:** A pipeline must be bound (`SituationCmdBindPipeline`).
+
+#### SituationCmdDrawQuad (High-Level Helper)
+
+```C
+void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color);
+```
+
+**Behavior:** Draws a unit square using an internal shared mesh. Useful for UI, particles, or prototyping. No manual mesh creation required.
+
+<a id="344-model-loading-gltf"></a>
+### 3.4.4 Model Loading (GLTF)
+
+The library includes a built-in loader for glTF 2.0 (.gltf / .glb) files. This is the industry standard for 3D assets.
+
+#### SituationLoadModel
+
+```C
+SituationModel SituationLoadModel(const char* file_path);
+```
+
+**Features:**
+*   Parses the node hierarchy.
+*   Loads binary geometry into `SituationMesh` objects.
+*   Loads embedded or external textures (Albedo, Normal, Metallic/Roughness).
+*   Supports PBR materials.
+
+**Return:** A `SituationModel` struct containing an array of meshes and textures.
+
+#### SituationDrawModel
+
+```C
+void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform);
+```
+
+**Behavior:** Iterates through all sub-meshes in the model. For each mesh:
+1.  Binds the material textures (Albedo, etc.).
+2.  Updates the Push Constant with the combined matrix (transform * local_node_transform).
+3.  Draws the mesh.
+
+#### SituationUnloadModel
+
+```C
+void SituationUnloadModel(SituationModel* model);
+```
+
+**Behavior:** Destroys all meshes and textures associated with the model.
+
+<a id="345-readback--exporting"></a>
+### 3.4.5 Readback & Exporting
+
+#### SituationGetMeshData
+
+```C
+void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* v_count, int* v_stride, void** index_data, int* i_count);
+```
+
+**Behavior:** Downloads the data from GPU memory back to CPU memory. Useful for saving modified geometry or collision detection.
+
+#### SituationSaveModelAsGltf
+
+```C
+bool SituationSaveModelAsGltf(SituationModel model, const char* file_path);
+```
+
+**Usage:** Exports a runtime model structure back to a .gltf file. Useful for building in-game level editors.
+
+<a id="346-example-custom-triangle"></a>
+### 3.4.6 Example: Custom Triangle
+
+```C
+// Define Data
+float vertices[] = {
+    -0.5f, -0.5f, 0.0f,  // Bottom Left
+     0.5f, -0.5f, 0.0f,  // Bottom Right
+     0.0f,  0.5f, 0.0f   // Top
+};
+uint32_t indices[] = { 0, 1, 2 };
+
+// Create
+SituationMesh triangle = SituationCreateMesh(
+    vertices, 3, 3 * sizeof(float), // Pos only (tightly packed)
+    indices, 3
+);
+
+// Draw
+SituationCmdBindPipeline(cmd, shader);
+SituationCmdDrawMesh(cmd, triangle);
+```
+</details>
+
+<a id="35-textures--images"></a>
+<details>
+<summary><b>3.5 Textures & Images</b></summary>
+
+This section distinguishes between CPU-side pixel data and GPU-side texture resources, covering loading, manipulation, and rendering.
+
+Situation separates image data into two distinct types:
+*   `SituationImage` (CPU): Raw pixel data in system RAM. You can read/write pixels here.
+*   `SituationTexture` (GPU): An optimized resource in Video RAM. You can sample this in shaders, but you cannot read pixels directly.
+
+<a id="351-image-manipulation-cpu"></a>
+### 3.5.1 Image Manipulation (CPU)
+
+Before uploading to the GPU, you can manipulate images using a suite of CPU-side tools.
+
+**Loading & Saving**
+*   `SituationLoadImage(path)`: Loads PNG, JPG, BMP, TGA.
+*   `SituationLoadImageFromMemory(...)`: Loads from a file embedded in your executable.
+*   `SituationExportImage(image, path)`: Saves to disk (PNG/BMP).
+
+**Generation**
+*   `SituationGenImageColor(w, h, color)`: Creates a solid color image.
+*   `SituationGenImageGradient(...)`: Creates linear/radial gradients.
+
+**Processing**
+*   `SituationImageResize(...)`: Rescales the image (Bicubic).
+*   `SituationImageCrop(...)`: Trims the image.
+*   `SituationImageDraw(...)`: Blits one image onto another (Software composition).
+*   `SituationImageAdjustHSV(...)`: Modifies Hue/Saturation/Brightness.
+
+<a id="352-texture-creation-gpu"></a>
+### 3.5.2 Texture Creation (GPU)
+
+Once your `SituationImage` is ready, you upload it to the GPU.
+
+#### SituationCreateTexture
+
+```C
+SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps);
+```
+
+**Behavior:** Allocates VRAM, copies pixels, and optionally generates a mipmap chain (for smoother minification).
+**Flags:** Automatically adds USAGE_SAMPLED and USAGE_STORAGE flags, making the texture compatible with both Graphics and Compute pipelines.
+
+#### SituationDestroyTexture
+
+```C
+void SituationDestroyTexture(SituationTexture* texture);
+```
+
+**Safety:** Call this to free VRAM. Do not destroy a texture while it is being used by a command buffer in flight (the library handles this synchronization automatically during Shutdown, but during runtime you must be careful).
+
+<a id="353-binding-textures"></a>
+### 3.5.3 Binding Textures
+
+To use a texture in a shader, bind it to a descriptor set slot.
+
+#### SituationCmdBindTextureSet
+
+```C
+SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);
+```
+
+**Usage:** Binds the texture and a default sampler to the specified Set index.
+**GLSL Mapping:**
+
+```Glsl
+layout(set = 1, binding = 0) uniform sampler2D myTexture;
+```
+
+<a id="354-hot-reloading-textures"></a>
+### 3.5.4 Hot-Reloading Textures
+
+#### SituationReloadTexture
+
+```C
+bool SituationReloadTexture(SituationTexture* texture);
+```
+
+**Behavior:**
+1.  Checks if the texture was loaded from a file path.
+2.  Reloads the file from disk into a temporary `SituationImage`.
+3.  Uploads the new pixels to the existing GPU handle (or creates a new internal handle and swaps it).
+
+**Usage:** Great for iterating on pixel art or UI assets without restarting.
+
+<a id="355-taking-screenshots"></a>
+### 3.5.5 Taking Screenshots
+
+#### SituationLoadImageFromScreen
+
+```C
+SituationImage SituationLoadImageFromScreen(void);
+```
+
+**Returns:** A CPU `SituationImage` containing the pixels of the current backbuffer.
+**Performance:** This causes a pipeline stall (CPU waits for GPU). Do not use every frame.
+
+#### SituationTakeScreenshot
+
+```C
+bool SituationTakeScreenshot(const char* filename);
+```
+
+**Format:** Must end in .png.
+
+<a id="356-example-loading--using-a-texture"></a>
+### 3.5.6 Example: Loading & Using a Texture
+
+```C
+// 1. Load Image (CPU)
+SituationImage img = SituationLoadImage("assets/wall.png");
+
+// 2. Modify (Optional)
+SituationImageAdjustHSV(&img, 10.0f, 1.2f, 1.0f, 1.0f); // Shift Hue, Boost Saturation
+
+// 3. Upload (GPU)
+SituationTexture tex = SituationCreateTexture(img, true);
+
+// 4. Cleanup CPU RAM
+SituationUnloadImage(img);
+
+// 5. Render Loop
+SituationCmdBindPipeline(cmd, shader);
+SituationCmdBindTextureSet(cmd, 1, tex); // Bind to Set 1
+SituationCmdDrawMesh(cmd, mesh);
+```
+</details>
+
+<a id="36-virtual-display-compositor"></a>
+<details>
+<summary><b>3.6 Virtual Display Compositor</b></summary>
+
+This section details one of the library's most powerful features: the ability to render to off-screen buffers and composite them with advanced blending and scaling logic.
+
+The Virtual Display system is a high-level abstraction for Off-Screen Rendering. It allows you to render your scene (or parts of it) into a texture, and then draw that texture onto the main screen.
+
+**This is the engine behind:**
+*   **Pixel Art Games:** Render at 320x180, scale to 4K with integer scaling.
+*   **Split Screen:** Render two views to two virtual displays, position them side-by-side.
+*   **UI Layering:** Render the game world in 3D, then render a high-res UI overlay on top.
+*   **Post-Processing:** Render the scene, then draw it with a shader effect.
+
+<a id="361-creating-a-virtual-display"></a>
+### 3.6.1 Creating a Virtual Display
+
+#### SituationCreateVirtualDisplay
+
+```C
+int SituationCreateVirtualDisplay(vec2 resolution,
+                                  double frame_time_mult,
+                                  int z_order,
+                                  SituationScalingMode scaling_mode,
+                                  SituationBlendMode blend_mode);
+```
+
+**Resolution:** The internal size (e.g., `{320, 240}`).
+**Frame Time Mult:** Controls update frequency. 1.0 = Every Frame. 0.5 = Every other frame (half framerate effect). 0.0 = Manual update only.
+**Z-Order:** Determines drawing order. Lower numbers are drawn first (background).
+**Returns:** An integer ID (>= 0).
+
+**Scaling Modes**
+
+| Mode | Description |
+| :--- | :--- |
+| `SITUATION_SCALING_INTEGER` | Pixel Perfect. Scales by whole numbers (1x, 2x, 3x). Results in sharp pixels but may have black bars. |
+| `SITUATION_SCALING_FIT` | Aspect Correct. Scales as large as possible while maintaining aspect ratio. Sharp edges (Nearest Neighbor). |
+| `SITUATION_SCALING_STRETCH` | Fill Screen. Disregards aspect ratio to fill the target area. Smooth filtering (Linear). Good for UI. |
+
+**Blend Modes**
+
+| Mode | Effect | Usage |
+| :--- | :--- | :--- |
+| `SITUATION_BLEND_ALPHA` | Standard transparency. | UI, Sprites. |
+| `SITUATION_BLEND_ADDITIVE` | Adds colors (Brightens). | Explosions, Glows. |
+| `SITUATION_BLEND_MULTIPLY` | Multiplies colors (Darkens). | Shadows, Vignettes. |
+| `SITUATION_BLEND_OVERLAY` | Complex contrast blend. | Stylized effects. |
+| `SITUATION_BLEND_SOFT_LIGHT` | Gentle lighting blend. | Atmosphere. |
+
+<a id="362-rendering-to-a-virtual-display"></a>
+### 3.6.2 Rendering To a Virtual Display
+
+To draw content into the virtual display, simply target its ID in a Render Pass.
+
+```C
+SituationRenderPassInfo pass = {
+    .display_id = my_vd_id, // Target the VD
+    .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, ... }
+};
+SituationCmdBeginRenderPass(cmd, &pass);
+// ... Draw your game world here ...
+SituationCmdEndRenderPass(cmd);
+```
+
+<a id="363-rendering-the-virtual-display-compositing"></a>
+### 3.6.3 Rendering The Virtual Display (Compositing)
+
+Once you have drawn into your virtual displays, you must composite them onto the main screen (or another target).
+
+#### SituationRenderVirtualDisplays
+
+```C
+void SituationRenderVirtualDisplays(SituationCommandBuffer cmd);
+```
+
+**Behavior:**
+1.  Sorts all active, visible Virtual Displays by Z-Order.
+2.  Calculates the destination rectangle based on the target size and the VD's ScalingMode.
+3.  Draws each VD as a full-screen quad using the specified BlendMode.
+
+**Usage:** Call this inside the Render Pass for the Main Window.
+
+<a id="364-configuration--optimization"></a>
+### 3.6.4 Configuration & Optimization
+
+#### SituationConfigureVirtualDisplay
+
+```C
+SituationError SituationConfigureVirtualDisplay(int display_id,
+                                                vec2 offset,
+                                                float opacity,
+                                                int z_order,
+                                                bool visible,
+                                                double frame_time_mult,
+                                                SituationBlendMode blend_mode);
+```
+
+**Usage:** Update properties at runtime. E.g., fade a display out by animating opacity, or move a Picture-in-Picture window by changing offset.
+
+#### SituationSetVirtualDisplayDirty
+
+```C
+void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty);
+```
+
+**Optimization:** If a VD has `frame_time_mult = 0.0`, it will strictly reuse the texture from the last frame. Call this function with `true` to force a single re-render. Useful for static UI panels.
+
+<a id="365-example-pixel-art-setup"></a>
+### 3.6.5 Example: Pixel Art Setup
+
+```C
+// 1. Setup: Create a 320x180 buffer
+int game_vd = SituationCreateVirtualDisplay(
+    (vec2){320, 180},
+    1.0,
+    0,
+    SITUATION_SCALING_INTEGER,
+    SITUATION_BLEND_ALPHA
+);
+
+// 2. Render Loop
+if (SituationAcquireFrameCommandBuffer()) {
+
+    // Pass A: Draw Game to VD
+    SituationRenderPassInfo game_pass = { .display_id = game_vd, ... };
+    SituationCmdBeginRenderPass(cmd, &game_pass);
+        // ... Draw Sprites ...
+    SituationCmdEndRenderPass(cmd);
+
+    // Pass B: Draw VD to Screen
+    SituationRenderPassInfo screen_pass = { .display_id = -1, ... };
+    SituationCmdBeginRenderPass(cmd, &screen_pass);
+        SituationRenderVirtualDisplays(cmd); // Composites the 320x180 image to 4K
+    SituationCmdEndRenderPass(cmd);
+
+    SituationEndFrame();
 }
 ```
 </details>
