@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4H "Velocity" (Hotfix H)
+*   Core API library v2.3.4I "Velocity" (Hotfix I)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "H"
+#define SITUATION_VERSION_REVISION "I"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -205,17 +205,9 @@ Bash
     #include <sys/sysinfo.h>    // For RAM info on Linux
 #endif
 
-// Header macro (unchanged, but for completeness)
-#ifndef NDEBUG
-#define SITUATION_LOG_WARNING(code, msg, ...) do { \
-    char _sit_err_buf[SITUATION_MAX_ERROR_MSG_LEN]; \
-    snprintf(_sit_err_buf, sizeof(_sit_err_buf), msg, ##__VA_ARGS__); \
-    _SituationSetErrorFromCode(code, _sit_err_buf); \
-    fprintf(stderr, "[Situation WARN] %s\n", _sit_err_buf); \
-} while(0)
-#else
-#define SITUATION_LOG_WARNING(code, msg, ...) do {} while(0)
-#endif
+// Header macro replaced with standard function
+SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
+#define SITUATION_LOG_WARNING SituationLogWarning
 
 // --- New Convenience Macro for Safe Main Loop ---
 // Ensures inputs are polled and timers updated at the exact start of the frame.
@@ -923,6 +915,7 @@ typedef struct {
 typedef struct {
     uint64_t id;
     size_t size_in_bytes;
+    SituationBufferUsageFlags usage_flags; // Abstract flags stored for backend logic
 #if defined(SITUATION_IMPLEMENTATION)
 #if defined(SITUATION_USE_VULKAN)
     VkBuffer vk_buffer;
@@ -1749,10 +1742,10 @@ SITAPI bool SituationIsModifierPressed(int modifier);                           
 SITAPI void SituationSetKeyCallback(SituationKeyCallback callback, void* user_data);    // Set a callback for key events.
 
 // --- Mouse Input ---
-SITAPI vec2 SituationGetMousePosition(void);                                            // Get the mouse position within the window.
-SITAPI vec2 SituationGetMouseDelta(void);                                               // Get the mouse movement since the last frame.
+SITAPI Vector2 SituationGetMousePosition(void);                                            // Get the mouse position within the window.
+SITAPI Vector2 SituationGetMouseDelta(void);                                               // Get the mouse movement since the last frame.
 SITAPI float SituationGetMouseWheelMove(void);                                          // Get vertical mouse wheel movement.
-SITAPI vec2 SituationGetMouseWheelMoveV(void);                                          // Get vertical and horizontal mouse wheel movement.
+SITAPI Vector2 SituationGetMouseWheelMoveV(void);                                          // Get vertical and horizontal mouse wheel movement.
 SITAPI bool SituationIsMouseButtonDown(int button);                                     // Check if a mouse button is currently held down (a state).
 SITAPI bool SituationIsMouseButtonPressed(int button);                                  // Check if a mouse button was pressed down this frame (an event).
 SITAPI bool SituationIsMouseButtonReleased(int button);                                 // Check if a mouse button was released this frame.
@@ -1937,8 +1930,13 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 #if defined(SITUATION_USE_VULKAN)
 // It is highly recommended to use the Vulkan Memory Allocator for production code.
 // Download the "vk_mem_alloc.h" file from the official repository and place it in your project.
+// Note: VMA is a C++ library. To use the Vulkan backend, the implementation file must be compiled as C++.
+#ifdef __cplusplus
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
+#else
+#error "The Situation Vulkan backend relies on VMA, which requires a C++ compiler. Please compile the implementation file (where SITUATION_IMPLEMENTATION is defined) as C++."
+#endif
 #endif
 
 // Check if the user has included the stb_image_write implementation
@@ -3399,6 +3397,20 @@ static void _SituationSetError(const char* msg) {
  * @note This function is for internal use only.
  * @see _SituationSetError(), SituationGetLastErrorMsg(), SituationError
  */
+SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...) {
+#ifndef NDEBUG
+    char _sit_err_buf[SITUATION_MAX_ERROR_MSG_LEN];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(_sit_err_buf, sizeof(_sit_err_buf), fmt, args);
+    va_end(args);
+    _SituationSetErrorFromCode(code, _sit_err_buf);
+    fprintf(stderr, "[Situation WARN] %s\n", _sit_err_buf);
+#else
+    (void)code; (void)fmt;
+#endif
+}
+
 static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
     char buffer[SITUATION_MAX_ERROR_MSG_LEN];
     const char* base_msg = "Unknown Error";
@@ -11539,7 +11551,7 @@ SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, 
     
     // Determine the correct buffer target based on the usage flags it was created with.
     // This requires that the usage flags are stored in the buffer handle.
-    if (buffer.abstract_usage_flags & SITUATION_BUFFER_USAGE_STORAGE_BUFFER) {
+    if (buffer.usage_flags & SITUATION_BUFFER_USAGE_STORAGE_BUFFER) {
         target = GL_SHADER_STORAGE_BUFFER;
     } else {
         // Default to uniform buffer if not explicitly a storage buffer.
@@ -11961,7 +11973,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
  */
 SITAPI void SituationDestroyTexture(SituationTexture* texture) {
     // --- 1. Input Validation ---
-	if (!texture.id) {
+	if (!texture->id) {
         SITUATION_LOG_WARNING(SITUATION_ERROR_INVALID_PARAM, "Null texture ID in DestroyTexture");
         return;
     }
@@ -12312,8 +12324,7 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
     if (usage_flags == 0) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateBuffer: No usage flags specified."); return buffer; }
 
     buffer.size_in_bytes = size;
-    // Store the abstract flags for potential internal use or debugging
-    //buffer.abstract_usage_flags = usage_flags;
+    buffer.usage_flags = usage_flags;
 
     // --- 2. Backend-Specific Creation ---
 #if defined(SITUATION_USE_OPENGL)
@@ -14239,7 +14250,7 @@ SITAPI void SituationSetClipboardText(const char* text) {
         text = "";
     }
     // GLFW handles all the complexity.
-    glfwSetClipboardString(sit_gs.sit_glfw_window);
+    glfwSetClipboardString(sit_gs.sit_glfw_window, text);
 }
 
 /**
@@ -23226,8 +23237,8 @@ SITAPI Vector2 SituationGetMousePosition(void) {
     }
     Vector2 pos;
     // Apply scale first, then offset
-    glm_vec2_mul(sit_gs.mouse.current_pos, sit_gs.mouse.scale, pos);
-    glm_vec2_add(pos, sit_gs.mouse.offset, pos);
+    glm_vec2_mul(sit_gs.mouse.current_pos, sit_gs.mouse.scale, (float*)&pos);
+    glm_vec2_add((float*)&pos, sit_gs.mouse.offset, (float*)&pos);
     return pos;
 }
 
@@ -23246,9 +23257,9 @@ SITAPI Vector2 SituationGetMouseDelta(void) {
         Vector2 zero_vec = {0.0f, 0.0f}; return zero_vec;
     }
     Vector2 delta;
-    glm_vec2_sub(sit_gs.mouse.current_pos, sit_gs.mouse.last_pos, delta);
+    glm_vec2_sub(sit_gs.mouse.current_pos, sit_gs.mouse.last_pos, (float*)&delta);
     // Scale the delta as well
-    glm_vec2_mul(delta, sit_gs.mouse.scale, delta);
+    glm_vec2_mul((float*)&delta, sit_gs.mouse.scale, (float*)&delta);
     return delta;
 }
 
