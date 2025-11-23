@@ -1,3 +1,23 @@
+Date: 2025-11-23
+Version: 2.3.4G "Velocity" (Hotfix G)
+
+## DESCRIPTION
+The "Polish" release.
+
+## DOCUMENTATION
+*   Every single struct in the public and internal API now carries full comments with logical grouping, separator lines, and deep explanatory notes.
+*   The entire callback section has been rewritten for consistency, real-time safety warnings, exact format guarantees.
+*   The API Usage Guide section has been replaced with a more complete version.
+*   All enum blocks (SituationDataType, SituationBufferUsageFlags, barrier flags, etc.) received full professional commentary, useful combination presets, and performance guidance.
+*   Custom DSP and audio capture callbacks finalised with correct float* buffers and complete real-time safety documentation.
+
+## CONSISTENCY & AESTHETICS
+*   Universal adoption of snake_case: every callback parameter is now user_data (including the MiniAudio stream callbacks).
+*   SituationFocusCallback parameter renamed from focused → gained_focus for instant, unambiguous clarity.
+*   All comment blocks now follow the exact same visual structure, density, and tone.
+*   Minor spacing, alignment, and comment style harmonisation across the entire file.
+
+--------------------------------------------------------------------------------
 
 Date: 2025-11-22
 Version: 2.3.4F "Velocity" (Hotfix F)

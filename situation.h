@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4E "Velocity" (Hotfix F)
+*   Core API library v2.3.4G "Velocity" (Hotfix G)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "F"
+#define SITUATION_VERSION_REVISION "G"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -379,6 +379,109 @@ Bash
 #define SIT_MOD_SUPER              0x0008
 #define SIT_MOD_CAPS_LOCK          0x0010
 #define SIT_MOD_NUM_LOCK           0x0020
+
+//==================================================================================
+//  Callback Type Definitions - v2.3.4 "Velocity" Standard
+//==================================================================================
+//
+//  All Situation callbacks are designed to be:
+//   • Invoked exclusively from the main thread (except audio capture when the SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD flag is NOT set — then it runs on the audio thread)
+//   • Real-time safe where applicable (especially audio-related callbacks)
+//   • Zero-overhead (no virtual calls, no hidden allocations)
+//   • Fully user-data driven (last parameter is always the pointer you supplied)
+//
+//  Never call other SITAPI functions from inside a callback unless the documentation for that specific callback explicitly declares it safe.
+//
+//  These signatures are frozen — they will never change in any future version.
+//
+
+// ── Window / OS Events ─────────────────────────────────────────────────────
+typedef void (*SituationFileDropCallback)(
+    int          count,       // Number of files dropped
+    const char** paths,       // Array of UTF-8 file paths (valid only for duration of callback)
+    void*        user_data
+); // Files/folders dragged from OS onto the window
+
+typedef void (*SituationFocusCallback)(
+    bool   gained_focus,      // true = window gained focus, false = lost focus
+    void*  user_data
+); // Window focus change (alt-tab, click, etc.)
+
+typedef void (*SituationWindowCloseCallback)(
+    void* user_data
+); // User clicked the OS close button. Rarely used — most code just polls SituationWindowShouldClose()
+
+// ── Input Events (Optional Event-Driven API — polling API is always available) ──
+typedef void (*SituationKeyCallback)(
+    int   key,       // SIT_KEY_xxx code
+    int   scancode,  // Platform-specific scancode (useful for non-QWERTY layouts)
+    int   action,    // SIT_PRESS, SIT_RELEASE, or SIT_REPEAT
+    int   mods,      // Bitfield of SIT_MOD_xxx
+    void* user_data
+); // Exact GLFW key callback signature
+
+typedef void (*SituationCharCallback)(
+    unsigned int codepoint,   // UTF-32 codepoint (valid Unicode character)
+    void*        user_data
+); // Text input (separate from key events — handles IME, dead keys, etc.)
+
+typedef void (*SituationMouseButtonCallback)(
+    int   button,    // SIT_MOUSE_BUTTON_1 to 8
+    int   action,    // SIT_PRESS or SIT_RELEASE
+    int   mods,      // Modifier bitfield
+    void* user_data
+); // Mouse button events
+
+typedef void (*SituationCursorPosCallback)(
+    vec2  position,   // Cursor position in screen coordinates (HiDPI-aware, sub-pixel precision)
+    void* user_data
+); // Called every time the mouse moves (can be very frequent)
+
+typedef void (*SituationScrollCallback)(
+    vec2  offset,     // x/y scroll amount (y is usually ±1.0 per notch)
+    void* user_data
+); // Mouse wheel / trackpad scroll
+
+typedef void (*SituationJoystickCallback)(
+    int  jid,        // Joystick ID (0 to SITUATION_MAX_JOYSTICKS-1)
+    int  event,      // GLFW_CONNECTED or GLFW_DISCONNECTED
+    void* user_data
+); // Gamepad/controller hotplug events
+
+// ── Custom Audio Streaming (Exact MiniAudio vtable signatures — required for perfect compatibility) ──
+typedef ma_uint64 (*SituationStreamReadCallback)(
+    void*      pUserData,    // Your custom stream context pointer
+    void*      pBufferOut,   // Buffer to fill with PCM data
+    ma_uint64  bytesToRead   // Maximum bytes to write
+); // Return number of bytes actually written
+
+typedef ma_result (*SituationStreamSeekCallback)(
+    void*       pUserData,   // Your custom stream context pointer
+    ma_int64    byteOffset,  // Offset in bytes
+    ma_seek_origin origin    // MA_SEEK_WHENCE_SOF/COF/EOF
+); // Return MA_SUCCESS on success
+
+// ── Audio Capture (Microphone / Line-In) ─────────────────────────────────────
+typedef void (*SituationAudioCaptureCallback)(
+    const float* input_buffer,   // Interleaved 32-bit float samples (read-only!)
+    uint32_t     frame_count,    // Number of frames in this block (typically 256–1024)
+    void*        user_data
+); // Called from audio thread unless SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD is set
+   // Format is always engine native: 48 kHz (or custom, stereo (or mono), interleaved floats
+
+// ── Custom DSP Processor Chain (Per-Sound Post-Effects) ─────────────────────
+typedef void (*SituationAudioProcessorCallback)(
+    float*       buffer,         // Interleaved float samples — read/write in-place
+    uint32_t     frames,         // Number of frames in this block
+    uint32_t     channels,       // 1 (mono) or 2 (stereo)
+    uint32_t     sampleRate,     // Current engine sample rate in Hz
+    void*        user_data 		 // Pointer supplied when the processor was added
+); // Applied after built-in effects (filter → echo → reverb) but before final volume/pan
+   // Must be real-time safe — no malloc, no locking, no system calls
+
+// ── Internal GLFW Error Callback (Exposed only for extremely advanced users) ──
+typedef void (*GLFWerrorfun)(int error_code, const char* description);
+
 
 /**
  * @brief Basic Math Types
@@ -883,45 +986,46 @@ typedef struct SituationModel {
 
 // --- Virtual Display Structures ---
 typedef struct {
-    int id;                        // Internal ID for API use
-    vec2 resolution;
-    vec2 offset;                   // Screen position for rendering (top-left)
-    float opacity;                 // Alpha blending (0.0f to 1.0f)
-    bool visible;                  // Whether to render this display
-    int z_order;                   // Z-order for compositing (lower drawn first)
+    int      id;                     // Unique sequential ID assigned at creation (used internally for tracking)
+    vec2     resolution;             // Render resolution of this virtual display (width, height in pixels)
+    vec2     offset;                 // Top-left screen position when composited to the main window (in screen pixels)
+    float    opacity;                // Global alpha multiplier for the entire display (0.0f = fully transparent, 1.0f = opaque)
+    bool     visible;                // If false, the display is skipped entirely during compositing
+    int      z_order;                // Sorting key for compositing order — lower values are drawn first (background → foreground)
 
-    // Timing and animation related
-    uint64_t frame_count;
-    double frame_time_multiplier;
-    double elapsed_time_seconds;
-    float cycle_animation_value;
-    double last_update_time_seconds;
-    double frame_delta_time_seconds;
-    
-    // Optimization related (new)
-    bool is_dirty;                  // True if content needs to be re-rendered
-    SituationScalingMode scaling_mode;
-    SituationBlendMode blend_mode;
+    // ── Independent Timing & Animation System (allows retro slowdown, bullet-time, UI-independent speed, etc.) ──
+    uint64_t frame_count;                // Number of frames this virtual display has advanced (independent of main window)
+    double   frame_time_multiplier;      // Speed multiplier (1.0 = normal, 0.5 = half speed, 2.0 = double speed, etc.)
+    double   elapsed_time_seconds;       // Total time this display has been running (affected by frame_time_multiplier)
+    float    cycle_animation_value;      // Oscillating value 0.0..1.0..0.0 useful for cheap pulsing/shake effects
+    double   last_update_time_seconds;   // Timestamp of the last frame advance (used for delta calculation)
+    double   frame_delta_time_seconds;   // Delta time for this virtual display's last frame (affected by multiplier)
 
-    // Backend-specific handles
+    // ── Optimization & Compositing Controls ──
+    bool                    is_dirty;       // Set to true when content changed → forces re-render of the off-screen buffer
+    SituationScalingMode    scaling_mode;   // How the VD is scaled when composited (Integer, Fit, Stretch, etc.)
+    SituationBlendMode      blend_mode;     // Blending style when compositing (Alpha, Additive, Overlay, Soft Light, Screen Grab, etc.)
+
+    // ── Backend-Specific GPU Resources (only compiled in the implementation file) ──
 #if defined(SITUATION_IMPLEMENTATION)
 #if defined(SITUATION_USE_VULKAN)
     struct {
-        VkImage image;
-        VmaAllocation image_memory;
-        VkImageView image_view;
-        VkImage depth_image;
-        VmaAllocation depth_image_memory;
-        VkImageView depth_image_view;
-        VkFramebuffer framebuffer;
-        VkSampler sampler;
-        VkRenderPass render_pass; // Each VD has its own render pass
+        VkImage         image;               // Device-local color image
+        VmaAllocation   image_memory;        // VMA allocation handle for the color image
+        VkImageView     image_view;          // Color attachment view
+        VkImage         depth_image;         // Depth-stencil image (if enabled)
+        VmaAllocation   depth_image_memory;  // VMA allocation for depth image
+        VkImageView     depth_image_view;    // Depth attachment view
+        VkFramebuffer   framebuffer;         // Framebuffer that references the above images
+        VkSampler       sampler;             // Sampler used when sampling this VD as a texture
+        VkRenderPass    render_pass;         // Dedicated render pass (one per VD for maximum compatibility/flexibility)
+        VkDescriptorSet persistent_ds;       // Pre-allocated descriptor set for ultra-fast compositing (Velocity era)
     } vk;
 #elif defined(SITUATION_USE_OPENGL)
     struct {
-        GLuint fbo_id;                 // OpenGL Framebuffer Object ID
-        GLuint texture_id;             // OpenGL Texture ID for color attachment
-        GLuint depth_rbo_id;           // OpenGL Renderbuffer for depth
+        GLuint fbo_id;          // Framebuffer Object ID
+        GLuint texture_id;      // Color attachment texture (GL_TEXTURE_2D)
+        GLuint depth_rbo_id;    // Renderbuffer Object for depth/stencil (optional but usually present)
     } gl;
 #endif
 #endif
@@ -944,8 +1048,6 @@ typedef struct SituationFont {
 
 // --- Audio Control Structures ---
 
-typedef void (*SituationAudioProcessorCallback)(void* buffer, unsigned int frames, int channels, int sampleRate, void* userData);
-
 typedef struct {
     int sample_rate;
     int channels;
@@ -959,74 +1061,6 @@ typedef struct {
     bool is_default_playback;
     bool is_default_capture;
 } SituationAudioDeviceInfo;
-
-typedef enum {
-    SITUATION_FILTER_NONE,
-    SITUATION_FILTER_LOWPASS,
-    SITUATION_FILTER_HIGHPASS
-} SituationFilterType;
-
-/**
- * @brief Represents a loaded sound object (file-based or streamed).
- * @details Holds the decoding state, playback cursor, effects chain, and configuration.
- *          For custom streams, it now internally stores the specific read/seek callbacks to ensure thread safety.
- */
-typedef struct {
-    ma_decoder decoder;             // Internal MiniAudio decoder state
-    // Internal RAM buffer for safe playback
-    void* preloaded_data; 
-    bool is_preloaded; 
-	
-    ma_data_converter converter;    // Internal sample rate/format converter
-    bool is_initialized;            // True if decoder is valid
-    bool converter_initialized;     // True if converter is valid
-    bool is_looping;                // True if sound should restart upon completion
-    bool is_streamed;               // True if data is pulled via callbacks (not pre-loaded)
-
-    uint64_t cursor_frames;         // Current playback position in frames
-    uint64_t total_frames;          // Total length (0 if unknown/streamed)
-    float volume;                   // Linear volume (0.0 to N.N)
-    float pan;                      // Panning (-1.0 left, 1.0 right)
-    float pitch;                    // Pitch multiplier (1.0 normal)
-	
-    // --- Custom Stream Callbacks (Instance Storage) ---
-    // These fields store the user-provided callbacks for *this specific sound instance*.
-    // They are accessed by the internal static thunks using pointer arithmetic.
-    SituationStreamReadCallback stream_read_cb; 
-    SituationStreamSeekCallback stream_seek_cb; 
-
-    void* stream_user_data; // New: User data for stream callbacks
-
-    // --- Effects Chain ---
-    struct {
-        // Biquad Filter (for LPF/HPF)
-        bool filter_enabled;
-        ma_biquad biquad;
-        SituationFilterType filter_type;
-        float filter_cutoff_hz;
-        float filter_q;
-
-        // Echo (Delay)
-        bool echo_enabled;
-        ma_delay delay;
-        float echo_delay_sec;
-        float echo_feedback;
-        float echo_wet_mix;
-
-        // Reverb
-        bool reverb_enabled;
-        ma_reverb reverb;
-        float reverb_room_size;
-        float reverb_damping;
-        float reverb_wet_mix;
-        float reverb_dry_mix;
-    } effects;
-
-    // --- Custom DSP Processors ---
-    SituationAudioProcessorCallback* processors;
-    void** processor_user_data;
-    int processor_count;
-} SituationSound;
 
 /**
  * @brief Strategy for loading audio data from disk.
@@ -1047,151 +1081,314 @@ typedef enum {
     SITUATION_AUDIO_LOAD_STREAM  // Force disk streaming (Best for long Music)
 } SituationAudioLoadMode;
 
+typedef enum {
+    SITUATION_FILTER_NONE,
+    SITUATION_FILTER_LOWPASS,
+    SITUATION_FILTER_HIGHPASS
+} SituationFilterType;
+
+// --- Sound Instance Structure (Hardened Audio Engine - v2.3.3C+) ---
+typedef struct {
+    ma_decoder                  decoder;                // Internal MiniAudio decoder (handles WAV, MP3, FLAC, OGG, etc.)
+    // ── Preloaded RAM Buffer (Critical for stutter-free SFX playback) ──
+    void*                       preloaded_data;         // Fully decoded PCM data in RAM when using SITUATION_AUDIO_LOAD_FULL/AUTO
+    bool                        is_preloaded;           // True if sound is fully decoded to RAM (zero audio-thread disk I/O)
+    
+    // ── Data Conversion & Format Normalization ──
+    ma_data_converter           converter;              // Converts source format → engine format (always f32, 48kHz stereo)
+    bool                        is_initialized;         // True if decoder was successfully initialized
+    bool                        converter_initialized; // True if data converter was successfully set up
+
+    // ── Playback Behaviour ──
+    bool                        is_looping;             // If true, sound restarts automatically when reaching end
+    bool                        is_streamed;            // True if sound is disk-streamed (music) rather than fully preloaded (SFX)
+    uint64_t                    cursor_frames;          // Current playback position in frames (updated by audio thread)
+    uint64_t                    total_frames;           // Total length in frames (0 if streamed/unknown length)
+
+    // ── Mixer Controls (per-instance) ──
+    float                       volume;                 // Linear volume multiplier (0.0f = silent, 1.0f = normal, >1.0f allowed)
+    float                       pan;                    // Stereo panning (-1.0f = full left, 0.0f = center, +1.0f = full right)
+    float                       pitch;                  // Playback speed/pitch shift (1.0f normal, 0.5f half-speed, 2.0f double-speed)
+
+    // ── Custom Streaming Support (Instance-Specific Callbacks - Thread-Safe Design) ──
+    // These are stored directly in the instance so each streamed sound can have its own callbacks/userdata.
+    // The audio thread uses static thunks + pointer arithmetic to safely invoke them without global state.
+    SituationStreamReadCallback stream_read_cb;         // User-provided read callback for custom streaming sources
+    SituationStreamSeekCallback stream_seek_cb;         // User-provided seek callback (optional but recommended)
+    void*                       stream_user_data;       // User pointer passed to the stream callbacks
+
+    // ── Built-in Effects Chain (Applied in processing order: Filter → Filter → Echo → Reverb → Volume/Pan) ──
+    struct {
+        // Biquad Filter (Low-pass, High-pass, Band-pass, etc.)
+        bool                    filter_enabled;         // Master enable for filter stage
+        ma_biquad               biquad;                 // MiniAudio biquad instance
+        SituationFilterType     filter_type;            // Current filter mode (LPF12, HPF12, etc.)
+        float                   filter_cutoff_hz;       // Cutoff frequency in Hz
+        float                   filter_q;               // Resonance/Q factor
+
+        // Echo / Delay Effect
+        bool                    echo_enabled;           // Master enable for echo stage
+        ma_delay                delay;                  // MiniAudio delay line
+        float                   echo_delay_sec;         // Delay time in seconds (typical range 0.1–1.0)
+        float                   echo_feedback;          // Feedback amount (0.0–1.0, >0.9 gets intense)
+        float                   echo_wet_mix;           // Wet/dry mix for delayed signal (0.0 = dry only, 1.0 = wet only)
+
+        // Simple Plate Reverb
+        bool                    reverb_enabled;         // Master enable for reverb stage
+        ma_reverb               reverb;                 // MiniAudio reverb instance
+        float                   reverb_room_size;       // Simulated room size (0.0 small → 1.0 large hall)
+        float                   reverb_damping;         // High-frequency damping (0.0.0 bright → 1.0 very damped)
+        float                   reverb_wet_mix;         // Wet amount (0.0 = dry only)
+        float                   reverb_dry_mix;         // Dry amount (usually kept at 1.0f)
+    } effects;
+
+    // ── Custom DSP Processor Chain (User-defined audio processing callbacks) ──
+    SituationAudioProcessorCallback* processors;        // Dynamic array of user callbacks (applied in order)
+    void**                      processor_user_data;    // Parallel array of user data pointers for each processor
+    int                         processor_count;        // Number of active custom processors
+} SituationSound;
+
+// --- Temporal Oscillator System (Global High-Precision Timing & Rhythm Engine) ---
+// This subsystem powers the advanced "Temporal Oscillator" feature set — a deterministic,
+// high-resolution metronome/beat-sync system capable of driving music-reactive events,
+// gameplay rhythms, animation pulses, procedural sequencing, etc.
+// All oscillators run on the same global timebase but can have independent periods and phases.
+
 // --- Timer System Structures ---
 #define SITUATION_MAX_OSCILLATORS 256
 #define SITUATION_TIMER_GRID_PERIOD_EDGES 60.0
 #define SITUATION_TIMER_GRIDILON 1.182940076
 
 typedef struct {
-    double period_seconds[SITUATION_MAX_OSCILLATORS];
-    uint64_t state_current[4];
-    uint64_t state_previous[4];
-    uint64_t trigger_count[SITUATION_MAX_OSCILLATORS];
-    double next_trigger_time_seconds[SITUATION_MAX_OSCILLATORS];
-    double last_ping_time_seconds[SITUATION_MAX_OSCILLATORS];
-    double current_system_time_seconds;
-    bool is_initialized;
+    // ── Oscillator Configuration ──
+    double   period_seconds[SITUATION_MAX_OSCILLATORS];     // Period of each oscillator in seconds (e.g. 0.5 = 120 BPM, 1/4 note)
+
+    // ── Deterministic Pseudo-Random State (xoshiro256** derived - 256-bit state) ──
+    // Used for repeatable "random" pulses, shakes, or procedural events that must stay perfectly in sync across runs/recordings
+    uint64_t state_current[4];      // Current 256-bit RNG state (xoshiro256** algorithm)
+    uint64_t state_previous[4];     // Previous frame state — enables perfect reverse playback or rewind debugging
+
+    // ── Per-Oscillator Runtime State ──
+    uint64_t trigger_count[SITUATION_MAX_OSCILLATORS];          // How many times this oscillator has fired since init (rolls over safely)
+    double   next_trigger_time_seconds[SITUATION_MAX_OSCILLATORS]; // Absolute time when the next trigger is scheduled
+    double   last_ping_time_seconds[SITUATION_MAX_OSCILLATORS];    // Time of the most recent trigger (for phase/duty queries)
+
+    // ── Global Timebase ──
+    double   current_system_time_seconds;   // Monotonically increasing high-resolution time (updated every frame via SituationUpdateTimers())
+
+    // ── Initialization Guard ──
+    bool     is_initialized;                // True after first call to SituationUpdateTimers() 
 } SituationTimerSystem;
 
-// Core Lifecycle & Error Handling
+// --- Initialization Configuration Structure (Passed to SituationInit) ---
 typedef struct {
-    int window_width;
-    int window_height;
-    const char* window_title;
-    uint32_t initial_active_window_flags;
-    uint32_t initial_inactive_window_flags;
-    // Vulkan specific options
-    bool enable_vulkan_validation;
-    uint32_t max_frames_in_flight;
-    const char** required_vulkan_extensions;
-    uint32_t required_vulkan_extension_count;
-    uint32_t flags; // New field for SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD
+    // ── Window Creation Parameters ──
+    int          window_width;              // Initial window width in screen coordinates
+    int          window_height;             // Initial window height in screen coordinates
+    const char*  window_title;              // Window title bar text (UTF-8)
+
+    // ── Window State Flags (Applied via GLFW window hints or direct state changes) ──
+    uint32_t     initial_active_window_flags;    // Flags when window has focus (e.g. SIT_WINDOW_BORDERLESS | SIT_WINDOW_VSYNC)
+    uint32_t     initial_inactive_window_flags;  // Flags when window is unfocused (e.g. pause rendering or reduce refresh rate)
+
+    // ── Vulkan-Specific Options ──
+    bool         enable_vulkan_validation;       // Enable VK_LAYER_KHRONOS_validation (debug builds only - auto-disabled in release)
+    uint32_t     max_frames_in_flight;           // Override SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT (usually 2 or 3)
+
+    // Optional: Provide custom Vulkan instance extensions (e.g. for VR, ray tracing, etc.)
+    const char** required_vulkan_extensions;     // Array of extension names (null or empty = use defaults)
+    uint32_t     required_vulkan_extension_count;// Length of the above array
+
+    // ── Engine Feature Flags ──
+    uint32_t     flags;  // Bitfield:
+                         //   SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD → route mic capture callbacks to main thread
+                         //   (future-proof expansion slot)
 } SituationInitInfo;
 
-/**
- * @brief Data types for vertex attributes
- */
+//==================================================================================
+//  Core Data Types & GPU Resource Semantics - v2.3.4 "Velocity" Standard
+//==================================================================================
+
+// ---------------------------------------------------------------------------------
+//  Vertex Attribute Data Types (used in SituationVertexAttribute layout descriptions)
+// ---------------------------------------------------------------------------------
 typedef enum {
-    SIT_DATA_BYTE,
-    SIT_DATA_UNSIGNED_BYTE,
-    SIT_DATA_SHORT,
-    SIT_DATA_UNSIGNED_SHORT,
-    SIT_DATA_INT,
-    SIT_DATA_UNSIGNED_INT,
-    SIT_DATA_FLOAT,
-    SIT_DATA_DOUBLE
+    SIT_DATA_BYTE           = 0,  // 8-bit signed integer   (normalized possible)
+    SIT_DATA_UNSIGNED_BYTE  = 1,  // 8-bit unsigned integer (normalized possible)
+    SIT_DATA_SHORT          = 2,  // 16-bit signed integer
+    SIT_DATA_UNSIGNED_SHORT = 3,  // 16-bit unsigned integer
+    SIT_DATA_INT            = 4,  // 32-bit signed integer
+    SIT_DATA_UNSIGNED_INT   = 5,  // 32-bit unsigned integer
+    SIT_DATA_FLOAT          = 6,  // 32-bit IEEE floating point (default for most attributes)
+    SIT_DATA_DOUBLE         = 7,  // 64-bit IEEE floating point (rare, only when explicitly needed)
 } SituationDataType;
 
-// Internal memory macro
+// ---------------------------------------------------------------------------------
+//  Memory Deallocation Macro (overridable for custom allocators)
+// ---------------------------------------------------------------------------------
 #ifndef SIT_FREE
-    #define SIT_FREE(p) free(p)
+    #define SIT_FREE(p) do { if (p) free(p); p = NULL; } while(0)
 #endif
 
-/**
- * @brief Helper enum to specify the type of data provided to the GL compute program creation function.
- */
+// ---------------------------------------------------------------------------------
+//  Compute Shader Source Format Specification
+//  Used when creating compute pipelines on backends that support multiple input formats.
+// ---------------------------------------------------------------------------------
 typedef enum {
-    SITUATION_GL_SHADER_SOURCE_TYPE_GLSL,  // Standard null-terminated GLSL string
-    SITUATION_GL_SHADER_SOURCE_TYPE_SPIRV  // SPIR-V bytecode
+    SITUATION_GL_SHADER_SOURCE_TYPE_GLSL   = 0,  // Null-terminated GLSL source string (compiled at runtime via shaderc when enabled)
+    SITUATION_GL_SHADER_SOURCE_TYPE_SPIRV  = 1,  // Raw SPIR-V bytecode blob (uint32_t array) - used when pre-compiling offline
 } SituationGLShaderSourceType;
 
-/**
- * @brief Flags indicating which previous pipeline stages have written to memory.
- * @details Used to specify the source of a memory dependency in a pipeline barrier.
- */
+// ---------------------------------------------------------------------------------
+//  Pipeline Barrier Source Access Flags
+//  Describes which previous pipeline stages have written to memory that later stages need to read.
+//  Combine with bitwise OR.
+// ---------------------------------------------------------------------------------
 typedef enum {
-    SITUATION_BARRIER_VERTEX_SHADER_WRITE   = 1 << 0,
-    SITUATION_BARRIER_FRAGMENT_SHADER_WRITE = 1 << 1,
-    SITUATION_BARRIER_COMPUTE_SHADER_WRITE  = 1 << 2,
-    SITUATION_BARRIER_TRANSFER_WRITE        = 1 << 3, // For buffer copies
+    SITUATION_BARRIER_VERTEX_SHADER_WRITE   = 1 << 0,   // Vertex shader wrote to SSBO / image
+    SITUATION_BARRIER_FRAGMENT_SHADER_WRITE  = 1 << 1,   // Fragment shader wrote to SSBO / image / color attachment
+    SITUATION_BARRIER_COMPUTE_SHADER_WRITE   = 1 << 2,   // Compute shader wrote to storage buffer / image
+    SITUATION_BARRIER_TRANSFER_WRITE         = 1 << 3,   // Copy/blit/fill operations wrote to buffer/image
 } SituationBarrierSrcFlags;
 
-/**
- * @brief Flags indicating which subsequent pipeline stages will read from memory.
- * @details Used to specify the destination of a memory dependency in a pipeline barrier.
- */
+// ---------------------------------------------------------------------------------
+//  Pipeline Barrier Destination Access Flags
+//  Describes which subsequent pipeline stages will read memory written by earlier stages.
+//  Combine with bitwise OR.
+// ---------------------------------------------------------------------------------
 typedef enum {
-    SITUATION_BARRIER_VERTEX_SHADER_READ   = 1 << 0,
-    SITUATION_BARRIER_FRAGMENT_SHADER_READ = 1 << 1,
-    SITUATION_BARRIER_COMPUTE_SHADER_READ  = 1 << 2,
-    SITUATION_BARRIER_TRANSFER_READ        = 1 << 3,
-    SITUATION_BARRIER_INDIRECT_COMMAND_READ = 1 << 4,
+    SITUATION_BARRIER_VERTEX_SHADER_READ     = 1 << 0,   // Vertex shader will read SSBO/image
+    SITUATION_BARRIER_FRAGMENT_SHADER_READ    = 1 << 1,   // Fragment shader will read SSBO/image/color attachment
+    SITUATION_BARRIER_COMPUTE_SHADER_READ     = 1 << 2,   // Compute shader will read storage buffer/image
+    SITUATION_BARRIER_TRANSFER_READ           = 1 << 3,   // Copy/blit operations will read from buffer/image
+    SITUATION_BARRIER_INDIRECT_COMMAND_READ   = 1 << 4,   // Indirect draw/dispatch buffer will be read by command processor
 } SituationBarrierDstFlags;
 
-/**
- * @brief Flags defining how a buffer will be used by the GPU.
- * These flags allow the backend (OpenGL/Vulkan) to optimize memory allocation and access patterns. Combine flags using bitwise OR.
- */
+// ---------------------------------------------------------------------------------
+//  Buffer Usage Flags (Critical for backend memory optimisation)
+//  These flags are translated directly to VkBufferUsageFlags / GL buffer usage hints.
+//  Always specify the minimal set required - the backend will place the buffer in the fastest
+//  memory type possible based on these hints.
+// ---------------------------------------------------------------------------------
 typedef enum {
-    SITUATION_BUFFER_USAGE_VERTEX_BUFFER      = 1 << 0, /**< Buffer will be used as a source of vertex data (e.g., glVertexAttribPointer). */
-    SITUATION_BUFFER_USAGE_INDEX_BUFFER       = 1 << 1, /**< Buffer will be used as a source of index data (e.g., glDrawElements). */
-    SITUATION_BUFFER_USAGE_UNIFORM_BUFFER     = 1 << 2, /**< Buffer will be used as a Uniform Buffer Object (UBO). */
-    SITUATION_BUFFER_USAGE_STORAGE_BUFFER     = 1 << 3, /**< Buffer will be used as a Shader Storage Buffer Object (SSBO). */
-    SITUATION_BUFFER_USAGE_INDIRECT_BUFFER    = 1 << 4, /**< Buffer will be used for indirect drawing commands (e.g., glMultiDrawElementsIndirect). */
-    SITUATION_BUFFER_USAGE_TRANSFER_SRC       = 1 << 5, /**< Buffer can be used as a source for transfer operations (e.g., copying data). */
-    SITUATION_BUFFER_USAGE_TRANSFER_DST       = 1 << 6, /**< Buffer can be used as a destination for transfer operations (e.g., uploading data). */
-    // Add more flags as needed for specific features
-    // Combination flags for common use cases
-    SITUATION_BUFFER_USAGE_VERTEX_AND_STORAGE = SITUATION_BUFFER_USAGE_VERTEX_BUFFER | SITUATION_BUFFER_USAGE_STORAGE_BUFFER
+    SITUATION_BUFFER_USAGE_VERTEX_BUFFER     = 1 << 0,   // Source of vertex data
+    SITUATION_BUFFER_USAGE_INDEX_BUFFER      = 1 << 1,   // Source of index data
+    SITUATION_BUFFER_USAGE_UNIFORM_BUFFER    = 1 << 2,   // Uniform Buffer Object (constant data, frequently updated)
+    SITUATION_BUFFER_USAGE_STORAGE_BUFFER    = 1 << 3,   // Shader Storage Buffer Object (read/write in shaders)
+    SITUATION_BUFFER_USAGE_INDIRECT_BUFFER   = 1 << 4,   // Indirect draw/dispatch command buffer
+    SITUATION_BUFFER_USAGE_TRANSFER_SRC      = 1 << 5,   // Source for copy operations (CPU → GPU staging)
+    SITUATION_BUFFER_USAGE_TRANSFER_DST      = 1 << 6,   // Destination for copy operations (GPU → CPU readback)
+
+    // Common combination presets (use these for convenience and maximum performance)
+    SITUATION_BUFFER_USAGE_VERTEX_AND_STORAGE = SITUATION_BUFFER_USAGE_VERTEX_BUFFER | SITUATION_BUFFER_USAGE_STORAGE_BUFFER,
+    SITUATION_BUFFER_USAGE_DYNAMIC_VERTEX = SITUATION_BUFFER_USAGE_VERTEX_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST,
+    SITUATION_BUFFER_USAGE_DYNAMIC_UNIFORM = SITUATION_BUFFER_USAGE_UNIFORM_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST,
+    SITUATION_BUFFER_USAGE_STORAGE_COMPUTE = SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_SRC | SITUATION_BUFFER_USAGE_TRANSFER_DST,
 } SituationBufferUsageFlags;
 
-// --- Callback and Type Definitions ---
-typedef void (*SituationFileDropCallback)(int count, const char** paths, void* user_data);                      // Function pointer for file drop events.
-typedef void (*SituationFocusCallback)(bool has_focus, void* user_data);                                        // Function pointer for window focus change events.
-typedef ma_uint64 (*SituationStreamReadCallback)(void* pUserData, void* pBufferOut, ma_uint64 bytesToRead);     // Function pointer for custom audio stream "read" operations.
-typedef ma_result (*SituationStreamSeekCallback)(void* pUserData, ma_int64 byteOffset, ma_seek_origin origin);  // Function pointer for custom audio stream "seek" operations.
-typedef void (*SituationAudioCaptureCallback)(const void* data, uint32_t frame_count, void* user_data);
-typedef void (*SituationKeyCallback)(int key, int scancode, int action, int mods, void* user_data);             // Function pointer for keyboard key events.
-typedef void (*SituationMouseButtonCallback)(int button, int action, int mods, void* user_data);                // Function pointer for mouse button events.
-typedef void (*SituationCursorPosCallback)(vec2 position, void* user_data);                                     // Function pointer for mouse cursor movement events.
-typedef void (*SituationScrollCallback)(vec2 offset, void* user_data);                                          // Function pointer for mouse scroll wheel events.
-typedef void (*SituationJoystickCallback)(int jid, int event, void* user_data);                                 // Function pointer for joystick connection/disconnection events.
-// GLFW has its own error callback: typedef void (*GLFWerrorfun)(int error_code, const char* description);
+//==================================================================================================
+//
+//  SITUATION API USAGE GUIDE - v2.3.4 "Velocity"
+//
+//  This is the canonical reference for correct usage of the Situation library.
+//  Every rule here is deliberate and enforced for maximum performance, identical cross-backend
+//  behaviour, and long-term stability in production applications.
+//
+//  Read this once. Then read it again. Then keep it open while you code.
+//
+//==================================================================================================
 
-//----------------------------------------------------------------------------------
-// --- API Declarations ---
-//----------------------------------------------------------------------------------
 /**
- * @section API Usage Guide
+ * @section Core Principles (Non-Negotiable)
  *
- * @b 1. @b Lifecycle
- * The library follows a strict lifecycle:
- *   - Call `SituationInit()` once at the start of your application.
- *   - Enter a main loop that runs until `SituationWindowShouldClose()` returns true.
- *   - Call `SituationShutdown()` once before your application exits.
- * All API functions (except where noted) must be called between `SituationInit()` and `SituationShutdown()`.
+ * 1. Single-Threaded API
+ *    All SITAPI functions (windowing, input polling, rendering, resource creation) 
+ *    MUST be called from the main thread that called SituationInit().
+ *    Background threads may perform pure CPU work or prepare data, but never call the API directly.
  *
- * @b 2. @b Main @b Loop @b Structure
- * A correct "Situation" main loop has three distinct phases per frame:
- *   1.  **Input:** Call `SituationPollInputEvents()` to gather all OS events.
- *   2.  **Update:** Call `SituationUpdateTimers()` to calculate delta time, then run your application logic.
- *   3.  **Render:** Call `SituationAcquireFrameCommandBuffer()`, record all your drawing commands using `SituationCmd*` functions, and finish with `SituationEndFrame()`.
+ * 2. Update-Before-Draw Contract (CRITICAL FOR BACKEND PARITY)
+ *    You MUST update buffers / push constants / textures
+ *    THEN you record draw commands.
+ *    Never the other way around.
+ *    In debug builds the library actively detects violations and aborts with a clear error.
+ *    This guarantees pixel-identical results between OpenGL (immediate) and Vulkan (deferred).
  *
- * @b 3. @b Resource @b Management @b (CRITICAL)
- * The library uses explicit, manual resource management. This is a core design principle.
- *   - Any resource created with a `SituationCreate*` or `SituationLoad*` function (e.g., `SituationCreateMesh`, `SituationLoadTexture`) **MUST** be explicitly freed with its corresponding `SituationDestroy*` or `SituationUnload*` function.
- *   - Any function that returns a `char*` (e.g., `SituationGetLastErrorMsg`, `SituationGetBasePath`) returns a new block of memory. The **caller is responsible for freeing this memory** using `free()`.
- *   - Failure to follow these rules will result in GPU and CPU memory leaks. The library will print warnings for leaked GPU resources at shutdown.
+ * 3. Explicit Resource Ownership
+ *    SituationCreate*  → must be paired with SituationDestroy*
+ *    SituationLoad*    → must be paired with SituationUnload*
+ *    SituationTakeScreenshot(), SituationGetLastErrorMsg(), SituationGetBasePath(), etc.
+ *      → return heap-allocated data → caller must free() or SituationFreeString().
+ *    SituationShutdown() performs leak detection and prints warnings for any GPU resource still alive.
  *
- * @b 4. @b Handles @b vs. @b Pointers
- * The API uses two patterns for interacting with objects:
- *   - **Handles (by value):** Opaque structs like `SituationMesh` or `SituationShader` are typically passed by value to drawing or binding functions (e.g., `SituationCmdDrawMesh(my_mesh)`).
- *   - **Pointers (for modification):** When a function needs to modify or destroy a resource, you must pass a pointer to its handle (e.g., `SituationDestroyMesh(&my_mesh)`). This allows the function to invalidate the handle by setting its internal ID to 0.
- *
- * @b 5. @b Thread @b Safety
- * The library is **strictly single-threaded**. All `SITAPI` functions must be called from the same thread that called `SituationInit()`. Asynchronous operations (like asset loading) must be handled by the user, ensuring that no `SITAPI` calls are made from worker threads.
+ * 4. Handle Pattern (by value) vs Modification (by pointer)
+ *    - Use:    SituationCmdDrawMesh(mesh_handle);          // pass by value
+ *    - Destroy: SituationDestroyMesh(&mesh_handle);        // pass by pointer → handle is zeroed
+ *    This pattern is used everywhere and prevents use-after-free bugs.
  */
- 
+
+/**
+ * @section Recommended Main Loop (Velocity-Era Standard)
+ *
+ * while (!SituationWindowShouldClose()) {
+ *     SITUATION_BEGIN_FRAME();           // Polls input + updates timers in correct order
+ *
+ *     // ── Your Update Logic Here (physics, gameplay, audio triggers, hot-reload checks) ──
+ *     SituationCheckHotReloads();        // Optional but highly recommended in development
+ *
+ *     if (SituationAcquireFrameCommandBuffer()) {
+ *         SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+ *
+ *         // ── Update GPU data first (buffers, push constants, descriptor binds) ──
+ *
+ *         // ── Then record draw commands ──
+ *         SituationCmdBeginRenderPass(cmd, &main_pass_info);
+ *         SituationCmdDrawMesh(cmd, my_mesh);
+ *         SituationCmdDrawText(cmd, font, "Situation v2.3.4F", vec2(10,10), WHITE);
+ *         SituationCmdEndRenderPass(cmd);
+ *
+ *         SituationEndFrame();               // Presents + GPU submit
+ *     }
+ * }
+ *
+ * This structure is now the official recommended pattern as of v2.3.4.
+ */
+
+/**
+ * @section Hot-Reloading Workflow (The "Velocity" Killer Feature)
+ *
+ * In development builds:
+ *   - Call SituationCheckHotReloads() once per frame (usually right after SITUATION_BEGIN_FRAME()).
+ *   - Any shader, compute pipeline, texture, or GLTF model that was loaded with the normal
+ *     SituationLoad* functions will automatically reload when the file on disk changes.
+ *   - Original handles remain valid → no need to rebuild materials, UI, or scene graphs.
+ *
+ * This feature alone typically doubles or triples artist/programmer iteration speed.
+ */
+
+/**
+ * @section Zero-Friction Features (They Just Work™)
+ *
+ *  SituationLoadSoundFromFile("music.mp3", SITUATION_AUDIO_LOAD_AUTO, true, &snd);
+ *  SituationLoadTexture("tex.png", true, &tex);           // mips + hot-reload ready
+ *  SituationTakeScreenshot("shot.png");            // always PNG, always works
+ *  SituationLoadFont("font.ttf") → SituationBakeFontAtlas() → SituationCmdDrawText()
+ *
+ * No extra defines, no manual stb includes, no custom writers required.
+ */
+
+/**
+ * @section Final Checklist Before Shipping
+ *
+ * [ ] Remove or #ifdef out SituationCheckHotReloads() in release builds
+ * [ ] Disable validation layers (SituationInitInfo::enable_vulkan_validation = false)
+ * [ ] Verify SituationShutdown() prints "No resource leaks detected"
+ * [ ] Confirm no "update-after-draw" assertions in debug builds
+ *
+ * If you can tick all boxes, you have achieved Situation mastery.
+ *
+ * Welcome to the Titanium tier.
+ */
+
 //==================================================================================
 // Core Module: Application Lifecycle and System
 //==================================================================================
@@ -1546,8 +1743,8 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
 SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix);   // Apply a reverb effect to a sound.
 
 // --- Custom Audio Processing ---
-SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* userData); // Attach a custom DSP processor to a sound's effect chain.
-SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* userData); // Detach a custom DSP processor from a sound.
+SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Attach a custom DSP processor to a sound's effect chain.
+SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Detach a custom DSP processor from a sound.
 
 //==================================================================================
 // Filesystem Module
@@ -19026,8 +19223,8 @@ SITAPI Vector2 SituationGetWindowScaleDPI(void) {
  * @param user_data A custom pointer that will be passed to your callback function.
  * @see SituationHasWindowFocus()
  */
-SITAPI void SituationSetFocusCallback(SituationFocusCallback callback, void* user_data) {
-    sit_gs.focus_callback_fn = callback;
+SITAPI void SituationSetFocusCallback(SituationFocusCallback gained_focus, void* user_data) {
+    sit_gs.focus_callback_fn = gained_focus;
     sit_gs.focus_callback_user_ptr = user_data;
 }
 
@@ -22416,9 +22613,9 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
  * @details Processors are called in the order they are attached, after built-in effects.
  * @param sound The sound to attach the processor to.
  * @param processor The callback function to execute.
- * @param userData A custom pointer to pass to the callback's userData parameter.
+ * @param user_data A custom pointer to pass to the callback's user_data parameter.
  */
-SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* userData) {
+SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
     if (!sound || !processor) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Sound or processor callback cannot be NULL.");
         return SITUATION_ERROR_INVALID_PARAM;
@@ -22446,7 +22643,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
 
     sound->processor_count++;
     sound->processors[sound->processor_count - 1] = processor;
-    sound->processor_user_data[sound->processor_count - 1] = userData;
+    sound->processor_user_data[sound->processor_count - 1] = user_data;
 
     ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
 
@@ -22457,9 +22654,9 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
  * @brief Detach a custom DSP processor from a sound.
  * @param sound The sound to detach the processor from.
  * @param processor The callback function to remove.
- * @param userData The user data pointer associated with the processor to remove.
+ * @param user_data The user data pointer associated with the processor to remove.
  */
-SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* userData) {
+SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
     if (!sound || !processor) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Sound or processor callback cannot be NULL.");
         return SITUATION_ERROR_INVALID_PARAM;
@@ -22469,7 +22666,7 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
 
     int found_index = -1;
     for (int i = 0; i < sound->processor_count; ++i) {
-        if (sound->processors[i] == processor && sound->processor_user_data[i] == userData) {
+        if (sound->processors[i] == processor && sound->processor_user_data[i] == user_data) {
             found_index = i;
             break;
         }
