@@ -1,5 +1,44 @@
-# Situation SDK Reference Manual
-**Version: 2.3.4F "Velocity"**
+# The "Situation" Advanced Platform Awareness, Control, and Timing
+## Core API Library Reference Manual
+
+| Metadata | Details |
+| :--- | :--- |
+| **Version** | 2.3.4F "Velocity" (Hotfix F) |
+| **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
+| **Backends** | OpenGL 4.6 Core / Vulkan 1.1+ |
+| **License** | MIT License |
+| **Author** | Jacques Morel |
+
+### Executive Summary
+
+"Situation" is a high-performance, single-file application kernel designed for cross-platform C and C++ development. It provides a unified, deterministic abstraction layer over the host operating system and graphics hardware.
+
+Unlike simple windowing wrappers, Situation is an opinionated System Abstraction Layer (SAL). It isolates the developer from the fragmentation of OS APIs (Windows/Linux/macOS) and Graphics Drivers (OpenGL/Vulkan), providing a stable, "Titanium-grade" foundation for building sophisticated interactive software—from real-time simulations and game engines to scientific visualization tools and multimedia installations.
+
+The library is engineered around three architectural pillars:
+
+1. **Awareness**
+   The library provides deep introspection of the host environment. It does not simply open a window; it queries the entire system topology.
+   *   **Hardware:** Real-time monitoring of GPU memory (VRAM), CPU topology, and storage capacity.
+   *   **Display:** Complete multi-monitor awareness, including physical dimensions, refresh rates, and HiDPI scaling factors.
+   *   **Events:** Precise handling of OS signals, file drops, focus changes, and clipboard state.
+
+2. **Control**
+   The library hands the developer explicit, granular control over the application stack.
+   *   **Unified Graphics:** A modern Command Buffer architecture that abstracts OpenGL 4.6 and Vulkan 1.1 behind a single API. It manages complex resources—Shaders, Compute Pipelines, and Descriptor Sets—automatically, while enforcing correct synchronization barriers.
+   *   **Hardened Audio:** A professional-grade audio engine supporting thread-safe capture (microphone), low-latency SFX playback, disk streaming for music, and a programmable DSP chain (Reverb, Echo, Filters).
+   *   **Input:** A lock-free, ring-buffered input system that guarantees $O(1)$ access time and zero event loss, even during frame-rate spikes.
+
+3. **Timing**
+   The library enforces a strict temporal cadence to ensure simulation stability.
+   *   **High-Resolution Timing:** Sub-millisecond performance measurement and frame-rate limiting.
+   *   **Oscillator System:** An integrated temporal oscillator bank for synchronizing logic and visuals to rhythmic, periodic events independent of the rendering frame rate.
+
+### New in v2.3.4 "Velocity"
+
+This release shifts focus from pure stability to Developer Efficiency. The "Velocity" module introduces a comprehensive suite of Hot-Reloading tools.
+
+Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on disk and reload them instantly into the running application via the API. The engine handles the complex task of stalling the GPU, destroying old resources, and seamlessly swapping in new assets while maintaining existing handle IDs. This drastically accelerates the iteration loop for visual programming and content creation.
 
 ## Table of Contents
 
