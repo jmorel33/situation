@@ -1850,8 +1850,6 @@ if (SituationAcquireFrameCommandBuffer()) {
 
 <a id="37-compute--gpgpu"></a>
 
----
-
 ## 3.7 Compute & GPGPU
 
 Situation provides a unified, high-level interface for General-Purpose GPU (GPGPU) computing. This allows you to run arbitrary code on the GPU for tasks like physics simulation, particle systems, or image post-processing, independent of the graphics pipeline.
