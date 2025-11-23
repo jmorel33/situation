@@ -163,17 +163,19 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
     - [File Drop Events](#file-drop-events)
 
 <a id="10-core-system-architecture"></a>
-<details>
-<summary><b>1.0 Core System Architecture</b></summary>
+
+---
+
+## 1.0 Core System Architecture
 
 The Core module acts as the central nervous system of the library. It is responsible for initializing the platform abstraction layer, managing the application's lifecycle, enforcing the execution model, and providing high-resolution timing services.
 
 Unlike loosely coupled libraries, Situation enforces a specific initialization and shutdown sequence to ensure that subsystems (Audio, Input, Graphics) are brought online in the correct order and torn down safely.
-</details>
+
 
 <a id="11-lifecycle-management"></a>
-<details>
-<summary><b>1.1 Lifecycle Management</b></summary>
+
+## 1.1 Lifecycle Management
 
 The application lifecycle is strictly defined. All interaction with the library must occur between a successful call to `SituationInit` and a final call to `SituationShutdown`.
 
@@ -291,11 +293,11 @@ int main(int argc, char** argv) {
     return 0;
 }
 ```
-</details>
+
 
 <a id="12-the-execution-model"></a>
-<details>
-<summary><b>1.2 The Execution Model</b></summary>
+
+## 1.2 The Execution Model
 
 This section defines the "Contract of Execution." It explains how the code runs, the strict ordering requirements of the frame loop, and the threading guarantees provided by the library. Violating these rules is the primary cause of "it works on my machine but crashes on yours" bugs.
 
@@ -390,11 +392,11 @@ if (shader.id == 0) {
     free(msg); // Important!
 }
 ```
-</details>
+
 
 <a id="13-timing--synchronization"></a>
-<details>
-<summary><b>1.3 Timing & Synchronization</b></summary>
+
+## 1.3 Timing & Synchronization
 
 Precise timing is the heartbeat of any interactive application. Situation provides a high-resolution monotonic clock, automatic frame pacing, and a specialized system for cyclic events.
 
@@ -521,11 +523,11 @@ while (!SituationWindowShouldClose()) {
     // alpha goes 0.0 -> 1.0 over 1 second
 }
 ```
-</details>
+
 
 <a id="14-hardware-awareness"></a>
-<details>
-<summary><b>1.4 Hardware Awareness</b></summary>
+
+## 1.4 Hardware Awareness
 
 This section details the library's ability to introspect the host machine. This is critical for auto-detecting performance tiers (e.g., "Low Spec" vs "Ultra") and debugging user issues.
 
@@ -648,18 +650,20 @@ void ConfigureQualitySettings() {
     }
 }
 ```
-</details>
+
 
 <a id="20-windowing--display-subsystem"></a>
-<details>
-<summary><b>2.0 Windowing & Display Subsystem</b></summary>
+
+---
+
+## 2.0 Windowing & Display Subsystem
 
 Situation provides a windowing abstraction built on top of GLFW. It handles the creation of the OS window, manages its state (fullscreen, minimized, etc.), and provides deep integration with the physical display topology.
-</details>
+
 
 <a id="21-window-state-management"></a>
-<details>
-<summary><b>2.1 Window State Management</b></summary>
+
+## 2.1 Window State Management
 
 This section covers how to manipulate the application window, covering everything from basic resizing to advanced "borderless" modes and focus handling. The window state is controlled via a set of bit-flags and explicit helper functions.
 
@@ -809,11 +813,11 @@ SituationError SituationSetWindowStateProfiles(uint32_t active_flags, uint32_t i
 
 **Example:** Limit FPS when unfocused to save battery.
 **Note:** This function sets flags, but FPS limiting logic must be implemented by the user based on `SituationHasWindowFocus()`.
-</details>
+
 
 <a id="22-multi-monitor-topology"></a>
-<details>
-<summary><b>2.2 Multi-Monitor Topology</b></summary>
+
+## 2.2 Multi-Monitor Topology
 
 This section explains how to detect, query, and utilize multiple physical displays. This is essential for games (to select the correct gaming monitor), presentation software, and multi-window tools.
 
@@ -971,11 +975,11 @@ for (int i = 0; i < count; i++) {
 
 SituationFreeDisplays(displays, count);
 ```
-</details>
+
 
 <a id="23-cursor--clipboard"></a>
-<details>
-<summary><b>2.3 Cursor & Clipboard</b></summary>
+
+## 2.3 Cursor & Clipboard
 
 This section covers interacting with the mouse pointer (visibility, shapes) and the operating system's clipboard (copy/paste text).
 
@@ -1069,18 +1073,20 @@ if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_V)
     }
 }
 ```
-</details>
+
 
 <a id="30-the-graphics-pipeline"></a>
-<details>
-<summary><b>3.0 The Graphics Pipeline</b></summary>
+
+---
+
+## 3.0 The Graphics Pipeline
 
 The Graphics module is the most complex part of the library. It provides a backend-agnostic abstraction for modern GPU rendering. Whether you are drawing a single 2D sprite or a complex 3D scene with compute shaders, you interact with the GPU through a unified Command Buffer interface.
-</details>
+
 
 <a id="31-the-command-buffer-abstraction"></a>
-<details>
-<summary><b>3.1 The Command Buffer Abstraction</b></summary>
+
+## 3.1 The Command Buffer Abstraction
 
 To support both OpenGL (which is historically state-based and immediate) and Vulkan (which is command-based and deferred), "Situation" adopts the Vulkan model as the primary abstraction.
 
@@ -1158,11 +1164,11 @@ if (SituationAcquireFrameCommandBuffer()) {
     SituationEndFrame();
 }
 ```
-</details>
+
 
 <a id="32-render-passes"></a>
-<details>
-<summary><b>3.2 Render Passes</b></summary>
+
+## 3.2 Render Passes
 
 This section defines where rendering happens and how the screen is cleared. It enforces the modern "Render Pass" architecture required by Vulkan and Metal, while mapping it gracefully to OpenGL framebuffers.
 
@@ -1276,11 +1282,11 @@ SituationCmdBeginRenderPass(cmd, &pass);
 // ... Draw commands ...
 SituationCmdEndRenderPass(cmd);
 ```
-</details>
+
 
 <a id="33-shader-pipelines"></a>
-<details>
-<summary><b>3.3 Shader Pipelines</b></summary>
+
+## 3.3 Shader Pipelines
 
 This section explains how to load, bind, and update Shaders. It also introduces the Hot-Reloading capabilities for shaders, which is a key feature of the "Velocity" update.
 
@@ -1420,11 +1426,11 @@ if (SituationIsKeyPressed(SIT_KEY_F5)) {
     SituationReloadShader(&shader);
 }
 ```
-</details>
+
 
 <a id="34-geometry--meshes"></a>
-<details>
-<summary><b>3.4 Geometry & Meshes</b></summary>
+
+## 3.4 Geometry & Meshes
 
 This section covers how to upload vertex data to the GPU, create reusable Mesh objects, and load standard 3D model files.
 
@@ -1571,11 +1577,11 @@ SituationMesh triangle = SituationCreateMesh(
 SituationCmdBindPipeline(cmd, shader);
 SituationCmdDrawMesh(cmd, triangle);
 ```
-</details>
+
 
 <a id="35-textures--images"></a>
-<details>
-<summary><b>3.5 Textures & Images</b></summary>
+
+## 3.5 Textures & Images
 
 This section distinguishes between CPU-side pixel data and GPU-side texture resources, covering loading, manipulation, and rendering.
 
@@ -1700,11 +1706,11 @@ SituationCmdBindPipeline(cmd, shader);
 SituationCmdBindTextureSet(cmd, 1, tex); // Bind to Set 1
 SituationCmdDrawMesh(cmd, mesh);
 ```
-</details>
+
 
 <a id="36-virtual-display-compositor"></a>
-<details>
-<summary><b>3.6 Virtual Display Compositor</b></summary>
+
+## 3.6 Virtual Display Compositor
 
 This section details one of the library's most powerful features: the ability to render to off-screen buffers and composite them with advanced blending and scaling logic.
 
@@ -1841,4 +1847,147 @@ if (SituationAcquireFrameCommandBuffer()) {
     SituationEndFrame();
 }
 ```
-</details>
+
+<a id="37-compute--gpgpu"></a>
+
+---
+
+## 3.7 Compute & GPGPU
+
+Situation provides a unified, high-level interface for General-Purpose GPU (GPGPU) computing. This allows you to run arbitrary code on the GPU for tasks like physics simulation, particle systems, or image post-processing, independent of the graphics pipeline.
+
+### Compute Pipelines
+
+A Compute Pipeline encapsulates a single Compute Shader. Unlike graphics pipelines, it has no fixed-function state (like blending or depth testing).
+
+#### SituationCreateComputePipeline
+
+Creates a compute pipeline from a GLSL shader file.
+
+```C
+SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type);
+```
+
+**Parameters:**
+*   `compute_shader_path`: Path to the `.comp` shader file.
+*   `layout_type`: Defines the resource bindings the shader expects (e.g., `SIT_COMPUTE_LAYOUT_ONE_SSBO`).
+
+#### SituationCmdBindComputePipeline
+
+Binds the pipeline for subsequent dispatch commands.
+
+```C
+void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline);
+```
+
+### Storage Buffers (SSBOs)
+
+Shader Storage Buffer Objects (SSBOs) are large, writable data buffers. They are the primary way to exchange data between the CPU and Compute Shaders.
+
+#### Creating an SSBO
+
+```C
+// Create a buffer for 1024 particles
+size_t size = 1024 * sizeof(Particle);
+SituationBuffer buffer = SituationCreateBuffer(
+    size,
+    initial_data,
+    SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST
+);
+```
+
+#### Binding an SSBO
+
+To make the buffer available to the shader:
+
+```C
+// Bind to binding point 0 (set = 0, binding = 0 in GLSL)
+SituationCmdBindComputeBuffer(cmd, 0, buffer);
+```
+
+### Dispatch & Synchronization Barriers
+
+#### SituationCmdDispatch
+
+Executes the compute shader. You must specify the number of **Work Groups** to launch.
+
+```C
+// Dispatch 1024 threads (assuming local_size_x = 64 in shader)
+// 1024 / 64 = 16 work groups
+SituationCmdDispatch(cmd, 16, 1, 1);
+```
+
+#### SituationCmdPipelineBarrier
+
+Compute shaders run asynchronously. If you write to a buffer in a compute shader and then want to read it in a vertex shader (or another compute shader), you **must** insert a memory barrier.
+
+```C
+// Wait for Compute Write -> Before Vertex Read
+SituationCmdPipelineBarrier(
+    cmd,
+    SITUATION_BARRIER_COMPUTE_SHADER_WRITE, // Source
+    SITUATION_BARRIER_VERTEX_SHADER_READ    // Destination
+);
+```
+
+<a id="40-audio-engine"></a>
+
+---
+
+## 4.0 Audio Engine
+
+### 4.1 Audio Context
+#### Device Enumeration
+#### Master Control
+
+### 4.2 Resource Management
+#### Loading Strategies (Stream vs. RAM)
+#### Decoding
+
+### 4.3 Voice Management
+#### Playback Control (Play/Stop/Loop)
+#### Properties (Pitch, Pan, Volume)
+
+### 4.4 DSP Chain
+#### Filters (Low/High Pass)
+#### Environmental Effects (Reverb, Echo)
+#### Custom Processors
+
+### 4.5 Audio Capture
+#### Microphone Initialization
+#### Buffer Access
+
+<a id="50-input--haptics"></a>
+
+---
+
+## 5.0 Input & Haptics
+
+### 5.1 Architecture: Ring Buffers & Polling
+
+### 5.2 Keyboard
+#### Key States vs. Events
+#### Text Input
+
+### 5.3 Mouse
+#### Position, Delta, and Wheel
+#### Buttons
+
+### 5.4 Gamepad
+#### Connection Handling
+#### Axis & Button Mapping
+#### Haptic Feedback (Rumble)
+
+<a id="60-filesystem--io"></a>
+
+---
+
+## 6.0 Filesystem & I/O
+
+### 6.1 Path Management
+#### Virtual Paths & Base Directories
+#### User Data / Save Paths
+
+### 6.2 File Operations
+#### Reading/Writing (Binary & Text)
+#### File Drop Events
