@@ -34,6 +34,9 @@ The library is engineered around three architectural pillars:
    *   **High-Resolution Timing:** Sub-millisecond performance measurement and frame-rate limiting.
    *   **Oscillator System:** An integrated temporal oscillator bank for synchronizing logic and visuals to rhythmic, periodic events independent of the rendering frame rate.
 
+> **Gotcha: Why manual RAII?**
+> "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
+
 ### New in v2.3.4 "Velocity"
 
 This release shifts focus from pure stability to Developer Efficiency. The "Velocity" module introduces a comprehensive suite of Hot-Reloading tools.
@@ -186,7 +189,7 @@ The entry point for the library is `SituationInit`. This function performs a mon
 
 #### SituationInit
 
-```C
+```c:disable-run
 SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info);
 ```
 
@@ -200,7 +203,7 @@ SituationError SituationInit(int argc, char** argv, const SituationInitInfo* ini
 
 This structure configures the initial state of the application kernel. It is passed to `SituationInit`.
 
-```C
+```c:disable-run
 typedef struct {
     // --- Window Configuration ---
     int window_width;                   // Client area width (e.g., 1280)
@@ -234,7 +237,7 @@ The library does not seize control of your main loop. Instead, it provides a pre
 
 #### SituationWindowShouldClose
 
-```C
+```c:disable-run
 bool SituationWindowShouldClose(void);
 ```
 
@@ -249,7 +252,7 @@ The `SituationShutdown` function is the destruct sequence for the kernel. It is 
 
 #### SituationShutdown
 
-```C
+```c:disable-run
 void SituationShutdown(void);
 ```
 
@@ -265,7 +268,7 @@ void SituationShutdown(void);
 
 A correct, minimal lifecycle implementation:
 
-```C
+```c:disable-run
 int main(int argc, char** argv) {
     // 1. Configuration
     SituationInitInfo config = {0};
@@ -343,7 +346,7 @@ Every iteration of your main loop represents one discrete unit of time (a frame)
 
 To reduce boilerplate and enforce this ordering, the library provides a convenience macro:
 
-```C
+```c:disable-run
 #define SITUATION_BEGIN_FRAME() \
     SituationPollInputEvents(); \
     SituationUpdateTimers();
@@ -380,11 +383,21 @@ To guarantee identical behavior between OpenGL (Immediate Execution) and Vulkan 
 
 The library uses return codes (`SituationError` enum) for critical failures and a logging system for warnings.
 
+#### Top 5 Common Errors
+
+| Error Code | Constant | Meaning & Fix |
+| :--- | :--- | :--- |
+| -500 | `SITUATION_ERROR_RESOURCE_INVALID` | Handle (0xdeadbeef) is invalid. Check if you already destroyed it or forgot to initialize it. |
+| -501 | `SITUATION_ERROR_BACKEND_MISMATCH` | You called an OpenGL function while running Vulkan (or vice versa). |
+| -502 | `SITUATION_ERROR_THREAD_VIOLATION` | You called a Main-Thread-Only function (like `SituationCreateTexture`) from a worker thread. |
+| -100 | `SITUATION_ERROR_ALREADY_INITIALIZED` | `SituationInit` was called twice without shutdown. |
+| -404 | `SITUATION_ERROR_FILE_NOT_FOUND` | Asset path is incorrect. Remember paths are relative to the executable (or working directory). |
+
 **Critical Failures:** Functions like `SituationInit` or `SituationLoadShader` return an error code or an invalid handle ID (0). You must check these.
 
 **Error Retrieval:** If a function fails, call `SituationGetLastErrorMsg()` immediately to get a human-readable string describing the failure (e.g., "Shader compilation failed at line 40"). You must free() this string.
 
-```C
+```c:disable-run
 SituationShader shader = SituationLoadShader(...);
 if (shader.id == 0) {
     char* msg = SituationGetLastErrorMsg();
@@ -392,6 +405,8 @@ if (shader.id == 0) {
     free(msg); // Important!
 }
 ```
+
+**Note on Cleanliness:** The library strictly enforces memory hygiene. The `SIT_FREE` macro is universally safe to use on any library pointer, and Debug builds enable aggressive warning macros (`SIT_WARN_ON_LEAK`) to catch dangling resources at shutdown.
 
 
 <a id="13-timing--synchronization"></a>
@@ -409,7 +424,7 @@ The library maintains an internal clock that starts at 0.0 upon initialization.
 
 #### SituationGetTime
 
-```C
+```c:disable-run
 double SituationGetTime(void);
 ```
 
@@ -419,14 +434,14 @@ double SituationGetTime(void);
 
 #### SituationGetFrameTime (Delta Time)
 
-```C
+```c:disable-run
 float SituationGetFrameTime(void);
 ```
 
 **Returns:** The time in seconds that the previous frame took to complete.
 **Usage:** Multiply all movement and physics calculations by this value to ensure your simulation runs at the same speed regardless of the frame rate.
 
-```C
+```c:disable-run
 position.x += speed * SituationGetFrameTime();
 ```
 
@@ -437,7 +452,7 @@ The library includes a built-in frame limiter to reduce CPU/GPU usage and preven
 
 #### SituationSetTargetFPS
 
-```C
+```c:disable-run
 void SituationSetTargetFPS(int fps);
 ```
 
@@ -449,7 +464,7 @@ void SituationSetTargetFPS(int fps);
 
 #### SituationGetFPS
 
-```C
+```c:disable-run
 int SituationGetFPS(void);
 ```
 
@@ -464,7 +479,7 @@ This is a unique feature of "Situation". Instead of tracking dozens of float tim
 
 #### SituationTimerHasOscillatorUpdated
 
-```C
+```c:disable-run
 bool SituationTimerHasOscillatorUpdated(int oscillator_id);
 ```
 
@@ -472,19 +487,19 @@ bool SituationTimerHasOscillatorUpdated(int oscillator_id);
 
 #### SituationSetTimerOscillatorPeriod
 
-```C
+```c:disable-run
 SituationError SituationSetTimerOscillatorPeriod(int oscillator_id, double period_seconds);
 ```
 
 **Usage:** Set oscillator 0 to trigger every 0.5 seconds (120 BPM).
 
-```C
+```c:disable-run
 SituationSetTimerOscillatorPeriod(0, 0.5);
 ```
 
 #### SituationTimerGetOscillatorState
 
-```C
+```c:disable-run
 bool SituationTimerGetOscillatorState(int oscillator_id);
 ```
 
@@ -492,7 +507,7 @@ bool SituationTimerGetOscillatorState(int oscillator_id);
 
 #### SituationTimerGetPingProgress
 
-```C
+```c:disable-run
 double SituationTimerGetPingProgress(int oscillator_id);
 ```
 
@@ -501,15 +516,19 @@ double SituationTimerGetPingProgress(int oscillator_id);
 <a id="134-timing-example"></a>
 ### 1.3.4 Timing Example
 
-```C
+```c:disable-run
 // Setup: Create a 1-second beat
 SituationSetTimerOscillatorPeriod(0, 1.0);
+
+// Bullet-time slowdown: oscillator.frame_time_mult = 0.25;
+// (Simulated by scaling delta time)
+float time_scale = 0.25f;
 
 while (!SituationWindowShouldClose()) {
     SITUATION_BEGIN_FRAME();
 
-    // 1. Delta Time Movement
-    float dt = SituationGetFrameTime();
+    // 1. Delta Time Movement (Applied Bullet-Time)
+    float dt = SituationGetFrameTime() * time_scale;
     player.x += 5.0f * dt;
 
     // 2. Rhythmic Logic
@@ -540,7 +559,7 @@ The primary interface for hardware info is `SituationGetDeviceInfo`. This functi
 
 #### SituationGetDeviceInfo
 
-```C
+```c:disable-run
 SituationDeviceInfo SituationGetDeviceInfo(void);
 ```
 
@@ -549,7 +568,7 @@ SituationDeviceInfo SituationGetDeviceInfo(void);
 
 #### SituationDeviceInfo Struct
 
-```C
+```c:disable-run
 typedef struct {
     // --- Processor ---
     char cpu_name[64];              // e.g., "Intel(R) Core(TM) i9-13900K"
@@ -583,7 +602,7 @@ For specific runtime checks, lighter helper functions are available.
 
 #### SituationGetGPUName
 
-```C
+```c:disable-run
 const char* SituationGetGPUName(void);
 ```
 
@@ -592,7 +611,7 @@ const char* SituationGetGPUName(void);
 
 #### SituationGetVRAMUsage (Graphics Module)
 
-```C
+```c:disable-run
 uint64_t SituationGetVRAMUsage(void);
 ```
 
@@ -602,6 +621,8 @@ uint64_t SituationGetVRAMUsage(void);
 *   **Vulkan:** Returns exact bytes allocated via VMA.
 *   **OpenGL:** Returns estimate based on texture/buffer uploads (driver dependent).
 
+**Perf Note:** Query VRAM once at init; cache for 60s to avoid DXGI stalls.
+
 <a id="143-drive-information-windows-only"></a>
 ### 1.4.3 Drive Information (Windows Only)
 
@@ -609,7 +630,7 @@ On Windows, you can query specific drive letters to manage save data or installa
 
 #### SituationGetCurrentDriveLetter
 
-```C
+```c:disable-run
 char SituationGetCurrentDriveLetter(void);
 ```
 
@@ -617,7 +638,7 @@ char SituationGetCurrentDriveLetter(void);
 
 #### SituationGetDriveInfo
 
-```C
+```c:disable-run
 bool SituationGetDriveInfo(char drive_letter,
                            uint64_t* out_total,
                            uint64_t* out_free,
@@ -630,7 +651,7 @@ bool SituationGetDriveInfo(char drive_letter,
 <a id="144-usage-example-auto-config"></a>
 ### 1.4.4 Usage Example: Auto-Config
 
-```C
+```c:disable-run
 void ConfigureQualitySettings() {
     SituationDeviceInfo info = SituationGetDeviceInfo();
 
@@ -674,7 +695,7 @@ The `SituationSetWindowState` function accepts a bitmask of flags. These flags a
 
 #### SituationSetWindowState / SituationClearWindowState
 
-```C
+```c:disable-run
 void SituationSetWindowState(uint32_t flags);
 void SituationClearWindowState(uint32_t flags);
 ```
@@ -692,7 +713,7 @@ void SituationClearWindowState(uint32_t flags);
 
 **Example:**
 
-```C
+```c:disable-run
 // Make window borderless and always on top
 SituationSetWindowState(SITUATION_FLAG_WINDOW_UNDECORATED | SITUATION_FLAG_WINDOW_TOPMOST);
 ```
@@ -702,7 +723,7 @@ SituationSetWindowState(SITUATION_FLAG_WINDOW_UNDECORATED | SITUATION_FLAG_WINDO
 
 #### SituationToggleFullscreen
 
-```C
+```c:disable-run
 void SituationToggleFullscreen(void);
 ```
 
@@ -711,7 +732,7 @@ void SituationToggleFullscreen(void);
 
 #### SituationToggleBorderlessWindowed
 
-```C
+```c:disable-run
 void SituationToggleBorderlessWindowed(void);
 ```
 
@@ -723,7 +744,7 @@ void SituationToggleBorderlessWindowed(void);
 
 #### SituationSetWindowSize / SituationGetWindowSize
 
-```C
+```c:disable-run
 void SituationSetWindowSize(int width, int height);
 void SituationGetWindowSize(int* width, int* height);
 ```
@@ -733,7 +754,7 @@ void SituationGetWindowSize(int* width, int* height);
 
 #### SituationSetWindowPosition
 
-```C
+```c:disable-run
 void SituationSetWindowPosition(int x, int y);
 ```
 
@@ -741,7 +762,7 @@ void SituationSetWindowPosition(int x, int y);
 
 #### SituationSetWindowMinSize / SituationSetWindowMaxSize
 
-```C
+```c:disable-run
 void SituationSetWindowMinSize(int width, int height);
 void SituationSetWindowMaxSize(int width, int height);
 ```
@@ -753,7 +774,7 @@ void SituationSetWindowMaxSize(int width, int height);
 
 #### SituationSetWindowFocused
 
-```C
+```c:disable-run
 void SituationSetWindowFocused(void);
 ```
 
@@ -761,7 +782,7 @@ void SituationSetWindowFocused(void);
 
 #### SituationSetWindowOpacity
 
-```C
+```c:disable-run
 void SituationSetWindowOpacity(float opacity);
 ```
 
@@ -773,7 +794,7 @@ void SituationSetWindowOpacity(float opacity);
 
 #### SituationSetWindowIcon
 
-```C
+```c:disable-run
 void SituationSetWindowIcon(SituationImage image);
 ```
 
@@ -782,7 +803,7 @@ void SituationSetWindowIcon(SituationImage image);
 
 #### SituationSetWindowIcons
 
-```C
+```c:disable-run
 void SituationSetWindowIcons(SituationImage *images, int count);
 ```
 
@@ -807,9 +828,18 @@ You can define different behaviors for when the window is focused vs unfocused.
 
 #### SituationSetWindowStateProfiles
 
-```C
+```c:disable-run
 SituationError SituationSetWindowStateProfiles(uint32_t active_flags, uint32_t inactive_flags);
 ```
+
+#### Flags Matrix (Example Profiles)
+
+| Feature | Active (Focused) | Inactive (Background) | Result |
+| :--- | :--- | :--- | :--- |
+| **Fullscreen** | `SITUATION_FLAG_FULLSCREEN_MODE` | (None) | Minimizes when alt-tabbed. |
+| **Borderless** | `SITUATION_FLAG_BORDERLESS` | `SITUATION_FLAG_BORDERLESS` | Stays visible on dual monitors. |
+| **FPS Limit** | `SITUATION_FLAG_VSYNC_HINT` | (None) | Uncaps FPS in background (add logic to limit). |
+| **Always Run** | `SITUATION_FLAG_WINDOW_ALWAYS_RUN` | `SITUATION_FLAG_WINDOW_ALWAYS_RUN` | Game continues updating while you check email. |
 
 **Example:** Limit FPS when unfocused to save battery.
 **Note:** This function sets flags, but FPS limiting logic must be implemented by the user based on `SituationHasWindowFocus()`.
@@ -830,7 +860,7 @@ To get information about connected screens, you retrieve the list of displays.
 
 #### SituationGetDisplays
 
-```C
+```c:disable-run
 SituationDisplayInfo* SituationGetDisplays(int* count);
 ```
 
@@ -840,7 +870,7 @@ SituationDisplayInfo* SituationGetDisplays(int* count);
 
 #### SituationFreeDisplays
 
-```C
+```c:disable-run
 void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 ```
 
@@ -851,7 +881,7 @@ void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 
 The `SituationDisplayInfo` struct contains comprehensive data about a specific monitor.
 
-```C
+```c:disable-run
 typedef struct {
     char name[128];                 // e.g., "LG UltraGear", "Generic PnP Monitor"
     int situation_monitor_id;       // Internal ID (0, 1, 2...)
@@ -868,7 +898,7 @@ typedef struct {
 
 #### SituationDisplayMode
 
-```C
+```c:disable-run
 typedef struct {
     int width;          // e.g., 1920
     int height;         // e.g., 1080
@@ -882,7 +912,7 @@ typedef struct {
 
 #### SituationGetMonitorCount
 
-```C
+```c:disable-run
 int SituationGetMonitorCount(void);
 ```
 
@@ -890,7 +920,7 @@ int SituationGetMonitorCount(void);
 
 #### SituationGetCurrentMonitor
 
-```C
+```c:disable-run
 int SituationGetCurrentMonitor(void);
 ```
 
@@ -898,7 +928,7 @@ int SituationGetCurrentMonitor(void);
 
 #### SituationSetWindowMonitor
 
-```C
+```c:disable-run
 void SituationSetWindowMonitor(int monitor_id);
 ```
 
@@ -906,7 +936,7 @@ void SituationSetWindowMonitor(int monitor_id);
 
 #### SituationGetMonitorName
 
-```C
+```c:disable-run
 const char* SituationGetMonitorName(int monitor_id);
 ```
 
@@ -919,7 +949,7 @@ For accurate multi-monitor layouts (e.g., a window spanning two screens), you ne
 
 #### SituationGetMonitorPosition
 
-```C
+```c:disable-run
 Vector2 SituationGetMonitorPosition(int monitor_id);
 ```
 
@@ -928,7 +958,7 @@ Vector2 SituationGetMonitorPosition(int monitor_id);
 
 #### SituationGetMonitorPhysicalWidth / Height
 
-```C
+```c:disable-run
 int SituationGetMonitorPhysicalWidth(int monitor_id);
 int SituationGetMonitorPhysicalHeight(int monitor_id);
 ```
@@ -943,7 +973,7 @@ You can change the resolution and refresh rate of a specific monitor.
 
 #### SituationSetDisplayMode
 
-```C
+```c:disable-run
 SituationError SituationSetDisplayMode(int monitor_id, const SituationDisplayMode* mode, bool fullscreen);
 ```
 
@@ -957,7 +987,7 @@ SituationError SituationSetDisplayMode(int monitor_id, const SituationDisplayMod
 <a id="226-usage-example-listing-monitors"></a>
 ### 2.2.6 Usage Example: Listing Monitors
 
-```C
+```c:disable-run
 int count = 0;
 SituationDisplayInfo* displays = SituationGetDisplays(&count);
 
@@ -990,7 +1020,7 @@ Situation provides direct control over the mouse cursor's appearance and behavio
 
 #### SituationShowCursor
 
-```C
+```c:disable-run
 void SituationShowCursor(void);
 ```
 
@@ -998,7 +1028,7 @@ void SituationShowCursor(void);
 
 #### SituationHideCursor
 
-```C
+```c:disable-run
 void SituationHideCursor(void);
 ```
 
@@ -1006,7 +1036,7 @@ void SituationHideCursor(void);
 
 #### SituationDisableCursor (FPS Mode)
 
-```C
+```c:disable-run
 void SituationDisableCursor(void);
 ```
 
@@ -1021,7 +1051,7 @@ You can change the system cursor icon to indicate interactivity (e.g., hovering 
 
 #### SituationSetCursor
 
-```C
+```c:disable-run
 void SituationSetCursor(SituationCursor cursor);
 ```
 
@@ -1042,7 +1072,7 @@ The library supports getting and setting UTF-8 text to/from the system clipboard
 
 #### SituationSetClipboardText
 
-```C
+```c:disable-run
 void SituationSetClipboardText(const char* text);
 ```
 
@@ -1050,7 +1080,7 @@ void SituationSetClipboardText(const char* text);
 
 #### SituationGetClipboardText
 
-```C
+```c:disable-run
 const char* SituationGetClipboardText(void);
 ```
 
@@ -1059,7 +1089,7 @@ const char* SituationGetClipboardText(void);
 
 #### Example: Implementing Copy/Paste
 
-```C
+```c:disable-run
 // Copy (Ctrl+C)
 if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_C)) {
     SituationSetClipboardText("Copied Text!");
@@ -1107,7 +1137,7 @@ Before you can record any rendering commands, you must acquire a target frame fr
 
 #### SituationAcquireFrameCommandBuffer
 
-```C
+```c:disable-run
 bool SituationAcquireFrameCommandBuffer(void);
 ```
 
@@ -1121,7 +1151,7 @@ Once a frame is acquired, you retrieve the handle to the current frame's command
 
 #### SituationGetMainCommandBuffer
 
-```C
+```c:disable-run
 SituationCommandBuffer SituationGetMainCommandBuffer(void);
 ```
 
@@ -1135,7 +1165,7 @@ After recording all commands, you must submit them for execution and present the
 
 #### SituationEndFrame
 
-```C
+```c:disable-run
 SituationError SituationEndFrame(void);
 ```
 
@@ -1148,7 +1178,7 @@ SituationError SituationEndFrame(void);
 <a id="315-usage-pattern"></a>
 ### 3.1.5 Usage Pattern
 
-```C
+```c:disable-run
 // 1. Attempt to start the frame
 if (SituationAcquireFrameCommandBuffer()) {
 
@@ -1182,7 +1212,7 @@ In modern graphics, you cannot simply "draw." You must perform drawing operation
 
 The `SituationRenderPassInfo` structure is used to configure a pass.
 
-```C
+```c:disable-run
 typedef struct {
     // Target ID
     // -1: The Main Window (Swapchain Backbuffer)
@@ -1199,7 +1229,7 @@ typedef struct {
 
 #### SituationAttachmentInfo
 
-```C
+```c:disable-run
 typedef struct {
     SituationAttachmentLoadOp  loadOp;  // Start of pass action
     SituationAttachmentStoreOp storeOp; // End of pass action
@@ -1222,7 +1252,7 @@ typedef struct {
 
 #### SituationCmdBeginRenderPass
 
-```C
+```c:disable-run
 SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);
 ```
 
@@ -1231,7 +1261,7 @@ SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const Sit
 
 #### SituationCmdEndRenderPass
 
-```C
+```c:disable-run
 void SituationCmdEndRenderPass(SituationCommandBuffer cmd);
 ```
 
@@ -1244,7 +1274,7 @@ While the Render Pass defines the target image, the Viewport and Scissor define 
 
 #### SituationCmdSetViewport
 
-```C
+```c:disable-run
 void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height);
 ```
 
@@ -1253,7 +1283,7 @@ void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float
 
 #### SituationCmdSetScissor
 
-```C
+```c:disable-run
 void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);
 ```
 
@@ -1262,7 +1292,7 @@ void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width,
 <a id="324-example-clearing-the-screen"></a>
 ### 3.2.4 Example: Clearing the Screen
 
-```C
+```c:disable-run
 // Define a pass that clears the screen to Dark Blue
 SituationRenderPassInfo pass = {
     .display_id = -1, // Main Window
@@ -1299,7 +1329,7 @@ You can load shaders from disk files or from memory strings.
 
 #### SituationLoadShader
 
-```C
+```c:disable-run
 SituationShader SituationLoadShader(const char* vs_path, const char* fs_path);
 ```
 
@@ -1312,7 +1342,7 @@ SituationShader SituationLoadShader(const char* vs_path, const char* fs_path);
 
 #### SituationLoadShaderFromMemory
 
-```C
+```c:disable-run
 SituationShader SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code);
 ```
 
@@ -1321,7 +1351,7 @@ SituationShader SituationLoadShaderFromMemory(const char* vs_code, const char* f
 
 #### SituationUnloadShader
 
-```C
+```c:disable-run
 void SituationUnloadShader(SituationShader* shader);
 ```
 
@@ -1334,7 +1364,7 @@ To use a shader for drawing, you must bind it to the command buffer.
 
 #### SituationCmdBindPipeline
 
-```C
+```c:disable-run
 SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader);
 ```
 
@@ -1349,7 +1379,7 @@ Shaders need data (Matrices, Colors, Time). Situation provides two ways to send 
 
 The fastest way to send small data (like a Model Matrix or a Color tint).
 
-```C
+```c:disable-run
 void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);
 ```
 
@@ -1367,7 +1397,7 @@ layout(push_constant) uniform Constants {
 
 For larger data shared across many objects (Camera View/Proj, Lights).
 
-```C
+```c:disable-run
 SituationCmdBindDescriptorSet(cmd, set_index, buffer_handle);
 ```
 
@@ -1377,7 +1407,7 @@ See Section 3.7 for details on creating buffers.
 
 For quick prototyping on OpenGL, you can set uniforms by name. Not supported on Vulkan.
 
-```C
+```c:disable-run
 SituationSetShaderUniform(shader, "uTime", &time, SIT_UNIFORM_FLOAT);
 ```
 
@@ -1388,7 +1418,7 @@ The "Velocity" feature set allows you to recompile shaders while the app is runn
 
 #### SituationReloadShader
 
-```C
+```c:disable-run
 bool SituationReloadShader(SituationShader* shader);
 ```
 
@@ -1404,7 +1434,7 @@ bool SituationReloadShader(SituationShader* shader);
 <a id="335-example-basic-shader-workflow"></a>
 ### 3.3.5 Example: Basic Shader Workflow
 
-```C
+```c:disable-run
 // 1. Load
 SituationShader shader = SituationLoadShader("assets/basic.vert", "assets/basic.frag");
 
@@ -1443,7 +1473,7 @@ The library expects a standard vertex layout for most helper functions (`Situati
 
 **Standard Vertex Format:**
 
-```C
+```c:disable-run
 typedef struct {
     vec3 position;  // Location (x, y, z)
     vec3 normal;    // Surface direction (nx, ny, nz)
@@ -1459,7 +1489,7 @@ typedef struct {
 
 #### SituationCreateMesh
 
-```C
+```c:disable-run
 SituationMesh SituationCreateMesh(const void* vertex_data,
                                   int vertex_count,
                                   size_t vertex_stride,
@@ -1472,7 +1502,7 @@ SituationMesh SituationCreateMesh(const void* vertex_data,
 
 #### SituationDestroyMesh
 
-```C
+```c:disable-run
 void SituationDestroyMesh(SituationMesh* mesh);
 ```
 
@@ -1483,7 +1513,7 @@ void SituationDestroyMesh(SituationMesh* mesh);
 
 #### SituationCmdDrawMesh
 
-```C
+```c:disable-run
 SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh);
 ```
 
@@ -1492,7 +1522,7 @@ SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh me
 
 #### SituationCmdDrawQuad (High-Level Helper)
 
-```C
+```c:disable-run
 void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color);
 ```
 
@@ -1505,7 +1535,7 @@ The library includes a built-in loader for glTF 2.0 (.gltf / .glb) files. This i
 
 #### SituationLoadModel
 
-```C
+```c:disable-run
 SituationModel SituationLoadModel(const char* file_path);
 ```
 
@@ -1519,7 +1549,7 @@ SituationModel SituationLoadModel(const char* file_path);
 
 #### SituationDrawModel
 
-```C
+```c:disable-run
 void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform);
 ```
 
@@ -1530,7 +1560,7 @@ void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 t
 
 #### SituationUnloadModel
 
-```C
+```c:disable-run
 void SituationUnloadModel(SituationModel* model);
 ```
 
@@ -1541,7 +1571,7 @@ void SituationUnloadModel(SituationModel* model);
 
 #### SituationGetMeshData
 
-```C
+```c:disable-run
 void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* v_count, int* v_stride, void** index_data, int* i_count);
 ```
 
@@ -1549,7 +1579,7 @@ void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* v_count, 
 
 #### SituationSaveModelAsGltf
 
-```C
+```c:disable-run
 bool SituationSaveModelAsGltf(SituationModel model, const char* file_path);
 ```
 
@@ -1558,7 +1588,7 @@ bool SituationSaveModelAsGltf(SituationModel model, const char* file_path);
 <a id="346-example-custom-triangle"></a>
 ### 3.4.6 Example: Custom Triangle
 
-```C
+```c:disable-run
 // Define Data
 float vertices[] = {
     -0.5f, -0.5f, 0.0f,  // Bottom Left
@@ -1616,7 +1646,7 @@ Once your `SituationImage` is ready, you upload it to the GPU.
 
 #### SituationCreateTexture
 
-```C
+```c:disable-run
 SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps);
 ```
 
@@ -1625,7 +1655,7 @@ SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipm
 
 #### SituationDestroyTexture
 
-```C
+```c:disable-run
 void SituationDestroyTexture(SituationTexture* texture);
 ```
 
@@ -1638,7 +1668,7 @@ To use a texture in a shader, bind it to a descriptor set slot.
 
 #### SituationCmdBindTextureSet
 
-```C
+```c:disable-run
 SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);
 ```
 
@@ -1654,7 +1684,7 @@ layout(set = 1, binding = 0) uniform sampler2D myTexture;
 
 #### SituationReloadTexture
 
-```C
+```c:disable-run
 bool SituationReloadTexture(SituationTexture* texture);
 ```
 
@@ -1670,7 +1700,7 @@ bool SituationReloadTexture(SituationTexture* texture);
 
 #### SituationLoadImageFromScreen
 
-```C
+```c:disable-run
 SituationImage SituationLoadImageFromScreen(void);
 ```
 
@@ -1679,7 +1709,7 @@ SituationImage SituationLoadImageFromScreen(void);
 
 #### SituationTakeScreenshot
 
-```C
+```c:disable-run
 bool SituationTakeScreenshot(const char* filename);
 ```
 
@@ -1688,7 +1718,7 @@ bool SituationTakeScreenshot(const char* filename);
 <a id="356-example-loading--using-a-texture"></a>
 ### 3.5.6 Example: Loading & Using a Texture
 
-```C
+```c:disable-run
 // 1. Load Image (CPU)
 SituationImage img = SituationLoadImage("assets/wall.png");
 
@@ -1727,7 +1757,7 @@ The Virtual Display system is a high-level abstraction for Off-Screen Rendering.
 
 #### SituationCreateVirtualDisplay
 
-```C
+```c:disable-run
 int SituationCreateVirtualDisplay(vec2 resolution,
                                   double frame_time_mult,
                                   int z_order,
@@ -1750,20 +1780,22 @@ int SituationCreateVirtualDisplay(vec2 resolution,
 
 **Blend Modes**
 
-| Mode | Effect | Usage |
+| Mode | **Effect** | Usage |
 | :--- | :--- | :--- |
-| `SITUATION_BLEND_ALPHA` | Standard transparency. | UI, Sprites. |
-| `SITUATION_BLEND_ADDITIVE` | Adds colors (Brightens). | Explosions, Glows. |
-| `SITUATION_BLEND_MULTIPLY` | Multiplies colors (Darkens). | Shadows, Vignettes. |
-| `SITUATION_BLEND_OVERLAY` | Complex contrast blend. | Stylized effects. |
-| `SITUATION_BLEND_SOFT_LIGHT` | Gentle lighting blend. | Atmosphere. |
+| `SITUATION_BLEND_ALPHA` | **Standard transparency.** | UI, Sprites. |
+| `SITUATION_BLEND_ADDITIVE` | **Adds colors (Brightens).** | Explosions, Glows. |
+| `SITUATION_BLEND_MULTIPLY` | **Multiplies colors (Darkens).** | Shadows, Vignettes. |
+| `SITUATION_BLEND_OVERLAY` | **Complex contrast blend.** | Stylized effects. |
+| `SITUATION_BLEND_SOFT_LIGHT` | **Gentle lighting blend.** | Atmosphere. |
+
+> **Perf Tip:** In Vulkan, Virtual Displays use **Persistent Descriptor Sets**. This allows compositing 10+ layers with less than **0.1ms** of CPU overhead per frame.
 
 <a id="362-rendering-to-a-virtual-display"></a>
 ### 3.6.2 Rendering To a Virtual Display
 
 To draw content into the virtual display, simply target its ID in a Render Pass.
 
-```C
+```c:disable-run
 SituationRenderPassInfo pass = {
     .display_id = my_vd_id, // Target the VD
     .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, ... }
@@ -1780,7 +1812,7 @@ Once you have drawn into your virtual displays, you must composite them onto the
 
 #### SituationRenderVirtualDisplays
 
-```C
+```c:disable-run
 void SituationRenderVirtualDisplays(SituationCommandBuffer cmd);
 ```
 
@@ -1796,7 +1828,7 @@ void SituationRenderVirtualDisplays(SituationCommandBuffer cmd);
 
 #### SituationConfigureVirtualDisplay
 
-```C
+```c:disable-run
 SituationError SituationConfigureVirtualDisplay(int display_id,
                                                 vec2 offset,
                                                 float opacity,
@@ -1810,7 +1842,7 @@ SituationError SituationConfigureVirtualDisplay(int display_id,
 
 #### SituationSetVirtualDisplayDirty
 
-```C
+```c:disable-run
 void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty);
 ```
 
@@ -1819,7 +1851,7 @@ void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty);
 <a id="365-example-pixel-art-setup"></a>
 ### 3.6.5 Example: Pixel Art Setup
 
-```C
+```c:disable-run
 // 1. Setup: Create a 320x180 buffer
 int game_vd = SituationCreateVirtualDisplay(
     (vec2){320, 180},
@@ -1862,7 +1894,7 @@ A Compute Pipeline encapsulates a single Compute Shader. Unlike graphics pipelin
 
 Creates a compute pipeline from a GLSL shader file.
 
-```C
+```c:disable-run
 SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type);
 ```
 
@@ -1874,7 +1906,7 @@ SituationComputePipeline SituationCreateComputePipeline(const char* compute_shad
 
 Binds the pipeline for subsequent dispatch commands.
 
-```C
+```c:disable-run
 void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline);
 ```
 
@@ -1884,7 +1916,7 @@ Shader Storage Buffer Objects (SSBOs) are large, writable data buffers. They are
 
 #### Creating an SSBO
 
-```C
+```c:disable-run
 // Create a buffer for 1024 particles
 size_t size = 1024 * sizeof(Particle);
 SituationBuffer buffer = SituationCreateBuffer(
@@ -1898,7 +1930,7 @@ SituationBuffer buffer = SituationCreateBuffer(
 
 To make the buffer available to the shader:
 
-```C
+```c:disable-run
 // Bind to binding point 0 (set = 0, binding = 0 in GLSL)
 SituationCmdBindComputeBuffer(cmd, 0, buffer);
 ```
@@ -1909,7 +1941,7 @@ SituationCmdBindComputeBuffer(cmd, 0, buffer);
 
 Executes the compute shader. You must specify the number of **Work Groups** to launch.
 
-```C
+```c:disable-run
 // Dispatch 1024 threads (assuming local_size_x = 64 in shader)
 // 1024 / 64 = 16 work groups
 SituationCmdDispatch(cmd, 16, 1, 1);
@@ -1919,7 +1951,7 @@ SituationCmdDispatch(cmd, 16, 1, 1);
 
 Compute shaders run asynchronously. If you write to a buffer in a compute shader and then want to read it in a vertex shader (or another compute shader), you **must** insert a memory barrier.
 
-```C
+```c:disable-run
 // Wait for Compute Write -> Before Vertex Read
 SituationCmdPipelineBarrier(
     cmd,
@@ -1933,6 +1965,15 @@ SituationCmdPipelineBarrier(
 ---
 
 ## 4.0 Audio Engine
+
+```mermaid
+graph LR
+    Source[Source (WAV/MP3)] --> Filter[Biquad Filter]
+    Filter --> Echo[Echo/Delay]
+    Echo --> Reverb[Plate Reverb]
+    Reverb --> Custom[Custom Processors]
+    Custom --> Mixer[Master Mixer]
+```
 
 ### 4.1 Audio Context
 #### Device Enumeration
