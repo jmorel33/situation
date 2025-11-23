@@ -4058,7 +4058,7 @@ float SituationGetMouseWheelMove(void);
 #### `SituationGetMouseWheelMoveV`
 Gets vertical and horizontal mouse wheel movement.
 ```c
-vec2 SituationGetMouseWheelMoveV(void);
+Vector2 SituationGetMouseWheelMoveV(void);
 ```
 
 ---

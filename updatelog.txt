@@ -1,4 +1,23 @@
 Date: 2025-11-23
+Version: 2.3.4I "Velocity" (Hotfix I)
+
+## DESCRIPTION
+This release, designated "Surgical Fixes," focuses on resolving specific defects identified in the codebase, ranging from strict C11 compliance issues to logic bugs in resource creation and input handling.
+
+## CRITICAL FIXES
+
+*   **Resource Initialization:** Fixed a critical bug in `SituationCreateBuffer` where `buffer.usage_flags` was not being assigned, potentially leading to undefined behavior or validation errors in backend resource creation.
+*   **Pointer Safety:** Corrected a pointer access error in `SituationDestroyTexture` (`texture.id` -> `texture->id`), preventing compilation errors and potential crashes during cleanup.
+*   **Clipboard Logic:** Fixed `SituationSetClipboardText` to correctly pass the `text` argument to the underlying GLFW function, restoring clipboard functionality.
+
+## API COMPLIANCE & REFACTORING
+
+*   **C11 Compliance (Input Module):** Refactored mouse input functions (`SituationGetMousePosition`, `SituationGetMouseDelta`, `SituationGetMouseWheelMoveV`) to return `Vector2` structs instead of `vec2` arrays. This resolves a strict C11 compliance violation regarding returning arrays from functions.
+*   **Implementation Correctness:** Updated the implementation of the above mouse functions to correctly cast `Vector2*` to `float*` (or `vec2`) when interfacing with the `cglm` math library, ensuring correct data layout and processing.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-23
 Version: 2.3.4H "Velocity" (Hotfix H)
 
 ## DESCRIPTION
