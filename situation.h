@@ -208,8 +208,10 @@ Bash
 // Header macro (unchanged, but for completeness)
 #ifndef NDEBUG
 #define SITUATION_LOG_WARNING(code, msg, ...) do { \
-    _SituationSetErrorFromCode(code, msg, ##__VA_ARGS__); \
-    fprintf(stderr, "[Situation WARN] " msg "\n", ##__VA_ARGS__); \
+    char _sit_err_buf[SITUATION_MAX_ERROR_MSG_LEN]; \
+    snprintf(_sit_err_buf, sizeof(_sit_err_buf), msg, ##__VA_ARGS__); \
+    _SituationSetErrorFromCode(code, _sit_err_buf); \
+    fprintf(stderr, "[Situation WARN] %s\n", _sit_err_buf); \
 } while(0)
 #else
 #define SITUATION_LOG_WARNING(code, msg, ...) do {} while(0)
