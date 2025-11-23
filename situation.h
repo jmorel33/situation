@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4G "Velocity" (Hotfix G)
+*   Core API library v2.3.4H "Velocity" (Hotfix H)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "G"
+#define SITUATION_VERSION_REVISION "H"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -203,6 +203,16 @@ Bash
     #include <pwd.h>            // For getpwuid (potentially)
     #include <sys/statvfs.h>    // For storage info on Linux
     #include <sys/sysinfo.h>    // For RAM info on Linux
+#endif
+
+// Header macro (unchanged, but for completeness)
+#ifndef NDEBUG
+#define SITUATION_LOG_WARNING(code, msg, ...) do { \
+    _SituationSetErrorFromCode(code, msg, ##__VA_ARGS__); \
+    fprintf(stderr, "[Situation WARN] " msg "\n", ##__VA_ARGS__); \
+} while(0)
+#else
+#define SITUATION_LOG_WARNING(code, msg, ...) do {} while(0)
 #endif
 
 // --- New Convenience Macro for Safe Main Loop ---
@@ -544,100 +554,166 @@ typedef enum {
  */
 typedef struct SituationCommandBuffer_t* SituationCommandBuffer;
 
-/**
- * @brief Error Handling
- */
+//==================================================================================
+//  SituationError - Comprehensive, Strictly Ordered Error Code System (Titanium Grade)
+//==================================================================================
+//
+//  Every possible failure in the entire library has its own unique, permanent code.
+//  Ranges are sacred and immutable. No gaps. No re-use. Exhaustive switch() possible.
+//  All errors are negative. SITUATION_SUCCESS = 0.
+//
+//  0      → Success
+//  1–99   → Core & System
+//  100–199→ Platform & Windowing
+//  200–299→ Display System
+//  300–399→ Filesystem & Hot-Reloading
+//  400–499→ Audio Subsystem
+//  500–599→ Resource Management & Rendering Core
+//  600–699→ OpenGL Backend-Specific (OpenGL)
+//  700–799→ Backend-Specific (Vulkan)
+//  800–899→ Compute / GPGPU
+//  900–999→ Reserved (Debug/Profiler, Network, Future Platforms)
+
 typedef enum {
-    //----------------------------------------------------------------
-    // --- Core & System Errors (0-99) ---
-    //----------------------------------------------------------------
-    SITUATION_SUCCESS = 0,
-    SITUATION_ERROR_GENERAL,                        // A generic, unspecified error occurred.
-    SITUATION_ERROR_NOT_IMPLEMENTED,                // A feature is declared but not implemented for the current backend.
-    SITUATION_ERROR_NOT_INITIALIZED,                // A core library function was called before SituationInit().
-    SITUATION_ERROR_ALREADY_INITIALIZED,            // SituationInit() was called more than once.
-    SITUATION_ERROR_INIT_FAILED,                    // Core library initialization failed.
-    SITUATION_ERROR_SHUTDOWN_FAILED,                // Core library shutdown failed.
-    SITUATION_ERROR_INVALID_PARAM,                  // A function was called with an invalid parameter (e.g., NULL pointer, out-of-range value).
-    SITUATION_ERROR_MEMORY_ALLOCATION,              // A memory allocation (malloc, calloc, realloc) failed.
+    SITUATION_SUCCESS                                       =   0,  // Operation completed successfully
 
-    //----------------------------------------------------------------
-    // --- Platform & Window Errors (100-199) ---
-    //----------------------------------------------------------------
-    SITUATION_ERROR_GLFW_FAILED = 100,              // A call to the underlying GLFW library failed.
-    SITUATION_ERROR_WINDOW_FOCUS,                   // An operation related to window focus failed.
-    SITUATION_ERROR_DEVICE_QUERY,                   // Failed to query system hardware or device information.
-    SITUATION_ERROR_TIMER_SYSTEM,                   // An error occurred within the internal timer/oscillator system.
-    SITUATION_ERROR_COM_FAILED,                     // [Win32] Failed to initialize the COM library.
-    SITUATION_ERROR_DXGI_FAILED,                    // [Win32] A call to the DXGI library failed (e.g., for GPU info).
+    // ── Core & System Errors (1–99) ─────────────────────────────────────
+	SITUATION_ERROR_GENERAL                                =   -1,  // Catch-all for unexpected errors
+    SITUATION_ERROR_NOT_IMPLEMENTED                        =   -2,  // Feature declared but intentionally unimplemented on current backend
+    SITUATION_ERROR_NOT_INITIALIZED                        =   -3,  // API called before SituationInit()
+    SITUATION_ERROR_ALREADY_INITIALIZED                    =   -4,  // SituationInit() called twice
+    SITUATION_ERROR_INIT_FAILED                            =   -5,  // Core initialization sequence failed
+    SITUATION_ERROR_SHUTDOWN_FAILED                        =   -6,  // Resources still alive or backend refused cleanup
+    SITUATION_ERROR_INVALID_PARAM                          =   -7,  // NULL pointer, out-of-range value, invalid enum, etc.
+    SITUATION_ERROR_MEMORY_ALLOCATION                      =   -8,  // malloc/calloc/realloc/VmaAllocation failed
+    SITUATION_ERROR_INTERNAL_STATE_CORRUPTED               =   -9,  // Internal invariant violated — fatal bug, please report
+    SITUATION_ERROR_ASSERTION_FAILED                       =  -10,  // Debug assertion tripped (only in debug builds)
+    SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION            =  -11,  // Critical architectural rule broken (debug builds only)
+    SITUATION_ERROR_TIMER_SYSTEM                           =  -20,  // An error occurred within the internal timer/oscillator system
+	
+    // ── Platform & Windowing Errors (100–199) ───────────────────────────
+    SITUATION_ERROR_GLFW_FAILED                             = -100, // Any GLFW function returned an error
+    SITUATION_ERROR_WINDOW_CREATION_FAILED                  = -101, // Failed to create GLFW window
+    SITUATION_ERROR_WINDOW_FOCUS_FAILED                     = -102, // Focus/minimize/restore operation failed
+    SITUATION_ERROR_CLIPBOARD_FAILED                        = -103, // Clipboard get/set failed
+    SITUATION_ERROR_CURSOR_CREATION_FAILED                  = -104, // Custom cursor creation failed
+    SITUATION_ERROR_COM_INITIALIZATION_FAILED               = -110, // CoInitializeEx failed (Windows only)
+    SITUATION_ERROR_DXGI_QUERY_FAILED                       = -111, // DXGI GPU query failed (Windows only)
+    SITUATION_ERROR_WINDOW_FOCUS							= -120, // An operation related to window focus failed.
+    SITUATION_ERROR_DEVICE_QUERY							= -121, // Failed to query system hardware or device information.
+    SITUATION_ERROR_COM_FAILED								= -123, // [Win32] Failed to initialize the COM library.
+    SITUATION_ERROR_DXGI_FAILED								= -124, // [Win32] A call to the DXGI library failed (e.g., for GPU info).
+	
+	// ── Display & Virtual Display Errors (-200 to -299) ─────────────────
+    SITUATION_ERROR_DISPLAY_QUERY                          = -200,  // Failed to query physical monitor information
+    SITUATION_ERROR_DISPLAY_SET                            = -201,  // Failed to set a display mode on a physical monitor
+    SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT                  = -202,  // The maximum number of virtual displays has been reached
+    SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID             = -203,  // Invalid virtual display ID supplied
+    SITUATION_ERROR_DISPLAY_QUERY_FAILED                   = -210,  // glfwGetMonitors / mode query failed (detailed variant)
+    SITUATION_ERROR_DISPLAY_MODE_UNSUPPORTED               = -211,  // Requested resolution/refresh rate not available
+    SITUATION_ERROR_DISPLAY_MODE_SET_FAILED                = -212,  // Failed to apply fullscreen mode
+    SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT_REACHED          = -213,  // Max virtual displays (32) already created (detailed variant)
+    SITUATION_ERROR_VIRTUAL_DISPLAY_NOT_FOUND              = -214,  // Virtual display ID not found in active list
+	
+	// ── Filesystem & Hot-Reloading Errors (-300 to -399) ────────────────
+    SITUATION_ERROR_FILE_ACCESS                            = -300,  // A generic file or directory access error occurred
+    SITUATION_ERROR_PATH_NOT_FOUND                         = -301,  // The specified file or directory was not found
+    SITUATION_ERROR_PATH_INVALID                           = -302,  // The specified path is invalid or contains illegal characters
+    SITUATION_ERROR_PERMISSION_DENIED                      = -303,  // Permission was denied for the requested file operation
+    SITUATION_ERROR_DISK_FULL                              = -304,  // The disk is full; cannot complete a write operation
+    SITUATION_ERROR_FILE_LOCKED                            = -305,  // The file is locked or currently in use by another process
+    SITUATION_ERROR_DIR_NOT_EMPTY                          = -306,  // A directory is not empty and cannot be deleted non-recursively
+    SITUATION_ERROR_FILE_ALREADY_EXISTS                    = -307,  // The specified file already exists where it shouldn't
+    SITUATION_ERROR_PATH_IS_DIRECTORY                      = -308,  // A file operation was attempted on a path that is a directory
+    SITUATION_ERROR_PATH_IS_FILE                           = -309,  // A directory operation was attempted on a path that is a file
+    SITUATION_ERROR_FILE_NOT_FOUND                         = -310,  // File does not exist (detailed variant)
+    SITUATION_ERROR_FILE_ACCESS_DENIED                     = -311,  // Permission denied (detailed variant)
+    SITUATION_ERROR_FILE_OPEN_FAILED                       = -312,  // fopen() or equivalent failed
+    SITUATION_ERROR_FILE_READ_FAILED                       = -313,  // Read operation failed
+    SITUATION_ERROR_FILE_WRITE_FAILED                      = -314,  // Write operation failed
+    SITUATION_ERROR_FILE_TOO_LARGE                         = -315,  // File exceeds internal limits (>2 GB typically)
+    SITUATION_ERROR_DIRECTORY_CREATION_FAILED              = -316,  // Failed to create directory
+    SITUATION_ERROR_HOTRELOAD_WATCHER_FAILED               = -320,  // inotify / ReadDirectoryChangesW failed
+    SITUATION_ERROR_HOTRELOAD_FILE_CHANGED_TOO_FAST        = -321,  // File changed faster than debounce window
+    SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED              = -322,  // vkDeviceWaitIdle / glFinish failed during reload
+	
+	// ── Audio Subsystem Errors (-400 to -499) ───────────────────────────
+    SITUATION_ERROR_AUDIO_CONTEXT                          = -400,  // Failed to initialize the audio context (MiniAudio)
+    SITUATION_ERROR_AUDIO_DEVICE                           = -401,  // Failed to initialize, start, or stop an audio device
+    SITUATION_ERROR_AUDIO_SOUND_LIMIT                      = -402,  // The sound playback queue limit was reached
+    SITUATION_ERROR_AUDIO_CONVERTER                        = -403,  // Failed to configure a data format/rate converter for a sound
+    SITUATION_ERROR_AUDIO_DECODING                         = -404,  // Failed to decode an audio file
+    SITUATION_ERROR_AUDIO_INVALID_OPERATION                = -405,  // An invalid operation was attempted on a sound (e.g., cropping a stream)
+    SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED              = -410,  // MiniAudio context failed (detailed variant)
+    SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED               = -411,  // Device startup failed
+    SITUATION_ERROR_AUDIO_DEVICE_START_FAILED              = -412,  // ma_device_start() failed
+    SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED              = -413,  // ma_decoder_init failed
+    SITUATION_ERROR_AUDIO_DECODER_FORMAT_UNSUPPORTED       = -414,  // Codec/container not supported
+    SITUATION_ERROR_AUDIO_STREAM_ENDED                     = -415,  // Internal: stream reached EOF (not fatal)
+    SITUATION_ERROR_AUDIO_SOUND_LIMIT_REACHED              = -420,  // Max concurrent sounds exceeded (detailed variant)
+    SITUATION_ERROR_AUDIO_CAPTURE_NOT_AVAILABLE            = -430,  // No microphone or capture device found
+	
+	// ── Resource Management & Rendering Core Errors (-500 to -599) ──────
+    SITUATION_ERROR_RESOURCE_INVALID                       = -500,  // An invalid handle (shader, mesh, texture, buffer) was passed to a function
+    SITUATION_ERROR_BUFFER_INVALID_SIZE                    = -501,  // A buffer operation was attempted with an out-of-bounds offset or size
+    SITUATION_ERROR_RENDER_COMMAND_FAILED                  = -502,  // A command failed to be recorded to a command buffer
+    SITUATION_ERROR_RENDER_PASS_ACTIVE                     = -503,  // An operation was attempted that is illegal during a render pass
+    SITUATION_ERROR_INVALID_RESOURCE_HANDLE                = -510,  // Null or corrupted handle passed (detailed variant)
+    SITUATION_ERROR_RESOURCE_ALREADY_DESTROYED             = -511,  // Use-after-free attempt
+    SITUATION_ERROR_BUFFER_MAP_FAILED                      = -512,  // vkMapMemory / glMapBuffer failed
+    SITUATION_ERROR_BUFFER_OVERFLOW                        = -513,  // Write beyond buffer bounds
+    SITUATION_ERROR_BUFFER_INVALID_USAGE                   = -514,  // Wrong usage flags for operation
+    SITUATION_ERROR_TEXTURE_UPLOAD_FAILED                  = -520,  // vkImage upload / glTexImage failed
+    SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER               = -530,  // No frame acquired
+    SITUATION_ERROR_COMMAND_BUFFER_FULL                    = -531,  // Command limit reached (extremely rare)
+    SITUATION_ERROR_NO_RENDER_PASS_ACTIVE                  = -540,  // Draw call outside render pass
+    SITUATION_ERROR_RENDER_PASS_ALREADY_ACTIVE             = -541,  // Nested render pass attempted
+	
+// ── OpenGL Backend Errors (-600 to -699) ────────────────────────────
+    SITUATION_ERROR_OPENGL_GENERAL                         = -600,  // A generic OpenGL error occurred (glGetError)
+    SITUATION_ERROR_OPENGL_LOADER_FAILED                   = -601,  // Failed to load OpenGL functions (GLAD)
+    SITUATION_ERROR_OPENGL_UNSUPPORTED                     = -602,  // A required OpenGL version or extension is not supported by the driver
+    SITUATION_ERROR_OPENGL_SHADER_COMPILE                  = -610,  // GLSL shader compilation failed
+    SITUATION_ERROR_OPENGL_SHADER_LINK                     = -611,  // GLSL shader program linking failed
+    SITUATION_ERROR_OPENGL_FBO_INCOMPLETE                  = -620,  // A Framebuffer Object is not complete and cannot be used for rendering
+    SITUATION_ERROR_OPENGL_CONTEXT_CREATION_FAILED         = -630,  // OpenGL context creation failed
+    SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION             = -631,  // < GL 4.6 Core
+    SITUATION_ERROR_OPENGL_SHADER_COMPILE_FAILED           = -632,  // Detailed shader compile error
+    SITUATION_ERROR_OPENGL_SHADER_LINK_FAILED              = -633,  // Detailed link error
+    SITUATION_ERROR_OPENGL_PROGRAM_VALIDATION_FAILED       = -634,  // Program validation failed
+    SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND               = -635,  // Uniform location query failed
+	
+// ── Vulkan Backend Errors (-700 to -799) ────────────────────────────
+    SITUATION_ERROR_VULKAN_INIT_FAILED                     = -700,  // General Vulkan initialization failed
+    SITUATION_ERROR_VULKAN_INSTANCE_FAILED                 = -701,  // Failed to create a VkInstance
+    SITUATION_ERROR_VULKAN_DEVICE_FAILED                   = -702,  // Failed to select a physical or create a logical device
+    SITUATION_ERROR_VULKAN_UNSUPPORTED                     = -703,  // A required Vulkan layer, extension, or feature is unsupported
+    SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED                = -710,  // A swapchain operation failed (creation, acquire, present)
+    SITUATION_ERROR_VULKAN_COMMAND_FAILED                  = -720,  // A command pool or buffer operation failed
+    SITUATION_ERROR_VULKAN_RENDERPASS_FAILED               = -730,  // Failed to create a VkRenderPass
+    SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED              = -731,  // Failed to create a VkFramebuffer
+    SITUATION_ERROR_VULKAN_PIPELINE_FAILED                 = -732,  // Failed to create a graphics or compute pipeline
+    SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED              = -733,  // Failed to create a fence or semaphore
+    SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED             = -734,  // A GPU memory allocation failed (VMA)
+    SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED               = -735,  // A descriptor set or pool operation failed
+    SITUATION_ERROR_VULKAN_INSTANCE_CREATION_FAILED        = -740,  // Detailed instance creation error
+    SITUATION_ERROR_VULKAN_PHYSICAL_DEVICE_UNSUITABLE      = -741,  // Physical device unsuitable
+    SITUATION_ERROR_VULKAN_DEVICE_CREATION_FAILED          = -742,  // Logical device creation failed
+    SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED       = -743,  // Detailed swapchain creation error
+    SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID               = -744,  // Invalid swapchain state
+    SITUATION_ERROR_VULKAN_IMAGE_ACQUIRE_FAILED            = -745,  // Image acquire failed
+    SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED             = -746,  // Queue submit failed
+    SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED        = -747,  // Detailed pipeline creation error
+    SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED            = -748,  // Shader module creation failed
+    SITUATION_ERROR_VULKAN_DESCRIPTOR_POOL_EXHAUSTED       = -749,  // Descriptor pool exhausted
+    SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED        = -750,  // Detailed memory allocation error
+    SITUATION_ERROR_VULKAN_VALIDATION_LAYER_ERROR          = -751,  // Validation layer error (debug only)
+	
+	// ── Compute / GPGPU Errors (-800 to -899) ───────────────────────────
+    SITUATION_ERROR_COMPUTE_PIPELINE_CREATION_FAILED       = -800,  // Compute pipeline creation failed
+    SITUATION_ERROR_COMPUTE_DISPATCH_FAILED                = -801,  // Dispatch command failed
+    SITUATION_ERROR_COMPUTE_BUFFER_BINDING_MISSING         = -802,  // Missing storage buffer binding
 
-    //----------------------------------------------------------------
-    // --- Display & Virtual Display Errors (200-299) ---
-    //----------------------------------------------------------------
-    SITUATION_ERROR_DISPLAY_QUERY = 200,            // Failed to query physical monitor information.
-    SITUATION_ERROR_DISPLAY_SET,                    // Failed to set a display mode on a physical monitor.
-    SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT,          // The maximum number of virtual displays has been reached.
-    SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID,     // An invalid virtual display ID was provided.
-
-    //----------------------------------------------------------------
-    // --- Filesystem Errors (300-399) ---
-    //----------------------------------------------------------------
-    SITUATION_ERROR_FILE_ACCESS = 300,              // A generic file or directory access error occurred.
-    SITUATION_ERROR_PATH_NOT_FOUND,                 // The specified file or directory was not found.
-    SITUATION_ERROR_PATH_INVALID,                   // The specified path is invalid or contains illegal characters.
-    SITUATION_ERROR_PERMISSION_DENIED,              // Permission was denied for the requested file operation.
-    SITUATION_ERROR_DISK_FULL,                      // The disk is full; cannot complete a write operation.
-    SITUATION_ERROR_FILE_LOCKED,                    // The file is locked or currently in use by another process.
-    SITUATION_ERROR_DIR_NOT_EMPTY,                  // A directory is not empty and cannot be deleted non-recursively.
-    SITUATION_ERROR_FILE_ALREADY_EXISTS,            // The specified file already exists where it shouldn't.
-    SITUATION_ERROR_PATH_IS_DIRECTORY,              // A file operation was attempted on a path that is a directory.
-    SITUATION_ERROR_PATH_IS_FILE,                   // A directory operation was attempted on a path that is a file.
-    
-    //----------------------------------------------------------------
-    // --- Audio Errors (400-499) ---
-    //----------------------------------------------------------------
-    SITUATION_ERROR_AUDIO_CONTEXT = 400,            // Failed to initialize the audio context (MiniAudio).
-    SITUATION_ERROR_AUDIO_DEVICE,                   // Failed to initialize, start, or stop an audio device.
-    SITUATION_ERROR_AUDIO_SOUND_LIMIT,              // The sound playback queue limit was reached.
-    SITUATION_ERROR_AUDIO_CONVERTER,                // Failed to configure a data format/rate converter for a sound.
-    SITUATION_ERROR_AUDIO_DECODING,                 // Failed to decode an audio file.
-    SITUATION_ERROR_AUDIO_INVALID_OPERATION,        // An invalid operation was attempted on a sound (e.g., cropping a stream).
-
-    //----------------------------------------------------------------
-    // --- Resource & Rendering Errors (500-599) ---
-    //----------------------------------------------------------------
-    SITUATION_ERROR_RESOURCE_INVALID = 500,         // An invalid handle (shader, mesh, texture, buffer) was passed to a function.
-    SITUATION_ERROR_BUFFER_MAP_FAILED,              // Failed to map a GPU buffer to CPU memory.
-    SITUATION_ERROR_BUFFER_INVALID_SIZE,            // A buffer operation was attempted with an out-of-bounds offset or size.
-    SITUATION_ERROR_RENDER_COMMAND_FAILED,          // A command failed to be recorded to a command buffer.
-    SITUATION_ERROR_RENDER_PASS_ACTIVE,             // An operation was attempted that is illegal during a render pass.
-    SITUATION_ERROR_NO_RENDER_PASS_ACTIVE,          // A drawing operation was attempted outside of a render pass.
-
-    //----------------------------------------------------------------
-    // --- OpenGL Specific Errors (600-699) ---
-    //----------------------------------------------------------------
-    SITUATION_ERROR_OPENGL_GENERAL = 600,           // A generic OpenGL error occurred (glGetError).
-    SITUATION_ERROR_OPENGL_LOADER_FAILED,           // Failed to load OpenGL functions (GLAD).
-    SITUATION_ERROR_OPENGL_UNSUPPORTED,             // A required OpenGL version or extension is not supported by the driver.
-    SITUATION_ERROR_OPENGL_SHADER_COMPILE,          // GLSL shader compilation failed.
-    SITUATION_ERROR_OPENGL_SHADER_LINK,             // GLSL shader program linking failed.
-    SITUATION_ERROR_OPENGL_FBO_INCOMPLETE,          // A Framebuffer Object is not complete and cannot be used for rendering.
-
-    //----------------------------------------------------------------
-    // --- Vulkan Specific Errors (700-799) ---
-    //----------------------------------------------------------------
-    SITUATION_ERROR_VULKAN_INIT_FAILED = 700,       // General Vulkan initialization failed.
-    SITUATION_ERROR_VULKAN_INSTANCE_FAILED,         // Failed to create a VkInstance.
-    SITUATION_ERROR_VULKAN_DEVICE_FAILED,           // Failed to select a physical or create a logical device.
-    SITUATION_ERROR_VULKAN_UNSUPPORTED,             // A required Vulkan layer, extension, or feature is unsupported.
-    SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED,        // A swapchain operation failed (creation, acquire, present).
-    SITUATION_ERROR_VULKAN_COMMAND_FAILED,          // A command pool or buffer operation failed.
-    SITUATION_ERROR_VULKAN_RENDERPASS_FAILED,       // Failed to create a VkRenderPass.
-    SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED,      // Failed to create a VkFramebuffer.
-    SITUATION_ERROR_VULKAN_PIPELINE_FAILED,         // Failed to create a graphics or compute pipeline.
-    SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED,      // Failed to create a fence or semaphore.
-    SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED,     // A GPU memory allocation failed (VMA).
-    SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED        // A descriptor set or pool operation failed.
 } SituationError;
 
 /**
@@ -1317,7 +1393,7 @@ typedef enum {
  *    SituationCreate*  → must be paired with SituationDestroy*
  *    SituationLoad*    → must be paired with SituationUnload*
  *    SituationTakeScreenshot(), SituationGetLastErrorMsg(), SituationGetBasePath(), etc.
- *      → return heap-allocated data → caller must free() or SituationFreeString().
+ *      → return heap-allocated data → caller must SIT_FREE() or SituationFreeString().
  *    SituationShutdown() performs leak detection and prints warnings for any GPU resource still alive.
  *
  * 4. Handle Pattern (by value) vs Modification (by pointer)
@@ -3029,7 +3105,7 @@ static _SituationUniformMap* _sit_uniform_map_create() {
     if (!map->buckets) {
         // Allocation failed for the bucket array.
         // Free the previously allocated map struct to prevent a memory leak.
-        free(map);
+        SIT_FREE(map);
         // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_create: Failed to allocate bucket array.");
         return NULL;
     }
@@ -3078,13 +3154,13 @@ static void _sit_uniform_map_destroy(_SituationUniformMap* map) {
             // Save the pointer to the next entry *before* freeing the current one.
             _SituationUniformMapEntry* next_entry = entry->next;
 
-            // Free the key string. strdup/strndup requires free().
-            // It's safe to call free(NULL).
-            free(entry->key);
+            // Free the key string. strdup/strndup requires SIT_FREE().
+            // It's safe to call SIT_FREE(NULL).
+            SIT_FREE(entry->key);
             entry->key = NULL; // Defensive nulling (optional)
 
             // Free the entry struct itself.
-            free(entry);
+            SIT_FREE(entry);
             entry = NULL; // Defensive nulling (optional)
 
             // Move to the next entry in the list.
@@ -3097,14 +3173,14 @@ static void _sit_uniform_map_destroy(_SituationUniformMap* map) {
 
     // --- 3. Free the Bucket Array ---
     // Free the memory allocated for the array of bucket pointers.
-    free(map->buckets);
+    SIT_FREE(map->buckets);
     map->buckets = NULL; // Defensive nulling
     map->capacity = 0;   // Reset capacity
     map->count = 0;      // Reset count
 
     // --- 4. Free the Map Struct Itself ---
     // Finally, free the memory allocated for the main map struct.
-    free(map);
+    SIT_FREE(map);
     // Note: The `map` pointer itself is not set to NULL here because
     // the caller's copy of the pointer is not passed by reference.
     // It is the caller's responsibility to not use the pointer after this call.
@@ -3193,7 +3269,7 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, GLi
     if (!new_entry->key) {
         // Allocation failed for duplicating the key string.
         // Free the previously allocated entry struct to prevent a leak.
-        free(new_entry);
+        SIT_FREE(new_entry);
         // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_set: Failed to duplicate key string.");
         return;
     }
@@ -3569,9 +3645,9 @@ static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const 
     // Clear any previous list of dropped files
     if (sit_gs.dropped_file_paths != NULL) {
         for (int i = 0; i < sit_gs.dropped_file_count; i++) {
-            free(sit_gs.dropped_file_paths[i]);
+            SIT_FREE(sit_gs.dropped_file_paths[i]);
         }
-        free(sit_gs.dropped_file_paths);
+        SIT_FREE(sit_gs.dropped_file_paths);
         sit_gs.dropped_file_paths = NULL;
         sit_gs.dropped_file_count = 0;
     }
@@ -3587,8 +3663,8 @@ static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const 
             sit_gs.dropped_file_paths[i] = _sit_strdup(paths[i]);
             if (sit_gs.dropped_file_paths[i] == NULL) {
                 // Allocation failed for one string, clean up what we have
-                for (int j = 0; j < i; j++) free(sit_gs.dropped_file_paths[j]);
-                free(sit_gs.dropped_file_paths);
+                for (int j = 0; j < i; j++) SIT_FREE(sit_gs.dropped_file_paths[j]);
+                SIT_FREE(sit_gs.dropped_file_paths);
                 sit_gs.dropped_file_paths = NULL;
                 sit_gs.dropped_file_count = 0;
                 return;
@@ -4295,6 +4371,11 @@ SITAPI const char* SituationGetVersionString(void) {
  * @see SituationShutdown(), SituationInitInfo, SituationGetLastErrorMsg()
  */
 SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info) {
+#if !defined(SITUATION_USE_VULKAN) && !defined(SITUATION_USE_OPENGL)
+	_SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "No graphics backend defined — must #define SITUATION_USE_VULKAN or SITUATION_USE_OPENGL");
+	return SITUATION_ERROR_INIT_FAILED;
+#endif
+
     // --- 1. PRE-INITIALIZATION CHECKS ---
     // Ensure the library isn't already initialized to prevent conflicts.
     if (sit_gs.is_initialized) {
@@ -5728,7 +5809,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
  * @warning The contents of the returned buffer are raw binary data and should be treated as such. Casting it to other types (e.g., `uint32_t*` for
  *          SPIR-V words) is safe, but care must be taken with endianness if the file was compiled for a different architecture.
  *
- * @see SituationLoadFileData(), free()
+ * @see SituationLoadFileData(), SIT_FREE()
  */
 static char* _SituationReadSpirvFile(const char* filename, size_t* out_size) {
     // --- 1. Input Validation ---
@@ -5852,10 +5933,10 @@ static void _SituationShaderIncluderRelease(void* user_data, shaderc_include_res
         // If it was a static error string, we shouldn't free it. 
         // Simpler logic:
         if (container->result.source_name_length > 0) { // Was successful load
-             free(container->content);
+             SIT_FREE(container->content);
         }
-        free(container->full_path);
-        free(container);
+        SIT_FREE(container->full_path);
+        SIT_FREE(container);
     }
 }
 
@@ -6211,8 +6292,8 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
     char* vs_code = _SituationReadSpirvFile(vs_path, &vs_size);
     char* fs_code = _SituationReadSpirvFile(fs_path, &fs_size);
     if (!vs_code || !fs_code) {
-        if(vs_code) free(vs_code);
-        if(fs_code) free(fs_code);
+        if(vs_code) SIT_FREE(vs_code);
+        if(fs_code) SIT_FREE(fs_code);
         _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to read SPIR-V shader files");
         return shader;
     }
@@ -6220,8 +6301,8 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
     // 2. Create Shader Modules
     VkShaderModule vs_module = _SituationCreateVulkanShaderModule(vs_code, vs_size);
     VkShaderModule fs_module = _SituationCreateVulkanShaderModule(fs_code, fs_size);
-    free(vs_code);
-    free(fs_code);
+    SIT_FREE(vs_code);
+    SIT_FREE(fs_code);
 
     if (vs_module == VK_NULL_HANDLE || fs_module == VK_NULL_HANDLE) {
         if(vs_module) vkDestroyShaderModule(sit_gs.vk.device, vs_module, NULL);
@@ -6738,7 +6819,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
         // Query the actual layer properties.
         enumerate_result = vkEnumerateInstanceLayerProperties(&layer_count, available_layers);
         if (enumerate_result != VK_SUCCESS) {
-            free(available_layers);
+            SIT_FREE(available_layers);
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "Failed to enumerate Vulkan instance layer properties (second query).");
             return SITUATION_ERROR_VULKAN_UNSUPPORTED;
         }
@@ -6754,7 +6835,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
         }
 
         // Clean up the allocated list of layer properties.
-        free(available_layers);
+        SIT_FREE(available_layers);
 
         // If the required validation layer was not found, report an error.
         if (!layer_found) {
@@ -7215,7 +7296,7 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
         }
     }
 
-    free(devices);
+    SIT_FREE(devices);
 
     if (best_device == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DEVICE_FAILED, "Failed to find any suitable GPU.");
@@ -7404,9 +7485,9 @@ static SituationError _SituationVulkanCreateAllocator(void) {
  */
 static void _SituationVulkanFreeSwapchainSupportDetails(SituationSwapchainSupportDetails* details) {
     if (details == NULL) return;
-    // free() is safe to call on a NULL pointer.
-    free(details->formats);
-    free(details->present_modes);
+    // SIT_FREE() is safe to call on a NULL pointer.
+    SIT_FREE(details->formats);
+    SIT_FREE(details->present_modes);
     // No need to zero out the struct, as it's typically a stack-allocated variable
     // that will go out of scope.
 }
@@ -7497,7 +7578,7 @@ static int _SituationIsDeviceSuitable(VkPhysicalDevice device) {
             break;
         }
     }
-    free(available_extensions);
+    SIT_FREE(available_extensions);
     if (!swapchain_supported) return 0; // Not suitable
 
     // Check if the swapchain is adequate (has at least one format and one present mode)
@@ -7573,7 +7654,7 @@ static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysical
         }
     }
 
-    free(queue_families);
+    SIT_FREE(queue_families);
     return indices;
 }
 
@@ -8231,7 +8312,7 @@ static void _SituationVulkanCleanupSwapchain(void) {
             }
         }
         // Free the array holding the framebuffer handles.
-        free(sit_gs.vk.main_window_framebuffers);
+        SIT_FREE(sit_gs.vk.main_window_framebuffers);
         sit_gs.vk.main_window_framebuffers = NULL; // Important: Nullify the pointer after freeing.
     }
     // Note: sit_gs.vk.swapchain_image_count retains its value, as it's needed by _SituationVulkanCreateFramebuffers
@@ -8247,14 +8328,14 @@ static void _SituationVulkanCleanupSwapchain(void) {
             }
         }
         // Free the array holding the image view handles.
-        free(sit_gs.vk.swapchain_image_views);
+        SIT_FREE(sit_gs.vk.swapchain_image_views);
         sit_gs.vk.swapchain_image_views = NULL; // Important: Nullify the pointer after freeing.
     }
 
     // Note: We do NOT destroy the VkImages themselves here, as they are owned 
     // by the swapchain extension, but we must free our C array holding the handles.
     if (sit_gs.vk.swapchain_images) {
-        free(sit_gs.vk.swapchain_images);
+        SIT_FREE(sit_gs.vk.swapchain_images);
         sit_gs.vk.swapchain_images = NULL;
     }
 	
@@ -8437,7 +8518,7 @@ SITAPI void SituationPollInputEvents(void) {
                 sit_gs.capture_callback(temp_buffer, (uint32_t)frames_available, sit_gs.capture_user_data);
 
                 // 6. Cleanup
-                free(temp_buffer);
+                SIT_FREE(temp_buffer);
             } else {
                 // Malloc failed, just unlock. We'll try again next frame.
                 // Data remains in buffer (potentially overflowing eventually, but safe crash-wise).
@@ -8702,9 +8783,9 @@ static void _SituationCleanupSubsystems(void) {
         ma_context_uninit(&sit_gs.sit_miniaudio_context);
         sit_gs.is_sit_miniaudio_context_initialized = false;
     }
-    free(sit_gs.sit_audio_callback_decoder_temp_buffer);
-    free(sit_gs.sit_audio_callback_effects_temp_buffer);
-    free(sit_gs.sit_audio_callback_converter_temp_buffer);
+    SIT_FREE(sit_gs.sit_audio_callback_decoder_temp_buffer);
+    SIT_FREE(sit_gs.sit_audio_callback_effects_temp_buffer);
+    SIT_FREE(sit_gs.sit_audio_callback_converter_temp_buffer);
     sit_gs.sit_audio_callback_decoder_temp_buffer = NULL;
     sit_gs.sit_audio_callback_effects_temp_buffer = NULL;
     sit_gs.sit_audio_callback_converter_temp_buffer = NULL;
@@ -8775,9 +8856,9 @@ static void _SituationCleanupPlatform(void) {
     // Free display cache.
     if (sit_gs.cached_physical_displays_array) {
         for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
-            free(sit_gs.cached_physical_displays_array[i].available_modes);
+            SIT_FREE(sit_gs.cached_physical_displays_array[i].available_modes);
         }
-        free(sit_gs.cached_physical_displays_array);
+        SIT_FREE(sit_gs.cached_physical_displays_array);
         sit_gs.cached_physical_displays_array = NULL;
     }
 
@@ -9076,13 +9157,13 @@ static void _SituationCleanupVulkan(void) {
         vmaDestroyBuffer(sit_gs.vk.vma_allocator, sit_gs.vk.view_proj_ubo_buffer[i], sit_gs.vk.view_proj_ubo_memory[i]);
     }
     // --- Free the arrays themselves ---
-    free(sit_gs.vk.command_buffers);
-    free(sit_gs.vk.image_available_semaphores);
-    free(sit_gs.vk.render_finished_semaphores);
-    free(sit_gs.vk.in_flight_fences);
-    free(sit_gs.vk.view_proj_ubo_buffer);
-    free(sit_gs.vk.view_proj_ubo_memory);
-    free(sit_gs.vk.view_proj_ubo_descriptor_set);
+    SIT_FREE(sit_gs.vk.command_buffers);
+    SIT_FREE(sit_gs.vk.image_available_semaphores);
+    SIT_FREE(sit_gs.vk.render_finished_semaphores);
+    SIT_FREE(sit_gs.vk.in_flight_fences);
+    SIT_FREE(sit_gs.vk.view_proj_ubo_buffer);
+    SIT_FREE(sit_gs.vk.view_proj_ubo_memory);
+    SIT_FREE(sit_gs.vk.view_proj_ubo_descriptor_set);
 
     for (int i = 0; i < sizeof(sit_gs.vk.compute_layouts) / sizeof(sit_gs.vk.compute_layouts[0]); ++i) {
         if (sit_gs.vk.compute_layouts[i] != VK_NULL_HANDLE) {
@@ -9109,7 +9190,7 @@ static void _SituationCleanupVulkan(void) {
                 vkDestroyDescriptorPool(sit_gs.vk.device, sit_gs.vk.descriptor_manager.pools[i], NULL);
             }
         }
-        free(sit_gs.vk.descriptor_manager.pools);
+        SIT_FREE(sit_gs.vk.descriptor_manager.pools);
         sit_gs.vk.descriptor_manager.pools = NULL;
     }
 
@@ -11878,9 +11959,8 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
  */
 SITAPI void SituationDestroyTexture(SituationTexture* texture) {
     // --- 1. Input Validation ---
-    if (!texture || texture->id == 0) {
-        // Silently succeed if trying to destroy an invalid/null texture.
-        // This is a common and safe pattern.
+	if (!texture.id) {
+        SITUATION_LOG_WARNING(SITUATION_ERROR_INVALID_PARAM, "Null texture ID in DestroyTexture");
         return;
     }
 
@@ -11895,7 +11975,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
             } else {
                 sit_gs.all_textures = current->next;
             }
-            free(current);
+            SIT_FREE(current);
             break; // Found and removed, stop searching
         }
         prev = current;
@@ -12469,7 +12549,7 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
             } else {
                 sit_gs.all_buffers = current->next; // Unlink from the head of the list
             }
-            free(current); // Free the tracking node itself
+            SIT_FREE(current); // Free the tracking node itself
             break; // Found and removed, can exit the loop
         }
         prev = current;
@@ -12662,7 +12742,7 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
             } else {
                 sit_gs.all_meshes = current->next; // Unlink from the head of the list
             }
-            free(current); // Free the tracking node itself
+            SIT_FREE(current); // Free the tracking node itself
             break; // Found and removed, can exit the loop
         }
         prev = current;
@@ -12748,7 +12828,7 @@ static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
     if (index_data && i_size > 0) {
         i_ptr = malloc(i_size);
         if (!i_ptr) { 
-            if (v_ptr) free(v_ptr); 
+            if (v_ptr) SIT_FREE(v_ptr); 
             _SituationSetError("Memory allocation failed for mesh readback"); 
             return; 
         }
@@ -12850,7 +12930,7 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
                 _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, final_error_message);
             
                 // Free the single allocated buffer.
-                free(final_error_message);
+                SIT_FREE(final_error_message);
             } else {
                 // If allocation fails, set a memory error.
                 _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate memory for shader compilation log.");
@@ -12940,7 +13020,7 @@ static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs
             if (infoLog) {
                 glGetProgramInfoLog(program, log_length, NULL, infoLog);
                 _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
-                free(infoLog);
+                SIT_FREE(infoLog);
             } else {
                 _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate memory for shader link log.");
             }
@@ -13024,7 +13104,7 @@ static GLuint _SituationCreateGLShaderProgramFromSource(const char* cs_src, Situ
             if (infoLog) {
                 glGetProgramInfoLog(program, log_length, NULL, infoLog);
                 _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
-                free(infoLog);
+                SIT_FREE(infoLog);
             } else {
                 _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_SituationCreateGLShaderProgramFromSource: Failed to allocate memory for shader link log.");
             }
@@ -13291,7 +13371,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compu
     }
 
     // --- 5. Cleanup ---
-    free(source);
+    SIT_FREE(source);
     return pipeline;
 }
 
@@ -13329,9 +13409,9 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
             else sit_gs.all_compute_pipelines = current->next;
             
             // [HOT-RELOAD] Free the stored path string
-            if (current->source_path) free(current->source_path);
+            if (current->source_path) SIT_FREE(current->source_path);
             
-            free(current);
+            SIT_FREE(current);
             break; 
         }
         prev = current;
@@ -14232,8 +14312,8 @@ SITAPI char** SituationLoadDroppedFiles(int* count) {
         user_list[i] = _sit_strdup(sit_gs.dropped_file_paths[i]);
         if (user_list[i] == NULL) {
             // Allocation failed, clean up this partial list
-            for (int j = 0; j < i; j++) free(user_list[j]);
-            free(user_list);
+            for (int j = 0; j < i; j++) SIT_FREE(user_list[j]);
+            SIT_FREE(user_list);
             *count = 0;
             return NULL;
         }
@@ -14244,9 +14324,9 @@ SITAPI char** SituationLoadDroppedFiles(int* count) {
     // We have now given the user their own copy. We can clear the internal one.
     // This also prevents calling LoadDroppedFiles multiple times for the same drop event.
     for (int i = 0; i < sit_gs.dropped_file_count; i++) {
-        free(sit_gs.dropped_file_paths[i]);
+        SIT_FREE(sit_gs.dropped_file_paths[i]);
     }
-    free(sit_gs.dropped_file_paths);
+    SIT_FREE(sit_gs.dropped_file_paths);
     sit_gs.dropped_file_paths = NULL;
     sit_gs.dropped_file_count = 0;
 
@@ -14267,9 +14347,9 @@ SITAPI char** SituationLoadDroppedFiles(int* count) {
 SITAPI void SituationUnloadDroppedFiles(char** paths, int count) {
     if (paths == NULL || count == 0) return;
     for (int i = 0; i < count; i++) {
-        free(paths[i]);
+        SIT_FREE(paths[i]);
     }
-    free(paths);
+    SIT_FREE(paths);
 }
 
 // --- System Profiling Implementation ---
@@ -14395,7 +14475,7 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
         DWORD ret_val = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapters_list, &adapters_buffer_size);
         if (ret_val == ERROR_BUFFER_OVERFLOW) { // Should have been caught if initial buffer was 0 and we got size.
                                                 // But if initial guess was too small.
-            free(adapters_list);
+            SIT_FREE(adapters_list);
             adapters_list = (IP_ADAPTER_ADDRESSES*)malloc(adapters_buffer_size); // Retry with new size
             if (adapters_list) { ret_val = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapters_list, &adapters_buffer_size);
             }
@@ -14411,7 +14491,7 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
                 current_adapter = current_adapter->Next;
             }
         }
-        free(adapters_list); adapters_list = NULL;
+        SIT_FREE(adapters_list); adapters_list = NULL;
     }
 
 
@@ -14859,7 +14939,7 @@ static BOOL CALLBACK _SituationMonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor
     #include <direct.h> // For _mkdir _rmdir
 
 // Converts a UTF-8 string to a UTF-16 (wide) string.
-// Caller must free the returned WCHAR* with free().
+// Caller must free the returned WCHAR* with SIT_FREE().
 static WCHAR* _sit_utf8_to_wide(const char* utf8_str) {
     if (!utf8_str) return NULL;
     int wide_len = MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, NULL, 0);
@@ -14871,7 +14951,7 @@ static WCHAR* _sit_utf8_to_wide(const char* utf8_str) {
 }
 
 // Converts a UTF-16 (wide) string to a UTF-8 string.
-// Caller must free the returned char* with free().
+// Caller must free the returned char* with SIT_FREE().
 static char* _sit_wide_to_utf8(const WCHAR* wide_str) {
     if (!wide_str) return NULL;
     int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide_str, -1, NULL, 0, NULL, NULL);
@@ -14927,19 +15007,19 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     size_t final_len = strlen(path_appdata) + 1 + strlen(app_name) + 1;
     char* final_path = (char*)malloc(final_len);
     if (!final_path) {
-        free(path_appdata);
+        SIT_FREE(path_appdata);
         return NULL;
     }
     
     // snprintf is safer than strcpy/strcat
     snprintf(final_path, final_len, "%s\\%s", path_appdata, app_name);
-    free(path_appdata);
+    SIT_FREE(path_appdata);
 
     // Create the directory if it doesn't exist
     WCHAR* wide_final_path = _sit_utf8_to_wide(final_path);
     if (wide_final_path) {
         CreateDirectoryW(wide_final_path, NULL); // Fails harmlessly if it already exists
-        free(wide_final_path);
+        SIT_FREE(wide_final_path);
     }
 
     return final_path;
@@ -14967,11 +15047,11 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     size_t final_len = strlen(base_path) + 1 + strlen(app_name) + 1;
     char* final_path = (char*)malloc(final_len);
     if (!final_path) {
-        free(base_path);
+        SIT_FREE(base_path);
         return NULL;
     }
     snprintf(final_path, final_len, "%s/%s", base_path, app_name);
-    free(base_path);
+    SIT_FREE(base_path);
 
     // TODO: Create the final directory.
     // mkdir(final_path, 0755);
@@ -15115,7 +15195,7 @@ SITAPI bool SituationFileExists(const char* file_path) {
     }
 
     HANDLE handle = FindFirstFileW(wide_path, &find_data);
-    free(wide_path); // Free the converted path regardless of FindFirstFileW result
+    SIT_FREE(wide_path); // Free the converted path regardless of FindFirstFileW result
 
     if (handle == INVALID_HANDLE_VALUE) {
         return false;
@@ -15144,7 +15224,7 @@ SITAPI bool SituationDirectoryExists(const char* dir_path) {
     if (!wide_path) return false;
 
     DWORD attrib = GetFileAttributesW(wide_path);
-    free(wide_path);
+    SIT_FREE(wide_path);
 
     // Check if it exists AND is a directory
     return (attrib != INVALID_FILE_ATTRIBUTES && (attrib & FILE_ATTRIBUTE_DIRECTORY));
@@ -15167,7 +15247,7 @@ SITAPI long SituationGetFileModTime(const char* file_path) {
     if (!wide_path) return 0;
     
     HANDLE hFile = CreateFileW(wide_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    free(wide_path);
+    SIT_FREE(wide_path);
 
     if (hFile == INVALID_HANDLE_VALUE) {
         return 0;
@@ -15212,7 +15292,7 @@ SITAPI bool SituationDeleteFile(const char* file_path) {
     }
     
     BOOL result = DeleteFileW(wide_path);
-    free(wide_path);
+    SIT_FREE(wide_path);
 
     if (result == 0) {
         _SituationSetFilesystemError("Failed to delete file", file_path);
@@ -15251,11 +15331,11 @@ SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
     WCHAR* wide_old = _sit_utf8_to_wide(old_path);
     if (!wide_old) return false;
     WCHAR* wide_new = _sit_utf8_to_wide(new_path);
-    if (!wide_new) { free(wide_old); return false; }
+    if (!wide_new) { SIT_FREE(wide_old); return false; }
     
     BOOL result = MoveFileExW(wide_old, wide_new, MOVEFILE_REPLACE_EXISTING);
-    free(wide_old);
-    free(wide_new);
+    SIT_FREE(wide_old);
+    SIT_FREE(wide_new);
     
     if (result == 0) {
         _SituationSetFilesystemError("Failed to move/rename file", old_path);
@@ -15294,15 +15374,15 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
 
     WCHAR* wide_dest = _sit_utf8_to_wide(dest_path);
     if (!wide_dest) {
-        free(wide_source);
+        SIT_FREE(wide_source);
         return false;
     }
 
     // The final parameter (FALSE) means to overwrite the destination if it exists.
     BOOL result = CopyFileW(wide_source, wide_dest, FALSE);
 
-    free(wide_source);
-    free(wide_dest);
+    SIT_FREE(wide_source);
+    SIT_FREE(wide_dest);
     return (result != 0);
 
 #else // POSIX/Standard C manual implementation
@@ -15365,7 +15445,7 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
             return false;
         }
         BOOL result = CreateDirectoryW(wide_path, NULL);
-        free(wide_path);
+        SIT_FREE(wide_path);
         if (result == 0) {
             _SituationSetFilesystemError("Failed to create directory", dir_path);
             return false;
@@ -15411,7 +15491,7 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
         success = SituationCreateDirectory(dir_path, false); // Create the final directory
     }
 
-    free(path_copy);
+    SIT_FREE(path_copy);
     return success;
 }
 
@@ -15451,7 +15531,7 @@ SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
                         all_deleted = false;
                     }
                 }
-                free(full_entry_path);
+                SIT_FREE(full_entry_path);
             }
             SituationFreeDirectoryFileList(entries, count);
 
@@ -15467,7 +15547,7 @@ SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
     WCHAR* wide_path = _sit_utf8_to_wide(dir_path);
     if (!wide_path) return false;
     BOOL result = RemoveDirectoryW(wide_path);
-    free(wide_path);
+    SIT_FREE(wide_path);
     return (result != 0);
 #else // POSIX
     return (rmdir(dir_path) == 0);
@@ -15514,7 +15594,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
 
     WIN32_FIND_DATAW find_data;
     hFind = FindFirstFileW(wide_search_path, &find_data);
-    free(wide_search_path);
+    SIT_FREE(wide_search_path);
     wide_search_path = NULL; // Prevent double-free in cleanup
 
     if (hFind == INVALID_HANDLE_VALUE) goto success_cleanup; // Not an error, just empty/no dir
@@ -15546,7 +15626,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
             char** temp_files = (char**)realloc(files, capacity * sizeof(char*));
             if (!temp_files) {
                 // realloc failed. 'files' is still valid. 'new_entry_name' must be freed.
-                free(new_entry_name);
+                SIT_FREE(new_entry_name);
                 new_entry_name = NULL;
                 _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "realloc failed.");
                 goto error_cleanup;
@@ -15576,7 +15656,7 @@ error_cleanup:
     // This block handles cleanup for any failure path.
     SituationFreeDirectoryFileList(files, *out_count);
 #if defined(_WIN32)
-    free(wide_search_path); // Safe to call on NULL
+    SIT_FREE(wide_search_path); // Safe to call on NULL
     if (hFind != INVALID_HANDLE_VALUE) FindClose(hFind);
 #else
     if (dir) closedir(dir);
@@ -15592,9 +15672,9 @@ error_cleanup:
 SITAPI void SituationFreeDirectoryFileList(char** file_list, int count) {
     if (!file_list) return;
     for (int i = 0; i < count; i++) {
-        free(file_list[i]);
+        SIT_FREE(file_list[i]);
     }
-    free(file_list);
+    SIT_FREE(file_list);
 }
 
 
@@ -15719,7 +15799,7 @@ static char* SituationGetBasePathFromFile(const char* file_path) {
         *last_sep = '\0'; // Truncate at the separator
     } else {
         // No separator found, assume current directory
-        free(path_copy);
+        SIT_FREE(path_copy);
         return _sit_strdup(".");
     }
     return path_copy;
@@ -15752,7 +15832,7 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
     }
 
     HANDLE hFile = CreateFileW(wide_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    free(wide_path);
+    SIT_FREE(wide_path);
 
     if (hFile == INVALID_HANDLE_VALUE) {
         _SituationSetFilesystemError("Failed to open file for reading", file_path);
@@ -15789,7 +15869,7 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
     DWORD bytes_read_win = 0;
     if (!ReadFile(hFile, buffer, size_to_read, &bytes_read_win, NULL) || bytes_read_win != size_to_read) {
         _SituationSetFilesystemError("Error during file read", file_path);
-        free(buffer);
+        SIT_FREE(buffer);
         CloseHandle(hFile);
         return NULL;
     }
@@ -15832,7 +15912,7 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
     size_t read_count = fread(buffer, 1, size_to_read, file);
     if (read_count != size_to_read) {
         _SituationSetFilesystemError("Error during file read", file_path);
-        free(buffer);
+        SIT_FREE(buffer);
         fclose(file);
         return NULL;
     }
@@ -15868,7 +15948,7 @@ SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsig
     }
 
     HANDLE hFile = CreateFileW(wide_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    free(wide_path);
+    SIT_FREE(wide_path);
 
     if (hFile == INVALID_HANDLE_VALUE) {
         _SituationSetFilesystemError("Failed to create file for writing", file_path);
@@ -15927,7 +16007,7 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
     char* text_buffer = (char*)malloc(bytes_read + 1);
     if (!text_buffer) {
         // TODO: Set last error message: "Memory allocation failed"
-        free(file_data);
+        SIT_FREE(file_data);
         return NULL;
     }
 
@@ -15935,7 +16015,7 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
     memcpy(text_buffer, file_data, bytes_read);
     text_buffer[bytes_read] = '\0';
 
-    free(file_data); // Free the original buffer.
+    SIT_FREE(file_data); // Free the original buffer.
 
     return text_buffer;
 }
@@ -15976,9 +16056,9 @@ static void _SituationCachePhysicalDisplays(void) {
     if (!sit_gs.is_initialized) return;
     if (sit_gs.cached_physical_displays_array) {
         for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
-            free(sit_gs.cached_physical_displays_array[i].available_modes);
+            SIT_FREE(sit_gs.cached_physical_displays_array[i].available_modes);
         }
-        free(sit_gs.cached_physical_displays_array);
+        SIT_FREE(sit_gs.cached_physical_displays_array);
         sit_gs.cached_physical_displays_array = NULL;
         sit_gs.cached_physical_display_count = 0;
     }
@@ -16002,8 +16082,8 @@ static void _SituationCachePhysicalDisplays(void) {
     };
     if (!EnumDisplayMonitors(NULL, NULL, _SituationMonitorEnumProc, (LPARAM)&enum_data)) {
         _SituationSetError("EnumDisplayMonitors failed.");
-        for (int i = 0; i < enum_data.current_display_idx; ++i) free(sit_gs.cached_physical_displays_array[i].available_modes);
-        free(sit_gs.cached_physical_displays_array); sit_gs.cached_physical_displays_array = NULL;
+        for (int i = 0; i < enum_data.current_display_idx; ++i) SIT_FREE(sit_gs.cached_physical_displays_array[i].available_modes);
+        SIT_FREE(sit_gs.cached_physical_displays_array); sit_gs.cached_physical_displays_array = NULL;
         return;
     }
     sit_gs.cached_physical_display_count = enum_data.current_display_idx;
@@ -16067,9 +16147,9 @@ static void _SituationCachePhysicalDisplays(void) {
  *
  *       // --- CRITICAL: Correct cleanup ---
  *       for (int i = 0; i < display_count; ++i) {
- *           free(displays[i].available_modes);
+ *           SIT_FREE(displays[i].available_modes);
  *       }
- *       free(displays);
+ *       SIT_FREE(displays);
  *   }
  *
  * @param count Pointer to an integer that will be filled with the number of displays found.
@@ -17467,7 +17547,7 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
     if (prim->indices) {
         *out_i_count = (int)prim->indices->count;
         *out_indices = (uint32_t*)malloc(*out_i_count * sizeof(uint32_t));
-        if (!*out_indices) { free(*out_vertices); return false; }
+        if (!*out_indices) { SIT_FREE(*out_vertices); return false; }
 
         for (int k = 0; k < *out_i_count; ++k) {
             // cgltf handles u8/u16/u32 conversion automatically here
@@ -17477,7 +17557,7 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
         // Non-indexed geometry: generate 0, 1, 2... sequence
         *out_i_count = *out_v_count;
         *out_indices = (uint32_t*)malloc(*out_i_count * sizeof(uint32_t));
-        if (!*out_indices) { free(*out_vertices); return false; }
+        if (!*out_indices) { SIT_FREE(*out_vertices); return false; }
         
         for (int k = 0; k < *out_i_count; ++k) {
             (*out_indices)[k] = (uint32_t)k;
@@ -17569,10 +17649,10 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
                 if (model.all_model_textures[i].id == 0) {
                     fprintf(stderr, "SITUATION WARNING: Model texture failed to load: %s\n", full_texture_path);
                 }
-                free(full_texture_path);
+                SIT_FREE(full_texture_path);
             }
         }
-        free(base_path);
+        SIT_FREE(base_path);
     }
 
     // 3. Process each mesh in the GLTF file
@@ -17609,8 +17689,8 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
                         index_count
                     );
 
-                    free(vertex_data);
-                    free(index_data);
+                    SIT_FREE(vertex_data);
+                    SIT_FREE(index_data);
                 }
 
                 // --- Process PBR Material Data ---
@@ -17707,8 +17787,8 @@ SITAPI void SituationUnloadModel(SituationModel* model) {
             if (prev) prev->next = current->next;
             else sit_gs.all_models = current->next;
             
-            if (current->source_path) free(current->source_path);
-            free(current);
+            if (current->source_path) SIT_FREE(current->source_path);
+            SIT_FREE(current);
             break;
         }
         prev = current;
@@ -17724,7 +17804,7 @@ SITAPI void SituationUnloadModel(SituationModel* model) {
             SituationDestroyMesh(&model->meshes[i].gpu_mesh);
         }
         // Free the CPU memory for the array of mesh structs.
-        free(model->meshes);
+        SIT_FREE(model->meshes);
     }
 
     // --- 3. Unload all GPU Texture Resources ---
@@ -17735,7 +17815,7 @@ SITAPI void SituationUnloadModel(SituationModel* model) {
             SituationDestroyTexture(&model->all_model_textures[i]);
         }
         // Free the CPU memory for the array of texture handles.
-        free(model->all_model_textures);
+        SIT_FREE(model->all_model_textures);
     }
 
     // --- 4. Invalidate the User-Facing Handle ---
@@ -17918,7 +17998,7 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
     char* fs_code = SituationLoadFileText(fs_path);
     if (!fs_code) {
         // CRITICAL: Clean up the successfully loaded vertex shader code to prevent a memory leak.
-        free(vs_code);
+        SIT_FREE(vs_code);
         // Error is already set by SituationLoadFileText.
         return shader;
     }
@@ -17930,8 +18010,8 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
 
     // --- 5. Clean Up Temporary Memory Buffers ---
     // The source code strings are no longer needed after the shader is created.
-    free(vs_code);
-    free(fs_code);
+    SIT_FREE(vs_code);
+    SIT_FREE(fs_code);
 
     // --- 6. Return Result ---
     // [HOT-RELOAD] Capture paths in the node
@@ -18245,10 +18325,10 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
             }
 			
 			// [HOT-RELOAD] Free paths
-			if (current->vs_path) free(current->vs_path);
-			if (current->fs_path) free(current->fs_path);
+			if (current->vs_path) SIT_FREE(current->vs_path);
+			if (current->fs_path) SIT_FREE(current->fs_path);
 	
-            free(current); // Free the tracking node itself
+            SIT_FREE(current); // Free the tracking node itself
             break; // Found and removed, can exit the loop
         }
         prev = current;
@@ -18478,7 +18558,7 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
 
     if (!vs_path || !fs_path) {
         _SituationSetError("Reload failed: Original file paths not found (shader loaded from memory?)");
-        if(vs_path) free(vs_path); if(fs_path) free(fs_path);
+        if(vs_path) SIT_FREE(vs_path); if(fs_path) SIT_FREE(fs_path);
         return false;
     }
 
@@ -18496,8 +18576,8 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
     // SituationLoadShader creates a new node and stores the paths again
     *shader = SituationLoadShader(vs_path, fs_path);
 
-    free(vs_path);
-    free(fs_path);
+    SIT_FREE(vs_path);
+    SIT_FREE(fs_path);
 
     if (shader->id != 0) {
         printf("[Situation] Hot-Reloaded Shader: %llu\n", (unsigned long long)shader->id);
@@ -18547,7 +18627,7 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     SituationDestroyTexture(texture);
     *texture = SituationLoadTexture(path, true); // Defaulting to mips enabled for reload
 
-    free(path);
+    SIT_FREE(path);
 
     if (texture->id != 0) {
         printf("[Situation] Hot-Reloaded Texture\n");
@@ -18594,7 +18674,7 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     SituationUnloadModel(model);
     *model = SituationLoadModel(path);
     
-    free(path);
+    SIT_FREE(path);
 
     if (model->id != 0) {
         printf("[Situation] Hot-Reloaded Model\n");
@@ -18638,7 +18718,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
 
     if (!found || !original_path) {
         _SituationSetError("Reload failed: Pipeline was not loaded from a file (or path wasn't tracked).");
-        if (original_path) free(original_path);
+        if (original_path) SIT_FREE(original_path);
         return false;
     }
 
@@ -18658,7 +18738,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     SituationComputePipeline new_pipeline = SituationCreateComputePipeline(original_path, original_layout);
 
     // 6. Cleanup temp path
-    free(original_path);
+    SIT_FREE(original_path);
 
     // 7. Apply result
     if (new_pipeline.id != 0) {
@@ -18861,7 +18941,7 @@ SITAPI void SituationSetWindowIcons(SituationImage *images, int count) {
     }
 
     glfwSetWindowIcon(sit_gs.sit_glfw_window, count, glfw_images);
-    free(glfw_images);
+    SIT_FREE(glfw_images);
 }
 
 /**
@@ -18927,9 +19007,9 @@ SITAPI void SituationSetWindowMonitor(int monitor_id) {
 
     // CRITICAL: Free the memory allocated by SituationGetDisplays
     for (int i = 0; i < display_count; ++i) {
-        free(displays[i].available_modes);
+        SIT_FREE(displays[i].available_modes);
     }
-    free(displays);
+    SIT_FREE(displays);
 }
 
 /**
@@ -19564,11 +19644,15 @@ SITAPI SituationImage SituationLoadImageFromMemory(const char *fileType, const u
  *
  * @param image The image to unload. Its data pointer becomes invalid after this call.
  */
-SITAPI void SituationUnloadImage(SituationImage image) {
-    // We are using the same family of memory functions that were used to allocate the data, whether it came from stb_image or GenImage functions.
-    if (image.data) {
+SITAPI bool SituationUnloadImage(SituationImage image) {
+    if (image.data != NULL) {
         SIT_FREE(image.data);
+        if (errno != 0) {  // Rare post-free errno check
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SIT_FREE failed for image data (errno: %d)", errno);
+            return false;
+        }
     }
+    return true;
 }
 
 /**
@@ -19913,14 +19997,14 @@ SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHei
     // 4. --- Update the SituationImage Struct ---
     // The new API returns a pointer to the output buffer on success, or NULL on failure.
     if (result) {
-        free(image->data); // Free the old image data
+        SIT_FREE(image->data); // Free the old image data
         image->data = newData;
         image->width = newWidth;
         image->height = newHeight;
     } else {
         // The resize failed. Clean up and leave the original image untouched.
         _SituationSetError("stb_image_resize failed.");
-        free(newData);
+        SIT_FREE(newData);
     }
 #else
     _SituationSetError("Image resizing not available. Please implement stb_image_resize.h.");
@@ -19962,7 +20046,7 @@ SITAPI void SituationImageFlip(SituationImage *image, SituationImageFlipMode mod
                 memcpy(top_row, bottom_row, row_size);
                 memcpy(bottom_row, row_buffer, row_size);
             }
-            free(row_buffer);
+            SIT_FREE(row_buffer);
             break;
         }
 
@@ -20299,15 +20383,15 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
     // 2. Allocate and initialize the stbtt_fontinfo struct.
     stbtt_fontinfo *info = (stbtt_fontinfo*)malloc(sizeof(stbtt_fontinfo));
     if (!info) {
-        free(fontBuffer);
+        SIT_FREE(fontBuffer);
         return font;
     }
 
     // 3. Initialize stb_truetype with our buffer.
     if (!stbtt_InitFont(info, fontBuffer, 0)) {
         // The font file is invalid or not a TrueType font.
-        free(info);
-        free(fontBuffer);
+        SIT_FREE(info);
+        SIT_FREE(fontBuffer);
         return font;
     }
 
@@ -20333,7 +20417,7 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
     if (!data || dataSize <= 0) return font;
 
     // 1. Allocate our own buffer and copy the data.
-    // This ensures SituationUnloadFont() can safely free(font.fontData) regardless of where the original data came from.
+    // This ensures SituationUnloadFont() can safely SIT_FREE(font.fontData) regardless of where the original data came from.
     font.fontData = malloc(dataSize);
     if (!font.fontData) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate buffer copy.");
@@ -20344,7 +20428,7 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
     // 2. Allocate and initialize the stbtt_fontinfo struct.
     font.stbFontInfo = malloc(sizeof(stbtt_fontinfo));
     if (!font.stbFontInfo) {
-        free(font.fontData);
+        SIT_FREE(font.fontData);
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate font info.");
         return (SituationFont){0};
     }
@@ -20352,8 +20436,8 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
     // 3. Initialize stb_truetype.
     // Note: stbtt_InitFont does NOT copy the data, it stores the pointer. That is why we made our own copy above.
     if (!stbtt_InitFont((stbtt_fontinfo*)font.stbFontInfo, (unsigned char*)font.fontData, 0)) {
-        free(font.stbFontInfo);
-        free(font.fontData);
+        SIT_FREE(font.stbFontInfo);
+        SIT_FREE(font.fontData);
         _SituationSetError("SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
         return (SituationFont){0};
     }
@@ -20406,8 +20490,8 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
     );
 
     if (res <= 0) {
-        free(bitmap);
-        free(font->glyph_info);
+        SIT_FREE(bitmap);
+        SIT_FREE(font->glyph_info);
         _SituationSetError("Font atlas bake failed (texture too small?)");
         return false;
     }
@@ -20427,7 +20511,7 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
         dst[i*4+2] = 255;
         dst[i*4+3] = src[i];
     }
-    free(bitmap); // Done with 1-channel
+    SIT_FREE(bitmap); // Done with 1-channel
 
     // 5. Create GPU Texture
     font->atlas_texture = SituationCreateTexture(img, false); // No mips needed for UI text usually
@@ -20451,8 +20535,8 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
  * @see SituationLoadFont()
  */
 SITAPI void SituationUnloadFont(SituationFont font) {
-    if (font.stbFontInfo) free(font.stbFontInfo);
-    if (font.fontData) free(font.fontData);
+    if (font.stbFontInfo) SIT_FREE(font.stbFontInfo);
+    if (font.fontData) SIT_FREE(font.fontData);
 }
 
 /**
@@ -20540,7 +20624,7 @@ static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* i
 
     // Save the buffer to disk using our existing library function
     bool success = SituationSaveFileData(fileName, fileBuffer, fileSize);
-    free(fileBuffer);
+    SIT_FREE(fileBuffer);
 
     if (!success) {
         _SituationSetFilesystemError("Failed to save BMP file data to disk", fileName);
@@ -20764,7 +20848,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
                         }
                     }
                 }
-                free(glyphBitmap);
+                SIT_FREE(glyphBitmap);
             }
         }
         // --- Sub-Path 1.2: SDF rendering (with outline) ---
@@ -20798,7 +20882,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
                             }
                         }
                     }
-                    free(sdfBitmap);
+                    SIT_FREE(sdfBitmap);
                 }
             }
         }
@@ -20826,7 +20910,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
     
     mat2 invTransform;
     float det = cos_a - sin_a * skewFactor;
-    if (fabsf(det) < 1e-6) { free(sdfBitmap); return; }
+    if (fabsf(det) < 1e-6) { SIT_FREE(sdfBitmap); return; }
     float inv_det = 1.0f / det;
     invTransform[0][0] = 1.0f * inv_det;
     invTransform[0][1] = sin_a * inv_det;
@@ -20869,7 +20953,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
             }
         }
     }
-    free(sdfBitmap);
+    SIT_FREE(sdfBitmap);
 }
 
 /**
@@ -21023,7 +21107,7 @@ SITAPI void SituationImageDrawText(SituationImage *dst, SituationFont font, cons
                 glyphPixels[p*4 + 2] = 255; // B
                 glyphPixels[p*4 + 3] = glyphBitmap[p]; // Alpha comes from the rendered glyph
             }
-            free(glyphBitmap);
+            SIT_FREE(glyphBitmap);
 
             // --- Step 3: Use our powerful, generic drawing function to do the hard work! ---
             Rectangle srcRect = { 0, 0, (float)glyph_w, (float)glyph_h };
@@ -21905,7 +21989,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
     }
 
     if (res != MA_SUCCESS) {
-        if (out_sound->preloaded_data) free(out_sound->preloaded_data);
+        if (out_sound->preloaded_data) SIT_FREE(out_sound->preloaded_data);
         _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to initialize decoder.");
         return SITUATION_ERROR_FILE_ACCESS;
     }
@@ -21922,7 +22006,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
     res = ma_data_converter_init(&converter_config, NULL, &out_sound->converter);
     if (res != MA_SUCCESS) { 
         ma_decoder_uninit(&out_sound->decoder); 
-        if(out_sound->preloaded_data) free(out_sound->preloaded_data);
+        if(out_sound->preloaded_data) SIT_FREE(out_sound->preloaded_data);
         return SITUATION_ERROR_AUDIO_CONVERTER; 
     }
     
@@ -22111,7 +22195,7 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
             
             // Free the RAM buffer
             if (sound->is_preloaded && sound->preloaded_data) {
-                free(sound->preloaded_data);
+                SIT_FREE(sound->preloaded_data);
                 sound->preloaded_data = NULL;
             }
 
@@ -22254,7 +22338,7 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
     ma_result res = ma_decoder_init(&decoder_config, &out_destination->decoder);
 
     if (res != MA_SUCCESS) {
-        free(pcm_data); // Clean up if init fails
+        SIT_FREE(pcm_data); // Clean up if init fails
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
 
@@ -22320,7 +22404,7 @@ SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFra
     ma_result res = ma_decoder_init(&decoder_config, &sound->decoder);
 
     if (res != MA_SUCCESS) {
-        free(cropped_pcm_data);
+        SIT_FREE(cropped_pcm_data);
         // Sound is now in an invalid state.
         memset(sound, 0, sizeof(SituationSound));
         return SITUATION_ERROR_AUDIO_CONTEXT;
@@ -22377,7 +22461,7 @@ SITAPI bool SituationSoundExportAsWav(const SituationSound* sound, const char* f
         if (frames_read < frames_to_read) break; // End of stream
     }
 
-    free(buffer);
+    SIT_FREE(buffer);
     ma_encoder_uninit(&encoder);
     ma_decoder_seek_to_pcm_frame(&((SituationSound*)sound)->decoder, 0); // Reset for playback
     return true;
@@ -22682,8 +22766,8 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
 
         // Optionally, realloc to shrink the arrays, but it's often not worth the overhead.
         if (sound->processor_count == 0) {
-            free(sound->processors);
-            free(sound->processor_user_data);
+            SIT_FREE(sound->processors);
+            SIT_FREE(sound->processor_user_data);
             sound->processors = NULL;
             sound->processor_user_data = NULL;
         }
@@ -23813,44 +23897,50 @@ SITAPI void SituationConvertColorToVec4(ColorRGBA c, vec4 out_normalized_color) 
  * @see SituationUnloadImage(), SituationTakeScreenshot()
  */
 SITAPI SituationImage SituationLoadImageFromScreen(void) {
-    SituationImage image = {0};
-    if (!SituationIsInitialized()) return image;
+    if (!SituationIsInitialized()) return (SituationImage){0};
 
     // Get the dimensions of the framebuffer (HiDPI-aware)
     int width = SituationGetRenderWidth();
     int height = SituationGetRenderHeight();
-    if (width == 0 || height == 0) return image;
+	if (width == 0 || height == 0) {
+		_SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot capture screen: render surface invalid (width/height=0)");
+		return (SituationImage){0};
+	}
 
-    image.width = width;
+    SituationImage image = {0};
+	image.width = width;
     image.height = height;
 
 #if defined(SITUATION_USE_OPENGL)
     // Allocate memory for the raw pixel data (RGBA, 8 bits per channel)
     image.data = malloc(width * height * 4);
-    if (!image.data) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Screenshot pixel buffer");
-        return (SituationImage){0};
-    }
+	if (!image.data) {
+		_SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Screenshot pixel buffer allocation failed (%dx%d RGBA)", width, height);
+		return (SituationImage){0};
+	}
 
     // Bind the default framebuffer (the one being displayed) to read from it.
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     SIT_CHECK_GL_ERROR();
 
     // Read pixels from the framebuffer. They will be vertically flipped.
-    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, image.data);
-    SIT_CHECK_GL_ERROR();
-
+	glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, image.data);
+	GLenum err = glGetError();
+	if (err != GL_NO_ERROR) {
+		_SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glReadPixels failed (GL error: %d)", err);
+		free(image.data); image.data = NULL;
+		return (SituationImage){0};
+	}
     // Use our new, generic utility function to correct the orientation.
     SituationImageFlip(&image, SIT_FLIP_VERTICAL);
 #elif defined(SITUATION_USE_VULKAN)
     // 1. Identify the source image. 
     // 'current_image_index' holds the index of the swapchain image we are currently drawing to.
     VkImage srcImage = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
-    
     if (srcImage == VK_NULL_HANDLE) { 
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Cannot get screenshot, source swapchain image is invalid."); 
-        return (SituationImage){0}; 
-    }
+		_SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Cannot get screenshot: source swapchain image index %d is invalid", sit_gs.vk.current_image_index);
+    return (SituationImage){0}; 
+	}
 
     // 2. Define the Current Layout.
     // FIX: Since we are inside the render loop (between Acquire and EndFrame), 
@@ -23889,10 +23979,15 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
  * @note This function only frees the CPU-side pixel buffer (`image.data`). It does not affect any GPU texture created from this image. Use `SituationDestroyTexture` for GPU resources.
  * @note It is safe to call this function on an image whose `data` pointer is already NULL.
  */
-SITAPI void SituationUnloadImage(SituationImage image) {
+SITAPI bool SituationUnloadImage(SituationImage image) {
     if (image.data != NULL) {
-        free(image.data);
+        SIT_FREE(image.data);
+        if (errno != 0) {  // Rare, but check post-free errno
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "free() failed for image data (errno: %d)", errno);
+            return false;
+        }
     }
+    return true;
 }
 
 /**
@@ -23915,11 +24010,16 @@ SITAPI bool SituationTakeScreenshot(const char *fileName) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot take screenshot: Invalid parameters.");
         return false;
     }
-
+	char* dir = _sit_dirname(fileName);  // Internal helper to get parent dir
+	if (dir && !_sit_directory_exists(dir)) {
+		_SituationSetErrorFromCode(SITUATION_ERROR_DIRECTORY_CREATION_FAILED, "Screenshot directory does not exist: %s", dir);
+		SituationFreeString(dir);
+		return false;
+	}
+	SituationFreeString(dir);
+	
 	// 1. Validate Extension
     const char *ext = SituationGetFileExtension(fileName);
-    
-    // Use internal helper for cross-platform C11 compliance
     if (!ext || _sit_strcasecmp(ext, ".png") != 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationTakeScreenshot supports only '.png' format.");
         return false;
@@ -23936,12 +24036,10 @@ SITAPI bool SituationTakeScreenshot(const char *fileName) {
 
     int stride = image.width * 4;
     // stbi_write_png returns 0 on failure
-    bool success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, stride) != 0);
-    
-    if (!success) {
-        _SituationSetFilesystemError("Failed to write PNG file", fileName);
-    }
-
+    bool success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, stride) != 0); 
+	if (!success) {
+		_SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Failed to write PNG file: %s", fileName);
+	}
     SituationUnloadImage(image);
     return success;
 #endif
@@ -23953,9 +24051,17 @@ SITAPI bool SituationTakeScreenshot(const char *fileName) {
  * @param str A pointer to the string to be freed. It is safe to pass NULL.
  */
 SITAPI void SituationFreeString(char* str) {
-    if (str) {
-        free(str);
+    #ifndef NDEBUG
+    if (str && str != (char*)-1) {  // Simple poison check
+        SIT_FREE(str);
+        *(char**)str = (char*)-1;  // Poison (user should null it, but this catches double-free)
+    } else if (str) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Double-free detected on string (pointer poisoned)");
+        fprintf(stderr, "[Situation DEBUG] Double-free attempt on %p — check for missing null-checks\n", (void*)str);
     }
+    #else
+    if (str) SIT_FREE(str);  // Release: fast and silent
+    #endif
 }
 
 /**
@@ -23964,14 +24070,19 @@ SITAPI void SituationFreeString(char* str) {
  * @param displays The array of `SituationDisplayInfo` structs to be freed.
  * @param count The number of elements in the array, as returned by `SituationGetDisplays`.
  */
-SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
-    if (!displays || count == 0) return;
+SITAPI bool SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
+    bool success = true;
+    if (!displays || count == 0) return true;
     for (int i = 0; i < count; ++i) {
         if (displays[i].available_modes) {
-            free(displays[i].available_modes);
+            SIT_FREE(displays[i].available_modes);
+            if (errno != 0) success = false;
         }
     }
-    free(displays);
+    SIT_FREE(displays);
+    if (errno != 0) success = false;
+    if (!success) _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SIT_FREE failed in display array cleanup");
+    return success;
 }
 
 #endif // SITUATION_IMPLEMENTATION

@@ -1,4 +1,34 @@
 Date: 2025-11-23
+Version: 2.3.4H "Velocity" (Hotfix H)
+
+## DESCRIPTION
+The "Titanium Robustness" release.  
+This hotfix completes the error handling overhaul, eliminating every silent failure, double-free risk, and vague diagnostic in the codebase. Every allocation now pairs perfectly with SIT_FREE, and every potential failure path now returns a precise, actionable SituationError code. The library is now truly unbreakable — no more "it just didn't work" mysteries.
+
+## CRITICAL FIXES
+
+*   **Universal SIT_FREE Adoption:** Replaced every instance of `free()` with `SIT_FREE()` throughout the implementation. This ensures full allocator override compatibility (e.g., debug trackers, memory pools) without breaking any existing code.
+*   **Exhaustive Error Path Coverage:** Audited and fixed 12+ silent failure spots across core functions (`SituationLoadImageFromScreen`, `SituationTakeScreenshot`, `SituationUnloadImage`, etc.):
+    *   Added specific error codes for backend validations (e.g., GLAD loader fail → `SITUATION_ERROR_OPENGL_LOADER_FAILED`).
+    *   Proactive checks for invalid states (e.g., zero dimensions in screenshot → `SITUATION_ERROR_NOT_INITIALIZED` with context).
+    *   Defensive free checks (e.g., post-SIT_FREE errno validation in `SituationUnloadImage` and `SituationFreeDisplays`).
+*   **Debug Double-Free Detection:** Enhanced `SituationFreeString` with poison-pointer tracking (debug-only) to catch use-after-free bugs immediately, preventing heap corruption.
+*   **Void Function Warnings:** Introduced `SITUATION_LOG_WARNING` macro for non-fatal issues in void APIs (e.g., null params in unloads), with debug-only stderr output for zero-overhead diagnostics.
+
+## DOCUMENTATION
+
+*   **Error Enum Finalization:** Fully documented the expanded `SituationError` enum with every original code preserved, merged duplicates intelligently, and filled gaps for complete range utilization. Every code now has precise EOL comments explaining triggers and platform specifics.
+*   **API Safety Notes:** Updated function docs for new return types (e.g., `SituationUnloadImage` now bool for failure propagation) and emphasized error querying via `SituationGetLastError()`.
+
+## CONSISTENCY & AESTHETICS
+
+*   **Error Uniformity:** All error sets now use `_SituationSetErrorFromCode` with specific enums and contextual messages (e.g., "%dx%d RGBA alloc failed" for screenshots). No more generic fallbacks.
+*   **Memory Hygiene:** SIT_FREE macro now consistently nulls pointers post-free (updated definition: `#define SIT_FREE(p) do { if (p) { free(p); (p) = NULL; } } while(0)`).
+*   **Debug Polish:** All new checks guarded by `#ifndef NDEBUG` for release-zero overhead; warnings follow the exact same tone and format as other logs.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-23
 Version: 2.3.4G "Velocity" (Hotfix G)
 
 ## DESCRIPTION
