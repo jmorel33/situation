@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4I "Velocity" (Hotfix I)
+*   Core API library v2.3.4J "Velocity" (Hotfix J)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "I"
+#define SITUATION_VERSION_REVISION "J"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -2549,7 +2549,7 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail); 
 static SituationError _SituationInitPlatform(void);                                             // [INIT] Initializes platform-specific dependencies (GLFW, COM).
 static SituationError _SituationInitWindow(const SituationInitInfo* init_info);                 // [INIT] Creates the main application window using GLFW.
 static SituationError _SituationInitRenderer(const SituationInitInfo* init_info);               // [INIT] Dispatches to the backend-specific graphics initializer (GL/VK).
-static SituationError _SituationInitSubsystems(void);                                           // [INIT] Initializes all non-rendering subsystems (Audio, Input, Timers).
+static SituationError _SituationInitSubsystems(const SituationInitInfo* init_info);                                           // [INIT] Initializes all non-rendering subsystems (Audio, Input, Timers).
 static void _SituationCleanupDanglingResources(void);                                           // [CLEANUP] Finds and frees any user-leaked resources at shutdown.
 static void _SituationCleanupPlatform(void);                                                    // [CLEANUP] Shuts down the platform layer (GLFW, COM).
 static void _SituationCleanupRenderer(void);                                                    // [CLEANUP] Dispatches to the backend-specific graphics cleanup.
@@ -4457,7 +4457,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     // --- 4. INITIALIZE OTHER LIBRARY SUBSYSTEMS ---
     // Initialize audio, input, timers, filesystem utils, etc.
     // These often depend on the window and renderer being available.
-    err = _SituationInitSubsystems();
+    err = _SituationInitSubsystems(init_info);
     if (err != SITUATION_SUCCESS) {
         // Subsystem initialization failed. Platform, Window, and Renderer were initialized.
         _SituationFullCleanupOnError(); // Clean up everything initialized so far
@@ -4791,7 +4791,7 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
  *
  * @see SituationInit(), _SituationCleanupSubsystems()
  */
-static SituationError _SituationInitSubsystems(void) {
+static SituationError _SituationInitSubsystems(const SituationInitInfo* init_info) {
     // --- 1. Audio System Initialization ---
     ma_context_config ctx_config = ma_context_config_init();
     if (ma_context_init(NULL, 0, &ctx_config, &sit_gs.sit_miniaudio_context) != MA_SUCCESS) {
@@ -4804,6 +4804,22 @@ static SituationError _SituationInitSubsystems(void) {
     if (ma_mutex_init(&sit_gs.sit_audio_queue_mutex) != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_GENERAL, "Failed to initialize audio queue mutex");
         return SITUATION_ERROR_GENERAL;
+    }
+
+    // Initialize capture queue if requested
+    if (init_info->flags & SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD) {
+        sit_gs.audio_capture_on_main_thread = true;
+        sit_gs.audio_capture_queue_capacity = 4096 * 4; // Reasonable default
+        sit_gs.audio_capture_queue = (float*)malloc(sit_gs.audio_capture_queue_capacity * sizeof(float));
+        if (!sit_gs.audio_capture_queue) {
+             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio capture ring buffer");
+             return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+        if (ma_mutex_init(&sit_gs.audio_capture_mutex) != MA_SUCCESS) {
+             SIT_FREE(sit_gs.audio_capture_queue);
+             _SituationSetErrorFromCode(SITUATION_ERROR_GENERAL, "Audio capture mutex");
+             return SITUATION_ERROR_GENERAL;
+        }
     }
 
     // Allocate temporary buffers...
@@ -8807,6 +8823,11 @@ static void _SituationCleanupSubsystems(void) {
     // Uninitialize mutexes.
     ma_mutex_uninit(&sit_gs.sit_audio_queue_mutex);
     ma_mutex_uninit(&sit_gs.keyboard.event_queue_mutex);
+    // Cleanup capture resources
+    if (sit_gs.audio_capture_on_main_thread) {
+        ma_mutex_uninit(&sit_gs.audio_capture_mutex);
+        SIT_FREE(sit_gs.audio_capture_queue);
+    }
     ma_mutex_uninit(&sit_gs.joysticks.event_queue_mutex);
 
     // --- Input Systems ---
@@ -11919,7 +11940,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write, 0, NULL);
     
     // --- Final ---
-    texture.id = (uint32_t)(uintptr_t)texture.image;
+    texture.id = (uint64_t)(uintptr_t)texture.image;
 #endif
 
     // --- Resource Manager Hook ---
@@ -12696,7 +12717,7 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
         vmaDestroyBuffer(sit_gs.vk.vma_allocator, mesh.vertex_buffer, mesh.vertex_buffer_memory);
         return (SituationMesh){0};
     }
-    mesh.id = (uint32_t)(uintptr_t)mesh.vertex_buffer;
+    mesh.id = (uint64_t)(uintptr_t)mesh.vertex_buffer;
 #endif
 
     mesh.index_count = index_count;
@@ -17650,6 +17671,11 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
     if (model.texture_count > 0) {
         model.all_model_textures = calloc(model.texture_count, sizeof(SituationTexture));
         
+        if (!model.all_model_textures) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadModel: Failed to allocate textures array.");
+            cgltf_free(data);
+            return model;
+        }
         char* base_path = SituationGetBasePathFromFile(file_path); 
         for (int i = 0; i < (int)data->textures_count; ++i) {
             const char* texture_uri = data->textures[i].image->uri;
@@ -17672,6 +17698,18 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
     model.mesh_count = (int)data->meshes_count;
     if (model.mesh_count > 0) {
         model.meshes = calloc(model.mesh_count, sizeof(SituationModelMesh));
+        if (!model.meshes) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadModel: Failed to allocate meshes array.");
+            cgltf_free(data);
+            /* Clean up textures allocated in step 2 */
+            if (model.all_model_textures) {
+                for (int j = 0; j < model.texture_count; j++) {
+                    SituationDestroyTexture(&model.all_model_textures[j]);
+                }
+                SIT_FREE(model.all_model_textures);
+            }
+            return (SituationModel){0};
+        }
         
         for (int i = 0; i < (int)data->meshes_count; ++i) {
             cgltf_mesh* gltf_mesh = &data->meshes[i];
