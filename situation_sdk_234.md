@@ -162,11 +162,18 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
     - [5.4.3 Haptic Feedback (Rumble)](#543-haptic-feedback-rumble)
 - [6.0 Filesystem & I/O](#60-filesystem--io)
   - [6.1 Path Management](#61-path-management)
-    - [Virtual Paths & Base Directories](#virtual-paths--base-directories)
-    - [User Data / Save Paths](#user-data--save-paths)
+    - [6.1.1 The Base Path Anchor](#611-the-base-path-anchor)
+    - [6.1.2 Path Composition](#612-path-composition)
+    - [6.1.3 The "User Data" Sandbox](#613-the-user-data-sandbox)
   - [6.2 File Operations](#62-file-operations)
-    - [Reading/Writing (Binary & Text)](#readingwriting-binary--text)
-    - [File Drop Events](#file-drop-events)
+    - [6.2.1 Reading Binary Data (The Asset Loader)](#621-reading-binary-data-the-asset-loader)
+    - [6.2.2 Reading Text (The Null-Terminator Trap)](#622-reading-text-the-null-terminator-trap)
+    - [6.2.3 Atomic Writes](#623-atomic-writes)
+  - [6.3 Advanced Directory Operations](#63-advanced-directory-operations)
+    - [6.3.1 Recursive Creation](#631-recursive-creation)
+    - [6.3.2 The "Delete" Cannon](#632-the-delete-cannon)
+    - [6.3.3 Directory Listing (Scanning)](#633-directory-listing-scanning)
+  - [6.4 Hot-Reloading & File Watching](#64-hot-reloading--file-watching)
 
 <a id="10-core-system-architecture"></a>
 
@@ -2662,10 +2669,258 @@ if (player.rumble_timer > 0) {
 
 ## 6.0 Filesystem & I/O
 
-### 6.1 Path Management
-#### Virtual Paths & Base Directories
-#### User Data / Save Paths
+The Filesystem module acts as the bridge between your application's memory space and the OS's persistent storage. This section treats the filesystem not as a simple storage bucket, but as a Hostile External Environment. Disk I/O is slow, permissions are volatile, and path separators are inconsistent. Situation abstracts this chaos into a deterministic, transactional API.
 
-### 6.2 File Operations
-#### Reading/Writing (Binary & Text)
-#### File Drop Events
+### The Three Commandments of Situation I/O:
+
+1.  **UTF-8 Everywhere:** All paths, filenames, and text content are strictly UTF-8. Windows `wchar_t` (UTF-16) paths are handled internally and transparently converted.
+2.  **Heap Ownership Transfer:** Functions that return data (`char*`, `void*`) allocate memory on the heap. You own this memory. You must free it.
+3.  **Sandboxing:** The API aggressively encourages relative paths. Absolute paths are supported but discouraged, as they break portability between development machines and end-user installations.
+
+<a id="61-path-management"></a>
+## 6.1 Path Management
+
+Paths are the most fragile part of cross-platform development. A path valid on your Dev PC (`D:\Dev\Assets\`) will crash on a user's laptop (`C:\Program Files\`) or a Linux server (`/opt/game/`).
+
+### 6.1.1 The Base Path Anchor
+
+To ensure asset portability, Situation calculates a "Base Path" at initialization.
+
+**Path Hell: Why this exists**
+
+| Platform | Typical Path for `assets/level1.dat` |
+| :--- | :--- |
+| **Windows** | `C:\Users\Dev\Project\assets\level1.dat` |
+| **Linux (Installed)** | `/usr/share/games/mygame/assets/level1.dat` |
+| **Linux (Portable)** | `/home/user/Downloads/mygame/assets/level1.dat` |
+| **macOS (Bundle)** | `/Applications/MyGame.app/Contents/Resources/assets/level1.dat` |
+
+#### SituationGetBasePath
+
+```c:disable-run
+char* SituationGetBasePath(void);
+```
+
+**Resolution Logic:**
+*   **Windows:** Calls `GetModuleFileNameW`, strips the executable name (`game.exe`), and normalizes backslashes to forward slashes.
+*   **Linux:** Reads `/proc/self/exe` to resolve symlinks (critical if your game is installed via a package manager).
+*   **macOS:** Resolves into the `Contents/Resources` folder of the App Bundle.
+
+**Return:** A heap-allocated string ending with a trailing slash (e.g., `C:/Games/Doom/`).
+**Usage:** Combine this with relative asset paths to load resources reliably.
+
+### 6.1.2 Path Composition
+
+Never manually concatenate strings with `strcat` and hardcoded `/` or `\` separators.
+
+#### SituationJoinPath
+
+```c:disable-run
+char* SituationJoinPath(const char* base_path, const char* file_or_dir_name);
+```
+
+**Behavior:**
+*   Detects the OS separator (Windows `\` vs POSIX `/`).
+*   Handles edge cases (missing trailing slash in base, leading slash in child).
+*   Allocates a new buffer for the result.
+
+```c:disable-run
+char* base = SituationGetBasePath();
+char* full_path = SituationJoinPath(base, "assets/textures/wall.png");
+// Result Win32: "C:/Games/Doom/assets/textures/wall.png" (Internal normalization)
+// Result Linux: "/usr/bin/doom/assets/textures/wall.png"
+```
+
+```mermaid
+graph LR
+    Base[Base Path] --> Join((SituationJoinPath));
+    Relative[Relative Path] --> Join;
+    Join --> Full[Safe Absolute Path];
+
+    style Base fill:#f9f,stroke:#333
+    style Relative fill:#ccf,stroke:#333
+    style Full fill:#9f9,stroke:#333
+```
+
+### 6.1.3 The "User Data" Sandbox
+
+Modern operating systems forbid writing to the application directory (`Program Files` / `/usr/bin`). Attempting to save `config.ini` next to your `.exe` will fail with `SITUATION_ERROR_ACCESS_DENIED` on end-user machines.
+
+You must use the User Data directory.
+
+#### SituationGetAppSavePath
+
+```c:disable-run
+char* SituationGetAppSavePath(const char* app_name);
+```
+
+**Resolution Logic:**
+*   **Windows:** `SHGetKnownFolderPath(FOLDERID_RoamingAppData)` + app_name.
+    *   Result: `C:\Users\Jacques\AppData\Roaming\MyGame\`
+*   **Linux:** `$XDG_DATA_HOME` or `~/.local/share/` + app_name.
+*   **macOS:** `~/Library/Application Support/` + app_name.
+
+**Side Effect:** If the directory does not exist, this function creates it recursively.
+
+<a id="62-file-operations"></a>
+## 6.2 File Operations
+
+These functions are atomic wrappers around standard C I/O (`stdio`), hardened against common failures.
+
+### 6.2.1 Reading Binary Data (The Asset Loader)
+
+#### SituationLoadFileData
+
+```c:disable-run
+unsigned char* SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read);
+```
+
+**The "Nuclear" Details:**
+*   **Allocation:** Uses `malloc`. The returned pointer is 16-byte aligned (on most platforms) to allow for SIMD operations on the loaded data.
+*   **Concurrency:** Opens the file in "Read-Shared" mode. This allows other processes (like your Text Editor) to keep the file open while the game reads it—essential for Hot-Reloading.
+*   **Limits:** Intended for assets that fit in RAM. Do not use this for 4GB video files; use the Streaming Audio/Video APIs instead.
+*   **Failure:** Returns `NULL` if the file doesn't exist or is locked exclusively. `*out_bytes_read` is set to 0.
+
+**Usage Pattern:**
+
+```c:disable-run
+unsigned int size = 0;
+unsigned char* buffer = SituationLoadFileData("mesh.bin", &size);
+
+if (buffer) {
+    // Process raw bytes...
+    UploadGeometryToGPU(buffer, size);
+
+    SIT_FREE(buffer); // CRITICAL: You own this memory.
+}
+```
+
+**Common I/O Errors & Solutions**
+
+| Error Code | Meaning | Actionable Fix |
+| :--- | :--- | :--- |
+| `SITUATION_ERROR_FILE_NOT_FOUND` | Path does not exist. | Check `SituationGetBasePath()` + relative path construction. |
+| `SITUATION_ERROR_FILE_LOCKED` | Used by another process. | Close your external Text Editor or Hex Viewer. |
+| `SITUATION_ERROR_ACCESS_DENIED` | Permissions error. | Are you trying to write to `Program Files`? Use `SituationGetAppSavePath`. |
+| `SITUATION_ERROR_DISK_FULL` | No space left. | Catch this and show a UI warning before autosaving. |
+
+### 6.2.2 Reading Text (The Null-Terminator Trap)
+
+Standard `fread` does not append a null-terminator (`\0`). If you load a shader or JSON file using generic binary loaders and pass it to a parser, you will trigger a Buffer Overread Segfault.
+
+#### SituationLoadFileText
+
+```c:disable-run
+char* SituationLoadFileText(const char* file_path);
+```
+
+**Guarantees:**
+*   **Null Termination:** Allocates `filesize + 1` bytes and sets the last byte to `\0`. Safe to pass directly to `glShaderSource` or `json_parse`.
+*   **Line Endings:** Does not normalize CRLF to LF. The buffer contains exactly what was on disk.
+*   **BOM Stripping:** If the file has a UTF-8 Byte Order Mark (0xEF, 0xBB, 0xBF), the returned pointer is advanced past it.
+
+### 6.2.3 Atomic Writes
+
+#### SituationSaveFileData / SituationSaveFileText
+
+```c:disable-run
+bool SituationSaveFileData(const char* path, const void* data, unsigned int bytes);
+bool SituationSaveFileText(const char* path, const char* text);
+```
+
+**Behavior:**
+*   Opens with `wb` (write binary) or `w` (write text).
+*   Truncates the existing file immediately.
+*   Returns `false` if disk is full or path is read-only.
+
+**Pro Tip:** For critical save data, do not overwrite `save.dat` directly. Write to `save.tmp`, then use `SituationMoveFile` to swap them. This prevents data corruption if the game crashes during the write.
+
+<a id="63-advanced-directory-operations"></a>
+## 6.3 Advanced Directory Operations
+
+### 6.3.1 Recursive Creation
+
+#### SituationCreateDirectory
+
+```c:disable-run
+bool SituationCreateDirectory(const char* dir_path, bool create_parents);
+```
+
+**Parameter `create_parents`:**
+*   `true`: Acts like `mkdir -p`. If you ask for `A/B/C` and A doesn't exist, it creates A, then B, then C.
+*   `false`: Fails if the parent directory does not exist.
+
+### 6.3.2 The "Delete" Cannon
+
+#### SituationDeleteDirectory
+
+```c:disable-run
+bool SituationDeleteDirectory(const char* dir_path, bool recursive);
+```
+
+**Parameter `recursive`:**
+*   `true`: **DANGER.** Acts like `rm -rf`. It iterates the directory tree, unlinks every file, deletes every subdirectory, and then removes the root. This operation is irreversible.
+*   `false`: Fails if the directory is not empty.
+
+### 6.3.3 Directory Listing (Scanning)
+
+#### SituationListDirectoryFiles
+
+```c:disable-run
+char** SituationListDirectoryFiles(const char* dir_path, int* out_count);
+```
+
+**Returns:** An array of strings (`char**`).
+
+**Filtering:**
+*   Automatically skips `.` and `..`
+*   Returns only the file names (e.g., `level1.map`), not full paths.
+
+**Memory Management:**
+This function allocates a block for the array and blocks for each string. You must use the specific helper to free it, or you will leak memory.
+
+```c:disable-run
+int count = 0;
+char** files = SituationListDirectoryFiles("saves/", &count);
+
+if (files) {
+    for (int i=0; i<count; i++) {
+        printf("Found save: %s\n", files[i]);
+    }
+    SituationFreeDirectoryFileList(files, count); // Required cleanup
+}
+```
+
+<a id="64-hot-reloading-implications"></a>
+## 6.4 Hot-Reloading & File Watching
+
+The "Velocity" module's Hot-Reloading capability relies on the Filesystem module.
+
+**Mechanism:**
+*   When you call `SituationLoadShader` or `SituationLoadTexture`, the library internally registers the absolute path with a file watcher (using `inotify` on Linux or `ReadDirectoryChangesW` on Windows).
+
+**The "Debounce" Factor:**
+*   Text editors (VS Code, Vim) often save files by writing to a temp file and renaming it, or writing in chunks. This generates multiple OS events for a single "Save".
+*   `SituationCheckHotReloads()` includes a Debounce Timer (typically 100ms). It waits for the filesystem events to settle before triggering the expensive GPU reload process.
+
+```mermaid
+sequenceDiagram
+    participant Editor
+    participant OS
+    participant Situation
+    participant GPU
+
+    Editor->>OS: Write Chunk 1
+    OS->>Situation: File Changed Event
+    Situation->>Situation: Start Timer (100ms)
+    Editor->>OS: Write Chunk 2
+    OS->>Situation: File Changed Event
+    Situation->>Situation: Reset Timer (100ms)
+    Note over Situation: ...Silence...
+    Situation->>GPU: Timer Expired -> Trigger Reload!
+```
+
+**Usage Warning:**
+If you delete a file that is currently being watched by the Hot-Reloader, the library will deregister the watch silently. If you restore the file, you must manually trigger a reload or restart the app to re-establish the link.
+
+> **Ship Tease:** v2.4 will introduce **Async I/O Queues**, allowing for stutter-free background loading of massive assets without blocking the main thread.
