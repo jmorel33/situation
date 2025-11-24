@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4L "Velocity" (Hotfix L)
+*   Core API library v2.3.4M "Velocity" (Hotfix M)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "L"
+#define SITUATION_VERSION_REVISION "M"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -3434,9 +3434,18 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_SHUTDOWN_FAILED:             base_msg = "Library shutdown failed"; break;
         case SITUATION_ERROR_INVALID_PARAM:               base_msg = "A function was called with an invalid parameter"; break;
         case SITUATION_ERROR_MEMORY_ALLOCATION:           base_msg = "A memory allocation (malloc, calloc, realloc) failed"; break;
+        case SITUATION_ERROR_INTERNAL_STATE_CORRUPTED:    base_msg = "Internal invariant violated — fatal bug"; break;
+        case SITUATION_ERROR_ASSERTION_FAILED:            base_msg = "Debug assertion tripped"; break;
+        case SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION: base_msg = "Architectural rule broken: Update called after Draw"; break;
 
         // --- Platform & Window Errors (100-199) ---
         case SITUATION_ERROR_GLFW_FAILED:                 base_msg = "An underlying GLFW library operation failed"; break;
+        case SITUATION_ERROR_WINDOW_CREATION_FAILED:      base_msg = "Failed to create the application window"; break;
+        case SITUATION_ERROR_WINDOW_FOCUS_FAILED:         base_msg = "Window focus/minimize/restore operation failed"; break;
+        case SITUATION_ERROR_CLIPBOARD_FAILED:            base_msg = "Clipboard operation failed"; break;
+        case SITUATION_ERROR_CURSOR_CREATION_FAILED:      base_msg = "Failed to create custom cursor"; break;
+        case SITUATION_ERROR_COM_INITIALIZATION_FAILED:   base_msg = "Failed to initialize COM (CoInitializeEx)"; break;
+        case SITUATION_ERROR_DXGI_QUERY_FAILED:           base_msg = "DXGI GPU query failed"; break;
         case SITUATION_ERROR_WINDOW_FOCUS:                base_msg = "An operation related to window focus failed"; break;
         case SITUATION_ERROR_DEVICE_QUERY:                base_msg = "Failed to query system hardware or device information"; break;
         case SITUATION_ERROR_TIMER_SYSTEM:                base_msg = "An error occurred within the internal timer/oscillator system"; break;
@@ -3448,6 +3457,11 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_DISPLAY_SET:                 base_msg = "Failed to set a display mode on a physical monitor"; break;
         case SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT:       base_msg = "The maximum number of virtual displays has been reached"; break;
         case SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID:  base_msg = "An invalid virtual display ID was provided"; break;
+        case SITUATION_ERROR_DISPLAY_QUERY_FAILED:        base_msg = "Detailed display query failure"; break;
+        case SITUATION_ERROR_DISPLAY_MODE_UNSUPPORTED:    base_msg = "Requested resolution or refresh rate is not supported"; break;
+        case SITUATION_ERROR_DISPLAY_MODE_SET_FAILED:     base_msg = "Failed to apply fullscreen or windowed mode settings"; break;
+        case SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT_REACHED: base_msg = "Max virtual displays (32) limit reached"; break;
+        case SITUATION_ERROR_VIRTUAL_DISPLAY_NOT_FOUND:   base_msg = "Virtual display ID not found"; break;
 
         // --- Filesystem Errors (300-399) ---
         case SITUATION_ERROR_FILE_ACCESS:                 base_msg = "A generic file or directory access error occurred"; break;
@@ -3460,6 +3474,16 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_FILE_ALREADY_EXISTS:         base_msg = "The specified file already exists where it shouldn't"; break;
         case SITUATION_ERROR_PATH_IS_DIRECTORY:           base_msg = "A file operation was attempted on a path that is a directory"; break;
         case SITUATION_ERROR_PATH_IS_FILE:                base_msg = "A directory operation was attempted on a path that is a file"; break;
+        case SITUATION_ERROR_FILE_NOT_FOUND:              base_msg = "File does not exist"; break;
+        case SITUATION_ERROR_FILE_ACCESS_DENIED:          base_msg = "Access denied to file"; break;
+        case SITUATION_ERROR_FILE_OPEN_FAILED:            base_msg = "Failed to open file (fopen)"; break;
+        case SITUATION_ERROR_FILE_READ_FAILED:            base_msg = "Failed to read from file"; break;
+        case SITUATION_ERROR_FILE_WRITE_FAILED:           base_msg = "Failed to write to file"; break;
+        case SITUATION_ERROR_FILE_TOO_LARGE:              base_msg = "File size exceeds internal limits"; break;
+        case SITUATION_ERROR_DIRECTORY_CREATION_FAILED:   base_msg = "Failed to create directory"; break;
+        case SITUATION_ERROR_HOTRELOAD_WATCHER_FAILED:    base_msg = "Hot-reload watcher failed to initialize or report"; break;
+        case SITUATION_ERROR_HOTRELOAD_FILE_CHANGED_TOO_FAST: base_msg = "File changed too fast for hot-reload"; break;
+        case SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED:   base_msg = "GPU synchronization failed during hot-reload"; break;
 
         // --- Audio Errors (400-499) ---
         case SITUATION_ERROR_AUDIO_CONTEXT:               base_msg = "Audio: Failed to initialize the audio context (MiniAudio)"; break;
@@ -3468,6 +3492,14 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_AUDIO_CONVERTER:             base_msg = "Audio: Failed to configure a data format/rate converter for a sound"; break;
         case SITUATION_ERROR_AUDIO_DECODING:              base_msg = "Audio: Failed to decode an audio file"; break;
         case SITUATION_ERROR_AUDIO_INVALID_OPERATION:     base_msg = "Audio: An invalid operation was attempted on a sound (e.g., cropping a stream)"; break;
+        case SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED:   base_msg = "Audio: Backend initialization failed"; break;
+        case SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED:    base_msg = "Audio: Device initialization failed"; break;
+        case SITUATION_ERROR_AUDIO_DEVICE_START_FAILED:   base_msg = "Audio: Device start failed"; break;
+        case SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED:   base_msg = "Audio: Decoder initialization failed"; break;
+        case SITUATION_ERROR_AUDIO_DECODER_FORMAT_UNSUPPORTED: base_msg = "Audio: Format not supported by decoder"; break;
+        case SITUATION_ERROR_AUDIO_STREAM_ENDED:          base_msg = "Audio: Stream reached end of file"; break;
+        case SITUATION_ERROR_AUDIO_SOUND_LIMIT_REACHED:   base_msg = "Audio: Max concurrent sounds limit reached"; break;
+        case SITUATION_ERROR_AUDIO_CAPTURE_NOT_AVAILABLE: base_msg = "Audio: Capture device not available"; break;
 
         // --- Resource & Rendering Errors (500-599) ---
         case SITUATION_ERROR_RESOURCE_INVALID:            base_msg = "An invalid resource handle (shader, mesh, texture, etc.) was used"; break;
@@ -3479,6 +3511,14 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_BACKEND_MISMATCH:            base_msg = "Operation requested on wrong backend (e.g., GL call on Vulkan)"; break;
         case SITUATION_ERROR_THREAD_VIOLATION:            base_msg = "Main-thread-only function called from worker thread"; break;
         case SITUATION_ERROR_PIPELINE_BIND_FAIL:          base_msg = "Failed to bind pipeline (incompatible layout or invalid handle)"; break;
+        case SITUATION_ERROR_INVALID_RESOURCE_HANDLE:     base_msg = "Invalid resource handle"; break;
+        case SITUATION_ERROR_RESOURCE_ALREADY_DESTROYED:  base_msg = "Resource already destroyed (Use-after-free)"; break;
+        case SITUATION_ERROR_BUFFER_OVERFLOW:             base_msg = "Buffer write overflow detected"; break;
+        case SITUATION_ERROR_BUFFER_INVALID_USAGE:        base_msg = "Buffer usage flags incompatible with operation"; break;
+        case SITUATION_ERROR_TEXTURE_UPLOAD_FAILED:       base_msg = "Texture upload to GPU failed"; break;
+        case SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER:    base_msg = "No active command buffer found"; break;
+        case SITUATION_ERROR_COMMAND_BUFFER_FULL:         base_msg = "Command buffer capacity exceeded"; break;
+        case SITUATION_ERROR_RENDER_PASS_ALREADY_ACTIVE:  base_msg = "Nested render pass attempted"; break;
 
         // --- OpenGL Specific Errors (600-699) ---
         case SITUATION_ERROR_OPENGL_GENERAL:              base_msg = "OpenGL: A general error occurred (glGetError)"; break;
@@ -3487,6 +3527,12 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_OPENGL_SHADER_COMPILE:       base_msg = "OpenGL: GLSL shader compilation failed"; break;
         case SITUATION_ERROR_OPENGL_SHADER_LINK:          base_msg = "OpenGL: GLSL shader program linking failed"; break;
         case SITUATION_ERROR_OPENGL_FBO_INCOMPLETE:       base_msg = "OpenGL: A Framebuffer Object is not complete and cannot be used"; break;
+        case SITUATION_ERROR_OPENGL_CONTEXT_CREATION_FAILED: base_msg = "OpenGL: Context creation failed"; break;
+        case SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION:  base_msg = "OpenGL: Version too old (Requires 4.6+)"; break;
+        case SITUATION_ERROR_OPENGL_SHADER_COMPILE_FAILED: base_msg = "OpenGL: Detailed shader compilation error"; break;
+        case SITUATION_ERROR_OPENGL_SHADER_LINK_FAILED:   base_msg = "OpenGL: Detailed shader linking error"; break;
+        case SITUATION_ERROR_OPENGL_PROGRAM_VALIDATION_FAILED: base_msg = "OpenGL: Program validation failed"; break;
+        case SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND:    base_msg = "OpenGL: Uniform not found"; break;
 
         // --- Vulkan Specific Errors (700-799) ---
         case SITUATION_ERROR_VULKAN_INIT_FAILED:          base_msg = "Vulkan: General initialization failed"; break;
@@ -3505,7 +3551,20 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_VULKAN_IMAGE_ACQUIRE_FAILED: base_msg = "Vulkan: Failed to acquire next swapchain image"; break;
         case SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED:  base_msg = "Vulkan: Queue submission failed (Device lost?)"; break;
         case SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED: base_msg = "Vulkan: Pipeline creation failed (check shader stages/layout)"; break;
+        case SITUATION_ERROR_VULKAN_INSTANCE_CREATION_FAILED: base_msg = "Vulkan: Detailed instance creation failure"; break;
+        case SITUATION_ERROR_VULKAN_PHYSICAL_DEVICE_UNSUITABLE: base_msg = "Vulkan: No suitable physical device found"; break;
+        case SITUATION_ERROR_VULKAN_DEVICE_CREATION_FAILED: base_msg = "Vulkan: Detailed logical device creation failure"; break;
+        case SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID:    base_msg = "Vulkan: Swapchain handle is invalid or incompatible"; break;
+        case SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED: base_msg = "Vulkan: Shader module creation failed"; break;
+        case SITUATION_ERROR_VULKAN_DESCRIPTOR_POOL_EXHAUSTED: base_msg = "Vulkan: Descriptor pool exhausted"; break;
+        case SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED: base_msg = "Vulkan: Detailed memory allocation error"; break;
+        case SITUATION_ERROR_VULKAN_VALIDATION_LAYER_ERROR: base_msg = "Vulkan: Validation layer reported error"; break;
         case SITUATION_ERROR_SHADER_COMPILATION_FAILED:   base_msg = "Shader compilation failed (shaderc)"; break;
+
+        // --- Compute / GPGPU Errors (800-899) ---
+        case SITUATION_ERROR_COMPUTE_PIPELINE_CREATION_FAILED: base_msg = "Compute pipeline creation failed"; break;
+        case SITUATION_ERROR_COMPUTE_DISPATCH_FAILED:          base_msg = "Compute dispatch failed"; break;
+        case SITUATION_ERROR_COMPUTE_BUFFER_BINDING_MISSING:   base_msg = "Required buffer binding missing for compute shader"; break;
 
         case SITUATION_ERROR_UNKNOWN_ERROR:               base_msg = "Unknown error (Cosmic rays)"; break;
     }
@@ -5077,8 +5136,8 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     if (GLVersion.major < 4 || (GLVersion.major == 4 && GLVersion.minor < 6)) {
         char detail[128];
         snprintf(detail, sizeof(detail), "_SituationInitOpenGL: OpenGL 4.6 not supported by the driver. Found version %d.%d", GLVersion.major, GLVersion.minor);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, detail);
-        return SITUATION_ERROR_OPENGL_UNSUPPORTED;
+        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION, detail);
+        return SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION;
     }
 
     // Validate required core features/extensions for our abstraction.
@@ -7949,8 +8008,8 @@ static SituationError _SituationVulkanCreateDepthResources(void) {
     if (_SituationVulkanCreateImage(sit_gs.vk.swapchain_extent.width, sit_gs.vk.swapchain_extent.height, sit_gs.vk.depth_format,
                                   VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VMA_MEMORY_USAGE_GPU_ONLY,
                                   &sit_gs.vk.depth_image, &sit_gs.vk.depth_image_memory) != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create depth image");
-        return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create depth image");
+        return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
     sit_gs.vk.depth_image_view = _SituationVulkanCreateImageView(sit_gs.vk.depth_image, sit_gs.vk.depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
     if(sit_gs.vk.depth_image_view == VK_NULL_HANDLE){
@@ -18636,14 +18695,20 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
     }
 
     if (!vs_path || !fs_path) {
-        _SituationSetError("Reload failed: Original file paths not found (shader loaded from memory?)");
+        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Original file paths not found (shader loaded from memory?)");
         if(vs_path) SIT_FREE(vs_path); if(fs_path) SIT_FREE(fs_path);
         return false;
     }
 
     // 2. Sync GPU
     #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device) vkDeviceWaitIdle(sit_gs.vk.device);
+    if (sit_gs.vk.device) {
+        if (vkDeviceWaitIdle(sit_gs.vk.device) != VK_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED, "vkDeviceWaitIdle failed during shader reload");
+            if(vs_path) SIT_FREE(vs_path); if(fs_path) SIT_FREE(fs_path);
+            return false;
+        }
+    }
     #elif defined(SITUATION_USE_OPENGL)
     glFinish();
     #endif
@@ -18693,12 +18758,18 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     }
 
     if (!path) {
-        _SituationSetError("Reload failed: Texture was not loaded from file via SituationLoadTexture.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Texture was not loaded from file via SituationLoadTexture.");
         return false;
     }
 
     #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device) vkDeviceWaitIdle(sit_gs.vk.device);
+    if (sit_gs.vk.device) {
+        if (vkDeviceWaitIdle(sit_gs.vk.device) != VK_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED, "vkDeviceWaitIdle failed during texture reload");
+            SIT_FREE(path);
+            return false;
+        }
+    }
     #else
     glFinish();
     #endif
@@ -18742,10 +18813,19 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
         current = current->next;
     }
 
-    if (!path) return false;
+    if (!path) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Model path not found.");
+        return false;
+    }
 
     #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device) vkDeviceWaitIdle(sit_gs.vk.device);
+    if (sit_gs.vk.device) {
+        if (vkDeviceWaitIdle(sit_gs.vk.device) != VK_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED, "vkDeviceWaitIdle failed during model reload");
+            SIT_FREE(path);
+            return false;
+        }
+    }
     #else
     glFinish();
     #endif
@@ -18796,14 +18876,20 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     }
 
     if (!found || !original_path) {
-        _SituationSetError("Reload failed: Pipeline was not loaded from a file (or path wasn't tracked).");
+        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Pipeline was not loaded from a file (or path wasn't tracked).");
         if (original_path) SIT_FREE(original_path);
         return false;
     }
 
     // 3. Synchronize GPU (Critical for hot-swapping)
     #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device) vkDeviceWaitIdle(sit_gs.vk.device);
+    if (sit_gs.vk.device) {
+        if (vkDeviceWaitIdle(sit_gs.vk.device) != VK_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED, "vkDeviceWaitIdle failed during compute pipeline reload");
+            if (original_path) SIT_FREE(original_path);
+            return false;
+        }
+    }
     #elif defined(SITUATION_USE_OPENGL)
     glFinish();
     #endif
