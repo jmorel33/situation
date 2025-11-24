@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.4H "Velocity" (Hotfix H) |
+| **Version** | 2.3.4I "Velocity" (Hotfix I) |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.1+ |
 | **License** | MIT License |
@@ -652,7 +652,9 @@ typedef struct {
 
     // --- Peripherals ---
     int network_adapter_count;
+    char network_adapter_names[SITUATION_MAX_NETWORK_ADAPTERS][SITUATION_MAX_DEVICE_NAME_LEN];
     int input_device_count;
+    char input_device_names[SITUATION_MAX_INPUT_DEVICES][SITUATION_MAX_DEVICE_NAME_LEN];
 } SituationDeviceInfo;
 ```
 
@@ -973,6 +975,7 @@ The `SituationDisplayInfo` struct contains comprehensive data about a specific m
 typedef struct {
     char name[128];                 // e.g., "LG UltraGear", "Generic PnP Monitor"
     int situation_monitor_id;       // Internal ID (0, 1, 2...)
+    GLFWmonitor* glfw_monitor_handle; // Raw GLFW monitor handle
     bool is_primary;                // True if this is the OS "Main Display"
 
     // --- Current Settings ---
@@ -2123,6 +2126,12 @@ SituationCmdBindComputeBuffer(cmd, 0, buffer);
 Executes the compute shader. You must specify the number of **Work Groups** to launch.
 
 ```c:disable-run
+void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
+```
+
+**Usage:**
+
+```c:disable-run
 // Dispatch 1024 threads (assuming local_size_x = 64 in shader)
 // 1024 / 64 = 16 work groups
 SituationCmdDispatch(cmd, 16, 1, 1);
@@ -2162,9 +2171,9 @@ Miss a barrier? Debug aborts with "Memory Hazard: Compute wrote SSBO, Vertex rea
 **Barrier Guide: Quick Reference**
 | From → To | Use Case | Code |
 | :--- | :--- | :--- |
-| **Compute Write → Vertex Read** | Particle sim → Render | `PipelineBarrier(WRITE_COMPUTE, READ_VERTEX)` |
-| **Transfer Write → Fragment Read** | Texture upload → Draw | `PipelineBarrier(WRITE_TRANSFER, READ_FRAGMENT)` |
-| **Compute Write → Compute Read** | Multi-pass physics | `PipelineBarrier(WRITE_COMPUTE, READ_COMPUTE)` |
+| **Compute Write → Vertex Read** | Particle sim → Render | `SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE, SITUATION_BARRIER_VERTEX_SHADER_READ)` |
+| **Transfer Write → Fragment Read** | Texture upload → Draw | `SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_TRANSFER_WRITE, SITUATION_BARRIER_FRAGMENT_SHADER_READ)` |
+| **Compute Write → Compute Read** | Multi-pass physics | `SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE, SITUATION_BARRIER_COMPUTE_SHADER_READ)` |
 
 > **Titanium Tip:** OpenGL emulates barriers as `glMemoryBarrier`—costs cycles. Vulkan barriers are often free (execution dependency only).
 
@@ -2770,8 +2779,8 @@ Vector2 SituationGetMouseDelta(void);
 #### SituationSetMouseScale & Offset
 
 ```c:disable-run
-void SituationSetMouseScale(Vector2 scale);
-void SituationSetMouseOffset(Vector2 offset);
+void SituationSetMouseScale(vec2 scale);
+void SituationSetMouseOffset(vec2 offset);
 ```
 
 **The Problem:** You render a pixel-art game at 320x180 to a VirtualDisplay, but the window is fullscreen at 1920x1080. `GetMousePosition` returns 1920x1080 coordinates, breaking your UI hit-testing.
