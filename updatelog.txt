@@ -1,3 +1,19 @@
+Date: 2025-11-24
+Version: 2.3.4J "Velocity" (Hotfix J)
+
+## DESCRIPTION
+This release delivers critical stability fixes for the audio subsystem and resource management, specifically targeting initialization logic, 64-bit system compatibility, and memory safety during asset loading.
+
+## CRITICAL FIXES
+
+*   **Audio Initialization Logic:** Resolved a critical logic error in `_SituationInitSubsystems` where the audio capture initialization block was unreachable due to incorrect nesting within an error check. The `SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD` flag now correctly initializes the capture ring buffer.
+*   **64-bit Pointer Safety:** Fixed a truncation bug where Vulkan and OpenGL resource handles (which are pointers) were being cast to `uint32_t` before being assigned to `uint64_t` IDs. This caused invalid handles on 64-bit systems. Handles are now correctly cast to `uintptr_t` first.
+*   **Model Loading Safety:** Added robust `NULL` checks for `calloc` memory allocations in `SituationLoadModel`.
+*   **Resource Cleanup on Failure:** Implemented proper cleanup logic in `SituationLoadModel`. If mesh allocation fails after textures have been loaded, the function now correctly destroys the loaded textures before returning, preventing resource leaks.
+*   **API Consistency:** Updated `_SituationInitSubsystems` to accept `const SituationInitInfo*` to match the initialization flow.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-23
 Version: 2.3.4I "Velocity" (Hotfix I)
 
@@ -212,7 +228,7 @@ This release transforms "Situation" from a static framework into a live developm
 
 ## NEW FEATURES
 
-*   **Hot-Reloading Module:** Added a suite of functions to safely reload assets at runtime. The engine handles the complex task of synchronizing with the GPU, ensuring the device is idle, destroying old resources, and seamlessly swapping in the new data while maintaining the original handle IDs.
+*   **Hot-Reloading Module:** Added a suite of functions to safely reload assets at runtime. The engine handles the complex task of synchronization with the GPU, ensuring the device is idle, destroying old resources, and seamlessly swapping in the new data while maintaining the original handle IDs.
     *   `SituationReloadShader`: Recompiles and links graphics pipelines.
     *   `SituationReloadComputePipeline`: Recompiles compute shaders, preserving the original layout configuration.
     *   `SituationReloadTexture`: Re-uploads image data to GPU memory (requires texture to be loaded from file).
@@ -467,7 +483,7 @@ Version 2.3.2 addresses the major feature gaps identified in previous versions, 
 
 ### [CRITICAL] Vulkan Synchronization & Stability
 *   **Fixed Buffer Readback Synchronization:** Completely refactored `SituationGetBufferData`. It now uses a new internal helper `_SituationVulkanReadBackBuffer` that correctly inserts `vkCmdPipelineBarrier` commands before and after transfers. This fixes race conditions where the CPU would read stale data before the GPU finished writing.
-*   **Fixed Texture Usage Flags:** `SituationCreateTexture` now automatically includes the `VK_IMAGE_USAGE_STORAGE_BIT`. This fixes a crash/validation error when attempting to bind textures as Storage Images in compute shaders (`SituationCmdBindComputeTexture`).
+*   **Fixed Texture Usage Flags:** `SituationCreateTexture` now automatically includes the `VK_IMAGE_USAGE_STORAGE_BIT`. This fixes a crash/validation error when binding textures as Storage Images in compute shaders (`SituationCmdBindComputeTexture`).
 *   **Fixed Memory Leaks in Buffer Updates:** Resolved memory leaks in `SituationUpdateBuffer` where temporary staging buffers were not freed if mapping or command allocation failed.
 
 ### [BUG FIXES]
