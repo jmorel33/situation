@@ -1,3 +1,19 @@
+Date: 2025-11-24  
+Version: 2.3.4K "Velocity" (Hotfix K)  
+
+## DESCRIPTION  
+This micro-hotfix delivers a single-line safeguard for OpenGL backend portability, ensuring seamless compilation in header-only environments without external GL headers.  
+
+## CRITICAL FIXES  
+
+*   **GLFW Include Guard:** Added `#define GLFW_INCLUDE_NONE` immediately before `<GLFW/glfw3.h>` inclusion to prevent GLFW from auto-including system `GL/gl.h` (or GL ES equivalents). This resolves "missing header" compilation failures in minimal setups (e.g., cross-compiles, embedded toolchains, or when bundling with GLAD). The change is non-intrusive, with zero runtime impact, and maintains full compatibility with existing builds.  
+
+## DOCUMENTATION  
+
+*   **Inline Comment:** Accompanied the define with a precise, self-explanatory comment detailing the rationale, environments affected, and synergy with GLAD loader. This enhances developer onboarding without bloating the header.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-24
 Version: 2.3.4J "Velocity" (Hotfix J)
 

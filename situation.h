@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4J "Velocity" (Hotfix J)
+*   Core API library v2.3.4K "Velocity" (Hotfix K)
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "J"
+#define SITUATION_VERSION_REVISION "K"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -157,6 +157,7 @@ Bash
  * @brief Core dependencies
  */
 #include <cglm/cglm.h>
+#define GLFW_INCLUDE_NONE   // This prevents GLFW from trying to include the system GL/gl.h header, which is missing in some environments (including this one) and is unnecessary when using glad.
 #include <GLFW/glfw3.h>
 #include <miniaudio.h>
 
