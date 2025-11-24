@@ -407,10 +407,10 @@ The library uses return codes (`SituationError` enum) for critical failures and 
 | Error Code | Constant | Meaning & Fix |
 | :--- | :--- | :--- |
 | -500 | `SITUATION_ERROR_RESOURCE_INVALID` | Handle (0xdeadbeef) is invalid. Check if you already destroyed it or forgot to initialize it. |
-| -501 | `SITUATION_ERROR_BACKEND_MISMATCH` | You called an OpenGL function while running Vulkan (or vice versa). |
-| -502 | `SITUATION_ERROR_THREAD_VIOLATION` | You called a Main-Thread-Only function (like `SituationCreateTexture`) from a worker thread. |
-| -100 | `SITUATION_ERROR_ALREADY_INITIALIZED` | `SituationInit` was called twice without shutdown. |
-| -404 | `SITUATION_ERROR_FILE_NOT_FOUND` | Asset path is incorrect. Remember paths are relative to the executable (or working directory). |
+| -550 | `SITUATION_ERROR_BACKEND_MISMATCH` | You called an OpenGL function while running Vulkan (or vice versa). |
+| -551 | `SITUATION_ERROR_THREAD_VIOLATION` | You called a Main-Thread-Only function (like `SituationCreateTexture`) from a worker thread. |
+| -4   | `SITUATION_ERROR_ALREADY_INITIALIZED` | `SituationInit` was called twice without shutdown. |
+| -310 | `SITUATION_ERROR_FILE_NOT_FOUND` | Asset path is incorrect. Remember paths are relative to the executable (or working directory). |
 
 **Critical Failures:** Functions like `SituationInit` or `SituationLoadShader` return an error code or an invalid handle ID (0). You must check these.
 
@@ -3286,16 +3286,18 @@ When things go wrong, they go wrong with a specific code.
 **Table: Top 10 Errors by Pillar**
 | Code | Constant | Meaning | The Fix |
 | :--- | :--- | :--- | :--- |
-| **-100** | `SIT_ALREADY_INITIALIZED` | Init called twice. | Check your entry point. |
-| **-404** | `SIT_FILE_NOT_FOUND` | Asset missing. | Check `SituationGetBasePath()` and case sensitivity. |
-| **-500** | `SIT_RESOURCE_INVALID` | Handle is 0 or dead. | Did you `SituationDestroy...()` it already? |
-| **-501** | `SIT_BACKEND_MISMATCH` | GL call on Vulkan. | Stick to the `SituationCmd*` API. |
-| **-502** | `SIT_THREAD_VIOLATION` | Main thread rule broken. | Move window/graphics calls to Main. |
-| **-600** | `SIT_AUDIO_DEVICE_FAIL` | WASAPI/ALSA error. | Unplugged USB headset? Retry init. |
-| **-700** | `SIT_SHADER_COMPILE_FAIL` | Syntax error in GLSL. | Check `SituationGetLastErrorMsg()`. |
-| **-701** | `SIT_PIPELINE_BIND_FAIL` | Incompatible layout. | Ensure Vertex Layout matches Shader inputs. |
-| **-800** | `SIT_OUT_OF_MEMORY` | RAM/VRAM full. | Check for texture leaks. |
-| **-999** | `SIT_UNKNOWN_ERROR` | Cosmic rays. | Report this bug. |
+| **-4** | `SITUATION_ERROR_ALREADY_INITIALIZED` | Init called twice. | Check your entry point. |
+| **-310** | `SITUATION_ERROR_FILE_NOT_FOUND` | Asset missing. | Check `SituationGetBasePath()` and case sensitivity. |
+| **-500** | `SITUATION_ERROR_RESOURCE_INVALID` | Handle is 0 or dead. | Did you `SituationDestroy...()` it already? |
+| **-550** | `SITUATION_ERROR_BACKEND_MISMATCH` | GL call on Vulkan. | Stick to the `SituationCmd*` API. |
+| **-551** | `SITUATION_ERROR_THREAD_VIOLATION` | Main thread rule broken. | Move window/graphics calls to Main. |
+| **-401** | `SITUATION_ERROR_AUDIO_DEVICE` | WASAPI/ALSA error. | Unplugged USB headset? Retry init. |
+| **-752** | `SITUATION_ERROR_SHADER_COMPILATION_FAILED` | Syntax error in GLSL. | Check `SituationGetLastErrorMsg()`. |
+| **-552** | `SITUATION_ERROR_PIPELINE_BIND_FAIL` | Incompatible layout. | Ensure Vertex Layout matches Shader inputs. |
+| **-8** | `SITUATION_ERROR_MEMORY_ALLOCATION` | RAM/VRAM full. | Check for texture leaks. |
+| **-749** | `SITUATION_ERROR_VULKAN_DESCRIPTOR_POOL_EXHAUSTED` | Descriptor pool full. | Internal pool auto-growth failed. |
+| **-750** | `SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED` | VRAM/RAM full. | VMA allocation failed. Check usage. |
+| **-999** | `SITUATION_ERROR_UNKNOWN_ERROR` | Cosmic rays. | Report this bug. |
 
 <a id="appendix-b-perf-codex"></a>
 
