@@ -2673,7 +2673,7 @@ The Filesystem module acts as the bridge between your application's memory space
 
 ### The Three Commandments of Situation I/O:
 
-1.  **UTF-8 Everywhere:** All paths, filenames, and text content are strictly UTF-8. Windows `wchar_t` (UTF-16) paths are handled internally and transparently converted.
+1.  **UTF-8 Everywhere:** All paths, filenames, and text content are strictly UTF-8. Windows `wchar_t` (UTF-16) paths are handled internally and transparently converted. (See [1.0 Core System Architecture](#10-core-system-architecture)).
 2.  **Heap Ownership Transfer:** Functions that return data (`char*`, `void*`) allocate memory on the heap. You own this memory. You must free it.
 3.  **Sandboxing:** The API aggressively encourages relative paths. Absolute paths are supported but discouraged, as they break portability between development machines and end-user installations.
 
@@ -2695,6 +2695,15 @@ To ensure asset portability, Situation calculates a "Base Path" at initializatio
 | **Linux (Portable)** | `/home/user/Downloads/mygame/assets/level1.dat` |
 | **macOS (Bundle)** | `/Applications/MyGame.app/Contents/Resources/assets/level1.dat` |
 
+#### Path Carnage: Real-World Failures
+
+| Scenario | The Code | The Result | Why? |
+| :--- | :--- | :--- | :--- |
+| **Hardcoded Slash** | `"assets\\data.bin"` | **Crash on Linux** | Backslash is an escape char, not a separator on POSIX. |
+| **UNC Paths** | `\\Server\Share\Art` | **Lag / Freeze** | Network timeout blocks the main thread. |
+| **Case Sensitivity** | `Load("Texture.PNG")` | **File Not Found** | Linux is case-sensitive; file is `Texture.png`. |
+| **Absolute Path** | `C:/Dev/Game/Art/` | **Deploy Fail** | User installed to `D:/Games/`. |
+
 #### SituationGetBasePath
 
 ```c:disable-run
@@ -2707,6 +2716,22 @@ char* SituationGetBasePath(void);
 *   **macOS:** Resolves into the `Contents/Resources` folder of the App Bundle.
 
 **Return:** A heap-allocated string ending with a trailing slash (e.g., `C:/Games/Doom/`).
+
+**Visualizing Resolution:**
+
+```text
+Project Root (The "Situation")
+├── bin/
+│   └── game.exe  <-- Execution Start
+├── assets/       <-- Target
+│   ├── shaders/
+│   └── textures/
+└── ...
+```
+
+*   `SituationGetBasePath()` -> `.../Project/bin/`
+*   `SituationJoinPath(base, "../assets/")` -> `.../Project/assets/`
+
 **Usage:** Combine this with relative asset paths to load resources reliably.
 
 ### 6.1.2 Path Composition
@@ -2804,6 +2829,10 @@ if (buffer) {
 | `SITUATION_ERROR_ACCESS_DENIED` | Permissions error. | Are you trying to write to `Program Files`? Use `SituationGetAppSavePath`. |
 | `SITUATION_ERROR_DISK_FULL` | No space left. | Catch this and show a UI warning before autosaving. |
 
+> **Hostile Tip:** If `SITUATION_ERROR_FILE_LOCKED` persists during development, it's usually VS Code or Explorer holding a handle. Force flush or kill the external process.
+
+> **SIMD Load Tip:** `SituationLoadFileData` guarantees 16-byte alignment. You can immediately cast the returned pointer to `__m128*` for vectorized parsing without an intermediate copy.
+
 ### 6.2.2 Reading Text (The Null-Terminator Trap)
 
 Standard `fread` does not append a null-terminator (`\0`). If you load a shader or JSON file using generic binary loaders and pass it to a parser, you will trigger a Buffer Overread Segfault.
@@ -2891,6 +2920,8 @@ if (files) {
 }
 ```
 
+> **Scale Tip:** For directories with 10,000+ files, avoid `SituationListDirectoryFiles` every frame. Use the recursive wildcard scan (e.g., `*.glb`) to filter noise at the OS level before allocation occurs.
+
 <a id="64-hot-reloading-implications"></a>
 ## 6.4 Hot-Reloading & File Watching
 
@@ -2902,6 +2933,14 @@ The "Velocity" module's Hot-Reloading capability relies on the Filesystem module
 **The "Debounce" Factor:**
 *   Text editors (VS Code, Vim) often save files by writing to a temp file and renaming it, or writing in chunks. This generates multiple OS events for a single "Save".
 *   `SituationCheckHotReloads()` includes a Debounce Timer (typically 100ms). It waits for the filesystem events to settle before triggering the expensive GPU reload process.
+
+#### False Alarms: What the Debounce Eats
+
+| Trigger | Description | Result |
+| :--- | :--- | :--- |
+| **Editor Auto-Save** | Writes a `.tmp` file, then renames. | **Ignored.** (Extension mismatch). |
+| **Virus Scanner** | Opens file for reading immediately after write. | **Absorbed.** (Debounce waits). |
+| **Git Pull** | Rapidly updates 50 files. | **Batched.** (Single reload trigger). |
 
 ```mermaid
 sequenceDiagram
@@ -2923,4 +2962,6 @@ sequenceDiagram
 **Usage Warning:**
 If you delete a file that is currently being watched by the Hot-Reloader, the library will deregister the watch silently. If you restore the file, you must manually trigger a reload or restart the app to re-establish the link.
 
-> **Ship Tease:** v2.4 will introduce **Async I/O Queues**, allowing for stutter-free background loading of massive assets without blocking the main thread.
+> **Forward Look:** Need to mount a ZIP file as a virtual drive? **Virtual Mounts (PAK support)** are coming in v2.5. For video streaming, see Section 8.0.
+>
+> **Ship Tease:** v2.4 will introduce **Async I/O Queues**, allowing for stutter-free background loading of massive assets (1GB+) without blocking the main thread.
