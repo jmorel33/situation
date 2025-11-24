@@ -129,22 +129,25 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
     - [Storage Buffers (SSBOs)](#storage-buffers-ssbos)
     - [Dispatch & Synchronization Barriers](#dispatch--synchronization-barriers)
 - [4.0 Audio Engine](#40-audio-engine)
-  - [4.1 Audio Context](#41-audio-context)
-    - [Device Enumeration](#device-enumeration)
-    - [Master Control](#master-control)
-  - [4.2 Resource Management](#42-resource-management)
-    - [Loading Strategies (Stream vs. RAM)](#loading-strategies-stream-vs-ram)
-    - [Decoding](#decoding)
+  - [4.1 Audio Context & Device Management](#41-audio-context)
+    - [4.1.1 Device Enumeration](#411-device-enumeration)
+    - [4.1.2 Device Configuration](#412-device-configuration)
+    - [4.1.3 Master Control](#413-master-control)
+  - [4.2 Resource Management & Data Manipulation](#42-resource-management)
+    - [4.2.1 Loading Strategies](#421-loading-strategies)
+    - [4.2.2 Custom Streaming (Procedural / Virtual Files)](#422-custom-streaming)
+    - [4.2.3 Waveform Manipulation](#423-waveform-manipulation)
   - [4.3 Voice Management](#43-voice-management)
-    - [Playback Control (Play/Stop/Loop)](#playback-control-playstoploop)
-    - [Properties (Pitch, Pan, Volume)](#properties-pitch-pan-volume)
-  - [4.4 DSP Chain](#44-dsp-chain)
-    - [Filters (Low/High Pass)](#filters-lowhigh-pass)
-    - [Environmental Effects (Reverb, Echo)](#environmental-effects-reverb-echo)
-    - [Custom Processors](#custom-processors)
+    - [4.3.1 Playback Control](#431-playback-control)
+    - [4.3.2 Voice Properties](#432-voice-properties)
+  - [4.4 DSP Chain (Effects)](#44-dsp-chain)
+    - [4.4.1 Filters](#441-filters)
+    - [4.4.2 Environmental Effects](#442-environmental-effects)
+    - [4.4.3 Custom Processors (The "Pro" Feature)](#443-custom-processors)
   - [4.5 Audio Capture](#45-audio-capture)
-    - [Microphone Initialization](#microphone-initialization)
-    - [Buffer Access](#buffer-access)
+    - [4.5.1 Microphone Initialization](#451-microphone-initialization)
+    - [4.5.2 Buffer Access](#452-buffer-access)
+    - [4.5.3 Stopping Capture](#453-stopping-capture)
 - [5.0 Input & Haptics](#50-input--haptics)
   - [5.1 Architecture: Ring Buffers & Polling](#51-architecture-ring-buffers--polling)
   - [5.2 Keyboard](#52-keyboard)
@@ -1966,35 +1969,360 @@ SituationCmdPipelineBarrier(
 
 ## 4.0 Audio Engine
 
-```mermaid
-graph LR
-    Source[Source (WAV/MP3)] --> Filter[Biquad Filter]
-    Filter --> Echo[Echo/Delay]
-    Echo --> Reverb[Plate Reverb]
-    Reverb --> Custom[Custom Processors]
-    Custom --> Mixer[Master Mixer]
+The Audio module in "Situation" is a high-performance, multithreaded mixing engine built directly on top of the OS audio HAL (WASAPI on Windows, CoreAudio on macOS, ALSA/Pulse on Linux) via the internal miniaudio backend.
+
+### Architectural Constraints & Guarantees
+
+*   **Thread Isolation:** The audio mixing graph runs on a dedicated, high-priority thread. All SITAPI audio functions are thread-safe wrappers that post atomic commands or lock-free messages to the mixer thread. You generally do not need to manage mutexes when calling these functions from the main thread.
+*   **32-bit Float Pipeline:** The internal mixing pipeline operates exclusively in 32-bit floating point, typically at 48kHz (unless overridden). All source data is resampled and converted to this format upon load or stream-read.
+*   **Strict Handle Semantics:** The `SituationSound` structure acts as a handle to a voice in the mixer graph. Unlike fire-and-forget engines, a `SituationSound` persists until explicitly unloaded, allowing for complex state manipulation (pitch bending, filter sweeps) during playback.
+
+<a id="41-audio-context"></a>
+
+## 4.1 Audio Context & Device Management
+
+While `SituationInit` brings the audio subsystem online using the OS default device, professional applications often require explicit device selection and precise sample rate control.
+
+#### Quick Start
+
+```c:disable-run
+// 1. Init Core (starts default audio device automatically)
+SituationInit(argc, argv, &config);
+
+// 2. (Optional) Select specific hardware if needed
+int count;
+SituationAudioDeviceInfo* devs = SituationGetAudioDevices(&count);
+if (count > 0) {
+    // Use the first available device
+    SituationSetAudioDevice(devs[0].situation_internal_id, NULL);
+}
+free(devs);
 ```
 
-### 4.1 Audio Context
-#### Device Enumeration
-#### Master Control
+<a id="411-device-enumeration"></a>
+### 4.1.1 Device Enumeration
 
-### 4.2 Resource Management
-#### Loading Strategies (Stream vs. RAM)
-#### Decoding
+To enumerate available playback hardware, use `SituationGetAudioDevices`. This allocates a snapshot of the system's topology.
 
-### 4.3 Voice Management
-#### Playback Control (Play/Stop/Loop)
-#### Properties (Pitch, Pan, Volume)
+#### SituationGetAudioDevices
 
-### 4.4 DSP Chain
-#### Filters (Low/High Pass)
-#### Environmental Effects (Reverb, Echo)
-#### Custom Processors
+```c:disable-run
+SituationAudioDeviceInfo* SituationGetAudioDevices(int* count);
+```
 
-### 4.5 Audio Capture
-#### Microphone Initialization
-#### Buffer Access
+**Returns:** A heap-allocated array of `SituationAudioDeviceInfo` structs. The caller must free this memory using standard `free()` (or the library's allocator if overridden).
+
+**Struct Definition:**
+
+```c:disable-run
+typedef struct {
+    char name[SITUATION_MAX_DEVICE_NAME_LEN]; // OS Device Name (UTF-8)
+    ma_device_id id;                            // Opaque Driver ID
+    int situation_internal_id;                  // ID used for SituationSetAudioDevice
+    bool is_default_playback;                   // True if this is the OS default
+    bool is_default_capture;                    // True if this is the default Mic
+} SituationAudioDeviceInfo;
+```
+
+<a id="412-device-configuration"></a>
+### 4.1.2 Device Configuration
+
+#### SituationSetAudioDevice
+
+```c:disable-run
+SituationError SituationSetAudioDevice(int internal_id, const SituationAudioFormat* format);
+```
+
+**Behavior:**
+*   Suspends the audio thread.
+*   Tears down the current backend connection.
+*   Initializes a new connection to the specified hardware `internal_id`.
+*   Restores the mixing graph.
+
+**Note:** This operation causes a brief audio dropout (typically < 100ms).
+
+**Format:** Pass `NULL` to use the device's native format (lowest latency). Pass a `SituationAudioFormat` struct to force specific settings (e.g., strict 44100Hz).
+
+| Rate | Use Case | Trade-off |
+| :--- | :--- | :--- |
+| **48,000 Hz** | **Standard (Cinema/Games)** | Native for most modern HW. Lowest latency. |
+| **44,100 Hz** | **Legacy / Music** | Standard for CD audio. May incur OS resampling cost. |
+| **96,000 Hz** | **Audiophile** | High CPU usage. Diminishing returns for games. |
+
+
+<a id="413-master-control"></a>
+### 4.1.3 Master Control
+
+These functions control the final output stage (the Master Bus) before data is sent to the DAC.
+
+*   `SituationSetAudioMasterVolume(float volume)`: Applies a linear gain. 1.0 is unity gain. Values > 1.0 are allowed but may cause digital clipping if the mix is hot.
+*   `SituationPauseAudioDevice()`: Stops the callback request from the OS. CPU usage for audio drops to near zero. Use this when the application loses focus.
+*   `SituationResumeAudioDevice()`: Restarts the callback.
+
+<a id="42-resource-management"></a>
+
+## 4.2 Resource Management & Data Manipulation
+
+The library distinguishes between Static Audio (fully resident in RAM) and Streamed Audio (buffered from disk).
+
+```mermaid
+graph LR
+  A[File on Disk] --> B{Size < 10s?};
+  B -- Yes --> C[Decode Entire File to RAM];
+  B -- No --> D[Open Stream Handle];
+  C --> E[SituationSound RAM];
+  D --> F[SituationSound Stream];
+```
+
+<a id="421-loading-strategies"></a>
+### 4.2.1 Loading Strategies
+
+When calling `SituationLoadSoundFromFile`, the `SituationAudioLoadMode` enum dictates the memory/latency trade-off.
+
+| Mode | Behavior | Best For |
+| :--- | :--- | :--- |
+| `SITUATION_AUDIO_LOAD_FULL` | Decodes the entire file to raw PCM (float32) in RAM immediately. | SFX: Gunshots, UI, Footsteps. Guarantees zero disk I/O during gameplay. |
+| `SITUATION_AUDIO_LOAD_STREAM` | Opens a file handle. Decodes small chunks into a ring buffer on the audio thread. | Music/Ambience: Large files (> 1 min). Keeps RAM usage low. |
+| `SITUATION_AUDIO_LOAD_AUTO` | Checks file duration. If < 10s, uses FULL. If > 10s, uses STREAM. | General usage. |
+
+#### SituationLoadSoundFromFile
+
+```c:disable-run
+SituationError SituationLoadSoundFromFile(const char* file_path,
+                                          SituationAudioLoadMode mode,
+                                          bool looping,
+                                          SituationSound* out_sound);
+```
+
+**Return:** `SITUATION_SUCCESS` or `SITUATION_ERROR_FILE_NOT_FOUND` / `SITUATION_ERROR_AUDIO_DECODING`.
+
+<a id="422-custom-streaming"></a>
+### 4.2.2 Custom Streaming (Procedural / Virtual Files)
+
+For engines that pack audio into custom archives (WAD/PAK) or generate audio procedurally, use the generic stream interface.
+
+#### SituationLoadSoundFromStream
+
+```c:disable-run
+SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read,
+                                            SituationStreamSeekCallback on_seek,
+                                            void* user_data,
+                                            const SituationAudioFormat* format,
+                                            bool looping,
+                                            SituationSound* out_sound);
+```
+
+**Callbacks:**
+*   `on_read`: Called by the audio thread when it needs more PCM data. You must fill `pBufferOut` with `bytesToRead`.
+*   `on_seek`: Called when the engine needs to rewind (e.g., looping).
+
+**Example: Procedural Sine Wave**
+
+```c:disable-run
+// Generates a 440Hz Sine Wave on the fly
+ma_uint64 MySineCallback(void* userData, void* pBufferOut, ma_uint64 bytesToRead) {
+    float* output = (float*)pBufferOut;
+    int* phase = (int*)userData;
+    uint32_t frames = bytesToRead / sizeof(float); // Mono stream
+
+    for(uint32_t i=0; i<frames; i++) {
+        output[i] = sinf(*phase * 0.05f); // Simplified math
+        (*phase)++;
+    }
+    return bytesToRead;
+}
+```
+
+<a id="423-waveform-manipulation"></a>
+### 4.2.3 Waveform Manipulation
+
+The library provides utilities to manipulate raw PCM data for loaded sounds. These functions only work on sounds loaded with `SITUATION_AUDIO_LOAD_FULL`.
+
+*   `SituationSoundCopy(source, dest)`: Deep copies the PCM buffer. Useful for creating variations of a sound (e.g., pitch-shifting one instance without affecting the original).
+*   `SituationSoundCrop(sound, startFrame, endFrame)`: Destructively trims the PCM buffer in RAM.
+*   `SituationSoundExportAsWav(sound, path)`: Dumps the current buffer to a standard WAV file. Useful for debugging procedural audio generation.
+
+<a id="43-voice-management"></a>
+
+## 4.3 Voice Management
+
+A `SituationSound` is not a "fire-and-forget" event; it is a persistent voice.
+
+> **Warning:** The engine has a default hard limit of **32 concurrent voices**. Playing more sounds will either fail or steal the oldest voice, depending on internal priority logic.
+
+<a id="431-playback-control"></a>
+### 4.3.1 Playback Control
+
+*   `SituationPlayLoadedSound(sound)`: Adds the sound to the mixer. If already playing, it restarts from the beginning (re-trigger).
+*   `SituationStopLoadedSound(sound)`: Removes the sound from the mixer and resets the cursor to 0.
+*   `SituationStopAllLoadedSounds()`: Immediate "panic button" to silence the application.
+
+<a id="432-voice-properties"></a>
+### 4.3.2 Voice Properties
+
+These functions can be called every frame to modulate audio based on game state.
+
+*   `SituationSetSoundVolume(sound, vol)`: Per-voice gain.
+*   `SituationSetSoundPan(sound, pan)`: Stereo panning. -1.0f (Left) to 1.0f (Right). Uses a constant-power panning law.
+*   `SituationSetSoundPitch(sound, pitch)`: Resamples the audio.
+
+**Example: Doppler Effect**
+
+```c:disable-run
+// Simple Doppler shift based on relative speed
+float rel_speed = player_velocity - source_velocity;
+float shift = 1.0f + (rel_speed / 343.0f); // Speed of sound ~343m/s
+SituationSetSoundPitch(sfx_car_engine, shift);
+```
+
+<a id="44-dsp-chain"></a>
+
+## 4.4 DSP Chain (Effects)
+
+Every `SituationSound` instance owns a private effects chain. The signal path is fixed to ensure stability:
+
+```mermaid
+graph LR
+PCM[Source PCM] --> Filter[Biquad Filter]
+Filter --> Echo[Echo/Delay]
+Echo --> Reverb[Reverb]
+Reverb --> Custom[Custom Processor]
+Custom --> PanVol[Pan & Volume]
+PanVol --> Mixer[Master Mixer]
+```
+
+<a id="441-filters"></a>
+### 4.4.1 Filters
+
+The Biquad filter stage allows for standard subtractive synthesis effects.
+
+#### SituationSetSoundFilter
+
+```c:disable-run
+SituationError SituationSetSoundFilter(SituationSound* sound,
+                                       SituationFilterType type,
+                                       float cutoff_hz,
+                                       float q_factor);
+```
+
+| Q-Factor | Effect |
+| :--- | :--- |
+| **0.707** | **Butterworth (Neutral).** No resonance. Smooth roll-off. |
+| **> 1.0** | **Resonant.** Boosts frequencies near the cutoff. "Wah-wah" sound. |
+| **< 0.5** | **Damped.** Gentle, wide slope. Very subtle. |
+
+<a id="442-environmental-effects"></a>
+### 4.4.2 Environmental Effects
+
+*   **SituationSetSoundEcho:** A feedback delay line.
+    *   `delay_sec`: Time between repeats (0.01s to 1.0s).
+    *   `feedback`: Decay rate (0.0 to 0.99).
+*   **SituationSetSoundReverb:** A Schroeder/Moorer algorithmic reverb.
+    *   `room_size`: 0.0 (Closet) to 1.0 (Cathedral).
+    *   `damping`: Absorbs high frequencies in the tail.
+
+<a id="443-custom-processors"></a>
+### 4.4.3 Custom Processors (The "Pro" Feature)
+
+For functionality not provided by the built-in chain (e.g., Bitcrushing, Ring Modulation, FFT Analysis), you can inject custom code into the mixing pipeline.
+
+#### SituationAttachAudioProcessor
+
+```c:disable-run
+SituationError SituationAttachAudioProcessor(SituationSound* sound,
+                                             SituationAudioProcessorCallback processor,
+                                             void* user_data);
+```
+
+**Callback Signature:**
+
+```c:disable-run
+typedef void (*SituationAudioProcessorCallback)(
+    float*       buffer,         // Interleaved float samples (L, R, L, R...)
+    uint32_t     frames,         // Number of frames to process
+    uint32_t     channels,       // Usually 2 (Stereo)
+    uint32_t     sampleRate,     // e.g., 48000
+    void*        user_data
+);
+```
+
+**Implementation Rules:**
+*   **In-Place Processing:** You write your output directly back into `buffer`.
+*   **Performance:** You have a budget of roughly 1-2ms per callback. Exceeding this causes audio glitches (pops/clicks).
+*   **Floating Point:** Data is normalized -1.0f to +1.0f.
+
+<a id="45-audio-capture"></a>
+
+## 4.5 Audio Capture
+
+The library provides low-level access to the system default recording device (Microphone/Line-In).
+
+<a id="451-microphone-initialization"></a>
+### 4.5.1 Microphone Initialization
+
+#### SituationStartAudioCapture
+
+```c:disable-run
+SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data);
+```
+
+<a id="452-buffer-access"></a>
+### 4.5.2 Buffer Access
+
+When the microphone has captured a chunk of audio, it invokes your callback to deliver the raw PCM data.
+
+**Callback Signature:**
+
+```c:disable-run
+typedef void (*SituationAudioCaptureCallback)(
+    const float* input_buffer,   // Read-Only samples
+    uint32_t     frame_count,
+    void*        user_data
+);
+```
+
+#### Threading Implications
+
+By default, the capture callback runs on the **Audio Thread**. This is efficient but dangerous if you try to access main-thread data structures without locking.
+
+**Safe Mode:**
+If you initialized the library with the flag `SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD` in `SituationInitInfo`, the library automatically buffers the captured audio and invokes your callback safely on the main thread during `SituationPollInputEvents()`.
+
+| Mode | Latency | Threading |
+| :--- | :--- | :--- |
+| **Direct (Default)** | **Lowest (~10ms)** | Runs on Audio Thread. **DANGEROUS.** No malloc/locks. |
+| **Main Thread** | **+1 Frame (~16ms)** | Runs on Main Thread. Safe. Easy to use. |
+
+#### Example: Voice Chat Buffer
+
+```c:disable-run
+// Simple Ring Buffer Accumulator (Main Thread Safe Mode)
+void MyCaptureCallback(const float* input, uint32_t frames, void* user) {
+    RingBufferPush(user->voice_chat_buffer, input, frames);
+}
+```
+
+<a id="453-stopping-capture"></a>
+### 4.5.3 Stopping Capture
+
+When you are finished recording, you must explicitly stop the capture device to release hardware resources and stop the callback from firing.
+
+#### SituationStopAudioCapture
+
+```c:disable-run
+void SituationStopAudioCapture(void);
+```
+
+**Behavior:**
+*   Halts the input stream immediately.
+*   Releases the microphone device handle.
+*   Ensures no further calls to your `SituationAudioCaptureCallback` will occur.
+
+**Safety:** It is safe to call this function even if capture is not currently active (it will simply do nothing).
+
+> **Forward Look:** Full 3D Audio (HRTF) is not currently built-in. For 3D effects, calculate volume and pan manually based on distance and angle to the listener.
+>
+> **Ship Tease:** A lock-free Job System for massive audio concurrency is planned for v2.4.
 
 <a id="50-input--haptics"></a>
 
