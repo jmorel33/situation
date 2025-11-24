@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.4L "Velocity" (Hotfix L)_
+_Core API library v2.3.4M "Velocity" (Hotfix M)_
 
 _(c) 2025 Jacques Morel_
 

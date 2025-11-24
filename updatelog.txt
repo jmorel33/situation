@@ -1,4 +1,21 @@
 Date: 2025-11-24
+Version: 2.3.4M "Velocity" (Hotfix M)
+
+## DESCRIPTION
+This release focuses on "surgical precision" in error handling and reporting. It ensures that every error code defined in the library is correctly mapped to a human-readable string, eliminating "Unknown Error" responses for defined failures. It also hardens the Hot-Reloading module against race conditions and resource invalidation.
+
+## CRITICAL FIXES
+
+*   **Exhaustive Error Mapping:** Updated `_SituationSetErrorFromCode` to include `case` statements for *every* `SITUATION_ERROR_*` constant defined in the enum. This guarantees that all internal failures report specific, actionable error messages instead of falling back to generic codes.
+*   **Hot-Reload Safety:** Enhanced `SituationReloadShader`, `SituationReloadTexture`, `SituationReloadModel`, and `SituationReloadComputePipeline` to explicitly check for GPU synchronization failures (`vkDeviceWaitIdle`). If the GPU cannot be idled (e.g., device lost), the reload operation now safely aborts with `SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED` instead of risking a crash or undefined behavior.
+*   **Precise Error Reporting:**
+    *   `_SituationInitOpenGL` now returns `SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION` (instead of generic unsupported) when the GL version check fails.
+    *   Vulkan internal resource creation (Depth Resources) now specifically reports `SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED` on allocation failure.
+    *   Hot-reload functions now return `SITUATION_ERROR_RESOURCE_INVALID` if the source file path was not correctly tracked, aiding in debugging.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-24
 Version: 2.3.4L "Velocity" (Hotfix L)
 
 ## DESCRIPTION
