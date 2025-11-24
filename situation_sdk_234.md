@@ -151,15 +151,15 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
 - [5.0 Input & Haptics](#50-input--haptics)
   - [5.1 Architecture: Ring Buffers & Polling](#51-architecture-ring-buffers--polling)
   - [5.2 Keyboard](#52-keyboard)
-    - [Key States vs. Events](#key-states-vs-events)
-    - [Text Input](#text-input)
+    - [5.2.1 Physical Keys (Scan Codes)](#521-physical-keys-scan-codes)
+    - [5.2.2 Text Input (Unicode)](#522-text-input-unicode)
   - [5.3 Mouse](#53-mouse)
-    - [Position, Delta, and Wheel](#position-delta-and-wheel)
-    - [Buttons](#buttons)
+    - [5.3.1 Position, Delta, and Wheel](#531-position-delta-and-wheel)
+    - [5.3.2 Buttons](#532-buttons)
   - [5.4 Gamepad](#54-gamepad)
-    - [Connection Handling](#connection-handling)
-    - [Axis & Button Mapping](#axis--button-mapping)
-    - [Haptic Feedback (Rumble)](#haptic-feedback-rumble)
+    - [5.4.1 Connection Handling](#541-connection-handling)
+    - [5.4.2 Axis & Button Mapping](#542-axis--button-mapping)
+    - [5.4.3 Haptic Feedback (Rumble)](#543-haptic-feedback-rumble)
 - [6.0 Filesystem & I/O](#60-filesystem--io)
   - [6.1 Path Management](#61-path-management)
     - [Virtual Paths & Base Directories](#virtual-paths--base-directories)
@@ -2330,20 +2330,331 @@ void SituationStopAudioCapture(void);
 
 ## 5.0 Input & Haptics
 
-### 5.1 Architecture: Ring Buffers & Polling
+The Input module of "Situation" is not merely a wrapper around OS events; it is a Frame-Synchronized State Machine.
 
-### 5.2 Keyboard
-#### Key States vs. Events
-#### Text Input
+Unlike standard event-driven architectures (like Qt or Win32) where input callbacks fire asynchronously during the frame—potentially causing "ghost inputs" or race conditions in physics logic—Situation captures a discrete snapshot of the entire input hardware state at the exact moment `SituationPollInputEvents()` is called.
 
-### 5.3 Mouse
-#### Position, Delta, and Wheel
-#### Buttons
+**The Atomic Guarantee:**
+Once `SituationPollInputEvents()` returns, the input state is immutable for the remainder of the frame. A key cannot change from "Pressed" to "Released" halfway through your update loop, guaranteeing deterministic logic execution.
 
-### 5.4 Gamepad
-#### Connection Handling
-#### Axis & Button Mapping
-#### Haptic Feedback (Rumble)
+<a id="51-architecture-ring-buffers--polling"></a>
+## 5.1 Architecture: Ring Buffers & Polling
+
+The input system utilizes a dual-layer architecture to handle the disparity between High-Frequency OS interrupts and the discrete Frame Rate of the application.
+
+```mermaid
+sequenceDiagram
+    participant HW as Hardware (1000Hz)
+    participant OS as OS Interrupts
+    participant Ring as Ring Buffer
+    participant Game as Game Frame (60Hz)
+
+    HW->>OS: Key Press
+    OS->>Ring: Push Event (Instant)
+    Note over Ring: Accumulates Events
+    HW->>OS: Key Release
+    OS->>Ring: Push Event (Instant)
+
+    Game->>Ring: SituationPollInputEvents()
+    Ring->>Game: Atomic Snapshot
+    Note right of Game: Update Logic (Fixed State)
+```
+
+**The Interrupt Layer (Hidden):**
+As the OS receives hardware interrupts (USB polling rates of 1000Hz+), it fires internal callbacks. Situation catches these and pushes raw events into fixed-size Ring Buffers (`SITUATION_KEY_QUEUE_MAX` size). This happens silently in the background.
+
+**The Polling Layer (API Visible):**
+When you call `SituationPollInputEvents()`, the library:
+1. Flushes the OS event queue.
+2. Processes the internal Ring Buffers to detect "Press" and "Release" edges.
+3. Updates the "Current Frame" state arrays (`bool keys[512]`).
+4. Copies "Current" to "Previous" to calculate deltas.
+
+**Missed Tap Math: Why this matters**
+Consider a rhythm game running at 60 FPS (16.6ms per frame). A pro gamer taps a key for only 10ms.
+*   **Without Ring Buffers:** The poll might happen *after* the key was released. Result: The game sees nothing.
+*   **With Situation:** The "Press" and "Release" events are stored in the queue. Even if the frame is late, `SituationGetKeyPressed()` will report the hit.
+
+**Edge Detection Logic**
+The library distinguishes between three distinct states for every button (Keyboard, Mouse, Gamepad):
+
+| Function Type | Logic | Use Case |
+| :--- | :--- | :--- |
+| **IsDown** | `current_state == 1` | Continuous movement (Walking, Throttle). |
+| **IsPressed** | `current_state == 1 && prev_state == 0` | Triggers (Jump, Shoot, Toggle Menu). |
+| **IsReleased** | `current_state == 0 && prev_state == 1` | Drag-and-drop release, Charging mechanics. |
+
+> **Titanium Tip:** Because `IsPressed` relies on comparing Current vs. Previous frames, you must call `SituationPollInputEvents()` exactly once per frame. Calling it multiple times will overwrite the "Previous" state, causing you to miss press events.
+
+<a id="52-keyboard"></a>
+## 5.2 Keyboard
+
+The keyboard API is split into two distinct pipelines: Physical Keys (for game control) and Character Input (for text entry).
+
+### 5.2.1 Physical Keys (Scan Codes)
+
+These functions query the physical location of a key on the board, mapped to a standard US QWERTY layout constant (`SIT_KEY_W`, `SIT_KEY_SPACE`, etc.).
+
+#### SituationIsKeyDown / SituationIsKeyUp
+
+```c:disable-run
+bool SituationIsKeyDown(int key);
+bool SituationIsKeyUp(int key);
+```
+
+**Complexity:** $O(1)$ array lookup.
+**Behavior:** Returns true if the key is physically held down during this frame snapshot.
+
+#### SituationIsKeyPressed
+
+```c:disable-run
+bool SituationIsKeyPressed(int key);
+```
+
+**Behavior:** Returns true only on the single frame the key transition occurred.
+**Buffering:** If the frame rate drops to 1 FPS, and the user taps 'Space' 5 times quickly, the internal Ring Buffer captures all 5 taps. `SituationIsKeyPressed` will return true, but standard polling might miss rapid taps. For absolute precision in rhythm games, use `SituationGetKeyPressed()` (queue access).
+
+#### SituationGetKeyPressed (Queue Access)
+
+```c:disable-run
+int SituationGetKeyPressed(void);
+```
+
+**Returns:** The next key code in the FIFO buffer, or 0 if empty.
+**Usage:** Use this when you need to process every key stroke order-independently, rather than checking specific keys.
+
+**Example: Draining the FIFO Queue**
+This is essential for handling burst inputs (like a barcode scanner or button mashing) without missing a single event.
+
+```c:disable-run
+int key;
+while ((key = SituationGetKeyPressed()) != 0) {
+    if (key == SIT_KEY_ENTER) {
+        SubmitForm();
+    }
+}
+```
+
+### 5.2.2 Text Input (Unicode)
+
+**CRITICAL WARNING:** Never use `SIT_KEY_` codes for text input.
+
+**The Layout Nightmare:**
+Physical keys do not match characters across regions.
+
+| Key Constant | QWERTY Physical | AZERTY Physical | Result |
+| :--- | :--- | :--- | :--- |
+| `SIT_KEY_Q` | 'Q' Key (Top Left) | 'A' Key (Top Left) | `IsKeyDown(SIT_KEY_Q)` is true |
+| `SIT_KEY_SLASH` | '/' Key | ':' Key | `IsKeyDown(SIT_KEY_SLASH)` is true |
+
+*   If Shift is held, the user expects '?'. The Key API still reports `SIT_KEY_SLASH`.
+*   On a French keyboard, `SIT_KEY_Q` is physically located where 'A' is on QWERTY.
+
+#### SituationGetCharPressed
+
+```c:disable-run
+unsigned int SituationGetCharPressed(void);
+```
+
+**Returns:** A UTF-32 Codepoint (e.g., 0x0041 for 'A', 0x00E9 for 'é').
+**Behavior:**
+* Handles Shift, Caps Lock, and Alt Gr states automatically.
+* Respects the OS Keyboard Layout (AZERTY, QWERTZ, Dvorak).
+* Returns 0 when the queue is empty.
+
+**Example: Robust Text Entry**
+
+```c:disable-run
+unsigned int char_code;
+while ((char_code = SituationGetCharPressed()) != 0) {
+    // Filter out non-printable control characters
+    if (char_code >= 32) {
+        MyStringAppendCodepoint(&input_field, char_code);
+    }
+}
+
+// Handle Backspace separately (it's a control key, not a char)
+if (SituationIsKeyPressed(SIT_KEY_BACKSPACE) || SituationIsKeyPressed(SIT_KEY_REPEAT)) {
+    MyStringRemoveLast(&input_field);
+}
+```
+
+<a id="53-mouse"></a>
+## 5.3 Mouse
+
+The Mouse module provides normalized screen coordinates and relative motion vectors.
+
+### 5.3.1 Position, Delta, and Wheel
+
+#### SituationGetMousePosition
+
+```c:disable-run
+Vector2 SituationGetMousePosition(void);
+```
+
+**Returns:** The absolute position (x, y) relative to the top-left of the window client area.
+**Range:** (0, 0) to (WindowWidth, WindowHeight). Values can be negative or exceed window size if the mouse is dragged outside.
+
+#### SituationGetMouseDelta
+
+```c:disable-run
+Vector2 SituationGetMouseDelta(void);
+```
+
+**Returns:** The vector (x, y) representing movement since the last frame.
+**Calculation:** CurrentPos - PreviousPos.
+**Usage:** Essential for 3D Camera controllers (Yaw/Pitch).
+
+#### SituationSetMouseScale & Offset
+
+```c:disable-run
+void SituationSetMouseScale(Vector2 scale);
+void SituationSetMouseOffset(Vector2 offset);
+```
+
+**The Problem:** You render a pixel-art game at 320x180 to a VirtualDisplay, but the window is fullscreen at 1920x1080. `GetMousePosition` returns 1920x1080 coordinates, breaking your UI hit-testing.
+**The Solution:** Set the scale to (320.0/1920.0, 180.0/1080.0). The library now automatically transforms all mouse inputs into your game's virtual coordinate space.
+
+> **HiDPI Gotcha:** On a 4K monitor, `GetMousePosition` returns (3840, 2160). If your game logic assumes 1080p, your UI clicks will fail. Always use `SituationSetMouseScale` or normalized coordinates.
+
+**Example: Clamping Mouse for Dragging**
+Since the mouse can leave the window, coordinates can be negative.
+
+```c:disable-run
+Vector2 pos = SituationGetMousePosition();
+// Clamp to window bounds
+if (pos.x < 0) pos.x = 0;
+if (pos.x > window_width) pos.x = window_width;
+if (pos.y < 0) pos.y = 0;
+if (pos.y > window_height) pos.y = window_height;
+```
+
+### 5.3.2 Buttons
+
+Supported buttons map to standard indices:
+* `SIT_MOUSE_BUTTON_LEFT` (0)
+* `SIT_MOUSE_BUTTON_RIGHT` (1)
+* `SIT_MOUSE_BUTTON_MIDDLE` (2)
+* `SIT_MOUSE_BUTTON_SIDE` (3, 4 - Gaming mouse side buttons)
+
+<a id="54-gamepad"></a>
+## 5.4 Gamepad
+
+Situation implements the SDL_GameControllerDB mapping standard. This means generic DirectInput (Windows) or HID (Linux) devices are automatically remapped to a standard "Xbox 360" layout.
+
+### 5.4.1 Connection Handling
+
+The system supports up to `SITUATION_MAX_JOYSTICKS` (2) active devices.
+
+#### SituationIsJoystickPresent
+
+```c:disable-run
+bool SituationIsJoystickPresent(int jid);
+```
+
+**Returns:** `true` if a device is plugged into slot `jid` (0 or 1).
+
+#### Hot-Plugging Callback
+
+To handle controllers being unplugged mid-game (and pausing the game automatically):
+
+```c:disable-run
+void OnJoystickChange(int jid, int event, void* user) {
+    if (event == GLFW_CONNECTED) {
+        printf("Controller %d connected: %s\n", jid, SituationGetJoystickName(jid));
+    } else if (event == GLFW_DISCONNECTED) {
+        printf("Controller %d disconnected.\n", jid);
+        MyGamePause();
+    }
+}
+SituationSetJoystickCallback(OnJoystickChange, NULL);
+```
+
+### 5.4.2 Axis & Button Mapping
+
+The library normalizes all controller types (PS5, Switch Pro, Xbox) to this standard:
+
+**Axes (SituationGetGamepadAxisValue)**
+
+Returns a float between -1.0 and 1.0.
+
+| Index | Name | Range |
+| :--- | :--- | :--- |
+| 0 | **Left Stick X** | -1.0 (Left) to 1.0 (Right) |
+| 1 | **Left Stick Y** | -1.0 (Up) to 1.0 (Down) |
+| 2 | **Right Stick X** | -1.0 (Left) to 1.0 (Right) |
+| 3 | **Right Stick Y** | -1.0 (Up) to 1.0 (Down) |
+| 4 | **Left Trigger (L2)** | -1.0 (Released) to 1.0 (Pressed) |
+| 5 | **Right Trigger (R2)** | -1.0 (Released) to 1.0 (Pressed) |
+
+**Deadzone Note:** The library defines `SITUATION_JOYSTICK_DEADZONE_L` (0.10f) but does not apply it automatically. You must implement deadzone logic to prevent "stick drift".
+
+```mermaid
+graph LR
+    Input[Raw Input] --> Deadzone{< 0.1?};
+    Deadzone -- Yes --> Zero[0.0];
+    Deadzone -- No --> Scale[Rescale 0.0 to 1.0];
+```
+
+```c:disable-run
+float x = SituationGetGamepadAxisValue(0, 0);
+// Simple Deadzone
+if (fabs(x) < SITUATION_JOYSTICK_DEADZONE_L) x = 0.0f;
+// Advanced: Rescaled Radial Deadzone prevents "jump" at 0.1
+```
+
+**Buttons (SituationIsGamepadButtonDown)**
+
+| ID | Xbox | PlayStation | Switch |
+| :--- | :--- | :--- | :--- |
+| 0 | **A** | **Cross** | **B** |
+| 1 | **B** | **Circle** | **A** |
+| 2 | **X** | **Square** | **Y** |
+| 3 | **Y** | **Triangle** | **X** |
+| 4 | **LB** | **L1** | **L** |
+| 5 | **RB** | **R1** | **R** |
+| 6 | **Back** | **Select/Share** | **-** |
+| 7 | **Start** | **Start/Options** | **+** |
+| 8 | **Guide** | **PS** | **Home** |
+| 9 | **L3** | **L3** | **Stick Click** |
+| 10 | **R3** | **R3** | **Stick Click** |
+| 11-14 | **D-Pad** | **D-Pad** | **D-Pad** |
+
+**Switch Note:** On Nintendo Switch controllers, the A/B and X/Y physical positions are swapped compared to Xbox. The library exposes the **Physical Location**, not the label. Pressing the bottom face button triggers ID 0 (Xbox A), even if the Switch label says "B".
+
+### 5.4.3 Haptic Feedback (Rumble)
+
+Situation provides dual-motor force feedback control.
+
+#### SituationSetGamepadVibration
+
+```c:disable-run
+bool SituationSetGamepadVibration(int jid, float left_motor, float right_motor);
+```
+
+**Parameters:**
+* `left_motor`: Low-frequency (Heavy) rumble. 0.0 to 1.0. Good for explosions/impacts.
+* `right_motor`: High-frequency (Light) buzz. 0.0 to 1.0. Good for engine revs/sliding.
+
+**Platform Support:**
+* **Windows:** Uses XInput. Works flawlessly with Xbox controllers.
+* **Linux/macOS:** Dependent on driver support. Function returns `false` if haptics are unavailable on the device.
+
+**Usage:** The vibration continues indefinitely until you call the function again with 0.0f, 0.0f. You must manage the duration yourself using a timer.
+
+```c:disable-run
+// Impact!
+SituationSetGamepadVibration(0, 1.0f, 1.0f);
+player.rumble_timer = 0.5f; // Rumble for half a second
+
+// Update Loop
+if (player.rumble_timer > 0) {
+    player.rumble_timer -= dt;
+    if (player.rumble_timer <= 0) {
+        SituationSetGamepadVibration(0, 0.0f, 0.0f); // Stop
+    }
+}
+```
 
 <a id="60-filesystem--io"></a>
 
