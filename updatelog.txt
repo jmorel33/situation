@@ -1,3 +1,25 @@
+Date: 2025-11-24
+Version: 2.3.4L "Velocity" (Hotfix L)
+
+## DESCRIPTION
+This release brings the SDK documentation and codebase into perfect synchronization regarding error handling. It resolves long-standing discrepancies in error code values and introduces granular, actionable error reporting for the Vulkan backend. Additionally, it addresses critical header dependency issues to ensure robust compilation in strict C environments.
+
+## CRITICAL FIXES
+
+*   **Header Compilation & Dependency Ordering:** Solved a compilation order dependency in `situation.h`. Moved `SituationError` and `SituationBufferUsageFlags` typedefs to the top of the header. This ensures that these types are defined before they are used in function prototypes or macros (like `SITUATION_LOG_WARNING`), preventing "unknown type" errors in single-pass C compilers.
+*   **Vulkan Descriptor Logic:** Fixed a memory leak in `_SituationVulkanAllocateDescriptorSet`. Previously, if `realloc` failed, the original pointer was lost. The logic now safely handles reallocation failures.
+
+## ERROR HANDLING & DOCUMENTATION
+
+*   **Error Code Synchronization:** Performed a comprehensive audit of `situation.h` and `situation_sdk_234.md`.
+    *   Verified `SITUATION_ERROR_UNKNOWN_ERROR` is explicitly `-999`.
+    *   Updated documentation to match implementation values for `SITUATION_ERROR_INVALID_ENUM` (-4), `SITUATION_ERROR_ALREADY_INITIALIZED` (-310), and filesystem errors (-550, -551).
+*   **Granular Vulkan Errors:** Implemented specific, high-value error codes for the Vulkan backend to aid in debugging resource exhaustion:
+    *   `_SituationVulkanAllocateDescriptorSet` now returns `SITUATION_ERROR_VULKAN_DESCRIPTOR_POOL_EXHAUSTED` (-749) instead of a generic error.
+    *   `_SituationVulkanCreateImage` and `_SituationVulkanCreateAndUploadBuffer` now return `SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED` (-750) on memory failures.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-24  
 Version: 2.3.4K "Velocity" (Hotfix K)  
 
