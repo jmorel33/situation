@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.4M "Velocity" (Hotfix M)
+*   Core API library v2.3.5 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 4
-#define SITUATION_VERSION_REVISION "N"
+#define SITUATION_VERSION_PATCH 5
+#define SITUATION_VERSION_REVISION ""
 
 /*
 Compilation command (adjust paths/libs for your system):
