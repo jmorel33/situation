@@ -1,3 +1,17 @@
+Date: 2025-11-25
+Version: 2.3.4N "Velocity" (Hotfix N)
+
+## DESCRIPTION
+This release focuses on critical performance optimization for the Vulkan backend. It eliminates severe CPU-side stalls during resource management and data transfer, transforming the engine's streaming capabilities. It also implements a "Linear Allocator" strategy for descriptor pools to prevent fragmentation and reduce allocation overhead.
+
+## CRITICAL PERFORMANCE FIXES
+
+*   **Deferred Resource Destruction:** Implemented a `SituationGraveyard` system. Resources (Buffers, Images, Pipelines, Descriptor Sets) destroyed during a frame are no longer deleted immediately (which required a stalling `vkDeviceWaitIdle`). Instead, they are queued and safely destroyed only after the frame that used them has completed execution on the GPU. This eliminates the massive frame spikes previously seen during asset unloading.
+*   **Asynchronous Buffer Uploads:** Refactored `_SituationVulkanCreateAndUploadBuffer`. It now uses the main command buffer to perform data transfers when inside a frame, inserting pipeline barriers for synchronization. This replaces the previous synchronous "allocate-record-submit-wait" cycle for every single buffer creation, significantly speeding up asset loading during gameplay.
+*   **Linear Descriptor Allocation:** Modified the `_SituationFlushGraveyard` logic to skip individual `vkFreeDescriptorSets` calls. By treating descriptor pools as append-only and resetting/destroying them only when full or at shutdown, we eliminate memory fragmentation and the high CPU cost of freeing sets individually.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-24
 Version: 2.3.4M "Velocity" (Hotfix M)
 
