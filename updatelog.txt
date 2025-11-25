@@ -1,5 +1,5 @@
 Date: 2025-11-25
-Version: 2.3.4N "Velocity" (Hotfix N)
+Version: 2.3.5 "Velocity"
 
 ## DESCRIPTION
 This release focuses on critical performance optimization for the Vulkan backend. It eliminates severe CPU-side stalls during resource management and data transfer, transforming the engine's streaming capabilities. It also implements a "Linear Allocator" strategy for descriptor pools to prevent fragmentation and reduce allocation overhead.
