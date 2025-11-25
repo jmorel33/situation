@@ -1,3 +1,18 @@
+Date: 2025-11-26
+Version: 2.3.5A "Velocity" (Pristine)
+
+## DESCRIPTION
+This is a documentation and refinement release. Following the major performance overhaul in 2.3.5, this update focuses on making the solutions "absolutely pristine" by adding comprehensive documentation and ensuring the code is clean, consistent, and easy to understand. It verifies that the fixes for the critical performance bottlenecks are robust and clearly explains the "why" behind the architecture.
+
+## DOCUMENTATION & REFINEMENT
+
+*   **Vulkan Graveyard System:** Added a detailed documentation block explaining the entire deferred deletion ("graveyard") system. It explicitly details how this architecture solves the `vkDeviceWaitIdle` abuse problem by queuing resources for deletion instead of stalling the GPU.
+*   **Asynchronous Uploads:** Added a comprehensive header to the `_SituationVulkanCreateAndUploadBuffer` function. It now clearly documents the dual-path (asynchronous/synchronous) mechanism and explains how the asynchronous path eliminates CPU-GPU stalls during in-game asset streaming.
+*   **Linear Descriptor Allocation:** Verified that `vkFreeDescriptorSets` is not used in the hot path. Added documentation to the `_SituationVulkanAllocateDescriptorSet` function explaining how the "Dynamic Descriptor Manager" acts as a high-performance, auto-growing linear allocator, solving the descriptor pool fragmentation issue.
+*   **API Consistency:** Refined internal function signatures for the deferred deletion system for better consistency.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-25
 Version: 2.3.5 "Velocity"
 
@@ -245,7 +260,7 @@ This update finalizes the strict C11 compliance overhaul and refactors the inter
 
 *   **Standard Compliance:**
     *   Added `_POSIX_C_SOURCE` and `_XOPEN_SOURCE` feature macros to correctly expose system headers on Linux/macOS.
-    *   Replaced all C++ style empty initializers `{}` with C11 universal zero initializers `{0}`.
+    *   Replaced all C++ style empty initializers (`{}`) with C11 universal zero initializers (`{0}`).
     *   Implemented internal helpers `_sit_strdup` and `_sit_strcasecmp` to remove dependency on non-standard headers.
     *   Replaced deprecated `usleep` with `nanosleep` for POSIX frame limiting.
 

@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 5
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -12368,26 +12368,23 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
 
 #if defined(SITUATION_USE_VULKAN)
 /**
- * @brief [INTERNAL] Creates a GPU buffer, uploads data to it via a staging buffer, and allocates memory.
+ * @brief [INTERNAL] Creates a device-local GPU buffer and uploads data to it, using an asynchronous path when possible.
  *
- * @details This is a fundamental helper function for Vulkan. It encapsulates the process of:
- * 1. Creating a CPU-visible staging buffer.
- * 2. Uploading user data to the staging buffer.
- * 3. Creating a GPU-local (device-memory) destination buffer with specified usage flags.
- * 4. Recording and submitting a command to copy data from the staging buffer to the destination buffer.
- * 5. Cleaning up the staging buffer.
+ * @details This is the core data upload utility for the Vulkan backend. It correctly handles the creation of high-performance, device-local buffers by using a temporary, host-visible "staging" buffer for the data transfer.
  *
- * @param data Pointer to the data to upload. Must not be NULL.
- * @param size The size of the data in bytes. Must be > 0.
- * @param usage The Vulkan usage flags for the final GPU buffer (e.g., VK_BUFFER_USAGE_VERTEX_BUFFER_BIT).
- *              VK_BUFFER_USAGE_TRANSFER_DST_BIT is automatically added.
- * @param out_buffer Pointer to a VkBuffer handle to store the created GPU buffer. Must not be NULL.
- * @param out_allocation Pointer to a VmaAllocation handle to store the memory allocation info. Must not be NULL.
- * @return SITUATION_SUCCESS on successful creation and data upload.
- * @return SITUATION_ERROR_INVALID_PARAM if input parameters are invalid.
- * @return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED if staging or final buffer allocation fails.
- * @return SITUATION_ERROR_BUFFER_MAP_FAILED if mapping the staging buffer fails.
- * @return SITUATION_ERROR_VULKAN_COMMAND_FAILED if recording or executing the copy command fails.
+ * @par Asynchronous Upload Path (The "Velocity" Solution)
+ *   This function implements a dual-path mechanism to solve the "Synchronous Transfers" bottleneck:
+ *   - **If `cmd` is a valid command buffer (not NULL):** This is the **asynchronous path**, used during the main render loop. The function records a `vkCmdCopyBuffer` command into the provided `cmd` and places the staging buffer into the graveyard for deferred deletion using `_SituationDeferDestroyBuffer`. This is a non-blocking operation that allows dozens of assets to be uploaded in a single frame without stalling the CPU.
+ *   - **If `cmd` is NULL:** This is the **synchronous path**, used during initialization or outside the main render loop. The function creates its own temporary command buffer, submits the copy, and stalls the CPU by waiting for the transfer to complete (`vkQueueWaitIdle`). This is necessary when a frame is not in flight but is avoided at all costs during runtime.
+ *
+ * @param cmd The main command buffer for the current frame, or NULL to force a synchronous upload.
+ * @param data Pointer to the data to upload.
+ * @param size The size of the data in bytes.
+ * @param usage The final usage flags for the destination buffer (e.g., `VK_BUFFER_USAGE_VERTEX_BUFFER_BIT`).
+ * @param[out] out_buffer Pointer to store the handle of the final, device-local buffer.
+ * @param[out] out_allocation Pointer to store the VMA allocation for the final buffer.
+ *
+ * @return `SITUATION_SUCCESS` on success.
  */
 /**
  * @brief [INTERNAL] Creates a device-local GPU buffer and uploads data to it, using an asynchronous path when possible.
