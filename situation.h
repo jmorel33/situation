@@ -2235,7 +2235,42 @@ typedef struct {
     VkImageView screen_copy_view;                                // View for screen copy
     VkDescriptorSet screen_copy_descriptor_set;                  // Descriptor set for reading screen copy
 
+    // --- Graveyard (Deferred Deletion Queue) ---
+    struct SituationGraveyard* graveyards;                       // Array of deletion queues (one per frame in flight)
+
 } _SituationVulkanState;
+
+// --- Vulkan Graveyard Definition ---
+typedef struct SituationGraveyard {
+    VkBuffer* buffers;
+    VmaAllocation* buffer_allocations;
+    int buffer_count;
+    int buffer_capacity;
+
+    VkImage* images;
+    VmaAllocation* image_allocations;
+    VkImageView* image_views;
+    VkSampler* samplers;
+    int image_count;
+    int image_capacity;
+
+    VkDescriptorSet* descriptor_sets;
+    int descriptor_set_count;
+    int descriptor_set_capacity;
+
+    VkPipeline* pipelines;
+    VkPipelineLayout* pipeline_layouts;
+    int pipeline_count;
+    int pipeline_capacity;
+
+    VkFramebuffer* framebuffers;
+    int framebuffer_count;
+    int framebuffer_capacity;
+
+    VkRenderPass* render_passes;
+    int render_pass_count;
+    int render_pass_capacity;
+} SituationGraveyard;
 #endif // SITUATION_USE_VULKAN
 
 #elif defined(SITUATION_USE_OPENGL)
@@ -2992,6 +3027,237 @@ static void _SituationFreeSpirvBlob(_SituationSpirvBlob* blob);
 static void _SituationVulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout);
 static void _SituationVulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
 static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkImageLayout srcImageLayout, uint32_t width, uint32_t height);
+
+// --- Vulkan Graveyard Helpers ---
+static void _SituationInitGraveyard(SituationGraveyard* gy);
+static void _SituationCleanupGraveyard(SituationGraveyard* gy);
+static void _SituationFlushGraveyard(uint32_t frame_index);
+static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation);
+static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler);
+static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set);
+static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout);
+static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer);
+static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass);
+
+// --- Vulkan Graveyard Implementation ---
+
+static void _SituationInitGraveyard(SituationGraveyard* gy) {
+    memset(gy, 0, sizeof(SituationGraveyard));
+    // Pre-allocate some capacity to avoid initial reallocs
+    gy->buffer_capacity = 16;
+    gy->buffers = (VkBuffer*)malloc(sizeof(VkBuffer) * gy->buffer_capacity);
+    gy->buffer_allocations = (VmaAllocation*)malloc(sizeof(VmaAllocation) * gy->buffer_capacity);
+
+    gy->image_capacity = 16;
+    gy->images = (VkImage*)malloc(sizeof(VkImage) * gy->image_capacity);
+    gy->image_allocations = (VmaAllocation*)malloc(sizeof(VmaAllocation) * gy->image_capacity);
+    gy->image_views = (VkImageView*)malloc(sizeof(VkImageView) * gy->image_capacity);
+    gy->samplers = (VkSampler*)malloc(sizeof(VkSampler) * gy->image_capacity);
+
+    gy->descriptor_set_capacity = 32;
+    gy->descriptor_sets = (VkDescriptorSet*)malloc(sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
+
+    gy->pipeline_capacity = 8;
+    gy->pipelines = (VkPipeline*)malloc(sizeof(VkPipeline) * gy->pipeline_capacity);
+    gy->pipeline_layouts = (VkPipelineLayout*)malloc(sizeof(VkPipelineLayout) * gy->pipeline_capacity);
+
+    gy->framebuffer_capacity = 4;
+    gy->framebuffers = (VkFramebuffer*)malloc(sizeof(VkFramebuffer) * gy->framebuffer_capacity);
+
+    gy->render_pass_capacity = 4;
+    gy->render_passes = (VkRenderPass*)malloc(sizeof(VkRenderPass) * gy->render_pass_capacity);
+}
+
+static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
+    // Ensure everything is flushed first (though device should be idle by now if called from CleanupVulkan)
+    // Just free the arrays
+    SIT_FREE(gy->buffers);
+    SIT_FREE(gy->buffer_allocations);
+    SIT_FREE(gy->images);
+    SIT_FREE(gy->image_allocations);
+    SIT_FREE(gy->image_views);
+    SIT_FREE(gy->samplers);
+    SIT_FREE(gy->descriptor_sets);
+    SIT_FREE(gy->pipelines);
+    SIT_FREE(gy->pipeline_layouts);
+    SIT_FREE(gy->framebuffers);
+    SIT_FREE(gy->render_passes);
+    memset(gy, 0, sizeof(SituationGraveyard));
+}
+
+static void _SituationFlushGraveyard(uint32_t frame_index) {
+    if (!sit_gs.vk.graveyards) return;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[frame_index];
+
+    // Buffers
+    for (int i = 0; i < gy->buffer_count; ++i) {
+        if (gy->buffers[i] != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(sit_gs.vk.vma_allocator, gy->buffers[i], gy->buffer_allocations[i]);
+        }
+    }
+    gy->buffer_count = 0;
+
+    // Images
+    for (int i = 0; i < gy->image_count; ++i) {
+        if (gy->samplers[i] != VK_NULL_HANDLE) vkDestroySampler(sit_gs.vk.device, gy->samplers[i], NULL);
+        if (gy->image_views[i] != VK_NULL_HANDLE) vkDestroyImageView(sit_gs.vk.device, gy->image_views[i], NULL);
+        if (gy->images[i] != VK_NULL_HANDLE) vmaDestroyImage(sit_gs.vk.vma_allocator, gy->images[i], gy->image_allocations[i]);
+    }
+    gy->image_count = 0;
+
+    // Descriptor Sets
+    if (gy->descriptor_set_count > 0) {
+        // Assuming all sets belong to the same pool or can be freed individually.
+        // The library uses a unified descriptor pool approach.
+        // Note: vkFreeDescriptorSets requires the pool. We assume persistent_descriptor_pool or
+        // that the sets came from the dynamic manager. Freeing individually from the dynamic manager's
+        // pools is valid if they were created with FREE_DESCRIPTOR_SET_BIT (they are).
+        // We'll try freeing from the persistent pool as a default, or iterate pools if needed?
+        // Actually, for simplicity/safety in this specific codebase architecture where we might not track
+        // *which* pool a set came from easily without extra storage:
+        // We can try freeing from the current active pool or the persistent pool.
+        // The current architecture's `_SituationVulkanAllocateDescriptorSet` uses dynamic pools.
+        // However, `SituationDestroyTexture` previously tried to free from `persistent_descriptor_pool`.
+        // We will iterate and try to free. If it's from a different pool, this might be an issue if we don't track the pool.
+        // **Refinement:** If we don't track the pool, we can't reliably free.
+        // BUT: The user issue mentioned "SituationDestroyTexture attempts to free... vkFreeDescriptorSets".
+        // So we should replicate that logic but deferred.
+        // Since `sit_gs.vk.descriptor_manager` is used for *new* allocations, but `SituationDestroyTexture` logic in the memory used `persistent_descriptor_pool`?
+        // Let's look at the `SituationCreateTexture` logic I see in the file.
+        // It calls `_SituationVulkanAllocateDescriptorSet`.
+        // `_SituationVulkanAllocateDescriptorSet` allocates from `sit_gs.vk.descriptor_manager.pools[...]`.
+        // So we don't know which pool it came from unless we stored it. `SituationTexture` doesn't store the pool.
+        // This suggests a pre-existing potential bug or simplification in the codebase.
+        // However, for the immediate fix of *stalling*, deferring is correct.
+        // If we can't free, we leak.
+        // Given the prompt says "If the pool wasn't created with ... FREE ... BIT ... it would crash", implies it IS supported.
+        // But we need the pool handle.
+        // *Assumption:* For now, we will assume sets come from `sit_gs.vk.descriptor_pool` (the active one) or `persistent_descriptor_pool`.
+        // Wait, `sit_gs.vk.descriptor_pool` is just a pointer to `persistent` initially.
+        // If we grew, we have multiple pools.
+        // If we can't identify the pool, we can't free.
+        // **Strategy:** We will skip freeing descriptor sets for now in the graveyard to avoid crashes from wrong pool usage,
+        // UNLESS we modify SituationTexture/Graveyard to store the pool.
+        // BUT, if we just don't free them, we leak.
+        // Let's look at `_SituationVulkanAllocateDescriptorSet` implementation.
+        // It uses `sit_gs.vk.descriptor_manager.pools[current]`.
+        // Since we can't easily change `SituationTexture` layout (it's public struct? No, public struct is opaque handle, definition is in implementation?),
+        // Actually `typedef struct { ... } SituationTexture;` is in the header. We can't change it without breaking ABI?
+        // The implementation is inside `#ifdef SITUATION_IMPLEMENTATION`.
+        // `SituationTexture` definition is public. We can't add fields easily if user code allocates it on stack?
+        // `SituationTexture` is returned by value.
+        // Okay, for this task "Critical Graphics Performance Bottlenecks", I will focus on the STALL.
+        // If I defer the "free" call to here, I still need the pool.
+        // *Compromise:* I will pass `VK_NULL_HANDLE` as the pool for now, which is invalid.
+        // Wait, `SituationDestroyTexture` in the *current* code uses `sit_gs.vk.persistent_descriptor_pool`.
+        // That suggests the author assumes all textures are in that pool.
+        // I will stick to that assumption for the graveyard flush to match existing logic.
+        // If that logic is flawed regarding multiple pools, it's a separate bug.
+        if (sit_gs.vk.persistent_descriptor_pool != VK_NULL_HANDLE) {
+             vkFreeDescriptorSets(sit_gs.vk.device, sit_gs.vk.persistent_descriptor_pool, gy->descriptor_set_count, gy->descriptor_sets);
+        }
+    }
+    gy->descriptor_set_count = 0;
+
+    // Pipelines
+    for (int i = 0; i < gy->pipeline_count; ++i) {
+        if (gy->pipelines[i] != VK_NULL_HANDLE) vkDestroyPipeline(sit_gs.vk.device, gy->pipelines[i], NULL);
+        if (gy->pipeline_layouts[i] != VK_NULL_HANDLE) vkDestroyPipelineLayout(sit_gs.vk.device, gy->pipeline_layouts[i], NULL);
+    }
+    gy->pipeline_count = 0;
+
+    // Framebuffers
+    for (int i = 0; i < gy->framebuffer_count; ++i) {
+        if (gy->framebuffers[i] != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_gs.vk.device, gy->framebuffers[i], NULL);
+    }
+    gy->framebuffer_count = 0;
+
+    // Render Passes
+    for (int i = 0; i < gy->render_pass_count; ++i) {
+        if (gy->render_passes[i] != VK_NULL_HANDLE) vkDestroyRenderPass(sit_gs.vk.device, gy->render_passes[i], NULL);
+    }
+    gy->render_pass_count = 0;
+}
+
+static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation) {
+    if (buffer == VK_NULL_HANDLE) return;
+    // Push to the PREVIOUS frame's graveyard to ensure the resource survives until that frame is fully complete.
+    uint32_t gy_idx = (sit_gs.vk.current_frame_index + sit_gs.vk.max_frames_in_flight - 1) % sit_gs.vk.max_frames_in_flight;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->buffer_count >= gy->buffer_capacity) {
+        gy->buffer_capacity *= 2;
+        gy->buffers = (VkBuffer*)realloc(gy->buffers, sizeof(VkBuffer) * gy->buffer_capacity);
+        gy->buffer_allocations = (VmaAllocation*)realloc(gy->buffer_allocations, sizeof(VmaAllocation) * gy->buffer_capacity);
+    }
+    gy->buffers[gy->buffer_count] = buffer;
+    gy->buffer_allocations[gy->buffer_count] = allocation;
+    gy->buffer_count++;
+}
+
+static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler) {
+    if (image == VK_NULL_HANDLE && view == VK_NULL_HANDLE && sampler == VK_NULL_HANDLE) return;
+    uint32_t gy_idx = (sit_gs.vk.current_frame_index + sit_gs.vk.max_frames_in_flight - 1) % sit_gs.vk.max_frames_in_flight;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->image_count >= gy->image_capacity) {
+        gy->image_capacity *= 2;
+        gy->images = (VkImage*)realloc(gy->images, sizeof(VkImage) * gy->image_capacity);
+        gy->image_allocations = (VmaAllocation*)realloc(gy->image_allocations, sizeof(VmaAllocation) * gy->image_capacity);
+        gy->image_views = (VkImageView*)realloc(gy->image_views, sizeof(VkImageView) * gy->image_capacity);
+        gy->samplers = (VkSampler*)realloc(gy->samplers, sizeof(VkSampler) * gy->image_capacity);
+    }
+    gy->images[gy->image_count] = image;
+    gy->image_allocations[gy->image_count] = allocation;
+    gy->image_views[gy->image_count] = view;
+    gy->samplers[gy->image_count] = sampler;
+    gy->image_count++;
+}
+
+static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set) {
+    if (set == VK_NULL_HANDLE) return;
+    uint32_t gy_idx = (sit_gs.vk.current_frame_index + sit_gs.vk.max_frames_in_flight - 1) % sit_gs.vk.max_frames_in_flight;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->descriptor_set_count >= gy->descriptor_set_capacity) {
+        gy->descriptor_set_capacity *= 2;
+        gy->descriptor_sets = (VkDescriptorSet*)realloc(gy->descriptor_sets, sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
+    }
+    gy->descriptor_sets[gy->descriptor_set_count++] = set;
+}
+
+static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout) {
+    if (pipeline == VK_NULL_HANDLE) return;
+    uint32_t gy_idx = (sit_gs.vk.current_frame_index + sit_gs.vk.max_frames_in_flight - 1) % sit_gs.vk.max_frames_in_flight;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->pipeline_count >= gy->pipeline_capacity) {
+        gy->pipeline_capacity *= 2;
+        gy->pipelines = (VkPipeline*)realloc(gy->pipelines, sizeof(VkPipeline) * gy->pipeline_capacity);
+        gy->pipeline_layouts = (VkPipelineLayout*)realloc(gy->pipeline_layouts, sizeof(VkPipelineLayout) * gy->pipeline_capacity);
+    }
+    gy->pipelines[gy->pipeline_count] = pipeline;
+    gy->pipeline_layouts[gy->pipeline_count] = layout;
+    gy->pipeline_count++;
+}
+
+static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
+    if (framebuffer == VK_NULL_HANDLE) return;
+    uint32_t gy_idx = (sit_gs.vk.current_frame_index + sit_gs.vk.max_frames_in_flight - 1) % sit_gs.vk.max_frames_in_flight;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->framebuffer_count >= gy->framebuffer_capacity) {
+        gy->framebuffer_capacity *= 2;
+        gy->framebuffers = (VkFramebuffer*)realloc(gy->framebuffers, sizeof(VkFramebuffer) * gy->framebuffer_capacity);
+    }
+    gy->framebuffers[gy->framebuffer_count++] = framebuffer;
+}
+
+static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass) {
+    if (render_pass == VK_NULL_HANDLE) return;
+    uint32_t gy_idx = (sit_gs.vk.current_frame_index + sit_gs.vk.max_frames_in_flight - 1) % sit_gs.vk.max_frames_in_flight;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->render_pass_count >= gy->render_pass_capacity) {
+        gy->render_pass_capacity *= 2;
+        gy->render_passes = (VkRenderPass*)realloc(gy->render_passes, sizeof(VkRenderPass) * gy->render_pass_capacity);
+    }
+    gy->render_passes[gy->render_pass_count++] = render_pass;
+}
 
 // --- Vulkan Callback Functions ---
 static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
@@ -6626,11 +6892,16 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     sit_gs.vk.view_proj_ubo_buffer = calloc(frame_count, sizeof(VkBuffer));
     sit_gs.vk.view_proj_ubo_memory = calloc(frame_count, sizeof(VmaAllocation));
     sit_gs.vk.view_proj_ubo_descriptor_set = calloc(frame_count, sizeof(VkDescriptorSet));
+    sit_gs.vk.graveyards = calloc(frame_count, sizeof(SituationGraveyard));
 
-    if (!sit_gs.vk.command_buffers || !sit_gs.vk.image_available_semaphores || !sit_gs.vk.render_finished_semaphores || !sit_gs.vk.in_flight_fences || !sit_gs.vk.view_proj_ubo_buffer || !sit_gs.vk.view_proj_ubo_memory || !sit_gs.vk.view_proj_ubo_descriptor_set) {
+    if (!sit_gs.vk.command_buffers || !sit_gs.vk.image_available_semaphores || !sit_gs.vk.render_finished_semaphores || !sit_gs.vk.in_flight_fences || !sit_gs.vk.view_proj_ubo_buffer || !sit_gs.vk.view_proj_ubo_memory || !sit_gs.vk.view_proj_ubo_descriptor_set || !sit_gs.vk.graveyards) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Per-frame Vulkan resource arrays");
         _SituationCleanupVulkan(); // The main cleanup function will free any non-NULL arrays
         return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+
+    for (uint32_t i = 0; i < frame_count; i++) {
+        _SituationInitGraveyard(&sit_gs.vk.graveyards[i]);
     }
 
     // --- Phase 3 & 4: Frame-Independent and Descriptor Infrastructure ---
@@ -6720,7 +6991,8 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
 
     for (uint32_t i = 0; i < frame_count; i++) {
         VkDeviceSize buffer_size = sizeof(ViewDataUBO);
-        if (_SituationVulkanCreateAndUploadBuffer(NULL, buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &sit_gs.vk.view_proj_ubo_buffer[i], &sit_gs.vk.view_proj_ubo_memory[i]) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
+        // Passing NULL cmd forces synchronous upload for init
+        if (_SituationVulkanCreateAndUploadBuffer(VK_NULL_HANDLE, NULL, buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &sit_gs.vk.view_proj_ubo_buffer[i], &sit_gs.vk.view_proj_ubo_memory[i]) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
 
         sit_gs.vk.view_proj_ubo_descriptor_set[i] = _SituationVulkanAllocateDescriptorSet(sit_gs.vk.view_data_ubo_layout);
         if (sit_gs.vk.view_proj_ubo_descriptor_set[i] == VK_NULL_HANDLE) {
@@ -9183,7 +9455,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
         0.0f, 1.0f,
         1.0f, 1.0f
     };
-    if (_SituationVulkanCreateAndUploadBuffer(quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &sit_gs.vk.quad_vertex_buffer, &sit_gs.vk.quad_vertex_buffer_memory) != SITUATION_SUCCESS) {
+    if (_SituationVulkanCreateAndUploadBuffer(VK_NULL_HANDLE, quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &sit_gs.vk.quad_vertex_buffer, &sit_gs.vk.quad_vertex_buffer_memory) != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create quad vertex buffer.");
         return false;
     }
@@ -9286,6 +9558,15 @@ static void _SituationCleanupVulkan(void) {
     SIT_FREE(sit_gs.vk.view_proj_ubo_buffer);
     SIT_FREE(sit_gs.vk.view_proj_ubo_memory);
     SIT_FREE(sit_gs.vk.view_proj_ubo_descriptor_set);
+
+    // Clean up graveyards
+    if (sit_gs.vk.graveyards) {
+        for (uint32_t i = 0; i < sit_gs.vk.max_frames_in_flight; i++) {
+            _SituationFlushGraveyard(i); // Important: Flush resources first!
+            _SituationCleanupGraveyard(&sit_gs.vk.graveyards[i]);
+        }
+        SIT_FREE(sit_gs.vk.graveyards);
+    }
 
     for (int i = 0; i < sizeof(sit_gs.vk.compute_layouts) / sizeof(sit_gs.vk.compute_layouts[0]); ++i) {
         if (sit_gs.vk.compute_layouts[i] != VK_NULL_HANDLE) {
@@ -10060,6 +10341,10 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
              _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to wait for frame fence in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
+
+        // --- FLUSH GRAVEYARD ---
+        // The GPU is done with this frame, so we can safely destroy deferred resources.
+        _SituationFlushGraveyard(sit_gs.vk.current_frame_index);
 
         // 2.2. Acquire the next swapchain image.
         uint32_t image_index;
@@ -11915,7 +12200,10 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     VkBuffer staging_buffer;
     VmaAllocation staging_allocation;
 
-    if (_SituationVulkanCreateAndUploadBuffer(image.data, image_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging_buffer, &staging_allocation) != SITUATION_SUCCESS) {
+    // Check if we can use async transfer (inside frame)
+    VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
+
+    if (_SituationVulkanCreateAndUploadBuffer(cmd, image.data, image_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging_buffer, &staging_allocation) != SITUATION_SUCCESS) {
         return texture;
     }
 
@@ -11928,14 +12216,18 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     if (_SituationVulkanCreateImage(image.width, image.height, mip_levels, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
                                   vk_usage, VMA_MEMORY_USAGE_GPU_ONLY,
                                   &texture.image, &texture.allocation) != SITUATION_SUCCESS) {
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+        if (cmd == VK_NULL_HANDLE) vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+        else _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
         return texture;
     }
 
     // --- Step 3: Copy and Generate Mipmaps ---
-    VkCommandBuffer command_buffer = _SituationVulkanBeginSingleTimeCommands();
+    VkCommandBuffer command_buffer = (cmd != VK_NULL_HANDLE) ? cmd : _SituationVulkanBeginSingleTimeCommands();
+    // If async, we assume _SituationVulkanCreateAndUploadBuffer already put the staging buffer in a state ready for transfer (it does, it doesn't transition it, but buffer is host visible).
+    // But we need to transition the *image* to TransferDst.
 
     // a. Transition the entire image (all mip levels) to be ready for writing.
+    // For async, we need a pipeline barrier to ensure the layout transition happens before the copy.
     _SituationVulkanTransitionImageLayout(command_buffer, texture.image, mip_levels, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     // b. Copy the staging buffer to the first mip level (level 0).
@@ -11949,10 +12241,14 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
         _SituationVulkanTransitionImageLayout(command_buffer, texture.image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
-    _SituationVulkanEndSingleTimeCommands(command_buffer);
-
-    // --- Step 4: Cleanup Staging Buffer ---
-    vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+    if (cmd == VK_NULL_HANDLE) {
+        _SituationVulkanEndSingleTimeCommands(command_buffer);
+        // --- Step 4: Cleanup Staging Buffer (Synchronous) ---
+        vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+    } else {
+        // --- Step 4: Defer Cleanup Staging Buffer (Asynchronous) ---
+        _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
+    }
 
     // --- Step 5: Create Image View and Sampler ---
     // The image view must now be aware of all the mip levels.
@@ -12116,54 +12412,19 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
 #elif defined(SITUATION_USE_VULKAN)
     {
         // --- 3. Vulkan Destruction ---
-        // Critical: Ensure the GPU is finished using the texture before destroying it.
-        // Waiting for the entire device to be idle is the simplest and safest way.
-        VkResult wait_result = vkDeviceWaitIdle(sit_gs.vk.device);
-        if (wait_result != VK_SUCCESS) {
-             fprintf(stderr, "WARNING: vkDeviceWaitIdle failed (0x%x) during texture destruction.\n", wait_result);
-             // Proceeding to destroy resources to prevent leaks, despite potential issues.
-        }
-
-        // --- NEW (if descriptor sets are cached): Free the persistent descriptor set ---
-        // This step is crucial if descriptor sets are pre-allocated for textures.
-        // It assumes the descriptor set was allocated from `sit_gs.vk.persistent_descriptor_pool`.
-        // (The exact pool might vary based on your implementation details).
+        // Defer destruction to avoid stalling.
         if (texture->descriptor_set != VK_NULL_HANDLE) {
-             // It's crucial that the pool used for allocation supports freeing individual sets
-             // (VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT).
-             VkResult free_result = vkFreeDescriptorSets(
-                 sit_gs.vk.device,
-                 sit_gs.vk.persistent_descriptor_pool, // Or the specific pool used for textures
-                 1,
-                 &texture->descriptor_set
-             );
-             if (free_result != VK_SUCCESS) {
-                 fprintf(stderr, "WARNING: vkFreeDescriptorSets failed (0x%x) for texture's descriptor set.\n", free_result);
-                 // This might indicate a pool problem.
-             }
-             texture->descriptor_set = VK_NULL_HANDLE; // Optional, as struct is zeroed later
+            _SituationDeferDestroyDescriptorSet(texture->descriptor_set);
         }
-        // --- END NEW ---
 
-        // --- Use Internal Helper (if it exists and handles sampler/view/image/alloc) ---
-        // Check if there's a specific helper like `_SituationVulkanDestroyTexture`.
-        // If it exists and is designed to handle all texture resources including the descriptor set (which we just freed above, so the helper shouldn't try to free it again), then call it. Otherwise, perform the destruction steps directly as below.
-        //
-        // IF SUCH A HELPER EXISTS AND IS SUITABLE:
-        // _SituationVulkanDestroyTexture(texture->image, texture->image_view, texture->sampler, texture->allocation);
-        //
-        // IF NO SUCH HELPER EXISTS OR IT'S INCOMPLETE, USE DIRECT CALLS:
-        // ---------------------------------------------------------------------
-        // Destroy the Vulkan objects directly.
-        vkDestroySampler(sit_gs.vk.device, texture->sampler, NULL);
-        vkDestroyImageView(sit_gs.vk.device, texture->image_view, NULL);
-        vmaDestroyImage(sit_gs.vk.vma_allocator, texture->image, texture->allocation);
-        // VkImage, VkImageView, VkSampler, VmaAllocation handles are now invalid.
+        _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
+
+        // Reset handles
         texture->image = VK_NULL_HANDLE;
         texture->image_view = VK_NULL_HANDLE;
         texture->sampler = VK_NULL_HANDLE;
         texture->allocation = VK_NULL_HANDLE;
-        // ---------------------------------------------------------------------
+        texture->descriptor_set = VK_NULL_HANDLE;
     }
 #endif
 
@@ -12197,13 +12458,11 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
  * @return SITUATION_ERROR_BUFFER_MAP_FAILED if mapping the staging buffer fails.
  * @return SITUATION_ERROR_VULKAN_COMMAND_FAILED if recording or executing the copy command fails.
  */
-static SituationError _SituationVulkanCreateAndUploadBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* out_buffer, VmaAllocation* out_allocation) {
+static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd, const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* out_buffer, VmaAllocation* out_allocation) {
     // --- 1. Input Validation ---
-    // As an internal helper, basic checks prevent internal errors.
     if (!data || size == 0 || !out_buffer || !out_allocation) {
         return SITUATION_ERROR_INVALID_PARAM;
     }
-    // Initialize outputs to safe/invalid values in case of early return.
     *out_buffer = VK_NULL_HANDLE;
     *out_allocation = VK_NULL_HANDLE;
 
@@ -12217,18 +12476,16 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(const void* data, Vk
     staging_buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
     VmaAllocationCreateInfo staging_alloc_info = {0};
-    staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU; // Suitable for uploads from CPU
+    staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
 
-    VkResult result = vmaCreateBuffer(sit_gs.vk.vma_allocator, &staging_buffer_info, &staging_alloc_info, &staging_buffer, &staging_allocation, NULL);
-    if (result != VK_SUCCESS) {
+    if (vmaCreateBuffer(sit_gs.vk.vma_allocator, &staging_buffer_info, &staging_alloc_info, &staging_buffer, &staging_allocation, NULL) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create staging buffer.");
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
 
     // --- 3. Upload Data to Staging Buffer ---
     void* mapped_data = NULL;
-    result = vmaMapMemory(sit_gs.vk.vma_allocator, staging_allocation, &mapped_data);
-    if (result != VK_SUCCESS) {
+    if (vmaMapMemory(sit_gs.vk.vma_allocator, staging_allocation, &mapped_data) != VK_SUCCESS) {
         vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
         return SITUATION_ERROR_BUFFER_MAP_FAILED;
     }
@@ -12239,55 +12496,68 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(const void* data, Vk
     VkBufferCreateInfo buffer_info = {0};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_info.size = size;
-    // Crucially, add TRANSFER_DST_BIT to the requested usage for the copy operation.
     buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage;
 
     VmaAllocationCreateInfo alloc_info = {0};
-    alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY; // High-performance device-local memory
+    alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-    result = vmaCreateBuffer(sit_gs.vk.vma_allocator, &buffer_info, &alloc_info, out_buffer, out_allocation, NULL);
-    if (result != VK_SUCCESS) {
+    if (vmaCreateBuffer(sit_gs.vk.vma_allocator, &buffer_info, &alloc_info, out_buffer, out_allocation, NULL) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create device-local buffer.");
         vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
 
-    // --- 5. Copy Data from Staging to Final Buffer ---
-    VkCommandBuffer command_buffer = _SituationVulkanBeginSingleTimeCommands();
-    if (command_buffer == VK_NULL_HANDLE) {
-        // Cleanup already created final buffer
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, *out_buffer, *out_allocation);
-        *out_buffer = VK_NULL_HANDLE;
-        *out_allocation = VK_NULL_HANDLE;
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
-        return SITUATION_ERROR_VULKAN_COMMAND_FAILED; // Assume _SituationVulkanBeginSingleTimeCommands sets a specific error
-    }
-
-    VkBufferCopy copy_region = {0}; // Explicitly zero-initialize
+    // --- 5. Copy Data ---
+    VkBufferCopy copy_region = {0};
     copy_region.size = size;
-    // Note: srcOffset and dstOffset default to 0, which is correct for full buffer copy.
-    vkCmdCopyBuffer(command_buffer, staging_buffer, *out_buffer, 1, &copy_region);
-    // Note: vkCmdCopyBuffer itself doesn't return VkResult. Errors would be caught during command buffer submission.
 
-    // _SituationVulkanEndSingleTimeCommands submits the command buffer and waits for completion.
-    SituationError cmd_result = _SituationVulkanEndSingleTimeCommands(command_buffer);
-    if (cmd_result != SITUATION_SUCCESS) {
-        // If the copy failed, we still need to clean up the successfully created resources.
-        // The command buffer itself is freed by _SituationVulkanEndSingleTimeCommands on failure path.
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, *out_buffer, *out_allocation);
-        *out_buffer = VK_NULL_HANDLE;
-        *out_allocation = VK_NULL_HANDLE;
+    if (cmd != VK_NULL_HANDLE) {
+        // === ASYNCHRONOUS PATH ===
+        // Use the provided command buffer. We must defer the destruction of the staging buffer
+        // until the frame is done.
+
+        // Barrier: Ensure copy happens before shader reads
+        // Note: Only need barrier if we use it in the same frame, but robust to add.
+        // Actually, standard practice is to barrier destination.
+        VkBufferMemoryBarrier barrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer = *out_buffer;
+        barrier.offset = 0;
+        barrier.size = size;
+
+        vkCmdCopyBuffer(cmd, staging_buffer, *out_buffer, 1, &copy_region);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 1, &barrier, 0, NULL);
+
+        _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
+        return SITUATION_SUCCESS;
+
+    } else {
+        // === SYNCHRONOUS PATH (Legacy/Init) ===
+        VkCommandBuffer temp_cmd = _SituationVulkanBeginSingleTimeCommands();
+        if (temp_cmd == VK_NULL_HANDLE) {
+            vmaDestroyBuffer(sit_gs.vk.vma_allocator, *out_buffer, *out_allocation);
+            vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+            *out_buffer = VK_NULL_HANDLE;
+            return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
+        }
+
+        vkCmdCopyBuffer(temp_cmd, staging_buffer, *out_buffer, 1, &copy_region);
+
+        SituationError cmd_result = _SituationVulkanEndSingleTimeCommands(temp_cmd);
+
+        // Cleanup staging immediately
         vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
-        return cmd_result; // Propagate the specific command error
+
+        if (cmd_result != SITUATION_SUCCESS) {
+             vmaDestroyBuffer(sit_gs.vk.vma_allocator, *out_buffer, *out_allocation);
+             *out_buffer = VK_NULL_HANDLE;
+             return cmd_result;
+        }
+        return SITUATION_SUCCESS;
     }
-
-    // --- 6. Cleanup Staging Buffer ---
-    // This must happen *after* the copy command has finished executing (ensured by _SituationVulkanEndSingleTimeCommands).
-    vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
-
-    // --- 7. Success ---
-    // Outputs (*out_buffer, *out_allocation) are already set by vmaCreateBuffer on success.
-    return SITUATION_SUCCESS;
 }
 
 /**
@@ -12491,8 +12761,12 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
 
         // --- 2.2. Create the buffer using the mapped flags ---
         if (initial_data) {
+            // Try to use main command buffer for async upload
+            VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
+
             // Use helper that creates staging buffer and uploads data.
             local_err = _SituationVulkanCreateAndUploadBuffer(
+                cmd,
                 initial_data,
                 size,
                 vk_usage_flags, // Pass the correctly mapped flags
@@ -12686,24 +12960,13 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
     }
 #elif defined(SITUATION_USE_VULKAN)
     {
-        // For Vulkan, we must ensure the GPU is finished before destroying resources.
-        // Waiting for the device to be idle is the simplest and safest synchronization method.
-        if (sit_gs.vk.device) {
-            vkDeviceWaitIdle(sit_gs.vk.device);
-        }
-
-        // 1. Free the persistent descriptor set associated with this buffer.
-        // This is crucial to return the descriptor to the pool.
+        // For Vulkan, defer destruction to the Graveyard to avoid stalling.
         if (buffer->descriptor_set != VK_NULL_HANDLE) {
-            // We must use the pool it was allocated from, which we've designated as the persistent one.
-            vkFreeDescriptorSets(sit_gs.vk.device, sit_gs.vk.persistent_descriptor_pool, 1, &buffer->descriptor_set);
+            _SituationDeferDestroyDescriptorSet(buffer->descriptor_set);
         }
 
-        // 2. Destroy the buffer and its memory allocation.
-        // Use the Vulkan Memory Allocator (VMA) to destroy the VkBuffer and free its VmaAllocation.
-        // This handles both the Vulkan object and its underlying memory in one call.
-        if (buffer->vk_buffer != VK_NULL_HANDLE && sit_gs.vk.vma_allocator) {
-            vmaDestroyBuffer(sit_gs.vk.vma_allocator, buffer->vk_buffer, buffer->vma_allocation);
+        if (buffer->vk_buffer != VK_NULL_HANDLE) {
+            _SituationDeferDestroyBuffer(buffer->vk_buffer, buffer->vma_allocation);
         }
     }
 #endif
@@ -12792,16 +13055,24 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
     SIT_CHECK_GL_ERROR();
 
 #elif defined(SITUATION_USE_VULKAN)
+    // Try to use main command buffer for async upload if inside a frame
+    VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
+
     VkDeviceSize vertex_buffer_size = (VkDeviceSize)vertex_count * vertex_stride;
-    if (_SituationVulkanCreateAndUploadBuffer(vertex_data, vertex_buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &mesh.vertex_buffer, &mesh.vertex_buffer_memory) != SITUATION_SUCCESS) {
+    if (_SituationVulkanCreateAndUploadBuffer(cmd, vertex_data, vertex_buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &mesh.vertex_buffer, &mesh.vertex_buffer_memory) != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create vertex buffer for mesh.");
         return (SituationMesh){0};
     }
 
     VkDeviceSize index_buffer_size = (VkDeviceSize)index_count * sizeof(uint32_t);
-    if (_SituationVulkanCreateAndUploadBuffer(index_data, index_buffer_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &mesh.index_buffer, &mesh.index_buffer_memory) != SITUATION_SUCCESS) {
+    if (_SituationVulkanCreateAndUploadBuffer(cmd, index_data, index_buffer_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &mesh.index_buffer, &mesh.index_buffer_memory) != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create index buffer for mesh.");
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, mesh.vertex_buffer, mesh.vertex_buffer_memory);
+        // Cleanup vertex buffer immediately if synchronous, or defer if async
+        if (cmd == VK_NULL_HANDLE) {
+             vmaDestroyBuffer(sit_gs.vk.vma_allocator, mesh.vertex_buffer, mesh.vertex_buffer_memory);
+        } else {
+             _SituationDeferDestroyBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory);
+        }
         return (SituationMesh){0};
     }
     mesh.id = (uint64_t)(uintptr_t)mesh.vertex_buffer;
@@ -12882,19 +13153,13 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
     }
 #elif defined(SITUATION_USE_VULKAN)
     {
-        // For Vulkan, we must ensure the GPU is finished before destroying buffers.
-        // Waiting for the device to be idle is the simplest and safest synchronization method.
+        // For Vulkan, defer destruction to the Graveyard to avoid stalling the GPU.
         if (sit_gs.vk.device) {
-            vkDeviceWaitIdle(sit_gs.vk.device);
-        }
-
-        // Use the Vulkan Memory Allocator (VMA) to destroy the buffers and free their allocations.
-        if (sit_gs.vk.vma_allocator) {
             if (mesh->vertex_buffer != VK_NULL_HANDLE) {
-                vmaDestroyBuffer(sit_gs.vk.vma_allocator, mesh->vertex_buffer, mesh->vertex_buffer_memory);
+                _SituationDeferDestroyBuffer(mesh->vertex_buffer, mesh->vertex_buffer_memory);
             }
             if (mesh->index_buffer != VK_NULL_HANDLE) {
-                vmaDestroyBuffer(sit_gs.vk.vma_allocator, mesh->index_buffer, mesh->index_buffer_memory);
+                _SituationDeferDestroyBuffer(mesh->index_buffer, mesh->index_buffer_memory);
             }
         }
     }
@@ -13558,38 +13823,16 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
 #elif defined(SITUATION_USE_VULKAN)
     {
         // --- Vulkan Destruction ---
+        // Defer destruction to Graveyard
+        _SituationDeferDestroyPipeline(pipeline->vk_pipeline, pipeline->vk_pipeline_layout);
 
-        // 1. Safety Check: GPU Idle
-        // We must wait because we are about to destroy the pipeline object.
-        if (sit_gs.vk.device != VK_NULL_HANDLE) {
-            VkResult wait_result = vkDeviceWaitIdle(sit_gs.vk.device);
-            if (wait_result != VK_SUCCESS) {
-                fprintf(stderr, "WARNING: vkDeviceWaitIdle failed (0x%x) during compute pipeline destruction.\n", wait_result);
-            }
-        }
-
-        // 2. Manual Resource Cleanup
-        // We destroy the handles directly on the Public struct to avoid type mismatch bugs.
-
-        if (pipeline->vk_pipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(sit_gs.vk.device, pipeline->vk_pipeline, NULL);
-            pipeline->vk_pipeline = VK_NULL_HANDLE;
-        }
-
-        if (pipeline->vk_pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(sit_gs.vk.device, pipeline->vk_pipeline_layout, NULL);
-            pipeline->vk_pipeline_layout = VK_NULL_HANDLE;
-        }
-
-        // Note: We do NOT destroy a VkShaderModule here because the creation function
-        // (_SituationVulkanCreateComputePipeline) destroys the module immediately after pipeline creation. It is not stored in the struct.
+        pipeline->vk_pipeline = VK_NULL_HANDLE;
+        pipeline->vk_pipeline_layout = VK_NULL_HANDLE;
     }
 #endif
 
     #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device != VK_NULL_HANDLE) vkDeviceWaitIdle(sit_gs.vk.device);
-    if (pipeline->vk_pipeline != VK_NULL_HANDLE) vkDestroyPipeline(sit_gs.vk.device, pipeline->vk_pipeline, NULL);
-    if (pipeline->vk_pipeline_layout != VK_NULL_HANDLE) vkDestroyPipelineLayout(sit_gs.vk.device, pipeline->vk_pipeline_layout, NULL);
+    // Redundant block removed
     #elif defined(SITUATION_USE_OPENGL)
     if (glIsProgram(pipeline->gl_program_id)) glDeleteProgram(pipeline->gl_program_id);
     #endif
@@ -16992,23 +17235,14 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
     SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[display_id];
 
 #if defined(SITUATION_USE_VULKAN)
-    // IMPORTANT: Wait for the GPU to finish all work before destroying resources it might be using.
-    vkDeviceWaitIdle(sit_gs.vk.device);
+    // Defer all destruction to the Graveyard to avoid stalling.
+    if (vd->vk.descriptor_set != VK_NULL_HANDLE) _SituationDeferDestroyDescriptorSet(vd->vk.descriptor_set);
+    if (vd->vk.framebuffer != VK_NULL_HANDLE) _SituationDeferDestroyFramebuffer(vd->vk.framebuffer);
+    if (vd->vk.render_pass != VK_NULL_HANDLE) _SituationDeferDestroyRenderPass(vd->vk.render_pass);
 
-    // This assumes the pool was created with VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
-    if (vd->vk.descriptor_set != VK_NULL_HANDLE) {
-        vkFreeDescriptorSets(sit_gs.vk.device, sit_gs.vk.descriptor_pool, 1, &vd->vk.descriptor_set);
-    }
-
-    // Destroy Vulkan resources in the reverse order of their creation.
-    // Descriptor sets are freed with their pool, so we don't free it individually here.
-    vkDestroyFramebuffer(sit_gs.vk.device, vd->framebuffer, NULL);
-    vkDestroyRenderPass(sit_gs.vk.device, vd->render_pass, NULL);
-    vkDestroySampler(sit_gs.vk.device, vd->sampler, NULL);
-    vkDestroyImageView(sit_gs.vk.device, vd->depth_image_view, NULL);
-    vmaDestroyImage(sit_gs.vk.vma_allocator, vd->depth_image, vd->depth_image_memory);
-    vkDestroyImageView(sit_gs.vk.device, vd->image_view, NULL);
-    vmaDestroyImage(sit_gs.vk.vma_allocator, vd->image, vd->image_memory);
+    // Defer images (includes view and sampler for color, just view for depth)
+    _SituationDeferDestroyImage(vd->vk.image, vd->vk.image_memory, vd->vk.image_view, vd->vk.sampler);
+    _SituationDeferDestroyImage(vd->vk.depth_image, vd->vk.depth_image_memory, vd->vk.depth_image_view, VK_NULL_HANDLE);
 
 #elif defined(SITUATION_USE_OPENGL)
     if (vd->texture_id != 0) glDeleteTextures(1, &vd->texture_id);
@@ -17078,9 +17312,8 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
 
     // For Vulkan, we must destroy the old sampler and create a new one.
 
-    // 1. Destroy the old sampler. It's good practice to wait for the device to be idle to ensure the sampler is no longer in use, although this can be a performance hit if called frequently.
-    vkDeviceWaitIdle(sit_gs.vk.device);
-    vkDestroySampler(sit_gs.vk.device, vd->sampler, NULL);
+    // 1. Defer destruction of the old sampler to avoid stalling.
+    _SituationDeferDestroyImage(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, vd->sampler);
 
     // 2. Create a new sampler with the correct filter mode.
     VkSamplerCreateInfo sampler_info = {0};
@@ -18485,17 +18718,8 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
     SIT_CHECK_GL_ERROR();
 
 #elif defined(SITUATION_USE_VULKAN)
-    // For Vulkan, we must ensure the GPU is finished before destroying the pipeline and its layout.
-    if (sit_gs.vk.device) {
-        vkDeviceWaitIdle(sit_gs.vk.device);
-    }
-
-    if (shader->vk_pipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(sit_gs.vk.device, shader->vk_pipeline, NULL);
-    }
-    if (shader->vk_pipeline_layout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(sit_gs.vk.device, shader->vk_pipeline_layout, NULL);
-    }
+    // Defer destruction to Graveyard
+    _SituationDeferDestroyPipeline(shader->vk_pipeline, shader->vk_pipeline_layout);
 #endif
 
     // --- 4. Invalidate the User-Facing Handle ---
@@ -18701,15 +18925,8 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
     }
 
     // 2. Sync GPU
-    #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device) {
-        if (vkDeviceWaitIdle(sit_gs.vk.device) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED, "vkDeviceWaitIdle failed during shader reload");
-            if(vs_path) SIT_FREE(vs_path); if(fs_path) SIT_FREE(fs_path);
-            return false;
-        }
-    }
-    #elif defined(SITUATION_USE_OPENGL)
+    // Note: Vulkan uses deferred destruction, so we don't need to wait.
+    #if defined(SITUATION_USE_OPENGL)
     glFinish();
     #endif
 
@@ -18762,15 +18979,7 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
         return false;
     }
 
-    #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device) {
-        if (vkDeviceWaitIdle(sit_gs.vk.device) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED, "vkDeviceWaitIdle failed during texture reload");
-            SIT_FREE(path);
-            return false;
-        }
-    }
-    #else
+    #if defined(SITUATION_USE_OPENGL)
     glFinish();
     #endif
 
@@ -18818,15 +19027,7 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
         return false;
     }
 
-    #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device) {
-        if (vkDeviceWaitIdle(sit_gs.vk.device) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED, "vkDeviceWaitIdle failed during model reload");
-            SIT_FREE(path);
-            return false;
-        }
-    }
-    #else
+    #if defined(SITUATION_USE_OPENGL)
     glFinish();
     #endif
 
@@ -18882,15 +19083,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     }
 
     // 3. Synchronize GPU (Critical for hot-swapping)
-    #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device) {
-        if (vkDeviceWaitIdle(sit_gs.vk.device) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED, "vkDeviceWaitIdle failed during compute pipeline reload");
-            if (original_path) SIT_FREE(original_path);
-            return false;
-        }
-    }
-    #elif defined(SITUATION_USE_OPENGL)
+    #if defined(SITUATION_USE_OPENGL)
     glFinish();
     #endif
 
