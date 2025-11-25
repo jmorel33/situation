@@ -3031,15 +3031,42 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
 static void _SituationInitGraveyard(SituationGraveyard* gy);
 static void _SituationCleanupGraveyard(SituationGraveyard* gy);
 static void _SituationFlushGraveyard(uint32_t frame_index);
-static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation, uint32_t frame_index);
+static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation);
 static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler);
 static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set);
 static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout);
 static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer);
 static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass);
 
-// --- Vulkan Graveyard Implementation ---
+// --- Vulkan Graveyard (Deferred Deletion) Implementation ---
+/**
+ * @section Vulkan Graveyard - The Solution to GPU Stalls
+ *
+ * @brief This subsystem is the core solution to the critical performance bottlenecks identified in the v2.3.4 release. It implements a deferred deletion queue, colloquially known as a "graveyard," to manage the lifecycle of GPU resources without ever stalling the CPU to wait for the GPU.
+ *
+ * @subsection The Problem: `vkDeviceWaitIdle` Abuse
+ *   - **Issue:** Previous versions called `vkDeviceWaitIdle()` inside every `SituationDestroy*` and `SituationReload*` function. This forces the entire GPU to a complete stop, causing severe stuttering, especially during asset streaming or hot-reloading.
+ *   - **Solution:** The `SituationDestroy*` functions no longer destroy resources immediately. Instead, they call a `_SituationDeferDestroy*` helper, which adds the resource's handles to a queue (the "graveyard").
+ *
+ * @subsection How It Works
+ *   1. **Queuing:** When a resource is "destroyed," it's added to the graveyard associated with the *current* frame being recorded (`sit_gs.vk.current_frame_index`).
+ *   2. **Waiting:** The main render loop proceeds as normal. At the beginning of a new frame `N`, the engine calls `vkWaitForFences` to ensure that frame `N - max_frames_in_flight` has finished rendering on the GPU.
+ *   3. **Flushing:** Only after the fence confirms the GPU is done with that old frame do we call `_SituationFlushGraveyard`. This function iterates through the old frame's graveyard queue and calls the real `vkDestroy*` / `vmaDestroy*` functions.
+ *   - **Result:** This guarantees that resources are only deleted after the GPU is confirmed to be finished with them, eliminating all `vkDeviceWaitIdle` stalls from the resource management path.
+ *
+ * @subsection Asynchronous Transfers
+ *   - **Issue:** Previously, functions like `_SituationVulkanCreateAndUploadBuffer` would create a temporary command buffer, submit it, and immediately call `vkQueueWaitIdle` to wait for the upload to finish, causing a CPU-GPU stall for every asset.
+ *   - **Solution:** `_SituationVulkanCreateAndUploadBuffer` can now use the main frame's command buffer. It records the copy command and uses `_SituationDeferDestroyBuffer` to place the temporary staging buffer into the graveyard. The staging buffer is now cleaned up automatically and asynchronously, allowing for dozens of assets to be uploaded in a single frame without any stalls.
+ *
+ * @subsection Descriptor Pool Fragmentation
+ *   - **Issue:** Calling `vkFreeDescriptorSets` frequently on pools that were not created with specific flags can be slow and lead to memory fragmentation, eventually causing allocation failures.
+ *   - **Solution:** The `_SituationFlushGraveyard` function **intentionally does not call `vkFreeDescriptorSets`**. Instead, descriptor sets are treated as if they were allocated from a linear or "bump" allocator. They are only reclaimed when the entire `VkDescriptorPool` is reset or destroyed at shutdown. This is a standard high-performance strategy that trades a small amount of memory for maximum stability and zero-stutter performance during runtime.
+ */
 
+/**
+ * @brief [INTERNAL] Initializes a single graveyard structure.
+ * @details Allocates the initial memory for the resource handle arrays.
+ */
 static void _SituationInitGraveyard(SituationGraveyard* gy) {
     memset(gy, 0, sizeof(SituationGraveyard));
     // Pre-allocate some capacity to avoid initial reallocs
@@ -3067,6 +3094,10 @@ static void _SituationInitGraveyard(SituationGraveyard* gy) {
     gy->render_passes = (VkRenderPass*)malloc(sizeof(VkRenderPass) * gy->render_pass_capacity);
 }
 
+/**
+ * @brief [INTERNAL] Frees the CPU memory used by a graveyard's internal arrays.
+ * @details Does not destroy Vulkan objects; assumes `_SituationFlushGraveyard` has already been called.
+ */
 static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
     // Ensure everything is flushed first (though device should be idle by now if called from CleanupVulkan)
     // Just free the arrays
@@ -3084,6 +3115,10 @@ static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
     memset(gy, 0, sizeof(SituationGraveyard));
 }
 
+/**
+ * @brief [INTERNAL] Destroys all Vulkan resources queued in a specific frame's graveyard.
+ * @details This is the heart of the deferred deletion system. It is called from `SituationAcquireFrameCommandBuffer` only after the fence for `frame_index` has signaled, guaranteeing the GPU is no longer using any of these resources.
+ */
 static void _SituationFlushGraveyard(uint32_t frame_index) {
     if (!sit_gs.vk.graveyards) return;
     SituationGraveyard* gy = &sit_gs.vk.graveyards[frame_index];
@@ -3142,9 +3177,12 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
     gy->render_pass_count = 0;
 }
 
-static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation, uint32_t frame_index) {
+static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation) {
     if (buffer == VK_NULL_HANDLE) return;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[frame_index];
+    // The resource is added to the graveyard of the *current* frame.
+    // It will be destroyed when this frame's fence is signaled in a future SituationAcquireFrameCommandBuffer call.
+    uint32_t gy_idx = sit_gs.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
     if (gy->buffer_count >= gy->buffer_capacity) {
         gy->buffer_capacity *= 2;
         gy->buffers = (VkBuffer*)realloc(gy->buffers, sizeof(VkBuffer) * gy->buffer_capacity);
@@ -6711,22 +6749,20 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
 }
 
 /**
- * @brief [INTERNAL] Allocates a descriptor set, automatically growing the pool capacity if necessary.
+ * @brief [INTERNAL] Allocates a descriptor set using an auto-growing, linear pool strategy.
  *
- * @details This is the core of the v2.3.3D Dynamic Descriptor System. Unlike raw `vkAllocateDescriptorSets` calls which fail when a pool fills up,
- *          this helper manages a dynamic list of descriptor pools (`sit_gs.vk.descriptor_manager`).
+ * @details This function is the core of the solution to the "Descriptor Pool Fragmentation" problem. It treats descriptor pools as append-only linear allocators, completely avoiding the performance and fragmentation issues of calling `vkFreeDescriptorSets`.
  *
- *          1. It attempts to allocate the set from the current active pool.
- *          2. If the pool is full (`VK_ERROR_OUT_OF_POOL_MEMORY`), it automatically creates a new, larger pool.
- *          3. It registers the new pool with the manager and retries the allocation.
+ * @par How It Works (The "Dynamic Descriptor Manager")
+ *   1. **Attempt Allocation:** It first tries to allocate a new descriptor set from the current active `VkDescriptorPool`.
+ *   2. **Handle Exhaustion:** If the allocation fails with `VK_ERROR_OUT_OF_POOL_MEMORY`, it does not crash. Instead, it creates a brand new, larger `VkDescriptorPool`.
+ *   3. **Grow and Retry:** This new pool is added to an internal list of pools, and the allocation is retried from the new pool.
  *
- *          This mechanism ensures the engine can scale infinitely (within VRAM limits) to handle heavy asset streaming without requiring the user
- *          to manually tune pool sizes.
+ * This auto-scaling, "never-free" approach ensures that the application can handle massive asset streaming scenarios (e.g., loading thousands of unique textures) without ever running out of descriptor sets or suffering from fragmentation-related crashes. The memory is reclaimed all at once when the pools are destroyed at shutdown.
  *
- * @param layout The `VkDescriptorSetLayout` that defines the structure of the set to allocate.
- *
+ * @param layout The `VkDescriptorSetLayout` that the new set must conform to.
  * @return A valid `VkDescriptorSet` handle on success.
- * @return `VK_NULL_HANDLE` if a critical error occurs (e.g., OOM preventing new pool creation).
+ * @return `VK_NULL_HANDLE` if allocation fails even after creating a new pool (a true out-of-memory condition).
  */
 static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayout layout) {
     VkDescriptorSetAllocateInfo alloc_info = {
@@ -12352,6 +12388,25 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
  * @return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED if staging or final buffer allocation fails.
  * @return SITUATION_ERROR_BUFFER_MAP_FAILED if mapping the staging buffer fails.
  * @return SITUATION_ERROR_VULKAN_COMMAND_FAILED if recording or executing the copy command fails.
+ */
+/**
+ * @brief [INTERNAL] Creates a device-local GPU buffer and uploads data to it, using an asynchronous path when possible.
+ *
+ * @details This is the core data upload utility for the Vulkan backend. It correctly handles the creation of high-performance, device-local buffers by using a temporary, host-visible "staging" buffer for the data transfer.
+ *
+ * @par Asynchronous Upload Path (The "Velocity" Solution)
+ *   This function implements a dual-path mechanism to solve the "Synchronous Transfers" bottleneck:
+ *   - **If `cmd` is a valid command buffer (not NULL):** This is the **asynchronous path**, used during the main render loop. The function records a `vkCmdCopyBuffer` command into the provided `cmd` and places the staging buffer into the graveyard for deferred deletion using `_SituationDeferDestroyBuffer`. This is a non-blocking operation that allows dozens of assets to be uploaded in a single frame without stalling the CPU.
+ *   - **If `cmd` is NULL:** This is the **synchronous path**, used during initialization or outside the main render loop. The function creates its own temporary command buffer, submits the copy, and stalls the CPU by waiting for the transfer to complete (`vkQueueWaitIdle`). This is necessary when a frame is not in flight but is avoided at all costs during runtime.
+ *
+ * @param cmd The main command buffer for the current frame, or NULL to force a synchronous upload.
+ * @param data Pointer to the data to upload.
+ * @param size The size of the data in bytes.
+ * @param usage The final usage flags for the destination buffer (e.g., `VK_BUFFER_USAGE_VERTEX_BUFFER_BIT`).
+ * @param[out] out_buffer Pointer to store the handle of the final, device-local buffer.
+ * @param[out] out_allocation Pointer to store the VMA allocation for the final buffer.
+ *
+ * @return `SITUATION_SUCCESS` on success.
  */
 static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd, const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* out_buffer, VmaAllocation* out_allocation) {
     // --- 1. Input Validation ---
