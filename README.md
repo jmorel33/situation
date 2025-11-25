@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.5 "Velocity"_
+_Core API library v2.3.5B "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.5 "Velocity"** marks a major milestone in the library's evolution, shifting focus from pure stability to developer efficiency. This release introduces the **Hot-Reloading Module**, a transformative feature set that allows developers to modify **Shaders, Compute Pipelines, Textures, and 3D Models** on disk and see the changes instantly in the running application. By eliminating the need to restart the app for every asset tweak, "Velocity" drastically accelerates the iteration loop for visual programming and content creation.
+**Version 2.3.5B "Velocity"** marks a major milestone in the library's evolution, shifting focus from pure stability to developer efficiency. This release introduces the **Hot-Reloading Module**, a transformative feature set that allows developers to modify **Shaders, Compute Pipelines, Textures, and 3D Models** on disk and see the changes instantly in the running application. By eliminating the need to restart the app for every asset tweak, "Velocity" drastically accelerates the iteration loop for visual programming and content creation.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.

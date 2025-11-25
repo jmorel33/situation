@@ -1,3 +1,26 @@
+Date: 2025-11-27
+Version: 2.3.5B "Velocity" (Documentation Overhaul)
+
+## DESCRIPTION
+This release is a comprehensive documentation overhaul, bringing the `situation_api.md` programming guide to 100% parity with the `v2.3.5A` "Velocity" header. It addresses the significant documentation debt accrued over multiple hotfix and feature releases, ensuring every public function, struct, and feature is now fully and accurately documented. This makes the library significantly easier to learn, use, and maintain.
+
+## DOCUMENTATION
+
+*   **Complete API Parity:** Performed a full audit of `situation.h` against `situation_api.md`. Every undocumented function has been added to the guide.
+*   **New Modules Documented:**
+    *   **Hot-Reloading Module:** Added a complete section for the "Velocity" Hot-Reloading feature set (`SituationCheckHotReloads`, `SituationReloadShader`, `SituationReloadTexture`, etc.), explaining its usage and benefits for rapid development.
+    *   **Audio Capture API:** Added a new "Audio Capture" subsection to the Audio Module, documenting `SituationStartAudioCapture`, `SituationStopAudioCapture`, and related functions.
+*   **Signature Corrections & Refinements:**
+    *   Updated dozens of function signatures and usage examples throughout `situation_api.md` to reflect the strict C11 `struct`-based approach (e.g., changing `vec2` return types to `Vector2`).
+    *   Corrected parameter lists and descriptions for functions whose behavior had diverged from the old documentation (e.g., `SituationSetSoundReverb`, `SituationGenImageGradient`).
+    *   Added documentation for recently introduced performance and hardware query functions (`SituationGetVRAMUsage`, `SituationGetDrawCallCount`).
+*   **Structural Improvements:** Re-organized sections for better logical flow and readability. Ensured all new entries follow the established documentation format with clear signatures, descriptions, and copy-paste-friendly usage examples.
+
+## CONSISTENCY & AESTHETICS
+
+*   **Version Sync:** The version number in `situation_api.md` is now correctly updated to `v2.3.5B`.
+*   **Formatting:** Ensured consistent Markdown formatting, code blocks, and section headers across the entire document.
+
 Date: 2025-11-26
 Version: 2.3.5A "Velocity" (Pristine)
 

@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.1_
+_Core API library v2.3.5B_
 
 _(c) 2025 Jacques Morel_
 
@@ -810,6 +810,75 @@ int main(int argc, char* argv[]) {
     if (player_name) {
         printf("Welcome, %s!\n", player_name);
     }
+}
+```
+
+---
+#### `SituationGetVersionString`
+Gets the version of the Situation library as a string.
+```c
+SITAPI const char* SituationGetVersionString(void);
+```
+**Usage Example:**
+```c
+const char* version = SituationGetVersionString();
+printf("Situation library version: %s\n", version);
+```
+
+---
+#### `SituationGetGPUName`
+Gets the human-readable name of the active GPU.
+```c
+SITAPI const char* SituationGetGPUName(void);
+```
+**Usage Example:**
+```c
+const char* gpu_name = SituationGetGPUName();
+printf("GPU: %s\n", gpu_name);
+```
+
+---
+
+---
+#### `SituationGetVRAMUsage`
+Gets the estimated total and used Video RAM (VRAM) in bytes. This is a best-effort query and may not be perfectly accurate on all platforms.
+```c
+SITAPI void SituationGetVRAMUsage(uint64_t* out_total_bytes, uint64_t* out_used_bytes);
+```
+**Usage Example:**
+```c
+uint64_t total_vram, used_vram;
+SituationGetVRAMUsage(&total_vram, &used_vram);
+printf("VRAM Usage: %.2f MB / %.2f MB\n",
+       (double)used_vram / (1024.0 * 1024.0),
+       (double)total_vram / (1024.0 * 1024.0));
+```
+
+---
+#### `SituationGetDrawCallCount`
+Gets the number of draw calls submitted in the last completed frame. This is a key performance metric for identifying rendering bottlenecks.
+```c
+SITAPI int SituationGetDrawCallCount(void);
+```
+**Usage Example:**
+```c
+// In the update loop, display the draw call count in the window title.
+char title[256];
+sprintf(title, "My App | FPS: %d | Draw Calls: %d",
+        SituationGetFPS(), SituationGetDrawCallCount());
+SituationSetWindowTitle(title);
+```
+
+---
+#### `SituationLogWarning`
+Logs a warning message in debug builds.
+```c
+SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
+```
+**Usage Example:**
+```c
+if (score > 9000) {
+    SituationLogWarning(SITUATION_ERROR_GENERAL, "Score is over 9000!");
 }
 ```
 
@@ -4584,6 +4653,59 @@ SituationLoadSoundFromFile("sounds/footstep.wav", false, &my_sound);
 SituationSetSoundReverb(&my_sound, true, 0.8f, 0.5f, 0.6f, 0.4f);
 SituationPlayLoadedSound(&my_sound);
 ```
+
+---
+#### Audio Capture
+---
+#### `SituationStartAudioCapture`
+Initializes and starts capturing audio from the default microphone or recording device. The captured audio data is delivered via a callback that you provide.
+```c
+SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback on_capture, void* user_data);
+```
+-   `on_capture`: A pointer to a function that will be called whenever a new buffer of audio data is available. The callback receives the raw audio buffer, the number of frames, and the user data pointer.
+-   `user_data`: A custom pointer that will be passed to your `on_capture` callback.
+**Usage Example:**
+```c
+// Define a callback to process the incoming audio data.
+void MyAudioCaptureCallback(const float* frames, int frame_count, void* user_data) {
+    // 'frames' is an interleaved buffer of 32-bit float samples.
+    // For stereo, it would be [L, R, L, R, ...].
+    printf("Captured %d audio frames.\n", frame_count);
+    // You could write this data to a file, perform FFT, or visualize it.
+}
+
+// In your initialization code:
+if (SituationStartAudioCapture(MyAudioCaptureCallback, NULL) != SIT_SUCCESS) {
+    fprintf(stderr, "Failed to start audio capture: %s\n", SituationGetLastErrorMsg());
+}
+```
+
+---
+#### `SituationStopAudioCapture`
+Stops the audio capture stream and releases the microphone device.
+```c
+SITAPI SituationError SituationStopAudioCapture(void);
+```
+**Usage Example:**
+```c
+// When the user clicks a "Stop Recording" button.
+SituationStopAudioCapture();
+printf("Audio capture stopped.\n");
+```
+
+---
+#### `SituationIsAudioCapture`
+Checks if the audio capture stream is currently active.
+```c
+SITAPI bool SituationIsAudioCapture(void);
+```
+**Usage Example:**
+```c
+if (SituationIsAudioCapture()) {
+    // Update UI to show a "Recording" indicator.
+}
+```
+
 </details>
 <details>
 <summary><h3>Filesystem Module</h3></summary>
@@ -5157,6 +5279,99 @@ Frees the memory for the list of file paths returned by `SituationListDirectoryF
 void SituationFreeDirectoryFileList(char** files, int count);
 ```
 </details>
+<details>
+<summary><h3>Hot-Reloading Module</h3></summary>
+
+**Overview:** The Hot-Reloading module provides a powerful suite of functions to dynamically reload assets like shaders, textures, and models while the application is running. This significantly accelerates development by allowing for instant iteration on visual and computational resources without needing to restart the application. The system works by monitoring the last modification time of source files and triggering a reload when a change is detected.
+
+### Functions
+
+---
+#### `SituationCheckHotReloads`
+Checks all registered resources for changes and reloads them if necessary. This is the main entry point for the hot-reloading system and should be called once per frame in your main update loop.
+```c
+SITAPI void SituationCheckHotReloads(void);
+```
+**Usage Example:**
+```c
+// In the main application loop, after polling for input and updating timers.
+while (!SituationWindowShouldClose()) {
+    SITUATION_BEGIN_FRAME();
+
+    // Check for any modified assets and reload them automatically.
+    SituationCheckHotReloads();
+
+    // ... proceed with application logic and rendering ...
+}
+```
+
+---
+#### `SituationReloadShader`
+Forces an immediate reload of a specific graphics shader from its source files. This function is useful for targeted reloads or when you want to trigger a reload manually, for example, via a debug console command.
+```c
+SITAPI SituationError SituationReloadShader(SituationShader* shader);
+```
+**Usage Example:**
+```c
+// Assume 'g_main_shader' is the handle to your primary shader.
+// In a debug input handler:
+if (SituationIsKeyPressed(SIT_KEY_R)) {
+    if (SituationReloadShader(&g_main_shader) == SIT_SUCCESS) {
+        printf("Main shader reloaded successfully.\n");
+    } else {
+        printf("Failed to reload main shader: %s\n", SituationGetLastErrorMsg());
+    }
+}
+```
+
+---
+#### `SituationReloadComputePipeline`
+Forces an immediate reload of a specific compute pipeline from its source file.
+```c
+SITAPI SituationError SituationReloadComputePipeline(SituationComputePipeline* pipeline);
+```
+**Usage Example:**
+```c
+// Assume 'g_particle_sim' is your compute pipeline for particle physics.
+// Reload it when 'F5' is pressed.
+if (SituationIsKeyPressed(SIT_KEY_F5)) {
+    SituationReloadComputePipeline(&g_particle_sim);
+}
+```
+
+---
+#### `SituationReloadTexture`
+Forces an immediate reload of a specific texture from its source file. Note that the texture must have been originally created from a file for this to work.
+```c
+SITAPI SituationError SituationReloadTexture(SituationTexture* texture);
+```
+**Usage Example:**
+```c
+// In a material editor, when the user saves changes to a texture file.
+void OnTextureFileSaved(const char* filepath) {
+    // Find the texture associated with this filepath and reload it.
+    SituationTexture* texture_to_reload = FindTextureByFilepath(filepath);
+    if (texture_to_reload) {
+        SituationReloadTexture(texture_to_reload);
+    }
+}
+```
+
+---
+#### `SituationReloadModel`
+Forces an immediate reload of a 3D model, including all its meshes and materials, from its source file (e.g., GLTF).
+```c
+SITAPI SituationError SituationReloadModel(SituationModel* model);
+```
+**Usage Example:**
+```c
+// In a 3D modeling workflow, reload the main scene model when requested.
+if (UserRequestedModelReload()) {
+    SituationReloadModel(&g_main_scene_model);
+}
+```
+</details>
+
 <details>
 <summary><h3>Logging Module</h3></summary>
 
