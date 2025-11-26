@@ -1,4 +1,22 @@
 Date: 2025-11-25
+Version: 2.3.6 "Velocity" (OpenGL Hardening & DSA Optimization)
+
+## DESCRIPTION
+This release hardens the OpenGL backend by strictly enforcing OpenGL 4.6 Core Profile at context creation. It also refactors the internal rendering pipeline to utilize Direct State Access (DSA), resulting in significantly faster internal rendering passes by eliminating CPU-GPU pipeline stalls.
+
+## BREAKING CHANGES
+*   **macOS Support Dropped:** By enforcing OpenGL 4.6, this library is no longer compatible with macOS (which is capped at OpenGL 4.1). Users on macOS must now use the Vulkan backend (via MoltenVK) or remain on v2.3.5.
+*   **Legacy GPU Support Dropped:** Older integrated graphics (pre-Intel Skylake/HD 500 series) that do not support GL_ARB_direct_state_access will now fail to initialize SituationInit.
+
+## TECHNICAL DETAILS
+*   **Strict Context Creation:** `_SituationInitWindow` now sends strict hints to GLFW to request an OpenGL 4.6 Core Profile context. If the driver cannot provide it, window creation fails immediately.
+*   **Elimination of State Query Stalls:** The `_SitGLBackupState` function has been optimized to remove slow `glGetIntegerv` calls that queried texture unit bindings, which are no longer needed with DSA.
+*   **DSA Implementation:** `SituationRenderVirtualDisplays` now uses `glBindTextureUnit` for direct texture binding, eliminating the need to modify `glActiveTexture` state.
+*   **Immutable Buffer Storage:** `SituationCreateBuffer` now mandates `glNamedBufferStorage` (Immutable Storage) over `glBufferData` (Mutable), providing better optimization hints to the driver.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-25
 Version: 2.3.5B "Velocity" (Documentation Overhaul)
 
 ## DESCRIPTION
@@ -61,7 +79,7 @@ This release focuses on "surgical precision" in error handling and reporting. It
 ## CRITICAL FIXES
 
 *   **Exhaustive Error Mapping:** Updated `_SituationSetErrorFromCode` to include `case` statements for *every* `SITUATION_ERROR_*` constant defined in the enum. This guarantees that all internal failures report specific, actionable error messages instead of falling back to generic codes.
-*   **Hot-Reload Safety:** Enhanced `SituationReloadShader`, `SituationReloadTexture`, `SituationReloadModel`, and `SituationReloadComputePipeline` to explicitly check for GPU synchronization failures (`vkDeviceWaitIdle`). If the GPU cannot be idled (e.g., device lost), the reload operation now safely aborts with `SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED` instead of risking a crash or undefined behavior.
+*   **Hot-Reload Safety:** Enhanced `SituationReloadShader`, `SituationReloadTexture`, `SituationReloadModel`, and `SituationReloadComputePipeline` to explicitly check for GPU synchronization failures (`vkDeviceWaitIdle`). If the GPU cannot be idled (e.g., device lost), the reload operation now safely aborts with `SITUATION_ERROR_HOTREQLOAD_GPU_SYNC_FAILED` instead of risking a crash or undefined behavior.
 *   **Precise Error Reporting:**
     *   `_SituationInitOpenGL` now returns `SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION` (instead of generic unsupported) when the GL version check fails.
     *   Vulkan internal resource creation (Depth Resources) now specifically reports `SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED` on allocation failure.
@@ -91,17 +109,17 @@ This release brings the SDK documentation and codebase into perfect synchronizat
 
 --------------------------------------------------------------------------------
 
-Date: 2025-11-24  
-Version: 2.3.4K "Velocity" (Hotfix K)  
+Date: 2025-11-24
+Version: 2.3.4K "Velocity" (Hotfix K)
 
-## DESCRIPTION  
-This micro-hotfix delivers a single-line safeguard for OpenGL backend portability, ensuring seamless compilation in header-only environments without external GL headers.  
+## DESCRIPTION
+This micro-hotfix delivers a single-line safeguard for OpenGL backend portability, ensuring seamless compilation in header-only environments without external GL headers.
 
-## CRITICAL FIXES  
+## CRITICAL FIXES
 
-*   **GLFW Include Guard:** Added `#define GLFW_INCLUDE_NONE` immediately before `<GLFW/glfw3.h>` inclusion to prevent GLFW from auto-including system `GL/gl.h` (or GL ES equivalents). This resolves "missing header" compilation failures in minimal setups (e.g., cross-compiles, embedded toolchains, or when bundling with GLAD). The change is non-intrusive, with zero runtime impact, and maintains full compatibility with existing builds.  
+*   **GLFW Include Guard:** Added `#define GLFW_INCLUDE_NONE` immediately before `<GLFW/glfw3.h>` inclusion to prevent GLFW from auto-including system `GL/gl.h` (or GL ES equivalents). This resolves "missing header" compilation failures in minimal setups (e.g., cross-compiles, embedded toolchains, or when bundling with GLAD). The change is non-intrusive, with zero runtime impact, and maintains full compatibility with existing builds.
 
-## DOCUMENTATION  
+## DOCUMENTATION
 
 *   **Inline Comment:** Accompanied the define with a precise, self-explanatory comment detailing the rationale, environments affected, and synergy with GLAD loader. This enhances developer onboarding without bloating the header.
 
@@ -146,7 +164,7 @@ Date: 2025-11-23
 Version: 2.3.4H "Velocity" (Hotfix H)
 
 ## DESCRIPTION
-The "Titanium Robustness" release.  
+The "Titanium Robustness" release.
 This hotfix completes the error handling overhaul, eliminating every silent failure, double-free risk, and vague diagnostic in the codebase. Every allocation now pairs perfectly with SIT_FREE, and every potential failure path now returns a precise, actionable SituationError code. The library is now truly unbreakable — no more "it just didn't work" mysteries.
 
 ## CRITICAL FIXES
