@@ -12660,8 +12660,6 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         // Determine appropriate OpenGL storage flags.
         // GL_DYNAMIC_STORAGE_BIT allows the buffer's contents to be updated via glNamedBufferSubData.
         GLbitfield gl_storage_flags = 0;
-
-        GLbitfield gl_storage_flags = 0;
         if (usage_flags & (SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_UNIFORM_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST)) {
              gl_storage_flags |= GL_DYNAMIC_STORAGE_BIT;
         }
