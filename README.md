@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.5 "Velocity"_
+_Core API library v2.3.6 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.5 "Velocity"** marks a major milestone in the library's evolution, shifting focus from pure stability to developer efficiency. This release introduces the **Hot-Reloading Module**, a transformative feature set that allows developers to modify **Shaders, Compute Pipelines, Textures, and 3D Models** on disk and see the changes instantly in the running application. By eliminating the need to restart the app for every asset tweak, "Velocity" drastically accelerates the iteration loop for visual programming and content creation.
+**Version 2.3.6 "Velocity"** hardens the library's OpenGL backend for higher performance and stricter compliance with modern standards. This release enforces an OpenGL 4.6 Core Profile, ensuring access to the latest features. A key part of this update is a complete refactoring of the internal rendering pipeline to use **Direct State Access (DSA)**, which eliminates CPU-GPU stalls by avoiding legacy state-querying functions. This results in significantly faster internal rendering passes, especially for complex scenes using the Virtual Display compositor. As a consequence of this modernization, support for macOS (capped at OpenGL 4.1) and older GPUs on the OpenGL backend has been deprecated; users on these platforms should utilize the Vulkan backend.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
@@ -264,7 +264,7 @@ This library does not use garbage collection.
 
 The documentation for "Situation" is split into two key documents:
 
-1.  [**Core API Library Reference Manual (situation_sdk_234.md)**](situation_sdk_234.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
+1.  [**Core API Library Reference Manual (situation_sdk_236.md)**](situation_sdk_236.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
 2.  [**Situation API Programming Guide (situation_api.md)**](situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
 
 </details>
