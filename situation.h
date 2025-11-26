@@ -1839,20 +1839,6 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
 // --- Path Management & Special Directories ---
 SITAPI char* SituationGetAppSavePath(const char* app_name);                             // Get a safe, persistent path for saving application data (caller must free).
 SITAPI char* SituationGetBasePath(void);                                                // Get the path to the directory containing the executable (caller must free).
-
-/**
- * @brief [INTERNAL] Extracts the directory component from a file path.
- *
- * @details Helper utility used during model loading to resolve relative paths for textures (e.g., finding "texture.png" located in the same folder as "model.gltf").
- *          Handles both forward slash ('/') and backslash ('\') separators.
- *
- * @param file_path The full path to a file.
- * @return A newly allocated string containing the directory path (e.g., "assets/models").
- *         Returns a duplicate of "." if no directory separator is found.
- *         Returns NULL if input is invalid.
- *
- * @warning The caller is responsible for freeing the returned string.
- */
 SITAPI static char* SituationGetBasePathFromFile(const char* file_path);
 SITAPI char* SituationJoinPath(const char* base_path, const char* file_or_dir_name);    // Join two path components with the correct OS separator (caller must free).
 SITAPI const char* SituationGetFileName(const char* full_path);                         // Extract the file name (including extension) from a full path.
