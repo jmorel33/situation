@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.5 "Velocity"
+*   Core API library v2.3.6 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 5
-#define SITUATION_VERSION_REVISION "B"
+#define SITUATION_VERSION_PATCH 6
+#define SITUATION_VERSION_REVISION ""
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -1136,6 +1136,14 @@ typedef struct {
         GLuint depth_rbo_id;    // Renderbuffer Object for depth/stencil (optional but usually present)
     } gl;
 #endif
+#else
+    // Opaque placeholder for backend data to ensure vd->gl.texture_id compiles
+    // for code outside the implementation block, even if it can't be used.
+    struct {
+        uint64_t _internal_handle_1;
+        uint64_t _internal_handle_2;
+        uint64_t _internal_handle_3;
+    } gl;
 #endif
 } SituationVirtualDisplay;
 
@@ -2119,10 +2127,7 @@ typedef struct {
 typedef struct {
     GLint program;
     GLint vao;
-    GLint active_texture_unit;
-    GLint bound_tex_unit_0;
-    GLint bound_tex_unit_4; // SIT_SAMPLER_BINDING_VD_SOURCE
-    GLint bound_tex_unit_5; // SIT_SAMPLER_BINDING_VD_DEST
+    GLint fbo;
     GLboolean blend;
     GLint blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha;
     GLint blend_equ_rgb, blend_equ_alpha;
@@ -4372,17 +4377,7 @@ static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, dou
 static void _SitGLBackupState(_SitGLStateBackup* s) {
     glGetIntegerv(GL_CURRENT_PROGRAM, &s->program);
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &s->vao);
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &s->active_texture_unit);
-
-    // Backup Texture Unit 0 (Commonly used)
-    glActiveTexture(GL_TEXTURE0);
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->bound_tex_unit_0);
-
-    // Backup Texture Units 4 & 5 (Used by VD Compositor)
-    glActiveTexture(GL_TEXTURE0 + 4);
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->bound_tex_unit_4);
-    glActiveTexture(GL_TEXTURE0 + 5);
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->bound_tex_unit_5);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &s->fbo); // Only backup draw FBO
 
     // Backup Capabilities
     s->blend = glIsEnabled(GL_BLEND);
@@ -4417,6 +4412,7 @@ static void _SitGLBackupState(_SitGLStateBackup* s) {
 static void _SitGLRestoreState(_SitGLStateBackup* s) {
     glUseProgram(s->program);
     glBindVertexArray(s->vao);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s->fbo);
 
     if (s->blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
     glBlendFuncSeparate(s->blend_src_rgb, s->blend_dst_rgb, s->blend_src_alpha, s->blend_dst_alpha);
@@ -4425,19 +4421,6 @@ static void _SitGLRestoreState(_SitGLStateBackup* s) {
     if (s->depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
     if (s->cull_face) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
     if (s->scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
-
-    // Restore Textures
-    glActiveTexture(GL_TEXTURE0 + 5);
-    glBindTexture(GL_TEXTURE_2D, s->bound_tex_unit_5);
-
-    glActiveTexture(GL_TEXTURE0 + 4);
-    glBindTexture(GL_TEXTURE_2D, s->bound_tex_unit_4);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, s->bound_tex_unit_0);
-
-    // Restore Active Unit last
-    glActiveTexture(s->active_texture_unit);
 }
 
 /**
@@ -4979,6 +4962,14 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
     // This prevents glfwCreateWindow from failing due to zero or negative sizes.
     sit_gs.main_window_width = (init_info->window_width > 0) ? init_info->window_width : 1280;
     sit_gs.main_window_height = (init_info->window_height > 0) ? init_info->window_height : 720;
+
+    #if defined(SITUATION_USE_OPENGL)
+    // [HARDENING] Enforce 4.6 Core. Fail if unsupported.
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+    #endif
 
     // --- 3. Configure GLFW Window Hints ---
     // Window hints must be set *before* calling glfwCreateWindow.
@@ -12670,15 +12661,13 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         // GL_DYNAMIC_STORAGE_BIT allows the buffer's contents to be updated via glNamedBufferSubData.
         GLbitfield gl_storage_flags = 0;
 
-        // If the buffer is likely to be updated from the CPU (e.g., SSBO, UBO for dynamic data, or a destination for transfers), we need DYNAMIC_STORAGE.
-        // The provided usage_flags are assumed to be OpenGL flags or a compatible abstract set.
-        // If they are abstract, a mapping function should be used here.
-        // For now, we pass them directly, assuming they are either 0 or contain GL_*_STORAGE_BIT flags.
-        // A safer approach is to ensure DYNAMIC_STORAGE is set if initial_data is NULL or if common mutable usage flags are present.
-        gl_storage_flags = (GLbitfield)usage_flags; // Direct cast, assuming compatibility
-
-        // Ensure DYNAMIC_STORAGE if needed for future updates
-        if (!initial_data || (usage_flags & (SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_UNIFORM_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST))) { gl_storage_flags |= GL_DYNAMIC_STORAGE_BIT; }
+        GLbitfield gl_storage_flags = 0;
+        if (usage_flags & (SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_UNIFORM_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST)) {
+             gl_storage_flags |= GL_DYNAMIC_STORAGE_BIT;
+        }
+        if (usage_flags & SITUATION_BUFFER_USAGE_TRANSFER_SRC) {
+             gl_storage_flags |= GL_MAP_READ_BIT;
+        }
         glNamedBufferStorage(buffer.gl_buffer_id, size, initial_data, gl_storage_flags);
 
         SIT_CHECK_GL_ERROR();
@@ -17450,26 +17439,25 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
             glBindTexture(GL_TEXTURE_2D, sit_gs.gl.composite_copy_texture_id);
             glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
 
-            glUseProgram(sit_gs.gl.composite_shader_program_id);
-            glUniformMatrix4fv(SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_gs.gl.vd_ortho_projection);
-            glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
+            glProgramUniformMatrix4fv(sit_gs.gl.composite_shader_program_id, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_gs.gl.vd_ortho_projection);
+            glProgramUniformMatrix4fv(sit_gs.gl.composite_shader_program_id, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
+            glProgramUniform1i(sit_gs.gl.composite_shader_program_id, SIT_UNIFORM_LOC_BLEND_MODE, vd->blend_mode);
+            glProgramUniform1f(sit_gs.gl.composite_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
 
             glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_1, sit_gs.gl.composite_copy_texture_id); // Destination
-            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->texture_id);                  // Source
+            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->gl.texture_id);                  // Source
 
-            glUniform1i(SIT_UNIFORM_LOC_BLEND_MODE, vd->blend_mode);
-            glUniform1f(SIT_UNIFORM_LOC_OPACITY, vd->opacity);
-
+            glUseProgram(sit_gs.gl.composite_shader_program_id);
             glDisable(GL_BLEND); // Blending handled in shader
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
         } else {
             // --- SIMPLE SHADER PATH ---
-            glUseProgram(sit_gs.gl.vd_shader_program_id);
-            glUniformMatrix4fv(SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_gs.gl.vd_ortho_projection);
-            glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
-            glUniform1f(SIT_UNIFORM_LOC_OPACITY, vd->opacity);
+            glProgramUniformMatrix4fv(sit_gs.gl.vd_shader_program_id, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_gs.gl.vd_ortho_projection);
+            glProgramUniformMatrix4fv(sit_gs.gl.vd_shader_program_id, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
+            glProgramUniform1f(sit_gs.gl.vd_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
 
+            glUseProgram(sit_gs.gl.vd_shader_program_id);
             glEnable(GL_BLEND);
             glBlendEquation(GL_FUNC_ADD);
             switch (vd->blend_mode) {
@@ -17481,7 +17469,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
                 default:                       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
             }
 
-            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->texture_id);
+            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->gl.texture_id);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
     }
