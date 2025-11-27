@@ -82,23 +82,24 @@ A minimal application requires **zero configuration** beyond selecting a backend
 int main(int argc, char** argv) {
     // 1. Initialize with config
     SituationInitInfo config = { .window_width = 1280, .window_height = 720, .window_title = "Hello Situation" };
-    if (SituationInit(argc, argv, &config) != SITUATION_SUCCESS) return -1;
+    SituationContext ctx = SituationCreateContext(&config);
+    if (!ctx) return -1;
 
     // 2. Zero Friction Assets (MP3/TTF loaded directly!)
     SituationSound music;
     // Use 'AUTO' mode: decodes SFX to RAM, streams long Music from disk automatically
-    SituationLoadSoundFromFile("bgm.mp3", SITUATION_AUDIO_LOAD_AUTO, true, &music);
-    SituationPlayLoadedSound(&music);
+    SituationLoadSoundFromFile(ctx, "bgm.mp3", SITUATION_AUDIO_LOAD_AUTO, true, &music);
+    SituationPlayLoadedSound(ctx, &music);
     
-    SituationFont font = SituationLoadFont("font.ttf");
-    SituationBakeFontAtlas(&font, 24.0f); // Create GPU texture for the font
+    SituationFont font = SituationLoadFont(ctx, "font.ttf");
+    SituationBakeFontAtlas(ctx, &font, 24.0f); // Create GPU texture for the font
 
     // 3. Main Loop
-    while (!SituationWindowShouldClose()) {
-        SITUATION_BEGIN_FRAME(); // Macro: Polls Input + Updates Timers
+    while (!SituationWindowShouldClose(ctx)) {
+        SITUATION_BEGIN_FRAME(ctx); // Macro: Polls Input + Updates Timers
 
-        if (SituationAcquireFrameCommandBuffer()) {
-            SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+        if (SituationAcquireFrameCommandBuffer(ctx)) {
+            SituationCommandBuffer cmd = SituationGetMainCommandBuffer(ctx);
             
             // Clear screen to dark slate blue
             SituationRenderPassInfo pass = { 
@@ -106,20 +107,20 @@ int main(int argc, char** argv) {
                 .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = {20, 30, 40, 255} } } 
             };
             
-            SituationCmdBeginRenderPass(cmd, &pass); 
+            SituationCmdBeginRenderPass(ctx, cmd, &pass);
             
             // Draw text directly using the internal batch renderer
-            SituationCmdDrawText(cmd, font, "Situation Engine Running...", (Vector2){50, 50}, (Color){255, 255, 255, 255});
+            SituationCmdDrawText(ctx, cmd, font, "Situation Engine Running...", (Vector2){50, 50}, (Color){255, 255, 255, 255});
             
-            SituationCmdEndRenderPass(cmd);
-            SituationEndFrame();
+            SituationCmdEndRenderPass(ctx, cmd);
+            SituationEndFrame(ctx);
         }
     }
     
     // 4. Cleanup (Automatic leak detection runs here)
-    SituationUnloadSound(&music);
-    SituationUnloadFont(font);
-    SituationShutdown();
+    SituationUnloadSound(ctx, &music);
+    SituationUnloadFont(ctx, font);
+    SituationDestroyContext(ctx);
     return 0;
 }
 ```

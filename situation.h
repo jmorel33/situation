@@ -161,6 +161,54 @@ Bash
 #include <GLFW/glfw3.h>
 #include <miniaudio.h>
 
+// --- [NEW] Context Handle ---
+typedef struct SituationContext_t* SituationContext;
+
+// --- [NEW] Thread-Local Storage Support ---
+#if defined(__GNUC__) || defined(__clang__)
+    #define SIT_THREAD_LOCAL __thread
+#elif defined(_MSC_VER)
+    #define SIT_THREAD_LOCAL __declspec(thread)
+#elif __STDC_VERSION__ >= 201112L
+    #define SIT_THREAD_LOCAL _Thread_local
+#else
+    #error "Compiler does not support Thread-Local Storage (TLS)"
+#endif
+
+// --- Initialization Configuration Structure (Passed to SituationInit) ---
+typedef struct {
+    // ── Window Creation Parameters ──
+    int          window_width;              // Initial window width in screen coordinates
+    int          window_height;             // Initial window height in screen coordinates
+    const char*  window_title;              // Window title bar text (UTF-8)
+
+    // ── Window State Flags (Applied via GLFW window hints or direct state changes) ──
+    uint32_t     initial_active_window_flags;    // Flags when window has focus (e.g. SIT_WINDOW_BORDERLESS | SIT_WINDOW_VSYNC)
+    uint32_t     initial_inactive_window_flags;  // Flags when window is unfocused (e.g. pause rendering or reduce refresh rate)
+
+    // ── Vulkan-Specific Options ──
+    bool         enable_vulkan_validation;       // Enable VK_LAYER_KHRONOS_validation (debug builds only - auto-disabled in release)
+    uint32_t     max_frames_in_flight;           // Override SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT (usually 2 or 3)
+
+    // Optional: Provide custom Vulkan instance extensions (e.g., for VR, ray tracing, etc.)
+    const char** required_vulkan_extensions;     // Array of extension names (null or empty = use defaults)
+    uint32_t     required_vulkan_extension_count;// Length of the above array
+
+    // ── Engine Feature Flags ──
+    uint32_t     flags;  // Bitfield:
+                         //   SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD → route mic capture callbacks to main thread
+                         //   (future-proof expansion slot)
+} SituationInitInfo;
+
+// --- [NEW] Context Management API ---
+SITAPI SituationContext SituationCreateContext(const SituationInitInfo* init_info);
+SITAPI void SituationDestroyContext(SituationContext ctx);
+
+// Sets the context for the calling thread (allows passing NULL to API functions)
+SITAPI void SituationSetCurrentContext(SituationContext ctx);
+SITAPI SituationContext SituationGetCurrentContext(void);
+
+
 /**
  * @brief Backend-specific includes
  */
@@ -215,7 +263,7 @@ Bash
  * @param fmt The printf-style format string for the message.
  * @param ... Variable arguments for the format string.
  */
-SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
+SITAPI void SituationLogWarning(SituationContext ctx, SituationError code, const char* fmt, ...);
 //==================================================================================
 //  SituationError - Comprehensive, Strictly Ordered Error Code System (Titanium Grade)
 //==================================================================================
@@ -1490,36 +1538,36 @@ typedef enum {
 
 // --- Application Lifecycle & State ---
 SITAPI const char* SituationGetVersionString(void); 									// Returns a read-only static string (e.g., "2.3.3A"). Do not free.
-SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info); // Initialize the library, create window and graphics context.
-SITAPI void SituationPollInputEvents(void);                                             // Poll for all input events (keyboard, mouse, joystick). Call once per frame.
-SITAPI void SituationUpdateTimers(void);                                                // Update all internal timers (frame timer, temporal system). Call after polling events.
-SITAPI void SituationUpdate(void);                                                      // DEPRECATED: Use SituationPollInputEvents() and SituationUpdateTimers().
-SITAPI void SituationShutdown(void);                                                    // Shut down the library and release all resources.
-SITAPI bool SituationIsInitialized(void);                                               // Check if the library has been successfully initialized.
-SITAPI bool SituationWindowShouldClose(void);                                           // Check if the application should close (e.g., user clicked X).
-SITAPI void SituationPauseApp(void);                                                    // Pause the application's internal state (e.g., audio).
-SITAPI void SituationResumeApp(void);                                                   // Resume a paused application.
-SITAPI bool SituationIsAppPaused(void);                                                 // Check if the application is currently paused.
+// SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info); // [DEPRECATED] by SituationCreateContext
+SITAPI void SituationPollInputEvents(SituationContext ctx);                                             // Poll for all input events (keyboard, mouse, joystick). Call once per frame.
+SITAPI void SituationUpdateTimers(SituationContext ctx);                                                // Update all internal timers (frame timer, temporal system). Call after polling events.
+// SITAPI void SituationUpdate(void);                                                      // [DEPRECATED] and removed by context refactor.
+SITAPI void SituationShutdown(SituationContext ctx);                                                    // Shut down the library and release all resources.
+SITAPI bool SituationIsInitialized(SituationContext ctx);                                               // Check if the library has been successfully initialized.
+SITAPI bool SituationWindowShouldClose(SituationContext ctx);                                           // Check if the application should close (e.g., user clicked X).
+SITAPI void SituationPauseApp(SituationContext ctx);                                                    // Pause the application's internal state (e.g., audio).
+SITAPI void SituationResumeApp(SituationContext ctx);                                                   // Resume a paused application.
+SITAPI bool SituationIsAppPaused(SituationContext ctx);                                                 // Check if the application is currently paused.
 
 // --- Frame Timing & FPS Management ---
-SITAPI void SituationSetTargetFPS(int fps);                                             // Set a desired frame rate cap (0 for uncapped).
-SITAPI float SituationGetFrameTime(void);                                               // Get the time in seconds for the last frame to complete (deltaTime).
-SITAPI int SituationGetFPS(void);                                                       // Get the current frames-per-second value.
+SITAPI void SituationSetTargetFPS(SituationContext ctx, int fps);                                             // Set a desired frame rate cap (0 for uncapped).
+SITAPI float SituationGetFrameTime(SituationContext ctx);                                               // Get the time in seconds for the last frame to complete (deltaTime).
+SITAPI int SituationGetFPS(SituationContext ctx);                                                       // Get the current frames-per-second value.
 
 // --- Callbacks and Event Handling ---
-SITAPI char* SituationGetLastErrorMsg(void);                                            // Get the last error message as a string (caller must free).
-SITAPI void SituationSetExitCallback(void (*callback)(void* user_data), void* user_data); // Set a callback to run just before shutdown.
-SITAPI void SituationSetResizeCallback(void (*callback)(int width, int height, void* user_data), void* user_data); // Set a callback for window framebuffer resize events.
-SITAPI void SituationSetFocusCallback(SituationFocusCallback callback, void* user_data); // Set a callback for window focus events.
-SITAPI void SituationSetFileDropCallback(SituationFileDropCallback callback, void* user_data); // Set a callback for file drop events.
+SITAPI char* SituationGetLastErrorMsg(SituationContext ctx);                                            // Get the last error message as a string (caller must free).
+SITAPI void SituationSetExitCallback(SituationContext ctx, void (*callback)(void* user_data), void* user_data); // Set a callback to run just before shutdown.
+SITAPI void SituationSetResizeCallback(SituationContext ctx, void (*callback)(int width, int height, void* user_data), void* user_data); // Set a callback for window framebuffer resize events.
+SITAPI void SituationSetFocusCallback(SituationContext ctx, SituationFocusCallback callback, void* user_data); // Set a callback for window focus events.
+SITAPI void SituationSetFileDropCallback(SituationContext ctx, SituationFileDropCallback callback, void* user_data); // Set a callback for file drop events.
 
 // --- Command-Line Argument Queries ---
-SITAPI bool SituationIsArgumentPresent(const char* arg_name);                           // Check if a command-line argument (e.g., "-server") was provided.
-SITAPI const char* SituationGetArgumentValue(const char* arg_name);                     // Get the value of an argument (e.g., "jungle" from "-level:jungle").
+SITAPI bool SituationIsArgumentPresent(SituationContext ctx, const char* arg_name);                           // Check if a command-line argument (e.g., "-server") was provided.
+SITAPI const char* SituationGetArgumentValue(SituationContext ctx, const char* arg_name);                     // Get the value of an argument (e.g., "jungle" from "-level:jungle").
 
 // --- System & Hardware Information ---
-SITAPI SituationDeviceInfo SituationGetDeviceInfo(void);                                // Get detailed information about system hardware (CPU, GPU, RAM, etc.).
-SITAPI const char* SituationGetGPUName(void);											// Get the name of the active GPU.
+SITAPI SituationDeviceInfo SituationGetDeviceInfo(SituationContext ctx);                                // Get detailed information about system hardware (CPU, GPU, RAM, etc.).
+SITAPI const char* SituationGetGPUName(SituationContext ctx);											// Get the name of the active GPU.
 SITAPI char* SituationGetUserDirectory(void);                                           // Get the full path to the current user's home directory (caller must free).
 SITAPI char SituationGetCurrentDriveLetter(void);                                       // Get the drive letter of the running executable (Windows only).
 SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacity_bytes, uint64_t* out_free_space_bytes, char* out_volume_name, int volume_name_len); // Get info for a specific drive (Windows only).
@@ -1529,74 +1577,74 @@ SITAPI void SituationOpenFile(const char* filePath);                            
 // Window and Display Module
 //==================================================================================
 // --- Window State Management ---
-SITAPI void SituationSetWindowState(uint32_t flags);                                    // Set window configuration state using flags (additive).
-SITAPI void SituationClearWindowState(uint32_t flags);                                  // Clear window configuration state flags.
-SITAPI void SituationToggleFullscreen(void);                                            // Toggle window between fullscreen and windowed mode.
-SITAPI void SituationToggleBorderlessWindowed(void);                                    // Toggle window between borderless and decorated mode.
-SITAPI void SituationMaximizeWindow(void);                                              // Maximize the window if it's resizable.
-SITAPI void SituationMinimizeWindow(void);                                              // Minimize the window (iconify).
-SITAPI void SituationRestoreWindow(void);                                               // Restore a minimized or maximized window.
-SITAPI void SituationSetWindowFocused(void);                                            // Set the window to be focused.
+SITAPI void SituationSetWindowState(SituationContext ctx, uint32_t flags);                                    // Set window configuration state using flags (additive).
+SITAPI void SituationClearWindowState(SituationContext ctx, uint32_t flags);                                  // Clear window configuration state flags.
+SITAPI void SituationToggleFullscreen(SituationContext ctx);                                            // Toggle window between fullscreen and windowed mode.
+SITAPI void SituationToggleBorderlessWindowed(SituationContext ctx);                                    // Toggle window between borderless and decorated mode.
+SITAPI void SituationMaximizeWindow(SituationContext ctx);                                              // Maximize the window if it's resizable.
+SITAPI void SituationMinimizeWindow(SituationContext ctx);                                              // Minimize the window (iconify).
+SITAPI void SituationRestoreWindow(SituationContext ctx);                                               // Restore a minimized or maximized window.
+SITAPI void SituationSetWindowFocused(SituationContext ctx);                                            // Set the window to be focused.
 
 // --- Window Property Management ---
-SITAPI void SituationSetWindowTitle(const char *title);                                 // Set the title for the window.
-SITAPI void SituationSetWindowIcon(SituationImage image);                               // Set the icon for the window (single image).
-SITAPI void SituationSetWindowIcons(SituationImage *images, int count);                 // Set the icon for the window (multiple sizes).
-SITAPI void SituationSetWindowPosition(int x, int y);                                   // Set the window position on the screen.
-SITAPI void SituationSetWindowSize(int width, int height);                              // Set the window dimensions.
-SITAPI void SituationSetWindowMinSize(int width, int height);                           // Set the window minimum dimensions.
-SITAPI void SituationSetWindowMaxSize(int width, int height);                           // Set the window maximum dimensions.
-SITAPI void SituationSetWindowOpacity(float opacity);                                   // Set window opacity [0.0f to 1.0f].
+SITAPI void SituationSetWindowTitle(SituationContext ctx, const char *title);                                 // Set the title for the window.
+SITAPI void SituationSetWindowIcon(SituationContext ctx, SituationImage image);                               // Set the icon for the window (single image).
+SITAPI void SituationSetWindowIcons(SituationContext ctx, SituationImage *images, int count);                 // Set the icon for the window (multiple sizes).
+SITAPI void SituationSetWindowPosition(SituationContext ctx, int x, int y);                                   // Set the window position on the screen.
+SITAPI void SituationSetWindowSize(SituationContext ctx, int width, int height);                              // Set the window dimensions.
+SITAPI void SituationSetWindowMinSize(SituationContext ctx, int width, int height);                           // Set the window minimum dimensions.
+SITAPI void SituationSetWindowMaxSize(SituationContext ctx, int width, int height);                           // Set the window maximum dimensions.
+SITAPI void SituationSetWindowOpacity(SituationContext ctx, float opacity);                                   // Set window opacity [0.0f to 1.0f].
 
 // --- Window State Queries ---
-SITAPI bool SituationIsWindowState(uint32_t flag);                                      // Check if a specific window state flag is set.
-SITAPI bool SituationIsWindowFullscreen(void);                                          // Check if the window is currently in fullscreen mode.
-SITAPI bool SituationIsWindowHidden(void);                                              // Check if the window is currently hidden.
-SITAPI bool SituationIsWindowMinimized(void);                                           // Check if the window is currently minimized.
-SITAPI bool SituationIsWindowMaximized(void);                                           // Check if the window is currently maximized.
-SITAPI bool SituationHasWindowFocus(void);                                              // Check if the window is currently focused.
-SITAPI bool SituationIsWindowResized(void);                                             // Check if the window was resized in the last frame.
+SITAPI bool SituationIsWindowState(SituationContext ctx, uint32_t flag);                                      // Check if a specific window state flag is set.
+SITAPI bool SituationIsWindowFullscreen(SituationContext ctx);                                          // Check if the window is currently in fullscreen mode.
+SITAPI bool SituationIsWindowHidden(SituationContext ctx);                                              // Check if the window is currently hidden.
+SITAPI bool SituationIsWindowMinimized(SituationContext ctx);                                           // Check if the window is currently minimized.
+SITAPI bool SituationIsWindowMaximized(SituationContext ctx);                                           // Check if the window is currently maximized.
+SITAPI bool SituationHasWindowFocus(SituationContext ctx);                                              // Check if the window is currently focused.
+SITAPI bool SituationIsWindowResized(SituationContext ctx);                                             // Check if the window was resized in the last frame.
 
 // --- Window & Screen Dimension Queries ---
-SITAPI int SituationGetScreenWidth(void);                                               // Get the current logical width of the window.
-SITAPI int SituationGetScreenHeight(void);                                              // Get the current logical height of the window.
-SITAPI int SituationGetRenderWidth(void);                                               // Get the current render width (backbuffer size, considers HiDPI).
-SITAPI int SituationGetRenderHeight(void);                                              // Get the current render height (backbuffer size, considers HiDPI).
-SITAPI void SituationGetWindowSize(int* width, int* height);                            // Get the current logical window size.
-SITAPI Vector2 SituationGetWindowPosition(void);                                        // Get the window's top-left position on the screen.
-SITAPI Vector2 SituationGetWindowScaleDPI(void);                                        // Get the DPI scaling factor for the window.
+SITAPI int SituationGetScreenWidth(SituationContext ctx);                                               // Get the current logical width of the window.
+SITAPI int SituationGetScreenHeight(SituationContext ctx);                                              // Get the current logical height of the window.
+SITAPI int SituationGetRenderWidth(SituationContext ctx);                                               // Get the current render width (backbuffer size, considers HiDPI).
+SITAPI int SituationGetRenderHeight(SituationContext ctx);                                              // Get the current render height (backbuffer size, considers HiDPI).
+SITAPI void SituationGetWindowSize(SituationContext ctx, int* width, int* height);                            // Get the current logical window size.
+SITAPI void SituationGetWindowPosition(SituationContext ctx, int* x, int* y);
+SITAPI Vector2 SituationGetWindowScaleDPI(SituationContext ctx);                                        // Get the DPI scaling factor for the window.
 
 // --- Physical Display (Monitor) Management ---
-SITAPI int SituationGetMonitorCount(void);                                              // Get the number of connected monitors.
-SITAPI int SituationGetCurrentMonitor(void);                                            // Get the index of the monitor the window is on.
-SITAPI SituationDisplayInfo* SituationGetDisplays(int* count);                          // Get information for all displays (caller must free).
-SITAPI void SituationRefreshDisplays(void);                                             // Force a refresh of the cached display information.
-SITAPI SituationError SituationSetDisplayMode(int monitor_id, const SituationDisplayMode* mode, bool fullscreen); // Set the display mode for a monitor.
-SITAPI void SituationSetWindowMonitor(int monitor_id);                                  // Set the window to be fullscreen on a specific monitor.
-SITAPI const char* SituationGetMonitorName(int monitor_id);                             // Get the human-readable name of a monitor.
-SITAPI int SituationGetMonitorWidth(int monitor_id);                                    // Get the width of a monitor's current video mode.
-SITAPI int SituationGetMonitorHeight(int monitor_id);                                   // Get the height of a monitor's current video mode.
-SITAPI int SituationGetMonitorPhysicalWidth(int monitor_id);                            // Get the physical width of a monitor in millimeters.
-SITAPI int SituationGetMonitorPhysicalHeight(int monitor_id);                           // Get the physical height of a monitor in millimeters.
-SITAPI int SituationGetMonitorRefreshRate(int monitor_id);                              // Get the refresh rate of a monitor.
-SITAPI Vector2 SituationGetMonitorPosition(int monitor_id);                             // Get the top-left position of a monitor on the desktop.
+SITAPI int SituationGetMonitorCount(SituationContext ctx);                                              // Get the number of connected monitors.
+SITAPI int SituationGetCurrentMonitor(SituationContext ctx);                                            // Get the index of the monitor the window is on.
+SITAPI SituationDisplayInfo* SituationGetDisplays(SituationContext ctx, int* count);                          // Get information for all displays (caller must free).
+SITAPI void SituationRefreshDisplays(SituationContext ctx);                                             // Force a refresh of the cached display information.
+SITAPI SituationError SituationSetDisplayMode(SituationContext ctx, int monitor_id, const SituationDisplayMode* mode, bool fullscreen); // Set the display mode for a monitor.
+SITAPI void SituationSetWindowMonitor(SituationContext ctx, int monitor_id);                                  // Set the window to be fullscreen on a specific monitor.
+SITAPI const char* SituationGetMonitorName(SituationContext ctx, int monitor_id);                             // Get the human-readable name of a monitor.
+SITAPI int SituationGetMonitorWidth(SituationContext ctx, int monitor_id);                                    // Get the width of a monitor's current video mode.
+SITAPI int SituationGetMonitorHeight(SituationContext ctx, int monitor_id);                                   // Get the height of a monitor's current video mode.
+SITAPI int SituationGetMonitorPhysicalWidth(SituationContext ctx, int monitor_id);                            // Get the physical width of a monitor in millimeters.
+SITAPI int SituationGetMonitorPhysicalHeight(SituationContext ctx, int monitor_id);                           // Get the physical height of a monitor in millimeters.
+SITAPI int SituationGetMonitorRefreshRate(SituationContext ctx, int monitor_id);                              // Get the refresh rate of a monitor.
+SITAPI Vector2 SituationGetMonitorPosition(SituationContext ctx, int monitor_id);                             // Get the top-left position of a monitor on the desktop.
 
 // --- Cursor, Clipboard and File Drops ---
-SITAPI void SituationSetCursor(SituationCursor cursor);                                 // Set the mouse cursor to a standard shape.
-SITAPI void SituationShowCursor(void);                                                  // Show the mouse cursor.
-SITAPI void SituationHideCursor(void);                                                  // Hide the mouse cursor.
-SITAPI void SituationDisableCursor(void);                                               // Hide and lock the cursor, providing raw mouse motion.
-SITAPI const char* SituationGetClipboardText(void);                                     // Get text from the system clipboard.
-SITAPI void SituationSetClipboardText(const char* text);                                // Set text in the system clipboard.
-SITAPI bool SituationIsFileDropped(void);                                               // Check if a file was dropped into the window this frame.
-SITAPI char** SituationLoadDroppedFiles(int* count);                                    // Get the paths of dropped files (returns a copy, caller must free).
-SITAPI void SituationUnloadDroppedFiles(char** paths, int count);                       // Unload the file path list returned by SituationLoadDroppedFiles.
+SITAPI void SituationSetCursor(SituationContext ctx, SituationCursor cursor);                                 // Set the mouse cursor to a standard shape.
+SITAPI void SituationShowCursor(SituationContext ctx);                                                  // Show the mouse cursor.
+SITAPI void SituationHideCursor(SituationContext ctx);                                                  // Hide the mouse cursor.
+SITAPI void SituationDisableCursor(SituationContext ctx);                                               // Hide and lock the cursor, providing raw mouse motion.
+SITAPI const char* SituationGetClipboardText(SituationContext ctx);                                     // Get text from the system clipboard.
+SITAPI void SituationSetClipboardText(SituationContext ctx, const char* text);                                // Set text in the system clipboard.
+SITAPI bool SituationIsFileDropped(SituationContext ctx);                                               // Check if a file was dropped into the window this frame.
+SITAPI char** SituationLoadDroppedFiles(SituationContext ctx, int* count);                                    // Get the paths of dropped files (returns a copy, caller must free).
+SITAPI void SituationUnloadDroppedFiles(SituationContext ctx, char** paths, int count);                       // Unload the file path list returned by SituationLoadDroppedFiles.
 
 // --- Advanced Window Profile Management ---
-SITAPI SituationError SituationSetWindowStateProfiles(uint32_t active_flags, uint32_t inactive_flags); // Set the flag profiles for when the window is focused vs. unfocused.
-SITAPI SituationError SituationApplyCurrentProfileWindowState(void);                    // Manually apply the appropriate window state profile based on current focus.
-SITAPI SituationError SituationToggleWindowStateFlags(SituationWindowStateFlags flags_to_toggle); // Toggle flags in the current profile and apply the result.
-SITAPI uint32_t SituationGetCurrentActualWindowStateFlags(void);                        // Gets flags based on current GLFW window state
+SITAPI SituationError SituationSetWindowStateProfiles(SituationContext ctx, uint32_t active_flags, uint32_t inactive_flags); // Set the flag profiles for when the window is focused vs. unfocused.
+SITAPI SituationError SituationApplyCurrentProfileWindowState(SituationContext ctx);                    // Manually apply the appropriate window state profile based on current focus.
+SITAPI SituationError SituationToggleWindowStateFlags(SituationContext ctx, SituationWindowStateFlags flags_to_toggle); // Toggle flags in the current profile and apply the result.
+SITAPI uint32_t SituationGetCurrentActualWindowStateFlags(SituationContext ctx);                        // Gets flags based on current GLFW window state
 
 //==================================================================================
 // Image Module: CPU-side Image and Font Loading and Manipulation
@@ -1626,8 +1674,8 @@ SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, floa
 // --- Font Management ---
 SITAPI SituationFont SituationLoadFont(const char *fileName);                           // Load a font from a TTF/OTF file for CPU rendering.
 SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize);		// Loads a font directly from a memory buffer (e.g., embedded resource).
-SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels);
-SITAPI void SituationUnloadFont(SituationFont font);                                    // Unload a CPU-side font and free its memory.
+SITAPI bool SituationBakeFontAtlas(SituationContext ctx, SituationFont* font, float fontSizePixels);
+SITAPI void SituationUnloadFont(SituationContext ctx, SituationFont font);                                    // Unload a CPU-side font and free its memory.
 SITAPI Rectangle SituationMeasureText(SituationFont font, const char *text, float fontSize); // Measure the pixel dimensions of a string before drawing.
 SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font, int codepoint, Vector2 position, float fontSize, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness); // Draw a single Unicode character with advanced styling onto an image.
 SITAPI void SituationImageDrawText(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, ColorRGBA tint ); // Draw a simple, tinted text string onto an image.
@@ -1639,104 +1687,112 @@ SITAPI void SituationImageDrawTextFormatted(SituationImage *dst, SituationFont f
 //==================================================================================
 
 // --- Profiling & Diagnostics ---
-SITAPI uint32_t SituationGetDrawCallCount(void); 										// Number of draw commands this frame
-SITAPI uint64_t SituationGetVRAMUsage(void);     										// Total GPU memory allocated (Bytes)
+SITAPI uint32_t SituationGetDrawCallCount(SituationContext ctx); 										// Number of draw commands this frame
+SITAPI uint64_t SituationGetVRAMUsage(SituationContext ctx);     										// Total GPU memory allocated (Bytes)
 
 // --- Frame Lifecycle & Command Buffer ---
-SITAPI bool SituationAcquireFrameCommandBuffer(void);                                   // Prepare the backend for a new frame of rendering commands.
-SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void);                      // Get the primary command buffer for the current frame.
-SITAPI SituationError SituationEndFrame(void);                                          // Submit all commands for the frame and present the result.
+SITAPI bool SituationAcquireFrameCommandBuffer(SituationContext ctx);                                   // Prepare the backend for a new frame of rendering commands.
+SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(SituationContext ctx);                      // Get the primary command buffer for the current frame.
+SITAPI SituationError SituationEndFrame(SituationContext ctx);                                          // Submit all commands for the frame and present the result.
 
 // --- Abstracted Rendering Commands ---
-SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cmd, int display_id, ColorRGBA clear_color);              // [DEPRECATED] Begins a render pass on a target (-1 for main window), clearing it.
-SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd);                                                                // [DEPRECATED] End the current render pass.
-SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height);                           // Sets the dynamic viewport and scissor for the current render pass.
-SITAPI void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);                                    // Sets the dynamic scissor rectangle to clip rendering.
-SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader);                                     // Binds a graphics pipeline (shader program) for subsequent draws.
-SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh);                                             // [High-Level] Records a command to draw a complete, pre-configured mesh.
-SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color);                                                   // [High-Level] Record a command to draw a simple, colored 2D quad.
-SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);               // [Core] Set a small block of per-draw uniform data (push constant).
-SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer);            // [Core] Binds a buffer's descriptor set (UBO/SSBO) to a set index.
-SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);             // [Core] Binds a texture's descriptor set (sampler/storage) to a set index.
-SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture);           // [Core] Binds a texture as a storage image for compute shaders.
-SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset); // [Core] Define the format of a vertex attribute for the active VAO.
-SITAPI void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance); // [Core] Record a non-indexed draw call.
-SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance); // [Core] Record an indexed draw call.
-SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);                     // Begins a render pass with detailed configuration.
-SITAPI void SituationCmdEndRenderPass(SituationCommandBuffer cmd);                                                                      // Ends the current render pass.
-SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color);		// Draws a text string using GPU-accelerated textured quads.
+SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationContext ctx, SituationCommandBuffer cmd, int display_id, ColorRGBA clear_color);              // [DEPRECATED] Begins a render pass on a target (-1 for main window), clearing it.
+SITAPI SituationError SituationCmdEndRender(SituationContext ctx, SituationCommandBuffer cmd);                                                                // [DEPRECATED] End the current render pass.
+SITAPI void SituationCmdSetViewport(SituationContext ctx, SituationCommandBuffer cmd, float x, float y, float width, float height);                           // Sets the dynamic viewport and scissor for the current render pass.
+SITAPI void SituationCmdSetScissor(SituationContext ctx, SituationCommandBuffer cmd, int x, int y, int width, int height);                                    // Sets the dynamic scissor rectangle to clip rendering.
+SITAPI SituationError SituationCmdBindPipeline(SituationContext ctx, SituationCommandBuffer cmd, SituationShader shader);                                     // Binds a graphics pipeline (shader program) for subsequent draws.
+SITAPI SituationError SituationCmdDrawMesh(SituationContext ctx, SituationCommandBuffer cmd, SituationMesh mesh);                                             // [High-Level] Records a command to draw a complete, pre-configured mesh.
+SITAPI void SituationCmdDrawQuad(SituationContext ctx, SituationCommandBuffer cmd, mat4 model, vec4 color);                                                   // [High-Level] Record a command to draw a simple, colored 2D quad.
+SITAPI void SituationCmdSetPushConstant(SituationContext ctx, SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);               // [Core] Set a small block of per-draw uniform data (push constant).
+SITAPI SituationError SituationCmdBindDescriptorSet(SituationContext ctx, SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer);            // [Core] Binds a buffer's descriptor set (UBO/SSBO) to a set index.
+SITAPI SituationError SituationCmdBindTextureSet(SituationContext ctx, SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);             // [Core] Binds a texture's descriptor set (sampler/storage) to a set index.
+SITAPI SituationError SituationCmdBindComputeTexture(SituationContext ctx, SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture);           // [Core] Binds a texture as a storage image for compute shaders.
+SITAPI void SituationCmdSetVertexAttribute(SituationContext ctx, SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset); // [Core] Define the format of a vertex attribute for the active VAO.
+SITAPI void SituationCmdDraw(SituationContext ctx, SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance); // [Core] Record a non-indexed draw call.
+SITAPI void SituationCmdDrawIndexed(SituationContext ctx, SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance); // [Core] Record an indexed draw call.
+SITAPI SituationError SituationCmdBeginRenderPass(SituationContext ctx, SituationCommandBuffer cmd, const SituationRenderPassInfo* info);                     // Begins a render pass with detailed configuration.
+SITAPI void SituationCmdEndRenderPass(SituationContext ctx, SituationCommandBuffer cmd);                                                                      // Ends the current render pass.
+SITAPI void SituationCmdDrawText(SituationContext ctx, SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color);		// Draws a text string using GPU-accelerated textured quads.
+
+// --- [NEW] Vulkan Multi-Threading API ---
+/**
+ * @brief Creates a secondary command pool for a worker thread.
+ * @details Allows a background thread to record commands without locking the main thread.
+ */
+SITAPI void SituationBeginWorkerCommandBuffer(SituationContext ctx, SituationCommandBuffer* out_cmd);
+SITAPI void SituationEndWorkerCommandBuffer(SituationContext ctx, SituationCommandBuffer cmd);
 
 // --- Graphics Resource Management ---
-SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count); // Create a mesh from vertex and index data.
-SITAPI void SituationDestroyMesh(SituationMesh* mesh);                                  // Unload a mesh from GPU memory.
+SITAPI SituationMesh SituationCreateMesh(SituationContext ctx, const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count); // Create a mesh from vertex and index data.
+SITAPI void SituationDestroyMesh(SituationContext ctx, SituationMesh* mesh);                                  // Unload a mesh from GPU memory.
 
 // --- Shader Management ---
-SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_path);   // Load a graphics shader pipeline from vertex and fragment files.
-SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code); // Create a graphics shader pipeline from in-memory GLSL source.
-SITAPI void SituationUnloadShader(SituationShader* shader);                             // Unload a graphics shader pipeline and free its GPU resources.
+SITAPI SituationShader SituationLoadShader(SituationContext ctx, const char* vs_path, const char* fs_path);   // Load a graphics shader pipeline from vertex and fragment files.
+SITAPI SituationShader SituationLoadShaderFromMemory(SituationContext ctx, const char* vs_code, const char* fs_code); // Create a graphics shader pipeline from in-memory GLSL source.
+SITAPI void SituationUnloadShader(SituationContext ctx, SituationShader* shader);                             // Unload a graphics shader pipeline and free its GPU resources.
 
 // --- Shader Interaction & Synchronization ---
-SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const char* uniform_name, const void* data, SituationUniformType type); // [OpenGL] Set a standalone uniform value by name (uses a cache).
-SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags); // Insert a fine-grained pipeline barrier for synchronization.
+SITAPI SituationError SituationSetShaderUniform(SituationContext ctx, SituationShader shader, const char* uniform_name, const void* data, SituationUniformType type); // [OpenGL] Set a standalone uniform value by name (uses a cache).
+SITAPI void SituationCmdPipelineBarrier(SituationContext ctx, SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags); // Insert a fine-grained pipeline barrier for synchronization.
 
 // --- Texture Management ---
-SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generate_mipmaps);// Loads a texture from disk and registers the path for hot-reloading.
-SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps); // Create a texture from a CPU-side image.
-SITAPI void SituationDestroyTexture(SituationTexture* texture);                         // Unload a texture from GPU memory.
+SITAPI SituationTexture SituationLoadTexture(SituationContext ctx, const char* file_path, bool generate_mipmaps);// Loads a texture from disk and registers the path for hot-reloading.
+SITAPI SituationTexture SituationCreateTexture(SituationContext ctx, SituationImage image, bool generate_mipmaps); // Create a texture from a CPU-side image.
+SITAPI void SituationDestroyTexture(SituationContext ctx, SituationTexture* texture);                         // Unload a texture from GPU memory.
 
 // --- Compute Shader Pipeline ---
-SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type); // Create a compute pipeline from a shader file.
-SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type); // Create a compute pipeline from in-memory GLSL source.
-SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline);        // Destroy a compute pipeline and free its GPU resources.
-SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline); // Bind a compute pipeline for a subsequent dispatch.
-SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z); // Record a command to dispatch compute shader work groups.
+SITAPI SituationComputePipeline SituationCreateComputePipeline(SituationContext ctx, const char* compute_shader_path, SituationComputeLayoutType layout_type); // Create a compute pipeline from a shader file.
+SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(SituationContext ctx, const char* compute_shader_source, SituationComputeLayoutType layout_type); // Create a compute pipeline from in-memory GLSL source.
+SITAPI void SituationDestroyComputePipeline(SituationContext ctx, SituationComputePipeline* pipeline);        // Destroy a compute pipeline and free its GPU resources.
+SITAPI void SituationCmdBindComputePipeline(SituationContext ctx, SituationCommandBuffer cmd, SituationComputePipeline pipeline); // Bind a compute pipeline for a subsequent dispatch.
+SITAPI void SituationCmdDispatch(SituationContext ctx, SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z); // Record a command to dispatch compute shader work groups.
 
 // --- GPU Buffer Management ---
-SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_data, SituationBufferUsageFlags usage_flags); // Create a generic GPU data buffer (e.g., SSBO).
-SITAPI void SituationDestroyBuffer(SituationBuffer* buffer);                            // Destroy a GPU buffer.
-SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offset, size_t size, const void* data); // Update data in a GPU buffer.
-SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offset, size_t size, void* out_data); // Read data from a GPU buffer.
+SITAPI SituationBuffer SituationCreateBuffer(SituationContext ctx, size_t size, const void* initial_data, SituationBufferUsageFlags usage_flags); // Create a generic GPU data buffer (e.g., SSBO).
+SITAPI void SituationDestroyBuffer(SituationContext ctx, SituationBuffer* buffer);                            // Destroy a GPU buffer.
+SITAPI SituationError SituationUpdateBuffer(SituationContext ctx, SituationBuffer buffer, size_t offset, size_t size, const void* data); // Update data in a GPU buffer.
+SITAPI SituationError SituationGetBufferData(SituationContext ctx, SituationBuffer buffer, size_t offset, size_t size, void* out_data); // Read data from a GPU buffer.
 
 // --- Virtual Displays (Render Targets) ---
-SITAPI int SituationCreateVirtualDisplay(vec2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode); // Create an off-screen render target.
-SITAPI SituationError SituationDestroyVirtualDisplay(int display_id);                   // Destroy a virtual display.
-SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd);                 // Composite all visible virtual displays to the current target.
-SITAPI SituationError SituationConfigureVirtualDisplay(int display_id, vec2 offset, float opacity, int z_order, bool visible, double frame_time_mult, SituationBlendMode blend_mode); // Configure a virtual display's properties.
-SITAPI SituationVirtualDisplay* SituationGetVirtualDisplay(int display_id);             // Get a pointer to a virtual display's state.
-SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, SituationScalingMode scaling_mode); // Set the scaling/filtering mode for a virtual display.
-SITAPI void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty);             // Mark a virtual display as needing to be re-rendered.
-SITAPI bool SituationIsVirtualDisplayDirty(int display_id);                             // Check if a virtual display is marked as dirty.
-SITAPI double SituationGetLastVDCompositeTimeMS(void);                                  // Get the time taken for the last virtual display composite pass.
-SITAPI void SituationGetVirtualDisplaySize(int display_id, int* width, int* height);    // Get the internal resolution of a virtual display.
+SITAPI int SituationCreateVirtualDisplay(SituationContext ctx, vec2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode); // Create an off-screen render target.
+SITAPI SituationError SituationDestroyVirtualDisplay(SituationContext ctx, int display_id);                   // Destroy a virtual display.
+SITAPI void SituationRenderVirtualDisplays(SituationContext ctx, SituationCommandBuffer cmd);                 // Composite all visible virtual displays to the current target.
+SITAPI SituationError SituationConfigureVirtualDisplay(SituationContext ctx, int display_id, vec2 offset, float opacity, int z_order, bool visible, double frame_time_mult, SituationBlendMode blend_mode); // Configure a virtual display's properties.
+SITAPI SituationVirtualDisplay* SituationGetVirtualDisplay(SituationContext ctx, int display_id);             // Get a pointer to a virtual display's state.
+SITAPI SituationError SituationSetVirtualDisplayScalingMode(SituationContext ctx, int display_id, SituationScalingMode scaling_mode); // Set the scaling/filtering mode for a virtual display.
+SITAPI void SituationSetVirtualDisplayDirty(SituationContext ctx, int display_id, bool is_dirty);             // Mark a virtual display as needing to be re-rendered.
+SITAPI bool SituationIsVirtualDisplayDirty(SituationContext ctx, int display_id);                             // Check if a virtual display is marked as dirty.
+SITAPI double SituationGetLastVDCompositeTimeMS(SituationContext ctx);                                  // Get the time taken for the last virtual display composite pass.
+SITAPI void SituationGetVirtualDisplaySize(SituationContext ctx, int display_id, int* width, int* height);    // Get the internal resolution of a virtual display.
 
 // --- 3D Model Utilities ---
-SITAPI SituationModel SituationLoadModel(const char* file_path);                        // Loads a complete 3D model and its textures from a GLTF file.
-SITAPI void SituationUnloadModel(SituationModel* model);                                // Frees all GPU and CPU resources associated with a loaded model.
-SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform); // Draws all sub-meshes of a model with a single root transformation.
-SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path);      // Exports a model to a human-readable .gltf and a .bin file for debugging.
-static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count);
+SITAPI SituationModel SituationLoadModel(SituationContext ctx, const char* file_path);                        // Loads a complete 3D model and its textures from a GLTF file.
+SITAPI void SituationUnloadModel(SituationContext ctx, SituationModel* model);                                // Frees all GPU and CPU resources associated with a loaded model.
+SITAPI void SituationDrawModel(SituationContext ctx, SituationCommandBuffer cmd, SituationModel model, mat4 transform); // Draws all sub-meshes of a model with a single root transformation.
+SITAPI bool SituationSaveModelAsGltf(SituationContext ctx, SituationModel model, const char* file_path);      // Exports a model to a human-readable .gltf and a .bin file for debugging.
+static void SituationGetMeshData(SituationContext ctx, SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count);
 
 // --- Image & Screenshot Utilities ---
-SITAPI SituationImage SituationLoadImageFromScreen(void);                               // Get a copy of the current screen backbuffer as an image.
-SITAPI bool SituationTakeScreenshot(const char *fileName);                              // Take a screenshot and save it to a file (PNG or BMP).
+SITAPI SituationImage SituationLoadImageFromScreen(SituationContext ctx);                               // Get a copy of the current screen backbuffer as an image.
+SITAPI bool SituationTakeScreenshot(SituationContext ctx, const char *fileName);                              // Take a screenshot and save it to a file (PNG or BMP).
 
 // --- Backend-Specific Accessors ---
-SITAPI SituationRendererType SituationGetRendererType(void);                            // Get the current active renderer type (OpenGL or Vulkan).
-SITAPI GLFWwindow* SituationGetGLFWwindow(void);                                        // Get the raw GLFW window handle.
+SITAPI SituationRendererType SituationGetRendererType(SituationContext ctx);                            // Get the current active renderer type (OpenGL or Vulkan).
+SITAPI GLFWwindow* SituationGetGLFWwindow(SituationContext ctx);                                        // Get the raw GLFW window handle.
 #ifdef SITUATION_USE_VULKAN
-SITAPI VkInstance SituationGetVulkanInstance(void);                                     // Get the raw Vulkan instance handle.
-SITAPI VkDevice SituationGetVulkanDevice(void);                                         // Get the raw Vulkan logical device handle.
-SITAPI VkPhysicalDevice SituationGetVulkanPhysicalDevice(void);                         // Get the raw Vulkan physical device handle.
-SITAPI VkRenderPass SituationGetMainWindowRenderPass(void);                             // Get the render pass for the main window.
+SITAPI VkInstance SituationGetVulkanInstance(SituationContext ctx);                                     // Get the raw Vulkan instance handle.
+SITAPI VkDevice SituationGetVulkanDevice(SituationContext ctx);                                         // Get the raw Vulkan logical device handle.
+SITAPI VkPhysicalDevice SituationGetVulkanPhysicalDevice(SituationContext ctx);                         // Get the raw Vulkan physical device handle.
+SITAPI VkRenderPass SituationGetMainWindowRenderPass(SituationContext ctx);                             // Get the render pass for the main window.
 #endif
 
 // --- [DEPRECATED] Use SituationCmdBindDescriptorSet() or SituationCmdBindTextureSet() instead. ---
-SITAPI SituationError SituationCmdBindUniformBuffer(SituationCommandBuffer cmd, uint32_t contract_id, SituationBuffer buffer);          // [DEPRECATED] [Core] Bind a Uniform Buffer Object (UBO) to a shader binding point.
-SITAPI SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);                // [DEPRECATED] [Core] Bind a texture and sampler to a shader binding point.
-SITAPI SituationError SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer);              // [DEPRECATED] Bind a buffer to a compute shader binding point.
-SITAPI SituationShader SituationLoadComputeShader(const char* cs_path);                                                                 // [DEPRECATED] Load a compute shader from a file. Use SituationCreateComputePipeline instead.
-SITAPI SituationShader SituationLoadComputeShaderFromMemory(const char* cs_code);                                                       // [DEPRECATED] Create a compute shader from memory. Use SituationCreateComputePipelineFromMemory instead.
-SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_bits);                                                  // [DEPRECATED] Insert a coarse-grained memory barrier. Use SituationCmdPipelineBarrier instead.
+SITAPI SituationError SituationCmdBindUniformBuffer(SituationContext ctx, SituationCommandBuffer cmd, uint32_t contract_id, SituationBuffer buffer);          // [DEPRECATED] [Core] Bind a Uniform Buffer Object (UBO) to a shader binding point.
+SITAPI SituationError SituationCmdBindTexture(SituationContext ctx, SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);                // [DEPRECATED] [Core] Bind a texture and sampler to a shader binding point.
+SITAPI SituationError SituationCmdBindComputeBuffer(SituationContext ctx, SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer);              // [DEPRECATED] Bind a buffer to a compute shader binding point.
+SITAPI SituationShader SituationLoadComputeShader(SituationContext ctx, const char* cs_path);                                                                 // [DEPRECATED] Load a compute shader from a file. Use SituationCreateComputePipeline instead.
+SITAPI SituationShader SituationLoadComputeShaderFromMemory(SituationContext ctx, const char* cs_code);                                                       // [DEPRECATED] Create a compute shader from memory. Use SituationCreateComputePipelineFromMemory instead.
+SITAPI void SituationMemoryBarrier(SituationContext ctx, SituationCommandBuffer cmd, uint32_t barrier_bits);                                                  // [DEPRECATED] Insert a coarse-grained memory barrier. Use SituationCmdPipelineBarrier instead.
 
 //==================================================================================
 // Hot-Reloading Module (Development Tools)
@@ -1744,102 +1800,102 @@ SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_
 // These functions allow you to reload assets from disk at runtime without restarting.
 // They handle GPU synchronization, resource destruction, and re-loading.
 // Returns true if the reload was successful. On failure, the old handle is usually invalid.
-SITAPI bool SituationReloadShader(SituationShader* shader);                             // Recompiles and links a shader from its original source files (Synchronous/Stalls GPU).
-SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline);         // Recompiles a compute pipeline from its original source file (Synchronous/Stalls GPU).
-SITAPI bool SituationReloadTexture(SituationTexture* texture);                          // Re-reads image file and recreates the GPU texture resource (Synchronous/Stalls GPU).
-SITAPI bool SituationReloadModel(SituationModel* model);                                // Re-parses GLTF/GLB file and rebuilds all meshes and textures (Synchronous/Stalls GPU).
+SITAPI bool SituationReloadShader(SituationContext ctx, SituationShader* shader);                             // Recompiles and links a shader from its original source files (Synchronous/Stalls GPU).
+SITAPI bool SituationReloadComputePipeline(SituationContext ctx, SituationComputePipeline* pipeline);         // Recompiles a compute pipeline from its original source file (Synchronous/Stalls GPU).
+SITAPI bool SituationReloadTexture(SituationContext ctx, SituationTexture* texture);                          // Re-reads image file and recreates the GPU texture resource (Synchronous/Stalls GPU).
+SITAPI bool SituationReloadModel(SituationContext ctx, SituationModel* model);                                // Re-parses GLTF/GLB file and rebuilds all meshes and textures (Synchronous/Stalls GPU).
 
 //==================================================================================
 // Input Module: Keyboard, Mouse, and Gamepad
 //==================================================================================
 // --- Keyboard Input ---
-SITAPI bool SituationIsKeyDown(int key);                                                // Check if a key is currently held down (a state).
-SITAPI bool SituationIsKeyUp(int key);                                                  // Check if a key is currently up (a state).
-SITAPI bool SituationIsKeyPressed(int key);                                             // Check if a key was pressed down this frame (an event).
-SITAPI bool SituationIsKeyReleased(int key);                                            // Check if a key was released this frame (an event).
-SITAPI int SituationGetKeyPressed(void);                                                // Get the next key from the press queue (no repeats).
-SITAPI int SituationPeekKeyPressed(void);                                               // Peek at the next key in the press queue without consuming it.
-SITAPI unsigned int SituationGetCharPressed(void);                                      // Get the next character from the text input queue.
-SITAPI bool SituationIsLockKeyPressed(int lock_key_mod);                                // Check if a lock key (Caps, Num) is currently active.
-SITAPI bool SituationIsScrollLockOn(void);                                              // Check if Scroll Lock is currently toggled on.
-SITAPI bool SituationIsModifierPressed(int modifier);                                   // Check if a modifier key (Shift, Ctrl, Alt) is pressed.
-SITAPI void SituationSetKeyCallback(SituationKeyCallback callback, void* user_data);    // Set a callback for key events.
+SITAPI bool SituationIsKeyDown(SituationContext ctx, int key);                                                // Check if a key is currently held down (a state).
+SITAPI bool SituationIsKeyUp(SituationContext ctx, int key);                                                  // Check if a key is currently up (a state).
+SITAPI bool SituationIsKeyPressed(SituationContext ctx, int key);                                             // Check if a key was pressed down this frame (an event).
+SITAPI bool SituationIsKeyReleased(SituationContext ctx, int key);                                            // Check if a key was released this frame (an event).
+SITAPI int SituationGetKeyPressed(SituationContext ctx);                                                // Get the next key from the press queue (no repeats).
+SITAPI int SituationPeekKeyPressed(SituationContext ctx);                                               // Peek at the next key in the press queue without consuming it.
+SITAPI unsigned int SituationGetCharPressed(SituationContext ctx);                                      // Get the next character from the text input queue.
+SITAPI bool SituationIsLockKeyPressed(SituationContext ctx, int lock_key_mod);                                // Check if a lock key (Caps, Num) is currently active.
+SITAPI bool SituationIsScrollLockOn(SituationContext ctx);                                              // Check if Scroll Lock is currently toggled on.
+SITAPI bool SituationIsModifierPressed(SituationContext ctx, int modifier);                                   // Check if a modifier key (Shift, Ctrl, Alt) is pressed.
+SITAPI void SituationSetKeyCallback(SituationContext ctx, SituationKeyCallback callback, void* user_data);    // Set a callback for key events.
 
 // --- Mouse Input ---
-SITAPI Vector2 SituationGetMousePosition(void);                                            // Get the mouse position within the window.
-SITAPI Vector2 SituationGetMouseDelta(void);                                               // Get the mouse movement since the last frame.
-SITAPI float SituationGetMouseWheelMove(void);                                          // Get vertical mouse wheel movement.
-SITAPI Vector2 SituationGetMouseWheelMoveV(void);                                          // Get vertical and horizontal mouse wheel movement.
-SITAPI bool SituationIsMouseButtonDown(int button);                                     // Check if a mouse button is currently held down (a state).
-SITAPI bool SituationIsMouseButtonPressed(int button);                                  // Check if a mouse button was pressed down this frame (an event).
-SITAPI bool SituationIsMouseButtonReleased(int button);                                 // Check if a mouse button was released this frame.
-SITAPI void SituationSetMousePosition(vec2 pos);                                        // Set the mouse position within the window.
-SITAPI void SituationSetMouseOffset(vec2 offset);                                       // Set a software offset for the mouse position.
-SITAPI void SituationSetMouseScale(vec2 scale);                                         // Set a software scale for the mouse position and delta.
-SITAPI void SituationSetMouseButtonCallback(SituationMouseButtonCallback callback, void* user_data); // Set a callback for mouse button events.
-SITAPI void SituationSetCursorPosCallback(SituationCursorPosCallback callback, void* user_data); // Set a callback for mouse movement events.
-SITAPI void SituationSetScrollCallback(SituationScrollCallback callback, void* user_data); // Set a callback for mouse scroll events.
+SITAPI Vector2 SituationGetMousePosition(SituationContext ctx);                                            // Get the mouse position within the window.
+SITAPI Vector2 SituationGetMouseDelta(SituationContext ctx);                                               // Get the mouse movement since the last frame.
+SITAPI float SituationGetMouseWheelMove(SituationContext ctx);                                          // Get vertical mouse wheel movement.
+SITAPI Vector2 SituationGetMouseWheelMoveV(SituationContext ctx);                                          // Get vertical and horizontal mouse wheel movement.
+SITAPI bool SituationIsMouseButtonDown(SituationContext ctx, int button);                                     // Check if a mouse button is currently held down (a state).
+SITAPI bool SituationIsMouseButtonPressed(SituationContext ctx, int button);                                  // Check if a mouse button was pressed down this frame (an event).
+SITAPI bool SituationIsMouseButtonReleased(SituationContext ctx, int button);                                 // Check if a mouse button was released this frame.
+SITAPI void SituationSetMousePosition(SituationContext ctx, vec2 pos);                                        // Set the mouse position within the window.
+SITAPI void SituationSetMouseOffset(SituationContext ctx, vec2 offset);                                       // Set a software offset for the mouse position.
+SITAPI void SituationSetMouseScale(SituationContext ctx, vec2 scale);                                         // Set a software scale for the mouse position and delta.
+SITAPI void SituationSetMouseButtonCallback(SituationContext ctx, SituationMouseButtonCallback callback, void* user_data); // Set a callback for mouse button events.
+SITAPI void SituationSetCursorPosCallback(SituationContext ctx, SituationCursorPosCallback callback, void* user_data); // Set a callback for mouse movement events.
+SITAPI void SituationSetScrollCallback(SituationContext ctx, SituationScrollCallback callback, void* user_data); // Set a callback for mouse scroll events.
 
 // --- Gamepad Input ---
-SITAPI bool SituationIsJoystickPresent(int jid);                                        // Check if a joystick/gamepad is connected.
-SITAPI bool SituationIsGamepad(int jid);                                                // Check if a connected joystick has a standard gamepad mapping.
-SITAPI const char* SituationGetJoystickName(int jid);                                   // Get the human-readable name of a joystick/gamepad.
-SITAPI void SituationSetJoystickCallback(SituationJoystickCallback callback, void* user_data); // Set a callback for joystick connection events.
-SITAPI int SituationSetGamepadMappings(const char *mappings);                           // Load a new set of gamepad mappings from a string.
-SITAPI int SituationGetGamepadButtonPressed(void);                                      // Get the next gamepad button from the press queue.
-SITAPI bool SituationIsGamepadButtonDown(int jid, int button);                          // Check if a gamepad button is currently held down (a state).
-SITAPI bool SituationIsGamepadButtonPressed(int jid, int button);                       // Check if a gamepad button was pressed down this frame (an event).
-SITAPI bool SituationIsGamepadButtonReleased(int jid, int button);                      // Check if a gamepad button was released this frame (an event).
-SITAPI int SituationGetGamepadAxisCount(int jid);                                       // Get the number of axes for a gamepad.
-SITAPI float SituationGetGamepadAxisValue(int jid, int axis);                           // Get the value of a gamepad axis (deadzone applied).
-SITAPI bool SituationSetGamepadVibration(int jid, float left_motor, float right_motor); // Set gamepad vibration/rumble (Windows only).
+SITAPI bool SituationIsJoystickPresent(SituationContext ctx, int jid);                                        // Check if a joystick/gamepad is connected.
+SITAPI bool SituationIsGamepad(SituationContext ctx, int jid);                                                // Check if a connected joystick has a standard gamepad mapping.
+SITAPI const char* SituationGetJoystickName(SituationContext ctx, int jid);                                   // Get the human-readable name of a joystick/gamepad.
+SITAPI void SituationSetJoystickCallback(SituationContext ctx, SituationJoystickCallback callback, void* user_data); // Set a callback for joystick connection events.
+SITAPI int SituationSetGamepadMappings(SituationContext ctx, const char *mappings);                           // Load a new set of gamepad mappings from a string.
+SITAPI int SituationGetGamepadButtonPressed(SituationContext ctx);                                      // Get the next gamepad button from the press queue.
+SITAPI bool SituationIsGamepadButtonDown(SituationContext ctx, int jid, int button);                          // Check if a gamepad button is currently held down (a state).
+SITAPI bool SituationIsGamepadButtonPressed(SituationContext ctx, int jid, int button);                       // Check if a gamepad button was pressed down this frame (an event).
+SITAPI bool SituationIsGamepadButtonReleased(SituationContext ctx, int jid, int button);                      // Check if a gamepad button was released this frame (an event).
+SITAPI int SituationGetGamepadAxisCount(SituationContext ctx, int jid);                                       // Get the number of axes for a gamepad.
+SITAPI float SituationGetGamepadAxisValue(SituationContext ctx, int jid, int axis);                           // Get the value of a gamepad axis (deadzone applied).
+SITAPI bool SituationSetGamepadVibration(SituationContext ctx, int jid, float left_motor, float right_motor); // Set gamepad vibration/rumble (Windows only).
 
 //==================================================================================
 // Audio Module
 //==================================================================================
 
 // --- Audio Device Management ---
-SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count);                  // Get a list of available audio playback devices (caller must free).
-SITAPI SituationError SituationSetAudioDevice(int internal_id, const SituationAudioFormat* format); // Set the active audio device.
-SITAPI int SituationGetAudioPlaybackSampleRate(void);                                   // Get the sample rate of the current audio device.
-SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate);             // Re-initialize the audio device with a new sample rate.
-SITAPI float SituationGetAudioMasterVolume(void);                                       // Get the master volume for the audio device.
-SITAPI SituationError SituationSetAudioMasterVolume(float volume);                      // Set the master volume for the audio device.
-SITAPI bool SituationIsAudioDevicePlaying(void);                                        // Check if the audio device is currently playing.
-SITAPI SituationError SituationPauseAudioDevice(void);                                  // Pause audio playback on the device.
-SITAPI SituationError SituationResumeAudioDevice(void);                                 // Resume audio playback on the device.
+SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(SituationContext ctx, int* count);                  // Get a list of available audio playback devices (caller must free).
+SITAPI SituationError SituationSetAudioDevice(SituationContext ctx, int internal_id, const SituationAudioFormat* format); // Set the active audio device.
+SITAPI int SituationGetAudioPlaybackSampleRate(SituationContext ctx);                                   // Get the sample rate of the current audio device.
+SITAPI SituationError SituationSetAudioPlaybackSampleRate(SituationContext ctx, int sample_rate);             // Re-initialize the audio device with a new sample rate.
+SITAPI float SituationGetAudioMasterVolume(SituationContext ctx);                                       // Get the master volume for the audio device.
+SITAPI SituationError SituationSetAudioMasterVolume(SituationContext ctx, float volume);                      // Set the master volume for the audio device.
+SITAPI bool SituationIsAudioDevicePlaying(SituationContext ctx);                                        // Check if the audio device is currently playing.
+SITAPI SituationError SituationPauseAudioDevice(SituationContext ctx);                                  // Pause audio playback on the device.
+SITAPI SituationError SituationResumeAudioDevice(SituationContext ctx);                                 // Resume audio playback on the device.
 
 // --- Audio Capture ---
-SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data);
-SITAPI void SituationStopAudioCapture(void);
+SITAPI SituationError SituationStartAudioCapture(SituationContext ctx, SituationAudioCaptureCallback callback, void* user_data);
+SITAPI void SituationStopAudioCapture(SituationContext ctx);
 
 // --- Sound Loading and Management ---
-SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, SituationAudioLoadMode mode, bool looping, SituationSound* out_sound); // Load a sound from a file.
-SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound); // Load a sound from a custom stream.
-SITAPI void SituationUnloadSound(SituationSound* sound);                                // Unload a sound and free its resources.
-SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound);                  // Play a loaded sound (restarts if already playing).
-SITAPI SituationError SituationStopLoadedSound(SituationSound* sound);                  // Stop a specific sound from playing.
-SITAPI SituationError SituationStopAllLoadedSounds(void);                               // Stop all currently playing sounds.
+SITAPI SituationError SituationLoadSoundFromFile(SituationContext ctx, const char* file_path, SituationAudioLoadMode mode, bool looping, SituationSound* out_sound); // Load a sound from a file.
+SITAPI SituationError SituationLoadSoundFromStream(SituationContext ctx, SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound); // Load a sound from a custom stream.
+SITAPI void SituationUnloadSound(SituationContext ctx, SituationSound* sound);                                // Unload a sound and free its resources.
+SITAPI SituationError SituationPlayLoadedSound(SituationContext ctx, SituationSound* sound);                  // Play a loaded sound (restarts if already playing).
+SITAPI SituationError SituationStopLoadedSound(SituationContext ctx, SituationSound* sound);                  // Stop a specific sound from playing.
+SITAPI SituationError SituationStopAllLoadedSounds(SituationContext ctx);                               // Stop all currently playing sounds.
 
 // --- Sound Data Manipulation (Wave Utilities) ---
-SITAPI SituationError SituationSoundCopy(const SituationSound* source, SituationSound* out_destination);    // Create a new sound by copying the raw PCM data from a source.
-SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame);   // Crop a sound's PCM data in-place to a new range.
-SITAPI bool SituationSoundExportAsWav(const SituationSound* sound, const char* fileName);                   // Export the sound's raw PCM data to a WAV file.
+SITAPI SituationError SituationSoundCopy(SituationContext ctx, const SituationSound* source, SituationSound* out_destination);    // Create a new sound by copying the raw PCM data from a source.
+SITAPI SituationError SituationSoundCrop(SituationContext ctx, SituationSound* sound, uint64_t initFrame, uint64_t finalFrame);   // Crop a sound's PCM data in-place to a new range.
+SITAPI bool SituationSoundExportAsWav(SituationContext ctx, const SituationSound* sound, const char* fileName);                   // Export the sound's raw PCM data to a WAV file.
 
 // --- Sound Parameters and Effects ---
-SITAPI SituationError SituationSetSoundVolume(SituationSound* sound, float volume);     // Set the volume for a specific sound.
-SITAPI float SituationGetSoundVolume(SituationSound* sound);                            // Get the volume of a specific sound.
-SITAPI SituationError SituationSetSoundPan(SituationSound* sound, float pan);           // Set the stereo pan for a sound [-1.0 to 1.0].
-SITAPI float SituationGetSoundPan(SituationSound* sound);                               // Get the stereo pan of a sound.
-SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch);       // Set the pitch for a sound (resamples).
-SITAPI float SituationGetSoundPitch(SituationSound* sound);                             // Get the pitch of a sound.
-SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFilterType type, float cutoff_hz, float q_factor);                    // Apply a low-pass or high-pass filter to a sound.
-SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled, float delay_sec, float feedback, float wet_mix);                   // Apply an echo effect to a sound.
-SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix);   // Apply a reverb effect to a sound.
+SITAPI SituationError SituationSetSoundVolume(SituationContext ctx, SituationSound* sound, float volume);     // Set the volume for a specific sound.
+SITAPI float SituationGetSoundVolume(SituationContext ctx, SituationSound* sound);                            // Get the volume of a specific sound.
+SITAPI SituationError SituationSetSoundPan(SituationContext ctx, SituationSound* sound, float pan);           // Set the stereo pan for a sound [-1.0 to 1.0].
+SITAPI float SituationGetSoundPan(SituationContext ctx, SituationSound* sound);                               // Get the stereo pan of a sound.
+SITAPI SituationError SituationSetSoundPitch(SituationContext ctx, SituationSound* sound, float pitch);       // Set the pitch for a sound (resamples).
+SITAPI float SituationGetSoundPitch(SituationContext ctx, SituationSound* sound);                             // Get the pitch of a sound.
+SITAPI SituationError SituationSetSoundFilter(SituationContext ctx, SituationSound* sound, SituationFilterType type, float cutoff_hz, float q_factor);                    // Apply a low-pass or high-pass filter to a sound.
+SITAPI SituationError SituationSetSoundEcho(SituationContext ctx, SituationSound* sound, bool enabled, float delay_sec, float feedback, float wet_mix);                   // Apply an echo effect to a sound.
+SITAPI SituationError SituationSetSoundReverb(SituationContext ctx, SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix);   // Apply a reverb effect to a sound.
 
 // --- Custom Audio Processing ---
-SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Attach a custom DSP processor to a sound's effect chain.
-SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Detach a custom DSP processor from a sound.
+SITAPI SituationError SituationAttachAudioProcessor(SituationContext ctx, SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Attach a custom DSP processor to a sound's effect chain.
+SITAPI SituationError SituationDetachAudioProcessor(SituationContext ctx, SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Detach a custom DSP processor from a sound.
 
 //==================================================================================
 // Filesystem Module
@@ -1877,15 +1933,15 @@ SITAPI void SituationFreeDirectoryFileList(char** file_list, int count);        
 // Miscellaneous Module
 //==================================================================================
 // --- Temporal Oscillator System ---
-SITAPI bool SituationTimerGetOscillatorState(int oscillator_id);                        // Get the current binary state (0 or 1) of an oscillator.
-SITAPI bool SituationTimerGetPreviousOscillatorState(int oscillator_id);                // Get the previous frame's state of an oscillator.
-SITAPI bool SituationTimerHasOscillatorUpdated(int oscillator_id);                      // Check if an oscillator's state has changed this frame.
-SITAPI bool SituationTimerPingOscillator(int oscillator_id);                            // Check if an oscillator's period has elapsed since the last ping.
-SITAPI uint64_t SituationTimerGetOscillatorTriggerCount(int oscillator_id);             // Get the total number of times an oscillator has triggered.
-SITAPI double SituationTimerGetOscillatorPeriod(int oscillator_id);                     // Get the period of an oscillator in seconds.
-SITAPI SituationError SituationSetTimerOscillatorPeriod(int oscillator_id, double period_seconds); // Set the period of an oscillator.
-SITAPI double SituationTimerGetPingProgress(int oscillator_id);                         // Get progress [0.0 to 1.0+] of the interval since the last successful ping.
-SITAPI double SituationTimerGetTime(void);                                              // Get the total time elapsed since initialization.
+SITAPI bool SituationTimerGetOscillatorState(SituationContext ctx, int oscillator_id);                        // Get the current binary state (0 or 1) of an oscillator.
+SITAPI bool SituationTimerGetPreviousOscillatorState(SituationContext ctx, int oscillator_id);                // Get the previous frame's state of an oscillator.
+SITAPI bool SituationTimerHasOscillatorUpdated(SituationContext ctx, int oscillator_id);                      // Check if an oscillator's state has changed this frame.
+SITAPI bool SituationTimerPingOscillator(SituationContext ctx, int oscillator_id);                            // Check if an oscillator's period has elapsed since the last ping.
+SITAPI uint64_t SituationTimerGetOscillatorTriggerCount(SituationContext ctx, int oscillator_id);             // Get the total number of times an oscillator has triggered.
+SITAPI double SituationTimerGetOscillatorPeriod(SituationContext ctx, int oscillator_id);                     // Get the period of an oscillator in seconds.
+SITAPI SituationError SituationSetTimerOscillatorPeriod(SituationContext ctx, int oscillator_id, double period_seconds); // Set the period of an oscillator.
+SITAPI double SituationTimerGetPingProgress(SituationContext ctx, int oscillator_id);                         // Get progress [0.0 to 1.0+] of the interval since the last successful ping.
+SITAPI double SituationTimerGetTime(SituationContext ctx);                                              // Get the total time elapsed since initialization.
 
 // --- Color Space Conversions ---
 SITAPI void SituationConvertColorToVec4(ColorRGBA c, vec4 out_normalized_color);        // Convert an 8-bit ColorRGBA struct to a normalized vec4.
@@ -2446,13 +2502,14 @@ typedef struct SituationGraveyard {
  *          safe default state for all pointers and flags. Backend-specific state is segregated
  *          into `vk` (Vulkan) and `gl` (OpenGL) substructures to keep the namespace clean.
  */
- typedef struct {
+// [REFACTORED] The monolithic global state is moved into a heap-allocated context struct.
+struct SituationContext_t {
     // -------------------------------------------------------------------------
     // Core Lifecycle & Error Handling
     // -------------------------------------------------------------------------
     char last_error_msg[SITUATION_MAX_ERROR_MSG_LEN];         // Buffer for the last reported error message
     ma_mutex error_mutex;                                     // Mutex protecting concurrent access to the error buffer
-    bool is_initialized;                                      // Flag indicating if SituationInit() has completed successfully
+    bool is_initialized;                                      // Flag indicating if SituationCreateContext() has completed successfully
     bool is_com_initialized;                                  // Flag indicating if Windows COM was initialized by this library
 
     // -------------------------------------------------------------------------
@@ -2588,9 +2645,25 @@ typedef struct SituationGraveyard {
     _SituationBufferNode* all_buffers;                        // Head of the buffer tracking list
     _SituationModelNode* all_models;                          // Head of the model tracking list
 
-} _SituationGlobalStateContainer;
+    // [NEW] Threading support
+    ma_mutex context_mutex; // For protecting shared resource lists (textures/meshes)
 
-static _SituationGlobalStateContainer sit_gs;
+#if defined(SITUATION_USE_VULKAN)
+    // Thread-specific command pools (Dynamic array or hash map by ThreadID)
+    // Simplified for PR:
+    VkCommandPool worker_command_pool;
+    ma_mutex worker_pool_mutex;
+#endif
+};
+
+// [NEW] TLS variable to hold the "current" context for the calling thread.
+static SIT_THREAD_LOCAL SituationContext _sit_current_context = NULL;
+
+// [NEW] Internal macro to resolve the context.
+// Usage: SIT_RESOLVE_CTX(ctx); if(!_ctx) { return ...; }
+#define SIT_RESOLVE_CTX(c) SituationContext _ctx = (c) ? (c) : _sit_current_context
+
+// [REMOVED] static _SituationGlobalStateContainer sit_gs;
 
 
 //----------------------------------------------------------------------------------
@@ -2615,17 +2688,245 @@ static void _SituationFullCleanupOnError(void);                                 
 //==================================================================================
 // GLFW Callback Helpers
 //==================================================================================
-static void _SituationGLFWErrorCallback(int error, const char* description);                    // [CALLBACK] Handles internal errors reported by GLFW.
-static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const char** paths);  // [CALLBACK] Handles files being dropped onto the window.
-static void _SituationGLFWWindowFocusCallback(GLFWwindow* window, int focused);                 // [CALLBACK] Handles the window gaining or losing input focus.
-static void _SituationGLFWWindowIconifyCallback(GLFWwindow* window, int iconified);             // [CALLBACK] Handles the window being minimized or restored.
-static void _SituationGLFWFramebufferSizeCallback(GLFWwindow* window, int width, int height);   // [CALLBACK] Handles changes to the framebuffer's pixel dimensions.
-static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods); // [CALLBACK] Handles all raw keyboard key events.
-static void _SituationGLFWCharCallback(GLFWwindow* window, unsigned int codepoint);             // [CALLBACK] Handles Unicode character input for text entry.
-static void _SituationGLFWMouseButtonCallback(GLFWwindow* window, int button, int action, int mods); // [CALLBACK] Handles mouse button press and release events.
-static void _SituationGLFWCursorPosCallback(GLFWwindow* window, double xpos, double ypos);      // [CALLBACK] Handles mouse cursor movement events.
-static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, double yoffset);   // [CALLBACK] Handles mouse scroll wheel events.
-static void _SituationGLFWJoystickCallback(int jid, int event);                                 // [CALLBACK] Handles joystick connection and disconnection events.
+static void _SituationGLFWErrorCallback(int error, const char* description) {
+    // This callback is not window-specific, so it must rely on the current thread's context.
+	SituationContext _ctx = SituationGetCurrentContext();
+
+	// If there's no context, we can't set an error message, but we can still log to stderr.
+	if (_ctx)
+	{
+		_SituationSetError(_ctx, SITUATION_ERROR_PLATFORM_ERROR, description);
+	}
+	fprintf(stderr, "[SITUATION GLFW Error] Code %d: %s\n", error, description);
+}
+
+static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const char** paths) {
+    SituationContext _ctx = (SituationContext)glfwGetWindowUserPointer(window);
+    if (!_ctx) return;
+
+    // First, handle the user-defined callback, if it exists
+    if (_ctx->file_drop_callback != NULL) {
+        _ctx->file_drop_callback(count, paths, _ctx->file_drop_user_data);
+    }
+
+    // Now, handle the internal state for the polling API
+    if (_ctx->dropped_file_paths != NULL) {
+        for (int i = 0; i < _ctx->dropped_file_count; i++) {
+            SIT_FREE(_ctx->dropped_file_paths[i]);
+        }
+        SIT_FREE(_ctx->dropped_file_paths);
+        _ctx->dropped_file_paths = NULL;
+        _ctx->dropped_file_count = 0;
+    }
+
+    if (count > 0) {
+        _ctx->dropped_file_paths = (char**)malloc(count * sizeof(char*));
+        if (_ctx->dropped_file_paths == NULL) {
+            _ctx->dropped_file_count = 0;
+            return; // Allocation failed
+        }
+
+        for (int i = 0; i < count; i++) {
+            _ctx->dropped_file_paths[i] = _sit_strdup(paths[i]);
+            if (_ctx->dropped_file_paths[i] == NULL) {
+                for (int j = 0; j < i; j++) SIT_FREE(_ctx->dropped_file_paths[j]);
+                SIT_FREE(_ctx->dropped_file_paths);
+                _ctx->dropped_file_paths = NULL;
+                _ctx->dropped_file_count = 0;
+                return;
+            }
+        }
+        _ctx->dropped_file_count = count;
+        _ctx->file_was_dropped_this_frame = true;
+    }
+}
+
+static void _SituationGLFWWindowFocusCallback(GLFWwindow* window, int focused) {
+    SituationContext _ctx = (SituationContext)glfwGetWindowUserPointer(window);
+    if (!_ctx) return;
+
+    bool has_focus = (focused == GLFW_TRUE);
+    if (has_focus != _ctx->current_window_focus_state) {
+        _ctx->current_window_focus_state = has_focus;
+        if (_ctx->focus_callback_fn) {
+            _ctx->focus_callback_fn(has_focus, _ctx->focus_callback_user_ptr);
+        }
+        SituationApplyCurrentProfileWindowState(_ctx);
+    }
+}
+
+static void _SituationGLFWWindowIconifyCallback(GLFWwindow* window, int iconified) {
+    SituationContext _ctx = (SituationContext)glfwGetWindowUserPointer(window);
+    if (!_ctx) return;
+
+    bool is_minimized_now = (iconified == GLFW_TRUE);
+    if (is_minimized_now && !_ctx->is_app_internally_paused && !_ctx->was_minimized_last_frame) {
+        SituationPauseApp(_ctx);
+    } else if (!is_minimized_now && _ctx->is_app_internally_paused && _ctx->was_minimized_last_frame) {
+        SituationResumeApp(_ctx);
+    }
+    _ctx->was_minimized_last_frame = is_minimized_now;
+    SituationApplyCurrentProfileWindowState(_ctx);
+}
+
+static void _SituationGLFWFramebufferSizeCallback(GLFWwindow* window, int width, int height) {
+    SituationContext _ctx = (SituationContext)glfwGetWindowUserPointer(window);
+    if (!_ctx) return;
+
+    if (width == 0 || height == 0) return;
+
+    _ctx->main_window_width = width;
+    _ctx->main_window_height = height;
+    _ctx->was_window_resized_last_frame = true;
+
+    #if defined(SITUATION_USE_OPENGL)
+    glViewport(0, 0, width, height);
+    glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, _ctx->gl.vd_ortho_projection);
+    if (_ctx->gl.composite_copy_texture_id != 0) {
+        glBindTexture(GL_TEXTURE_2D, _ctx->gl.composite_copy_texture_id);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    if (_ctx->gl.quad_shader_program) {
+        mat4 proj_quad;
+        glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, proj_quad);
+        glProgramUniformMatrix4fv(_ctx->gl.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)proj_quad);
+    }
+    #elif defined(SITUATION_USE_VULKAN)
+    _ctx->vk.framebuffer_resized = true;
+    #endif
+
+    if (_ctx->resize_callback != NULL) {
+        _ctx->resize_callback(width, height, _ctx->resize_callback_user_data);
+    }
+}
+
+static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    SituationContext _ctx = (SituationContext)glfwGetWindowUserPointer(window);
+    if (!_ctx) return;
+
+    (void)scancode;
+    if (key >= 0 && key <= GLFW_KEY_LAST) {
+        if (action == GLFW_PRESS) {
+            _ctx->keyboard.current_state[key] = true;
+            _ctx->keyboard.down_this_frame[key] = true;
+
+			ma_mutex_lock(&_ctx->keyboard.event_queue_mutex);
+            uint32_t next_head = (_ctx->keyboard.pressed_head + 1) % SITUATION_KEY_QUEUE_MAX;
+            if (next_head != _ctx->keyboard.pressed_tail) {
+                _ctx->keyboard.pressed_queue[_ctx->keyboard.pressed_head] = key;
+                _ctx->keyboard.pressed_head = next_head;
+            }
+            if (key == SIT_KEY_SCROLL_LOCK) {
+                _ctx->keyboard.is_scroll_lock_on = !_ctx->keyboard.is_scroll_lock_on;
+            }
+            ma_mutex_unlock(&_ctx->keyboard.event_queue_mutex);
+
+        } else if (action == GLFW_RELEASE) {
+            _ctx->keyboard.current_state[key] = false;
+            _ctx->keyboard.up_this_frame[key] = true;
+        }
+    }
+    _ctx->keyboard.modifier_state = mods;
+    _ctx->keyboard.lock_key_state = mods & (SIT_MOD_CAPS_LOCK | SIT_MOD_NUM_LOCK);
+
+    if (_ctx->keyboard.key_callback) {
+        _ctx->keyboard.key_callback(key, scancode, action, mods, _ctx->keyboard.key_callback_user_data);
+    }
+}
+
+static void _SituationGLFWCharCallback(GLFWwindow* window, unsigned int codepoint) {
+    SituationContext _ctx = (SituationContext)glfwGetWindowUserPointer(window);
+    if (!_ctx) return;
+
+	ma_mutex_lock(&_ctx->keyboard.event_queue_mutex);
+    uint32_t next_head = (_ctx->keyboard.char_head + 1) % SITUATION_CHAR_QUEUE_MAX;
+    if (next_head != _ctx->keyboard.char_tail) {
+        _ctx->keyboard.char_queue[_ctx->keyboard.char_head] = codepoint;
+        _ctx->keyboard.char_head = next_head;
+    }
+    ma_mutex_unlock(&_ctx->keyboard.event_queue_mutex);
+}
+
+static void _SituationGLFWMouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+    SituationContext _ctx = (SituationContext)glfwGetWindowUserPointer(window);
+    if (!_ctx) return;
+
+    ma_mutex_lock(&_ctx->mouse.mutex);
+    {
+        if (button >= 0 && button <= GLFW_MOUSE_BUTTON_LAST) {
+            if (action == GLFW_PRESS) {
+                _ctx->mouse.current_button_state[button] = true;
+                _ctx->mouse.button_down_this_frame[button] = true;
+
+                uint32_t next_head = (_ctx->mouse.button_head + 1) % SITUATION_KEY_QUEUE_MAX;
+                if (next_head != _ctx->mouse.button_tail) {
+                    _ctx->mouse.button_queue[_ctx->mouse.button_head] = button;
+                    _ctx->mouse.button_head = next_head;
+                }
+            } else if (action == GLFW_RELEASE) {
+                _ctx->mouse.current_button_state[button] = false;
+                _ctx->mouse.button_up_this_frame[button] = true;
+            }
+        }
+    }
+    ma_mutex_unlock(&_ctx->mouse.mutex);
+
+    if (_ctx->mouse.button_callback) {
+        _ctx->mouse.button_callback(button, action, mods, _ctx->mouse.button_callback_user_data);
+    }
+}
+
+static void _SituationGLFWCursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
+    SituationContext _ctx = (SituationContext)glfwGetWindowUserPointer(window);
+    if (!_ctx) return;
+
+    ma_mutex_lock(&_ctx->mouse.mutex);
+    {
+        _ctx->mouse.current_pos[0] = (float)xpos;
+        _ctx->mouse.current_pos[1] = (float)ypos;
+    }
+    ma_mutex_unlock(&_ctx->mouse.mutex);
+
+    if (_ctx->mouse.cursor_pos_callback) {
+        vec2 pos = {(float)xpos, (float)ypos};
+        _ctx->mouse.cursor_pos_callback(pos, _ctx->mouse.cursor_pos_callback_user_data);
+    }
+}
+
+static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
+    SituationContext _ctx = (SituationContext)glfwGetWindowUserPointer(window);
+    if (!_ctx) return;
+
+    ma_mutex_lock(&_ctx->mouse.mutex);
+    {
+        _ctx->mouse.wheel_move_x += (float)xoffset;
+        _ctx->mouse.wheel_move_y += (float)yoffset;
+    }
+    ma_mutex_unlock(&_ctx->mouse.mutex);
+
+    if (_ctx->mouse.scroll_callback) {
+        vec2 offset = {(float)xoffset, (float)yoffset};
+        _ctx->mouse.scroll_callback(offset, _ctx->mouse.scroll_callback_user_data);
+    }
+}
+
+static void _SituationGLFWJoystickCallback(int jid, int event) {
+    SituationContext _ctx = SituationGetCurrentContext();
+	if (!_ctx) return;
+
+    if (jid < 0 || jid >= SITUATION_MAX_JOYSTICKS) return;
+
+    ma_mutex_lock(&_ctx->joysticks.event_queue_mutex);
+    {
+        if (_ctx->joysticks.event_queue_count < SITUATION_MAX_JOYSTICKS) {
+            _ctx->joysticks.event_queue[_ctx->joysticks.event_queue_count].jid = jid;
+            _ctx->joysticks.event_queue[_ctx->joysticks.event_queue_count].event = event;
+            _ctx->joysticks.event_queue_count++;
+        }
+    }
+    ma_mutex_unlock(&_ctx->joysticks.event_queue_mutex);
+}
 
 //==================================================================================
 // Shader Contract
@@ -3653,23 +3954,28 @@ static GLint _sit_uniform_map_get(_SituationUniformMap* map, const char* key) {
  *
  * @param msg The null-terminated error message string to be set. If NULL, a default "Unknown error" message will be used.
  */
-static void _SituationSetError(const char* msg) {
+static void _SituationSetError(SituationContext ctx, const char* msg) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx) return; // Cannot set error without a context
+
     // A single, consistent string to use for NULL input.
     const char* default_error_msg = "Unknown error";
     const char* message_to_copy = msg ? msg : default_error_msg;
 
     // Lock the mutex to ensure exclusive access to the shared error message buffer.
-    ma_mutex_lock(&sit_gs.error_mutex);
+    ma_mutex_lock(&_ctx->error_mutex);
     {
         // Use strncpy to safely copy the message, preventing buffer overflows if the source string is longer than the destination buffer. It will copy at most (SITUATION_MAX_ERROR_MSG_LEN - 1) characters.
-        strncpy(sit_gs.last_error_msg, message_to_copy, SITUATION_MAX_ERROR_MSG_LEN - 1);
+        strncpy(_ctx->last_error_msg, message_to_copy, SITUATION_MAX_ERROR_MSG_LEN - 1);
 
         // CRITICAL: strncpy does not guarantee null-termination if the source string is exactly as long as or longer than the destination buffer size. We must manually ensure the string is always null-terminated for safety.
-        sit_gs.last_error_msg[SITUATION_MAX_ERROR_MSG_LEN - 1] = '\0';
+        _ctx->last_error_msg[SITUATION_MAX_ERROR_MSG_LEN - 1] = '\0';
     }
     // Unlock the mutex as soon as the critical section is finished.
-    ma_mutex_unlock(&sit_gs.error_mutex);
+    ma_mutex_unlock(&_ctx->error_mutex);
 }
+
+static void _SituationSetErrorFromCode(SituationContext ctx, SituationError err, const char* detail);
 
 /**
  * @brief [INTERNAL] Sets the library's last error message from an error code and an optional detail string.
@@ -3683,21 +3989,26 @@ static void _SituationSetError(const char* msg) {
  * @note This function is for internal use only.
  * @see _SituationSetError(), SituationGetLastErrorMsg(), SituationError
  */
-SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...) {
+SITAPI void SituationLogWarning(SituationContext ctx, SituationError code, const char* fmt, ...) {
 #ifndef NDEBUG
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx) return;
     char _sit_err_buf[SITUATION_MAX_ERROR_MSG_LEN];
     va_list args;
     va_start(args, fmt);
     vsnprintf(_sit_err_buf, sizeof(_sit_err_buf), fmt, args);
     va_end(args);
-    _SituationSetErrorFromCode(code, _sit_err_buf);
+    _SituationSetErrorFromCode(_ctx, code, _sit_err_buf);
     fprintf(stderr, "[Situation WARN] %s\n", _sit_err_buf);
 #else
-    (void)code; (void)fmt;
+    (void)ctx; (void)code; (void)fmt;
 #endif
 }
 
-static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
+static void _SituationSetErrorFromCode(SituationContext ctx, SituationError err, const char* detail) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx) return;
+
     char buffer[SITUATION_MAX_ERROR_MSG_LEN];
     const char* base_msg = "Unknown Error";
 
@@ -3707,7 +4018,7 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_GENERAL:                     base_msg = "A general error occurred"; break;
         case SITUATION_ERROR_NOT_IMPLEMENTED:             base_msg = "A feature is declared but not implemented for the current backend"; break;
         case SITUATION_ERROR_NOT_INITIALIZED:             base_msg = "Function called before library was successfully initialized"; break;
-        case SITUATION_ERROR_ALREADY_INITIALIZED:         base_msg = "SituationInit() was called more than once"; break;
+        case SITUATION_ERROR_ALREADY_INITIALIZED:         base_msg = "SituationCreateContext() was called more than once on the same context"; break;
         case SITUATION_ERROR_INIT_FAILED:                 base_msg = "Core library initialization failed"; break;
         case SITUATION_ERROR_SHUTDOWN_FAILED:             base_msg = "Library shutdown failed"; break;
         case SITUATION_ERROR_INVALID_PARAM:               base_msg = "A function was called with an invalid parameter"; break;
@@ -3853,7 +4164,7 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         strncpy(buffer, base_msg, sizeof(buffer) - 1);
     }
     buffer[sizeof(buffer) - 1] = '\0';
-    _SituationSetError(buffer);
+    _SituationSetError(_ctx, buffer);
 }
 
 /**
@@ -3871,34 +4182,30 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
  *
  * @see SituationFreeString(), _SituationSetError()
  */
-SITAPI char* SituationGetLastErrorMsg(void) {
-    // --- 1. Input/State Validation ---
-    // Check if the library is initialized. Accessing sit_gs before init is unsafe.
-    if (!sit_gs.is_initialized) {
-        // No meaningful error state exists before initialization.
-        return NULL;
-    }
+SITAPI char* SituationGetLastErrorMsg(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx) return NULL;
 
     // A mutex lock/unlock could be added here for perfect thread-safety if another thread could be setting an error while this one is reading.
     // For now, we assume this is called on the main thread shortly after an error.
-    ma_mutex_lock(&sit_gs.error_mutex);
+    ma_mutex_lock(&_ctx->error_mutex);
 
     // Check if the internal error message is empty.
-    if (sit_gs.last_error_msg[0] == '\0') {
-        ma_mutex_unlock(&sit_gs.error_mutex);
+    if (_ctx->last_error_msg[0] == '\0') {
+        ma_mutex_unlock(&_ctx->error_mutex);
         return NULL; // No error message has been set.
     }
 
     // --- 2. Allocate Memory for the Copy ---
     // Determine the length of the internal error message.
-    size_t msg_len = strlen(sit_gs.last_error_msg);
+    size_t msg_len = strlen(_ctx->last_error_msg);
 
     // Allocate memory for the copy, including space for the null terminator.
     char* msg_copy = (char*)malloc(msg_len + 1);
 
     // --- 3. Handle Allocation Failure ---
     if (!msg_copy) {
-        ma_mutex_unlock(&sit_gs.error_mutex);
+        ma_mutex_unlock(&_ctx->error_mutex);
         // Unable to allocate memory for the error string copy.
         // We can't return the error, but we also can't do much else.
         // Returning NULL is the only option.
@@ -3907,9 +4214,9 @@ SITAPI char* SituationGetLastErrorMsg(void) {
 
     // --- 4. Copy the Error Message ---
     // Copy the string while the mutex is still held to prevent a data race.
-    strcpy(msg_copy, sit_gs.last_error_msg);
+    strcpy(msg_copy, _ctx->last_error_msg);
 
-    ma_mutex_unlock(&sit_gs.error_mutex);
+    ma_mutex_unlock(&_ctx->error_mutex);
 
     // --- 5. Return the Copy ---
     // The caller now owns this memory and is responsible for calling SituationFreeString().
@@ -4717,17 +5024,39 @@ SITAPI const char* SituationGetVersionString(void) {
  *
  * @see SituationShutdown(), SituationInitInfo, SituationGetLastErrorMsg()
  */
-SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info) {
-#if !defined(SITUATION_USE_VULKAN) && !defined(SITUATION_USE_OPENGL)
-	_SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "No graphics backend defined — must #define SITUATION_USE_VULKAN or SITUATION_USE_OPENGL");
-	return SITUATION_ERROR_INIT_FAILED;
+SITAPI SituationContext SituationCreateContext(const SituationInitInfo* init_info) {
+    // 1. Allocate Context on Heap
+    SituationContext _ctx = (SituationContext)calloc(1, sizeof(struct SituationContext_t));
+    if (!_ctx) {
+        // We can't set an error message as there's no context to store it in.
+        // The caller must check for NULL.
+        return NULL;
+    }
+
+    // 2. Initialize Mutexes early
+    if (ma_mutex_init(&_ctx->error_mutex) != MA_SUCCESS || ma_mutex_init(&_ctx->context_mutex) != MA_SUCCESS) {
+        free(_ctx);
+        return NULL;
+    }
+#if defined(SITUATION_USE_VULKAN)
+    if (ma_mutex_init(&_ctx->worker_pool_mutex) != MA_SUCCESS) {
+        ma_mutex_uninit(&_ctx->error_mutex);
+        ma_mutex_uninit(&_ctx->context_mutex);
+        free(_ctx);
+        return NULL;
+    }
 #endif
+
+    // 3. Temporarily set as current for initialization helpers
+    SituationContext prev_ctx = _sit_current_context;
+    _sit_current_context = _ctx;
+
 
     // --- 1. PRE-INITIALIZATION CHECKS ---
     // Ensure the library isn't already initialized to prevent conflicts.
-    if (sit_gs.is_initialized) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_ALREADY_INITIALIZED, "SituationInit: Library is already initialized.");
-        return SITUATION_ERROR_ALREADY_INITIALIZED;
+    if (_ctx->is_initialized) {
+        _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_ALREADY_INITIALIZED, "SituationInit: Library is already initialized.");
+        return NULL;
     }
 
     // Ensure the required initialization configuration struct is provided.
@@ -4749,7 +5078,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     //
     // Zero out the *entire* global state container to ensure a clean slate.
     // This is crucial for preventing issues from previous runs or failed shutdowns.
-    memset(&sit_gs, 0, sizeof(_SituationGlobalStateContainer));
+    // memset(&sit_gs, 0, sizeof(_SituationGlobalStateContainer)); // Already handled by calloc
     // After memset, sit_gs.is_initialized is false, and all pointers are NULL.
     // sit_gs.last_error_code is also 0 (SITUATION_SUCCESS).
 
@@ -4758,7 +5087,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     // They are common to both OpenGL and Vulkan backends.
 
     // 2a. Initialize platform-specific components (GLFW, COM on Windows, etc.).
-    SituationError err = _SituationInitPlatform();
+    SituationError err = _SituationInitPlatform(_ctx);
     if (err != SITUATION_SUCCESS) {
         // Platform initialization failed. No major resources have been allocated yet
         // by the library itself (GLFW might have allocated some internal stuff, but _SituationInitPlatform should clean that up on failure).
@@ -4766,35 +5095,40 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
         // However, the previous version comment said "No need to call FullCleanup...", which is also a valid viewpoint for this very early failure.
         // Let's stick to the original logic for this specific early failure point, but document it clearly.
         // _SituationFullCleanupOnError(); // Not needed for platform-only failure
-        return err; // Return the specific error from platform init.
+        SituationDestroyContext(_ctx);
+        _sit_current_context = prev_ctx;
+        return NULL;
     }
 
     // 2b. Create the main application window using GLFW.
-    err = _SituationInitWindow(init_info);
+    err = _SituationInitWindow(_ctx, init_info);
     if (err != SITUATION_SUCCESS) {
         // Window creation failed. Platform was initialized, so cleanup is needed.
-        _SituationFullCleanupOnError(); // Clean up platform (GLFW)
-        return err; // Return the specific error from window init.
+        _SituationFullCleanupOnError(_ctx); // Clean up platform (GLFW)
+        _sit_current_context = prev_ctx;
+        return NULL;
     }
 
     // --- 3. INITIALIZE THE CHOSEN RENDERER ---
     // Dispatch to the backend-specific initialization (OpenGL or Vulkan).
     // This is a major step involving context/device creation, swapchains, etc.
-    err = _SituationInitRenderer(init_info);
+    err = _SituationInitRenderer(_ctx, init_info);
     if (err != SITUATION_SUCCESS) {
         // Renderer initialization failed. Platform and Window were initialized.
-        _SituationFullCleanupOnError(); // Clean up platform, window, and any partial renderer state
-        return err; // Return the specific error from renderer init.
+        _SituationFullCleanupOnError(_ctx); // Clean up platform, window, and any partial renderer state
+        _sit_current_context = prev_ctx;
+        return NULL;
     }
 
     // --- 4. INITIALIZE OTHER LIBRARY SUBSYSTEMS ---
     // Initialize audio, input, timers, filesystem utils, etc.
     // These often depend on the window and renderer being available.
-    err = _SituationInitSubsystems(init_info);
+    err = _SituationInitSubsystems(_ctx, init_info);
     if (err != SITUATION_SUCCESS) {
         // Subsystem initialization failed. Platform, Window, and Renderer were initialized.
-        _SituationFullCleanupOnError(); // Clean up everything initialized so far
-        return err; // Return the specific error from subsystems init.
+        _SituationFullCleanupOnError(_ctx); // Clean up everything initialized so far
+        _sit_current_context = prev_ctx;
+        return NULL;
     }
 
     // --- 5. FINAL STATE SETUP ---
@@ -5052,13 +5386,17 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
     // --- 7. Store Window State Profiles ---
     // Save the initial window state flags provided in init_info.
     // These are used later by the window state management functions (e.g., SituationApplyCurrentProfileWindowState) to define the behavior when the window is active or inactive.
-    sit_gs.active_profile_window_flags = init_info->initial_active_window_flags;
-    sit_gs.inactive_profile_window_flags = init_info->initial_inactive_window_flags;
+    _ctx->active_profile_window_flags = init_info->initial_active_window_flags;
+    _ctx->inactive_profile_window_flags = init_info->initial_inactive_window_flags;
+
+    // Associate the context with the window
+    glfwSetWindowUserPointer(_ctx->sit_glfw_window, _ctx);
+
     // Note: The actual GLFW window state (resizable, decorated, etc.) is set by the hints above and the creation process. These flags are for the library's higher-level state management system.
 
     // --- 8. Success ---
     // If we reach here, the GLFW window was created successfully.
-    // The handle is stored in sit_gs.sit_glfw_window.
+    // The handle is stored in _ctx->sit_glfw_window.
     // The next step in initialization will typically be renderer setup (_SituationInitRenderer) followed by subsystem initialization (_SituationInitSubsystems).
     return SITUATION_SUCCESS;
 }
@@ -8845,23 +9183,24 @@ static void _SituationVulkanRecreateSwapchain(void) {
  *
  * @see SituationUpdateTimers()
  */
-SITAPI void SituationPollInputEvents(void) {
-    if (!sit_gs.is_initialized) return;
+SITAPI void SituationPollInputEvents(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
 
     // [NEW] Reset Profiler Counters
-    sit_gs.frame_draw_calls = 0;
-    sit_gs.frame_triangle_count = 0;
+    _ctx->frame_draw_calls = 0;
+    _ctx->frame_triangle_count = 0;
 
     // Reset consistency check flag
     sit_gs.debug_draw_command_issued_this_frame = false;
 
 	// Process Main Thread Audio Capture
-    if (sit_gs.audio_capture_on_main_thread && sit_gs.capture_callback) {
-        ma_mutex_lock(&sit_gs.audio_capture_mutex);
+    if (_ctx->audio_capture_on_main_thread && _ctx->capture_callback) {
+        ma_mutex_lock(&_ctx->audio_capture_mutex);
 
-        size_t write_head = sit_gs.audio_capture_write_head;
-        size_t read_head = sit_gs.audio_capture_read_head;
-        size_t capacity = sit_gs.audio_capture_queue_capacity;
+        size_t write_head = _ctx->audio_capture_write_head;
+        size_t read_head = _ctx->audio_capture_read_head;
+        size_t capacity = _ctx->audio_capture_queue_capacity;
 
         // Calculate frames available to read
         size_t frames_available = 0;
@@ -8883,56 +9222,56 @@ SITAPI void SituationPollInputEvents(void) {
                 // 2. Copy and Linearize Data
                 if (write_head >= read_head) {
                     // Contiguous block
-                    memcpy(temp_buffer, &sit_gs.audio_capture_queue[read_head], frames_available * sizeof(float));
+                    memcpy(temp_buffer, &_ctx->audio_capture_queue[read_head], frames_available * sizeof(float));
                 } else {
                     // Split block (Wrapped)
                     size_t end_chunk_size = capacity - read_head;
                     // Part 1: Read to end of buffer
-                    memcpy(temp_buffer, &sit_gs.audio_capture_queue[read_head], end_chunk_size * sizeof(float));
+                    memcpy(temp_buffer, &_ctx->audio_capture_queue[read_head], end_chunk_size * sizeof(float));
                     // Part 2: Start from beginning to write head
-                    memcpy(temp_buffer + end_chunk_size, &sit_gs.audio_capture_queue[0], write_head * sizeof(float));
+                    memcpy(temp_buffer + end_chunk_size, &_ctx->audio_capture_queue[0], write_head * sizeof(float));
                 }
 
                 // 3. Advance Read Head
-                sit_gs.audio_capture_read_head = write_head;
+                _ctx->audio_capture_read_head = write_head;
 
                 // 4. Unlock BEFORE callback to prevent deadlocks if user callback takes time
-                ma_mutex_unlock(&sit_gs.audio_capture_mutex);
+                ma_mutex_unlock(&_ctx->audio_capture_mutex);
 
                 // 5. Dispatch to User
-                sit_gs.capture_callback(temp_buffer, (uint32_t)frames_available, sit_gs.capture_user_data);
+                _ctx->capture_callback(temp_buffer, (uint32_t)frames_available, _ctx->capture_user_data);
 
                 // 6. Cleanup
                 SIT_FREE(temp_buffer);
             } else {
                 // Malloc failed, just unlock. We'll try again next frame.
                 // Data remains in buffer (potentially overflowing eventually, but safe crash-wise).
-                ma_mutex_unlock(&sit_gs.audio_capture_mutex);
+                ma_mutex_unlock(&_ctx->audio_capture_mutex);
             }
         } else {
             // No data, just unlock
-            ma_mutex_unlock(&sit_gs.audio_capture_mutex);
+            ma_mutex_unlock(&_ctx->audio_capture_mutex);
         }
     }
 
     // --- RESET PER-FRAME EVENT FLAGS AND BUFFERS ---
-    sit_gs.was_window_resized_last_frame = false;
-    sit_gs.file_was_dropped_this_frame = false;
+    _ctx->was_window_resized_last_frame = false;
+    _ctx->file_was_dropped_this_frame = false;
 
     // Reset keyboard event state.
     // Copy the now-old state to the "last" buffer for comparison.
-    memcpy(sit_gs.keyboard.last_state, sit_gs.keyboard.current_state, sizeof(sit_gs.keyboard.last_state));
+    memcpy(_ctx->keyboard.last_state, _ctx->keyboard.current_state, sizeof(_ctx->keyboard.last_state));
     // Clear the single-frame press/release event trackers.
-    memset(sit_gs.keyboard.down_this_frame, 0, sizeof(sit_gs.keyboard.down_this_frame));
-    memset(sit_gs.keyboard.up_this_frame, 0, sizeof(sit_gs.keyboard.up_this_frame));
+    memset(_ctx->keyboard.down_this_frame, 0, sizeof(_ctx->keyboard.down_this_frame));
+    memset(_ctx->keyboard.up_this_frame, 0, sizeof(_ctx->keyboard.up_this_frame));
 
     // Reset mouse event state.
-    glm_vec2_copy(sit_gs.mouse.current_pos, sit_gs.mouse.last_pos);
-    memcpy(sit_gs.mouse.last_button_state, sit_gs.mouse.current_button_state, sizeof(sit_gs.mouse.last_button_state));
-    memset(sit_gs.mouse.button_down_this_frame, 0, sizeof(sit_gs.mouse.button_down_this_frame));
-    memset(sit_gs.mouse.button_up_this_frame, 0, sizeof(sit_gs.mouse.button_up_this_frame));
-    sit_gs.mouse.wheel_move_x = 0.0f;
-    sit_gs.mouse.wheel_move_y = 0.0f;
+    glm_vec2_copy(_ctx->mouse.current_pos, _ctx->mouse.last_pos);
+    memcpy(_ctx->mouse.last_button_state, _ctx->mouse.current_button_state, sizeof(_ctx->mouse.last_button_state));
+    memset(_ctx->mouse.button_down_this_frame, 0, sizeof(_ctx->mouse.button_down_this_frame));
+    memset(_ctx->mouse.button_up_this_frame, 0, sizeof(_ctx->mouse.button_up_this_frame));
+    _ctx->mouse.wheel_move_x = 0.0f;
+    _ctx->mouse.wheel_move_y = 0.0f;
 
     // --- [POLL] GATHER NEW EVENTS FROM THE OPERATING SYSTEM ---
     // This call triggers all the GLFW callbacks (_SituationGLFWKeyCallback, etc.), which will populate our `current_state` and event queue buffers for this frame.
@@ -8954,66 +9293,67 @@ SITAPI void SituationPollInputEvents(void) {
  *
  * @see SituationPollInputEvents(), SituationGetFrameTime(), SituationUpdate()
  */
-SITAPI void SituationUpdateTimers(void) {
-    if (!sit_gs.is_initialized) return;
+SITAPI void SituationUpdateTimers(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
 
     // --- 1. Global Frame Time Calculation ---
-    sit_gs.current_time = glfwGetTime();
-    sit_gs.frame_time = sit_gs.current_time - sit_gs.previous_time;
-    sit_gs.previous_time = sit_gs.current_time;
+    _ctx->current_time = glfwGetTime();
+    _ctx->frame_time = _ctx->current_time - _ctx->previous_time;
+    _ctx->previous_time = _ctx->current_time;
 
     // --- 2. Process Joystick Connection Events (Thread-Safe) ---
-    ma_mutex_lock(&sit_gs.joysticks.event_queue_mutex);
-    for (int i = 0; i < sit_gs.joysticks.event_queue_count; i++) {
-        _SituationJoystickEvent ev = sit_gs.joysticks.event_queue[i];
+    ma_mutex_lock(&_ctx->joysticks.event_queue_mutex);
+    for (int i = 0; i < _ctx->joysticks.event_queue_count; i++) {
+        _SituationJoystickEvent ev = _ctx->joysticks.event_queue[i];
 
         if (ev.event == GLFW_CONNECTED) {
-            sit_gs.joysticks.state[ev.jid].is_present = true;
-            sit_gs.joysticks.state[ev.jid].is_gamepad = glfwJoystickIsGamepad(ev.jid);
+            _ctx->joysticks.state[ev.jid].is_present = true;
+            _ctx->joysticks.state[ev.jid].is_gamepad = glfwJoystickIsGamepad(ev.jid);
             int axis_count = 0;
             glfwGetJoystickAxes(ev.jid, &axis_count);
-            sit_gs.joysticks.state[ev.jid].axis_count = axis_count;
+            _ctx->joysticks.state[ev.jid].axis_count = axis_count;
             const char* name = glfwGetJoystickName(ev.jid);
             if (name) {
-                strncpy(sit_gs.joysticks.state[ev.jid].name, name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
+                strncpy(_ctx->joysticks.state[ev.jid].name, name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
             } else {
-                snprintf(sit_gs.joysticks.state[ev.jid].name, SITUATION_MAX_DEVICE_NAME_LEN, "Joystick %d", ev.jid);
+                snprintf(_ctx->joysticks.state[ev.jid].name, SITUATION_MAX_DEVICE_NAME_LEN, "Joystick %d", ev.jid);
             }
         } else if (ev.event == GLFW_DISCONNECTED) {
-            memset(&sit_gs.joysticks.state[ev.jid], 0, sizeof(_SituationJoystickState));
+            memset(&_ctx->joysticks.state[ev.jid], 0, sizeof(_SituationJoystickState));
         }
 
-        if (sit_gs.joysticks.callback) {
-            sit_gs.joysticks.callback(ev.jid, ev.event, sit_gs.joysticks.callback_user_data);
+        if (_ctx->joysticks.callback) {
+            _ctx->joysticks.callback(ev.jid, ev.event, _ctx->joysticks.callback_user_data);
         }
     }
-    sit_gs.joysticks.event_queue_count = 0;
-    ma_mutex_unlock(&sit_gs.joysticks.event_queue_mutex);
+    _ctx->joysticks.event_queue_count = 0;
+    ma_mutex_unlock(&_ctx->joysticks.event_queue_mutex);
 
 
     // --- 3. Poll Gamepad State & Detect Press Events ---
     for (int jid = 0; jid < SITUATION_MAX_JOYSTICKS; jid++) {
-        if (sit_gs.joysticks.state[jid].is_present && sit_gs.joysticks.state[jid].is_gamepad) {
+        if (_ctx->joysticks.state[jid].is_present && _ctx->joysticks.state[jid].is_gamepad) {
             // Copy current state to last state BEFORE polling new state.
-            memcpy(sit_gs.joysticks.state[jid].last_button_state, sit_gs.joysticks.state[jid].current_button_state, sizeof(sit_gs.joysticks.state[jid].current_button_state));
+            memcpy(_ctx->joysticks.state[jid].last_button_state, _ctx->joysticks.state[jid].current_button_state, sizeof(_ctx->joysticks.state[jid].current_button_state));
 
             GLFWgamepadstate glfw_state;
             if (glfwGetGamepadState(jid, &glfw_state)) {
                 // Update the current state buffers.
-                memcpy(sit_gs.joysticks.state[jid].current_button_state, glfw_state.buttons, sizeof(glfw_state.buttons));
-                memcpy(sit_gs.joysticks.state[jid].axis_state, glfw_state.axes, sizeof(glfw_state.axes));
+                memcpy(_ctx->joysticks.state[jid].current_button_state, glfw_state.buttons, sizeof(glfw_state.buttons));
+                memcpy(_ctx->joysticks.state[jid].axis_state, glfw_state.axes, sizeof(glfw_state.axes));
 
                 // Compare current vs. last to detect press events.
                 for (int button = 0; button < SITUATION_MAX_JOYSTICK_BUTTONS; ++button) {
-                    bool was_down = (sit_gs.joysticks.state[jid].last_button_state[button] == GLFW_PRESS);
-                    bool is_down = (sit_gs.joysticks.state[jid].current_button_state[button] == GLFW_PRESS);
+                    bool was_down = (_ctx->joysticks.state[jid].last_button_state[button] == GLFW_PRESS);
+                    bool is_down = (_ctx->joysticks.state[jid].current_button_state[button] == GLFW_PRESS);
 
                     if (is_down && !was_down) {
                         // Joystick Ring Buffer Push
-                        uint32_t next_head = (sit_gs.joysticks.button_head + 1) % SITUATION_KEY_QUEUE_MAX;
-                        if (next_head != sit_gs.joysticks.button_tail) {
-                            sit_gs.joysticks.button_pressed_queue[sit_gs.joysticks.button_head] = button;
-                            sit_gs.joysticks.button_head = next_head;
+                        uint32_t next_head = (_ctx->joysticks.button_head + 1) % SITUATION_KEY_QUEUE_MAX;
+                        if (next_head != _ctx->joysticks.button_tail) {
+                            _ctx->joysticks.button_pressed_queue[_ctx->joysticks.button_head] = button;
+                            _ctx->joysticks.button_head = next_head;
                         }
                     }
                 }
@@ -9022,10 +9362,10 @@ SITAPI void SituationUpdateTimers(void) {
     }
 
     // --- 4. Update Temporal Oscillator System ---
-    if (sit_gs.timer_system_instance.is_initialized) {
-        SituationTimerSystem* ts = &sit_gs.timer_system_instance;
+    if (_ctx->timer_system_instance.is_initialized) {
+        SituationTimerSystem* ts = &_ctx->timer_system_instance;
         memcpy(ts->state_previous, ts->state_current, sizeof(ts->state_current));
-        ts->current_system_time_seconds = sit_gs.current_time;
+        ts->current_system_time_seconds = _ctx->current_time;
         for (int i = 0; i < SITUATION_MAX_OSCILLATORS; i++) {
             if (ts->current_system_time_seconds >= ts->next_trigger_time_seconds[i] && ts->period_seconds[i] > 0.0) {
                 int bank = i / 64;
@@ -9041,10 +9381,10 @@ SITAPI void SituationUpdateTimers(void) {
     }
 
     // --- 5. Update Virtual Display Timers ---
-    double current_time_for_vdisplays = sit_gs.timer_system_instance.is_initialized ? sit_gs.timer_system_instance.current_system_time_seconds : sit_gs.current_time;
+    double current_time_for_vdisplays = _ctx->timer_system_instance.is_initialized ? _ctx->timer_system_instance.current_system_time_seconds : _ctx->current_time;
     for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
-        if (sit_gs.virtual_display_slots_used[i]) {
-            SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[i];
+        if (_ctx->virtual_display_slots_used[i]) {
+            SituationVirtualDisplay* vd = &_ctx->virtual_display_slots[i];
             vd->frame_delta_time_seconds = (current_time_for_vdisplays - vd->last_update_time_seconds);
             vd->elapsed_time_seconds += vd->frame_delta_time_seconds * vd->frame_time_multiplier;
             vd->frame_count++;
@@ -9085,9 +9425,9 @@ SITAPI void SituationUpdateTimers(void) {
  * @deprecated Use `SituationPollInputEvents()` followed by `SituationUpdateTimers()`.
  * @see SituationPollInputEvents(), SituationUpdateTimers()
  */
-SITAPI void SituationUpdate(void) {
-    SituationPollInputEvents();
-    SituationUpdateTimers();
+SITAPI void SituationUpdate(SituationContext ctx) {
+    SituationPollInputEvents(ctx);
+    SituationUpdateTimers(ctx);
 }
 
 // --- Main Shutdown Orchestrator ---
@@ -9111,34 +9451,37 @@ SITAPI void SituationUpdate(void) {
  *
  * @see SituationInit(), _SituationCleanupDanglingResources()
  */
-SITAPI void SituationShutdown(void) {
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_SHUTDOWN_FAILED, "Not initialized"); return; }
-    if (sit_gs.exit_callback != NULL) { sit_gs.exit_callback(sit_gs.exit_callback_user_data); }
+SITAPI void SituationShutdown(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) {
+        // _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_SHUTDOWN_FAILED, "Not initialized");
+        return;
+    }
+    if (_ctx->exit_callback != NULL) { _ctx->exit_callback(_ctx->exit_callback_user_data); }
 
     // Wait for the GPU to finish any in-flight work before we start tearing things down. This is especially critical for Vulkan.
 #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device != VK_NULL_HANDLE) vkDeviceWaitIdle(sit_gs.vk.device);
+    if (_ctx->vk.device != VK_NULL_HANDLE) vkDeviceWaitIdle(_ctx->vk.device);
 #elif defined(SITUATION_USE_OPENGL)
-    if (sit_gs.sit_glfw_window) glFinish();
+    if (_ctx->sit_glfw_window) glFinish();
 #endif
 
     // --- Call the auto-cleanup function ---
-    _SituationCleanupDanglingResources();
+    _SituationCleanupDanglingResources(_ctx);
 
     // 1. --- CLEANUP THE RENDERER ---
-    _SituationCleanupRenderer();    // This is the main dispatch for backend-specific cleanup.
+    _SituationCleanupRenderer(_ctx);    // This is the main dispatch for backend-specific cleanup.
 
     // 2. --- CLEANUP LIBRARY SUBSYSTEMS ---
-    _SituationCleanupSubsystems();     // (Audio, Input, Timers, etc.)
+    _SituationCleanupSubsystems(_ctx);     // (Audio, Input, Timers, etc.)
 
     // 3. --- CLEANUP CORE PLATFORM & WINDOW ---
-    _SituationCleanupPlatform();
+    _SituationCleanupPlatform(_ctx);
 
     // 4. --- FINAL STATE RESET ---
-    sit_gs.is_initialized = false;
-    _SituationSetError("Shutdown complete");
-    // Optionally, memset sit_gs to 0 if re-initialization is a possibility.
-    // memset(&sit_gs, 0, sizeof(_SituationGlobalStateContainer));
+    _ctx->is_initialized = false;
+    _SituationSetError(_ctx, "Shutdown complete");
+    // The context itself will be freed by SituationDestroyContext.
 }
 
 
@@ -10126,10 +10469,11 @@ SITAPI SituationRendererType SituationGetRendererType(void) {
  *
  * @see SituationShutdown()
  */
-SITAPI void SituationSetExitCallback(void (*callback)(void* user_data), void* user_data) {
-    if (!sit_gs.is_initialized) return;
-    sit_gs.exit_callback = callback;
-    sit_gs.exit_callback_user_data = user_data;
+SITAPI void SituationSetExitCallback(SituationContext ctx, void (*callback)(void* user_data), void* user_data) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
+    _ctx->exit_callback = callback;
+    _ctx->exit_callback_user_data = user_data;
 }
 
 /**
@@ -10148,10 +10492,11 @@ SITAPI void SituationSetExitCallback(void (*callback)(void* user_data), void* us
  *
  * @see SituationGetRenderWidth(), SituationGetRenderHeight()
  */
-SITAPI void SituationSetResizeCallback(void (*callback)(int width, int height, void* user_data), void* user_data) {
-    if (!sit_gs.is_initialized) return;
-    sit_gs.resize_callback = callback;
-    sit_gs.resize_callback_user_data = user_data;
+SITAPI void SituationSetResizeCallback(SituationContext ctx, void (*callback)(int width, int height, void* user_data), void* user_data) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
+    _ctx->resize_callback = callback;
+    _ctx->resize_callback_user_data = user_data;
 }
 
 // --- Command-Line Argument Queries ---
@@ -10161,10 +10506,11 @@ SITAPI void SituationSetResizeCallback(void (*callback)(int width, int height, v
  * @param arg_name The argument to search for.
  * @return True if the argument was present at launch.
  */
-SITAPI bool SituationIsArgumentPresent(const char* arg_name) {
-    if (!sit_gs.is_initialized || !arg_name) return false;
-    for (int i = 1; i < sit_gs.argc; i++) { // Start at 1 to skip the program name
-        if (strcmp(sit_gs.argv[i], arg_name) == 0) {
+SITAPI bool SituationIsArgumentPresent(SituationContext ctx, const char* arg_name) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized || !arg_name) return false;
+    for (int i = 1; i < _ctx->argc; i++) { // Start at 1 to skip the program name
+        if (strcmp(_ctx->argv[i], arg_name) == 0) {
             return true;
         }
     }
@@ -10179,20 +10525,21 @@ SITAPI bool SituationIsArgumentPresent(const char* arg_name) {
  * @param arg_name The key of the argument to look for (e.g., "-level").
  * @return A const string with the value, or NULL if the argument is not found.
  */
-SITAPI const char* SituationGetArgumentValue(const char* arg_name) {
-    if (!sit_gs.is_initialized || !arg_name) return NULL;
+SITAPI const char* SituationGetArgumentValue(SituationContext ctx, const char* arg_name) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized || !arg_name) return NULL;
     size_t arg_len = strlen(arg_name);
 
-    for (int i = 1; i < sit_gs.argc; i++) {
+    for (int i = 1; i < _ctx->argc; i++) {
         // Check for "-key:value" format
-        if (strncmp(sit_gs.argv[i], arg_name, arg_len) == 0 && sit_gs.argv[i][arg_len] == ':') {
-            return sit_gs.argv[i] + arg_len + 1;
+        if (strncmp(_ctx->argv[i], arg_name, arg_len) == 0 && _ctx->argv[i][arg_len] == ':') {
+            return _ctx->argv[i] + arg_len + 1;
         }
         // Check for "-key value" format
-        if (strcmp(sit_gs.argv[i], arg_name) == 0) {
+        if (strcmp(_ctx->argv[i], arg_name) == 0) {
             // Ensure there is a next argument to be the value
-            if (i + 1 < sit_gs.argc) {
-                return sit_gs.argv[i + 1];
+            if (i + 1 < _ctx->argc) {
+                return _ctx->argv[i + 1];
             }
         }
     }
@@ -10232,10 +10579,9 @@ SITAPI const char* SituationGetArgumentValue(const char* arg_name) {
  *
  * @warning This function is not thread-safe and must be called from the thread that initialized the library.
  */
-SITAPI bool SituationAcquireFrameCommandBuffer(void) {
-    // --- 1. Library Initialization Check ---
-    if (!sit_gs.is_initialized) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot begin frame before library initialization.");
+SITAPI bool SituationAcquireFrameCommandBuffer(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) {
         return false;
     }
 
@@ -10243,11 +10589,11 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
     {
         // --- 2. OpenGL Frame Setup ---
         // Make the context current for this thread (often a no-op if already current).
-        glfwMakeContextCurrent(sit_gs.sit_glfw_window);
+        glfwMakeContextCurrent(_ctx->sit_glfw_window);
         // Bind the default framebuffer (main window backbuffer).
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         // Set the viewport to the full window size.
-        glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
+        glViewport(0, 0, _ctx->main_window_width, _ctx->main_window_height);
         // OpenGL setup is generally straightforward and assumed to succeed
         // if the context is valid.
         return true;
@@ -10260,28 +10606,28 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // 2.1. Wait for the previous frame (using this frame's fence) to finish.
         // This ensures the command buffer and swapchain image are free to be reused.
         VkResult wait_result = vkWaitForFences(
-            sit_gs.vk.device,
+            _ctx->vk.device,
             1,
-            &sit_gs.vk.in_flight_fences[sit_gs.vk.current_frame_index],
+            &_ctx->vk.in_flight_fences[_ctx->vk.current_frame_index],
             VK_TRUE,           // waitAll
             UINT64_MAX         // timeout
         );
         if (wait_result != VK_SUCCESS) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to wait for frame fence in SituationAcquireFrameCommandBuffer.");
+             _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to wait for frame fence in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
 
         // --- FLUSH GRAVEYARD ---
         // The GPU is done with this frame, so we can safely destroy deferred resources.
-        _SituationFlushGraveyard(sit_gs.vk.current_frame_index);
+        _SituationFlushGraveyard(_ctx, _ctx->vk.current_frame_index);
 
         // 2.2. Acquire the next swapchain image.
         uint32_t image_index;
         VkResult acquire_result = vkAcquireNextImageKHR(
-            sit_gs.vk.device,
-            sit_gs.vk.swapchain,
+            _ctx->vk.device,
+            _ctx->vk.swapchain,
             UINT64_MAX, // timeout
-            sit_gs.vk.image_available_semaphores[sit_gs.vk.current_frame_index], // Signal this semaphore when the image is acquired
+            _ctx->vk.image_available_semaphores[_ctx->vk.current_frame_index], // Signal this semaphore when the image is acquired
             VK_NULL_HANDLE,                                                     // No fence to signal
             &image_index                                                        // Output: index of the acquired image
         );
@@ -10290,7 +10636,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
             // The swapchain is incompatible (e.g., window resized) and must be recreated.
             // This function handles the recreation internally.
-            _SituationVulkanRecreateSwapchain();
+            _SituationVulkanRecreateSwapchain(_ctx);
             // Return false to signal that the frame setup was interrupted.
             // The caller should retry SituationAcquireFrameCommandBuffer next frame.
             return false;
@@ -10302,37 +10648,37 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
              // Proceeding is generally safe, but performance/quality might be affected.
         } else if (acquire_result != VK_SUCCESS) {
             // An unexpected error occurred during image acquisition.
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_IMAGE_ACQUIRE_FAILED, "Failed to acquire swap chain image in SituationAcquireFrameCommandBuffer!");
+            _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_VULKAN_IMAGE_ACQUIRE_FAILED, "Failed to acquire swap chain image in SituationAcquireFrameCommandBuffer!");
             return false; // Indicate failure
         }
 
         // 2.4. Update Global State.
         // Store the index of the swapchain image we will render to this frame.
-        sit_gs.vk.current_image_index = image_index;
+        _ctx->vk.current_image_index = image_index;
 
         // 2.5. Prepare Command Buffer for Recording.
         // Reset the fence to the unsignaled state *before* resetting the command buffer.
         VkResult reset_fence_result = vkResetFences(
-            sit_gs.vk.device,
+            _ctx->vk.device,
             1,
-            &sit_gs.vk.in_flight_fences[sit_gs.vk.current_frame_index]
+            &_ctx->vk.in_flight_fences[_ctx->vk.current_frame_index]
         );
         if (reset_fence_result != VK_SUCCESS) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to reset frame fence in SituationAcquireFrameCommandBuffer.");
+             _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to reset frame fence in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
 
-        // Get the command buffer for this frame (assuming this helper function exists and returns the correct buffer from sit_gs.vk.command_buffers).
-        VkCommandBuffer cmd = SituationGetMainCommandBuffer(); // Or directly access: sit_gs.vk.command_buffers[sit_gs.vk.current_frame_index]
+        // Get the command buffer for this frame (assuming this helper function exists and returns the correct buffer from _ctx->vk.command_buffers).
+        VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer(_ctx); // Or directly access: _ctx->vk.command_buffers[_ctx->vk.current_frame_index]
         if (cmd == VK_NULL_HANDLE) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get main command buffer for frame in SituationAcquireFrameCommandBuffer.");
+             _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get main command buffer for frame in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
 
         // Reset the command buffer to ensure it's ready for new commands.
         VkResult reset_cmd_result = vkResetCommandBuffer(cmd, 0); // VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT is 0
         if (reset_cmd_result != VK_SUCCESS) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to reset command buffer in SituationAcquireFrameCommandBuffer.");
+             _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to reset command buffer in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
 
@@ -10342,7 +10688,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // Flags = 0 means "one time submit" implicitly, and no inheritance.
         VkResult begin_result = vkBeginCommandBuffer(cmd, &begin_info);
         if (begin_result != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to begin recording command buffer in SituationAcquireFrameCommandBuffer!");
+            _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to begin recording command buffer in SituationAcquireFrameCommandBuffer!");
             return false; // Indicate failure
         }
 
@@ -10387,10 +10733,9 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
  *
  * @see SituationAcquireFrameCommandBuffer()
  */
-SITAPI SituationError SituationEndFrame(void) {
-    // --- 1. Library Initialization Check ---
-    if (!sit_gs.is_initialized) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot end frame.");
+SITAPI SituationError SituationEndFrame(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) {
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
 
@@ -10399,7 +10744,7 @@ SITAPI SituationError SituationEndFrame(void) {
     {
         // --- 2a. OpenGL Frame End ---
         // Swap the front and back buffers to display the rendered frame.
-        glfwSwapBuffers(sit_gs.sit_glfw_window);
+        glfwSwapBuffers(_ctx->sit_glfw_window);
         // Note: glfwSwapBuffers typically doesn't return an error code.
         // Context loss or other severe issues would usually be caught elsewhere.
         // For maximum robustness, one could check glfwGetError() here, but it's often omitted.
@@ -10414,14 +10759,14 @@ SITAPI SituationError SituationEndFrame(void) {
 
         // 1. End recording the primary command buffer for this frame.
         // Get the command buffer first and validate it.
-        VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
-        if (cmd == VK_NULL_HANDLE) { // Check if SituationGetMainCommandBuffer returned NULL
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get main command buffer for ending frame.");
+        VkCommandBuffer cmd_vk = (VkCommandBuffer)SituationGetMainCommandBuffer(ctx);
+        if (cmd_vk == VK_NULL_HANDLE) { // Check if SituationGetMainCommandBuffer returned NULL
+             _SituationSetErrorFromCode(ctx, SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get main command buffer for ending frame.");
              return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
         }
 
-        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to end recording command buffer!");
+        if (vkEndCommandBuffer(cmd_vk) != VK_SUCCESS) {
+            _SituationSetErrorFromCode(ctx, SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to end recording command buffer!");
             return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
         }
 
@@ -10429,23 +10774,23 @@ SITAPI SituationError SituationEndFrame(void) {
         VkSubmitInfo submit_info = {0};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-        VkSemaphore wait_semaphores[] = { sit_gs.vk.image_available_semaphores[sit_gs.vk.current_frame_index] };
+        VkSemaphore wait_semaphores[] = { _ctx->vk.image_available_semaphores[_ctx->vk.current_frame_index] };
         VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
         submit_info.waitSemaphoreCount = 1;
         submit_info.pWaitSemaphores = wait_semaphores;
         submit_info.pWaitDstStageMask = wait_stages;
 
         submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &cmd;
+        submit_info.pCommandBuffers = &cmd_vk;
 
-        VkSemaphore signal_semaphores[] = { sit_gs.vk.render_finished_semaphores[sit_gs.vk.current_frame_index] };
+        VkSemaphore signal_semaphores[] = { _ctx->vk.render_finished_semaphores[_ctx->vk.current_frame_index] };
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores = signal_semaphores;
 
         // Submit the command buffer, waiting on the acquire semaphore and signaling the render finish semaphore.
         // The fence associated with this frame is signaled when the submission completes.
-        if (vkQueueSubmit(sit_gs.vk.graphics_queue, 1, &submit_info, sit_gs.vk.in_flight_fences[sit_gs.vk.current_frame_index]) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "Failed to submit draw command buffer!");
+        if (vkQueueSubmit(_ctx->vk.graphics_queue, 1, &submit_info, _ctx->vk.in_flight_fences[_ctx->vk.current_frame_index]) != VK_SUCCESS) {
+            _SituationSetErrorFromCode(ctx, SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "Failed to submit draw command buffer!");
             return SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED;
         }
 
@@ -10454,34 +10799,34 @@ SITAPI SituationError SituationEndFrame(void) {
         present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         present_info.waitSemaphoreCount = 1;
         present_info.pWaitSemaphores = signal_semaphores; // Wait for rendering to finish
-        VkSwapchainKHR swapchains[] = { sit_gs.vk.swapchain };
+        VkSwapchainKHR swapchains[] = { _ctx->vk.swapchain };
         present_info.swapchainCount = 1;
         present_info.pSwapchains = swapchains;
-        present_info.pImageIndices = &sit_gs.vk.current_image_index; // Present the image we acquired/used this frame
+        present_info.pImageIndices = &_ctx->vk.current_image_index; // Present the image we acquired/used this frame
 
         // Perform the presentation.
-        VkResult result = vkQueuePresentKHR(sit_gs.vk.present_queue, &present_info);
+        VkResult result = vkQueuePresentKHR(_ctx->vk.present_queue, &present_info);
 
         // 4. Handle Presentation Result & Swapchain State.
-        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || sit_gs.vk.framebuffer_resized) {
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || _ctx->vk.framebuffer_resized) {
             // The swapchain is out of date or not optimal. Recreate it.
             // Reset the resize flag if it was set.
-            sit_gs.vk.framebuffer_resized = false;
-            _SituationVulkanRecreateSwapchain();
+            _ctx->vk.framebuffer_resized = false;
+            _SituationVulkanRecreateSwapchain(_ctx);
             // Note: We don't return an error here. Recreating the swapchain is handled internally.
             // The application should check for swapchain recreation needs in SituationAcquireFrameCommandBuffer.
         } else if (result != VK_SUCCESS) {
             // An unexpected error occurred during presentation.
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Failed to present swap chain image!");
+            _SituationSetErrorFromCode(ctx, SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Failed to present swap chain image!");
             return SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED;
         }
 
         // Store the index of the image we just submitted for presentation.
-        sit_gs.vk.last_presented_image_index = sit_gs.vk.current_image_index;
+        _ctx->vk.last_presented_image_index = _ctx->vk.current_image_index;
 
         // 5. Advance Frame Index for Next Frame's Synchronization.
         // Use the dynamically determined max frames in flight, not a compile-time constant.
-        sit_gs.vk.current_frame_index = (sit_gs.vk.current_frame_index + 1) % sit_gs.vk.max_frames_in_flight;
+        _ctx->vk.current_frame_index = (_ctx->vk.current_frame_index + 1) % _ctx->vk.max_frames_in_flight;
     }
 #endif // SITUATION_USE_VULKAN
 
@@ -10490,8 +10835,8 @@ SITAPI SituationError SituationEndFrame(void) {
     // It includes the time taken by buffer swapping/presentation.
 
     // Frame Rate Limiting (if a target time is set).
-    if (sit_gs.target_frame_time > 0.0) {
-        double next_frame_start_time = sit_gs.current_time + sit_gs.target_frame_time;
+    if (_ctx->target_frame_time > 0.0) {
+        double next_frame_start_time = _ctx->current_time + _ctx->target_frame_time;
         double current_time = glfwGetTime(); // Get current time for comparison
         while (current_time < next_frame_start_time) {
             // Yield control to the OS briefly to avoid consuming 100% CPU.
@@ -10511,13 +10856,13 @@ SITAPI SituationError SituationEndFrame(void) {
     }
 
     // FPS Calculation Update.
-    sit_gs.fps_frame_counter++;
-    double time_since_last_fps_update = glfwGetTime() - sit_gs.fps_last_update_time;
+    _ctx->fps_frame_counter++;
+    double time_since_last_fps_update = glfwGetTime() - _ctx->fps_last_update_time;
     if (time_since_last_fps_update >= 1.0) {
         // Calculate average FPS over the last second (or so).
-        sit_gs.current_fps = (int)((double)sit_gs.fps_frame_counter / time_since_last_fps_update);
-        sit_gs.fps_frame_counter = 0; // Reset the counter
-        sit_gs.fps_last_update_time = glfwGetTime(); // Reset the timer
+        _ctx->current_fps = (int)((double)_ctx->fps_frame_counter / time_since_last_fps_update);
+        _ctx->fps_frame_counter = 0; // Reset the counter
+        _ctx->fps_last_update_time = glfwGetTime(); // Reset the timer
     }
 
     // --- 4. Success ---
@@ -10552,12 +10897,9 @@ SITAPI SituationError SituationEndFrame(void) {
  *
  * @see SituationAcquireFrameCommandBuffer(), SituationEndFrame()
  */
-SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
-    // --- 1. Library Initialization Check ---
-    if (!sit_gs.is_initialized) {
-        // Returning NULL is a safe default for an invalid/uninitialized state.
-        // Could also set an error, but often just returning NULL is sufficient for a getter.
-        // _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get command buffer before library initialization.");
+SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) {
         return NULL;
     }
 
@@ -10573,21 +10915,21 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
     {
         // --- 2. Vulkan Path ---
         // Retrieve the command buffer for the current frame index.
-        // This assumes sit_gs.vk.current_frame_index is valid (set by SituationAcquireFrameCommandBuffer).
+        // This assumes _ctx->vk.current_frame_index is valid (set by SituationAcquireFrameCommandBuffer).
 
         // Optional: Add a bounds check for robustness, though SituationAcquireFrameCommandBuffer should manage this.
-        if (sit_gs.vk.current_frame_index >= sit_gs.vk.max_frames_in_flight) {
+        if (_ctx->vk.current_frame_index >= _ctx->vk.max_frames_in_flight) {
             // This indicates a potential logic error or state issue.
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Current frame index is out of bounds for command buffer access.");
+            _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_INVALID_PARAM, "Current frame index is out of bounds for command buffer access.");
             return NULL;
         }
 
         // Get the VkCommandBuffer from the internal array.
-        VkCommandBuffer vk_cmd = sit_gs.vk.command_buffers[sit_gs.vk.current_frame_index];
+        VkCommandBuffer vk_cmd = _ctx->vk.command_buffers[_ctx->vk.current_frame_index];
 
         // Optional: Check if vk_cmd is VK_NULL_HANDLE, though SituationAcquireFrameCommandBuffer should provide a valid one.
         if (vk_cmd == VK_NULL_HANDLE) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Current frame's command buffer is unexpectedly NULL.");
+             _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Current frame's command buffer is unexpectedly NULL.");
              return NULL;
         }
 
@@ -14495,8 +14837,10 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
  *
  * @note This function is safe to call at any time, from any thread, even before `SituationInit()` or after a crash.
  */
-bool SituationIsInitialized(void) {
-    return sit_gs.is_initialized;
+SITAPI bool SituationIsInitialized(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx) return false;
+    return _ctx->is_initialized;
 }
 
 /**
@@ -14686,9 +15030,12 @@ SITAPI void SituationUnloadDroppedFiles(char** paths, int count) {
  * @warning The completeness of the returned data is highly dependent on the operating system. Features like VRAM size, storage info, and detailed network/input device names are most reliable on Windows.
  */
 SITUATION_DEVICE_INFO_DEPRECATED("Use the new, more specific functions like SituationGetCPUInfo(), SituationGetGPUInfo(), etc. This function will be removed in a future version.")
-SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
+SITAPI SituationDeviceInfo SituationGetDeviceInfo(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
     SituationDeviceInfo info = {0};
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get device info"); return info; }
+    if (!_ctx || !_ctx->is_initialized) {
+        return info;
+    }
 
     #if defined(_WIN32)
     // CPU Info
@@ -14715,8 +15062,8 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
 
     // GPU Info
     #ifdef SITUATION_ENABLE_DXGI
-    // DXGI needs COM to be initialized. The flag sit_gs.is_com_initialized should be true.
-    if (sit_gs.is_com_initialized) { // Check if COM is available
+    // DXGI needs COM to be initialized. The flag _ctx->is_com_initialized should be true.
+    if (_ctx->is_com_initialized) { // Check if COM is available
         IDXGIFactory* pFactory = NULL;
         if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)&pFactory)) && pFactory) {
             IDXGIAdapter* pAdapter = NULL;
@@ -14738,7 +15085,7 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
         }
     } else
     #endif // SITUATION_ENABLE_DXGI
-    if (sit_gs.sit_glfw_window && glad_glGetString) {
+    if (_ctx->sit_glfw_window && glad_glGetString) {
         const char* gl_renderer = (const char*)glGetString(GL_RENDERER);
         if (gl_renderer) { strncpy(info.gpu_name, gl_renderer, SITUATION_MAX_GPU_NAME_LEN-1);
         info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
@@ -14831,7 +15178,7 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
     long nproc = sysconf(_SC_NPROCESSORS_ONLN);
     info.cpu_cores = (nproc > 0) ? (int)nproc : 1;
 
-    if (sit_gs.sit_glfw_window && glad_glGetString) {
+    if (_ctx->sit_glfw_window && glad_glGetString) {
         const char* gl_renderer = (const char*)glGetString(GL_RENDERER);
         if (gl_renderer) { strncpy(info.gpu_name, gl_renderer, SITUATION_MAX_GPU_NAME_LEN-1);
         info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
@@ -14856,18 +15203,19 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
  * @return A pointer to a static string containing the GPU name (e.g., "NVIDIA GeForce RTX 4090").
  *         Do not free this string.
  */
-SITAPI const char* SituationGetGPUName(void) {
-    if (!sit_gs.is_initialized) return "Unknown (Not Initialized)";
+SITAPI const char* SituationGetGPUName(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return "Unknown (Not Initialized)";
 
 #if defined(SITUATION_USE_OPENGL)
-    if (sit_gs.sit_glfw_window) {
+    if (_ctx->sit_glfw_window) {
         const char* renderer = (const char*)glGetString(GL_RENDERER);
         if (renderer) return renderer;
     }
     return "Unknown OpenGL Device";
 
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.physical_device != VK_NULL_HANDLE) {
+    if (_ctx->vk.physical_device != VK_NULL_HANDLE) {
         // We use a static buffer to return a valid const char* pointer without malloc.
         // This is not thread-safe if called concurrently, but getting GPU name is usually a setup-time task.
         static char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
@@ -14875,7 +15223,7 @@ SITAPI const char* SituationGetGPUName(void) {
         // Only query if we haven't already (simple optimization)
         if (device_name[0] == '\0') {
             VkPhysicalDeviceProperties properties;
-            vkGetPhysicalDeviceProperties(sit_gs.vk.physical_device, &properties);
+            vkGetPhysicalDeviceProperties(_ctx->vk.physical_device, &properties);
             strncpy(device_name, properties.deviceName, VK_MAX_PHYSICAL_DEVICE_NAME_SIZE);
         }
         return device_name;
@@ -14905,10 +15253,11 @@ SITAPI const char* SituationGetGPUName(void) {
  *
  * @see SituationGetAppSavePath()
  */
-SITAPI char* SituationGetUserDirectory(void) {
+SITAPI char* SituationGetUserDirectory(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
     #if defined(_WIN32)
-    if (!sit_gs.is_initialized || !sit_gs.is_com_initialized) { // Check COM for SHGetKnownFolderPath
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "COM or library not initialized for GetUserDirectory");
+    if (!_ctx || !_ctx->is_initialized || !_ctx->is_com_initialized) { // Check COM for SHGetKnownFolderPath
+        _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_NOT_INITIALIZED, "COM or library not initialized for GetUserDirectory");
         return NULL;
     }
     PWSTR wPath = NULL;
@@ -14964,14 +15313,14 @@ SITAPI char* SituationGetUserDirectory(void) {
  *
  * @see SituationGetDriveInfo()
  */
-SITAPI char SituationGetCurrentDriveLetter(void) {
-    if (!sit_gs.is_initialized) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetCurrentDriveLetter");
+SITAPI char SituationGetCurrentDriveLetter(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) {
         return 0;
     }
     char exe_path[MAX_PATH];
     if (GetModuleFileNameA(NULL, exe_path, MAX_PATH) == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "GetModuleFileNameA failed for current drive letter");
+        _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_DEVICE_QUERY, "GetModuleFileNameA failed for current drive letter");
         return 0;
     }
 
@@ -14979,7 +15328,7 @@ SITAPI char SituationGetCurrentDriveLetter(void) {
     if (drive_number != -1) { // -1 means no drive letter (e.g. UNC path) or error
         return (char)('A' + drive_number);
     }
-    _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "PathGetDriveNumberA failed or path has no drive letter");
+    _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_DEVICE_QUERY, "PathGetDriveNumberA failed or path has no drive letter");
     return 0;
 }
 
@@ -15004,9 +15353,9 @@ SITAPI char SituationGetCurrentDriveLetter(void) {
  *
  * @see SituationGetCurrentDriveLetter()
  */
-SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacity_bytes, uint64_t* out_free_space_bytes, char* out_volume_name, int volume_name_len) {
-    if (!sit_gs.is_initialized) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDriveInfo");
+SITAPI bool SituationGetDriveInfo(SituationContext ctx, char drive_letter, uint64_t* out_total_capacity_bytes, uint64_t* out_free_space_bytes, char* out_volume_name, int volume_name_len) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) {
         return false;
     }
     if (!((drive_letter >= 'A' && drive_letter <= 'Z') || (drive_letter >= 'a' && drive_letter <= 'z'))) {
@@ -15091,9 +15440,10 @@ SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacit
  * @details This functions like a "double-click". It uses the platform's recommended native APIs for a secure and reliable operation (e.g., ShellExecute on Windows, xdg-open on Linux).
  * @param filePath The path to the file, folder, or a full URL to open.
  */
-SITAPI void SituationOpenFile(const char* filePath) {
+SITAPI void SituationOpenFile(SituationContext ctx, const char* filePath) {
+    SIT_RESOLVE_CTX(ctx);
     if (!filePath || filePath[0] == '\0') {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "File path cannot be null or empty.");
+        _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_INVALID_PARAM, "File path cannot be null or empty.");
         return;
     }
 
@@ -15284,30 +15634,31 @@ static char* _sit_wide_to_utf8(const WCHAR* wide_str) {
  * @param app_name The name of your application, used to create the final subdirectory.
  * @return A new string containing the full path, or NULL on failure.
  */
-SITAPI char* SituationGetAppSavePath(const char* app_name) {
+SITAPI char* SituationGetAppSavePath(SituationContext ctx, const char* app_name) {
+    SIT_RESOLVE_CTX(ctx);
     if (!app_name || app_name[0] == '\0') return NULL;
 
 #if defined(_WIN32)
-    // NOTE: For this to work reliably, CoInitialize may need to be called.
-    // situation.h already does this for DXGI, so it should be fine.
+    if (!_ctx || !_ctx->is_initialized || !_ctx->is_com_initialized) {
+        _SituationSetError(_ctx, "COM or library not initialized for GetAppSavePath");
+        return NULL;
+    }
     PWSTR wide_path_appdata = NULL;
     HRESULT hr = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &wide_path_appdata);
 
     if (FAILED(hr)) {
-        // TODO: Set last error message
+        _SituationSetError(_ctx, "SHGetKnownFolderPath failed");
         return NULL;
     }
 
     char* path_appdata = _sit_wide_to_utf8(wide_path_appdata);
-    CoTaskMemFree(wide_path_appdata); // Free the memory allocated by the shell API
+    CoTaskMemFree(wide_path_appdata);
 
     if (!path_appdata) {
-        // TODO: Set last error message
+        _SituationSetError(_ctx, "Failed to convert appdata path to UTF-8");
         return NULL;
     }
 
-    // Now, construct the full path: %APPDATA%\app_name
-    // +1 for separator, +1 for null terminator
     size_t final_len = strlen(path_appdata) + 1 + strlen(app_name) + 1;
     char* final_path = (char*)malloc(final_len);
     if (!final_path) {
@@ -15315,14 +15666,12 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
         return NULL;
     }
 
-    // snprintf is safer than strcpy/strcat
     snprintf(final_path, final_len, "%s\\%s", path_appdata, app_name);
     SIT_FREE(path_appdata);
 
-    // Create the directory if it doesn't exist
     WCHAR* wide_final_path = _sit_utf8_to_wide(final_path);
     if (wide_final_path) {
-        CreateDirectoryW(wide_final_path, NULL); // Fails harmlessly if it already exists
+        CreateDirectoryW(wide_final_path, NULL);
         SIT_FREE(wide_final_path);
     }
 
@@ -15331,7 +15680,6 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     const char* home_dir = getenv("HOME");
     if (!home_dir) return NULL;
 
-    // Follow XDG Base Directory Spec: $XDG_DATA_HOME or fallback to ~/.local/share
     const char* xdg_data_home = getenv("XDG_DATA_HOME");
     char* base_path = NULL;
     if (xdg_data_home && xdg_data_home[0] != '\0') {
@@ -15345,8 +15693,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
 
     if (!base_path) return NULL;
 
-    // TODO: Create the base directory if it doesn't exist.
-    // mkdir(base_path, 0755);
+    mkdir(base_path, 0755);
 
     size_t final_len = strlen(base_path) + 1 + strlen(app_name) + 1;
     char* final_path = (char*)malloc(final_len);
@@ -15357,8 +15704,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     snprintf(final_path, final_len, "%s/%s", base_path, app_name);
     SIT_FREE(base_path);
 
-    // TODO: Create the final directory.
-    // mkdir(final_path, 0755);
+    mkdir(final_path, 0755);
 
     return final_path;
 #endif
@@ -15369,29 +15715,27 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
  * @warning The returned string is dynamically allocated. The caller is **responsible for freeing this memory** using `free()`.
  * @return A new string containing the base path, or NULL on failure.
  */
-SITAPI char* SituationGetBasePath(void) {
+SITAPI char* SituationGetBasePath(SituationContext ctx) {
+    (void)ctx;
 #if defined(_WIN32)
     WCHAR wide_path[MAX_PATH];
     DWORD len = GetModuleFileNameW(NULL, wide_path, MAX_PATH);
     if (len == 0 || len == MAX_PATH) {
-        // TODO: Set last error: Path too long or other failure
         return NULL;
     }
 
-    // Find the last backslash to get the directory part
     WCHAR* last_slash = wcsrchr(wide_path, L'\\');
     if (last_slash) {
-        *last_slash = L'\0'; // Null-terminate at the slash to chop off the filename
+        *last_slash = L'\0';
     }
 
     return _sit_wide_to_utf8(wide_path);
 #else // POSIX fallback
     char path_buf[1024] = {0};
-    // readlink is the standard way on Linux
     ssize_t len = readlink("/proc/self/exe", path_buf, sizeof(path_buf) - 1);
 
     if (len != -1) {
-        path_buf[len] = '\0'; // Null-terminate the result
+        path_buf[len] = '\0';
         char* last_slash = strrchr(path_buf, '/');
         if (last_slash) {
             *last_slash = '\0';
@@ -15399,8 +15743,7 @@ SITAPI char* SituationGetBasePath(void) {
         return _sit_strdup(path_buf);
     }
 
-    // Fallback for other systems or if /proc isn't available
-    return _sit_strdup("."); // Current working directory
+    return _sit_strdup(".");
 #endif
 }
 
@@ -15463,11 +15806,11 @@ SITAPI const char* SituationGetFileName(const char* full_path) {
  * @param file_path The path to a file.
  * @return A pointer to the '.' in the file extension within the original string. Returns NULL if no extension.
  */
-SITAPI const char* SituationGetFileExtension(const char* file_path) {
+SITAPI const char* SituationGetFileExtension(SituationContext ctx, const char* file_path) {
     if (!file_path) return NULL;
 
     // First, find the filename part to avoid matching dots in directory names
-    const char* filename = SituationGetFileName(file_path);
+    const char* filename = SituationGetFileName(ctx, file_path);
     if (!filename) return NULL; // Should not happen if file_path is valid
 
     const char* last_dot = strrchr(filename, '.');
@@ -15488,13 +15831,14 @@ SITAPI const char* SituationGetFileExtension(const char* file_path) {
  * @param file_path The path to the file to check.
  * @return True if the file exists and is a regular file, false otherwise.
  */
-SITAPI bool SituationFileExists(const char* file_path) {
+SITAPI bool SituationFileExists(SituationContext ctx, const char* file_path) {
+    SIT_RESOLVE_CTX(ctx);
     if (!file_path) return false;
 #if defined(_WIN32)
     WIN32_FIND_DATAW find_data;
     WCHAR* wide_path = _sit_utf8_to_wide(file_path);
     if (wide_path == NULL) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_utf8_to_wide failed for file path.");
+        _SituationSetError(_ctx, "_sit_utf8_to_wide failed for file path.");
         return false; // Treat as not found if conversion fails
     }
 
@@ -15521,7 +15865,8 @@ SITAPI bool SituationFileExists(const char* file_path) {
  * @param dir_path The path to the directory to check.
  * @return True if the directory exists, false otherwise.
  */
-SITAPI bool SituationDirectoryExists(const char* dir_path) {
+SITAPI bool SituationDirectoryExists(SituationContext ctx, const char* dir_path) {
+    (void)ctx;
     if (!dir_path) return false;
 #if defined(_WIN32)
     WCHAR* wide_path = _sit_utf8_to_wide(dir_path);
@@ -15544,7 +15889,8 @@ SITAPI bool SituationDirectoryExists(const char* dir_path) {
  * @param file_path The path to the file.
  * @return The last modification time as a Unix timestamp (seconds since epoch), or 0 on failure.
  */
-SITAPI long SituationGetFileModTime(const char* file_path) {
+SITAPI long SituationGetFileModTime(SituationContext ctx, const char* file_path) {
+    (void)ctx;
     if (!file_path) return 0;
 #if defined(_WIN32)
     WCHAR* wide_path = _sit_utf8_to_wide(file_path);
@@ -15583,15 +15929,16 @@ SITAPI long SituationGetFileModTime(const char* file_path) {
  * @param file_path The path to the file to be deleted.
  * @return True if the file was successfully deleted, false otherwise.
  */
-SITAPI bool SituationDeleteFile(const char* file_path) {
+SITAPI bool SituationDeleteFile(SituationContext ctx, const char* file_path) {
+    SIT_RESOLVE_CTX(ctx);
     if (!file_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
+        _SituationSetError(_ctx, "file_path cannot be NULL.");
         return false;
     }
 #if defined(_WIN32)
     WCHAR* wide_path = _sit_utf8_to_wide(file_path);
     if (!wide_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
+        _SituationSetError(_ctx, "Could not convert path to wide string.");
         return false;
     }
 
@@ -15599,13 +15946,13 @@ SITAPI bool SituationDeleteFile(const char* file_path) {
     SIT_FREE(wide_path);
 
     if (result == 0) {
-        _SituationSetFilesystemError("Failed to delete file", file_path);
+        _SituationSetFilesystemError(ctx, "Failed to delete file", file_path);
         return false;
     }
     return true;
 #else // POSIX/Standard C
     if (remove(file_path) != 0) {
-        _SituationSetFilesystemError("Failed to delete file", file_path);
+        _SituationSetFilesystemError(ctx, "Failed to delete file", file_path);
         return false;
     }
     return true;
@@ -15618,8 +15965,8 @@ SITAPI bool SituationDeleteFile(const char* file_path) {
  * @param new_path The new path for the file or directory.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationRenameFile(const char* old_path, const char* new_path) {
-    return SituationMoveFile(old_path, new_path);
+SITAPI bool SituationRenameFile(SituationContext ctx, const char* old_path, const char* new_path) {
+    return SituationMoveFile(ctx, old_path, new_path);
 }
 
 /**
@@ -15628,7 +15975,8 @@ SITAPI bool SituationRenameFile(const char* old_path, const char* new_path) {
  * @param new_path The new path for the file or directory.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
+SITAPI bool SituationMoveFile(SituationContext ctx, const char* old_path, const char* new_path) {
+    SIT_RESOLVE_CTX(ctx);
     if (!old_path || !new_path) return false;
 
 #if defined(_WIN32)
@@ -15642,7 +15990,7 @@ SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
     SIT_FREE(wide_new);
 
     if (result == 0) {
-        _SituationSetFilesystemError("Failed to move/rename file", old_path);
+        _SituationSetFilesystemError(ctx, "Failed to move/rename file", old_path);
         return false;
     }
     return true;
@@ -15651,13 +15999,13 @@ SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
         return true;
     }
     if (errno == EXDEV) {
-        if (SituationCopyFile(old_path, new_path)) {
-            return SituationDeleteFile(old_path);
+        if (SituationCopyFile(ctx, old_path, new_path)) {
+            return SituationDeleteFile(ctx, old_path);
         }
-        _SituationSetFilesystemError("Failed to copy file during cross-device move", old_path);
+        _SituationSetFilesystemError(ctx, "Failed to copy file during cross-device move", old_path);
         return false;
     }
-    _SituationSetFilesystemError("Failed to move/rename file", old_path);
+    _SituationSetFilesystemError(ctx, "Failed to move/rename file", old_path);
     return false;
 #endif
 }
@@ -15669,7 +16017,8 @@ SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
  * @param dest_path The path where the file will be copied to.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
+SITAPI bool SituationCopyFile(SituationContext ctx, const char* source_path, const char* dest_path) {
+    (void)ctx;
     if (!source_path || !dest_path) return false;
 
 #if defined(_WIN32)
@@ -15731,13 +16080,14 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
  * @param dir_path The path of the directory to list.
  * @return A list of file and directory names.
  */
-SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) {
-    if (!dir_path || dir_path[0] == '\0') {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "dir_path cannot be NULL or empty.");
+SITAPI bool SituationCreateDirectory(SituationContext ctx, const char* dir_path, bool create_parents) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !dir_path || dir_path[0] == '\0') {
+        if (_ctx) _SituationSetError(_ctx, "dir_path cannot be NULL or empty.");
         return false;
     }
 
-    if (SituationDirectoryExists(dir_path)) {
+    if (SituationDirectoryExists(ctx, dir_path)) {
         return true; // Already exists, success.
     }
 
@@ -15745,19 +16095,19 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
 #if defined(_WIN32)
         WCHAR* wide_path = _sit_utf8_to_wide(dir_path);
         if (!wide_path) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
+            _SituationSetError(_ctx, "Could not convert path to wide string.");
             return false;
         }
         BOOL result = CreateDirectoryW(wide_path, NULL);
         SIT_FREE(wide_path);
         if (result == 0) {
-            _SituationSetFilesystemError("Failed to create directory", dir_path);
+            _SituationSetFilesystemError(ctx, "Failed to create directory", dir_path);
             return false;
         }
         return true;
 #else
         if (mkdir(dir_path, 0755) != 0) {
-            _SituationSetFilesystemError("Failed to create directory", dir_path);
+            _SituationSetFilesystemError(ctx, "Failed to create directory", dir_path);
             return false;
         }
         return true;
@@ -15766,7 +16116,7 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
 
     char* path_copy = _sit_strdup(dir_path);
     if (!path_copy) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Could not duplicate path string for recursive create.");
+        _SituationSetError(_ctx, "Could not duplicate path string for recursive create.");
         return false;
     }
 
@@ -15780,8 +16130,8 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
     while (*p) {
         if (*p == '/' || *p == '\\') {
             *p = '\0';
-            if (!SituationDirectoryExists(path_copy)) {
-                if (!SituationCreateDirectory(path_copy, false)) { // Call non-recursive version
+            if (!SituationDirectoryExists(ctx, path_copy)) {
+                if (!SituationCreateDirectory(ctx, path_copy, false)) { // Call non-recursive version
                     success = false;
                     break;
                 }
@@ -15792,7 +16142,7 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
     }
 
     if (success) {
-        success = SituationCreateDirectory(dir_path, false); // Create the final directory
+        success = SituationCreateDirectory(ctx, dir_path, false); // Create the final directory
     }
 
     SIT_FREE(path_copy);
@@ -15805,39 +16155,39 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
  * @param recursive If true, perform a recursive deletion of all contents.
  * @return True if the directory was successfully deleted, false otherwise.
  */
-SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
-    if (!dir_path || !SituationDirectoryExists(dir_path)) {
+SITAPI bool SituationDeleteDirectory(SituationContext ctx, const char* dir_path, bool recursive) {
+    if (!dir_path || !SituationDirectoryExists(ctx, dir_path)) {
         // TODO: Set last error: Invalid path or directory not found
         return false;
     }
 
     if (recursive) {
         int count = 0;
-        char** entries = SituationListDirectoryFiles(dir_path, &count);
+        char** entries = SituationListDirectoryFiles(ctx, dir_path, &count);
         if (entries) {
             bool all_deleted = true;
             for (int i = 0; i < count; i++) {
-                char* full_entry_path = SituationJoinPath(dir_path, entries[i]);
+                char* full_entry_path = SituationJoinPath(ctx, dir_path, entries[i]);
                 if (!full_entry_path) {
                     all_deleted = false;
                     continue; // Skip if path join fails
                 }
 
                 // Check if the entry is a file or a directory
-                if (SituationDirectoryExists(full_entry_path)) {
+                if (SituationDirectoryExists(ctx, full_entry_path)) {
                     // It's a directory, recurse
-                    if (!SituationDeleteDirectory(full_entry_path, true)) {
+                    if (!SituationDeleteDirectory(ctx, full_entry_path, true)) {
                         all_deleted = false;
                     }
                 } else {
                     // It's a file, delete it
-                    if (!SituationDeleteFile(full_entry_path)) {
+                    if (!SituationDeleteFile(ctx, full_entry_path)) {
                         all_deleted = false;
                     }
                 }
                 SIT_FREE(full_entry_path);
             }
-            SituationFreeDirectoryFileList(entries, count);
+            SituationFreeDirectoryFileList(ctx, entries, count);
 
             if (!all_deleted) {
                 // TODO: Set last error: Failed to delete one or more items within the directory
@@ -15866,7 +16216,8 @@ SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
  *          The caller MUST free both the array itself and each string within it using SituationFreeDirectoryFileList.
  *          Returns NULL on failure.
  */
-SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) {
+SITAPI char** SituationListDirectoryFiles(SituationContext ctx, const char* dir_path, int* out_count) {
+    SIT_RESOLVE_CTX(ctx);
     if (!dir_path || !out_count) {
         if (out_count) *out_count = 0;
         return NULL;
@@ -15876,7 +16227,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
     int capacity = 32;
     char** files = (char**)malloc(capacity * sizeof(char*));
     if (!files) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Initial allocation for file list failed.");
+        if (_ctx) _SituationSetError(_ctx, "Initial allocation for file list failed.");
         return NULL;
     }
 
@@ -15921,7 +16272,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
 #endif
         // --- COMMON LOGIC BLOCK ---
         if (!new_entry_name) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "strdup/_sit_wide_to_utf8 failed.");
+            if (_ctx) _SituationSetError(_ctx, "strdup/_sit_wide_to_utf8 failed.");
             goto error_cleanup;
         }
 
@@ -15932,7 +16283,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
                 // realloc failed. 'files' is still valid. 'new_entry_name' must be freed.
                 SIT_FREE(new_entry_name);
                 new_entry_name = NULL;
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "realloc failed.");
+                if (_ctx) _SituationSetError(_ctx, "realloc failed.");
                 goto error_cleanup;
             }
             files = temp_files;
@@ -15958,7 +16309,7 @@ success_cleanup:
 
 error_cleanup:
     // This block handles cleanup for any failure path.
-    SituationFreeDirectoryFileList(files, *out_count);
+    SituationFreeDirectoryFileList(ctx, files, *out_count);
 #if defined(_WIN32)
     SIT_FREE(wide_search_path); // Safe to call on NULL
     if (hFind != INVALID_HANDLE_VALUE) FindClose(hFind);
@@ -15973,7 +16324,8 @@ error_cleanup:
  * @param file_list The array of strings returned by SituationListDirectoryFiles.
  * @param count The number of entries in the array.
  */
-SITAPI void SituationFreeDirectoryFileList(char** file_list, int count) {
+SITAPI void SituationFreeDirectoryFileList(SituationContext ctx, char** file_list, int count) {
+    (void)ctx;
     if (!file_list) return;
     for (int i = 0; i < count; i++) {
         SIT_FREE(file_list[i]);
@@ -15990,7 +16342,9 @@ SITAPI void SituationFreeDirectoryFileList(char** file_list, int count) {
  * @param base_message A string describing the operation that failed (e.g., "Failed to create directory").
  * @param path The file or directory path that was involved in the failed operation.
  */
-static void _SituationSetFilesystemError(const char* base_message, const char* path) {
+static void _SituationSetFilesystemError(SituationContext ctx, const char* base_message, const char* path) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx) return;
     char platform_error_str[256] = {0};
     SituationError specific_error_code = SITUATION_ERROR_FILE_ACCESS; // Default to a generic file error
 
@@ -16077,7 +16431,7 @@ static void _SituationSetFilesystemError(const char* base_message, const char* p
     snprintf(final_message, sizeof(final_message), "%s: '%s' - %s", base_message, path, platform_error_str);
 
     // Use the specific error code we determined, with the full message as detail.
-    _SituationSetErrorFromCode(specific_error_code, final_message);
+    _SituationSetError(_ctx, final_message);
 }
 
 /**
@@ -16093,7 +16447,8 @@ static void _SituationSetFilesystemError(const char* base_message, const char* p
  *
  * @warning The caller is responsible for freeing the returned string.
  */
-static char* SituationGetBasePathFromFile(const char* file_path) {
+static char* SituationGetBasePathFromFile(SituationContext ctx, const char* file_path) {
+    (void)ctx;
     if (!file_path) return NULL;
     char* path_copy = _sit_strdup(file_path);
     char* last_sep = strrchr(path_copy, '/');
@@ -16116,14 +16471,15 @@ static char* SituationGetBasePathFromFile(const char* file_path) {
  * @param out_bytes_read A pointer that will be filled with the number of bytes read.
  * @return A new buffer containing the file data, or NULL on failure.
  */
-SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read) {
+SITAPI unsigned char* SituationLoadFileData(SituationContext ctx, const char* file_path, unsigned int* out_bytes_read) {
+    SIT_RESOLVE_CTX(ctx);
     if (!file_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
+        if (_ctx) _SituationSetError(_ctx, "file_path cannot be NULL.");
         if (out_bytes_read) *out_bytes_read = 0;
         return NULL;
     }
     if (!out_bytes_read) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_bytes_read cannot be NULL.");
+        if (_ctx) _SituationSetError(_ctx, "out_bytes_read cannot be NULL.");
         return NULL;
     }
     *out_bytes_read = 0;
@@ -16131,7 +16487,7 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
 #if defined(_WIN32)
     WCHAR* wide_path = _sit_utf8_to_wide(file_path);
     if (!wide_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string (check for invalid UTF-8 characters).");
+        if (_ctx) _SituationSetError(_ctx, "Could not convert path to wide string (check for invalid UTF-8 characters).");
         return NULL;
     }
 
@@ -16139,19 +16495,19 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
     SIT_FREE(wide_path);
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        _SituationSetFilesystemError("Failed to open file for reading", file_path);
+        _SituationSetFilesystemError(ctx, "Failed to open file for reading", file_path);
         return NULL;
     }
 
     LARGE_INTEGER file_size;
     if (!GetFileSizeEx(hFile, &file_size)) {
-        _SituationSetFilesystemError("Failed to get file size", file_path);
+        _SituationSetFilesystemError(ctx, "Failed to get file size", file_path);
         CloseHandle(hFile);
         return NULL;
     }
 
     if (file_size.QuadPart > 0xFFFFFFFF) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "File is too large (>4GB).");
+        if (_ctx) _SituationSetError(_ctx, "File is too large (>4GB).");
         CloseHandle(hFile);
         return NULL;
     }
@@ -16165,14 +16521,14 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
 
     unsigned char* buffer = (unsigned char*)malloc(size_to_read);
     if (!buffer) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
+        if (_ctx) _SituationSetError(_ctx, "Failed to allocate buffer for file data.");
         CloseHandle(hFile);
         return NULL;
     }
 
     DWORD bytes_read_win = 0;
     if (!ReadFile(hFile, buffer, size_to_read, &bytes_read_win, NULL) || bytes_read_win != size_to_read) {
-        _SituationSetFilesystemError("Error during file read", file_path);
+        _SituationSetFilesystemError(ctx, "Error during file read", file_path);
         SIT_FREE(buffer);
         CloseHandle(hFile);
         return NULL;
@@ -16185,7 +16541,7 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
 #else // Standard C library implementation (POSIX)
     FILE* file = fopen(file_path, "rb");
     if (!file) {
-        _SituationSetFilesystemError("Failed to open file for reading", file_path);
+        _SituationSetFilesystemError(ctx, "Failed to open file for reading", file_path);
         return NULL;
     }
 
@@ -16194,7 +16550,7 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
     fseek(file, 0, SEEK_SET);
 
     if (file_size < 0) {
-        _SituationSetFilesystemError("Failed to get file size", file_path);
+        _SituationSetFilesystemError(ctx, "Failed to get file size", file_path);
         fclose(file);
         return NULL;
     }
@@ -16208,14 +16564,14 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
 
     unsigned char* buffer = (unsigned char*)malloc(size_to_read);
     if (!buffer) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
+        if (_ctx) _SituationSetError(_ctx, "Failed to allocate buffer for file data.");
         fclose(file);
         return NULL;
     }
 
     size_t read_count = fread(buffer, 1, size_to_read, file);
     if (read_count != size_to_read) {
-        _SituationSetFilesystemError("Error during file read", file_path);
+        _SituationSetFilesystemError(ctx, "Error during file read", file_path);
         SIT_FREE(buffer);
         fclose(file);
         return NULL;
@@ -16234,20 +16590,21 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
  * @param bytes_to_write The number of bytes to write from the data buffer.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsigned int bytes_to_write) {
+SITAPI bool SituationSaveFileData(SituationContext ctx, const char* file_path, const void* data, unsigned int bytes_to_write) {
+    SIT_RESOLVE_CTX(ctx);
     if (!file_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
+        if (_ctx) _SituationSetError(_ctx, "file_path cannot be NULL.");
         return false;
     }
     if (!data && bytes_to_write > 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "data cannot be NULL when bytes_to_write is > 0.");
+        if (_ctx) _SituationSetError(_ctx, "data cannot be NULL when bytes_to_write is > 0.");
         return false;
     }
 
 #if defined(_WIN32)
     WCHAR* wide_path = _sit_utf8_to_wide(file_path);
     if (!wide_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
+        if (_ctx) _SituationSetError(_ctx, "Could not convert path to wide string.");
         return false;
     }
 
@@ -16255,14 +16612,14 @@ SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsig
     SIT_FREE(wide_path);
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        _SituationSetFilesystemError("Failed to create file for writing", file_path);
+        _SituationSetFilesystemError(ctx, "Failed to create file for writing", file_path);
         return false;
     }
 
     if (bytes_to_write > 0) {
         DWORD bytes_written = 0;
         if (!WriteFile(hFile, data, bytes_to_write, &bytes_written, NULL) || bytes_written != bytes_to_write) {
-            _SituationSetFilesystemError("Error during file write", file_path);
+            _SituationSetFilesystemError(ctx, "Error during file write", file_path);
             CloseHandle(hFile);
             return false;
         }
@@ -16274,13 +16631,13 @@ SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsig
 #else // Standard C library implementation
     FILE* file = fopen(file_path, "wb");
     if (!file) {
-        _SituationSetFilesystemError("Failed to create file for writing", file_path);
+        _SituationSetFilesystemError(ctx, "Failed to create file for writing", file_path);
         return false;
     }
 
     if (bytes_to_write > 0) {
         if (fwrite(data, 1, bytes_to_write, file) != bytes_to_write) {
-            _SituationSetFilesystemError("Error during file write", file_path);
+            _SituationSetFilesystemError(ctx, "Error during file write", file_path);
             fclose(file);
             return false;
         }
@@ -16297,11 +16654,12 @@ SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsig
  * @param file_path The path to the text file to load.
  * @return A new null-terminated string containing the file text, or NULL on failure.
  */
-SITAPI char* SituationLoadFileText(const char* file_path) {
+SITAPI char* SituationLoadFileText(SituationContext ctx, const char* file_path) {
+    SIT_RESOLVE_CTX(ctx);
     if (!file_path) return NULL;
 
     unsigned int bytes_read = 0;
-    unsigned char* file_data = SituationLoadFileData(file_path, &bytes_read);
+    unsigned char* file_data = SituationLoadFileData(ctx, file_path, &bytes_read);
 
     if (!file_data) {
         return NULL; // Load failed, error message is already set by the underlying function.
@@ -16310,7 +16668,7 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
     // Allocate a new buffer that is one byte larger for the null terminator.
     char* text_buffer = (char*)malloc(bytes_read + 1);
     if (!text_buffer) {
-        // TODO: Set last error message: "Memory allocation failed"
+        if (_ctx) _SituationSetError(_ctx, "Memory allocation failed");
         SIT_FREE(file_data);
         return NULL;
     }
@@ -16330,9 +16688,10 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
  * @param text The null-terminated string to write.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
+SITAPI bool SituationSaveFileText(SituationContext ctx, const char* file_path, const char* text) {
+    SIT_RESOLVE_CTX(ctx);
     if (!file_path || !text) {
-        // TODO: Set last error message: "Invalid parameter"
+        if (_ctx) _SituationSetError(_ctx, "Invalid parameter");
         return false;
     }
 
@@ -16340,7 +16699,7 @@ SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
     // The file on disk doesn't need to be null-terminated.
     unsigned int len = (unsigned int)strlen(text);
 
-    return SituationSaveFileData(file_path, text, len);
+    return SituationSaveFileData(ctx, file_path, text, len);
 }
 
 /**
@@ -16356,52 +16715,53 @@ SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
  * @warning This function performs dynamic memory allocation for the display array and the mode lists within it.
  *          Existing cache memory is freed before new allocation occurs.
  */
-static void _SituationCachePhysicalDisplays(void) {
-    if (!sit_gs.is_initialized) return;
-    if (sit_gs.cached_physical_displays_array) {
-        for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
-            SIT_FREE(sit_gs.cached_physical_displays_array[i].available_modes);
+static void _SituationCachePhysicalDisplays(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
+    if (_ctx->cached_physical_displays_array) {
+        for (int i = 0; i < _ctx->cached_physical_display_count; ++i) {
+            SIT_FREE(_ctx->cached_physical_displays_array[i].available_modes);
         }
-        SIT_FREE(sit_gs.cached_physical_displays_array);
-        sit_gs.cached_physical_displays_array = NULL;
-        sit_gs.cached_physical_display_count = 0;
+        SIT_FREE(_ctx->cached_physical_displays_array);
+        _ctx->cached_physical_displays_array = NULL;
+        _ctx->cached_physical_display_count = 0;
     }
     #if defined(_WIN32)
     int win32_monitor_count = GetSystemMetrics(SM_CMONITORS);
     if (win32_monitor_count <= 0) {
-        _SituationSetError("No physical monitors reported by GetSystemMetrics(SM_CMONITORS)."); return;
+        _SituationSetError(_ctx, "No physical monitors reported by GetSystemMetrics(SM_CMONITORS)."); return;
     }
-    sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)calloc(win32_monitor_count, sizeof(SituationDisplayInfo));
-    if (!sit_gs.cached_physical_displays_array) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache"); return;
+    _ctx->cached_physical_displays_array = (SituationDisplayInfo*)calloc(win32_monitor_count, sizeof(SituationDisplayInfo));
+    if (!_ctx->cached_physical_displays_array) {
+        _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache"); return;
     }
     int glfw_monitor_count;
     GLFWmonitor** glfw_monitors = glfwGetMonitors(&glfw_monitor_count);
     _SituationMonitorEnumData enum_data = {
-        .displays_array = sit_gs.cached_physical_displays_array,
+        .displays_array = _ctx->cached_physical_displays_array,
         .max_displays = win32_monitor_count,
         .current_display_idx = 0,
         .glfw_monitors = glfw_monitors,
         .glfw_monitor_count = glfw_monitor_count
     };
     if (!EnumDisplayMonitors(NULL, NULL, _SituationMonitorEnumProc, (LPARAM)&enum_data)) {
-        _SituationSetError("EnumDisplayMonitors failed.");
-        for (int i = 0; i < enum_data.current_display_idx; ++i) SIT_FREE(sit_gs.cached_physical_displays_array[i].available_modes);
-        SIT_FREE(sit_gs.cached_physical_displays_array); sit_gs.cached_physical_displays_array = NULL;
+        _SituationSetError(_ctx, "EnumDisplayMonitors failed.");
+        for (int i = 0; i < enum_data.current_display_idx; ++i) SIT_FREE(_ctx->cached_physical_displays_array[i].available_modes);
+        SIT_FREE(_ctx->cached_physical_displays_array); _ctx->cached_physical_displays_array = NULL;
         return;
     }
-    sit_gs.cached_physical_display_count = enum_data.current_display_idx;
+    _ctx->cached_physical_display_count = enum_data.current_display_idx;
     #else
     int glfw_count;
     GLFWmonitor** monitors = glfwGetMonitors(&glfw_count);
     if (glfw_count > 0) {
-        sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)calloc(glfw_count, sizeof(SituationDisplayInfo));
-        if (!sit_gs.cached_physical_displays_array) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache (non-Win32)"); return;
+        _ctx->cached_physical_displays_array = (SituationDisplayInfo*)calloc(glfw_count, sizeof(SituationDisplayInfo));
+        if (!_ctx->cached_physical_displays_array) {
+            _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache (non-Win32)"); return;
         }
-        sit_gs.cached_physical_display_count = glfw_count;
+        _ctx->cached_physical_display_count = glfw_count;
         for (int i = 0; i < glfw_count; ++i) {
-            SituationDisplayInfo* disp = &sit_gs.cached_physical_displays_array[i];
+            SituationDisplayInfo* disp = &_ctx->cached_physical_displays_array[i];
             disp->situation_monitor_id = i;
             disp->glfw_monitor_handle = monitors[i];
             const char* name = glfwGetMonitorName(monitors[i]);
@@ -16429,12 +16789,12 @@ static void _SituationCachePhysicalDisplays(void) {
                     }
                 } else {
                     disp->available_mode_count = 0;
-                    _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Available modes for GLFW monitor");
+                    _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_MEMORY_ALLOCATION, "Available modes for GLFW monitor");
                 }
             } else { disp->available_mode_count = 0; }
         }
     } else {
-        _SituationSetError("No monitors reported by GLFW.");
+        _SituationSetError(_ctx, "No monitors reported by GLFW.");
     }
     #endif
 }
@@ -16459,33 +16819,34 @@ static void _SituationCachePhysicalDisplays(void) {
  * @param count Pointer to an integer that will be filled with the number of displays found.
  * @return A pointer to a newly allocated array of SituationDisplayInfo structs, or NULL on failure.
  */
-SITAPI SituationDisplayInfo* SituationGetDisplays(int* count) {
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDisplays"); if (count) *count = 0; return NULL; }
-    if (!sit_gs.cached_physical_displays_array) _SituationCachePhysicalDisplays();
-    if (!sit_gs.cached_physical_displays_array || sit_gs.cached_physical_display_count == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No cached displays or count is zero");
+SITAPI SituationDisplayInfo* SituationGetDisplays(SituationContext ctx, int* count) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) { if (count) *count = 0; return NULL; }
+    if (!_ctx->cached_physical_displays_array) _SituationCachePhysicalDisplays(_ctx);
+    if (!_ctx->cached_physical_displays_array || _ctx->cached_physical_display_count == 0) {
+        _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_DISPLAY_QUERY, "No cached displays or count is zero");
         if (count) *count = 0;
         return NULL;
     }
-    SituationDisplayInfo* displays_copy = (SituationDisplayInfo*)malloc(sit_gs.cached_physical_display_count * sizeof(SituationDisplayInfo));
-    if (!displays_copy) { _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Copy of display infos"); if (count) *count = 0; return NULL; }
-    for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
-        memcpy(&displays_copy[i], &sit_gs.cached_physical_displays_array[i], sizeof(SituationDisplayInfo));
-        if (sit_gs.cached_physical_displays_array[i].available_mode_count > 0 && sit_gs.cached_physical_displays_array[i].available_modes) {
+    SituationDisplayInfo* displays_copy = (SituationDisplayInfo*)malloc(_ctx->cached_physical_display_count * sizeof(SituationDisplayInfo));
+    if (!displays_copy) { _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_MEMORY_ALLOCATION, "Copy of display infos"); if (count) *count = 0; return NULL; }
+    for (int i = 0; i < _ctx->cached_physical_display_count; ++i) {
+        memcpy(&displays_copy[i], &_ctx->cached_physical_displays_array[i], sizeof(SituationDisplayInfo));
+        if (_ctx->cached_physical_displays_array[i].available_mode_count > 0 && _ctx->cached_physical_displays_array[i].available_modes) {
             displays_copy[i].available_modes = (SituationDisplayMode*)malloc(displays_copy[i].available_mode_count * sizeof(SituationDisplayMode));
             if (displays_copy[i].available_modes) {
-                memcpy(displays_copy[i].available_modes, sit_gs.cached_physical_displays_array[i].available_modes, displays_copy[i].available_mode_count * sizeof(SituationDisplayMode));
+                memcpy(displays_copy[i].available_modes, _ctx->cached_physical_displays_array[i].available_modes, displays_copy[i].available_mode_count * sizeof(SituationDisplayMode));
             } else {
                 displays_copy[i].available_modes = NULL;
                 displays_copy[i].available_mode_count = 0;
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Copy of available modes for one display");
+                _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_MEMORY_ALLOCATION, "Copy of available modes for one display");
             }
         } else {
             displays_copy[i].available_modes = NULL;
             displays_copy[i].available_mode_count = 0;
         }
     }
-    if (count) *count = sit_gs.cached_physical_display_count;
+    if (count) *count = _ctx->cached_physical_display_count;
     return displays_copy;
 }
 
@@ -16500,9 +16861,10 @@ SITAPI SituationDisplayInfo* SituationGetDisplays(int* count) {
  *
  * @see _SituationCachePhysicalDisplays()
  */
-SITAPI void SituationRefreshDisplays(void) {
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "RefreshDisplays"); return; }
-    _SituationCachePhysicalDisplays();
+SITAPI void SituationRefreshDisplays(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
+    _SituationCachePhysicalDisplays(_ctx);
 }
 
 /**
@@ -16518,23 +16880,25 @@ SITAPI void SituationRefreshDisplays(void) {
  *
  * @note This function is used internally by `SituationApplyCurrentProfileWindowState` to determine where to place the window when toggling fullscreen.
  */
-SITAPI int _SituationGetCurrentDisplayIdentifier(void) {
-    if (!sit_gs.is_initialized || !sit_gs.sit_glfw_window) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetCurrentDisplayIdentifier"); return -1; }
-    GLFWmonitor* current_glfw_monitor = glfwGetWindowMonitor(sit_gs.sit_glfw_window);
+static int _SituationGetCurrentDisplayIdentifier(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized || !_ctx->sit_glfw_window) return -1;
+
+    GLFWmonitor* current_glfw_monitor = glfwGetWindowMonitor(_ctx->sit_glfw_window);
     if (!current_glfw_monitor) {
         int win_x, win_y, win_w, win_h;
-        glfwGetWindowPos(sit_gs.sit_glfw_window, &win_x, &win_y);
-        glfwGetWindowSize(sit_gs.sit_glfw_window, &win_w, &win_h);
+        glfwGetWindowPos(_ctx->sit_glfw_window, &win_x, &win_y);
+        glfwGetWindowSize(_ctx->sit_glfw_window, &win_w, &win_h);
         if (win_w <=0 || win_h <=0) {
-            win_w = sit_gs.main_window_width; win_h = sit_gs.main_window_height;
+            win_w = _ctx->main_window_width; win_h = _ctx->main_window_height;
         }
         Rectangle window_rect = {(float)win_x, (float)win_y, (float)win_w, (float)win_h};
         current_glfw_monitor = glfwGetPrimaryMonitor();
         int max_overlap = 0;
-        if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
-        for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
-            if (sit_gs.cached_physical_displays_array[i].glfw_monitor_handle) {
-                GLFWmonitor* mon_handle = sit_gs.cached_physical_displays_array[i].glfw_monitor_handle;
+        if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+        for (int i = 0; i < _ctx->cached_physical_display_count; ++i) {
+            if (_ctx->cached_physical_displays_array[i].glfw_monitor_handle) {
+                GLFWmonitor* mon_handle = _ctx->cached_physical_displays_array[i].glfw_monitor_handle;
                 const GLFWvidmode* mode = glfwGetVideoMode(mon_handle);
                 int mon_x, mon_y;
                 glfwGetMonitorPos(mon_handle, &mon_x, &mon_y);
@@ -16551,14 +16915,14 @@ SITAPI int _SituationGetCurrentDisplayIdentifier(void) {
             }
         }
     }
-    for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
-        if (sit_gs.cached_physical_displays_array[i].glfw_monitor_handle == current_glfw_monitor) {
-            return sit_gs.cached_physical_displays_array[i].situation_monitor_id;
+    for (int i = 0; i < _ctx->cached_physical_display_count; ++i) {
+        if (_ctx->cached_physical_displays_array[i].glfw_monitor_handle == current_glfw_monitor) {
+            return _ctx->cached_physical_displays_array[i].situation_monitor_id;
         }
     }
-    if (current_glfw_monitor == glfwGetPrimaryMonitor() && sit_gs.cached_physical_display_count > 0) {
-        for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
-            if (sit_gs.cached_physical_displays_array[i].is_primary) return sit_gs.cached_physical_displays_array[i].situation_monitor_id;
+    if (current_glfw_monitor == glfwGetPrimaryMonitor() && _ctx->cached_physical_display_count > 0) {
+        for (int i = 0; i < _ctx->cached_physical_display_count; ++i) {
+            if (_ctx->cached_physical_displays_array[i].is_primary) return _ctx->cached_physical_displays_array[i].situation_monitor_id;
         }
     }
     return -1;
@@ -16584,17 +16948,18 @@ SITAPI int _SituationGetCurrentDisplayIdentifier(void) {
  * @note On Windows, this function attempts to match the Win32 monitor handle with the GLFW monitor handle to ensure correct placement.
  * @warning Changing display modes can cause the screen to flicker or go black momentarily.
  */
-SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const SituationDisplayMode* mode, bool fullscreen) {
-    if (!sit_gs.is_initialized || !sit_gs.sit_glfw_window) return SITUATION_ERROR_NOT_INITIALIZED;
+SITAPI SituationError SituationSetDisplayMode(SituationContext ctx, int situation_monitor_id, const SituationDisplayMode* mode, bool fullscreen) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized || !_ctx->sit_glfw_window) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!mode) return SITUATION_ERROR_INVALID_PARAM;
-    if (situation_monitor_id < 0 || situation_monitor_id >= sit_gs.cached_physical_display_count || !sit_gs.cached_physical_displays_array) {
-         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid situation_monitor_id or display cache empty");
+    if (situation_monitor_id < 0 || situation_monitor_id >= _ctx->cached_physical_display_count || !_ctx->cached_physical_displays_array) {
+         _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_INVALID_PARAM, "Invalid situation_monitor_id or display cache empty");
         return SITUATION_ERROR_INVALID_PARAM;
     }
-    SituationDisplayInfo* target_display_info = &sit_gs.cached_physical_displays_array[situation_monitor_id];
+    SituationDisplayInfo* target_display_info = &_ctx->cached_physical_displays_array[situation_monitor_id];
     GLFWmonitor* glfw_mon = target_display_info->glfw_monitor_handle;
     if (!glfw_mon) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No GLFW monitor handle for specified Situation ID. Cannot set mode via GLFW.");
+        _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_DISPLAY_QUERY, "No GLFW monitor handle for specified Situation ID. Cannot set mode via GLFW.");
         #if !defined(_WIN32)
         return SITUATION_ERROR_DISPLAY_QUERY;
         #endif
@@ -16620,19 +16985,19 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
         if (cds_result != DISP_CHANGE_SUCCESSFUL) {
             char err_detail[128];
             snprintf(err_detail, sizeof(err_detail), "Win32 ChangeDisplaySettingsExA for '%s' failed with code %ld.", target_display_info->name, cds_result);
-            _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_SET, err_detail);
+            _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_DISPLAY_SET, err_detail);
             if (!glfw_mon) return SITUATION_ERROR_DISPLAY_SET;
         } else {
-             SituationRefreshDisplays();
+             SituationRefreshDisplays(_ctx);
         }
     } else if (!glfw_mon) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No Win32 device name and no GLFW monitor for SetDisplayMode.");
+        _SituationSetErrorFromCode(_ctx, SITUATION_ERROR_DISPLAY_QUERY, "No Win32 device name and no GLFW monitor for SetDisplayMode.");
         return SITUATION_ERROR_DISPLAY_QUERY;
     }
 #endif
     if (glfw_mon) {
         if (fullscreen) {
-            glfwSetWindowMonitor(sit_gs.sit_glfw_window, glfw_mon, 0, 0, mode->width, mode->height, mode->refresh_rate > 0 ? mode->refresh_rate : GLFW_DONT_CARE);
+            glfwSetWindowMonitor(_ctx->sit_glfw_window, glfw_mon, 0, 0, mode->width, mode->height, mode->refresh_rate > 0 ? mode->refresh_rate : GLFW_DONT_CARE);
         } else {
             const GLFWvidmode* current_mon_mode = glfwGetVideoMode(glfw_mon);
             int win_x = 0, win_y = 0;
@@ -16649,7 +17014,7 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
                      win_y = (primary_mode->height - mode->height) / 2;
                 } else { win_x = 100; win_y = 100; }
             }
-            glfwSetWindowMonitor(sit_gs.sit_glfw_window, NULL, win_x, win_y, mode->width, mode->height, GLFW_DONT_CARE);
+            glfwSetWindowMonitor(_ctx->sit_glfw_window, NULL, win_x, win_y, mode->width, mode->height, GLFW_DONT_CARE);
         }
     } else {
         #if defined(_WIN32)
@@ -16659,9 +17024,9 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
         #endif
     }
     int fb_w, fb_h;
-    glfwGetFramebufferSize(sit_gs.sit_glfw_window, &fb_w, &fb_h);
-    _SituationGLFWFramebufferSizeCallback(sit_gs.sit_glfw_window, fb_w, fb_h);
-    SituationRefreshDisplays();
+    glfwGetFramebufferSize(_ctx->sit_glfw_window, &fb_w, &fb_h);
+    _SituationGLFWFramebufferSizeCallback(_ctx->sit_glfw_window, fb_w, fb_h);
+    SituationRefreshDisplays(_ctx);
     return SITUATION_SUCCESS;
 }
 
@@ -19058,18 +19423,20 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
  * @return `true` if the window is in fullscreen mode, `false` otherwise.
  * @see SituationToggleFullscreen()
  */
-SITAPI bool SituationIsWindowFullscreen(void) {
-    if (!SituationIsInitialized()) return false;
-    return (glfwGetWindowMonitor(sit_gs.sit_glfw_window) != NULL);
+SITAPI bool SituationIsWindowFullscreen(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return false;
+    return (glfwGetWindowMonitor(_ctx->sit_glfw_window) != NULL);
 }
 
 /**
  * @brief Checks if the window is currently hidden (not visible).
  * @return `true` if the window is hidden, `false` otherwise.
  */
-SITAPI bool SituationIsWindowHidden(void) {
-    if (!SituationIsInitialized()) return false;
-    return (glfwGetWindowAttrib(sit_gs.sit_glfw_window, GLFW_VISIBLE) == GLFW_FALSE);
+SITAPI bool SituationIsWindowHidden(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return false;
+    return (glfwGetWindowAttrib(_ctx->sit_glfw_window, GLFW_VISIBLE) == GLFW_FALSE);
 }
 
 /**
@@ -19077,9 +19444,10 @@ SITAPI bool SituationIsWindowHidden(void) {
  * @return `true` if the window is minimized, `false` otherwise.
  * @see SituationMinimizeWindow()
  */
-SITAPI bool SituationIsWindowMinimized(void) {
-    if (!SituationIsInitialized()) return false;
-    return (glfwGetWindowAttrib(sit_gs.sit_glfw_window, GLFW_ICONIFIED) == GLFW_TRUE);
+SITAPI bool SituationIsWindowMinimized(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return false;
+    return (glfwGetWindowAttrib(_ctx->sit_glfw_window, GLFW_ICONIFIED) == GLFW_TRUE);
 }
 
 /**
@@ -19087,9 +19455,10 @@ SITAPI bool SituationIsWindowMinimized(void) {
  * @return `true` if the window is maximized, `false` otherwise.
  * @see SituationMaximizeWindow()
  */
-SITAPI bool SituationIsWindowMaximized(void) {
-    if (!SituationIsInitialized()) return false;
-    return (glfwGetWindowAttrib(sit_gs.sit_glfw_window, GLFW_MAXIMIZED) == GLFW_TRUE);
+SITAPI bool SituationIsWindowMaximized(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return false;
+    return (glfwGetWindowAttrib(_ctx->sit_glfw_window, GLFW_MAXIMIZED) == GLFW_TRUE);
 }
 
 /**
@@ -19097,9 +19466,10 @@ SITAPI bool SituationIsWindowMaximized(void) {
  * @details This is a single-frame "event" flag, ideal for triggering resolution-dependent updates in your main loop. It is reset to `false` at the beginning of each frame by `SituationPollInputEvents()`.
  * @return `true` if a resize event occurred, `false` otherwise.
  */
-SITAPI bool SituationIsWindowResized(void) {
-    if (!SituationIsInitialized()) return false;
-    return sit_gs.was_window_resized_last_frame;
+SITAPI bool SituationIsWindowResized(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return false;
+    return _ctx->was_window_resized_last_frame;
 }
 
 /**
@@ -19109,9 +19479,242 @@ SITAPI bool SituationIsWindowResized(void) {
  * @return `true` if the flag corresponds to an active window state, `false` otherwise.
  * @see SituationGetCurrentActualWindowStateFlags()
  */
-SITAPI bool SituationIsWindowState(uint32_t flag) {
-    if (!SituationIsInitialized()) return false;
-    return (SituationGetCurrentActualWindowStateFlags() & flag) != 0;
+SITAPI bool SituationIsWindowState(SituationContext ctx, uint32_t flag) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return false;
+    return (SituationGetCurrentActualWindowStateFlags(ctx) & flag) != 0;
+}
+
+/**
+ * @brief Gets the current width of the window in screen coordinates (logical size).
+ * @details This value represents the size of the window as perceived by the OS's window manager.
+ *          On HiDPI displays, this may be different from the actual pixel width of the framebuffer.
+ * @return The current window width in screen coordinates.
+ * @see SituationGetRenderWidth()
+ */
+SITAPI int SituationGetScreenWidth(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    // We already cache this in our global state, but glfwGetWindowSize is the source of truth.
+    int width, height;
+    glfwGetWindowSize(_ctx->sit_glfw_window, &width, &height);
+    return width;
+}
+
+/**
+ * @brief Gets the current height of the window in screen coordinates (logical size).
+ * @details This value represents the size of the window as perceived by the OS's window manager.
+ *          On HiDPI displays, this may be different from the actual pixel height of the framebuffer.
+ * @return The current window height in screen coordinates.
+ * @see SituationGetRenderHeight()
+ */
+SITAPI int SituationGetScreenHeight(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    int width, height;
+    glfwGetWindowSize(_ctx->sit_glfw_window, &width, &height);
+    return height;
+}
+
+/**
+ * @brief Gets the current width of the rendering framebuffer in pixels (HiDPI-aware).
+ * @details This is the actual pixel dimension you should use for setting viewports, creating render targets, and calculating projection matrices. On a 200% scaled display, this value may be twice `SituationGetScreenWidth()`.
+ * @return The current backbuffer width in pixels.
+ * @see SituationGetScreenWidth()
+ */
+SITAPI int SituationGetRenderWidth(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    // This is the framebuffer size, which correctly handles DPI scaling.
+    int width, height;
+    glfwGetFramebufferSize(_ctx->sit_glfw_window, &width, &height);
+    return width;
+}
+
+/**
+ * @brief Gets the current height of the rendering framebuffer in pixels (HiDPI-aware).
+ * @details This is the actual pixel dimension you should use for setting viewports, creating
+ *          render targets, and calculating projection matrices.
+ * @return The current backbuffer height in pixels.
+ * @see SituationGetScreenHeight()
+ */
+SITAPI int SituationGetRenderHeight(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    int width, height;
+    glfwGetFramebufferSize(_ctx->sit_glfw_window, &width, &height);
+    return height;
+}
+
+// --- Monitor Information ---
+
+/**
+ * @brief Gets the number of connected monitors.
+ * @return The number of detected physical displays.
+ */
+SITAPI int SituationGetMonitorCount(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    // Ensure cache is populated if it hasn't been already
+    if (_ctx->cached_physical_display_count == 0) {
+        _SituationCachePhysicalDisplays(_ctx);
+    }
+    return _ctx->cached_physical_display_count;
+}
+
+/**
+ * @brief Gets the index of the monitor the window is currently on.
+ * @return The index of the current monitor.
+ */
+SITAPI int SituationGetCurrentMonitor(SituationContext ctx) {
+    // This is a direct 1:1 mapping to your existing, more descriptively named function.
+    return _SituationGetCurrentDisplayIdentifier(ctx);
+}
+
+/**
+ * @brief Gets the position of the specified monitor on the desktop.
+ * @param monitor_id The index of the monitor (from 0 to GetMonitorCount()-1).
+ * @return A Vector2 with the monitor's top-left XY coordinates.
+ */
+SITAPI Vector2 SituationGetMonitorPosition(SituationContext ctx, int monitor_id) {
+    Vector2 pos = {0.0f, 0.0f};
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return pos;
+
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return pos;
+
+    SituationDisplayInfo* disp = &_ctx->cached_physical_displays_array[monitor_id];
+    if (disp->glfw_monitor_handle) {
+        int x, y;
+        glfwGetMonitorPos(disp->glfw_monitor_handle, &x, &y);
+        pos.x = (float)x;
+        pos.y = (float)y;
+    }
+    return pos;
+}
+
+/**
+ * @brief Gets the width of the monitor's current video mode.
+ * @param monitor_id The index of the monitor.
+ * @return The width of the monitor in pixels.
+ */
+SITAPI int SituationGetMonitorWidth(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return 0;
+    // This data is already in our excellent cache.
+    return _ctx->cached_physical_displays_array[monitor_id].current_mode.width;
+}
+
+/**
+ * @brief Gets the height of the monitor's current video mode.
+ * @param monitor_id The index of the monitor.
+ * @return The height of the monitor in pixels.
+ */
+SITAPI int SituationGetMonitorHeight(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return 0;
+    return _ctx->cached_physical_displays_array[monitor_id].current_mode.height;
+}
+
+/**
+ * @brief Gets the physical width of the monitor in millimeters.
+ * @param monitor_id The index of the monitor.
+ * @return The physical width of the monitor.
+ */
+SITAPI int SituationGetMonitorPhysicalWidth(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return 0;
+
+    SituationDisplayInfo* disp = &_ctx->cached_physical_displays_array[monitor_id];
+    if (disp->glfw_monitor_handle) {
+        int width_mm, height_mm;
+        glfwGetMonitorPhysicalSize(disp->glfw_monitor_handle, &width_mm, &height_mm);
+        return width_mm;
+    }
+    return 0;
+}
+
+/**
+ * @brief Gets the physical height of the monitor in millimeters.
+ * @param monitor_id The index of the monitor.
+ * @return The physical height of the monitor.
+ */
+SITAPI int SituationGetMonitorPhysicalHeight(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return 0;
+
+    SituationDisplayInfo* disp = &_ctx->cached_physical_displays_array[monitor_id];
+    if (disp->glfw_monitor_handle) {
+        int width_mm, height_mm;
+        glfwGetMonitorPhysicalSize(disp->glfw_monitor_handle, &width_mm, &height_mm);
+        return height_mm;
+    }
+    return 0;
+}
+
+/**
+ * @brief Gets the refresh rate of the monitor's current video mode.
+ * @param monitor_id The index of the monitor.
+ * @return The refresh rate in Hz.
+ */
+SITAPI int SituationGetMonitorRefreshRate(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return 0;
+    return _ctx->cached_physical_displays_array[monitor_id].current_mode.refresh_rate;
+}
+
+/**
+ * @brief Gets the human-readable UTF-8 name of the monitor.
+ * @param monitor_id The index of the monitor.
+ * @return A const string with the monitor's name.
+ */
+SITAPI const char* SituationGetMonitorName(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return "N/A";
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return "Invalid ID";
+    return _ctx->cached_physical_displays_array[monitor_id].name;
+}
+
+// --- Window Properties ---
+
+/**
+ * @brief Gets the window's top-left position on the virtual desktop.
+ * @return A `Vector2` containing the window's top-left (x, y) coordinates in screen space.
+ * @see SituationSetWindowPosition()
+ */
+SITAPI void SituationGetWindowPosition(SituationContext ctx, int* x, int* y) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!x || !y) return;
+    if (!_ctx || !_ctx->is_initialized || !_ctx->sit_glfw_window) {
+        *x = 0; *y = 0; return;
+    }
+    glfwGetWindowPos(_ctx->sit_glfw_window, x, y);
+}
+
+/**
+ * @brief Gets the DPI scaling factor for the window's content area.
+ * @details On a standard 96 DPI display, this will be (1.0, 1.0). On a "Retina" or other HiDPI display scaled to 200%, this will be (2.0, 2.0). This factor represents the ratio
+ *          between screen coordinates and framebuffer pixels.
+ * @return A `Vector2` containing the horizontal and vertical content scale factors.
+ */
+SITAPI Vector2 SituationGetWindowScaleDPI(SituationContext ctx) {
+    Vector2 scale = {1.0f, 1.0f};
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return scale;
+    glfwGetWindowContentScale(_ctx->sit_glfw_window, &scale.x, &scale.y);
+    return scale;
 }
 
 /**
@@ -19264,9 +19867,10 @@ SITAPI void SituationSetWindowTitle(const char *title) {
  * @param y The new y-coordinate on the virtual screen.
  * @see SituationGetWindowPosition()
  */
-SITAPI void SituationSetWindowPosition(int x, int y) {
-    if (!SituationIsInitialized()) return;
-    glfwSetWindowPos(sit_gs.sit_glfw_window, x, y);
+SITAPI void SituationSetWindowPosition(SituationContext ctx, int x, int y) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
+    glfwSetWindowPos(_ctx->sit_glfw_window, x, y);
 }
 
 /**
@@ -19275,23 +19879,25 @@ SITAPI void SituationSetWindowPosition(int x, int y) {
  * @param height The new height of the client area in screen coordinates.
  * @see SituationGetWindowSize()
  */
-SITAPI void SituationSetWindowSize(int width, int height) {
-    if (!SituationIsInitialized()) return;
-    glfwSetWindowSize(sit_gs.sit_glfw_window, width, height);
+SITAPI void SituationSetWindowSize(SituationContext ctx, int width, int height) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
+    glfwSetWindowSize(_ctx->sit_glfw_window, width, height);
 }
 
-SITAPI void SituationSetWindowMonitor(int monitor_id) {
-    if (!SituationIsInitialized()) return;
+SITAPI void SituationSetWindowMonitor(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
 
     int display_count = 0;
-    SituationDisplayInfo* displays = SituationGetDisplays(&display_count); // Uses your existing function
+    SituationDisplayInfo* displays = SituationGetDisplays(ctx, &display_count); // Uses your existing function
     if (!displays) return;
 
     if (monitor_id >= 0 && monitor_id < display_count) {
         SituationDisplayInfo* target_display = &displays[monitor_id];
         if (target_display->glfw_monitor_handle) {
             // Go fullscreen on the target monitor using its current mode
-            glfwSetWindowMonitor(sit_gs.sit_glfw_window,
+            glfwSetWindowMonitor(_ctx->sit_glfw_window,
                                  target_display->glfw_monitor_handle,
                                  0, 0, // Position is relative to monitor in fullscreen
                                  target_display->current_mode.width,
@@ -19315,12 +19921,13 @@ SITAPI void SituationSetWindowMonitor(int monitor_id) {
  * @see SituationSetWindowMaxSize()
  */
 
-SITAPI void SituationSetWindowMinSize(int width, int height) {
-    if (!SituationIsInitialized()) return;
+SITAPI void SituationSetWindowMinSize(SituationContext ctx, int width, int height) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
     // Get max size to avoid overwriting it
     int maxW, maxH;
-    glfwGetWindowSizeLimits(sit_gs.sit_glfw_window, NULL, NULL, &maxW, &maxH);
-    glfwSetWindowSizeLimits(sit_gs.sit_glfw_window, width, height, maxW, maxH);
+    glfwGetWindowSizeLimits(_ctx->sit_glfw_window, NULL, NULL, &maxW, &maxH);
+    glfwSetWindowSizeLimits(_ctx->sit_glfw_window, width, height, maxW, maxH);
 }
 
 /**
@@ -19330,12 +19937,13 @@ SITAPI void SituationSetWindowMinSize(int width, int height) {
  * @param height The maximum height in screen coordinates.
  * @see SituationSetWindowMinSize()
  */
-SITAPI void SituationSetWindowMaxSize(int width, int height) {
-    if (!SituationIsInitialized()) return;
+SITAPI void SituationSetWindowMaxSize(SituationContext ctx, int width, int height) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
     // Get min size to avoid overwriting it
     int minW, minH;
-    glfwGetWindowSizeLimits(sit_gs.sit_glfw_window, &minW, &minH, NULL, NULL);
-    glfwSetWindowSizeLimits(sit_gs.sit_glfw_window, minW, minH, width, height);
+    glfwGetWindowSizeLimits(_ctx->sit_glfw_window, &minW, &minH, NULL, NULL);
+    glfwSetWindowSizeLimits(_ctx->sit_glfw_window, minW, minH, width, height);
 }
 
 /**
@@ -19343,11 +19951,12 @@ SITAPI void SituationSetWindowMaxSize(int width, int height) {
  * @details This allows for translucent or "ghosted" window effects.
  * @param opacity A value from `0.0f` (fully transparent) to `1.0f` (fully opaque). Values outside this range will be clamped.
  */
-SITAPI void SituationSetWindowOpacity(float opacity) {
-    if (!SituationIsInitialized()) return;
+SITAPI void SituationSetWindowOpacity(SituationContext ctx, float opacity) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
     // Clamp opacity between 0.0 and 1.0
     float clamped_opacity = (opacity < 0.0f) ? 0.0f : (opacity > 1.0f) ? 1.0f : opacity;
-    glfwSetWindowOpacity(sit_gs.sit_glfw_window, clamped_opacity);
+    glfwSetWindowOpacity(_ctx->sit_glfw_window, clamped_opacity);
 }
 
 /**
@@ -19355,9 +19964,10 @@ SITAPI void SituationSetWindowOpacity(float opacity) {
  * @details The operating system's window manager ultimately decides whether to grant focus, but this function signals the application's intent to become the active window.
  * @see SituationHasWindowFocus()
  */
-SITAPI void SituationSetWindowFocused(void) {
-    if (!SituationIsInitialized()) return;
-    glfwFocusWindow(sit_gs.sit_glfw_window);
+SITAPI void SituationSetWindowFocused(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
+    glfwFocusWindow(_ctx->sit_glfw_window);
 }
 
 /**
@@ -19366,9 +19976,10 @@ SITAPI void SituationSetWindowFocused(void) {
  * @return `true` if the window is the active, focused window on the desktop, `false` otherwise.
  * @see SituationSetWindowFocused()
  */
-SITAPI bool SituationHasWindowFocus(void) {
-    if (!sit_gs.is_initialized) return false;
-    return sit_gs.current_window_focus_state;
+SITAPI bool SituationHasWindowFocus(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return false;
+    return _ctx->current_window_focus_state;
 }
 
 /**
@@ -19378,11 +19989,12 @@ SITAPI bool SituationHasWindowFocus(void) {
  * @return The current window width in screen coordinates.
  * @see SituationGetRenderWidth()
  */
-SITAPI int SituationGetScreenWidth(void) {
-    if (!SituationIsInitialized()) return 0;
+SITAPI int SituationGetScreenWidth(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
     // We already cache this in our global state, but glfwGetWindowSize is the source of truth.
     int width, height;
-    glfwGetWindowSize(sit_gs.sit_glfw_window, &width, &height);
+    glfwGetWindowSize(_ctx->sit_glfw_window, &width, &height);
     return width;
 }
 
@@ -19393,10 +20005,11 @@ SITAPI int SituationGetScreenWidth(void) {
  * @return The current window height in screen coordinates.
  * @see SituationGetRenderHeight()
  */
-SITAPI int SituationGetScreenHeight(void) {
-    if (!SituationIsInitialized()) return 0;
+SITAPI int SituationGetScreenHeight(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
     int width, height;
-    glfwGetWindowSize(sit_gs.sit_glfw_window, &width, &height);
+    glfwGetWindowSize(_ctx->sit_glfw_window, &width, &height);
     return height;
 }
 
@@ -19406,11 +20019,12 @@ SITAPI int SituationGetScreenHeight(void) {
  * @return The current backbuffer width in pixels.
  * @see SituationGetScreenWidth()
  */
-SITAPI int SituationGetRenderWidth(void) {
-    if (!SituationIsInitialized()) return 0;
+SITAPI int SituationGetRenderWidth(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
     // This is the framebuffer size, which correctly handles DPI scaling.
     int width, height;
-    glfwGetFramebufferSize(sit_gs.sit_glfw_window, &width, &height);
+    glfwGetFramebufferSize(_ctx->sit_glfw_window, &width, &height);
     return width;
 }
 
@@ -19421,10 +20035,11 @@ SITAPI int SituationGetRenderWidth(void) {
  * @return The current backbuffer height in pixels.
  * @see SituationGetScreenHeight()
  */
-SITAPI int SituationGetRenderHeight(void) {
-    if (!SituationIsInitialized()) return 0;
+SITAPI int SituationGetRenderHeight(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
     int width, height;
-    glfwGetFramebufferSize(sit_gs.sit_glfw_window, &width, &height);
+    glfwGetFramebufferSize(_ctx->sit_glfw_window, &width, &height);
     return height;
 }
 
@@ -19434,22 +20049,23 @@ SITAPI int SituationGetRenderHeight(void) {
  * @brief Gets the number of connected monitors.
  * @return The number of detected physical displays.
  */
-SITAPI int SituationGetMonitorCount(void) {
-    if (!SituationIsInitialized()) return 0;
+SITAPI int SituationGetMonitorCount(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
     // Ensure cache is populated if it hasn't been already
-    if (sit_gs.cached_physical_display_count == 0) {
-        _SituationCachePhysicalDisplays();
+    if (_ctx->cached_physical_display_count == 0) {
+        _SituationCachePhysicalDisplays(_ctx);
     }
-    return sit_gs.cached_physical_display_count;
+    return _ctx->cached_physical_display_count;
 }
 
 /**
  * @brief Gets the index of the monitor the window is currently on.
  * @return The index of the current monitor.
  */
-SITAPI int SituationGetCurrentMonitor(void) {
+SITAPI int SituationGetCurrentMonitor(SituationContext ctx) {
     // This is a direct 1:1 mapping to your existing, more descriptively named function.
-    return _SituationGetCurrentDisplayIdentifier();
+    return _SituationGetCurrentDisplayIdentifier(ctx);
 }
 
 /**
@@ -19457,19 +20073,20 @@ SITAPI int SituationGetCurrentMonitor(void) {
  * @param monitor_id The index of the monitor (from 0 to GetMonitorCount()-1).
  * @return A Vector2 with the monitor's top-left XY coordinates.
  */
-SITAPI Vector2 SituationGetMonitorPosition(int monitor_id) {
+SITAPI Vector2 SituationGetMonitorPosition(SituationContext ctx, int monitor_id) {
     Vector2 pos = {0.0f, 0.0f};
-    if (!SituationIsInitialized()) return pos;
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return pos;
 
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
-    if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return pos;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return pos;
 
-    SituationDisplayInfo* disp = &sit_gs.cached_physical_displays_array[monitor_id];
+    SituationDisplayInfo* disp = &_ctx->cached_physical_displays_array[monitor_id];
     if (disp->glfw_monitor_handle) {
         int x, y;
         glfwGetMonitorPos(disp->glfw_monitor_handle, &x, &y);
-        pos[0] = (float)x;
-        pos[1] = (float)y;
+        pos.x = (float)x;
+        pos.y = (float)y;
     }
     return pos;
 }
@@ -19479,12 +20096,13 @@ SITAPI Vector2 SituationGetMonitorPosition(int monitor_id) {
  * @param monitor_id The index of the monitor.
  * @return The width of the monitor in pixels.
  */
-SITAPI int SituationGetMonitorWidth(int monitor_id) {
-    if (!SituationIsInitialized()) return 0;
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
-    if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return 0;
+SITAPI int SituationGetMonitorWidth(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return 0;
     // This data is already in our excellent cache.
-    return sit_gs.cached_physical_displays_array[monitor_id].current_mode.width;
+    return _ctx->cached_physical_displays_array[monitor_id].current_mode.width;
 }
 
 /**
@@ -19492,11 +20110,12 @@ SITAPI int SituationGetMonitorWidth(int monitor_id) {
  * @param monitor_id The index of the monitor.
  * @return The height of the monitor in pixels.
  */
-SITAPI int SituationGetMonitorHeight(int monitor_id) {
-    if (!SituationIsInitialized()) return 0;
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
-    if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return 0;
-    return sit_gs.cached_physical_displays_array[monitor_id].current_mode.height;
+SITAPI int SituationGetMonitorHeight(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return 0;
+    return _ctx->cached_physical_displays_array[monitor_id].current_mode.height;
 }
 
 /**
@@ -19504,12 +20123,13 @@ SITAPI int SituationGetMonitorHeight(int monitor_id) {
  * @param monitor_id The index of the monitor.
  * @return The physical width of the monitor.
  */
-SITAPI int SituationGetMonitorPhysicalWidth(int monitor_id) {
-    if (!SituationIsInitialized()) return 0;
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
-    if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return 0;
+SITAPI int SituationGetMonitorPhysicalWidth(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return 0;
 
-    SituationDisplayInfo* disp = &sit_gs.cached_physical_displays_array[monitor_id];
+    SituationDisplayInfo* disp = &_ctx->cached_physical_displays_array[monitor_id];
     if (disp->glfw_monitor_handle) {
         int width_mm, height_mm;
         glfwGetMonitorPhysicalSize(disp->glfw_monitor_handle, &width_mm, &height_mm);
@@ -19523,12 +20143,13 @@ SITAPI int SituationGetMonitorPhysicalWidth(int monitor_id) {
  * @param monitor_id The index of the monitor.
  * @return The physical height of the monitor.
  */
-SITAPI int SituationGetMonitorPhysicalHeight(int monitor_id) {
-    if (!SituationIsInitialized()) return 0;
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
-    if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return 0;
+SITAPI int SituationGetMonitorPhysicalHeight(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return 0;
 
-    SituationDisplayInfo* disp = &sit_gs.cached_physical_displays_array[monitor_id];
+    SituationDisplayInfo* disp = &_ctx->cached_physical_displays_array[monitor_id];
     if (disp->glfw_monitor_handle) {
         int width_mm, height_mm;
         glfwGetMonitorPhysicalSize(disp->glfw_monitor_handle, &width_mm, &height_mm);
@@ -19542,11 +20163,12 @@ SITAPI int SituationGetMonitorPhysicalHeight(int monitor_id) {
  * @param monitor_id The index of the monitor.
  * @return The refresh rate in Hz.
  */
-SITAPI int SituationGetMonitorRefreshRate(int monitor_id) {
-    if (!SituationIsInitialized()) return 0;
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
-    if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return 0;
-    return sit_gs.cached_physical_displays_array[monitor_id].current_mode.refresh_rate;
+SITAPI int SituationGetMonitorRefreshRate(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return 0;
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return 0;
+    return _ctx->cached_physical_displays_array[monitor_id].current_mode.refresh_rate;
 }
 
 /**
@@ -19554,11 +20176,12 @@ SITAPI int SituationGetMonitorRefreshRate(int monitor_id) {
  * @param monitor_id The index of the monitor.
  * @return A const string with the monitor's name.
  */
-SITAPI const char* SituationGetMonitorName(int monitor_id) {
-    if (!SituationIsInitialized()) return "N/A";
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
-    if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return "Invalid ID";
-    return sit_gs.cached_physical_displays_array[monitor_id].name;
+SITAPI const char* SituationGetMonitorName(SituationContext ctx, int monitor_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return "N/A";
+    if (_ctx->cached_physical_display_count == 0) _SituationCachePhysicalDisplays(_ctx);
+    if (monitor_id < 0 || monitor_id >= _ctx->cached_physical_display_count) return "Invalid ID";
+    return _ctx->cached_physical_displays_array[monitor_id].name;
 }
 
 // --- Window Properties ---
@@ -19568,14 +20191,13 @@ SITAPI const char* SituationGetMonitorName(int monitor_id) {
  * @return A `Vector2` containing the window's top-left (x, y) coordinates in screen space.
  * @see SituationSetWindowPosition()
  */
-SITAPI Vector2 SituationGetWindowPosition(void) {
-    Vector2 pos = {0.0f, 0.0f};
-    if (!SituationIsInitialized()) return pos;
-    int x, y;
-    glfwGetWindowPos(sit_gs.sit_glfw_window, &x, &y);
-    pos[0] = (float)x;
-    pos[1] = (float)y;
-    return pos;
+SITAPI void SituationGetWindowPosition(SituationContext ctx, int* x, int* y) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!x || !y) return;
+    if (!_ctx || !_ctx->is_initialized || !_ctx->sit_glfw_window) {
+        *x = 0; *y = 0; return;
+    }
+    glfwGetWindowPos(_ctx->sit_glfw_window, x, y);
 }
 
 /**
@@ -19584,10 +20206,11 @@ SITAPI Vector2 SituationGetWindowPosition(void) {
  *          between screen coordinates and framebuffer pixels.
  * @return A `Vector2` containing the horizontal and vertical content scale factors.
  */
-SITAPI Vector2 SituationGetWindowScaleDPI(void) {
+SITAPI Vector2 SituationGetWindowScaleDPI(SituationContext ctx) {
     Vector2 scale = {1.0f, 1.0f};
-    if (!SituationIsInitialized()) return scale;
-    glfwGetWindowContentScale(sit_gs.sit_glfw_window, &scale[0], &scale[1]);
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return scale;
+    glfwGetWindowContentScale(_ctx->sit_glfw_window, &scale.x, &scale.y);
     return scale;
 }
 
@@ -19688,16 +20311,16 @@ SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
                 win_x = mon_x_pos + (mode->width - sit_gs.main_window_width) / 2;
                 win_y = mon_y_pos + (mode->height - sit_gs.main_window_height) / 2;
             }
-            glfwSetWindowMonitor(sit_gs.sit_glfw_window, NULL, win_x, win_y, sit_gs.main_window_width, sit_gs.main_window_height, 0);
+    glfwSetWindowMonitor(_ctx->sit_glfw_window, NULL, win_x, win_y, _ctx->main_window_width, _ctx->main_window_height, 0);
         }
     }
 
     // Apply other attributes AFTER fullscreen is handled.
     // Some attributes might be hints and only work at creation, or might be ignored in fullscreen.
     // GLFW_FLOATING, GLFW_DECORATED, GLFW_RESIZABLE are settable post-creation via glfwSetWindowAttrib.
-    glfwSetWindowAttrib(sit_gs.sit_glfw_window, GLFW_FLOATING, (target_flags & SITUATION_FLAG_WINDOW_TOPMOST) ? GLFW_TRUE : GLFW_FALSE);
-    glfwSetWindowAttrib(sit_gs.sit_glfw_window, GLFW_DECORATED, (target_flags & SITUATION_FLAG_WINDOW_UNDECORATED) ? GLFW_FALSE : GLFW_TRUE);
-    glfwSetWindowAttrib(sit_gs.sit_glfw_window, GLFW_RESIZABLE, (target_flags & SITUATION_FLAG_WINDOW_RESIZABLE) ? GLFW_TRUE : GLFW_FALSE);
+    glfwSetWindowAttrib(_ctx->sit_glfw_window, GLFW_FLOATING, (target_flags & SITUATION_FLAG_WINDOW_TOPMOST) ? GLFW_TRUE : GLFW_FALSE);
+    glfwSetWindowAttrib(_ctx->sit_glfw_window, GLFW_DECORATED, (target_flags & SITUATION_FLAG_WINDOW_UNDECORATED) ? GLFW_FALSE : GLFW_TRUE);
+    glfwSetWindowAttrib(_ctx->sit_glfw_window, GLFW_RESIZABLE, (target_flags & SITUATION_FLAG_WINDOW_RESIZABLE) ? GLFW_TRUE : GLFW_FALSE);
 
     // Hidden state
     if (target_flags & SITUATION_FLAG_WINDOW_HIDDEN) {
@@ -19883,19 +20506,21 @@ SITAPI bool SituationIsAppPaused(void) {
  *
  * @see SituationUnloadImage(), SituationLoadImageFromMemory(), SituationCreateTexture()
  */
-SITAPI SituationImage SituationLoadImage(const char *fileName) {
+SITAPI SituationImage SituationLoadImage(SituationContext ctx, const char *fileName) {
     SituationImage image = {0};
 #if defined(STB_IMAGE_IMPLEMENTATION)
     int channels;
     // We force 4 channels (RGBA) for consistency across the library.
     image.data = stbi_load(fileName, &image.width, &image.height, &channels, 4);
     if (image.data == NULL) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to load image file or format not supported.");
+        SIT_RESOLVE_CTX(ctx);
+        _SituationSetError(_ctx, "Failed to load image file or format not supported.");
         image.width = 0;
         image.height = 0;
     }
 #else
-    _SituationSetError("Image loading not available. Please implement stb_image.h.");
+    SIT_RESOLVE_CTX(ctx);
+    _SituationSetError(_ctx, "Image loading not available. Please implement stb_image.h.");
 #endif
     return image;
 }
@@ -19916,19 +20541,21 @@ SITAPI SituationImage SituationLoadImage(const char *fileName) {
  *
  * @see SituationUnloadImage(), SituationLoadImage()
  */
-SITAPI SituationImage SituationLoadImageFromMemory(const char *fileType, const unsigned char *fileData, int dataSize) {
+SITAPI SituationImage SituationLoadImageFromMemory(SituationContext ctx, const char *fileType, const unsigned char *fileData, int dataSize) {
     (void)fileType; // fileType is mainly for hinting, stbi_load_from_memory auto-detects.
     SituationImage image = {0};
 #if defined(STB_IMAGE_IMPLEMENTATION)
     int channels;
     image.data = stbi_load_from_memory(fileData, dataSize, &image.width, &image.height, &channels, 4);
     if (image.data == NULL) {
-        _SituationSetError("Failed to load image from memory or format not supported.");
+        SIT_RESOLVE_CTX(ctx);
+        _SituationSetError(_ctx, "Failed to load image from memory or format not supported.");
         image.width = 0;
         image.height = 0;
     }
 #else
-    _SituationSetError("Image loading not available. Please implement stb_image.h.");
+    SIT_RESOLVE_CTX(ctx);
+    _SituationSetError(_ctx, "Image loading not available. Please implement stb_image.h.");
 #endif
     return image;
 }
@@ -19939,11 +20566,12 @@ SITAPI SituationImage SituationLoadImageFromMemory(const char *fileType, const u
  *
  * @param image The image to unload. Its data pointer becomes invalid after this call.
  */
-SITAPI bool SituationUnloadImage(SituationImage image) {
+SITAPI bool SituationUnloadImage(SituationContext ctx, SituationImage image) {
     if (image.data != NULL) {
         SIT_FREE(image.data);
         if (errno != 0) {  // Rare post-free errno check
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SIT_FREE failed for image data (errno: %d)", errno);
+            SIT_RESOLVE_CTX(ctx);
+            _SituationSetError(_ctx, "SIT_FREE failed for image data");
             return false;
         }
     }
@@ -19958,7 +20586,8 @@ SITAPI bool SituationUnloadImage(SituationImage image) {
  *
  * @return `true` if the image is valid, `false` otherwise.
  */
-SITAPI bool SituationIsImageValid(SituationImage image) {
+SITAPI bool SituationIsImageValid(SituationContext ctx, SituationImage image) {
+    (void)ctx;
     return (image.data != NULL && image.width > 0 && image.height > 0);
 }
 
@@ -19977,10 +20606,11 @@ SITAPI bool SituationIsImageValid(SituationImage image) {
  *
  * @see SituationLoadImage(), SituationTakeScreenshot()
  */
-SITAPI bool SituationExportImage(SituationImage image, const char *fileName) {
-    if (!SituationIsImageValid(image) || !fileName) return false;
+SITAPI bool SituationExportImage(SituationContext ctx, SituationImage image, const char *fileName) {
+    if (!SituationIsImageValid(ctx, image) || !fileName) return false;
+    SIT_RESOLVE_CTX(ctx);
 
-    const char *ext = SituationGetFileExtension(fileName);
+    const char *ext = SituationGetFileExtension(ctx, fileName);
     bool success = false;
 
     // Use helper here
@@ -19988,13 +20618,13 @@ SITAPI bool SituationExportImage(SituationImage image, const char *fileName) {
 #if defined(STB_IMAGE_WRITE_IMPLEMENTATION)
         success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, image.width * 4) != 0);
 #else
-        _SituationSetError("PNG export not available. Please implement stb_image_write.h.");
+        _SituationSetError(_ctx, "PNG export not available. Please implement stb_image_write.h.");
 #endif
     // Use helper here
     } else if (ext != NULL && _sit_strcasecmp(ext, ".bmp") == 0) {
-        success = _SituationSaveImageBMP(fileName, &image);
+        success = _SituationSaveImageBMP(ctx, fileName, &image);
     } else {
-        _SituationSetError("Unsupported image export format. Use .png or .bmp.");
+        _SituationSetError(_ctx, "Unsupported image export format. Use .png or .bmp.");
     }
     return success;
 }
@@ -20012,9 +20642,9 @@ SITAPI bool SituationExportImage(SituationImage image, const char *fileName) {
  *
  * @see SituationUnloadImage(), SituationImageCrop()
  */
-SITAPI SituationImage SituationImageCopy(SituationImage image) {
+SITAPI SituationImage SituationImageCopy(SituationContext ctx, SituationImage image) {
     SituationImage new_image = {0};
-    if (!SituationIsImageValid(image)) return new_image;
+    if (!SituationIsImageValid(ctx, image)) return new_image;
 
     size_t data_size = image.width * image.height * 4;
     new_image.data = malloc(data_size);
@@ -20043,9 +20673,9 @@ SITAPI SituationImage SituationImageCopy(SituationImage image) {
  *
  * @see SituationImageDrawAlpha()
  */
-SITAPI void SituationImageDraw(SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos) {
+SITAPI void SituationImageDraw(SituationContext ctx, SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos) {
     // 1. --- Initial Validation ---
-    if (!SituationIsImageValid(*dst) || !SituationIsImageValid(src)) { return; }
+    if (!SituationIsImageValid(ctx, *dst) || !SituationIsImageValid(ctx, src)) { return; }
 
     // 2. --- Calculate the Intersection Rectangle (The core of the logic) ---
 
@@ -20125,7 +20755,8 @@ SITAPI void SituationImageDraw(SituationImage *dst, SituationImage src, Rectangl
  *
  * @see SituationUnloadImage(), SituationGenImageGradient()
  */
-SITAPI SituationImage SituationGenImageColor(int width, int height, ColorRGBA color) {
+SITAPI SituationImage SituationGenImageColor(SituationContext ctx, int width, int height, ColorRGBA color) {
+    (void)ctx;
     SituationImage image = {0};
     image.width = width;
     image.height = height;
@@ -20153,7 +20784,8 @@ SITAPI SituationImage SituationGenImageColor(int width, int height, ColorRGBA co
  * @param br The color for the Bottom-Right corner.
  * @return A SituationImage containing the gradient. The data must be freed later.
  */
-SITAPI SituationImage SituationGenImageGradient(int width, int height, ColorRGBA tl, ColorRGBA tr, ColorRGBA bl, ColorRGBA br) {
+SITAPI SituationImage SituationGenImageGradient(SituationContext ctx, int width, int height, ColorRGBA tl, ColorRGBA tr, ColorRGBA bl, ColorRGBA br) {
+    (void)ctx;
     SituationImage image = {0};
     image.width = width;
     image.height = height;
@@ -20216,8 +20848,8 @@ SITAPI SituationImage SituationGenImageGradient(int width, int height, ColorRGBA
  *
  * @see SituationImageResize(), SituationImageCopy()
  */
-SITAPI void SituationImageCrop(SituationImage *image, Rectangle crop) {
-    if (!SituationIsImageValid(*image) || crop.width <= 0 || crop.height <= 0) return;
+SITAPI void SituationImageCrop(SituationContext ctx, SituationImage *image, Rectangle crop) {
+    if (!SituationIsImageValid(ctx, *image) || crop.width <= 0 || crop.height <= 0) return;
 
     int x = (int)crop.x;
     int y = (int)crop.y;
@@ -20240,7 +20872,7 @@ SITAPI void SituationImageCrop(SituationImage *image, Rectangle crop) {
         memcpy(dst + (j * w * 4), src + ((y + j) * image->width + x) * 4, w * 4);
     }
 
-    SituationUnloadImage(*image); // Free the old image data
+    SituationUnloadImage(ctx, *image); // Free the old image data
     image->data = cropped_data;
     image->width = w;
     image->height = h;
@@ -20262,16 +20894,17 @@ SITAPI void SituationImageCrop(SituationImage *image, Rectangle crop) {
  *
  * @see SituationImageCrop(), SituationImageCopy()
  */
-SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHeight) {
+SITAPI void SituationImageResize(SituationContext ctx, SituationImage *image, int newWidth, int newHeight) {
     // 1. --- Validation ---
-    if (!SituationIsImageValid(*image) || newWidth <= 0 || newHeight <= 0) { return; }
+    if (!SituationIsImageValid(ctx, *image) || newWidth <= 0 || newHeight <= 0) { return; }
     if (image->width == newWidth && image->height == newHeight) { return; }
 
 #if defined(STB_IMAGE_RESIZE_IMPLEMENTATION)
     // 2. --- Allocate Memory for the New Image ---
     unsigned char *newData = (unsigned char*)malloc((size_t)newWidth * (size_t)newHeight * 4);
     if (!newData) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Image resize buffer");
+        SIT_RESOLVE_CTX(ctx);
+        _SituationSetError(_ctx, "Image resize buffer");
         return;
     }
 
@@ -20298,11 +20931,13 @@ SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHei
         image->height = newHeight;
     } else {
         // The resize failed. Clean up and leave the original image untouched.
-        _SituationSetError("stb_image_resize failed.");
+        SIT_RESOLVE_CTX(ctx);
+        _SituationSetError(_ctx, "stb_image_resize failed.");
         SIT_FREE(newData);
     }
 #else
-    _SituationSetError("Image resizing not available. Please implement stb_image_resize.h.");
+    SIT_RESOLVE_CTX(ctx);
+    _SituationSetError(_ctx, "Image resizing not available. Please implement stb_image_resize.h.");
 #endif
 }
 
@@ -20318,8 +20953,8 @@ SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHei
  * @param[in,out] image A pointer to the `SituationImage` to be modified.
  * @param mode The `SituationImageFlipMode` enum specifying the type of flip to perform.
  */
-SITAPI void SituationImageFlip(SituationImage *image, SituationImageFlipMode mode) {
-    if (!image || !SituationIsImageValid(*image)) {
+SITAPI void SituationImageFlip(SituationContext ctx, SituationImage *image, SituationImageFlipMode mode) {
+    if (!image || !SituationIsImageValid(ctx, *image)) {
         // Added a check for the image pointer itself
         return;
     }
@@ -20370,8 +21005,8 @@ SITAPI void SituationImageFlip(SituationImage *image, SituationImageFlipMode mod
         case SIT_FLIP_BOTH: {
             // The simplest way to flip both is to perform one flip after the other.
             // This is equivalent to a 180-degree rotation.
-            SituationImageFlip(image, SIT_FLIP_VERTICAL);
-            SituationImageFlip(image, SIT_FLIP_HORIZONTAL);
+            SituationImageFlip(ctx, image, SIT_FLIP_VERTICAL);
+            SituationImageFlip(ctx, image, SIT_FLIP_HORIZONTAL);
             break;
         }
     }
@@ -20393,7 +21028,8 @@ SITAPI void SituationImageFlip(SituationImage *image, SituationImageFlipMode mod
  *
  * @see SituationHsvToRgb(), SituationImageAdjustHSV()
  */
-SITAPI ColorHSV SituationRgbToHsv(ColorRGBA rgb) {
+SITAPI ColorHSV SituationRgbToHsv(SituationContext ctx, ColorRGBA rgb) {
+    (void)ctx;
     ColorHSV hsv;
     float r = rgb.r / 255.0f;
     float g = rgb.g / 255.0f;
@@ -20432,7 +21068,8 @@ SITAPI ColorHSV SituationRgbToHsv(ColorRGBA rgb) {
  *
  * @see SituationRgbToHsv(), SituationImageAdjustHSV()
  */
-SITAPI ColorRGBA SituationHsvToRgb(ColorHSV hsv) {
+SITAPI ColorRGBA SituationHsvToRgb(SituationContext ctx, ColorHSV hsv) {
+    (void)ctx;
     ColorRGBA rgb;
     float c = hsv.v * hsv.s;
     float x = c * (1.0f - fabsf(fmodf(hsv.h / 60.0f, 2.0f) - 1.0f));
@@ -20465,7 +21102,8 @@ SITAPI ColorRGBA SituationHsvToRgb(ColorHSV hsv) {
  *
  * @see SituationColorToYPQ()
  */
-SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color) {
+SITAPI ColorRGBA SituationColorFromYPQ(SituationContext ctx, ColorYPQA ypq_color) {
+    (void)ctx;
     // 1. Map YPQ parameters to YIQ components based on 8-8-8 bit ranges
 
     // Y (Luminance): Scale 0-255 (8 bits) to 0.0-1.0
@@ -20534,7 +21172,8 @@ SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color) {
  *
  * @see SituationColorFromYPQ()
  */
-SITAPI ColorYPQA SituationColorToYPQ(ColorRGBA color) {
+SITAPI ColorYPQA SituationColorToYPQ(SituationContext ctx, ColorRGBA color) {
+    (void)ctx;
     // 1. Convert source RGBA (0-255) to normalized floating point (0.0-1.0).
     double r = (double)color.r / 255.0;
     double g = (double)color.g / 255.0;
@@ -20594,8 +21233,8 @@ SITAPI ColorYPQA SituationColorToYPQ(ColorRGBA color) {
  *
  * @see SituationRgbToHsv(), SituationHsvToRgb()
  */
-SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, float sat_factor, float val_factor, float mix) {
-    if (!SituationIsImageValid(*image)) return;
+SITAPI void SituationImageAdjustHSV(SituationContext ctx, SituationImage *image, float hue_shift, float sat_factor, float val_factor, float mix) {
+    if (!SituationIsImageValid(ctx, *image)) return;
 
     // Clamp mix factor to a safe range [0, 1]
     mix = fmaxf(0.0f, fminf(1.0f, mix));
@@ -20606,7 +21245,7 @@ SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, floa
     for (int i = 0; i < pixel_count; ++i) {
         // Step 1: Get original pixel and convert to HSV
         ColorRGBA original_rgb = { pixels[i*4+0], pixels[i*4+1], pixels[i*4+2], pixels[i*4+3] };
-        ColorHSV hsv = SituationRgbToHsv(original_rgb);
+        ColorHSV hsv = SituationRgbToHsv(ctx, original_rgb);
 
         // Step 2: Apply adjustments to H, S, V
         // Adjust Hue (wraps around 360 degrees)
@@ -20622,7 +21261,7 @@ SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, floa
         hsv.v = fmaxf(0.0f, fminf(1.0f, hsv.v));
 
         // Step 3: Convert the adjusted HSV back to RGB
-        ColorRGBA adjusted_rgb = SituationHsvToRgb(hsv);
+        ColorRGBA adjusted_rgb = SituationHsvToRgb(ctx, hsv);
 
         // Step 4: Linearly interpolate (mix) between original and adjusted color
         pixels[i*4 + 0] = (unsigned char)((float)original_rgb.r * (1.0f - mix) + (float)adjusted_rgb.r * mix);
@@ -20650,13 +21289,14 @@ SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, floa
  *
  * @see SituationUnloadFont(), SituationImageDrawText(), SituationMeasureText()
  */
-SITAPI SituationFont SituationLoadFont(const char *fileName) {
+SITAPI SituationFont SituationLoadFont(SituationContext ctx, const char *fileName) {
+    SIT_RESOLVE_CTX(ctx);
     SituationFont font = {0};
     long size = 0;
     FILE *fontFile = fopen(fileName, "rb");
 
     if (!fontFile) {
-        // You should have some logging here
+        _SituationSetError(_ctx, "Failed to open font file");
         return font;
     }
 
@@ -20707,7 +21347,8 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
  *
  * @note The returned font owns its memory copy. Call `SituationUnloadFont()` to free it.
  */
-SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize) {
+SITAPI SituationFont SituationLoadFontFromMemory(SituationContext ctx, const void* data, int dataSize) {
+    SIT_RESOLVE_CTX(ctx);
     SituationFont font = {0};
     if (!data || dataSize <= 0) return font;
 
@@ -20715,7 +21356,7 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
     // This ensures SituationUnloadFont() can safely SIT_FREE(font.fontData) regardless of where the original data came from.
     font.fontData = malloc(dataSize);
     if (!font.fontData) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate buffer copy.");
+        _SituationSetError(_ctx, "SituationLoadFontFromMemory: Failed to allocate buffer copy.");
         return font;
     }
     memcpy(font.fontData, data, dataSize);
@@ -20724,7 +21365,7 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
     font.stbFontInfo = malloc(sizeof(stbtt_fontinfo));
     if (!font.stbFontInfo) {
         SIT_FREE(font.fontData);
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate font info.");
+        _SituationSetError(_ctx, "SituationLoadFontFromMemory: Failed to allocate font info.");
         return (SituationFont){0};
     }
 
@@ -20733,7 +21374,7 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
     if (!stbtt_InitFont((stbtt_fontinfo*)font.stbFontInfo, (unsigned char*)font.fontData, 0)) {
         SIT_FREE(font.stbFontInfo);
         SIT_FREE(font.fontData);
-        _SituationSetError("SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
+        _SituationSetError(_ctx, "SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
         return (SituationFont){0};
     }
 
@@ -20762,8 +21403,9 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
  * @note The generated texture is managed by the `SituationFont` struct. Calling `SituationUnloadFont` will
  *       automatically destroy this texture.
  */
-SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
+SITAPI bool SituationBakeFontAtlas(SituationContext ctx, SituationFont* font, float fontSizePixels) {
     if (!font || !font->fontData) return false;
+    SIT_RESOLVE_CTX(ctx);
 
     // 1. Allocate Bitmap Memory (512x512 is usually enough for ASCII)
     int w = 512;
@@ -20787,7 +21429,7 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
     if (res <= 0) {
         SIT_FREE(bitmap);
         SIT_FREE(font->glyph_info);
-        _SituationSetError("Font atlas bake failed (texture too small?)");
+        _SituationSetError(_ctx, "Font atlas bake failed (texture too small?)");
         return false;
     }
 
@@ -20809,8 +21451,8 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
     SIT_FREE(bitmap); // Done with 1-channel
 
     // 5. Create GPU Texture
-    font->atlas_texture = SituationCreateTexture(img, false); // No mips needed for UI text usually
-    SituationUnloadImage(img);
+    font->atlas_texture = SituationCreateTexture(ctx, img, false); // No mips needed for UI text usually
+    SituationUnloadImage(ctx, img);
 
     font->atlas_width = w;
     font->atlas_height = h;
@@ -20829,7 +21471,8 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
  *
  * @see SituationLoadFont()
  */
-SITAPI void SituationUnloadFont(SituationFont font) {
+SITAPI void SituationUnloadFont(SituationContext ctx, SituationFont font) {
+    (void)ctx;
     if (font.stbFontInfo) SIT_FREE(font.stbFontInfo);
     if (font.fontData) SIT_FREE(font.fontData);
 }
@@ -20984,10 +21627,10 @@ static inline ColorRGBA _SituationColorAlphaBlend(ColorRGBA dst, ColorRGBA src, 
  *
  * @see SituationImageDraw()
  */
-SITAPI void SituationImageDrawAlpha(SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos, ColorRGBA tint) {
+SITAPI void SituationImageDrawAlpha(SituationContext ctx, SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos, ColorRGBA tint) {
     // 1. --- Validation and Intersection Calculation ---
     // (This is the same robust boundary-checking logic from our previous `SituationImageDraw` discussion)
-    if (!SituationIsImageValid(*dst) || !SituationIsImageValid(src)) return;
+    if (!SituationIsImageValid(ctx, *dst) || !SituationIsImageValid(ctx, src)) return;
 
     int srcClipX = (srcRect.x < 0) ? 0 : srcRect.x;
     int srcClipY = (srcRect.y < 0) ? 0 : srcRect.y;
@@ -21470,7 +22113,8 @@ SITAPI void SituationImageDrawTextFormatted(SituationImage *dst, SituationFont f
  *
  * @see SituationImageDrawText(), SituationImageDrawTextEx()
  */
-SITAPI Rectangle SituationMeasureText(SituationFont font, const char *text, float fontSize) {
+SITAPI Rectangle SituationMeasureText(SituationContext ctx, SituationFont font, const char *text, float fontSize) {
+    (void)ctx;
     Rectangle bounds = {0};
     if (!font.stbFontInfo || !text) return bounds;
 
@@ -21521,25 +22165,25 @@ SITAPI Rectangle SituationMeasureText(SituationFont font, const char *text, floa
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
     (void)pInput;
 
-    _SituationGlobalStateContainer* pGs = (_SituationGlobalStateContainer*)pDevice->pUserData;
-    if (!pGs || frameCount == 0 || !pOutput) {
+    SituationContext _ctx = (SituationContext)pDevice->pUserData;
+    if (!_ctx || frameCount == 0 || !pOutput) {
         return;
     }
 
-    if (frameCount > pGs->sit_audio_callback_temp_buffer_frames_capacity) {
-        frameCount = pGs->sit_audio_callback_temp_buffer_frames_capacity;
+    if (frameCount > _ctx->sit_audio_callback_temp_buffer_frames_capacity) {
+        frameCount = _ctx->sit_audio_callback_temp_buffer_frames_capacity;
     }
 
-    ma_mutex_lock(&pGs->sit_audio_queue_mutex);
+    ma_mutex_lock(&_ctx->sit_audio_queue_mutex);
 
     memset(pOutput, 0, frameCount * ma_get_bytes_per_frame(pDevice->playback.format, pDevice->playback.channels));
 
-    float* decoder_buffer = pGs->sit_audio_callback_decoder_temp_buffer;
-    float* effects_buffer = pGs->sit_audio_callback_effects_temp_buffer;
-    void*  converter_buffer = pGs->sit_audio_callback_converter_temp_buffer;
+    float* decoder_buffer = _ctx->sit_audio_callback_decoder_temp_buffer;
+    float* effects_buffer = _ctx->sit_audio_callback_effects_temp_buffer;
+    void*  converter_buffer = _ctx->sit_audio_callback_converter_temp_buffer;
 
-    for (int i = 0; i < pGs->sit_queued_sound_count; ++i) {
-        SituationSound* sound = pGs->sit_queued_sounds[i];
+    for (int i = 0; i < _ctx->sit_queued_sound_count; ++i) {
+        SituationSound* sound = _ctx->sit_queued_sounds[i];
 
         if (!sound || !sound->is_initialized || !sound->converter_initialized) {
             continue;
@@ -21553,8 +22197,8 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
 
             ma_data_converter_get_required_input_frame_count(&sound->converter, frames_needed_for_output_pass, &input_frames_converter_requires);
 
-            if (input_frames_converter_requires > pGs->sit_audio_callback_temp_buffer_frames_capacity) {
-                 input_frames_converter_requires = pGs->sit_audio_callback_temp_buffer_frames_capacity;
+            if (input_frames_converter_requires > _ctx->sit_audio_callback_temp_buffer_frames_capacity) {
+                 input_frames_converter_requires = _ctx->sit_audio_callback_temp_buffer_frames_capacity;
             }
 
             uint64_t frames_read_from_decoder;
@@ -21562,7 +22206,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
             sound->cursor_frames += frames_read_from_decoder;
 
             if (res_dec != MA_SUCCESS && res_dec != MA_AT_END) {
-                pGs->sit_queued_sounds[i] = pGs->sit_queued_sounds[--pGs->sit_queued_sound_count]; i--;
+                _ctx->sit_queued_sounds[i] = _ctx->sit_queued_sounds[--_ctx->sit_queued_sound_count]; i--;
                 goto next_sound_in_queue_locked;
             }
 
@@ -21572,7 +22216,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                     sound->cursor_frames = 0;
                     continue;
                 } else {
-                    pGs->sit_queued_sounds[i] = pGs->sit_queued_sounds[--pGs->sit_queued_sound_count]; i--;
+                    _ctx->sit_queued_sounds[i] = _ctx->sit_queued_sounds[--_ctx->sit_queued_sound_count]; i--;
                     goto next_sound_in_queue_locked;
                 }
             }
@@ -21698,7 +22342,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
     next_sound_in_queue_locked:;
     }
 
-    ma_mutex_unlock(&pGs->sit_audio_queue_mutex);
+    ma_mutex_unlock(&_ctx->sit_audio_queue_mutex);
 }
 
 
@@ -21713,21 +22357,21 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
  */
 static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
     (void)pOutput;
-    _SituationGlobalStateContainer* pGs = (_SituationGlobalStateContainer*)pDevice->pUserData;
-    if (!pGs || !pInput) return;
+    SituationContext _ctx = (SituationContext)pDevice->pUserData;
+    if (!_ctx || !pInput) return;
 
     // 1. If Main Thread Mode is disabled, call directly (legacy behavior)
-    if (!pGs->audio_capture_on_main_thread) {
-        if (pGs->capture_callback) pGs->capture_callback(pInput, frameCount, pGs->capture_user_data);
+    if (!_ctx->audio_capture_on_main_thread) {
+        if (_ctx->capture_callback) _ctx->capture_callback(pInput, frameCount, _ctx->capture_user_data);
         return;
     }
 
     // 2. Main Thread Mode: Push to Ring Buffer
-    ma_mutex_lock(&pGs->audio_capture_mutex);
+    ma_mutex_lock(&_ctx->audio_capture_mutex);
 
-    size_t capacity = pGs->audio_capture_queue_capacity;
-    size_t write_head = pGs->audio_capture_write_head;
-    size_t read_head = pGs->audio_capture_read_head; // Snapshot read head
+    size_t capacity = _ctx->audio_capture_queue_capacity;
+    size_t write_head = _ctx->audio_capture_write_head;
+    size_t read_head = _ctx->audio_capture_read_head; // Snapshot read head
 
     // Calculate available space
     size_t used = (write_head >= read_head) ? (write_head - read_head) : (capacity - read_head + write_head);
@@ -21739,18 +22383,18 @@ static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, c
 
         if (frameCount <= frames_to_end) {
             // Contiguous write
-            memcpy(&pGs->audio_capture_queue[write_head], input_f32, frameCount * sizeof(float));
+            memcpy(&_ctx->audio_capture_queue[write_head], input_f32, frameCount * sizeof(float));
         } else {
             // Split write (wrap around)
-            memcpy(&pGs->audio_capture_queue[write_head], input_f32, frames_to_end * sizeof(float));
-            memcpy(&pGs->audio_capture_queue[0], input_f32 + frames_to_end, (frameCount - frames_to_end) * sizeof(float));
+            memcpy(&_ctx->audio_capture_queue[write_head], input_f32, frames_to_end * sizeof(float));
+            memcpy(&_ctx->audio_capture_queue[0], input_f32 + frames_to_end, (frameCount - frames_to_end) * sizeof(float));
         }
-        pGs->audio_capture_write_head = (write_head + frameCount) % capacity;
+        _ctx->audio_capture_write_head = (write_head + frameCount) % capacity;
     } else {
         // Buffer overrun: Drop packets or log warning in debug mode
     }
 
-    ma_mutex_unlock(&pGs->audio_capture_mutex);
+    ma_mutex_unlock(&_ctx->audio_capture_mutex);
 }
 
 /**
@@ -21772,32 +22416,33 @@ static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, c
  *
  * @see SituationStopAudioCapture(), SituationAudioCaptureCallback
  */
-SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data) {
-    if (!sit_gs.is_sit_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
-    if (sit_gs.is_capture_device_active) SituationStopAudioCapture();
+SITAPI SituationError SituationStartAudioCapture(SituationContext ctx, SituationAudioCaptureCallback callback, void* user_data) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_sit_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
+    if (_ctx->is_capture_device_active) SituationStopAudioCapture(ctx);
 
-    sit_gs.capture_callback = callback;
-    sit_gs.capture_user_data = user_data;
+    _ctx->capture_callback = callback;
+    _ctx->capture_user_data = user_data;
 
     ma_device_config config = ma_device_config_init(ma_device_type_capture);
     config.capture.format = ma_format_f32; // Standardize on Float32
     config.capture.channels = 1;           // Mono microphone is standard
     config.sampleRate = 44100;             // Standard rate
     config.dataCallback = _sit_miniaudio_capture_callback;
-    config.pUserData = &sit_gs;
+    config.pUserData = _ctx;
 
-    if (ma_device_init(&sit_gs.sit_miniaudio_context, &config, &sit_gs.sit_capture_device) != MA_SUCCESS) {
-        _SituationSetError("Failed to initialize capture device.");
+    if (ma_device_init(&_ctx->sit_miniaudio_context, &config, &_ctx->sit_capture_device) != MA_SUCCESS) {
+        _SituationSetError(_ctx, "Failed to initialize capture device.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
-    if (ma_device_start(&sit_gs.sit_capture_device) != MA_SUCCESS) {
-        ma_device_uninit(&sit_gs.sit_capture_device);
-        _SituationSetError("Failed to start capture device.");
+    if (ma_device_start(&_ctx->sit_capture_device) != MA_SUCCESS) {
+        ma_device_uninit(&_ctx->sit_capture_device);
+        _SituationSetError(_ctx, "Failed to start capture device.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
-    sit_gs.is_capture_device_active = true;
+    _ctx->is_capture_device_active = true;
     return SITUATION_SUCCESS;
 }
 
@@ -21809,12 +22454,13 @@ SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback c
  *
  * @see SituationStartAudioCapture()
  */
-SITAPI void SituationStopAudioCapture(void) {
-    if (sit_gs.is_capture_device_active) {
-        ma_device_uninit(&sit_gs.sit_capture_device);
-        sit_gs.is_capture_device_active = false;
-        sit_gs.capture_callback = NULL;
-    }
+SITAPI void SituationStopAudioCapture(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_capture_device_active) return;
+
+    ma_device_uninit(&_ctx->sit_capture_device);
+    _ctx->is_capture_device_active = false;
+    _ctx->capture_callback = NULL;
 }
 
 /**
@@ -21832,9 +22478,10 @@ SITAPI void SituationStopAudioCapture(void) {
  *
  * @see SituationSetAudioDevice()
  */
-SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
-    if (!sit_gs.is_sit_miniaudio_context_initialized) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "GetAudioDevices: MiniAudio context not initialized");
+SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(SituationContext ctx, int* count) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_sit_miniaudio_context_initialized) {
+        _SituationSetError(_ctx, "GetAudioDevices: MiniAudio context not initialized");
         if (count) *count = 0;
         return NULL;
     }
@@ -21844,22 +22491,22 @@ SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
     // ma_device_info* ma_capture_devices = NULL; // Not used in this example
     // uint32_t ma_capture_count = 0;
 
-    ma_result res = ma_context_get_devices(&sit_gs.sit_miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL); // Passing NULL for capture devices
+    ma_result res = ma_context_get_devices(&_ctx->sit_miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL); // Passing NULL for capture devices
     if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "ma_context_get_devices failed");
+        _SituationSetError(_ctx, "ma_context_get_devices failed");
         if (count) *count = 0;
         return NULL;
     }
 
     if (ma_playback_count == 0) {
-        _SituationSetError("No playback audio devices found by MiniAudio.");
+        _SituationSetError(_ctx, "No playback audio devices found by MiniAudio.");
         if (count) *count = 0;
         return NULL;
     }
 
     SituationAudioDeviceInfo* sit_devices = (SituationAudioDeviceInfo*)calloc(ma_playback_count, sizeof(SituationAudioDeviceInfo));
     if (!sit_devices) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio device info array");
+        _SituationSetError(_ctx, "Audio device info array");
         if (count) *count = 0;
         return NULL;
     }
@@ -21898,30 +22545,30 @@ SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
  *
  * @see SituationGetAudioDevices()
  */
-SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const SituationAudioFormat* format) {
-    if (!sit_gs.is_sit_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
+SITAPI SituationError SituationSetAudioDevice(SituationContext ctx, int situation_internal_id, const SituationAudioFormat* format) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_sit_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
 
     ma_device_info* ma_playback_devices = NULL;
     uint32_t ma_playback_count = 0;
-    ma_result res = ma_context_get_devices(&sit_gs.sit_miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL);
+    ma_result res = ma_context_get_devices(&_ctx->sit_miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL);
 
     if (res != MA_SUCCESS || situation_internal_id < 0 || (uint32_t)situation_internal_id >= ma_playback_count) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Invalid internal_id or failed to enumerate for SetAudioDevice");
+        _SituationSetError(_ctx, "Invalid internal_id or failed to enumerate for SetAudioDevice");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
     ma_device_id* target_device_id = &ma_playback_devices[situation_internal_id].id;
 
-    if (sit_gs.is_sit_miniaudio_device_active) {
-        ma_device_uninit(&sit_gs.sit_miniaudio_device);
-        sit_gs.is_sit_miniaudio_device_active = false;
+    if (_ctx->is_sit_miniaudio_device_active) {
+        ma_device_uninit(&_ctx->sit_miniaudio_device);
+        _ctx->is_sit_miniaudio_device_active = false;
     }
 
     ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
     device_config.playback.pDeviceID = target_device_id;
     device_config.dataCallback = sit_miniaudio_data_callback;
-    device_config.pUserData = &sit_gs; // Pass global state if callback needs it (e.g. for temp buffers)
-                                      // User data is accessed via pDevice->pUserData in callback
+    device_config.pUserData = _ctx;
 
     if (format) {
         device_config.playback.channels = format->channels;
@@ -21931,38 +22578,32 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
         else if (format->bit_depth == 24) device_config.playback.format = ma_format_s24; // Requires device support
         else if (format->bit_depth == 8) device_config.playback.format = ma_format_u8;   // Requires device support
         else {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported bit depth in SetAudioDevice format");
+            _SituationSetError(_ctx, "Unsupported bit depth in SetAudioDevice format");
             return SITUATION_ERROR_INVALID_PARAM;
         }
     } else { // Use device default format preferences, or sensible common defaults
         device_config.playback.format = ma_format_f32; // Prefer float32 for easier mixing
         device_config.playback.channels = 2;           // Stereo default
         device_config.sampleRate = 48000;              // Common default sample rate
-        // To use device's native format:
-        // device_config.playback.format = ma_format_unknown; // Let miniaudio pick
-        // device_config.playback.nativeChannelCount = 0; // Use device native or best match
-        // device_config.nativeSampleRate = 0;
     }
-    // Define period size for callback scheduling (optional, MiniAudio has defaults)
-    // device_config.periodSizeInFrames = 512; // Example: ~10ms at 48kHz
 
-    res = ma_device_init(&sit_gs.sit_miniaudio_context, &device_config, &sit_gs.sit_miniaudio_device);
+    res = ma_device_init(&_ctx->sit_miniaudio_context, &device_config, &_ctx->sit_miniaudio_device);
     if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, ma_result_description(res));
+        _SituationSetError(_ctx, ma_result_description(res));
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
-    if (!sit_gs.is_sit_miniaudio_device_internally_paused) { // Only start if not meant to be paused
-        res = ma_device_start(&sit_gs.sit_miniaudio_device);
+    if (!_ctx->is_sit_miniaudio_device_internally_paused) { // Only start if not meant to be paused
+        res = ma_device_start(&_ctx->sit_miniaudio_device);
         if (res != MA_SUCCESS) {
-            ma_device_uninit(&sit_gs.sit_miniaudio_device);
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to start new audio device");
+            ma_device_uninit(&_ctx->sit_miniaudio_device);
+            _SituationSetError(_ctx, "Failed to start new audio device");
             return SITUATION_ERROR_AUDIO_DEVICE;
         }
     }
 
-    sit_gs.is_sit_miniaudio_device_active = true;
-    sit_gs.current_sit_miniaudio_device_sitaudioinfo_id = situation_internal_id;
+    _ctx->is_sit_miniaudio_device_active = true;
+    _ctx->current_sit_miniaudio_device_sitaudioinfo_id = situation_internal_id;
     return SITUATION_SUCCESS;
 }
 
@@ -21973,12 +22614,14 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
  * @return The sample rate in Hertz (e.g., 44100, 48000).
  * @return `0` if the library is not initialized or if no audio device is currently active.
  */
-SITAPI int SituationGetAudioPlaybackSampleRate(void) {
-    if (!sit_gs.is_sit_miniaudio_device_active) {
-        _SituationSetError("Audio device not active for GetAudioPlaybackSampleRate");
+SITAPI int SituationGetAudioPlaybackSampleRate(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_sit_miniaudio_device_active) {
+        // We can't set an error in a getter that might be in a tight loop.
+        // Returning 0 is the expected failure mode.
         return 0;
     }
-    return sit_gs.sit_miniaudio_device.sampleRate;
+    return _ctx->sit_miniaudio_device.sampleRate;
 }
 
 /**
@@ -21996,26 +22639,27 @@ SITAPI int SituationGetAudioPlaybackSampleRate(void) {
  * @warning Changing the sample rate will cause a brief interruption in audio playback.
  * @note All currently playing sounds will be automatically resampled to the new master rate by their internal converters.
  */
-SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
-     if (!sit_gs.is_sit_miniaudio_device_active || sit_gs.current_sit_miniaudio_device_sitaudioinfo_id < 0) {
-        _SituationSetError("No audio device set, cannot change sample rate.");
+SITAPI SituationError SituationSetAudioPlaybackSampleRate(SituationContext ctx, int sample_rate) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_sit_miniaudio_device_active || _ctx->current_sit_miniaudio_device_sitaudioinfo_id < 0) {
+        _SituationSetError(_ctx, "No audio device set, cannot change sample rate.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
     SituationAudioFormat current_fmt;
-    current_fmt.channels = sit_gs.sit_miniaudio_device.playback.channels;
+    current_fmt.channels = _ctx->sit_miniaudio_device.playback.channels;
     current_fmt.sample_rate = sample_rate;
 
-    ma_format current_ma_fmt = sit_gs.sit_miniaudio_device.playback.format;
+    ma_format current_ma_fmt = _ctx->sit_miniaudio_device.playback.format;
     if (current_ma_fmt == ma_format_f32) current_fmt.bit_depth = 32;
     else if (current_ma_fmt == ma_format_s16) current_fmt.bit_depth = 16;
     else if (current_ma_fmt == ma_format_s24) current_fmt.bit_depth = 24;
     else if (current_ma_fmt == ma_format_u8) current_fmt.bit_depth = 8;
     else {
-        _SituationSetError("Cannot determine current bit depth to change sample rate (unsupported format).");
+        _SituationSetError(_ctx, "Cannot determine current bit depth to change sample rate (unsupported format).");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
-    return SituationSetAudioDevice(sit_gs.current_sit_miniaudio_device_sitaudioinfo_id, &current_fmt);
+    return SituationSetAudioDevice(ctx, _ctx->current_sit_miniaudio_device_sitaudioinfo_id, &current_fmt);
 }
 
 /**
@@ -22027,15 +22671,15 @@ SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
  *
  * @see SituationSetAudioMasterVolume()
  */
-SITAPI float SituationGetAudioMasterVolume(void) {
-    if (!sit_gs.is_sit_miniaudio_device_active) {
-        _SituationSetError("Audio device not active for GetAudioMasterVolume");
+SITAPI float SituationGetAudioMasterVolume(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_sit_miniaudio_device_active) {
         return 0.0f;
     }
     float volume = 0.0f; // Default to 0 if get fails
-    ma_result res = ma_device_get_master_volume(&sit_gs.sit_miniaudio_device, &volume);
+    ma_result res = ma_device_get_master_volume(&_ctx->sit_miniaudio_device, &volume);
     if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to get master volume");
+        _SituationSetError(_ctx, "Failed to get master volume");
         // volume remains 0.0f or its last valid value if ma_device_get_master_volume modified it partially
     }
     return volume;
@@ -22052,14 +22696,15 @@ SITAPI float SituationGetAudioMasterVolume(void) {
  *
  * @see SituationGetAudioMasterVolume(), SituationSetSoundVolume()
  */
-SITAPI SituationError SituationSetAudioMasterVolume(float volume) {
-    if (!sit_gs.is_sit_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
+SITAPI SituationError SituationSetAudioMasterVolume(SituationContext ctx, float volume) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_sit_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
     // MiniAudio volume is linear [0, 1], can go >1 for gain. Clamp to [0,1] for typical app behavior.
     float clamped_volume = (volume < 0.0f) ? 0.0f : volume; // (volume > 1.0f) ? 1.0f : volume; // No upper clamp to allow gain
 
-    ma_result res = ma_device_set_master_volume(&sit_gs.sit_miniaudio_device, clamped_volume);
+    ma_result res = ma_device_set_master_volume(&_ctx->sit_miniaudio_device, clamped_volume);
     if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to set master volume");
+        _SituationSetError(_ctx, "Failed to set master volume");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
     return SITUATION_SUCCESS;
@@ -22073,10 +22718,11 @@ SITAPI SituationError SituationSetAudioMasterVolume(float volume) {
  *
  * @see SituationPauseAudioDevice(), SituationResumeAudioDevice()
  */
-SITAPI bool SituationIsAudioDevicePlaying(void) {
-    if (!sit_gs.is_sit_miniaudio_device_active) return false;
+SITAPI bool SituationIsAudioDevicePlaying(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_sit_miniaudio_device_active) return false;
     // Considered "playing" if device is started and not internally marked as paused by our system
-    return ma_device_is_started(&sit_gs.sit_miniaudio_device) && !sit_gs.is_sit_miniaudio_device_internally_paused;
+    return ma_device_is_started(&_ctx->sit_miniaudio_device) && !_ctx->is_sit_miniaudio_device_internally_paused;
 }
 
 /**
@@ -22091,22 +22737,25 @@ SITAPI bool SituationIsAudioDevicePlaying(void) {
  *
  * @see SituationResumeAudioDevice(), SituationIsAudioDevicePlaying(), SituationPauseApp()
  */
-SITAPI SituationError SituationPauseAudioDevice(void) {
-    if (!sit_gs.is_sit_miniaudio_device_active) {
+SITAPI SituationError SituationPauseAudioDevice(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx) return SITUATION_ERROR_NOT_INITIALIZED;
+
+    if (!_ctx->is_sit_miniaudio_device_active) {
         // Not an error to pause an inactive device, just mark it.
-        sit_gs.is_sit_miniaudio_device_internally_paused = true;
+        _ctx->is_sit_miniaudio_device_internally_paused = true;
         return SITUATION_SUCCESS;
     }
 
-    if (ma_device_is_started(&sit_gs.sit_miniaudio_device)) {
-        ma_result res = ma_device_stop(&sit_gs.sit_miniaudio_device);
+    if (ma_device_is_started(&_ctx->sit_miniaudio_device)) {
+        ma_result res = ma_device_stop(&_ctx->sit_miniaudio_device);
         if (res != MA_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to stop (pause) audio device");
+            _SituationSetError(_ctx, "Failed to stop (pause) audio device");
             return SITUATION_ERROR_AUDIO_DEVICE;
         }
     }
 
-    sit_gs.is_sit_miniaudio_device_internally_paused = true;
+    _ctx->is_sit_miniaudio_device_internally_paused = true;
     return SITUATION_SUCCESS;
 }
 
@@ -22121,13 +22770,16 @@ SITAPI SituationError SituationPauseAudioDevice(void) {
  *
  * @see SituationPauseAudioDevice(), SituationIsAudioDevicePlaying(), SituationResumeApp()
  */
-SITAPI SituationError SituationResumeAudioDevice(void) {
-    sit_gs.is_sit_miniaudio_device_internally_paused = false;
+SITAPI SituationError SituationResumeAudioDevice(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx) return SITUATION_ERROR_NOT_INITIALIZED;
 
-    if (sit_gs.is_sit_miniaudio_device_active && !ma_device_is_started(&sit_gs.sit_miniaudio_device)) {
-        ma_result res = ma_device_start(&sit_gs.sit_miniaudio_device);
+    _ctx->is_sit_miniaudio_device_internally_paused = false;
+
+    if (_ctx->is_sit_miniaudio_device_active && !ma_device_is_started(&_ctx->sit_miniaudio_device)) {
+        ma_result res = ma_device_start(&_ctx->sit_miniaudio_device);
         if (res != MA_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to start (resume) audio device");
+            _SituationSetError(_ctx, "Failed to start (resume) audio device");
             return SITUATION_ERROR_AUDIO_DEVICE;
         }
     }
@@ -22151,7 +22803,7 @@ SITAPI SituationError SituationResumeAudioDevice(void) {
  *
  * @see SituationLoadSoundFromFile(), SituationLoadSoundFromStream()
  */
-static SituationError _SituationInitSoundEffects(SituationSound* sound) {
+static SituationError _SituationInitSoundEffects(SituationContext ctx, SituationSound* sound) {
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
     ma_uint32 channels = sound->decoder.outputChannels;
     ma_uint32 sampleRate = sound->decoder.outputSampleRate;
@@ -22200,10 +22852,11 @@ static SituationError _SituationInitSoundEffects(SituationSound* sound) {
  * @note The caller is **responsible** for freeing resources by calling `SituationUnloadSound()`.
  * @see SituationUnloadSound(), SituationAudioLoadMode
  */
-SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, SituationAudioLoadMode mode, bool looping, SituationSound* out_sound) {
+SITAPI SituationError SituationLoadSoundFromFile(SituationContext ctx, const char* file_path, SituationAudioLoadMode mode, bool looping, SituationSound* out_sound) {
+    SIT_RESOLVE_CTX(ctx);
     if (!out_sound || !file_path) return SITUATION_ERROR_INVALID_PARAM;
-    if (!sit_gs.is_sit_miniaudio_device_active) {
-        _SituationSetError("Audio device not active for sound loading.");
+    if (!_ctx->is_sit_miniaudio_device_active) {
+        _SituationSetError(_ctx, "Audio device not active for sound loading.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
@@ -22285,7 +22938,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
 
     if (res != MA_SUCCESS) {
         if (out_sound->preloaded_data) SIT_FREE(out_sound->preloaded_data);
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to initialize decoder.");
+        _SituationSetError(_ctx, "Failed to initialize decoder.");
         return SITUATION_ERROR_FILE_ACCESS;
     }
 
@@ -22294,9 +22947,9 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
     converter_config.formatIn = out_sound->decoder.outputFormat;
     converter_config.channelsIn = out_sound->decoder.outputChannels;
     converter_config.sampleRateIn = out_sound->decoder.outputSampleRate;
-    converter_config.formatOut = sit_gs.sit_miniaudio_device.playback.format;
-    converter_config.channelsOut = sit_gs.sit_miniaudio_device.playback.channels;
-    converter_config.sampleRateOut = sit_gs.sit_miniaudio_device.sampleRate;
+    converter_config.formatOut = _ctx->sit_miniaudio_device.playback.format;
+    converter_config.channelsOut = _ctx->sit_miniaudio_device.playback.channels;
+    converter_config.sampleRateOut = _ctx->sit_miniaudio_device.sampleRate;
 
     res = ma_data_converter_init(&converter_config, NULL, &out_sound->converter);
     if (res != MA_SUCCESS) {
@@ -22309,9 +22962,9 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
     out_sound->is_initialized = true;
     out_sound->is_looping = looping;
 
-    if (_SituationInitSoundEffects(out_sound) != SITUATION_SUCCESS) {
-        SituationUnloadSound(out_sound);
-        _SituationSetError("Failed to initialize sound effects.");
+    if (_SituationInitSoundEffects(ctx, out_sound) != SITUATION_SUCCESS) {
+        SituationUnloadSound(ctx, out_sound);
+        _SituationSetError(_ctx, "Failed to initialize sound effects.");
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
     return SITUATION_SUCCESS;
@@ -22396,10 +23049,11 @@ static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byt
  *
  * @return SITUATION_SUCCESS on success, or an error code if initialization fails.
  */
-SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound) {
+SITAPI SituationError SituationLoadSoundFromStream(SituationContext ctx, SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound) {
+    SIT_RESOLVE_CTX(ctx);
     if (!out_sound || !on_read || !format) return SITUATION_ERROR_INVALID_PARAM;
-    if (!sit_gs.is_sit_miniaudio_device_active) {
-         _SituationSetError("Audio device not active for stream loading.");
+    if (!_ctx->is_sit_miniaudio_device_active) {
+         _SituationSetError(_ctx, "Audio device not active for stream loading.");
          return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
@@ -22431,7 +23085,7 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
 
     ma_result res = ma_decoder_init(&decoder_config, &out_sound->decoder);
     if (res != MA_SUCCESS) {
-        _SituationSetError("Failed to init custom stream decoder.");
+        _SituationSetError(_ctx, "Failed to init custom stream decoder.");
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
 
@@ -22442,9 +23096,9 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     converter_config.formatIn = out_sound->decoder.outputFormat;
     converter_config.channelsIn = out_sound->decoder.outputChannels;
     converter_config.sampleRateIn = out_sound->decoder.outputSampleRate;
-    converter_config.formatOut = sit_gs.sit_miniaudio_device.playback.format;
-    converter_config.channelsOut = sit_gs.sit_miniaudio_device.playback.channels;
-    converter_config.sampleRateOut = sit_gs.sit_miniaudio_device.sampleRate;
+    converter_config.formatOut = _ctx->sit_miniaudio_device.playback.format;
+    converter_config.channelsOut = _ctx->sit_miniaudio_device.playback.channels;
+    converter_config.sampleRateOut = _ctx->sit_miniaudio_device.sampleRate;
 
     res = ma_data_converter_init(&converter_config, NULL, &out_sound->converter);
     if (res != MA_SUCCESS) {
@@ -22457,9 +23111,9 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     out_sound->is_looping = looping;
 
     // --- Effects Chain Initialization ---
-    if (_SituationInitSoundEffects(out_sound) != SITUATION_SUCCESS) {
-        SituationUnloadSound(out_sound);
-        _SituationSetError("Failed to initialize stream sound effects.");
+    if (_SituationInitSoundEffects(ctx, out_sound) != SITUATION_SUCCESS) {
+        SituationUnloadSound(ctx, out_sound);
+        _SituationSetError(_ctx, "Failed to initialize stream sound effects.");
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
 
@@ -22480,7 +23134,8 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
  *
  * @see SituationLoadSoundFromFile(), SituationLoadSoundFromStream()
  */
-SITAPI void SituationUnloadSound(SituationSound* sound) {
+SITAPI void SituationUnloadSound(SituationContext ctx, SituationSound* sound) {
+    (void)ctx;
     if (sound) {
         if (sound->converter_initialized) {
             ma_data_converter_uninit(&sound->converter, NULL);
@@ -22516,25 +23171,26 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
  *
  * @see SituationStopLoadedSound(), SituationStopAllLoadedSounds()
  */
-SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound_to_play) {
-    if (!sit_gs.is_sit_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
+SITAPI SituationError SituationPlayLoadedSound(SituationContext ctx, SituationSound* sound_to_play) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_sit_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
     if (!sound_to_play || !sound_to_play->is_initialized || !sound_to_play->converter_initialized) {
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex); // Lock
-    if (sit_gs.sit_queued_sound_count >= SITUATION_MAX_AUDIO_SOUNDS_QUEUED) {
-        ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex); // Unlock on early exit
+    ma_mutex_lock(&_ctx->sit_audio_queue_mutex); // Lock
+    if (_ctx->sit_queued_sound_count >= SITUATION_MAX_AUDIO_SOUNDS_QUEUED) {
+        ma_mutex_unlock(&_ctx->sit_audio_queue_mutex); // Unlock on early exit
         return SITUATION_ERROR_AUDIO_SOUND_LIMIT;
     }
 
     // Check if already playing, if so, restart it
-    for (int i = 0; i < sit_gs.sit_queued_sound_count; ++i) {
-        if (sit_gs.sit_queued_sounds[i] == sound_to_play) {
+    for (int i = 0; i < _ctx->sit_queued_sound_count; ++i) {
+        if (_ctx->sit_queued_sounds[i] == sound_to_play) {
             ma_decoder_seek_to_pcm_frame(&sound_to_play->decoder, 0);
             sound_to_play->cursor_frames = 0;
             // Converter state is generally reset by processing new input from frame 0
-            ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex); // Unlock
+            ma_mutex_unlock(&_ctx->sit_audio_queue_mutex); // Unlock
             return SITUATION_SUCCESS;
         }
     }
@@ -22543,8 +23199,8 @@ SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound_to_play) {
     ma_decoder_seek_to_pcm_frame(&sound_to_play->decoder, 0);
     sound_to_play->cursor_frames = 0;
 
-    sit_gs.sit_queued_sounds[sit_gs.sit_queued_sound_count++] = sound_to_play;
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex); // Unlock
+    _ctx->sit_queued_sounds[_ctx->sit_queued_sound_count++] = sound_to_play;
+    ma_mutex_unlock(&_ctx->sit_audio_queue_mutex); // Unlock
     return SITUATION_SUCCESS;
 }
 
@@ -22562,21 +23218,22 @@ SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound_to_play) {
  *
  * @see SituationPlayLoadedSound(), SituationStopAllLoadedSounds()
  */
-SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
-    if (!sit_gs.is_initialized || !sound_to_stop) return SITUATION_ERROR_INVALID_PARAM;
+SITAPI SituationError SituationStopLoadedSound(SituationContext ctx, SituationSound* sound_to_stop) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized || !sound_to_stop) return SITUATION_ERROR_INVALID_PARAM;
     bool found_and_removed = false;
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex); // Lock
-    for (int i = 0; i < sit_gs.sit_queued_sound_count; ++i) {
-        if (sit_gs.sit_queued_sounds[i] == sound_to_stop) {
+    ma_mutex_lock(&_ctx->sit_audio_queue_mutex); // Lock
+    for (int i = 0; i < _ctx->sit_queued_sound_count; ++i) {
+        if (_ctx->sit_queued_sounds[i] == sound_to_stop) {
             // Simple removal: replace with last element and decrement count
-            sit_gs.sit_queued_sounds[i] = sit_gs.sit_queued_sounds[--sit_gs.sit_queued_sound_count];
-            // sit_gs.sit_queued_sounds[sit_gs.sit_queued_sound_count] = NULL; // Optional: clear the now unused slot
+            _ctx->sit_queued_sounds[i] = _ctx->sit_queued_sounds[--_ctx->sit_queued_sound_count];
+            // _ctx->sit_queued_sounds[_ctx->sit_queued_sound_count] = NULL; // Optional: clear the now unused slot
             found_and_removed = true;
             break;
         }
     }
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex); // Unlock
+    ma_mutex_unlock(&_ctx->sit_audio_queue_mutex); // Unlock
     return found_and_removed ? SITUATION_SUCCESS : SITUATION_ERROR_INVALID_PARAM;
 }
 
@@ -22591,11 +23248,12 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
  *
  * @see SituationStopLoadedSound()
  */
-SITAPI SituationError SituationStopAllLoadedSounds(void) {
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex); // Lock
-    sit_gs.sit_queued_sound_count = 0;
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex); // Unlock
+SITAPI SituationError SituationStopAllLoadedSounds(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    ma_mutex_lock(&_ctx->sit_audio_queue_mutex); // Lock
+    _ctx->sit_queued_sound_count = 0;
+    ma_mutex_unlock(&_ctx->sit_audio_queue_mutex); // Unlock
     return SITUATION_SUCCESS;
 }
 
@@ -22606,8 +23264,9 @@ SITAPI SituationError SituationStopAllLoadedSounds(void) {
  * @param out_destination A pointer to a SituationSound struct to be initialized with the copy.
  * @return SITUATION_SUCCESS on success.
  */
-SITAPI SituationError SituationSoundCopy(const SituationSound* source, SituationSound* out_destination) {
-    if (!source || !out_destination || !source->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
+SITAPI SituationError SituationSoundCopy(SituationContext ctx, const SituationSound* source, SituationSound* out_destination) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !source || !out_destination || !source->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
     if (source->is_streamed) return SITUATION_ERROR_INVALID_PARAM;
 
     ma_uint64 total_frames = 0;
@@ -22652,18 +23311,18 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
     converter_config.formatIn = out_destination->decoder.outputFormat;
     converter_config.channelsIn = out_destination->decoder.outputChannels;
     converter_config.sampleRateIn = out_destination->decoder.outputSampleRate;
-    converter_config.formatOut = sit_gs.sit_miniaudio_device.playback.format;
-    converter_config.channelsOut = sit_gs.sit_miniaudio_device.playback.channels;
-    converter_config.sampleRateOut = sit_gs.sit_miniaudio_device.sampleRate;
+    converter_config.formatOut = _ctx->sit_miniaudio_device.playback.format;
+    converter_config.channelsOut = _ctx->sit_miniaudio_device.playback.channels;
+    converter_config.sampleRateOut = _ctx->sit_miniaudio_device.sampleRate;
 
     if (ma_data_converter_init(&converter_config, NULL, &out_destination->converter) == MA_SUCCESS) {
         out_destination->converter_initialized = true;
     } else {
-        SituationUnloadSound(out_destination); // This will now correctly free pcm_data
+        SituationUnloadSound(ctx, out_destination); // This will now correctly free pcm_data
         return SITUATION_ERROR_AUDIO_CONVERTER;
     }
 
-    _SituationInitSoundEffects(out_destination);
+    _SituationInitSoundEffects(ctx, out_destination);
     return SITUATION_SUCCESS;
 }
 
@@ -22675,7 +23334,8 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
  * @param finalFrame The last frame to include.
  * @return SITUATION_SUCCESS on success.
  */
-SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame) {
+SITAPI SituationError SituationSoundCrop(SituationContext ctx, SituationSound* sound, uint64_t initFrame, uint64_t finalFrame) {
+    (void)ctx;
     if (!sound || !sound->is_initialized || sound->is_streamed || initFrame >= finalFrame || finalFrame > sound->total_frames) {
         return SITUATION_ERROR_INVALID_PARAM;
     }
@@ -22716,7 +23376,8 @@ SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFra
  * @param fileName The path of the .wav file to create.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationSoundExportAsWav(const SituationSound* sound, const char* fileName) {
+SITAPI bool SituationSoundExportAsWav(SituationContext ctx, const SituationSound* sound, const char* fileName) {
+    (void)ctx;
     if (!sound || !fileName || !sound->is_initialized || sound->is_streamed) return false;
 
     ma_encoder_config config = ma_encoder_config_init(
@@ -22774,7 +23435,8 @@ SITAPI bool SituationSoundExportAsWav(const SituationSound* sound, const char* f
  *
  * @see SituationGetSoundVolume(), SituationSetAudioMasterVolume()
  */
-SITAPI SituationError SituationSetSoundVolume(SituationSound* sound, float volume) {
+SITAPI SituationError SituationSetSoundVolume(SituationContext ctx, SituationSound* sound, float volume) {
+    (void)ctx;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
     // Volume can be > 1.0 for gain, typically non-negative.
     sound->volume = (volume < 0.0f) ? 0.0f : volume;
@@ -22790,7 +23452,8 @@ SITAPI SituationError SituationSetSoundVolume(SituationSound* sound, float volum
  *
  * @see SituationSetSoundVolume()
  */
-SITAPI float SituationGetSoundVolume(SituationSound* sound) {
+SITAPI float SituationGetSoundVolume(SituationContext ctx, SituationSound* sound) {
+    (void)ctx;
     if (!sound || !sound->is_initialized) return 0.0f; // Or some error indication
     return sound->volume;
 }
@@ -22807,7 +23470,8 @@ SITAPI float SituationGetSoundVolume(SituationSound* sound) {
  *
  * @see SituationGetSoundPan()
  */
-SITAPI SituationError SituationSetSoundPan(SituationSound* sound, float pan) {
+SITAPI SituationError SituationSetSoundPan(SituationContext ctx, SituationSound* sound, float pan) {
+    (void)ctx;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
     // Clamp pan from -1.0 (left) to 1.0 (right)
     if (pan < -1.0f) pan = -1.0f;
@@ -22825,7 +23489,8 @@ SITAPI SituationError SituationSetSoundPan(SituationSound* sound, float pan) {
  *
  * @see SituationSetSoundPan()
  */
-SITAPI float SituationGetSoundPan(SituationSound* sound) {
+SITAPI float SituationGetSoundPan(SituationContext ctx, SituationSound* sound) {
+    (void)ctx;
     if (!sound || !sound->is_initialized) return 0.0f; // Or some error indication
     return sound->pan;
 }
@@ -22843,14 +23508,15 @@ SITAPI float SituationGetSoundPan(SituationSound* sound) {
  *
  * @warning Changing the pitch is a moderately expensive operation as it requires reconfiguring the audio resampler. Avoid calling it on every frame if possible.
  */
-SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch) {
-    if (!sound || !sound->converter_initialized) return SITUATION_ERROR_INVALID_PARAM;
+SITAPI SituationError SituationSetSoundPitch(SituationContext ctx, SituationSound* sound, float pitch) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !sound || !sound->converter_initialized) return SITUATION_ERROR_INVALID_PARAM;
     if (pitch <= 0.0f) pitch = 0.01f; // Prevent zero or negative pitch
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&_ctx->sit_audio_queue_mutex);
     sound->pitch = pitch;
     ma_result res = ma_data_converter_set_rate_in_hz(&sound->converter, (ma_uint32)(sound->decoder.outputSampleRate * pitch));
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&_ctx->sit_audio_queue_mutex);
 
     if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONVERTER;
     return SITUATION_SUCCESS;
@@ -22865,7 +23531,8 @@ SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch)
  *
  * @see SituationSetSoundPitch()
  */
-SITAPI float SituationGetSoundPitch(SituationSound* sound) {
+SITAPI float SituationGetSoundPitch(SituationContext ctx, SituationSound* sound) {
+    (void)ctx;
     if (!sound || !sound->is_initialized) return 1.0f;
     return sound->pitch;
 }
@@ -22882,12 +23549,13 @@ SITAPI float SituationGetSoundPitch(SituationSound* sound) {
  * @return `SITUATION_SUCCESS` on success.
  * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
  */
-SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFilterType type, float cutoff_hz, float q_factor) {
-    if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
+SITAPI SituationError SituationSetSoundFilter(SituationContext ctx, SituationSound* sound, SituationFilterType type, float cutoff_hz, float q_factor) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
     if (cutoff_hz <= 0) type = SITUATION_FILTER_NONE;
     if (q_factor <= 0) q_factor = 0.707f; // Default Q
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&_ctx->sit_audio_queue_mutex);
     if (type == SITUATION_FILTER_NONE) {
         sound->effects.filter_enabled = false;
     } else {
@@ -22905,7 +23573,7 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
             sound->effects.filter_q = q_factor;
         }
     }
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&_ctx->sit_audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -22922,10 +23590,11 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
  * @return `SITUATION_SUCCESS` on success.
  * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
  */
-SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled, float delay_sec, float feedback, float wet_mix) {
-    if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
+SITAPI SituationError SituationSetSoundEcho(SituationContext ctx, SituationSound* sound, bool enabled, float delay_sec, float feedback, float wet_mix) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&_ctx->sit_audio_queue_mutex);
     sound->effects.echo_enabled = enabled;
     if (enabled) {
         if (delay_sec < 0) delay_sec = 0;
@@ -22944,7 +23613,7 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
         sound->effects.echo_feedback = feedback;
         sound->effects.echo_wet_mix = wet_mix;
     }
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&_ctx->sit_audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -22962,10 +23631,11 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
  * @return `SITUATION_SUCCESS` on success.
  * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
  */
-SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix) {
-    if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
+SITAPI SituationError SituationSetSoundReverb(SituationContext ctx, SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&_ctx->sit_audio_queue_mutex);
     sound->effects.reverb_enabled = enabled;
     if (enabled) {
         if (room_size < 0) room_size = 0; if (room_size > 1.0f) room_size = 1.0f;
@@ -22983,7 +23653,7 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
         sound->effects.reverb_wet_mix = wet_mix;
         sound->effects.reverb_dry_mix = dry_mix;
     }
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&_ctx->sit_audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -22994,18 +23664,19 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
  * @param processor The callback function to execute.
  * @param user_data A custom pointer to pass to the callback's user_data parameter.
  */
-SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
-    if (!sound || !processor) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Sound or processor callback cannot be NULL.");
+SITAPI SituationError SituationAttachAudioProcessor(SituationContext ctx, SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !sound || !processor) {
+        _SituationSetError(_ctx, "Sound or processor callback cannot be NULL.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&_ctx->sit_audio_queue_mutex);
 
     void* new_processors = realloc(sound->processors, (sound->processor_count + 1) * sizeof(SituationAudioProcessorCallback));
     if (!new_processors) {
-        ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc processor list.");
+        ma_mutex_unlock(&_ctx->sit_audio_queue_mutex);
+        _SituationSetError(_ctx, "Failed to realloc processor list.");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
     sound->processors = (SituationAudioProcessorCallback*)new_processors;
@@ -23014,8 +23685,8 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
     if (!new_user_datas) {
         // This is tricky. The first realloc succeeded. We should try to shrink it back.
         sound->processors = realloc(sound->processors, sound->processor_count * sizeof(SituationAudioProcessorCallback));
-        ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc processor user data list.");
+        ma_mutex_unlock(&_ctx->sit_audio_queue_mutex);
+        _SituationSetError(_ctx, "Failed to realloc processor user data list.");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
     sound->processor_user_data = (void**)new_user_datas;
@@ -23024,7 +23695,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
     sound->processors[sound->processor_count - 1] = processor;
     sound->processor_user_data[sound->processor_count - 1] = user_data;
 
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&_ctx->sit_audio_queue_mutex);
 
     return SITUATION_SUCCESS;
 }
@@ -23035,13 +23706,14 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
  * @param processor The callback function to remove.
  * @param user_data The user data pointer associated with the processor to remove.
  */
-SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
-    if (!sound || !processor) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Sound or processor callback cannot be NULL.");
+SITAPI SituationError SituationDetachAudioProcessor(SituationContext ctx, SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !sound || !processor) {
+        _SituationSetError(_ctx, "Sound or processor callback cannot be NULL.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&_ctx->sit_audio_queue_mutex);
 
     int found_index = -1;
     for (int i = 0; i < sound->processor_count; ++i) {
@@ -23068,7 +23740,7 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
         }
     }
 
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&_ctx->sit_audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -23086,9 +23758,10 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
  *
  * @see SituationTimerGetPreviousOscillatorState(), SituationTimerHasOscillatorUpdated()
  */
-SITAPI bool SituationTimerGetOscillatorState(int oscillator_id) {
-    if (!sit_gs.timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return false;
-    SituationTimerSystem* ts = &sit_gs.timer_system_instance;
+SITAPI bool SituationTimerGetOscillatorState(SituationContext ctx, int oscillator_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return false;
+    SituationTimerSystem* ts = &_ctx->timer_system_instance;
     int bank = oscillator_id / 64;
     int bit_pos = oscillator_id % 64;
     return (ts->state_current[bank] & ((uint64_t)1 << bit_pos)) != 0;
@@ -23104,9 +23777,10 @@ SITAPI bool SituationTimerGetOscillatorState(int oscillator_id) {
  *
  * @see SituationTimerGetOscillatorState(), SituationTimerHasOscillatorUpdated()
  */
-SITAPI bool SituationTimerGetPreviousOscillatorState(int oscillator_id) {
-    if (!sit_gs.timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return false;
-    SituationTimerSystem* ts = &sit_gs.timer_system_instance;
+SITAPI bool SituationTimerGetPreviousOscillatorState(SituationContext ctx, int oscillator_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return false;
+    SituationTimerSystem* ts = &_ctx->timer_system_instance;
     int bank = oscillator_id / 64;
     int bit_pos = oscillator_id % 64;
     return (ts->state_previous[bank] & ((uint64_t)1 << bit_pos)) != 0;
@@ -23128,10 +23802,11 @@ SITAPI bool SituationTimerGetPreviousOscillatorState(int oscillator_id) {
  *       my_object.scale = 1.0f; // Return to normal
  *   }
  */
-SITAPI bool SituationTimerHasOscillatorUpdated(int oscillator_id) {
-    if (!sit_gs.timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return false;
+SITAPI bool SituationTimerHasOscillatorUpdated(SituationContext ctx, int oscillator_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return false;
     // Updated if current state is different from previous state for that oscillator
-    return SituationTimerGetOscillatorState(oscillator_id) != SituationTimerGetPreviousOscillatorState(oscillator_id);
+    return SituationTimerGetOscillatorState(ctx, oscillator_id) != SituationTimerGetPreviousOscillatorState(ctx, oscillator_id);
 }
 
 /**
@@ -23144,9 +23819,10 @@ SITAPI bool SituationTimerHasOscillatorUpdated(int oscillator_id) {
  *
  * @return `true` if the period has elapsed since the last successful ping for this oscillator, `false` otherwise.
  */
-SITAPI bool SituationTimerPingOscillator(int oscillator_id) {
-    if (!sit_gs.timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return false;
-    SituationTimerSystem* ts = &sit_gs.timer_system_instance;
+SITAPI bool SituationTimerPingOscillator(SituationContext ctx, int oscillator_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return false;
+    SituationTimerSystem* ts = &_ctx->timer_system_instance;
 
     bool ping_triggered = (ts->current_system_time_seconds >= ts->last_ping_time_seconds[oscillator_id] + ts->period_seconds[oscillator_id]);
     if (ping_triggered) {
@@ -23166,9 +23842,10 @@ SITAPI bool SituationTimerPingOscillator(int oscillator_id) {
  *
  * @return A `uint64_t` representing the total number of triggers.
  */
-SITAPI uint64_t SituationTimerGetOscillatorTriggerCount(int oscillator_id) {
-    if (!sit_gs.timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return 0;
-    return sit_gs.timer_system_instance.trigger_count[oscillator_id];
+SITAPI uint64_t SituationTimerGetOscillatorTriggerCount(SituationContext ctx, int oscillator_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return 0;
+    return _ctx->timer_system_instance.trigger_count[oscillator_id];
 }
 
 /**
@@ -23190,9 +23867,10 @@ SITAPI uint64_t SituationTimerGetOscillatorTriggerCount(int oscillator_id) {
  *
  * @see SituationSetTimerOscillatorPeriod()
  */
-SITAPI double SituationTimerGetOscillatorPeriod(int oscillator_id) {
-    if (!sit_gs.timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return 0.0;
-    return sit_gs.timer_system_instance.period_seconds[oscillator_id];
+SITAPI double SituationTimerGetOscillatorPeriod(SituationContext ctx, int oscillator_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) return 0.0;
+    return _ctx->timer_system_instance.period_seconds[oscillator_id];
 }
 
 /**
@@ -23221,12 +23899,13 @@ SITAPI double SituationTimerGetOscillatorPeriod(int oscillator_id) {
  *
  * @see SituationTimerGetOscillatorPeriod()
  */
-SITAPI SituationError SituationSetTimerOscillatorPeriod(int oscillator_id, double period_seconds) {
-    if (!sit_gs.timer_system_instance.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+SITAPI SituationError SituationSetTimerOscillatorPeriod(SituationContext ctx, int oscillator_id, double period_seconds) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->timer_system_instance.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
     if (oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS || period_seconds <= 0.0) {
         return SITUATION_ERROR_INVALID_PARAM;
     }
-    SituationTimerSystem* ts = &sit_gs.timer_system_instance;
+    SituationTimerSystem* ts = &_ctx->timer_system_instance;
     ts->period_seconds[oscillator_id] = period_seconds;
     // Reschedule next trigger based on current time and new period
     // Preserve phase? Or just restart from current_time + new_period?
@@ -23261,12 +23940,13 @@ SITAPI SituationError SituationSetTimerOscillatorPeriod(int oscillator_id, doubl
  *
  * @see SituationTimerPingOscillator()
  */
-SITAPI double SituationTimerGetPingProgress(int oscillator_id) {
-    if (!sit_gs.timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) {
+SITAPI double SituationTimerGetPingProgress(SituationContext ctx, int oscillator_id) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->timer_system_instance.is_initialized || oscillator_id < 0 || oscillator_id >= SITUATION_MAX_OSCILLATORS) {
         return 0.0;
     }
 
-    SituationTimerSystem* ts = &sit_gs.timer_system_instance;
+    SituationTimerSystem* ts = &_ctx->timer_system_instance;
     double period = ts->period_seconds[oscillator_id];
 
     // Avoid division by zero for invalid periods
@@ -23747,13 +24427,14 @@ SITAPI void SituationSetScrollCallback(SituationScrollCallback callback, void* u
  *
  * @param cursor An enum `SituationCursor` representing the desired shape (e.g., `SIT_CURSOR_HAND`, `SIT_CURSOR_IBEAM`). Use `SIT_CURSOR_DEFAULT` to restore the system's default arrow.
  */
-SITAPI void SituationSetCursor(SituationCursor cursor) {
-    if (!SituationIsInitialized()) return;
+SITAPI void SituationSetCursor(SituationContext ctx, SituationCursor cursor) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
 
     // Ensure the requested cursor is within the bounds of what we created
-    if (cursor >= 0 && cursor < sit_gs.cursor_count) {
+    if (cursor >= 0 && cursor < _ctx->cursor_count) {
         // NULL for the cursor handle tells GLFW to use the default system cursor
-        glfwSetCursor(sit_gs.window, sit_gs.cursors[cursor]);
+        glfwSetCursor(_ctx->sit_glfw_window, _ctx->cursors[cursor]);
     }
 }
 
@@ -23763,9 +24444,10 @@ SITAPI void SituationSetCursor(SituationCursor cursor) {
  *
  * @see SituationHideCursor(), SituationDisableCursor()
  */
-SITAPI void SituationShowCursor(void) {
-    if (!SituationIsInitialized()) return;
-    glfwSetInputMode(sit_gs.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+SITAPI void SituationShowCursor(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
+    glfwSetInputMode(_ctx->sit_glfw_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 }
 
 /**
@@ -23774,9 +24456,10 @@ SITAPI void SituationShowCursor(void) {
  *
  * @see SituationShowCursor(), SituationDisableCursor()
  */
-SITAPI void SituationHideCursor(void) {
-    if (!SituationIsInitialized()) return;
-    glfwSetInputMode(sit_gs.window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+SITAPI void SituationHideCursor(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
+    glfwSetInputMode(_ctx->sit_glfw_window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
 }
 
 /**
@@ -23785,9 +24468,10 @@ SITAPI void SituationHideCursor(void) {
  *
  * @see SituationShowCursor(), SituationHideCursor(), SituationGetMouseDelta()
  */
-SITAPI void SituationDisableCursor(void) {
-    if (!SituationIsInitialized()) return;
-    glfwSetInputMode(sit_gs.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+SITAPI void SituationDisableCursor(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) return;
+    glfwSetInputMode(_ctx->sit_glfw_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 }
 
 /**
@@ -23802,22 +24486,20 @@ SITAPI void SituationDisableCursor(void) {
  * @param event The event type (GLFW_CONNECTED or GLFW_DISCONNECTED).
  */
 static void _SituationGLFWJoystickCallback(int jid, int event) {
-    // Ignore joysticks beyond the maximum we are tracking.
+    SituationContext _ctx = SituationGetCurrentContext();
+	if (!_ctx) return;
+
     if (jid < 0 || jid >= SITUATION_MAX_JOYSTICKS) return;
 
-    // Lock the mutex to safely access the shared event queue.
-    ma_mutex_lock(&sit_gs.joysticks.event_queue_mutex);
+    ma_mutex_lock(&_ctx->joysticks.event_queue_mutex);
     {
-        // Add the event to the queue if there is space.
-        if (sit_gs.joysticks.event_queue_count < SITUATION_MAX_JOYSTICKS) {
-            sit_gs.joysticks.event_queue[sit_gs.joysticks.event_queue_count].jid = jid;
-            sit_gs.joysticks.event_queue[sit_gs.joysticks.event_queue_count].event = event;
-            sit_gs.joysticks.event_queue_count++;
+        if (_ctx->joysticks.event_queue_count < SITUATION_MAX_JOYSTICKS) {
+            _ctx->joysticks.event_queue[_ctx->joysticks.event_queue_count].jid = jid;
+            _ctx->joysticks.event_queue[_ctx->joysticks.event_queue_count].event = event;
+            _ctx->joysticks.event_queue_count++;
         }
-        // else: The queue is full and the event is dropped. This is rare for connect/disconnect events but prevents a buffer overflow. A larger queue could be used if this becomes an issue.
     }
-    // Unlock the mutex as quickly as possible.
-    ma_mutex_unlock(&sit_gs.joysticks.event_queue_mutex);
+    ma_mutex_unlock(&_ctx->joysticks.event_queue_mutex);
 }
 
 // --- Gamepad (Joystick) Management Implementation ---
@@ -24091,12 +24773,13 @@ SITAPI void SituationGetWindowSize(int* width, int* height) {
 // Checks if the GLFW window should close (e.g., user clicked close button).
 // Returns true if not initialized or window is null, setting an error.
 // Use in the main loop to control application exit.
-SITAPI bool SituationWindowShouldClose(void) {
-    if (!sit_gs.is_initialized || !sit_gs.sit_glfw_window) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot check window close state");
-        return true; // If not init'd, effectively should "close" or not run.
+SITAPI bool SituationWindowShouldClose(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized || !_ctx->sit_glfw_window) {
+        // We can't set an error here reliably if _ctx is NULL
+        return true;
     }
-    return glfwWindowShouldClose(sit_gs.sit_glfw_window) == GLFW_TRUE;
+    return glfwWindowShouldClose(_ctx->sit_glfw_window) == GLFW_TRUE;
 }
 
 /**
@@ -24106,22 +24789,19 @@ SITAPI bool SituationWindowShouldClose(void) {
  * @note This function requires the library to be initialized (`SituationInit` must have been called successfully).
  * @see SituationGetFrameTime(), SituationGetFPS()
  */
-SITAPI void SituationSetTargetFPS(int fps) {
-    // --- 1. Pre-condition Check ---
-    if (!sit_gs.is_initialized) {
-        // As per library convention, silently return or set a general error if called incorrectly.
-        // The provided text shows similar functions returning early.
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetTargetFPS: Library not initialized.");
+SITAPI void SituationSetTargetFPS(SituationContext ctx, int fps) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) {
         return;
     }
 
     // --- 2. Set Target Frame Time ---
     if (fps <= 0) {
         // Disable frame rate limiting by setting target time to 0.0.
-        sit_gs.target_frame_time = 0.0;
+        _ctx->target_frame_time = 0.0;
     } else {
         // Calculate the target time per frame in seconds.
-        sit_gs.target_frame_time = 1.0 / (double)fps;
+        _ctx->target_frame_time = 1.0 / (double)fps;
     }
 }
 
@@ -24133,16 +24813,15 @@ SITAPI void SituationSetTargetFPS(int fps) {
  * @note This function requires the library to be initialized.
  * @see SituationSetTargetFPS(), SituationGetFPS()
  */
-SITAPI float SituationGetFrameTime(void) {
-    // --- 1. Pre-condition Check ---
-    if (!sit_gs.is_initialized) {
-        // Return a default value as per the original docstring and common practice.
+SITAPI float SituationGetFrameTime(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) {
         return 0.0f;
     }
 
     // --- 2. Return Stored Value ---
     // The frame time is updated in the main loop (e.g., within SituationEndFrame or similar timing update function).
-    return (float)sit_gs.frame_time;
+    return (float)_ctx->frame_time;
 }
 
 /**
@@ -24152,16 +24831,15 @@ SITAPI float SituationGetFrameTime(void) {
  * @note This function requires the library to be initialized.
  * @see SituationSetTargetFPS(), SituationGetFrameTime()
  */
-SITAPI int SituationGetFPS(void) {
-    // --- 1. Pre-condition Check ---
-    if (!sit_gs.is_initialized) {
-        // Return a default value as per the original docstring.
+SITAPI int SituationGetFPS(SituationContext ctx) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !_ctx->is_initialized) {
         return 0;
     }
 
     // --- 2. Return Stored Value ---
     // The current FPS is calculated and stored in the global state.
-    return sit_gs.current_fps;
+    return _ctx->current_fps;
 }
 
 /**
@@ -24380,6 +25058,64 @@ SITAPI bool SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
     return success;
 }
 
+#if defined(SITUATION_USE_VULKAN)
+
+// This function is called by worker threads
+SITAPI void SituationBeginWorkerCommandBuffer(SituationContext ctx, SituationCommandBuffer* out_cmd) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !out_cmd) return;
+
+    // Ideally, we have a pool per thread.
+    // For v1 of this PR, we lock a shared secondary pool or create a transient one.
+
+    VkCommandBufferAllocateInfo allocInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY, // Secondary buffers for parallel recording
+        .commandBufferCount = 1
+    };
+
+    ma_mutex_lock(&_ctx->worker_pool_mutex);
+
+    // Lazy init of worker pool if needed
+    if (_ctx->vk.worker_command_pool == VK_NULL_HANDLE) {
+        VkCommandPoolCreateInfo pool_info = {0};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = _ctx->vk.graphics_family_index;
+        if (vkCreateCommandPool(_ctx->vk.device, &pool_info, NULL, &_ctx->vk.worker_command_pool) != VK_SUCCESS) {
+            ma_mutex_unlock(&_ctx->worker_pool_mutex);
+            *out_cmd = VK_NULL_HANDLE;
+            return;
+        }
+    }
+
+    allocInfo.commandPool = _ctx->vk.worker_command_pool;
+    VkCommandBuffer vk_cmd;
+    vkAllocateCommandBuffers(_ctx->vk.device, &allocInfo, &vk_cmd);
+
+    ma_mutex_unlock(&_ctx->worker_pool_mutex);
+
+    // Begin recording (Inheritance info is required for Secondary buffers in real scenarios)
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
+    };
+
+    vkBeginCommandBuffer(vk_cmd, &beginInfo);
+    *out_cmd = (SituationCommandBuffer)vk_cmd;
+}
+
+SITAPI void SituationEndWorkerCommandBuffer(SituationContext ctx, SituationCommandBuffer cmd) {
+    SIT_RESOLVE_CTX(ctx);
+    if (!_ctx || !cmd) return;
+
+    vkEndCommandBuffer((VkCommandBuffer)cmd);
+    // The command buffer is now recorded. The user is responsible for passing it
+    // to the main thread to be executed in a vkCmdExecuteCommands call within the primary command buffer.
+    // For now, this function just ends recording. A more advanced system would queue it for execution.
+}
+
+#endif
 #endif // SITUATION_IMPLEMENTATION
 
 #endif // SITUATION_H
