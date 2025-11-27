@@ -1,0 +1,131 @@
+# Multi-Threading Work-in-Progress Report (v2.3.7)
+
+## 1. Overview of Architectural Changes
+
+The core architecture of the 'situation' library has been refactored to move away from a monolithic, static global state (`_SituationGlobalStateContainer sit_gs`). This fundamental change introduces the **Situation Context** system.
+
+### Key Changes:
+- **State Management:** All global state is now encapsulated within a heap-allocated struct, `SituationContext_t`. Access to this state is managed through an opaque handle, `SituationContext`.
+- **Instance Independence:** This change allows for multiple, independent instances of the library to coexist within the same application process. This is critical for advanced use cases like multi-window editor tools or parallel unit testing.
+- **Thread Safety Foundation:** The refactoring lays the groundwork for thread-safe operations by isolating state. A mutex (`context_mutex`) has been added to the context struct to protect shared resources (like resource tracking lists) from concurrent access.
+- **Thread-Local Storage (TLS):** For backward compatibility and ease of use in single-threaded applications, a Thread-Local Storage layer has been introduced. Users can set a "current" context for a given thread, allowing API functions to be called with a `NULL` context, which then resolves to the thread's current context.
+
+## 2. Migration Guide for Users
+
+This refactoring introduces breaking changes to the public API. All existing user code must be updated.
+
+### 2.1. Initialization and Shutdown
+
+The global `SituationInit()` and `SituationShutdown()` functions have been replaced.
+
+**Old Code:**
+```c
+SituationInit(&init_info);
+// ... main loop ...
+SituationShutdown();
+```
+
+**New Code:**
+```c
+// 1. Create a context
+SituationContext ctx = SituationCreateContext(&init_info);
+if (!ctx) {
+    // Handle initialization failure
+    return -1;
+}
+
+// 2. (Optional) Set the context for the main thread to enable NULL calls
+SituationSetCurrentContext(ctx);
+
+// ... main loop ...
+
+// 3. Destroy the context at the end
+SituationDestroyContext(ctx);
+```
+
+### 2.2. API Function Calls
+
+Every API function now requires the `SituationContext` as its first argument.
+
+**Old Code:**
+```c
+while (!SituationWindowShouldClose()) {
+    SituationPollInputEvents();
+    if (SituationIsKeyPressed(SIT_KEY_SPACE)) {
+        // ...
+    }
+}
+```
+
+**New Code (Explicit Context):**
+```c
+while (!SituationWindowShouldClose(ctx)) {
+    SituationPollInputEvents(ctx);
+    if (SituationIsKeyPressed(ctx, SIT_KEY_SPACE)) {
+        // ...
+    }
+}
+```
+
+**New Code (Implicit/TLS Context):**
+*This requires `SituationSetCurrentContext(ctx)` to have been called on the thread.*
+```c
+while (!SituationWindowShouldClose(NULL)) {
+    SituationPollInputEvents(NULL);
+    if (SituationIsKeyPressed(NULL, SIT_KEY_SPACE)) {
+        // ...
+    }
+}
+```
+
+## 3. New API Documentation
+
+### 3.1. Context Management
+---
+#### `SituationContext SituationCreateContext(const SituationInitInfo* init_info);`
+Initializes all library subsystems and allocates a new context object. This replaces `SituationInit`.
+- **`init_info`**: A pointer to the initialization configuration struct.
+- **Returns**: A valid `SituationContext` handle on success, or `NULL` on failure.
+
+---
+#### `void SituationDestroyContext(SituationContext ctx);`
+Shuts down all subsystems associated with the given context and frees its memory. This replaces `SituationShutdown`.
+- **`ctx`**: The context to destroy. Can be `NULL` (no-op).
+
+---
+#### `void SituationSetCurrentContext(SituationContext ctx);`
+Sets the active context for the calling thread. This allows subsequent API calls on this thread to use `NULL` for the context parameter.
+- **`ctx`**: The context to make current for this thread.
+
+---
+#### `SituationContext SituationGetCurrentContext(void);`
+Retrieves the active context for the calling thread.
+- **Returns**: The current `SituationContext` handle, or `NULL` if none is set.
+
+### 3.2. Vulkan Multi-Threading
+---
+#### `void SituationBeginWorkerCommandBuffer(SituationContext ctx, SituationCommandBuffer* out_cmd);`
+Creates and begins a **secondary** command buffer for recording rendering commands on a worker thread. This allows parallel command generation without stalling the main rendering thread.
+- **`ctx`**: The main application context.
+- **`out_cmd`**: A pointer to a `SituationCommandBuffer` that will be filled with the handle to the new command buffer.
+- **Notes**: The first call to this function on a context will lazily initialize a shared, mutex-protected `VkCommandPool`. Future work should aim for per-thread command pools. The returned command buffer is in the recording state.
+
+---
+#### `void SituationEndWorkerCommandBuffer(SituationContext ctx, SituationCommandBuffer cmd);`
+Ends the recording of a secondary command buffer created by `SituationBeginWorkerCommandBuffer`.
+- **`ctx`**: The main application context.
+- **`cmd`**: The command buffer to end.
+- **Notes**: After this call, the user is responsible for passing this recorded command buffer to the main thread, where it can be executed within a primary command buffer using `vkCmdExecuteCommands`.
+
+## 4. Known Issues & Next Steps
+
+### 4.1. Compilation Environment
+- The project currently fails to compile due to a missing external dependency: `KHR/khrplatform.h`. This header is required by `glad.h`. This is an environment issue that needs to be resolved by ensuring the Vulkan SDK or equivalent development headers are correctly installed and included in the build path. The implemented code logic is sound.
+
+### 4.2. Vulkan Worker Threads
+- The current implementation of `SituationBeginWorkerCommandBuffer` uses a single, shared `VkCommandPool` protected by a mutex. While thread-safe, this introduces a point of contention.
+- **Next Step:** The architecture should be evolved to use a per-thread command pool system. This would involve a mechanism to create or retrieve a `VkCommandPool` for each unique worker thread ID, eliminating the lock and enabling true parallel command allocation.
+
+### 4.3. Command Buffer Execution
+- The current API only provides functions to *record* secondary command buffers. There is no high-level, cross-platform API to *execute* them.
+- **Next Step:** A new function, `SituationCmdExecuteCommands(SituationCommandBuffer primary, uint32_t count, SituationCommandBuffer* secondaries)`, should be added. This function would wrap `vkCmdExecuteCommands` and provide a safe way for the main thread to submit work recorded by worker threads. An OpenGL equivalent would not be possible.
