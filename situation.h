@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.6 "Velocity"
+*   Core API library v2.3.7 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 6
+#define SITUATION_VERSION_PATCH 7
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -2436,6 +2436,45 @@ typedef struct SituationGraveyard {
     void* callback_user_data;                               // User context for connection callback
 } _SituationJoystickManager;
 
+ typedef struct {
+    // -------------------------------------------------------------------------
+    // Audio Subsystem (MiniAudio)
+    // -------------------------------------------------------------------------
+    ma_context miniaudio_context;                         // The main MiniAudio context
+    ma_device miniaudio_device;                           // The primary playback device
+    bool is_miniaudio_context_initialized;                // True if the context was successfully created
+    bool is_miniaudio_device_active;                      // True if the playback device is initialized
+    bool is_miniaudio_device_internally_paused;           // True if playback is temporarily suspended (e.g. minimized)
+    int current_miniaudio_device_audioinfo_id;         // ID of the currently selected output device
+
+    SituationSound* queued_sounds[SITUATION_MAX_AUDIO_SOUNDS_QUEUED]; // Array of active sounds being mixed
+    int queued_sound_count;                                           // Number of active sounds
+    ma_mutex audio_queue_mutex;                                       // Mutex protecting the sound queue
+
+    // Pre-allocated temp buffers for the audio callback (avoids malloc on audio thread)
+    float* audio_callback_decoder_temp_buffer;            // Scratch buffer for decoding PCM
+    float* audio_callback_effects_temp_buffer;            // Scratch buffer for processing effects
+    float* audio_callback_converter_temp_buffer;          // Scratch buffer for sample rate conversion
+    uint32_t audio_callback_temp_buffer_frames_capacity;  // Size of the scratch buffers in frames
+
+    // -------------------------------------------------------------------------
+    // Audio Capture (Recording)
+    // -------------------------------------------------------------------------
+    ma_device sit_capture_device;                             // The primary recording device
+    bool is_capture_device_active;                            // True if recording is currently active
+    SituationAudioCaptureCallback capture_callback;           // User callback for processing recorded audio
+    void* capture_user_data;                                  // User context pointer for the capture callback
+
+    bool audio_capture_on_main_thread;                        // Configuration flag for main-thread dispatch
+    float* audio_capture_queue;                               // Ring buffer for transferring audio to main thread
+    size_t audio_capture_write_head;                          // Write index for the capture ring buffer
+    size_t audio_capture_read_head;                           // Read index for the capture ring buffer
+    size_t audio_capture_queue_capacity;                      // Total size of the capture ring buffer
+    ma_mutex audio_capture_mutex;                             // Mutex protecting the capture ring buffer
+} _SituationAudioState;
+
+
+
 /**
  * @brief [INTERNAL] The central monolithic state container for the entire library.
  *
@@ -2498,41 +2537,6 @@ typedef struct SituationGraveyard {
     int active_virtual_display_count;                         // Count of currently allocated virtual displays
 
     // -------------------------------------------------------------------------
-    // Audio Subsystem (MiniAudio)
-    // -------------------------------------------------------------------------
-    ma_context sit_miniaudio_context;                         // The main MiniAudio context
-    ma_device sit_miniaudio_device;                           // The primary playback device
-    bool is_sit_miniaudio_context_initialized;                // True if the context was successfully created
-    bool is_sit_miniaudio_device_active;                      // True if the playback device is initialized
-    bool is_sit_miniaudio_device_internally_paused;           // True if playback is temporarily suspended (e.g. minimized)
-    int current_sit_miniaudio_device_sitaudioinfo_id;         // ID of the currently selected output device
-
-    SituationSound* sit_queued_sounds[SITUATION_MAX_AUDIO_SOUNDS_QUEUED]; // Array of active sounds being mixed
-    int sit_queued_sound_count;                                           // Number of active sounds
-    ma_mutex sit_audio_queue_mutex;                                       // Mutex protecting the sound queue
-
-    // Pre-allocated temp buffers for the audio callback (avoids malloc on audio thread)
-    float* sit_audio_callback_decoder_temp_buffer;            // Scratch buffer for decoding PCM
-    float* sit_audio_callback_effects_temp_buffer;            // Scratch buffer for processing effects
-    float* sit_audio_callback_converter_temp_buffer;          // Scratch buffer for sample rate conversion
-    uint32_t sit_audio_callback_temp_buffer_frames_capacity;  // Size of the scratch buffers in frames
-
-    // -------------------------------------------------------------------------
-    // Audio Capture (Recording)
-    // -------------------------------------------------------------------------
-    ma_device sit_capture_device;                             // The primary recording device
-    bool is_capture_device_active;                            // True if recording is currently active
-    SituationAudioCaptureCallback capture_callback;           // User callback for processing recorded audio
-    void* capture_user_data;                                  // User context pointer for the capture callback
-
-    bool audio_capture_on_main_thread;                        // Configuration flag for main-thread dispatch
-    float* audio_capture_queue;                               // Ring buffer for transferring audio to main thread
-    size_t audio_capture_write_head;                          // Write index for the capture ring buffer
-    size_t audio_capture_read_head;                           // Read index for the capture ring buffer
-    size_t audio_capture_queue_capacity;                      // Total size of the capture ring buffer
-    ma_mutex audio_capture_mutex;                             // Mutex protecting the capture ring buffer
-
-    // -------------------------------------------------------------------------
     // Input Subsystems
     // -------------------------------------------------------------------------
     _SituationKeyboardState keyboard;                         // Encapsulated keyboard state and event queue
@@ -2591,6 +2595,7 @@ typedef struct SituationGraveyard {
 } _SituationGlobalStateContainer;
 
 static _SituationGlobalStateContainer sit_gs;
+static _SituationAudioState sit_audio;
 
 
 //----------------------------------------------------------------------------------
@@ -5135,29 +5140,29 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
 static SituationError _SituationInitSubsystems(const SituationInitInfo* init_info) {
     // --- 1. Audio System Initialization ---
     ma_context_config ctx_config = ma_context_config_init();
-    if (ma_context_init(NULL, 0, &ctx_config, &sit_gs.sit_miniaudio_context) != MA_SUCCESS) {
+    if (ma_context_init(NULL, 0, &ctx_config, &sit_audio.miniaudio_context) != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "ma_context_init failed");
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
-    sit_gs.is_sit_miniaudio_context_initialized = true;
+    sit_audio.is_miniaudio_context_initialized = true;
 
     // Initialize the mutex that protects the sound playback queue.
-    if (ma_mutex_init(&sit_gs.sit_audio_queue_mutex) != MA_SUCCESS) {
+    if (ma_mutex_init(&sit_audio.audio_queue_mutex) != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_GENERAL, "Failed to initialize audio queue mutex");
         return SITUATION_ERROR_GENERAL;
     }
 
     // Initialize capture queue if requested
     if (init_info->flags & SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD) {
-        sit_gs.audio_capture_on_main_thread = true;
-        sit_gs.audio_capture_queue_capacity = 4096 * 4; // Reasonable default
-        sit_gs.audio_capture_queue = (float*)malloc(sit_gs.audio_capture_queue_capacity * sizeof(float));
-        if (!sit_gs.audio_capture_queue) {
+        sit_audio.audio_capture_on_main_thread = true;
+        sit_audio.audio_capture_queue_capacity = 4096 * 4; // Reasonable default
+        sit_audio.audio_capture_queue = (float*)malloc(sit_audio.audio_capture_queue_capacity * sizeof(float));
+        if (!sit_audio.audio_capture_queue) {
              _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio capture ring buffer");
              return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
-        if (ma_mutex_init(&sit_gs.audio_capture_mutex) != MA_SUCCESS) {
-             SIT_FREE(sit_gs.audio_capture_queue);
+        if (ma_mutex_init(&sit_audio.audio_capture_mutex) != MA_SUCCESS) {
+             SIT_FREE(sit_audio.audio_capture_queue);
              _SituationSetErrorFromCode(SITUATION_ERROR_GENERAL, "Audio capture mutex");
              return SITUATION_ERROR_GENERAL;
         }
@@ -5167,14 +5172,14 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     size_t decoder_buf_size = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES * 8 * sizeof(float);
     size_t effects_buf_size = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES * 8 * sizeof(float);
     size_t converter_buf_size = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES * MA_MAX_CHANNELS * sizeof(float);
-    sit_gs.sit_audio_callback_decoder_temp_buffer = (float*)malloc(decoder_buf_size);
-    sit_gs.sit_audio_callback_effects_temp_buffer = (float*)malloc(effects_buf_size);
-    sit_gs.sit_audio_callback_converter_temp_buffer = (float*)malloc(converter_buf_size);
-    if (!sit_gs.sit_audio_callback_decoder_temp_buffer || !sit_gs.sit_audio_callback_effects_temp_buffer || !sit_gs.sit_audio_callback_converter_temp_buffer) {
+    sit_audio.audio_callback_decoder_temp_buffer = (float*)malloc(decoder_buf_size);
+    sit_audio.audio_callback_effects_temp_buffer = (float*)malloc(effects_buf_size);
+    sit_audio.audio_callback_converter_temp_buffer = (float*)malloc(converter_buf_size);
+    if (!sit_audio.audio_callback_decoder_temp_buffer || !sit_audio.audio_callback_effects_temp_buffer || !sit_audio.audio_callback_converter_temp_buffer) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio callback temp buffers");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
-    sit_gs.sit_audio_callback_temp_buffer_frames_capacity = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES;
+    sit_audio.audio_callback_temp_buffer_frames_capacity = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES;
 
 
     // --- 2. Timer System Initialization ---
@@ -8856,12 +8861,12 @@ SITAPI void SituationPollInputEvents(void) {
     sit_gs.debug_draw_command_issued_this_frame = false;
 
 	// Process Main Thread Audio Capture
-    if (sit_gs.audio_capture_on_main_thread && sit_gs.capture_callback) {
-        ma_mutex_lock(&sit_gs.audio_capture_mutex);
+    if (sit_audio.audio_capture_on_main_thread && sit_audio.capture_callback) {
+        ma_mutex_lock(&sit_audio.audio_capture_mutex);
 
-        size_t write_head = sit_gs.audio_capture_write_head;
+        size_t write_head = sit_audio.audio_capture_read_head;
         size_t read_head = sit_gs.audio_capture_read_head;
-        size_t capacity = sit_gs.audio_capture_queue_capacity;
+        size_t capacity = sit_audio.audio_capture_queue_capacity;
 
         // Calculate frames available to read
         size_t frames_available = 0;
@@ -8883,35 +8888,35 @@ SITAPI void SituationPollInputEvents(void) {
                 // 2. Copy and Linearize Data
                 if (write_head >= read_head) {
                     // Contiguous block
-                    memcpy(temp_buffer, &sit_gs.audio_capture_queue[read_head], frames_available * sizeof(float));
+                    memcpy(temp_buffer, &sit_audio.audio_capture_queue[read_head], frames_available * sizeof(float));
                 } else {
                     // Split block (Wrapped)
                     size_t end_chunk_size = capacity - read_head;
                     // Part 1: Read to end of buffer
-                    memcpy(temp_buffer, &sit_gs.audio_capture_queue[read_head], end_chunk_size * sizeof(float));
+                    memcpy(temp_buffer, &sit_audio.audio_capture_queue[read_head], end_chunk_size * sizeof(float));
                     // Part 2: Start from beginning to write head
-                    memcpy(temp_buffer + end_chunk_size, &sit_gs.audio_capture_queue[0], write_head * sizeof(float));
+                    memcpy(temp_buffer + end_chunk_size, &sit_audio.audio_capture_queue[0], write_head * sizeof(float));
                 }
 
                 // 3. Advance Read Head
                 sit_gs.audio_capture_read_head = write_head;
 
                 // 4. Unlock BEFORE callback to prevent deadlocks if user callback takes time
-                ma_mutex_unlock(&sit_gs.audio_capture_mutex);
+                ma_mutex_unlock(&sit_audio.audio_capture_mutex);
 
                 // 5. Dispatch to User
-                sit_gs.capture_callback(temp_buffer, (uint32_t)frames_available, sit_gs.capture_user_data);
+                sit_audio.capture_callback(temp_buffer, (uint32_t)frames_available, sit_audio.capture_user_data);
 
                 // 6. Cleanup
                 SIT_FREE(temp_buffer);
             } else {
                 // Malloc failed, just unlock. We'll try again next frame.
                 // Data remains in buffer (potentially overflowing eventually, but safe crash-wise).
-                ma_mutex_unlock(&sit_gs.audio_capture_mutex);
+                ma_mutex_unlock(&sit_audio.audio_capture_mutex);
             }
         } else {
             // No data, just unlock
-            ma_mutex_unlock(&sit_gs.audio_capture_mutex);
+            ma_mutex_unlock(&sit_audio.audio_capture_mutex);
         }
     }
 
@@ -9159,29 +9164,29 @@ static void _SituationCleanupSubsystems(void) {
     // --- Audio System ---
     // Stop all sounds before uninitializing the device.
     SituationStopAllLoadedSounds();
-    if (sit_gs.is_sit_miniaudio_device_active) {
-        ma_device_uninit(&sit_gs.sit_miniaudio_device);
-        sit_gs.is_sit_miniaudio_device_active = false;
+    if (sit_audio.is_miniaudio_device_active) {
+        ma_device_uninit(&sit_audio.miniaudio_device);
+        sit_audio.is_miniaudio_device_active = false;
     }
     // Uninitialize the context and free buffers last for the audio system.
-    if (sit_gs.is_sit_miniaudio_context_initialized) {
-        ma_context_uninit(&sit_gs.sit_miniaudio_context);
-        sit_gs.is_sit_miniaudio_context_initialized = false;
+    if (sit_audio.is_miniaudio_context_initialized) {
+        ma_context_uninit(&sit_audio.miniaudio_context);
+        sit_audio.is_miniaudio_context_initialized = false;
     }
-    SIT_FREE(sit_gs.sit_audio_callback_decoder_temp_buffer);
-    SIT_FREE(sit_gs.sit_audio_callback_effects_temp_buffer);
-    SIT_FREE(sit_gs.sit_audio_callback_converter_temp_buffer);
-    sit_gs.sit_audio_callback_decoder_temp_buffer = NULL;
-    sit_gs.sit_audio_callback_effects_temp_buffer = NULL;
-    sit_gs.sit_audio_callback_converter_temp_buffer = NULL;
+    SIT_FREE(sit_audio.audio_callback_decoder_temp_buffer);
+    SIT_FREE(sit_audio.audio_callback_effects_temp_buffer);
+    SIT_FREE(sit_audio.audio_callback_converter_temp_buffer);
+    sit_audio.audio_callback_decoder_temp_buffer = NULL;
+    sit_audio.audio_callback_effects_temp_buffer = NULL;
+    sit_audio.audio_callback_converter_temp_buffer = NULL;
 
     // Uninitialize mutexes.
-    ma_mutex_uninit(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_uninit(&sit_audio.audio_queue_mutex);
     ma_mutex_uninit(&sit_gs.keyboard.event_queue_mutex);
     // Cleanup capture resources
-    if (sit_gs.audio_capture_on_main_thread) {
-        ma_mutex_uninit(&sit_gs.audio_capture_mutex);
-        SIT_FREE(sit_gs.audio_capture_queue);
+    if (sit_audio.audio_capture_on_main_thread) {
+        ma_mutex_uninit(&sit_audio.audio_capture_mutex);
+        SIT_FREE(sit_audio.audio_capture_queue);
     }
     ma_mutex_uninit(&sit_gs.joysticks.event_queue_mutex);
 
@@ -21521,25 +21526,25 @@ SITAPI Rectangle SituationMeasureText(SituationFont font, const char *text, floa
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
     (void)pInput;
 
-    _SituationGlobalStateContainer* pGs = (_SituationGlobalStateContainer*)pDevice->pUserData;
+    _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
     if (!pGs || frameCount == 0 || !pOutput) {
         return;
     }
 
-    if (frameCount > pGs->sit_audio_callback_temp_buffer_frames_capacity) {
-        frameCount = pGs->sit_audio_callback_temp_buffer_frames_capacity;
+    if (frameCount > pGs->audio_callback_temp_buffer_frames_capacity) {
+        frameCount = pGs->audio_callback_temp_buffer_frames_capacity;
     }
 
-    ma_mutex_lock(&pGs->sit_audio_queue_mutex);
+    ma_mutex_lock(&pGs->audio_queue_mutex);
 
     memset(pOutput, 0, frameCount * ma_get_bytes_per_frame(pDevice->playback.format, pDevice->playback.channels));
 
-    float* decoder_buffer = pGs->sit_audio_callback_decoder_temp_buffer;
-    float* effects_buffer = pGs->sit_audio_callback_effects_temp_buffer;
-    void*  converter_buffer = pGs->sit_audio_callback_converter_temp_buffer;
+    float* decoder_buffer = pGs->audio_callback_decoder_temp_buffer;
+    float* effects_buffer = pGs->audio_callback_effects_temp_buffer;
+    void*  converter_buffer = pGs->audio_callback_converter_temp_buffer;
 
-    for (int i = 0; i < pGs->sit_queued_sound_count; ++i) {
-        SituationSound* sound = pGs->sit_queued_sounds[i];
+    for (int i = 0; i < pGs->queued_sound_count; ++i) {
+        SituationSound* sound = pGs->queued_sounds[i];
 
         if (!sound || !sound->is_initialized || !sound->converter_initialized) {
             continue;
@@ -21553,8 +21558,8 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
 
             ma_data_converter_get_required_input_frame_count(&sound->converter, frames_needed_for_output_pass, &input_frames_converter_requires);
 
-            if (input_frames_converter_requires > pGs->sit_audio_callback_temp_buffer_frames_capacity) {
-                 input_frames_converter_requires = pGs->sit_audio_callback_temp_buffer_frames_capacity;
+            if (input_frames_converter_requires > pGs->audio_callback_temp_buffer_frames_capacity) {
+                 input_frames_converter_requires = pGs->audio_callback_temp_buffer_frames_capacity;
             }
 
             uint64_t frames_read_from_decoder;
@@ -21562,7 +21567,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
             sound->cursor_frames += frames_read_from_decoder;
 
             if (res_dec != MA_SUCCESS && res_dec != MA_AT_END) {
-                pGs->sit_queued_sounds[i] = pGs->sit_queued_sounds[--pGs->sit_queued_sound_count]; i--;
+                pGs->queued_sounds[i] = pGs->queued_sounds[--pGs->queued_sound_count]; i--;
                 goto next_sound_in_queue_locked;
             }
 
@@ -21572,7 +21577,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                     sound->cursor_frames = 0;
                     continue;
                 } else {
-                    pGs->sit_queued_sounds[i] = pGs->sit_queued_sounds[--pGs->sit_queued_sound_count]; i--;
+                    pGs->queued_sounds[i] = pGs->queued_sounds[--pGs->queued_sound_count]; i--;
                     goto next_sound_in_queue_locked;
                 }
             }
@@ -21698,7 +21703,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
     next_sound_in_queue_locked:;
     }
 
-    ma_mutex_unlock(&pGs->sit_audio_queue_mutex);
+    ma_mutex_unlock(&pGs->audio_queue_mutex);
 }
 
 
@@ -21713,7 +21718,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
  */
 static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
     (void)pOutput;
-    _SituationGlobalStateContainer* pGs = (_SituationGlobalStateContainer*)pDevice->pUserData;
+    _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
     if (!pGs || !pInput) return;
 
     // 1. If Main Thread Mode is disabled, call directly (legacy behavior)
@@ -21773,11 +21778,11 @@ static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, c
  * @see SituationStopAudioCapture(), SituationAudioCaptureCallback
  */
 SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data) {
-    if (!sit_gs.is_sit_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
-    if (sit_gs.is_capture_device_active) SituationStopAudioCapture();
+    if (!sit_audio.is_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
+    if (sit_audio.is_capture_device_active) SituationStopAudioCapture();
 
-    sit_gs.capture_callback = callback;
-    sit_gs.capture_user_data = user_data;
+    sit_audio.capture_callback = callback;
+    sit_audio.capture_user_data = user_data;
 
     ma_device_config config = ma_device_config_init(ma_device_type_capture);
     config.capture.format = ma_format_f32; // Standardize on Float32
@@ -21786,18 +21791,18 @@ SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback c
     config.dataCallback = _sit_miniaudio_capture_callback;
     config.pUserData = &sit_gs;
 
-    if (ma_device_init(&sit_gs.sit_miniaudio_context, &config, &sit_gs.sit_capture_device) != MA_SUCCESS) {
+    if (ma_device_init(&sit_audio.miniaudio_context, &config, &sit_audio.capture_device) != MA_SUCCESS) {
         _SituationSetError("Failed to initialize capture device.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
-    if (ma_device_start(&sit_gs.sit_capture_device) != MA_SUCCESS) {
-        ma_device_uninit(&sit_gs.sit_capture_device);
+    if (ma_device_start(&sit_audio.capture_device) != MA_SUCCESS) {
+        ma_device_uninit(&sit_audio.capture_device);
         _SituationSetError("Failed to start capture device.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
-    sit_gs.is_capture_device_active = true;
+    sit_audio.is_capture_device_active = true;
     return SITUATION_SUCCESS;
 }
 
@@ -21810,10 +21815,10 @@ SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback c
  * @see SituationStartAudioCapture()
  */
 SITAPI void SituationStopAudioCapture(void) {
-    if (sit_gs.is_capture_device_active) {
-        ma_device_uninit(&sit_gs.sit_capture_device);
-        sit_gs.is_capture_device_active = false;
-        sit_gs.capture_callback = NULL;
+    if (sit_audio.is_capture_device_active) {
+        ma_device_uninit(&sit_audio.capture_device);
+        sit_audio.is_capture_device_active = false;
+        sit_audio.capture_callback = NULL;
     }
 }
 
@@ -21833,7 +21838,7 @@ SITAPI void SituationStopAudioCapture(void) {
  * @see SituationSetAudioDevice()
  */
 SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
-    if (!sit_gs.is_sit_miniaudio_context_initialized) {
+    if (!sit_audio.is_miniaudio_context_initialized) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "GetAudioDevices: MiniAudio context not initialized");
         if (count) *count = 0;
         return NULL;
@@ -21844,7 +21849,7 @@ SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
     // ma_device_info* ma_capture_devices = NULL; // Not used in this example
     // uint32_t ma_capture_count = 0;
 
-    ma_result res = ma_context_get_devices(&sit_gs.sit_miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL); // Passing NULL for capture devices
+    ma_result res = ma_context_get_devices(&sit_audio.miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL); // Passing NULL for capture devices
     if (res != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "ma_context_get_devices failed");
         if (count) *count = 0;
@@ -21899,11 +21904,11 @@ SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
  * @see SituationGetAudioDevices()
  */
 SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const SituationAudioFormat* format) {
-    if (!sit_gs.is_sit_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
+    if (!sit_audio.is_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
 
     ma_device_info* ma_playback_devices = NULL;
     uint32_t ma_playback_count = 0;
-    ma_result res = ma_context_get_devices(&sit_gs.sit_miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL);
+    ma_result res = ma_context_get_devices(&sit_audio.miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL);
 
     if (res != MA_SUCCESS || situation_internal_id < 0 || (uint32_t)situation_internal_id >= ma_playback_count) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Invalid internal_id or failed to enumerate for SetAudioDevice");
@@ -21912,9 +21917,9 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
 
     ma_device_id* target_device_id = &ma_playback_devices[situation_internal_id].id;
 
-    if (sit_gs.is_sit_miniaudio_device_active) {
-        ma_device_uninit(&sit_gs.sit_miniaudio_device);
-        sit_gs.is_sit_miniaudio_device_active = false;
+    if (sit_audio.is_miniaudio_device_active) {
+        ma_device_uninit(&sit_audio.miniaudio_device);
+        sit_audio.is_miniaudio_device_active = false;
     }
 
     ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
@@ -21946,23 +21951,23 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
     // Define period size for callback scheduling (optional, MiniAudio has defaults)
     // device_config.periodSizeInFrames = 512; // Example: ~10ms at 48kHz
 
-    res = ma_device_init(&sit_gs.sit_miniaudio_context, &device_config, &sit_gs.sit_miniaudio_device);
+    res = ma_device_init(&sit_audio.miniaudio_context, &device_config, &sit_audio.miniaudio_device);
     if (res != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, ma_result_description(res));
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
-    if (!sit_gs.is_sit_miniaudio_device_internally_paused) { // Only start if not meant to be paused
-        res = ma_device_start(&sit_gs.sit_miniaudio_device);
+    if (!sit_audio.is_miniaudio_device_internally_paused) { // Only start if not meant to be paused
+        res = ma_device_start(&sit_audio.miniaudio_device);
         if (res != MA_SUCCESS) {
-            ma_device_uninit(&sit_gs.sit_miniaudio_device);
+            ma_device_uninit(&sit_audio.miniaudio_device);
             _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to start new audio device");
             return SITUATION_ERROR_AUDIO_DEVICE;
         }
     }
 
-    sit_gs.is_sit_miniaudio_device_active = true;
-    sit_gs.current_sit_miniaudio_device_sitaudioinfo_id = situation_internal_id;
+    sit_audio.is_miniaudio_device_active = true;
+    sit_audio.current_miniaudio_device_audioinfo_id = situation_internal_id;
     return SITUATION_SUCCESS;
 }
 
@@ -21974,11 +21979,11 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
  * @return `0` if the library is not initialized or if no audio device is currently active.
  */
 SITAPI int SituationGetAudioPlaybackSampleRate(void) {
-    if (!sit_gs.is_sit_miniaudio_device_active) {
+    if (!sit_audio.is_miniaudio_device_active) {
         _SituationSetError("Audio device not active for GetAudioPlaybackSampleRate");
         return 0;
     }
-    return sit_gs.sit_miniaudio_device.sampleRate;
+    return sit_audio.miniaudio_device.sampleRate;
 }
 
 /**
@@ -21997,15 +22002,15 @@ SITAPI int SituationGetAudioPlaybackSampleRate(void) {
  * @note All currently playing sounds will be automatically resampled to the new master rate by their internal converters.
  */
 SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
-     if (!sit_gs.is_sit_miniaudio_device_active || sit_gs.current_sit_miniaudio_device_sitaudioinfo_id < 0) {
+     if (!sit_audio.is_miniaudio_device_active || sit_audio.current_miniaudio_device_audioinfo_id < 0) {
         _SituationSetError("No audio device set, cannot change sample rate.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
     SituationAudioFormat current_fmt;
-    current_fmt.channels = sit_gs.sit_miniaudio_device.playback.channels;
+    current_fmt.channels = sit_audio.miniaudio_device.playback.channels;
     current_fmt.sample_rate = sample_rate;
 
-    ma_format current_ma_fmt = sit_gs.sit_miniaudio_device.playback.format;
+    ma_format current_ma_fmt = sit_audio.miniaudio_device.playback.format;
     if (current_ma_fmt == ma_format_f32) current_fmt.bit_depth = 32;
     else if (current_ma_fmt == ma_format_s16) current_fmt.bit_depth = 16;
     else if (current_ma_fmt == ma_format_s24) current_fmt.bit_depth = 24;
@@ -22015,7 +22020,7 @@ SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
-    return SituationSetAudioDevice(sit_gs.current_sit_miniaudio_device_sitaudioinfo_id, &current_fmt);
+    return SituationSetAudioDevice(sit_audio.current_miniaudio_device_audioinfo_id, &current_fmt);
 }
 
 /**
@@ -22028,12 +22033,12 @@ SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
  * @see SituationSetAudioMasterVolume()
  */
 SITAPI float SituationGetAudioMasterVolume(void) {
-    if (!sit_gs.is_sit_miniaudio_device_active) {
+    if (!sit_audio.is_miniaudio_device_active) {
         _SituationSetError("Audio device not active for GetAudioMasterVolume");
         return 0.0f;
     }
     float volume = 0.0f; // Default to 0 if get fails
-    ma_result res = ma_device_get_master_volume(&sit_gs.sit_miniaudio_device, &volume);
+    ma_result res = ma_device_get_master_volume(&sit_audio.miniaudio_device, &volume);
     if (res != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to get master volume");
         // volume remains 0.0f or its last valid value if ma_device_get_master_volume modified it partially
@@ -22053,11 +22058,11 @@ SITAPI float SituationGetAudioMasterVolume(void) {
  * @see SituationGetAudioMasterVolume(), SituationSetSoundVolume()
  */
 SITAPI SituationError SituationSetAudioMasterVolume(float volume) {
-    if (!sit_gs.is_sit_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
+    if (!sit_audio.is_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
     // MiniAudio volume is linear [0, 1], can go >1 for gain. Clamp to [0,1] for typical app behavior.
     float clamped_volume = (volume < 0.0f) ? 0.0f : volume; // (volume > 1.0f) ? 1.0f : volume; // No upper clamp to allow gain
 
-    ma_result res = ma_device_set_master_volume(&sit_gs.sit_miniaudio_device, clamped_volume);
+    ma_result res = ma_device_set_master_volume(&sit_audio.miniaudio_device, clamped_volume);
     if (res != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to set master volume");
         return SITUATION_ERROR_AUDIO_DEVICE;
@@ -22074,9 +22079,9 @@ SITAPI SituationError SituationSetAudioMasterVolume(float volume) {
  * @see SituationPauseAudioDevice(), SituationResumeAudioDevice()
  */
 SITAPI bool SituationIsAudioDevicePlaying(void) {
-    if (!sit_gs.is_sit_miniaudio_device_active) return false;
+    if (!sit_audio.is_miniaudio_device_active) return false;
     // Considered "playing" if device is started and not internally marked as paused by our system
-    return ma_device_is_started(&sit_gs.sit_miniaudio_device) && !sit_gs.is_sit_miniaudio_device_internally_paused;
+    return ma_device_is_started(&sit_audio.miniaudio_device) && !sit_audio.is_miniaudio_device_internally_paused;
 }
 
 /**
@@ -22092,21 +22097,21 @@ SITAPI bool SituationIsAudioDevicePlaying(void) {
  * @see SituationResumeAudioDevice(), SituationIsAudioDevicePlaying(), SituationPauseApp()
  */
 SITAPI SituationError SituationPauseAudioDevice(void) {
-    if (!sit_gs.is_sit_miniaudio_device_active) {
+    if (!sit_audio.is_miniaudio_device_active) {
         // Not an error to pause an inactive device, just mark it.
-        sit_gs.is_sit_miniaudio_device_internally_paused = true;
+        sit_audio.is_miniaudio_device_internally_paused = true;
         return SITUATION_SUCCESS;
     }
 
-    if (ma_device_is_started(&sit_gs.sit_miniaudio_device)) {
-        ma_result res = ma_device_stop(&sit_gs.sit_miniaudio_device);
+    if (ma_device_is_started(&sit_audio.miniaudio_device)) {
+        ma_result res = ma_device_stop(&sit_audio.miniaudio_device);
         if (res != MA_SUCCESS) {
             _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to stop (pause) audio device");
             return SITUATION_ERROR_AUDIO_DEVICE;
         }
     }
 
-    sit_gs.is_sit_miniaudio_device_internally_paused = true;
+    sit_audio.is_miniaudio_device_internally_paused = true;
     return SITUATION_SUCCESS;
 }
 
@@ -22122,10 +22127,10 @@ SITAPI SituationError SituationPauseAudioDevice(void) {
  * @see SituationPauseAudioDevice(), SituationIsAudioDevicePlaying(), SituationResumeApp()
  */
 SITAPI SituationError SituationResumeAudioDevice(void) {
-    sit_gs.is_sit_miniaudio_device_internally_paused = false;
+    sit_audio.is_miniaudio_device_internally_paused = false;
 
-    if (sit_gs.is_sit_miniaudio_device_active && !ma_device_is_started(&sit_gs.sit_miniaudio_device)) {
-        ma_result res = ma_device_start(&sit_gs.sit_miniaudio_device);
+    if (sit_audio.is_miniaudio_device_active && !ma_device_is_started(&sit_audio.miniaudio_device)) {
+        ma_result res = ma_device_start(&sit_audio.miniaudio_device);
         if (res != MA_SUCCESS) {
             _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to start (resume) audio device");
             return SITUATION_ERROR_AUDIO_DEVICE;
@@ -22202,7 +22207,7 @@ static SituationError _SituationInitSoundEffects(SituationSound* sound) {
  */
 SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, SituationAudioLoadMode mode, bool looping, SituationSound* out_sound) {
     if (!out_sound || !file_path) return SITUATION_ERROR_INVALID_PARAM;
-    if (!sit_gs.is_sit_miniaudio_device_active) {
+    if (!sit_audio.is_miniaudio_device_active) {
         _SituationSetError("Audio device not active for sound loading.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
@@ -22294,9 +22299,9 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
     converter_config.formatIn = out_sound->decoder.outputFormat;
     converter_config.channelsIn = out_sound->decoder.outputChannels;
     converter_config.sampleRateIn = out_sound->decoder.outputSampleRate;
-    converter_config.formatOut = sit_gs.sit_miniaudio_device.playback.format;
-    converter_config.channelsOut = sit_gs.sit_miniaudio_device.playback.channels;
-    converter_config.sampleRateOut = sit_gs.sit_miniaudio_device.sampleRate;
+    converter_config.formatOut = sit_audio.miniaudio_device.playback.format;
+    converter_config.channelsOut = sit_audio.miniaudio_device.playback.channels;
+    converter_config.sampleRateOut = sit_audio.miniaudio_device.sampleRate;
 
     res = ma_data_converter_init(&converter_config, NULL, &out_sound->converter);
     if (res != MA_SUCCESS) {
@@ -22398,7 +22403,7 @@ static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byt
  */
 SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound) {
     if (!out_sound || !on_read || !format) return SITUATION_ERROR_INVALID_PARAM;
-    if (!sit_gs.is_sit_miniaudio_device_active) {
+    if (!sit_audio.is_miniaudio_device_active) {
          _SituationSetError("Audio device not active for stream loading.");
          return SITUATION_ERROR_AUDIO_DEVICE;
     }
@@ -22442,9 +22447,9 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     converter_config.formatIn = out_sound->decoder.outputFormat;
     converter_config.channelsIn = out_sound->decoder.outputChannels;
     converter_config.sampleRateIn = out_sound->decoder.outputSampleRate;
-    converter_config.formatOut = sit_gs.sit_miniaudio_device.playback.format;
-    converter_config.channelsOut = sit_gs.sit_miniaudio_device.playback.channels;
-    converter_config.sampleRateOut = sit_gs.sit_miniaudio_device.sampleRate;
+    converter_config.formatOut = sit_audio.miniaudio_device.playback.format;
+    converter_config.channelsOut = sit_audio.miniaudio_device.playback.channels;
+    converter_config.sampleRateOut = sit_audio.miniaudio_device.sampleRate;
 
     res = ma_data_converter_init(&converter_config, NULL, &out_sound->converter);
     if (res != MA_SUCCESS) {
@@ -22517,24 +22522,24 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
  * @see SituationStopLoadedSound(), SituationStopAllLoadedSounds()
  */
 SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound_to_play) {
-    if (!sit_gs.is_sit_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
+    if (!sit_audio.is_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
     if (!sound_to_play || !sound_to_play->is_initialized || !sound_to_play->converter_initialized) {
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex); // Lock
-    if (sit_gs.sit_queued_sound_count >= SITUATION_MAX_AUDIO_SOUNDS_QUEUED) {
-        ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex); // Unlock on early exit
+    ma_mutex_lock(&sit_audio.audio_queue_mutex); // Lock
+    if (sit_audio.queued_sound_count >= SITUATION_MAX_AUDIO_SOUNDS_QUEUED) {
+        ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock on early exit
         return SITUATION_ERROR_AUDIO_SOUND_LIMIT;
     }
 
     // Check if already playing, if so, restart it
-    for (int i = 0; i < sit_gs.sit_queued_sound_count; ++i) {
-        if (sit_gs.sit_queued_sounds[i] == sound_to_play) {
+    for (int i = 0; i < sit_audio.queued_sound_count; ++i) {
+        if (sit_audio.queued_sounds[i] == sound_to_play) {
             ma_decoder_seek_to_pcm_frame(&sound_to_play->decoder, 0);
             sound_to_play->cursor_frames = 0;
             // Converter state is generally reset by processing new input from frame 0
-            ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex); // Unlock
+            ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock
             return SITUATION_SUCCESS;
         }
     }
@@ -22543,8 +22548,8 @@ SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound_to_play) {
     ma_decoder_seek_to_pcm_frame(&sound_to_play->decoder, 0);
     sound_to_play->cursor_frames = 0;
 
-    sit_gs.sit_queued_sounds[sit_gs.sit_queued_sound_count++] = sound_to_play;
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex); // Unlock
+    sit_audio.queued_sounds[sit_audio.queued_sound_count++] = sound_to_play;
+    ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock
     return SITUATION_SUCCESS;
 }
 
@@ -22566,17 +22571,17 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
     if (!sit_gs.is_initialized || !sound_to_stop) return SITUATION_ERROR_INVALID_PARAM;
     bool found_and_removed = false;
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex); // Lock
-    for (int i = 0; i < sit_gs.sit_queued_sound_count; ++i) {
-        if (sit_gs.sit_queued_sounds[i] == sound_to_stop) {
+    ma_mutex_lock(&sit_audio.audio_queue_mutex); // Lock
+    for (int i = 0; i < sit_audio.queued_sound_count; ++i) {
+        if (sit_audio.queued_sounds[i] == sound_to_stop) {
             // Simple removal: replace with last element and decrement count
-            sit_gs.sit_queued_sounds[i] = sit_gs.sit_queued_sounds[--sit_gs.sit_queued_sound_count];
-            // sit_gs.sit_queued_sounds[sit_gs.sit_queued_sound_count] = NULL; // Optional: clear the now unused slot
+            sit_audio.queued_sounds[i] = sit_audio.queued_sounds[--sit_audio.queued_sound_count];
+            // sit_audio.queued_sounds[sit_audio.queued_sound_count] = NULL; // Optional: clear the now unused slot
             found_and_removed = true;
             break;
         }
     }
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex); // Unlock
+    ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock
     return found_and_removed ? SITUATION_SUCCESS : SITUATION_ERROR_INVALID_PARAM;
 }
 
@@ -22593,9 +22598,9 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
  */
 SITAPI SituationError SituationStopAllLoadedSounds(void) {
     if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex); // Lock
-    sit_gs.sit_queued_sound_count = 0;
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex); // Unlock
+    ma_mutex_lock(&sit_audio.audio_queue_mutex); // Lock
+    sit_audio.queued_sound_count = 0;
+    ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock
     return SITUATION_SUCCESS;
 }
 
@@ -22652,9 +22657,9 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
     converter_config.formatIn = out_destination->decoder.outputFormat;
     converter_config.channelsIn = out_destination->decoder.outputChannels;
     converter_config.sampleRateIn = out_destination->decoder.outputSampleRate;
-    converter_config.formatOut = sit_gs.sit_miniaudio_device.playback.format;
-    converter_config.channelsOut = sit_gs.sit_miniaudio_device.playback.channels;
-    converter_config.sampleRateOut = sit_gs.sit_miniaudio_device.sampleRate;
+    converter_config.formatOut = sit_audio.miniaudio_device.playback.format;
+    converter_config.channelsOut = sit_audio.miniaudio_device.playback.channels;
+    converter_config.sampleRateOut = sit_audio.miniaudio_device.sampleRate;
 
     if (ma_data_converter_init(&converter_config, NULL, &out_destination->converter) == MA_SUCCESS) {
         out_destination->converter_initialized = true;
@@ -22847,10 +22852,10 @@ SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch)
     if (!sound || !sound->converter_initialized) return SITUATION_ERROR_INVALID_PARAM;
     if (pitch <= 0.0f) pitch = 0.01f; // Prevent zero or negative pitch
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&sit_audio.audio_queue_mutex);
     sound->pitch = pitch;
     ma_result res = ma_data_converter_set_rate_in_hz(&sound->converter, (ma_uint32)(sound->decoder.outputSampleRate * pitch));
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
 
     if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONVERTER;
     return SITUATION_SUCCESS;
@@ -22887,7 +22892,7 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
     if (cutoff_hz <= 0) type = SITUATION_FILTER_NONE;
     if (q_factor <= 0) q_factor = 0.707f; // Default Q
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&sit_audio.audio_queue_mutex);
     if (type == SITUATION_FILTER_NONE) {
         sound->effects.filter_enabled = false;
     } else {
@@ -22905,7 +22910,7 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
             sound->effects.filter_q = q_factor;
         }
     }
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -22925,7 +22930,7 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
 SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled, float delay_sec, float feedback, float wet_mix) {
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&sit_audio.audio_queue_mutex);
     sound->effects.echo_enabled = enabled;
     if (enabled) {
         if (delay_sec < 0) delay_sec = 0;
@@ -22944,7 +22949,7 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
         sound->effects.echo_feedback = feedback;
         sound->effects.echo_wet_mix = wet_mix;
     }
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -22965,7 +22970,7 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
 SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix) {
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&sit_audio.audio_queue_mutex);
     sound->effects.reverb_enabled = enabled;
     if (enabled) {
         if (room_size < 0) room_size = 0; if (room_size > 1.0f) room_size = 1.0f;
@@ -22983,7 +22988,7 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
         sound->effects.reverb_wet_mix = wet_mix;
         sound->effects.reverb_dry_mix = dry_mix;
     }
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -23000,11 +23005,11 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&sit_audio.audio_queue_mutex);
 
     void* new_processors = realloc(sound->processors, (sound->processor_count + 1) * sizeof(SituationAudioProcessorCallback));
     if (!new_processors) {
-        ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+        ma_mutex_unlock(&sit_audio.audio_queue_mutex);
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc processor list.");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
@@ -23014,7 +23019,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
     if (!new_user_datas) {
         // This is tricky. The first realloc succeeded. We should try to shrink it back.
         sound->processors = realloc(sound->processors, sound->processor_count * sizeof(SituationAudioProcessorCallback));
-        ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+        ma_mutex_unlock(&sit_audio.audio_queue_mutex);
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc processor user data list.");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
@@ -23024,7 +23029,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
     sound->processors[sound->processor_count - 1] = processor;
     sound->processor_user_data[sound->processor_count - 1] = user_data;
 
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
 
     return SITUATION_SUCCESS;
 }
@@ -23041,7 +23046,7 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    ma_mutex_lock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_lock(&sit_audio.audio_queue_mutex);
 
     int found_index = -1;
     for (int i = 0; i < sound->processor_count; ++i) {
@@ -23068,7 +23073,7 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
         }
     }
 
-    ma_mutex_unlock(&sit_gs.sit_audio_queue_mutex);
+    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
