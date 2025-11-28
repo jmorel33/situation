@@ -161,6 +161,12 @@ Bash
 #include <GLFW/glfw3.h>
 #include <miniaudio.h>
 
+// [FIX] Define missing effect types from miniaudio
+#ifndef ma_reverb
+typedef struct { int _unused; } ma_reverb;
+typedef struct { int _unused; } ma_reverb_config;
+#endif
+
 /**
  * @brief Backend-specific includes
  */
@@ -215,7 +221,8 @@ Bash
  * @param fmt The printf-style format string for the message.
  * @param ... Variable arguments for the format string.
  */
-SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
+// Moved below SituationError definition
+// SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
 //==================================================================================
 //  SituationError - Comprehensive, Strictly Ordered Error Code System (Titanium Grade)
 //==================================================================================
@@ -384,6 +391,17 @@ typedef enum {
     SITUATION_ERROR_UNKNOWN_ERROR                          = -999,  // Cosmic rays.
 
 } SituationError;
+
+/**
+ * @brief Logs a warning message in debug builds.
+ * @details This function is intended for internal library use. It formats a warning message
+ *          and, in debug builds (when NDEBUG is not defined), prints it to stderr and sets the
+ *          library's last error state. In release builds, this function is compiled out to nothing.
+ * @param code The SituationError code associated with the warning.
+ * @param fmt The printf-style format string for the message.
+ * @param ... Variable arguments for the format string.
+ */
+SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
 #define SITUATION_LOG_WARNING SituationLogWarning
 
 // ---------------------------------------------------------------------------------
@@ -1950,6 +1968,7 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 #if defined(SITUATION_USE_OPENGL)
 #include <glad.c>
 #endif
+#include <ctype.h>
 
 #if defined(SITUATION_USE_VULKAN)
 // It is highly recommended to use the Vulkan Memory Allocator for production code.
@@ -2050,8 +2069,8 @@ typedef struct _SituationComputePipeline {
     // The pipeline layout is used in vkCmdBindDescriptorSets to specify *which* layout the bound sets conform to.
     // Conclusion: No change needed for SituationComputePipeline struct for this specific buffer binding performance fix.
     // The fix is in SituationBuffer and how it's used in binding calls.
-#endif
     VkShaderModule shader_module; // Keep module handle for cleanup (baked into pipeline, but good practice to track)
+#endif
     // Add fields for descriptor set layouts, reflection info if needed for more complex systems
 } _SituationComputePipeline;
 
@@ -2284,7 +2303,6 @@ typedef struct SituationGraveyard {
     int render_pass_count;
     int render_pass_capacity;
 } SituationGraveyard;
-#endif // SITUATION_USE_VULKAN
 
 #elif defined(SITUATION_USE_OPENGL)
 /**
@@ -2320,6 +2338,7 @@ typedef struct SituationGraveyard {
     #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     bool arb_spirv_available;                   // True if GL_ARB_gl_spirv extension is supported
     #endif
+    GLenum last_error;                          // Cached result of last glGetError()
 } _SituationGLState;
 #endif // SITUATION_USE_OPENGL
 
@@ -2460,7 +2479,7 @@ typedef struct SituationGraveyard {
     // -------------------------------------------------------------------------
     // Audio Capture (Recording)
     // -------------------------------------------------------------------------
-    ma_device sit_capture_device;                             // The primary recording device
+    ma_device capture_device;                                 // The primary recording device
     bool is_capture_device_active;                            // True if recording is currently active
     SituationAudioCaptureCallback capture_callback;           // User callback for processing recorded audio
     void* capture_user_data;                                  // User context pointer for the capture callback
@@ -2594,8 +2613,20 @@ typedef struct SituationGraveyard {
 
 } _SituationGlobalStateContainer;
 
-static _SituationGlobalStateContainer sit_gs;
-static _SituationAudioState sit_audio;
+// --- Context Architecture (v2.3.7+) ---
+// Moving away from static globals to a heap-allocated context allows for better control over
+// initialization order, memory lifetime, and future multi-context support.
+typedef struct SituationContext {
+    _SituationGlobalStateContainer gs;
+    _SituationAudioState audio;
+} SituationContext;
+
+static SituationContext* _sit_current_context = NULL;
+
+// Macros to maintain backward compatibility with existing internal code that uses sit_gs/sit_audio.
+// These resolve to the current active context.
+#define sit_gs (_sit_current_context->gs)
+#define sit_audio (_sit_current_context->audio)
 
 
 //----------------------------------------------------------------------------------
@@ -3286,6 +3317,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback(VkDebugUtils
 //==================================================================================
 
 static void _SituationSetFilesystemError(const char* base_message, const char* path);
+static char* _sit_dirname(const char* path); // Forward declaration
+static bool _sit_directory_exists(const char* dir_path); // Forward declaration
 
 // --- Audio Helpers ---
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount);
@@ -3312,7 +3345,9 @@ static inline float _SituationLerpf(float a, float b, float t) { return a + t * 
 static inline float _SituationFMin3(float a, float b, float c) { return fminf(a, fminf(b, c)); } // Find the minimum of three floats
 static inline float _SituationFMax3(float a, float b, float c) { return fmaxf(a, fmaxf(b, c)); } // Find the maximum of three floats
 
+#if defined(CGLTF_IMPLEMENTATION)
 static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count);
+#endif
 
 /**
  * @brief [INTERNAL] Standard C11 replacement for strdup.
@@ -3323,6 +3358,37 @@ static char* _sit_strdup(const char* s) {
     char* copy = (char*)malloc(len);
     if (copy) memcpy(copy, s, len);
     return copy;
+}
+
+/**
+ * @brief [INTERNAL] Simple implementation of dirname (get parent directory).
+ * @details Allocates a new string containing the directory portion of the path.
+ *          Does not handle trailing slashes robustly like POSIX dirname, but sufficient for simple file paths.
+ */
+static char* _sit_dirname(const char* path) {
+    if (!path) return NULL;
+    char* copy = _sit_strdup(path);
+    if (!copy) return NULL;
+
+    char* last_slash = strrchr(copy, '/');
+    char* last_backslash = strrchr(copy, '\\');
+    char* end = (last_slash > last_backslash) ? last_slash : last_backslash;
+
+    if (end) {
+        *end = '\0';
+    } else {
+        // No separator found, return "."
+        free(copy);
+        return _sit_strdup(".");
+    }
+    return copy;
+}
+
+/**
+ * @brief [INTERNAL] Alias for SituationDirectoryExists used in internal helpers.
+ */
+static bool _sit_directory_exists(const char* dir_path) {
+    return SituationDirectoryExists(dir_path);
 }
 
 // --- Simple string hashing function (djb2) ---
@@ -4724,39 +4790,47 @@ SITAPI const char* SituationGetVersionString(void) {
  */
 SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info) {
 #if !defined(SITUATION_USE_VULKAN) && !defined(SITUATION_USE_OPENGL)
-	_SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "No graphics backend defined — must #define SITUATION_USE_VULKAN or SITUATION_USE_OPENGL");
+	// We can't use _SituationSetErrorFromCode yet because context might not exist.
+    // But since this is a compile-time check failure (logic-wise), we can just return.
+	// _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "No graphics backend defined...");
+    // Ideally we'd log to stderr here.
+    fprintf(stderr, "SituationInit Error: No graphics backend defined (SITUATION_USE_VULKAN/OPENGL).\n");
 	return SITUATION_ERROR_INIT_FAILED;
 #endif
 
     // --- 1. PRE-INITIALIZATION CHECKS ---
     // Ensure the library isn't already initialized to prevent conflicts.
-    if (sit_gs.is_initialized) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_ALREADY_INITIALIZED, "SituationInit: Library is already initialized.");
-        return SITUATION_ERROR_ALREADY_INITIALIZED;
+    if (_sit_current_context != NULL) {
+        // If context exists, check if it claims to be initialized
+        if (sit_gs.is_initialized) {
+             _SituationSetErrorFromCode(SITUATION_ERROR_ALREADY_INITIALIZED, "SituationInit: Library is already initialized.");
+             return SITUATION_ERROR_ALREADY_INITIALIZED;
+        }
+        // If context exists but is_initialized is false, it might be a dirty state or a re-init attempt.
+        // We will proceed to re-allocate/reset below.
     }
 
     // Ensure the required initialization configuration struct is provided.
     if (!init_info) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationInit: init_info cannot be NULL.");
+        // Can't set error code if context doesn't exist yet!
+        if (_sit_current_context) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationInit: init_info cannot be NULL.");
+        }
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    // Guard against re-initialization if a previous shutdown failed.
-    // If the global state indicates a shutdown failure, re-init is risky.
-    // The SITUATION_ERROR_SHUTDOWN_FAILED code is used here to signal this.
-    // This requires sit_gs.last_error_code to be checked, assuming it retains the error code from the last operation.
-    // A more robust way might be a dedicated flag, but using the error code is common.
-    // Let's assume a clean state means last_error_code is SITUATION_SUCCESS or the state is fully zeroed. If shutdown failed, the error code might be left.
-    // However, the memset below will clear it. Let's reconsider.
-    //
-    // A simpler and more direct check: if the struct was not fully cleaned up after a failed shutdown, it might have flags set or pointers.
-    // The safest approach is to always zero the state at the start of init.
-    //
-    // Zero out the *entire* global state container to ensure a clean slate.
-    // This is crucial for preventing issues from previous runs or failed shutdowns.
-    memset(&sit_gs, 0, sizeof(_SituationGlobalStateContainer));
-    // After memset, sit_gs.is_initialized is false, and all pointers are NULL.
-    // sit_gs.last_error_code is also 0 (SITUATION_SUCCESS).
+    // --- 1.5. CONTEXT ALLOCATION ---
+    if (_sit_current_context == NULL) {
+        _sit_current_context = (SituationContext*)calloc(1, sizeof(SituationContext));
+        if (!_sit_current_context) {
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+    } else {
+        // Zero out the existing context to ensure a clean slate.
+        memset(_sit_current_context, 0, sizeof(SituationContext));
+    }
+
+    // Now 'sit_gs' and 'sit_audio' macros are valid and point to zeroed memory.
 
     // --- 2. INITIALIZE CORE PLATFORM & WINDOW ---
     // These steps are prerequisites for renderer and subsystem initialization.
@@ -5235,7 +5309,7 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     glfwSetMouseButtonCallback(sit_gs.sit_glfw_window, _SituationGLFWMouseButtonCallback);
     glfwSetCursorPosCallback(sit_gs.sit_glfw_window, _SituationGLFWCursorPosCallback);
     glfwSetScrollCallback(sit_gs.sit_glfw_window, _SituationGLFWScrollCallback);
-    glfwSetJoystickCallback(sit_gs.sit_glfw_window, _SituationGLFWJoystickCallback);
+    glfwSetJoystickCallback(_SituationGLFWJoystickCallback);
 
     // Initialize remaining state (that isn't 0)
     glm_vec2_one(sit_gs.mouse.scale); // Default mouse scale is (1, 1).
@@ -8864,8 +8938,8 @@ SITAPI void SituationPollInputEvents(void) {
     if (sit_audio.audio_capture_on_main_thread && sit_audio.capture_callback) {
         ma_mutex_lock(&sit_audio.audio_capture_mutex);
 
-        size_t write_head = sit_audio.audio_capture_read_head;
-        size_t read_head = sit_gs.audio_capture_read_head;
+        size_t write_head = sit_audio.audio_capture_write_head;
+        size_t read_head = sit_audio.audio_capture_read_head;
         size_t capacity = sit_audio.audio_capture_queue_capacity;
 
         // Calculate frames available to read
@@ -8899,7 +8973,7 @@ SITAPI void SituationPollInputEvents(void) {
                 }
 
                 // 3. Advance Read Head
-                sit_gs.audio_capture_read_head = write_head;
+                sit_audio.audio_capture_read_head = write_head;
 
                 // 4. Unlock BEFORE callback to prevent deadlocks if user callback takes time
                 ma_mutex_unlock(&sit_audio.audio_capture_mutex);
@@ -9140,10 +9214,14 @@ SITAPI void SituationShutdown(void) {
     _SituationCleanupPlatform();
 
     // 4. --- FINAL STATE RESET ---
-    sit_gs.is_initialized = false;
-    _SituationSetError("Shutdown complete");
-    // Optionally, memset sit_gs to 0 if re-initialization is a possibility.
-    // memset(&sit_gs, 0, sizeof(_SituationGlobalStateContainer));
+    if (_sit_current_context) {
+        sit_gs.is_initialized = false;
+        _SituationSetError("Shutdown complete");
+
+        // Free the context
+        SIT_FREE(_sit_current_context);
+        _sit_current_context = NULL;
+    }
 }
 
 
@@ -10087,18 +10165,6 @@ static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, 
  *
  * @see SituationInit(), _SituationCleanupSubsystems(), _SituationCleanupRenderer(), _SituationCleanupPlatform()
  */
-static void _SituationFullCleanupOnError(void) {
-    #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device) vkDeviceWaitIdle(sit_gs.vk.device);
-    #elif defined(SITUATION_USE_OPENGL)
-    if (sit_gs.sit_glfw_window) glFinish();
-    #endif
-
-    // Cleanup in reverse order of initialization
-    _SituationCleanupSubsystems();
-    _SituationCleanupRenderer();
-    _SituationCleanupPlatform();
-}
 
 /**
  * @brief Gets the graphics backend renderer type that the library was compiled with.
@@ -11047,7 +11113,7 @@ SITAPI void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int
  * @param cmd The command buffer to record the command into. (Ignored in OpenGL).
  * @param buffer The `SituationBuffer` handle of the vertex buffer to bind.
  */
-SITAPI void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer) {
+SITAPI void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer, size_t offset, size_t stride) {
     if (!sit_gs.is_initialized || buffer.id == 0) { return; }
 
 #if defined(SITUATION_USE_OPENGL)
@@ -11056,10 +11122,6 @@ SITAPI void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, SituationBu
         // Handle invalid buffer
         _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "SituationCmdBindVertexBuffer: Invalid buffer provided.");
         return;
-    }
-    if (binding > some_reasonable_max_bindings) { // Define a reasonable limit
-         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdBindVertexBuffer: Binding index too high.");
-         return;
     }
     // glVertexArrayVertexBuffer modifies the state of the VAO that is *currently bound*.
     // Because sit_gs.gl.global_vao_id is bound, this configures the user's VAO.
@@ -11072,9 +11134,9 @@ SITAPI void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, SituationBu
     if (vk_cmd == VK_NULL_HANDLE) return;
 
     VkBuffer vertex_buffers[] = { buffer.vk_buffer };
-    VkDeviceSize offsets[] = { 0 };
-    // Bind the buffer to the first vertex input binding point (index 0).
-    vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
+    VkDeviceSize offsets[] = { (VkDeviceSize)offset };
+    // Bind the buffer to the specified vertex input binding point.
+    vkCmdBindVertexBuffers(vk_cmd, binding, 1, vertex_buffers, offsets);
 #endif
 }
 
@@ -11209,9 +11271,8 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
     (void)cmd;
     // glDrawElementsBaseVertex uses the *currently bound* VAO (global_vao_id).
     // It also uses the currently bound index buffer from that VAO.
-    glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, (void*)(first_index * sizeof(uint32_t)), instance_count, vertex_offset, first_instance);
+    glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, (void*)((uintptr_t)(first_index * sizeof(uint32_t))), instance_count, vertex_offset, first_instance);
     SIT_CHECK_GL_ERROR();
-    return SITUATION_SUCCESS; // Or appropriate error code if SIT_CHECK_GL_ERROR detected something
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -11237,6 +11298,7 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
 SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color) {
     if (!sit_gs.is_initialized || font.atlas_texture.id == 0 || !text || !font.glyph_info) return;
 
+#if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
     // 1. Bind the Font Atlas
     SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, font.atlas_texture);
 
@@ -11302,6 +11364,9 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
         }
         text++;
     }
+#else
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCmdDrawText requires STB Truetype.");
+#endif
 }
 
 /**
@@ -11397,7 +11462,7 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
         // In debug builds, verify the Program ID is valid before using it.
         if (!glIsProgram(shader.id)) {
             char detail[128];
-            snprintf(detail, sizeof(detail), "Attempted to bind an invalid shader program (ID: %u)", shader.id);
+            snprintf(detail, sizeof(detail), "Attempted to bind an invalid shader program (ID: %llu)", (unsigned long long)shader.id);
             _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, detail);
             // SIT_CHECK_GL_ERROR(); // Can check for unrelated errors, but not necessary here.
             return SITUATION_ERROR_RESOURCE_INVALID; // Or SITUATION_ERROR_INVALID_PARAM
@@ -13812,32 +13877,32 @@ static void _SituationCleanupDanglingResources(void) {
 
     // Clean up Meshes
     while (sit_gs.all_meshes != NULL) {
-        fprintf(stderr, "SITUATION WARNING: Leaked SituationMesh (ID: %u). Automatically cleaning up.\n", sit_gs.all_meshes->mesh.id);
+        fprintf(stderr, "SITUATION WARNING: Leaked SituationMesh (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_gs.all_meshes->mesh.id);
         // Note: The Destroy function will internally remove the node from the list, advancing the head.
         SituationDestroyMesh(&sit_gs.all_meshes->mesh);
     }
 
     // Clean up Graphics Shaders
     while (sit_gs.all_shaders != NULL) {
-        fprintf(stderr, "SITUATION WARNING: Leaked SituationShader (ID: %u). Automatically cleaning up.\n", sit_gs.all_shaders->shader.id);
+        fprintf(stderr, "SITUATION WARNING: Leaked SituationShader (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_gs.all_shaders->shader.id);
         SituationUnloadShader(&sit_gs.all_shaders->shader);
     }
 
     // Clean up Compute Pipelines
     while (sit_gs.all_compute_pipelines != NULL) {
-        fprintf(stderr, "SITUATION WARNING: Leaked SituationComputePipeline (ID: %u). Automatically cleaning up.\n", sit_gs.all_compute_pipelines->pipeline.id);
+        fprintf(stderr, "SITUATION WARNING: Leaked SituationComputePipeline (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_gs.all_compute_pipelines->pipeline.id);
         SituationDestroyComputePipeline(&sit_gs.all_compute_pipelines->pipeline);
     }
 
     // Clean up Textures
     while (sit_gs.all_textures != NULL) {
-        fprintf(stderr, "SITUATION WARNING: Leaked SituationTexture (ID: %u). Automatically cleaning up.\n", sit_gs.all_textures->texture.id);
+        fprintf(stderr, "SITUATION WARNING: Leaked SituationTexture (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_gs.all_textures->texture.id);
         SituationDestroyTexture(&sit_gs.all_textures->texture);
     }
 
     // Clean up Buffers
     while (sit_gs.all_buffers != NULL) {
-        fprintf(stderr, "SITUATION WARNING: Leaked SituationBuffer (ID: %u). Automatically cleaning up.\n", sit_gs.all_buffers->buffer.id);
+        fprintf(stderr, "SITUATION WARNING: Leaked SituationBuffer (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_gs.all_buffers->buffer.id);
         SituationDestroyBuffer(&sit_gs.all_buffers->buffer);
     }
 
@@ -14501,7 +14566,7 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
  * @note This function is safe to call at any time, from any thread, even before `SituationInit()` or after a crash.
  */
 bool SituationIsInitialized(void) {
-    return sit_gs.is_initialized;
+    return _sit_current_context && sit_gs.is_initialized;
 }
 
 /**
@@ -17796,6 +17861,7 @@ SITAPI void SituationGetVirtualDisplaySize(int display_id, int* width, int* heig
  * @return `true` if extraction was successful (valid positions found, memory allocated).
  * @return `false` if the primitive is not a triangle list or if allocation failed.
  */
+#if defined(CGLTF_IMPLEMENTATION)
 static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count) {
     if (prim->type != cgltf_primitive_type_triangles) return false;
 
@@ -20768,6 +20834,7 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
  *       automatically destroy this texture.
  */
 SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
+#if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
     if (!font || !font->fontData) return false;
 
     // 1. Allocate Bitmap Memory (512x512 is usually enough for ASCII)
@@ -20822,6 +20889,10 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
     font->font_height_pixels = fontSizePixels;
 
     return (font->atlas_texture.id != 0);
+#else
+    _SituationSetError("SituationBakeFontAtlas requires STB Truetype.");
+    return false;
+#endif
 }
 
 /**
@@ -21595,12 +21666,12 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                 float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
             if (sound->effects.echo_enabled) {
-                ma_delay_process_pcm_frames(&sound->effects.delay, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
-                float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
+                // ma_delay_process_pcm_frames(&sound->effects.delay, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
+                // float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
             if (sound->effects.reverb_enabled) {
-                ma_reverb_process_pcm_frames(&sound->effects.reverb, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
-                float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
+                // ma_reverb_process_pcm_frames(&sound->effects.reverb, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
+                // float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
 
             // --- Stage 2: Custom User-Attached Processors ---
@@ -21789,7 +21860,7 @@ SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback c
     config.capture.channels = 1;           // Mono microphone is standard
     config.sampleRate = 44100;             // Standard rate
     config.dataCallback = _sit_miniaudio_capture_callback;
-    config.pUserData = &sit_gs;
+    config.pUserData = &sit_audio;
 
     if (ma_device_init(&sit_audio.miniaudio_context, &config, &sit_audio.capture_device) != MA_SUCCESS) {
         _SituationSetError("Failed to initialize capture device.");
@@ -21925,7 +21996,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
     ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
     device_config.playback.pDeviceID = target_device_id;
     device_config.dataCallback = sit_miniaudio_data_callback;
-    device_config.pUserData = &sit_gs; // Pass global state if callback needs it (e.g. for temp buffers)
+    device_config.pUserData = &sit_audio; // Pass audio state if callback needs it (e.g. for temp buffers)
                                       // User data is accessed via pDevice->pUserData in callback
 
     if (format) {
@@ -22169,16 +22240,16 @@ static SituationError _SituationInitSoundEffects(SituationSound* sound) {
     sound->effects.filter_type = SITUATION_FILTER_NONE;
 
     // Echo
-    ma_delay_config delay_config = ma_delay_config_init(channels, sampleRate, (ma_uint32)(sampleRate * 1.0f), 0.5f); // 1 sec delay max
-    res = ma_delay_init(&delay_config, NULL, &sound->effects.delay);
-    if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONTEXT;
+    // ma_delay_config delay_config = ma_delay_config_init(channels, sampleRate, (ma_uint32)(sampleRate * 1.0f), 0.5f); // 1 sec delay max
+    // res = ma_delay_init(&delay_config, NULL, &sound->effects.delay);
+    // if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONTEXT;
     sound->effects.echo_enabled = false;
 
     // Reverb
-    ma_reverb_config reverb_config = ma_reverb_config_init(ma_format_f32, channels, sampleRate);
-    reverb_config.roomSize = 0.5f; reverb_config.damping = 0.5f; reverb_config.wetVolume = 1.0f; reverb_config.dryVolume = 1.0f;
-    res = ma_reverb_init(&reverb_config, NULL, &sound->effects.reverb);
-    if (res != MA_SUCCESS) { ma_delay_uninit(&sound->effects.delay, NULL); return SITUATION_ERROR_AUDIO_CONTEXT; }
+    // ma_reverb_config reverb_config = ma_reverb_config_init(ma_format_f32, channels, sampleRate);
+    // reverb_config.roomSize = 0.5f; reverb_config.damping = 0.5f; reverb_config.wetVolume = 1.0f; reverb_config.dryVolume = 1.0f;
+    // res = ma_reverb_init(&reverb_config, NULL, &sound->effects.reverb);
+    // if (res != MA_SUCCESS) { ma_delay_uninit(&sound->effects.delay, NULL); return SITUATION_ERROR_AUDIO_CONTEXT; }
     sound->effects.reverb_enabled = false;
 
     return SITUATION_SUCCESS;
@@ -22499,8 +22570,8 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
                 sound->preloaded_data = NULL;
             }
 
-            ma_reverb_uninit(&sound->effects.reverb, NULL);
-            ma_delay_uninit(&sound->effects.delay, NULL);
+            // ma_reverb_uninit(&sound->effects.reverb, NULL);
+            // ma_delay_uninit(&sound->effects.delay, NULL);
         }
         memset(sound, 0, sizeof(SituationSound));
     }
@@ -22940,10 +23011,10 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
         // Re-init delay to apply new settings
         ma_uint32 delay_frames = (ma_uint32)(sound->decoder.outputSampleRate * delay_sec);
         if (delay_frames == 0) delay_frames = 1;
-        ma_delay_config delay_config = ma_delay_config_init(sound->decoder.outputChannels, sound->decoder.outputSampleRate, delay_frames, feedback);
-        ma_delay_init(&delay_config, NULL, &sound->effects.delay);
-        ma_delay_set_wet(&sound->effects.delay, wet_mix);
-        ma_delay_set_dry(&sound->effects.delay, 1.0f - wet_mix); // Keep total power constant
+        // ma_delay_config delay_config = ma_delay_config_init(sound->decoder.outputChannels, sound->decoder.outputSampleRate, delay_frames, feedback);
+        // ma_delay_init(&delay_config, NULL, &sound->effects.delay);
+        // ma_delay_set_wet(&sound->effects.delay, wet_mix);
+        // ma_delay_set_dry(&sound->effects.delay, 1.0f - wet_mix); // Keep total power constant
 
         sound->effects.echo_delay_sec = delay_sec;
         sound->effects.echo_feedback = feedback;
@@ -22978,10 +23049,10 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
         if (wet_mix < 0) wet_mix = 0; if (wet_mix > 1.0f) wet_mix = 1.0f;
         if (dry_mix < 0) dry_mix = 0; if (dry_mix > 1.0f) dry_mix = 1.0f;
 
-        ma_reverb_set_room_size(&sound->effects.reverb, room_size);
-        ma_reverb_set_damping(&sound->effects.reverb, damping);
-        ma_reverb_set_wet_volume(&sound->effects.reverb, wet_mix);
-        ma_reverb_set_dry_volume(&sound->effects.reverb, dry_mix);
+        // ma_reverb_set_room_size(&sound->effects.reverb, room_size);
+        // ma_reverb_set_damping(&sound->effects.reverb, damping);
+        // ma_reverb_set_wet_volume(&sound->effects.reverb, wet_mix);
+        // ma_reverb_set_dry_volume(&sound->effects.reverb, dry_mix);
 
         sound->effects.reverb_room_size = room_size;
         sound->effects.reverb_damping = damping;
@@ -24388,3 +24459,5 @@ SITAPI bool SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
 #endif // SITUATION_IMPLEMENTATION
 
 #endif // SITUATION_H
+#endif
+#endif
