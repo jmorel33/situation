@@ -2075,11 +2075,13 @@ typedef struct _SituationComputePipeline {
 } _SituationComputePipeline;
 
 // Helper struct to track memory allocated during include resolution
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
 typedef struct _SitIncludeResult {
     shaderc_include_result result;
     char* full_path; // We own this
     char* content;   // We own this
 } _SitIncludeResult;
+#endif
 
 // --- Internal Resource Tracking Node Definitions ---
 typedef struct _SituationMeshNode {
@@ -3945,7 +3947,7 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
 SITAPI char* SituationGetLastErrorMsg(void) {
     // --- 1. Input/State Validation ---
     // Check if the library is initialized. Accessing sit_gs before init is unsafe.
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         // No meaningful error state exists before initialization.
         return NULL;
     }
@@ -6066,7 +6068,7 @@ static void _SituationVulkanDestroyScreenCopyResource(void) {
  */
 static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
     // --- 1. Input/State Validation ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "_SituationVulkanBeginSingleTimeCommands: Library not initialized.");
         return VK_NULL_HANDLE;
     }
@@ -8925,7 +8927,7 @@ static void _SituationVulkanRecreateSwapchain(void) {
  * @see SituationUpdateTimers()
  */
 SITAPI void SituationPollInputEvents(void) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
 
     // [NEW] Reset Profiler Counters
     sit_gs.frame_draw_calls = 0;
@@ -9034,7 +9036,7 @@ SITAPI void SituationPollInputEvents(void) {
  * @see SituationPollInputEvents(), SituationGetFrameTime(), SituationUpdate()
  */
 SITAPI void SituationUpdateTimers(void) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
 
     // --- 1. Global Frame Time Calculation ---
     sit_gs.current_time = glfwGetTime();
@@ -9191,7 +9193,7 @@ SITAPI void SituationUpdate(void) {
  * @see SituationInit(), _SituationCleanupDanglingResources()
  */
 SITAPI void SituationShutdown(void) {
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_SHUTDOWN_FAILED, "Not initialized"); return; }
+    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_SHUTDOWN_FAILED, "Not initialized"); return; }
     if (sit_gs.exit_callback != NULL) { sit_gs.exit_callback(sit_gs.exit_callback_user_data); }
 
     // Wait for the GPU to finish any in-flight work before we start tearing things down. This is especially critical for Vulkan.
@@ -9767,7 +9769,7 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
     SituationComputePipeline pipeline = {0}; // Initialize to invalid state
 
     // --- 1. Pre-condition Checks ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "_SituationVulkanCreateComputePipeline: Library not initialized.");
         return pipeline; // Return invalid pipeline
     }
@@ -10198,7 +10200,7 @@ SITAPI SituationRendererType SituationGetRendererType(void) {
  * @see SituationShutdown()
  */
 SITAPI void SituationSetExitCallback(void (*callback)(void* user_data), void* user_data) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     sit_gs.exit_callback = callback;
     sit_gs.exit_callback_user_data = user_data;
 }
@@ -10220,7 +10222,7 @@ SITAPI void SituationSetExitCallback(void (*callback)(void* user_data), void* us
  * @see SituationGetRenderWidth(), SituationGetRenderHeight()
  */
 SITAPI void SituationSetResizeCallback(void (*callback)(int width, int height, void* user_data), void* user_data) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     sit_gs.resize_callback = callback;
     sit_gs.resize_callback_user_data = user_data;
 }
@@ -10305,7 +10307,7 @@ SITAPI const char* SituationGetArgumentValue(const char* arg_name) {
  */
 SITAPI bool SituationAcquireFrameCommandBuffer(void) {
     // --- 1. Library Initialization Check ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot begin frame before library initialization.");
         return false;
     }
@@ -10460,7 +10462,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
  */
 SITAPI SituationError SituationEndFrame(void) {
     // --- 1. Library Initialization Check ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot end frame.");
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
@@ -10625,7 +10627,7 @@ SITAPI SituationError SituationEndFrame(void) {
  */
 SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
     // --- 1. Library Initialization Check ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         // Returning NULL is a safe default for an invalid/uninitialized state.
         // Could also set an error, but often just returning NULL is sufficient for a getter.
         // _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get command buffer before library initialization.");
@@ -10703,7 +10705,7 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
  * @note Must be paired with `SituationCmdEndRenderPass`.
  */
 SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info) {
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!info) return SITUATION_ERROR_INVALID_PARAM;
 
 #if defined(SITUATION_USE_OPENGL)
@@ -10783,7 +10785,7 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
  * @warning Calling this function without an active render pass (Vulkan) will result in a validation error.
  */
 SITAPI void SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
 
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
@@ -10804,7 +10806,7 @@ SITAPI void SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
  * @param clear_color The color to clear the target with.
  */
 SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cmd, int display_id, ColorRGBA clear_color) {
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "CmdBeginRenderToDisplay");
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
@@ -10891,7 +10893,7 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
  */
 SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
     // --- 1. Input Validation ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "CmdEndRender");
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
@@ -10981,7 +10983,7 @@ SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
  */
 SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height) {
     // --- 1. Input Validation ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         // Silently return if not initialized, consistent with snippet behavior.
         // Alternatively, could set an error: _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "...");
         return;
@@ -11186,7 +11188,7 @@ SITAPI void SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuf
  * @return `SITUATION_ERROR_INVALID_PARAM` or `SITUATION_ERROR_RESOURCE_INVALID` on failure.
  */
 SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture) {
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (texture.id == 0) return SITUATION_ERROR_RESOURCE_INVALID;
 
 #if defined(SITUATION_USE_OPENGL)
@@ -11387,7 +11389,7 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
  * @param offset The byte offset of this attribute within the vertex structure.
  */
 SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
 
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
@@ -11441,7 +11443,7 @@ SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t 
  */
 SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader) {
     // --- 1. Input Validation ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (shader.id == 0) {
@@ -11540,7 +11542,7 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
  */
 SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh) {
     // --- 1. Input Validation ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (mesh.id == 0 || mesh.index_count == 0) {
@@ -11616,7 +11618,7 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
  * @param color The color of the quad as a normalized vec4 (r, g, b, a).
  */
 SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     sit_gs.debug_draw_command_issued_this_frame = true;
     sit_gs.frame_draw_calls++;
     sit_gs.frame_triangle_count += 2;
@@ -11699,7 +11701,7 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 co
  */
 SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size) {
     // --- 1. Input Validation ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot set push constant.");
         return;
     }
@@ -11822,7 +11824,7 @@ SITAPI uint32_t SituationGetDrawCallCount(void) {
  * @return The total allocated VRAM in bytes, or 0 if the information cannot be retrieved.
  */
 SITAPI uint64_t SituationGetVRAMUsage(void) {
-    if (!sit_gs.is_initialized) return 0;
+    if (!SituationIsInitialized()) return 0;
 
     // --- 1. VULKAN (Most Accurate) ---
 #if defined(SITUATION_USE_VULKAN)
@@ -11928,7 +11930,7 @@ SITAPI uint64_t SituationGetVRAMUsage(void) {
  * @see SituationCreateBuffer(), SituationCmdBindTextureSet()
  */
 SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer) {
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         // No error message set here as this is a common check.
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
@@ -12007,7 +12009,7 @@ SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, 
  * @see SituationCreateTexture(), SituationCmdBindDescriptorSet()
  */
 SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture) {
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (texture.id == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to bind an invalid texture handle.");
         return SITUATION_ERROR_RESOURCE_INVALID;
@@ -12712,7 +12714,7 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
     SituationError local_err = SITUATION_SUCCESS;
 
     // --- 1. Pre-initialization Validation ---
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create buffer before library initialization."); return buffer; } // Return zeroed/invalid buffer
+    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create buffer before library initialization."); return buffer; } // Return zeroed/invalid buffer
     if (size == 0) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot create buffer of size 0."); return buffer; }
     // Ensure at least one usage flag is specified to guide creation and memory allocation.
     if (usage_flags == 0) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateBuffer: No usage flags specified."); return buffer; }
@@ -13601,7 +13603,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
     SituationComputePipeline pipeline = {0}; // Always initialize to an invalid state.
 
     // --- 1. Pre-condition Checks ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipelineFromMemory: Library not initialized.");
         return pipeline; // Return invalid pipeline
     }
@@ -13744,7 +13746,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compu
     // --- 1. Input Validation ---
     SituationComputePipeline pipeline = {0};
 
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode( SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipeline: Library not initialized." ); return pipeline; }
+    if (!SituationIsInitialized()) { _SituationSetErrorFromCode( SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipeline: Library not initialized." ); return pipeline; }
     if (!compute_shader_path) { _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipeline: compute_shader_path cannot be NULL." ); return pipeline; }
 
     // --- 2. Load Shader Source from File ---
@@ -13936,7 +13938,7 @@ static void _SituationCleanupDanglingResources(void) {
  */
 SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offset, size_t size, const void* data) {
     // --- 1. Pre-Operation Validation ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (buffer.id == 0) {
@@ -14160,7 +14162,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
  */
 SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offset, size_t size, void* out_data) {
     // --- 1. Pre-Operation Validation ---
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (buffer.id == 0) return SITUATION_ERROR_RESOURCE_INVALID;
     if (!out_data) return SITUATION_ERROR_INVALID_PARAM;
     if (size == 0) return SITUATION_SUCCESS;
@@ -14207,7 +14209,7 @@ SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offs
  */
 SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline) {
     // --- Input Validation ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot bind compute pipeline.");
         return;
     }
@@ -14316,7 +14318,7 @@ SITAPI SituationError SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, 
  * @param dst_flags A bitmask of `SituationBarrierDstFlags` indicating the pipeline stage(s) and type(s) of memory access that form the destination of the dependency.
  */
 SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags) {
-    if (!sit_gs.is_initialized) { return; } // Silently return if the library isn't initialized.
+    if (!SituationIsInitialized()) { return; } // Silently return if the library isn't initialized.
 
 #if defined(SITUATION_USE_OPENGL)
     {
@@ -14502,7 +14504,7 @@ SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src
  */
 SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
     // --- 1. Core Library Initialization Check ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot dispatch compute work.");
         return;
     }
@@ -14643,7 +14645,7 @@ SITAPI void SituationSetFileDropCallback(SituationFileDropCallback callback, voi
  * @see SituationLoadDroppedFiles()
  */
 SITAPI bool SituationIsFileDropped(void) {
-    if (!sit_gs.is_initialized) return false;
+    if (!SituationIsInitialized()) return false;
     return sit_gs.file_was_dropped_this_frame;
 }
 
@@ -14758,7 +14760,7 @@ SITAPI void SituationUnloadDroppedFiles(char** paths, int count) {
 SITUATION_DEVICE_INFO_DEPRECATED("Use the new, more specific functions like SituationGetCPUInfo(), SituationGetGPUInfo(), etc. This function will be removed in a future version.")
 SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
     SituationDeviceInfo info = {0};
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get device info"); return info; }
+    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get device info"); return info; }
 
     #if defined(_WIN32)
     // CPU Info
@@ -14927,7 +14929,7 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
  *         Do not free this string.
  */
 SITAPI const char* SituationGetGPUName(void) {
-    if (!sit_gs.is_initialized) return "Unknown (Not Initialized)";
+    if (!SituationIsInitialized()) return "Unknown (Not Initialized)";
 
 #if defined(SITUATION_USE_OPENGL)
     if (sit_gs.sit_glfw_window) {
@@ -15035,7 +15037,7 @@ SITAPI char* SituationGetUserDirectory(void) {
  * @see SituationGetDriveInfo()
  */
 SITAPI char SituationGetCurrentDriveLetter(void) {
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetCurrentDriveLetter");
         return 0;
     }
@@ -15075,7 +15077,7 @@ SITAPI char SituationGetCurrentDriveLetter(void) {
  * @see SituationGetCurrentDriveLetter()
  */
 SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacity_bytes, uint64_t* out_free_space_bytes, char* out_volume_name, int volume_name_len) {
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDriveInfo");
         return false;
     }
@@ -16427,7 +16429,7 @@ SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
  *          Existing cache memory is freed before new allocation occurs.
  */
 static void _SituationCachePhysicalDisplays(void) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     if (sit_gs.cached_physical_displays_array) {
         for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
             SIT_FREE(sit_gs.cached_physical_displays_array[i].available_modes);
@@ -16530,7 +16532,7 @@ static void _SituationCachePhysicalDisplays(void) {
  * @return A pointer to a newly allocated array of SituationDisplayInfo structs, or NULL on failure.
  */
 SITAPI SituationDisplayInfo* SituationGetDisplays(int* count) {
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDisplays"); if (count) *count = 0; return NULL; }
+    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDisplays"); if (count) *count = 0; return NULL; }
     if (!sit_gs.cached_physical_displays_array) _SituationCachePhysicalDisplays();
     if (!sit_gs.cached_physical_displays_array || sit_gs.cached_physical_display_count == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No cached displays or count is zero");
@@ -16571,7 +16573,7 @@ SITAPI SituationDisplayInfo* SituationGetDisplays(int* count) {
  * @see _SituationCachePhysicalDisplays()
  */
 SITAPI void SituationRefreshDisplays(void) {
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "RefreshDisplays"); return; }
+    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "RefreshDisplays"); return; }
     _SituationCachePhysicalDisplays();
 }
 
@@ -16978,7 +16980,7 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
  */
 SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode) {
     // --- 1. Validation ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create virtual display");
         return -1;
     }
@@ -17238,7 +17240,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
  * @return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID if the ID is invalid or not in use.
  */
 SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
         return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
     }
@@ -17282,7 +17284,7 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
  * @return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID if the ID is invalid or not in use.
  */
 SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, SituationScalingMode scaling_mode) {
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
@@ -17725,7 +17727,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
  *         Returns SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID if the ID is invalid or not in use.
  */
 SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, float opacity, int z_order, bool visible, double frame_time_mult, SituationBlendMode blend_mode) {
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
         return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
     }
@@ -17812,7 +17814,7 @@ SITAPI bool SituationIsVirtualDisplayDirty(int display_id) {
  *         Returns 0.0 if no compositing has occurred yet or if there were no visible VDs.
  */
 SITAPI double SituationGetLastVDCompositeTimeMS(void) {
-    if (!sit_gs.is_initialized) return 0.0;
+    if (!SituationIsInitialized()) return 0.0;
     return sit_gs.gl.last_vd_composite_time_ms;
 }
 
@@ -18365,7 +18367,7 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
     SituationShader shader = {0}; // Always initialize to an invalid state.
 
     // --- 1. Pre-condition Checks ---
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader."); return shader; }
+    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader."); return shader; }
     if (!vs_path || !fs_path) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader paths cannot be NULL."); return shader; }
 
     // --- 2. Load Vertex Shader Source from File ---
@@ -18428,7 +18430,7 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
  */
 SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code) {
     SituationShader shader = {0};
-    if (!sit_gs.is_initialized) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader."); return shader; }
+    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader."); return shader; }
     if (!vs_code || !fs_code) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader source code cannot be NULL"); return shader; }
 
 // --- Backend-Specific Shader Creation Logic ---
@@ -18532,7 +18534,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
     SituationComputePipeline pipeline = {0}; // Always initialize to an invalid state.
 
     // --- 1. Pre-condition Checks ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create compute pipeline.");
         return pipeline;
     }
@@ -18765,7 +18767,7 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
  * @see SituationCmdSetPushConstant(), SituationCmdBindUniformBuffer()
  */
 SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const char* uniform_name, const void* data, SituationUniformType type) {
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (shader.id == 0 || !uniform_name || !data) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid shader, name, or data for SetShaderUniform.");
         return SITUATION_ERROR_INVALID_PARAM;
@@ -19438,7 +19440,7 @@ SITAPI void SituationSetWindowFocused(void) {
  * @see SituationSetWindowFocused()
  */
 SITAPI bool SituationHasWindowFocus(void) {
-    if (!sit_gs.is_initialized) return false;
+    if (!SituationIsInitialized()) return false;
     return sit_gs.current_window_focus_state;
 }
 
@@ -19682,7 +19684,7 @@ SITAPI void SituationSetFocusCallback(SituationFocusCallback gained_focus, void*
  * @see SituationClearWindowState(), SituationApplyCurrentProfileWindowState()
  */
 SITAPI SituationError SituationSetWindowStateProfiles(uint32_t active_flags, uint32_t inactive_flags) {
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     sit_gs.active_profile_window_flags = active_flags;
     sit_gs.inactive_profile_window_flags = inactive_flags;
     return SituationApplyCurrentProfileWindowState();
@@ -19818,7 +19820,7 @@ SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
  * @param flags_to_toggle A bitmask of `SITUATION_FLAG_*` defines to toggle (flip) in the profile.
  */
 SITAPI SituationError SituationToggleWindowStateFlags(SituationWindowStateFlags flags_to_toggle) {
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     uint32_t* profile_to_modify = sit_gs.current_window_focus_state ? &sit_gs.active_profile_window_flags : &sit_gs.inactive_profile_window_flags;
 
     // Special handling for mutually exclusive flags like MINIMIZED/MAXIMIZED/FULLSCREEN
@@ -19933,7 +19935,7 @@ SITAPI void SituationResumeApp(void) { // Largely same logic
  * @see SituationPauseApp(), SituationResumeApp()
  */
 SITAPI bool SituationIsAppPaused(void) {
-    if (!sit_gs.is_initialized) return true;
+    if (!SituationIsInitialized()) return true;
     return sit_gs.is_app_internally_paused;
 }
 
@@ -21666,8 +21668,8 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                 float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
             if (sound->effects.echo_enabled) {
-                // ma_delay_process_pcm_frames(&sound->effects.delay, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
-                // float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
+                ma_delay_process_pcm_frames(&sound->effects.delay, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
+                float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
             if (sound->effects.reverb_enabled) {
                 // ma_reverb_process_pcm_frames(&sound->effects.reverb, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
@@ -22240,9 +22242,9 @@ static SituationError _SituationInitSoundEffects(SituationSound* sound) {
     sound->effects.filter_type = SITUATION_FILTER_NONE;
 
     // Echo
-    // ma_delay_config delay_config = ma_delay_config_init(channels, sampleRate, (ma_uint32)(sampleRate * 1.0f), 0.5f); // 1 sec delay max
-    // res = ma_delay_init(&delay_config, NULL, &sound->effects.delay);
-    // if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONTEXT;
+    ma_delay_config delay_config = ma_delay_config_init(channels, sampleRate, (ma_uint32)(sampleRate * 1.0f), 0.5f); // 1 sec delay max
+    res = ma_delay_init(&delay_config, NULL, &sound->effects.delay);
+    if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONTEXT;
     sound->effects.echo_enabled = false;
 
     // Reverb
@@ -22571,7 +22573,7 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
             }
 
             // ma_reverb_uninit(&sound->effects.reverb, NULL);
-            // ma_delay_uninit(&sound->effects.delay, NULL);
+            ma_delay_uninit(&sound->effects.delay, NULL);
         }
         memset(sound, 0, sizeof(SituationSound));
     }
@@ -22668,7 +22670,7 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
  * @see SituationStopLoadedSound()
  */
 SITAPI SituationError SituationStopAllLoadedSounds(void) {
-    if (!sit_gs.is_initialized) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     ma_mutex_lock(&sit_audio.audio_queue_mutex); // Lock
     sit_audio.queued_sound_count = 0;
     ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock
@@ -22920,6 +22922,7 @@ SITAPI float SituationGetSoundPan(SituationSound* sound) {
  * @warning Changing the pitch is a moderately expensive operation as it requires reconfiguring the audio resampler. Avoid calling it on every frame if possible.
  */
 SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->converter_initialized) return SITUATION_ERROR_INVALID_PARAM;
     if (pitch <= 0.0f) pitch = 0.01f; // Prevent zero or negative pitch
 
@@ -22959,6 +22962,7 @@ SITAPI float SituationGetSoundPitch(SituationSound* sound) {
  * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
  */
 SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFilterType type, float cutoff_hz, float q_factor) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
     if (cutoff_hz <= 0) type = SITUATION_FILTER_NONE;
     if (q_factor <= 0) q_factor = 0.707f; // Default Q
@@ -22999,6 +23003,7 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
  * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
  */
 SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled, float delay_sec, float feedback, float wet_mix) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
     ma_mutex_lock(&sit_audio.audio_queue_mutex);
@@ -23011,10 +23016,18 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
         // Re-init delay to apply new settings
         ma_uint32 delay_frames = (ma_uint32)(sound->decoder.outputSampleRate * delay_sec);
         if (delay_frames == 0) delay_frames = 1;
-        // ma_delay_config delay_config = ma_delay_config_init(sound->decoder.outputChannels, sound->decoder.outputSampleRate, delay_frames, feedback);
-        // ma_delay_init(&delay_config, NULL, &sound->effects.delay);
-        // ma_delay_set_wet(&sound->effects.delay, wet_mix);
-        // ma_delay_set_dry(&sound->effects.delay, 1.0f - wet_mix); // Keep total power constant
+
+        // Uninit previous delay to prevent leaks if we re-init
+        ma_delay_uninit(&sound->effects.delay, NULL);
+
+        ma_delay_config delay_config = ma_delay_config_init(sound->decoder.outputChannels, sound->decoder.outputSampleRate, delay_frames, feedback);
+        if (ma_delay_init(&delay_config, NULL, &sound->effects.delay) != MA_SUCCESS) {
+            sound->effects.echo_enabled = false; // Disable if init fails
+            ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+            return SITUATION_ERROR_AUDIO_CONTEXT;
+        }
+        ma_delay_set_wet(&sound->effects.delay, wet_mix);
+        ma_delay_set_dry(&sound->effects.delay, 1.0f - wet_mix); // Keep total power constant
 
         sound->effects.echo_delay_sec = delay_sec;
         sound->effects.echo_feedback = feedback;
@@ -23039,28 +23052,37 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
  * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
  */
 SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
     ma_mutex_lock(&sit_audio.audio_queue_mutex);
-    sound->effects.reverb_enabled = enabled;
+
     if (enabled) {
+        // [FIX] Reverb is currently disabled due to missing implementation in the miniaudio header provided.
+        // We log a warning but return an error code to inform the user it's not active.
+        SITUATION_LOG_WARNING(SITUATION_ERROR_NOT_IMPLEMENTED, "Reverb effect is currently unavailable in this build.");
+
+        sound->effects.reverb_enabled = false; // Force disable
+        ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+        return SITUATION_ERROR_NOT_IMPLEMENTED;
+    } else {
+        // If disabling, we can successfully "disable" it (even if it wasn't really running)
+        sound->effects.reverb_enabled = false;
+
+        // Store parameters anyway in case they are used for other logic or if reverb is re-enabled later
         if (room_size < 0) room_size = 0; if (room_size > 1.0f) room_size = 1.0f;
         if (damping < 0) damping = 0; if (damping > 1.0f) damping = 1.0f;
         if (wet_mix < 0) wet_mix = 0; if (wet_mix > 1.0f) wet_mix = 1.0f;
         if (dry_mix < 0) dry_mix = 0; if (dry_mix > 1.0f) dry_mix = 1.0f;
 
-        // ma_reverb_set_room_size(&sound->effects.reverb, room_size);
-        // ma_reverb_set_damping(&sound->effects.reverb, damping);
-        // ma_reverb_set_wet_volume(&sound->effects.reverb, wet_mix);
-        // ma_reverb_set_dry_volume(&sound->effects.reverb, dry_mix);
-
         sound->effects.reverb_room_size = room_size;
         sound->effects.reverb_damping = damping;
         sound->effects.reverb_wet_mix = wet_mix;
         sound->effects.reverb_dry_mix = dry_mix;
+
+        ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+        return SITUATION_SUCCESS;
     }
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
-    return SITUATION_SUCCESS;
 }
 
 /**
@@ -23454,7 +23476,7 @@ SITAPI bool SituationIsKeyReleased(int key) {
  * @see SituationPeekKeyPressed()
  */
 SITAPI int SituationGetKeyPressed(void) {
-    if (!sit_gs.is_initialized) return 0;
+    if (!SituationIsInitialized()) return 0;
 
     int key = 0;
     ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
@@ -23479,7 +23501,7 @@ SITAPI int SituationGetKeyPressed(void) {
  * @see SituationGetKeyPressed()
  */
 SITAPI int SituationPeekKeyPressed(void) {
-    if (!sit_gs.is_initialized) return 0;
+    if (!SituationIsInitialized()) return 0;
 
     int key = 0;
     ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
@@ -23503,7 +23525,7 @@ SITAPI int SituationPeekKeyPressed(void) {
  * @note The queue is cleared at the beginning of each frame by `SituationPollInputEvents()`.
  */
 SITAPI unsigned int SituationGetCharPressed(void) {
-    if (!sit_gs.is_initialized) return 0;
+    if (!SituationIsInitialized()) return 0;
 
     unsigned int codepoint = 0;
     ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
@@ -23529,7 +23551,7 @@ SITAPI unsigned int SituationGetCharPressed(void) {
  * @see SituationIsScrollLockOn(), SituationIsModifierPressed()
  */
 SITAPI bool SituationIsLockKeyPressed(int lock_key_mod) {
-    if (!sit_gs.is_initialized) return false;
+    if (!SituationIsInitialized()) return false;
     return (sit_gs.keyboard.lock_key_state & lock_key_mod) != 0;
 }
 
@@ -23544,7 +23566,7 @@ SITAPI bool SituationIsLockKeyPressed(int lock_key_mod) {
  * @see SituationIsLockKeyPressed()
  */
 SITAPI bool SituationIsScrollLockOn(void) {
-    if (!sit_gs.is_initialized) return false;
+    if (!SituationIsInitialized()) return false;
     return sit_gs.keyboard.is_scroll_lock_on;
 }
 
@@ -23559,7 +23581,7 @@ SITAPI bool SituationIsScrollLockOn(void) {
  * @see SituationIsKeyDown()
  */
 SITAPI bool SituationIsModifierPressed(int modifier) {
-    if (!sit_gs.is_initialized) return false;
+    if (!SituationIsInitialized()) return false;
     return (sit_gs.keyboard.modifier_state & modifier) != 0;
 }
 
@@ -23573,7 +23595,7 @@ SITAPI bool SituationIsModifierPressed(int modifier) {
  * @warning The callback is executed in the same thread that calls `SituationPollInputEvents`. It is not asynchronous and will block the main loop until it returns.
  */
 SITAPI void SituationSetKeyCallback(SituationKeyCallback callback, void* user_data) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     sit_gs.keyboard.key_callback = callback;
     sit_gs.keyboard.key_callback_user_data = user_data;
 }
@@ -23590,7 +23612,7 @@ SITAPI void SituationSetKeyCallback(SituationKeyCallback callback, void* user_da
  * @see SituationGetMouseDelta(), SituationSetMousePosition()
  */
 SITAPI Vector2 SituationGetMousePosition(void) {
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         Vector2 zero_vec = {0.0f, 0.0f}; return zero_vec;
     }
     Vector2 pos;
@@ -23611,7 +23633,7 @@ SITAPI Vector2 SituationGetMousePosition(void) {
  * @see SituationGetMousePosition()
  */
 SITAPI Vector2 SituationGetMouseDelta(void) {
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         Vector2 zero_vec = {0.0f, 0.0f}; return zero_vec;
     }
     Vector2 delta;
@@ -23656,7 +23678,7 @@ SITAPI void SituationSetMousePosition(Vector2 pos) {
  * @see SituationGetMousePosition(), SituationSetMouseScale()
  */
 SITAPI void SituationSetMouseOffset(Vector2 offset) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     glm_vec2_copy(offset, sit_gs.mouse.offset);
 }
 
@@ -23672,7 +23694,7 @@ SITAPI void SituationSetMouseOffset(Vector2 offset) {
  * @see SituationGetMousePosition(), SituationGetMouseDelta(), SituationSetMouseOffset()
  */
 SITAPI void SituationSetMouseScale(Vector2 scale) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     glm_vec2_copy(scale, sit_gs.mouse.scale);
 }
 
@@ -23687,7 +23709,7 @@ SITAPI void SituationSetMouseScale(Vector2 scale) {
  * @see SituationGetMouseWheelMoveV()
  */
 SITAPI float SituationGetMouseWheelMove(void) {
-    if (!sit_gs.is_initialized) return 0.0f;
+    if (!SituationIsInitialized()) return 0.0f;
     // GLFW scroll y offset is positive for scroll up/away from user, negative for scroll down/towards user.
     return sit_gs.mouse.wheel_move_y;
 }
@@ -23703,7 +23725,7 @@ SITAPI float SituationGetMouseWheelMove(void) {
  * @see SituationGetMouseWheelMove()
  */
 SITAPI Vector2 SituationGetMouseWheelMoveV(void) {
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         Vector2 zero_vec = {0.0f, 0.0f}; return zero_vec;
     }
     Vector2 wheel_v = {sit_gs.mouse.wheel_move_x, sit_gs.mouse.wheel_move_y};
@@ -23720,7 +23742,7 @@ SITAPI Vector2 SituationGetMouseWheelMoveV(void) {
  * @note The queue is cleared at the beginning of each frame by `SituationPollInputEvents()`.
  */
 SITAPI int SituationGetMouseButtonPressed(void) {
-    if (!sit_gs.is_initialized) return -1;
+    if (!SituationIsInitialized()) return -1;
 
     ma_mutex_lock(&sit_gs.mouse.mutex);
     int button = -1;
@@ -23782,7 +23804,7 @@ SITAPI bool SituationIsMouseButtonReleased(int button) {
  * @warning The callback is executed in the same thread that calls `SituationPollInputEvents`.
  */
 SITAPI void SituationSetMouseButtonCallback(SituationMouseButtonCallback callback, void* user_data) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     sit_gs.mouse.button_callback = callback;
     sit_gs.mouse.button_callback_user_data = user_data;
 }
@@ -23797,7 +23819,7 @@ SITAPI void SituationSetMouseButtonCallback(SituationMouseButtonCallback callbac
  * @warning The callback is executed in the same thread that calls `SituationPollInputEvents`.
  */
 SITAPI void SituationSetCursorPosCallback(SituationCursorPosCallback callback, void* user_data) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     sit_gs.mouse.cursor_pos_callback = callback;
     sit_gs.mouse.cursor_pos_callback_user_data = user_data;
 }
@@ -23812,7 +23834,7 @@ SITAPI void SituationSetCursorPosCallback(SituationCursorPosCallback callback, v
  * @warning The callback is executed in the same thread that calls `SituationPollInputEvents`.
  */
 SITAPI void SituationSetScrollCallback(SituationScrollCallback callback, void* user_data) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     sit_gs.mouse.scroll_callback = callback;
     sit_gs.mouse.scroll_callback_user_data = user_data;
 }
@@ -23950,7 +23972,7 @@ SITAPI const char* SituationGetJoystickName(int jid) {
  * @warning The GLFW callback that triggers this may be called from a separate thread. Your callback function should be thread-safe or delegate complex work to the main thread.
  */
 SITAPI void SituationSetJoystickCallback(SituationJoystickCallback callback, void* user_data) {
-    if (!sit_gs.is_initialized) return;
+    if (!SituationIsInitialized()) return;
     sit_gs.joysticks.callback = callback;
     sit_gs.joysticks.callback_user_data = user_data;
 }
@@ -23981,7 +24003,7 @@ SITAPI bool SituationIsGamepadButtonDown(int jid, int button) {
  * @note This function does not distinguish which gamepad the press came from. It is best used for single-player UI navigation or actions where the source controller doesn't matter. For player-specific input, use `SituationIsGamepadButtonPressed()`.
  */
 SITAPI int SituationGetGamepadButtonPressed(void) {
-    if (!sit_gs.is_initialized) return -1;
+    if (!SituationIsInitialized()) return -1;
 
     int button = -1;
     // Note: Gamepad queue isn't mutex protected as it's updated in main thread
@@ -24084,7 +24106,7 @@ SITAPI int SituationGetGamepadAxisCount(int jid) {
  * @return `1` on success, `0` on failure (e.g., if the mapping string is invalid).
  */
 SITAPI int SituationSetGamepadMappings(const char *mappings) {
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SetGamepadMappings");
         return 0;
     }
@@ -24152,7 +24174,7 @@ SITAPI GLFWwindow* SituationGetGLFWwindow(void) {
  * @see SituationGetScreenWidth(), SituationGetScreenHeight()
  */
 SITAPI void SituationGetWindowSize(int* width, int* height) {
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         // If the engine isn't running, return 0 to avoid errors.
         if (width) *width = 0;
         if (height) *height = 0;
@@ -24184,7 +24206,7 @@ SITAPI bool SituationWindowShouldClose(void) {
  */
 SITAPI void SituationSetTargetFPS(int fps) {
     // --- 1. Pre-condition Check ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         // As per library convention, silently return or set a general error if called incorrectly.
         // The provided text shows similar functions returning early.
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetTargetFPS: Library not initialized.");
@@ -24211,7 +24233,7 @@ SITAPI void SituationSetTargetFPS(int fps) {
  */
 SITAPI float SituationGetFrameTime(void) {
     // --- 1. Pre-condition Check ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         // Return a default value as per the original docstring and common practice.
         return 0.0f;
     }
@@ -24230,7 +24252,7 @@ SITAPI float SituationGetFrameTime(void) {
  */
 SITAPI int SituationGetFPS(void) {
     // --- 1. Pre-condition Check ---
-    if (!sit_gs.is_initialized) {
+    if (!SituationIsInitialized()) {
         // Return a default value as per the original docstring.
         return 0;
     }
