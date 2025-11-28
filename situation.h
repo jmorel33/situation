@@ -2075,11 +2075,13 @@ typedef struct _SituationComputePipeline {
 } _SituationComputePipeline;
 
 // Helper struct to track memory allocated during include resolution
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
 typedef struct _SitIncludeResult {
     shaderc_include_result result;
     char* full_path; // We own this
     char* content;   // We own this
 } _SitIncludeResult;
+#endif
 
 // --- Internal Resource Tracking Node Definitions ---
 typedef struct _SituationMeshNode {
@@ -21666,8 +21668,8 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                 float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
             if (sound->effects.echo_enabled) {
-                // ma_delay_process_pcm_frames(&sound->effects.delay, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
-                // float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
+                ma_delay_process_pcm_frames(&sound->effects.delay, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
+                float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
             if (sound->effects.reverb_enabled) {
                 // ma_reverb_process_pcm_frames(&sound->effects.reverb, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
@@ -22240,9 +22242,9 @@ static SituationError _SituationInitSoundEffects(SituationSound* sound) {
     sound->effects.filter_type = SITUATION_FILTER_NONE;
 
     // Echo
-    // ma_delay_config delay_config = ma_delay_config_init(channels, sampleRate, (ma_uint32)(sampleRate * 1.0f), 0.5f); // 1 sec delay max
-    // res = ma_delay_init(&delay_config, NULL, &sound->effects.delay);
-    // if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONTEXT;
+    ma_delay_config delay_config = ma_delay_config_init(channels, sampleRate, (ma_uint32)(sampleRate * 1.0f), 0.5f); // 1 sec delay max
+    res = ma_delay_init(&delay_config, NULL, &sound->effects.delay);
+    if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONTEXT;
     sound->effects.echo_enabled = false;
 
     // Reverb
@@ -22571,7 +22573,7 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
             }
 
             // ma_reverb_uninit(&sound->effects.reverb, NULL);
-            // ma_delay_uninit(&sound->effects.delay, NULL);
+            ma_delay_uninit(&sound->effects.delay, NULL);
         }
         memset(sound, 0, sizeof(SituationSound));
     }
@@ -22920,6 +22922,7 @@ SITAPI float SituationGetSoundPan(SituationSound* sound) {
  * @warning Changing the pitch is a moderately expensive operation as it requires reconfiguring the audio resampler. Avoid calling it on every frame if possible.
  */
 SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->converter_initialized) return SITUATION_ERROR_INVALID_PARAM;
     if (pitch <= 0.0f) pitch = 0.01f; // Prevent zero or negative pitch
 
@@ -22959,6 +22962,7 @@ SITAPI float SituationGetSoundPitch(SituationSound* sound) {
  * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
  */
 SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFilterType type, float cutoff_hz, float q_factor) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
     if (cutoff_hz <= 0) type = SITUATION_FILTER_NONE;
     if (q_factor <= 0) q_factor = 0.707f; // Default Q
@@ -22999,6 +23003,7 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
  * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
  */
 SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled, float delay_sec, float feedback, float wet_mix) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
     ma_mutex_lock(&sit_audio.audio_queue_mutex);
@@ -23011,10 +23016,18 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
         // Re-init delay to apply new settings
         ma_uint32 delay_frames = (ma_uint32)(sound->decoder.outputSampleRate * delay_sec);
         if (delay_frames == 0) delay_frames = 1;
-        // ma_delay_config delay_config = ma_delay_config_init(sound->decoder.outputChannels, sound->decoder.outputSampleRate, delay_frames, feedback);
-        // ma_delay_init(&delay_config, NULL, &sound->effects.delay);
-        // ma_delay_set_wet(&sound->effects.delay, wet_mix);
-        // ma_delay_set_dry(&sound->effects.delay, 1.0f - wet_mix); // Keep total power constant
+
+        // Uninit previous delay to prevent leaks if we re-init
+        ma_delay_uninit(&sound->effects.delay, NULL);
+
+        ma_delay_config delay_config = ma_delay_config_init(sound->decoder.outputChannels, sound->decoder.outputSampleRate, delay_frames, feedback);
+        if (ma_delay_init(&delay_config, NULL, &sound->effects.delay) != MA_SUCCESS) {
+            sound->effects.echo_enabled = false; // Disable if init fails
+            ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+            return SITUATION_ERROR_AUDIO_CONTEXT;
+        }
+        ma_delay_set_wet(&sound->effects.delay, wet_mix);
+        ma_delay_set_dry(&sound->effects.delay, 1.0f - wet_mix); // Keep total power constant
 
         sound->effects.echo_delay_sec = delay_sec;
         sound->effects.echo_feedback = feedback;
@@ -23039,28 +23052,37 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
  * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
  */
 SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
     ma_mutex_lock(&sit_audio.audio_queue_mutex);
-    sound->effects.reverb_enabled = enabled;
+
     if (enabled) {
+        // [FIX] Reverb is currently disabled due to missing implementation in the miniaudio header provided.
+        // We log a warning but return an error code to inform the user it's not active.
+        SITUATION_LOG_WARNING(SITUATION_ERROR_NOT_IMPLEMENTED, "Reverb effect is currently unavailable in this build.");
+
+        sound->effects.reverb_enabled = false; // Force disable
+        ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+        return SITUATION_ERROR_NOT_IMPLEMENTED;
+    } else {
+        // If disabling, we can successfully "disable" it (even if it wasn't really running)
+        sound->effects.reverb_enabled = false;
+
+        // Store parameters anyway in case they are used for other logic or if reverb is re-enabled later
         if (room_size < 0) room_size = 0; if (room_size > 1.0f) room_size = 1.0f;
         if (damping < 0) damping = 0; if (damping > 1.0f) damping = 1.0f;
         if (wet_mix < 0) wet_mix = 0; if (wet_mix > 1.0f) wet_mix = 1.0f;
         if (dry_mix < 0) dry_mix = 0; if (dry_mix > 1.0f) dry_mix = 1.0f;
 
-        // ma_reverb_set_room_size(&sound->effects.reverb, room_size);
-        // ma_reverb_set_damping(&sound->effects.reverb, damping);
-        // ma_reverb_set_wet_volume(&sound->effects.reverb, wet_mix);
-        // ma_reverb_set_dry_volume(&sound->effects.reverb, dry_mix);
-
         sound->effects.reverb_room_size = room_size;
         sound->effects.reverb_damping = damping;
         sound->effects.reverb_wet_mix = wet_mix;
         sound->effects.reverb_dry_mix = dry_mix;
+
+        ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+        return SITUATION_SUCCESS;
     }
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
-    return SITUATION_SUCCESS;
 }
 
 /**
