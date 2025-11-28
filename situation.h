@@ -8864,8 +8864,8 @@ SITAPI void SituationPollInputEvents(void) {
     if (sit_audio.audio_capture_on_main_thread && sit_audio.capture_callback) {
         ma_mutex_lock(&sit_audio.audio_capture_mutex);
 
-        size_t write_head = sit_audio.audio_capture_read_head;
-        size_t read_head = sit_gs.audio_capture_read_head;
+        size_t write_head = sit_audio.audio_capture_write_head;
+        size_t read_head = sit_audio.audio_capture_read_head;
         size_t capacity = sit_audio.audio_capture_queue_capacity;
 
         // Calculate frames available to read
@@ -8899,7 +8899,7 @@ SITAPI void SituationPollInputEvents(void) {
                 }
 
                 // 3. Advance Read Head
-                sit_gs.audio_capture_read_head = write_head;
+                sit_audio.audio_capture_read_head = write_head;
 
                 // 4. Unlock BEFORE callback to prevent deadlocks if user callback takes time
                 ma_mutex_unlock(&sit_audio.audio_capture_mutex);
@@ -21789,7 +21789,7 @@ SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback c
     config.capture.channels = 1;           // Mono microphone is standard
     config.sampleRate = 44100;             // Standard rate
     config.dataCallback = _sit_miniaudio_capture_callback;
-    config.pUserData = &sit_gs;
+    config.pUserData = &sit_audio;
 
     if (ma_device_init(&sit_audio.miniaudio_context, &config, &sit_audio.capture_device) != MA_SUCCESS) {
         _SituationSetError("Failed to initialize capture device.");
@@ -21925,7 +21925,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
     ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
     device_config.playback.pDeviceID = target_device_id;
     device_config.dataCallback = sit_miniaudio_data_callback;
-    device_config.pUserData = &sit_gs; // Pass global state if callback needs it (e.g. for temp buffers)
+    device_config.pUserData = &sit_audio; // Pass audio state if callback needs it (e.g. for temp buffers)
                                       // User data is accessed via pDevice->pUserData in callback
 
     if (format) {
