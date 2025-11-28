@@ -1,3 +1,17 @@
+Date: 2025-11-26
+Version: 2.3.7 "Velocity" (Audio Architecture Refactor)
+
+## DESCRIPTION
+This release finalizes the architectural separation of the Audio subsystem from the central global state. It moves all audio-related state into a dedicated `_SituationAudioState` container (`sit_audio`), improving modularity and memory organization. This update also includes critical fixes for audio capture and device management that were identified during the refactor.
+
+## CRITICAL FIXES
+
+*   **Audio State Separation:** Completed the migration of audio state variables (MiniAudio context, device handles, capture queues) from `sit_gs` to the new `sit_audio` static container. This decoupling ensures cleaner subsystem isolation.
+*   **Audio Capture Logic:** Fixed a severe logic error in `SituationPollInputEvents` where the audio capture ring buffer's write head was being incorrectly initialized with the read head's value, and where state was being read from the wrong structure. This restores functional audio capture on the main thread.
+*   **User Data Pointer Safety:** Corrected `SituationStartAudioCapture` and `SituationSetAudioDevice` to pass the correct `&sit_audio` pointer to MiniAudio callbacks. Previously, they passed `&sit_gs`, which would have caused a crash or memory corruption when the callback cast it to `_SituationAudioState*`.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-25
 Version: 2.3.6 "Velocity" (OpenGL Hardening & DSA Optimization)
 
