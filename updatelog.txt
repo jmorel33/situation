@@ -1,4 +1,24 @@
 Date: 2025-11-29
+Version: 2.3.8A "Velocity" (Hotfix A)
+
+## DESCRIPTION
+This release achieves production-readiness for the "Velocity" hot-reloading module. It introduces a robust "Fail-Safe" reloading architecture that prevents application crashes or visual corruption when reloading assets with errors.
+
+## NEW FEATURES
+
+*   **Fail-Safe Hot-Reloading:**
+    *   **Shaders:** Refactored `SituationReloadShader` and `SituationReloadComputePipeline` to use a "Load-Swap-Destroy" pattern. New shaders are compiled and verified *before* the old ones are destroyed. If compilation fails, the old shader remains active, and an error is logged. This prevents "black screen" states during shader development.
+    *   **Textures:** Applied fail-safe logic to `SituationReloadTexture`. Invalid image files or load errors no longer invalidate the existing texture handle.
+    *   **Models:** Implemented deep-swap reloading for `SituationReloadModel`. The entire model hierarchy (meshes and textures) is rebuilt in the background and swapped atomically on success.
+    *   **Stability:** The hot-reload loop (`SituationCheckHotReloads`) is now resilient to list mutation and ensures safe iteration even if resources are added or removed during the reload process.
+
+## CRITICAL FIXES
+
+*   **Internal robustness:** Corrected resource tracking node management during reloads to prevent memory leaks and ensure persistent tracking of reloaded assets.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-29
 Version: 2.3.8 "Velocity" (Hot-Reload Implementation & API Fixes)
 
 ## DESCRIPTION
