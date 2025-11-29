@@ -3083,226 +3083,6 @@ static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout
 static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer);
 static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass);
 
-// --- Vulkan Graveyard (Deferred Deletion) Implementation ---
-/**
- * @section Vulkan Graveyard - The Solution to GPU Stalls
- *
- * @brief This subsystem is the core solution to the critical performance bottlenecks identified in the v2.3.4 release. It implements a deferred deletion queue, colloquially known as a "graveyard," to manage the lifecycle of GPU resources without ever stalling the CPU to wait for the GPU.
- *
- * @subsection The Problem: `vkDeviceWaitIdle` Abuse
- *   - **Issue:** Previous versions called `vkDeviceWaitIdle()` inside every `SituationDestroy*` and `SituationReload*` function. This forces the entire GPU to a complete stop, causing severe stuttering, especially during asset streaming or hot-reloading.
- *   - **Solution:** The `SituationDestroy*` functions no longer destroy resources immediately. Instead, they call a `_SituationDeferDestroy*` helper, which adds the resource's handles to a queue (the "graveyard").
- *
- * @subsection How It Works
- *   1. **Queuing:** When a resource is "destroyed," it's added to the graveyard associated with the *current* frame being recorded (`sit_gs.vk.current_frame_index`).
- *   2. **Waiting:** The main render loop proceeds as normal. At the beginning of a new frame `N`, the engine calls `vkWaitForFences` to ensure that frame `N - max_frames_in_flight` has finished rendering on the GPU.
- *   3. **Flushing:** Only after the fence confirms the GPU is done with that old frame do we call `_SituationFlushGraveyard`. This function iterates through the old frame's graveyard queue and calls the real `vkDestroy*` / `vmaDestroy*` functions.
- *   - **Result:** This guarantees that resources are only deleted after the GPU is confirmed to be finished with them, eliminating all `vkDeviceWaitIdle` stalls from the resource management path.
- *
- * @subsection Asynchronous Transfers
- *   - **Issue:** Previously, functions like `_SituationVulkanCreateAndUploadBuffer` would create a temporary command buffer, submit it, and immediately call `vkQueueWaitIdle` to wait for the upload to finish, causing a CPU-GPU stall for every asset.
- *   - **Solution:** `_SituationVulkanCreateAndUploadBuffer` can now use the main frame's command buffer. It records the copy command and uses `_SituationDeferDestroyBuffer` to place the temporary staging buffer into the graveyard. The staging buffer is now cleaned up automatically and asynchronously, allowing for dozens of assets to be uploaded in a single frame without any stalls.
- *
- * @subsection Descriptor Pool Fragmentation
- *   - **Issue:** Calling `vkFreeDescriptorSets` frequently on pools that were not created with specific flags can be slow and lead to memory fragmentation, eventually causing allocation failures.
- *   - **Solution:** The `_SituationFlushGraveyard` function **intentionally does not call `vkFreeDescriptorSets`**. Instead, descriptor sets are treated as if they were allocated from a linear or "bump" allocator. They are only reclaimed when the entire `VkDescriptorPool` is reset or destroyed at shutdown. This is a standard high-performance strategy that trades a small amount of memory for maximum stability and zero-stutter performance during runtime.
- */
-
-/**
- * @brief [INTERNAL] Initializes a single graveyard structure.
- * @details Allocates the initial memory for the resource handle arrays.
- */
-static void _SituationInitGraveyard(SituationGraveyard* gy) {
-    memset(gy, 0, sizeof(SituationGraveyard));
-    // Pre-allocate some capacity to avoid initial reallocs
-    gy->buffer_capacity = 16;
-    gy->buffers = (VkBuffer*)malloc(sizeof(VkBuffer) * gy->buffer_capacity);
-    gy->buffer_allocations = (VmaAllocation*)malloc(sizeof(VmaAllocation) * gy->buffer_capacity);
-
-    gy->image_capacity = 16;
-    gy->images = (VkImage*)malloc(sizeof(VkImage) * gy->image_capacity);
-    gy->image_allocations = (VmaAllocation*)malloc(sizeof(VmaAllocation) * gy->image_capacity);
-    gy->image_views = (VkImageView*)malloc(sizeof(VkImageView) * gy->image_capacity);
-    gy->samplers = (VkSampler*)malloc(sizeof(VkSampler) * gy->image_capacity);
-
-    gy->descriptor_set_capacity = 32;
-    gy->descriptor_sets = (VkDescriptorSet*)malloc(sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
-
-    gy->pipeline_capacity = 8;
-    gy->pipelines = (VkPipeline*)malloc(sizeof(VkPipeline) * gy->pipeline_capacity);
-    gy->pipeline_layouts = (VkPipelineLayout*)malloc(sizeof(VkPipelineLayout) * gy->pipeline_capacity);
-
-    gy->framebuffer_capacity = 4;
-    gy->framebuffers = (VkFramebuffer*)malloc(sizeof(VkFramebuffer) * gy->framebuffer_capacity);
-
-    gy->render_pass_capacity = 4;
-    gy->render_passes = (VkRenderPass*)malloc(sizeof(VkRenderPass) * gy->render_pass_capacity);
-}
-
-/**
- * @brief [INTERNAL] Frees the CPU memory used by a graveyard's internal arrays.
- * @details Does not destroy Vulkan objects; assumes `_SituationFlushGraveyard` has already been called.
- */
-static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
-    // Ensure everything is flushed first (though device should be idle by now if called from CleanupVulkan)
-    // Just free the arrays
-    SIT_FREE(gy->buffers);
-    SIT_FREE(gy->buffer_allocations);
-    SIT_FREE(gy->images);
-    SIT_FREE(gy->image_allocations);
-    SIT_FREE(gy->image_views);
-    SIT_FREE(gy->samplers);
-    SIT_FREE(gy->descriptor_sets);
-    SIT_FREE(gy->pipelines);
-    SIT_FREE(gy->pipeline_layouts);
-    SIT_FREE(gy->framebuffers);
-    SIT_FREE(gy->render_passes);
-    memset(gy, 0, sizeof(SituationGraveyard));
-}
-
-/**
- * @brief [INTERNAL] Destroys all Vulkan resources queued in a specific frame's graveyard.
- * @details This is the heart of the deferred deletion system. It is called from `SituationAcquireFrameCommandBuffer` only after the fence for `frame_index` has signaled, guaranteeing the GPU is no longer using any of these resources.
- */
-static void _SituationFlushGraveyard(uint32_t frame_index) {
-    if (!sit_gs.vk.graveyards) return;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[frame_index];
-
-    // Buffers
-    for (int i = 0; i < gy->buffer_count; ++i) {
-        if (gy->buffers[i] != VK_NULL_HANDLE) {
-            vmaDestroyBuffer(sit_gs.vk.vma_allocator, gy->buffers[i], gy->buffer_allocations[i]);
-        }
-    }
-    gy->buffer_count = 0;
-
-    // Images
-    for (int i = 0; i < gy->image_count; ++i) {
-        if (gy->samplers[i] != VK_NULL_HANDLE) vkDestroySampler(sit_gs.vk.device, gy->samplers[i], NULL);
-        if (gy->image_views[i] != VK_NULL_HANDLE) vkDestroyImageView(sit_gs.vk.device, gy->image_views[i], NULL);
-        if (gy->images[i] != VK_NULL_HANDLE) vmaDestroyImage(sit_gs.vk.vma_allocator, gy->images[i], gy->image_allocations[i]);
-    }
-    gy->image_count = 0;
-
-    // Descriptor Sets
-    if (gy->descriptor_set_count > 0) {
-        // --- PATCH: Linear Allocator Strategy ---
-        // We intentionally skip calling vkFreeDescriptorSets here.
-        // Reason 1 (Performance): Individual frees are slow and cause fragmentation.
-        // Reason 2 (Stability): Our Dynamic Descriptor Manager creates multiple pools.
-        // Since we don't track which pool a set came from in the SituationTexture struct,
-        // guessing the pool (e.g., persistent_descriptor_pool) would be unsafe and cause crashes.
-        // By not freeing, we treat the pools as append-only. Resources are reclaimed only when the entire pool is reset or destroyed at shutdown.
-        // This trades VRAM for stability and zero-stutter performance.
-        /*
-        if (sit_gs.vk.persistent_descriptor_pool != VK_NULL_HANDLE) {
-             vkFreeDescriptorSets(sit_gs.vk.device, sit_gs.vk.persistent_descriptor_pool, gy->descriptor_set_count, gy->descriptor_sets);
-        }
-        */
-    }
-    gy->descriptor_set_count = 0;
-
-    // Pipelines
-    for (int i = 0; i < gy->pipeline_count; ++i) {
-        if (gy->pipelines[i] != VK_NULL_HANDLE) vkDestroyPipeline(sit_gs.vk.device, gy->pipelines[i], NULL);
-        if (gy->pipeline_layouts[i] != VK_NULL_HANDLE) vkDestroyPipelineLayout(sit_gs.vk.device, gy->pipeline_layouts[i], NULL);
-    }
-    gy->pipeline_count = 0;
-
-    // Framebuffers
-    for (int i = 0; i < gy->framebuffer_count; ++i) {
-        if (gy->framebuffers[i] != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_gs.vk.device, gy->framebuffers[i], NULL);
-    }
-    gy->framebuffer_count = 0;
-
-    // Render Passes
-    for (int i = 0; i < gy->render_pass_count; ++i) {
-        if (gy->render_passes[i] != VK_NULL_HANDLE) vkDestroyRenderPass(sit_gs.vk.device, gy->render_passes[i], NULL);
-    }
-    gy->render_pass_count = 0;
-}
-
-static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation) {
-    if (buffer == VK_NULL_HANDLE) return;
-    // The resource is added to the graveyard of the *current* frame.
-    // It will be destroyed when this frame's fence is signaled in a future SituationAcquireFrameCommandBuffer call.
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
-    if (gy->buffer_count >= gy->buffer_capacity) {
-        gy->buffer_capacity *= 2;
-        gy->buffers = (VkBuffer*)realloc(gy->buffers, sizeof(VkBuffer) * gy->buffer_capacity);
-        gy->buffer_allocations = (VmaAllocation*)realloc(gy->buffer_allocations, sizeof(VmaAllocation) * gy->buffer_capacity);
-    }
-    gy->buffers[gy->buffer_count] = buffer;
-    gy->buffer_allocations[gy->buffer_count] = allocation;
-    gy->buffer_count++;
-}
-
-static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler) {
-    if (image == VK_NULL_HANDLE && view == VK_NULL_HANDLE && sampler == VK_NULL_HANDLE) return;
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
-    if (gy->image_count >= gy->image_capacity) {
-        gy->image_capacity *= 2;
-        gy->images = (VkImage*)realloc(gy->images, sizeof(VkImage) * gy->image_capacity);
-        gy->image_allocations = (VmaAllocation*)realloc(gy->image_allocations, sizeof(VmaAllocation) * gy->image_capacity);
-        gy->image_views = (VkImageView*)realloc(gy->image_views, sizeof(VkImageView) * gy->image_capacity);
-        gy->samplers = (VkSampler*)realloc(gy->samplers, sizeof(VkSampler) * gy->image_capacity);
-    }
-    gy->images[gy->image_count] = image;
-    gy->image_allocations[gy->image_count] = allocation;
-    gy->image_views[gy->image_count] = view;
-    gy->samplers[gy->image_count] = sampler;
-    gy->image_count++;
-}
-
-static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set) {
-    if (set == VK_NULL_HANDLE) return;
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
-    if (gy->descriptor_set_count >= gy->descriptor_set_capacity) {
-        gy->descriptor_set_capacity *= 2;
-        gy->descriptor_sets = (VkDescriptorSet*)realloc(gy->descriptor_sets, sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
-    }
-    gy->descriptor_sets[gy->descriptor_set_count++] = set;
-}
-
-static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout) {
-    if (pipeline == VK_NULL_HANDLE) return;
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
-    if (gy->pipeline_count >= gy->pipeline_capacity) {
-        gy->pipeline_capacity *= 2;
-        gy->pipelines = (VkPipeline*)realloc(gy->pipelines, sizeof(VkPipeline) * gy->pipeline_capacity);
-        gy->pipeline_layouts = (VkPipelineLayout*)realloc(gy->pipeline_layouts, sizeof(VkPipelineLayout) * gy->pipeline_capacity);
-    }
-    gy->pipelines[gy->pipeline_count] = pipeline;
-    gy->pipeline_layouts[gy->pipeline_count] = layout;
-    gy->pipeline_count++;
-}
-
-static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
-    if (framebuffer == VK_NULL_HANDLE) return;
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
-    if (gy->framebuffer_count >= gy->framebuffer_capacity) {
-        gy->framebuffer_capacity *= 2;
-        gy->framebuffers = (VkFramebuffer*)realloc(gy->framebuffers, sizeof(VkFramebuffer) * gy->framebuffer_capacity);
-    }
-    gy->framebuffers[gy->framebuffer_count++] = framebuffer;
-}
-
-static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass) {
-    if (render_pass == VK_NULL_HANDLE) return;
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
-    if (gy->render_pass_count >= gy->render_pass_capacity) {
-        gy->render_pass_capacity *= 2;
-        gy->render_passes = (VkRenderPass*)realloc(gy->render_passes, sizeof(VkRenderPass) * gy->render_pass_capacity);
-    }
-    gy->render_passes[gy->render_pass_count++] = render_pass;
-}
-
 // --- Vulkan Callback Functions ---
 static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
 
@@ -3705,6 +3485,226 @@ static GLint _sit_uniform_map_get(_SituationUniformMap* map, const char* key) {
     // If the loop completes, the key was not present in the map.
     // Return -1 to indicate "not found".
     return -1;
+}
+
+// --- Vulkan Graveyard (Deferred Deletion) Implementation ---
+/**
+ * @section Vulkan Graveyard - The Solution to GPU Stalls
+ *
+ * @brief This subsystem is the core solution to the critical performance bottlenecks identified in the v2.3.4 release. It implements a deferred deletion queue, colloquially known as a "graveyard," to manage the lifecycle of GPU resources without ever stalling the CPU to wait for the GPU.
+ *
+ * @subsection The Problem: `vkDeviceWaitIdle` Abuse
+ *   - **Issue:** Previous versions called `vkDeviceWaitIdle()` inside every `SituationDestroy*` and `SituationReload*` function. This forces the entire GPU to a complete stop, causing severe stuttering, especially during asset streaming or hot-reloading.
+ *   - **Solution:** The `SituationDestroy*` functions no longer destroy resources immediately. Instead, they call a `_SituationDeferDestroy*` helper, which adds the resource's handles to a queue (the "graveyard").
+ *
+ * @subsection How It Works
+ *   1. **Queuing:** When a resource is "destroyed," it's added to the graveyard associated with the *current* frame being recorded (`sit_gs.vk.current_frame_index`).
+ *   2. **Waiting:** The main render loop proceeds as normal. At the beginning of a new frame `N`, the engine calls `vkWaitForFences` to ensure that frame `N - max_frames_in_flight` has finished rendering on the GPU.
+ *   3. **Flushing:** Only after the fence confirms the GPU is done with that old frame do we call `_SituationFlushGraveyard`. This function iterates through the old frame's graveyard queue and calls the real `vkDestroy*` / `vmaDestroy*` functions.
+ *   - **Result:** This guarantees that resources are only deleted after the GPU is confirmed to be finished with them, eliminating all `vkDeviceWaitIdle` stalls from the resource management path.
+ *
+ * @subsection Asynchronous Transfers
+ *   - **Issue:** Previously, functions like `_SituationVulkanCreateAndUploadBuffer` would create a temporary command buffer, submit it, and immediately call `vkQueueWaitIdle` to wait for the upload to finish, causing a CPU-GPU stall for every asset.
+ *   - **Solution:** `_SituationVulkanCreateAndUploadBuffer` can now use the main frame's command buffer. It records the copy command and uses `_SituationDeferDestroyBuffer` to place the temporary staging buffer into the graveyard. The staging buffer is now cleaned up automatically and asynchronously, allowing for dozens of assets to be uploaded in a single frame without any stalls.
+ *
+ * @subsection Descriptor Pool Fragmentation
+ *   - **Issue:** Calling `vkFreeDescriptorSets` frequently on pools that were not created with specific flags can be slow and lead to memory fragmentation, eventually causing allocation failures.
+ *   - **Solution:** The `_SituationFlushGraveyard` function **intentionally does not call `vkFreeDescriptorSets`**. Instead, descriptor sets are treated as if they were allocated from a linear or "bump" allocator. They are only reclaimed when the entire `VkDescriptorPool` is reset or destroyed at shutdown. This is a standard high-performance strategy that trades a small amount of memory for maximum stability and zero-stutter performance during runtime.
+ */
+
+/**
+ * @brief [INTERNAL] Initializes a single graveyard structure.
+ * @details Allocates the initial memory for the resource handle arrays.
+ */
+static void _SituationInitGraveyard(SituationGraveyard* gy) {
+    memset(gy, 0, sizeof(SituationGraveyard));
+    // Pre-allocate some capacity to avoid initial reallocs
+    gy->buffer_capacity = 16;
+    gy->buffers = (VkBuffer*)malloc(sizeof(VkBuffer) * gy->buffer_capacity);
+    gy->buffer_allocations = (VmaAllocation*)malloc(sizeof(VmaAllocation) * gy->buffer_capacity);
+
+    gy->image_capacity = 16;
+    gy->images = (VkImage*)malloc(sizeof(VkImage) * gy->image_capacity);
+    gy->image_allocations = (VmaAllocation*)malloc(sizeof(VmaAllocation) * gy->image_capacity);
+    gy->image_views = (VkImageView*)malloc(sizeof(VkImageView) * gy->image_capacity);
+    gy->samplers = (VkSampler*)malloc(sizeof(VkSampler) * gy->image_capacity);
+
+    gy->descriptor_set_capacity = 32;
+    gy->descriptor_sets = (VkDescriptorSet*)malloc(sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
+
+    gy->pipeline_capacity = 8;
+    gy->pipelines = (VkPipeline*)malloc(sizeof(VkPipeline) * gy->pipeline_capacity);
+    gy->pipeline_layouts = (VkPipelineLayout*)malloc(sizeof(VkPipelineLayout) * gy->pipeline_capacity);
+
+    gy->framebuffer_capacity = 4;
+    gy->framebuffers = (VkFramebuffer*)malloc(sizeof(VkFramebuffer) * gy->framebuffer_capacity);
+
+    gy->render_pass_capacity = 4;
+    gy->render_passes = (VkRenderPass*)malloc(sizeof(VkRenderPass) * gy->render_pass_capacity);
+}
+
+/**
+ * @brief [INTERNAL] Frees the CPU memory used by a graveyard's internal arrays.
+ * @details Does not destroy Vulkan objects; assumes `_SituationFlushGraveyard` has already been called.
+ */
+static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
+    // Ensure everything is flushed first (though device should be idle by now if called from CleanupVulkan)
+    // Just free the arrays
+    SIT_FREE(gy->buffers);
+    SIT_FREE(gy->buffer_allocations);
+    SIT_FREE(gy->images);
+    SIT_FREE(gy->image_allocations);
+    SIT_FREE(gy->image_views);
+    SIT_FREE(gy->samplers);
+    SIT_FREE(gy->descriptor_sets);
+    SIT_FREE(gy->pipelines);
+    SIT_FREE(gy->pipeline_layouts);
+    SIT_FREE(gy->framebuffers);
+    SIT_FREE(gy->render_passes);
+    memset(gy, 0, sizeof(SituationGraveyard));
+}
+
+/**
+ * @brief [INTERNAL] Destroys all Vulkan resources queued in a specific frame's graveyard.
+ * @details This is the heart of the deferred deletion system. It is called from `SituationAcquireFrameCommandBuffer` only after the fence for `frame_index` has signaled, guaranteeing the GPU is no longer using any of these resources.
+ */
+static void _SituationFlushGraveyard(uint32_t frame_index) {
+    if (!sit_gs.vk.graveyards) return;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[frame_index];
+
+    // Buffers
+    for (int i = 0; i < gy->buffer_count; ++i) {
+        if (gy->buffers[i] != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(sit_gs.vk.vma_allocator, gy->buffers[i], gy->buffer_allocations[i]);
+        }
+    }
+    gy->buffer_count = 0;
+
+    // Images
+    for (int i = 0; i < gy->image_count; ++i) {
+        if (gy->samplers[i] != VK_NULL_HANDLE) vkDestroySampler(sit_gs.vk.device, gy->samplers[i], NULL);
+        if (gy->image_views[i] != VK_NULL_HANDLE) vkDestroyImageView(sit_gs.vk.device, gy->image_views[i], NULL);
+        if (gy->images[i] != VK_NULL_HANDLE) vmaDestroyImage(sit_gs.vk.vma_allocator, gy->images[i], gy->image_allocations[i]);
+    }
+    gy->image_count = 0;
+
+    // Descriptor Sets
+    if (gy->descriptor_set_count > 0) {
+        // --- PATCH: Linear Allocator Strategy ---
+        // We intentionally skip calling vkFreeDescriptorSets here.
+        // Reason 1 (Performance): Individual frees are slow and cause fragmentation.
+        // Reason 2 (Stability): Our Dynamic Descriptor Manager creates multiple pools.
+        // Since we don't track which pool a set came from in the SituationTexture struct,
+        // guessing the pool (e.g., persistent_descriptor_pool) would be unsafe and cause crashes.
+        // By not freeing, we treat the pools as append-only. Resources are reclaimed only when the entire pool is reset or destroyed at shutdown.
+        // This trades VRAM for stability and zero-stutter performance.
+        /*
+        if (sit_gs.vk.persistent_descriptor_pool != VK_NULL_HANDLE) {
+             vkFreeDescriptorSets(sit_gs.vk.device, sit_gs.vk.persistent_descriptor_pool, gy->descriptor_set_count, gy->descriptor_sets);
+        }
+        */
+    }
+    gy->descriptor_set_count = 0;
+
+    // Pipelines
+    for (int i = 0; i < gy->pipeline_count; ++i) {
+        if (gy->pipelines[i] != VK_NULL_HANDLE) vkDestroyPipeline(sit_gs.vk.device, gy->pipelines[i], NULL);
+        if (gy->pipeline_layouts[i] != VK_NULL_HANDLE) vkDestroyPipelineLayout(sit_gs.vk.device, gy->pipeline_layouts[i], NULL);
+    }
+    gy->pipeline_count = 0;
+
+    // Framebuffers
+    for (int i = 0; i < gy->framebuffer_count; ++i) {
+        if (gy->framebuffers[i] != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_gs.vk.device, gy->framebuffers[i], NULL);
+    }
+    gy->framebuffer_count = 0;
+
+    // Render Passes
+    for (int i = 0; i < gy->render_pass_count; ++i) {
+        if (gy->render_passes[i] != VK_NULL_HANDLE) vkDestroyRenderPass(sit_gs.vk.device, gy->render_passes[i], NULL);
+    }
+    gy->render_pass_count = 0;
+}
+
+static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation) {
+    if (buffer == VK_NULL_HANDLE) return;
+    // The resource is added to the graveyard of the *current* frame.
+    // It will be destroyed when this frame's fence is signaled in a future SituationAcquireFrameCommandBuffer call.
+    uint32_t gy_idx = sit_gs.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->buffer_count >= gy->buffer_capacity) {
+        gy->buffer_capacity *= 2;
+        gy->buffers = (VkBuffer*)realloc(gy->buffers, sizeof(VkBuffer) * gy->buffer_capacity);
+        gy->buffer_allocations = (VmaAllocation*)realloc(gy->buffer_allocations, sizeof(VmaAllocation) * gy->buffer_capacity);
+    }
+    gy->buffers[gy->buffer_count] = buffer;
+    gy->buffer_allocations[gy->buffer_count] = allocation;
+    gy->buffer_count++;
+}
+
+static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler) {
+    if (image == VK_NULL_HANDLE && view == VK_NULL_HANDLE && sampler == VK_NULL_HANDLE) return;
+    uint32_t gy_idx = sit_gs.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->image_count >= gy->image_capacity) {
+        gy->image_capacity *= 2;
+        gy->images = (VkImage*)realloc(gy->images, sizeof(VkImage) * gy->image_capacity);
+        gy->image_allocations = (VmaAllocation*)realloc(gy->image_allocations, sizeof(VmaAllocation) * gy->image_capacity);
+        gy->image_views = (VkImageView*)realloc(gy->image_views, sizeof(VkImageView) * gy->image_capacity);
+        gy->samplers = (VkSampler*)realloc(gy->samplers, sizeof(VkSampler) * gy->image_capacity);
+    }
+    gy->images[gy->image_count] = image;
+    gy->image_allocations[gy->image_count] = allocation;
+    gy->image_views[gy->image_count] = view;
+    gy->samplers[gy->image_count] = sampler;
+    gy->image_count++;
+}
+
+static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set) {
+    if (set == VK_NULL_HANDLE) return;
+    uint32_t gy_idx = sit_gs.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->descriptor_set_count >= gy->descriptor_set_capacity) {
+        gy->descriptor_set_capacity *= 2;
+        gy->descriptor_sets = (VkDescriptorSet*)realloc(gy->descriptor_sets, sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
+    }
+    gy->descriptor_sets[gy->descriptor_set_count++] = set;
+}
+
+static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout) {
+    if (pipeline == VK_NULL_HANDLE) return;
+    uint32_t gy_idx = sit_gs.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->pipeline_count >= gy->pipeline_capacity) {
+        gy->pipeline_capacity *= 2;
+        gy->pipelines = (VkPipeline*)realloc(gy->pipelines, sizeof(VkPipeline) * gy->pipeline_capacity);
+        gy->pipeline_layouts = (VkPipelineLayout*)realloc(gy->pipeline_layouts, sizeof(VkPipelineLayout) * gy->pipeline_capacity);
+    }
+    gy->pipelines[gy->pipeline_count] = pipeline;
+    gy->pipeline_layouts[gy->pipeline_count] = layout;
+    gy->pipeline_count++;
+}
+
+static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
+    if (framebuffer == VK_NULL_HANDLE) return;
+    uint32_t gy_idx = sit_gs.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->framebuffer_count >= gy->framebuffer_capacity) {
+        gy->framebuffer_capacity *= 2;
+        gy->framebuffers = (VkFramebuffer*)realloc(gy->framebuffers, sizeof(VkFramebuffer) * gy->framebuffer_capacity);
+    }
+    gy->framebuffers[gy->framebuffer_count++] = framebuffer;
+}
+
+static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass) {
+    if (render_pass == VK_NULL_HANDLE) return;
+    uint32_t gy_idx = sit_gs.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    if (gy->render_pass_count >= gy->render_pass_capacity) {
+        gy->render_pass_capacity *= 2;
+        gy->render_passes = (VkRenderPass*)realloc(gy->render_passes, sizeof(VkRenderPass) * gy->render_pass_capacity);
+    }
+    gy->render_passes[gy->render_pass_count++] = render_pass;
 }
 
 // --- Error Handling Implementation ---
