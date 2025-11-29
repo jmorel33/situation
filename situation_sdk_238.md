@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.8 "Velocity" |
+| **Version** | 2.3.8B "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.1+ |
 | **License** | MIT License |
@@ -1727,6 +1727,20 @@ void SituationUnloadModel(SituationModel* model);
 
 **Behavior:** Destroys all meshes and textures associated with the model.
 
+#### SituationReloadModel
+
+```c:disable-run
+bool SituationReloadModel(SituationModel* model);
+```
+
+**Behavior:**
+*   Re-parses the original GLTF/GLB file from disk.
+*   Re-loads all referenced textures.
+*   Re-creates all mesh geometry on the GPU.
+*   Swaps the new resources into the existing `SituationModel` handle.
+
+**Usage:** Essential for previewing 3D asset changes (e.g., from Blender exports) without restarting the application.
+
 <a id="345-readback--exporting"></a>
 ### 3.4.5 Readback & Exporting
 
@@ -2093,6 +2107,19 @@ Binds the pipeline for subsequent dispatch commands.
 ```c:disable-run
 void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline);
 ```
+
+#### SituationReloadComputePipeline
+
+```c:disable-run
+bool SituationReloadComputePipeline(SituationComputePipeline* pipeline);
+```
+
+**Behavior:**
+*   Recompiles the compute shader from the original source file.
+*   Rebuilds the pipeline object.
+*   Updates the handle in-place, preserving the original `layout_type`.
+
+**Usage:** Allows iterative tuning of compute kernels (e.g., physics constants, procedural generation algorithms) at runtime.
 
 ### Storage Buffers (SSBOs)
 
@@ -2776,6 +2803,16 @@ Vector2 SituationGetMouseDelta(void);
 **Calculation:** CurrentPos - PreviousPos.
 **Usage:** Essential for 3D Camera controllers (Yaw/Pitch).
 
+#### SituationSetMousePosition
+
+```c:disable-run
+void SituationSetMousePosition(Vector2 pos);
+```
+
+**Behavior:** Warps the mouse cursor to the specified (x, y) coordinates within the window.
+**Usage:** Useful for re-centering the mouse in FPS cameras or snapping to UI elements.
+**Note:** The provided coordinates are automatically reverse-transformed by the current Mouse Scale and Offset, ensuring `SituationGetMousePosition()` returns the value you set.
+
 #### SituationSetMouseScale & Offset
 
 ```c:disable-run
@@ -3077,6 +3114,7 @@ char* SituationGetAppSavePath(const char* app_name);
 *   **macOS:** `~/Library/Application Support/` + app_name.
 
 **Side Effect:** If the directory does not exist, this function creates it recursively.
+**Error Handling:** Returns `NULL` if parameters are invalid or the OS API fails (check `SituationGetLastErrorMsg()` for `SITUATION_ERROR_DEVICE_QUERY` or `SITUATION_ERROR_MEMORY_ALLOCATION`).
 
 <a id="62-file-operations"></a>
 ## 6.2 File Operations
@@ -3219,7 +3257,7 @@ if (files) {
 The "Velocity" module's Hot-Reloading capability relies on the Filesystem module.
 
 **Mechanism:**
-*   When you call `SituationLoadShader` or `SituationLoadTexture`, the library internally registers the absolute path with a file watcher (using `inotify` on Linux or `ReadDirectoryChangesW` on Windows).
+*   When you call `SituationLoadShader`, `SituationLoadTexture`, `SituationLoadModel`, or `SituationCreateComputePipeline`, the library internally registers the absolute path with a file watcher (using `inotify` on Linux or `ReadDirectoryChangesW` on Windows).
 
 **The "Debounce" Factor:**
 *   Text editors (VS Code, Vim) often save files by writing to a temp file and renaming it, or writing in chunks. This generates multiple OS events for a single "Save".
