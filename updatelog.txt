@@ -1,3 +1,17 @@
+Date: 2025-11-28
+Version: 2.3.7A "Velocity" (Audio Safety Hotfix)
+
+## DESCRIPTION
+This hotfix addresses critical stability regressions introduced in the 2.3.7 Audio Architecture Refactor. It focuses on ensuring that the Audio API is robust against invalid usage and that the core initialization check is correctly exported for external use.
+
+## CRITICAL FIXES
+
+*   **Audio API Safety Guards:** Implemented explicit `SituationIsInitialized()` checks at the entry point of every public Audio API function. This prevents the application from crashing with a null pointer dereference if audio functions (like `SituationPlayLoadedSound` or `SituationSetAudioDevice`) are called before `SituationInit()` or after `SituationShutdown()`. Instead of crashing, these functions now safely return an error code.
+*   **SITAPI Export Fix:** The implementation of `SituationIsInitialized()` was missing the `SITAPI` macro in its definition. This has been corrected to ensure the function is properly exported in shared library (DLL) builds, matching its forward declaration.
+*   **Error Reporting Safety:** Hardened the `_SituationSetError` internal helper to check for a valid context pointer before attempting to write error messages. This prevents a secondary crash when the library attempts to report an "Uninitialized" error.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-26
 Version: 2.3.7 "Velocity" (Audio Architecture Refactor)
 
