@@ -1,3 +1,39 @@
+Date: 2025-11-29
+Version: 2.3.8 "Velocity" (Hot-Reload Implementation & API Fixes)
+
+## DESCRIPTION
+This release finalizes the "Velocity" feature set by implementing the Hot-Reloading module and addressing critical API inconsistencies. It introduces the `SituationCheckHotReloads` function, enabling runtime asset reloading, and corrects strict typing issues in the Input and Graphics modules.
+
+## NEW FEATURES
+
+*   **Hot-Reloading Implementation:** Fully implemented `SituationCheckHotReloads` and resource tracking.
+    *   **Resource Tracking:** Internal resource nodes (`_SituationShaderNode`, `_SituationTextureNode`, `_SituationModelNode`, `_SituationComputePipelineNode`) now store source file paths and last modification times.
+    *   **Loader Integration:** `SituationLoadShader`, `SituationLoadTexture`, `SituationLoadModel`, and `SituationCreateComputePipeline` now capture file modification times upon successful load.
+    *   **Polling:** `SituationCheckHotReloads` (intended for development builds) polls these files for changes and triggers the appropriate `SituationReload*` function.
+
+## CRITICAL FIXES
+
+*   **Input API Strict Typing:** Corrected function signatures in `situation.h` for `SituationSetMousePosition`, `SituationSetMouseOffset`, and `SituationSetMouseScale`. They now correctly accept `Vector2` structs instead of `vec2` arrays, matching their implementations and ensuring Strict C11 compliance.
+*   **Vulkan/OpenGL State Consistency:** Moved `last_vd_composite_time_ms` from the backend-specific structs to the common `_SituationGlobalStateContainer`. This fixes a bug where profiling data was inaccessible or reading from uninitialized memory depending on the active backend.
+*   **OpenGL Error Macro Visibility:** Added a forward declaration for `_SituationLogGLError` in the public section of `situation.h`. This ensures the `SIT_CHECK_GL_ERROR` macro compiles correctly in user applications when `SITUATION_USE_OPENGL` is defined.
+*   **Memory Leaks Plugged:** Fixed memory leaks in `SituationDestroyTexture`, `SituationUnloadShader`, `SituationUnloadModel`, and `SituationDestroyComputePipeline` where the path strings (`source_path`, `vs_path`, `fs_path`) tracked for hot-reloading were not being freed during destruction.
+*   **Hot-Reload Loop Prevention:** Updated `SituationCheckHotReloads` to update the file modification timestamp *before* attempting a reload. This prevents infinite retry loops and GPU stalls if a file has syntax errors (avoiding a "reload -> fail -> retry next frame" cycle).
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-29
+Version: 2.3.7C "Velocity" (Graveyard & Reverb Documentation)
+
+## DESCRIPTION
+This update focuses on documentation completeness and internal clarity. It retroactively documents the "Graveyard" deferred destruction system introduced in previous versions and finalizes the description of the embedded reverb implementation.
+
+## DOCUMENTATION
+
+*   **Vulkan Graveyard:** Added comprehensive internal documentation for `SituationGraveyard` and its associated helper functions (`_SituationInitGraveyard`, `_SituationFlushGraveyard`). This clarifies how the library prevents GPU stalls during resource destruction.
+*   **Reverb Internals:** Documented the Schroeder/Freeverb implementation details, including the structure of the `SituationReverbState` and the logic behind the parallel comb filters and all-pass filters.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-28
 Version: 2.3.7B "Velocity" (Embedded Reverb Implementation)
 

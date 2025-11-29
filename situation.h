@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.7 "Velocity"
+*   Core API library v2.3.8 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licenced
 *
@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 7
-#define SITUATION_VERSION_REVISION "C"
+#define SITUATION_VERSION_PATCH 8
+#define SITUATION_VERSION_REVISION ""
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -85,7 +85,12 @@ Bash
  * @brief The public-facing macro. It now ALWAYS calls the logging function.
  *      The logging function itself will decide whether to print to stderr based on the build type.
  */
+#if defined(SITUATION_USE_OPENGL)
+SITAPI void _SituationLogGLError(const char* file, int line);
 #define SIT_CHECK_GL_ERROR() _SituationLogGLError(__FILE__, __LINE__)
+#else
+#define SIT_CHECK_GL_ERROR() do {} while(0)
+#endif
 
 // --- [IMPORTANT] User must define the backend to use ---
 #if !defined(SITUATION_USE_VULKAN) && !defined(SITUATION_USE_OPENGL)
@@ -1756,6 +1761,7 @@ SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_
 // These functions allow you to reload assets from disk at runtime without restarting.
 // They handle GPU synchronization, resource destruction, and re-loading.
 // Returns true if the reload was successful. On failure, the old handle is usually invalid.
+SITAPI void SituationCheckHotReloads(void);                                             // Checks all tracked resources for file changes and reloads them if necessary.
 SITAPI bool SituationReloadShader(SituationShader* shader);                             // Recompiles and links a shader from its original source files (Synchronous/Stalls GPU).
 SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline);         // Recompiles a compute pipeline from its original source file (Synchronous/Stalls GPU).
 SITAPI bool SituationReloadTexture(SituationTexture* texture);                          // Re-reads image file and recreates the GPU texture resource (Synchronous/Stalls GPU).
@@ -1785,9 +1791,9 @@ SITAPI Vector2 SituationGetMouseWheelMoveV(void);                               
 SITAPI bool SituationIsMouseButtonDown(int button);                                     // Check if a mouse button is currently held down (a state).
 SITAPI bool SituationIsMouseButtonPressed(int button);                                  // Check if a mouse button was pressed down this frame (an event).
 SITAPI bool SituationIsMouseButtonReleased(int button);                                 // Check if a mouse button was released this frame.
-SITAPI void SituationSetMousePosition(vec2 pos);                                        // Set the mouse position within the window.
-SITAPI void SituationSetMouseOffset(vec2 offset);                                       // Set a software offset for the mouse position.
-SITAPI void SituationSetMouseScale(vec2 scale);                                         // Set a software scale for the mouse position and delta.
+SITAPI void SituationSetMousePosition(Vector2 pos);                                     // Set the mouse position within the window.
+SITAPI void SituationSetMouseOffset(Vector2 offset);                                    // Set a software offset for the mouse position.
+SITAPI void SituationSetMouseScale(Vector2 scale);                                      // Set a software scale for the mouse position and delta.
 SITAPI void SituationSetMouseButtonCallback(SituationMouseButtonCallback callback, void* user_data); // Set a callback for mouse button events.
 SITAPI void SituationSetCursorPosCallback(SituationCursorPosCallback callback, void* user_data); // Set a callback for mouse movement events.
 SITAPI void SituationSetScrollCallback(SituationScrollCallback callback, void* user_data); // Set a callback for mouse scroll events.
@@ -2087,6 +2093,8 @@ typedef struct _SituationShaderNode {
     SituationShader shader;
     char* vs_path; // [HOT-RELOAD] Store source path
     char* fs_path; // [HOT-RELOAD] Store source path
+    long vs_mod_time; // [HOT-RELOAD] Last modification time
+    long fs_mod_time; // [HOT-RELOAD] Last modification time
     struct _SituationShaderNode* next;
 } _SituationShaderNode;
 
@@ -2097,11 +2105,13 @@ typedef struct _SituationComputePipelineNode {
     // [HOT-RELOAD SUPPORT]
     char* source_path;                      // The file path on disk
     SituationComputeLayoutType layout_type; // The layout configuration used
+    long mod_time;                          // [HOT-RELOAD] Last modification time
 } _SituationComputePipelineNode;
 
 typedef struct _SituationTextureNode {
     SituationTexture texture;
     char* source_path; // [HOT-RELOAD] Only set if loaded via SituationLoadTexture
+    long mod_time;     // [HOT-RELOAD] Last modification time
     struct _SituationTextureNode* next;
 } _SituationTextureNode;
 
@@ -2114,6 +2124,7 @@ typedef struct _SituationBufferNode {
 typedef struct _SituationModelNode {
     SituationModel model;
     char* source_path;
+    long mod_time;     // [HOT-RELOAD] Last modification time
     struct _SituationModelNode* next;
 } _SituationModelNode;
 
@@ -2315,7 +2326,6 @@ typedef struct SituationGraveyard {
     GLuint vd_quad_vao;                         // Private VAO for full-screen quad rendering
     GLuint vd_quad_vbo;                         // Private VBO for full-screen quad geometry
     mat4 vd_ortho_projection;                   // Orthographic projection matrix matching the window size
-    double last_vd_composite_time_ms;           // Profiling timer for the composition pass
 
     GLuint composite_shader_program_id;         // Shader program for advanced blending modes
     GLuint composite_copy_texture_id;           // Texture used to copy the framebuffer for advanced blending
@@ -2575,6 +2585,7 @@ typedef struct SituationGraveyard {
 
     uint32_t frame_draw_calls;                                // Counter for draw commands issued this frame
     uint32_t frame_triangle_count;                            // Estimate of triangles drawn this frame
+    double last_vd_composite_time_ms;                         // Profiling timer for the composition pass
 
     // -------------------------------------------------------------------------
     // Application Callbacks
@@ -12437,6 +12448,8 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
             } else {
                 sit_gs.all_textures = current->next;
             }
+            // [HOT-RELOAD] Free the stored path string
+            if (current->source_path) SIT_FREE(current->source_path);
             SIT_FREE(current);
             break; // Found and removed, stop searching
         }
@@ -13809,6 +13822,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compu
     if (pipeline.id != 0 && sit_gs.all_compute_pipelines && sit_gs.all_compute_pipelines->pipeline.id == pipeline.id) {
         sit_gs.all_compute_pipelines->source_path = _sit_strdup(compute_shader_path);
         sit_gs.all_compute_pipelines->layout_type = layout_type;
+        sit_gs.all_compute_pipelines->mod_time = SituationGetFileModTime(compute_shader_path);
     }
 
     // --- 5. Cleanup ---
@@ -17448,7 +17462,7 @@ static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
 SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     // --- Initial Checks ---
     if (!SituationIsInitialized() || sit_gs.active_virtual_display_count == 0) {
-        sit_gs.gl.last_vd_composite_time_ms = 0.0;
+        sit_gs.last_vd_composite_time_ms = 0.0;
         return;
     }
 
@@ -17476,7 +17490,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
         }
     }
     if (visible_count == 0) {
-        sit_gs.gl.last_vd_composite_time_ms = 0.0;
+        sit_gs.last_vd_composite_time_ms = 0.0;
         return;
     }
 
@@ -17749,7 +17763,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     }
 #endif
     double end_time = glfwGetTime();
-    sit_gs.gl.last_vd_composite_time_ms = (end_time - start_time) * 1000.0;
+    sit_gs.last_vd_composite_time_ms = (end_time - start_time) * 1000.0;
 }
 
 /**
@@ -17857,7 +17871,7 @@ SITAPI bool SituationIsVirtualDisplayDirty(int display_id) {
  */
 SITAPI double SituationGetLastVDCompositeTimeMS(void) {
     if (!SituationIsInitialized()) return 0.0;
-    return sit_gs.gl.last_vd_composite_time_ms;
+    return sit_gs.last_vd_composite_time_ms;
 }
 
 /**
@@ -17999,6 +18013,7 @@ SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generat
     // [HOT-RELOAD] Capture path
     if (tex.id != 0 && sit_gs.all_textures && sit_gs.all_textures->texture.id == tex.id) {
         sit_gs.all_textures->source_path = _sit_strdup(file_path);
+        sit_gs.all_textures->mod_time = SituationGetFileModTime(file_path);
     }
     return tex;
 }
@@ -18169,6 +18184,7 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
         if (node) {
             node->model = model; // Copy struct by value (contains pointers to meshes)
             node->source_path = _sit_strdup(file_path);
+            node->mod_time = SituationGetFileModTime(file_path);
             node->next = sit_gs.all_models;
             sit_gs.all_models = node;
         }
@@ -18443,6 +18459,8 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
     if (shader.id != 0 && sit_gs.all_shaders && sit_gs.all_shaders->shader.id == shader.id) {
         sit_gs.all_shaders->vs_path = _sit_strdup(vs_path);
         sit_gs.all_shaders->fs_path = _sit_strdup(fs_path);
+        sit_gs.all_shaders->vs_mod_time = SituationGetFileModTime(vs_path);
+        sit_gs.all_shaders->fs_mod_time = SituationGetFileModTime(fs_path);
     }
     // The returned handle will be valid (id != 0) if compilation was successful, or invalid (id == 0) if it failed.
     return shader;
@@ -18999,6 +19017,10 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
     return false;
 }
 
+//==================================================================================
+// Implementation for Hot-Reloading
+//==================================================================================
+
 /**
  * @brief Reloads a texture from its original image file.
  *
@@ -19161,6 +19183,80 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
         // The compiler error is in SituationGetLastErrorMsg().
         _SituationSetError("Hot-reload failed during compilation. Previous pipeline destroyed.");
         return false;
+    }
+}
+
+/**
+ * @brief Checks all tracked resources for file changes and reloads them if necessary.
+ * @details This function iterates through all tracked resources (shaders, textures, models, compute pipelines)
+ *          and checks if their source files have been modified on disk. If a modification is detected
+ *          (and passes a debounce check), the resource is automatically reloaded.
+ *
+ * @note This function should be called once per frame in development builds.
+ */
+SITAPI void SituationCheckHotReloads(void) {
+    if (!SituationIsInitialized()) return;
+
+    // --- Check Shaders ---
+    _SituationShaderNode* shader_node = sit_gs.all_shaders;
+    while (shader_node) {
+        if (shader_node->vs_path && shader_node->fs_path) {
+            long vs_mod = SituationGetFileModTime(shader_node->vs_path);
+            long fs_mod = SituationGetFileModTime(shader_node->fs_path);
+
+            if (vs_mod > shader_node->vs_mod_time || fs_mod > shader_node->fs_mod_time) {
+                // Update timestamps immediately to prevent infinite retry loops if reload fails.
+                // If the file is broken, we don't want to stall the GPU every frame trying to compile it.
+                // We will only try again when the file is modified *again* (hopefully fixed).
+                shader_node->vs_mod_time = vs_mod;
+                shader_node->fs_mod_time = fs_mod;
+
+                SituationReloadShader(&shader_node->shader);
+            }
+        }
+        shader_node = shader_node->next;
+    }
+
+    // --- Check Compute Pipelines ---
+    _SituationComputePipelineNode* cp_node = sit_gs.all_compute_pipelines;
+    while (cp_node) {
+        if (cp_node->source_path) {
+            long mod = SituationGetFileModTime(cp_node->source_path);
+            if (mod > cp_node->mod_time) {
+                // Update timestamp first to prevent loop on failure
+                cp_node->mod_time = mod;
+                SituationReloadComputePipeline(&cp_node->pipeline);
+            }
+        }
+        cp_node = cp_node->next;
+    }
+
+    // --- Check Textures ---
+    _SituationTextureNode* tex_node = sit_gs.all_textures;
+    while (tex_node) {
+        if (tex_node->source_path) {
+            long mod = SituationGetFileModTime(tex_node->source_path);
+            if (mod > tex_node->mod_time) {
+                // Update timestamp first
+                tex_node->mod_time = mod;
+                SituationReloadTexture(&tex_node->texture);
+            }
+        }
+        tex_node = tex_node->next;
+    }
+
+    // --- Check Models ---
+    _SituationModelNode* model_node = sit_gs.all_models;
+    while (model_node) {
+        if (model_node->source_path) {
+            long mod = SituationGetFileModTime(model_node->source_path);
+            if (mod > model_node->mod_time) {
+                // Update timestamp first
+                model_node->mod_time = mod;
+                SituationReloadModel(&model_node->model);
+            }
+        }
+        model_node = model_node->next;
     }
 }
 
