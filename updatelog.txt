@@ -1,3 +1,16 @@
+Date: 2025-11-30
+Version: 2.3.8B "Velocity" (Production Readiness)
+
+## DESCRIPTION
+This release is an affirming hardening production readiness release. It aims to polish and wrap up the progressive work done in the "Velocity" saga from codebase to the SDK documentation.
+
+## IMPROVEMENTS
+
+*   **Documentation Polish:** Comprehensive review and update of the SDK documentation (`situation_sdk_238.md`) to reflect the finalized state of the Velocity module.
+*   **Version Synchronization:** Aligned version numbers across all documentation and header files to 2.3.8B.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-29
 Version: 2.3.8A "Velocity" (Hotfix A)
 

@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.8A "Velocity"
+*   Core API library v2.3.8B "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 8
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_REVISION "B"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -15406,7 +15406,10 @@ static char* _sit_wide_to_utf8(const WCHAR* wide_str) {
  * @return A new string containing the full path, or NULL on failure.
  */
 SITAPI char* SituationGetAppSavePath(const char* app_name) {
-    if (!app_name || app_name[0] == '\0') return NULL;
+    if (!app_name || app_name[0] == '\0') {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "App name cannot be NULL or empty.");
+        return NULL;
+    }
 
 #if defined(_WIN32)
     // NOTE: For this to work reliably, CoInitialize may need to be called.
@@ -15415,7 +15418,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     HRESULT hr = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &wide_path_appdata);
 
     if (FAILED(hr)) {
-        // TODO: Set last error message
+        _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "SHGetKnownFolderPath failed to retrieve AppData.");
         return NULL;
     }
 
@@ -15423,7 +15426,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     CoTaskMemFree(wide_path_appdata); // Free the memory allocated by the shell API
 
     if (!path_appdata) {
-        // TODO: Set last error message
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to convert AppData path to UTF-8.");
         return NULL;
     }
 
@@ -15495,7 +15498,7 @@ SITAPI char* SituationGetBasePath(void) {
     WCHAR wide_path[MAX_PATH];
     DWORD len = GetModuleFileNameW(NULL, wide_path, MAX_PATH);
     if (len == 0 || len == MAX_PATH) {
-        // TODO: Set last error: Path too long or other failure
+        _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "GetModuleFileNameW failed or path too long.");
         return NULL;
     }
 
@@ -15928,7 +15931,7 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
  */
 SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
     if (!dir_path || !SituationDirectoryExists(dir_path)) {
-        // TODO: Set last error: Invalid path or directory not found
+        _SituationSetErrorFromCode(SITUATION_ERROR_PATH_NOT_FOUND, "Directory path is invalid or does not exist.");
         return false;
     }
 
@@ -15961,7 +15964,7 @@ SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
             SituationFreeDirectoryFileList(entries, count);
 
             if (!all_deleted) {
-                // TODO: Set last error: Failed to delete one or more items within the directory
+                _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to delete one or more items within the directory.");
                 return false; // Failed to empty the directory, so we can't delete it
             }
         }
@@ -16431,7 +16434,7 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
     // Allocate a new buffer that is one byte larger for the null terminator.
     char* text_buffer = (char*)malloc(bytes_read + 1);
     if (!text_buffer) {
-        // TODO: Set last error message: "Memory allocation failed"
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file text.");
         SIT_FREE(file_data);
         return NULL;
     }
@@ -16453,7 +16456,7 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
  */
 SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
     if (!file_path || !text) {
-        // TODO: Set last error message: "Invalid parameter"
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path or text cannot be NULL.");
         return false;
     }
 
