@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 7
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_REVISION "B"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -160,12 +160,6 @@ Bash
 #define GLFW_INCLUDE_NONE   // This prevents GLFW from trying to include the system GL/gl.h header, which is missing in some environments (including this one) and is unnecessary when using glad.
 #include <GLFW/glfw3.h>
 #include <miniaudio.h>
-
-// [FIX] Define missing effect types from miniaudio
-#ifndef ma_reverb
-typedef struct { int _unused; } ma_reverb;
-typedef struct { int _unused; } ma_reverb_config;
-#endif
 
 /**
  * @brief Backend-specific includes
@@ -1269,7 +1263,7 @@ typedef struct {
 
         // Simple Plate Reverb
         bool                    reverb_enabled;         // Master enable for reverb stage
-        ma_reverb               reverb;                 // MiniAudio reverb instance
+        void*                   reverb_state;           // Internal custom reverb state (opaque)
         float                   reverb_room_size;       // Simulated room size (0.0 small → 1.0 large hall)
         float                   reverb_damping;         // High-frequency damping (0.0.0 bright → 1.0 very damped)
         float                   reverb_wet_mix;         // Wet amount (0.0 = dry only)
@@ -21576,6 +21570,133 @@ SITAPI Rectangle SituationMeasureText(SituationFont font, const char *text, floa
     return bounds;
 }
 
+// --- Internal Reverb Implementation (Schroeder/Freeverb) ---
+// Constants for 44.1kHz (will scale for 48k)
+#define SIT_REVERB_COMB_COUNT 8
+#define SIT_REVERB_ALLPASS_COUNT 4
+#define SIT_REVERB_STEREO_SPREAD 23
+
+typedef struct {
+    float* buffer;
+    int size;
+    int cursor;
+    float feedback;
+    float filter_store;
+    float damp;
+} SituationReverbComb;
+
+typedef struct {
+    float* buffer;
+    int size;
+    int cursor;
+    float feedback;
+} SituationReverbAllPass;
+
+typedef struct {
+    SituationReverbComb combs[SIT_REVERB_COMB_COUNT];
+    SituationReverbAllPass allpasses[SIT_REVERB_ALLPASS_COUNT];
+    float room_size;
+    float damp;
+    float wet;
+    float dry;
+    float width;
+    uint32_t sample_rate;
+} SituationReverbState;
+
+static float _sit_reverb_comb_process(SituationReverbComb* comb, float input) {
+    float output = comb->buffer[comb->cursor];
+    comb->filter_store = (output * (1.0f - comb->damp)) + (comb->filter_store * comb->damp);
+    comb->buffer[comb->cursor] = input + (comb->filter_store * comb->feedback);
+    if (++comb->cursor >= comb->size) comb->cursor = 0;
+    return output;
+}
+
+static float _sit_reverb_allpass_process(SituationReverbAllPass* ap, float input) {
+    float buffered = ap->buffer[ap->cursor];
+    float output = -input + buffered;
+    ap->buffer[ap->cursor] = input + (buffered * ap->feedback);
+    if (++ap->cursor >= ap->size) ap->cursor = 0;
+    return output;
+}
+
+static void _SituationUninitReverb(void* state_ptr) {
+    if (!state_ptr) return;
+    SituationReverbState* rev = (SituationReverbState*)state_ptr;
+    for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) SIT_FREE(rev->combs[i].buffer);
+    for(int i=0; i<SIT_REVERB_ALLPASS_COUNT; ++i) SIT_FREE(rev->allpasses[i].buffer);
+    SIT_FREE(rev);
+}
+
+static void* _SituationInitReverb(uint32_t sample_rate) {
+    SituationReverbState* rev = (SituationReverbState*)calloc(1, sizeof(SituationReverbState));
+    if (!rev) return NULL;
+
+    rev->sample_rate = sample_rate;
+    float scale = (float)sample_rate / 44100.0f;
+
+    // Tuning values (Schroeder/Freeverb defaults scaled)
+    const int comb_tunings[] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
+    const int allpass_tunings[] = {225, 341, 441, 556};
+
+    for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) {
+        rev->combs[i].size = (int)(comb_tunings[i] * scale);
+        rev->combs[i].buffer = (float*)calloc(rev->combs[i].size, sizeof(float));
+        rev->combs[i].feedback = 0.5f; // Initial room size
+        rev->combs[i].damp = 0.5f;     // Initial damp
+    }
+
+    for(int i=0; i<SIT_REVERB_ALLPASS_COUNT; ++i) {
+        rev->allpasses[i].size = (int)(allpass_tunings[i] * scale);
+        rev->allpasses[i].buffer = (float*)calloc(rev->allpasses[i].size, sizeof(float));
+        rev->allpasses[i].feedback = 0.5f;
+    }
+
+    rev->room_size = 0.5f;
+    rev->damp = 0.5f;
+    rev->wet = 0.3f;
+    rev->dry = 1.0f;
+    rev->width = 1.0f;
+
+    return rev;
+}
+
+static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels) {
+    if (!state_ptr) return;
+    SituationReverbState* rev = (SituationReverbState*)state_ptr;
+
+    // Apply parameters
+    float room_scale = rev->room_size * 0.28f + 0.7f; // Scale to stable range
+    for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) {
+        rev->combs[i].feedback = room_scale;
+        rev->combs[i].damp = rev->damp * 0.4f;
+    }
+
+    for (uint32_t i = 0; i < frameCount; ++i) {
+        float in_sample = 0.0f;
+        // Downmix input to mono for reverb engine
+        for(int c=0; c<channels; ++c) in_sample += pInput[i*channels + c];
+        in_sample *= (0.015f / channels); // Gain compensation
+
+        float out = 0.0f;
+        for(int j=0; j<SIT_REVERB_COMB_COUNT; ++j) {
+            out += _sit_reverb_comb_process(&rev->combs[j], in_sample);
+        }
+
+        for(int j=0; j<SIT_REVERB_ALLPASS_COUNT; ++j) {
+            out = _sit_reverb_allpass_process(&rev->allpasses[j], out);
+        }
+
+        // Apply Wet/Dry mix
+        for(int c=0; c<channels; ++c) {
+            float wet_sig = out * rev->wet;
+            // Simple stereo spread
+            if (c%2==1) wet_sig *= -1.0f; // Phase invert right channel for wideness
+
+            pOutput[i*channels + c] = (pInput[i*channels + c] * rev->dry) + wet_sig;
+        }
+    }
+}
+
 // --- Audio Implementations (MiniAudio) ---
 /**
  * @brief The core audio processing callback function for MiniAudio.
@@ -21673,9 +21794,9 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                 ma_delay_process_pcm_frames(&sound->effects.delay, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
                 float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
-            if (sound->effects.reverb_enabled) {
-                // ma_reverb_process_pcm_frames(&sound->effects.reverb, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
-                // float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
+            if (sound->effects.reverb_enabled && sound->effects.reverb_state) {
+                _SituationProcessReverb(sound->effects.reverb_state, pFramesOut, pFramesIn, (uint32_t)frame_count_for_effects, (int)effect_channels);
+                float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
 
             // --- Stage 2: Custom User-Attached Processors ---
@@ -22265,10 +22386,11 @@ static SituationError _SituationInitSoundEffects(SituationSound* sound) {
     sound->effects.echo_enabled = false;
 
     // Reverb
-    // ma_reverb_config reverb_config = ma_reverb_config_init(ma_format_f32, channels, sampleRate);
-    // reverb_config.roomSize = 0.5f; reverb_config.damping = 0.5f; reverb_config.wetVolume = 1.0f; reverb_config.dryVolume = 1.0f;
-    // res = ma_reverb_init(&reverb_config, NULL, &sound->effects.reverb);
-    // if (res != MA_SUCCESS) { ma_delay_uninit(&sound->effects.delay, NULL); return SITUATION_ERROR_AUDIO_CONTEXT; }
+    sound->effects.reverb_state = _SituationInitReverb(sampleRate);
+    if (!sound->effects.reverb_state) {
+        ma_delay_uninit(&sound->effects.delay, NULL);
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
     sound->effects.reverb_enabled = false;
 
     return SITUATION_SUCCESS;
@@ -22591,7 +22713,7 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
                 sound->preloaded_data = NULL;
             }
 
-            // ma_reverb_uninit(&sound->effects.reverb, NULL);
+            if (sound->effects.reverb_state) _SituationUninitReverb(sound->effects.reverb_state);
             ma_delay_uninit(&sound->effects.delay, NULL);
         }
         memset(sound, 0, sizeof(SituationSound));
@@ -23078,27 +23200,21 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
 
     ma_mutex_lock(&sit_audio.audio_queue_mutex);
 
-    if (enabled) {
-        // [FIX] Reverb is currently disabled due to missing implementation in the miniaudio header provided.
-        // We log a warning but return an error code to inform the user it's not active.
-        SITUATION_LOG_WARNING(SITUATION_ERROR_NOT_IMPLEMENTED, "Reverb effect is currently unavailable in this build.");
-
-        sound->effects.reverb_enabled = false; // Force disable
-        ma_mutex_unlock(&sit_audio.audio_queue_mutex);
-        return SITUATION_ERROR_NOT_IMPLEMENTED;
-    } else {
-        // If disabling, we can successfully "disable" it (even if it wasn't really running)
-        sound->effects.reverb_enabled = false;
-
-        // Store parameters anyway in case they are used for other logic or if reverb is re-enabled later
-        sound->effects.reverb_room_size = room_size;
-        sound->effects.reverb_damping = damping;
-        sound->effects.reverb_wet_mix = wet_mix;
-        sound->effects.reverb_dry_mix = dry_mix;
-
-        ma_mutex_unlock(&sit_audio.audio_queue_mutex);
-        return SITUATION_SUCCESS;
+    sound->effects.reverb_enabled = enabled;
+    if (sound->effects.reverb_state) {
+        SituationReverbState* rev = (SituationReverbState*)sound->effects.reverb_state;
+        rev->room_size = room_size;
+        rev->damp = damping;
+        rev->wet = wet_mix;
+        rev->dry = dry_mix;
     }
+    sound->effects.reverb_room_size = room_size;
+    sound->effects.reverb_damping = damping;
+    sound->effects.reverb_wet_mix = wet_mix;
+    sound->effects.reverb_dry_mix = dry_mix;
+
+    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+    return SITUATION_SUCCESS;
 }
 
 /**

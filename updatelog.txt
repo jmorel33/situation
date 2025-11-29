@@ -1,4 +1,23 @@
 Date: 2025-11-28
+Version: 2.3.7B "Velocity" (Embedded Reverb Implementation)
+
+## DESCRIPTION
+This patch implements a custom Schroeder/Freeverb reverberation algorithm directly within the `situation.h` header, replacing the missing `miniaudio` reverb dependency. This ensures that the `SituationSetSoundReverb` function is fully operational and self-contained, providing high-quality environmental audio effects without requiring external DSP libraries.
+
+## NEW FEATURES
+
+*   **Embedded Reverb Algorithm:** Implemented a complete Schroeder/Freeverb reverb engine (8 comb filters, 4 all-pass filters) within the library's implementation block. This restores full functionality to the `SituationSetSoundReverb` API, enabling Room Size, Damping, and Wet/Dry mix controls.
+*   **Opaque State Management:** The public `SituationSound` struct now uses an opaque `void* reverb_state` pointer, completely hiding the internal reverb data structures (`SituationReverbState`, `SituationReverbComb`, etc.) from the public API. This improves encapsulation and prevents ABI breakage if the reverb implementation changes in the future.
+
+## CRITICAL FIXES
+
+*   **Missing Dependency Resolution:** Replaced calls to non-existent `ma_reverb` functions with internal helpers (`_SituationInitReverb`, `_SituationProcessReverb`, `_SituationUninitReverb`). The Audio Engine now initializes and processes the custom reverb chain seamlessly as part of the standard audio pipeline.
+*   **Initialization Safety:** Added robust null checks for memory allocation in `_SituationInitReverb` to prevent potential crashes during sound loading or effect initialization.
+*   **API Cleanliness:** Removed redundant macro definitions (`SIT_REVERB_COMB_COUNT`, etc.) from the public header section, keeping the global namespace clean.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-28
 Version: 2.3.7A "Velocity" (Audio Safety Hotfix)
 
 ## DESCRIPTION
