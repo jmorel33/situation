@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.8 "Velocity"_
+_Core API library v2.3.8A "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.8 "Velocity"** introduces a major workflow enhancement: **Live Hot-Reloading**. This feature allows developers to update Shaders, Compute Pipelines, Textures, and 3D Models on disk while the application is running, seeing changes instantly without a restart. This release also hardens the library's OpenGL backend for higher performance and stricter compliance with modern standards, enforcing an OpenGL 4.6 Core Profile and utilizing **Direct State Access (DSA)** to eliminate CPU-GPU stalls.
+**Version 2.3.8A** marks the completion and production-hardening of the **"Velocity"** saga. This milestone delivers a comprehensive **Hot-Reloading Module** that is now **Fail-Safe**: invalid assets, syntax errors, or missing files encountered during a reload will safely abort the operation, keeping the original asset active and preventing application crashes. Alongside this, the update finalizes the backend modernization effort, ensuring both Vulkan and OpenGL implementations are robust, high-performance, and strictly compliant with modern standards.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.

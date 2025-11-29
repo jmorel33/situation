@@ -1,17 +1,17 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.8 "Velocity"
+*   Core API library v2.3.8A "Velocity"
 *   (c) 2025 Jacques Morel
-*   MIT Licenced
+*   MIT Licensed
 *
 *   A single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities,
 *   offering a lean yet powerful API for building sophisticated, high-performance software.
 *
 *   The library's philosophy is reflected in its name, granting developers complete situational "Awareness," precise "Control," and fine-grained "Timing."
 *
-*   **New in v2.3.4 "Velocity":**
-*   This release introduces the **Hot-Reloading Module**, a development-focused toolset that allows Shaders, Compute Pipelines, Textures, and 3D Models to be reloaded from disk at runtime.
+*   **Velocity Module (Hot-Reloading):**
+*   This release integrates the **Hot-Reloading Module**, a development-focused toolset that allows Shaders, Compute Pipelines, Textures, and 3D Models to be reloaded from disk at runtime.
 *   This eliminates the need to restart the application to see asset changes, significantly increasing iteration speed for visual adjustments and shader programming.
 *
 *   It provides deep **Awareness** of the host system through APIs for querying hardware and multi-monitor display information, and by handling operating system events like window focus and file drops.
@@ -53,30 +53,25 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 8
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
-Compilation command (adjust paths/libs for your system):
-GCC (Linux/MinGW):
-gcc main.c -o situation_demo \
-    -I. -I./ext -I./ext/glad/include -I./ext/GLFW  # Adjust include paths for headers
-    -L/path/to/glfw/libs                           # If GLFW lib is not in standard path
-    -lglfw3 -lGL -lm -ldl -lpthread                # Common Linux libs
-    # For MinGW on Windows, add Windows specific libs:
-    # -lgdi32 -lopengl32 -lwinmm -luser32 -lshell32 -liphlpapi -lsetupapi -ldxgi -lole32 -lpropsys -lshlwapi
-Use code with caution.
-Bash
-If you installed GLFW, Miniaudio, GLAD headers, and CGLM headers via a package manager like pacman in MSYS2/MinGW, the -I flags for them might not be needed if they are in the compiler's default search paths.
- However, you'll still need -I. if situation.h is in the current directory and #include "ext/glad.c" implies ext is a subdirectory.
-A more self-contained MinGW command assuming headers are somewhat organized:
-gcc main.c -o situation_demo.exe -I. -Iext \
-    -lglfw3 -lsqlite3 \ # If you had sqlite3 (not used by situation.h but by earlier tests)
-    -lgdi32 -lopengl32 -lwinmm -luser32 -lshell32 -lole32 -liphlpapi -lsetupapi -ldxgi -lpropsys -lshlwapi \
-    -lm
-Use code with caution.
-Bash
-(Note: The -lsqlite3 might not be needed if your situation.h doesn't use it, but your earlier test program did. The provided situation.h doesn't list SQLite3 as a direct dependency).
-*/
+ *  ---------------------------------------------------------------------------------------------------
+ *  COMPILATION INSTRUCTIONS
+ *  ---------------------------------------------------------------------------------------------------
+ *
+ *  GCC / Clang (Linux):
+ *      gcc main.c -o situation_demo -std=c11 -I. -I./ext -D_POSIX_C_SOURCE=200809L \
+ *      -lglfw -lGL -lm -ldl -lpthread
+ *
+ *  MinGW (Windows):
+ *      gcc main.c -o situation_demo.exe -std=c11 -I. -I./ext \
+ *      -lglfw3 -lgdi32 -lopengl32 -lwinmm -luser32 -lshell32 -lole32 -liphlpapi -lsetupapi \
+ *      -ldxgi -lpropsys -lshlwapi -lm
+ *
+ *  Note: Ensure you link against GLFW3 and your system's OpenGL libraries.
+ *        The 'ext' directory should contain the required dependencies (stb, glad, miniaudio).
+ */
 
 #ifndef SITUATION_H
 #define SITUATION_H
@@ -220,8 +215,6 @@ SITAPI void _SituationLogGLError(const char* file, int line);
  * @param fmt The printf-style format string for the message.
  * @param ... Variable arguments for the format string.
  */
-// Moved below SituationError definition
-// SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
 //==================================================================================
 //  SituationError - Comprehensive, Strictly Ordered Error Code System (Titanium Grade)
 //==================================================================================
@@ -18973,19 +18966,19 @@ SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_
 SITAPI bool SituationReloadShader(SituationShader* shader) {
     if (!SituationIsInitialized() || !shader || shader->id == 0) return false;
 
-    // 1. Retrieve source paths from internal tracker
+    // 1. Retrieve source paths and tracking node
     char* vs_path = NULL;
     char* fs_path = NULL;
-    _SituationShaderNode* current = sit_gs.all_shaders;
-    while (current) {
-        if (current->shader.id == shader->id) {
-            if (current->vs_path && current->fs_path) {
-                vs_path = _sit_strdup(current->vs_path);
-                fs_path = _sit_strdup(current->fs_path);
+    _SituationShaderNode* old_node = sit_gs.all_shaders;
+    while (old_node) {
+        if (old_node->shader.id == shader->id) {
+            if (old_node->vs_path && old_node->fs_path) {
+                vs_path = _sit_strdup(old_node->vs_path);
+                fs_path = _sit_strdup(old_node->fs_path);
             }
             break;
         }
-        current = current->next;
+        old_node = old_node->next;
     }
 
     if (!vs_path || !fs_path) {
@@ -18994,27 +18987,64 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
         return false;
     }
 
-    // 2. Sync GPU
-    // Note: Vulkan uses deferred destruction, so we don't need to wait.
-    #if defined(SITUATION_USE_OPENGL)
-    glFinish();
-    #endif
-
-    // 3. Destroy old, Load new
-    // SituationUnloadShader removes the old node (and frees the old path strings)
-    SituationUnloadShader(shader);
-
-    // SituationLoadShader creates a new node and stores the paths again
-    *shader = SituationLoadShader(vs_path, fs_path);
+    // 2. Load NEW shader first (Fail-Safe)
+    // This creates a NEW tracking node at the head of the list.
+    SituationShader new_shader = SituationLoadShader(vs_path, fs_path);
 
     SIT_FREE(vs_path);
     SIT_FREE(fs_path);
 
-    if (shader->id != 0) {
-        printf("[Situation] Hot-Reloaded Shader: %llu\n", (unsigned long long)shader->id);
-        return true;
+    if (new_shader.id == 0) {
+        // Load failed. The old shader remains active and untouched.
+        _SituationSetError("Hot-reload compilation failed. Keeping old shader.");
+        return false;
     }
-    return false;
+
+    // 3. Swap and Cleanup
+
+    // 3a. Remove the NEW tracking node created by LoadShader.
+    // We want to keep the OLD node (to preserve list position for iterators) but update its content.
+    if (sit_gs.all_shaders && sit_gs.all_shaders->shader.id == new_shader.id) {
+        _SituationShaderNode* new_node = sit_gs.all_shaders;
+        sit_gs.all_shaders = new_node->next; // Unlink
+        // Free node strings (they are duplicates of what we already have in old_node)
+        if (new_node->vs_path) SIT_FREE(new_node->vs_path);
+        if (new_node->fs_path) SIT_FREE(new_node->fs_path);
+        SIT_FREE(new_node);
+    } else {
+        // Fallback search if it wasn't at head (unlikely)
+        _SituationShaderNode* curr = sit_gs.all_shaders;
+        _SituationShaderNode* prev = NULL;
+        while (curr) {
+            if (curr->shader.id == new_shader.id) {
+                if (prev) prev->next = curr->next; else sit_gs.all_shaders = curr->next;
+                if (curr->vs_path) SIT_FREE(curr->vs_path);
+                if (curr->fs_path) SIT_FREE(curr->fs_path);
+                SIT_FREE(curr);
+                break;
+            }
+            prev = curr;
+            curr = curr->next;
+        }
+    }
+
+    // 3b. Destroy OLD resources manually (bypassing SituationUnloadShader to keep the node)
+    #if defined(SITUATION_USE_OPENGL)
+        if (shader->uniform_map) _sit_uniform_map_destroy(shader->uniform_map);
+        if (glIsProgram(shader->id)) glDeleteProgram(shader->id);
+    #elif defined(SITUATION_USE_VULKAN)
+        _SituationDeferDestroyPipeline(shader->vk_pipeline, shader->vk_pipeline_layout);
+    #endif
+
+    // 3c. Update handles
+    *shader = new_shader; // Update user's handle
+    if (old_node) {
+        old_node->shader = new_shader; // Update internal tracker
+        // Timestamps are updated by the caller (CheckHotReloads)
+    }
+
+    printf("[Situation] Hot-Reloaded Shader: %llu\n", (unsigned long long)new_shader.id);
+    return true;
 }
 
 //==================================================================================
@@ -19039,13 +19069,13 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     if (!SituationIsInitialized() || !texture || texture->id == 0) return false;
 
     char* path = NULL;
-    _SituationTextureNode* current = sit_gs.all_textures;
-    while (current) {
-        if (current->texture.id == texture->id) {
-            if (current->source_path) path = _sit_strdup(current->source_path);
+    _SituationTextureNode* old_node = sit_gs.all_textures;
+    while (old_node) {
+        if (old_node->texture.id == texture->id) {
+            if (old_node->source_path) path = _sit_strdup(old_node->source_path);
             break;
         }
-        current = current->next;
+        old_node = old_node->next;
     }
 
     if (!path) {
@@ -19053,20 +19083,54 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
         return false;
     }
 
-    #if defined(SITUATION_USE_OPENGL)
-    glFinish();
-    #endif
-
-    SituationDestroyTexture(texture);
-    *texture = SituationLoadTexture(path, true); // Defaulting to mips enabled for reload
-
+    // 1. Load NEW texture first (Fail-Safe)
+    SituationTexture new_texture = SituationLoadTexture(path, true); // Assume mips enabled
     SIT_FREE(path);
 
-    if (texture->id != 0) {
-        printf("[Situation] Hot-Reloaded Texture\n");
-        return true;
+    if (new_texture.id == 0) {
+        _SituationSetError("Hot-reload texture failed. Keeping old texture.");
+        return false;
     }
-    return false;
+
+    // 2. Swap and Cleanup
+
+    // 2a. Remove NEW tracking node (created by LoadTexture)
+    if (sit_gs.all_textures && sit_gs.all_textures->texture.id == new_texture.id) {
+        _SituationTextureNode* new_node = sit_gs.all_textures;
+        sit_gs.all_textures = new_node->next;
+        if (new_node->source_path) SIT_FREE(new_node->source_path);
+        SIT_FREE(new_node);
+    } else {
+        _SituationTextureNode* curr = sit_gs.all_textures;
+        _SituationTextureNode* prev = NULL;
+        while (curr) {
+            if (curr->texture.id == new_texture.id) {
+                if (prev) prev->next = curr->next; else sit_gs.all_textures = curr->next;
+                if (curr->source_path) SIT_FREE(curr->source_path);
+                SIT_FREE(curr);
+                break;
+            }
+            prev = curr;
+            curr = curr->next;
+        }
+    }
+
+    // 2b. Destroy OLD resources manually
+    #if defined(SITUATION_USE_OPENGL)
+        glDeleteTextures(1, &texture->gl_texture_id);
+    #elif defined(SITUATION_USE_VULKAN)
+        if (texture->descriptor_set != VK_NULL_HANDLE) _SituationDeferDestroyDescriptorSet(texture->descriptor_set);
+        _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
+    #endif
+
+    // 2c. Update handles
+    *texture = new_texture;
+    if (old_node) {
+        old_node->texture = new_texture;
+    }
+
+    printf("[Situation] Hot-Reloaded Texture\n");
+    return true;
 }
 
 /**
@@ -19087,13 +19151,13 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     if (!SituationIsInitialized() || !model || model->id == 0) return false;
 
     char* path = NULL;
-    _SituationModelNode* current = sit_gs.all_models;
-    while (current) {
-        if (current->model.id == model->id) {
-            if (current->source_path) path = _sit_strdup(current->source_path);
+    _SituationModelNode* old_node = sit_gs.all_models;
+    while (old_node) {
+        if (old_node->model.id == model->id) {
+            if (old_node->source_path) path = _sit_strdup(old_node->source_path);
             break;
         }
-        current = current->next;
+        old_node = old_node->next;
     }
 
     if (!path) {
@@ -19101,20 +19165,63 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
         return false;
     }
 
-    #if defined(SITUATION_USE_OPENGL)
-    glFinish();
-    #endif
-
-    SituationUnloadModel(model);
-    *model = SituationLoadModel(path);
-
+    // 1. Load NEW model (Fail-Safe)
+    SituationModel new_model = SituationLoadModel(path);
     SIT_FREE(path);
 
-    if (model->id != 0) {
-        printf("[Situation] Hot-Reloaded Model\n");
-        return true;
+    if (new_model.id == 0) {
+        _SituationSetError("Hot-reload model failed (file not found or parse error). Keeping old model.");
+        return false;
     }
-    return false;
+
+    // 2. Swap and Cleanup
+
+    // 2a. Remove the NEW model tracking node (created by LoadModel)
+    if (sit_gs.all_models && sit_gs.all_models->model.id == new_model.id) {
+        _SituationModelNode* new_node = sit_gs.all_models;
+        sit_gs.all_models = new_node->next;
+        if (new_node->source_path) SIT_FREE(new_node->source_path);
+        SIT_FREE(new_node);
+    } else {
+        _SituationModelNode* curr = sit_gs.all_models;
+        _SituationModelNode* prev = NULL;
+        while (curr) {
+            if (curr->model.id == new_model.id) {
+                if (prev) prev->next = curr->next; else sit_gs.all_models = curr->next;
+                if (curr->source_path) SIT_FREE(curr->source_path);
+                SIT_FREE(curr);
+                break;
+            }
+            prev = curr;
+            curr = curr->next;
+        }
+    }
+
+    // 2b. Destroy OLD resources manually (Deep cleanup)
+    if (model->meshes) {
+        for (int i = 0; i < model->mesh_count; i++) {
+            SituationDestroyMesh(&model->meshes[i].gpu_mesh);
+        }
+        SIT_FREE(model->meshes);
+    }
+    if (model->all_model_textures) {
+        for (int i = 0; i < model->texture_count; i++) {
+            SituationDestroyTexture(&model->all_model_textures[i]);
+        }
+        SIT_FREE(model->all_model_textures);
+    }
+
+    // 2c. Update handles
+    *model = new_model;
+    if (old_node) {
+        old_node->model = new_model; // Update struct content (arrays and ID)
+        // Note: Mesh/Texture sub-resources now have new IDs and tracking nodes (created by LoadModel)
+        // which is correct behavior as they are new entities. The old sub-resources were removed
+        // from their lists by SituationDestroyMesh/Texture calls above.
+    }
+
+    printf("[Situation] Hot-Reloaded Model\n");
+    return true;
 }
 
 /**
@@ -19135,55 +19242,72 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     // 2. Lookup the original creation info from the internal tracker
     char* original_path = NULL;
     SituationComputeLayoutType original_layout = SIT_COMPUTE_LAYOUT_EMPTY;
-    bool found = false;
+    _SituationComputePipelineNode* old_node = sit_gs.all_compute_pipelines;
 
-    _SituationComputePipelineNode* current = sit_gs.all_compute_pipelines;
-    while (current) {
-        if (current->pipeline.id == pipeline->id) {
-            if (current->source_path) {
-                original_path = _sit_strdup(current->source_path); // Copy because node will be destroyed
-                original_layout = current->layout_type;
-                found = true;
+    while (old_node) {
+        if (old_node->pipeline.id == pipeline->id) {
+            if (old_node->source_path) {
+                original_path = _sit_strdup(old_node->source_path);
+                original_layout = old_node->layout_type;
             }
             break;
         }
-        current = current->next;
+        old_node = old_node->next;
     }
 
-    if (!found || !original_path) {
+    if (!original_path) {
         _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Pipeline was not loaded from a file (or path wasn't tracked).");
-        if (original_path) SIT_FREE(original_path);
         return false;
     }
 
-    // 3. Synchronize GPU (Critical for hot-swapping)
-    #if defined(SITUATION_USE_OPENGL)
-    glFinish();
-    #endif
-
-    // 4. Destroy the old pipeline
-    // This cleans up GPU resources and removes the old tracking node
-    SituationDestroyComputePipeline(pipeline);
-
-    // 5. Re-create the pipeline
-    // This loads from disk, compiles, creates GPU resources, and adds a NEW tracking node
+    // 3. Load NEW pipeline (Fail-Safe)
     SituationComputePipeline new_pipeline = SituationCreateComputePipeline(original_path, original_layout);
-
-    // 6. Cleanup temp path
     SIT_FREE(original_path);
 
-    // 7. Apply result
-    if (new_pipeline.id != 0) {
-        // Success: Update the user's handle structure in-place
-        *pipeline = new_pipeline;
-        printf("[Situation] Hot-Reloaded Compute Pipeline (ID: %llu)\n", (unsigned long long)pipeline->id);
-        return true;
-    } else {
-        // Failure: The user's handle is already zeroed by SituationDestroyComputePipeline.
-        // The compiler error is in SituationGetLastErrorMsg().
-        _SituationSetError("Hot-reload failed during compilation. Previous pipeline destroyed.");
+    if (new_pipeline.id == 0) {
+        _SituationSetError("Hot-reload compilation failed. Keeping old pipeline.");
         return false;
     }
+
+    // 4. Swap and Cleanup
+
+    // 4a. Remove NEW tracking node (created by CreateComputePipeline)
+    if (sit_gs.all_compute_pipelines && sit_gs.all_compute_pipelines->pipeline.id == new_pipeline.id) {
+        _SituationComputePipelineNode* new_node = sit_gs.all_compute_pipelines;
+        sit_gs.all_compute_pipelines = new_node->next;
+        if (new_node->source_path) SIT_FREE(new_node->source_path);
+        SIT_FREE(new_node);
+    } else {
+        // Search
+        _SituationComputePipelineNode* curr = sit_gs.all_compute_pipelines;
+        _SituationComputePipelineNode* prev = NULL;
+        while (curr) {
+            if (curr->pipeline.id == new_pipeline.id) {
+                if (prev) prev->next = curr->next; else sit_gs.all_compute_pipelines = curr->next;
+                if (curr->source_path) SIT_FREE(curr->source_path);
+                SIT_FREE(curr);
+                break;
+            }
+            prev = curr;
+            curr = curr->next;
+        }
+    }
+
+    // 4b. Destroy OLD resources manually
+    #if defined(SITUATION_USE_OPENGL)
+        if (glIsProgram(pipeline->gl_program_id)) glDeleteProgram(pipeline->gl_program_id);
+    #elif defined(SITUATION_USE_VULKAN)
+        _SituationDeferDestroyPipeline(pipeline->vk_pipeline, pipeline->vk_pipeline_layout);
+    #endif
+
+    // 4c. Update handles
+    *pipeline = new_pipeline;
+    if (old_node) {
+        old_node->pipeline = new_pipeline;
+    }
+
+    printf("[Situation] Hot-Reloaded Compute Pipeline (ID: %llu)\n", (unsigned long long)new_pipeline.id);
+    return true;
 }
 
 /**
@@ -19200,26 +19324,26 @@ SITAPI void SituationCheckHotReloads(void) {
     // --- Check Shaders ---
     _SituationShaderNode* shader_node = sit_gs.all_shaders;
     while (shader_node) {
+        _SituationShaderNode* next_node = shader_node->next; // Save next in case current node is somehow corrupted/freed (though our new reload logic prevents this)
         if (shader_node->vs_path && shader_node->fs_path) {
             long vs_mod = SituationGetFileModTime(shader_node->vs_path);
             long fs_mod = SituationGetFileModTime(shader_node->fs_path);
 
             if (vs_mod > shader_node->vs_mod_time || fs_mod > shader_node->fs_mod_time) {
                 // Update timestamps immediately to prevent infinite retry loops if reload fails.
-                // If the file is broken, we don't want to stall the GPU every frame trying to compile it.
-                // We will only try again when the file is modified *again* (hopefully fixed).
                 shader_node->vs_mod_time = vs_mod;
                 shader_node->fs_mod_time = fs_mod;
 
                 SituationReloadShader(&shader_node->shader);
             }
         }
-        shader_node = shader_node->next;
+        shader_node = next_node;
     }
 
     // --- Check Compute Pipelines ---
     _SituationComputePipelineNode* cp_node = sit_gs.all_compute_pipelines;
     while (cp_node) {
+        _SituationComputePipelineNode* next_node = cp_node->next;
         if (cp_node->source_path) {
             long mod = SituationGetFileModTime(cp_node->source_path);
             if (mod > cp_node->mod_time) {
@@ -19228,12 +19352,13 @@ SITAPI void SituationCheckHotReloads(void) {
                 SituationReloadComputePipeline(&cp_node->pipeline);
             }
         }
-        cp_node = cp_node->next;
+        cp_node = next_node;
     }
 
     // --- Check Textures ---
     _SituationTextureNode* tex_node = sit_gs.all_textures;
     while (tex_node) {
+        _SituationTextureNode* next_node = tex_node->next;
         if (tex_node->source_path) {
             long mod = SituationGetFileModTime(tex_node->source_path);
             if (mod > tex_node->mod_time) {
@@ -19242,12 +19367,13 @@ SITAPI void SituationCheckHotReloads(void) {
                 SituationReloadTexture(&tex_node->texture);
             }
         }
-        tex_node = tex_node->next;
+        tex_node = next_node;
     }
 
     // --- Check Models ---
     _SituationModelNode* model_node = sit_gs.all_models;
     while (model_node) {
+        _SituationModelNode* next_node = model_node->next;
         if (model_node->source_path) {
             long mod = SituationGetFileModTime(model_node->source_path);
             if (mod > model_node->mod_time) {
@@ -19256,7 +19382,7 @@ SITAPI void SituationCheckHotReloads(void) {
                 SituationReloadModel(&model_node->model);
             }
         }
-        model_node = model_node->next;
+        model_node = next_node;
     }
 }
 
