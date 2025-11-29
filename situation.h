@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 7
-#define SITUATION_VERSION_REVISION "B"
+#define SITUATION_VERSION_REVISION "C"
 
 /*
 Compilation command (adjust paths/libs for your system):
@@ -3100,6 +3100,7 @@ static bool _sit_directory_exists(const char* dir_path); // Forward declaration
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount);
 static ma_uint64 _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, ma_uint64 bytesToRead);	// thunk to route read calls to the specific SituationSound instance
 static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin);// thunk to route seek calls to the specific SituationSound instance
+static void* _SituationInitReverb(uint32_t sample_rate);
 
 // --- Display Helpers ---
 static void _SituationCachePhysicalDisplays(void);
@@ -3514,7 +3515,9 @@ static GLint _sit_uniform_map_get(_SituationUniformMap* map, const char* key) {
 
 /**
  * @brief [INTERNAL] Initializes a single graveyard structure.
- * @details Allocates the initial memory for the resource handle arrays.
+ * @details Allocates the initial memory for the resource handle arrays used to track deferred resources.
+ *          Each type of resource (buffers, images, pipelines) has its own dynamic array.
+ * @param gy Pointer to the `SituationGraveyard` struct to initialize.
  */
 static void _SituationInitGraveyard(SituationGraveyard* gy) {
     memset(gy, 0, sizeof(SituationGraveyard));
@@ -3545,7 +3548,9 @@ static void _SituationInitGraveyard(SituationGraveyard* gy) {
 
 /**
  * @brief [INTERNAL] Frees the CPU memory used by a graveyard's internal arrays.
- * @details Does not destroy Vulkan objects; assumes `_SituationFlushGraveyard` has already been called.
+ * @details This function only frees the containers (C arrays), not the Vulkan objects themselves.
+ *          It assumes that `_SituationFlushGraveyard` has already been called to release the GPU resources.
+ * @param gy Pointer to the `SituationGraveyard` struct to clean up.
  */
 static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
     // Ensure everything is flushed first (though device should be idle by now if called from CleanupVulkan)
@@ -3566,7 +3571,10 @@ static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
 
 /**
  * @brief [INTERNAL] Destroys all Vulkan resources queued in a specific frame's graveyard.
- * @details This is the heart of the deferred deletion system. It is called from `SituationAcquireFrameCommandBuffer` only after the fence for `frame_index` has signaled, guaranteeing the GPU is no longer using any of these resources.
+ * @details This function iterates through all deferred destruction queues for the specified frame index
+ *          and calls the appropriate Vulkan/VMA destroy functions.
+ *          It must only be called when the GPU is confirmed to be finished with the frame (via fence wait).
+ * @param frame_index The index of the frame whose graveyard should be flushed.
  */
 static void _SituationFlushGraveyard(uint32_t frame_index) {
     if (!sit_gs.vk.graveyards) return;
@@ -3626,6 +3634,12 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
     gy->render_pass_count = 0;
 }
 
+/**
+ * @brief [INTERNAL] Schedules a Vulkan Buffer for deferred destruction.
+ * @details Adds the buffer and its allocation to the graveyard of the *current* frame.
+ * @param buffer The buffer handle to destroy.
+ * @param allocation The VMA allocation handle associated with the buffer.
+ */
 static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation) {
     if (buffer == VK_NULL_HANDLE) return;
     // The resource is added to the graveyard of the *current* frame.
@@ -3642,6 +3656,14 @@ static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocati
     gy->buffer_count++;
 }
 
+/**
+ * @brief [INTERNAL] Schedules a Vulkan Image and its views/samplers for deferred destruction.
+ * @details Adds the image, its memory, view, and sampler to the graveyard. Any parameter can be VK_NULL_HANDLE.
+ * @param image The image handle.
+ * @param allocation The VMA allocation handle.
+ * @param view The image view handle (optional).
+ * @param sampler The sampler handle (optional).
+ */
 static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler) {
     if (image == VK_NULL_HANDLE && view == VK_NULL_HANDLE && sampler == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_gs.vk.current_frame_index;
@@ -3660,6 +3682,12 @@ static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation,
     gy->image_count++;
 }
 
+/**
+ * @brief [INTERNAL] Schedules a Descriptor Set for deferred destruction.
+ * @details Currently, descriptor sets are not individually freed to avoid fragmentation, but this
+ *          function is kept for architectural completeness and potential future use.
+ * @param set The descriptor set handle.
+ */
 static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set) {
     if (set == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_gs.vk.current_frame_index;
@@ -3671,6 +3699,12 @@ static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set) {
     gy->descriptor_sets[gy->descriptor_set_count++] = set;
 }
 
+/**
+ * @brief [INTERNAL] Schedules a Pipeline and its Layout for deferred destruction.
+ * @details Ensures that the pipeline and its layout are kept alive until the GPU finishes using them.
+ * @param pipeline The pipeline handle.
+ * @param layout The pipeline layout handle.
+ */
 static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout) {
     if (pipeline == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_gs.vk.current_frame_index;
@@ -3685,6 +3719,10 @@ static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout
     gy->pipeline_count++;
 }
 
+/**
+ * @brief [INTERNAL] Schedules a Framebuffer for deferred destruction.
+ * @param framebuffer The framebuffer handle.
+ */
 static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
     if (framebuffer == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_gs.vk.current_frame_index;
@@ -3696,6 +3734,10 @@ static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
     gy->framebuffers[gy->framebuffer_count++] = framebuffer;
 }
 
+/**
+ * @brief [INTERNAL] Schedules a Render Pass for deferred destruction.
+ * @param render_pass The render pass handle.
+ */
 static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass) {
     if (render_pass == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_gs.vk.current_frame_index;
@@ -21603,6 +21645,16 @@ typedef struct {
     uint32_t sample_rate;
 } SituationReverbState;
 
+/**
+ * @brief [INTERNAL] Processes a single sample through a Schroeder comb filter.
+ * @details The comb filter creates a series of decaying echoes by feeding the output back into the input
+ *          through a delay buffer. It also includes a low-pass filter in the feedback loop to simulate
+ *          the absorption of high frequencies by air and walls (damping).
+ *
+ * @param comb Pointer to the comb filter state.
+ * @param input The input audio sample (normalized float).
+ * @return The processed output sample.
+ */
 static float _sit_reverb_comb_process(SituationReverbComb* comb, float input) {
     float output = comb->buffer[comb->cursor];
     comb->filter_store = (output * (1.0f - comb->damp)) + (comb->filter_store * comb->damp);
@@ -21611,6 +21663,16 @@ static float _sit_reverb_comb_process(SituationReverbComb* comb, float input) {
     return output;
 }
 
+/**
+ * @brief [INTERNAL] Processes a single sample through an All-Pass filter.
+ * @details All-pass filters change the phase relationship of frequencies without altering their amplitude response.
+ *          In reverb algorithms, they are used to increase the "density" of the reflections, diffusing the
+ *          distinct echoes from the comb filters into a smooth wash of sound.
+ *
+ * @param ap Pointer to the all-pass filter state.
+ * @param input The input audio sample (normalized float).
+ * @return The processed output sample.
+ */
 static float _sit_reverb_allpass_process(SituationReverbAllPass* ap, float input) {
     float buffered = ap->buffer[ap->cursor];
     float output = -input + buffered;
@@ -21619,6 +21681,13 @@ static float _sit_reverb_allpass_process(SituationReverbAllPass* ap, float input
     return output;
 }
 
+/**
+ * @brief [INTERNAL] Frees all memory associated with the reverb state.
+ * @details This function iterates through all comb and all-pass filters, freeing their internal delay buffers,
+ *          and then frees the main state structure itself.
+ *
+ * @param state_ptr A void pointer to the `SituationReverbState` struct to destroy.
+ */
 static void _SituationUninitReverb(void* state_ptr) {
     if (!state_ptr) return;
     SituationReverbState* rev = (SituationReverbState*)state_ptr;
@@ -21627,6 +21696,15 @@ static void _SituationUninitReverb(void* state_ptr) {
     SIT_FREE(rev);
 }
 
+/**
+ * @brief [INTERNAL] Allocates and initializes the Schroeder/Freeverb reverb engine state.
+ * @details This function sets up the complex network of comb and all-pass filters required for the reverb effect.
+ *          It scales the delay line lengths based on the provided sample rate to ensure consistent timing
+ *          across different audio configurations (e.g., 44.1kHz vs 48kHz).
+ *
+ * @param sample_rate The sample rate of the audio context (e.g., 48000).
+ * @return A void pointer to the opaque `SituationReverbState` struct, or NULL on allocation failure.
+ */
 static void* _SituationInitReverb(uint32_t sample_rate) {
     SituationReverbState* rev = (SituationReverbState*)calloc(1, sizeof(SituationReverbState));
     if (!rev) return NULL;
@@ -21660,6 +21738,18 @@ static void* _SituationInitReverb(uint32_t sample_rate) {
     return rev;
 }
 
+/**
+ * @brief [INTERNAL] Processes a block of audio through the reverb engine.
+ * @details This is the main DSP loop for the reverb effect. It takes an input buffer (stereo or mono),
+ *          downmixes it to mono for processing, runs it through the parallel comb filters and series all-pass filters,
+ *          and then mixes the wet (reverberated) signal back into the output buffer with stereo spreading.
+ *
+ * @param state_ptr A void pointer to the `SituationReverbState` struct.
+ * @param pOutput The output buffer to write mixed audio to (interleaved).
+ * @param pInput The input buffer containing the dry signal (interleaved).
+ * @param frameCount The number of frames to process.
+ * @param channels The number of channels (must be uniform for input/output).
+ */
 static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels) {
     if (!state_ptr) return;
     SituationReverbState* rev = (SituationReverbState*)state_ptr;
