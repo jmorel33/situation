@@ -1,4 +1,27 @@
 Date: 2025-11-29
+Version: 2.3.10 "Velocity" (Feature Flag System & API Refinement)
+
+## DESCRIPTION
+This release introduces a comprehensive Feature Flag system to `situation.h`, enabling applications to query granular GPU capabilities at runtime. It also resolves critical compilation issues in the OpenGL backend related to extension macros and duplicate definitions.
+
+## NEW FEATURES
+*   **Feature Flag System:** Introduced the `SituationFeature` enum and `SituationIsFeatureSupported()` function.
+    *   Allows querying support for advanced features like `SIT_FEATURE_BINDLESS_BUFFERS`, `SIT_FEATURE_MESH_SHADER`, `SIT_FEATURE_RAY_TRACING`, and more.
+    *   Automatically populated during backend initialization based on available extensions and driver limits.
+
+## CRITICAL FIXES
+*   **Compilation Fixes:**
+    *   Corrected the definition order of `SITAPI` to resolve "expected ‘;’ before ‘void’" errors.
+    *   Removed duplicate function definitions (`SituationGetBufferDeviceAddress`, `SituationGetTextureHandle`) that caused redefinition errors.
+    *   Added proper `#ifdef` guards around OpenGL extension macros (`GLAD_GL_NV_shader_buffer_load`, etc.) to prevent compile-time failures when extensions are missing from the loader.
+*   **Missing Definitions:** Verified presence of `_SituationCachePhysicalDisplays` and `_SituationGLFWJoystickCallback` to resolve linker warnings.
+
+## DOCUMENTATION
+*   **Versioning:** Updated all version macros and documentation to 2.3.10.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-29
 Version: 2.3.9 "Velocity" (Vulkan 1.2 & Buffer Device Address)
 
 ## DESCRIPTION
