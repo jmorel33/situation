@@ -2610,7 +2610,14 @@ typedef struct SituationGraveyard {
     ma_mutex audio_capture_mutex;                             // Mutex protecting the capture ring buffer
 } _SituationAudioState;
 
-
+// [NEW] Dedicated Input State Container
+typedef struct {
+    _SituationKeyboardState keyboard;
+    _SituationMouseState mouse;
+    _SituationJoystickManager joysticks;
+    GLFWcursor* cursors[16];
+    int cursor_count;
+} _SituationInputState;
 
 /**
  * @brief [INTERNAL] The central monolithic state container for the entire library.
@@ -2674,16 +2681,6 @@ typedef struct SituationGraveyard {
     int active_virtual_display_count;                         // Count of currently allocated virtual displays
 
     // -------------------------------------------------------------------------
-    // Input Subsystems
-    // -------------------------------------------------------------------------
-    _SituationKeyboardState keyboard;                         // Encapsulated keyboard state and event queue
-    _SituationMouseState mouse;                               // Encapsulated mouse state and position
-    _SituationJoystickManager joysticks;                      // Encapsulated joystick/gamepad manager
-
-    GLFWcursor* cursors[16];                                  // Array of standard system cursor handles
-    int cursor_count;                                         // Number of created cursors
-
-    // -------------------------------------------------------------------------
     // Timing & Profiling
     // -------------------------------------------------------------------------
     SituationTimerSystem timer_system_instance;               // The Temporal Oscillator system state
@@ -2743,6 +2740,7 @@ typedef struct SituationGraveyard {
 typedef struct SituationContext {
     _SituationGlobalStateContainer gs;
     _SituationAudioState audio;
+    _SituationInputState input; // [NEW]
 } SituationContext;
 
 static SituationContext* _sit_current_context = NULL;
@@ -2751,6 +2749,7 @@ static SituationContext* _sit_current_context = NULL;
 // These resolve to the current active context.
 #define sit_gs (_sit_current_context->gs)
 #define sit_audio (_sit_current_context->audio)
+#define sit_input (_sit_current_context->input) // [NEW]
 
 
 //----------------------------------------------------------------------------------
@@ -4349,10 +4348,10 @@ static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const 
  *
  * @par State Management
  *   Upon invocation, this function updates several aspects of the internal keyboard state:
- *   - **Current State:** Updates the `sit_gs.keyboard.current_state` array, which is used by `SituationIsKeyDown()`.
+ *   - **Current State:** Updates the `sit_input.keyboard.current_state` array, which is used by `SituationIsKeyDown()`.
  *   - **Event Flags:** Sets the `down_this_frame` or `up_this_frame` flags for the specific key, which are used by `SituationIsKeyPressed()` and `SituationIsKeyReleased()`.
  *   - **Event Queue:** On a key press, it pushes the key code onto a mutex-protected queue for consumption by `SituationGetKeyPressed()`.
- *   - **Modifier State:** It updates the global modifier flags (`sit_gs.keyboard.modifier_state`) for Shift, Ctrl, Alt, etc.
+ *   - **Modifier State:** It updates the global modifier flags (`sit_input.keyboard.modifier_state`) for Shift, Ctrl, Alt, etc.
  *   - **Lock Key State:** It specifically tracks the state of lock keys like Caps Lock and Num Lock.
  *   - **Scroll Lock:** It manually toggles the internal `is_scroll_lock_on` flag, as this state is not provided as a standard modifier.
  *
@@ -4374,33 +4373,33 @@ static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode,
     (void)window; (void)scancode;
     if (key >= 0 && key <= GLFW_KEY_LAST) {
         if (action == GLFW_PRESS) {
-            sit_gs.keyboard.current_state[key] = true;
-            sit_gs.keyboard.down_this_frame[key] = true; // This happens before queue lock, generally fine as it's main thread context
+            sit_input.keyboard.current_state[key] = true;
+            sit_input.keyboard.down_this_frame[key] = true; // This happens before queue lock, generally fine as it's main thread context
 
-			ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex); // Lock for queue
+			ma_mutex_lock(&sit_input.keyboard.event_queue_mutex); // Lock for queue
             // Ring Buffer Push
-            uint32_t next_head = (sit_gs.keyboard.pressed_head + 1) % SITUATION_KEY_QUEUE_MAX;
-            if (next_head != sit_gs.keyboard.pressed_tail) {
-                sit_gs.keyboard.pressed_queue[sit_gs.keyboard.pressed_head] = key;
-                sit_gs.keyboard.pressed_head = next_head;
+            uint32_t next_head = (sit_input.keyboard.pressed_head + 1) % SITUATION_KEY_QUEUE_MAX;
+            if (next_head != sit_input.keyboard.pressed_tail) {
+                sit_input.keyboard.pressed_queue[sit_input.keyboard.pressed_head] = key;
+                sit_input.keyboard.pressed_head = next_head;
             }
             if (key == SIT_KEY_SCROLL_LOCK) {
-                sit_gs.keyboard.is_scroll_lock_on = !sit_gs.keyboard.is_scroll_lock_on;
+                sit_input.keyboard.is_scroll_lock_on = !sit_input.keyboard.is_scroll_lock_on;
             }
-            ma_mutex_unlock(&sit_gs.keyboard.event_queue_mutex); // Unlock queue
+            ma_mutex_unlock(&sit_input.keyboard.event_queue_mutex); // Unlock queue
 
         } else if (action == GLFW_RELEASE) {
-            sit_gs.keyboard.current_state[key] = false;
-            sit_gs.keyboard.up_this_frame[key] = true;
+            sit_input.keyboard.current_state[key] = false;
+            sit_input.keyboard.up_this_frame[key] = true;
         }
     }
-    sit_gs.keyboard.modifier_state = mods;
+    sit_input.keyboard.modifier_state = mods;
 
     // Store the state of Caps Lock and Num Lock
-    sit_gs.keyboard.lock_key_state = mods & (SIT_MOD_CAPS_LOCK | SIT_MOD_NUM_LOCK);
+    sit_input.keyboard.lock_key_state = mods & (SIT_MOD_CAPS_LOCK | SIT_MOD_NUM_LOCK);
 
-    if (sit_gs.keyboard.key_callback) { // User callback can be called outside the queue lock
-        sit_gs.keyboard.key_callback(key, scancode, action, mods, sit_gs.keyboard.key_callback_user_data);
+    if (sit_input.keyboard.key_callback) { // User callback can be called outside the queue lock
+        sit_input.keyboard.key_callback(key, scancode, action, mods, sit_input.keyboard.key_callback_user_data);
     }
 }
 
@@ -4408,7 +4407,7 @@ static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode,
  * @brief [INTERNAL] GLFW callback function invoked for text input events.
  * @details This callback is specifically for handling character input, as opposed to raw key presses. GLFW calls this function with the Unicode codepoint of a character as it is typed, correctly handling keyboard layouts and modifier keys.
  *
- * Its sole responsibility is to push the received codepoint onto a thread-safe queue (`sit_gs.keyboard.char_queue`). This queue is then consumed by the public `SituationGetCharPressed()` function, providing a reliable way for applications to implement text entry fields.
+ * Its sole responsibility is to push the received codepoint onto a thread-safe queue (`sit_input.keyboard.char_queue`). This queue is then consumed by the public `SituationGetCharPressed()` function, providing a reliable way for applications to implement text entry fields.
  *
  * @param window The GLFW window that received the event (unused).
  * @param codepoint The Unicode codepoint of the character.
@@ -4420,14 +4419,14 @@ static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode,
 static void _SituationGLFWCharCallback(GLFWwindow* window, unsigned int codepoint) {
     (void)window; // Unused parameter
 
-	ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
+	ma_mutex_lock(&sit_input.keyboard.event_queue_mutex);
     // Ring Buffer Push
-    uint32_t next_head = (sit_gs.keyboard.char_head + 1) % SITUATION_CHAR_QUEUE_MAX;
-    if (next_head != sit_gs.keyboard.char_tail) {
-        sit_gs.keyboard.char_queue[sit_gs.keyboard.char_head] = codepoint;
-        sit_gs.keyboard.char_head = next_head;
+    uint32_t next_head = (sit_input.keyboard.char_head + 1) % SITUATION_CHAR_QUEUE_MAX;
+    if (next_head != sit_input.keyboard.char_tail) {
+        sit_input.keyboard.char_queue[sit_input.keyboard.char_head] = codepoint;
+        sit_input.keyboard.char_head = next_head;
     }
-    ma_mutex_unlock(&sit_gs.keyboard.event_queue_mutex);
+    ma_mutex_unlock(&sit_input.keyboard.event_queue_mutex);
 }
 
 /**
@@ -4551,7 +4550,7 @@ static void _SituationGLFWFramebufferSizeCallback(GLFWwindow* window, int width,
  * @details This function is called by GLFW's event processing thread whenever a mouse button is pressed or released. It is responsible for updating the library's internal mouse state in a thread-safe manner.
  *
  * @par Thread Safety
- *   All modifications to the shared `sit_gs.mouse` state are protected by a mutex. This prevents race conditions where the main application thread might read incomplete or inconsistent state while this callback is executing.
+ *   All modifications to the shared `sit_input.mouse` state are protected by a mutex. This prevents race conditions where the main application thread might read incomplete or inconsistent state while this callback is executing.
  *   The user-defined callback is intentionally called *after* the mutex is unlocked to prevent potential deadlocks if the user's code also performs locking.
  *
  * @param window The GLFW window that received the event (unused).
@@ -4563,32 +4562,32 @@ static void _SituationGLFWMouseButtonCallback(GLFWwindow* window, int button, in
     (void)window; // Unused parameter
 
     // --- State Update (Thread-Safe) ---
-    ma_mutex_lock(&sit_gs.mouse.mutex);
+    ma_mutex_lock(&sit_input.mouse.mutex);
     {
         // Validate the button code to prevent out-of-bounds array access.
         if (button >= 0 && button <= GLFW_MOUSE_BUTTON_LAST) {
             if (action == GLFW_PRESS) {
-                sit_gs.mouse.current_button_state[button] = true;
-                sit_gs.mouse.button_down_this_frame[button] = true;
+                sit_input.mouse.current_button_state[button] = true;
+                sit_input.mouse.button_down_this_frame[button] = true;
 
                 // Ring Buffer Push
-                uint32_t next_head = (sit_gs.mouse.button_head + 1) % SITUATION_KEY_QUEUE_MAX;
-                if (next_head != sit_gs.mouse.button_tail) {
-                    sit_gs.mouse.button_queue[sit_gs.mouse.button_head] = button;
-                    sit_gs.mouse.button_head = next_head;
+                uint32_t next_head = (sit_input.mouse.button_head + 1) % SITUATION_KEY_QUEUE_MAX;
+                if (next_head != sit_input.mouse.button_tail) {
+                    sit_input.mouse.button_queue[sit_input.mouse.button_head] = button;
+                    sit_input.mouse.button_head = next_head;
                 }
             } else if (action == GLFW_RELEASE) {
-                sit_gs.mouse.current_button_state[button] = false;
-                sit_gs.mouse.button_up_this_frame[button] = true;
+                sit_input.mouse.current_button_state[button] = false;
+                sit_input.mouse.button_up_this_frame[button] = true;
             }
         }
     }
-    ma_mutex_unlock(&sit_gs.mouse.mutex);
+    ma_mutex_unlock(&sit_input.mouse.mutex);
 
     // --- User Callback (Outside of Lock) ---
     // Call the user's registered callback, if any. This is done outside the critical section to avoid potential deadlocks in the user's application.
-    if (sit_gs.mouse.button_callback) {
-        sit_gs.mouse.button_callback(button, action, mods, sit_gs.mouse.button_callback_user_data);
+    if (sit_input.mouse.button_callback) {
+        sit_input.mouse.button_callback(button, action, mods, sit_input.mouse.button_callback_user_data);
     }
 }
 
@@ -4597,7 +4596,7 @@ static void _SituationGLFWMouseButtonCallback(GLFWwindow* window, int button, in
  * @details This function is called by GLFW whenever the cursor moves over the window. It updates the internal `current_pos` state in a thread-safe manner.
  *
  * @par Thread Safety
- *   The update to `sit_gs.mouse.current_pos` is protected by a mutex to prevent data tearing if another thread reads the position while it is being updated. The user-defined callback is called after the lock is released.
+ *   The update to `sit_input.mouse.current_pos` is protected by a mutex to prevent data tearing if another thread reads the position while it is being updated. The user-defined callback is called after the lock is released.
  *
  * @param window The GLFW window that received the event (unused).
  * @param xpos The new cursor x-coordinate, relative to the left edge of the content area.
@@ -4607,17 +4606,17 @@ static void _SituationGLFWCursorPosCallback(GLFWwindow* window, double xpos, dou
     (void)window; // Unused parameter
 
     // --- State Update (Thread-Safe) ---
-    ma_mutex_lock(&sit_gs.mouse.mutex);
+    ma_mutex_lock(&sit_input.mouse.mutex);
     {
-        sit_gs.mouse.current_pos[0] = (float)xpos;
-        sit_gs.mouse.current_pos[1] = (float)ypos;
+        sit_input.mouse.current_pos[0] = (float)xpos;
+        sit_input.mouse.current_pos[1] = (float)ypos;
     }
-    ma_mutex_unlock(&sit_gs.mouse.mutex);
+    ma_mutex_unlock(&sit_input.mouse.mutex);
 
     // --- User Callback (Outside of Lock) ---
-    if (sit_gs.mouse.cursor_pos_callback) {
+    if (sit_input.mouse.cursor_pos_callback) {
         vec2 pos = {(float)xpos, (float)ypos};
-        sit_gs.mouse.cursor_pos_callback(pos, sit_gs.mouse.cursor_pos_callback_user_data);
+        sit_input.mouse.cursor_pos_callback(pos, sit_input.mouse.cursor_pos_callback_user_data);
     }
 }
 
@@ -4626,7 +4625,7 @@ static void _SituationGLFWCursorPosCallback(GLFWwindow* window, double xpos, dou
  * @details This function is called by GLFW when a scrolling device is used. It accumulates scroll offsets in a thread-safe manner, as multiple scroll events can fire within a single frame.
  *
  * @par Thread Safety
- *   The accumulation of scroll offsets into `sit_gs.mouse.wheel_move_x/y` is protected by a mutex to ensure atomic updates. The user-defined callback is called after the lock is released.
+ *   The accumulation of scroll offsets into `sit_input.mouse.wheel_move_x/y` is protected by a mutex to ensure atomic updates. The user-defined callback is called after the lock is released.
  *
  * @param window The GLFW window that received the event (unused).
  * @param xoffset The scroll offset along the x-axis.
@@ -4636,19 +4635,19 @@ static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, dou
     (void)window; // Unused parameter
 
     // --- State Update (Thread-Safe) ---
-    ma_mutex_lock(&sit_gs.mouse.mutex);
+    ma_mutex_lock(&sit_input.mouse.mutex);
     {
         // Accumulate scroll offsets, as multiple events can occur per frame.
-        sit_gs.mouse.wheel_move_x += (float)xoffset;
-        sit_gs.mouse.wheel_move_y += (float)yoffset;
+        sit_input.mouse.wheel_move_x += (float)xoffset;
+        sit_input.mouse.wheel_move_y += (float)yoffset;
     }
-    ma_mutex_unlock(&sit_gs.mouse.mutex);
+    ma_mutex_unlock(&sit_input.mouse.mutex);
 
     // --- User Callback (Outside of Lock) ---
-    if (sit_gs.mouse.scroll_callback) {
+    if (sit_input.mouse.scroll_callback) {
         // Pass the per-event offset directly to the user callback.
         vec2 offset = {(float)xoffset, (float)yoffset};
-        sit_gs.mouse.scroll_callback(offset, sit_gs.mouse.scroll_callback_user_data);
+        sit_input.mouse.scroll_callback(offset, sit_input.mouse.scroll_callback_user_data);
     }
 }
 
@@ -5515,14 +5514,14 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     // --- 3. Input Systems Initialization ---
 
     // [FIX] STEP 1: Zero out the memory structures FIRST
-    memset(&sit_gs.keyboard, 0, sizeof(sit_gs.keyboard));
-    memset(&sit_gs.mouse, 0, sizeof(sit_gs.mouse));
-    memset(&sit_gs.joysticks, 0, sizeof(sit_gs.joysticks));
+    memset(&sit_input.keyboard, 0, sizeof(sit_input.keyboard));
+    memset(&sit_input.mouse, 0, sizeof(sit_input.mouse));
+    memset(&sit_input.joysticks, 0, sizeof(sit_input.joysticks));
 
     // [FIX] STEP 2: Initialize mutexes AFTER memset
-    if (ma_mutex_init(&sit_gs.keyboard.event_queue_mutex) != MA_SUCCESS ||
-        ma_mutex_init(&sit_gs.joysticks.event_queue_mutex) != MA_SUCCESS ||
-        ma_mutex_init(&sit_gs.mouse.mutex) != MA_SUCCESS) {
+    if (ma_mutex_init(&sit_input.keyboard.event_queue_mutex) != MA_SUCCESS ||
+        ma_mutex_init(&sit_input.joysticks.event_queue_mutex) != MA_SUCCESS ||
+        ma_mutex_init(&sit_input.mouse.mutex) != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to initialize input mutexes");
         return SITUATION_ERROR_INIT_FAILED;
     }
@@ -5540,23 +5539,23 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     glfwSetJoystickCallback(_SituationGLFWJoystickCallback);
 
     // Initialize remaining state (that isn't 0)
-    glm_vec2_one(sit_gs.mouse.scale); // Default mouse scale is (1, 1).
+    glm_vec2_one(sit_input.mouse.scale); // Default mouse scale is (1, 1).
 
     double initial_mx, initial_my;
     glfwGetCursorPos(sit_gs.sit_glfw_window, &initial_mx, &initial_my);
-    sit_gs.mouse.current_pos[0] = (float)initial_mx;
-    sit_gs.mouse.current_pos[1] = (float)initial_my;
-    glm_vec2_copy(sit_gs.mouse.current_pos, sit_gs.mouse.last_pos);
+    sit_input.mouse.current_pos[0] = (float)initial_mx;
+    sit_input.mouse.current_pos[1] = (float)initial_my;
+    glm_vec2_copy(sit_input.mouse.current_pos, sit_input.mouse.last_pos);
 
     // Pre-create cursors
-    sit_gs.cursors[SIT_CURSOR_DEFAULT]   = NULL;
-    sit_gs.cursors[SIT_CURSOR_ARROW]     = glfwCreateStandardCursor(GLFW_ARROW_CURSOR);
-    sit_gs.cursors[SIT_CURSOR_IBEAM]     = glfwCreateStandardCursor(GLFW_IBEAM_CURSOR);
-    sit_gs.cursors[SIT_CURSOR_CROSSHAIR] = glfwCreateStandardCursor(GLFW_CROSSHAIR_CURSOR);
-    sit_gs.cursors[SIT_CURSOR_HAND]      = glfwCreateStandardCursor(GLFW_HAND_CURSOR);
-    sit_gs.cursors[SIT_CURSOR_HRESIZE]   = glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR);
-    sit_gs.cursors[SIT_CURSOR_VRESIZE]   = glfwCreateStandardCursor(GLFW_VRESIZE_CURSOR);
-    sit_gs.cursor_count = 7;
+    sit_input.cursors[SIT_CURSOR_DEFAULT]   = NULL;
+    sit_input.cursors[SIT_CURSOR_ARROW]     = glfwCreateStandardCursor(GLFW_ARROW_CURSOR);
+    sit_input.cursors[SIT_CURSOR_IBEAM]     = glfwCreateStandardCursor(GLFW_IBEAM_CURSOR);
+    sit_input.cursors[SIT_CURSOR_CROSSHAIR] = glfwCreateStandardCursor(GLFW_CROSSHAIR_CURSOR);
+    sit_input.cursors[SIT_CURSOR_HAND]      = glfwCreateStandardCursor(GLFW_HAND_CURSOR);
+    sit_input.cursors[SIT_CURSOR_HRESIZE]   = glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR);
+    sit_input.cursors[SIT_CURSOR_VRESIZE]   = glfwCreateStandardCursor(GLFW_VRESIZE_CURSOR);
+    sit_input.cursor_count = 7;
 
     // Poll for existing joysticks
     for (int jid = 0; jid < SITUATION_MAX_JOYSTICKS; jid++) {
@@ -9511,18 +9510,18 @@ SITAPI void SituationPollInputEvents(void) {
 
     // Reset keyboard event state.
     // Copy the now-old state to the "last" buffer for comparison.
-    memcpy(sit_gs.keyboard.last_state, sit_gs.keyboard.current_state, sizeof(sit_gs.keyboard.last_state));
+    memcpy(sit_input.keyboard.last_state, sit_input.keyboard.current_state, sizeof(sit_input.keyboard.last_state));
     // Clear the single-frame press/release event trackers.
-    memset(sit_gs.keyboard.down_this_frame, 0, sizeof(sit_gs.keyboard.down_this_frame));
-    memset(sit_gs.keyboard.up_this_frame, 0, sizeof(sit_gs.keyboard.up_this_frame));
+    memset(sit_input.keyboard.down_this_frame, 0, sizeof(sit_input.keyboard.down_this_frame));
+    memset(sit_input.keyboard.up_this_frame, 0, sizeof(sit_input.keyboard.up_this_frame));
 
     // Reset mouse event state.
-    glm_vec2_copy(sit_gs.mouse.current_pos, sit_gs.mouse.last_pos);
-    memcpy(sit_gs.mouse.last_button_state, sit_gs.mouse.current_button_state, sizeof(sit_gs.mouse.last_button_state));
-    memset(sit_gs.mouse.button_down_this_frame, 0, sizeof(sit_gs.mouse.button_down_this_frame));
-    memset(sit_gs.mouse.button_up_this_frame, 0, sizeof(sit_gs.mouse.button_up_this_frame));
-    sit_gs.mouse.wheel_move_x = 0.0f;
-    sit_gs.mouse.wheel_move_y = 0.0f;
+    glm_vec2_copy(sit_input.mouse.current_pos, sit_input.mouse.last_pos);
+    memcpy(sit_input.mouse.last_button_state, sit_input.mouse.current_button_state, sizeof(sit_input.mouse.last_button_state));
+    memset(sit_input.mouse.button_down_this_frame, 0, sizeof(sit_input.mouse.button_down_this_frame));
+    memset(sit_input.mouse.button_up_this_frame, 0, sizeof(sit_input.mouse.button_up_this_frame));
+    sit_input.mouse.wheel_move_x = 0.0f;
+    sit_input.mouse.wheel_move_y = 0.0f;
 
     // --- [POLL] GATHER NEW EVENTS FROM THE OPERATING SYSTEM ---
     // This call triggers all the GLFW callbacks (_SituationGLFWKeyCallback, etc.), which will populate our `current_state` and event queue buffers for this frame.
@@ -9553,57 +9552,57 @@ SITAPI void SituationUpdateTimers(void) {
     sit_gs.previous_time = sit_gs.current_time;
 
     // --- 2. Process Joystick Connection Events (Thread-Safe) ---
-    ma_mutex_lock(&sit_gs.joysticks.event_queue_mutex);
-    for (int i = 0; i < sit_gs.joysticks.event_queue_count; i++) {
-        _SituationJoystickEvent ev = sit_gs.joysticks.event_queue[i];
+    ma_mutex_lock(&sit_input.joysticks.event_queue_mutex);
+    for (int i = 0; i < sit_input.joysticks.event_queue_count; i++) {
+        _SituationJoystickEvent ev = sit_input.joysticks.event_queue[i];
 
         if (ev.event == GLFW_CONNECTED) {
-            sit_gs.joysticks.state[ev.jid].is_present = true;
-            sit_gs.joysticks.state[ev.jid].is_gamepad = glfwJoystickIsGamepad(ev.jid);
+            sit_input.joysticks.state[ev.jid].is_present = true;
+            sit_input.joysticks.state[ev.jid].is_gamepad = glfwJoystickIsGamepad(ev.jid);
             int axis_count = 0;
             glfwGetJoystickAxes(ev.jid, &axis_count);
-            sit_gs.joysticks.state[ev.jid].axis_count = axis_count;
+            sit_input.joysticks.state[ev.jid].axis_count = axis_count;
             const char* name = glfwGetJoystickName(ev.jid);
             if (name) {
-                strncpy(sit_gs.joysticks.state[ev.jid].name, name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
+                strncpy(sit_input.joysticks.state[ev.jid].name, name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
             } else {
-                snprintf(sit_gs.joysticks.state[ev.jid].name, SITUATION_MAX_DEVICE_NAME_LEN, "Joystick %d", ev.jid);
+                snprintf(sit_input.joysticks.state[ev.jid].name, SITUATION_MAX_DEVICE_NAME_LEN, "Joystick %d", ev.jid);
             }
         } else if (ev.event == GLFW_DISCONNECTED) {
-            memset(&sit_gs.joysticks.state[ev.jid], 0, sizeof(_SituationJoystickState));
+            memset(&sit_input.joysticks.state[ev.jid], 0, sizeof(_SituationJoystickState));
         }
 
-        if (sit_gs.joysticks.callback) {
-            sit_gs.joysticks.callback(ev.jid, ev.event, sit_gs.joysticks.callback_user_data);
+        if (sit_input.joysticks.callback) {
+            sit_input.joysticks.callback(ev.jid, ev.event, sit_input.joysticks.callback_user_data);
         }
     }
-    sit_gs.joysticks.event_queue_count = 0;
-    ma_mutex_unlock(&sit_gs.joysticks.event_queue_mutex);
+    sit_input.joysticks.event_queue_count = 0;
+    ma_mutex_unlock(&sit_input.joysticks.event_queue_mutex);
 
 
     // --- 3. Poll Gamepad State & Detect Press Events ---
     for (int jid = 0; jid < SITUATION_MAX_JOYSTICKS; jid++) {
-        if (sit_gs.joysticks.state[jid].is_present && sit_gs.joysticks.state[jid].is_gamepad) {
+        if (sit_input.joysticks.state[jid].is_present && sit_input.joysticks.state[jid].is_gamepad) {
             // Copy current state to last state BEFORE polling new state.
-            memcpy(sit_gs.joysticks.state[jid].last_button_state, sit_gs.joysticks.state[jid].current_button_state, sizeof(sit_gs.joysticks.state[jid].current_button_state));
+            memcpy(sit_input.joysticks.state[jid].last_button_state, sit_input.joysticks.state[jid].current_button_state, sizeof(sit_input.joysticks.state[jid].current_button_state));
 
             GLFWgamepadstate glfw_state;
             if (glfwGetGamepadState(jid, &glfw_state)) {
                 // Update the current state buffers.
-                memcpy(sit_gs.joysticks.state[jid].current_button_state, glfw_state.buttons, sizeof(glfw_state.buttons));
-                memcpy(sit_gs.joysticks.state[jid].axis_state, glfw_state.axes, sizeof(glfw_state.axes));
+                memcpy(sit_input.joysticks.state[jid].current_button_state, glfw_state.buttons, sizeof(glfw_state.buttons));
+                memcpy(sit_input.joysticks.state[jid].axis_state, glfw_state.axes, sizeof(glfw_state.axes));
 
                 // Compare current vs. last to detect press events.
                 for (int button = 0; button < SITUATION_MAX_JOYSTICK_BUTTONS; ++button) {
-                    bool was_down = (sit_gs.joysticks.state[jid].last_button_state[button] == GLFW_PRESS);
-                    bool is_down = (sit_gs.joysticks.state[jid].current_button_state[button] == GLFW_PRESS);
+                    bool was_down = (sit_input.joysticks.state[jid].last_button_state[button] == GLFW_PRESS);
+                    bool is_down = (sit_input.joysticks.state[jid].current_button_state[button] == GLFW_PRESS);
 
                     if (is_down && !was_down) {
                         // Joystick Ring Buffer Push
-                        uint32_t next_head = (sit_gs.joysticks.button_head + 1) % SITUATION_KEY_QUEUE_MAX;
-                        if (next_head != sit_gs.joysticks.button_tail) {
-                            sit_gs.joysticks.button_pressed_queue[sit_gs.joysticks.button_head] = button;
-                            sit_gs.joysticks.button_head = next_head;
+                        uint32_t next_head = (sit_input.joysticks.button_head + 1) % SITUATION_KEY_QUEUE_MAX;
+                        if (next_head != sit_input.joysticks.button_tail) {
+                            sit_input.joysticks.button_pressed_queue[sit_input.joysticks.button_head] = button;
+                            sit_input.joysticks.button_head = next_head;
                         }
                     }
                 }
@@ -9771,19 +9770,19 @@ static void _SituationCleanupSubsystems(void) {
 
     // Uninitialize mutexes.
     ma_mutex_uninit(&sit_audio.audio_queue_mutex);
-    ma_mutex_uninit(&sit_gs.keyboard.event_queue_mutex);
+    ma_mutex_uninit(&sit_input.keyboard.event_queue_mutex);
     // Cleanup capture resources
     if (sit_audio.audio_capture_on_main_thread) {
         ma_mutex_uninit(&sit_audio.audio_capture_mutex);
         SIT_FREE(sit_audio.audio_capture_queue);
     }
-    ma_mutex_uninit(&sit_gs.joysticks.event_queue_mutex);
+    ma_mutex_uninit(&sit_input.joysticks.event_queue_mutex);
 
     // --- Input Systems ---
     // Destroy created cursors.
-    for (int i = 0; i < sit_gs.cursor_count; i++) {
-        if (sit_gs.cursors[i] != NULL) {
-            glfwDestroyCursor(sit_gs.cursors[i]);
+    for (int i = 0; i < sit_input.cursor_count; i++) {
+        if (sit_input.cursors[i] != NULL) {
+            glfwDestroyCursor(sit_input.cursors[i]);
         }
     }
 
@@ -24652,7 +24651,7 @@ SITAPI double SituationTimerGetTime(void) {
  */
 SITAPI bool SituationIsKeyDown(int key) {
     if (!SituationIsInitialized() || key < 0 || key > GLFW_KEY_LAST) return false;
-    return sit_gs.keyboard.current_state[key];
+    return sit_input.keyboard.current_state[key];
 }
 
 /**
@@ -24669,7 +24668,7 @@ SITAPI bool SituationIsKeyDown(int key) {
  */
 SITAPI bool SituationIsKeyUp(int key) {
     if (!SituationIsInitialized() || key < 0 || key > GLFW_KEY_LAST) return false;
-    return !sit_gs.keyboard.current_state[key];
+    return !sit_input.keyboard.current_state[key];
 }
 
 /**
@@ -24686,7 +24685,7 @@ SITAPI bool SituationIsKeyUp(int key) {
  */
 SITAPI bool SituationIsKeyPressed(int key) {
     if (!SituationIsInitialized() || key < 0 || key > GLFW_KEY_LAST) return false;
-    return sit_gs.keyboard.down_this_frame[key];
+    return sit_input.keyboard.down_this_frame[key];
 }
 
 /**
@@ -24703,7 +24702,7 @@ SITAPI bool SituationIsKeyPressed(int key) {
  */
 SITAPI bool SituationIsKeyReleased(int key) {
     if (!SituationIsInitialized() || key < 0 || key > GLFW_KEY_LAST) return false;
-    return sit_gs.keyboard.up_this_frame[key];
+    return sit_input.keyboard.up_this_frame[key];
 }
 
 /**
@@ -24720,13 +24719,13 @@ SITAPI int SituationGetKeyPressed(void) {
     if (!SituationIsInitialized()) return 0;
 
     int key = 0;
-    ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
+    ma_mutex_lock(&sit_input.keyboard.event_queue_mutex);
     // Ring Buffer Pop
-    if (sit_gs.keyboard.pressed_head != sit_gs.keyboard.pressed_tail) {
-        key = sit_gs.keyboard.pressed_queue[sit_gs.keyboard.pressed_tail];
-        sit_gs.keyboard.pressed_tail = (sit_gs.keyboard.pressed_tail + 1) % SITUATION_KEY_QUEUE_MAX;
+    if (sit_input.keyboard.pressed_head != sit_input.keyboard.pressed_tail) {
+        key = sit_input.keyboard.pressed_queue[sit_input.keyboard.pressed_tail];
+        sit_input.keyboard.pressed_tail = (sit_input.keyboard.pressed_tail + 1) % SITUATION_KEY_QUEUE_MAX;
     }
-    ma_mutex_unlock(&sit_gs.keyboard.event_queue_mutex);
+    ma_mutex_unlock(&sit_input.keyboard.event_queue_mutex);
     return key;
 }
 
@@ -24745,12 +24744,12 @@ SITAPI int SituationPeekKeyPressed(void) {
     if (!SituationIsInitialized()) return 0;
 
     int key = 0;
-    ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
+    ma_mutex_lock(&sit_input.keyboard.event_queue_mutex);
     // Ring Buffer Peek
-    if (sit_gs.keyboard.pressed_head != sit_gs.keyboard.pressed_tail) {
-        key = sit_gs.keyboard.pressed_queue[sit_gs.keyboard.pressed_tail];
+    if (sit_input.keyboard.pressed_head != sit_input.keyboard.pressed_tail) {
+        key = sit_input.keyboard.pressed_queue[sit_input.keyboard.pressed_tail];
     }
-    ma_mutex_unlock(&sit_gs.keyboard.event_queue_mutex);
+    ma_mutex_unlock(&sit_input.keyboard.event_queue_mutex);
     return key;
 }
 
@@ -24769,13 +24768,13 @@ SITAPI unsigned int SituationGetCharPressed(void) {
     if (!SituationIsInitialized()) return 0;
 
     unsigned int codepoint = 0;
-    ma_mutex_lock(&sit_gs.keyboard.event_queue_mutex);
+    ma_mutex_lock(&sit_input.keyboard.event_queue_mutex);
     // Ring Buffer Pop
-    if (sit_gs.keyboard.char_head != sit_gs.keyboard.char_tail) {
-        codepoint = sit_gs.keyboard.char_queue[sit_gs.keyboard.char_tail];
-        sit_gs.keyboard.char_tail = (sit_gs.keyboard.char_tail + 1) % SITUATION_CHAR_QUEUE_MAX;
+    if (sit_input.keyboard.char_head != sit_input.keyboard.char_tail) {
+        codepoint = sit_input.keyboard.char_queue[sit_input.keyboard.char_tail];
+        sit_input.keyboard.char_tail = (sit_input.keyboard.char_tail + 1) % SITUATION_CHAR_QUEUE_MAX;
     }
-    ma_mutex_unlock(&sit_gs.keyboard.event_queue_mutex);
+    ma_mutex_unlock(&sit_input.keyboard.event_queue_mutex);
     return codepoint;
 }
 
@@ -24793,7 +24792,7 @@ SITAPI unsigned int SituationGetCharPressed(void) {
  */
 SITAPI bool SituationIsLockKeyPressed(int lock_key_mod) {
     if (!SituationIsInitialized()) return false;
-    return (sit_gs.keyboard.lock_key_state & lock_key_mod) != 0;
+    return (sit_input.keyboard.lock_key_state & lock_key_mod) != 0;
 }
 
 /**
@@ -24808,7 +24807,7 @@ SITAPI bool SituationIsLockKeyPressed(int lock_key_mod) {
  */
 SITAPI bool SituationIsScrollLockOn(void) {
     if (!SituationIsInitialized()) return false;
-    return sit_gs.keyboard.is_scroll_lock_on;
+    return sit_input.keyboard.is_scroll_lock_on;
 }
 
 /**
@@ -24823,7 +24822,7 @@ SITAPI bool SituationIsScrollLockOn(void) {
  */
 SITAPI bool SituationIsModifierPressed(int modifier) {
     if (!SituationIsInitialized()) return false;
-    return (sit_gs.keyboard.modifier_state & modifier) != 0;
+    return (sit_input.keyboard.modifier_state & modifier) != 0;
 }
 
 /**
@@ -24837,8 +24836,8 @@ SITAPI bool SituationIsModifierPressed(int modifier) {
  */
 SITAPI void SituationSetKeyCallback(SituationKeyCallback callback, void* user_data) {
     if (!SituationIsInitialized()) return;
-    sit_gs.keyboard.key_callback = callback;
-    sit_gs.keyboard.key_callback_user_data = user_data;
+    sit_input.keyboard.key_callback = callback;
+    sit_input.keyboard.key_callback_user_data = user_data;
 }
 
 // --- Mouse Management Implementation ---
@@ -24858,8 +24857,8 @@ SITAPI Vector2 SituationGetMousePosition(void) {
     }
     Vector2 pos;
     // Apply scale first, then offset
-    glm_vec2_mul(sit_gs.mouse.current_pos, sit_gs.mouse.scale, (float*)&pos);
-    glm_vec2_add((float*)&pos, sit_gs.mouse.offset, (float*)&pos);
+    glm_vec2_mul(sit_input.mouse.current_pos, sit_input.mouse.scale, (float*)&pos);
+    glm_vec2_add((float*)&pos, sit_input.mouse.offset, (float*)&pos);
     return pos;
 }
 
@@ -24878,9 +24877,9 @@ SITAPI Vector2 SituationGetMouseDelta(void) {
         Vector2 zero_vec = {0.0f, 0.0f}; return zero_vec;
     }
     Vector2 delta;
-    glm_vec2_sub(sit_gs.mouse.current_pos, sit_gs.mouse.last_pos, (float*)&delta);
+    glm_vec2_sub(sit_input.mouse.current_pos, sit_input.mouse.last_pos, (float*)&delta);
     // Scale the delta as well
-    glm_vec2_mul((float*)&delta, sit_gs.mouse.scale, (float*)&delta);
+    glm_vec2_mul((float*)&delta, sit_input.mouse.scale, (float*)&delta);
     return delta;
 }
 
@@ -24897,15 +24896,15 @@ SITAPI void SituationSetMousePosition(Vector2 pos) {
     if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) return;
     // We must "un-transform" the position before sending it to GLFW, so that GetMousePosition will return the value the user expects.
     Vector2 raw_pos;
-    glm_vec2_sub(pos, sit_gs.mouse.offset, raw_pos);
+    glm_vec2_sub(pos, sit_input.mouse.offset, raw_pos);
     // Division is component-wise. Ensure scale components are not zero.
-    if (sit_gs.mouse.scale[0] != 0.0f) raw_pos[0] /= sit_gs.mouse.scale[0];
-    if (sit_gs.mouse.scale[1] != 0.0f) raw_pos[1] /= sit_gs.mouse.scale[1];
+    if (sit_input.mouse.scale[0] != 0.0f) raw_pos[0] /= sit_input.mouse.scale[0];
+    if (sit_input.mouse.scale[1] != 0.0f) raw_pos[1] /= sit_input.mouse.scale[1];
 
     glfwSetCursorPos(sit_gs.sit_glfw_window, raw_pos[0], raw_pos[1]);
 
     // Also update our internal state immediately to prevent a "jumpy" delta on the next frame.
-    glm_vec2_copy(raw_pos, sit_gs.mouse.current_pos);
+    glm_vec2_copy(raw_pos, sit_input.mouse.current_pos);
 }
 
 /**
@@ -24920,7 +24919,7 @@ SITAPI void SituationSetMousePosition(Vector2 pos) {
  */
 SITAPI void SituationSetMouseOffset(Vector2 offset) {
     if (!SituationIsInitialized()) return;
-    glm_vec2_copy(offset, sit_gs.mouse.offset);
+    glm_vec2_copy(offset, sit_input.mouse.offset);
 }
 
 /**
@@ -24936,7 +24935,7 @@ SITAPI void SituationSetMouseOffset(Vector2 offset) {
  */
 SITAPI void SituationSetMouseScale(Vector2 scale) {
     if (!SituationIsInitialized()) return;
-    glm_vec2_copy(scale, sit_gs.mouse.scale);
+    glm_vec2_copy(scale, sit_input.mouse.scale);
 }
 
 /**
@@ -24952,7 +24951,7 @@ SITAPI void SituationSetMouseScale(Vector2 scale) {
 SITAPI float SituationGetMouseWheelMove(void) {
     if (!SituationIsInitialized()) return 0.0f;
     // GLFW scroll y offset is positive for scroll up/away from user, negative for scroll down/towards user.
-    return sit_gs.mouse.wheel_move_y;
+    return sit_input.mouse.wheel_move_y;
 }
 
 /**
@@ -24969,7 +24968,7 @@ SITAPI Vector2 SituationGetMouseWheelMoveV(void) {
     if (!SituationIsInitialized()) {
         Vector2 zero_vec = {0.0f, 0.0f}; return zero_vec;
     }
-    Vector2 wheel_v = {sit_gs.mouse.wheel_move_x, sit_gs.mouse.wheel_move_y};
+    Vector2 wheel_v = {sit_input.mouse.wheel_move_x, sit_input.mouse.wheel_move_y};
     return wheel_v;
 }
 
@@ -24985,14 +24984,14 @@ SITAPI Vector2 SituationGetMouseWheelMoveV(void) {
 SITAPI int SituationGetMouseButtonPressed(void) {
     if (!SituationIsInitialized()) return -1;
 
-    ma_mutex_lock(&sit_gs.mouse.mutex);
+    ma_mutex_lock(&sit_input.mouse.mutex);
     int button = -1;
     // Ring Buffer Pop
-    if (sit_gs.mouse.button_head != sit_gs.mouse.button_tail) {
-        button = sit_gs.mouse.button_queue[sit_gs.mouse.button_tail];
-        sit_gs.mouse.button_tail = (sit_gs.mouse.button_tail + 1) % SITUATION_KEY_QUEUE_MAX;
+    if (sit_input.mouse.button_head != sit_input.mouse.button_tail) {
+        button = sit_input.mouse.button_queue[sit_input.mouse.button_tail];
+        sit_input.mouse.button_tail = (sit_input.mouse.button_tail + 1) % SITUATION_KEY_QUEUE_MAX;
     }
-    ma_mutex_unlock(&sit_gs.mouse.mutex);
+    ma_mutex_unlock(&sit_input.mouse.mutex);
     return button;
 }
 
@@ -25006,7 +25005,7 @@ SITAPI int SituationGetMouseButtonPressed(void) {
  */
 SITAPI bool SituationIsMouseButtonDown(int button) {
     if (!SituationIsInitialized() || button < 0 || button > GLFW_MOUSE_BUTTON_LAST) return false;
-    return sit_gs.mouse.current_button_state[button];
+    return sit_input.mouse.current_button_state[button];
 }
 
 /**
@@ -25019,7 +25018,7 @@ SITAPI bool SituationIsMouseButtonDown(int button) {
  */
 SITAPI bool SituationIsMouseButtonPressed(int button) {
     if (!SituationIsInitialized() || button < 0 || button > GLFW_MOUSE_BUTTON_LAST) return false;
-    return sit_gs.mouse.button_down_this_frame[button];
+    return sit_input.mouse.button_down_this_frame[button];
 }
 
 /**
@@ -25032,7 +25031,7 @@ SITAPI bool SituationIsMouseButtonPressed(int button) {
  */
 SITAPI bool SituationIsMouseButtonReleased(int button) {
     if (!SituationIsInitialized() || button < 0 || button > GLFW_MOUSE_BUTTON_LAST) return false;
-    return sit_gs.mouse.button_up_this_frame[button];
+    return sit_input.mouse.button_up_this_frame[button];
 }
 
 /**
@@ -25046,8 +25045,8 @@ SITAPI bool SituationIsMouseButtonReleased(int button) {
  */
 SITAPI void SituationSetMouseButtonCallback(SituationMouseButtonCallback callback, void* user_data) {
     if (!SituationIsInitialized()) return;
-    sit_gs.mouse.button_callback = callback;
-    sit_gs.mouse.button_callback_user_data = user_data;
+    sit_input.mouse.button_callback = callback;
+    sit_input.mouse.button_callback_user_data = user_data;
 }
 
 /**
@@ -25061,8 +25060,8 @@ SITAPI void SituationSetMouseButtonCallback(SituationMouseButtonCallback callbac
  */
 SITAPI void SituationSetCursorPosCallback(SituationCursorPosCallback callback, void* user_data) {
     if (!SituationIsInitialized()) return;
-    sit_gs.mouse.cursor_pos_callback = callback;
-    sit_gs.mouse.cursor_pos_callback_user_data = user_data;
+    sit_input.mouse.cursor_pos_callback = callback;
+    sit_input.mouse.cursor_pos_callback_user_data = user_data;
 }
 
 /**
@@ -25076,8 +25075,8 @@ SITAPI void SituationSetCursorPosCallback(SituationCursorPosCallback callback, v
  */
 SITAPI void SituationSetScrollCallback(SituationScrollCallback callback, void* user_data) {
     if (!SituationIsInitialized()) return;
-    sit_gs.mouse.scroll_callback = callback;
-    sit_gs.mouse.scroll_callback_user_data = user_data;
+    sit_input.mouse.scroll_callback = callback;
+    sit_input.mouse.scroll_callback_user_data = user_data;
 }
 
 /**
@@ -25090,9 +25089,9 @@ SITAPI void SituationSetCursor(SituationCursor cursor) {
     if (!SituationIsInitialized()) return;
 
     // Ensure the requested cursor is within the bounds of what we created
-    if (cursor >= 0 && cursor < sit_gs.cursor_count) {
+    if (cursor >= 0 && cursor < sit_input.cursor_count) {
         // NULL for the cursor handle tells GLFW to use the default system cursor
-        glfwSetCursor(sit_gs.window, sit_gs.cursors[cursor]);
+        glfwSetCursor(sit_gs.sit_glfw_window, sit_input.cursors[cursor]);
     }
 }
 
@@ -25104,7 +25103,7 @@ SITAPI void SituationSetCursor(SituationCursor cursor) {
  */
 SITAPI void SituationShowCursor(void) {
     if (!SituationIsInitialized()) return;
-    glfwSetInputMode(sit_gs.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    glfwSetInputMode(sit_gs.sit_glfw_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 }
 
 /**
@@ -25115,7 +25114,7 @@ SITAPI void SituationShowCursor(void) {
  */
 SITAPI void SituationHideCursor(void) {
     if (!SituationIsInitialized()) return;
-    glfwSetInputMode(sit_gs.window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+    glfwSetInputMode(sit_gs.sit_glfw_window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
 }
 
 /**
@@ -25126,7 +25125,7 @@ SITAPI void SituationHideCursor(void) {
  */
 SITAPI void SituationDisableCursor(void) {
     if (!SituationIsInitialized()) return;
-    glfwSetInputMode(sit_gs.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    glfwSetInputMode(sit_gs.sit_glfw_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 }
 
 /**
@@ -25145,18 +25144,18 @@ static void _SituationGLFWJoystickCallback(int jid, int event) {
     if (jid < 0 || jid >= SITUATION_MAX_JOYSTICKS) return;
 
     // Lock the mutex to safely access the shared event queue.
-    ma_mutex_lock(&sit_gs.joysticks.event_queue_mutex);
+    ma_mutex_lock(&sit_input.joysticks.event_queue_mutex);
     {
         // Add the event to the queue if there is space.
-        if (sit_gs.joysticks.event_queue_count < SITUATION_MAX_JOYSTICKS) {
-            sit_gs.joysticks.event_queue[sit_gs.joysticks.event_queue_count].jid = jid;
-            sit_gs.joysticks.event_queue[sit_gs.joysticks.event_queue_count].event = event;
-            sit_gs.joysticks.event_queue_count++;
+        if (sit_input.joysticks.event_queue_count < SITUATION_MAX_JOYSTICKS) {
+            sit_input.joysticks.event_queue[sit_input.joysticks.event_queue_count].jid = jid;
+            sit_input.joysticks.event_queue[sit_input.joysticks.event_queue_count].event = event;
+            sit_input.joysticks.event_queue_count++;
         }
         // else: The queue is full and the event is dropped. This is rare for connect/disconnect events but prevents a buffer overflow. A larger queue could be used if this becomes an issue.
     }
     // Unlock the mutex as quickly as possible.
-    ma_mutex_unlock(&sit_gs.joysticks.event_queue_mutex);
+    ma_mutex_unlock(&sit_input.joysticks.event_queue_mutex);
 }
 
 // --- Gamepad (Joystick) Management Implementation ---
@@ -25170,7 +25169,7 @@ static void _SituationGLFWJoystickCallback(int jid, int event) {
  */
 SITAPI bool SituationIsJoystickPresent(int jid) {
     if (!SituationIsInitialized() || jid < 0 || jid >= SITUATION_MAX_JOYSTICKS) return false;
-    return sit_gs.joysticks.state[jid].is_present;
+    return sit_input.joysticks.state[jid].is_present;
 }
 
 /**
@@ -25186,7 +25185,7 @@ SITAPI bool SituationIsJoystickPresent(int jid) {
  */
 SITAPI bool SituationIsGamepad(int jid) {
     if (!SituationIsJoystickPresent(jid)) return false;
-    return sit_gs.joysticks.state[jid].is_gamepad;
+    return sit_input.joysticks.state[jid].is_gamepad;
 }
 
 /**
@@ -25200,7 +25199,7 @@ SITAPI bool SituationIsGamepad(int jid) {
  */
 SITAPI const char* SituationGetJoystickName(int jid) {
     if (!SituationIsJoystickPresent(jid)) return "N/A";
-    return sit_gs.joysticks.state[jid].name;
+    return sit_input.joysticks.state[jid].name;
 }
 
 /**
@@ -25214,8 +25213,8 @@ SITAPI const char* SituationGetJoystickName(int jid) {
  */
 SITAPI void SituationSetJoystickCallback(SituationJoystickCallback callback, void* user_data) {
     if (!SituationIsInitialized()) return;
-    sit_gs.joysticks.callback = callback;
-    sit_gs.joysticks.callback_user_data = user_data;
+    sit_input.joysticks.callback = callback;
+    sit_input.joysticks.callback_user_data = user_data;
 }
 
 /**
@@ -25231,7 +25230,7 @@ SITAPI void SituationSetJoystickCallback(SituationJoystickCallback callback, voi
  */
 SITAPI bool SituationIsGamepadButtonDown(int jid, int button) {
     if (!SituationIsGamepad(jid) || button < 0 || button >= SITUATION_MAX_JOYSTICK_BUTTONS) return false;
-    return (sit_gs.joysticks.state[jid].current_button_state[button] == GLFW_PRESS);
+    return (sit_input.joysticks.state[jid].current_button_state[button] == GLFW_PRESS);
 }
 
 /**
@@ -25249,9 +25248,9 @@ SITAPI int SituationGetGamepadButtonPressed(void) {
     int button = -1;
     // Note: Gamepad queue isn't mutex protected as it's updated in main thread
     // Ring Buffer Pop
-    if (sit_gs.joysticks.button_head != sit_gs.joysticks.button_tail) {
-        button = sit_gs.joysticks.button_pressed_queue[sit_gs.joysticks.button_tail];
-        sit_gs.joysticks.button_tail = (sit_gs.joysticks.button_tail + 1) % SITUATION_KEY_QUEUE_MAX;
+    if (sit_input.joysticks.button_head != sit_input.joysticks.button_tail) {
+        button = sit_input.joysticks.button_pressed_queue[sit_input.joysticks.button_tail];
+        sit_input.joysticks.button_tail = (sit_input.joysticks.button_tail + 1) % SITUATION_KEY_QUEUE_MAX;
     }
     return button;
 }
@@ -25269,8 +25268,8 @@ SITAPI int SituationGetGamepadButtonPressed(void) {
  */
 SITAPI bool SituationIsGamepadButtonPressed(int jid, int button) {
     if (!SituationIsGamepad(jid) || button < 0 || button >= SITUATION_MAX_JOYSTICK_BUTTONS) return false;
-    return (sit_gs.joysticks.state[jid].current_button_state[button] == GLFW_PRESS &&
-            sit_gs.joysticks.state[jid].last_button_state[button] == GLFW_RELEASE);
+    return (sit_input.joysticks.state[jid].current_button_state[button] == GLFW_PRESS &&
+            sit_input.joysticks.state[jid].last_button_state[button] == GLFW_RELEASE);
 }
 
 /**
@@ -25286,8 +25285,8 @@ SITAPI bool SituationIsGamepadButtonPressed(int jid, int button) {
  */
 SITAPI bool SituationIsGamepadButtonReleased(int jid, int button) {
     if (!SituationIsGamepad(jid) || button < 0 || button >= SITUATION_MAX_JOYSTICK_BUTTONS) return false;
-    return (sit_gs.joysticks.state[jid].current_button_state[button] == GLFW_RELEASE &&
-            sit_gs.joysticks.state[jid].last_button_state[button] == GLFW_PRESS);
+    return (sit_input.joysticks.state[jid].current_button_state[button] == GLFW_RELEASE &&
+            sit_input.joysticks.state[jid].last_button_state[button] == GLFW_PRESS);
 }
 
 /**
@@ -25305,7 +25304,7 @@ SITAPI bool SituationIsGamepadButtonReleased(int jid, int button) {
 SITAPI float SituationGetGamepadAxisValue(int jid, int axis) {
     if (!SituationIsGamepad(jid) || axis < 0 || axis >= SITUATION_MAX_JOYSTICK_AXES) return 0.0f;
 
-    float value = sit_gs.joysticks.state[jid].axis_state[axis];
+    float value = sit_input.joysticks.state[jid].axis_state[axis];
 
     // Apply deadzone for analog sticks to prevent drift
     float deadzone = 0.0f;
@@ -25335,7 +25334,7 @@ SITAPI float SituationGetGamepadAxisValue(int jid, int axis) {
  */
 SITAPI int SituationGetGamepadAxisCount(int jid) {
     if (!SituationIsJoystickPresent(jid)) return 0;
-    return sit_gs.joysticks.state[jid].axis_count;
+    return sit_input.joysticks.state[jid].axis_count;
 }
 
 /**
