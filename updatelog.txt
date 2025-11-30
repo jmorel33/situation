@@ -1,3 +1,20 @@
+Date: 2025-11-30
+Version: 2.3.10C "Velocity" (Error Reporting Refactor)
+
+## DESCRIPTION
+This update completes the overhaul of the error reporting system, ensuring that every failure case reports a specific, granular `SituationError` code rather than a generic failure. This allows for precise programmatic handling of errors across all subsystems (Filesystem, Audio, Display, Graphics).
+
+## CRITICAL FIXES
+*   **Filesystem Error Fidelity:** `_SituationSetFilesystemError` now accepts a `SituationError` code argument. This allows filesystem operations (load, save, list) to report specific errors like `SITUATION_ERROR_FILE_NOT_FOUND` or `SITUATION_ERROR_ACCESS_DENIED` while still preserving the OS-specific error string (strerror/FormatMessage) for logging.
+*   **Audio Decoder Reporting:** Fixed `SituationLoadSoundFromStream`. Previously, if the decoder initialization failed, it returned a generic context error. It now explicitly returns `SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED`.
+*   **Global Error Refactor:** Replaced all remaining instances of generic error codes (like `-1` or `0`) with specific `SituationError` enums in:
+    *   **Audio:** `SituationSetAudioDevice`, `SituationStartAudioCapture`.
+    *   **Display:** `SituationSetDisplayMode`.
+    *   **Graphics:** `SituationCreateTexture`, `SituationCreateShader`, `SituationCreateComputePipeline`.
+    *   **Filesystem:** `SituationLoadFileData`, `SituationSaveFileData`, `SituationListDirectoryFiles`.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-29
 Version: 2.3.10B "Velocity" (Feature Parity & Error Reporting)
 
