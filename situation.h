@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.10C "Velocity"
+*   Core API library v2.3.11 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
@@ -10,9 +10,9 @@
 *
 *   The library's philosophy is reflected in its name, granting developers complete situational "Awareness," precise "Control," and fine-grained "Timing."
 *
-*   **Error Reporting Refactor (v2.3.10C):**
-*   This update completes the overhaul of the error reporting system, ensuring that every failure case reports a specific, granular `SituationError` code rather than a generic failure.
-*   This allows for precise programmatic handling of errors across all subsystems.
+*   **Vulkan Stability & Errno Fixes (v2.3.11):**
+*   This update addresses critical stability issues in the Vulkan backend regarding descriptor set allocation and resource cleanup.
+*   It also removes invalid errno checks in memory management functions to prevent false error reporting.
 *
 *   **Velocity Module (Hot-Reloading):**
 *   This release integrates the **Hot-Reloading Module**, a development-focused toolset that allows Shaders, Compute Pipelines, Textures, and 3D Models to be reloaded from disk at runtime.
@@ -56,8 +56,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 10
-#define SITUATION_VERSION_REVISION "C"
+#define SITUATION_VERSION_PATCH 11
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -7204,8 +7204,9 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
         res = vkAllocateDescriptorSets(sit_gs.vk.device, &alloc_info, &out_set);
     }
 
-    // If failed (or no pools), create new pool and retry
-    if (res != VK_SUCCESS) {
+    // Only attempt to grow if the pool is actually full or fragmented.
+    // Fail fast on Host Memory or Device Lost errors.
+    if (res == VK_ERROR_OUT_OF_POOL_MEMORY || res == VK_ERROR_FRAGMENTED_POOL || sit_gs.vk.descriptor_manager.count == 0) {
         // Define pool sizes (Big enough to avoid frequent resizing)
         VkDescriptorPoolSize pool_sizes[] = {
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
@@ -13017,10 +13018,11 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
 
     if (texture.descriptor_set == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
-        // Cleanup code...
-        if (texture.sampler != VK_NULL_HANDLE) { vkDestroySampler(sit_gs.vk.device, texture.sampler, NULL); }
-        if (texture.image_view != VK_NULL_HANDLE) { vkDestroyImageView(sit_gs.vk.device, texture.image_view, NULL); }
-        if (texture.image != VK_NULL_HANDLE) { vmaDestroyImage(sit_gs.vk.vma_allocator, texture.image, texture.allocation); }
+
+        // CRITICAL: Defer cleanup to Graveyard. Immediate destruction is unsafe if async upload commands are pending.
+        _SituationDeferDestroyImage(texture.image, texture.allocation, texture.image_view, texture.sampler);
+
+        // Note: Staging buffer (if used) was already deferred to graveyard or destroyed synchronously above.
         return (SituationTexture){0};
     }
 
@@ -13583,7 +13585,12 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         if (buffer.descriptor_set == VK_NULL_HANDLE) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for buffer.");
             local_err = SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
-            vmaDestroyBuffer(sit_gs.vk.vma_allocator, buffer.vk_buffer, buffer.vma_allocation);
+            // CRITICAL: Defer destruction to Graveyard. Immediate vmaDestroy is unsafe here because
+            // _SituationVulkanCreateAndUploadBuffer might have recorded commands using this buffer
+            // in the current frame's command buffer (if initial_data != NULL).
+            if (buffer.vk_buffer != VK_NULL_HANDLE) {
+                _SituationDeferDestroyBuffer(buffer.vk_buffer, buffer.vma_allocation);
+            }
             memset(&buffer, 0, sizeof(buffer));
             return buffer;
         }
@@ -20978,10 +20985,8 @@ SITAPI SituationImage SituationLoadImageFromMemory(const char *fileType, const u
 SITAPI bool SituationUnloadImage(SituationImage image) {
     if (image.data != NULL) {
         SIT_FREE(image.data);
-        if (errno != 0) {  // Rare post-free errno check
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SIT_FREE failed for image data (errno: %d)", errno);
-            return false;
-        }
+        // Standard free() returns void and does not set errno.
+        // We assume success if the pointer was valid.
     }
     return true;
 }
@@ -21957,8 +21962,8 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
  * @see SituationLoadFont()
  */
 SITAPI void SituationUnloadFont(SituationFont font) {
-    if (font.stbFontInfo) SIT_FREE(font.stbFontInfo);
-    if (font.fontData) SIT_FREE(font.fontData);
+    if (font.stbFontInfo) { SIT_FREE(font.stbFontInfo); }
+    if (font.fontData) { SIT_FREE(font.fontData); }
 }
 
 /**
@@ -25611,10 +25616,8 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
 SITAPI bool SituationUnloadImage(SituationImage image) {
     if (image.data != NULL) {
         SIT_FREE(image.data);
-        if (errno != 0) {  // Rare, but check post-free errno
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "free() failed for image data (errno: %d)", errno);
-            return false;
-        }
+        // Standard free() returns void and does not set errno.
+        // We assume success if the pointer was valid.
     }
     return true;
 }
@@ -25700,18 +25703,14 @@ SITAPI void SituationFreeString(char* str) {
  * @param count The number of elements in the array, as returned by `SituationGetDisplays`.
  */
 SITAPI bool SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
-    bool success = true;
     if (!displays || count == 0) return true;
     for (int i = 0; i < count; ++i) {
         if (displays[i].available_modes) {
             SIT_FREE(displays[i].available_modes);
-            if (errno != 0) success = false;
         }
     }
     SIT_FREE(displays);
-    if (errno != 0) success = false;
-    if (!success) _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SIT_FREE failed in display array cleanup");
-    return success;
+    return true;
 }
 
 #endif // SITUATION_IMPLEMENTATION

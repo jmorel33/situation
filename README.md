@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.10C "Velocity"_
+_Core API library v2.3.11 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.10C** completes the overhaul of the error reporting system. It refactors internal error handling across all subsystems (Filesystem, Audio, Display, Graphics) to use specific `SituationError` codes instead of generic failures. This ensures that the comprehensive `SituationError` enum table is fully utilized, providing precise and actionable feedback for every failure case.
+**Version 2.3.11** addresses critical stability issues in the Vulkan backend, specifically regarding descriptor set allocation and resource cleanup, ensuring robust handling of memory exhaustion scenarios. It also cleans up invalid errno checks in memory management functions.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
