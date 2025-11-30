@@ -1,4 +1,18 @@
 Date: 2025-11-30
+Version: 2.3.11 "Velocity" (Vulkan Stability & Errno Fixes)
+
+## DESCRIPTION
+This release addresses critical stability issues in the Vulkan backend regarding descriptor set allocation and resource cleanup. It also removes invalid errno checks in memory management functions to prevent false error reporting.
+
+## CRITICAL FIXES
+*   **Vulkan Descriptor Hardening:** `_SituationVulkanAllocateDescriptorSet` now strictly checks for `VK_ERROR_OUT_OF_POOL_MEMORY` or `VK_ERROR_FRAGMENTED_POOL` before attempting to grow the pool. Other errors fail fast to prevent infinite loops.
+*   **Zombie Resource Prevention:** Hardened `SituationCreateBuffer` and `SituationCreateTexture` to safely defer destruction of underlying Vulkan resources (Buffers/Images) if descriptor set allocation fails, preventing VRAM leaks and GPU stalls.
+*   **Errno Safety:** Removed invalid `if (errno != 0)` checks after `SIT_FREE` calls in `SituationUnloadImage` and `SituationFreeDisplays`, which could lead to false positive error reports.
+*   **Cosmetic:** Added braces to single-line statements in `SituationUnloadFont`.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-30
 Version: 2.3.10C "Velocity" (Error Reporting Refactor)
 
 ## DESCRIPTION
