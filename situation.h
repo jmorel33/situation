@@ -25152,7 +25152,4 @@ SITAPI bool SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
 }
 
 #endif // SITUATION_IMPLEMENTATION
-
 #endif // SITUATION_H
-#endif
-#endif
