@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.8B "Velocity"_
+_Core API library v2.3.9 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.8B** is an affirming hardening production readiness release that polishes and wraps up the progressive work done in the **"Velocity"** saga, from codebase to the SDK documentation. This milestone solidifies the comprehensive **Hot-Reloading Module**, ensuring it is **Fail-Safe**: invalid assets, syntax errors, or missing files encountered during a reload will safely abort the operation, keeping the original asset active and preventing application crashes. Alongside this, the update finalizes the backend modernization effort, ensuring both Vulkan and OpenGL implementations are robust, high-performance, and strictly compliant with modern standards.
+**Version 2.3.9** is an affirming hardening production readiness release that polishes and wraps up the progressive work done in the **"Velocity"** saga, from codebase to the SDK documentation. This milestone solidifies the comprehensive **Hot-Reloading Module**, ensuring it is **Fail-Safe**: invalid assets, syntax errors, or missing files encountered during a reload will safely abort the operation, keeping the original asset active and preventing application crashes. Alongside this, the update finalizes the backend modernization effort, ensuring both Vulkan and OpenGL implementations are robust, high-performance, and strictly compliant with modern standards.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
@@ -26,7 +26,7 @@ This foundation enables precise **Control** over the entire application stack:
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management.
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events.
 *   **Audio:** A professional-grade pipeline supporting **safe RAM preloading** for SFX, disk streaming for music, **thread-safe capture (recording)**, and real-time effects (Reverb, Delay, Filter).
-*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.1**. It manages complex resources—shaders, meshes, and **dynamically allocated descriptor sets**—automatically. It includes high-level utilities for **Compute Shaders (with #include support)**, **Virtual Display Compositing**, and high-quality text rendering.
+*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.2**. It manages complex resources—shaders, meshes, and **dynamically allocated descriptor sets**—automatically. It includes high-level utilities for **Compute Shaders (with #include support)**, **Virtual Display Compositing**, and high-quality text rendering.
 *   **Hot-Reloading:** A new suite of tools for live-reloading assets at runtime, safely handling GPU synchronization and resource rebuilding.
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
@@ -54,7 +54,7 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 
 ### **Key Capabilities**
 
-*   **Unified Command Architecture:** Write your rendering code once using abstract `SituationCmd*` functions. The library compiles this into direct state changes for **OpenGL 4.6** or optimized command buffers for **Vulkan 1.1**.
+*   **Unified Command Architecture:** Write your rendering code once using abstract `SituationCmd*` functions. The library compiles this into direct state changes for **OpenGL 4.6** or optimized command buffers for **Vulkan 1.2**.
 *   **"Hardened" Audio Engine:** A professional audio pipeline built on miniaudio. It features **thread-safe asset loading** (decoding SFX to RAM to prevent stalling), background music streaming, real-time DSP effects (Reverb/Delay), and low-latency microphone capture.
 *   **Dynamic Resource Management:** No arbitrary limits. The Vulkan backend features a **Dynamic Descriptor Manager** that automatically grows resource pools as you load assets, supporting scenes with thousands of textures and buffers.
 *   **O(1) Input System:** A lock-free, ring-buffered input architecture ensures that no keypress or mouse click is ever lost, even during frame-rate spikes.
@@ -158,10 +158,10 @@ The library is built on several core principles to ensure a simple, predictable,
 | Macro | Type | Description |
 | :--- | :--- | :--- |
 | `SITUATION_IMPLEMENTATION` | **Required** | Define this in **exactly one** `.c` or `.cpp` file to compile the library's implementation code. |
-| `SITUATION_USE_VULKAN` | Backend | Selects the **Vulkan 1.1+** backend. Best for high-performance, multi-threaded asset loading, and modern GPU features. |
+| `SITUATION_USE_VULKAN` | Backend | Selects the **Vulkan 1.2+** backend. Best for high-performance, multi-threaded asset loading, and modern GPU features. |
 | `SITUATION_USE_OPENGL` | Backend | Selects the **OpenGL 4.6** backend using GLAD (included). Best for compatibility and smaller binary sizes. |
 | `SITUATION_ENABLE_SHADER_COMPILER` | Feature | Enables runtime GLSL $\to$ SPIR-V compilation. **Mandatory for Vulkan** if you wish to use the built-in Text or Virtual Display renderers. Requires linking `shaderc`. |
-| `SITUATION_ENABLE_DXGI` | Feature | **(Windows Only)** Uses DXGI for precise VRAM usage and GPU naming. Requires linking `dxgi.lib` and `ole32.lib`. |
+| `SITUATION_ENABLE_DXGI` | Feature | **(Windows Only)** Enables high-precision VRAM monitoring and GPU naming using the DXGI API. Requires linking `dxgi.lib` and `ole32.lib`. |
 | `SITUATION_NO_STB` | Integration | "Situation" embeds `stb_image`, `stb_truetype`, etc. Define this to disable them if your project already links these libraries to avoid symbol collisions. |
 | `SITUATION_BUILD_SHARED` | Build | Define this when compiling "Situation" as a standalone DLL/Shared Library (`.dll` / `.so`). |
 | `SITUATION_USE_SHARED` | Build | Define this in your application when linking against the "Situation" DLL. |
@@ -264,7 +264,7 @@ This library does not use garbage collection.
 
 The documentation for "Situation" is split into two key documents:
 
-1.  [**Core API Library Reference Manual (situation_sdk_238.md)**](situation_sdk_238.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
+1.  [**Core API Library Reference Manual (situation_sdk_239.md)**](situation_sdk_239.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
 2.  [**Situation API Programming Guide (situation_api.md)**](situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
 
 </details>
