@@ -1,4 +1,20 @@
 Date: 2025-11-29
+Version: 2.3.10B "Velocity" (Feature Parity & Error Reporting)
+
+## DESCRIPTION
+This release significantly enhances the robustness of the library by expanding error reporting and ensuring correct feature management across both OpenGL and Vulkan backends. It addresses critical gaps in error code handling and implements proper feature detection and enablement for Vulkan extensions.
+
+## CRITICAL FIXES & SAFETY
+*   **Comprehensive Error Support:** Added a full block of `NETWORK` error codes (`-900` to `-907`) and updated `_SituationSetErrorFromCode` to include specific case handlers for *every* `SituationError` defined in the enum. This eliminates generic "Unknown Error" messages for defined failure states.
+*   **Renaming:** Renamed `SituationFeature` to `SituationRenderFeature` to better reflect its scope and purpose within the graphics subsystem.
+*   **Vulkan Feature Management:**
+    *   Fixed a critical issue in `_SituationVulkanCreateLogicalDevice` where optional features (Mesh Shaders, Ray Tracing) were not being correctly enabled.
+    *   Implemented robust `pNext` chaining logic to properly link `VkPhysicalDeviceMeshShaderFeaturesEXT`, `VkPhysicalDeviceRayTracingPipelineFeaturesKHR`, and other feature structs to the `VkDeviceCreateInfo` chain. This ensures that requested features are actually activated on the logical device.
+*   **OpenGL Feature Detection:** Updated `_SituationInitOpenGL` to correctly populate the `enabled_features_mask` based on available GLAD extensions and core version capabilities, ensuring `SituationIsFeatureSupported` returns accurate results.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-29
 Version: 2.3.10A "Velocity" (Stability Fixes & Optimization)
 
 ## DESCRIPTION

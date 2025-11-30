@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 10
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "B"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -378,6 +378,16 @@ typedef enum {
     SITUATION_ERROR_COMPUTE_PIPELINE_CREATION_FAILED       = -800,  // Compute pipeline creation failed
     SITUATION_ERROR_COMPUTE_DISPATCH_FAILED                = -801,  // Dispatch command failed
     SITUATION_ERROR_COMPUTE_BUFFER_BINDING_MISSING         = -802,  // Missing storage buffer binding
+
+    // ── Network Errors (-900 to -949) ───────────────────────────────────
+    SITUATION_ERROR_NETWORK_INIT_FAILED                    = -900,  // Failed to initialize network subsystem
+    SITUATION_ERROR_NETWORK_SOCKET_CREATION_FAILED         = -901,  // Failed to create socket
+    SITUATION_ERROR_NETWORK_CONNECTION_FAILED              = -902,  // Failed to connect to remote host
+    SITUATION_ERROR_NETWORK_SEND_FAILED                    = -903,  // Failed to send data
+    SITUATION_ERROR_NETWORK_RECEIVE_FAILED                 = -904,  // Failed to receive data
+    SITUATION_ERROR_NETWORK_BIND_FAILED                    = -905,  // Failed to bind socket
+    SITUATION_ERROR_NETWORK_LISTEN_FAILED                  = -906,  // Failed to listen on socket
+    SITUATION_ERROR_NETWORK_ACCEPT_FAILED                  = -907,  // Failed to accept connection
 
     // ── Unknown / Catch-All ─────────────────────────────────────────────
     SITUATION_ERROR_UNKNOWN_ERROR                          = -999,  // Cosmic rays.
@@ -1403,14 +1413,14 @@ typedef enum {
     SIT_FEATURE_TEXTURE_COMPRESSION_ASTC = 1 << 20, // ASTC Compression support (Mobile/High-end)
     SIT_FEATURE_HDR_OUTPUT             = 1 << 21, // High Dynamic Range display output support (10-bit/16-bit swapchain)
 
-} SituationFeature;
+} SituationRenderFeature;
 
 /**
  * @brief Checks if a specific graphics feature is supported and enabled on the current hardware.
  * @param feature The feature flag to check.
  * @return true if the feature is available for use.
  */
-SITAPI bool SituationIsFeatureSupported(SituationFeature feature);
+SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature);
 
 //==================================================================================
 //  Core Data Types & GPU Resource Semantics - v2.3.4 "Velocity" Standard
@@ -2719,7 +2729,7 @@ typedef struct SituationGraveyard {
     // -------------------------------------------------------------------------
     // Feature Capabilities
     // -------------------------------------------------------------------------
-    uint64_t enabled_features_mask;                           // Bitmask of SituationFeature flags enabled on the current backend
+    uint64_t enabled_features_mask;                           // Bitmask of SituationRenderFeature flags enabled on the current backend
 
 } _SituationGlobalStateContainer;
 
@@ -4119,6 +4129,16 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_COMPUTE_PIPELINE_CREATION_FAILED: base_msg = "Compute pipeline creation failed"; break;
         case SITUATION_ERROR_COMPUTE_DISPATCH_FAILED:          base_msg = "Compute dispatch failed"; break;
         case SITUATION_ERROR_COMPUTE_BUFFER_BINDING_MISSING:   base_msg = "Required buffer binding missing for compute shader"; break;
+
+        // --- Network Errors (900-949) ---
+        case SITUATION_ERROR_NETWORK_INIT_FAILED:           base_msg = "Network: Initialization failed"; break;
+        case SITUATION_ERROR_NETWORK_SOCKET_CREATION_FAILED:base_msg = "Network: Socket creation failed"; break;
+        case SITUATION_ERROR_NETWORK_CONNECTION_FAILED:     base_msg = "Network: Connection failed"; break;
+        case SITUATION_ERROR_NETWORK_SEND_FAILED:           base_msg = "Network: Send failed"; break;
+        case SITUATION_ERROR_NETWORK_RECEIVE_FAILED:        base_msg = "Network: Receive failed"; break;
+        case SITUATION_ERROR_NETWORK_BIND_FAILED:           base_msg = "Network: Bind failed"; break;
+        case SITUATION_ERROR_NETWORK_LISTEN_FAILED:         base_msg = "Network: Listen failed"; break;
+        case SITUATION_ERROR_NETWORK_ACCEPT_FAILED:         base_msg = "Network: Accept failed"; break;
 
         case SITUATION_ERROR_UNKNOWN_ERROR:               base_msg = "Unknown error (Cosmic rays)"; break;
     }
@@ -5836,6 +5856,10 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     sit_gs.enabled_features_mask |= SIT_FEATURE_COMPUTE_SHADER;
     sit_gs.enabled_features_mask |= SIT_FEATURE_INT64;
     sit_gs.enabled_features_mask |= SIT_FEATURE_FLOAT64;
+    sit_gs.enabled_features_mask |= SIT_FEATURE_DRAW_INDIRECT_COUNT; // Core in 4.6 (GL_ARB_indirect_parameters)
+    sit_gs.enabled_features_mask |= SIT_FEATURE_MULTI_DRAW_INDIRECT; // Core in 4.3
+    sit_gs.enabled_features_mask |= SIT_FEATURE_MULTI_VIEWPORT;      // Core in 4.1 (GL_ARB_viewport_array)
+
     // Extension-based features
 #if defined(GLAD_GL_NV_shader_buffer_load) && defined(GLAD_GL_EXT_buffer_reference)
     if (GLAD_GL_NV_shader_buffer_load || GLAD_GL_EXT_buffer_reference) {
@@ -5852,6 +5876,33 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         sit_gs.enabled_features_mask |= SIT_FEATURE_MESH_SHADER;
     }
 #endif
+#if defined(GLAD_GL_KHR_shader_subgroup)
+    if (GLAD_GL_KHR_shader_subgroup) {
+        sit_gs.enabled_features_mask |= SIT_FEATURE_SUBGROUP_OPERATIONS;
+    }
+#endif
+#if defined(GLAD_GL_AMD_gpu_shader_half_float) || defined(GLAD_GL_NV_gpu_shader5)
+    if (GLAD_GL_AMD_gpu_shader_half_float || GLAD_GL_NV_gpu_shader5) {
+        sit_gs.enabled_features_mask |= SIT_FEATURE_FLOAT16;
+    }
+#endif
+#if defined(GLAD_GL_NV_shader_atomic_float)
+    if (GLAD_GL_NV_shader_atomic_float) {
+        sit_gs.enabled_features_mask |= SIT_FEATURE_ATOMIC_FLOAT;
+    }
+#endif
+#if defined(GLAD_GL_EXT_texture_compression_s3tc)
+    if (GLAD_GL_EXT_texture_compression_s3tc) {
+        sit_gs.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_BC;
+    }
+#endif
+#if defined(GLAD_GL_KHR_texture_compression_astc_ldr)
+    if (GLAD_GL_KHR_texture_compression_astc_ldr) {
+        sit_gs.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_ASTC;
+    }
+#endif
+    // Standard GL framebuffers can usually handle 10-bit if requested
+    sit_gs.enabled_features_mask |= SIT_FEATURE_HDR_OUTPUT;
 
     return SITUATION_SUCCESS;
 }
@@ -8117,8 +8168,8 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     VkPhysicalDeviceFeatures device_features = {0}; // Enable features as needed later
 
     // --- Device Extensions ---
-    // Use a small, manageable array to build the list of required extensions.
-    const char* device_extensions[4]; // Max 4 should be enough for now
+    // Use a manageable array to build the list of required extensions.
+    const char* device_extensions[8]; // Increased size for optional extensions
     uint32_t extension_count = 0;
 
     // The swapchain extension is always required for rendering to a window.
@@ -8128,6 +8179,51 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     #if defined(__APPLE__)
         device_extensions[extension_count++] = "VK_KHR_portability_subset";
     #endif
+
+    // Check for optional extensions
+    uint32_t available_ext_count = 0;
+    vkEnumerateDeviceExtensionProperties(sit_gs.vk.physical_device, NULL, &available_ext_count, NULL);
+    VkExtensionProperties* available_exts = (VkExtensionProperties*)SIT_MALLOC(sizeof(VkExtensionProperties) * available_ext_count);
+    vkEnumerateDeviceExtensionProperties(sit_gs.vk.physical_device, NULL, &available_ext_count, available_exts);
+
+    bool mesh_shader_supported = false;
+    bool ray_tracing_supported = false;
+
+    for (uint32_t i = 0; i < available_ext_count; i++) {
+        if (strcmp(available_exts[i].extensionName, "VK_EXT_mesh_shader") == 0) {
+            mesh_shader_supported = true;
+        }
+        if (strcmp(available_exts[i].extensionName, "VK_KHR_ray_tracing_pipeline") == 0) {
+            ray_tracing_supported = true;
+        }
+    }
+    SIT_FREE(available_exts);
+
+    // Define feature structures for extensions
+    VkPhysicalDeviceMeshShaderFeaturesEXT mesh_features = {0};
+    mesh_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR ray_tracing_features = {0};
+    ray_tracing_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR accel_features = {0};
+    accel_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+
+    if (mesh_shader_supported) {
+        device_extensions[extension_count++] = "VK_EXT_mesh_shader";
+        sit_gs.enabled_features_mask |= SIT_FEATURE_MESH_SHADER;
+        mesh_features.meshShader = VK_TRUE;
+    }
+
+    if (ray_tracing_supported) {
+        device_extensions[extension_count++] = "VK_KHR_ray_tracing_pipeline";
+        device_extensions[extension_count++] = "VK_KHR_acceleration_structure"; // Prerequisite
+        device_extensions[extension_count++] = "VK_KHR_deferred_host_operations"; // Prerequisite
+        sit_gs.enabled_features_mask |= SIT_FEATURE_RAY_TRACING;
+
+        ray_tracing_features.rayTracingPipeline = VK_TRUE;
+        accel_features.accelerationStructure = VK_TRUE;
+    }
 
     // --- Feature Query & Enablement ---
     // We need to query what is supported before blindly enabling it.
@@ -8147,12 +8243,48 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     VkPhysicalDeviceVulkan12Features enable_vk12 = {0};
     enable_vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 
+    // Chain extension features if enabled
+    void** next_ptr = &enable_vk12.pNext;
+    if (mesh_shader_supported) {
+        *next_ptr = &mesh_features;
+        next_ptr = &mesh_features.pNext;
+    }
+    if (ray_tracing_supported) {
+        *next_ptr = &ray_tracing_features;
+        next_ptr = &ray_tracing_features.pNext;
+        *next_ptr = &accel_features;
+        next_ptr = &accel_features.pNext;
+    }
+
     // Enable Buffer Device Address (Critical for Bindless)
     if (supported_vk12.bufferDeviceAddress) {
         enable_vk12.bufferDeviceAddress = VK_TRUE;
         sit_gs.enabled_features_mask |= SIT_FEATURE_BINDLESS_BUFFERS;
     } else {
         printf("Situation [Vulkan]: Warning - bufferDeviceAddress not supported. Bindless features disabled.\n");
+    }
+
+    // Enable Descriptor Indexing (Critical for Bindless Textures)
+    if (supported_vk12.descriptorIndexing) {
+        enable_vk12.descriptorIndexing = VK_TRUE;
+        // We also need specific sub-features for full bindless texture support
+        if (supported_vk12.shaderSampledImageArrayNonUniformIndexing && supported_vk12.runtimeDescriptorArray) {
+             enable_vk12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+             enable_vk12.runtimeDescriptorArray = VK_TRUE;
+             sit_gs.enabled_features_mask |= SIT_FEATURE_BINDLESS_TEXTURES;
+        }
+    }
+
+    // Enable Float16 (Half-float)
+    if (supported_vk12.shaderFloat16) {
+        enable_vk12.shaderFloat16 = VK_TRUE;
+        sit_gs.enabled_features_mask |= SIT_FEATURE_FLOAT16;
+    }
+
+    // Enable Draw Indirect Count
+    if (supported_vk12.drawIndirectCount) {
+        enable_vk12.drawIndirectCount = VK_TRUE;
+        sit_gs.enabled_features_mask |= SIT_FEATURE_DRAW_INDIRECT_COUNT;
     }
 
     // Enable Standard Features (Compute, Geometry, etc.)
@@ -8185,8 +8317,30 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
         device_features.shaderFloat64 = VK_TRUE;
         sit_gs.enabled_features_mask |= SIT_FEATURE_FLOAT64;
     }
+    if (supported_features2.features.multiViewport) {
+        device_features.multiViewport = VK_TRUE;
+        sit_gs.enabled_features_mask |= SIT_FEATURE_MULTI_VIEWPORT;
+    }
+    if (supported_features2.features.multiDrawIndirect) {
+        device_features.multiDrawIndirect = VK_TRUE;
+        sit_gs.enabled_features_mask |= SIT_FEATURE_MULTI_DRAW_INDIRECT;
+    }
+    if (supported_features2.features.textureCompressionBC) {
+        device_features.textureCompressionBC = VK_TRUE;
+        sit_gs.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_BC;
+    }
+    if (supported_features2.features.textureCompressionASTC_LDR) {
+        device_features.textureCompressionASTC_LDR = VK_TRUE;
+        sit_gs.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_ASTC;
+    }
+
     // Compute is mandatory in Vulkan, but good to track
     sit_gs.enabled_features_mask |= SIT_FEATURE_COMPUTE_SHADER;
+
+    // Subgroup Operations (Core in 1.1)
+    // We can assume basic subgroup support if we are on Vulkan 1.2, but let's check properties if we were being pedantic.
+    // For now, enable the flag as it's standard.
+    sit_gs.enabled_features_mask |= SIT_FEATURE_SUBGROUP_OPERATIONS;
 
 
     // --- Device Create Info ---
@@ -15142,7 +15296,7 @@ SITAPI bool SituationIsInitialized(void) {
 /**
  * @brief Checks if a specific graphics feature is supported and enabled on the current hardware.
  */
-SITAPI bool SituationIsFeatureSupported(SituationFeature feature) {
+SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature) {
     if (!SituationIsInitialized()) return false;
     // Check against the mask populated during backend initialization
     return (sit_gs.enabled_features_mask & feature) != 0;
