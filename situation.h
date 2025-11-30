@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 8
-#define SITUATION_VERSION_REVISION "B"
+#define SITUATION_VERSION_PATCH 9
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -737,6 +737,7 @@ typedef enum {
     SIT_COMPUTE_LAYOUT_ONE_SSBO,                    // A layout for shaders that use one Shader Storage Buffer Object (SSBO) at set 0.
     SIT_COMPUTE_LAYOUT_TWO_SSBOS,                   // A layout for shaders that use two SSBOs at sets 0 and 1.
     SIT_COMPUTE_LAYOUT_IMAGE_AND_SSBO,              // A layout for shaders that use one Storage Image at set 0 and one SSBO at set 1.
+    SIT_COMPUTE_LAYOUT_BUFFER_IMAGE,                // A layout for shaders that use one SSBO (Set 0) and one Storage Image (Set 1).
     SIT_COMPUTE_LAYOUT_PUSH_CONSTANT,               // A layout for shaders that use a 64-byte push constant for small data.
     SIT_COMPUTE_LAYOUT_EMPTY,                       // A layout for simple shaders that take no external resources.
 } SituationComputeLayoutType;
@@ -1622,6 +1623,9 @@ SITAPI bool SituationExportImage(SituationImage image, const char *fileName);   
 
 // --- Image Generation & Copying ---
 SITAPI SituationImage SituationImageCopy(SituationImage image);                         // Create a new image by copying another.
+SITAPI SituationImage SituationCreateImage(int width, int height, int channels);        // Allocates an uninitialized image container.
+SITAPI void SituationBlitRawDataToImage(SituationImage *dst, const void* data, int x, int y, int width, int height, int src_channels); // Copies raw byte data into a specific region of an image.
+SITAPI void SituationSetPixelColor(SituationImage *img, int x, int y, ColorRGBA col);   // Helper to set a specific pixel color (CPU-side).
 SITAPI void SituationImageDraw(SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos); // Copying portion of one image into another image at destination placement
 SITAPI void SituationImageDrawAlpha(SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos, ColorRGBA tint);
 SITAPI SituationImage SituationGenImageColor(int width, int height, ColorRGBA color);   // Generate a new image of a solid color.
@@ -1675,10 +1679,14 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
 SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);                     // Begins a render pass with detailed configuration.
 SITAPI void SituationCmdEndRenderPass(SituationCommandBuffer cmd);                                                                      // Ends the current render pass.
 SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color);		// Draws a text string using GPU-accelerated textured quads.
+SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture);                                                  // Submits a command to copy a texture to the main window's swapchain.
+SITAPI SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture);                // Binds a texture as a sampled image (sampler2D) to a specific binding point.
 
 // --- Graphics Resource Management ---
 SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count); // Create a mesh from vertex and index data.
 SITAPI void SituationDestroyMesh(SituationMesh* mesh);                                  // Unload a mesh from GPU memory.
+SITAPI uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer);                // Retrieves the GPU device address of a buffer for bindless access.
+SITAPI uint64_t SituationGetTextureHandle(SituationTexture texture);                    // Retrieves the bindless texture handle.
 
 // --- Shader Management ---
 SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_path);   // Load a graphics shader pipeline from vertex and fragment files.
@@ -2241,7 +2249,7 @@ typedef struct {
     // Compute Pipeline Layout Cache
     VkPipelineLayout current_pipeline_layout_for_push_constants; // Last bound graphics layout
     VkPipelineLayout current_compute_pipeline_layout;            // Last bound compute layout
-    VkPipelineLayout compute_layouts[5];                         // Pre-created standard layouts
+    VkPipelineLayout compute_layouts[6];                         // Pre-created standard layouts
 
     // -------------------------------------------------------------------------
     // Internal Renderers Resources
@@ -7366,7 +7374,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
     // Engine version: Consider using a central #define for SITUATION_VERSION_MAJOR/MINOR/PATCH
     app_info.engineVersion = VK_MAKE_VERSION(2, 6, 0); // Bumped version
     // Specify the target Vulkan API version. Ensure consistency with VMA and device requirements.
-    app_info.apiVersion = VK_API_VERSION_1_1; // Target Vulkan 1.1
+    app_info.apiVersion = VK_API_VERSION_1_2; // Target Vulkan 1.2
 
     // --- 4. Specify Instance Creation Parameters ---
     VkInstanceCreateInfo create_info = {0}; // Explicitly zero-initialize
@@ -7886,9 +7894,15 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
         device_extensions[extension_count++] = "VK_KHR_portability_subset";
     #endif
 
+    // Enable Vulkan 1.2 features (Buffer Device Address)
+    VkPhysicalDeviceVulkan12Features vk12Features = {0};
+    vk12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vk12Features.bufferDeviceAddress = VK_TRUE;
+
     // --- Device Create Info ---
     VkDeviceCreateInfo create_info = {0};
     create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    create_info.pNext = &vk12Features; // Chain the 1.2 features
     create_info.pQueueCreateInfos = queue_create_infos;
     create_info.queueCreateInfoCount = unique_queue_family_count;
     create_info.pEnabledFeatures = &device_features;
@@ -7949,7 +7963,7 @@ static SituationError _SituationVulkanCreateAllocator(void) {
     // --- 2. Configure VMA Creation Info ---
     VmaAllocatorCreateInfo allocator_info = {0}; // Explicitly zero-initialize
     allocator_info.sType = VMA_STRUCTURE_TYPE_ALLOCATOR_CREATE_INFO; // Set sType for completeness/extensibility
-    allocator_info.vulkanApiVersion = VK_API_VERSION_1_1; // Specify target Vulkan API version
+    allocator_info.vulkanApiVersion = VK_API_VERSION_1_2; // Specify target Vulkan API version
     allocator_info.instance = sit_gs.vk.instance; // Link to Vulkan instance
     allocator_info.physicalDevice = sit_gs.vk.physical_device; // Link to physical device
     allocator_info.device = sit_gs.vk.device; // Link to logical device
@@ -9771,6 +9785,17 @@ static void _SituationCleanupVulkan(void) {
     layout_info.setLayoutCount = 2;
     if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &sit_gs.vk.compute_layouts[SIT_COMPUTE_LAYOUT_IMAGE_AND_SSBO]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
 
+    // Layout 3.5: SIT_COMPUTE_LAYOUT_BUFFER_IMAGE
+    // Set 0: SSBO (Buffer), Set 1: Storage Image
+    VkDescriptorSetLayout buffer_image_layouts[2];
+    buffer_image_layouts[0] = sit_gs.vk.ssbo_layout;
+    buffer_image_layouts[1] = sit_gs.vk.storage_image_layout;
+
+    layout_info.setLayoutCount = 2;
+    layout_info.pSetLayouts = buffer_image_layouts;
+    layout_info.pushConstantRangeCount = 0;
+    if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &sit_gs.vk.compute_layouts[SIT_COMPUTE_LAYOUT_BUFFER_IMAGE]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+
     // Layout 4: SIT_COMPUTE_LAYOUT_PUSH_CONSTANT
     layout_info.setLayoutCount = 0;
     layout_info.pushConstantRangeCount = 1;
@@ -11415,6 +11440,75 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
 #else
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCmdDrawText requires STB Truetype.");
 #endif
+}
+
+SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture) {
+    if (!SituationIsInitialized()) return;
+
+#if defined(SITUATION_USE_VULKAN)
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    if (vk_cmd == VK_NULL_HANDLE) return;
+
+    // 1. Get the current swapchain image we are targeting
+    VkImage swapchainImage = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
+    if (swapchainImage == VK_NULL_HANDLE) return;
+
+    // 2. Transition Swapchain to TRANSFER_DST
+    // Note: SituationAcquireFrameCommandBuffer normally leaves it in UNDEFINED or COLOR_ATTACHMENT_OPTIMAL.
+    // We assume it's currently UNDEFINED or ready for writing.
+    _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImage, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    // 3. Transition Source Texture to TRANSFER_SRC
+    // Note: Compute shaders leave textures in GENERAL or SHADER_READ_ONLY usually.
+    // We safely transition from GENERAL (common for storage) to SRC.
+    _SituationVulkanTransitionImageLayout(vk_cmd, texture.image, 1, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    // 4. Blit
+    VkImageBlit blit = {0};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.layerCount = 1;
+    blit.srcOffsets[1].x = texture.width;
+    blit.srcOffsets[1].y = texture.height;
+    blit.srcOffsets[1].z = 1;
+
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.dstSubresource.layerCount = 1;
+    blit.dstOffsets[1].x = sit_gs.vk.swapchain_extent.width;
+    blit.dstOffsets[1].y = sit_gs.vk.swapchain_extent.height;
+    blit.dstOffsets[1].z = 1;
+
+    vkCmdBlitImage(vk_cmd, texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   swapchainImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &blit, VK_FILTER_LINEAR);
+
+    // 5. Transition Swapchain to PRESENT_SRC
+    _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImage, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+    // 6. Transition Source back to GENERAL (for next compute frame)
+    _SituationVulkanTransitionImageLayout(vk_cmd, texture.image, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+
+#elif defined(SITUATION_USE_OPENGL)
+    (void)cmd;
+    // 1. Generate a temporary FBO for the read source if we haven't cached one
+    // Ideally, cache this in the texture struct or a global temp, but for now we create/destroy
+    GLuint fbo;
+    glCreateFramebuffers(1, &fbo);
+    glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, texture.gl_texture_id, 0);
+
+    // 2. Blit to default framebuffer (0)
+    // Destination is the backbuffer
+    glBlitNamedFramebuffer(fbo, 0,
+                           0, 0, texture.width, texture.height,
+                           0, 0, sit_gs.main_window_width, sit_gs.main_window_height,
+                           GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+    glDeleteFramebuffers(1, &fbo);
+    SIT_CHECK_GL_ERROR();
+#endif
+}
+
+SITAPI SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture) {
+    return SituationCmdBindTextureSet(cmd, binding, texture);
 }
 
 /**
@@ -13230,6 +13324,49 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
     // Zero out the entire struct to prevent accidental use of dangling pointers or stale handles.
     // This correctly sets mesh->id to 0, marking it as invalid for future calls.
     memset(mesh, 0, sizeof(SituationMesh));
+}
+
+SITAPI uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer) {
+    if (buffer.id == 0) return 0;
+
+#if defined(SITUATION_USE_VULKAN)
+    // Note: Requires shaderDeviceAddress feature to be enabled in Logical Device creation.
+    VkBufferDeviceAddressInfo info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = buffer.vk_buffer
+    };
+    // Assuming Vulkan 1.2 core or extension available
+    return vkGetBufferDeviceAddress(sit_gs.vk.device, &info);
+
+#elif defined(SITUATION_USE_OPENGL)
+    GLuint64 address = 0;
+    // GL_ARB_bindless_texture / GL_NV_shader_buffer_load
+    if (GLAD_GL_EXT_buffer_reference || GLAD_GL_NV_shader_buffer_load) {
+        glGetNamedBufferParameterui64v(buffer.gl_buffer_id, GL_BUFFER_GPU_ADDRESS_NV, &address);
+        glMakeNamedBufferResidentNV(buffer.gl_buffer_id, GL_READ_WRITE);
+    }
+    return (uint64_t)address;
+#endif
+    return 0;
+}
+
+SITAPI uint64_t SituationGetTextureHandle(SituationTexture texture) {
+    if (texture.id == 0) return 0;
+
+#if defined(SITUATION_USE_OPENGL)
+    if (GLAD_GL_ARB_bindless_texture) {
+        GLuint64 handle = glGetTextureHandleARB(texture.gl_texture_id);
+        if (!glIsTextureHandleResidentARB(handle)) {
+            glMakeTextureHandleResidentARB(handle);
+        }
+        return (uint64_t)handle;
+    }
+    return 0;
+#elif defined(SITUATION_USE_VULKAN)
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationGetTextureHandle not implemented for Vulkan");
+    return 0;
+#endif
+    return 0;
 }
 
 /**
@@ -20337,6 +20474,89 @@ SITAPI bool SituationExportImage(SituationImage image, const char *fileName) {
         _SituationSetError("Unsupported image export format. Use .png or .bmp.");
     }
     return success;
+}
+
+/**
+ * @brief Allocates an uninitialized image container.
+ * @warning Pixel data is uninitialized (garbage). Use SituationGenImageColor for zeroed memory.
+ */
+SITAPI SituationImage SituationCreateImage(int width, int height, int channels) {
+    SituationImage img = {0};
+    if (width <= 0 || height <= 0 || channels <= 0) return img;
+
+    // Enforce 4 channels (RGBA) to match the rest of the library's assumptions (SituationImage struct).
+    // Even if the user requests 1 or 3, we allocate 4 to prevent buffer overflows in Blit functions.
+    int actual_channels = 4;
+
+    img.width = width;
+    img.height = height;
+    size_t size = (size_t)width * height * actual_channels;
+    img.data = malloc(size);
+
+    if (!img.data) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationCreateImage failed");
+        return (SituationImage){0};
+    }
+
+    return img;
+}
+
+/**
+ * @brief Copies raw byte data into a specific region of an image.
+ * @details Useful for uploading raw font bitmaps or procedural data into an atlas.
+ */
+SITAPI void SituationBlitRawDataToImage(SituationImage *dst, const void* data, int x, int y, int width, int height, int src_channels) {
+    if (!dst || !dst->data || !data) return;
+
+    // Assuming dst is always RGBA (4 bytes) as per library standard
+    int dst_channels = 4;
+    unsigned char* dst_pixels = (unsigned char*)dst->data;
+    const unsigned char* src_pixels = (const unsigned char*)data;
+
+    for (int row = 0; row < height; ++row) {
+        int dst_y = y + row;
+        if (dst_y >= dst->height) break;
+
+        for (int col = 0; col < width; ++col) {
+            int dst_x = x + col;
+            if (dst_x >= dst->width) break;
+
+            int dst_idx = (dst_y * dst->width + dst_x) * dst_channels;
+            int src_idx = (row * width + col) * src_channels;
+
+            if (src_channels == 1) {
+                unsigned char val = src_pixels[src_idx];
+                dst_pixels[dst_idx + 0] = val;
+                dst_pixels[dst_idx + 1] = val;
+                dst_pixels[dst_idx + 2] = val;
+                dst_pixels[dst_idx + 3] = 255;
+            } else if (src_channels == 3) {
+                dst_pixels[dst_idx + 0] = src_pixels[src_idx + 0];
+                dst_pixels[dst_idx + 1] = src_pixels[src_idx + 1];
+                dst_pixels[dst_idx + 2] = src_pixels[src_idx + 2];
+                dst_pixels[dst_idx + 3] = 255;
+            } else if (src_channels == 4) {
+                dst_pixels[dst_idx + 0] = src_pixels[src_idx + 0];
+                dst_pixels[dst_idx + 1] = src_pixels[src_idx + 1];
+                dst_pixels[dst_idx + 2] = src_pixels[src_idx + 2];
+                dst_pixels[dst_idx + 3] = src_pixels[src_idx + 3];
+            }
+        }
+    }
+}
+
+/**
+ * @brief Helper to set a specific pixel color (CPU-side).
+ */
+SITAPI void SituationSetPixelColor(SituationImage *img, int x, int y, ColorRGBA col) {
+    if (!img || !img->data || x < 0 || y < 0 || x >= img->width || y >= img->height) return;
+
+    // Assuming 32-bit RGBA
+    unsigned char* ptr = (unsigned char*)img->data + (y * img->width + x) * 4;
+    ptr[0] = col.r;
+    ptr[1] = col.g;
+    ptr[2] = col.b;
+    ptr[3] = col.a;
 }
 
 /**

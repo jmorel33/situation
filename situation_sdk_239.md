@@ -3,9 +3,9 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.8B "Velocity" |
+| **Version** | 2.3.9 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
-| **Backends** | OpenGL 4.6 Core / Vulkan 1.1+ |
+| **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
 | **Author** | Jacques Morel |
 
@@ -36,6 +36,15 @@ The library is engineered around three architectural pillars:
 
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
+
+### New in v2.3.9 "Velocity" (Vulkan 1.2 & Bindless)
+
+This release marks a critical infrastructure upgrade. The Situation SDK now mandates **Vulkan 1.2** as the minimum requirement for the Vulkan backend. This enables advanced GPU features essential for modern high-performance rendering architectures.
+
+**Key Enhancements:**
+*   **Bindless Graphics:** Full support for `bufferDeviceAddress`, allowing shaders to access GPU buffers directly via 64-bit pointers. This eliminates the need for traditional descriptor set binding for massive data arrays.
+*   **Compute Presentation:** The new `SituationCmdPresent` command allows "Compute-Only" pipelines to write directly to a texture and present it to the screen, bypassing the rasterization pipeline entirely.
+*   **Image Manipulation:** A suite of CPU-side image utilities (`SituationCreateImage`, `SituationBlitRawDataToImage`) simplifies the procedural generation of textures and font atlases.
 
 ### New in v2.3.8 "Velocity"
 
@@ -117,7 +126,8 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
     - [3.5.3 Binding Textures](#353-binding-textures)
     - [3.5.4 Hot-Reloading Textures](#354-hot-reloading-textures)
     - [3.5.5 Taking Screenshots](#355-taking-screenshots)
-    - [3.5.6 Example: Loading & Using a Texture](#356-example-loading--using-a-texture)
+    - [3.5.6 Bindless Textures (Advanced)](#356-bindless-textures-advanced)
+    - [3.5.7 Example: Loading & Using a Texture](#357-example-loading--using-a-texture)
   - [3.6 Virtual Display Compositor](#36-virtual-display-compositor)
     - [3.6.1 Creating a Virtual Display](#361-creating-a-virtual-display)
     - [3.6.2 Rendering To a Virtual Display](#362-rendering-to-a-virtual-display)
@@ -1814,6 +1824,14 @@ Before uploading to the GPU, you can manipulate images using a suite of CPU-side
 *   `SituationImageDraw(...)`: Blits one image onto another (Software composition).
 *   `SituationImageAdjustHSV(...)`: Modifies Hue/Saturation/Brightness.
 
+#### Low-Level Generation
+
+For procedural content or font atlas generation, you can create uninitialized images and write raw bytes.
+
+*   `SituationCreateImage(w, h, channels)`: Allocates an empty image buffer (uninitialized).
+*   `SituationBlitRawDataToImage(dst, data, ...)`: Copies raw bytes into an image region.
+*   `SituationSetPixelColor(img, x, y, color)`: Sets a specific pixel.
+
 <a id="352-texture-creation-gpu"></a>
 ### 3.5.2 Texture Creation (GPU)
 
@@ -1847,12 +1865,17 @@ To use a texture in a shader, bind it to a descriptor set slot.
 SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);
 ```
 
-**Usage:** Binds the texture and a default sampler to the specified Set index.
-**GLSL Mapping:**
+**Usage:** Binds the texture and a default sampler to the specified Set index (Descriptor Set).
+**GLSL Mapping:** `layout(set = 1, binding = 0) uniform sampler2D myTexture;`
 
-```Glsl
-layout(set = 1, binding = 0) uniform sampler2D myTexture;
+#### SituationCmdBindSampledTexture
+
+```c:disable-run
+SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture);
 ```
+
+**Usage:** Binds a texture specifically for sampling (sampler2D), distinct from storage image bindings.
+**Why:** Essential for disambiguating between sampled textures and storage images in complex compute shaders.
 
 <a id="354-hot-reloading-textures"></a>
 ### 3.5.4 Hot-Reloading Textures
@@ -1890,8 +1913,22 @@ bool SituationTakeScreenshot(const char* filename);
 
 **Format:** Must end in .png.
 
-<a id="356-example-loading--using-a-texture"></a>
-### 3.5.6 Example: Loading & Using a Texture
+<a id="356-bindless-textures-advanced"></a>
+### 3.5.6 Bindless Textures (Advanced)
+
+For advanced engines, you can retrieve a 64-bit handle to a texture to pass it directly to shaders via UBOs, bypassing binding slots.
+
+#### SituationGetTextureHandle
+
+```c:disable-run
+uint64_t SituationGetTextureHandle(SituationTexture texture);
+```
+
+**Returns:** A 64-bit handle (resident) for the texture.
+**Support:** OpenGL Only (via `GL_ARB_bindless_texture`). Returns 0 on Vulkan in v2.3.9.
+
+<a id="357-example-loading--using-a-texture"></a>
+### 3.5.7 Example: Loading & Using a Texture
 
 ```c:disable-run
 // Snippet Supreme: Zero-Leak Texture Loader
@@ -2098,7 +2135,10 @@ SituationComputePipeline SituationCreateComputePipeline(const char* compute_shad
 
 **Parameters:**
 *   `compute_shader_path`: Path to the `.comp` shader file.
-*   `layout_type`: Defines the resource bindings the shader expects (e.g., `SIT_COMPUTE_LAYOUT_ONE_SSBO`).
+*   `layout_type`: Defines the resource bindings the shader expects.
+    *   `SIT_COMPUTE_LAYOUT_ONE_SSBO`: One buffer at binding 0.
+    *   `SIT_COMPUTE_LAYOUT_BUFFER_IMAGE`: One buffer at binding 0, one storage image at binding 1.
+    *   ...and others.
 
 #### SituationCmdBindComputePipeline
 
@@ -2145,6 +2185,32 @@ To make the buffer available to the shader:
 // Bind to binding point 0 (set = 0, binding = 0 in GLSL)
 SituationCmdBindComputeBuffer(cmd, 0, buffer);
 ```
+
+### Presentation (Compute-Only)
+
+For pipelines that generate an image without a rasterization pass (e.g., Ray Tracing, Simulation), you can present a texture directly to the swapchain.
+
+#### SituationCmdPresent
+
+```c:disable-run
+void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture);
+```
+
+**Behavior:** Blits the given texture to the backbuffer and prepares it for presentation.
+**Usage:** Call this instead of a Render Pass if your "rendering" happened in a Compute Shader.
+
+### Bindless Buffers (Advanced)
+
+For massive data arrays (e.g., GPU-driven rendering), you can bypass descriptors entirely.
+
+#### SituationGetBufferDeviceAddress
+
+```c:disable-run
+uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer);
+```
+
+**Returns:** A 64-bit GPU pointer to the buffer.
+**Usage:** Pass this address to a shader via a UBO. Access it in GLSL using `GL_EXT_buffer_reference`.
 
 ### Dispatch & Synchronization Barriers
 
