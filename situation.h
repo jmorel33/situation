@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.9 "Velocity"
+*   Core API library v2.3.10C "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
@@ -9,6 +9,10 @@
 *   offering a lean yet powerful API for building sophisticated, high-performance software.
 *
 *   The library's philosophy is reflected in its name, granting developers complete situational "Awareness," precise "Control," and fine-grained "Timing."
+*
+*   **Error Reporting Refactor (v2.3.10C):**
+*   This update completes the overhaul of the error reporting system, ensuring that every failure case reports a specific, granular `SituationError` code rather than a generic failure.
+*   This allows for precise programmatic handling of errors across all subsystems.
 *
 *   **Velocity Module (Hot-Reloading):**
 *   This release integrates the **Hot-Reloading Module**, a development-focused toolset that allows Shaders, Compute Pipelines, Textures, and 3D Models to be reloaded from disk at runtime.
@@ -53,7 +57,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 10
-#define SITUATION_VERSION_REVISION "B"
+#define SITUATION_VERSION_REVISION "C"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -3262,7 +3266,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback(VkDebugUtils
 // Miscellaneous Module Helpers
 //==================================================================================
 
-static void _SituationSetFilesystemError(const char* base_message, const char* path);
+static void _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error);
 static char* _sit_dirname(const char* path); // Forward declaration
 static bool _sit_directory_exists(const char* dir_path); // Forward declaration
 
@@ -5344,12 +5348,12 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
         // or OS-level failures (e.g., too many windows, permission denied).
         // GLFW's error callback (_SituationGLFWErrorCallback) should have captured a more detailed error message from GLFW itself.
         _SituationSetErrorFromCode(
-            SITUATION_ERROR_GLFW_FAILED,
+            SITUATION_ERROR_WINDOW_CREATION_FAILED,
             "_SituationInitWindow: glfwCreateWindow failed. Check previous GLFW error message or window parameters (size, title)."
         );
         // Ensure the global window handle is explicitly NULL on failure.
         sit_gs.sit_glfw_window = NULL;
-        return SITUATION_ERROR_GLFW_FAILED;
+        return SITUATION_ERROR_WINDOW_CREATION_FAILED;
     }
 
     // --- 7. Store Window State Profiles ---
@@ -5404,10 +5408,10 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
         // This branch should ideally be unreachable due to the #error directives in the header file that force the user to define a backend.
         // However, as a safeguard, handle the case where no backend is defined.
         _SituationSetErrorFromCode(
-            SITUATION_ERROR_GENERAL,
+            SITUATION_ERROR_NOT_IMPLEMENTED,
             "_SituationInitRenderer: No graphics renderer backend defined (SITUATION_USE_VULKAN or SITUATION_USE_OPENGL). This should be caught at compile time."
         );
-        return SITUATION_ERROR_GENERAL;
+        return SITUATION_ERROR_NOT_IMPLEMENTED;
     }
 #endif
 }
@@ -5446,8 +5450,8 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
 
     // Initialize the mutex that protects the sound playback queue.
     if (ma_mutex_init(&sit_audio.audio_queue_mutex) != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_GENERAL, "Failed to initialize audio queue mutex");
-        return SITUATION_ERROR_GENERAL;
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to initialize audio queue mutex");
+        return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
     }
 
     // Initialize capture queue if requested
@@ -5461,8 +5465,8 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
         }
         if (ma_mutex_init(&sit_audio.audio_capture_mutex) != MA_SUCCESS) {
              SIT_FREE(sit_audio.audio_capture_queue);
-             _SituationSetErrorFromCode(SITUATION_ERROR_GENERAL, "Audio capture mutex");
-             return SITUATION_ERROR_GENERAL;
+             _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Audio capture mutex");
+             return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
         }
     }
 
@@ -5519,8 +5523,8 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     if (ma_mutex_init(&sit_gs.keyboard.event_queue_mutex) != MA_SUCCESS ||
         ma_mutex_init(&sit_gs.joysticks.event_queue_mutex) != MA_SUCCESS ||
         ma_mutex_init(&sit_gs.mouse.mutex) != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_GENERAL, "Failed to initialize input mutexes");
-        return SITUATION_ERROR_GENERAL;
+        _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to initialize input mutexes");
+        return SITUATION_ERROR_INIT_FAILED;
     }
 
     // Register callbacks
@@ -6347,7 +6351,7 @@ static void _SituationVulkanCreateScreenCopyResource(void) {
     // Allocate Set
     sit_gs.vk.screen_copy_descriptor_set = _SituationVulkanAllocateDescriptorSet(sit_gs.vk.image_sampler_layout);
     if (sit_gs.vk.screen_copy_descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetError("Failed to allocate descriptor set for Screen Copy.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate descriptor set for Screen Copy.");
     }
 
     // Note: We update this descriptor set every frame in the render loop because
@@ -6800,7 +6804,7 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
 
     // Check if initialization was successful.
     if (!compiler) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_GENERAL, "_SituationVulkanCompileGLSLtoSPIRV: Failed to initialize shaderc compiler." );
+        _SituationSetErrorFromCode( SITUATION_ERROR_SHADER_COMPILATION_FAILED, "_SituationVulkanCompileGLSLtoSPIRV: Failed to initialize shaderc compiler." );
         // Clean up any potentially partially initialized object.
         if (options) {
             shaderc_compile_options_release(options);
@@ -6808,7 +6812,7 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
         return blob; // Return zero-initialized struct
     }
     if (!options) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_GENERAL, "_SituationVulkanCompileGLSLtoSPIRV: Failed to initialize shaderc compile options." );
+        _SituationSetErrorFromCode( SITUATION_ERROR_SHADER_COMPILATION_FAILED, "_SituationVulkanCompileGLSLtoSPIRV: Failed to initialize shaderc compile options." );
         // Clean up the successfully initialized compiler.
         shaderc_compiler_release(compiler);
         return blob; // Return zero-initialized struct
@@ -11322,7 +11326,7 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
         return SituationCmdBeginRenderToDisplay(cmd, info->display_id, info->color_attachment.clear.color);
     } else {
         // TODO: Implement a Render Pass Cache to support LOAD_OP_LOAD
-        _SituationSetError("Non-clearing render passes (SIT_LOAD_OP_LOAD) are not yet implemented for the Vulkan backend.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Non-clearing render passes (SIT_LOAD_OP_LOAD) are not yet implemented for the Vulkan backend.");
         return SITUATION_ERROR_NOT_IMPLEMENTED;
     }
 #endif
@@ -13941,7 +13945,7 @@ static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
 
     if (vertex_data && v_size > 0) {
         v_ptr = SIT_MALLOC(v_size);
-        if (!v_ptr) { _SituationSetError("Memory allocation failed for mesh readback"); return; }
+        if (!v_ptr) { _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Mesh readback vertex buffer"); return; }
         *vertex_data = v_ptr;
     }
 
@@ -13949,7 +13953,7 @@ static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
         i_ptr = SIT_MALLOC(i_size);
         if (!i_ptr) {
             if (v_ptr) SIT_FREE(v_ptr);
-            _SituationSetError("Memory allocation failed for mesh readback");
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Mesh readback index buffer");
             return;
         }
         *index_data = i_ptr;
@@ -13968,12 +13972,12 @@ static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
     // Use our new helper
     if (v_ptr) {
         if (_SituationVulkanReadBackBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory, v_size, 0, v_ptr) != SITUATION_SUCCESS) {
-            _SituationSetError("Failed to read vertex buffer from Vulkan mesh");
+            _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to read vertex buffer from Vulkan mesh");
         }
     }
     if (i_ptr) {
         if (_SituationVulkanReadBackBuffer(mesh.index_buffer, mesh.index_buffer_memory, i_size, 0, i_ptr) != SITUATION_SUCCESS) {
-            _SituationSetError("Failed to read index buffer from Vulkan mesh");
+            _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to read index buffer from Vulkan mesh");
         }
     }
 #endif
@@ -14687,7 +14691,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         fprintf(stderr, "SITUATION CRITICAL WARNING: Buffer updated AFTER draw commands in the same frame!\n"
                         "    This causes divergent behavior between OpenGL (Immediate) and Vulkan (Deferred).\n"
                         "    Fix: Move SituationUpdateBuffer() calls before any SituationCmdDraw*() calls.\n");
-        _SituationSetError("Architectural Violation: Buffer update after draw.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION, "Buffer update after draw.");
         // We don't return error to avoid crashing app, but the warning is loud.
     }
 #endif
@@ -15904,22 +15908,22 @@ SITAPI void SituationOpenFile(const char* filePath) {
     #include <shellapi.h>
     int result = (int)(uintptr_t)ShellExecuteA(NULL, "open", filePath, NULL, NULL, SW_SHOWNORMAL);
     if (result <= 32) {
-        _SituationSetError("ShellExecuteA failed to open file or path.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "ShellExecuteA failed to open file or path.");
     }
 #elif defined(__APPLE__)
     char command[2048];
     snprintf(command, sizeof(command), "open \"%s\"", filePath);
     if (system(command) != 0) {
-        _SituationSetError("macOS 'open' command failed.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "macOS 'open' command failed.");
     }
 #elif defined(__linux__)
     char command[2048];
     snprintf(command, sizeof(command), "xdg-open \"%s\"", filePath);
     if (system(command) != 0) {
-        _SituationSetError("Linux 'xdg-open' command failed.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Linux 'xdg-open' command failed.");
     }
 #else
-    _SituationSetError("SituationOpenFile is not supported on this platform.");
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationOpenFile is not supported on this platform.");
 #endif
 }
 
@@ -16405,13 +16409,13 @@ SITAPI bool SituationDeleteFile(const char* file_path) {
     SIT_FREE(wide_path);
 
     if (result == 0) {
-        _SituationSetFilesystemError("Failed to delete file", file_path);
+        _SituationSetFilesystemError("Failed to delete file", file_path, SITUATION_ERROR_FILE_ACCESS);
         return false;
     }
     return true;
 #else // POSIX/Standard C
     if (remove(file_path) != 0) {
-        _SituationSetFilesystemError("Failed to delete file", file_path);
+        _SituationSetFilesystemError("Failed to delete file", file_path, SITUATION_ERROR_FILE_ACCESS);
         return false;
     }
     return true;
@@ -16448,7 +16452,7 @@ SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
     SIT_FREE(wide_new);
 
     if (result == 0) {
-        _SituationSetFilesystemError("Failed to move/rename file", old_path);
+        _SituationSetFilesystemError("Failed to move/rename file", old_path, SITUATION_ERROR_FILE_ACCESS);
         return false;
     }
     return true;
@@ -16460,10 +16464,10 @@ SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
         if (SituationCopyFile(old_path, new_path)) {
             return SituationDeleteFile(old_path);
         }
-        _SituationSetFilesystemError("Failed to copy file during cross-device move", old_path);
+        _SituationSetFilesystemError("Failed to copy file during cross-device move", old_path, SITUATION_ERROR_FILE_ACCESS);
         return false;
     }
-    _SituationSetFilesystemError("Failed to move/rename file", old_path);
+    _SituationSetFilesystemError("Failed to move/rename file", old_path, SITUATION_ERROR_FILE_ACCESS);
     return false;
 #endif
 }
@@ -16493,7 +16497,11 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
 
     SIT_FREE(wide_source);
     SIT_FREE(wide_dest);
-    return (result != 0);
+    if (result == 0) {
+        _SituationSetFilesystemError("Failed to copy file", source_path, SITUATION_ERROR_FILE_ACCESS);
+        return false;
+    }
+    return true;
 
 #else // POSIX/Standard C manual implementation
     const int BUFFER_SIZE = 65536; // 64KB buffer for copying
@@ -16501,31 +16509,37 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
     size_t bytes_read;
 
     FILE* source = fopen(source_path, "rb");
-    if (!source) return false;
+    if (!source) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Failed to open source file for copying.");
+        return false;
+    }
 
     FILE* dest = fopen(dest_path, "wb");
     if (!dest) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Failed to open destination file for copying.");
         fclose(source);
         return false;
     }
 
     while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, source)) > 0) {
         if (fwrite(buffer, 1, bytes_read, dest) != bytes_read) {
-            // Write error occurred
+            _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error writing to destination file.");
             fclose(source);
             fclose(dest);
             return false;
         }
     }
 
-    fclose(source);
-    fclose(dest);
-
     // Check for read error from source file
     if (ferror(source)) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error reading from source file.");
+        fclose(source);
+        fclose(dest);
         return false;
     }
 
+    fclose(source);
+    fclose(dest);
     return true;
 #endif
 }
@@ -16557,13 +16571,13 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
         BOOL result = CreateDirectoryW(wide_path, NULL);
         SIT_FREE(wide_path);
         if (result == 0) {
-            _SituationSetFilesystemError("Failed to create directory", dir_path);
+            _SituationSetFilesystemError("Failed to create directory", dir_path, SITUATION_ERROR_DIRECTORY_CREATION_FAILED);
             return false;
         }
         return true;
 #else
         if (mkdir(dir_path, 0755) != 0) {
-            _SituationSetFilesystemError("Failed to create directory", dir_path);
+            _SituationSetFilesystemError("Failed to create directory", dir_path, SITUATION_ERROR_DIRECTORY_CREATION_FAILED);
             return false;
         }
         return true;
@@ -16646,7 +16660,7 @@ SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
             SituationFreeDirectoryFileList(entries, count);
 
             if (!all_deleted) {
-                _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to delete one or more items within the directory.");
+                _SituationSetErrorFromCode(SITUATION_ERROR_DIR_NOT_EMPTY, "Failed to delete one or more items within the directory.");
                 return false; // Failed to empty the directory, so we can't delete it
             }
         }
@@ -16796,9 +16810,9 @@ SITAPI void SituationFreeDirectoryFileList(char** file_list, int count) {
  * @param base_message A string describing the operation that failed (e.g., "Failed to create directory").
  * @param path The file or directory path that was involved in the failed operation.
  */
-static void _SituationSetFilesystemError(const char* base_message, const char* path) {
+static void _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error) {
     char platform_error_str[256] = {0};
-    SituationError specific_error_code = SITUATION_ERROR_FILE_ACCESS; // Default to a generic file error
+    SituationError specific_error_code = default_error;
 
 #if defined(_WIN32)
     DWORD error_code = GetLastError();
@@ -16945,19 +16959,19 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
     SIT_FREE(wide_path);
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        _SituationSetFilesystemError("Failed to open file for reading", file_path);
+        _SituationSetFilesystemError("Failed to open file for reading", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
         return NULL;
     }
 
     LARGE_INTEGER file_size;
     if (!GetFileSizeEx(hFile, &file_size)) {
-        _SituationSetFilesystemError("Failed to get file size", file_path);
+        _SituationSetFilesystemError("Failed to get file size", file_path, SITUATION_ERROR_FILE_READ_FAILED);
         CloseHandle(hFile);
         return NULL;
     }
 
     if (file_size.QuadPart > 0xFFFFFFFF) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "File is too large (>4GB).");
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_TOO_LARGE, "File is too large (>4GB).");
         CloseHandle(hFile);
         return NULL;
     }
@@ -16978,7 +16992,7 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
 
     DWORD bytes_read_win = 0;
     if (!ReadFile(hFile, buffer, size_to_read, &bytes_read_win, NULL) || bytes_read_win != size_to_read) {
-        _SituationSetFilesystemError("Error during file read", file_path);
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error during file read.");
         SIT_FREE(buffer);
         CloseHandle(hFile);
         return NULL;
@@ -16991,7 +17005,7 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
 #else // Standard C library implementation (POSIX)
     FILE* file = fopen(file_path, "rb");
     if (!file) {
-        _SituationSetFilesystemError("Failed to open file for reading", file_path);
+        _SituationSetFilesystemError("Failed to open file for reading", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
         return NULL;
     }
 
@@ -17000,7 +17014,7 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
     fseek(file, 0, SEEK_SET);
 
     if (file_size < 0) {
-        _SituationSetFilesystemError("Failed to get file size", file_path);
+        _SituationSetFilesystemError("Failed to get file size", file_path, SITUATION_ERROR_FILE_READ_FAILED);
         fclose(file);
         return NULL;
     }
@@ -17021,7 +17035,7 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
 
     size_t read_count = fread(buffer, 1, size_to_read, file);
     if (read_count != size_to_read) {
-        _SituationSetFilesystemError("Error during file read", file_path);
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error during file read.");
         SIT_FREE(buffer);
         fclose(file);
         return NULL;
@@ -17061,14 +17075,14 @@ SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsig
     SIT_FREE(wide_path);
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        _SituationSetFilesystemError("Failed to create file for writing", file_path);
+        _SituationSetFilesystemError("Failed to create file for writing", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
         return false;
     }
 
     if (bytes_to_write > 0) {
         DWORD bytes_written = 0;
         if (!WriteFile(hFile, data, bytes_to_write, &bytes_written, NULL) || bytes_written != bytes_to_write) {
-            _SituationSetFilesystemError("Error during file write", file_path);
+            _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error during file write.");
             CloseHandle(hFile);
             return false;
         }
@@ -17080,13 +17094,13 @@ SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsig
 #else // Standard C library implementation
     FILE* file = fopen(file_path, "wb");
     if (!file) {
-        _SituationSetFilesystemError("Failed to create file for writing", file_path);
+        _SituationSetFilesystemError("Failed to create file for writing", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
         return false;
     }
 
     if (bytes_to_write > 0) {
         if (fwrite(data, 1, bytes_to_write, file) != bytes_to_write) {
-            _SituationSetFilesystemError("Error during file write", file_path);
+            _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error during file write.");
             fclose(file);
             return false;
         }
@@ -17175,7 +17189,7 @@ static void _SituationCachePhysicalDisplays(void) {
     #if defined(_WIN32)
     int win32_monitor_count = GetSystemMetrics(SM_CMONITORS);
     if (win32_monitor_count <= 0) {
-        _SituationSetError("No physical monitors reported by GetSystemMetrics(SM_CMONITORS)."); return;
+        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "No physical monitors reported by GetSystemMetrics(SM_CMONITORS)."); return;
     }
     sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)SIT_CALLOC(win32_monitor_count, sizeof(SituationDisplayInfo));
     if (!sit_gs.cached_physical_displays_array) {
@@ -17191,7 +17205,7 @@ static void _SituationCachePhysicalDisplays(void) {
         .glfw_monitor_count = glfw_monitor_count
     };
     if (!EnumDisplayMonitors(NULL, NULL, _SituationMonitorEnumProc, (LPARAM)&enum_data)) {
-        _SituationSetError("EnumDisplayMonitors failed.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "EnumDisplayMonitors failed.");
         for (int i = 0; i < enum_data.current_display_idx; ++i) SIT_FREE(sit_gs.cached_physical_displays_array[i].available_modes);
         SIT_FREE(sit_gs.cached_physical_displays_array); sit_gs.cached_physical_displays_array = NULL;
         return;
@@ -17240,7 +17254,7 @@ static void _SituationCachePhysicalDisplays(void) {
             } else { disp->available_mode_count = 0; }
         }
     } else {
-        _SituationSetError("No monitors reported by GLFW.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "No monitors reported by GLFW.");
     }
     #endif
 }
@@ -18075,9 +18089,9 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 
     if (vkCreateSampler(sit_gs.vk.device, &sampler_info, NULL, &vd->sampler) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_GENERAL, "Failed to re-create sampler for scaling mode change");
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to re-create sampler for scaling mode change");
         // The VD is now in a bad state with a destroyed sampler.
-        return SITUATION_ERROR_VULKAN_GENERAL;
+        return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
 
     // 3. Update the existing descriptor set to point to the new sampler.
@@ -18722,12 +18736,12 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
     // 1. Parse the GLTF file using cgltf
     cgltf_result result = cgltf_parse_file(&options, file_path, &data);
     if (result != cgltf_result_success) {
-        _SituationSetError("Failed to parse GLTF file.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Failed to parse GLTF file.");
         return model;
     }
     result = cgltf_load_buffers(&options, data, file_path);
     if (result != cgltf_result_success) {
-        _SituationSetError("Failed to load GLTF buffers.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Failed to load GLTF buffers.");
         cgltf_free(data);
         return model;
     }
@@ -18871,7 +18885,7 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
     return model;
 #else
     (void)file_path;
-    _SituationSetError("Model loading not available. Please implement cgltf.h.");
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Model loading not available. Please implement cgltf.h.");
     return (SituationModel){0};
 #endif
 }
@@ -19072,7 +19086,7 @@ SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path
     return result == cgltf_result_success;
 #else
     (void)model; (void)file_path;
-    _SituationSetError("Model saving not available. Please implement cgltf.h and cgltf_write.h.");
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Model saving not available. Please implement cgltf.h and cgltf_write.h.");
     return false;
 #endif
 }
@@ -19513,8 +19527,8 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
 
 #if defined(SITUATION_USE_OPENGL)
     if (!shader.uniform_map) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_GENERAL, "Shader uniform map not initialized.");
-        return SITUATION_ERROR_GENERAL;
+        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Shader uniform map not initialized.");
+        return SITUATION_ERROR_RESOURCE_INVALID;
     }
 
     // 1. Check the cache (hash map) first
@@ -19681,7 +19695,7 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
 
     if (new_shader.id == 0) {
         // Load failed. The old shader remains active and untouched.
-        _SituationSetError("Hot-reload compilation failed. Keeping old shader.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, "Hot-reload compilation failed. Keeping old shader.");
         return false;
     }
 
@@ -19773,7 +19787,7 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     SIT_FREE(path);
 
     if (new_texture.id == 0) {
-        _SituationSetError("Hot-reload texture failed. Keeping old texture.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED, "Hot-reload texture failed. Keeping old texture.");
         return false;
     }
 
@@ -19855,7 +19869,7 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     SIT_FREE(path);
 
     if (new_model.id == 0) {
-        _SituationSetError("Hot-reload model failed (file not found or parse error). Keeping old model.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Hot-reload model failed (file not found or parse error). Keeping old model.");
         return false;
     }
 
@@ -19950,7 +19964,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     SIT_FREE(original_path);
 
     if (new_pipeline.id == 0) {
-        _SituationSetError("Hot-reload compilation failed. Keeping old pipeline.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_COMPUTE_PIPELINE_CREATION_FAILED, "Hot-reload compilation failed. Keeping old pipeline.");
         return false;
     }
 
@@ -20917,7 +20931,7 @@ SITAPI SituationImage SituationLoadImage(const char *fileName) {
         image.height = 0;
     }
 #else
-    _SituationSetError("Image loading not available. Please implement stb_image.h.");
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image loading not available. Please implement stb_image.h.");
 #endif
     return image;
 }
@@ -20945,12 +20959,12 @@ SITAPI SituationImage SituationLoadImageFromMemory(const char *fileType, const u
     int channels;
     image.data = stbi_load_from_memory(fileData, dataSize, &image.width, &image.height, &channels, 4);
     if (image.data == NULL) {
-        _SituationSetError("Failed to load image from memory or format not supported.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Failed to load image from memory or format not supported.");
         image.width = 0;
         image.height = 0;
     }
 #else
-    _SituationSetError("Image loading not available. Please implement stb_image.h.");
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image loading not available. Please implement stb_image.h.");
 #endif
     return image;
 }
@@ -21010,13 +21024,13 @@ SITAPI bool SituationExportImage(SituationImage image, const char *fileName) {
 #if defined(STB_IMAGE_WRITE_IMPLEMENTATION)
         success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, image.width * 4) != 0);
 #else
-        _SituationSetError("PNG export not available. Please implement stb_image_write.h.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG export not available. Please implement stb_image_write.h.");
 #endif
     // Use helper here
     } else if (ext != NULL && _sit_strcasecmp(ext, ".bmp") == 0) {
         success = _SituationSaveImageBMP(fileName, &image);
     } else {
-        _SituationSetError("Unsupported image export format. Use .png or .bmp.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported image export format. Use .png or .bmp.");
     }
     return success;
 }
@@ -21405,11 +21419,11 @@ SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHei
         image->height = newHeight;
     } else {
         // The resize failed. Clean up and leave the original image untouched.
-        _SituationSetError("stb_image_resize failed.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "stb_image_resize failed.");
         SIT_FREE(newData);
     }
 #else
-    _SituationSetError("Image resizing not available. Please implement stb_image_resize.h.");
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image resizing not available. Please implement stb_image_resize.h.");
 #endif
 }
 
@@ -21763,7 +21777,7 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
     FILE *fontFile = fopen(fileName, "rb");
 
     if (!fontFile) {
-        // You should have some logging here
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "SituationLoadFont: Failed to open font file.");
         return font;
     }
 
@@ -21794,6 +21808,7 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
         // The font file is invalid or not a TrueType font.
         SIT_FREE(info);
         SIT_FREE(fontBuffer);
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFont: Failed to parse TrueType/OpenType data.");
         return font;
     }
 
@@ -21840,7 +21855,7 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
     if (!stbtt_InitFont((stbtt_fontinfo*)font.stbFontInfo, (unsigned char*)font.fontData, 0)) {
         SIT_FREE(font.stbFontInfo);
         SIT_FREE(font.fontData);
-        _SituationSetError("SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
         return (SituationFont){0};
     }
 
@@ -21895,7 +21910,7 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
     if (res <= 0) {
         SIT_FREE(bitmap);
         SIT_FREE(font->glyph_info);
-        _SituationSetError("Font atlas bake failed (texture too small?)");
+        _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED, "Font atlas bake failed (texture too small?)");
         return false;
     }
 
@@ -21926,7 +21941,7 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
 
     return (font->atlas_texture.id != 0);
 #else
-    _SituationSetError("SituationBakeFontAtlas requires STB Truetype.");
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationBakeFontAtlas requires STB Truetype.");
     return false;
 #endif
 }
@@ -22034,7 +22049,7 @@ static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* i
     SIT_FREE(fileBuffer);
 
     if (!success) {
-        _SituationSetFilesystemError("Failed to save BMP file data to disk", fileName);
+        _SituationSetFilesystemError("Failed to save BMP file data to disk", fileName, SITUATION_ERROR_FILE_WRITE_FAILED);
     }
     return success;
 }
@@ -23075,14 +23090,14 @@ SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback c
     config.pUserData = &sit_audio;
 
     if (ma_device_init(&sit_audio.miniaudio_context, &config, &sit_audio.capture_device) != MA_SUCCESS) {
-        _SituationSetError("Failed to initialize capture device.");
-        return SITUATION_ERROR_AUDIO_DEVICE;
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "Failed to initialize capture device.");
+        return SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED;
     }
 
     if (ma_device_start(&sit_audio.capture_device) != MA_SUCCESS) {
         ma_device_uninit(&sit_audio.capture_device);
-        _SituationSetError("Failed to start capture device.");
-        return SITUATION_ERROR_AUDIO_DEVICE;
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start capture device.");
+        return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
     }
 
     sit_audio.is_capture_device_active = true;
@@ -23146,7 +23161,7 @@ SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
     }
 
     if (ma_playback_count == 0) {
-        _SituationSetError("No playback audio devices found by MiniAudio.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "No playback audio devices found by MiniAudio.");
         if (count) *count = 0;
         return NULL;
     }
@@ -23243,16 +23258,16 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
 
     res = ma_device_init(&sit_audio.miniaudio_context, &device_config, &sit_audio.miniaudio_device);
     if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, ma_result_description(res));
-        return SITUATION_ERROR_AUDIO_DEVICE;
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, ma_result_description(res));
+        return SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED;
     }
 
     if (!sit_audio.is_miniaudio_device_internally_paused) { // Only start if not meant to be paused
         res = ma_device_start(&sit_audio.miniaudio_device);
         if (res != MA_SUCCESS) {
             ma_device_uninit(&sit_audio.miniaudio_device);
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to start new audio device");
-            return SITUATION_ERROR_AUDIO_DEVICE;
+            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start new audio device");
+            return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
         }
     }
 
@@ -23271,7 +23286,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
 SITAPI int SituationGetAudioPlaybackSampleRate(void) {
     if (!SituationIsInitialized()) return 0;
     if (!sit_audio.is_miniaudio_device_active) {
-        _SituationSetError("Audio device not active for GetAudioPlaybackSampleRate");
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for GetAudioPlaybackSampleRate");
         return 0;
     }
     return sit_audio.miniaudio_device.sampleRate;
@@ -23295,7 +23310,7 @@ SITAPI int SituationGetAudioPlaybackSampleRate(void) {
 SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sit_audio.is_miniaudio_device_active || sit_audio.current_miniaudio_device_audioinfo_id < 0) {
-        _SituationSetError("No audio device set, cannot change sample rate.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "No audio device set, cannot change sample rate.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
     SituationAudioFormat current_fmt;
@@ -23308,7 +23323,7 @@ SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
     else if (current_ma_fmt == ma_format_s24) current_fmt.bit_depth = 24;
     else if (current_ma_fmt == ma_format_u8) current_fmt.bit_depth = 8;
     else {
-        _SituationSetError("Cannot determine current bit depth to change sample rate (unsupported format).");
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_INVALID_OPERATION, "Cannot determine current bit depth to change sample rate (unsupported format).");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
@@ -23327,7 +23342,7 @@ SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
 SITAPI float SituationGetAudioMasterVolume(void) {
     if (!SituationIsInitialized()) return 0.0f;
     if (!sit_audio.is_miniaudio_device_active) {
-        _SituationSetError("Audio device not active for GetAudioMasterVolume");
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for GetAudioMasterVolume");
         return 0.0f;
     }
     float volume = 0.0f; // Default to 0 if get fails
@@ -23429,8 +23444,8 @@ SITAPI SituationError SituationResumeAudioDevice(void) {
     if (sit_audio.is_miniaudio_device_active && !ma_device_is_started(&sit_audio.miniaudio_device)) {
         ma_result res = ma_device_start(&sit_audio.miniaudio_device);
         if (res != MA_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to start (resume) audio device");
-            return SITUATION_ERROR_AUDIO_DEVICE;
+            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start (resume) audio device");
+            return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
         }
     }
 
@@ -23507,7 +23522,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!out_sound || !file_path) return SITUATION_ERROR_INVALID_PARAM;
     if (!sit_audio.is_miniaudio_device_active) {
-        _SituationSetError("Audio device not active for sound loading.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for sound loading.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
@@ -23589,8 +23604,8 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
 
     if (res != MA_SUCCESS) {
         if (out_sound->preloaded_data) SIT_FREE(out_sound->preloaded_data);
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to initialize decoder.");
-        return SITUATION_ERROR_FILE_ACCESS;
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED, "Failed to initialize decoder.");
+        return SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED;
     }
 
     // --- Standard Init (Converter & Effects) ---
@@ -23615,7 +23630,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
 
     if (_SituationInitSoundEffects(out_sound) != SITUATION_SUCCESS) {
         SituationUnloadSound(out_sound);
-        _SituationSetError("Failed to initialize sound effects.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "Failed to initialize sound effects.");
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
     return SITUATION_SUCCESS;
@@ -23704,7 +23719,7 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!out_sound || !on_read || !format) return SITUATION_ERROR_INVALID_PARAM;
     if (!sit_audio.is_miniaudio_device_active) {
-         _SituationSetError("Audio device not active for stream loading.");
+         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for stream loading.");
          return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
@@ -23736,8 +23751,8 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
 
     ma_result res = ma_decoder_init(&decoder_config, &out_sound->decoder);
     if (res != MA_SUCCESS) {
-        _SituationSetError("Failed to init custom stream decoder.");
-        return SITUATION_ERROR_AUDIO_CONTEXT;
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED, "Failed to init custom stream decoder.");
+        return SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED;
     }
 
     out_sound->total_frames = 0; // Length is unknown for a stream unless specified
@@ -23764,7 +23779,7 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     // --- Effects Chain Initialization ---
     if (_SituationInitSoundEffects(out_sound) != SITUATION_SUCCESS) {
         SituationUnloadSound(out_sound);
-        _SituationSetError("Failed to initialize stream sound effects.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "Failed to initialize stream sound effects.");
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
 
@@ -23915,11 +23930,11 @@ SITAPI SituationError SituationStopAllLoadedSounds(void) {
 SITAPI SituationError SituationSoundCopy(const SituationSound* source, SituationSound* out_destination) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!source || !out_destination || !source->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
-    if (source->is_streamed) return SITUATION_ERROR_INVALID_PARAM;
+    if (source->is_streamed) return SITUATION_ERROR_AUDIO_INVALID_OPERATION;
 
     ma_uint64 total_frames = 0;
     ma_decoder_get_length_in_pcm_frames(&((SituationSound*)source)->decoder, &total_frames);
-    if (total_frames == 0) return SITUATION_ERROR_GENERAL;
+    if (total_frames == 0) return SITUATION_ERROR_AUDIO_DECODING;
 
     size_t data_size = total_frames * ma_get_bytes_per_frame(source->decoder.outputFormat, source->decoder.outputChannels);
 
@@ -23983,9 +23998,10 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
  * @return SITUATION_SUCCESS on success.
  */
 SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame) {
-    if (!sound || !sound->is_initialized || sound->is_streamed || initFrame >= finalFrame || finalFrame > sound->total_frames) {
+    if (!sound || !sound->is_initialized || initFrame >= finalFrame || finalFrame > sound->total_frames) {
         return SITUATION_ERROR_INVALID_PARAM;
     }
+    if (sound->is_streamed) return SITUATION_ERROR_AUDIO_INVALID_OPERATION;
 
     uint64_t frames_to_crop = finalFrame - initFrame;
     size_t cropped_data_size = frames_to_crop * ma_get_bytes_per_frame(sound->decoder.outputFormat, sound->decoder.outputChannels);
@@ -25640,7 +25656,7 @@ SITAPI bool SituationTakeScreenshot(const char *fileName) {
 
     // 2. Check for STB Writer
 #if !defined(STB_IMAGE_WRITE_IMPLEMENTATION)
-    _SituationSetError("PNG support not available. Please implement stb_image_write.h.");
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG support not available. Please implement stb_image_write.h.");
     return false;
 #else
     // 3. Capture and Save
