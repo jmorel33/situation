@@ -1,4 +1,22 @@
 Date: 2025-11-29
+Version: 2.3.10A "Velocity" (Stability Fixes & Optimization)
+
+## DESCRIPTION
+This is a "surgical fix" release targeting stability, memory safety, and text rendering performance. It introduces configurable memory allocators, C++ RAII wrappers for strings, and a significant optimization for text rendering that replaces character-by-character draw calls with batched rendering.
+
+## CRITICAL FIXES & SAFETY
+*   **Memory Safety Macros:** Replaced all internal calls to `malloc`, `calloc`, `realloc` with overridable macros `SIT_MALLOC`, `SIT_CALLOC`, `SIT_REALLOC`. This allows users to integrate custom allocators (e.g., for tracking or pools) by defining these macros before including the header.
+*   **RAII String Wrapper (C++):** Added `SituationScopedString` struct for C++ users. This RAII wrapper automatically calls `SituationFreeString()` when it goes out of scope, preventing memory leaks from API functions that return heap-allocated strings (like `SituationGetLastErrorMsg`).
+
+## OPTIMIZATIONS
+*   **Batched Text Rendering:** Completely rewrote `SituationCmdDrawText`.
+    *   **Old Behavior:** Issued one draw call per character, causing massive driver overhead.
+    *   **New Behavior:** Batches all characters into a single dynamic vertex buffer and issues one draw call per string.
+    *   **Backend Support:** Implemented efficient dynamic buffer updates for both OpenGL (`glNamedBufferSubData`) and Vulkan (Staging Buffer + Pipeline Barrier).
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-29
 Version: 2.3.10 "Velocity" (Feature Flag System & API Refinement)
 
 ## DESCRIPTION

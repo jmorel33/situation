@@ -246,7 +246,7 @@ typedef enum {
     SITUATION_ERROR_INIT_FAILED                            =   -5,  // Core initialization sequence failed
     SITUATION_ERROR_SHUTDOWN_FAILED                        =   -6,  // Resources still alive or backend refused cleanup
     SITUATION_ERROR_INVALID_PARAM                          =   -7,  // NULL pointer, out-of-range value, invalid enum, etc.
-    SITUATION_ERROR_MEMORY_ALLOCATION                      =   -8,  // malloc/calloc/realloc/VmaAllocation failed
+    SITUATION_ERROR_MEMORY_ALLOCATION                      =   -8,  // SIT_MALLOC/SIT_CALLOC/SIT_REALLOC/VmaAllocation failed
     SITUATION_ERROR_INTERNAL_STATE_CORRUPTED               =   -9,  // Internal invariant violated — fatal bug, please report
     SITUATION_ERROR_ASSERTION_FAILED                       =  -10,  // Debug assertion tripped (only in debug builds)
     SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION            =  -11,  // Critical architectural rule broken (debug builds only)
@@ -689,11 +689,41 @@ typedef void (*SituationAudioProcessorCallback)(
     uint32_t     sampleRate,     // Current engine sample rate in Hz
     void*        user_data 		 // Pointer supplied when the processor was added
 ); // Applied after built-in effects (filter → echo → reverb) but before final volume/pan
-   // Must be real-time safe — no malloc, no locking, no system calls
+   // Must be real-time safe — no SIT_MALLOC, no locking, no system calls
 
 // ── Internal GLFW Error Callback (Exposed only for extremely advanced users) ──
 typedef void (*GLFWerrorfun)(int error_code, const char* description);
 
+SITAPI void SituationFreeString(char* str);
+
+#if defined(__cplusplus)
+extern "C++" {
+/**
+ * @brief RAII Wrapper for Situation Strings (C++ only).
+ * @details Automatically calls SituationFreeString() when it goes out of scope.
+ */
+struct SituationScopedString {
+    char* str;
+    SituationScopedString(char* s) : str(s) {}
+    ~SituationScopedString() { if(str) SituationFreeString(str); }
+    operator const char*() const { return str; }
+    const char* get() const { return str; }
+    // Prevent copy
+    SituationScopedString(const SituationScopedString&) = delete;
+    SituationScopedString& operator=(const SituationScopedString&) = delete;
+    // Allow move
+    SituationScopedString(SituationScopedString&& other) noexcept : str(other.str) { other.str = NULL; }
+    SituationScopedString& operator=(SituationScopedString&& other) noexcept {
+        if (this != &other) {
+            if (str) SituationFreeString(str);
+            str = other.str;
+            other.str = NULL;
+        }
+        return *this;
+    }
+};
+}
+#endif
 
 /**
  * @brief Basic Math Types
@@ -1401,8 +1431,17 @@ typedef enum {
 } SituationDataType;
 
 // ---------------------------------------------------------------------------------
-//  Memory Deallocation Macro (overridable for custom allocators)
+//  Memory Allocation Macros (overridable for custom allocators)
 // ---------------------------------------------------------------------------------
+#ifndef SIT_MALLOC
+    #define SIT_MALLOC(sz) malloc(sz)
+#endif
+#ifndef SIT_CALLOC
+    #define SIT_CALLOC(n, sz) calloc(n, sz)
+#endif
+#ifndef SIT_REALLOC
+    #define SIT_REALLOC(p, sz) realloc(p, sz)
+#endif
 #ifndef SIT_FREE
     #define SIT_FREE(p) do { if (p) free(p); p = NULL; } while(0)
 #endif
@@ -1965,7 +2004,6 @@ SITAPI ColorRGBA SituationHsvToRgb(ColorHSV hsv);                               
 SITAPI ColorYPQA SituationColorToYPQ(ColorRGBA color);                                  // Converts a standard RGBA color to the YPQA (Luma, Phase, Quadrature) color space.
 SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color);                            // Converts a YPQA color back to the standard RGBA color space.
 
-SITAPI void SituationFreeString(char* str);
 SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 
 //----------------------------------------------------------------------------------
@@ -2311,6 +2349,9 @@ typedef struct {
     VkBuffer quad_vertex_buffer;                                 // Vertex buffer for unit quad
     VmaAllocation quad_vertex_buffer_memory;                     // Memory for quad vertex buffer
 
+    VkPipeline text_pipeline;                                    // Pipeline for Batched Text renderer
+    VkPipelineLayout text_pipeline_layout;                       // Layout for Batched Text renderer
+
     VkPipeline vd_compositing_pipeline;                          // Pipeline for simple VD composition
     VkPipelineLayout vd_compositing_pipeline_layout;             // Layout for simple VD composition
     VkPipeline advanced_compositing_pipeline;                    // Pipeline for advanced blend modes
@@ -2386,6 +2427,10 @@ typedef struct SituationGraveyard {
     GLuint quad_shader_program;                 // Shader program for the 2D Quad/Text renderer
     GLuint quad_vao;                            // Private VAO for 2D quads
     GLuint quad_vbo;                            // Private VBO for 2D quads
+
+    GLuint text_shader_program;                 // Shader program for Batched Text renderer
+    GLuint text_vao;                            // Private VAO for Batched Text
+    GLuint text_vbo;                            // Private dynamic VBO for Batched Text
 
     // -------------------------------------------------------------------------
     // Global Resources & State
@@ -2529,7 +2574,7 @@ typedef struct SituationGraveyard {
     int queued_sound_count;                                           // Number of active sounds
     ma_mutex audio_queue_mutex;                                       // Mutex protecting the sound queue
 
-    // Pre-allocated temp buffers for the audio callback (avoids malloc on audio thread)
+    // Pre-allocated temp buffers for the audio callback (avoids SIT_MALLOC on audio thread)
     float* audio_callback_decoder_temp_buffer;            // Scratch buffer for decoding PCM
     float* audio_callback_effects_temp_buffer;            // Scratch buffer for processing effects
     float* audio_callback_converter_temp_buffer;          // Scratch buffer for sample rate conversion
@@ -3019,6 +3064,52 @@ static const char* SIT_QUAD_FRAGMENT_SHADER =
 #endif
 ;
 
+// Draws batched text quads.
+static const char* SIT_TEXT_VERTEX_SHADER =
+    "#version 450 core\n"
+    "layout(location = " SIT_STRINGIFY(SIT_ATTR_POSITION) ") in vec2 aPos;\n"
+    "layout(location = " SIT_STRINGIFY(SIT_ATTR_TEXCOORD_0) ") in vec2 aTexCoord;\n"
+    "layout(location = 0) out vec2 v_TexCoord;\n"
+    "\n"
+#if defined(SITUATION_USE_VULKAN)
+    "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
+    "void main() {\n"
+    "    gl_Position = ubo.projection * vec4(aPos, 0.0, 1.0);\n"
+    "    v_TexCoord = aTexCoord;\n"
+    "}\n"
+#elif defined(SITUATION_USE_OPENGL)
+    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_PROJECTION_MATRIX) ") uniform mat4 u_projection;\n"
+    "void main() {\n"
+    "    gl_Position = u_projection * vec4(aPos, 0.0, 1.0);\n"
+    "    v_TexCoord = aTexCoord;\n"
+    "}\n"
+#endif
+;
+
+static const char* SIT_TEXT_FRAGMENT_SHADER =
+    "#version 450 core\n"
+    "layout(location = 0) in vec2 v_TexCoord;\n"
+    "layout(location = 0) out vec4 outColor;\n"
+    "\n"
+    "layout(binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"
+    "\n"
+#if defined(SITUATION_USE_VULKAN)
+    "layout(push_constant) uniform TextPushConstants { vec4 color; } pc;\n"
+    "void main() {\n"
+    "    vec4 texColor = texture(u_Texture, v_TexCoord);\n"
+    "    // Font atlas is often alpha-only or white-on-transparent.\n"
+    "    // Assuming white-on-transparent RGBA from SituationBakeFontAtlas.\n"
+    "    outColor = texColor * pc.color;\n"
+    "}\n"
+#elif defined(SITUATION_USE_OPENGL)
+    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_OBJECT_COLOR) ") uniform vec4 u_color;\n"
+    "void main() {\n"
+    "    vec4 texColor = texture(u_Texture, v_TexCoord);\n"
+    "    outColor = texColor * u_color;\n"
+    "}\n"
+#endif
+;
+
 //==================================================================================
 // OpenGL Backend Helpers & Shader Contract
 //==================================================================================
@@ -3203,7 +3294,7 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
 static char* _sit_strdup(const char* s) {
     if (!s) return NULL;
     size_t len = strlen(s) + 1;
-    char* copy = (char*)malloc(len);
+    char* copy = (char*)SIT_MALLOC(len);
     if (copy) memcpy(copy, s, len);
     return copy;
 }
@@ -3284,8 +3375,8 @@ static int _sit_strcasecmp(const char* s1, const char* s2) {
  */
 static _SituationUniformMap* _sit_uniform_map_create() {
     // --- 1. Allocate Memory for the Map Struct ---
-    _SituationUniformMap* map = (_SituationUniformMap*)calloc(1, sizeof(_SituationUniformMap));
-    // Using calloc initializes map->count and map->capacity to 0, and map->buckets to NULL.
+    _SituationUniformMap* map = (_SituationUniformMap*)SIT_CALLOC(1, sizeof(_SituationUniformMap));
+    // Using SIT_CALLOC initializes map->count and map->capacity to 0, and map->buckets to NULL.
 
     // Check if allocation for the map struct itself was successful.
     if (!map) {
@@ -3303,8 +3394,8 @@ static _SituationUniformMap* _sit_uniform_map_create() {
     // --- 3. Allocate Memory for the Bucket Array ---
     // Allocate an array of pointers to `_SituationUniformMapEntry`.
     // The size is `capacity * sizeof(_SituationUniformMapEntry*)`.
-    map->buckets = (_SituationUniformMapEntry**)calloc(map->capacity, sizeof(_SituationUniformMapEntry*));
-    // Using calloc initializes all bucket pointers to NULL.
+    map->buckets = (_SituationUniformMapEntry**)SIT_CALLOC(map->capacity, sizeof(_SituationUniformMapEntry*));
+    // Using SIT_CALLOC initializes all bucket pointers to NULL.
 
     // Check if allocation for the bucket array was successful.
     if (!map->buckets) {
@@ -3457,7 +3548,7 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, GLi
     // We need to create a new entry for this key/value pair.
 
     // Allocate memory for the new entry struct.
-    _SituationUniformMapEntry* new_entry = (_SituationUniformMapEntry*)malloc(sizeof(_SituationUniformMapEntry));
+    _SituationUniformMapEntry* new_entry = (_SituationUniformMapEntry*)SIT_MALLOC(sizeof(_SituationUniformMapEntry));
     // Check if allocation for the new entry was successful.
     if (!new_entry) {
         // Allocation failed for the new entry struct.
@@ -3595,27 +3686,27 @@ static void _SituationInitGraveyard(SituationGraveyard* gy) {
     memset(gy, 0, sizeof(SituationGraveyard));
     // Pre-allocate some capacity to avoid initial reallocs
     gy->buffer_capacity = 16;
-    gy->buffers = (VkBuffer*)malloc(sizeof(VkBuffer) * gy->buffer_capacity);
-    gy->buffer_allocations = (VmaAllocation*)malloc(sizeof(VmaAllocation) * gy->buffer_capacity);
+    gy->buffers = (VkBuffer*)SIT_MALLOC(sizeof(VkBuffer) * gy->buffer_capacity);
+    gy->buffer_allocations = (VmaAllocation*)SIT_MALLOC(sizeof(VmaAllocation) * gy->buffer_capacity);
 
     gy->image_capacity = 16;
-    gy->images = (VkImage*)malloc(sizeof(VkImage) * gy->image_capacity);
-    gy->image_allocations = (VmaAllocation*)malloc(sizeof(VmaAllocation) * gy->image_capacity);
-    gy->image_views = (VkImageView*)malloc(sizeof(VkImageView) * gy->image_capacity);
-    gy->samplers = (VkSampler*)malloc(sizeof(VkSampler) * gy->image_capacity);
+    gy->images = (VkImage*)SIT_MALLOC(sizeof(VkImage) * gy->image_capacity);
+    gy->image_allocations = (VmaAllocation*)SIT_MALLOC(sizeof(VmaAllocation) * gy->image_capacity);
+    gy->image_views = (VkImageView*)SIT_MALLOC(sizeof(VkImageView) * gy->image_capacity);
+    gy->samplers = (VkSampler*)SIT_MALLOC(sizeof(VkSampler) * gy->image_capacity);
 
     gy->descriptor_set_capacity = 32;
-    gy->descriptor_sets = (VkDescriptorSet*)malloc(sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
+    gy->descriptor_sets = (VkDescriptorSet*)SIT_MALLOC(sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
 
     gy->pipeline_capacity = 8;
-    gy->pipelines = (VkPipeline*)malloc(sizeof(VkPipeline) * gy->pipeline_capacity);
-    gy->pipeline_layouts = (VkPipelineLayout*)malloc(sizeof(VkPipelineLayout) * gy->pipeline_capacity);
+    gy->pipelines = (VkPipeline*)SIT_MALLOC(sizeof(VkPipeline) * gy->pipeline_capacity);
+    gy->pipeline_layouts = (VkPipelineLayout*)SIT_MALLOC(sizeof(VkPipelineLayout) * gy->pipeline_capacity);
 
     gy->framebuffer_capacity = 4;
-    gy->framebuffers = (VkFramebuffer*)malloc(sizeof(VkFramebuffer) * gy->framebuffer_capacity);
+    gy->framebuffers = (VkFramebuffer*)SIT_MALLOC(sizeof(VkFramebuffer) * gy->framebuffer_capacity);
 
     gy->render_pass_capacity = 4;
-    gy->render_passes = (VkRenderPass*)malloc(sizeof(VkRenderPass) * gy->render_pass_capacity);
+    gy->render_passes = (VkRenderPass*)SIT_MALLOC(sizeof(VkRenderPass) * gy->render_pass_capacity);
 }
 
 /**
@@ -3720,8 +3811,8 @@ static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocati
     SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
     if (gy->buffer_count >= gy->buffer_capacity) {
         gy->buffer_capacity *= 2;
-        gy->buffers = (VkBuffer*)realloc(gy->buffers, sizeof(VkBuffer) * gy->buffer_capacity);
-        gy->buffer_allocations = (VmaAllocation*)realloc(gy->buffer_allocations, sizeof(VmaAllocation) * gy->buffer_capacity);
+        gy->buffers = (VkBuffer*)SIT_REALLOC(gy->buffers, sizeof(VkBuffer) * gy->buffer_capacity);
+        gy->buffer_allocations = (VmaAllocation*)SIT_REALLOC(gy->buffer_allocations, sizeof(VmaAllocation) * gy->buffer_capacity);
     }
     gy->buffers[gy->buffer_count] = buffer;
     gy->buffer_allocations[gy->buffer_count] = allocation;
@@ -3742,10 +3833,10 @@ static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation,
     SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
     if (gy->image_count >= gy->image_capacity) {
         gy->image_capacity *= 2;
-        gy->images = (VkImage*)realloc(gy->images, sizeof(VkImage) * gy->image_capacity);
-        gy->image_allocations = (VmaAllocation*)realloc(gy->image_allocations, sizeof(VmaAllocation) * gy->image_capacity);
-        gy->image_views = (VkImageView*)realloc(gy->image_views, sizeof(VkImageView) * gy->image_capacity);
-        gy->samplers = (VkSampler*)realloc(gy->samplers, sizeof(VkSampler) * gy->image_capacity);
+        gy->images = (VkImage*)SIT_REALLOC(gy->images, sizeof(VkImage) * gy->image_capacity);
+        gy->image_allocations = (VmaAllocation*)SIT_REALLOC(gy->image_allocations, sizeof(VmaAllocation) * gy->image_capacity);
+        gy->image_views = (VkImageView*)SIT_REALLOC(gy->image_views, sizeof(VkImageView) * gy->image_capacity);
+        gy->samplers = (VkSampler*)SIT_REALLOC(gy->samplers, sizeof(VkSampler) * gy->image_capacity);
     }
     gy->images[gy->image_count] = image;
     gy->image_allocations[gy->image_count] = allocation;
@@ -3766,7 +3857,7 @@ static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set) {
     SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
     if (gy->descriptor_set_count >= gy->descriptor_set_capacity) {
         gy->descriptor_set_capacity *= 2;
-        gy->descriptor_sets = (VkDescriptorSet*)realloc(gy->descriptor_sets, sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
+        gy->descriptor_sets = (VkDescriptorSet*)SIT_REALLOC(gy->descriptor_sets, sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
     }
     gy->descriptor_sets[gy->descriptor_set_count++] = set;
 }
@@ -3783,8 +3874,8 @@ static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout
     SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
     if (gy->pipeline_count >= gy->pipeline_capacity) {
         gy->pipeline_capacity *= 2;
-        gy->pipelines = (VkPipeline*)realloc(gy->pipelines, sizeof(VkPipeline) * gy->pipeline_capacity);
-        gy->pipeline_layouts = (VkPipelineLayout*)realloc(gy->pipeline_layouts, sizeof(VkPipelineLayout) * gy->pipeline_capacity);
+        gy->pipelines = (VkPipeline*)SIT_REALLOC(gy->pipelines, sizeof(VkPipeline) * gy->pipeline_capacity);
+        gy->pipeline_layouts = (VkPipelineLayout*)SIT_REALLOC(gy->pipeline_layouts, sizeof(VkPipelineLayout) * gy->pipeline_capacity);
     }
     gy->pipelines[gy->pipeline_count] = pipeline;
     gy->pipeline_layouts[gy->pipeline_count] = layout;
@@ -3801,7 +3892,7 @@ static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
     SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
     if (gy->framebuffer_count >= gy->framebuffer_capacity) {
         gy->framebuffer_capacity *= 2;
-        gy->framebuffers = (VkFramebuffer*)realloc(gy->framebuffers, sizeof(VkFramebuffer) * gy->framebuffer_capacity);
+        gy->framebuffers = (VkFramebuffer*)SIT_REALLOC(gy->framebuffers, sizeof(VkFramebuffer) * gy->framebuffer_capacity);
     }
     gy->framebuffers[gy->framebuffer_count++] = framebuffer;
 }
@@ -3816,7 +3907,7 @@ static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass) {
     SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
     if (gy->render_pass_count >= gy->render_pass_capacity) {
         gy->render_pass_capacity *= 2;
-        gy->render_passes = (VkRenderPass*)realloc(gy->render_passes, sizeof(VkRenderPass) * gy->render_pass_capacity);
+        gy->render_passes = (VkRenderPass*)SIT_REALLOC(gy->render_passes, sizeof(VkRenderPass) * gy->render_pass_capacity);
     }
     gy->render_passes[gy->render_pass_count++] = render_pass;
 }
@@ -3896,7 +3987,7 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_INIT_FAILED:                 base_msg = "Core library initialization failed"; break;
         case SITUATION_ERROR_SHUTDOWN_FAILED:             base_msg = "Library shutdown failed"; break;
         case SITUATION_ERROR_INVALID_PARAM:               base_msg = "A function was called with an invalid parameter"; break;
-        case SITUATION_ERROR_MEMORY_ALLOCATION:           base_msg = "A memory allocation (malloc, calloc, realloc) failed"; break;
+        case SITUATION_ERROR_MEMORY_ALLOCATION:           base_msg = "A memory allocation (SIT_MALLOC, SIT_CALLOC, SIT_REALLOC) failed"; break;
         case SITUATION_ERROR_INTERNAL_STATE_CORRUPTED:    base_msg = "Internal invariant violated — fatal bug"; break;
         case SITUATION_ERROR_ASSERTION_FAILED:            base_msg = "Debug assertion tripped"; break;
         case SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION: base_msg = "Architectural rule broken: Update called after Draw"; break;
@@ -4078,7 +4169,7 @@ SITAPI char* SituationGetLastErrorMsg(void) {
     size_t msg_len = strlen(sit_gs.last_error_msg);
 
     // Allocate memory for the copy, including space for the null terminator.
-    char* msg_copy = (char*)malloc(msg_len + 1);
+    char* msg_copy = (char*)SIT_MALLOC(msg_len + 1);
 
     // --- 3. Handle Allocation Failure ---
     if (!msg_copy) {
@@ -4206,7 +4297,7 @@ static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const 
     }
 
     if (count > 0) {
-        sit_gs.dropped_file_paths = (char**)malloc(count * sizeof(char*));
+        sit_gs.dropped_file_paths = (char**)SIT_MALLOC(count * sizeof(char*));
         if (sit_gs.dropped_file_paths == NULL) {
             sit_gs.dropped_file_count = 0;
             return; // Allocation failed
@@ -4934,7 +5025,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
 
     // --- 1.5. CONTEXT ALLOCATION ---
     if (_sit_current_context == NULL) {
-        _sit_current_context = (SituationContext*)calloc(1, sizeof(SituationContext));
+        _sit_current_context = (SituationContext*)SIT_CALLOC(1, sizeof(SituationContext));
         if (!_sit_current_context) {
             return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
@@ -5307,7 +5398,7 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
  * @details This function is called once during `SituationInit` after the platform and graphics backend have been successfully set up. It is responsible for bringing all other core library modules to life.
  *
  * @par Initialization Process
- *   - **Audio System:** Initializes the `miniaudio` context, creates the mutex for the sound queue, and pre-allocates the temporary memory buffers used by the real-time audio callback. This pre-allocation is a critical optimization to prevent `malloc` calls on the audio thread.
+ *   - **Audio System:** Initializes the `miniaudio` context, creates the mutex for the sound queue, and pre-allocates the temporary memory buffers used by the real-time audio callback. This pre-allocation is a critical optimization to prevent `SIT_MALLOC` calls on the audio thread.
  *   - **Timer System:** Initializes the Temporal Oscillator system, calculating the default, musically-timed periods for the oscillator bank and setting the initial system time.
  *   - **Input Systems:**
  *     - Initializes mutexes for thread-safe keyboard and joystick event queuing.
@@ -5343,7 +5434,7 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     if (init_info->flags & SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD) {
         sit_audio.audio_capture_on_main_thread = true;
         sit_audio.audio_capture_queue_capacity = 4096 * 4; // Reasonable default
-        sit_audio.audio_capture_queue = (float*)malloc(sit_audio.audio_capture_queue_capacity * sizeof(float));
+        sit_audio.audio_capture_queue = (float*)SIT_MALLOC(sit_audio.audio_capture_queue_capacity * sizeof(float));
         if (!sit_audio.audio_capture_queue) {
              _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio capture ring buffer");
              return SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -5359,9 +5450,9 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     size_t decoder_buf_size = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES * 8 * sizeof(float);
     size_t effects_buf_size = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES * 8 * sizeof(float);
     size_t converter_buf_size = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES * MA_MAX_CHANNELS * sizeof(float);
-    sit_audio.audio_callback_decoder_temp_buffer = (float*)malloc(decoder_buf_size);
-    sit_audio.audio_callback_effects_temp_buffer = (float*)malloc(effects_buf_size);
-    sit_audio.audio_callback_converter_temp_buffer = (float*)malloc(converter_buf_size);
+    sit_audio.audio_callback_decoder_temp_buffer = (float*)SIT_MALLOC(decoder_buf_size);
+    sit_audio.audio_callback_effects_temp_buffer = (float*)SIT_MALLOC(effects_buf_size);
+    sit_audio.audio_callback_converter_temp_buffer = (float*)SIT_MALLOC(converter_buf_size);
     if (!sit_audio.audio_callback_decoder_temp_buffer || !sit_audio.audio_callback_effects_temp_buffer || !sit_audio.audio_callback_converter_temp_buffer) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio callback temp buffers");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -5632,6 +5723,13 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     if (!_SituationInitQuadRenderer(sit_gs.main_window_width, sit_gs.main_window_height)) {
         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal quad renderer.");
         // Cleanup global VAO on failure of dependent subsystem
+        glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
+        sit_gs.gl.global_vao_id = 0;
+        return SITUATION_ERROR_OPENGL_GENERAL;
+    }
+
+    if (!_SituationInitTextRenderer()) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal text renderer.");
         glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
         sit_gs.gl.global_vao_id = 0;
         return SITUATION_ERROR_OPENGL_GENERAL;
@@ -5966,6 +6064,9 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     VkBuffer         quad_vertex_buffer = VK_NULL_HANDLE;
     VmaAllocation    quad_vertex_buffer_memory = VK_NULL_HANDLE;
 
+    VkPipelineLayout text_pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline       text_pipeline = VK_NULL_HANDLE;
+
     VkPipelineLayout vd_compositing_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       vd_compositing_pipeline = VK_NULL_HANDLE;
 
@@ -6077,11 +6178,57 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
         if (advanced_compositing_pipeline == VK_NULL_HANDLE) goto cleanup;
     }
 
+    // ======================================================================================
+    // --- 3. Initialize the Batched Text Renderer ---
+    // ======================================================================================
+    {
+        vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_TEXT_VERTEX_SHADER, "internal_text.vert", shaderc_vertex_shader);
+        fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_TEXT_FRAGMENT_SHADER, "internal_text.frag", shaderc_fragment_shader);
+        if (!vs_spirv.data || !fs_spirv.data) goto cleanup;
+
+        VkDescriptorSetLayout layouts[] = { sit_gs.vk.view_data_ubo_layout, sit_gs.vk.image_sampler_layout };
+        VkPushConstantRange push_constant_range = {
+            .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
+            .offset = 0,
+            .size = sizeof(vec4) // Color
+        };
+
+        VkPipelineLayoutCreateInfo layout_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 2,
+            .pSetLayouts = layouts,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &push_constant_range
+        };
+
+        if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &text_pipeline_layout) != VK_SUCCESS) goto cleanup;
+
+        VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 4 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription attr_descs[2] = {
+            { .binding = 0, .location = SIT_ATTR_POSITION,   .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 },
+            { .binding = 0, .location = SIT_ATTR_TEXCOORD_0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 2 * sizeof(float) }
+        };
+
+        text_pipeline = _SituationVulkanCreateGraphicsPipeline(
+            vs_spirv.data, vs_spirv.size,
+            fs_spirv.data, fs_spirv.size,
+            text_pipeline_layout,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            1, &binding_desc,
+            2, attr_descs
+        );
+        _SituationFreeSpirvBlob(&vs_spirv);
+        _SituationFreeSpirvBlob(&fs_spirv);
+        if (text_pipeline == VK_NULL_HANDLE) goto cleanup;
+    }
+
     // --- Success ---
     sit_gs.vk.quad_pipeline_layout = quad_pipeline_layout;
     sit_gs.vk.quad_pipeline = quad_pipeline;
     sit_gs.vk.quad_vertex_buffer = quad_vertex_buffer;
     sit_gs.vk.quad_vertex_buffer_memory = quad_vertex_buffer_memory;
+    sit_gs.vk.text_pipeline = text_pipeline;
+    sit_gs.vk.text_pipeline_layout = text_pipeline_layout;
     sit_gs.vk.vd_compositing_pipeline_layout = vd_compositing_pipeline_layout;
     sit_gs.vk.vd_compositing_pipeline = vd_compositing_pipeline;
     sit_gs.vk.advanced_compositing_pipeline_layout = advanced_compositing_pipeline_layout;
@@ -6095,6 +6242,8 @@ cleanup:
     if (quad_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, quad_pipeline_layout, NULL);
     if (quad_pipeline) vkDestroyPipeline(sit_gs.vk.device, quad_pipeline, NULL);
     if (quad_vertex_buffer) vmaDestroyBuffer(sit_gs.vk.vma_allocator, quad_vertex_buffer, quad_vertex_buffer_memory);
+    if (text_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, text_pipeline_layout, NULL);
+    if (text_pipeline) vkDestroyPipeline(sit_gs.vk.device, text_pipeline, NULL);
     if (vd_compositing_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, vd_compositing_pipeline_layout, NULL);
     if (vd_compositing_pipeline) vkDestroyPipeline(sit_gs.vk.device, vd_compositing_pipeline, NULL);
     if (advanced_compositing_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, advanced_compositing_pipeline_layout, NULL);
@@ -6395,7 +6544,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
  *         In case of failure, `*out_size` is set to 0, and a specific error message is set via `_SituationSetErrorFromCode` (inherited from `SituationLoadFileData` or generated by this function).
  *
  * @note This function is for internal library use and is not part of the public API.
- * @note The returned pointer points to memory allocated using the standard `malloc`.
+ * @note The returned pointer points to memory allocated using the standard `SIT_MALLOC`.
  *       It must be freed using the standard `free`.
  * @warning The caller must check the return value for NULL before using it.
  * @warning The contents of the returned buffer are raw binary data and should be treated as such. Casting it to other types (e.g., `uint32_t*` for
@@ -6421,7 +6570,7 @@ static char* _SituationReadSpirvFile(const char* filename, size_t* out_size) {
 
     // --- 3. Use Existing File Loading Logic ---
     // Leverage the library's established `SituationLoadFileData` function.
-    // This function is assumed to handle file opening, reading into a malloc'd buffer, and null-terminating the buffer. It returns the number of bytes read.
+    // This function is assumed to handle file opening, reading into a SIT_MALLOC'd buffer, and null-terminating the buffer. It returns the number of bytes read.
     unsigned int bytes_read_u32 = 0; // Use the type expected by SituationLoadFileData
     char* buffer = (char*)SituationLoadFileData(filename, &bytes_read_u32);
 
@@ -6477,7 +6626,7 @@ static shaderc_include_result* _SituationShaderIncluderResolve(
 {
     (void)user_data; (void)type; (void)include_depth; (void)requesting_source;
 
-    _SitIncludeResult* container = (_SitIncludeResult*)calloc(1, sizeof(_SitIncludeResult));
+    _SitIncludeResult* container = (_SitIncludeResult*)SIT_CALLOC(1, sizeof(_SitIncludeResult));
 
     // 1. Load the file
     // Note: In a more complex engine, we would resolve relative paths based on 'requesting_source'.
@@ -6521,7 +6670,7 @@ static void _SituationShaderIncluderRelease(void* user_data, shaderc_include_res
         if (container->content && container->content != container->result.content) {
              // Handle error message case if strictly needed, but usually we just free content
         }
-        // If content was loaded via SituationLoadFileText (malloc), free it.
+        // If content was loaded via SituationLoadFileText (SIT_MALLOC), free it.
         // If it was a static error string, we shouldn't free it.
         // Simpler logic:
         if (container->result.source_name_length > 0) { // Was successful load
@@ -7027,7 +7176,7 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
         // Add to manager list (Dynamic array logic)
         if (sit_gs.vk.descriptor_manager.count >= sit_gs.vk.descriptor_manager.capacity) {
             int new_cap = (sit_gs.vk.descriptor_manager.capacity == 0) ? 1 : sit_gs.vk.descriptor_manager.capacity * 2;
-            void* new_pools = realloc(sit_gs.vk.descriptor_manager.pools, new_cap * sizeof(VkDescriptorPool));
+            void* new_pools = SIT_REALLOC(sit_gs.vk.descriptor_manager.pools, new_cap * sizeof(VkDescriptorPool));
             if (!new_pools) {
                 _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to resize descriptor pool list.");
                 vkDestroyDescriptorPool(sit_gs.vk.device, new_pool, NULL);
@@ -7101,15 +7250,15 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     printf("Situation [Vulkan]: Using %u frames in flight.\n", sit_gs.vk.max_frames_in_flight);
 
     uint32_t frame_count = sit_gs.vk.max_frames_in_flight;
-    // Use calloc to zero-initialize all handles to NULL
-    sit_gs.vk.command_buffers = calloc(frame_count, sizeof(VkCommandBuffer));
-    sit_gs.vk.image_available_semaphores = calloc(frame_count, sizeof(VkSemaphore));
-    sit_gs.vk.render_finished_semaphores = calloc(frame_count, sizeof(VkSemaphore));
-    sit_gs.vk.in_flight_fences = calloc(frame_count, sizeof(VkFence));
-    sit_gs.vk.view_proj_ubo_buffer = calloc(frame_count, sizeof(VkBuffer));
-    sit_gs.vk.view_proj_ubo_memory = calloc(frame_count, sizeof(VmaAllocation));
-    sit_gs.vk.view_proj_ubo_descriptor_set = calloc(frame_count, sizeof(VkDescriptorSet));
-    sit_gs.vk.graveyards = calloc(frame_count, sizeof(SituationGraveyard));
+    // Use SIT_CALLOC to zero-initialize all handles to NULL
+    sit_gs.vk.command_buffers = SIT_CALLOC(frame_count, sizeof(VkCommandBuffer));
+    sit_gs.vk.image_available_semaphores = SIT_CALLOC(frame_count, sizeof(VkSemaphore));
+    sit_gs.vk.render_finished_semaphores = SIT_CALLOC(frame_count, sizeof(VkSemaphore));
+    sit_gs.vk.in_flight_fences = SIT_CALLOC(frame_count, sizeof(VkFence));
+    sit_gs.vk.view_proj_ubo_buffer = SIT_CALLOC(frame_count, sizeof(VkBuffer));
+    sit_gs.vk.view_proj_ubo_memory = SIT_CALLOC(frame_count, sizeof(VmaAllocation));
+    sit_gs.vk.view_proj_ubo_descriptor_set = SIT_CALLOC(frame_count, sizeof(VkDescriptorSet));
+    sit_gs.vk.graveyards = SIT_CALLOC(frame_count, sizeof(SituationGraveyard));
 
     if (!sit_gs.vk.command_buffers || !sit_gs.vk.image_available_semaphores || !sit_gs.vk.render_finished_semaphores || !sit_gs.vk.in_flight_fences || !sit_gs.vk.view_proj_ubo_buffer || !sit_gs.vk.view_proj_ubo_memory || !sit_gs.vk.view_proj_ubo_descriptor_set || !sit_gs.vk.graveyards) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Per-frame Vulkan resource arrays");
@@ -7155,7 +7304,7 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     // 2. Seed the Dynamic Manager with this pool
     // This ensures subsequent allocations use this pool instead of creating a new one immediately.
     sit_gs.vk.descriptor_manager.capacity = 4;
-    sit_gs.vk.descriptor_manager.pools = (VkDescriptorPool*)malloc(sizeof(VkDescriptorPool) * 4);
+    sit_gs.vk.descriptor_manager.pools = (VkDescriptorPool*)SIT_MALLOC(sizeof(VkDescriptorPool) * 4);
     if (!sit_gs.vk.descriptor_manager.pools) {
         _SituationCleanupVulkan();
         return SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -7415,7 +7564,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
         }
 
         // Allocate memory to hold the list of available layers.
-        VkLayerProperties* available_layers = (VkLayerProperties*)malloc(sizeof(VkLayerProperties) * layer_count);
+        VkLayerProperties* available_layers = (VkLayerProperties*)SIT_MALLOC(sizeof(VkLayerProperties) * layer_count);
         if (!available_layers) {
              _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate memory for Vulkan instance layer properties.");
              return SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -7887,7 +8036,7 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
         return SITUATION_ERROR_VULKAN_DEVICE_FAILED;
     }
 
-    VkPhysicalDevice* devices = (VkPhysicalDevice*)malloc(sizeof(VkPhysicalDevice) * device_count);
+    VkPhysicalDevice* devices = (VkPhysicalDevice*)SIT_MALLOC(sizeof(VkPhysicalDevice) * device_count);
     vkEnumeratePhysicalDevices(sit_gs.vk.instance, &device_count, devices);
 
     int max_score = 0;
@@ -8184,7 +8333,7 @@ static void _SituationVulkanQuerySwapchainSupport(VkPhysicalDevice device, Situa
     // Get the supported surface formats
     vkGetPhysicalDeviceSurfaceFormatsKHR(device, sit_gs.vk.surface, &out_details->format_count, NULL);
     if (out_details->format_count != 0) {
-        out_details->formats = (VkSurfaceFormatKHR*)malloc(sizeof(VkSurfaceFormatKHR) * out_details->format_count);
+        out_details->formats = (VkSurfaceFormatKHR*)SIT_MALLOC(sizeof(VkSurfaceFormatKHR) * out_details->format_count);
         vkGetPhysicalDeviceSurfaceFormatsKHR(device, sit_gs.vk.surface, &out_details->format_count, out_details->formats);
     } else {
         out_details->formats = NULL;
@@ -8193,7 +8342,7 @@ static void _SituationVulkanQuerySwapchainSupport(VkPhysicalDevice device, Situa
     // Get the supported presentation modes
     vkGetPhysicalDeviceSurfacePresentModesKHR(device, sit_gs.vk.surface, &out_details->present_mode_count, NULL);
     if (out_details->present_mode_count != 0) {
-        out_details->present_modes = (VkPresentModeKHR*)malloc(sizeof(VkPresentModeKHR) * out_details->present_mode_count);
+        out_details->present_modes = (VkPresentModeKHR*)SIT_MALLOC(sizeof(VkPresentModeKHR) * out_details->present_mode_count);
         vkGetPhysicalDeviceSurfacePresentModesKHR(device, sit_gs.vk.surface, &out_details->present_mode_count, out_details->present_modes);
     } else {
         out_details->present_modes = NULL;
@@ -8235,7 +8384,7 @@ static int _SituationIsDeviceSuitable(VkPhysicalDevice device) {
     // Check for required device extension support (e.g., swapchain)
     uint32_t extension_count;
     vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, NULL);
-    VkExtensionProperties* available_extensions = (VkExtensionProperties*)malloc(sizeof(VkExtensionProperties) * extension_count);
+    VkExtensionProperties* available_extensions = (VkExtensionProperties*)SIT_MALLOC(sizeof(VkExtensionProperties) * extension_count);
     vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, available_extensions);
 
     bool swapchain_supported = false;
@@ -8300,7 +8449,7 @@ static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysical
 
     uint32_t queue_family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
-    VkQueueFamilyProperties* queue_families = (VkQueueFamilyProperties*)malloc(sizeof(VkQueueFamilyProperties) * queue_family_count);
+    VkQueueFamilyProperties* queue_families = (VkQueueFamilyProperties*)SIT_MALLOC(sizeof(VkQueueFamilyProperties) * queue_family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families);
 
     for (uint32_t i = 0; i < queue_family_count; i++) {
@@ -8422,7 +8571,7 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
     }
 
     vkGetSwapchainImagesKHR(sit_gs.vk.device, sit_gs.vk.swapchain, &image_count, NULL);
-    sit_gs.vk.swapchain_images = (VkImage*)malloc(sizeof(VkImage) * image_count);
+    sit_gs.vk.swapchain_images = (VkImage*)SIT_MALLOC(sizeof(VkImage) * image_count);
     vkGetSwapchainImagesKHR(sit_gs.vk.device, sit_gs.vk.swapchain, &image_count, sit_gs.vk.swapchain_images);
     sit_gs.vk.swapchain_image_format = surface_format.format;
     sit_gs.vk.swapchain_extent = extent;
@@ -8446,7 +8595,7 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
  * @see _SituationVulkanCreateSwapchain(), _SituationVulkanCreateImageView()
  */
 static SituationError _SituationVulkanCreateImageViews(void) {
-    sit_gs.vk.swapchain_image_views = (VkImageView*)malloc(sizeof(VkImageView) * sit_gs.vk.swapchain_image_count);
+    sit_gs.vk.swapchain_image_views = (VkImageView*)SIT_MALLOC(sizeof(VkImageView) * sit_gs.vk.swapchain_image_count);
     for (uint32_t i = 0; i < sit_gs.vk.swapchain_image_count; i++) {
         sit_gs.vk.swapchain_image_views[i] = _SituationVulkanCreateImageView(sit_gs.vk.swapchain_images[i], sit_gs.vk.swapchain_image_format, VK_IMAGE_ASPECT_COLOR_BIT);
         if(sit_gs.vk.swapchain_image_views[i] == VK_NULL_HANDLE) {
@@ -8599,7 +8748,7 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
     // --- 1. Allocate Array for Framebuffer Handles ---
     // Allocate memory for the array that will hold the VkFramebuffer handles.
     // The number of framebuffers needed equals the number of swapchain images.
-    sit_gs.vk.main_window_framebuffers = (VkFramebuffer*)malloc(sizeof(VkFramebuffer) * sit_gs.vk.swapchain_image_count);
+    sit_gs.vk.main_window_framebuffers = (VkFramebuffer*)SIT_MALLOC(sizeof(VkFramebuffer) * sit_gs.vk.swapchain_image_count);
 
     // Check if the memory allocation for the framebuffer array was successful.
     if (!sit_gs.vk.main_window_framebuffers) {
@@ -9157,9 +9306,9 @@ SITAPI void SituationPollInputEvents(void) {
         // Only process if we have data
         if (frames_available > 0) {
             // 1. Allocate a linear temporary buffer
-            // We use malloc here to avoid stack overflow on large chunks,
+            // We use SIT_MALLOC here to avoid stack overflow on large chunks,
             // though a static scratch buffer would be an optimization for v2.4.
-            float* temp_buffer = (float*)malloc(frames_available * sizeof(float));
+            float* temp_buffer = (float*)SIT_MALLOC(frames_available * sizeof(float));
 
             if (temp_buffer) {
                 // 2. Copy and Linearize Data
@@ -9748,6 +9897,45 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 }
 
 /**
+ * @brief [INTERNAL] Initializes backend-specific resources for the Batched Text renderer.
+ */
+static bool _SituationInitTextRenderer(void) {
+#if defined(SITUATION_USE_OPENGL)
+    SituationError shader_err;
+    sit_gs.gl.text_shader_program = _SituationCreateGLShaderProgram(SIT_TEXT_VERTEX_SHADER, SIT_TEXT_FRAGMENT_SHADER, &shader_err);
+    if (shader_err != SITUATION_SUCCESS) return false;
+
+    glCreateVertexArrays(1, &sit_gs.gl.text_vao);
+    glCreateBuffers(1, &sit_gs.gl.text_vbo);
+
+    // Pre-allocate a dynamic buffer (512KB = ~5400 characters)
+    glNamedBufferData(sit_gs.gl.text_vbo, 524288, NULL, GL_DYNAMIC_DRAW);
+
+    glBindVertexArray(sit_gs.gl.text_vao);
+    glVertexArrayVertexBuffer(sit_gs.gl.text_vao, 0, sit_gs.gl.text_vbo, 0, 4 * sizeof(float)); // Stride: x,y,u,v
+
+    // Pos: 2 floats, offset 0
+    glEnableVertexArrayAttrib(sit_gs.gl.text_vao, SIT_ATTR_POSITION);
+    glVertexArrayAttribFormat(sit_gs.gl.text_vao, SIT_ATTR_POSITION, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(sit_gs.gl.text_vao, SIT_ATTR_POSITION, 0);
+
+    // UV: 2 floats, offset 8
+    glEnableVertexArrayAttrib(sit_gs.gl.text_vao, SIT_ATTR_TEXCOORD_0);
+    glVertexArrayAttribFormat(sit_gs.gl.text_vao, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float));
+    glVertexArrayAttribBinding(sit_gs.gl.text_vao, SIT_ATTR_TEXCOORD_0, 0);
+
+    glBindVertexArray(0);
+    return true;
+
+#elif defined(SITUATION_USE_VULKAN)
+    // Vulkan initialization is handled in _SituationVulkanInitInternalRenderers due to complex dependency chains
+    // (Pipeline Layouts, SPIR-V compilation, etc.)
+    return true;
+#endif
+    return false;
+}
+
+/**
  * @brief [INTERNAL] Destroys all backend-specific resources used by the internal quad renderer.
  * @details This helper function is called during the main shutdown sequence to clean up the dedicated resources created by `_SituationInitQuadRenderer`. It ensures that the internal shaders, pipelines, and vertex buffers used for drawing simple quads are properly released.
  *
@@ -9766,11 +9954,20 @@ static void _SituationCleanupQuadRenderer(void) {
     if (sit_gs.gl.quad_vao) { glDeleteVertexArrays(1, &sit_gs.gl.quad_vao); sit_gs.gl.quad_vao = 0; }
     if (sit_gs.gl.quad_vbo) { glDeleteBuffers(1, &sit_gs.gl.quad_vbo); sit_gs.gl.quad_vbo = 0; }
 
+    // Cleanup Text Renderer
+    if (sit_gs.gl.text_shader_program) { glDeleteProgram(sit_gs.gl.text_shader_program); sit_gs.gl.text_shader_program = 0; }
+    if (sit_gs.gl.text_vao) { glDeleteVertexArrays(1, &sit_gs.gl.text_vao); sit_gs.gl.text_vao = 0; }
+    if (sit_gs.gl.text_vbo) { glDeleteBuffers(1, &sit_gs.gl.text_vbo); sit_gs.gl.text_vbo = 0; }
+
 #elif defined(SITUATION_USE_VULKAN)
     if (sit_gs.vk.device) {
         if (sit_gs.vk.quad_pipeline) vkDestroyPipeline(sit_gs.vk.device, sit_gs.vk.quad_pipeline, NULL);
         if (sit_gs.vk.quad_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, sit_gs.vk.quad_pipeline_layout, NULL);
         if (sit_gs.vk.quad_vertex_buffer) vmaDestroyBuffer(sit_gs.vk.vma_allocator, sit_gs.vk.quad_vertex_buffer, sit_gs.vk.quad_vertex_buffer_memory);
+
+        // Text Renderer Cleanup
+        if (sit_gs.vk.text_pipeline) vkDestroyPipeline(sit_gs.vk.device, sit_gs.vk.text_pipeline, NULL);
+        if (sit_gs.vk.text_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, sit_gs.vk.text_pipeline_layout, NULL);
     }
 #endif
 }
@@ -10196,7 +10393,7 @@ static void _SituationVulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buff
  *             - Transition source image layout back to its original state.
  *          3. Submits and waits for the GPU to finish (`vkQueueWaitIdle`).
  *          4. Maps the temporary buffer memory.
- *          5. `memcpy`s the data to a new `malloc`'d pointer.
+ *          5. `memcpy`s the data to a new `SIT_MALLOC`'d pointer.
  *          6. Destroys the temporary buffer.
  *
  * @param srcImage The source image handle (must have `TRANSFER_SRC` usage).
@@ -10256,7 +10453,7 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
     }
 
     // Allocate the final buffer for the user and copy the data
-    finalImageData = malloc(bufferSize);
+    finalImageData = SIT_MALLOC(bufferSize);
     if (finalImageData) {
         memcpy(finalImageData, mappedData, bufferSize);
     } else {
@@ -11511,71 +11708,111 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     if (!SituationIsInitialized() || font.atlas_texture.id == 0 || !text || !font.glyph_info) return;
 
 #if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
-    // 1. Bind the Font Atlas
-    SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, font.atlas_texture);
+    // --- BATCHED TEXT RENDERING ---
+    // Instead of drawing one quad per char, we generate a vertex buffer for the whole string.
 
-    vec4 color_vec;
-    SituationConvertColorToVec4(color, color_vec);
+    size_t len = strlen(text);
+    if (len == 0) return;
+    if (len > 2048) len = 2048; // Cap for temporary stack buffer safety if needed, or just use heap.
+
+    // 6 vertices per char (2 tris), 4 floats per vertex (x,y,u,v)
+    size_t vert_count = len * 6;
+    size_t data_size = vert_count * 4 * sizeof(float);
+
+    // Allocate temp buffer (Heap to avoid stack overflow on long strings)
+    float* vertices = (float*)SIT_MALLOC(data_size);
+    if (!vertices) return;
 
     float x = pos.x;
     float y = pos.y;
     stbtt_bakedchar* cdata = (stbtt_bakedchar*)font.glyph_info;
+    int v_idx = 0;
 
-    // Loop through string
-    while (*text) {
-        if (*text >= 32 && *text < 128) {
+    for (size_t i = 0; i < len; i++) {
+        if (text[i] >= 32 && text[i] < 128) {
             stbtt_aligned_quad q;
-            stbtt_GetBakedQuad(cdata, font.atlas_width, font.atlas_height, *text - 32, &x, &y, &q, 1);
+            stbtt_GetBakedQuad(cdata, font.atlas_width, font.atlas_height, text[i] - 32, &x, &y, &q, 1);
 
-            // Calc Quad Dims
-            float w = q.x1 - q.x0;
-            float h = q.y1 - q.y0;
+            // Quad to 2 Triangles (CCW)
+            // V1 (TL)
+            vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t0;
+            // V2 (BL)
+            vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t1;
+            // V3 (TR)
+            vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t0;
 
-            // Model Matrix for this character
-            mat4 model;
-            glm_mat4_identity(model);
-            glm_translate(model, (vec3){q.x0, q.y0, 0.0f});
-            glm_scale(model, (vec3){w, h, 1.0f});
-
-            // UV Rect calculation
-            // q.s0, q.t0 = top-left UV
-            // q.s1, q.t1 = bottom-right UV
-            // offset = (s0, t0), scale = (s1-s0, t1-t0)
-            vec4 uv_rect = { q.s0, q.t0, q.s1 - q.s0, q.t1 - q.t0 };
-            int use_texture = 1;
-
-            // Draw
-            sit_gs.debug_draw_command_issued_this_frame = true;
-            sit_gs.frame_draw_calls++;
-            sit_gs.frame_triangle_count += 2;
-
-            #if defined(SITUATION_USE_OPENGL)
-                glUseProgram(sit_gs.gl.quad_shader_program);
-                glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model);
-                glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec);
-                glUniform4fv(5, 1, (const GLfloat*)uv_rect);
-                glUniform1i(6, use_texture);
-                glBindVertexArray(sit_gs.gl.quad_vao);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            #elif defined(SITUATION_USE_VULKAN)
-                // Vulkan binding logic (pipeline/buffers) assumed already set by CmdBindTexture call above or reused
-                // For safety, ensure pipeline is bound:
-                VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-                vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.quad_pipeline);
-                // Vertex buffers bound...
-
-                struct { mat4 model; vec4 color; vec4 uv_rect; int use_texture; } push_data;
-                glm_mat4_copy(model, push_data.model);
-                glm_vec4_copy(color_vec, push_data.color);
-                glm_vec4_copy(uv_rect, push_data.uv_rect);
-                push_data.use_texture = use_texture;
-
-                vkCmdPushConstants(vk_cmd, sit_gs.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
-                vkCmdDraw(vk_cmd, 4, 1, 0, 0);
-            #endif
+            // V4 (TR)
+            vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t0;
+            // V5 (BL)
+            vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t1;
+            // V6 (BR)
+            vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t1;
         }
-        text++;
     }
+
+    // Actual vertex count used (might be less if chars were skipped)
+    int final_vert_count = v_idx / 4;
+    if (final_vert_count == 0) { SIT_FREE(vertices); return; }
+
+    // Update Stats
+    sit_gs.debug_draw_command_issued_this_frame = true;
+    sit_gs.frame_draw_calls++;
+    sit_gs.frame_triangle_count += final_vert_count / 3;
+
+    vec4 color_vec;
+    SituationConvertColorToVec4(color, color_vec);
+
+    // Bind Atlas (Common)
+    SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, font.atlas_texture);
+
+#if defined(SITUATION_USE_OPENGL)
+    glUseProgram(sit_gs.gl.text_shader_program);
+
+    // Upload Batched Data to Dynamic VBO
+    // Ensure we don't overflow the pre-allocated 512KB buffer
+    if (data_size > 524288) {
+        data_size = 524288;
+        // Clamp vertex count to match truncated data to avoid GPU OOB read
+        final_vert_count = (int)(data_size / (4 * sizeof(float)));
+    }
+
+    glNamedBufferSubData(sit_gs.gl.text_vbo, 0, data_size, vertices);
+
+    // Set Uniforms
+    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec);
+
+    glBindVertexArray(sit_gs.gl.text_vao);
+    glDrawArrays(GL_TRIANGLES, 0, final_vert_count);
+    glBindVertexArray(0);
+
+#elif defined(SITUATION_USE_VULKAN)
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    if (sit_gs.vk.text_pipeline == VK_NULL_HANDLE) { SIT_FREE(vertices); return; }
+
+    // Upload to temporary vertex buffer
+    VkBuffer temp_buffer;
+    VmaAllocation temp_alloc;
+    if (_SituationVulkanCreateAndUploadBuffer(vk_cmd, vertices, v_idx * sizeof(float), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &temp_buffer, &temp_alloc) == SITUATION_SUCCESS) {
+        // _SituationVulkanCreateAndUploadBuffer destroys the STAGING buffer, but we must destroy the DESTINATION buffer (temp_buffer)
+
+        vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.text_pipeline);
+
+        // Bind Vertex Buffer
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(vk_cmd, 0, 1, &temp_buffer, offsets);
+
+        // Push Color
+        vkCmdPushConstants(vk_cmd, sit_gs.vk.text_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(vec4), color_vec);
+
+        vkCmdDraw(vk_cmd, final_vert_count, 1, 0, 0);
+
+        // Schedule destruction of the per-frame vertex buffer
+        _SituationDeferDestroyBuffer(temp_buffer, temp_alloc);
+    }
+#endif
+
+    SIT_FREE(vertices);
+
 #else
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCmdDrawText requires STB Truetype.");
 #endif
@@ -12660,7 +12897,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
         // We must check if an error occurred during the GL calls above.
         // If it did, we should not add it to the tracking list.
         if (strcmp(sit_gs.last_error_msg, "No error") == 0) {
-            _SituationTextureNode* node = (_SituationTextureNode*)malloc(sizeof(_SituationTextureNode));
+            _SituationTextureNode* node = (_SituationTextureNode*)SIT_MALLOC(sizeof(_SituationTextureNode));
             if (node) {
                 node->texture = texture;
                 node->next = sit_gs.all_textures;
@@ -13218,7 +13455,7 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
 
     // --- 3. Resource Tracking (Add to internal linked list) ---
     if (buffer.id != 0) {
-        _SituationBufferNode* node = (_SituationBufferNode*)malloc(sizeof(_SituationBufferNode));
+        _SituationBufferNode* node = (_SituationBufferNode*)SIT_MALLOC(sizeof(_SituationBufferNode));
         if (node) {
             node->buffer = buffer;
             node->next = sit_gs.all_buffers;
@@ -13427,7 +13664,7 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
 
     // --- Resource Manager: Add to tracking list ---
     if (mesh.id != 0) {
-        _SituationMeshNode* node = (_SituationMeshNode*)malloc(sizeof(_SituationMeshNode));
+        _SituationMeshNode* node = (_SituationMeshNode*)SIT_MALLOC(sizeof(_SituationMeshNode));
         if (node) {
             node->mesh = mesh;
             node->next = sit_gs.all_meshes;
@@ -13549,13 +13786,13 @@ static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
     void* i_ptr = NULL;
 
     if (vertex_data && v_size > 0) {
-        v_ptr = malloc(v_size);
+        v_ptr = SIT_MALLOC(v_size);
         if (!v_ptr) { _SituationSetError("Memory allocation failed for mesh readback"); return; }
         *vertex_data = v_ptr;
     }
 
     if (index_data && i_size > 0) {
-        i_ptr = malloc(i_size);
+        i_ptr = SIT_MALLOC(i_size);
         if (!i_ptr) {
             if (v_ptr) SIT_FREE(v_ptr);
             _SituationSetError("Memory allocation failed for mesh readback");
@@ -13642,7 +13879,7 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
             size_t total_buffer_size = prefix_len + log_length;
 
             // Allocate a single buffer for the entire message.
-            char* final_error_message = (char*)malloc(total_buffer_size);
+            char* final_error_message = (char*)SIT_MALLOC(total_buffer_size);
 
             if (final_error_message) {
                 // Write the prefix into the buffer.
@@ -13745,7 +13982,7 @@ static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs
         glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_length);
         // Dynamically allocate a buffer large enough for the full link error log.
         if (log_length > 0) {
-            char* infoLog = (char*)malloc(log_length);
+            char* infoLog = (char*)SIT_MALLOC(log_length);
             if (infoLog) {
                 glGetProgramInfoLog(program, log_length, NULL, infoLog);
                 _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
@@ -13829,7 +14066,7 @@ static GLuint _SituationCreateGLShaderProgramFromSource(const char* cs_src, Situ
         glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_length);
         // Handle potential glGetProgramiv failure? Unlikely, but glGetError could check.
         if (log_length > 0) {
-            char* infoLog = (char*)malloc((size_t)log_length);
+            char* infoLog = (char*)SIT_MALLOC((size_t)log_length);
             if (infoLog) {
                 glGetProgramInfoLog(program, log_length, NULL, infoLog);
                 _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
@@ -13961,7 +14198,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
         pipeline.id = pipeline.gl_program_id;
 
         // --- Resource Tracking for OpenGL ---
-        _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)malloc(sizeof(_SituationComputePipelineNode));
+        _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
         if (node) {
             node->pipeline = pipeline;
             node->next = sit_gs.all_compute_pipelines;
@@ -14022,7 +14259,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
         pipeline.id = (uint64_t)(uintptr_t)pipeline.vk_pipeline; // Using 64-bit ID
 
         // Add the new pipeline to the internal tracking list for leak detection.
-        _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)malloc(sizeof(_SituationComputePipelineNode));
+        _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
         if (node) {
             node->pipeline = pipeline;
             node->next = sit_gs.all_compute_pipelines;
@@ -15018,7 +15255,7 @@ SITAPI char** SituationLoadDroppedFiles(int* count) {
     }
 
     // Return a COPY of the internal list, so the user can own it and free it.
-    char** user_list = (char**)malloc(sit_gs.dropped_file_count * sizeof(char*));
+    char** user_list = (char**)SIT_MALLOC(sit_gs.dropped_file_count * sizeof(char*));
     if (user_list == NULL) {
         *count = 0;
         return NULL;
@@ -15186,13 +15423,13 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
     // Network Adapter Info
     ULONG adapters_buffer_size = 15000; // Recommended starting size by MS docs
     info.network_adapter_count = 0;
-    IP_ADAPTER_ADDRESSES* adapters_list = (IP_ADAPTER_ADDRESSES*)malloc(adapters_buffer_size);
+    IP_ADAPTER_ADDRESSES* adapters_list = (IP_ADAPTER_ADDRESSES*)SIT_MALLOC(adapters_buffer_size);
     if (adapters_list) {
         DWORD ret_val = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapters_list, &adapters_buffer_size);
         if (ret_val == ERROR_BUFFER_OVERFLOW) { // Should have been caught if initial buffer was 0 and we got size.
                                                 // But if initial guess was too small.
             SIT_FREE(adapters_list);
-            adapters_list = (IP_ADAPTER_ADDRESSES*)malloc(adapters_buffer_size); // Retry with new size
+            adapters_list = (IP_ADAPTER_ADDRESSES*)SIT_MALLOC(adapters_buffer_size); // Retry with new size
             if (adapters_list) { ret_val = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapters_list, &adapters_buffer_size);
             }
         }
@@ -15280,7 +15517,7 @@ SITAPI const char* SituationGetGPUName(void) {
 
 #elif defined(SITUATION_USE_VULKAN)
     if (sit_gs.vk.physical_device != VK_NULL_HANDLE) {
-        // We use a static buffer to return a valid const char* pointer without malloc.
+        // We use a static buffer to return a valid const char* pointer without SIT_MALLOC.
         // This is not thread-safe if called concurrently, but getting GPU name is usually a setup-time task.
         static char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 
@@ -15330,7 +15567,7 @@ SITAPI char* SituationGetUserDirectory(void) {
         int chars_converted = WideCharToMultiByte(CP_UTF8, 0, wPath, -1, path_utf8, sizeof(path_utf8), NULL, NULL);
         CoTaskMemFree(wPath);
         if (chars_converted > 0) {
-            char* result = (char*)malloc(strlen(path_utf8) + 1);
+            char* result = (char*)SIT_MALLOC(strlen(path_utf8) + 1);
             if (!result) { _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "User directory string"); return NULL; }
             strcpy(result, path_utf8);
             return result;
@@ -15346,7 +15583,7 @@ SITAPI char* SituationGetUserDirectory(void) {
         if (pw) home_dir = pw->pw_dir;
     }
     if (home_dir) {
-        char* result = (char*)malloc(strlen(home_dir) + 1);
+        char* result = (char*)SIT_MALLOC(strlen(home_dir) + 1);
         if (!result) { _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "User directory string"); return NULL; }
         strcpy(result, home_dir);
         return result;
@@ -15633,7 +15870,7 @@ static BOOL CALLBACK _SituationMonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor
         }
 
         if (unique_modes_count > 0) {
-            display->available_modes = (SituationDisplayMode*)malloc(unique_modes_count * sizeof(SituationDisplayMode));
+            display->available_modes = (SituationDisplayMode*)SIT_MALLOC(unique_modes_count * sizeof(SituationDisplayMode));
             if (display->available_modes) {
                 memcpy(display->available_modes, temp_modes_buffer, unique_modes_count * sizeof(SituationDisplayMode));
                 display->available_mode_count = unique_modes_count;
@@ -15660,7 +15897,7 @@ static WCHAR* _sit_utf8_to_wide(const char* utf8_str) {
     if (!utf8_str) return NULL;
     int wide_len = MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, NULL, 0);
     if (wide_len == 0) return NULL;
-    WCHAR* wide_str = (WCHAR*)malloc(wide_len * sizeof(WCHAR));
+    WCHAR* wide_str = (WCHAR*)SIT_MALLOC(wide_len * sizeof(WCHAR));
     if (!wide_str) return NULL;
     MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, wide_str, wide_len);
     return wide_str;
@@ -15672,7 +15909,7 @@ static char* _sit_wide_to_utf8(const WCHAR* wide_str) {
     if (!wide_str) return NULL;
     int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide_str, -1, NULL, 0, NULL, NULL);
     if (utf8_len == 0) return NULL;
-    char* utf8_str = (char*)malloc(utf8_len * sizeof(char));
+    char* utf8_str = (char*)SIT_MALLOC(utf8_len * sizeof(char));
     if (!utf8_str) return NULL;
     WideCharToMultiByte(CP_UTF8, 0, wide_str, -1, utf8_str, utf8_len, NULL, NULL);
     return utf8_str;
@@ -15724,7 +15961,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     // Now, construct the full path: %APPDATA%\app_name
     // +1 for separator, +1 for null terminator
     size_t final_len = strlen(path_appdata) + 1 + strlen(app_name) + 1;
-    char* final_path = (char*)malloc(final_len);
+    char* final_path = (char*)SIT_MALLOC(final_len);
     if (!final_path) {
         SIT_FREE(path_appdata);
         return NULL;
@@ -15754,7 +15991,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     } else {
         const char* fallback_suffix = "/.local/share";
         size_t len = strlen(home_dir) + strlen(fallback_suffix) + 1;
-        base_path = (char*)malloc(len);
+        base_path = (char*)SIT_MALLOC(len);
         if (base_path) snprintf(base_path, len, "%s%s", home_dir, fallback_suffix);
     }
 
@@ -15764,7 +16001,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     // mkdir(base_path, 0755);
 
     size_t final_len = strlen(base_path) + 1 + strlen(app_name) + 1;
-    char* final_path = (char*)malloc(final_len);
+    char* final_path = (char*)SIT_MALLOC(final_len);
     if (!final_path) {
         SIT_FREE(base_path);
         return NULL;
@@ -15840,7 +16077,7 @@ SITAPI char* SituationJoinPath(const char* base_path, const char* file_or_dir_na
     bool needs_separator = (base_path[base_len - 1] != '\\' && base_path[base_len - 1] != '/');
 
     size_t final_len = base_len + strlen(file_or_dir_name) + (needs_separator ? 1 : 0) + 1;
-    char* final_path = (char*)malloc(final_len);
+    char* final_path = (char*)SIT_MALLOC(final_len);
     if (!final_path) return NULL;
 
     strcpy(final_path, base_path);
@@ -16289,7 +16526,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
     *out_count = 0;
 
     int capacity = 32;
-    char** files = (char**)malloc(capacity * sizeof(char*));
+    char** files = (char**)SIT_MALLOC(capacity * sizeof(char*));
     if (!files) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Initial allocation for file list failed.");
         return NULL;
@@ -16342,12 +16579,12 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
 
         if (*out_count >= capacity) {
             capacity *= 2;
-            char** temp_files = (char**)realloc(files, capacity * sizeof(char*));
+            char** temp_files = (char**)SIT_REALLOC(files, capacity * sizeof(char*));
             if (!temp_files) {
-                // realloc failed. 'files' is still valid. 'new_entry_name' must be freed.
+                // SIT_REALLOC failed. 'files' is still valid. 'new_entry_name' must be freed.
                 SIT_FREE(new_entry_name);
                 new_entry_name = NULL;
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "realloc failed.");
+                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SIT_REALLOC failed.");
                 goto error_cleanup;
             }
             files = temp_files;
@@ -16575,10 +16812,10 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
     if (size_to_read == 0) {
         CloseHandle(hFile);
         *out_bytes_read = 0;
-        return (unsigned char*)malloc(1); // Return valid, empty buffer.
+        return (unsigned char*)SIT_MALLOC(1); // Return valid, empty buffer.
     }
 
-    unsigned char* buffer = (unsigned char*)malloc(size_to_read);
+    unsigned char* buffer = (unsigned char*)SIT_MALLOC(size_to_read);
     if (!buffer) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
         CloseHandle(hFile);
@@ -16618,10 +16855,10 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
     if (size_to_read == 0) {
         fclose(file);
         *out_bytes_read = 0;
-        return (unsigned char*)malloc(1);
+        return (unsigned char*)SIT_MALLOC(1);
     }
 
-    unsigned char* buffer = (unsigned char*)malloc(size_to_read);
+    unsigned char* buffer = (unsigned char*)SIT_MALLOC(size_to_read);
     if (!buffer) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
         fclose(file);
@@ -16723,7 +16960,7 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
     }
 
     // Allocate a new buffer that is one byte larger for the null terminator.
-    char* text_buffer = (char*)malloc(bytes_read + 1);
+    char* text_buffer = (char*)SIT_MALLOC(bytes_read + 1);
     if (!text_buffer) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file text.");
         SIT_FREE(file_data);
@@ -16786,7 +17023,7 @@ static void _SituationCachePhysicalDisplays(void) {
     if (win32_monitor_count <= 0) {
         _SituationSetError("No physical monitors reported by GetSystemMetrics(SM_CMONITORS)."); return;
     }
-    sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)calloc(win32_monitor_count, sizeof(SituationDisplayInfo));
+    sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)SIT_CALLOC(win32_monitor_count, sizeof(SituationDisplayInfo));
     if (!sit_gs.cached_physical_displays_array) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache"); return;
     }
@@ -16810,7 +17047,7 @@ static void _SituationCachePhysicalDisplays(void) {
     int glfw_count;
     GLFWmonitor** monitors = glfwGetMonitors(&glfw_count);
     if (glfw_count > 0) {
-        sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)calloc(glfw_count, sizeof(SituationDisplayInfo));
+        sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)SIT_CALLOC(glfw_count, sizeof(SituationDisplayInfo));
         if (!sit_gs.cached_physical_displays_array) {
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache (non-Win32)"); return;
         }
@@ -16833,7 +17070,7 @@ static void _SituationCachePhysicalDisplays(void) {
             int vid_mode_count;
             const GLFWvidmode* vid_modes = glfwGetVideoModes(monitors[i], &vid_mode_count);
             if (vid_mode_count > 0) {
-                disp->available_modes = (SituationDisplayMode*)malloc(vid_mode_count * sizeof(SituationDisplayMode));
+                disp->available_modes = (SituationDisplayMode*)SIT_MALLOC(vid_mode_count * sizeof(SituationDisplayMode));
                 if (disp->available_modes) {
                     disp->available_mode_count = vid_mode_count;
                     for (int j = 0; j < vid_mode_count; ++j) {
@@ -16882,12 +17119,12 @@ SITAPI SituationDisplayInfo* SituationGetDisplays(int* count) {
         if (count) *count = 0;
         return NULL;
     }
-    SituationDisplayInfo* displays_copy = (SituationDisplayInfo*)malloc(sit_gs.cached_physical_display_count * sizeof(SituationDisplayInfo));
+    SituationDisplayInfo* displays_copy = (SituationDisplayInfo*)SIT_MALLOC(sit_gs.cached_physical_display_count * sizeof(SituationDisplayInfo));
     if (!displays_copy) { _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Copy of display infos"); if (count) *count = 0; return NULL; }
     for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
         memcpy(&displays_copy[i], &sit_gs.cached_physical_displays_array[i], sizeof(SituationDisplayInfo));
         if (sit_gs.cached_physical_displays_array[i].available_mode_count > 0 && sit_gs.cached_physical_displays_array[i].available_modes) {
-            displays_copy[i].available_modes = (SituationDisplayMode*)malloc(displays_copy[i].available_mode_count * sizeof(SituationDisplayMode));
+            displays_copy[i].available_modes = (SituationDisplayMode*)SIT_MALLOC(displays_copy[i].available_mode_count * sizeof(SituationDisplayMode));
             if (displays_copy[i].available_modes) {
                 memcpy(displays_copy[i].available_modes, sit_gs.cached_physical_displays_array[i].available_modes, displays_copy[i].available_mode_count * sizeof(SituationDisplayMode));
             } else {
@@ -18227,7 +18464,7 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
 
     // 2. Allocate Interleaved Vertex Buffer (8 floats per vertex)
     // Layout: X, Y, Z, Nx, Ny, Nz, U, V
-    *out_vertices = (float*)malloc(*out_v_count * 8 * sizeof(float));
+    *out_vertices = (float*)SIT_MALLOC(*out_v_count * 8 * sizeof(float));
     if (!*out_vertices) return false;
 
     // 3. Interleave Data
@@ -18255,7 +18492,7 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
     // 4. Extract Indices
     if (prim->indices) {
         *out_i_count = (int)prim->indices->count;
-        *out_indices = (uint32_t*)malloc(*out_i_count * sizeof(uint32_t));
+        *out_indices = (uint32_t*)SIT_MALLOC(*out_i_count * sizeof(uint32_t));
         if (!*out_indices) { SIT_FREE(*out_vertices); return false; }
 
         for (int k = 0; k < *out_i_count; ++k) {
@@ -18265,7 +18502,7 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
     } else {
         // Non-indexed geometry: generate 0, 1, 2... sequence
         *out_i_count = *out_v_count;
-        *out_indices = (uint32_t*)malloc(*out_i_count * sizeof(uint32_t));
+        *out_indices = (uint32_t*)SIT_MALLOC(*out_i_count * sizeof(uint32_t));
         if (!*out_indices) { SIT_FREE(*out_vertices); return false; }
 
         for (int k = 0; k < *out_i_count; ++k) {
@@ -18345,7 +18582,7 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
     model.texture_count = (int)data->textures_count;
     // Only allocate if there are textures
     if (model.texture_count > 0) {
-        model.all_model_textures = calloc(model.texture_count, sizeof(SituationTexture));
+        model.all_model_textures = SIT_CALLOC(model.texture_count, sizeof(SituationTexture));
 
         if (!model.all_model_textures) {
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadModel: Failed to allocate textures array.");
@@ -18373,7 +18610,7 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
     // 3. Process each mesh in the GLTF file
     model.mesh_count = (int)data->meshes_count;
     if (model.mesh_count > 0) {
-        model.meshes = calloc(model.mesh_count, sizeof(SituationModelMesh));
+        model.meshes = SIT_CALLOC(model.mesh_count, sizeof(SituationModelMesh));
         if (!model.meshes) {
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadModel: Failed to allocate meshes array.");
             cgltf_free(data);
@@ -18467,7 +18704,7 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
 
     // [HOT-RELOAD] Add to tracking list
     if (model.id != 0) {
-        _SituationModelNode* node = (_SituationModelNode*)malloc(sizeof(_SituationModelNode));
+        _SituationModelNode* node = (_SituationModelNode*)SIT_MALLOC(sizeof(_SituationModelNode));
         if (node) {
             node->model = model; // Copy struct by value (contains pointers to meshes)
             node->source_path = _sit_strdup(file_path);
@@ -18641,9 +18878,9 @@ SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path
     // This is a simplified outline. A full implementation is very involved.
 
     // 1. Setup cgltf_data structure
-    cgltf_data* data = calloc(1, sizeof(cgltf_data));
+    cgltf_data* data = SIT_CALLOC(1, sizeof(cgltf_data));
     data->meshes_count = model.mesh_count;
-    data->meshes = calloc(model.mesh_count, sizeof(cgltf_mesh));
+    data->meshes = SIT_CALLOC(model.mesh_count, sizeof(cgltf_mesh));
     // ... allocate memory for materials, textures, accessors, buffer_views, buffers ...
 
     // This will hold all vertex/index data for the entire model
@@ -18837,7 +19074,7 @@ SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const 
 
     // --- Resource Manager: Add to tracking list ---
     if (shader.id != 0) {
-        _SituationShaderNode* node = (_SituationShaderNode*)malloc(sizeof(_SituationShaderNode));
+        _SituationShaderNode* node = (_SituationShaderNode*)SIT_MALLOC(sizeof(_SituationShaderNode));
         if (node) {
             node->shader = shader;
             node->next = sit_gs.all_shaders;
@@ -18936,7 +19173,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
         pipeline.id = (uint64_t)pipeline.gl_program_id;
 
         // Add the new pipeline to the internal tracking list for leak detection.
-        _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)malloc(sizeof(_SituationComputePipelineNode));
+        _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
         if (node) {
             node->pipeline = pipeline;
             node->next = sit_gs.all_compute_pipelines;
@@ -18992,7 +19229,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
         pipeline.id = (uint64_t)(uintptr_t)pipeline.vk_pipeline; // Using 64-bit ID
 
         // Add the new pipeline to the internal tracking list for leak detection.
-        _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)malloc(sizeof(_SituationComputePipelineNode));
+        _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
         if (node) {
             node->pipeline = pipeline;
             node->next = sit_gs.all_compute_pipelines;
@@ -19857,7 +20094,7 @@ SITAPI void SituationRestoreWindow(void) {
 SITAPI void SituationSetWindowIcons(SituationImage *images, int count) {
     if (!SituationIsInitialized() || !images || count <= 0) return;
 
-    GLFWimage* glfw_images = (GLFWimage*)malloc(count * sizeof(GLFWimage));
+    GLFWimage* glfw_images = (GLFWimage*)SIT_MALLOC(count * sizeof(GLFWimage));
     if (!glfw_images) return;
 
     for (int i = 0; i < count; i++) {
@@ -20644,7 +20881,7 @@ SITAPI SituationImage SituationCreateImage(int width, int height, int channels) 
     // Note: Library generally assumes 4-channel (RGBA) for GPU upload,
     // but we allocate based on request for intermediate buffers.
     size_t size = (size_t)width * height * channels;
-    img.data = malloc(size);
+    img.data = SIT_MALLOC(size);
 
     if (!img.data) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationCreateImage failed");
@@ -20733,7 +20970,7 @@ SITAPI SituationImage SituationImageCopy(SituationImage image) {
     if (!SituationIsImageValid(image)) return new_image;
 
     size_t data_size = image.width * image.height * 4;
-    new_image.data = malloc(data_size);
+    new_image.data = SIT_MALLOC(data_size);
 
     if (new_image.data) {
         memcpy(new_image.data, image.data, data_size);
@@ -20846,7 +21083,7 @@ SITAPI SituationImage SituationGenImageColor(int width, int height, ColorRGBA co
     image.width = width;
     image.height = height;
     size_t data_size = width * height * 4;
-    image.data = malloc(data_size);
+    image.data = SIT_MALLOC(data_size);
 
     if (image.data) {
         unsigned int* pixels = (unsigned int*)image.data;
@@ -20873,7 +21110,7 @@ SITAPI SituationImage SituationGenImageGradient(int width, int height, ColorRGBA
     SituationImage image = {0};
     image.width = width;
     image.height = height;
-    image.data = malloc(width * height * 4); // 4 bytes per pixel (RGBA)
+    image.data = SIT_MALLOC(width * height * 4); // 4 bytes per pixel (RGBA)
 
     if (image.data) {
         unsigned char* pixels = (unsigned char*)image.data;
@@ -20947,7 +21184,7 @@ SITAPI void SituationImageCrop(SituationImage *image, Rectangle crop) {
     if (y + h > image->height) h = image->height - y;
     if (w <= 0 || h <= 0) return;
 
-    void* cropped_data = malloc(w * h * 4);
+    void* cropped_data = SIT_MALLOC(w * h * 4);
     if (!cropped_data) return;
 
     unsigned char* src = (unsigned char*)image->data;
@@ -20985,7 +21222,7 @@ SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHei
 
 #if defined(STB_IMAGE_RESIZE_IMPLEMENTATION)
     // 2. --- Allocate Memory for the New Image ---
-    unsigned char *newData = (unsigned char*)malloc((size_t)newWidth * (size_t)newHeight * 4);
+    unsigned char *newData = (unsigned char*)SIT_MALLOC((size_t)newWidth * (size_t)newHeight * 4);
     if (!newData) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Image resize buffer");
         return;
@@ -21045,7 +21282,7 @@ SITAPI void SituationImageFlip(SituationImage *image, SituationImageFlipMode mod
         case SIT_FLIP_VERTICAL: {
             // This is your original, optimized logic.
             int row_size = image->width * 4;
-            unsigned char* row_buffer = (unsigned char*)malloc(row_size);
+            unsigned char* row_buffer = (unsigned char*)SIT_MALLOC(row_size);
             if (!row_buffer) return;
 
             for (int y = 0; y < image->height / 2; ++y) {
@@ -21382,7 +21619,7 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
 
     // 1. Load the entire font file into a buffer.
     // We must keep this buffer alive as long as we use the font.
-    unsigned char *fontBuffer = (unsigned char*)malloc(size);
+    unsigned char *fontBuffer = (unsigned char*)SIT_MALLOC(size);
     if (!fontBuffer) {
         fclose(fontFile);
         return font;
@@ -21392,7 +21629,7 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
     fclose(fontFile);
 
     // 2. Allocate and initialize the stbtt_fontinfo struct.
-    stbtt_fontinfo *info = (stbtt_fontinfo*)malloc(sizeof(stbtt_fontinfo));
+    stbtt_fontinfo *info = (stbtt_fontinfo*)SIT_MALLOC(sizeof(stbtt_fontinfo));
     if (!info) {
         SIT_FREE(fontBuffer);
         return font;
@@ -21429,7 +21666,7 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
 
     // 1. Allocate our own buffer and copy the data.
     // This ensures SituationUnloadFont() can safely SIT_FREE(font.fontData) regardless of where the original data came from.
-    font.fontData = malloc(dataSize);
+    font.fontData = SIT_MALLOC(dataSize);
     if (!font.fontData) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate buffer copy.");
         return font;
@@ -21437,7 +21674,7 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
     memcpy(font.fontData, data, dataSize);
 
     // 2. Allocate and initialize the stbtt_fontinfo struct.
-    font.stbFontInfo = malloc(sizeof(stbtt_fontinfo));
+    font.stbFontInfo = SIT_MALLOC(sizeof(stbtt_fontinfo));
     if (!font.stbFontInfo) {
         SIT_FREE(font.fontData);
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate font info.");
@@ -21485,11 +21722,11 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
     // 1. Allocate Bitmap Memory (512x512 is usually enough for ASCII)
     int w = 512;
     int h = 512;
-    unsigned char* bitmap = calloc(w * h, 1); // 1-channel alpha
+    unsigned char* bitmap = SIT_CALLOC(w * h, 1); // 1-channel alpha
 
     // 2. Allocate Glyph Info
     // standard ASCII 32-126 is 96 chars
-    font->glyph_info = malloc(sizeof(stbtt_bakedchar) * 96);
+    font->glyph_info = SIT_MALLOC(sizeof(stbtt_bakedchar) * 96);
 
     // 3. Bake using STB
     // Returns > 0 on success (rows used), or 0 on failure (didn't fit)
@@ -21513,7 +21750,7 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
     SituationImage img;
     img.width = w;
     img.height = h;
-    img.data = malloc(w * h * 4);
+    img.data = SIT_MALLOC(w * h * 4);
     unsigned char* src = bitmap;
     unsigned char* dst = (unsigned char*)img.data;
 
@@ -21616,7 +21853,7 @@ static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* i
     infoHeader[11] = (char)(image->height >> 24);
 
     // Create a single buffer for the entire file
-    unsigned char *fileBuffer = (unsigned char *)malloc(fileSize);
+    unsigned char *fileBuffer = (unsigned char *)SIT_MALLOC(fileSize);
     if (!fileBuffer) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "BMP file buffer");
         return false;
@@ -21848,7 +22085,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
             int glyph_w = g_x1 - g_x0;
             int glyph_h = g_y1 - g_y0;
             if (glyph_w > 0 && glyph_h > 0) {
-                unsigned char *glyphBitmap = (unsigned char*)calloc(glyph_w * glyph_h, sizeof(unsigned char));
+                unsigned char *glyphBitmap = (unsigned char*)SIT_CALLOC(glyph_w * glyph_h, sizeof(unsigned char));
                 if (!glyphBitmap) return;
                 stbtt_MakeCodepointBitmap(info, glyphBitmap, glyph_w, glyph_h, glyph_w, scale, scale, codepoint);
                 for (int y = 0; y < glyph_h; ++y) {
@@ -21877,7 +22114,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
             int glyph_w = g_x1 - g_x0;
             int glyph_h = g_y1 - g_y0;
             if (glyph_w > 0 && glyph_h > 0) {
-                unsigned char *sdfBitmap = (unsigned char*)calloc(glyph_w * glyph_h, sizeof(unsigned char));
+                unsigned char *sdfBitmap = (unsigned char*)SIT_CALLOC(glyph_w * glyph_h, sizeof(unsigned char));
                 if (!sdfBitmap) return;
                 stbtt_MakeCodepointSDF(info, sdfBitmap, glyph_w, glyph_h, glyph_w, scale, codepoint, padding, onedge_value, pixel_dist_scale);
                 float fill_thresh_inner = onedge_value - 1.0f, fill_thresh_outer = onedge_value + 1.0f;
@@ -21916,7 +22153,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
     int glyph_h = g_y1 - g_y0;
     if (glyph_w <= 0 || glyph_h <= 0) return;
 
-    unsigned char *sdfBitmap = (unsigned char*)calloc(glyph_w * glyph_h, sizeof(unsigned char));
+    unsigned char *sdfBitmap = (unsigned char*)SIT_CALLOC(glyph_w * glyph_h, sizeof(unsigned char));
     if (!sdfBitmap) return;
     stbtt_MakeCodepointSDF(info, sdfBitmap, glyph_w, glyph_h, glyph_w, scale, codepoint, padding, onedge_value, pixel_dist_scale);
 
@@ -22106,7 +22343,7 @@ SITAPI void SituationImageDrawText(SituationImage *dst, SituationFont font, cons
 
         if (glyph_w > 0 && glyph_h > 0) {
             // Render the 1-channel alpha glyph from stb_truetype
-            unsigned char *glyphBitmap = (unsigned char*)malloc(glyph_w * glyph_h);
+            unsigned char *glyphBitmap = (unsigned char*)SIT_MALLOC(glyph_w * glyph_h);
             stbtt_MakeCodepointBitmap(info, glyphBitmap, glyph_w, glyph_h, glyph_w, scale, scale, codepoint);
 
             // --- Step 2: Create a temporary 4-channel SituationImage for our compositing function ---
@@ -22114,7 +22351,7 @@ SITAPI void SituationImageDrawText(SituationImage *dst, SituationFont font, cons
             SituationImage glyphImage = {0};
             glyphImage.width = glyph_w;
             glyphImage.height = glyph_h;
-            glyphImage.data = malloc(glyph_w * glyph_h * 4);
+            glyphImage.data = SIT_MALLOC(glyph_w * glyph_h * 4);
 
             unsigned char* glyphPixels = (unsigned char*)glyphImage.data;
             for (int p = 0; p < glyph_w * glyph_h; ++p) {
@@ -22311,7 +22548,7 @@ static void _SituationUninitReverb(void* state_ptr) {
  * @return A void pointer to the opaque `SituationReverbState` struct, or NULL on allocation failure.
  */
 static void* _SituationInitReverb(uint32_t sample_rate) {
-    SituationReverbState* rev = (SituationReverbState*)calloc(1, sizeof(SituationReverbState));
+    SituationReverbState* rev = (SituationReverbState*)SIT_CALLOC(1, sizeof(SituationReverbState));
     if (!rev) return NULL;
 
     rev->sample_rate = sample_rate;
@@ -22323,14 +22560,14 @@ static void* _SituationInitReverb(uint32_t sample_rate) {
 
     for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) {
         rev->combs[i].size = (int)(comb_tunings[i] * scale);
-        rev->combs[i].buffer = (float*)calloc(rev->combs[i].size, sizeof(float));
+        rev->combs[i].buffer = (float*)SIT_CALLOC(rev->combs[i].size, sizeof(float));
         rev->combs[i].feedback = 0.5f; // Initial room size
         rev->combs[i].damp = 0.5f;     // Initial damp
     }
 
     for(int i=0; i<SIT_REVERB_ALLPASS_COUNT; ++i) {
         rev->allpasses[i].size = (int)(allpass_tunings[i] * scale);
-        rev->allpasses[i].buffer = (float*)calloc(rev->allpasses[i].size, sizeof(float));
+        rev->allpasses[i].buffer = (float*)SIT_CALLOC(rev->allpasses[i].size, sizeof(float));
         rev->allpasses[i].feedback = 0.5f;
     }
 
@@ -22760,7 +22997,7 @@ SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
         return NULL;
     }
 
-    SituationAudioDeviceInfo* sit_devices = (SituationAudioDeviceInfo*)calloc(ma_playback_count, sizeof(SituationAudioDeviceInfo));
+    SituationAudioDeviceInfo* sit_devices = (SituationAudioDeviceInfo*)SIT_CALLOC(ma_playback_count, sizeof(SituationAudioDeviceInfo));
     if (!sit_devices) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio device info array");
         if (count) *count = 0;
@@ -23168,7 +23405,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
         size_t frame_size = ma_get_bytes_per_frame(temp_dec.outputFormat, temp_dec.outputChannels);
         size_t data_size = total_frames * frame_size;
 
-        out_sound->preloaded_data = malloc(data_size);
+        out_sound->preloaded_data = SIT_MALLOC(data_size);
         if (!out_sound->preloaded_data) {
             ma_decoder_uninit(&temp_dec);
             return SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -23533,7 +23770,7 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
     size_t data_size = total_frames * ma_get_bytes_per_frame(source->decoder.outputFormat, source->decoder.outputChannels);
 
     // Allocate new buffer for the copy
-    void* pcm_data = malloc(data_size);
+    void* pcm_data = SIT_MALLOC(data_size);
     if (!pcm_data) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     // Read data from source
@@ -23598,7 +23835,7 @@ SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFra
 
     uint64_t frames_to_crop = finalFrame - initFrame;
     size_t cropped_data_size = frames_to_crop * ma_get_bytes_per_frame(sound->decoder.outputFormat, sound->decoder.outputChannels);
-    void* cropped_pcm_data = malloc(cropped_data_size);
+    void* cropped_pcm_data = SIT_MALLOC(cropped_data_size);
     if (!cropped_pcm_data) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     ma_decoder_seek_to_pcm_frame(&sound->decoder, initFrame);
@@ -23652,7 +23889,7 @@ SITAPI bool SituationSoundExportAsWav(const SituationSound* sound, const char* f
     ma_decoder_seek_to_pcm_frame(&((SituationSound*)sound)->decoder, 0);
 
     const int BUFFER_FRAMES = 4096;
-    void* buffer = malloc(BUFFER_FRAMES * ma_get_bytes_per_frame(config.format, config.channels));
+    void* buffer = SIT_MALLOC(BUFFER_FRAMES * ma_get_bytes_per_frame(config.format, config.channels));
     if (!buffer) {
         ma_encoder_uninit(&encoder);
         return false;
@@ -23928,20 +24165,20 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
 
     ma_mutex_lock(&sit_audio.audio_queue_mutex);
 
-    void* new_processors = realloc(sound->processors, (sound->processor_count + 1) * sizeof(SituationAudioProcessorCallback));
+    void* new_processors = SIT_REALLOC(sound->processors, (sound->processor_count + 1) * sizeof(SituationAudioProcessorCallback));
     if (!new_processors) {
         ma_mutex_unlock(&sit_audio.audio_queue_mutex);
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc processor list.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to SIT_REALLOC processor list.");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
     sound->processors = (SituationAudioProcessorCallback*)new_processors;
 
-    void* new_user_datas = realloc(sound->processor_user_data, (sound->processor_count + 1) * sizeof(void*));
+    void* new_user_datas = SIT_REALLOC(sound->processor_user_data, (sound->processor_count + 1) * sizeof(void*));
     if (!new_user_datas) {
-        // This is tricky. The first realloc succeeded. We should try to shrink it back.
-        sound->processors = realloc(sound->processors, sound->processor_count * sizeof(SituationAudioProcessorCallback));
+        // This is tricky. The first SIT_REALLOC succeeded. We should try to shrink it back.
+        sound->processors = SIT_REALLOC(sound->processors, sound->processor_count * sizeof(SituationAudioProcessorCallback));
         ma_mutex_unlock(&sit_audio.audio_queue_mutex);
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc processor user data list.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to SIT_REALLOC processor user data list.");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
     sound->processor_user_data = (void**)new_user_datas;
@@ -23986,7 +24223,7 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
         }
         sound->processor_count--;
 
-        // Optionally, realloc to shrink the arrays, but it's often not worth the overhead.
+        // Optionally, SIT_REALLOC to shrink the arrays, but it's often not worth the overhead.
         if (sound->processor_count == 0) {
             SIT_FREE(sound->processors);
             SIT_FREE(sound->processor_user_data);
@@ -25135,7 +25372,7 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
 
 #if defined(SITUATION_USE_OPENGL)
     // Allocate memory for the raw pixel data (RGBA, 8 bits per channel)
-    image.data = malloc(width * height * 4);
+    image.data = SIT_MALLOC(width * height * 4);
 	if (!image.data) {
 		_SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Screenshot pixel buffer allocation failed (%dx%d RGBA)", width, height);
 		return (SituationImage){0};

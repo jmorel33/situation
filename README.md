@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.10 "Velocity"_
+_Core API library v2.3.10A "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.10** introduces a comprehensive **Feature Flag System**, allowing applications to query granular GPU capabilities (Ray Tracing, Mesh Shaders, Bindless Resources) at runtime. This release also addresses critical compilation issues in the OpenGL backend, ensuring seamless integration in diverse build environments. It finalizes the "Velocity" cycle with a focus on API stability and robustness.
+**Version 2.3.10A** introduces a comprehensive **Feature Flag System**, allowing applications to query granular GPU capabilities (Ray Tracing, Mesh Shaders, Bindless Resources) at runtime. This release also includes critical stability fixes for memory management (SIT_MALLOC macros), text rendering optimizations, and C++ RAII helpers. It finalizes the "Velocity" cycle with a focus on API stability and robustness.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
