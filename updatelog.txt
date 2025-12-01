@@ -1,3 +1,27 @@
+
+Date: 2025-11-30
+Version: 2.3.13 "Velocity" (Async Threading Module)
+
+## DESCRIPTION
+This release introduces the **Async Threading Module**, a C11-compliant job system designed to eliminate main-thread stalls caused by heavy operations like audio decoding and file I/O. It provides a high-performance, lock-minimized ring buffer for job submission and worker management, paving the way for the upcoming v2.4 "Momentum" engine architecture.
+
+## NEW FEATURES
+*   **SituationThreadPool:** A robust, user-managed thread pool implementation using C11 primitives (`<threads.h>`, `<stdatomic.h>`). Features a fixed-size ring buffer (default 256 slots) for zero-allocation job submission at runtime.
+*   **Async Audio Loading:** Added `SituationLoadSoundFromFileAsync`, allowing audio files to be decoded to RAM in the background without blocking the rendering loop.
+*   **Job System API:**
+    *   `SituationCreateThreadPool`: Auto-detects logical cores to spawn an optimal number of worker threads.
+    *   `SituationSubmitJob`: Pushes generic work units to the background workers.
+    *   `SituationWaitForJob` / `SituationWaitForAllJobs`: Provides flexible synchronization options, using condition variables to sleep efficiently (zero CPU usage) while waiting.
+*   **Safety Mechanisms:**
+    *   **Main Thread Assertions:** New `SIT_ASSERT_MAIN_THREAD()` macro ensures thread-sensitive APIs (OpenGL, Windowing) are never called from worker threads.
+    *   **Atomic State Tracking:** Job completion status and active worker counts are managed atomically to prevent race conditions.
+
+## ARCHITECTURAL CHANGES
+*   **Worker Logic:** Implemented a robust worker loop that handles spurious wakeups and ensures the `active_jobs` counter is decremented only *after* job execution is fully complete, preventing race conditions in `WaitForAll`.
+*   **Error Handling:** Added threading-specific error codes (`SITUATION_ERROR_THREAD_QUEUE_FULL`, `SITUATION_ERROR_THREAD_VIOLATION`) to the core error enum.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-30
 Version: 2.3.12A "Velocity" (critical fixes)
 
