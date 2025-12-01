@@ -24923,7 +24923,7 @@ SITAPI void SituationSetMousePosition(Vector2 pos) {
  */
 SITAPI void SituationSetMouseOffset(Vector2 offset) {
     if (!SituationIsInitialized()) return;
-    glm_vec2_copy(offset, sit_input.mouse.offset);
+    glm_vec2_copy((float*)&offset, sit_input.mouse.offset);
 }
 
 /**
