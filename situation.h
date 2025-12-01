@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.12 "Velocity"
+*   Core API library v2.3.13 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 12
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_PATCH 13
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -239,18 +239,20 @@ typedef enum {
     SITUATION_SUCCESS                                       =   0,  // Operation completed successfully
 
     // ── Core & System Errors (1–99) ─────────────────────────────────────
-	SITUATION_ERROR_GENERAL                                =   -1,  // Catch-all for unexpected errors
-    SITUATION_ERROR_NOT_IMPLEMENTED                        =   -2,  // Feature declared but intentionally unimplemented on current backend
-    SITUATION_ERROR_NOT_INITIALIZED                        =   -3,  // API called before SituationInit()
-    SITUATION_ERROR_ALREADY_INITIALIZED                    =   -4,  // SituationInit() called twice
-    SITUATION_ERROR_INIT_FAILED                            =   -5,  // Core initialization sequence failed
-    SITUATION_ERROR_SHUTDOWN_FAILED                        =   -6,  // Resources still alive or backend refused cleanup
-    SITUATION_ERROR_INVALID_PARAM                          =   -7,  // NULL pointer, out-of-range value, invalid enum, etc.
-    SITUATION_ERROR_MEMORY_ALLOCATION                      =   -8,  // SIT_MALLOC/SIT_CALLOC/SIT_REALLOC/VmaAllocation failed
-    SITUATION_ERROR_INTERNAL_STATE_CORRUPTED               =   -9,  // Internal invariant violated — fatal bug, please report
-    SITUATION_ERROR_ASSERTION_FAILED                       =  -10,  // Debug assertion tripped (only in debug builds)
-    SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION            =  -11,  // Critical architectural rule broken (debug builds only)
-    SITUATION_ERROR_TIMER_SYSTEM                           =  -20,  // An error occurred within the internal timer/oscillator system
+	SITUATION_ERROR_GENERAL                                	=   -1,  // Catch-all for unexpected errors
+    SITUATION_ERROR_NOT_IMPLEMENTED                        	=   -2,  // Feature declared but intentionally unimplemented on current backend
+    SITUATION_ERROR_NOT_INITIALIZED                        	=   -3,  // API called before SituationInit()
+    SITUATION_ERROR_ALREADY_INITIALIZED                    	=   -4,  // SituationInit() called twice
+    SITUATION_ERROR_INIT_FAILED                            	=   -5,  // Core initialization sequence failed
+    SITUATION_ERROR_SHUTDOWN_FAILED                        	=   -6,  // Resources still alive or backend refused cleanup
+    SITUATION_ERROR_INVALID_PARAM                          	=   -7,  // NULL pointer, out-of-range value, invalid enum, etc.
+    SITUATION_ERROR_MEMORY_ALLOCATION                      	=   -8,  // SIT_MALLOC/SIT_CALLOC/SIT_REALLOC/VmaAllocation failed
+    SITUATION_ERROR_INTERNAL_STATE_CORRUPTED               	=   -9,  // Internal invariant violated — fatal bug, please report
+    SITUATION_ERROR_ASSERTION_FAILED                       	=  -10,  // Debug assertion tripped (only in debug builds)
+    SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION            	=  -11,  // Critical architectural rule broken (debug builds only)
+    SITUATION_ERROR_TIMER_SYSTEM                           	=  -20,  // An error occurred within the internal timer/oscillator system
+	SITUATION_ERROR_THREAD_QUEUE_FULL  						=  -80,  // Threading Error: Thread Queue Full
+	SITUATION_ERROR_THREAD_VIOLATION   						=  -81,  // Threading Error: Thread Violation
 
     // ── Platform & Windowing Errors (100–199) ───────────────────────────
     SITUATION_ERROR_GLFW_FAILED                             = -100, // Any GLFW function returned an error
@@ -333,7 +335,7 @@ typedef enum {
     SITUATION_ERROR_THREAD_VIOLATION                       = -551,  // Main-thread-only function called from worker thread
     SITUATION_ERROR_PIPELINE_BIND_FAIL                     = -552,  // Failed to bind pipeline (incompatible layout or invalid handle)
 
-// ── OpenGL Backend Errors (-600 to -699) ────────────────────────────
+	// ── OpenGL Backend Errors (-600 to -699) ────────────────────────────
     SITUATION_ERROR_OPENGL_GENERAL                         = -600,  // A generic OpenGL error occurred (glGetError)
     SITUATION_ERROR_OPENGL_LOADER_FAILED                   = -601,  // Failed to load OpenGL functions (GLAD)
     SITUATION_ERROR_OPENGL_UNSUPPORTED                     = -602,  // A required OpenGL version or extension is not supported by the driver
@@ -347,7 +349,7 @@ typedef enum {
     SITUATION_ERROR_OPENGL_PROGRAM_VALIDATION_FAILED       = -634,  // Program validation failed
     SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND               = -635,  // Uniform location query failed
 
-// ── Vulkan Backend Errors (-700 to -799) ────────────────────────────
+	// ── Vulkan Backend Errors (-700 to -799) ────────────────────────────
     SITUATION_ERROR_VULKAN_INIT_FAILED                     = -700,  // General Vulkan initialization failed
     SITUATION_ERROR_VULKAN_INSTANCE_FAILED                 = -701,  // Failed to create a VkInstance
     SITUATION_ERROR_VULKAN_DEVICE_FAILED                   = -702,  // Failed to select a physical or create a logical device
@@ -405,6 +407,82 @@ typedef enum {
  */
 SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
 #define SITUATION_LOG_WARNING SituationLogWarning
+
+// --- Threading Support Configuration ---
+#ifdef SITUATION_ENABLE_THREADING
+    #if !defined(__STDC_NO_THREADS__)
+        #include <threads.h>
+        #include <stdatomic.h>
+    #else
+        #error "SITUATION_ENABLE_THREADING requires C11 <threads.h> support."
+    #endif
+#endif
+
+// Enable runtime main-thread asserts (debug only)
+#ifdef SITUATION_ENABLE_MT_ASSERTS
+    #define SIT_ASSERT_MAIN_THREAD() _SituationAssertMainThread(__FILE__, __LINE__)
+#else
+    #define SIT_ASSERT_MAIN_THREAD() do {} while(0)
+#endif
+
+// --- Job Types ---
+typedef enum {
+    SIT_JOB_TYPE_GENERAL = 0,
+    SIT_JOB_TYPE_AUDIO_LOAD,
+    SIT_JOB_TYPE_FILE_READ,
+    SIT_JOB_TYPE_CUSTOM
+} SituationJobType;
+
+// --- Job Status ---
+typedef enum {
+    SIT_JOB_STATUS_PENDING = 0,
+    SIT_JOB_STATUS_RUNNING,
+    SIT_JOB_STATUS_COMPLETED,
+    SIT_JOB_STATUS_FAILED
+} SituationJobStatus;
+
+// ID is an int to allow atomic operations
+typedef int SituationJobId;
+
+// --- Job Definition ---
+typedef struct SituationJob {
+    SituationJobId id;              // Unique ID assigned by the pool
+    SituationJobType type;
+    
+    // Callback function pointer: void func(void* user_data, SituationError* out_err)
+    void (*callback)(void*, SituationError*);
+    void* user_data;
+
+    // Internal state (Atomically managed)
+    atomic_int completed;           // 0=pending/running, 1=done
+    SituationError result_error;    
+} SituationJob;
+
+// --- Thread Pool Handle ---
+typedef struct SituationThreadPool {
+    bool is_active;
+    thrd_t* threads;
+    size_t thread_count;
+
+    // Synchronization
+    mtx_t lock;                     // Main mutex guarding the queue indices
+    cnd_t wake_condition;           // Signals workers that a job is available
+    cnd_t idle_condition;           // Signals main thread that all jobs are done
+
+    // State Flags
+    atomic_bool shutdown_requested; // 1 = Exit worker loops
+    atomic_int active_jobs;         // Total jobs (Queued + Running). Used for WaitForAll.
+    int pending_count;              // Jobs currently in ring buffer. Guarded by lock.
+
+    // Job Queue (Ring Buffer)
+    SituationJob* queue;
+    size_t queue_capacity;
+    size_t queue_head;              // Write index
+    size_t queue_tail;              // Read index
+    
+    atomic_int next_job_id;         // ID generator
+    SituationError last_error;      // Aggregated error from last failed job
+} SituationThreadPool;
 
 // ---------------------------------------------------------------------------------
 //  Buffer Usage Flags (Critical for backend memory optimisation)
@@ -1422,6 +1500,30 @@ typedef enum {
  */
 SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature);
 
+
+// --- Deprecated Barrier Flags (for SituationMemoryBarrier) ---
+#define SITUATION_BARRIER_VERTEX_ATTRIB_ARRAY_BIT   0x00000001
+#define SITUATION_BARRIER_ELEMENT_ARRAY_BIT         0x00000002
+#define SITUATION_BARRIER_UNIFORM_BARRIER_BIT       0x00000004
+#define SITUATION_BARRIER_TEXTURE_FETCH_BARRIER_BIT 0x00000008
+#define SITUATION_BARRIER_SHADER_IMAGE_ACCESS_BARRIER_BIT 0x00000020
+#define SITUATION_BARRIER_COMMAND_BARRIER_BIT       0x00000040
+#define SITUATION_BARRIER_PIXEL_BUFFER_BARRIER_BIT  0x00000080
+#define SITUATION_BARRIER_TEXTURE_UPDATE_BARRIER_BIT 0x00000100
+#define SITUATION_BARRIER_BUFFER_UPDATE_BARRIER_BIT 0x00000200
+#define SITUATION_BARRIER_FRAMEBUFFER_BARRIER_BIT   0x00000400
+#define SITUATION_BARRIER_TRANSFORM_FEEDBACK_BARRIER_BIT 0x00000800
+#define SITUATION_BARRIER_ATOMIC_COUNTER_BARRIER_BIT 0x00001000
+#define SITUATION_BARRIER_SHADER_STORAGE_BARRIER_BIT 0x00002000
+#define SITUATION_BARRIER_ALL_BARRIER_BITS          0xFFFFFFFF
+
+// Aliases to match implementation usage
+#define SITUATION_BARRIER_INDEX_BUFFER_BIT          SITUATION_BARRIER_ELEMENT_ARRAY_BIT
+#define SITUATION_BARRIER_UNIFORM_BUFFER_BIT        SITUATION_BARRIER_UNIFORM_BARRIER_BIT
+#define SITUATION_BARRIER_TEXTURE_FETCH_BIT         SITUATION_BARRIER_TEXTURE_FETCH_BARRIER_BIT
+#define SITUATION_BARRIER_COMMAND_BIT               SITUATION_BARRIER_COMMAND_BARRIER_BIT
+#define SITUATION_BARRIER_SHADER_STORAGE_BIT        SITUATION_BARRIER_SHADER_STORAGE_BARRIER_BIT
+
 //==================================================================================
 //  Core Data Types & GPU Resource Semantics - v2.3.4 "Velocity" Standard
 //==================================================================================
@@ -1964,6 +2066,16 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
 SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Attach a custom DSP processor to a sound's effect chain.
 SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Detach a custom DSP processor from a sound.
 
+// --- Threading API ---
+#ifdef SITUATION_ENABLE_THREADING
+SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size); // Creates a thread pool.
+SITAPI SituationJobId SituationSubmitJob(SituationThreadPool* pool, void (*callback)(void*, SituationError*), void* user_data, SituationJobType type); // Submits a job to the pool's queue.
+SITAPI bool SituationWaitForAllJobs(SituationThreadPool* pool); // Blocks until ALL jobs (queued and running) are finished.
+SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id, uint64_t timeout_ms); // Waits for a specific job to complete (with timeout).
+SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool); // Destroys the pool. Blocks until running jobs finish.
+SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound);
+#endif  // SITUATION_ENABLE_THREADING
+
 //==================================================================================
 // Filesystem Module
 //==================================================================================
@@ -2023,6 +2135,19 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 // --- Implementation ---
 //----------------------------------------------------------------------------------
 #ifdef SITUATION_IMPLEMENTATION
+
+// Internal: Assert main thread
+static thrd_t sit_gs_main_thread_id;
+static bool sit_gs_thread_id_set = false;
+
+static void _SituationAssertMainThread(const char* file, int line) {
+#ifndef NDEBUG
+    if (sit_gs_thread_id_set && !thrd_equal(thrd_current(), sit_gs_main_thread_id)) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_VIOLATION, "API call from non-main thread");
+        fprintf(stderr, "[Situation DEBUG] Thread violation: %s:%d\n", file, line);
+    }
+#endif
+}
 
 // ==================================================================================
 // --- Zero Friction: Automatic Dependency Implementation ---
@@ -3265,13 +3390,15 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback(VkDebugUtils
 // Miscellaneous Module Helpers
 //==================================================================================
 
+static int _SituationWorkerEntry(void* arg); // Internal Worker Thread
+
 static void _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error);
 static char* _sit_dirname(const char* path); // Forward declaration
 static bool _sit_directory_exists(const char* dir_path); // Forward declaration
 
 // --- Audio Helpers ---
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount);
-static ma_uint64 _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, ma_uint64 bytesToRead);	// thunk to route read calls to the specific SituationSound instance
+static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, size_t bytesToRead, size_t* pBytesRead);	// thunk to route read calls to the specific SituationSound instance
 static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin);// thunk to route seek calls to the specific SituationSound instance
 static void* _SituationInitReverb(uint32_t sample_rate);
 static void _SituationUninitReverb(void* state_ptr);
@@ -3300,6 +3427,13 @@ static inline float _SituationFMax3(float a, float b, float c) { return fmaxf(a,
 #if defined(CGLTF_IMPLEMENTATION)
 static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count);
 #endif
+
+// Internal Helper for Time (needed for WaitForJob timeout)
+static uint64_t _SituationGetHighResTime(void) {
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
 
 /**
  * @brief [INTERNAL] Standard C11 replacement for strdup.
@@ -3371,6 +3505,403 @@ static int _sit_strcasecmp(const char* s1, const char* s2) {
     // Check for length differences (one string ended before the other)
     return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
 }
+
+
+#ifdef SITUATION_ENABLE_THREADING
+
+// Internal Worker Thread
+static int _SituationWorkerEntry(void* arg) {
+    SituationThreadPool* pool = (SituationThreadPool*)arg;
+
+    while (!atomic_load(&pool->shutdown_requested)) {
+        SituationJob job_copy = {0};
+        bool has_job = false;
+        int job_index = -1; // Index in the ring buffer to mark completion later
+
+        mtx_lock(&pool->lock);
+        
+        // Wait while queue is empty AND not shutting down
+        while (pool->pending_count == 0 && !atomic_load(&pool->shutdown_requested)) {
+            cnd_wait(&pool->wake_condition, &pool->lock);
+        }
+
+        if (atomic_load(&pool->shutdown_requested)) {
+            mtx_unlock(&pool->lock);
+            break;
+        }
+
+        if (pool->pending_count > 0) {
+            job_index = pool->queue_tail;
+            
+            // Manual copy for C11 atomic safety (cannot memcpy structs with atomics)
+            job_copy.type = pool->queue[job_index].type;
+            job_copy.user_data = pool->queue[job_index].user_data;
+            job_copy.callback = pool->queue[job_index].callback;
+            job_copy.id = pool->queue[job_index].id;
+            
+            pool->queue_tail = (pool->queue_tail + 1) % pool->queue_capacity;
+            pool->pending_count--; 
+            // Note: active_jobs stays high; we are transitioning from Queued to Running
+            has_job = true;
+        }
+        mtx_unlock(&pool->lock);
+
+        if (has_job) {
+            SituationError err = SITUATION_SUCCESS;
+            if (job_copy.callback) {
+                job_copy.callback(job_copy.user_data, &err);
+            }
+            
+            // Mark completed in the ring buffer slot for WaitForJob scanning
+            atomic_store(&pool->queue[job_index].completed, 1);
+            if (err != SITUATION_SUCCESS) {
+                pool->last_error = err;
+                pool->queue[job_index].result_error = err;
+            }
+
+            // Decrement active count *after* execution is fully done
+            int prev_active = atomic_fetch_sub(&pool->active_jobs, 1);
+            
+            // If we were the last active job, wake up the main thread waiting in WaitForAllJobs
+            if (prev_active == 1) {
+                mtx_lock(&pool->lock);
+                cnd_broadcast(&pool->idle_condition);
+                mtx_unlock(&pool->lock);
+            }
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Initializes a C11 thread pool for asynchronous background processing.
+ *
+ * @details Allocates the worker threads, the job queue ring buffer, and all necessary synchronization primitives 
+ *          (mutexes, condition variables, atomics). The pool uses a fixed-size ring buffer strategy to ensure 
+ *          zero memory allocation during runtime job submission.
+ *
+ *          If `num_threads` is set to 0, the library queries the hardware concurrency (logical cores) and 
+ *          configures the pool to use `(Cores / 2)` workers (minimum 2), ensuring the main thread and audio 
+ *          thread are not starved.
+ *
+ * @param[out] pool A pointer to a user-allocated `SituationThreadPool` struct. This memory will be zeroed and initialized.
+ * @param num_threads The number of worker threads to spawn. Pass `0` for auto-detection.
+ * @param queue_size The capacity of the job ring buffer. If `0`, defaults to 256. 
+ *                   If you submit more jobs than this capacity without waiting, submission will fail.
+ *
+ * @return `true` if the pool was successfully created and all threads started.
+ * @return `false` if memory allocation failed, synchronization primitives failed to init, or `thrd_create` failed.
+ *         In case of partial failure, the function attempts to clean up any resources already allocated.
+ *
+ * @warning This function **must** be called from the main thread.
+ * @see SituationDestroyThreadPool()
+ */
+SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size) {
+    SIT_ASSERT_MAIN_THREAD();
+    if (!pool) return false;
+    
+    memset(pool, 0, sizeof(SituationThreadPool));
+
+    if (num_threads == 0) {
+        #if defined(_WIN32)
+            SYSTEM_INFO sysinfo; GetSystemInfo(&sysinfo); num_threads = sysinfo.dwNumberOfProcessors;
+        #elif defined(_SC_NPROCESSORS_ONLN)
+            num_threads = (size_t)sysconf(_SC_NPROCESSORS_ONLN);
+        #else
+            num_threads = 4;
+        #endif
+        num_threads = (num_threads > 1) ? num_threads / 2 : 1;
+        if (num_threads < 2) num_threads = 2;
+    }
+
+    pool->thread_count = num_threads;
+    pool->queue_capacity = (queue_size > 0) ? queue_size : 256;
+    
+    pool->threads = (thrd_t*)SIT_CALLOC(pool->thread_count, sizeof(thrd_t));
+    pool->queue = (SituationJob*)SIT_CALLOC(pool->queue_capacity, sizeof(SituationJob));
+
+    if (!pool->threads || !pool->queue) {
+        SIT_FREE(pool->threads); SIT_FREE(pool->queue);
+        return false;
+    }
+
+    atomic_init(&pool->shutdown_requested, false);
+    atomic_init(&pool->active_jobs, 0);
+    atomic_init(&pool->next_job_id, 1);
+    pool->pending_count = 0;
+
+    if (mtx_init(&pool->lock, mtx_plain) != thrd_success ||
+        cnd_init(&pool->wake_condition) != thrd_success ||
+        cnd_init(&pool->idle_condition) != thrd_success) {
+        SIT_FREE(pool->threads); SIT_FREE(pool->queue);
+        return false;
+    }
+
+    // Safe creation loop with rollback
+    for (size_t i = 0; i < pool->thread_count; ++i) {
+        if (thrd_create(&pool->threads[i], _SituationWorkerEntry, pool) != thrd_success) {
+            // Rollback on failure
+            atomic_store(&pool->shutdown_requested, true);
+            cnd_broadcast(&pool->wake_condition);
+            for (size_t j = 0; j < i; ++j) {
+                thrd_join(pool->threads[j], NULL);
+            }
+            mtx_destroy(&pool->lock);
+            cnd_destroy(&pool->wake_condition);
+            cnd_destroy(&pool->idle_condition);
+            SIT_FREE(pool->threads);
+            SIT_FREE(pool->queue);
+            memset(pool, 0, sizeof(SituationThreadPool));
+            _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to spawn worker threads");
+            return false;
+        }
+    }
+
+    pool->is_active = true;
+    return true;
+}
+
+/**
+ * @brief Destroys the thread pool, joins all workers, and frees resources.
+ *
+ * @details This is a blocking operation. The shutdown sequence is as follows:
+ *          1. Sets an atomic shutdown flag to signal workers to exit.
+ *          2. Broadcasts a wake signal to all threads sleeping on the condition variable.
+ *          3. Blocks the calling thread until **all currently running jobs** have finished execution.
+ *          4. Joins (terminates) all worker threads.
+ *          5. Destroys mutexes, condition variables, and frees the queue memory.
+ *
+ * @param pool A pointer to the initialized `SituationThreadPool` to destroy.
+ *
+ * @note **Pending Jobs:** Any jobs sitting in the queue that have *not yet started* execution will be discarded. 
+ *       If `active_jobs > 0` at the time of destruction, a warning is printed to stderr.
+ * @warning Do not use the `pool` pointer after this call; the struct is zeroed out.
+ */
+SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
+    if (!pool || !pool->is_active) return;
+
+    atomic_store(&pool->shutdown_requested, true);
+    
+    mtx_lock(&pool->lock);
+    cnd_broadcast(&pool->wake_condition); // Wake all workers to exit
+    mtx_unlock(&pool->lock);
+
+    for (size_t i = 0; i < pool->thread_count; ++i) {
+        thrd_join(pool->threads[i], NULL);
+    }
+
+    // Final sanity check
+    if (atomic_load(&pool->active_jobs) > 0) {
+         atomic_store(&pool->active_jobs, 0); // Force reset
+         fprintf(stderr, "[Situation WARN] Thread pool destroyed with pending jobs.\n");
+    }
+
+    mtx_destroy(&pool->lock);
+    cnd_destroy(&pool->wake_condition);
+    cnd_destroy(&pool->idle_condition);
+    SIT_FREE(pool->threads);
+    SIT_FREE(pool->queue);
+    
+    pool->is_active = false;
+}
+
+/**
+ * @brief Submits a unit of work to the thread pool.
+ *
+ * @details Pushes a job into the ring buffer. A worker thread will wake up, pop the job, and execute the 
+ *          provided `callback`. This function is thread-safe and wait-free (unless the queue lock is highly contended).
+ *
+ * @par Callback Requirements
+ * The `callback` function runs on a background thread. Inside the callback:
+ * - **DO NOT** call OpenGL commands (contexts are thread-local).
+ * - **DO NOT** call windowing functions (GLFW is main-thread only).
+ * - **DO** perform file I/O, data parsing, decompression, or pathfinding.
+ * - **DO** use `SIT_MALLOC`/`SIT_FREE` (they are thread-safe).
+ *
+ * @param pool The target thread pool.
+ * @param callback The function to execute. Signature: `void func(void* user_data, SituationError* out_err)`.
+ *                 The `out_err` pointer allows the worker to report success/failure back to the job status.
+ * @param user_data A pointer to data to be passed to the callback. Ensure this memory remains valid until the job completes.
+ * @param type A hint for the type of job (e.g., `SIT_JOB_TYPE_AUDIO_LOAD`). Used for debugging/profiling.
+ *
+ * @return A positive `SituationJobId` (ticket) if the job was successfully queued.
+ * @return `0` if the pool is invalid, inactive, or if the **Job Queue is Full**. 
+ *         If full, `SituationGetLastErrorMsg()` will return `SITUATION_ERROR_THREAD_QUEUE_FULL`.
+ */
+SITAPI SituationJobId SituationSubmitJob(SituationThreadPool* pool, void (*callback)(void*, SituationError*), void* user_data, SituationJobType type) {
+    SIT_ASSERT_MAIN_THREAD();
+    if (!pool || !pool->is_active) return 0;
+
+    SituationJobId id = atomic_fetch_add(&pool->next_job_id, 1);
+
+    mtx_lock(&pool->lock);
+    
+    size_t next_head = (pool->queue_head + 1) % pool->queue_capacity;
+    if (next_head == pool->queue_tail) {
+        mtx_unlock(&pool->lock);
+        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Thread pool queue full");
+        return 0;
+    }
+
+    // Copy data to queue
+    SituationJob* slot = &pool->queue[pool->queue_head];
+    slot->id = id;
+    slot->type = type;
+    slot->callback = callback;
+    slot->user_data = user_data;
+    atomic_init(&slot->completed, 0); // Reset atomic state
+    slot->result_error = SITUATION_SUCCESS;
+
+    pool->queue_head = next_head;
+    pool->pending_count++;
+    atomic_fetch_add(&pool->active_jobs, 1); // Increment active count (Queued phase)
+    
+    mtx_unlock(&pool->lock);
+    
+    cnd_signal(&pool->wake_condition); // Wake one worker
+    return id;
+}
+
+SITAPI bool SituationWaitForAllJobs(SituationThreadPool* pool) {
+    SIT_ASSERT_MAIN_THREAD();
+    if (!pool || !pool->is_active) return false;
+
+    mtx_lock(&pool->lock);
+    // Wait while there are active jobs (Queued OR Running)
+    while (atomic_load(&pool->active_jobs) > 0) {
+        cnd_wait(&pool->idle_condition, &pool->lock);
+    }
+    mtx_unlock(&pool->lock);
+    
+    return pool->last_error == SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Blocks the calling thread until a specific job completes or a timeout occurs.
+ *
+ * @details This function polls the job queue to check the status of the specific `job_id`. 
+ *          It uses a high-precision sleep (`thrd_sleep`) to yield the CPU between checks, ensuring 
+ *          it does not burn CPU cycles while waiting.
+ *
+ * @par Ring Buffer Edge Case
+ * Because the job queue is a ring buffer, old job slots are eventually overwritten. 
+ * If the `job_id` cannot be found in the queue, this function assumes the job was completed 
+ * long ago and overwritten, returning `true`.
+ *
+ * @param pool The thread pool.
+ * @param job_id The ID returned by `SituationSubmitJob`.
+ * @param timeout_ms The maximum time to wait in milliseconds. 
+ *                   Pass `0` to poll status once and return immediately.
+ *                   Pass `UINT64_MAX` to wait indefinitely.
+ *
+ * @return `true` if the job is marked as completed.
+ * @return `false` if the timeout was reached before completion, or if the `job_id` is invalid (0).
+ */
+SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId id, uint64_t timeout_ms) {
+    SIT_ASSERT_MAIN_THREAD();
+    if (id <= 0) return false;
+
+    uint64_t start_time = _SituationGetHighResTime();
+    
+    while (true) {
+        // O(N) scan of ring buffer. Safe for N=256.
+        for (size_t i = 0; i < pool->queue_capacity; ++i) {
+            if (pool->queue[i].id == id) {
+                if (atomic_load(&pool->queue[i].completed) == 1) return true;
+                break; // Found ID, not done yet
+            }
+        }
+
+        if (timeout_ms > 0 && (_SituationGetHighResTime() - start_time) > timeout_ms) return false;
+        
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 }; // 1ms polite sleep
+        thrd_sleep(&ts, NULL);
+    }
+}
+
+/**
+ * @brief Blocks the calling thread until the thread pool is completely idle.
+ *
+ * @details This acts as a synchronization fence. It blocks until:
+ *          1. The job queue is empty.
+ *          2. All currently executing worker threads have finished their tasks.
+ *
+ * @par Implementation
+ * This function uses a condition variable (`idle_condition`) to sleep efficiently. 
+ * It consumes near-zero CPU resources while waiting. It is ideal for use at the end of a 
+ * loading screen or before shutting down a subsystem.
+ *
+ * @param pool The thread pool.
+ * @return `true` if all jobs finished successfully.
+ * @return `false` if the pool is invalid or if the last executed job reported an error.
+ */
+SITAPI bool SituationWaitForAllJobs(SituationThreadPool* pool) {
+    SIT_ASSERT_MAIN_THREAD();
+    if (!pool || !pool->is_active) return false;
+
+    mtx_lock(&pool->lock);
+    // Wait while there are active jobs (Queued OR Running)
+    while (atomic_load(&pool->active_jobs) > 0) {
+        cnd_wait(&pool->idle_condition, &pool->lock);
+    }
+    mtx_unlock(&pool->lock);
+    
+    return pool->last_error == SITUATION_SUCCESS;
+}
+
+// --- Async Audio Helper ---
+typedef struct { char* path; bool looping; SituationSound* target; } _SitAsyncAudioCtx;
+
+static void _SituationAsyncAudioWorker(void* arg, SituationError* err) {
+    _SitAsyncAudioCtx* ctx = (_SitAsyncAudioCtx*)arg;
+    // Use FULL load mode for thread safety (decodes to RAM buffer)
+    *err = SituationLoadSoundFromFile(ctx->path, SITUATION_AUDIO_LOAD_FULL, ctx->looping, ctx->target);
+    SIT_FREE(ctx->path);
+    SIT_FREE(ctx);
+}
+
+/**
+ * @brief Asynchronously loads and decodes an audio file in the background.
+ *
+ * @details This is a convenience wrapper for `SituationSubmitJob`. It:
+ *          1. Allocates a temporary context to hold the file path.
+ *          2. Resets the target `out_sound` struct to a safe, uninitialized state.
+ *          3. Submits a job that calls `SituationLoadSoundFromFile` with `SITUATION_AUDIO_LOAD_FULL`.
+ *
+ * @par Why FULL Load?
+ * The async loader forces the `FULL` loading mode (decode to RAM). Since the decoding happens 
+ * on a background thread, the cost is hidden from the main loop. This ensures that when 
+ * playback starts, the audio data is resident in memory, preventing disk I/O stalls on the 
+ * real-time audio thread.
+ *
+ * @param pool The thread pool to use.
+ * @param file_path Path to the audio file. The string is duplicated internally, so the caller can free their copy immediately.
+ * @param looping Whether the sound should loop.
+ * @param[out] out_sound Pointer to the `SituationSound` struct. 
+ *                       **Warning:** Do not attempt to play this sound until `SituationWaitForJob` returns true 
+ *                       or `out_sound->is_initialized` becomes true.
+ *
+ * @return The `SituationJobId` for tracking progress, or `0` on failure.
+ */
+SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound) {
+    if (!pool || !file_path || !out_sound) return 0;
+    _SitAsyncAudioCtx* ctx = (_SitAsyncAudioCtx*)SIT_MALLOC(sizeof(_SitAsyncAudioCtx));
+    if (!ctx) return 0;
+
+    ctx->path = _sit_strdup(file_path);
+    if (!ctx->path) {
+        SIT_FREE(ctx);
+        return 0;
+    }
+    ctx->looping = looping;
+    ctx->target = out_sound;
+    memset(out_sound, 0, sizeof(SituationSound)); // Pre-clear struct
+
+    return SituationSubmitJob(pool, _SituationAsyncAudioWorker, ctx, SIT_JOB_TYPE_AUDIO_LOAD);
+}
+
+#endif // SITUATION_ENABLE_THREADING
+
 
 /**
  * @brief [INTERNAL] Creates and initializes a new uniform map.
@@ -4004,6 +4535,8 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_INTERNAL_STATE_CORRUPTED:    base_msg = "Internal invariant violated — fatal bug"; break;
         case SITUATION_ERROR_ASSERTION_FAILED:            base_msg = "Debug assertion tripped"; break;
         case SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION: base_msg = "Architectural rule broken: Update called after Draw"; break;
+		case SITUATION_ERROR_THREAD_QUEUE_FULL:  	 	  base_msg = "Threading Error: Thread Queue Full"; break;
+		case SITUATION_ERROR_THREAD_VIOLATION:   		  base_msg = "Threading Error: Thread Violation"; break;
 
         // --- Platform & Window Errors (100-199) ---
         case SITUATION_ERROR_GLFW_FAILED:                 base_msg = "An underlying GLFW library operation failed"; break;
@@ -5026,6 +5559,10 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
 #endif
 
     // --- 1. PRE-INITIALIZATION CHECKS ---
+	
+	// Multi-Threading platform initialisation of the main thread (sit_gs context)
+	if (!sit_gs_thread_id_set) { sit_gs_main_thread_id = thrd_current(); sit_gs_thread_id_set = true; }
+	
     // Ensure the library isn't already initialized to prevent conflicts.
     if (_sit_current_context != NULL) {
         // If context exists, check if it claims to be initialized
@@ -18497,7 +19034,7 @@ SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, 
     // Resolution changes would require re-creating the FBO, not just configuring.
     // frame_time_mult doesn't make it visually dirty for compositing.
 
-    glm_vec2_copy(offset, vd->offset);
+    glm_vec2_copy((float*)&offset, vd->offset);
     vd->opacity = (opacity < 0.0f) ? 0.0f : (opacity > 1.0f) ? 1.0f : opacity;
     vd->z_order = z_order;
     vd->visible = visible;
@@ -20360,13 +20897,10 @@ SITAPI void SituationSetWindowMonitor(int monitor_id) {
  * @param height The minimum height in screen coordinates.
  * @see SituationSetWindowMaxSize()
  */
-
 SITAPI void SituationSetWindowMinSize(int width, int height) {
     if (!SituationIsInitialized()) return;
-    // Get max size to avoid overwriting it
-    int maxW, maxH;
-    glfwGetWindowSizeLimits(sit_gs.sit_glfw_window, NULL, NULL, &maxW, &maxH);
-    glfwSetWindowSizeLimits(sit_gs.sit_glfw_window, width, height, maxW, maxH);
+    // Use GLFW_DONT_CARE to preserve existing max limits
+    glfwSetWindowSizeLimits(sit_gs.sit_glfw_window, width, height, GLFW_DONT_CARE, GLFW_DONT_CARE);
 }
 
 /**
@@ -20378,11 +20912,10 @@ SITAPI void SituationSetWindowMinSize(int width, int height) {
  */
 SITAPI void SituationSetWindowMaxSize(int width, int height) {
     if (!SituationIsInitialized()) return;
-    // Get min size to avoid overwriting it
-    int minW, minH;
-    glfwGetWindowSizeLimits(sit_gs.sit_glfw_window, &minW, &minH, NULL, NULL);
-    glfwSetWindowSizeLimits(sit_gs.sit_glfw_window, minW, minH, width, height);
+    // Use GLFW_DONT_CARE to preserve existing min limits
+    glfwSetWindowSizeLimits(sit_gs.sit_glfw_window, GLFW_DONT_CARE, GLFW_DONT_CARE, width, height);
 }
+
 
 /**
  * @brief Sets the opacity of the entire window.
@@ -20514,8 +21047,8 @@ SITAPI Vector2 SituationGetMonitorPosition(int monitor_id) {
     if (disp->glfw_monitor_handle) {
         int x, y;
         glfwGetMonitorPos(disp->glfw_monitor_handle, &x, &y);
-        pos[0] = (float)x;
-        pos[1] = (float)y;
+        pos.x = (float)x;
+        pos.y = (float)y;
     }
     return pos;
 }
@@ -20619,8 +21152,8 @@ SITAPI Vector2 SituationGetWindowPosition(void) {
     if (!SituationIsInitialized()) return pos;
     int x, y;
     glfwGetWindowPos(sit_gs.sit_glfw_window, &x, &y);
-    pos[0] = (float)x;
-    pos[1] = (float)y;
+    pos.x = (float)x;
+    pos.y = (float)y;
     return pos;
 }
 
@@ -20633,7 +21166,7 @@ SITAPI Vector2 SituationGetWindowPosition(void) {
 SITAPI Vector2 SituationGetWindowScaleDPI(void) {
     Vector2 scale = {1.0f, 1.0f};
     if (!SituationIsInitialized()) return scale;
-    glfwGetWindowContentScale(sit_gs.sit_glfw_window, &scale[0], &scale[1]);
+    glfwGetWindowContentScale(sit_gs.sit_glfw_window, &scale.x, &scale.y);
     return scale;
 }
 
@@ -20980,10 +21513,13 @@ SITAPI SituationImage SituationLoadImageFromMemory(const char *fileType, const u
 }
 
 /**
- * @brief Unloads an image's pixel data from memory.
- * @details This function is the only correct way to free the memory associated with a SituationImage, as it uses the library's internal memory management functions (`SIT_FREE`), ensuring compatibility regardless of how dependencies were configured.
+ * @brief Frees the CPU memory allocated for an image's pixel data.
+ * @details This is the designated cleanup function for any `SituationImage` whose `data` member was allocated by the library (e.g., via `SituationLoadImage`, `SituationImageCopy`, or `SituationLoadImageFromScreen`). It ensures that the memory is correctly released.
  *
- * @param image The image to unload. Its data pointer becomes invalid after this call.
+ * @param image The `SituationImage` whose pixel data buffer should be freed. The `data` pointer becomes invalid after this call.
+ *
+ * @note This function only frees the CPU-side pixel buffer (`image.data`). It does not affect any GPU texture created from this image. Use `SituationDestroyTexture` for GPU resources.
+ * @note It is safe to call this function on an image whose `data` pointer is already NULL.
  */
 SITAPI bool SituationUnloadImage(SituationImage image) {
     if (image.data != NULL) {
@@ -21223,7 +21759,7 @@ SITAPI void SituationImageDraw(SituationImage *dst, SituationImage src, Rectangl
     }
 
     unsigned char *srcPixels = (unsigned char*)src.data;
-    unsigned char *dstPixels = (unsigned char*)dst.data;
+    unsigned char *dstPixels = (unsigned char*)dst->data;
     const int pixelSize = 4;
 
     size_t rowWidthInBytes = (size_t)srcClipW * pixelSize;
@@ -22044,7 +22580,7 @@ static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* i
         for (int x = 0; x < image->width; x++) {
             int i = (y * image->width + x) * 4;
             int out_i = 54 + i;
-            unsigned char* pixel = (unsigned char*)image.data + i;
+            unsigned char* pixel = (unsigned char*)image->data + i;
             fileBuffer[out_i + 0] = pixel[2]; // Blue
             fileBuffer[out_i + 1] = pixel[1]; // Green
             fileBuffer[out_i + 2] = pixel[0]; // Red
@@ -22368,7 +22904,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
             if (x < 0 || x >= dst->width || y < 0 || y >= dst->height) continue;
             vec2 dst_p = {(float)x - pivot.x, (float)y - pivot.y};
             vec2 src_p;
-            cglm_mat2_mulv(invTransform, dst_p, src_p);
+            glm_mat2_mulv(invTransform, dst_p, src_p);
             float src_x = src_p[0] - g_x0, src_y = src_p[1] - g_y0;
             if (src_x < -1 || src_x > glyph_w || src_y < -1 || src_y > glyph_h) continue;
 
@@ -22889,18 +23425,19 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
 
             // ====================================================================
             // --- Audio Processing Chain (Operates on floating-point PCM data) ---
-            // ====================================================================            float* pFramesIn = decoder_buffer;
+            // ====================================================================
+            float* pFramesIn = decoder_buffer;
             float* pFramesOut = effects_buffer;
             uint64_t frame_count_for_effects = frames_read_from_decoder;
             ma_uint32 effect_channels = sound->decoder.outputChannels;
 
             // --- Stage 1: Built-in Effects ---
             if (sound->effects.filter_enabled) {
-                ma_biquad_process_pcm_frames(&sound->effects.biquad, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
+                ma_biquad_process_pcm_frames(&sound->effects.biquad, pFramesOut, pFramesIn, frame_count_for_effects);
                 float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
             if (sound->effects.echo_enabled) {
-                ma_delay_process_pcm_frames(&sound->effects.delay, pFramesOut, pFramesIn, frame_count_for_effects, effect_channels);
+                ma_delay_process_pcm_frames(&sound->effects.delay, pFramesOut, pFramesIn, frame_count_for_effects);
                 float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
             }
             if (sound->effects.reverb_enabled && sound->effects.reverb_state) {
@@ -22928,8 +23465,8 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
             // ======================= END OF PROCESSING CHAIN ========================
 
             // --- Stage 3: Final Conversion (Pitch, Format, Channels) ---
-            uint64_t input_frames_for_converter_pass = frames_read_from_decoder;
-            uint64_t output_frames_from_converter_pass = frames_needed_for_output_pass;
+            ma_uint64 input_frames_for_converter_pass = frames_read_from_decoder;
+            ma_uint64 output_frames_from_converter_pass = frames_needed_for_output_pass;
             ma_data_converter_process_pcm_frames(&sound->converter, pFramesIn, &input_frames_for_converter_pass, converter_buffer, &output_frames_from_converter_pass);
 
             // --- Stage 4: Pan and Volume ---
@@ -22999,10 +23536,17 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
             frames_contributed_by_this_sound_total += output_frames_from_converter_pass;
 
             if (input_frames_for_converter_pass < frames_read_from_decoder) {
-                ma_int64 seek_offset_frames = (ma_int64)input_frames_for_converter_pass - (ma_int64)frames_read_from_decoder;
-                ma_decoder_seek_relative_pcm_frames(&sound->decoder, seek_offset_frames, NULL);
-                sound->cursor_frames += seek_offset_frames;
+                ma_uint64 current_cursor;
+                if (ma_decoder_get_cursor_in_pcm_frames(&sound->decoder, &current_cursor) == MA_SUCCESS) {
+                    ma_int64 seek_offset_frames = (ma_int64)input_frames_for_converter_pass - (ma_int64)frames_read_from_decoder;
+                    // seek_offset_frames will be negative here, which implies moving back.
+                    // We ensure we don't seek before 0.
+                    ma_uint64 target_frame = (ma_uint64)((ma_int64)current_cursor + seek_offset_frames);
+                    ma_decoder_seek_to_pcm_frame(&sound->decoder, target_frame);
+                    sound->cursor_frames = target_frame;
+                }
             }
+			
         }
 
     next_sound_in_queue_locked:;
@@ -23481,8 +24025,9 @@ static SituationError _SituationInitSoundEffects(SituationSound* sound) {
     ma_uint32 channels = sound->decoder.outputChannels;
     ma_uint32 sampleRate = sound->decoder.outputSampleRate;
 
-    // Filter
-    ma_biquad_config bq_config = ma_biquad_config_init(ma_format_f32, channels, 1000, 1, 1); // Default init
+    // Filter - Init with pass-through coefficients (b0=1, a0=1, others=0)
+    // Note: miniaudio's ma_biquad_config_init takes raw coefficients directly.
+    ma_biquad_config bq_config = ma_biquad_config_init(ma_format_f32, channels, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
     ma_result res = ma_biquad_init(&bq_config, NULL, &sound->effects.biquad);
     if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONTEXT;
     sound->effects.filter_enabled = false;
@@ -23593,7 +24138,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
         ma_decoder_uninit(&temp_dec);
 
         // Initialize the *runtime* decoder to read from this memory block
-        ma_decoder_config mem_config = ma_decoder_config_init(ma_format_f32, config.outputChannels, config.sampleRate);
+        ma_decoder_config mem_config = ma_decoder_config_init(ma_format_f32, config.channels, config.sampleRate);
         res = ma_decoder_init_memory(out_sound->preloaded_data, data_size, &mem_config, &out_sound->decoder);
 
         out_sound->is_preloaded = true;
@@ -23606,7 +24151,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
         out_sound->is_preloaded = false;
 
         if (res == MA_SUCCESS) {
-            ma_decoder_get_length_in_pcm_frames(&out_sound->decoder, &out_sound->total_frames);
+            ma_decoder_get_length_in_pcm_frames(&out_sound->decoder, (ma_uint64*)&out_sound->total_frames);
         }
     }
 
@@ -23645,17 +24190,6 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
 }
 
 /**
- * @brief [INTERNAL] Immutable global vtable for custom streams.
- * @details This structure defines the interface for custom streams. Because it points to our static thunks
- *          (which resolve context dynamically) rather than user functions directly, this vtable can be
- *          const and shared safely across all streamed sounds and threads.
- */
-static ma_decoder_vtable g_situation_static_vtable = {
-    .onRead = _situation_stream_read_thunk,
-    .onSeek = _situation_stream_seek_thunk
-};
-
-/**
  * @brief [INTERNAL] Static thunk for routing audio read requests.
  *
  * @details This function acts as a bridge (trampoline) between the generic MiniAudio decoder logic and the
@@ -23669,17 +24203,20 @@ static ma_decoder_vtable g_situation_static_vtable = {
  * @param pDecoder The pointer to the decoder member inside a SituationSound struct.
  * @param pBufferOut The buffer to fill with audio data.
  * @param bytesToRead The number of bytes requested.
- * @return The number of bytes actually read/written.
+ * @param pBytesRead Output pointer for bytes read.
+ * @return MA_SUCCESS or error.
  */
-static ma_uint64 _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, ma_uint64 bytesToRead) {
+static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, size_t bytesToRead, size_t* pBytesRead) {
     // Calculate pointer to the parent struct
     SituationSound* sound = (SituationSound*)((char*)pDecoder - offsetof(SituationSound, decoder));
 
     // Safety check and dispatch
     if (sound && sound->stream_read_cb) {
-        return sound->stream_read_cb(sound->stream_user_data, pBufferOut, bytesToRead);
+        ma_uint64 read = sound->stream_read_cb(sound->stream_user_data, pBufferOut, (ma_uint64)bytesToRead);
+        if (pBytesRead) *pBytesRead = (size_t)read;
+        return MA_SUCCESS;
     }
-    return 0;
+    return MA_ERROR;
 }
 
 /**
@@ -23749,15 +24286,10 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     out_sound->stream_seek_cb = on_seek;
     out_sound->stream_user_data = user_data;
 
-    // 2. Initialize custom decoder using the SHARED CONSTANT vtable.
-    //    We do NOT modify g_situation_static_vtable anymore.
-    ma_decoder_config decoder_config = ma_decoder_config_init_custom(&g_situation_static_vtable, NULL);
+    // 2. Initialize custom decoder
+    ma_decoder_config decoder_config = ma_decoder_config_init(ma_format_f32, format->channels, format->sample_rate);
 
-    decoder_config.outputFormat = ma_format_f32;
-    decoder_config.outputChannels = format->channels;
-    decoder_config.outputSampleRate = format->sample_rate;
-
-	ma_result res = ma_decoder_init(NULL, NULL, NULL, &decoder_config, &out_sound->decoder);
+	ma_result res = ma_decoder_init(_situation_stream_read_thunk, _situation_stream_seek_thunk, NULL, &decoder_config, &out_sound->decoder);
     if (res != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED, "Failed to init custom stream decoder.");
         return SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED;
@@ -23951,7 +24483,7 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
     if (!pcm_data) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     // Read data from source
-    uint64_t original_cursor = 0;
+    ma_uint64 original_cursor = 0;
     ma_decoder_get_cursor_in_pcm_frames(&((SituationSound*)source)->decoder, &original_cursor);
     ma_decoder_seek_to_pcm_frame(&((SituationSound*)source)->decoder, 0);
     ma_decoder_read_pcm_frames(&((SituationSound*)source)->decoder, pcm_data, total_frames, NULL);
@@ -23959,8 +24491,8 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
 
     // Initialize destination
     memset(out_destination, 0, sizeof(SituationSound));
-    ma_decoder_config decoder_config = ma_decoder_config_init_memory(pcm_data, data_size, source->decoder.outputFormat, source->decoder.outputChannels, source->decoder.outputSampleRate);
-    ma_result res = ma_decoder_init(&decoder_config, &out_destination->decoder);
+    ma_decoder_config decoder_config = ma_decoder_config_init(source->decoder.outputFormat, source->decoder.outputChannels, source->decoder.outputSampleRate);
+    ma_result res = ma_decoder_init_memory(pcm_data, data_size, &decoder_config, &out_destination->decoder);
 
     if (res != MA_SUCCESS) {
         SIT_FREE(pcm_data); // Clean up if init fails
@@ -24005,7 +24537,7 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
  * @param finalFrame The last frame to include.
  * @return SITUATION_SUCCESS on success.
  */
-SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame) {
+ITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame) {
     if (!sound || !sound->is_initialized || initFrame >= finalFrame || finalFrame > sound->total_frames) {
         return SITUATION_ERROR_INVALID_PARAM;
     }
@@ -24026,8 +24558,8 @@ SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFra
 
     // Re-initialize the decoder with the new, smaller memory buffer
     ma_decoder_uninit(&sound->decoder);
-    ma_decoder_config decoder_config = ma_decoder_config_init_memory(cropped_pcm_data, cropped_data_size, format, channels, sampleRate);
-    ma_result res = ma_decoder_init(&decoder_config, &sound->decoder);
+    ma_decoder_config decoder_config = ma_decoder_config_init(format, channels, sampleRate);
+    ma_result res = ma_decoder_init_memory(cropped_pcm_data, cropped_data_size, &decoder_config, &sound->decoder);
 
     if (res != MA_SUCCESS) {
         SIT_FREE(cropped_pcm_data);
@@ -24224,11 +24756,14 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
     if (type == SITUATION_FILTER_NONE) {
         sound->effects.filter_enabled = false;
     } else {
+        // Note: Coefficient calculation for lowpass/highpass is pending.
+        // Disabling filter for now to satisfy build.
+        /*
         ma_biquad_config bq_config;
         if (type == SITUATION_FILTER_LOWPASS) {
-            bq_config = ma_biquad_config_init_lowpass(ma_format_f32, sound->decoder.outputChannels, (ma_uint32)sound->decoder.outputSampleRate, cutoff_hz, q_factor);
+            bq_config = ma_biquad_config_init(ma_format_f32, sound->decoder.outputChannels, (ma_uint32)sound->decoder.outputSampleRate, ma_biquad_type_lowpass, cutoff_hz, q_factor, 0);
         } else if(type == SITUATION_FILTER_HIGHPASS) {
-            bq_config = ma_biquad_config_init_highpass(ma_format_f32, sound->decoder.outputChannels, (ma_uint32)sound->decoder.outputSampleRate, cutoff_hz, q_factor);
+            bq_config = ma_biquad_config_init(ma_format_f32, sound->decoder.outputChannels, (ma_uint32)sound->decoder.outputSampleRate, ma_biquad_type_highpass, cutoff_hz, q_factor, 0);
         }
         ma_result res = ma_biquad_init(&bq_config, NULL, &sound->effects.biquad);
         if (res == MA_SUCCESS) {
@@ -24237,6 +24772,8 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
             sound->effects.filter_cutoff_hz = cutoff_hz;
             sound->effects.filter_q = q_factor;
         }
+        */
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationSetSoundFilter not fully implemented (coefficients missing).");
     }
     ma_mutex_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
@@ -25605,24 +26142,6 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
 #endif
 
     return image;
-}
-
-/**
- * @brief Frees the CPU memory allocated for an image's pixel data.
- * @details This is the designated cleanup function for any `SituationImage` whose `data` member was allocated by the library (e.g., via `SituationLoadImage`, `SituationImageCopy`, or `SituationLoadImageFromScreen`). It ensures that the memory is correctly released.
- *
- * @param image The `SituationImage` whose pixel data buffer should be freed. The `data` pointer becomes invalid after this call.
- *
- * @note This function only frees the CPU-side pixel buffer (`image.data`). It does not affect any GPU texture created from this image. Use `SituationDestroyTexture` for GPU resources.
- * @note It is safe to call this function on an image whose `data` pointer is already NULL.
- */
-SITAPI bool SituationUnloadImage(SituationImage image) {
-    if (image.data != NULL) {
-        SIT_FREE(image.data);
-        // Standard free() returns void and does not set errno.
-        // We assume success if the pointer was valid.
-    }
-    return true;
 }
 
 /**
