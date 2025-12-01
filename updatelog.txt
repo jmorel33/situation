@@ -1,4 +1,17 @@
 Date: 2025-11-30
+Version: 2.3.12 "Velocity" (Input Subsystem Refactor)
+
+## DESCRIPTION
+This release executes a major architectural refactor of the Input Subsystem. All Human Interface Device (HID) state—Keyboard, Mouse, Joysticks, and Cursors—has been decoupled from the monolithic global state container and moved into a dedicated `_SituationInputState` structure within the main context.
+
+## ARCHITECTURAL CHANGES
+*   **Input State Isolation:** Introduced `_SituationInputState` to encapsulate all input-related data structures. This cleanly separates input logic from windowing and rendering state.
+*   **Context Expansion:** Updated `SituationContext` to include the new `input` container. Added the `sit_input` macro for internal access.
+*   **Thread Safety Prep:** This refactor is the foundational prerequisite for the upcoming "Double-Buffered Input" system, which will allow game logic and rendering to run on separate threads without locking or race conditions.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-30
 Version: 2.3.11 "Velocity" (Vulkan Stability & Errno Fixes)
 
 ## DESCRIPTION
