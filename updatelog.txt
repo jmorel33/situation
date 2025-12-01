@@ -1,4 +1,16 @@
 Date: 2025-11-30
+Version: 2.3.12A "Velocity" (critical fixes)
+
+## DESCRIPTION
+This release was strictly critical fixes done to help compile the library.
+
+## CRITICAL FIXES
+*   **Audio Hardening:** Fixes to SituationLoadSoundFromStream, SituationSetSoundPitch, SituationSetSoundFilter fixes to signatures when calling miniaudio.
+*   **Input Hardening:** Fixes to SituationSetMousePosition, SituationSetMouseOffset, SituationSetMouseScale rewrite of the functions for accuracy.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-11-30
 Version: 2.3.12 "Velocity" (Input Subsystem Refactor)
 
 ## DESCRIPTION
