@@ -10,10 +10,6 @@
 *
 *   The library's philosophy is reflected in its name, granting developers complete situational "Awareness," precise "Control," and fine-grained "Timing."
 *
-*   **Vulkan Stability & Errno Fixes (v2.3.11):**
-*   This update addresses critical stability issues in the Vulkan backend regarding descriptor set allocation and resource cleanup.
-*   It also removes invalid errno checks in memory management functions to prevent false error reporting.
-*
 *   **Velocity Module (Hot-Reloading):**
 *   This release integrates the **Hot-Reloading Module**, a development-focused toolset that allows Shaders, Compute Pipelines, Textures, and 3D Models to be reloaded from disk at runtime.
 *   This eliminates the need to restart the application to see asset changes, significantly increasing iteration speed for visual adjustments and shader programming.
@@ -57,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 12
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -1635,8 +1631,11 @@ SITAPI const char* SituationGetArgumentValue(const char* arg_name);             
 SITAPI SituationDeviceInfo SituationGetDeviceInfo(void);                                // Get detailed information about system hardware (CPU, GPU, RAM, etc.).
 SITAPI const char* SituationGetGPUName(void);											// Get the name of the active GPU.
 SITAPI char* SituationGetUserDirectory(void);                                           // Get the full path to the current user's home directory (caller must free).
+#if defined(_WIN32)
 SITAPI char SituationGetCurrentDriveLetter(void);                                       // Get the drive letter of the running executable (Windows only).
 SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacity_bytes, uint64_t* out_free_space_bytes, char* out_volume_name, int volume_name_len); // Get info for a specific drive (Windows only).
+#endif // _WIN32
+
 SITAPI void SituationOpenFile(const char* filePath);                                    // Open a file or folder with its default application.
 
 //==================================================================================
@@ -2764,7 +2763,8 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail); 
 static SituationError _SituationInitPlatform(void);                                             // [INIT] Initializes platform-specific dependencies (GLFW, COM).
 static SituationError _SituationInitWindow(const SituationInitInfo* init_info);                 // [INIT] Creates the main application window using GLFW.
 static SituationError _SituationInitRenderer(const SituationInitInfo* init_info);               // [INIT] Dispatches to the backend-specific graphics initializer (GL/VK).
-static SituationError _SituationInitSubsystems(const SituationInitInfo* init_info);                                           // [INIT] Initializes all non-rendering subsystems (Audio, Input, Timers).
+static bool _SituationInitTextRenderer(void);													// [INIT] (GL)
+static SituationError _SituationInitSubsystems(const SituationInitInfo* init_info);             // [INIT] Initializes all non-rendering subsystems (Audio, Input, Timers).
 static void _SituationCleanupDanglingResources(void);                                           // [CLEANUP] Finds and frees any user-leaked resources at shutdown.
 static void _SituationCleanupPlatform(void);                                                    // [CLEANUP] Shuts down the platform layer (GLFW, COM).
 static void _SituationCleanupRenderer(void);                                                    // [CLEANUP] Dispatches to the backend-specific graphics cleanup.
@@ -9752,6 +9752,7 @@ static void _SituationCleanupSubsystems(void) {
     // --- Audio System ---
     // Stop all sounds before uninitializing the device.
     SituationStopAllLoadedSounds();
+	SituationStopAudioCapture(); // Stop recording if active
     if (sit_audio.is_miniaudio_device_active) {
         ma_device_uninit(&sit_audio.miniaudio_device);
         sit_audio.is_miniaudio_device_active = false;
@@ -9771,6 +9772,7 @@ static void _SituationCleanupSubsystems(void) {
     // Uninitialize mutexes.
     ma_mutex_uninit(&sit_audio.audio_queue_mutex);
     ma_mutex_uninit(&sit_input.keyboard.event_queue_mutex);
+    ma_mutex_uninit(&sit_input.mouse.mutex);
     // Cleanup capture resources
     if (sit_audio.audio_capture_on_main_thread) {
         ma_mutex_uninit(&sit_audio.audio_capture_mutex);
@@ -15897,7 +15899,7 @@ SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacit
     // This becomes complex due to GetLastError state. The current code is simpler.
     // Let's assume if we try to get info and it fails, the out params won't be valid, and the error message will be set. The boolean indicates an attempt was made.
 }
-
+#endif // _WIN32
 
 /**
  * @brief Asks the operating system to open a file, folder, or URL with its default application.
@@ -18686,6 +18688,7 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
 
     return true;
 }
+#endif // CGLTF_IMPLEMENTATION
 
 /**
  * @brief Loads a texture directly from a file path (Reload-Compatible).
@@ -18816,6 +18819,7 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
                 int index_count = 0;
 
                 // --- Extract Data using Helper ---
+				// function _SituationExtractGLTFPrimitive bound by CGLTF_IMPLEMENTATION
                 if (_SituationExtractGLTFPrimitive(prim, &vertex_data, &vertex_count, &index_data, &index_count)) {
 
                     // Create GPU Mesh (Stride is 8 floats: 3 Pos + 3 Norm + 2 UV)
@@ -23753,7 +23757,7 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     decoder_config.outputChannels = format->channels;
     decoder_config.outputSampleRate = format->sample_rate;
 
-    ma_result res = ma_decoder_init(&decoder_config, &out_sound->decoder);
+	ma_result res = ma_decoder_init(NULL, NULL, NULL, &decoder_config, &out_sound->decoder);
     if (res != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED, "Failed to init custom stream decoder.");
         return SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED;
@@ -24177,7 +24181,7 @@ SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch)
 
     ma_mutex_lock(&sit_audio.audio_queue_mutex);
     sound->pitch = pitch;
-    ma_result res = ma_data_converter_set_rate_in_hz(&sound->converter, (ma_uint32)(sound->decoder.outputSampleRate * pitch));
+    ma_result res = ma_data_converter_set_rate(&sound->converter, (ma_uint32)(sound->decoder.outputSampleRate * pitch), sit_audio.miniaudio_device.sampleRate);
     ma_mutex_unlock(&sit_audio.audio_queue_mutex);
 
     if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONVERTER;
@@ -24222,9 +24226,9 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
     } else {
         ma_biquad_config bq_config;
         if (type == SITUATION_FILTER_LOWPASS) {
-            bq_config = ma_biquad_config_init(ma_format_f32, sound->decoder.outputChannels, cutoff_hz, q_factor, 0);
-        } else { // High-pass
-            bq_config = ma_biquad_config_init(ma_format_f32, sound->decoder.outputChannels, 0, 0, cutoff_hz);
+            bq_config = ma_biquad_config_init_lowpass(ma_format_f32, sound->decoder.outputChannels, (ma_uint32)sound->decoder.outputSampleRate, cutoff_hz, q_factor);
+        } else if(type == SITUATION_FILTER_HIGHPASS) {
+            bq_config = ma_biquad_config_init_highpass(ma_format_f32, sound->decoder.outputChannels, (ma_uint32)sound->decoder.outputSampleRate, cutoff_hz, q_factor);
         }
         ma_result res = ma_biquad_init(&bq_config, NULL, &sound->effects.biquad);
         if (res == MA_SUCCESS) {
@@ -24896,15 +24900,15 @@ SITAPI void SituationSetMousePosition(Vector2 pos) {
     if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) return;
     // We must "un-transform" the position before sending it to GLFW, so that GetMousePosition will return the value the user expects.
     Vector2 raw_pos;
-    glm_vec2_sub(pos, sit_input.mouse.offset, raw_pos);
+    glm_vec2_sub((float*)&pos, sit_input.mouse.offset, (float*)&raw_pos);
     // Division is component-wise. Ensure scale components are not zero.
-    if (sit_input.mouse.scale[0] != 0.0f) raw_pos[0] /= sit_input.mouse.scale[0];
-    if (sit_input.mouse.scale[1] != 0.0f) raw_pos[1] /= sit_input.mouse.scale[1];
+    if (sit_input.mouse.scale[0] != 0.0f) raw_pos.x /= sit_input.mouse.scale[0];
+    if (sit_input.mouse.scale[1] != 0.0f) raw_pos.y /= sit_input.mouse.scale[1];
 
-    glfwSetCursorPos(sit_gs.sit_glfw_window, raw_pos[0], raw_pos[1]);
+    glfwSetCursorPos(sit_gs.sit_glfw_window, raw_pos.x, raw_pos.y);
 
     // Also update our internal state immediately to prevent a "jumpy" delta on the next frame.
-    glm_vec2_copy(raw_pos, sit_input.mouse.current_pos);
+    glm_vec2_copy((float*)&raw_pos, sit_input.mouse.current_pos);
 }
 
 /**
@@ -24935,7 +24939,7 @@ SITAPI void SituationSetMouseOffset(Vector2 offset) {
  */
 SITAPI void SituationSetMouseScale(Vector2 scale) {
     if (!SituationIsInitialized()) return;
-    glm_vec2_copy(scale, sit_input.mouse.scale);
+    glm_vec2_copy((float*)&scale, sit_input.mouse.scale);
 }
 
 /**
