@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.12 "Velocity"_
+_Core API library v2.3.13 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,9 +8,10 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.11** addresses critical stability issues in the Vulkan backend, specifically regarding descriptor set allocation and resource cleanup, ensuring robust handling of memory exhaustion scenarios. It also cleans up invalid errno checks in memory management functions.
+**Version 2.3.13** introduces the **Async Threading Module**, a C11-compliant job system designed to eliminate main-thread stalls caused by heavy operations like audio decoding and file I/O. It provides a high-performance, lock-minimized ring buffer for job submission and worker management, paving the way for the upcoming **v2.4 "Momentum"** engine architecture.
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **Render Lists (Momentum):** Decoupling draw command generation from submission to allow multi-threaded rendering.
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
 *   **Async Compute**: Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
 *   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
@@ -24,10 +25,11 @@ It provides deep **Awareness** of the host system through APIs for querying hard
 
 This foundation enables precise **Control** over the entire application stack:
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management.
+*   **Threading:** A new, user-managed **C11 Thread Pool** with atomic job tracking and zero-allocation ring buffers for safe background processing.
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events.
-*   **Audio:** A professional-grade pipeline supporting **safe RAM preloading** for SFX, disk streaming for music, **thread-safe capture (recording)**, and real-time effects (Reverb, Delay, Filter).
+*   **Audio:** A professional-grade pipeline supporting **safe RAM preloading** via background threads (Async Load), disk streaming for music, **thread-safe capture (recording)**, and real-time effects (Reverb, Delay, Filter).
 *   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.2**. It manages complex resources—shaders, meshes, and **dynamically allocated descriptor sets**—automatically. It includes high-level utilities for **Compute Shaders (with #include support)**, **Virtual Display Compositing**, and high-quality text rendering.
-*   **Hot-Reloading:** A new suite of tools for live-reloading assets at runtime, safely handling GPU synchronization and resource rebuilding.
+*   **Hot-Reloading:** A suite of tools for live-reloading assets (Shaders, Textures, Models) at runtime, safely handling GPU synchronization and resource rebuilding.
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
 
