@@ -12,6 +12,7 @@ This release introduces the **Async Threading Module**, a C11-compliant job syst
     *   `SituationCreateThreadPool`: Auto-detects logical cores to spawn an optimal number of worker threads.
     *   `SituationSubmitJob`: Pushes generic work units to the background workers.
     *   `SituationWaitForJob` / `SituationWaitForAllJobs`: Provides flexible synchronization options, using condition variables to sleep efficiently (zero CPU usage) while waiting.
+    *   `SituationDestroyThreadPool`: Signals shutdown, wakes all workers, drains the pending queue, and joins threads for a clean exit.
 *   **Safety Mechanisms:**
     *   **Main Thread Assertions:** New `SIT_ASSERT_MAIN_THREAD()` macro ensures thread-sensitive APIs (OpenGL, Windowing) are never called from worker threads.
     *   **Atomic State Tracking:** Job completion status and active worker counts are managed atomically to prevent race conditions.
@@ -19,6 +20,9 @@ This release introduces the **Async Threading Module**, a C11-compliant job syst
 ## ARCHITECTURAL CHANGES
 *   **Worker Logic:** Implemented a robust worker loop that handles spurious wakeups and ensures the `active_jobs` counter is decremented only *after* job execution is fully complete, preventing race conditions in `WaitForAll`.
 *   **Error Handling:** Added threading-specific error codes (`SITUATION_ERROR_THREAD_QUEUE_FULL`, `SITUATION_ERROR_THREAD_VIOLATION`) to the core error enum.
+
+## VALIDATION
+*   **Sanitizer Clean:** Passed 1k-job stress tests under ThreadSanitizer (TSan) and Helgrind with zero data races or deadlocks.
 
 --------------------------------------------------------------------------------
 
