@@ -12,12 +12,20 @@ This release addresses critical stability issues and performance bottlenecks ide
 *   **Vulkan PBR Regression Fix:** Resolved a blocking regression where new 48-byte stride PBR pipelines broke compatibility with legacy 32-byte meshes. The Vulkan backend now dynamically selects between Legacy and PBR pipelines based on mesh vertex stride.
 
 ## PERFORMANCE OPTIMIZATIONS
-*   **OpenGL Shadow State:** Implemented software tracking of GL state (program, VAO, FBO, blend modes) to eliminate redundant `glGetIntegerv` calls from the hot render loop, reducing CPU-GPU sync bubbles.
-*   **Vulkan Asset Descriptor Pool:** Introduced a dedicated, freeable `VkDescriptorPool` for long-lived assets (Textures/Models) to prevent descriptor exhaustion during level transitions.
-*   **Text Rendering Allocations:** Replaced per-frame `malloc/free` in `SituationCmdDrawText` with a persistent, auto-growing scratch buffer (`text_batch_scratch`), significantly reducing allocator pressure.
+*   **OpenGL Shadow State:** Implemented software tracking of GL state (program, VAO, FBO, blend modes) to eliminate redundant `glGetIntegerv` calls from the hot render loop. This removes significant CPU-GPU synchronization bubbles.
+*   **Vulkan Asset Descriptor Pool:** Introduced a dedicated, freeable `VkDescriptorPool` for long-lived assets (Textures/Models). This prevents descriptor exhaustion and fragmentation during level transitions, which was a risk with the previous linear-only allocator.
+*   **Text Rendering Allocations:** Replaced per-frame `malloc/free` calls in `SituationCmdDrawText` with a persistent, auto-growing scratch buffer (`text_batch_scratch`), significantly reducing heap allocator pressure during UI rendering.
 
 ## NEW FEATURES
-*   **Tangent Space Support:** Updated `SituationCreateMesh` and the internal GLTF loader to extract and store Tangent data (12-float stride: Pos, Norm, Tan, UV). This enables correct normal mapping for PBR shaders.
+*   **Tangent Space Support:** Updated `SituationCreateMesh` and the internal GLTF loader to extract and store Tangent data (12-float stride: Pos, Norm, Tangent, UV). This enables correct normal mapping for PBR shaders.
+
+## MIGRATION GUIDE
+*   **Shader Contract Update:** The vertex input layout has changed to support Tangents. Custom shaders using `SituationCmdDrawMesh` must update their input layout:
+    *   **Location 0:** Position (vec3)
+    *   **Location 1:** Normal (vec3)
+    *   **Location 2:** TexCoord0 (vec2)
+    *   **Location 3:** Color (vec4) - *Reserved/Legacy*
+    *   **Location 4:** Tangent (vec4) - **[NEW]**
 
 --------------------------------------------------------------------------------
 
