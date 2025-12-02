@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 14
-#define SITUATION_VERSION_STRING "2.3.14 Velocity"
+#define SITUATION_VERSION_STRING ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
