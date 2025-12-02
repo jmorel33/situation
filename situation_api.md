@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.5B_
+_Core API library v2.3.13_
 
 _(c) 2025 Jacques Morel_
 
@@ -5094,6 +5094,147 @@ for (int i = 0; i < file_count; ++i) {
     printf("Found file: %s\n", files[i]);
 }
 SituationFreeDirectoryFileList(files, file_count);
+```
+</details>
+<details>
+<summary><h3>Threading Module</h3></summary>
+
+**Overview:** The Threading module provides a simple yet powerful job system for executing tasks asynchronously. It allows you to offload heavy computations or I/O operations (like audio loading) to worker threads, preventing stalls on the main thread. The system is designed with safety in mind, asserting main-thread usage where required.
+
+### Structs and Enums
+
+#### `SituationJobType`
+Defines the type of task a job performs.
+```c
+typedef enum {
+    SIT_JOB_TYPE_GENERAL = 0,
+    SIT_JOB_TYPE_AUDIO_LOAD,
+    SIT_JOB_TYPE_FILE_READ,
+    SIT_JOB_TYPE_CUSTOM
+} SituationJobType;
+```
+
+---
+#### `SituationJob`
+Represents a unit of work to be executed by the thread pool.
+```c
+typedef struct SituationJob {
+    SituationJobId id;              // Unique ID assigned by the pool
+    SituationJobType type;
+    
+    // Callback function pointer: void func(void* user_data, SituationError* out_err)
+    void (*callback)(void*, SituationError*);
+    void* user_data;
+
+    // Internal state (Atomically managed)
+    atomic_int completed;           // 0=pending/running, 1=done
+    SituationError result_error;    
+} SituationJob;
+```
+-   `id`: Unique identifier for the job.
+-   `type`: The type of job.
+-   `callback`: The function to execute on the worker thread.
+-   `user_data`: User data passed to the callback.
+-   `completed`: Atomic flag indicating completion status.
+-   `result_error`: Error code resulting from the job execution.
+
+---
+#### `SituationThreadPool`
+Manages a pool of worker threads and a job queue.
+```c
+typedef struct SituationThreadPool {
+    bool is_active;
+    thrd_t* threads;
+    size_t thread_count;
+    // ... internal synchronization primitives ...
+    SituationJob* queue;
+    size_t queue_capacity;
+    // ... internal queue state ...
+} SituationThreadPool;
+```
+
+### Functions
+
+---
+#### `SituationCreateThreadPool`
+Creates a thread pool with a specified number of worker threads and job queue capacity.
+```c
+bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size);
+```
+**Usage Example:**
+```c
+SituationThreadPool pool;
+// Create a pool with 4 threads and space for 32 jobs
+if (SituationCreateThreadPool(&pool, 4, 32)) {
+    printf("Thread pool initialized.\n");
+}
+```
+
+---
+#### `SituationDestroyThreadPool`
+Shuts down the thread pool, stopping all worker threads and freeing resources. This function blocks until all running jobs have finished.
+```c
+void SituationDestroyThreadPool(SituationThreadPool* pool);
+```
+**Usage Example:**
+```c
+SituationDestroyThreadPool(&pool);
+```
+
+---
+#### `SituationSubmitJob`
+Submits a generic custom job to the thread pool.
+```c
+SituationJobId SituationSubmitJob(SituationThreadPool* pool, void (*callback)(void*, SituationError*), void* user_data, SituationJobType type);
+```
+**Usage Example:**
+```c
+void MyHeavyTask(void* data, SituationError* err) {
+    printf("Processing data: %s\n", (char*)data);
+    *err = SITUATION_SUCCESS;
+}
+
+// ... inside main loop ...
+SituationJobId job_id = SituationSubmitJob(&pool, MyHeavyTask, "Hello Thread!", SIT_JOB_TYPE_CUSTOM);
+```
+
+---
+#### `SituationLoadSoundFromFileAsync`
+Submits a job to load a sound file asynchronously. This prevents the main thread from stalling while decoding large audio files.
+```c
+SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound);
+```
+**Usage Example:**
+```c
+SituationSound music;
+SituationJobId load_job = SituationLoadSoundFromFileAsync(&pool, "music/track.mp3", true, &music);
+
+// Later, check if it's done
+if (SituationWaitForJob(&pool, load_job, 0)) {
+    SituationPlayLoadedSound(&music);
+}
+```
+
+---
+#### `SituationWaitForJob`
+Checks the status of a specific job. 
+```c
+bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id, uint64_t timeout_ms);
+```
+- `timeout_ms`: Max time to wait. Pass `0` for non-blocking check.
+**Usage Example:**
+```c
+// Non-blocking check
+if (SituationWaitForJob(&pool, job_id, 0)) {
+    // Job is done
+}
+```
+
+---
+#### `SituationWaitForAllJobs`
+Blocks the calling thread until all jobs in the pool are completed.
+```c
+bool SituationWaitForAllJobs(SituationThreadPool* pool);
 ```
 </details>
 <details>
