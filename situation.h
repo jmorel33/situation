@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 14
-#define SITUATION_VERSION_STRING ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -424,6 +424,7 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
     #define SIT_ASSERT_MAIN_THREAD() do {} while(0)
 #endif
 
+#ifdef SITUATION_ENABLE_THREADING
 // --- Job Types ---
 typedef enum {
     SIT_JOB_TYPE_GENERAL = 0,
@@ -482,6 +483,7 @@ typedef struct SituationThreadPool {
     atomic_int next_job_id;         // ID generator
     SituationError last_error;      // Aggregated error from last failed job
 } SituationThreadPool;
+#endif // SITUATION_ENABLE_THREADING
 
 // ---------------------------------------------------------------------------------
 //  Buffer Usage Flags (Critical for backend memory optimisation)
@@ -1521,6 +1523,7 @@ SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature);
 #define SITUATION_BARRIER_INDEX_BUFFER_BIT          SITUATION_BARRIER_ELEMENT_ARRAY_BIT
 #define SITUATION_BARRIER_UNIFORM_BUFFER_BIT        SITUATION_BARRIER_UNIFORM_BARRIER_BIT
 #define SITUATION_BARRIER_TEXTURE_FETCH_BIT         SITUATION_BARRIER_TEXTURE_FETCH_BARRIER_BIT
+#define SITUATION_BARRIER_SHADER_IMAGE_ACCESS_BIT   SITUATION_BARRIER_SHADER_IMAGE_ACCESS_BARRIER_BIT
 #define SITUATION_BARRIER_COMMAND_BIT               SITUATION_BARRIER_COMMAND_BARRIER_BIT
 #define SITUATION_BARRIER_SHADER_STORAGE_BIT        SITUATION_BARRIER_SHADER_STORAGE_BARRIER_BIT
 
@@ -1922,7 +1925,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
 SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offset, size_t size, void* out_data); // Read data from a GPU buffer.
 
 // --- Virtual Displays (Render Targets) ---
-SITAPI int SituationCreateVirtualDisplay(vec2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode); // Create an off-screen render target.
+SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode); // Create an off-screen render target.
 SITAPI SituationError SituationDestroyVirtualDisplay(int display_id);                   // Destroy a virtual display.
 SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd);                 // Composite all visible virtual displays to the current target.
 SITAPI SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, float opacity, int z_order, bool visible, double frame_time_mult, SituationBlendMode blend_mode); // Configure a virtual display's properties.
@@ -2594,17 +2597,18 @@ typedef struct SituationGraveyard {
     // Shadow State (Tracks what we *think* the driver state is)
     GLuint current_vao_id;
     GLuint current_fbo_id;
-    bool   blend_enabled;
+    int    blend_enabled;
     GLenum blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha;
     GLenum blend_eq_rgb, blend_eq_alpha;
-    bool   depth_test_enabled;
-    bool   cull_face_enabled;
-    bool   scissor_test_enabled;
+    int    depth_test_enabled;
+    int    cull_face_enabled;
+    int    scissor_test_enabled;
 
     #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     bool arb_spirv_available;                   // True if GL_ARB_gl_spirv extension is supported
     #endif
     GLenum last_error;                          // Cached result of last glGetError()
+    bool shadow_state_dirty;                    // [2.3.14A] Flag to indicate external state changes
 } _SituationGLState;
 #endif // SITUATION_USE_OPENGL
 
@@ -3292,6 +3296,7 @@ static GLuint _SituationCreateGLComputeProgram(const void* source_data, Situatio
 static void _SituationCheckGLError(const char* location);
 static void _SitGLBackupState(_SitGLStateBackup* s);
 static void _SitGLRestoreState(_SitGLStateBackup* s);
+static void _SitGLInvalidateShadowState(void); // [2.3.14A]
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
 // Forward declare the SPIR-V blob struct as it's used here
 struct _SituationSpirvBlob;
@@ -5226,10 +5231,10 @@ static void _SitGLBackupState(_SitGLStateBackup* s) {
     s->fbo = sit_gs.gl.current_fbo_id;
 
     // Backup Capabilities
-    s->blend = sit_gs.gl.blend_enabled;
-    s->depth_test = sit_gs.gl.depth_test_enabled;
-    s->cull_face = sit_gs.gl.cull_face_enabled;
-    s->scissor_test = sit_gs.gl.scissor_test_enabled;
+    s->blend = (sit_gs.gl.blend_enabled == -1) ? glIsEnabled(GL_BLEND) : (GLboolean)sit_gs.gl.blend_enabled;
+    s->depth_test = (sit_gs.gl.depth_test_enabled == -1) ? glIsEnabled(GL_DEPTH_TEST) : (GLboolean)sit_gs.gl.depth_test_enabled;
+    s->cull_face = (sit_gs.gl.cull_face_enabled == -1) ? glIsEnabled(GL_CULL_FACE) : (GLboolean)sit_gs.gl.cull_face_enabled;
+    s->scissor_test = (sit_gs.gl.scissor_test_enabled == -1) ? glIsEnabled(GL_SCISSOR_TEST) : (GLboolean)sit_gs.gl.scissor_test_enabled;
 
     // Backup Blend State
     s->blend_src_rgb = sit_gs.gl.blend_src_rgb;
@@ -5267,6 +5272,25 @@ static void _SitGLRestoreState(_SitGLStateBackup* s) {
     if (s->depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
     if (s->cull_face) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
     if (s->scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+}
+
+/**
+ * @brief [INTERNAL] Helper to force a re-upload of state next time it's requested.
+ * @details [2.3.14A] Invalidates the internal shadow state tracking to recover from external GL modifications (e.g. ImGui).
+ */
+static void _SitGLInvalidateShadowState(void) {
+    sit_gs.gl.current_program_id = 0;
+    sit_gs.gl.current_vao_id = 0;
+    sit_gs.gl.current_fbo_id = 0;
+
+    // Force mismatch by setting to -1 (unknown state)
+    sit_gs.gl.blend_enabled = -1;
+    sit_gs.gl.blend_src_rgb = GL_NONE;
+    sit_gs.gl.depth_test_enabled = -1;
+    sit_gs.gl.cull_face_enabled = -1;
+    sit_gs.gl.scissor_test_enabled = -1;
+
+    sit_gs.gl.shadow_state_dirty = true;
 }
 
 /**
@@ -11459,6 +11483,10 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // --- 2. OpenGL Frame Setup ---
         // Make the context current for this thread (often a no-op if already current).
         glfwMakeContextCurrent(sit_gs.sit_glfw_window);
+
+        // [2.3.14A] Invalidate shadow state at start of frame to recover from external changes (ImGui, etc.)
+        _SitGLInvalidateShadowState();
+
         // Bind the default framebuffer (main window backbuffer).
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         // Set the viewport to the full window size.
@@ -13567,7 +13595,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
                                   vk_usage, VMA_MEMORY_USAGE_GPU_ONLY,
                                   &texture.image, &texture.allocation) != SITUATION_SUCCESS) {
         if (cmd == VK_NULL_HANDLE) vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
-        else _SituationDeferDestroyBuffer(staging_buffer, staging_allocation, sit_gs.vk.current_frame_index);
+        else _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
         return texture;
     }
 
@@ -13597,7 +13625,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
         vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
     } else {
         // --- Step 4: Defer Cleanup Staging Buffer (Asynchronous) ---
-        _SituationDeferDestroyBuffer(staging_buffer, staging_allocation, sit_gs.vk.current_frame_index);
+        _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
     }
 
     // --- Step 5: Create Image View and Sampler ---
@@ -13907,7 +13935,7 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
         vkCmdCopyBuffer(cmd, staging_buffer, *out_buffer, 1, &copy_region);
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1, &barrier, 0, NULL);
 
-        _SituationDeferDestroyBuffer(staging_buffer, staging_allocation, sit_gs.vk.current_frame_index);
+        _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
         return SITUATION_SUCCESS;
 
     } else {
@@ -13922,16 +13950,18 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
 
         vkCmdCopyBuffer(temp_cmd, staging_buffer, *out_buffer, 1, &copy_region);
 
-        SituationError cmd_result = _SituationVulkanEndSingleTimeCommands(temp_cmd);
+        // Execute and Wait
+        _SituationVulkanEndSingleTimeCommands(temp_cmd);
 
-        // Cleanup staging immediately
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
-
-        if (cmd_result != SITUATION_SUCCESS) {
-             vmaDestroyBuffer(sit_gs.vk.vma_allocator, *out_buffer, *out_allocation);
-             *out_buffer = VK_NULL_HANDLE;
-             return cmd_result;
+        // SAFE CLEANUP [2.3.14A]:
+        // If we are initializing, Graveyards might not be ready or flushed yet.
+        // Explicit destroy is fine here because we waited on the queue via EndSingleTimeCommands.
+        if (sit_gs.vk.graveyards) {
+            _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
+        } else {
+            vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
         }
+
         return SITUATION_SUCCESS;
     }
 }
@@ -14342,7 +14372,7 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
         }
 
         if (buffer->vk_buffer != VK_NULL_HANDLE) {
-            _SituationDeferDestroyBuffer(buffer->vk_buffer, buffer->vma_allocation, sit_gs.vk.current_frame_index);
+            _SituationDeferDestroyBuffer(buffer->vk_buffer, buffer->vma_allocation);
         }
     }
 #endif
@@ -14382,6 +14412,38 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
         return mesh;
     }
 
+    // [2.3.14A] Auto-Upgrade Legacy Stride
+    void* final_vertex_data = (void*)vertex_data;
+    size_t final_stride = vertex_stride;
+    bool allocated_temp_buffer = false;
+
+    // Detect Legacy Format: 8 floats (Pos3 + Norm3 + UV2 = 32 bytes)
+    if (vertex_stride == 8 * sizeof(float)) {
+        size_t new_stride = 12 * sizeof(float); // Add 4 floats for Tangent
+        float* new_buffer = (float*)SIT_MALLOC(vertex_count * new_stride);
+
+        const float* src = (const float*)vertex_data;
+        float* dst = new_buffer;
+
+        for (int i = 0; i < vertex_count; i++) {
+            // Copy Pos (3), Norm (3)
+            memcpy(dst, src, 6 * sizeof(float));
+            // Insert Default Tangent (1, 0, 0, 1)
+            dst[6] = 1.0f; dst[7] = 0.0f; dst[8] = 0.0f; dst[9] = 1.0f;
+            // Copy UV (2)
+            dst[10] = src[6]; dst[11] = src[7];
+
+            src += 8;
+            dst += 12;
+        }
+
+        final_vertex_data = new_buffer;
+        final_stride = new_stride;
+        allocated_temp_buffer = true;
+
+        SituationLogWarning(SITUATION_SUCCESS, "SituationCreateMesh: Legacy 32-byte stride detected. Auto-padded to 48-byte (Tangents added).");
+    }
+
     mesh.index_count = index_count;
 
 #if defined(SITUATION_USE_OPENGL)
@@ -14395,14 +14457,14 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
 
     // 2. Upload the vertex and index data to their respective buffers.
     //    GL_STATIC_DRAW is a hint that this data will not be modified frequently.
-    glNamedBufferData(mesh.vbo_id, vertex_count * vertex_stride, vertex_data, GL_STATIC_DRAW);
+    glNamedBufferData(mesh.vbo_id, vertex_count * final_stride, final_vertex_data, GL_STATIC_DRAW);
     glNamedBufferData(mesh.ebo_id, index_count * sizeof(uint32_t), index_data, GL_STATIC_DRAW);
 
     // 3. Configure the VAO: This is where we describe the layout of the vertex data.
     //    We are telling the VAO, "When you are used for drawing..."
 
     // "...use `mesh.vbo_id` as the source for vertex data for binding point 0."
-    glVertexArrayVertexBuffer(mesh.vao_id, 0, mesh.vbo_id, 0, vertex_stride);
+    glVertexArrayVertexBuffer(mesh.vao_id, 0, mesh.vbo_id, 0, final_stride);
 
     // "...use `mesh.ebo_id` as the source for indices."
     glVertexArrayElementBuffer(mesh.vao_id, mesh.ebo_id);
@@ -14420,19 +14482,19 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
     glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_NORMAL, 0);
 
     // Tangent (Location 4): 4 floats, offset 6*float
-    if (vertex_stride >= (3 + 3 + 4) * sizeof(float)) {
+    if (final_stride >= (3 + 3 + 4) * sizeof(float)) {
         glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_TANGENT);
         glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_TANGENT, 4, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
         glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_TANGENT, 0);
     }
 
     // Conditionally enable texture coordinates if the vertex stride is large enough to contain them.
-    if (vertex_stride >= (3 + 3 + 4 + 2) * sizeof(float)) {
+    if (final_stride >= (3 + 3 + 4 + 2) * sizeof(float)) {
         // New Stride: Pos(3) + Norm(3) + Tan(4) + UV(2) -> Offset 10
         glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_TEXCOORD_0);
         glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 10 * sizeof(float));
         glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 0);
-    } else if (vertex_stride >= (3 + 3 + 2) * sizeof(float)) {
+    } else if (final_stride >= (3 + 3 + 2) * sizeof(float)) {
         // Legacy Stride: Pos(3) + Norm(3) + UV(2) -> Offset 6
         glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_TEXCOORD_0);
         glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
@@ -14447,9 +14509,10 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
     // Try to use main command buffer for async upload if inside a frame
     VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
 
-    VkDeviceSize vertex_buffer_size = (VkDeviceSize)vertex_count * vertex_stride;
-    if (_SituationVulkanCreateAndUploadBuffer(cmd, vertex_data, vertex_buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &mesh.vertex_buffer, &mesh.vertex_buffer_memory) != SITUATION_SUCCESS) {
+    VkDeviceSize vertex_buffer_size = (VkDeviceSize)vertex_count * final_stride;
+    if (_SituationVulkanCreateAndUploadBuffer(cmd, final_vertex_data, vertex_buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &mesh.vertex_buffer, &mesh.vertex_buffer_memory) != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create vertex buffer for mesh.");
+        if (allocated_temp_buffer) SIT_FREE(final_vertex_data);
         return (SituationMesh){0};
     }
 
@@ -14460,7 +14523,7 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
         if (cmd == VK_NULL_HANDLE) {
              vmaDestroyBuffer(sit_gs.vk.vma_allocator, mesh.vertex_buffer, mesh.vertex_buffer_memory);
         } else {
-             _SituationDeferDestroyBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory, sit_gs.vk.current_frame_index);
+             _SituationDeferDestroyBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory);
         }
         return (SituationMesh){0};
     }
@@ -14469,7 +14532,11 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
 
     mesh.index_count = index_count;
     mesh.vertex_count = vertex_count;
-    mesh.vertex_stride = vertex_stride;
+    mesh.vertex_stride = final_stride;
+
+    if (allocated_temp_buffer) {
+        SIT_FREE(final_vertex_data);
+    }
 
     // --- Resource Manager: Add to tracking list ---
     if (mesh.id != 0) {
@@ -14545,10 +14612,10 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
         // For Vulkan, defer destruction to the Graveyard to avoid stalling the GPU.
         if (sit_gs.vk.device) {
             if (mesh->vertex_buffer != VK_NULL_HANDLE) {
-                _SituationDeferDestroyBuffer(mesh->vertex_buffer, mesh->vertex_buffer_memory, sit_gs.vk.current_frame_index);
+                _SituationDeferDestroyBuffer(mesh->vertex_buffer, mesh->vertex_buffer_memory);
             }
             if (mesh->index_buffer != VK_NULL_HANDLE) {
-                _SituationDeferDestroyBuffer(mesh->index_buffer, mesh->index_buffer_memory, sit_gs.vk.current_frame_index);
+                _SituationDeferDestroyBuffer(mesh->index_buffer, mesh->index_buffer_memory);
             }
         }
     }
@@ -18419,8 +18486,8 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
     memset(vd, 0, sizeof(SituationVirtualDisplay)); // Crucial: Start with clean slate for safe cleanup
 
     vd->id = new_id;
-    vd->resolution[0] = (resolution[0] > 0) ? resolution[0] : 1.0f;
-    vd->resolution[1] = (resolution[1] > 0) ? resolution[1] : 1.0f;
+    vd->resolution[0] = (resolution.x > 0) ? resolution.x : 1.0f;
+    vd->resolution[1] = (resolution.y > 0) ? resolution.y : 1.0f;
     vd->frame_time_multiplier = frame_time_mult;
     vd->z_order = z_order;
     vd->scaling_mode = scaling_mode;
@@ -21514,13 +21581,12 @@ SITAPI SituationImage SituationLoadImageFromMemory(const char *fileType, const u
  * @note This function only frees the CPU-side pixel buffer (`image.data`). It does not affect any GPU texture created from this image. Use `SituationDestroyTexture` for GPU resources.
  * @note It is safe to call this function on an image whose `data` pointer is already NULL.
  */
-SITAPI bool SituationUnloadImage(SituationImage image) {
+SITAPI void SituationUnloadImage(SituationImage image) {
     if (image.data != NULL) {
         SIT_FREE(image.data);
         // Standard free() returns void and does not set errno.
         // We assume success if the pointer was valid.
     }
-    return true;
 }
 
 /**
@@ -23358,23 +23424,42 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         frameCount = pGs->audio_callback_temp_buffer_frames_capacity;
     }
 
-    // [THREADING] Try to lock. If we can't get it immediately, it means the main thread is
-    // doing something heavy with the sound list. Skip mixing this frame to avoid stuttering.
-    if (ma_mutex_try_lock(&pGs->audio_queue_mutex) != MA_SUCCESS) {
-        // Zero output and return. Ideally, fading out would be better,
-        // but silence is better than a buffer underrun/glitch loop.
-        memset(pOutput, 0, frameCount * ma_get_bytes_per_frame(pDevice->playback.format, pDevice->playback.channels));
-        return;
-    }
+    // Local snapshot buffer (Stack allocated, fast)
+    // Max concurrent sounds is defined as 32, so this is cheap.
+    SituationSound* local_sound_list[SITUATION_MAX_AUDIO_SOUNDS_QUEUED];
+    int local_count = 0;
 
+    // --- CRITICAL SECTION START ---
+    // Lock ONLY to copy the pointers. This takes nanoseconds.
+    ma_mutex_lock(&pGs->audio_queue_mutex);
+    {
+        local_count = pGs->queued_sound_count;
+        if (local_count > 0) {
+            memcpy(local_sound_list, pGs->queued_sounds, local_count * sizeof(SituationSound*));
+        }
+    }
+    ma_mutex_unlock(&pGs->audio_queue_mutex);
+    // --- CRITICAL SECTION END ---
+
+    // Initialize output to silence
     memset(pOutput, 0, frameCount * ma_get_bytes_per_frame(pDevice->playback.format, pDevice->playback.channels));
 
+    if (local_count == 0) return;
+
+    // --- MIXING (Thread-Safe, Lock-Free) ---
+    // We iterate over our LOCAL list.
+    // Note: SituationSound structs must remain valid memory during playback.
+    // SituationUnloadSound handles this by removing from queue before freeing.
     float* decoder_buffer = pGs->audio_callback_decoder_temp_buffer;
     float* effects_buffer = pGs->audio_callback_effects_temp_buffer;
     void*  converter_buffer = pGs->audio_callback_converter_temp_buffer;
 
-    for (int i = 0; i < pGs->queued_sound_count; ++i) {
-        SituationSound* sound = pGs->queued_sounds[i];
+    // Track sounds that finish playback to remove them later
+    SituationSound* sounds_to_remove[SITUATION_MAX_AUDIO_SOUNDS_QUEUED];
+    int remove_count = 0;
+
+    for (int i = 0; i < local_count; ++i) {
+        SituationSound* sound = local_sound_list[i];
 
         if (!sound || !sound->is_initialized || !sound->converter_initialized) {
             continue;
@@ -23397,7 +23482,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
             sound->cursor_frames += frames_read_from_decoder;
 
             if (res_dec != MA_SUCCESS && res_dec != MA_AT_END) {
-                pGs->queued_sounds[i] = pGs->queued_sounds[--pGs->queued_sound_count]; i--;
+                sounds_to_remove[remove_count++] = sound;
                 goto next_sound_in_queue_locked;
             }
 
@@ -23407,7 +23492,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                     sound->cursor_frames = 0;
                     continue;
                 } else {
-                    pGs->queued_sounds[i] = pGs->queued_sounds[--pGs->queued_sound_count]; i--;
+                    sounds_to_remove[remove_count++] = sound;
                     goto next_sound_in_queue_locked;
                 }
             }
@@ -23541,7 +23626,21 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
     next_sound_in_queue_locked:;
     }
 
-    ma_mutex_unlock(&pGs->audio_queue_mutex);
+    // --- CLEANUP FINISHED SOUNDS ---
+    if (remove_count > 0) {
+        ma_mutex_lock(&pGs->audio_queue_mutex);
+        for (int r = 0; r < remove_count; ++r) {
+            SituationSound* target = sounds_to_remove[r];
+            // Find and remove from the LIVE list
+            for (int j = 0; j < pGs->queued_sound_count; ++j) {
+                if (pGs->queued_sounds[j] == target) {
+                    pGs->queued_sounds[j] = pGs->queued_sounds[--pGs->queued_sound_count];
+                    break;
+                }
+            }
+        }
+        ma_mutex_unlock(&pGs->audio_queue_mutex);
+    }
 }
 
 
@@ -24331,6 +24430,10 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
  */
 SITAPI void SituationUnloadSound(SituationSound* sound) {
     if (sound) {
+        // [2.3.14A] Ensure sound is removed from the active mixing queue before destroying resources.
+        // This prevents the audio thread from accessing freed memory during its snapshot phase.
+        SituationStopLoadedSound(sound);
+
         if (sound->converter_initialized) {
             ma_data_converter_uninit(&sound->converter, NULL);
         }
@@ -26215,15 +26318,14 @@ SITAPI void SituationFreeString(char* str) {
  * @param displays The array of `SituationDisplayInfo` structs to be freed.
  * @param count The number of elements in the array, as returned by `SituationGetDisplays`.
  */
-SITAPI bool SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
-    if (!displays || count == 0) return true;
+SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
+    if (!displays || count == 0) return;
     for (int i = 0; i < count; ++i) {
         if (displays[i].available_modes) {
             SIT_FREE(displays[i].available_modes);
         }
     }
     SIT_FREE(displays);
-    return true;
 }
 
 #endif // SITUATION_IMPLEMENTATION
