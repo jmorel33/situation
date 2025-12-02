@@ -1,3 +1,18 @@
+Date: 2025-12-02
+Version: 2.3.14A "Velocity" (Stability / Bug Fix / Compatibility)
+
+## DESCRIPTION
+This patch hardens the "Velocity" architecture, focusing on audio stability, graphics compatibility, and backend robustness. It addresses critical issues that could cause audio dropouts, crashes with legacy meshes, and state desynchronization in OpenGL.
+
+## CRITICAL FIXES
+*   **Audio Snapshot Mixing:** Replaced the v2.3.14 `try_lock` strategy in the audio callback with a Snapshot-Mixing strategy. This reduces the critical section to pointer copying only (O(1)), eliminating silence and dropouts during main-thread contention (e.g., asset loading).
+*   **Graphics Auto-Padding:** Added an Auto-Padding Layer to `SituationCreateMesh`. Legacy 32-byte vertex data (Pos/Norm/UV) is now automatically detected and upgraded to the required 48-byte format (Pos/Norm/Tan/UV) by inserting default tangents. This prevents crashes and validation errors when using new PBR shaders with older assets.
+*   **OpenGL Shadow State Invalidation:** Introduced `_SitGLInvalidateShadowState()` and integrated it into the frame start sequence. This invalidates internal state tracking at the beginning of every frame, allowing the library to recover gracefully if external tools (like ImGui) modify the GL state behind its back.
+*   **Vulkan Staging Buffer Cleanup:** Consolidated logic in `_SituationVulkanCreateAndUploadBuffer` to ensure robust cleanup of staging buffers. It now safely handles both synchronous (initialization) and asynchronous (runtime) upload paths, preventing potential double-frees or leaks.
+*   **Header Cleanup:** Removed the empty `SITUATION_VERSION_STRING` macro definition to clean up the public header.
+
+--------------------------------------------------------------------------------
+
 
 Date: 2025-12-01
 Version: 2.3.14 "Velocity" (Stability & Performance)
