@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.14 "Velocity" |
+| **Version** | 2.3.14A "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -36,6 +36,15 @@ The library is engineered around three architectural pillars:
 
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
+
+### New in v2.3.14A "Velocity" (Refinement)
+
+This patch release focuses on thread safety and developer quality-of-life improvements.
+
+**Key Enhancements:**
+*   **Audio Snapshot Mixing:** The audio callback now uses a O(1) snapshotting strategy instead of a `try_lock` loop. This eliminates potential race conditions and audio dropouts when loading assets on the main thread.
+*   **Mesh Auto-Padding:** `SituationCreateMesh` now detects legacy 32-byte vertex data (Pos/Norm/UV) and automatically upgrades it to the standard 48-byte PBR format (Pos/Norm/Tan/UV) by inserting default tangent vectors. This simplifies migration from older projects.
+*   **Shadow State Invalidation:** The OpenGL backend now correctly invalidates its internal state tracker at the start of each frame, ensuring compatibility with external middleware (like ImGui) that modifies GL state directly.
 
 ### New in v2.3.14 "Velocity" (Stability & Performance)
 
@@ -76,6 +85,7 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
     - [1.4.2 Specialized Queries](#142-specialized-queries)
     - [1.4.3 Drive Information (Windows Only)](#143-drive-information-windows-only)
     - [1.4.4 Usage Example: Auto-Config](#144-usage-example-auto-config)
+    - [1.4.5 Feature Support Queries](#145-feature-support-queries)
 - [2.0 Windowing & Display Subsystem](#20-windowing--display-subsystem)
   - [2.1 Window State Management](#21-window-state-management)
     - [2.1.1 Configuration Flags](#211-configuration-flags)
@@ -748,6 +758,23 @@ void ConfigureQualitySettings() {
     }
 }
 ```
+
+### 1.4.5 Feature Support Queries
+
+To check for specific GPU capabilities (e.g., Ray Tracing, Mesh Shaders) at runtime, use `SituationIsFeatureSupported`.
+
+#### SituationIsFeatureSupported
+
+```c:disable-run
+bool SituationIsFeatureSupported(SituationRenderFeature feature);
+```
+
+**Feature Flags:**
+*   `SIT_FEATURE_RAY_TRACING`: Hardware Ray Tracing support.
+*   `SIT_FEATURE_MESH_SHADER`: Mesh Shaders (NV/EXT).
+*   `SIT_FEATURE_COMPUTE_SHADER`: Compute Shader support (Standard in Vulkan/GL 4.3+).
+*   `SIT_FEATURE_BINDLESS_TEXTURES`: Bindless Texture support.
+*   `SIT_FEATURE_FLOAT16`: Half-precision float support in shaders.
 
 
 <a id="20-windowing--display-subsystem"></a>
@@ -1673,6 +1700,7 @@ SituationMesh SituationCreateMesh(const void* vertex_data,
 ```
 
 **Behavior:** Allocates GPU memory (VBO/EBO), uploads the data, and configures the input assembly state (VAO in OpenGL).
+**Auto-Padding:** If `vertex_stride` is 32 bytes (Legacy format: Pos/Norm/UV), the function automatically allocates a temporary buffer, inserts default Tangent vectors `(1, 0, 0, 1)`, and uploads the data as the standard 48-byte PBR format.
 **Return:** A ready-to-draw `SituationMesh` handle.
 
 #### SituationDestroyMesh
@@ -2283,7 +2311,7 @@ Miss a barrier? Debug aborts with "Memory Hazard: Compute wrote SSBO, Vertex rea
 The Audio module in "Situation" is a high-performance, multithreaded mixing engine built directly on top of the OS audio HAL (WASAPI on Windows, CoreAudio on macOS, ALSA/Pulse on Linux) via the internal miniaudio backend.
 
 > **The Audio Guarantee**
-> *   **Thread Safety:** The mixing thread is lock-free. You can trigger sounds from Main, Physics, or Loader threads without mutex contention.
+> *   **Thread Safety:** The mixing thread uses a "Snapshot" strategy. It briefly locks to copy the list of active sound pointers to a local stack array, then unlocks immediately to perform mixing. This ensures that main-thread actions (like loading or unloading sounds) never stall the audio thread, preventing dropouts.
 > *   **Latency:** Default buffer is 10ms (480 frames @ 48kHz).
 > *   **Format:** Everything is float32. No integer clipping until the final DAC stage.
 
@@ -3440,6 +3468,22 @@ if (SituationWaitForJob(&pool, my_load_job_id, 0)) {
     UploadTextureToGPU(loaded_pixels);
 }
 ```
+
+#### SituationLoadSoundFromFileAsync
+
+A convenience helper for loading audio in the background.
+
+```c:disable-run
+SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
+                                               const char* file_path,
+                                               bool looping,
+                                               SituationSound* out_sound);
+```
+
+**Behavior:**
+*   Allocates a job context.
+*   Submits a job to the pool that calls `SituationLoadSoundFromFile` with mode `SITUATION_AUDIO_LOAD_FULL` (decode to RAM).
+*   **Safety:** Do not touch `out_sound` until `SituationWaitForJob` returns true.
 
 <a id="appendix-a-error-omniscience"></a>
 
