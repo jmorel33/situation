@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.13 "Velocity"
+*   Core API library v2.3.13A "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 13
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -252,8 +252,8 @@ typedef enum {
     SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION            	=  -11,  // Critical architectural rule broken (debug builds only)
     SITUATION_ERROR_TIMER_SYSTEM                           	=  -20,  // An error occurred within the internal timer/oscillator system
 	SITUATION_ERROR_THREAD_QUEUE_FULL  						=  -80,  // Threading Error: Thread Queue Full
-	SITUATION_ERROR_THREAD_VIOLATION   						=  -81,  // Threading Error: Thread Violation
-
+	SITUATION_ERROR_THREAD_VIOLATION   						=  -81,  // Main-thread-only function called from worker thread
+	
     // ── Platform & Windowing Errors (100–199) ───────────────────────────
     SITUATION_ERROR_GLFW_FAILED                             = -100, // Any GLFW function returned an error
     SITUATION_ERROR_WINDOW_CREATION_FAILED                  = -101, // Failed to create GLFW window
@@ -332,7 +332,6 @@ typedef enum {
     SITUATION_ERROR_NO_RENDER_PASS_ACTIVE                  = -540,  // Draw call outside render pass
     SITUATION_ERROR_RENDER_PASS_ALREADY_ACTIVE             = -541,  // Nested render pass attempted
     SITUATION_ERROR_BACKEND_MISMATCH                       = -550,  // Operation requested on wrong backend (e.g., GL call on Vulkan)
-    SITUATION_ERROR_THREAD_VIOLATION                       = -551,  // Main-thread-only function called from worker thread
     SITUATION_ERROR_PIPELINE_BIND_FAIL                     = -552,  // Failed to bind pipeline (incompatible layout or invalid handle)
 
 	// ── OpenGL Backend Errors (-600 to -699) ────────────────────────────
@@ -1925,7 +1924,7 @@ SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offs
 SITAPI int SituationCreateVirtualDisplay(vec2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode); // Create an off-screen render target.
 SITAPI SituationError SituationDestroyVirtualDisplay(int display_id);                   // Destroy a virtual display.
 SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd);                 // Composite all visible virtual displays to the current target.
-SITAPI SituationError SituationConfigureVirtualDisplay(int display_id, vec2 offset, float opacity, int z_order, bool visible, double frame_time_mult, SituationBlendMode blend_mode); // Configure a virtual display's properties.
+SITAPI SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, float opacity, int z_order, bool visible, double frame_time_mult, SituationBlendMode blend_mode); // Configure a virtual display's properties.
 SITAPI SituationVirtualDisplay* SituationGetVirtualDisplay(int display_id);             // Get a pointer to a virtual display's state.
 SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, SituationScalingMode scaling_mode); // Set the scaling/filtering mode for a virtual display.
 SITAPI void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty);             // Mark a virtual display as needing to be re-rendered.
@@ -2137,15 +2136,23 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 #ifdef SITUATION_IMPLEMENTATION
 
 // Internal: Assert main thread
+static void _SituationSetErrorFromCode(SituationError err, const char* detail);
+
+#ifdef SITUATION_ENABLE_THREADING
 static thrd_t sit_gs_main_thread_id;
 static bool sit_gs_thread_id_set = false;
+#endif
 
 static void _SituationAssertMainThread(const char* file, int line) {
 #ifndef NDEBUG
+#ifdef SITUATION_ENABLE_THREADING
     if (sit_gs_thread_id_set && !thrd_equal(thrd_current(), sit_gs_main_thread_id)) {
         _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_VIOLATION, "API call from non-main thread");
         fprintf(stderr, "[Situation DEBUG] Thread violation: %s:%d\n", file, line);
     }
+#else
+    (void)file; (void)line;
+#endif
 #endif
 }
 
@@ -3762,20 +3769,6 @@ SITAPI SituationJobId SituationSubmitJob(SituationThreadPool* pool, void (*callb
     return id;
 }
 
-SITAPI bool SituationWaitForAllJobs(SituationThreadPool* pool) {
-    SIT_ASSERT_MAIN_THREAD();
-    if (!pool || !pool->is_active) return false;
-
-    mtx_lock(&pool->lock);
-    // Wait while there are active jobs (Queued OR Running)
-    while (atomic_load(&pool->active_jobs) > 0) {
-        cnd_wait(&pool->idle_condition, &pool->lock);
-    }
-    mtx_unlock(&pool->lock);
-    
-    return pool->last_error == SITUATION_SUCCESS;
-}
-
 /**
  * @brief Blocks the calling thread until a specific job completes or a timeout occurs.
  *
@@ -4536,7 +4529,7 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_ASSERTION_FAILED:            base_msg = "Debug assertion tripped"; break;
         case SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION: base_msg = "Architectural rule broken: Update called after Draw"; break;
 		case SITUATION_ERROR_THREAD_QUEUE_FULL:  	 	  base_msg = "Threading Error: Thread Queue Full"; break;
-		case SITUATION_ERROR_THREAD_VIOLATION:   		  base_msg = "Threading Error: Thread Violation"; break;
+		case SITUATION_ERROR_THREAD_VIOLATION:   		  base_msg = "Main-thread-only function called from worker thread"; break;
 
         // --- Platform & Window Errors (100-199) ---
         case SITUATION_ERROR_GLFW_FAILED:                 base_msg = "An underlying GLFW library operation failed"; break;
@@ -4609,7 +4602,6 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_RENDER_PASS_ACTIVE:          base_msg = "An operation was attempted that is illegal during an active render pass"; break;
         case SITUATION_ERROR_NO_RENDER_PASS_ACTIVE:       base_msg = "A drawing operation was attempted outside of a render pass"; break;
         case SITUATION_ERROR_BACKEND_MISMATCH:            base_msg = "Operation requested on wrong backend (e.g., GL call on Vulkan)"; break;
-        case SITUATION_ERROR_THREAD_VIOLATION:            base_msg = "Main-thread-only function called from worker thread"; break;
         case SITUATION_ERROR_PIPELINE_BIND_FAIL:          base_msg = "Failed to bind pipeline (incompatible layout or invalid handle)"; break;
         case SITUATION_ERROR_INVALID_RESOURCE_HANDLE:     base_msg = "Invalid resource handle"; break;
         case SITUATION_ERROR_RESOURCE_ALREADY_DESTROYED:  base_msg = "Resource already destroyed (Use-after-free)"; break;
@@ -5560,9 +5552,11 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
 
     // --- 1. PRE-INITIALIZATION CHECKS ---
 	
+#ifdef SITUATION_ENABLE_THREADING
 	// Multi-Threading platform initialisation of the main thread (sit_gs context)
 	if (!sit_gs_thread_id_set) { sit_gs_main_thread_id = thrd_current(); sit_gs_thread_id_set = true; }
-	
+#endif
+
     // Ensure the library isn't already initialized to prevent conflicts.
     if (_sit_current_context != NULL) {
         // If context exists, check if it claims to be initialized
@@ -10216,8 +10210,6 @@ SITAPI void SituationUpdate(void) {
     SituationUpdateTimers();
 }
 
-// --- Main Shutdown Orchestrator ---
-
 /**
  * @brief Shuts down the entire Situation library and releases all resources.
  * @details This is the main exit point for the library and must be the last `SITAPI` function called. It orchestrates a graceful shutdown of all subsystems in the precise reverse order of their initialization, ensuring a clean exit with no resource leaks.
@@ -14841,18 +14833,25 @@ static GLuint _SituationCreateGLComputeProgram(const void* source_data, Situatio
 }
 #endif
 
-/**
- * @brief Creates a compute pipeline directly from GLSL source code provided as a C string in memory.
+
+ /**
+ * @brief [core] Creates a compute pipeline directly from GLSL source code provided as a C string in memory.
  *
  * @details This function compiles the provided GLSL compute shader source code into SPIR-V bytecode (if the shader compiler is enabled) and then creates the corresponding backend-specific compute pipeline object (e.g., OpenGL program, Vulkan pipeline).
  *          The resulting `SituationComputePipeline` handle can be used with `SituationCmdBindComputePipeline` and `SituationCmdDispatch` to execute compute work on the GPU.
+ *
+ * @par Backend-Specific Behavior
+ * - **OpenGL:** Compiles the GLSL source into an OpenGL Compute Program. If `SITUATION_ENABLE_SHADER_COMPILER` and `GL_ARB_gl_spirv` are available, it may compile to SPIR-V first for consistency with Vulkan.
+ * - **Vulkan:** This backend **requires** `SITUATION_ENABLE_SHADER_COMPILER`. The function uses `shaderc` to compile the GLSL source into a SPIR-V binary blob, which is then used to create a `VkPipeline`.
  *
  * @param compute_shader_source A null-terminated string containing the GLSL compute shader source code. Must not be NULL.
  *
  * @return A `SituationComputePipeline` handle.
  *         - On **success**: The handle's `.id` member will be non-zero, and it can be used for binding and dispatching. The caller is responsible for destroying it using `SituationDestroyComputePipeline()` to prevent resource leaks.
  *         - On **failure**: The handle will be in an invalid state (`.id` == 0). A detailed error message can be retrieved using `SituationGetLastErrorMsg()`.
+ *           Use `SituationGetLastErrorMsg()` to get a detailed error description.
  *
+ * @note The caller is **responsible** for destroying the returned pipeline using `SituationDestroyComputePipeline()` to prevent GPU and CPU memory leaks.
  * @note This function requires the library to be initialized (`SituationInit()` must have been called successfully).
  * @note This function requires the `SITUATION_ENABLE_SHADER_COMPILER` define to be set during compilation for the Vulkan backend to work with GLSL source. For OpenGL, it depends on the internal handling of GLSL vs SPIR-V (as discussed in `_SituationCreateGLComputeProgram`).
  * @warning This function is not thread-safe and must be called from the main thread that initialized the library.
@@ -14864,6 +14863,7 @@ static GLuint _SituationCreateGLComputeProgram(const void* source_data, Situatio
  * - The valid GPU resource handle is still returned.
  * - It is the caller's **absolute responsibility** to call `SituationDestroyComputePipeline()` on the returned handle to prevent a GPU resource leak, as the library's automatic shutdown cleanup will not track this specific resource.
  *
+ * @warning This function is not thread-safe and must be called from the main thread that initialized the library.
  * @see SituationCreateComputePipeline()
  * @see SituationDestroyComputePipeline()
  * @see SituationCmdBindComputePipeline()
@@ -14882,25 +14882,54 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipelineFromMemory: Compute shader source cannot be NULL.");
         return pipeline; // Return invalid pipeline
     }
-
+	
     // --- 2. Backend-Specific Pipeline Creation ---
 #if defined(SITUATION_USE_OPENGL)
+    // The layout_type parameter is specific to Vulkan's explicit pipeline layout system.
+    // In OpenGL, the layout is implicitly defined by the shader source itself.
+    // We acknowledge the parameter to match the unified API signature but do not use it.
+    (void)layout_type;
+
     SituationError err = SITUATION_SUCCESS;
 
-    // --- Dispatch to OpenGL Creation Helper ---
-    // Pass the source and explicitly state it's GLSL.
-    // The refactored _SituationCreateGLComputeProgram handles internal logic, including checking sit_gs.gl.arb_spirv_available if it receives SPIR-V internally.
-    pipeline.gl_program_id = _SituationCreateGLComputeProgram(
-        (const void*)compute_shader_source, // Cast source string to generic pointer
-        SITUATION_GL_SHADER_SOURCE_TYPE_GLSL, // Explicitly tell the function the type of data
-        &err
-    );
+    // The OpenGL backend has a preferred modern path and a legacy fallback path.
+    // Path 1 (Preferred): Compile GLSL to SPIR-V for consistency with the Vulkan backend.
+    // Path 2 (Fallback): Compile GLSL source directly if SPIR-V is unsupported or disabled.
 
-    if (err == SITUATION_SUCCESS && pipeline.gl_program_id != 0) { // Extra check for robustness
-        // Assign the public ID (using the GL program ID directly is common)
-        pipeline.id = pipeline.gl_program_id;
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
+    // The shader compiler is enabled, so we can attempt the modern SPIR-V path.
+    if (GLAD_GL_ARB_gl_spirv) { // Check if the current OpenGL driver supports SPIR-V.
+
+        // Compile the GLSL source to a SPIR-V binary blob.
+        _SituationSpirvBlob cs_spirv = _SituationVulkanCompileGLSLtoSPIRV(compute_shader_source, "compute.comp", shaderc_compute_shader);
+
+        if (cs_spirv.data) {
+            // SPIR-V compilation was successful. Create the OpenGL program from the binary.
+            pipeline.gl_program_id = _SituationCreateGLComputeProgram((const void*)&cs_spirv, SITUATION_GL_SHADER_SOURCE_TYPE_SPIRV, &err);
+            _SituationFreeSpirvBlob(&cs_spirv); // Clean up the temporary SPIR-V blob.
+        } else {
+            // Compilation to SPIR-V failed. This is a hard error.
+            // The compiler helper has already set a detailed error message.
+            return pipeline; // Return the invalid (zeroed) handle.
+        }
+    } else {
+        // The driver does not support SPIR-V. Fall back to the traditional GLSL source path.
+        pipeline.gl_program_id = _SituationCreateGLComputeProgram((const void*)compute_shader_source, SITUATION_GL_SHADER_SOURCE_TYPE_GLSL, &err);
+    }
+#else
+    // The shader compiler is disabled. The only available path is to compile GLSL source directly.
+    pipeline.gl_program_id = _SituationCreateGLComputeProgram((const void*)compute_shader_source, SITUATION_GL_SHADER_SOURCE_TYPE_GLSL, &err);
+#endif
+
+    // --- Handle Creation Result and Resource Tracking ---
+    if (err == SITUATION_SUCCESS && pipeline.gl_program_id != 0) {
+        // Success: The OpenGL program object was created successfully.
+
+        // Assign a unique public ID for the resource manager (using 64-bit for consistency).
+        pipeline.id = (uint64_t)pipeline.gl_program_id;
 
         // --- Resource Tracking for OpenGL ---
+        // Add the new pipeline to the internal tracking list for leak detection.
         _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
         if (node) {
             node->pipeline = pipeline;
@@ -14908,20 +14937,17 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
             sit_gs.all_compute_pipelines = node;
             // Optional: node->was_spirv_used = false; // Since we passed GLSL directly
         } else {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationCreateComputePipelineFromMemory: Failed to allocate resource tracking node for OpenGL compute pipeline.");
-            // Log warning about potential leak due to tracking failure
-            fprintf(stderr, "WARNING: Potential leak of OpenGL compute program ID %u due to tracking node allocation failure.\n", pipeline.gl_program_id);
-            // Returning the valid pipeline is acceptable, the user MUST call SituationDestroyComputePipeline.
-            // If strict no-leak policy is required even on tracking failure, you'd call SituationDestroyComputePipeline(&pipeline) here and return {0}.
+            // This is a non-fatal but serious issue: the GPU resource was created but we failed to track it. We must warn the user that they are now responsible for cleanup.
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
+            fprintf(stderr,
+                "SITUATION WARNING: GPU compute pipeline created successfully but failed to add to resource tracker.\n"
+                "         This is a potential memory leak. You MUST call SituationDestroyComputePipeline() on the returned handle to free GPU resources.\n");
         }
         // Success path: pipeline struct is valid with .id and .gl_program_id set.
-    } else {
-        // Error occurred during OpenGL program creation.
-        // _SituationCreateGLComputeProgram should have set a detailed error message.
-        // The pipeline struct remains {0}, which is the correct invalid state to return.
-        // No need for explicit cleanup here as gl_program_id should be 0 on failure.
-        // Error message is already set.
     }
+    // If _SituationCreateGLComputeProgram failed, it returned 0 and set the 'err' code and a detailed message.
+    // The 'pipeline' struct remains invalid (zeroed), which is the correct state to return.
+    // No 'else' block is needed as the function will simply fall through and return the invalid handle.
 
 #elif defined(SITUATION_USE_VULKAN)
     // The Vulkan backend requires the shader compiler to be enabled to handle GLSL source.
@@ -14968,8 +14994,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
             node->next = sit_gs.all_compute_pipelines;
             sit_gs.all_compute_pipelines = node;
         } else {
-            // This is a non-fatal but serious issue: the GPU resource was created
-            // but we failed to track it. We warn the user they are now responsible for cleanup.
+            // This is a non-fatal but serious issue: the GPU resource was created but we failed to track it. Warn the user they are now responsible for cleanup.
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
             fprintf(stderr,
                 "SITUATION WARNING: GPU compute pipeline created successfully but failed to add to resource tracker.\n"
@@ -14994,6 +15019,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
     // If invalid, .id will be zero, and an error message will be set.
     return pipeline;
 }
+
 
 /**
  * @brief Creates a compute pipeline by loading GLSL source code from a file.
@@ -18550,9 +18576,9 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
     _SituationDeferDestroyImage(vd->depth_image, vd->depth_image_memory, vd->depth_image_view, VK_NULL_HANDLE);
 
 #elif defined(SITUATION_USE_OPENGL)
-    if (vd->texture_id != 0) glDeleteTextures(1, &vd->texture_id);
-    if (vd->depth_rbo_id != 0) glDeleteRenderbuffers(1, &vd->depth_rbo_id);
-    if (vd->fbo_id != 0) glDeleteFramebuffers(1, &vd->fbo_id);
+    if (vd->gl.texture_id != 0) glDeleteTextures(1, &vd->gl.texture_id);
+    if (vd->gl.depth_rbo_id != 0) glDeleteRenderbuffers(1, &vd->gl.depth_rbo_id);
+    if (vd->gl.fbo_id != 0) glDeleteFramebuffers(1, &vd->gl.fbo_id);
 #endif
 
     memset(vd, 0, sizeof(SituationVirtualDisplay));
@@ -18603,7 +18629,7 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     GLenum filter_mode = (scaling_mode == SITUATION_SCALING_STRETCH) ? GL_LINEAR : GL_NEAREST;
 
     // Bind the texture, change its parameters, and unbind it.
-    glBindTexture(GL_TEXTURE_2D, vd->texture_id);
+    glBindTexture(GL_TEXTURE_2D, vd->gl.texture_id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter_mode);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter_mode);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -19027,7 +19053,7 @@ SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, 
     SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[display_id];
 
     bool visual_property_changed = false;
-    if (vd->offset[0] != offset[0] || vd->offset[1] != offset[1]) visual_property_changed = true;
+    if (vd->offset[0] != offset.x || vd->offset[1] != offset.y) visual_property_changed = true;
     if (fabsf(vd->opacity - opacity) > 0.001f) visual_property_changed = true; // Compare floats with tolerance
     if (vd->z_order != z_order) visual_property_changed = true;
     if (vd->visible != visible) visual_property_changed = true;
@@ -19804,170 +19830,6 @@ SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const 
     return shader;
 }
 
-
-/**
- * @brief [Core] Creates a compute pipeline directly from GLSL source code provided as a C string.
- * @details This is the core function for creating compute shaders. It compiles the provided GLSL source and creates the corresponding backend-specific GPU pipeline object. It also registers the new resource with the internal resource manager for leak detection at shutdown.
- *
- * @par Backend-Specific Behavior
- * - **OpenGL:** Compiles the GLSL source into an OpenGL Compute Program. If `SITUATION_ENABLE_SHADER_COMPILER` and `GL_ARB_gl_spirv` are available, it may compile to SPIR-V first for consistency with Vulkan.
- * - **Vulkan:** This backend **requires** `SITUATION_ENABLE_SHADER_COMPILER`. The function uses `shaderc` to compile the GLSL source into a SPIR-V binary blob, which is then used to create a `VkPipeline`.
- *
- * @param compute_shader_source A null-terminated C string containing the GLSL source code for the compute shader.
- *
- * @return A `SituationComputePipeline` handle.
- *         - On success, the `id` member will be non-zero, and the handle is ready for use.
- *         - On failure (e.g., compilation error, GPU resource allocation failure), an invalid handle (`id == 0`) is returned.
- *           Use `SituationGetLastErrorMsg()` to get a detailed error description.
- *
- * @note The caller is **responsible** for destroying the returned pipeline using `SituationDestroyComputePipeline()` to prevent GPU and CPU memory leaks.
- * @par Resource Tracking and Potential Leaks:
- * If this function succeeds (returns a handle with `.id != 0`), the underlying GPU resources are valid.
- * However, an internal CPU memory allocation for resource tracking might fail. In this rare case:
- * - A warning will be printed to `stderr` (e.g., "WARNING: Potential leak of Vulkan compute pipeline handle...").
- * - The valid GPU resource handle is still returned.
- * - It is the caller's **absolute responsibility** to call `SituationDestroyComputePipeline()` on the returned handle to prevent a GPU resource leak, as the library's automatic shutdown cleanup will not track this specific resource.
- * @warning This function is not thread-safe and must be called from the main thread that initialized the library.
- */
-SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type) {
-    SituationComputePipeline pipeline = {0}; // Always initialize to an invalid state.
-
-    // --- 1. Pre-condition Checks ---
-    if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create compute pipeline.");
-        return pipeline;
-    }
-    if (!compute_shader_source) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Compute shader source cannot be NULL.");
-        return pipeline;
-    }
-
-    // --- 2. Backend-Specific Pipeline Creation ---
-#if defined(SITUATION_USE_OPENGL)
-    // The layout_type parameter is specific to Vulkan's explicit pipeline layout system.
-    // In OpenGL, the layout is implicitly defined by the shader source itself.
-    // We acknowledge the parameter to match the unified API signature but do not use it.
-    (void)layout_type;
-
-    SituationError err = SITUATION_SUCCESS;
-
-    // The OpenGL backend has a preferred modern path and a legacy fallback path.
-    // Path 1 (Preferred): Compile GLSL to SPIR-V for consistency with the Vulkan backend.
-    // Path 2 (Fallback): Compile GLSL source directly if SPIR-V is unsupported or disabled.
-
-#if defined(SITUATION_ENABLE_SHADER_COMPILER)
-    // The shader compiler is enabled, so we can attempt the modern SPIR-V path.
-    if (GLAD_GL_ARB_gl_spirv) { // Check if the current OpenGL driver supports SPIR-V.
-
-        // Compile the GLSL source to a SPIR-V binary blob.
-        _SituationSpirvBlob cs_spirv = _SituationVulkanCompileGLSLtoSPIRV(compute_shader_source, "compute.comp", shaderc_compute_shader);
-
-        if (cs_spirv.data) {
-            // SPIR-V compilation was successful. Create the OpenGL program from the binary.
-            pipeline.gl_program_id = _SituationCreateGLComputeProgram((const void*)&cs_spirv, SITUATION_GL_SHADER_SOURCE_TYPE_SPIRV, &err);
-            _SituationFreeSpirvBlob(&cs_spirv); // Clean up the temporary SPIR-V blob.
-        } else {
-            // Compilation to SPIR-V failed. This is a hard error.
-            // The compiler helper has already set a detailed error message.
-            return pipeline; // Return the invalid (zeroed) handle.
-        }
-    } else {
-        // The driver does not support SPIR-V. Fall back to the traditional GLSL source path.
-        pipeline.gl_program_id = _SituationCreateGLComputeProgram((const void*)compute_shader_source, SITUATION_GL_SHADER_SOURCE_TYPE_GLSL, &err);
-    }
-#else
-    // The shader compiler is disabled. The only available path is to compile GLSL source directly.
-    pipeline.gl_program_id = _SituationCreateGLComputeProgram((const void*)compute_shader_source, SITUATION_GL_SHADER_SOURCE_TYPE_GLSL, &err);
-#endif
-
-    // --- Handle Creation Result and Resource Tracking ---
-    if (err == SITUATION_SUCCESS && pipeline.gl_program_id != 0) {
-        // Success: The OpenGL program object was created successfully.
-
-        // Assign a unique public ID for the resource manager (using 64-bit for consistency).
-        pipeline.id = (uint64_t)pipeline.gl_program_id;
-
-        // Add the new pipeline to the internal tracking list for leak detection.
-        _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
-        if (node) {
-            node->pipeline = pipeline;
-            node->next = sit_gs.all_compute_pipelines;
-            sit_gs.all_compute_pipelines = node;
-        } else {
-            // This is a non-fatal but serious issue: the GPU resource was created but we failed to track it. We must warn the user that they are now responsible for cleanup.
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
-            fprintf(stderr,
-                "SITUATION WARNING: GPU compute pipeline created successfully but failed to add to resource tracker.\n"
-                "         This is a potential memory leak. You MUST call SituationDestroyComputePipeline() on the returned handle to free GPU resources.\n");
-        }
-    }
-    // If _SituationCreateGLComputeProgram failed, it returned 0 and set the 'err' code and a detailed message.
-    // The 'pipeline' struct remains invalid (zeroed), which is the correct state to return.
-    // No 'else' block is needed as the function will simply fall through and return the invalid handle.
-
-#elif defined(SITUATION_USE_VULKAN)
-    // The Vulkan backend requires the shader compiler to be enabled to handle GLSL source.
-    #if !defined(SITUATION_ENABLE_SHADER_COMPILER)
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Vulkan backend requires SITUATION_ENABLE_SHADER_COMPILER to create pipelines from source code.");
-        return pipeline; // Return the invalid (zeroed) pipeline handle
-    #else
-
-    // 1. --- Compile GLSL source to SPIR-V bytecode ---
-    _SituationSpirvBlob cs_spirv = _SituationVulkanCompileGLSLtoSPIRV(compute_shader_source, "compute.comp", shaderc_compute_shader);
-
-    // If compilation fails, the helper function sets the error and returns an empty blob.
-    if (cs_spirv.data == NULL) {
-        // No need to set an error here; it's already done by the compiler helper.
-        return pipeline; // Return the invalid (zeroed) pipeline handle
-    }
-
-    // 2. --- Select the pre-created Pipeline Layout ---
-    // Validate the user-provided layout type to prevent out-of-bounds access.
-    if (layout_type < 0 || layout_type >= (sizeof(sit_gs.vk.compute_layouts) / sizeof(sit_gs.vk.compute_layouts[0]))) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "An invalid SituationComputeLayoutType was specified.");
-        _SituationFreeSpirvBlob(&cs_spirv); // Clean up the compiled SPIR-V
-        return pipeline;
-    }
-    VkPipelineLayout selected_layout = sit_gs.vk.compute_layouts[layout_type];
-
-    // 3. --- Create the Vulkan Pipeline from SPIR-V and the selected layout ---
-    pipeline = _SituationVulkanCreateComputePipeline(cs_spirv.data, cs_spirv.size, selected_layout);
-
-    // Always free the temporary SPIR-V blob now that it has been consumed by the pipeline creation.
-    _SituationFreeSpirvBlob(&cs_spirv);
-
-    // 4. --- Handle Creation Result and Resource Tracking ---
-    if (pipeline.vk_pipeline != VK_NULL_HANDLE) {
-        // Success: The pipeline and layout handles are valid.
-
-        // Assign a unique public ID for the resource manager.
-        pipeline.id = (uint64_t)(uintptr_t)pipeline.vk_pipeline; // Using 64-bit ID
-
-        // Add the new pipeline to the internal tracking list for leak detection.
-        _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
-        if (node) {
-            node->pipeline = pipeline;
-            node->next = sit_gs.all_compute_pipelines;
-            sit_gs.all_compute_pipelines = node;
-        } else {
-            // This is a non-fatal but serious issue: the GPU resource was created but we failed to track it. Warn the user they are now responsible for cleanup.
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
-            fprintf(stderr,
-                "SITUATION WARNING: GPU compute pipeline created successfully but failed to add to resource tracker.\n"
-                "         This is a potential memory leak. You MUST call SituationDestroyComputePipeline() on the returned handle to free GPU resources.\n");
-        }
-    }
-    // If _SituationVulkanCreateComputePipeline failed, it returned a zeroed 'pipeline' struct and set the error.
-    // There is nothing more to do here; we simply return the invalid handle.
-
-    return pipeline;
-
-    #endif // SITUATION_ENABLE_SHADER_COMPILER
-#endif // SITUATION_USE_OPENGL / SITUATION_USE_VULKAN
-
-    // --- 3. Return Result ---
-    return pipeline;
-}
 
 /**
  * @brief Destroys a graphics shader pipeline and frees all of its associated GPU and CPU resources.
@@ -22822,14 +22684,9 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
             const int padding = (int)outlineThickness + 2;
             const unsigned char onedge_value = 180;
             const float pixel_dist_scale = (float)onedge_value / (float)padding;
-            int g_x0, g_y0, g_x1, g_y1;
-            stbtt_GetCodepointSDF(info, scale, codepoint, padding, onedge_value, pixel_dist_scale, &g_x0, &g_y0, &g_x1, &g_y1);
-            int glyph_w = g_x1 - g_x0;
-            int glyph_h = g_y1 - g_y0;
-            if (glyph_w > 0 && glyph_h > 0) {
-                unsigned char *sdfBitmap = (unsigned char*)SIT_CALLOC(glyph_w * glyph_h, sizeof(unsigned char));
-                if (!sdfBitmap) return;
-                stbtt_MakeCodepointSDF(info, sdfBitmap, glyph_w, glyph_h, glyph_w, scale, codepoint, padding, onedge_value, pixel_dist_scale);
+            int glyph_w, glyph_h, g_x0, g_y0;
+            unsigned char *sdfBitmap = stbtt_GetCodepointSDF(info, scale, codepoint, padding, onedge_value, pixel_dist_scale, &glyph_w, &glyph_h, &g_x0, &g_y0);
+            if (sdfBitmap) {
                 float fill_thresh_inner = onedge_value - 1.0f, fill_thresh_outer = onedge_value + 1.0f;
                 float outline_thresh_inner = onedge_value - (outlineThickness * pixel_dist_scale) - 1.0f;
                 float outline_thresh_outer = onedge_value - (outlineThickness * pixel_dist_scale) + 1.0f;
@@ -22848,7 +22705,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
                             }
                         }
                     }
-                    SIT_FREE(sdfBitmap);
+                stbtt_FreeSDF(sdfBitmap, info->userdata);
                 }
             }
         }
@@ -22860,15 +22717,9 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
     const int padding = (int)fmaxf(outlineThickness + 5.0f, 5.0f);
     const unsigned char onedge_value = 180;
     const float pixel_dist_scale = (float)onedge_value / (float)padding;
-    int g_x0, g_y0, g_x1, g_y1;
-    stbtt_GetCodepointSDF(info, scale, codepoint, padding, onedge_value, pixel_dist_scale, &g_x0, &g_y0, &g_x1, &g_y1);
-    int glyph_w = g_x1 - g_x0;
-    int glyph_h = g_y1 - g_y0;
-    if (glyph_w <= 0 || glyph_h <= 0) return;
-
-    unsigned char *sdfBitmap = (unsigned char*)SIT_CALLOC(glyph_w * glyph_h, sizeof(unsigned char));
+    int glyph_w, glyph_h, g_x0, g_y0;
+    unsigned char *sdfBitmap = stbtt_GetCodepointSDF(info, scale, codepoint, padding, onedge_value, pixel_dist_scale, &glyph_w, &glyph_h, &g_x0, &g_y0);
     if (!sdfBitmap) return;
-    stbtt_MakeCodepointSDF(info, sdfBitmap, glyph_w, glyph_h, glyph_w, scale, codepoint, padding, onedge_value, pixel_dist_scale);
 
     float angleRad = rotationDegrees * (M_PI / 180.0f);
     float cos_a = cosf(angleRad), sin_a = sinf(angleRad);
@@ -22876,7 +22727,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
 
     mat2 invTransform;
     float det = cos_a - sin_a * skewFactor;
-    if (fabsf(det) < 1e-6) { SIT_FREE(sdfBitmap); return; }
+    if (fabsf(det) < 1e-6) { stbtt_FreeSDF(sdfBitmap, info->userdata); return; }
     float inv_det = 1.0f / det;
     invTransform[0][0] = 1.0f * inv_det;
     invTransform[0][1] = sin_a * inv_det;
@@ -22919,7 +22770,7 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
             }
         }
     }
-    SIT_FREE(sdfBitmap);
+    stbtt_FreeSDF(sdfBitmap, info->userdata);
 }
 
 /**
@@ -23395,7 +23246,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
 
         while (frames_contributed_by_this_sound_total < frameCount) {
             uint64_t frames_needed_for_output_pass = frameCount - frames_contributed_by_this_sound_total;
-            uint64_t input_frames_converter_requires;
+            ma_uint64 input_frames_converter_requires;
 
             ma_data_converter_get_required_input_frame_count(&sound->converter, frames_needed_for_output_pass, &input_frames_converter_requires);
 
@@ -23403,7 +23254,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                  input_frames_converter_requires = pGs->audio_callback_temp_buffer_frames_capacity;
             }
 
-            uint64_t frames_read_from_decoder;
+            ma_uint64 frames_read_from_decoder;
             ma_result res_dec = ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer, input_frames_converter_requires, &frames_read_from_decoder);
             sound->cursor_frames += frames_read_from_decoder;
 
@@ -24537,7 +24388,7 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
  * @param finalFrame The last frame to include.
  * @return SITUATION_SUCCESS on success.
  */
-ITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame) {
+SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame) {
     if (!sound || !sound->is_initialized || initFrame >= finalFrame || finalFrame > sound->total_frames) {
         return SITUATION_ERROR_INVALID_PARAM;
     }
@@ -26089,7 +25940,9 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
     // Allocate memory for the raw pixel data (RGBA, 8 bits per channel)
     image.data = SIT_MALLOC(width * height * 4);
 	if (!image.data) {
-		_SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Screenshot pixel buffer allocation failed (%dx%d RGBA)", width, height);
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg), "Screenshot pixel buffer allocation failed (%dx%d RGBA)", width, height);
+		_SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, err_msg);
 		return (SituationImage){0};
 	}
 
@@ -26101,7 +25954,9 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
 	glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, image.data);
 	GLenum err = glGetError();
 	if (err != GL_NO_ERROR) {
-		_SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glReadPixels failed (GL error: %d)", err);
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg), "glReadPixels failed (GL error: %d)", err);
+		_SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, err_msg);
 		free(image.data); image.data = NULL;
 		return (SituationImage){0};
 	}
@@ -26112,8 +25967,10 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
     // 'current_image_index' holds the index of the swapchain image we are currently drawing to.
     VkImage srcImage = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
     if (srcImage == VK_NULL_HANDLE) {
-		_SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID, "Cannot get screenshot: source swapchain image index %d is invalid", sit_gs.vk.current_image_index);
-    return (SituationImage){0};
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg), "Cannot get screenshot: source swapchain image index %u is invalid", sit_gs.vk.current_image_index);
+		_SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID, err_msg);
+        return (SituationImage){0};
 	}
 
     // 2. Define the Current Layout.
@@ -26166,7 +26023,9 @@ SITAPI bool SituationTakeScreenshot(const char *fileName) {
     }
 	char* dir = _sit_dirname(fileName);  // Internal helper to get parent dir
 	if (dir && !_sit_directory_exists(dir)) {
-		_SituationSetErrorFromCode(SITUATION_ERROR_DIRECTORY_CREATION_FAILED, "Screenshot directory does not exist: %s", dir);
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), "Screenshot directory does not exist: %s", dir);
+		_SituationSetErrorFromCode(SITUATION_ERROR_DIRECTORY_CREATION_FAILED, err_msg);
 		SituationFreeString(dir);
 		return false;
 	}
@@ -26192,7 +26051,9 @@ SITAPI bool SituationTakeScreenshot(const char *fileName) {
     // stbi_write_png returns 0 on failure
     bool success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, stride) != 0);
 	if (!success) {
-		_SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Failed to write PNG file: %s", fileName);
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), "Failed to write PNG file: %s", fileName);
+		_SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, err_msg);
 	}
     SituationUnloadImage(image);
     return success;
