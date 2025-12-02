@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.13 "Velocity"_
+_Core API library v2.3.14 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.13** introduces the **Async Threading Module**, a C11-compliant job system designed to eliminate main-thread stalls caused by heavy operations like audio decoding and file I/O. It provides a high-performance, lock-minimized ring buffer for job submission and worker management, paving the way for the upcoming **v2.4 "Momentum"** engine architecture.
+**Version 2.3.14** introduces critical stability fixes and performance optimizations, resolving long-standing bottlenecks in the Velocity architecture. It features a new dedicated **Vulkan Asset Descriptor Pool** to prevent fragmentation during heavy streaming, software-tracked **OpenGL Shadow State** to eliminate redundant driver calls, and thread-safe Audio locking. It also adds **Tangent Space Support** (12-float stride) for advanced PBR rendering.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Render Lists (Momentum):** Decoupling draw command generation from submission to allow multi-threaded rendering.

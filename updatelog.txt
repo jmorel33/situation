@@ -1,4 +1,26 @@
 
+Date: 2025-12-01
+Version: 2.3.14 "Velocity" (Stability & Performance)
+
+## DESCRIPTION
+This release addresses critical stability issues and performance bottlenecks identified in the Velocity architecture. It introduces key optimizations for both OpenGL and Vulkan backends, fixes a severe heap corruption bug, and adds support for Tangent Space geometry, enabling advanced PBR rendering.
+
+## CRITICAL FIXES
+*   **Heap Corruption Fix:** Removed invalid pointer poisoning logic in `SituationFreeString` that caused undefined behavior and heap corruption.
+*   **Audio Thread Safety:** Implemented `try_lock` logic in the audio callback to prevent the high-priority audio thread from stalling if the main thread hangs during asset loading.
+*   **Vulkan Buffer Race Condition:** Fixed a race condition in `SituationUpdateBuffer` by forcing the use of staging buffers for all updates within the render loop, ensuring correct synchronization.
+*   **Vulkan PBR Regression Fix:** Resolved a blocking regression where new 48-byte stride PBR pipelines broke compatibility with legacy 32-byte meshes. The Vulkan backend now dynamically selects between Legacy and PBR pipelines based on mesh vertex stride.
+
+## PERFORMANCE OPTIMIZATIONS
+*   **OpenGL Shadow State:** Implemented software tracking of GL state (program, VAO, FBO, blend modes) to eliminate redundant `glGetIntegerv` calls from the hot render loop, reducing CPU-GPU sync bubbles.
+*   **Vulkan Asset Descriptor Pool:** Introduced a dedicated, freeable `VkDescriptorPool` for long-lived assets (Textures/Models) to prevent descriptor exhaustion during level transitions.
+*   **Text Rendering Allocations:** Replaced per-frame `malloc/free` in `SituationCmdDrawText` with a persistent, auto-growing scratch buffer (`text_batch_scratch`), significantly reducing allocator pressure.
+
+## NEW FEATURES
+*   **Tangent Space Support:** Updated `SituationCreateMesh` and the internal GLTF loader to extract and store Tangent data (12-float stride: Pos, Norm, Tan, UV). This enables correct normal mapping for PBR shaders.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-11-30
 Version: 2.3.13 "Velocity" (Async Threading Module)
 
@@ -744,7 +766,7 @@ This patch release resolves critical compilation errors in the Vulkan backend in
 
 *   **Missing Definitions:** Added the missing `SituationTextureUsageFlags` enum and replaced undefined macros in `_SituationInitVulkan` with defined numeric constants for descriptor pool sizing.
 
-*   **Compute Binding Crash:** Fixed a runtime crash during Vulkan initialization by ensuring the `storage_image_layout` is correctly created. This resolves issues when attempting to bind textures to Compute Shaders.
+*   **Compute Binding Crash:** Fixed a runtime crash during Vulkan initialization by ensuring the `storage_image_layout` is correctly created. This resolves issues when binding textures to Compute Shaders.
 
 --------------------------------------------------------------------------------
 
