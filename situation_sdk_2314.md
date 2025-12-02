@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.13 "Velocity" |
+| **Version** | 2.3.14 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -37,15 +37,15 @@ The library is engineered around three architectural pillars:
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
 
-### New in v2.3.13 "Velocity" (Async Threading)
+### New in v2.3.14 "Velocity" (Stability & Performance)
 
-This release introduces the **Async Threading Module**, a high-performance job system designed to offload heavy tasks from the main thread without the complexity of raw OS threads.
+This release is a major stability and performance hardening update. It addresses critical bottlenecks in both rendering backends and expands PBR support.
 
 **Key Enhancements:**
-*   **SituationThreadPool:** A lock-free ring-buffer based job system.
-*   **Async Audio Loading:** Load large music files in the background (`SituationLoadSoundFromFileAsync`) to prevent frame drops.
-*   **Job API:** Submit custom tasks (`SituationSubmitJob`) and wait for them efficiently (`SituationWaitForJob`).
-*   **Safety:** New debug assertions (`SIT_ASSERT_MAIN_THREAD`) ensure API thread-safety contracts are respected.
+*   **Tangent Space Support:** `SituationCreateMesh` now supports and automatically extracts Tangent vectors (12-float stride), enabling correct Normal Mapping in PBR shaders.
+*   **Vulkan Optimization:** Introduced a dedicated `AssetDescriptorPool` to prevent fragmentation during level loading.
+*   **OpenGL Optimization:** Implemented "Shadow State" tracking to eliminate redundant `glGetIntegerv` calls from the hot loop.
+*   **Text Rendering:** Switched to a persistent scratch buffer allocation strategy, eliminating per-frame `malloc/free` overhead.
 
 ### New in v2.3.8 "Velocity"
 

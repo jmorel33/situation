@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.13A "Velocity"
+*   Core API library v2.3.14 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 13
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_PATCH 14
+#define SITUATION_VERSION_STRING "2.3.14 Velocity"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -1152,6 +1152,7 @@ typedef struct {
     struct _SituationUniformMap* uniform_map;
 #elif defined(SITUATION_USE_VULKAN)
     VkPipeline vk_pipeline;
+    VkPipeline vk_pipeline_legacy; // 32-byte stride variant
     VkPipelineLayout vk_pipeline_layout;
 #endif
 #endif
@@ -2463,6 +2464,7 @@ typedef struct {
     // Descriptor Management
     // -------------------------------------------------------------------------
     VkDescriptorPool persistent_descriptor_pool;// Initial pool for long-lived resources
+    VkDescriptorPool asset_descriptor_pool;     // [VULKAN] Separate pool for assets (Textures/Models)
     VkDescriptorPool descriptor_pool;           // Current active pool for allocations
 
     // Dynamic Pool Manager
@@ -2502,6 +2504,10 @@ typedef struct {
     VkPipeline advanced_compositing_pipeline;                    // Pipeline for advanced blend modes
     VkPipelineLayout advanced_compositing_pipeline_layout;       // Layout for advanced blend modes
 
+    // [PIPELINE STATE]
+    VkPipeline current_legacy_pipeline;
+    VkPipeline current_pbr_pipeline;
+
     // Global UBOs (Per-Frame)
     VkBuffer* view_proj_ubo_buffer;                              // Array of View UBOs
     VmaAllocation* view_proj_ubo_memory;                         // Array of View UBO memory
@@ -2533,6 +2539,7 @@ typedef struct SituationGraveyard {
     int image_capacity;
 
     VkDescriptorSet* descriptor_sets;
+    VkDescriptorPool* descriptor_pools; // [NEW] Track pool for freeing
     int descriptor_set_count;
     int descriptor_set_capacity;
 
@@ -2583,6 +2590,16 @@ typedef struct SituationGraveyard {
     GLuint view_data_ubo_id;                    // Handle to the global View/Projection UBO
     GLuint global_vao_id;                       // The "Public" VAO active during user rendering commands
     GLuint current_program_id;                  // Cache of the currently bound shader program ID
+
+    // Shadow State (Tracks what we *think* the driver state is)
+    GLuint current_vao_id;
+    GLuint current_fbo_id;
+    bool   blend_enabled;
+    GLenum blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha;
+    GLenum blend_eq_rgb, blend_eq_alpha;
+    bool   depth_test_enabled;
+    bool   cull_face_enabled;
+    bool   scissor_test_enabled;
 
     #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     bool arb_spirv_available;                   // True if GL_ARB_gl_spirv extension is supported
@@ -2862,6 +2879,10 @@ typedef struct {
     // Feature Capabilities
     // -------------------------------------------------------------------------
     uint64_t enabled_features_mask;                           // Bitmask of SituationRenderFeature flags enabled on the current backend
+
+    // [PERF] Text Batch Scratch Buffer
+    float* text_batch_scratch;
+    size_t text_batch_capacity;
 
 } _SituationGlobalStateContainer;
 
@@ -3383,7 +3404,7 @@ static void _SituationCleanupGraveyard(SituationGraveyard* gy);
 static void _SituationFlushGraveyard(uint32_t frame_index);
 static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation);
 static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler);
-static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set);
+static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool);
 static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout);
 static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer);
 static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass);
@@ -4234,6 +4255,7 @@ static void _SituationInitGraveyard(SituationGraveyard* gy) {
 
     gy->descriptor_set_capacity = 32;
     gy->descriptor_sets = (VkDescriptorSet*)SIT_MALLOC(sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
+    gy->descriptor_pools = (VkDescriptorPool*)SIT_MALLOC(sizeof(VkDescriptorPool) * gy->descriptor_set_capacity);
 
     gy->pipeline_capacity = 8;
     gy->pipelines = (VkPipeline*)SIT_MALLOC(sizeof(VkPipeline) * gy->pipeline_capacity);
@@ -4262,6 +4284,7 @@ static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
     SIT_FREE(gy->image_views);
     SIT_FREE(gy->samplers);
     SIT_FREE(gy->descriptor_sets);
+    SIT_FREE(gy->descriptor_pools);
     SIT_FREE(gy->pipelines);
     SIT_FREE(gy->pipeline_layouts);
     SIT_FREE(gy->framebuffers);
@@ -4298,19 +4321,14 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
 
     // Descriptor Sets
     if (gy->descriptor_set_count > 0) {
-        // --- PATCH: Linear Allocator Strategy ---
-        // We intentionally skip calling vkFreeDescriptorSets here.
-        // Reason 1 (Performance): Individual frees are slow and cause fragmentation.
-        // Reason 2 (Stability): Our Dynamic Descriptor Manager creates multiple pools.
-        // Since we don't track which pool a set came from in the SituationTexture struct,
-        // guessing the pool (e.g., persistent_descriptor_pool) would be unsafe and cause crashes.
-        // By not freeing, we treat the pools as append-only. Resources are reclaimed only when the entire pool is reset or destroyed at shutdown.
-        // This trades VRAM for stability and zero-stutter performance.
-        /*
-        if (sit_gs.vk.persistent_descriptor_pool != VK_NULL_HANDLE) {
-             vkFreeDescriptorSets(sit_gs.vk.device, sit_gs.vk.persistent_descriptor_pool, gy->descriptor_set_count, gy->descriptor_sets);
+        for (int i = 0; i < gy->descriptor_set_count; ++i) {
+            if (gy->descriptor_pools[i] != VK_NULL_HANDLE) {
+                // If a pool is provided, we free the set back to it (e.g., asset pool)
+                vkFreeDescriptorSets(sit_gs.vk.device, gy->descriptor_pools[i], 1, &gy->descriptor_sets[i]);
+            }
+            // If pool is NULL, it's from the linear allocator (dynamic manager) and we intentionally skip freeing
+            // to avoid fragmentation/performance hits. It will be reclaimed when the pool is reset/destroyed.
         }
-        */
     }
     gy->descriptor_set_count = 0;
 
@@ -4384,19 +4402,23 @@ static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation,
 
 /**
  * @brief [INTERNAL] Schedules a Descriptor Set for deferred destruction.
- * @details Currently, descriptor sets are not individually freed to avoid fragmentation, but this
- *          function is kept for architectural completeness and potential future use.
+ * @details If 'pool' is provided, the set will be freed back to that pool. If 'pool' is VK_NULL_HANDLE,
+ *          the set is assumed to be from a linear allocator and will NOT be freed (just dropped).
  * @param set The descriptor set handle.
+ * @param pool The descriptor pool it belongs to (or VK_NULL_HANDLE).
  */
-static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set) {
+static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool) {
     if (set == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_gs.vk.current_frame_index;
     SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
     if (gy->descriptor_set_count >= gy->descriptor_set_capacity) {
         gy->descriptor_set_capacity *= 2;
         gy->descriptor_sets = (VkDescriptorSet*)SIT_REALLOC(gy->descriptor_sets, sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
+        gy->descriptor_pools = (VkDescriptorPool*)SIT_REALLOC(gy->descriptor_pools, sizeof(VkDescriptorPool) * gy->descriptor_set_capacity);
     }
-    gy->descriptor_sets[gy->descriptor_set_count++] = set;
+    gy->descriptor_sets[gy->descriptor_set_count] = set;
+    gy->descriptor_pools[gy->descriptor_set_count] = pool;
+    gy->descriptor_set_count++;
 }
 
 /**
@@ -5198,23 +5220,24 @@ static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, dou
  * @see _SitGLRestoreState(), SituationRenderVirtualDisplays()
  */
 static void _SitGLBackupState(_SitGLStateBackup* s) {
-    glGetIntegerv(GL_CURRENT_PROGRAM, &s->program);
-    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &s->vao);
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &s->fbo); // Only backup draw FBO
+    // [PERF] Copy from Shadow State, avoid driver query (glGet)
+    s->program = sit_gs.gl.current_program_id;
+    s->vao = sit_gs.gl.current_vao_id;
+    s->fbo = sit_gs.gl.current_fbo_id;
 
     // Backup Capabilities
-    s->blend = glIsEnabled(GL_BLEND);
-    s->depth_test = glIsEnabled(GL_DEPTH_TEST);
-    s->cull_face = glIsEnabled(GL_CULL_FACE);
-    s->scissor_test = glIsEnabled(GL_SCISSOR_TEST);
+    s->blend = sit_gs.gl.blend_enabled;
+    s->depth_test = sit_gs.gl.depth_test_enabled;
+    s->cull_face = sit_gs.gl.cull_face_enabled;
+    s->scissor_test = sit_gs.gl.scissor_test_enabled;
 
     // Backup Blend State
-    glGetIntegerv(GL_BLEND_SRC_RGB, &s->blend_src_rgb);
-    glGetIntegerv(GL_BLEND_DST_RGB, &s->blend_dst_rgb);
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &s->blend_src_alpha);
-    glGetIntegerv(GL_BLEND_DST_ALPHA, &s->blend_dst_alpha);
-    glGetIntegerv(GL_BLEND_EQUATION_RGB, &s->blend_equ_rgb);
-    glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &s->blend_equ_alpha);
+    s->blend_src_rgb = sit_gs.gl.blend_src_rgb;
+    s->blend_dst_rgb = sit_gs.gl.blend_dst_rgb;
+    s->blend_src_alpha = sit_gs.gl.blend_src_alpha;
+    s->blend_dst_alpha = sit_gs.gl.blend_dst_alpha;
+    s->blend_equ_rgb = sit_gs.gl.blend_eq_rgb;
+    s->blend_equ_alpha = sit_gs.gl.blend_eq_alpha;
 }
 
 /**
@@ -7887,6 +7910,21 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     }
     sit_gs.vk.descriptor_pool = sit_gs.vk.persistent_descriptor_pool;
 
+    // 1b. Create a separate pool specifically for assets
+    VkDescriptorPoolSize asset_pool_sizes[] = {
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 }, // Allow 4k textures
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024 }
+    };
+
+    VkDescriptorPoolCreateInfo asset_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        .maxSets = 4096,
+        .poolSizeCount = 2,
+        .pPoolSizes = asset_pool_sizes
+    };
+    vkCreateDescriptorPool(sit_gs.vk.device, &asset_pool_info, NULL, &sit_gs.vk.asset_descriptor_pool);
+
     // 2. Seed the Dynamic Manager with this pool
     // This ensures subsequent allocations use this pool instead of creating a new one immediately.
     sit_gs.vk.descriptor_manager.capacity = 4;
@@ -10254,6 +10292,9 @@ SITAPI void SituationShutdown(void) {
 
     // 4. --- FINAL STATE RESET ---
     if (_sit_current_context) {
+        // Cleanup text scratch
+        if (sit_gs.text_batch_scratch) { SIT_FREE(sit_gs.text_batch_scratch); }
+
         sit_gs.is_initialized = false;
         _SituationSetError("Shutdown complete");
 
@@ -10471,6 +10512,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 
     // 5. Temporarily bind OUR private VAO to configure it.
     glBindVertexArray(sit_gs.gl.quad_vao);
+    // sit_gs.gl.current_vao_id = sit_gs.gl.quad_vao; // Don't track internal temporary binds as they are restored immediately
     SIT_CHECK_GL_ERROR(); // Check for errors during VAO binding
 
     // 6. Configure the VAO state: Bind VBO, set vertex attributes.
@@ -10488,6 +10530,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 
     // 7. *** CRITICAL *** Unbind our private VAO.
     glBindVertexArray(0); // Explicit unbind for safety and clarity
+    // sit_gs.gl.current_vao_id = 0;
     SIT_CHECK_GL_ERROR();
 
     // --- End of Private VAO/VBO Setup ---
@@ -10502,6 +10545,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     // 9. CRITICAL: Ensure the global_vao_id is bound again before returning.
     // This reinforces that the user's rendering state is ready.
     glBindVertexArray(sit_gs.gl.global_vao_id);
+    sit_gs.gl.current_vao_id = sit_gs.gl.global_vao_id;
     SIT_CHECK_GL_ERROR();
 
     return true; // Indicate success
@@ -10601,6 +10645,7 @@ static bool _SituationInitTextRenderer(void) {
     glNamedBufferData(sit_gs.gl.text_vbo, 524288, NULL, GL_DYNAMIC_DRAW);
 
     glBindVertexArray(sit_gs.gl.text_vao);
+    // sit_gs.gl.current_vao_id = sit_gs.gl.text_vao;
     glVertexArrayVertexBuffer(sit_gs.gl.text_vao, 0, sit_gs.gl.text_vbo, 0, 4 * sizeof(float)); // Stride: x,y,u,v
 
     // Pos: 2 floats, offset 0
@@ -10614,6 +10659,7 @@ static bool _SituationInitTextRenderer(void) {
     glVertexArrayAttribBinding(sit_gs.gl.text_vao, SIT_ATTR_TEXCOORD_0, 0);
 
     glBindVertexArray(0);
+    // sit_gs.gl.current_vao_id = 0;
     return true;
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -11812,6 +11858,7 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
     if (info->display_id < 0) {
         // Target: Main Window
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        sit_gs.gl.current_fbo_id = 0;
         glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
     } else {
         // Target: Virtual Display
@@ -11820,6 +11867,7 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
         }
         SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[info->display_id];
         glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
+        sit_gs.gl.current_fbo_id = vd->gl.fbo_id;
         glViewport(0, 0, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
     }
 
@@ -11912,6 +11960,7 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
 
     if (display_id < 0) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        sit_gs.gl.current_fbo_id = 0;
         glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
     } else {
         if (display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
@@ -11920,12 +11969,14 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
         }
         SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[display_id];
         glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
+        sit_gs.gl.current_fbo_id = vd->gl.fbo_id;
         glViewport(0, 0, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
     }
 
     glClearColor(clear_color.r / 255.0f, clear_color.g / 255.0f, clear_color.b / 255.0f, clear_color.a / 255.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
+    sit_gs.gl.depth_test_enabled = true;
 
 #elif defined(SITUATION_USE_VULKAN)
     VkRenderPassBeginInfo render_pass_info = {0};
@@ -12001,17 +12052,26 @@ SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
         // --- 2. OpenGL End Render Pass & State Reset ---
         // Unbind any custom FBO, return to default framebuffer.
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    sit_gs.gl.current_fbo_id = 0;
 
         // --- State Resets (as per original snippet, noted as potentially intrusive) ---
         // Unbind current shader program.
         glUseProgram(0);
+        sit_gs.gl.current_program_id = 0;
         // Unbind current VAO.
         glBindVertexArray(0);
+        sit_gs.gl.current_vao_id = 0;
         // Reset common blending state.
         glEnable(GL_BLEND);
+        sit_gs.gl.blend_enabled = true;
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        sit_gs.gl.blend_src_rgb = GL_SRC_ALPHA;
+        sit_gs.gl.blend_dst_rgb = GL_ONE_MINUS_SRC_ALPHA;
+        sit_gs.gl.blend_src_alpha = GL_SRC_ALPHA;
+        sit_gs.gl.blend_dst_alpha = GL_ONE_MINUS_SRC_ALPHA;
         // Reset common depth test state.
         glEnable(GL_DEPTH_TEST);
+        sit_gs.gl.depth_test_enabled = true;
         glDepthFunc(GL_LESS);
         // --- End State Resets ---
 
@@ -12408,8 +12468,13 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     size_t vert_count = len * 6;
     size_t data_size = vert_count * 4 * sizeof(float);
 
-    // Allocate temp buffer (Heap to avoid stack overflow on long strings)
-    float* vertices = (float*)SIT_MALLOC(data_size);
+    // [PERF] Auto-grow scratch buffer
+    if (sit_gs.text_batch_capacity < data_size) {
+        sit_gs.text_batch_scratch = (float*)SIT_REALLOC(sit_gs.text_batch_scratch, data_size * 2); // Grow 2x
+        sit_gs.text_batch_capacity = data_size * 2;
+    }
+
+    float* vertices = sit_gs.text_batch_scratch;
     if (!vertices) return;
 
     float x = pos.x;
@@ -12441,7 +12506,7 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
 
     // Actual vertex count used (might be less if chars were skipped)
     int final_vert_count = v_idx / 4;
-    if (final_vert_count == 0) { SIT_FREE(vertices); return; }
+    if (final_vert_count == 0) { return; }
 
     // Update Stats
     sit_gs.debug_draw_command_issued_this_frame = true;
@@ -12456,6 +12521,7 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
 
 #if defined(SITUATION_USE_OPENGL)
     glUseProgram(sit_gs.gl.text_shader_program);
+    sit_gs.gl.current_program_id = sit_gs.gl.text_shader_program;
 
     // Upload Batched Data to Dynamic VBO
     // Ensure we don't overflow the pre-allocated 512KB buffer
@@ -12471,12 +12537,14 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec);
 
     glBindVertexArray(sit_gs.gl.text_vao);
+    sit_gs.gl.current_vao_id = sit_gs.gl.text_vao;
     glDrawArrays(GL_TRIANGLES, 0, final_vert_count);
     glBindVertexArray(0);
+    sit_gs.gl.current_vao_id = 0;
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-    if (sit_gs.vk.text_pipeline == VK_NULL_HANDLE) { SIT_FREE(vertices); return; }
+    if (sit_gs.vk.text_pipeline == VK_NULL_HANDLE) { return; }
 
     // Upload to temporary vertex buffer
     VkBuffer temp_buffer;
@@ -12500,7 +12568,7 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     }
 #endif
 
-    SIT_FREE(vertices);
+    // SIT_FREE(vertices); // Using scratch buffer now
 
 #else
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCmdDrawText requires STB Truetype.");
@@ -12727,6 +12795,7 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
 
         // --- 3. OpenGL Bind Execution ---
         glUseProgram(shader.id);
+        sit_gs.gl.current_program_id = shader.id;
 
         // --- 4. OpenGL Error Checking ---
         SIT_CHECK_GL_ERROR();
@@ -12750,6 +12819,10 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
         // --- 3. Vulkan Bind Execution ---
         // Record the command to bind the graphics pipeline.
         vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shader.vk_pipeline);
+
+        // Store pipelines for stride-based switching
+        sit_gs.vk.current_pbr_pipeline = shader.vk_pipeline;
+        sit_gs.vk.current_legacy_pipeline = shader.vk_pipeline_legacy;
 
         // Update the global state so subsequent commands (Push Constants, Descriptor Sets)
         // know which pipeline layout to use.
@@ -12815,12 +12888,14 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
     // 1. Bind the mesh's own private, pre-configured VAO.
     // This single call restores its VBO, EBO, and vertex attribute layout.
     glBindVertexArray(mesh.vao_id);
+    sit_gs.gl.current_vao_id = mesh.vao_id;
 
     // 2. Issue the draw call.
     glDrawElements(GL_TRIANGLES, mesh.index_count, GL_UNSIGNED_INT, (void*)0);
 
     // 3. Unbind the VAO to be tidy (optional but good practice).
     glBindVertexArray(0);
+    sit_gs.gl.current_vao_id = 0;
 
     SIT_CHECK_GL_ERROR();
     return SITUATION_SUCCESS;
@@ -12834,6 +12909,23 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
         // --- 3. Vulkan Draw Execution ---
+
+        // Select pipeline variant based on mesh stride
+        VkPipeline pipeline_to_use = VK_NULL_HANDLE;
+        // Legacy (32-byte)
+        if (mesh.vertex_stride == 32 && sit_gs.vk.current_legacy_pipeline != VK_NULL_HANDLE) {
+            pipeline_to_use = sit_gs.vk.current_legacy_pipeline;
+        }
+        // PBR (48-byte)
+        else if (mesh.vertex_stride == 48 && sit_gs.vk.current_pbr_pipeline != VK_NULL_HANDLE) {
+            pipeline_to_use = sit_gs.vk.current_pbr_pipeline;
+        }
+
+        // Only re-bind if we found a specific match (otherwise assume current bound is correct or generic)
+        if (pipeline_to_use != VK_NULL_HANDLE) {
+             vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_to_use);
+        }
+
         // 1. Bind the vertex buffer for this mesh to binding point 0.
         // Assumes the bound pipeline expects vertex data at binding 0.
         VkBuffer vertex_buffers[] = { mesh.vertex_buffer };
@@ -12886,6 +12978,7 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 co
     if (sit_gs.gl.quad_shader_program == 0) return;
 
     glUseProgram(sit_gs.gl.quad_shader_program);
+    sit_gs.gl.current_program_id = sit_gs.gl.quad_shader_program;
     glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model);
     glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color);
 
@@ -12896,7 +12989,9 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 co
     glBindVertexArray(sit_gs.gl.quad_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
+    sit_gs.gl.current_vao_id = 0;
     glUseProgram(0);
+    sit_gs.gl.current_program_id = 0;
 
 #elif defined(SITUATION_USE_VULKAN)
     if (sit_gs.vk.quad_pipeline == VK_NULL_HANDLE) return;
@@ -13543,8 +13638,14 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
         descriptor_type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
 
-    // Use the dynamic allocator
-    texture.descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use);
+    // Use the Asset Pool
+    VkDescriptorSetAllocateInfo asset_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = sit_gs.vk.asset_descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &layout_to_use
+    };
+    vkAllocateDescriptorSets(sit_gs.vk.device, &asset_alloc_info, &texture.descriptor_set);
 
     if (texture.descriptor_set == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
@@ -13673,7 +13774,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
         // --- 3. Vulkan Destruction ---
         // Defer destruction to avoid stalling.
         if (texture->descriptor_set != VK_NULL_HANDLE) {
-            _SituationDeferDestroyDescriptorSet(texture->descriptor_set);
+             _SituationDeferDestroyDescriptorSet(texture->descriptor_set, sit_gs.vk.asset_descriptor_pool);
         }
 
         _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
@@ -14237,7 +14338,7 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
     {
         // For Vulkan, defer destruction to the Graveyard to avoid stalling.
         if (buffer->descriptor_set != VK_NULL_HANDLE) {
-            _SituationDeferDestroyDescriptorSet(buffer->descriptor_set);
+            _SituationDeferDestroyDescriptorSet(buffer->descriptor_set, VK_NULL_HANDLE);
         }
 
         if (buffer->vk_buffer != VK_NULL_HANDLE) {
@@ -14318,8 +14419,21 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
     glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float));
     glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_NORMAL, 0);
 
+    // Tangent (Location 4): 4 floats, offset 6*float
+    if (vertex_stride >= (3 + 3 + 4) * sizeof(float)) {
+        glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_TANGENT);
+        glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_TANGENT, 4, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
+        glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_TANGENT, 0);
+    }
+
     // Conditionally enable texture coordinates if the vertex stride is large enough to contain them.
-    if (vertex_stride >= (3 + 3 + 2) * sizeof(float)) {
+    if (vertex_stride >= (3 + 3 + 4 + 2) * sizeof(float)) {
+        // New Stride: Pos(3) + Norm(3) + Tan(4) + UV(2) -> Offset 10
+        glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_TEXCOORD_0);
+        glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 10 * sizeof(float));
+        glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 0);
+    } else if (vertex_stride >= (3 + 3 + 2) * sizeof(float)) {
+        // Legacy Stride: Pos(3) + Norm(3) + UV(2) -> Offset 6
         glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_TEXCOORD_0);
         glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
         glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 0);
@@ -15285,29 +15399,11 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         VkDevice device = sit_gs.vk.device;
         VmaAllocator allocator = sit_gs.vk.vma_allocator;
 
-        // 2.1. Handle Directly Mappable Buffers (e.g., CPU_TO_GPU)
-        // First, check if the buffer's memory is host-visible/coherent.
-        VmaAllocationInfo alloc_info;
-        vmaGetAllocationInfo(allocator, buffer.vma_allocation, &alloc_info);
+        // 2.2. Handle Non-Mappable Buffers (e.g., GPU_ONLY) - Use Staging Buffer
+        // This is the more common and robust path for performance-oriented buffers.
 
-        if ((alloc_info.memoryTypeBits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-            (alloc_info.memoryTypeBits & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            // Memory is host-visible and coherent, we can map it directly and update.
-            void* mapped_data;
-            VkResult result = vmaMapMemory(allocator, buffer.vma_allocation, &mapped_data);
-            if (result != VK_SUCCESS) {
-                _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to map Vulkan buffer memory for direct update.");
-                return SITUATION_ERROR_BUFFER_MAP_FAILED;
-            }
-            memcpy((char*)mapped_data + offset, data, size);
-            vmaUnmapMemory(allocator, buffer.vma_allocation);
-            return SITUATION_SUCCESS;
-        } else {
-            // 2.2. Handle Non-Mappable Buffers (e.g., GPU_ONLY) - Use Staging Buffer
-            // This is the more common and robust path for performance-oriented buffers.
-
-            // --- a. Create Staging Buffer (Host Visible) ---
-            VkBuffer staging_buffer;
+        // --- a. Create Staging Buffer (Host Visible) ---
+        VkBuffer staging_buffer;
             VmaAllocation staging_allocation;
 
             // Create a temporary, host-visible staging buffer for the upload
@@ -15423,7 +15519,6 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
             vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
 
             return SITUATION_SUCCESS;
-        }
     }
 #endif // SITUATION_USE_VULKAN
 
@@ -15557,6 +15652,7 @@ SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, Situatio
     // --- OpenGL Implementation ---
     // Bind the OpenGL Compute Program using glUseProgram.
     glUseProgram(pipeline.gl_program_id);
+    sit_gs.gl.current_program_id = pipeline.gl_program_id;
     SIT_CHECK_GL_ERROR();
     // Note: Error handling for glUseProgram is often omitted as it typically only fails
     //       if the program is invalid, which should be caught during creation.
@@ -18567,7 +18663,7 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
 
 #if defined(SITUATION_USE_VULKAN)
     // Defer all destruction to the Graveyard to avoid stalling.
-    if (vd->descriptor_set != VK_NULL_HANDLE) _SituationDeferDestroyDescriptorSet(vd->descriptor_set);
+    if (vd->descriptor_set != VK_NULL_HANDLE) _SituationDeferDestroyDescriptorSet(vd->descriptor_set, VK_NULL_HANDLE);
     if (vd->framebuffer != VK_NULL_HANDLE) _SituationDeferDestroyFramebuffer(vd->framebuffer);
     if (vd->render_pass != VK_NULL_HANDLE) _SituationDeferDestroyRenderPass(vd->render_pass);
 
@@ -18773,6 +18869,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
 
     // 1. Bind OUR PRIVATE VAO for compositing.
     glBindVertexArray(sit_gs.gl.vd_quad_vao);
+    // sit_gs.gl.current_vao_id = sit_gs.gl.vd_quad_vao; // Assuming internal use doesn't require tracking for backup/restore as backup is already done
 
     // Get the dimensions of the current render target
     float target_width = (float)sit_gs.main_window_width;
@@ -18837,6 +18934,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
             glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->gl.texture_id);                  // Source
 
             glUseProgram(sit_gs.gl.composite_shader_program_id);
+            sit_gs.gl.current_program_id = sit_gs.gl.composite_shader_program_id;
             glDisable(GL_BLEND); // Blending handled in shader
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
@@ -18847,6 +18945,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
             glProgramUniform1f(sit_gs.gl.vd_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
 
             glUseProgram(sit_gs.gl.vd_shader_program_id);
+            sit_gs.gl.current_program_id = sit_gs.gl.vd_shader_program_id;
             glEnable(GL_BLEND);
             glBlendEquation(GL_FUNC_ADD);
             switch (vd->blend_mode) {
@@ -19201,14 +19300,19 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
 
     *out_v_count = (int)pos_acc->count;
 
-    // 2. Allocate Interleaved Vertex Buffer (8 floats per vertex)
-    // Layout: X, Y, Z, Nx, Ny, Nz, U, V
-    *out_vertices = (float*)SIT_MALLOC(*out_v_count * 8 * sizeof(float));
+    // 2. Allocate Interleaved Vertex Buffer (12 floats per vertex)
+    // Layout: X, Y, Z, Nx, Ny, Nz, Tx, Ty, Tz, Tw, U, V
+    *out_vertices = (float*)SIT_MALLOC(*out_v_count * 12 * sizeof(float));
     if (!*out_vertices) return false;
+
+    cgltf_accessor* tan_acc = NULL;
+    for (size_t i = 0; i < prim->attributes_count; ++i) {
+        if (prim->attributes[i].type == cgltf_attribute_type_tangent) tan_acc = prim->attributes[i].data;
+    }
 
     // 3. Interleave Data
     for (int i = 0; i < *out_v_count; ++i) {
-        float* v_ptr = &(*out_vertices)[i * 8];
+        float* v_ptr = &(*out_vertices)[i * 12];
 
         // Position
         cgltf_accessor_read_float(pos_acc, i, v_ptr, 3);
@@ -19220,11 +19324,18 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
             v_ptr[3] = 0.0f; v_ptr[4] = 0.0f; v_ptr[5] = 1.0f;
         }
 
+        // Tangent (Default to 1,0,0,1 if missing)
+        if (tan_acc) {
+            cgltf_accessor_read_float(tan_acc, i, v_ptr + 6, 4);
+        } else {
+            v_ptr[6] = 1.0f; v_ptr[7] = 0.0f; v_ptr[8] = 0.0f; v_ptr[9] = 1.0f;
+        }
+
         // UV (Default to 0,0 if missing)
         if (uv_acc) {
-            cgltf_accessor_read_float(uv_acc, i, v_ptr + 6, 2);
+            cgltf_accessor_read_float(uv_acc, i, v_ptr + 10, 2);
         } else {
-            v_ptr[6] = 0.0f; v_ptr[7] = 0.0f;
+            v_ptr[10] = 0.0f; v_ptr[11] = 0.0f;
         }
     }
 
@@ -19385,11 +19496,11 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
 				// function _SituationExtractGLTFPrimitive bound by CGLTF_IMPLEMENTATION
                 if (_SituationExtractGLTFPrimitive(prim, &vertex_data, &vertex_count, &index_data, &index_count)) {
 
-                    // Create GPU Mesh (Stride is 8 floats: 3 Pos + 3 Norm + 2 UV)
+                    // Create GPU Mesh (Stride is 12 floats: 3 Pos + 3 Norm + 4 Tan + 2 UV)
                     sit_mesh->gpu_mesh = SituationCreateMesh(
                         vertex_data,
                         vertex_count,
-                        8 * sizeof(float),
+                        12 * sizeof(float),
                         index_data,
                         index_count
                     );
@@ -19772,16 +19883,31 @@ SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const 
         VkPipelineLayoutCreateInfo pipeline_layout_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 2, .pSetLayouts = layouts, .pushConstantRangeCount = 1, .pPushConstantRanges = &push_constant_range };
 
         if (vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &shader.vk_pipeline_layout) == VK_SUCCESS) {
-            VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = (3 + 3 + 2) * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
-            VkVertexInputAttributeDescription attr_descs[3] = {
+            // 1. PBR Pipeline (48-byte stride: Pos, Norm, Tan, UV)
+            VkVertexInputBindingDescription binding_desc_pbr = { .binding = 0, .stride = (3 + 3 + 4 + 2) * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+            VkVertexInputAttributeDescription attr_descs_pbr[4] = {
+                { .binding = 0, .location = SIT_ATTR_POSITION,   .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 },
+                { .binding = 0, .location = SIT_ATTR_NORMAL,     .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 3 * sizeof(float) },
+                { .binding = 0, .location = SIT_ATTR_TANGENT,    .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 6 * sizeof(float) },
+                { .binding = 0, .location = SIT_ATTR_TEXCOORD_0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = 10 * sizeof(float) }
+            };
+            shader.vk_pipeline = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, shader.vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr);
+
+            // 2. Legacy Pipeline (32-byte stride: Pos, Norm, UV)
+            VkVertexInputBindingDescription binding_desc_legacy = { .binding = 0, .stride = (3 + 3 + 2) * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+            VkVertexInputAttributeDescription attr_descs_legacy[3] = {
                 { .binding = 0, .location = SIT_ATTR_POSITION,   .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 },
                 { .binding = 0, .location = SIT_ATTR_NORMAL,     .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 3 * sizeof(float) },
                 { .binding = 0, .location = SIT_ATTR_TEXCOORD_0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = 6 * sizeof(float) }
             };
-            shader.vk_pipeline = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, shader.vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc, 3, attr_descs);
-            if (shader.vk_pipeline != VK_NULL_HANDLE) {
+            shader.vk_pipeline_legacy = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, shader.vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy);
+
+            if (shader.vk_pipeline != VK_NULL_HANDLE && shader.vk_pipeline_legacy != VK_NULL_HANDLE) {
                 shader.id = (uint32_t)(uintptr_t)shader.vk_pipeline;
             } else {
+                // Cleanup on partial failure
+                if (shader.vk_pipeline) vkDestroyPipeline(sit_gs.vk.device, shader.vk_pipeline, NULL);
+                if (shader.vk_pipeline_legacy) vkDestroyPipeline(sit_gs.vk.device, shader.vk_pipeline_legacy, NULL);
                 vkDestroyPipelineLayout(sit_gs.vk.device, shader.vk_pipeline_layout, NULL);
                 shader.vk_pipeline_layout = VK_NULL_HANDLE;
             }
@@ -19892,6 +20018,9 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
 #elif defined(SITUATION_USE_VULKAN)
     // Defer destruction to Graveyard
     _SituationDeferDestroyPipeline(shader->vk_pipeline, shader->vk_pipeline_layout);
+    if (shader->vk_pipeline_legacy != VK_NULL_HANDLE) {
+        _SituationDeferDestroyPipeline(shader->vk_pipeline_legacy, VK_NULL_HANDLE); // Layout is shared, already deferred
+    }
 #endif
 
     // --- 4. Invalidate the User-Facing Handle ---
@@ -19947,6 +20076,7 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
     if (location == -1) {
         // Ensure the correct shader is active before querying its uniforms
         glUseProgram(shader.id);
+        sit_gs.gl.current_program_id = shader.id;
         location = glGetUniformLocation(shader.id, uniform_name);
 
         if (location != -1) {
@@ -19961,6 +20091,7 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
     // 3. Set the uniform value based on its type
     // glUseProgram is already called if we had to query, but it's safe to call again.
     glUseProgram(shader.id);
+    sit_gs.gl.current_program_id = shader.id;
     switch(type) {
         case SIT_UNIFORM_FLOAT: glUniform1fv(location, 1, (const GLfloat*)data); break;
         case SIT_UNIFORM_VEC2:  glUniform2fv(location, 1, (const GLfloat*)data); break;
@@ -20227,7 +20358,7 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     #if defined(SITUATION_USE_OPENGL)
         glDeleteTextures(1, &texture->gl_texture_id);
     #elif defined(SITUATION_USE_VULKAN)
-        if (texture->descriptor_set != VK_NULL_HANDLE) _SituationDeferDestroyDescriptorSet(texture->descriptor_set);
+        if (texture->descriptor_set != VK_NULL_HANDLE) _SituationDeferDestroyDescriptorSet(texture->descriptor_set, sit_gs.vk.asset_descriptor_pool);
         _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
     #endif
 
@@ -23227,7 +23358,14 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         frameCount = pGs->audio_callback_temp_buffer_frames_capacity;
     }
 
-    ma_mutex_lock(&pGs->audio_queue_mutex);
+    // [THREADING] Try to lock. If we can't get it immediately, it means the main thread is
+    // doing something heavy with the sound list. Skip mixing this frame to avoid stuttering.
+    if (ma_mutex_try_lock(&pGs->audio_queue_mutex) != MA_SUCCESS) {
+        // Zero output and return. Ideally, fading out would be better,
+        // but silence is better than a buffer underrun/glitch loop.
+        memset(pOutput, 0, frameCount * ma_get_bytes_per_frame(pDevice->playback.format, pDevice->playback.channels));
+        return;
+    }
 
     memset(pOutput, 0, frameCount * ma_get_bytes_per_frame(pDevice->playback.format, pDevice->playback.channels));
 
@@ -26066,17 +26204,9 @@ SITAPI bool SituationTakeScreenshot(const char *fileName) {
  * @param str A pointer to the string to be freed. It is safe to pass NULL.
  */
 SITAPI void SituationFreeString(char* str) {
-    #ifndef NDEBUG
-    if (str && str != (char*)-1) {  // Simple poison check
+    if (str) {
         SIT_FREE(str);
-        *(char**)str = (char*)-1;  // Poison (user should null it, but this catches double-free)
-    } else if (str) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Double-free detected on string (pointer poisoned)");
-        fprintf(stderr, "[Situation DEBUG] Double-free attempt on %p — check for missing null-checks\n", (void*)str);
     }
-    #else
-    if (str) SIT_FREE(str);  // Release: fast and silent
-    #endif
 }
 
 /**
