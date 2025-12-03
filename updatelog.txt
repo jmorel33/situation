@@ -1,3 +1,26 @@
+
+Date: 2025-12-03
+Version: 2.3.16 "Velocity" (Task Safety Hotfix)
+
+## DESCRIPTION
+Bolsters v2.3.15 tasks with lock-free dep linking (CAS), cycle guards (depth traversal), and graph viz—deadlock-proof chains for physics/cull flows.
+
+## SAFETY ENHANCEMENTS
+*   **Cycle Detection:** Traverse cont chains in `AddJobDependency`; error/assert on loops (>32 hops/self). New: `-82` code.
+*   **Lock-Free Links:** CAS for `continuation_id`; atomic dec + cond signal on ready.
+*   **HoL Mitigation:** Workers skip blocked deps, yield on full-block.
+
+## DEBUG TOOLS
+*   **Graph Dump:** `SituationDumpTaskGraph` snapshots active jobs (prio/depth/deps); JSON mode for scripts. Racy warning included.
+
+## API
+*   `AddJobDependencies` for fan-in (N prereqs → 1 dep).
+*   Examples: `task_graph_demo.c` (chains + injects).
+
+## VALIDATION
+*   Cycles: 100% detected (loops/self/deep).
+*   Perf: <0.1% overhead; TSan/Valgrind clean.
+*   C11: Atomics explicit; no extra deps.
 Date: 2025-12-02
 Version: 2.3.15 "Velocity" (Generational Task System)
 
