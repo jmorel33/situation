@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.14A "Velocity" |
+| **Version** | 2.3.15 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -36,6 +36,16 @@ The library is engineered around three architectural pillars:
 
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
+
+### New in v2.3.15 "Velocity" (Threading Overhaul)
+
+This release replaces the legacy linear-scan threading model with a hardened **Generational Task System** to support high-throughput, stutter-free background operations.
+
+**Key Enhancements:**
+*   **Generational Ring Buffers:** The thread pool now uses O(1) handle validation via generation counters. This eliminates ABA problems (where a new job accidentally reuses an old ID) and allows for instantaneous status checks without locking.
+*   **Dual Priority Queues:** Jobs are now split into High Priority (Physics, Logic) and Low Priority (Asset Loading) queues. Worker threads use a work-stealing heuristic to prioritize critical path tasks.
+*   **Small Object Optimization (SOO):** Payloads up to 64 bytes are embedded directly into the job structure, eliminating heap allocation overhead for the vast majority of tasks.
+*   **Backpressure Handling:** New submission flags (`SIT_SUBMIT_RUN_IF_FULL`) allow critical jobs to execute immediately on the calling thread if the queues are full, preventing frame drops.
 
 ### New in v2.3.14A "Velocity" (Refinement)
 
@@ -196,8 +206,9 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
     - [6.3.3 Directory Listing (Scanning)](#633-directory-listing-scanning)
   - [6.4 Hot-Reloading & File Watching](#64-hot-reloading--file-watching)
 - [7.0 Threading & Async](#70-threading--async)
-  - [7.1 Thread Pool Architecture](#71-thread-pool-architecture)
-  - [7.2 Async Jobs](#72-async-jobs)
+  - [7.1 Generational Task System](#71-generational-task-system)
+  - [7.2 Job Submission & Control](#72-job-submission--control)
+  - [7.3 Parallel Dispatch](#73-parallel-dispatch)
 - [Appendix A: Error Omniscience](#appendix-a-error-omniscience)
 - [Appendix B: Perf Codex](#appendix-b-perf-codex)
 
@@ -3417,73 +3428,105 @@ If you delete a file that is currently being watched by the Hot-Reloader, the li
 
 ## 7.0 Threading & Async
 
-The Threading module provides a lightweight, C11-based job system to offload work from the main thread. This is critical for tasks like loading large audio files, decompressing assets, or baking physics, which would otherwise cause frame-rate stutters.
+The Threading module provides a hardened, high-performance **Generational Task System** to offload work from the main thread. This is critical for tasks like loading large audio files, decompressing assets, or baking physics, which would otherwise cause frame-rate stutters.
 
-<a id="71-thread-pool-architecture"></a>
-### 7.1 Thread Pool Architecture
+<a id="71-generational-task-system"></a>
+### 7.1 Generational Task System
 
-The `SituationThreadPool` uses a fixed-size ring buffer queue to manage jobs. This ensures **zero allocation** during job submission, preventing heap contention and GC-like pauses.
+The `SituationThreadPool` (v2.3.15+) uses a dual-priority ring buffer architecture with O(1) generational validation.
 
-**Worker Threads:**
-When you create a pool, it spawns $N$ worker threads that sleep on a condition variable. When a job is submitted, one worker wakes up, processes the job, and goes back to sleep.
+**Key Features:**
+*   **Zero Allocation:** The job queue is a fixed-size ring buffer. Submitting a job involves no `malloc` calls (unless the payload > 64 bytes).
+*   **O(1) Validation:** Handle IDs contain a "Generation Counter". If a slot is reused, the generation increments. This makes `SituationWaitForJob` instantaneous and safe against ABA problems (checking an old ID for a slot that now contains a new job).
+*   **Dual Priority:**
+    *   **High Priority (Index 1):** For frame-critical tasks like Physics steps or Audio DSP. Workers always check this queue first.
+    *   **Low Priority (Index 0):** For bulk IO tasks like Asset Loading.
 
 **Thread Safety:**
 *   **Main Thread Only:** You must create and destroy the pool from the main thread.
-*   **Any Thread:** You can submit jobs from the main thread. (Worker-to-worker submission is currently experimental).
+*   **Any Thread:** You can submit jobs from any thread.
 *   **Safety Assertions:** The library uses `SIT_ASSERT_MAIN_THREAD()` in debug builds to catch API violations, such as calling `SituationCreateTexture` from a worker thread.
 
-<a id="72-async-jobs"></a>
-### 7.2 Async Jobs
+<a id="72-job-submission--control"></a>
+### 7.2 Job Submission & Control
 
-A job is a simple function pointer plus a void* user data pointer.
+#### SituationSubmitJobEx (The Power User API)
 
-#### SituationSubmitJob
+This is the primary entry point for the task system.
 
 ```c:disable-run
-SituationJobId SituationSubmitJob(SituationThreadPool* pool,
-                                  void (*callback)(void*, SituationError*),
-                                  void* user_data,
-                                  SituationJobType type);
+SituationJobId SituationSubmitJobEx(
+    SituationThreadPool* pool,
+    void (*func)(void* data, void* reserved),
+    const void* data,
+    size_t data_size,
+    SituationJobFlags flags
+);
 ```
 
 **Parameters:**
-*   `callback`: The function to run on the worker thread.
-*   `user_data`: A pointer to your data context. You must ensure this memory stays valid until the job completes.
-*   `type`: A hint for debugging (e.g., `SIT_JOB_TYPE_AUDIO_LOAD`).
+*   `data`: Pointer to your payload.
+    *   **Small Object Optimization (SOO):** If `data_size <= 64`, the data is **copied** directly into the job slot. No allocation, no pointer management. Perfect for matrices or config structs.
+    *   **Large Data:** If `data_size > 64`, the pointer is stored as-is. You must ensure the memory remains valid until execution completes.
+*   `flags`:
+    *   `SIT_SUBMIT_HIGH_PRIORITY`: Push to the high-priority queue.
+    *   `SIT_SUBMIT_BLOCK_IF_FULL`: Spin-wait if the queue is full (use sparingly).
+    *   `SIT_SUBMIT_RUN_IF_FULL`: **Recommended.** If queue is full, execute immediately on the calling thread. Prevents drops/stalls.
 
-**Returns:** A unique `SituationJobId`.
+#### SituationSubmitJob (Legacy Wrapper)
+
+A macro for simple pointer passing. Equivalent to `SituationSubmitJobEx` with default priority and no copy.
+
+```c:disable-run
+SituationSubmitJob(pool, MyCallback, my_ptr);
+```
 
 #### SituationWaitForJob
 
 ```c:disable-run
-bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId id, uint64_t timeout_ms);
-```
-
-**Usage:** Call this with `timeout_ms = 0` in your update loop to check if a background task is finished.
-
-```c:disable-run
-// Main Loop
-if (SituationWaitForJob(&pool, my_load_job_id, 0)) {
-    // Job is done! Now we can upload the texture to the GPU.
-    UploadTextureToGPU(loaded_pixels);
-}
-```
-
-#### SituationLoadSoundFromFileAsync
-
-A convenience helper for loading audio in the background.
-
-```c:disable-run
-SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
-                                               const char* file_path,
-                                               bool looping,
-                                               SituationSound* out_sound);
+bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId id);
 ```
 
 **Behavior:**
-*   Allocates a job context.
-*   Submits a job to the pool that calls `SituationLoadSoundFromFile` with mode `SITUATION_AUDIO_LOAD_FULL` (decode to RAM).
-*   **Safety:** Do not touch `out_sound` until `SituationWaitForJob` returns true.
+*   Checks the generation counter in the handle against the slot.
+*   If they match, the job is pending/running -> Blocks until complete.
+*   If they differ, the job (and likely several others) is already finished -> Returns `true` immediately.
+
+ #### SituationLoadSoundFromFileAsync
+
+ A convenience helper for loading audio in the background.
+
+ ```c:disable-run
+ SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
+                                                const char* file_path,
+                                                bool looping,
+                                                SituationSound* out_sound);
+ ```
+
+ **Behavior:**
+ *   Allocates a job context.
+ *   Submits a job to the pool that calls `SituationLoadSoundFromFile` with mode `SITUATION_AUDIO_LOAD_FULL` (decode to RAM).
+ *   **Safety:** Do not touch `out_sound` until `SituationWaitForJob` returns true.
+
+<a id="73-parallel-dispatch"></a>
+### 7.3 Parallel Dispatch
+
+For data-parallel tasks (e.g., processing 10,000 particles), use the Fork-Join dispatcher.
+
+#### SituationDispatchParallel
+
+```c:disable-run
+void SituationDispatchParallel(
+    SituationThreadPool* pool,
+    int count,
+    int min_batch_size,
+    void (*func)(int index, void* user_data),
+    void* user_data
+);
+```
+
+**"Helping" Strategy:**
+While waiting for the workers to finish the batches, the calling thread does not sleep. It actively "helps" by stealing jobs from the High Priority queue. This ensures maximum CPU utilization and prevents the main thread from idling during heavy workloads.
 
 <a id="appendix-a-error-omniscience"></a>
 

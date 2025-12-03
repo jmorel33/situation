@@ -1,3 +1,26 @@
+Date: 2025-12-03
+Version: 2.3.15 "Velocity" (Generational Task System)
+
+## DESCRIPTION
+This release replaces the previous basic threading implementation with a hardened Generational Task System. It introduces O(1) job tracking, dual priority queues (High/Low) to prevent asset loading from stalling gameplay physics, and "Small Object Optimization" to remove malloc overhead for 95% of tasks.
+
+## NEW FEATURES
+*   **Generational Ring Buffer:** Replaced the linear-scan thread pool with a Generational Ring Buffer System, enabling O(1) job submission and tracking.
+*   **Dual Priority Queues:** Jobs can now be submitted to High (Physics/Logic) or Low (Assets/IO) priority queues. Workers prioritize the High queue to prevent frame spikes.
+*   **Small Object Optimization (SOO):** Job payloads <= 64 bytes are now embedded directly in the job structure, eliminating heap allocation overhead for most tasks.
+*   **Parallel Dispatch:** Added `SituationDispatchParallel` for easy fork-join parallelism (parallel-for loops). The calling thread actively participates in execution ("helping") to prevent stalls.
+*   **Advanced Submission Control:** Introduced `SituationSubmitJobEx` with flags for Backpressure handling:
+    *   `SIT_SUBMIT_BLOCK_IF_FULL`: Spin/yield until a slot opens.
+    *   `SIT_SUBMIT_RUN_IF_FULL`: Execute immediately on the calling thread if the queue is full.
+*   **Generational IDs:** `SituationJobId` now packs a generation counter to prevent ABA problems and allow safe O(1) validity checks.
+
+## API CHANGES
+*   Replaced previous threading API with the new Generational Task System API.
+*   Updated `SituationLoadSoundFromFileAsync` to utilize the new Generational Task System (now utilizes Small Object Optimization for zero-allocation submission).
+*   Added `<threads.h>` and `<stdatomic.h>` as hard dependencies when `SITUATION_ENABLE_THREADING` is defined (C11 support required).
+
+--------------------------------------------------------------------------------
+
 Date: 2025-12-02
 Version: 2.3.14A "Velocity" (Stability / Bug Fix / Compatibility)
 
@@ -502,7 +525,7 @@ Version: 2.3.4H "Velocity" (Hotfix H)
 
 ## DESCRIPTION
 The "Titanium Robustness" release.
-This hotfix completes the error handling overhaul, eliminating every silent failure, double-free risk, and vague diagnostic in the codebase. Every allocation now pairs perfectly with SIT_FREE, and every potential failure path now returns a precise, actionable SituationError code. The library is now truly unbreakable — no more "it just didn't work" mysteries.
+This hotfix completes the error handling overhaul, eliminating every silent failure, double-free risk, and vague diagnostic in the codebase. Every allocation now pairs perfectly with SIT_FREE, and every failure path now returns a precise, actionable SituationError code. The library is now truly unbreakable — no more "it just didn't work" mysteries.
 
 ## CRITICAL FIXES
 
@@ -947,7 +970,7 @@ Version 2.3.2 addresses the major feature gaps identified in previous versions, 
 
 ### [CRITICAL] Vulkan Synchronization & Stability
 *   **Fixed Buffer Readback Synchronization:** Completely refactored `SituationGetBufferData`. It now uses a new internal helper `_SituationVulkanReadBackBuffer` that correctly inserts `vkCmdPipelineBarrier` commands before and after transfers. This fixes race conditions where the CPU would read stale data before the GPU finished writing.
-*   **Fixed Texture Usage Flags:** `SituationCreateTexture` now automatically includes the `VK_IMAGE_USAGE_STORAGE_BIT`. This fixes a crash/validation error when binding textures as Storage Images in compute shaders (`SituationCmdBindComputeTexture`).
+*   **Fixed Texture Usage Flags:** `SituationCreateTexture` now automatically includes the `VK_IMAGE_USAGE_STORAGE_BIT`. This fixes a crash/validation error when binding textures to Compute Shaders (`SituationCmdBindComputeTexture`).
 *   **Fixed Memory Leaks in Buffer Updates:** Resolved memory leaks in `SituationUpdateBuffer` where temporary staging buffers were not freed if mapping or command allocation failed.
 
 ### [BUG FIXES]
