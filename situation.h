@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.14 "Velocity"
+*   Core API library v2.3.15 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
