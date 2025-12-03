@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.14 "Velocity"_
+_Core API library v2.3.15 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,10 +8,10 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.14** introduces critical stability fixes and performance optimizations, resolving long-standing bottlenecks in the Velocity architecture. It features a new dedicated **Vulkan Asset Descriptor Pool** to prevent fragmentation during heavy streaming, software-tracked **OpenGL Shadow State** to eliminate redundant driver calls, and thread-safe Audio locking. It also adds **Tangent Space Support** (12-float stride) for advanced PBR rendering.
+**Version 2.3.15** marks a significant architectural leap with the introduction of the **Generational Task System**. This release replaces the legacy linear-scan thread pool with a hardened, lock-free ring buffer architecture featuring **O(1) Job Tracking** and **Dual Priority Queues**. This ensures that heavy background assets (Low Priority) never stall critical gameplay physics (High Priority). Additionally, new **Small Object Optimization (SOO)** eliminates heap allocation overhead for 95% of task submissions, and **Parallel Dispatch** allows the main thread to actively "help" worker threads, maximizing CPU saturation.
 
 Our immediate development roadmap is focused on expanding the library's capability:
-*   **Render Lists (Momentum):** Decoupling draw command generation from submission to allow multi-threaded rendering.
+*   **Render Lists (Momentum Phase 2):** Decoupling draw command generation from submission to allow multi-threaded rendering recording.
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
 *   **Async Compute**: Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
 *   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
@@ -24,9 +24,9 @@ The library's philosophy is reflected in its name, granting developers complete 
 It provides deep **Awareness** of the host system through APIs for querying hardware **(GPU Name, VRAM)** and multi-monitor display information, and by handling operating system events like window focus and file drops.
 
 This foundation enables precise **Control** over the entire application stack:
+*   **Threading:** A completely new **Generational Task System** supporting fork-join parallelism (`ParallelFor`), priority scheduling (High/Low rings), and backpressure handling (`RUN_IF_FULL`).
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management.
-*   **Threading:** A new, user-managed **C11 Thread Pool** with atomic job tracking and zero-allocation ring buffers for safe background processing.
-*   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events.
+*   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events ensures no input is ever lost during frame spikes.
 *   **Audio:** A professional-grade pipeline supporting **safe RAM preloading** via background threads (Async Load), disk streaming for music, **thread-safe capture (recording)**, and real-time effects (Reverb, Delay, Filter).
 *   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.2**. It manages complex resources—shaders, meshes, and **dynamically allocated descriptor sets**—automatically. It includes high-level utilities for **Compute Shaders (with #include support)**, **Virtual Display Compositing**, and high-quality text rendering.
 *   **Hot-Reloading:** A suite of tools for live-reloading assets (Shaders, Textures, Models) at runtime, safely handling GPU synchronization and resource rebuilding.
@@ -57,6 +57,7 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 ### **Key Capabilities**
 
 *   **Unified Command Architecture:** Write your rendering code once using abstract `SituationCmd*` functions. The library compiles this into direct state changes for **OpenGL 4.6** or optimized command buffers for **Vulkan 1.2**.
+*   **Generational Task System:** A C11-native, lock-free thread pool supporting fork-join parallelism (`ParallelFor`), priority scheduling, and backpressure handling.
 *   **"Hardened" Audio Engine:** A professional audio pipeline built on miniaudio. It features **thread-safe asset loading** (decoding SFX to RAM to prevent stalling), background music streaming, real-time DSP effects (Reverb/Delay), and low-latency microphone capture.
 *   **Dynamic Resource Management:** No arbitrary limits. The Vulkan backend features a **Dynamic Descriptor Manager** that automatically grows resource pools as you load assets, supporting scenes with thousands of textures and buffers.
 *   **O(1) Input System:** A lock-free, ring-buffered input architecture ensures that no keypress or mouse click is ever lost, even during frame-rate spikes.
@@ -73,12 +74,13 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 A minimal application requires **zero configuration** beyond selecting a backend.
 
 1.  Download `situation.h` (and ensure stb headers are available if not using the bundled release).
-2.  Create `main.c`. This example plays music and draws text using the built-in GPU text renderer.
+2.  Create `main.c`. This example utilizes the new Task System to load music asynchronously while drawing text.
 
 ```c
 #define SITUATION_IMPLEMENTATION
-#define SITUATION_USE_VULKAN // or SITUATION_USE_OPENGL
-#define SITUATION_ENABLE_SHADER_COMPILER // Required for Text/Quad rendering in Vulkan
+#define SITUATION_USE_VULKAN            // Select Backend: VULKAN or OPENGL
+#define SITUATION_ENABLE_THREADING      // Enable the new Task System
+#define SITUATION_ENABLE_SHADER_COMPILER // Required for Vulkan Text/Quad rendering
 #include "situation.h"
 
 int main(int argc, char** argv) {
@@ -86,18 +88,24 @@ int main(int argc, char** argv) {
     SituationInitInfo config = { .window_width = 1280, .window_height = 720, .window_title = "Hello Situation" };
     if (SituationInit(argc, argv, &config) != SITUATION_SUCCESS) return -1;
 
-    // 2. Zero Friction Assets (MP3/TTF loaded directly!)
+    // 2. Create Generational Thread Pool (Auto-detect core count)
+    SituationThreadPool pool;
+    SituationCreateThreadPool(&pool, 0, 1024);
+
+    // 3. Zero Friction Assets (Async)
     SituationSound music;
-    // Use 'AUTO' mode: decodes SFX to RAM, streams long Music from disk automatically
-    SituationLoadSoundFromFile("bgm.mp3", SITUATION_AUDIO_LOAD_AUTO, true, &music);
-    SituationPlayLoadedSound(&music);
+    // Decodes to RAM on background thread (Low Priority), zero main-thread stalls
+    SituationLoadSoundFromFileAsync(&pool, "bgm.mp3", true, &music);
     
     SituationFont font = SituationLoadFont("font.ttf");
     SituationBakeFontAtlas(&font, 24.0f); // Create GPU texture for the font
 
-    // 3. Main Loop
+    // 4. Main Loop
     while (!SituationWindowShouldClose()) {
         SITUATION_BEGIN_FRAME(); // Macro: Polls Input + Updates Timers
+
+        // Example: Dispatch Physics in Parallel (High Priority)
+        SituationDispatchParallel(&pool, 1000, 64, MyPhysicsCallback, NULL);
 
         if (SituationAcquireFrameCommandBuffer()) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
@@ -118,14 +126,14 @@ int main(int argc, char** argv) {
         }
     }
     
-    // 4. Cleanup (Automatic leak detection runs here)
+    // 5. Cleanup (Automatic leak detection runs here)
+    SituationDestroyThreadPool(&pool);
     SituationUnloadSound(&music);
     SituationUnloadFont(font);
     SituationShutdown();
     return 0;
 }
 ```
-
 </details>
 
 ---
@@ -138,9 +146,11 @@ The library is built on several core principles to ensure a simple, predictable,
     -   In **Vulkan**, this maps 1:1 to hardware command buffers for deferred execution.
     -   In **OpenGL**, this acts as a "pass-through" layer, executing commands immediately while maintaining API compatibility.
 -   **The "Update-Before-Draw" Contract:** To guarantee identical behavior across backends, you must strictly separate data updates from draw calls within a frame. Always update your buffers/constants *before* recording the draw commands that use them.
--   **Hybrid Threading Model:**
-    -   **User Logic (Main Thread):** All Windowing, Rendering, and Event Polling calls must occur on the main thread.
-    -   **Engine Internals (Async):** Audio mixing, File Streaming, and Input accumulation occur on dedicated background threads. The API handles safe synchronization automatically (e.g., O(1) ring buffers for input, mutex-protected audio queues).
+-   **Generational Threading Model:**
+    -   **Main Thread:** Handles OS Events, Windowing, and Recording Render Commands.
+    -   **Task System:** Handles Logic, Physics, and File I/O. The system uses **Dual Priority Queues**:
+        -   **High Priority:** For frame-critical tasks (Physics, Culling).
+        -   **Low Priority:** For streaming (Asset Loading).
 -   **Explicit Resource Management:** There is no garbage collector. Every resource created with `SituationCreate...` or `SituationLoad...` returns an opaque handle and **must** be explicitly released with its corresponding `SituationDestroy...` or `SituationUnload...` function.
 -   **Three-Phase Frame:** The main loop follows a strict, non-blocking cadence:
     1.  **Input:** `SituationPollInputEvents()` (Gathers OS events into thread-safe buffers).
@@ -148,7 +158,6 @@ The library is built on several core principles to ensure a simple, predictable,
     3.  **Render:** `SituationAcquireFrameCommandBuffer` -> Record Commands -> `SituationEndFrame`.
 
 </details>
-
 ---
 <details>
 <summary><h2>4. Building & Configuration</h2></summary>
@@ -162,11 +171,10 @@ The library is built on several core principles to ensure a simple, predictable,
 | `SITUATION_IMPLEMENTATION` | **Required** | Define this in **exactly one** `.c` or `.cpp` file to compile the library's implementation code. |
 | `SITUATION_USE_VULKAN` | Backend | Selects the **Vulkan 1.2+** backend. Best for high-performance, multi-threaded asset loading, and modern GPU features. |
 | `SITUATION_USE_OPENGL` | Backend | Selects the **OpenGL 4.6** backend using GLAD (included). Best for compatibility and smaller binary sizes. |
+| `SITUATION_ENABLE_THREADING` | Feature | **(New in v2.3.15)** Enables the Generational Task System. Requires C11 support. |
 | `SITUATION_ENABLE_SHADER_COMPILER` | Feature | Enables runtime GLSL $\to$ SPIR-V compilation. **Mandatory for Vulkan** if you wish to use the built-in Text or Virtual Display renderers. Requires linking `shaderc`. |
 | `SITUATION_ENABLE_DXGI` | Feature | **(Windows Only)** Enables high-precision VRAM monitoring and GPU naming using the DXGI API. Requires linking `dxgi.lib` and `ole32.lib`. |
 | `SITUATION_NO_STB` | Integration | "Situation" embeds `stb_image`, `stb_truetype`, etc. Define this to disable them if your project already links these libraries to avoid symbol collisions. |
-| `SITUATION_BUILD_SHARED` | Build | Define this when compiling "Situation" as a standalone DLL/Shared Library (`.dll` / `.so`). |
-| `SITUATION_USE_SHARED` | Build | Define this in your application when linking against the "Situation" DLL. |
 
 ---
 
@@ -193,7 +201,6 @@ The repository includes a variety of examples demonstrating the library's featur
 The full source code for all examples can be found in the `/examples` directory.
 
 </details>
-
 ---
 <details>
 <summary><h2>6. Frequently Asked Questions (FAQ) & Troubleshooting</h2></summary>
@@ -222,9 +229,9 @@ To maintain consistency between the **Immediate Mode** nature of OpenGL and the 
 **Why?** In Vulkan, commands recorded now are executed later. If you update a buffer *after* recording a draw call but *before* the frame ends, the GPU will read the *new* data for the *old* draw call. In Debug builds, the library actively monitors this and will report architectural violations.
 
 #### 2. Thread Safety
-The "Situation" API is **Single-Threaded** by design for all Windowing and Rendering calls.
-*   **Audio:** The audio engine is multi-threaded. Playback callbacks run on a high-priority thread. As of v2.3.3C, loading sounds with `SITUATION_AUDIO_LOAD_FULL` is thread-safe and non-blocking.
-*   **Input:** The Input subsystem uses **O(1) Ring Buffers** protected by mutexes, ensuring no events are lost even if the main thread stalls.
+*   **Main Thread:** Windowing, Rendering commands, and Event Polling must occur here.
+*   **Worker Threads:** File I/O, Data decompression, and Logic (Physics/AI) are safe via the **Generational Task System**.
+*   **Safety:** The new task system uses atomic operations for O(1) lock-free status checks. Input uses ring buffers. Audio loading uses full RAM decoding.
 
 ---
 
@@ -248,7 +255,7 @@ This library does not use garbage collection.
 *   **Cause:** You defined `SITUATION_USE_VULKAN` but did not define `SITUATION_ENABLE_SHADER_COMPILER`. The internal 2D renderers (for Text and Virtual Displays) require `shaderc` to compile their GLSL source to SPIR-V at runtime.
 
 **Q: Why does my game crash after loading ~500 textures in Vulkan?**
-*   **Cause:** If you are on an older version (< v2.3.3C), you hit the fixed descriptor pool limit. **Upgrade to v2.3.3C**, which introduces the Dynamic Descriptor Manager to automatically grow the pool as needed.
+*   **Cause:** If you are on an older version (< v2.3.3C), you hit the fixed descriptor pool limit. **Upgrade to v2.3.15**, which introduces the Dynamic Descriptor Manager to automatically grow the pool as needed.
 
 **Q: `SituationTakeScreenshot` returns false?**
 *   **Cause:** Screenshots **must** use the `.png` extension. Check that your filename ends in `.png` and that you haven't disabled STB support without providing an alternative writer.
@@ -266,11 +273,10 @@ This library does not use garbage collection.
 
 The documentation for "Situation" is split into two key documents:
 
-1.  [**Core API Library Reference Manual (situation_sdk_2314.md)**](situation_sdk_2314.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
+1.  [**Core API Library Reference Manual (situation_sdk_2315.md)**](situation_sdk_2315.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
 2.  [**Situation API Programming Guide (situation_api.md)**](situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
 
 </details>
-
 ---
 ## License (MIT)
 
