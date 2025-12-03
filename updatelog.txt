@@ -21,6 +21,9 @@ Bolsters v2.3.15 tasks with lock-free dep linking (CAS), cycle guards (depth tra
 *   Cycles: 100% detected (loops/self/deep).
 *   Perf: <0.1% overhead; TSan/Valgrind clean.
 *   C11: Atomics explicit; no extra deps.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-12-02
 Version: 2.3.15 "Velocity" (Generational Task System)
 
