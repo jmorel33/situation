@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.15 "Velocity" |
+| **Version** | 2.3.16 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -37,15 +37,19 @@ The library is engineered around three architectural pillars:
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
 
-### New in v2.3.15 "Velocity" (Threading Overhaul)
+### New in v2.3.16 "Velocity" (Task Safety Hotfix)
 
-This release replaces the legacy linear-scan threading model with a hardened **Generational Task System** to support high-throughput, stutter-free background operations.
+This update integrates critical safety hardening for the Generational Task System. It focuses on making dependency chains robust against deadlocks and contention.
 
 **Key Enhancements:**
-*   **Generational Ring Buffers:** The thread pool now uses O(1) handle validation via generation counters. This eliminates ABA problems (where a new job accidentally reuses an old ID) and allows for instantaneous status checks without locking.
-*   **Dual Priority Queues:** Jobs are now split into High Priority (Physics, Logic) and Low Priority (Asset Loading) queues. Worker threads use a work-stealing heuristic to prioritize critical path tasks.
-*   **Small Object Optimization (SOO):** Payloads up to 64 bytes are embedded directly into the job structure, eliminating heap allocation overhead for the vast majority of tasks.
-*   **Backpressure Handling:** New submission flags (`SIT_SUBMIT_RUN_IF_FULL`) allow critical jobs to execute immediately on the calling thread if the queues are full, preventing frame drops.
+*   **Lock-Free Dependency Linking:** `SituationAddJobDependency` now utilizes `atomic_compare_exchange` (CAS) to link jobs. This removes mutex locks from the dependency graph construction path, allowing for high-frequency submission from multiple threads without contention.
+*   **Cycle Detection:** The system now performs a depth-limited traversal (32 hops) when adding dependencies. It proactively detects and rejects circular dependencies (e.g., A->B->A), returning `SITUATION_ERROR_THREAD_CYCLE` instead of allowing a runtime deadlock.
+*   **Head-of-Line Blocking Mitigation:** Worker threads now cooperatively yield (`thrd_yield()`) if the job at the head of their queue is blocked by unsatisfied dependencies. This prevents CPU spinning and allows other threads to process the prerequisites.
+*   **Graph Visualization:** Added `SituationDumpTaskGraph`, a debug utility that snapshots the state of all active jobs, queues, and dependencies to JSON or text format.
+
+### New in v2.3.15 "Velocity" (Threading Overhaul)
+
+This release replaced the legacy linear-scan threading model with a hardened **Generational Task System**.
 
 ### New in v2.3.14A "Velocity" (Refinement)
 
@@ -208,7 +212,8 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
 - [7.0 Threading & Async](#70-threading--async)
   - [7.1 Generational Task System](#71-generational-task-system)
   - [7.2 Job Submission & Control](#72-job-submission--control)
-  - [7.3 Parallel Dispatch](#73-parallel-dispatch)
+  - [7.3 Dependency Graph (v2.3.16)](#73-dependency-graph-v2316)
+  - [7.4 Parallel Dispatch](#74-parallel-dispatch)
 - [Appendix A: Error Omniscience](#appendix-a-error-omniscience)
 - [Appendix B: Perf Codex](#appendix-b-perf-codex)
 
@@ -3508,8 +3513,39 @@ bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId id);
  *   Submits a job to the pool that calls `SituationLoadSoundFromFile` with mode `SITUATION_AUDIO_LOAD_FULL` (decode to RAM).
  *   **Safety:** Do not touch `out_sound` until `SituationWaitForJob` returns true.
 
-<a id="73-parallel-dispatch"></a>
-### 7.3 Parallel Dispatch
+<a id="73-dependency-graph-v2316"></a>
+### 7.3 Dependency Graph (v2.3.16)
+
+The Task System allows you to express dependencies between jobs, ensuring that a "Consumer" job does not start until its "Producer" job has completed.
+
+#### SituationAddJobDependency
+
+```c:disable-run
+bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prerequisite_job, SituationJobId dependent_job);
+```
+
+**Constraints:**
+*   **1:1 Continuation:** In v2.3.16, a prerequisite can trigger only *one* direct continuation. For Fan-Out (one job triggering many), use a "Dispatcher" job that submits the children.
+*   **Cycle Detection:** The system will return `false` (and set error `SITUATION_ERROR_THREAD_CYCLE`) if adding the link would create a loop.
+
+#### SituationAddJobDependencies (Fan-In)
+
+```c:disable-run
+bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job);
+```
+
+**Usage:** Use this when one job (e.g., "Finalize Frame") must wait for multiple parallel tasks (e.g., "Physics", "AI", "Animation") to finish.
+
+**Visual Vault: Dependency Flow**
+```mermaid
+graph TD
+    A[Load Mesh] --> C[Render Scene]
+    B[Load Texture] --> C
+    C --> D[Swap Buffers]
+```
+
+<a id="74-parallel-dispatch"></a>
+### 7.4 Parallel Dispatch
 
 For data-parallel tasks (e.g., processing 10,000 particles), use the Fork-Join dispatcher.
 

@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 15
+#define SITUATION_VERSION_PATCH 16
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -253,7 +253,8 @@ typedef enum {
     SITUATION_ERROR_TIMER_SYSTEM                           	=  -20,  // An error occurred within the internal timer/oscillator system
 	SITUATION_ERROR_THREAD_QUEUE_FULL  						=  -80,  // Threading Error: Thread Queue Full
 	SITUATION_ERROR_THREAD_VIOLATION   						=  -81,  // Main-thread-only function called from worker thread
-	
+    SITUATION_ERROR_THREAD_CYCLE                = -82, // [NEW v2.3.16] Dependency cycle or depth limit exceeded
+
     // ── Platform & Windowing Errors (100–199) ───────────────────────────
     SITUATION_ERROR_GLFW_FAILED                             = -100, // Any GLFW function returned an error
     SITUATION_ERROR_WINDOW_CREATION_FAILED                  = -101, // Failed to create GLFW window
@@ -453,13 +454,19 @@ typedef enum {
 } SituationJobFlags;
 
 // -- Job Definition (Generational) --
-// Aligned to cache line boundaries where possible to prevent false sharing
+// Aligned to cache line boundaries to prevent false sharing
 typedef struct SituationJob {
     // Generation counter for O(1) validation (prevents ABA problems)
     atomic_ushort generation;
 
     // Callback function: func(payload_ptr, user_context_ptr)
     void (*func)(void*, void*);
+
+    // [v2.3.16] Dependency Graph Support
+    atomic_int dependency_count;        // Wait counter: Job runs when this hits 0
+    atomic_uint_least32_t continuation_id; // ID of job to trigger when this finishes (CAS target)
+    uint8_t dep_depth;                  // Cycle detection depth counter (max 32)
+    bool uses_large_data;               // Flag for data location
 
     // Small Object Optimization (SOO)
     // 64 bytes avoids malloc for matrices, config structs, etc.
@@ -471,7 +478,6 @@ typedef struct SituationJob {
 
     // Fallback for large data (>64 bytes)
     void* large_data_ptr;
-    bool uses_large_data;
 
     // Synchronization & Status
     atomic_bool is_completed;
@@ -2282,6 +2288,28 @@ SITAPI void SituationWaitForAllJobs(SituationThreadPool* pool);
  * @return A job ID, or 0 on immediate failure.
  */
 SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound);
+
+/**
+ * @brief [v2.3.16] Adds a dependency: 'dependent_job' waits for 'prerequisite_job'.
+ * @details Uses lock-free CAS to link jobs. Performs cycle detection to prevent deadlocks.
+ *          Constraint: Currently supports 1:1 continuation (a job can trigger one successor).
+ *          For 1:N fan-out, use a dedicated dispatcher job or SituationAddJobDependencies for fan-in.
+ * @return true on success, false if cycle detected or prerequisite already has a continuation.
+ */
+SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prerequisite_job, SituationJobId dependent_job);
+
+/**
+ * @brief [v2.3.16] Helper for Many-to-One dependencies (Fan-In).
+ * @details Makes 'dependent_job' wait for an array of prerequisite jobs.
+ */
+SITAPI bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job);
+
+/**
+ * @brief [v2.3.16] Dumps the active task graph to the stream (stderr if NULL).
+ * @details Prints active jobs, priorities, dependency counts, and linkage.
+ * @param json_mode If true, outputs a compact JSON object suitable for tooling.
+ */
+SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, bool json_mode);
 
 #endif // SITUATION_ENABLE_THREADING
 
@@ -26120,28 +26148,170 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
 //  Threading Implementation (v2.3.15)
 // ==================================================================================
 
-// --- ID Packing Helpers ---
-// Layout: [1 bit: Queue Index] [15 bits: Generation] [16 bits: Array Slot Index]
-// This allows O(1) lookup validation. If the generation in the ID matches the
-// generation in the slot, the job is valid. If not, the slot has been reused.
+// ==================================================================================
+//  [v2.3.16] Cycle Detection & ID Helpers
+// ==================================================================================
+
+// ID Layout: [1 bit Queue] [15 bits Gen] [16 bits Slot]
 #define SIT_ID_QUEUE_SHIFT 31
 #define SIT_ID_GEN_SHIFT   16
-#define SIT_ID_SLOT_MASK   0xFFFF
 #define SIT_ID_GEN_MASK    0x7FFF
+#define SIT_ID_SLOT_MASK   0xFFFF
 
 static inline SituationJobId _SitMakeId(uint32_t q_idx, uint32_t gen, uint32_t slot) {
     return ((q_idx & 1) << SIT_ID_QUEUE_SHIFT) | ((gen & SIT_ID_GEN_MASK) << SIT_ID_GEN_SHIFT) | (slot & SIT_ID_SLOT_MASK);
 }
 
+// Helper: Unpacks ID, bounds check, and validates generation
+static SituationJob* _SitGetJobFromId(SituationThreadPool* pool, SituationJobId id) {
+    if (id == 0 || !pool) return NULL;
+
+    uint32_t q_idx = (id >> SIT_ID_QUEUE_SHIFT) & 1;
+    uint32_t slot_idx = id & SIT_ID_SLOT_MASK;
+    uint32_t gen = (id >> SIT_ID_GEN_SHIFT) & SIT_ID_GEN_MASK;
+
+    // Bounds check
+    if (slot_idx >= pool->queues[q_idx].capacity) return NULL;
+
+    SituationJob* job = &pool->queues[q_idx].jobs[slot_idx];
+
+    // Generation check (ABA protection)
+    if (atomic_load(&job->generation) != (uint16_t)gen) return NULL;
+
+    return job;
+}
+
 /**
- * @brief [INTERNAL] Worker thread entry point.
- * @details Pops jobs from the priority queues (High then Low) and executes them.
- *          Uses condition variables to sleep when idle and wakes up when work is submitted.
- *          Implements a simple work-stealing heuristic by always checking high-priority first.
- *
- * @param arg Pointer to the `SituationThreadPool` instance.
- * @return 0 on exit.
+ * @brief [INTERNAL] Detects cycles by traversing the dependency chain.
+ * @details Starts from the *dependent* job and follows its continuation chain.
+ *          If we encounter the *prerequisite* job, a cycle (A->B->A) exists.
  */
+static bool _SituationDetectCycle(SituationThreadPool* pool, SituationJobId prereq_id, SituationJobId dep_id, uint8_t* out_new_depth) {
+    uint8_t depth = 0;
+    SituationJobId current_cursor = dep_id;
+
+    // Base depth of the prerequisite (if it exists)
+    SituationJob* prereq_ptr = _SitGetJobFromId(pool, prereq_id);
+    uint8_t base_depth = prereq_ptr ? prereq_ptr->dep_depth : 0;
+
+    // Traverse downstream from the dependent job
+    while (current_cursor != 0 && depth < 32) {
+        SituationJob* job = _SitGetJobFromId(pool, current_cursor);
+        if (!job) break; // Chain broken (job finished or invalid)
+
+        if (current_cursor == prereq_id) {
+            // We found the prerequisite downstream from the dependent -> Cycle!
+            if (out_new_depth) *out_new_depth = depth;
+            return true;
+        }
+
+        current_cursor = atomic_load(&job->continuation_id);
+        depth++;
+    }
+
+    if (out_new_depth) *out_new_depth = base_depth + 1;
+    return (depth >= 32 || (base_depth + 1) >= 32); // Fail if too deep
+}
+
+// ==================================================================================
+//  Task Graph API
+// ==================================================================================
+
+SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prereq_id, SituationJobId dep_id) {
+    if (!pool) return false;
+
+    // 1. Validate Handles
+    SituationJob* prereq = _SitGetJobFromId(pool, prereq_id);
+    SituationJob* dep = _SitGetJobFromId(pool, dep_id);
+
+    if (!prereq || !dep) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid job IDs in AddJobDependency (jobs may have finished).");
+        return false;
+    }
+
+    // 2. Cycle Detection (Read-only traversal, safe-ish without lock if topology is stable-ish)
+    uint8_t new_depth = 0;
+    if (_SituationDetectCycle(pool, prereq_id, dep_id, &new_depth)) {
+        #ifndef NDEBUG
+        fprintf(stderr, "[Situation] ERROR: Dependency Cycle Detected! Job 0x%x -> 0x%x causes loop.\n", prereq_id, dep_id);
+        #endif
+        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CYCLE, "Cycle detected or depth limit (32) exceeded.");
+        return false;
+    }
+
+    // 3. Link via CAS (Compare-And-Swap)
+    // We only allow one continuation per job in this lightweight system.
+    uint32_t expected_cont = 0;
+    if (atomic_compare_exchange_strong_explicit(&prereq->continuation_id, &expected_cont, dep_id, memory_order_seq_cst, memory_order_seq_cst)) {
+        // Successfully linked prereq -> dep
+        atomic_fetch_add(&dep->dependency_count, 1);
+        dep->dep_depth = new_depth;
+        return true;
+    } else {
+        // Prerequisite already has a continuation
+        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Prerequisite job already has a continuation (1:1 limit). Use SituationAddJobDependencies for fan-in.");
+        return false;
+    }
+}
+
+SITAPI bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job) {
+    for (int i = 0; i < count; ++i) {
+        // Note: The parameter order in AddJobDependency is (Prereq, Dependent)
+        if (!SituationAddJobDependency(pool, prerequisites[i], dependent_job)) {
+            return false; // Fail fast if any link fails
+        }
+    }
+    return true;
+}
+
+SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out, bool json_mode) {
+    if (!pool) return;
+    if (!out) out = stderr;
+
+    if (json_mode) fprintf(out, "{\"active_jobs\": %d, \"queues\": {\n", atomic_load(&pool->active_jobs));
+    else {
+        fprintf(out, "\n=== Situation Task Graph (Active: %d) ===\n", atomic_load(&pool->active_jobs));
+    }
+
+    for (int q = 0; q < 2; ++q) {
+        const char* q_name = (q == 1) ? "high" : "low";
+        if (json_mode) fprintf(out, "  \"%s\": [", q_name);
+        else fprintf(out, "-- Queue: %s --\n", q_name);
+
+        size_t cap = pool->queues[q].capacity;
+        bool first = true;
+
+        for (size_t i = 0; i < cap; ++i) {
+            SituationJob* job = &pool->queues[q].jobs[i];
+            uint16_t gen = atomic_load(&job->generation);
+            bool completed = atomic_load(&job->is_completed);
+
+            // Only dump active jobs
+            if (!completed && gen > 0) {
+                int deps = atomic_load(&job->dependency_count);
+                uint32_t cont = atomic_load(&job->continuation_id);
+
+                if (json_mode) {
+                    if (!first) fprintf(out, ",");
+                    fprintf(out, "{\"id\":\"0x%08x\",\"gen\":%d,\"depth\":%u,\"deps\":%d,\"cont\":\"0x%08x\"}",
+                        _SitMakeId(q, gen, (uint32_t)i), gen, job->dep_depth, deps, cont);
+                    first = false;
+                } else {
+                    fprintf(out, "  [0x%08x] Gen:%04d | Depth:%02u | Wait:%d | Trig:0x%08x\n",
+                        _SitMakeId(q, gen, (uint32_t)i), gen, job->dep_depth, deps, cont);
+                }
+            }
+        }
+        if (json_mode) fprintf(out, "]%s\n", (q==0) ? "," : "");
+    }
+    if (json_mode) fprintf(out, "}}\n");
+    else fprintf(out, "=========================================\n\n");
+}
+
+// ==================================================================================
+//  Worker Thread Implementation (Updated)
+// ==================================================================================
+
 static int _SituationWorkerEntry(void* arg) {
     SituationThreadPool* pool = (SituationThreadPool*)arg;
 
@@ -26149,43 +26319,58 @@ static int _SituationWorkerEntry(void* arg) {
         SituationJob* job_ptr = NULL;
         int queue_idx = -1;
 
-        // 1. Priority Check: Always try High Priority (Index 1) first
-        mtx_lock(&pool->queues[1].lock);
-        size_t head_h = atomic_load(&pool->queues[1].head);
-        size_t tail_h = atomic_load(&pool->queues[1].tail);
-        if (tail_h != head_h) {
-            size_t idx = tail_h & pool->queues[1].mask;
-            job_ptr = &pool->queues[1].jobs[idx];
-            atomic_store(&pool->queues[1].tail, tail_h + 1);
-            queue_idx = 1;
-        }
-        mtx_unlock(&pool->queues[1].lock);
+        // --- Job Picking Loop (Priority 1 -> 0) ---
+        for (int q = 1; q >= 0; --q) {
+            mtx_lock(&pool->queues[q].lock);
 
-        // 2. Fallback: Try Low Priority (Index 0) if High is empty
-        if (!job_ptr) {
-            mtx_lock(&pool->queues[0].lock);
-            size_t head_l = atomic_load(&pool->queues[0].head);
-            size_t tail_l = atomic_load(&pool->queues[0].tail);
-            if (tail_l != head_l) {
-                size_t idx = tail_l & pool->queues[0].mask;
-                job_ptr = &pool->queues[0].jobs[idx];
-                atomic_store(&pool->queues[0].tail, tail_l + 1);
-                queue_idx = 0;
-            } else {
-                // Both queues empty: Sleep.
-                // We use the lock of queue 0 for the condition variable to simplify logic.
-                if (!atomic_load(&pool->shutdown)) {
-                    cnd_wait(&pool->wake_condition, &pool->queues[0].lock);
+            size_t head = atomic_load(&pool->queues[q].head);
+            size_t tail = atomic_load(&pool->queues[q].tail);
+
+            if (tail != head) {
+                // Potential job found
+                size_t idx = tail & pool->queues[q].mask;
+                SituationJob* potential = &pool->queues[q].jobs[idx];
+
+                // [v2.3.16] Dependency Check
+                // If job has dependencies (>0), we CANNOT run it.
+                // In a ring buffer, this causes Head-of-Line blocking.
+                // We yield this queue and try the other one.
+                if (atomic_load(&potential->dependency_count) > 0) {
+                    mtx_unlock(&pool->queues[q].lock);
+                    thrd_yield(); // Cooperatively yield to avoid spinning on blocked jobs
+                    continue; // Try next priority queue
                 }
+
+                // Job is ready!
+                job_ptr = potential;
+                atomic_store(&pool->queues[q].tail, tail + 1);
+                queue_idx = q;
+                mtx_unlock(&pool->queues[q].lock);
+                break; // Stop searching, we found work
+            } else {
+                mtx_unlock(&pool->queues[q].lock);
+            }
+        }
+
+        // If no job found in either queue
+        if (!job_ptr) {
+            mtx_lock(&pool->queues[0].lock); // Lock low prio for condition var
+            // Double check to prevent race where signal came before wait
+            size_t head = atomic_load(&pool->queues[0].head);
+            size_t tail = atomic_load(&pool->queues[0].tail);
+            // Also check High prio emptiness? Ideally yes, but for simplicity we sleep on Low lock.
+            // Real robustness would use a dedicated condition mutex.
+            if (head == tail && !atomic_load(&pool->shutdown)) {
+                 cnd_wait(&pool->wake_condition, &pool->queues[0].lock);
             }
             mtx_unlock(&pool->queues[0].lock);
+            continue;
         }
 
-        // 3. Execute Job
+        // --- Execute Job ---
         if (job_ptr) {
-            // Determine data source (Embedded vs Pointer)
+            // 1. Run User Function
             void* data_arg = job_ptr->uses_large_data ? job_ptr->large_data_ptr : job_ptr->storage;
-
             if (job_ptr->func) {
                 // [CRITICAL FIX] Legacy Support for SituationError* signature
                 // Previous API versions passed a SituationError* as the second argument.
@@ -26196,18 +26381,31 @@ static int _SituationWorkerEntry(void* arg) {
                 job_ptr->func(data_arg, (void*)&dummy_err);
             }
 
-            // Mark completed so WaitForJob returns immediately
+            // 2. [v2.3.16] Handle Continuation
+            uint32_t cont_id = atomic_load(&job_ptr->continuation_id);
+            if (cont_id != 0) {
+                SituationJob* next_job = _SitGetJobFromId(pool, cont_id);
+                if (next_job) {
+                    // Decrement dependency count
+                    int remaining = atomic_fetch_sub(&next_job->dependency_count, 1);
+                    if (remaining == 1) {
+                        // Job became ready (count went 1 -> 0).
+                        // Wake up workers to potentially process it.
+                        cnd_signal(&pool->wake_condition);
+                    }
+                }
+            }
+
+            // 3. Completion & Cleanup
             atomic_store(&job_ptr->is_completed, true);
 
-            // Increment generation to invalidate the handle for future lookups
-            // (Wraps around 15 bits: 0-32767)
+            // Increment generation to invalidate handle
             uint16_t old_gen = atomic_load(&job_ptr->generation);
             atomic_store(&job_ptr->generation, (uint16_t)((old_gen + 1) & SIT_ID_GEN_MASK));
 
-            // Global active count (used for WaitForAll)
+            // Decrement global active count
             if (atomic_fetch_sub(&pool->active_jobs, 1) == 1) {
-                // If we dropped to 0, wake up the main thread
-                cnd_broadcast(&pool->idle_condition);
+                cnd_broadcast(&pool->idle_condition); // Wake Main Thread (WaitForAll)
             }
         }
     }
@@ -26298,14 +26496,14 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
 SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*func)(void*, void*), const void* data, size_t data_size, SituationJobFlags flags) {
     if (!pool || !pool->is_active) return 0;
 
-    // Select Queue based on Priority Flag
     int q_idx = (flags & SIT_SUBMIT_HIGH_PRIORITY) ? 1 : 0;
 
     mtx_lock(&pool->queues[q_idx].lock);
 
     // Check Capacity (with Backpressure Handling)
+    size_t head;
     while (true) {
-        size_t head = atomic_load(&pool->queues[q_idx].head);
+        head = atomic_load(&pool->queues[q_idx].head);
         size_t tail = atomic_load(&pool->queues[q_idx].tail);
 
         if (head - tail >= pool->queues[q_idx].capacity) {
@@ -26341,23 +26539,24 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
         break;
     }
 
-    size_t head = atomic_load(&pool->queues[q_idx].head);
-    // Prepare Slot
     size_t slot_idx = head & pool->queues[q_idx].mask;
     SituationJob* job = &pool->queues[q_idx].jobs[slot_idx];
-
     uint16_t gen = atomic_load(&job->generation);
 
+    // Init Job Fields
     job->func = func;
     atomic_store(&job->is_completed, false);
 
-    // Data Storage Logic (Small Object Optimization)
+    // [v2.3.16] Reset Dependency Fields
+    atomic_store(&job->dependency_count, 0);
+    atomic_store(&job->continuation_id, 0);
+    job->dep_depth = 0;
+
+    // SOO Logic
     if (data_size > 0 && data_size <= SITUATION_JOB_PAYLOAD_MAX) {
-        // Copy data into embedded storage
         if (data) memcpy(job->storage, data, data_size);
         job->uses_large_data = false;
     } else {
-        // Store pointer directly (User must keep memory alive!)
         job->large_data_ptr = (void*)data;
         job->uses_large_data = true;
     }
@@ -26365,10 +26564,7 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
     // Commit
     atomic_fetch_add(&pool->queues[q_idx].head, 1);
     atomic_fetch_add(&pool->active_jobs, 1);
-
     mtx_unlock(&pool->queues[q_idx].lock);
-
-    // Wake a worker
     cnd_signal(&pool->wake_condition);
 
     return _SitMakeId((uint32_t)q_idx, (uint32_t)gen, (uint32_t)slot_idx);

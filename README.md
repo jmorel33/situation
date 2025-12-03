@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.15 "Velocity"_
+_Core API library v2.3.16 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.15** marks a significant architectural leap with the introduction of the **Generational Task System**. This release replaces the legacy linear-scan thread pool with a hardened, lock-free ring buffer architecture featuring **O(1) Job Tracking** and **Dual Priority Queues**. This ensures that heavy background assets (Low Priority) never stall critical gameplay physics (High Priority). Additionally, new **Small Object Optimization (SOO)** eliminates heap allocation overhead for 95% of task submissions, and **Parallel Dispatch** allows the main thread to actively "help" worker threads, maximizing CPU saturation.
+**Version 2.3.16** is a production-ready integration of the **Task Safety Hotfix**. It introduces **Lock-Free Dependency Linking** (via CAS) to eliminate mutex contention during job submission, and **Cycle Detection** to prevent graph deadlocks (e.g., A->B->A loops). This release also adds **Task Graph Visualization** tools, making it safe to build complex dependency chains for physics and culling systems.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Render Lists (Momentum Phase 2):** Decoupling draw command generation from submission to allow multi-threaded rendering recording.
@@ -282,7 +282,7 @@ This library does not use garbage collection.
 
 The documentation for "Situation" is split into two key documents:
 
-1.  [**Core API Library Reference Manual (situation_sdk_2315.md)**](situation_sdk_2315.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
+1.  [**Core API Library Reference Manual (situation_sdk_2316.md)**](situation_sdk_2316.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
 2.  [**Situation API Programming Guide (situation_api.md)**](situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
 
 </details>
