@@ -34,6 +34,7 @@ This foundation enables precise **Control** over the entire application stack:
 Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
 
 > **CRITICAL ARCHITECTURAL NOTE:** To guarantee identical behavior between OpenGL (Immediate) and Vulkan (Deferred), developers must **update all buffer data before recording draw commands** within a frame. *The library actively enforces this rule in debug builds and will report a runtime error if violated.*
+
 ---
 
 ## Table of Contents
@@ -68,6 +69,7 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 </details>
 
 ---
+
 <details>
 <summary><h2>2. Getting Started</h2></summary>
 
@@ -137,6 +139,7 @@ int main(int argc, char** argv) {
 </details>
 
 ---
+
 <details>
 <summary><h2>3. Core Concepts & Architecture</h2></summary>
 
@@ -158,7 +161,9 @@ The library is built on several core principles to ensure a simple, predictable,
     3.  **Render:** `SituationAcquireFrameCommandBuffer` -> Record Commands -> `SituationEndFrame`.
 
 </details>
+
 ---
+
 <details>
 <summary><h2>4. Building & Configuration</h2></summary>
 
@@ -193,6 +198,7 @@ Depending on your configuration, you must link against specific system libraries
 </details>
 
 ---
+
 <details>
 <summary><h2>5. Examples & Tutorials</h2></summary>
 
@@ -201,7 +207,9 @@ The repository includes a variety of examples demonstrating the library's featur
 The full source code for all examples can be found in the `/examples` directory.
 
 </details>
+
 ---
+
 <details>
 <summary><h2>6. Frequently Asked Questions (FAQ) & Troubleshooting</h2></summary>
 
@@ -268,6 +276,7 @@ This library does not use garbage collection.
 </details>
 
 ---
+
 <details>
 <summary><h2>7. API Reference</h2></summary>
 
@@ -277,7 +286,9 @@ The documentation for "Situation" is split into two key documents:
 2.  [**Situation API Programming Guide (situation_api.md)**](situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
 
 </details>
+
 ---
+
 ## License (MIT)
 
 "Situation" is licensed under the permissive MIT License. In simple terms, this means you are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software for both commercial and private projects. The only requirement is that you include the original copyright and license notice in any substantial portion of the software or derivative work you distribute. This library is provided "as is", without any warranty.
