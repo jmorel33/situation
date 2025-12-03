@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 14
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_PATCH 15
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -407,16 +407,6 @@ typedef enum {
 SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
 #define SITUATION_LOG_WARNING SituationLogWarning
 
-// --- Threading Support Configuration ---
-#ifdef SITUATION_ENABLE_THREADING
-    #if !defined(__STDC_NO_THREADS__)
-        #include <threads.h>
-        #include <stdatomic.h>
-    #else
-        #error "SITUATION_ENABLE_THREADING requires C11 <threads.h> support."
-    #endif
-#endif
-
 // Enable runtime main-thread asserts (debug only)
 #ifdef SITUATION_ENABLE_MT_ASSERTS
     #define SIT_ASSERT_MAIN_THREAD() _SituationAssertMainThread(__FILE__, __LINE__)
@@ -424,65 +414,101 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
     #define SIT_ASSERT_MAIN_THREAD() do {} while(0)
 #endif
 
+// --- Threading Support Configuration ---
 #ifdef SITUATION_ENABLE_THREADING
-// --- Job Types ---
+    #if !defined(__STDC_NO_THREADS__)
+        #include <threads.h>
+        #include <stdatomic.h>
+        #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+            #include <stdalign.h> // For alignas/_Alignas
+        #endif
+    #else
+        #error "SITUATION_ENABLE_THREADING requires C11 <threads.h> support."
+    #endif
+
+// ==================================================================================
+//  Thread Pool & Task System (Generational)
+// ==================================================================================
+//  A high-performance, lock-free (for reading) job system with two priority queues.
+//  Features:
+//   - Dual Priority Queues: High (Physics/Logic) and Low (Assets/IO).
+//   - O(1) Job Tracking: Uses a generational index to safely track job completion.
+//   - Small Object Optimization (SOO): Embeds 64 bytes of data directly in the job struct.
+//   - Fork-Join Parallelism: DispatchParallel for batched workloads.
+//   - Backpressure Handling: Run-Inline fallback when queues are full.
+
+// -- Constants --
+#define SITUATION_MAX_THREADS 32
+#define SITUATION_JOB_PAYLOAD_MAX 64
+
+// -- Types --
+typedef uint32_t SituationJobId;
+
+// -- Submission Flags --
 typedef enum {
-    SIT_JOB_TYPE_GENERAL = 0,
-    SIT_JOB_TYPE_AUDIO_LOAD,
-    SIT_JOB_TYPE_FILE_READ,
-    SIT_JOB_TYPE_CUSTOM
-} SituationJobType;
+    SIT_SUBMIT_DEFAULT       = 0,       // Low Priority, Return 0 if full
+    SIT_SUBMIT_HIGH_PRIORITY = 1 << 0,  // Use High Priority Queue (Physics, Audio)
+    SIT_SUBMIT_BLOCK_IF_FULL = 1 << 1,  // Spin/Sleep until a slot opens
+    SIT_SUBMIT_RUN_IF_FULL   = 1 << 2   // Execute immediately on current thread if full
+} SituationJobFlags;
 
-// --- Job Status ---
-typedef enum {
-    SIT_JOB_STATUS_PENDING = 0,
-    SIT_JOB_STATUS_RUNNING,
-    SIT_JOB_STATUS_COMPLETED,
-    SIT_JOB_STATUS_FAILED
-} SituationJobStatus;
-
-// ID is an int to allow atomic operations
-typedef int SituationJobId;
-
-// --- Job Definition ---
+// -- Job Definition (Generational) --
+// Aligned to cache line boundaries where possible to prevent false sharing
 typedef struct SituationJob {
-    SituationJobId id;              // Unique ID assigned by the pool
-    SituationJobType type;
-    
-    // Callback function pointer: void func(void* user_data, SituationError* out_err)
-    void (*callback)(void*, SituationError*);
-    void* user_data;
+    // Generation counter for O(1) validation (prevents ABA problems)
+    atomic_ushort generation;
 
-    // Internal state (Atomically managed)
-    atomic_int completed;           // 0=pending/running, 1=done
-    SituationError result_error;    
+    // Callback function: func(payload_ptr, user_context_ptr)
+    void (*func)(void*, void*);
+
+    // Small Object Optimization (SOO)
+    // 64 bytes avoids malloc for matrices, config structs, etc.
+    #if defined(__stdalign_h)
+    alignas(16) uint8_t storage[SITUATION_JOB_PAYLOAD_MAX];
+    #else
+    uint8_t storage[SITUATION_JOB_PAYLOAD_MAX]; // Fallback alignment
+    #endif
+
+    // Fallback for large data (>64 bytes)
+    void* large_data_ptr;
+    bool uses_large_data;
+
+    // Synchronization & Status
+    atomic_bool is_completed;
 } SituationJob;
 
-// --- Thread Pool Handle ---
+// -- Thread Pool Handle --
 typedef struct SituationThreadPool {
     bool is_active;
-    thrd_t* threads;
+    thrd_t threads[SITUATION_MAX_THREADS];
     size_t thread_count;
 
-    // Synchronization
-    mtx_t lock;                     // Main mutex guarding the queue indices
-    cnd_t wake_condition;           // Signals workers that a job is available
-    cnd_t idle_condition;           // Signals main thread that all jobs are done
+    // -- Dual Ring Buffers --
+    // Index 0 = Low Priority (Assets/IO), Index 1 = High Priority (Physics/Logic)
+    struct {
+        SituationJob* jobs;
+        size_t capacity;
+        size_t mask;        // capacity - 1 (for fast bitwise wrapping)
+        atomic_size_t head; // Write index
+        atomic_size_t tail; // Read index
+        mtx_t lock;         // Fine-grained lock per queue
+    } queues[2];
 
-    // State Flags
-    atomic_bool shutdown_requested; // 1 = Exit worker loops
-    atomic_int active_jobs;         // Total jobs (Queued + Running). Used for WaitForAll.
-    int pending_count;              // Jobs currently in ring buffer. Guarded by lock.
+    // Signaling
+    cnd_t wake_condition;   // Wakes workers when work is added
+    cnd_t idle_condition;   // Wakes main thread when all jobs complete
 
-    // Job Queue (Ring Buffer)
-    SituationJob* queue;
-    size_t queue_capacity;
-    size_t queue_head;              // Write index
-    size_t queue_tail;              // Read index
-    
-    atomic_int next_job_id;         // ID generator
-    SituationError last_error;      // Aggregated error from last failed job
+    atomic_int active_jobs; // Total jobs currently running or pending
+    atomic_bool shutdown;
+    char _padding[64];      // Prevent false sharing on the shutdown flag
 } SituationThreadPool;
+
+// -- API --
+
+// Note: API Prototypes are located in the main API section below (around line ~2240)
+// to keep header structure clean and consistent with other modules.
+// See: SituationCreateThreadPool, SituationSubmitJobEx, etc.
+
 #endif // SITUATION_ENABLE_THREADING
 
 // ---------------------------------------------------------------------------------
@@ -2069,15 +2095,6 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
 SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Attach a custom DSP processor to a sound's effect chain.
 SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Detach a custom DSP processor from a sound.
 
-// --- Threading API ---
-#ifdef SITUATION_ENABLE_THREADING
-SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size); // Creates a thread pool.
-SITAPI SituationJobId SituationSubmitJob(SituationThreadPool* pool, void (*callback)(void*, SituationError*), void* user_data, SituationJobType type); // Submits a job to the pool's queue.
-SITAPI bool SituationWaitForAllJobs(SituationThreadPool* pool); // Blocks until ALL jobs (queued and running) are finished.
-SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id, uint64_t timeout_ms); // Waits for a specific job to complete (with timeout).
-SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool); // Destroys the pool. Blocks until running jobs finish.
-SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound);
-#endif  // SITUATION_ENABLE_THREADING
 
 //==================================================================================
 // Filesystem Module
@@ -2133,6 +2150,140 @@ SITAPI ColorYPQA SituationColorToYPQ(ColorRGBA color);                          
 SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color);                            // Converts a YPQA color back to the standard RGBA color space.
 
 SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
+
+//==================================================================================
+// Threading Module
+//==================================================================================
+
+#ifdef SITUATION_ENABLE_THREADING
+
+/**
+ * @brief Initializes the high-performance, generational thread pool.
+ * @details Allocates resources for the dual-priority ring buffers (High/Low) and spawns worker threads.
+ *          The system uses a generational index strategy to ensure O(1) job tracking and validity checks,
+ *          preventing ABA problems common in ring-buffer based pools.
+ *          The High Priority queue is always checked first by workers, ensuring critical tasks (Physics, Audio)
+ *          are not blocked by bulk background work (Asset Loading).
+ *
+ * @param pool Pointer to the `SituationThreadPool` struct to initialize.
+ * @param num_threads Number of worker threads to spawn. Pass 0 to auto-detect based on CPU cores.
+ *                    Recommended: logical_cores - 1 (leaving main thread free).
+ * @param queue_size Capacity of the ring buffers. Must be a power of 2 (e.g., 1024, 2048).
+ *                   If not, it will be rounded up to the next power of 2. This determines how many
+ *                   jobs can be queued before backpressure handling (BLOCK/RUN_INLINE) kicks in.
+ * @return `true` if the pool was successfully initialized, `false` otherwise (e.g., memory allocation failure).
+ */
+SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size);
+
+/**
+ * @brief Destroys the thread pool, joining all threads and freeing resources.
+ * @details Signals all worker threads to exit and blocks the calling thread until they have all joined.
+ *          Crucially, this function cleans up the internal mutexes, condition variables, and the job ring buffers.
+ *          Any pending jobs remaining in the queue will be discarded (not executed).
+ * @param pool Pointer to the `SituationThreadPool` to destroy.
+ */
+SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool);
+
+/**
+ * @brief Submits a job to the thread pool with advanced control over priority and data payload.
+ * @details This is the primary entry point for the task system. It pushes a task to the appropriate queue (High/Low) based on flags.
+ *          It implements **Small Object Optimization (SOO)**:
+ *          - If `data_size` is <= 64 bytes, the data is copied directly into the job slot (zero allocation).
+ *            This is perfect for passing 4x4 matrices, configuration structs, or small buffers.
+ *          - If `data_size` > 64 bytes, `data` is treated as a pointer and passed through directly.
+ *            In this case, the user is responsible for keeping the pointed-to memory valid until the job completes.
+ *
+ * @param pool The thread pool to submit to.
+ * @param func The callback function to execute. Prototype: `void func(void* data, void* user_ptr)`.
+ *             Note: `user_ptr` is currently unused/reserved in the implementation but kept for signature compatibility.
+ * @param data Pointer to the data payload. If using SOO, this data is copied.
+ * @param data_size Size of the data payload in bytes.
+ * @param flags Submission behavior flags. Combine with bitwise OR:
+ *              - `SIT_SUBMIT_HIGH_PRIORITY`: Use the high-priority queue.
+ *              - `SIT_SUBMIT_BLOCK_IF_FULL`: If queue is full, sleep until a slot opens.
+ *              - `SIT_SUBMIT_RUN_IF_FULL`: If queue is full, execute immediately on the calling thread (avoids stalls).
+ *
+ * @return A `SituationJobId` handle. This handle encodes the generation, allowing safe O(1) completion checks
+ *         via `SituationWaitForJob` even if the slot is reused later. Returns 0 on failure (e.g., queue full and no fallback set).
+ */
+SITAPI SituationJobId SituationSubmitJobEx(
+    SituationThreadPool* pool,
+    void (*func)(void*, void*),
+    const void* data,
+    size_t data_size,
+    SituationJobFlags flags
+);
+
+/**
+ * @brief Legacy wrapper for simple pointer passing.
+ * @details Submits a job with default priority (Low) and treats `user_ptr` as a raw pointer (no copy).
+ * @param pool The thread pool.
+ * @param func The callback function.
+ * @param user_ptr The pointer to pass to the function.
+ */
+#define SituationSubmitJob(pool, func, user_ptr) \
+    SituationSubmitJobEx(pool, (void(*)(void*, void*))func, user_ptr, 0, SIT_SUBMIT_DEFAULT)
+
+/**
+ * @brief Executes a parallel-for loop (Fork-Join pattern) across the worker threads.
+ * @details Splits a workload of `count` items into batches and distributes them across the thread pool.
+ *          The calling thread actively participates in execution ("Helping" strategy) by processing
+ *          jobs from the High Priority queue while waiting for the batches to complete.
+ *          This ensures that the main thread does not sit idle while waiting for the workers.
+ *
+ * @param pool The thread pool.
+ * @param count Total number of items to process (e.g., number of entities, pixels, array elements).
+ * @param min_batch_size Minimum items per batch (prevents overhead for trivial tasks).
+ *                       Heuristics suggest using a size that takes at least 10-50 microseconds to process.
+ * @param func The callback function: `void func(int index, void* user_data)`. Called for each index from 0 to count-1.
+ * @param user_data Context pointer passed to the callback.
+ */
+SITAPI void SituationDispatchParallel(
+    SituationThreadPool* pool,
+    int count,
+    int min_batch_size,
+    void (*func)(int index, void* user_data),
+    void* user_data
+);
+
+/**
+ * @brief Waits for a specific job to complete (O(1) check).
+ * @details Blocks the calling thread until the job is finished. Uses an efficient generation check:
+ *          1. If the job's generation counter in the slot matches the ID, the job is still pending or running -> Wait.
+ *          2. If the generation has incremented, the slot was reused for a NEW job -> OLD job is definitely done -> Return.
+ *          3. If the explicit `is_completed` flag is set -> Return.
+ *
+ * @param pool The thread pool.
+ * @param job_id The handle returned by `SituationSubmitJobEx`.
+ * @return `true` if the job is complete (always returns true, blocks until then).
+ */
+SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id);
+
+/**
+ * @brief Blocks until ALL queues are empty and active jobs are zero.
+ * @details Waits for all queues (High and Low) to drain and all active worker threads to complete
+ *          their current tasks. This is a "sync point" useful for frame boundaries or ensuring
+ *          all async work is done before shutting down or changing scenes.
+ * @param pool The thread pool.
+ */
+SITAPI void SituationWaitForAllJobs(SituationThreadPool* pool);
+
+/**
+ * @brief Loads an audio file in the background using the thread pool.
+ * @details This is a convenience wrapper that submits a job to the thread pool to load and decode
+ *          an audio file into RAM (SITUATION_AUDIO_LOAD_FULL).
+ *          The function returns immediately with a job ID. You must check `SituationWaitForJob`
+ *          before accessing the `out_sound` struct.
+ *
+ * @param pool The thread pool to use.
+ * @param file_path Path to the audio file.
+ * @param looping Whether the sound should loop.
+ * @param out_sound Pointer to the SituationSound struct to be initialized.
+ * @return A job ID, or 0 on immediate failure.
+ */
+SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound);
+
+#endif // SITUATION_ENABLE_THREADING
 
 //----------------------------------------------------------------------------------
 // --- Implementation ---
@@ -2781,6 +2932,8 @@ typedef struct {
  *          safe default state for all pointers and flags. Backend-specific state is segregated
  *          into `vk` (Vulkan) and `gl` (OpenGL) substructures to keep the namespace clean.
  */
+
+
  typedef struct {
     // -------------------------------------------------------------------------
     // Core Lifecycle & Error Handling
@@ -2889,6 +3042,12 @@ typedef struct {
     size_t text_batch_capacity;
 
 } _SituationGlobalStateContainer;
+
+#ifdef SITUATION_ENABLE_THREADING
+// --- Forward Declarations for Threading Internal Helpers ---
+static int _SituationWorkerEntry(void* arg);                                                    // [THREAD] Internal worker thread loop
+static void _SitParallelWorker(void* data, void* ctx);                                          // [THREAD] Internal helper for parallel dispatch
+#endif
 
 // --- Context Architecture (v2.3.7+) ---
 // Moving away from static globals to a heap-allocated context allows for better control over
@@ -3540,386 +3699,6 @@ static int _sit_strcasecmp(const char* s1, const char* s2) {
 }
 
 
-#ifdef SITUATION_ENABLE_THREADING
-
-// Internal Worker Thread
-static int _SituationWorkerEntry(void* arg) {
-    SituationThreadPool* pool = (SituationThreadPool*)arg;
-
-    while (!atomic_load(&pool->shutdown_requested)) {
-        SituationJob job_copy = {0};
-        bool has_job = false;
-        int job_index = -1; // Index in the ring buffer to mark completion later
-
-        mtx_lock(&pool->lock);
-        
-        // Wait while queue is empty AND not shutting down
-        while (pool->pending_count == 0 && !atomic_load(&pool->shutdown_requested)) {
-            cnd_wait(&pool->wake_condition, &pool->lock);
-        }
-
-        if (atomic_load(&pool->shutdown_requested)) {
-            mtx_unlock(&pool->lock);
-            break;
-        }
-
-        if (pool->pending_count > 0) {
-            job_index = pool->queue_tail;
-            
-            // Manual copy for C11 atomic safety (cannot memcpy structs with atomics)
-            job_copy.type = pool->queue[job_index].type;
-            job_copy.user_data = pool->queue[job_index].user_data;
-            job_copy.callback = pool->queue[job_index].callback;
-            job_copy.id = pool->queue[job_index].id;
-            
-            pool->queue_tail = (pool->queue_tail + 1) % pool->queue_capacity;
-            pool->pending_count--; 
-            // Note: active_jobs stays high; we are transitioning from Queued to Running
-            has_job = true;
-        }
-        mtx_unlock(&pool->lock);
-
-        if (has_job) {
-            SituationError err = SITUATION_SUCCESS;
-            if (job_copy.callback) {
-                job_copy.callback(job_copy.user_data, &err);
-            }
-            
-            // Mark completed in the ring buffer slot for WaitForJob scanning
-            atomic_store(&pool->queue[job_index].completed, 1);
-            if (err != SITUATION_SUCCESS) {
-                pool->last_error = err;
-                pool->queue[job_index].result_error = err;
-            }
-
-            // Decrement active count *after* execution is fully done
-            int prev_active = atomic_fetch_sub(&pool->active_jobs, 1);
-            
-            // If we were the last active job, wake up the main thread waiting in WaitForAllJobs
-            if (prev_active == 1) {
-                mtx_lock(&pool->lock);
-                cnd_broadcast(&pool->idle_condition);
-                mtx_unlock(&pool->lock);
-            }
-        }
-    }
-    return 0;
-}
-
-/**
- * @brief Initializes a C11 thread pool for asynchronous background processing.
- *
- * @details Allocates the worker threads, the job queue ring buffer, and all necessary synchronization primitives 
- *          (mutexes, condition variables, atomics). The pool uses a fixed-size ring buffer strategy to ensure 
- *          zero memory allocation during runtime job submission.
- *
- *          If `num_threads` is set to 0, the library queries the hardware concurrency (logical cores) and 
- *          configures the pool to use `(Cores / 2)` workers (minimum 2), ensuring the main thread and audio 
- *          thread are not starved.
- *
- * @param[out] pool A pointer to a user-allocated `SituationThreadPool` struct. This memory will be zeroed and initialized.
- * @param num_threads The number of worker threads to spawn. Pass `0` for auto-detection.
- * @param queue_size The capacity of the job ring buffer. If `0`, defaults to 256. 
- *                   If you submit more jobs than this capacity without waiting, submission will fail.
- *
- * @return `true` if the pool was successfully created and all threads started.
- * @return `false` if memory allocation failed, synchronization primitives failed to init, or `thrd_create` failed.
- *         In case of partial failure, the function attempts to clean up any resources already allocated.
- *
- * @warning This function **must** be called from the main thread.
- * @see SituationDestroyThreadPool()
- */
-SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size) {
-    SIT_ASSERT_MAIN_THREAD();
-    if (!pool) return false;
-    
-    memset(pool, 0, sizeof(SituationThreadPool));
-
-    if (num_threads == 0) {
-        #if defined(_WIN32)
-            SYSTEM_INFO sysinfo; GetSystemInfo(&sysinfo); num_threads = sysinfo.dwNumberOfProcessors;
-        #elif defined(_SC_NPROCESSORS_ONLN)
-            num_threads = (size_t)sysconf(_SC_NPROCESSORS_ONLN);
-        #else
-            num_threads = 4;
-        #endif
-        num_threads = (num_threads > 1) ? num_threads / 2 : 1;
-        if (num_threads < 2) num_threads = 2;
-    }
-
-    pool->thread_count = num_threads;
-    pool->queue_capacity = (queue_size > 0) ? queue_size : 256;
-    
-    pool->threads = (thrd_t*)SIT_CALLOC(pool->thread_count, sizeof(thrd_t));
-    pool->queue = (SituationJob*)SIT_CALLOC(pool->queue_capacity, sizeof(SituationJob));
-
-    if (!pool->threads || !pool->queue) {
-        SIT_FREE(pool->threads); SIT_FREE(pool->queue);
-        return false;
-    }
-
-    atomic_init(&pool->shutdown_requested, false);
-    atomic_init(&pool->active_jobs, 0);
-    atomic_init(&pool->next_job_id, 1);
-    pool->pending_count = 0;
-
-    if (mtx_init(&pool->lock, mtx_plain) != thrd_success ||
-        cnd_init(&pool->wake_condition) != thrd_success ||
-        cnd_init(&pool->idle_condition) != thrd_success) {
-        SIT_FREE(pool->threads); SIT_FREE(pool->queue);
-        return false;
-    }
-
-    // Safe creation loop with rollback
-    for (size_t i = 0; i < pool->thread_count; ++i) {
-        if (thrd_create(&pool->threads[i], _SituationWorkerEntry, pool) != thrd_success) {
-            // Rollback on failure
-            atomic_store(&pool->shutdown_requested, true);
-            cnd_broadcast(&pool->wake_condition);
-            for (size_t j = 0; j < i; ++j) {
-                thrd_join(pool->threads[j], NULL);
-            }
-            mtx_destroy(&pool->lock);
-            cnd_destroy(&pool->wake_condition);
-            cnd_destroy(&pool->idle_condition);
-            SIT_FREE(pool->threads);
-            SIT_FREE(pool->queue);
-            memset(pool, 0, sizeof(SituationThreadPool));
-            _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to spawn worker threads");
-            return false;
-        }
-    }
-
-    pool->is_active = true;
-    return true;
-}
-
-/**
- * @brief Destroys the thread pool, joins all workers, and frees resources.
- *
- * @details This is a blocking operation. The shutdown sequence is as follows:
- *          1. Sets an atomic shutdown flag to signal workers to exit.
- *          2. Broadcasts a wake signal to all threads sleeping on the condition variable.
- *          3. Blocks the calling thread until **all currently running jobs** have finished execution.
- *          4. Joins (terminates) all worker threads.
- *          5. Destroys mutexes, condition variables, and frees the queue memory.
- *
- * @param pool A pointer to the initialized `SituationThreadPool` to destroy.
- *
- * @note **Pending Jobs:** Any jobs sitting in the queue that have *not yet started* execution will be discarded. 
- *       If `active_jobs > 0` at the time of destruction, a warning is printed to stderr.
- * @warning Do not use the `pool` pointer after this call; the struct is zeroed out.
- */
-SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
-    if (!pool || !pool->is_active) return;
-
-    atomic_store(&pool->shutdown_requested, true);
-    
-    mtx_lock(&pool->lock);
-    cnd_broadcast(&pool->wake_condition); // Wake all workers to exit
-    mtx_unlock(&pool->lock);
-
-    for (size_t i = 0; i < pool->thread_count; ++i) {
-        thrd_join(pool->threads[i], NULL);
-    }
-
-    // Final sanity check
-    if (atomic_load(&pool->active_jobs) > 0) {
-         atomic_store(&pool->active_jobs, 0); // Force reset
-         fprintf(stderr, "[Situation WARN] Thread pool destroyed with pending jobs.\n");
-    }
-
-    mtx_destroy(&pool->lock);
-    cnd_destroy(&pool->wake_condition);
-    cnd_destroy(&pool->idle_condition);
-    SIT_FREE(pool->threads);
-    SIT_FREE(pool->queue);
-    
-    pool->is_active = false;
-}
-
-/**
- * @brief Submits a unit of work to the thread pool.
- *
- * @details Pushes a job into the ring buffer. A worker thread will wake up, pop the job, and execute the 
- *          provided `callback`. This function is thread-safe and wait-free (unless the queue lock is highly contended).
- *
- * @par Callback Requirements
- * The `callback` function runs on a background thread. Inside the callback:
- * - **DO NOT** call OpenGL commands (contexts are thread-local).
- * - **DO NOT** call windowing functions (GLFW is main-thread only).
- * - **DO** perform file I/O, data parsing, decompression, or pathfinding.
- * - **DO** use `SIT_MALLOC`/`SIT_FREE` (they are thread-safe).
- *
- * @param pool The target thread pool.
- * @param callback The function to execute. Signature: `void func(void* user_data, SituationError* out_err)`.
- *                 The `out_err` pointer allows the worker to report success/failure back to the job status.
- * @param user_data A pointer to data to be passed to the callback. Ensure this memory remains valid until the job completes.
- * @param type A hint for the type of job (e.g., `SIT_JOB_TYPE_AUDIO_LOAD`). Used for debugging/profiling.
- *
- * @return A positive `SituationJobId` (ticket) if the job was successfully queued.
- * @return `0` if the pool is invalid, inactive, or if the **Job Queue is Full**. 
- *         If full, `SituationGetLastErrorMsg()` will return `SITUATION_ERROR_THREAD_QUEUE_FULL`.
- */
-SITAPI SituationJobId SituationSubmitJob(SituationThreadPool* pool, void (*callback)(void*, SituationError*), void* user_data, SituationJobType type) {
-    SIT_ASSERT_MAIN_THREAD();
-    if (!pool || !pool->is_active) return 0;
-
-    SituationJobId id = atomic_fetch_add(&pool->next_job_id, 1);
-
-    mtx_lock(&pool->lock);
-    
-    size_t next_head = (pool->queue_head + 1) % pool->queue_capacity;
-    if (next_head == pool->queue_tail) {
-        mtx_unlock(&pool->lock);
-        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Thread pool queue full");
-        return 0;
-    }
-
-    // Copy data to queue
-    SituationJob* slot = &pool->queue[pool->queue_head];
-    slot->id = id;
-    slot->type = type;
-    slot->callback = callback;
-    slot->user_data = user_data;
-    atomic_init(&slot->completed, 0); // Reset atomic state
-    slot->result_error = SITUATION_SUCCESS;
-
-    pool->queue_head = next_head;
-    pool->pending_count++;
-    atomic_fetch_add(&pool->active_jobs, 1); // Increment active count (Queued phase)
-    
-    mtx_unlock(&pool->lock);
-    
-    cnd_signal(&pool->wake_condition); // Wake one worker
-    return id;
-}
-
-/**
- * @brief Blocks the calling thread until a specific job completes or a timeout occurs.
- *
- * @details This function polls the job queue to check the status of the specific `job_id`. 
- *          It uses a high-precision sleep (`thrd_sleep`) to yield the CPU between checks, ensuring 
- *          it does not burn CPU cycles while waiting.
- *
- * @par Ring Buffer Edge Case
- * Because the job queue is a ring buffer, old job slots are eventually overwritten. 
- * If the `job_id` cannot be found in the queue, this function assumes the job was completed 
- * long ago and overwritten, returning `true`.
- *
- * @param pool The thread pool.
- * @param job_id The ID returned by `SituationSubmitJob`.
- * @param timeout_ms The maximum time to wait in milliseconds. 
- *                   Pass `0` to poll status once and return immediately.
- *                   Pass `UINT64_MAX` to wait indefinitely.
- *
- * @return `true` if the job is marked as completed.
- * @return `false` if the timeout was reached before completion, or if the `job_id` is invalid (0).
- */
-SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId id, uint64_t timeout_ms) {
-    SIT_ASSERT_MAIN_THREAD();
-    if (id <= 0) return false;
-
-    uint64_t start_time = _SituationGetHighResTime();
-    
-    while (true) {
-        // O(N) scan of ring buffer. Safe for N=256.
-        for (size_t i = 0; i < pool->queue_capacity; ++i) {
-            if (pool->queue[i].id == id) {
-                if (atomic_load(&pool->queue[i].completed) == 1) return true;
-                break; // Found ID, not done yet
-            }
-        }
-
-        if (timeout_ms > 0 && (_SituationGetHighResTime() - start_time) > timeout_ms) return false;
-        
-        struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 }; // 1ms polite sleep
-        thrd_sleep(&ts, NULL);
-    }
-}
-
-/**
- * @brief Blocks the calling thread until the thread pool is completely idle.
- *
- * @details This acts as a synchronization fence. It blocks until:
- *          1. The job queue is empty.
- *          2. All currently executing worker threads have finished their tasks.
- *
- * @par Implementation
- * This function uses a condition variable (`idle_condition`) to sleep efficiently. 
- * It consumes near-zero CPU resources while waiting. It is ideal for use at the end of a 
- * loading screen or before shutting down a subsystem.
- *
- * @param pool The thread pool.
- * @return `true` if all jobs finished successfully.
- * @return `false` if the pool is invalid or if the last executed job reported an error.
- */
-SITAPI bool SituationWaitForAllJobs(SituationThreadPool* pool) {
-    SIT_ASSERT_MAIN_THREAD();
-    if (!pool || !pool->is_active) return false;
-
-    mtx_lock(&pool->lock);
-    // Wait while there are active jobs (Queued OR Running)
-    while (atomic_load(&pool->active_jobs) > 0) {
-        cnd_wait(&pool->idle_condition, &pool->lock);
-    }
-    mtx_unlock(&pool->lock);
-    
-    return pool->last_error == SITUATION_SUCCESS;
-}
-
-// --- Async Audio Helper ---
-typedef struct { char* path; bool looping; SituationSound* target; } _SitAsyncAudioCtx;
-
-static void _SituationAsyncAudioWorker(void* arg, SituationError* err) {
-    _SitAsyncAudioCtx* ctx = (_SitAsyncAudioCtx*)arg;
-    // Use FULL load mode for thread safety (decodes to RAM buffer)
-    *err = SituationLoadSoundFromFile(ctx->path, SITUATION_AUDIO_LOAD_FULL, ctx->looping, ctx->target);
-    SIT_FREE(ctx->path);
-    SIT_FREE(ctx);
-}
-
-/**
- * @brief Asynchronously loads and decodes an audio file in the background.
- *
- * @details This is a convenience wrapper for `SituationSubmitJob`. It:
- *          1. Allocates a temporary context to hold the file path.
- *          2. Resets the target `out_sound` struct to a safe, uninitialized state.
- *          3. Submits a job that calls `SituationLoadSoundFromFile` with `SITUATION_AUDIO_LOAD_FULL`.
- *
- * @par Why FULL Load?
- * The async loader forces the `FULL` loading mode (decode to RAM). Since the decoding happens 
- * on a background thread, the cost is hidden from the main loop. This ensures that when 
- * playback starts, the audio data is resident in memory, preventing disk I/O stalls on the 
- * real-time audio thread.
- *
- * @param pool The thread pool to use.
- * @param file_path Path to the audio file. The string is duplicated internally, so the caller can free their copy immediately.
- * @param looping Whether the sound should loop.
- * @param[out] out_sound Pointer to the `SituationSound` struct. 
- *                       **Warning:** Do not attempt to play this sound until `SituationWaitForJob` returns true 
- *                       or `out_sound->is_initialized` becomes true.
- *
- * @return The `SituationJobId` for tracking progress, or `0` on failure.
- */
-SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound) {
-    if (!pool || !file_path || !out_sound) return 0;
-    _SitAsyncAudioCtx* ctx = (_SitAsyncAudioCtx*)SIT_MALLOC(sizeof(_SitAsyncAudioCtx));
-    if (!ctx) return 0;
-
-    ctx->path = _sit_strdup(file_path);
-    if (!ctx->path) {
-        SIT_FREE(ctx);
-        return 0;
-    }
-    ctx->looping = looping;
-    ctx->target = out_sound;
-    memset(out_sound, 0, sizeof(SituationSound)); // Pre-clear struct
-
-    return SituationSubmitJob(pool, _SituationAsyncAudioWorker, ctx, SIT_JOB_TYPE_AUDIO_LOAD);
-}
-
-#endif // SITUATION_ENABLE_THREADING
 
 
 /**
@@ -4537,6 +4316,13 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...) {
 #endif
 }
 
+/**
+ * @brief [INTERNAL] Sets the library's last error message from an error code and an optional detail string.
+ * @details Translates a `SituationError` enum into a human-readable base message, appends details,
+ *          and stores the result in the global error message buffer via `_SituationSetError`.
+ * @param err The `SituationError` code to translate.
+ * @param detail An optional, more specific string describing the context of the error.
+ */
 static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
     char buffer[SITUATION_MAX_ERROR_MSG_LEN];
     const char* base_msg = "Unknown Error";
@@ -26327,6 +26113,509 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
     }
     SIT_FREE(displays);
 }
+
+#ifdef SITUATION_ENABLE_THREADING
+
+// ==================================================================================
+//  Threading Implementation (v2.3.15)
+// ==================================================================================
+
+// --- ID Packing Helpers ---
+// Layout: [1 bit: Queue Index] [15 bits: Generation] [16 bits: Array Slot Index]
+// This allows O(1) lookup validation. If the generation in the ID matches the
+// generation in the slot, the job is valid. If not, the slot has been reused.
+#define SIT_ID_QUEUE_SHIFT 31
+#define SIT_ID_GEN_SHIFT   16
+#define SIT_ID_SLOT_MASK   0xFFFF
+#define SIT_ID_GEN_MASK    0x7FFF
+
+static inline SituationJobId _SitMakeId(uint32_t q_idx, uint32_t gen, uint32_t slot) {
+    return ((q_idx & 1) << SIT_ID_QUEUE_SHIFT) | ((gen & SIT_ID_GEN_MASK) << SIT_ID_GEN_SHIFT) | (slot & SIT_ID_SLOT_MASK);
+}
+
+/**
+ * @brief [INTERNAL] Worker thread entry point.
+ * @details Pops jobs from the priority queues (High then Low) and executes them.
+ *          Uses condition variables to sleep when idle and wakes up when work is submitted.
+ *          Implements a simple work-stealing heuristic by always checking high-priority first.
+ *
+ * @param arg Pointer to the `SituationThreadPool` instance.
+ * @return 0 on exit.
+ */
+static int _SituationWorkerEntry(void* arg) {
+    SituationThreadPool* pool = (SituationThreadPool*)arg;
+
+    while (!atomic_load(&pool->shutdown)) {
+        SituationJob* job_ptr = NULL;
+        int queue_idx = -1;
+
+        // 1. Priority Check: Always try High Priority (Index 1) first
+        mtx_lock(&pool->queues[1].lock);
+        size_t head_h = atomic_load(&pool->queues[1].head);
+        size_t tail_h = atomic_load(&pool->queues[1].tail);
+        if (tail_h != head_h) {
+            size_t idx = tail_h & pool->queues[1].mask;
+            job_ptr = &pool->queues[1].jobs[idx];
+            atomic_store(&pool->queues[1].tail, tail_h + 1);
+            queue_idx = 1;
+        }
+        mtx_unlock(&pool->queues[1].lock);
+
+        // 2. Fallback: Try Low Priority (Index 0) if High is empty
+        if (!job_ptr) {
+            mtx_lock(&pool->queues[0].lock);
+            size_t head_l = atomic_load(&pool->queues[0].head);
+            size_t tail_l = atomic_load(&pool->queues[0].tail);
+            if (tail_l != head_l) {
+                size_t idx = tail_l & pool->queues[0].mask;
+                job_ptr = &pool->queues[0].jobs[idx];
+                atomic_store(&pool->queues[0].tail, tail_l + 1);
+                queue_idx = 0;
+            } else {
+                // Both queues empty: Sleep.
+                // We use the lock of queue 0 for the condition variable to simplify logic.
+                if (!atomic_load(&pool->shutdown)) {
+                    cnd_wait(&pool->wake_condition, &pool->queues[0].lock);
+                }
+            }
+            mtx_unlock(&pool->queues[0].lock);
+        }
+
+        // 3. Execute Job
+        if (job_ptr) {
+            // Determine data source (Embedded vs Pointer)
+            void* data_arg = job_ptr->uses_large_data ? job_ptr->large_data_ptr : job_ptr->storage;
+
+            if (job_ptr->func) {
+                // [CRITICAL FIX] Legacy Support for SituationError* signature
+                // Previous API versions passed a SituationError* as the second argument.
+                // While the new API uses void* user_context (currently unused/NULL),
+                // legacy code might try to write to the second argument.
+                // We pass a dummy error variable to prevent segfaults if old code is linked against this new implementation.
+                SituationError dummy_err = SITUATION_SUCCESS;
+                job_ptr->func(data_arg, (void*)&dummy_err);
+            }
+
+            // Mark completed so WaitForJob returns immediately
+            atomic_store(&job_ptr->is_completed, true);
+
+            // Increment generation to invalidate the handle for future lookups
+            // (Wraps around 15 bits: 0-32767)
+            uint16_t old_gen = atomic_load(&job_ptr->generation);
+            atomic_store(&job_ptr->generation, (uint16_t)((old_gen + 1) & SIT_ID_GEN_MASK));
+
+            // Global active count (used for WaitForAll)
+            if (atomic_fetch_sub(&pool->active_jobs, 1) == 1) {
+                // If we dropped to 0, wake up the main thread
+                cnd_broadcast(&pool->idle_condition);
+            }
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Initializes the high-performance, generational thread pool.
+ * @details Allocates resources for the dual-priority ring buffers (High/Low) and spawns worker threads.
+ *          The system uses a generational index strategy to ensure O(1) job tracking and validity checks.
+ * @param pool Pointer to the `SituationThreadPool` struct to initialize.
+ * @param num_threads Number of worker threads to spawn. Pass 0 to auto-detect based on CPU cores.
+ * @param queue_size Capacity of the ring buffers. Must be a power of 2 (e.g., 1024, 2048).
+ * @return true if the pool was successfully initialized.
+ */
+SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size) {
+    SIT_ASSERT_MAIN_THREAD();
+    if (!pool) return false;
+    memset(pool, 0, sizeof(SituationThreadPool));
+
+    // Auto-detect threads if 0
+    if (num_threads == 0) {
+        #if defined(_WIN32)
+            SYSTEM_INFO sysinfo; GetSystemInfo(&sysinfo); num_threads = sysinfo.dwNumberOfProcessors;
+        #elif defined(_SC_NPROCESSORS_ONLN)
+            num_threads = (size_t)sysconf(_SC_NPROCESSORS_ONLN);
+        #else
+            num_threads = 4;
+        #endif
+        num_threads = (num_threads > 1) ? num_threads - 1 : 1; // Leave one for main
+    }
+    if (num_threads > SITUATION_MAX_THREADS) num_threads = SITUATION_MAX_THREADS;
+    pool->thread_count = num_threads;
+
+    // Round queue size up to next power of 2 for fast bitmasking
+    size_t cap = 256;
+    while (cap < queue_size) cap *= 2;
+
+    // Initialize Dual Queues
+    for (int i = 0; i < 2; i++) {
+        pool->queues[i].capacity = cap;
+        pool->queues[i].mask = cap - 1;
+        pool->queues[i].jobs = (SituationJob*)SIT_CALLOC(cap, sizeof(SituationJob));
+
+        if (!pool->queues[i].jobs) {
+            // Cleanup previous if failed
+            if(i==1) SIT_FREE(pool->queues[0].jobs);
+            return false;
+        }
+
+        mtx_init(&pool->queues[i].lock, mtx_plain);
+        atomic_init(&pool->queues[i].head, 0);
+        atomic_init(&pool->queues[i].tail, 0);
+
+        // Initialize generations to 1 (0 is reserved for null/invalid)
+        for(size_t k=0; k<cap; k++) {
+            atomic_init(&pool->queues[i].jobs[k].generation, 1);
+            atomic_init(&pool->queues[i].jobs[k].is_completed, true); // Slots start "free"
+        }
+    }
+
+    cnd_init(&pool->wake_condition);
+    cnd_init(&pool->idle_condition);
+    atomic_init(&pool->active_jobs, 0);
+    atomic_init(&pool->shutdown, false);
+
+    for (size_t i = 0; i < num_threads; ++i) {
+        if (thrd_create(&pool->threads[i], _SituationWorkerEntry, pool) != thrd_success) {
+            // Rollback logic omitted for brevity, assuming stable OS env
+            return false;
+        }
+    }
+
+    pool->is_active = true;
+    return true;
+}
+
+/**
+ * @brief Submits a job to the thread pool with advanced control over priority and data payload.
+ * @details Pushes a task to the appropriate queue (High/Low) based on flags. Implements Small Object Optimization (SOO).
+ * @param pool The thread pool to submit to.
+ * @param func The callback function to execute.
+ * @param data Pointer to the data payload.
+ * @param data_size Size of the data payload in bytes.
+ * @param flags Submission behavior flags (e.g., `SIT_SUBMIT_HIGH_PRIORITY`, `SIT_SUBMIT_RUN_IF_FULL`).
+ * @return A `SituationJobId` handle encoding the generation for O(1) completion checks.
+ */
+SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*func)(void*, void*), const void* data, size_t data_size, SituationJobFlags flags) {
+    if (!pool || !pool->is_active) return 0;
+
+    // Select Queue based on Priority Flag
+    int q_idx = (flags & SIT_SUBMIT_HIGH_PRIORITY) ? 1 : 0;
+
+    mtx_lock(&pool->queues[q_idx].lock);
+
+    // Check Capacity (with Backpressure Handling)
+    while (true) {
+        size_t head = atomic_load(&pool->queues[q_idx].head);
+        size_t tail = atomic_load(&pool->queues[q_idx].tail);
+
+        if (head - tail >= pool->queues[q_idx].capacity) {
+            mtx_unlock(&pool->queues[q_idx].lock);
+
+            // Handle Backpressure
+            if (flags & SIT_SUBMIT_RUN_IF_FULL) {
+                // "Velocity" Path: Run immediately to avoid stutter
+                if(func) {
+                    // [CRITICAL FIX] Legacy Support for SituationError* signature
+                    // Must pass a dummy error pointer, even on main thread, to prevent segfaults in legacy callbacks.
+                    SituationError dummy_err = SITUATION_SUCCESS;
+                    func((void*)data, (void*)&dummy_err);
+                }
+                return 0; // 0 indicates job is already done/invalid handle
+            }
+            else if (flags & SIT_SUBMIT_BLOCK_IF_FULL) {
+                // "Robust" Path: Spin-wait (polite yield) until slot opens
+                // [FIX] Replaced recursion with iterative loop to prevent Stack Overflow
+                struct timespec ts = { .tv_sec = 0, .tv_nsec = 10000 }; // 10us
+                thrd_sleep(&ts, NULL);
+
+                // Re-acquire lock and try again
+                mtx_lock(&pool->queues[q_idx].lock);
+                continue;
+            }
+
+            // Default Path: Fail
+            _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Job queue full and no blocking/run-inline flag set.");
+            return 0;
+        }
+        // If we have space, break the retry loop and proceed to slot reservation
+        break;
+    }
+
+    size_t head = atomic_load(&pool->queues[q_idx].head);
+    // Prepare Slot
+    size_t slot_idx = head & pool->queues[q_idx].mask;
+    SituationJob* job = &pool->queues[q_idx].jobs[slot_idx];
+
+    uint16_t gen = atomic_load(&job->generation);
+
+    job->func = func;
+    atomic_store(&job->is_completed, false);
+
+    // Data Storage Logic (Small Object Optimization)
+    if (data_size > 0 && data_size <= SITUATION_JOB_PAYLOAD_MAX) {
+        // Copy data into embedded storage
+        if (data) memcpy(job->storage, data, data_size);
+        job->uses_large_data = false;
+    } else {
+        // Store pointer directly (User must keep memory alive!)
+        job->large_data_ptr = (void*)data;
+        job->uses_large_data = true;
+    }
+
+    // Commit
+    atomic_fetch_add(&pool->queues[q_idx].head, 1);
+    atomic_fetch_add(&pool->active_jobs, 1);
+
+    mtx_unlock(&pool->queues[q_idx].lock);
+
+    // Wake a worker
+    cnd_signal(&pool->wake_condition);
+
+    return _SitMakeId((uint32_t)q_idx, (uint32_t)gen, (uint32_t)slot_idx);
+}
+
+/**
+ * @brief Waits for a specific job to complete (O(1) check).
+ * @details Blocks the calling thread until the job is finished. Uses an efficient generation check.
+ * @param pool The thread pool.
+ * @param job_id The handle returned by `SituationSubmitJobEx`.
+ * @return true if the job is complete.
+ */
+SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id) {
+    SIT_ASSERT_MAIN_THREAD();
+    if (job_id == 0) return true; // Immediate jobs (Run-Inline) are implicitly done
+
+    uint32_t q_idx = (job_id >> SIT_ID_QUEUE_SHIFT) & 1;
+    uint32_t slot_idx = job_id & SIT_ID_SLOT_MASK;
+    uint32_t expected_gen = (job_id >> SIT_ID_GEN_SHIFT) & SIT_ID_GEN_MASK;
+
+    // Direct pointer access to the slot (safe because array doesn't move)
+    SituationJob* job = &pool->queues[q_idx].jobs[slot_idx];
+
+    while (true) {
+        uint16_t current_gen = atomic_load(&job->generation);
+
+        // O(1) Status Logic:
+        // 1. If generation has incremented, the slot was reused for a NEW job -> OLD job is definitely done.
+        // 2. If generation matches, check the explicit completion flag.
+
+        if (current_gen != (uint16_t)expected_gen) return true;
+        if (atomic_load(&job->is_completed)) return true;
+
+        // Job not done. Yield CPU politely.
+        // We don't use a condition var here to avoid N^2 condition/mutex pairs.
+        // Active polling with yield is standard for game tasks waiting <1 frame.
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000 }; // 1us sleep
+        thrd_sleep(&ts, NULL);
+    }
+}
+
+// --- Parallel Dispatch Implementation ---
+
+typedef struct {
+    void (*user_func)(int, void*);
+    void* user_data;
+    atomic_int* counter; // Shared counter across batch
+    int start_idx;
+    int end_idx;
+} _SitParallelCtx;
+
+/**
+ * @brief [INTERNAL] Helper wrapper for parallel dispatch jobs.
+ * @details This function unpacks the `_SitParallelCtx`, executes the user's loop body for the assigned range, and then decrements the shared atomic counter.
+ */
+static void _SitParallelWorker(void* data, void* ctx) {
+    (void)ctx;
+    _SitParallelCtx* pctx = (_SitParallelCtx*)data;
+    // Execute loop range
+    for (int i = pctx->start_idx; i < pctx->end_idx; ++i) {
+        pctx->user_func(i, pctx->user_data);
+    }
+    // Decrement shared counter
+    atomic_fetch_sub(pctx->counter, 1);
+}
+
+/**
+ * @brief Executes a parallel-for loop (Fork-Join pattern) across the worker threads.
+ * @details Splits a workload of `count` items into batches. The calling thread actively participates ("Helping").
+ * @param pool The thread pool.
+ * @param count Total number of items to process.
+ * @param min_batch_size Minimum items per batch.
+ * @param func The callback function.
+ * @param user_data Context pointer passed to the callback.
+ */
+SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int min_batch_size, void (*func)(int, void*), void* user_data) {
+    SIT_ASSERT_MAIN_THREAD();
+    if (count <= 0) return;
+
+    // 1. Calculate Chunking
+    int thread_count = (int)pool->thread_count;
+    // Heuristic: Aim for 2 batches per thread to allow load balancing
+    int batch_size = count / (thread_count * 2);
+    if (batch_size < min_batch_size) batch_size = min_batch_size;
+    if (batch_size < 1) batch_size = 1;
+
+    int num_batches = (count + batch_size - 1) / batch_size;
+
+    // 2. Setup Sync Counter
+    // Stack allocated atomic is safe because this function blocks until 0.
+    atomic_int completion_counter;
+    atomic_init(&completion_counter, num_batches);
+
+    // 3. Submit Batches
+    for (int i = 0; i < num_batches; ++i) {
+        int start = i * batch_size;
+        int end = start + batch_size;
+        if (end > count) end = count;
+
+        _SitParallelCtx ctx;
+        ctx.user_func = func;
+        ctx.user_data = user_data;
+        ctx.counter = &completion_counter;
+        ctx.start_idx = start;
+        ctx.end_idx = end;
+
+        // Important: Use SIT_SUBMIT_RUN_IF_FULL.
+        // If queue is full, we run it here immediately. This prevents deadlocks
+        // and ensures progress even under heavy load.
+        // Using High Priority ensures workers pick these up ASAP.
+        SituationSubmitJobEx(pool, _SitParallelWorker, &ctx, sizeof(_SitParallelCtx), SIT_SUBMIT_HIGH_PRIORITY | SIT_SUBMIT_RUN_IF_FULL);
+    }
+
+    // 4. Helping Loop (Work Stealing)
+    // While waiting for the batches to finish, the main thread shouldn't sleep.
+    // It should help process the High Priority queue to clear the blockage.
+    while (atomic_load(&completion_counter) > 0) {
+        bool stole_work = false;
+
+        // Peek into High Priority Queue (Non-blocking try)
+        if (mtx_trylock(&pool->queues[1].lock) == thrd_success) {
+            size_t head = atomic_load(&pool->queues[1].head);
+            size_t tail = atomic_load(&pool->queues[1].tail);
+
+            if (tail != head) {
+                // Steal it!
+                size_t idx = tail & pool->queues[1].mask;
+                SituationJob* job_ptr = &pool->queues[1].jobs[idx];
+                atomic_store(&pool->queues[1].tail, tail + 1);
+                mtx_unlock(&pool->queues[1].lock);
+
+                // Execute Stolen Job
+                void* d = job_ptr->uses_large_data ? job_ptr->large_data_ptr : job_ptr->storage;
+                if (job_ptr->func) job_ptr->func(d, NULL);
+
+                atomic_store(&job_ptr->is_completed, true);
+                uint16_t g = atomic_load(&job_ptr->generation);
+                atomic_store(&job_ptr->generation, (uint16_t)((g + 1) & SIT_ID_GEN_MASK));
+                atomic_fetch_sub(&pool->active_jobs, 1);
+
+                stole_work = true;
+            } else {
+                mtx_unlock(&pool->queues[1].lock);
+            }
+        }
+
+        if (!stole_work) {
+            thrd_yield(); // Nothing to steal, brief yield
+        }
+    }
+    // All batches done.
+}
+
+/**
+ * @brief Blocks until ALL queues are empty and active jobs are zero.
+ * @details Waits for all queues (High and Low) to drain and all active worker threads to complete their current tasks.
+ * @param pool The thread pool.
+ */
+SITAPI void SituationWaitForAllJobs(SituationThreadPool* pool) {
+    if (!pool->is_active) return;
+
+    // We use the Low Priority queue lock for the idle condition
+    mtx_lock(&pool->queues[0].lock);
+    while (atomic_load(&pool->active_jobs) > 0) {
+        cnd_wait(&pool->idle_condition, &pool->queues[0].lock);
+    }
+    mtx_unlock(&pool->queues[0].lock);
+}
+
+/**
+ * @brief Destroys the thread pool, joining all threads and freeing resources.
+ * @details Blocks until all currently running jobs are finished and all worker threads have exited.
+ * @param pool Pointer to the `SituationThreadPool` to destroy.
+ */
+SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
+    if (!pool->is_active) return;
+
+    atomic_store(&pool->shutdown, true);
+
+    // Wake everyone up so they can exit
+    cnd_broadcast(&pool->wake_condition);
+
+    for (size_t i = 0; i < pool->thread_count; ++i) {
+        thrd_join(pool->threads[i], NULL);
+    }
+
+    mtx_destroy(&pool->queues[0].lock);
+    mtx_destroy(&pool->queues[1].lock);
+    cnd_destroy(&pool->wake_condition);
+    cnd_destroy(&pool->idle_condition);
+
+    SIT_FREE(pool->queues[0].jobs);
+    SIT_FREE(pool->queues[1].jobs);
+
+    pool->is_active = false;
+}
+
+// --- Async Audio Helper (Restored & Updated for v2.3.15) ---
+
+typedef struct {
+    char* path;
+    bool looping;
+    SituationSound* target;
+} _SitAsyncAudioCtx;
+
+// The worker function matches the new signature: func(void* data, void* context)
+static void _SituationAsyncAudioWorker(void* data, void* unused) {
+    (void)unused;
+    _SitAsyncAudioCtx* ctx = (_SitAsyncAudioCtx*)data;
+
+    // Use FULL load mode to decode to RAM on this background thread.
+    // This ensures no disk I/O happens on the main thread later.
+    SituationLoadSoundFromFile(ctx->path, SITUATION_AUDIO_LOAD_FULL, ctx->looping, ctx->target);
+
+    // Cleanup string copy
+    SIT_FREE(ctx->path);
+    // Note: We don't free 'ctx' here because it's embedded in the job storage!
+    // The beauty of Small Object Optimization.
+}
+
+SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound) {
+    if (!pool || !file_path || !out_sound) return 0;
+
+    // 1. Prepare Context
+    _SitAsyncAudioCtx ctx;
+    ctx.path = _sit_strdup(file_path); // Duplicate string (ownership transfers to worker)
+    if (!ctx.path) return 0;
+
+    ctx.looping = looping;
+    ctx.target = out_sound;
+
+    // 2. Clear target struct for safety
+    memset(out_sound, 0, sizeof(SituationSound));
+
+    // 3. Submit to Low Priority Queue (Assets/IO)
+    // We pass 'ctx' by value. Since sizeof(_SitAsyncAudioCtx) is ~24 bytes,
+    // it fits easily into the 64-byte storage (SOO). No malloc for the context!
+    return SituationSubmitJobEx(
+        pool,
+        _SituationAsyncAudioWorker,
+        &ctx,
+        sizeof(_SitAsyncAudioCtx),
+        SIT_SUBMIT_DEFAULT // Low Priority is correct for loading
+    );
+}
+
+#endif // SITUATION_ENABLE_THREADING
 
 #endif // SITUATION_IMPLEMENTATION
 #endif // SITUATION_H

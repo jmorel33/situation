@@ -26,7 +26,7 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 ---
 
-# Situation v2.3.1 API Programming Guide
+# Situation v2.3.15 API Programming Guide
 
 "Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
 
@@ -5099,57 +5099,29 @@ SituationFreeDirectoryFileList(files, file_count);
 <details>
 <summary><h3>Threading Module</h3></summary>
 
-**Overview:** The Threading module provides a simple yet powerful job system for executing tasks asynchronously. It allows you to offload heavy computations or I/O operations (like audio loading) to worker threads, preventing stalls on the main thread. The system is designed with safety in mind, asserting main-thread usage where required.
+**Overview:** The Threading module provides a high-performance **Generational Task System** for executing tasks asynchronously. It features a lock-minimized dual-queue architecture (High/Low priority) to prevent asset loading from stalling critical gameplay physics. The system uses O(1) generational IDs to prevent ABA problems and "Small Object Optimization" to avoid memory allocation for most jobs.
 
 ### Structs and Enums
 
-#### `SituationJobType`
-Defines the type of task a job performs.
+#### `SituationJobFlags`
+Flags to control job submission behavior, including priority and backpressure handling.
 ```c
 typedef enum {
-    SIT_JOB_TYPE_GENERAL = 0,
-    SIT_JOB_TYPE_AUDIO_LOAD,
-    SIT_JOB_TYPE_FILE_READ,
-    SIT_JOB_TYPE_CUSTOM
-} SituationJobType;
+    SIT_SUBMIT_DEFAULT       = 0,       // Low Priority, Return 0 if full
+    SIT_SUBMIT_HIGH_PRIORITY = 1 << 0,  // Use High Priority Queue (Physics, Audio)
+    SIT_SUBMIT_BLOCK_IF_FULL = 1 << 1,  // Spin/Sleep until a slot opens
+    SIT_SUBMIT_RUN_IF_FULL   = 1 << 2   // Execute immediately on current thread if full
+} SituationJobFlags;
 ```
-
----
-#### `SituationJob`
-Represents a unit of work to be executed by the thread pool.
-```c
-typedef struct SituationJob {
-    SituationJobId id;              // Unique ID assigned by the pool
-    SituationJobType type;
-    
-    // Callback function pointer: void func(void* user_data, SituationError* out_err)
-    void (*callback)(void*, SituationError*);
-    void* user_data;
-
-    // Internal state (Atomically managed)
-    atomic_int completed;           // 0=pending/running, 1=done
-    SituationError result_error;    
-} SituationJob;
-```
--   `id`: Unique identifier for the job.
--   `type`: The type of job.
--   `callback`: The function to execute on the worker thread.
--   `user_data`: User data passed to the callback.
--   `completed`: Atomic flag indicating completion status.
--   `result_error`: Error code resulting from the job execution.
 
 ---
 #### `SituationThreadPool`
-Manages a pool of worker threads and a job queue.
+Manages a pool of worker threads and dual priority queues.
 ```c
 typedef struct SituationThreadPool {
     bool is_active;
-    thrd_t* threads;
     size_t thread_count;
-    // ... internal synchronization primitives ...
-    SituationJob* queue;
-    size_t queue_capacity;
-    // ... internal queue state ...
+    // ... internal state (queues, threads, synchronization) ...
 } SituationThreadPool;
 ```
 
@@ -5157,85 +5129,87 @@ typedef struct SituationThreadPool {
 
 ---
 #### `SituationCreateThreadPool`
-Creates a thread pool with a specified number of worker threads and job queue capacity.
+Creates a thread pool with a specified number of worker threads and a ring buffer size.
 ```c
 bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size);
 ```
 **Usage Example:**
 ```c
 SituationThreadPool pool;
-// Create a pool with 4 threads and space for 32 jobs
-if (SituationCreateThreadPool(&pool, 4, 32)) {
+// Create a pool with auto-detected threads and 256 slots per queue
+if (SituationCreateThreadPool(&pool, 0, 256)) {
     printf("Thread pool initialized.\n");
 }
 ```
 
 ---
 #### `SituationDestroyThreadPool`
-Shuts down the thread pool, stopping all worker threads and freeing resources. This function blocks until all running jobs have finished.
+Shuts down the thread pool, stopping all worker threads and freeing resources. Blocks until all running jobs are finished.
 ```c
 void SituationDestroyThreadPool(SituationThreadPool* pool);
 ```
+
+---
+#### `SituationSubmitJobEx`
+Submits a job with advanced control flags and embedded data.
+```c
+SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*func)(void*, void*), const void* data, size_t data_size, SituationJobFlags flags);
+```
+- `data`: Pointer to data to pass to the function. If `data_size` <= 64, it is copied into the job structure (zero-allocation). If larger, the pointer is passed directly.
+- `flags`: Controls priority and behavior when the queue is full.
+
 **Usage Example:**
 ```c
-SituationDestroyThreadPool(&pool);
+typedef struct { mat4 view; vec3 pos; } RenderData; // > 64 bytes
+
+void ProcessRender(void* data, void* unused) {
+    RenderData* rd = (RenderData*)data;
+    // ...
+}
+
+RenderData my_data = { ... };
+// Submit to High Priority queue, run immediately if full
+SituationSubmitJobEx(&pool, ProcessRender, &my_data, sizeof(RenderData), SIT_SUBMIT_HIGH_PRIORITY | SIT_SUBMIT_RUN_IF_FULL);
 ```
 
 ---
 #### `SituationSubmitJob`
-Submits a generic custom job to the thread pool.
+Legacy wrapper for simple pointer passing. Equivalent to `SituationSubmitJobEx` with default flags.
 ```c
-SituationJobId SituationSubmitJob(SituationThreadPool* pool, void (*callback)(void*, SituationError*), void* user_data, SituationJobType type);
-```
-**Usage Example:**
-```c
-void MyHeavyTask(void* data, SituationError* err) {
-    printf("Processing data: %s\n", (char*)data);
-    *err = SITUATION_SUCCESS;
-}
-
-// ... inside main loop ...
-SituationJobId job_id = SituationSubmitJob(&pool, MyHeavyTask, "Hello Thread!", SIT_JOB_TYPE_CUSTOM);
+#define SituationSubmitJob(pool, func, user_ptr) ...
 ```
 
 ---
-#### `SituationLoadSoundFromFileAsync`
-Submits a job to load a sound file asynchronously. This prevents the main thread from stalling while decoding large audio files.
+#### `SituationDispatchParallel`
+Executes a parallel-for loop (Fork-Join pattern). Splits `count` items into batches and distributes them across threads. The calling thread actively participates ("helps") until all items are processed.
 ```c
-SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound);
+void SituationDispatchParallel(SituationThreadPool* pool, int count, int min_batch_size, void (*func)(int index, void* user_data), void* user_data);
 ```
 **Usage Example:**
 ```c
-SituationSound music;
-SituationJobId load_job = SituationLoadSoundFromFileAsync(&pool, "music/track.mp3", true, &music);
-
-// Later, check if it's done
-if (SituationWaitForJob(&pool, load_job, 0)) {
-    SituationPlayLoadedSound(&music);
+void ProcessParticle(int index, void* user_data) {
+    Particle* particles = (Particle*)user_data;
+    UpdateParticle(&particles[index]);
 }
+
+// Update 10,000 particles in parallel
+SituationDispatchParallel(&pool, 10000, 64, ProcessParticle, all_particles);
 ```
 
 ---
 #### `SituationWaitForJob`
-Checks the status of a specific job. 
+Waits for a specific job to complete. Returns immediately if the job is already done.
 ```c
-bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id, uint64_t timeout_ms);
-```
-- `timeout_ms`: Max time to wait. Pass `0` for non-blocking check.
-**Usage Example:**
-```c
-// Non-blocking check
-if (SituationWaitForJob(&pool, job_id, 0)) {
-    // Job is done
-}
+bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id);
 ```
 
 ---
 #### `SituationWaitForAllJobs`
-Blocks the calling thread until all jobs in the pool are completed.
+Blocks the calling thread until ALL queues are empty and no jobs are running.
 ```c
-bool SituationWaitForAllJobs(SituationThreadPool* pool);
+void SituationWaitForAllJobs(SituationThreadPool* pool);
 ```
+
 </details>
 <details>
 <summary><h3>Miscellaneous Module</h3></summary>
