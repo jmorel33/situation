@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.16A "Velocity" |
+| **Version** | 2.3.17 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -37,13 +37,13 @@ The library is engineered around three architectural pillars:
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
 
-### New in v2.3.16A "Velocity" (Hotfix: Vector & Docs)
+### New in v2.3.17 "Velocity" (Refactor: Render State Separation)
 
-This release solidifies the API type system and documentation. It replaces legacy `vec2`/`vec3`/`vec4` array typedefs with C11-compliant `Vector2`/`Vector3`/`Vector4` unions, ensuring strict standards compliance and resolving ambiguity. It also elevates the threading module documentation to "Titanium" standards.
+This release implements a massive architectural refactor to decouple the rendering state from the core global state. This change is purely structural and preserves identical API behavior and performance, but paves the way for future multi-context support and cleaner internal modularity.
 
 **Key Enhancements:**
-*   **Vector Standardization:** Replaced `vec2`, `vec3`, `vec4` array typedefs with `Vector2`, `Vector3`, `Vector4` unions.
-*   **Titanium Threading Docs:** Moved all detailed threading documentation from `situation.h` header declarations to the implementation section.
+*   **State Decoupling:** The monolithic `_SituationGlobalStateContainer` has been split. A new `_SituationRenderState` struct now encapsulates all graphics-related state (Vulkan handles, OpenGL context data, virtual displays, resource trackers).
+*   **Context Object:** Introduced a heap-allocated `SituationContext` that holds the Global, Render, Audio, and Input states, replacing static global variables with a structured context pointer.
 
 ### New in v2.3.16 "Velocity" (Task Safety Hotfix)
 
