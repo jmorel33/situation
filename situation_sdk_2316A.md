@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.16 "Velocity" |
+| **Version** | 2.3.16A "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -36,6 +36,14 @@ The library is engineered around three architectural pillars:
 
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
+
+### New in v2.3.16A "Velocity" (Hotfix: Vector & Docs)
+
+This release solidifies the API type system and documentation. It replaces legacy `vec2`/`vec3`/`vec4` array typedefs with C11-compliant `Vector2`/`Vector3`/`Vector4` unions, ensuring strict standards compliance and resolving ambiguity. It also elevates the threading module documentation to "Titanium" standards.
+
+**Key Enhancements:**
+*   **Vector Standardization:** Replaced `vec2`, `vec3`, `vec4` array typedefs with `Vector2`, `Vector3`, `Vector4` unions.
+*   **Titanium Threading Docs:** Moved all detailed threading documentation from `situation.h` header declarations to the implementation section.
 
 ### New in v2.3.16 "Velocity" (Task Safety Hotfix)
 

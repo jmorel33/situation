@@ -1,3 +1,19 @@
+Date: 2025-12-03
+Version: 2.3.16A "Velocity" (Hotfix: Vector & Docs)
+
+## DESCRIPTION
+This release solidifies the API type system and documentation. It replaces legacy `vec2`/`vec3`/`vec4` array typedefs with C11-compliant `Vector2`/`Vector3`/`Vector4` unions, ensuring strict standards compliance and resolving ambiguity. It also elevates the threading module documentation to "Titanium" standards.
+
+## API CHANGES
+*   **Vector Standardization:** Replaced `vec2`, `vec3`, `vec4` array typedefs with `Vector2`, `Vector3`, `Vector4` unions.
+    *   **Impact:** Access members via `.x`, `.y`, etc., instead of array indexing `[0]`. Use `.raw` for CGLM interop.
+    *   **Compatibility:** This is a breaking change for code directly accessing vector components via array syntax on Situation structs.
+
+## DOCUMENTATION
+*   **Titanium Threading Docs:** Moved all detailed threading documentation from `situation.h` header declarations to the implementation section, ensuring a clean API surface while maintaining exhaustive developer reference.
+*   **Cleanup:** Fixed typos in `SituationWaitForAllJobs` and `SituationLoadSoundFromFileAsync` documentation.
+
+--------------------------------------------------------------------------------
 
 Date: 2025-12-03
 Version: 2.3.16 "Velocity" (Task Safety Hotfix)

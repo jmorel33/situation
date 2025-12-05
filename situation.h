@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 16
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -766,13 +766,13 @@ typedef void (*SituationMouseButtonCallback)(
 ); // Mouse button events
 
 typedef void (*SituationCursorPosCallback)(
-    vec2  position,   // Cursor position in screen coordinates (HiDPI-aware, sub-pixel precision)
-    void* user_data
+    Vector2 position, // Cursor position in screen coordinates (HiDPI-aware, sub-pixel precision)
+    void*   user_data
 ); // Called every time the mouse moves (can be very frequent)
 
 typedef void (*SituationScrollCallback)(
-    vec2  offset,     // x/y scroll amount (y is usually ±1.0 per notch)
-    void* user_data
+    Vector2 offset,   // x/y scroll amount (y is usually ±1.0 per notch)
+    void*   user_data
 ); // Mouse wheel / trackpad scroll
 
 typedef void (*SituationJoystickCallback)(
@@ -853,7 +853,24 @@ typedef struct ColorHSV { float h, s, v; } ColorHSV; // Hue = 0.0f to 360.0f deg
 typedef struct ColorYPQA { unsigned char y, p, q, a; } ColorYPQA; // Luminance (0-255), Phase (0-255), Quadrature (0-255), Alpha (0-255)
 typedef struct ColorRGBA { unsigned char r, g, b, a; } ColorRGBA;
 typedef ColorRGBA Color;
-typedef struct Vector2 { float x; float y; } Vector2;
+
+typedef union Vector2 {
+    struct { float x, y; };
+    float raw[2];
+} Vector2;
+
+typedef union Vector3 {
+    struct { float x, y, z; };
+    struct { float r, g, b; };
+    float raw[3];
+} Vector3;
+
+typedef union Vector4 {
+    struct { float x, y, z, w; };
+    struct { float r, g, b, a; };
+    float raw[4];
+} Vector4;
+
 typedef struct Rectangle { float x, y, width, height; } Rectangle;
 
 typedef struct SituationImage {
@@ -1224,10 +1241,10 @@ typedef struct SituationModelMesh {
 
     // --- PBR Material Properties ---
     // These are loaded directly from the GLTF material definition.
-    vec4 base_color_factor;                   // The base color tint (RGBA)
+    Vector4 base_color_factor;                // The base color tint (RGBA)
     float metallic_factor;                    // How metallic the surface is [0-1]
     float roughness_factor;                   // How rough the surface is [0-1]
-    vec3 emissive_factor;                     // The color of light emitted by the surface
+    Vector3 emissive_factor;                  // The color of light emitted by the surface
 
     // --- Texture Handles ---
     // These point to textures that are also part of the model.
@@ -1259,8 +1276,8 @@ typedef struct SituationModel {
 // --- Virtual Display Structures ---
 typedef struct {
     int      id;                     // Unique sequential ID assigned at creation (used internally for tracking)
-    vec2     resolution;             // Render resolution of this virtual display (width, height in pixels)
-    vec2     offset;                 // Top-left screen position when composited to the main window (in screen pixels)
+    Vector2  resolution;             // Render resolution of this virtual display (width, height in pixels)
+    Vector2  offset;                 // Top-left screen position when composited to the main window (in screen pixels)
     float    opacity;                // Global alpha multiplier for the entire display (0.0f = fully transparent, 1.0f = opaque)
     bool     visible;                // If false, the display is skipped entirely during compositing
     int      z_order;                // Sorting key for compositing order — lower values are drawn first (background → foreground)
@@ -1909,7 +1926,7 @@ SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y
 SITAPI void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);                                    // Sets the dynamic scissor rectangle to clip rendering.
 SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader);                                     // Binds a graphics pipeline (shader program) for subsequent draws.
 SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh);                                             // [High-Level] Records a command to draw a complete, pre-configured mesh.
-SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color);                                                   // [High-Level] Record a command to draw a simple, colored 2D quad.
+SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color);                                                // [High-Level] Record a command to draw a simple, colored 2D quad.
 SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);               // [Core] Set a small block of per-draw uniform data (push constant).
 SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer);            // [Core] Binds a buffer's descriptor set (UBO/SSBO) to a set index.
 SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);             // [Core] Binds a texture's descriptor set (sampler/storage) to a set index.
@@ -2149,7 +2166,7 @@ SITAPI double SituationTimerGetPingProgress(int oscillator_id);                 
 SITAPI double SituationTimerGetTime(void);                                              // Get the total time elapsed since initialization.
 
 // --- Color Space Conversions ---
-SITAPI void SituationConvertColorToVec4(ColorRGBA c, vec4 out_normalized_color);        // Convert an 8-bit ColorRGBA struct to a normalized vec4.
+SITAPI void SituationConvertColorToVector4(ColorRGBA c, Vector4* out_normalized_color); // Convert an 8-bit ColorRGBA struct to a normalized Vector4.
 SITAPI ColorHSV SituationRgbToHsv(ColorRGBA rgb);                                       // Converts a standard RGBA color to the Hue, Saturation, Value color space.
 SITAPI ColorRGBA SituationHsvToRgb(ColorHSV hsv);                                       // Converts a Hue, Saturation, Value color back to the standard RGBA color space.
 SITAPI ColorYPQA SituationColorToYPQ(ColorRGBA color);                                  // Converts a standard RGBA color to the YPQA (Luma, Phase, Quadrature) color space.
@@ -2163,153 +2180,36 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 
 #ifdef SITUATION_ENABLE_THREADING
 
-/**
- * @brief Initializes the high-performance, generational thread pool.
- * @details Allocates resources for the dual-priority ring buffers (High/Low) and spawns worker threads.
- *          The system uses a generational index strategy to ensure O(1) job tracking and validity checks,
- *          preventing ABA problems common in ring-buffer based pools.
- *          The High Priority queue is always checked first by workers, ensuring critical tasks (Physics, Audio)
- *          are not blocked by bulk background work (Asset Loading).
- *
- * @param pool Pointer to the `SituationThreadPool` struct to initialize.
- * @param num_threads Number of worker threads to spawn. Pass 0 to auto-detect based on CPU cores.
- *                    Recommended: logical_cores - 1 (leaving main thread free).
- * @param queue_size Capacity of the ring buffers. Must be a power of 2 (e.g., 1024, 2048).
- *                   If not, it will be rounded up to the next power of 2. This determines how many
- *                   jobs can be queued before backpressure handling (BLOCK/RUN_INLINE) kicks in.
- * @return `true` if the pool was successfully initialized, `false` otherwise (e.g., memory allocation failure).
- */
-SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size);
+SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size); // Initializes the thread pool with dual-priority queues and worker threads.
+SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool); // Shuts down the thread pool and releases resources.
 
-/**
- * @brief Destroys the thread pool, joining all threads and freeing resources.
- * @details Signals all worker threads to exit and blocks the calling thread until they have all joined.
- *          Crucially, this function cleans up the internal mutexes, condition variables, and the job ring buffers.
- *          Any pending jobs remaining in the queue will be discarded (not executed).
- * @param pool Pointer to the `SituationThreadPool` to destroy.
- */
-SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool);
-
-/**
- * @brief Submits a job to the thread pool with advanced control over priority and data payload.
- * @details This is the primary entry point for the task system. It pushes a task to the appropriate queue (High/Low) based on flags.
- *          It implements **Small Object Optimization (SOO)**:
- *          - If `data_size` is <= 64 bytes, the data is copied directly into the job slot (zero allocation).
- *            This is perfect for passing 4x4 matrices, configuration structs, or small buffers.
- *          - If `data_size` > 64 bytes, `data` is treated as a pointer and passed through directly.
- *            In this case, the user is responsible for keeping the pointed-to memory valid until the job completes.
- *
- * @param pool The thread pool to submit to.
- * @param func The callback function to execute. Prototype: `void func(void* data, void* user_ptr)`.
- *             Note: `user_ptr` is currently unused/reserved in the implementation but kept for signature compatibility.
- * @param data Pointer to the data payload. If using SOO, this data is copied.
- * @param data_size Size of the data payload in bytes.
- * @param flags Submission behavior flags. Combine with bitwise OR:
- *              - `SIT_SUBMIT_HIGH_PRIORITY`: Use the high-priority queue.
- *              - `SIT_SUBMIT_BLOCK_IF_FULL`: If queue is full, sleep until a slot opens.
- *              - `SIT_SUBMIT_RUN_IF_FULL`: If queue is full, execute immediately on the calling thread (avoids stalls).
- *
- * @return A `SituationJobId` handle. This handle encodes the generation, allowing safe O(1) completion checks
- *         via `SituationWaitForJob` even if the slot is reused later. Returns 0 on failure (e.g., queue full and no fallback set).
- */
 SITAPI SituationJobId SituationSubmitJobEx(
     SituationThreadPool* pool,
     void (*func)(void*, void*),
     const void* data,
     size_t data_size,
     SituationJobFlags flags
-);
+); // Submits a job with priority flags and optional data payload.
 
-/**
- * @brief Legacy wrapper for simple pointer passing.
- * @details Submits a job with default priority (Low) and treats `user_ptr` as a raw pointer (no copy).
- * @param pool The thread pool.
- * @param func The callback function.
- * @param user_ptr The pointer to pass to the function.
- */
+// Legacy wrapper for simple pointer passing (Low priority, no copy).
 #define SituationSubmitJob(pool, func, user_ptr) \
     SituationSubmitJobEx(pool, (void(*)(void*, void*))func, user_ptr, 0, SIT_SUBMIT_DEFAULT)
 
-/**
- * @brief Executes a parallel-for loop (Fork-Join pattern) across the worker threads.
- * @details Splits a workload of `count` items into batches and distributes them across the thread pool.
- *          The calling thread actively participates in execution ("Helping" strategy) by processing
- *          jobs from the High Priority queue while waiting for the batches to complete.
- *          This ensures that the main thread does not sit idle while waiting for the workers.
- *
- * @param pool The thread pool.
- * @param count Total number of items to process (e.g., number of entities, pixels, array elements).
- * @param min_batch_size Minimum items per batch (prevents overhead for trivial tasks).
- *                       Heuristics suggest using a size that takes at least 10-50 microseconds to process.
- * @param func The callback function: `void func(int index, void* user_data)`. Called for each index from 0 to count-1.
- * @param user_data Context pointer passed to the callback.
- */
 SITAPI void SituationDispatchParallel(
     SituationThreadPool* pool,
     int count,
     int min_batch_size,
     void (*func)(int index, void* user_data),
     void* user_data
-);
+); // Executes a loop in parallel across worker threads (Fork-Join).
 
-/**
- * @brief Waits for a specific job to complete (O(1) check).
- * @details Blocks the calling thread until the job is finished. Uses an efficient generation check:
- *          1. If the job's generation counter in the slot matches the ID, the job is still pending or running -> Wait.
- *          2. If the generation has incremented, the slot was reused for a NEW job -> OLD job is definitely done -> Return.
- *          3. If the explicit `is_completed` flag is set -> Return.
- *
- * @param pool The thread pool.
- * @param job_id The handle returned by `SituationSubmitJobEx`.
- * @return `true` if the job is complete (always returns true, blocks until then).
- */
-SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id);
+SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id); // Waits for a specific job to complete (O(1) check).
+SITAPI void SituationWaitForAllJobs(SituationThreadPool* pool); // Blocks until all queued jobs are finished.
+SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound); // Asynchronously loads and decodes a sound file.
 
-/**
- * @brief Blocks until ALL queues are empty and active jobs are zero.
- * @details Waits for all queues (High and Low) to drain and all active worker threads to complete
- *          their current tasks. This is a "sync point" useful for frame boundaries or ensuring
- *          all async work is done before shutting down or changing scenes.
- * @param pool The thread pool.
- */
-SITAPI void SituationWaitForAllJobs(SituationThreadPool* pool);
-
-/**
- * @brief Loads an audio file in the background using the thread pool.
- * @details This is a convenience wrapper that submits a job to the thread pool to load and decode
- *          an audio file into RAM (SITUATION_AUDIO_LOAD_FULL).
- *          The function returns immediately with a job ID. You must check `SituationWaitForJob`
- *          before accessing the `out_sound` struct.
- *
- * @param pool The thread pool to use.
- * @param file_path Path to the audio file.
- * @param looping Whether the sound should loop.
- * @param out_sound Pointer to the SituationSound struct to be initialized.
- * @return A job ID, or 0 on immediate failure.
- */
-SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound);
-
-/**
- * @brief [v2.3.16] Adds a dependency: 'dependent_job' waits for 'prerequisite_job'.
- * @details Uses lock-free CAS to link jobs. Performs cycle detection to prevent deadlocks.
- *          Constraint: Currently supports 1:1 continuation (a job can trigger one successor).
- *          For 1:N fan-out, use a dedicated dispatcher job or SituationAddJobDependencies for fan-in.
- * @return true on success, false if cycle detected or prerequisite already has a continuation.
- */
-SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prerequisite_job, SituationJobId dependent_job);
-
-/**
- * @brief [v2.3.16] Helper for Many-to-One dependencies (Fan-In).
- * @details Makes 'dependent_job' wait for an array of prerequisite jobs.
- */
-SITAPI bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job);
-
-/**
- * @brief [v2.3.16] Dumps the active task graph to the stream (stderr if NULL).
- * @details Prints active jobs, priorities, dependency counts, and linkage.
- * @param json_mode If true, outputs a compact JSON object suitable for tooling.
- */
-SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, bool json_mode);
+SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prerequisite_job, SituationJobId dependent_job); // Adds a dependency between two jobs (prereq -> dependent).
+SITAPI bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job); // Adds multiple dependencies for a single dependent job.
+SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, bool json_mode); // Prints the current task graph state to the stream.
 
 #endif // SITUATION_ENABLE_THREADING
 
@@ -4981,7 +4881,7 @@ static void _SituationGLFWCursorPosCallback(GLFWwindow* window, double xpos, dou
 
     // --- User Callback (Outside of Lock) ---
     if (sit_input.mouse.cursor_pos_callback) {
-        vec2 pos = {(float)xpos, (float)ypos};
+        Vector2 pos = {(float)xpos, (float)ypos};
         sit_input.mouse.cursor_pos_callback(pos, sit_input.mouse.cursor_pos_callback_user_data);
     }
 }
@@ -5012,7 +4912,7 @@ static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, dou
     // --- User Callback (Outside of Lock) ---
     if (sit_input.mouse.scroll_callback) {
         // Pass the per-event offset directly to the user callback.
-        vec2 offset = {(float)xoffset, (float)yoffset};
+        Vector2 offset = {(float)xoffset, (float)yoffset};
         sit_input.mouse.scroll_callback(offset, sit_input.mouse.scroll_callback_user_data);
     }
 }
@@ -11710,7 +11610,7 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
         SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[info->display_id];
         glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
         sit_gs.gl.current_fbo_id = vd->gl.fbo_id;
-        glViewport(0, 0, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
+        glViewport(0, 0, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
     }
 
     // 2. Set clear values and determine clear mask
@@ -11812,7 +11712,7 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
         SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[display_id];
         glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
         sit_gs.gl.current_fbo_id = vd->gl.fbo_id;
-        glViewport(0, 0, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
+        glViewport(0, 0, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
     }
 
     glClearColor(clear_color.r / 255.0f, clear_color.g / 255.0f, clear_color.b / 255.0f, clear_color.a / 255.0f);
@@ -11845,7 +11745,7 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
         render_pass_info.renderPass = vd->vk.render_pass;
         render_pass_info.framebuffer = vd->vk.framebuffer;
         render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
-        render_pass_info.renderArea.extent = (VkExtent2D){(uint32_t)vd->resolution[0], (uint32_t)vd->resolution[1]};
+        render_pass_info.renderArea.extent = (VkExtent2D){(uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y};
     }
 
     vkCmdBeginRenderPass((VkCommandBuffer)cmd, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
@@ -12355,8 +12255,8 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     sit_gs.frame_draw_calls++;
     sit_gs.frame_triangle_count += final_vert_count / 3;
 
-    vec4 color_vec;
-    SituationConvertColorToVec4(color, color_vec);
+    Vector4 color_vec;
+    SituationConvertColorToVector4(color, &color_vec);
 
     // Bind Atlas (Common)
     SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, font.atlas_texture);
@@ -12376,7 +12276,7 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     glNamedBufferSubData(sit_gs.gl.text_vbo, 0, data_size, vertices);
 
     // Set Uniforms
-    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec);
+    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec.raw);
 
     glBindVertexArray(sit_gs.gl.text_vao);
     sit_gs.gl.current_vao_id = sit_gs.gl.text_vao;
@@ -12401,7 +12301,7 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
         vkCmdBindVertexBuffers(vk_cmd, 0, 1, &temp_buffer, offsets);
 
         // Push Color
-        vkCmdPushConstants(vk_cmd, sit_gs.vk.text_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(vec4), color_vec);
+        vkCmdPushConstants(vk_cmd, sit_gs.vk.text_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(Vector4), color_vec.raw);
 
         vkCmdDraw(vk_cmd, final_vert_count, 1, 0, 0);
 
@@ -12805,14 +12705,14 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
  * @param model The 4x4 model matrix (position, rotation, scale) for the quad.
  * @param color The color of the quad as a normalized vec4 (r, g, b, a).
  */
-SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color) {
+SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color) {
     if (!SituationIsInitialized()) return;
     sit_gs.debug_draw_command_issued_this_frame = true;
     sit_gs.frame_draw_calls++;
     sit_gs.frame_triangle_count += 2;
 
     // Default UV Rect: Offset (0,0), Scale (1,1)
-    vec4 uv_rect = {0.0f, 0.0f, 1.0f, 1.0f};
+    Vector4 uv_rect = {{0.0f, 0.0f, 1.0f, 1.0f}};
     int use_texture = 0; // False
 
 #if defined(SITUATION_USE_OPENGL)
@@ -12822,10 +12722,10 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 co
     glUseProgram(sit_gs.gl.quad_shader_program);
     sit_gs.gl.current_program_id = sit_gs.gl.quad_shader_program;
     glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model);
-    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color);
+    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color.raw);
 
     // Set new uniforms
-    glUniform4fv(5, 1, (const GLfloat*)uv_rect); // Location 5 from shader
+    glUniform4fv(5, 1, (const GLfloat*)uv_rect.raw); // Location 5 from shader
     glUniform1i(6, use_texture);                 // Location 6 from shader
 
     glBindVertexArray(sit_gs.gl.quad_vao);
@@ -12854,8 +12754,8 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 co
     } push_data;
 
     glm_mat4_copy(model, push_data.model);
-    glm_vec4_copy(color, push_data.color);
-    glm_vec4_copy(uv_rect, push_data.uv_rect);
+    glm_vec4_copy(color.raw, push_data.color);
+    glm_vec4_copy(uv_rect.raw, push_data.uv_rect);
     push_data.use_texture = use_texture;
 
     // Note: vkCmdPushConstants size must update to match the larger struct
@@ -18300,8 +18200,8 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
     memset(vd, 0, sizeof(SituationVirtualDisplay)); // Crucial: Start with clean slate for safe cleanup
 
     vd->id = new_id;
-    vd->resolution[0] = (resolution.x > 0) ? resolution.x : 1.0f;
-    vd->resolution[1] = (resolution.y > 0) ? resolution.y : 1.0f;
+    vd->resolution.x = (resolution.x > 0) ? resolution.x : 1.0f;
+    vd->resolution.y = (resolution.y > 0) ? resolution.y : 1.0f;
     vd->frame_time_multiplier = frame_time_mult;
     vd->z_order = z_order;
     vd->scaling_mode = scaling_mode;
@@ -18323,7 +18223,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
 
     // --- Step 1: Create Color Image ---
     if (success) {
-        if (_SituationVulkanCreateImage((uint32_t)vd->resolution[0], (uint32_t)vd->resolution[1], color_format,
+        if (_SituationVulkanCreateImage((uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y, color_format,
                                         VK_IMAGE_TILING_OPTIMAL,
                                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                                         VMA_MEMORY_USAGE_GPU_ONLY,
@@ -18341,7 +18241,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
 
     // --- Step 3: Create Depth Image ---
     if (success) {
-        if (_SituationVulkanCreateImage((uint32_t)vd->resolution[0], (uint32_t)vd->resolution[1], depth_format,
+        if (_SituationVulkanCreateImage((uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y, depth_format,
                                         VK_IMAGE_TILING_OPTIMAL,
                                         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                                         VMA_MEMORY_USAGE_GPU_ONLY,
@@ -18421,8 +18321,8 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
         framebuffer_info.renderPass = vd->render_pass;
         framebuffer_info.attachmentCount = 2;
         framebuffer_info.pAttachments = fb_attachments;
-        framebuffer_info.width = (uint32_t)vd->resolution[0];
-        framebuffer_info.height = (uint32_t)vd->resolution[1];
+        framebuffer_info.width = (uint32_t)vd->resolution.x;
+        framebuffer_info.height = (uint32_t)vd->resolution.y;
         framebuffer_info.layers = 1;
 
         if (vkCreateFramebuffer(sit_gs.vk.device, &framebuffer_info, NULL, &vd->framebuffer) != VK_SUCCESS) success = false;
@@ -18482,7 +18382,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
 
     // Step 2: Configure Texture
     if (success) {
-        glTextureStorage2D(vd->gl.texture_id, 1, GL_RGBA8, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
+        glTextureStorage2D(vd->gl.texture_id, 1, GL_RGBA8, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
 
         GLenum filter_mode = (scaling_mode == SITUATION_SCALING_STRETCH) ? GL_LINEAR : GL_NEAREST;
         glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_MIN_FILTER, filter_mode);
@@ -18493,7 +18393,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
 
     // Step 3: Configure Renderbuffer & Attach
     if (success) {
-        glNamedRenderbufferStorage(vd->gl.depth_rbo_id, GL_DEPTH_COMPONENT24, (GLsizei)vd->resolution[0], (GLsizei)vd->resolution[1]);
+        glNamedRenderbufferStorage(vd->gl.depth_rbo_id, GL_DEPTH_COMPONENT24, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
         glNamedFramebufferTexture(vd->gl.fbo_id, GL_COLOR_ATTACHMENT0, vd->gl.texture_id, 0);
         glNamedFramebufferRenderbuffer(vd->gl.fbo_id, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, vd->gl.depth_rbo_id);
 
@@ -18767,17 +18667,17 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
 
         switch (vd->scaling_mode) {
             case SITUATION_SCALING_STRETCH: {
-                glm_translate_make(T_mat, (vec3){vd->offset[0], vd->offset[1], 0.0f});
-                glm_scale_make(S_mat, (vec3){vd->resolution[0], vd->resolution[1], 1.0f});
+                glm_translate_make(T_mat, (vec3){vd->offset.x, vd->offset.y, 0.0f});
+                glm_scale_make(S_mat, (vec3){vd->resolution.x, vd->resolution.y, 1.0f});
                 glm_mat4_mul(T_mat, S_mat, model_matrix);
                 break;
             }
             case SITUATION_SCALING_FIT: {
-                float scale_x = target_width / vd->resolution[0];
-                float scale_y = target_height / vd->resolution[1];
+                float scale_x = target_width / vd->resolution.x;
+                float scale_y = target_height / vd->resolution.y;
                 float final_scale = fminf(scale_x, scale_y);
-                float final_width = vd->resolution[0] * final_scale;
-                float final_height = vd->resolution[1] * final_scale;
+                float final_width = vd->resolution.x * final_scale;
+                float final_height = vd->resolution.y * final_scale;
                 float final_x = (target_width - final_width) / 2.0f;
                 float final_y = (target_height - final_height) / 2.0f;
                 glm_translate_make(T_mat, (vec3){final_x, final_y, 0.0f});
@@ -18786,11 +18686,11 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
                 break;
             }
             case SITUATION_SCALING_INTEGER: {
-                float scale_x = target_width / vd->resolution[0];
-                float scale_y = target_height / vd->resolution[1];
+                float scale_x = target_width / vd->resolution.x;
+                float scale_y = target_height / vd->resolution.y;
                 float final_scale = fmaxf(1.0f, floorf(fminf(scale_x, scale_y)));
-                float final_width = vd->resolution[0] * final_scale;
-                float final_height = vd->resolution[1] * final_scale;
+                float final_width = vd->resolution.x * final_scale;
+                float final_height = vd->resolution.y * final_scale;
                 float final_x = (target_width - final_width) / 2.0f;
                 float final_y = (target_height - final_height) / 2.0f;
                 glm_translate_make(T_mat, (vec3){final_x, final_y, 0.0f});
@@ -18888,17 +18788,17 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
 
         switch (vd->scaling_mode) {
             case SITUATION_SCALING_STRETCH: {
-                glm_translate_make(T, (vec3){vd->offset[0], vd->offset[1], 0.0f});
+                glm_translate_make(T, (vec3){vd->offset.x, vd->offset.y, 0.0f});
                 glm_scale_make(S, (vec3){target_width, target_height, 1.0f});
                 glm_mat4_mul(T, S, model_matrix);
                 break;
             }
             case SITUATION_SCALING_FIT: {
-                float sx = target_width / vd->resolution[0];
-                float sy = target_height / vd->resolution[1];
+                float sx = target_width / vd->resolution.x;
+                float sy = target_height / vd->resolution.y;
                 float s = fminf(sx, sy);
-                float final_w = vd->resolution[0] * s;
-                float final_h = vd->resolution[1] * s;
+                float final_w = vd->resolution.x * s;
+                float final_h = vd->resolution.y * s;
                 float final_x = (target_width - final_w) / 2.0f;
                 float final_y = (target_height - final_h) / 2.0f;
                 glm_translate_make(T, (vec3){final_x, final_y, 0.0f});
@@ -18907,9 +18807,9 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
                 break;
             }
             case SITUATION_SCALING_INTEGER: {
-                float s = fmaxf(1.0f, floorf(fminf(target_width / vd->resolution[0], target_height / vd->resolution[1])));
-                float final_w = vd->resolution[0] * s;
-                float final_h = vd->resolution[1] * s;
+                float s = fmaxf(1.0f, floorf(fminf(target_width / vd->resolution.x, target_height / vd->resolution.y)));
+                float final_w = vd->resolution.x * s;
+                float final_h = vd->resolution.y * s;
                 float final_x = (target_width - final_w) / 2.0f;
                 float final_y = (target_height - final_h) / 2.0f;
                 glm_translate_make(T, (vec3){final_x, final_y, 0.0f});
@@ -19033,14 +18933,14 @@ SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, 
     SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[display_id];
 
     bool visual_property_changed = false;
-    if (vd->offset[0] != offset.x || vd->offset[1] != offset.y) visual_property_changed = true;
+    if (vd->offset.x != offset.x || vd->offset.y != offset.y) visual_property_changed = true;
     if (fabsf(vd->opacity - opacity) > 0.001f) visual_property_changed = true; // Compare floats with tolerance
     if (vd->z_order != z_order) visual_property_changed = true;
     if (vd->visible != visible) visual_property_changed = true;
     // Resolution changes would require re-creating the FBO, not just configuring.
     // frame_time_mult doesn't make it visually dirty for compositing.
 
-    glm_vec2_copy((float*)&offset, vd->offset);
+    vd->offset = offset;
     vd->opacity = (opacity < 0.0f) ? 0.0f : (opacity > 1.0f) ? 1.0f : opacity;
     vd->z_order = z_order;
     vd->visible = visible;
@@ -19133,7 +19033,7 @@ SITAPI void SituationGetVirtualDisplaySize(int display_id, int* width, int* heig
     if (!SituationIsInitialized() || !width || !height) { *width = 0; *height = 0; return; }
     if (display_id < 0) { *width = sit_gs.main_window_width; *height = sit_gs.main_window_height; return; }
     SituationVirtualDisplay* vd = SituationGetVirtualDisplay(display_id);
-    if (vd) { *width = (int)vd->resolution[0]; *height = (int)vd->resolution[1]; } else { *width = 0; *height = 0; }
+    if (vd) { *width = (int)vd->resolution.x; *height = (int)vd->resolution.y; } else { *width = 0; *height = 0; }
 }
 
 /**
@@ -19397,7 +19297,7 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
                         cgltf_pbr_metallic_roughness* pbr = &mat->pbr_metallic_roughness;
 
                         // Factors
-                        memcpy(sit_mesh->base_color_factor, pbr->base_color_factor, sizeof(vec4));
+                        memcpy(sit_mesh->base_color_factor.raw, pbr->base_color_factor, sizeof(Vector4));
                         sit_mesh->metallic_factor = pbr->metallic_factor;
                         sit_mesh->roughness_factor = pbr->roughness_factor;
 
@@ -19419,7 +19319,7 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
                     }
 
                     // Emissive
-                    memcpy(sit_mesh->emissive_factor, mat->emissive_factor, sizeof(vec3));
+                    memcpy(sit_mesh->emissive_factor.raw, mat->emissive_factor, sizeof(Vector3));
                     if (mat->emissive_texture.texture) {
                         ptrdiff_t idx = mat->emissive_texture.texture - data->textures;
                         sit_mesh->emissive_texture = model.all_model_textures[idx];
@@ -19579,7 +19479,7 @@ SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model,
         glm_mat4_copy(transform, constants.model_matrix);
 
         // Copy the material's PBR factor values.
-        glm_vec4_copy(mesh->base_color_factor, constants.base_color_factor);
+        glm_vec4_copy(mesh->base_color_factor.raw, constants.base_color_factor);
         constants.pbr_factors[0] = mesh->metallic_factor;
         constants.pbr_factors[1] = mesh->roughness_factor;
         constants.pbr_factors[2] = 0.0f; // Unused
@@ -25956,9 +25856,11 @@ SITAPI int SituationGetFPS(void) {
  * @param c The source `ColorRGBA` struct.
  * @param[out] out_normalized_color A `vec4` (float array of size 4) that will be filled with the normalized color components [r, g, b, a].
  */
-SITAPI void SituationConvertColorToVec4(ColorRGBA c, vec4 out_normalized_color) {
-    out_normalized_color[0] = c.r / 255.0f; out_normalized_color[1] = c.g / 255.0f;
-    out_normalized_color[2] = c.b / 255.0f; out_normalized_color[3] = c.a / 255.0f;
+SITAPI void SituationConvertColorToVector4(ColorRGBA c, Vector4* out_normalized_color) {
+    out_normalized_color->x = c.r / 255.0f;
+    out_normalized_color->y = c.g / 255.0f;
+    out_normalized_color->z = c.b / 255.0f;
+    out_normalized_color->w = c.a / 255.0f;
 }
 
 /**
@@ -26158,11 +26060,24 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
 #define SIT_ID_GEN_MASK    0x7FFF
 #define SIT_ID_SLOT_MASK   0xFFFF
 
+/**
+ * @brief [INTERNAL] Packs queue index, generation, and slot index into a single Job ID.
+ * @param q_idx The priority queue index (0 or 1).
+ * @param gen The generation counter (15 bits).
+ * @param slot The slot index in the ring buffer (16 bits).
+ * @return A packed SituationJobId.
+ */
 static inline SituationJobId _SitMakeId(uint32_t q_idx, uint32_t gen, uint32_t slot) {
     return ((q_idx & 1) << SIT_ID_QUEUE_SHIFT) | ((gen & SIT_ID_GEN_MASK) << SIT_ID_GEN_SHIFT) | (slot & SIT_ID_SLOT_MASK);
 }
 
-// Helper: Unpacks ID, bounds check, and validates generation
+/**
+ * @brief [INTERNAL] Resolves a Job ID to a pointer, with validation.
+ * @details Unpacks the ID, checks bounds, and validates the generation counter to prevent ABA issues.
+ * @param pool The thread pool instance.
+ * @param id The job handle to resolve.
+ * @return Pointer to the SituationJob, or NULL if invalid/stale.
+ */
 static SituationJob* _SitGetJobFromId(SituationThreadPool* pool, SituationJobId id) {
     if (id == 0 || !pool) return NULL;
 
@@ -26217,6 +26132,41 @@ static bool _SituationDetectCycle(SituationThreadPool* pool, SituationJobId prer
 //  Task Graph API
 // ==================================================================================
 
+/**
+ * @brief Establishes a directed dependency between two jobs (Prerequisite -> Dependent).
+ *
+ * @details This function constructs a dependency edge in the task graph, ensuring that the `dependent_job`
+ *          will not execute until the `prerequisite_job` has completed.
+ *
+ *          **Mechanism:**
+ *          - The dependency count of the `dependent_job` is atomically incremented.
+ *          - The `continuation_id` of the `prerequisite_job` is updated to point to the `dependent_job`.
+ *          - This uses a lock-free Compare-And-Swap (CAS) loop to ensure thread safety without mutexes.
+ *
+ *          **Cycle Detection:**
+ *          Before modifying the graph, this function performs a depth-limited search (max depth 32)
+ *          to detect potential cycles (e.g., A->B->A). If a cycle is detected, the operation is aborted
+ *          to prevent deadlocks.
+ *
+ *          **Constraints:**
+ *          - **1:1 Continuation:** Currently, a job can trigger only *one* direct successor via this mechanism.
+ *            If `prerequisite_job` already has a continuation, this function will fail.
+ *            For 1:N (Fan-Out) dependencies, use a dedicated dispatcher job that submits multiple children.
+ *            For N:1 (Fan-In) dependencies, use `SituationAddJobDependencies`.
+ *
+ * @param pool The thread pool instance managing the jobs.
+ * @param prereq_id The ID of the job that must finish first (the "parent" or "predecessor").
+ * @param dep_id The ID of the job that is waiting (the "child" or "successor").
+ *
+ * @return `true` if the dependency was successfully added.
+ * @return `false` if:
+ *         - The thread pool is invalid.
+ *         - Either job ID is invalid or refers to a completed/recycled slot.
+ *         - A dependency cycle was detected.
+ *         - The `prerequisite_job` already has a continuation (collision).
+ *
+ * @see SituationAddJobDependencies()
+ */
 SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prereq_id, SituationJobId dep_id) {
     if (!pool) return false;
 
@@ -26254,6 +26204,27 @@ SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId 
     }
 }
 
+/**
+ * @brief Establishes a Many-to-One dependency (Fan-In).
+ *
+ * @details Configures the `dependent_job` to wait for *multiple* prerequisite jobs to complete.
+ *          This is commonly used for synchronization points, such as a "Frame End" job that waits for
+ *          "Physics", "AI", and "Rendering" jobs to finish.
+ *
+ *          This is a helper function that iteratively calls `SituationAddJobDependency` for each
+ *          ID in the `prerequisites` array.
+ *
+ * @param pool The thread pool instance.
+ * @param prerequisites An array of job IDs that must complete before the dependent job starts.
+ * @param count The number of job IDs in the `prerequisites` array.
+ * @param dependent_job The ID of the job that will wait.
+ *
+ * @return `true` if **all** dependencies were successfully added.
+ * @return `false` if *any* dependency failed to be added (e.g., due to invalid ID, cycle, or 1:1 constraint violation).
+ *         If `false` is returned, the dependency graph may be in a partially updated state (some dependencies added, some not).
+ *
+ * @see SituationAddJobDependency()
+ */
 SITAPI bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job) {
     for (int i = 0; i < count; ++i) {
         // Note: The parameter order in AddJobDependency is (Prereq, Dependent)
@@ -26264,6 +26235,23 @@ SITAPI bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobI
     return true;
 }
 
+/**
+ * @brief Dumps the current state of the task graph to a file stream for debugging.
+ *
+ * @details Prints a snapshot of all active jobs, their states, and their dependency links.
+ *          This is an invaluable tool for diagnosing deadlocks, verifying graph topology, or visualizing
+ *          the execution flow of complex async workloads.
+ *
+ * @par Output Formats
+ *   - **Text Mode (`json_mode = false`):** A human-readable, column-aligned table useful for console logging.
+ *   - **JSON Mode (`json_mode = true`):** A structured JSON object representing the graph nodes and edges.
+ *     This output can be piped to a file and visualized using graph plotting tools (e.g., Graphviz, D3.js).
+ *
+ * @param pool The thread pool instance to inspect.
+ * @param out The output file stream (e.g., `stdout`, `stderr`, or a file opened with `fopen`).
+ *            If `NULL`, defaults to `stderr`.
+ * @param json_mode Set to `true` for machine-readable JSON output, `false` for human-readable text.
+ */
 SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out, bool json_mode) {
     if (!pool) return;
     if (!out) out = stderr;
@@ -26312,6 +26300,14 @@ SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out, bool js
 //  Worker Thread Implementation (Updated)
 // ==================================================================================
 
+/**
+ * @brief [INTERNAL] The main loop for worker threads.
+ * @details Continuously polls the High then Low priority queues for work.
+ *          Implements cooperative yielding and condition variable sleeping to minimize CPU usage when idle.
+ *          Handles job execution, dependency resolution (continuation), and generation cycling.
+ * @param arg Pointer to the SituationThreadPool.
+ * @return 0 upon thread exit.
+ */
 static int _SituationWorkerEntry(void* arg) {
     SituationThreadPool* pool = (SituationThreadPool*)arg;
 
@@ -26413,13 +26409,27 @@ static int _SituationWorkerEntry(void* arg) {
 }
 
 /**
- * @brief Initializes the high-performance, generational thread pool.
- * @details Allocates resources for the dual-priority ring buffers (High/Low) and spawns worker threads.
- *          The system uses a generational index strategy to ensure O(1) job tracking and validity checks.
- * @param pool Pointer to the `SituationThreadPool` struct to initialize.
- * @param num_threads Number of worker threads to spawn. Pass 0 to auto-detect based on CPU cores.
- * @param queue_size Capacity of the ring buffers. Must be a power of 2 (e.g., 1024, 2048).
- * @return true if the pool was successfully initialized.
+ * @brief Initializes the thread pool and spawns worker threads.
+ *
+ * @details Allocates resources for the dual-priority ring buffers (High/Low) and spawns the requested number of worker threads.
+ *          The system uses a **Generational Index** strategy for job handles, ensuring O(1) validation and preventing ABA problems
+ *          (reuse of IDs) without the need for heavy locking or dynamic allocation per job.
+ *
+ *          The **High Priority Queue** is always checked first by workers. This ensures that critical, latency-sensitive tasks
+ *          (like Physics updates or Audio processing) are never blocked behind a backlog of bulk background work (like Asset Loading).
+ *
+ * @param pool Pointer to the `SituationThreadPool` struct to initialize. This memory must be allocated by the caller (e.g., on the stack or heap).
+ * @param num_threads Number of worker threads to spawn.
+ *                    - Pass `0` to automatically detect the number of logical CPU cores and use a sensible default (usually `logical_cores - 1`).
+ *                    - Recommended setting: `logical_cores - 1` to leave the main thread free for window/rendering tasks.
+ * @param queue_size The capacity of the internal job ring buffers.
+ *                   - Must be a power of 2 (e.g., 1024, 2048). If not, it will be automatically rounded up.
+ *                   - This determines the maximum number of pending jobs before backpressure strategies (Blocking or Run-Inline) are triggered.
+ *
+ * @return `true` if the thread pool was successfully initialized.
+ * @return `false` if initialization failed (e.g., memory allocation failure, thread creation failure).
+ *
+ * @warning This function must be called from the main thread.
  */
 SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size) {
     SIT_ASSERT_MAIN_THREAD();
@@ -26484,14 +26494,30 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
 }
 
 /**
- * @brief Submits a job to the thread pool with advanced control over priority and data payload.
- * @details Pushes a task to the appropriate queue (High/Low) based on flags. Implements Small Object Optimization (SOO).
- * @param pool The thread pool to submit to.
- * @param func The callback function to execute.
- * @param data Pointer to the data payload.
- * @param data_size Size of the data payload in bytes.
- * @param flags Submission behavior flags (e.g., `SIT_SUBMIT_HIGH_PRIORITY`, `SIT_SUBMIT_RUN_IF_FULL`).
- * @return A `SituationJobId` handle encoding the generation for O(1) completion checks.
+ * @brief Submits a job to the thread pool for execution.
+ *
+ * @details Pushes a task into one of the priority queues. This function is thread-safe and wait-free in the common case
+ *          (unless the queue is full).
+ *
+ *          **Small Object Optimization (SOO):**
+ *          - If `data_size` is <= 64 bytes, the payload is copied *by value* into the job structure itself. This avoids heap allocation
+ *            and pointer indirection, making it ideal for passing small structs like matrices, vectors, or configuration identifiers.
+ *          - If `data_size` > 64 bytes, the `data` pointer is passed through directly. The user must ensure the pointed-to memory
+ *            remains valid until the job completes.
+ *
+ * @param pool The thread pool instance.
+ * @param func The work function to execute. Prototype: `void my_func(void* data, void* unused)`.
+ * @param data A pointer to the data payload.
+ * @param data_size The size of the data payload in bytes. Determines whether SOO is used.
+ * @param flags Bitmask of behavior flags:
+ *              - `SIT_SUBMIT_HIGH_PRIORITY`: Submit to the high-priority queue (Physics, Audio).
+ *              - `SIT_SUBMIT_BLOCK_IF_FULL`: If the queue is full, block (sleep) until a slot becomes available.
+ *              - `SIT_SUBMIT_RUN_IF_FULL`: If the queue is full, execute the job *immediately* on the calling thread. This prevents stalls but blocks the main thread temporarily.
+ *
+ * @return A unique `SituationJobId` handle for the submitted job.
+ *         - This handle encodes the queue index, slot index, and a generation counter.
+ *         - It allows for O(1) status checks via `SituationWaitForJob`.
+ *         - Returns `0` if the job could not be submitted (e.g., queue full and no backpressure strategy specified).
  */
 SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*func)(void*, void*), const void* data, size_t data_size, SituationJobFlags flags) {
     if (!pool || !pool->is_active) return 0;
@@ -26571,11 +26597,17 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
 }
 
 /**
- * @brief Waits for a specific job to complete (O(1) check).
- * @details Blocks the calling thread until the job is finished. Uses an efficient generation check.
- * @param pool The thread pool.
- * @param job_id The handle returned by `SituationSubmitJobEx`.
- * @return true if the job is complete.
+ * @brief Blocks the calling thread until a specific job has completed.
+ *
+ * @details This function performs an efficient O(1) check using the job's generation ID.
+ *          It handles three scenarios correctly:
+ *          1. **Job Pending/Running:** The ID in the slot matches. The function yields/sleeps until the `is_completed` flag is set.
+ *          2. **Job Already Finished & Replaced:** The ID in the slot has a *newer* generation than the handle. This proves the old job finished and the slot was reused. Returns immediately.
+ *          3. **Invalid Handle:** Returns immediately (safe default).
+ *
+ * @param pool The thread pool instance.
+ * @param job_id The handle of the job to wait for.
+ * @return `true` when the job is confirmed complete.
  */
 SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id) {
     SIT_ASSERT_MAIN_THREAD();
@@ -26608,6 +26640,10 @@ SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id
 
 // --- Parallel Dispatch Implementation ---
 
+/**
+ * @brief [INTERNAL] Context for parallel dispatch jobs.
+ * @details Carries the loop range and synchronization counter for a batch of work.
+ */
 typedef struct {
     void (*user_func)(int, void*);
     void* user_data;
@@ -26632,13 +26668,24 @@ static void _SitParallelWorker(void* data, void* ctx) {
 }
 
 /**
- * @brief Executes a parallel-for loop (Fork-Join pattern) across the worker threads.
- * @details Splits a workload of `count` items into batches. The calling thread actively participates ("Helping").
- * @param pool The thread pool.
- * @param count Total number of items to process.
- * @param min_batch_size Minimum items per batch.
- * @param func The callback function.
- * @param user_data Context pointer passed to the callback.
+ * @brief Executes a parallel loop (Fork-Join) across the worker threads.
+ *
+ * @details Splits a workload of `count` items into efficient batches and distributes them to the thread pool.
+ *          This is ideal for data-parallel tasks like particle updates, culling, or image processing.
+ *
+ *          **"Helping" Strategy:**
+ *          While waiting for the workers to finish the batches, the calling thread (usually Main) does not sleep.
+ *          Instead, it actively "steals" and executes jobs from the High Priority queue. This maximizes CPU utilization
+ *          and prevents the main thread from becoming a bottleneck.
+ *
+ * @param pool The thread pool instance.
+ * @param count The total number of items to process (iterations).
+ * @param min_batch_size The minimum number of items per batch.
+ *                       - Prevents overhead from creating too many tiny jobs.
+ *                       - A good rule of thumb is a size that takes at least 10-50 microseconds to execute.
+ * @param func The user callback function. It will be called for every index `i` from 0 to `count - 1`.
+ *             Prototype: `void func(int index, void* user_data)`.
+ * @param user_data A pointer passed to the callback (e.g., the array being processed).
  */
 SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int min_batch_size, void (*func)(int, void*), void* user_data) {
     SIT_ASSERT_MAIN_THREAD();
@@ -26719,9 +26766,17 @@ SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int 
 }
 
 /**
- * @brief Blocks until ALL queues are empty and active jobs are zero.
- * @details Waits for all queues (High and Low) to drain and all active worker threads to complete their current tasks.
- * @param pool The thread pool.
+ * @brief Blocks until all submitted jobs in the pool have finished.
+ *
+ * @details Acts as a global synchronization barrier. It waits for both High and Low priority queues to drain completely
+ *          and for all currently running worker threads to finish their tasks.
+ *
+ *          Useful for:
+ *          - End-of-frame synchronization.
+ *          - Ensuring all assets are loaded before switching scenes.
+ *          - Clean shutdown.
+ *
+ * @param pool The thread pool instance.
  */
 SITAPI void SituationWaitForAllJobs(SituationThreadPool* pool) {
     if (!pool->is_active) return;
@@ -26735,8 +26790,15 @@ SITAPI void SituationWaitForAllJobs(SituationThreadPool* pool) {
 }
 
 /**
- * @brief Destroys the thread pool, joining all threads and freeing resources.
- * @details Blocks until all currently running jobs are finished and all worker threads have exited.
+ * @brief Shuts down the thread pool and releases all resources.
+ *
+ * @details 1. Sets a shutdown flag to signal all worker threads to exit.
+ *          2. Wakes all sleeping threads.
+ *          3. Joins all worker threads (waits for them to terminate).
+ *          4. Destroys internal mutexes, condition variables, and ring buffer memory.
+ *
+ *          **Note:** Any jobs still pending in the queue will be discarded and NOT executed.
+ *
  * @param pool Pointer to the `SituationThreadPool` to destroy.
  */
 SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
@@ -26764,13 +26826,22 @@ SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
 
 // --- Async Audio Helper (Restored & Updated for v2.3.15) ---
 
+/**
+ * @brief [INTERNAL] Context data for asynchronous audio loading jobs.
+ * @details Packed into the job's 64-byte SOO storage to avoid allocation.
+ */
 typedef struct {
     char* path;
     bool looping;
     SituationSound* target;
 } _SitAsyncAudioCtx;
 
-// The worker function matches the new signature: func(void* data, void* context)
+/**
+ * @brief [INTERNAL] Job callback for background audio loading.
+ * @details Decodes audio to RAM (SITUATION_AUDIO_LOAD_FULL) on a worker thread to avoid main-thread disk I/O.
+ * @param data Pointer to the _SitAsyncAudioCtx (embedded in job storage).
+ * @param unused Unused user context.
+ */
 static void _SituationAsyncAudioWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncAudioCtx* ctx = (_SitAsyncAudioCtx*)data;
@@ -26785,6 +26856,26 @@ static void _SituationAsyncAudioWorker(void* data, void* unused) {
     // The beauty of Small Object Optimization.
 }
 
+/**
+ * @brief Asynchronously loads an audio file from disk in a background thread.
+ *
+ * @details This is a convenience helper that wraps `SituationLoadSoundFromFile` in a thread pool job.
+ *          It performs a **Full Load** (decoding the entire file to RAM) to avoid disk I/O on the main thread.
+ *
+ *          **Usage:**
+ *          1. Call this function. It returns immediately.
+ *          2. Store the returned `SituationJobId`.
+ *          3. Use `SituationWaitForJob(job_id)` to know when loading is done.
+ *          4. Once complete, the `out_sound` struct contains the ready-to-play sound.
+ *
+ * @param pool The thread pool instance.
+ * @param file_path The path to the audio file.
+ * @param looping Whether the sound should loop.
+ * @param out_sound Pointer to the `SituationSound` struct to be initialized.
+ *                  **Important:** This memory must remain valid until the job completes.
+ *
+ * @return A `SituationJobId` for the loading task, or `0` if submission failed.
+ */
 SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound) {
     if (!pool || !file_path || !out_sound) return 0;
 
