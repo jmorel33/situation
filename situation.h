@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 17
+#define SITUATION_VERSION_PATCH 18
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -2470,6 +2470,60 @@ typedef struct {
 
 #if defined(SITUATION_USE_OPENGL)
 // --- OpenGL State Hardening Helpers ---
+
+// [Phase 1] Soft Command Buffer Definitions
+typedef enum {
+    SIT_OP_BEGIN_RENDER_PASS,
+    SIT_OP_END_RENDER_PASS,
+    SIT_OP_SET_VIEWPORT,
+    SIT_OP_SET_SCISSOR,
+    SIT_OP_BIND_PIPELINE,
+    SIT_OP_DRAW_MESH,
+    SIT_OP_DRAW_QUAD,
+    SIT_OP_SET_PUSH_CONSTANT,
+    SIT_OP_BIND_DESCRIPTOR_SET,
+    SIT_OP_BIND_VERTEX_BUFFER,
+    SIT_OP_BIND_INDEX_BUFFER,
+    SIT_OP_DRAW,
+    SIT_OP_DRAW_INDEXED,
+    SIT_OP_PIPELINE_BARRIER,
+    SIT_OP_DISPATCH,
+    SIT_OP_BIND_COMPUTE_PIPELINE,
+    SIT_OP_PRESENT,
+    SIT_OP_DRAW_TEXT // Special op for deferred text drawing
+} SitOpCode;
+
+typedef struct {
+    SitOpCode opcode;
+    union {
+        struct { int display_id; SituationRenderPassInfo info; } begin_pass;
+        struct { float x, y, w, h; } viewport;
+        struct { int x, y, w, h; } scissor;
+        struct { uint64_t shader_id; } bind_pipeline;
+        struct { SituationMesh mesh; } draw_mesh;
+        struct { mat4 model; Vector4 color; Vector4 uv_rect; } draw_quad;
+        struct { uint32_t offset; size_t size; size_t data_offset; } push_constant;
+        struct { uint32_t set_index; uint64_t resource_id; int resource_type; } bind_desc; // type: 0=buf, 1=tex, 2=img, 3=sampled_tex
+        struct { uint32_t binding; uint64_t buffer_id; size_t offset; size_t stride; } bind_vbo;
+        struct { uint64_t buffer_id; } bind_ibo;
+        struct { uint32_t v_count, i_count, first_v, first_i; } draw;
+        struct { uint32_t idx_count, inst_count, first_idx; int32_t v_offset; uint32_t first_inst; } draw_indexed;
+        struct { uint32_t src, dst; } barrier;
+        struct { uint32_t x, y, z; } dispatch;
+        struct { SituationTexture texture; } present;
+        struct { SituationFont font; Vector2 pos; ColorRGBA color; size_t text_offset; } draw_text; // Store text in data_buffer
+    } args;
+} SitCommandPacket;
+
+typedef struct {
+    SitCommandPacket* packets;
+    size_t packet_count;
+    size_t packet_capacity;
+    uint8_t* data_buffer;
+    size_t data_cursor;
+    size_t data_capacity;
+} SituationGLSoftCommandBuffer;
+
 typedef struct {
     GLint program;
     GLint vao;
@@ -2689,6 +2743,9 @@ typedef struct SituationGraveyard {
     #endif
     GLenum last_error;                          // Cached result of last glGetError()
     bool shadow_state_dirty;                    // [2.3.14A] Flag to indicate external state changes
+
+    // [Phase 1] Soft Command Buffer for Deferred Rendering
+    SituationGLSoftCommandBuffer soft_buffer;
 } _SituationGLState;
 #endif // SITUATION_USE_OPENGL
 
@@ -5997,6 +6054,331 @@ static bool _SituationInitGLVirtualDisplayRenderer(void) {
  *
  * @see _SituationInitRenderer(), _SituationInitQuadRenderer(), _SituationCleanupOpenGL()
  */
+// --- Soft Command Buffer Implementation ---
+
+/**
+ * @brief [INTERNAL] Allocates a new command packet in the soft buffer.
+ * @details Checks for capacity and grows the buffer if necessary using `SIT_REALLOC`.
+ *          The growth strategy is geometric (doubling) to minimize allocation frequency.
+ *
+ * @param buf The soft command buffer to append to.
+ * @param opcode The operation code for the new command.
+ * @return A pointer to the allocated `SitCommandPacket` struct within the buffer.
+ *         Returns NULL if memory allocation fails.
+ */
+static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, SitOpCode opcode) {
+    if (buf->packet_count >= buf->packet_capacity) {
+        size_t new_cap = (buf->packet_capacity == 0) ? 64 : buf->packet_capacity * 2;
+        SitCommandPacket* new_ptr = (SitCommandPacket*)SIT_REALLOC(buf->packets, new_cap * sizeof(SitCommandPacket));
+        if (!new_ptr) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer packets realloc failed");
+            return NULL;
+        }
+        buf->packets = new_ptr;
+        buf->packet_capacity = new_cap;
+    }
+    SitCommandPacket* packet = &buf->packets[buf->packet_count++];
+    packet->opcode = opcode;
+    return packet;
+}
+
+/**
+ * @brief [INTERNAL] Pushes raw data (payload) into the soft buffer's data stream.
+ * @details Used for variable-length data like push constants or text strings that don't fit in the fixed-size packet union.
+ *          Ensures 8-byte alignment could be added here if needed, but currently packs tightly.
+ *
+ * @param buf The soft command buffer.
+ * @param data Pointer to the source data to copy. If NULL, space is reserved but not written.
+ * @param size Size in bytes to allocate/copy.
+ * @return A pointer to the data's location *within the buffer*.
+ *         Warning: This pointer may be invalidated by subsequent calls to _SitGLSoftDataPush if the buffer reallocates.
+ *         Always use offsets for long-term storage.
+ */
+static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* data, size_t size) {
+    if (buf->data_cursor + size > buf->data_capacity) {
+        size_t new_cap = (buf->data_capacity == 0) ? 4096 : buf->data_capacity * 2;
+        while (buf->data_cursor + size > new_cap) new_cap *= 2;
+
+        uint8_t* new_ptr = (uint8_t*)SIT_REALLOC(buf->data_buffer, new_cap);
+        if (!new_ptr) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer data realloc failed");
+            return NULL;
+        }
+        buf->data_buffer = new_ptr;
+        buf->data_capacity = new_cap;
+    }
+
+    void* dest = buf->data_buffer + buf->data_cursor;
+    if (data) memcpy(dest, data, size);
+    buf->data_cursor += size;
+    return dest; // Pointer to data inside buffer (valid until realloc)
+}
+
+/**
+ * @brief [INTERNAL] Replays the soft command buffer to the OpenGL driver.
+ * @details This is the "Consumer" phase of the deferred rendering model. It iterates through the recorded packets
+ *          and issues the corresponding `gl*` calls.
+ *
+ *          **Key Responsibilities:**
+ *          - State Translation: Maps abstract opcodes to specific OpenGL functions.
+ *          - Resource Binding: Handles VAO/VBO/UBO binding.
+ *          - Draw Calls: Issues `glDrawArrays` / `glDrawElements`.
+ *          - **State Restoration:** Critically, after operations that modify global state (like `SIT_OP_DRAW_MESH` changing the VAO),
+ *            it restores the "Global VAO" (`sit_render.gl.global_vao_id`) to ensure subsequent commands work as expected.
+ *
+ * @param buf The soft command buffer to execute.
+ */
+static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
+    for (size_t i = 0; i < buf->packet_count; ++i) {
+        SitCommandPacket* p = &buf->packets[i];
+        switch (p->opcode) {
+            case SIT_OP_BEGIN_RENDER_PASS:
+                {
+                    if (p->args.begin_pass.display_id < 0) {
+                        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                        sit_render.gl.current_fbo_id = 0;
+                        glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
+                    } else {
+                        int did = p->args.begin_pass.display_id;
+                        if (did < SITUATION_MAX_VIRTUAL_DISPLAYS && sit_render.virtual_display_slots_used[did]) {
+                            SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[did];
+                            glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
+                            sit_render.gl.current_fbo_id = vd->gl.fbo_id;
+                            glViewport(0, 0, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
+                        }
+                    }
+
+                    GLbitfield clear_mask = 0;
+                    if (p->args.begin_pass.info.color_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
+                        ColorRGBA c = p->args.begin_pass.info.color_attachment.clear.color;
+                        glClearColor(c.r/255.0f, c.g/255.0f, c.b/255.0f, c.a/255.0f);
+                        clear_mask |= GL_COLOR_BUFFER_BIT;
+                    }
+                    if (p->args.begin_pass.info.depth_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
+                        glClearDepth(p->args.begin_pass.info.depth_attachment.clear.depth);
+                        clear_mask |= GL_DEPTH_BUFFER_BIT;
+                    }
+                    if (clear_mask) glClear(clear_mask);
+
+                    glEnable(GL_DEPTH_TEST);
+                    sit_render.gl.depth_test_enabled = true;
+                }
+                break;
+
+            case SIT_OP_END_RENDER_PASS:
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                break;
+
+            case SIT_OP_SET_VIEWPORT:
+                glViewport((GLint)p->args.viewport.x, (GLint)p->args.viewport.y,
+                           (GLsizei)p->args.viewport.w, (GLsizei)p->args.viewport.h);
+                break;
+
+            case SIT_OP_SET_SCISSOR:
+                glEnable(GL_SCISSOR_TEST);
+                glScissor(p->args.scissor.x, p->args.scissor.y, p->args.scissor.w, p->args.scissor.h);
+                break;
+
+            case SIT_OP_BIND_PIPELINE:
+                glUseProgram((GLuint)p->args.bind_pipeline.shader_id);
+                sit_render.gl.current_program_id = (GLuint)p->args.bind_pipeline.shader_id;
+                break;
+
+            case SIT_OP_DRAW_MESH:
+                {
+                    GLuint vao = p->args.draw_mesh.mesh.vao_id;
+                    glBindVertexArray(vao);
+                    sit_render.gl.current_vao_id = vao;
+                    glDrawElements(GL_TRIANGLES, p->args.draw_mesh.mesh.index_count, GL_UNSIGNED_INT, (void*)0);
+
+                    // [CRITICAL] Restore global VAO state for subsequent generic draw calls
+                    glBindVertexArray(sit_render.gl.global_vao_id);
+                    sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                }
+                break;
+
+            case SIT_OP_DRAW_QUAD:
+                {
+                    if (sit_render.gl.quad_shader_program == 0) break;
+                    glUseProgram(sit_render.gl.quad_shader_program);
+                    sit_render.gl.current_program_id = sit_render.gl.quad_shader_program;
+
+                    glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)p->args.draw_quad.model);
+                    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)p->args.draw_quad.color.raw);
+
+                    // Use UV rect from packet
+                    glUniform4fv(5, 1, (const GLfloat*)p->args.draw_quad.uv_rect.raw);
+                    glUniform1i(6, 0); // use_texture = false
+
+                    glBindVertexArray(sit_render.gl.quad_vao);
+                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+                    // [CRITICAL] Restore global VAO state
+                    glBindVertexArray(sit_render.gl.global_vao_id);
+                }
+                break;
+
+            case SIT_OP_SET_PUSH_CONSTANT:
+                {
+                    GLuint prog = 0;
+                    glGetIntegerv(GL_CURRENT_PROGRAM, (GLint*)&prog);
+                    if (prog) {
+                        void* data = buf->data_buffer + p->args.push_constant.data_offset;
+                        size_t sz = p->args.push_constant.size;
+                        uint32_t loc = p->args.push_constant.offset;
+
+                        if (sz == sizeof(mat4)) glProgramUniformMatrix4fv(prog, loc, 1, GL_FALSE, (const GLfloat*)data);
+                        else if (sz == sizeof(vec4)) glProgramUniform4fv(prog, loc, 1, (const GLfloat*)data);
+                        else if (sz == sizeof(vec3)) glProgramUniform3fv(prog, loc, 1, (const GLfloat*)data);
+                        else if (sz == sizeof(vec2)) glProgramUniform2fv(prog, loc, 1, (const GLfloat*)data);
+                        else if (sz == sizeof(float)) glProgramUniform1fv(prog, loc, 1, (const GLfloat*)data);
+                        else if (sz == sizeof(int)) glProgramUniform1iv(prog, loc, 1, (const GLint*)data);
+                    }
+                }
+                break;
+
+            case SIT_OP_BIND_DESCRIPTOR_SET:
+                {
+                    uint32_t idx = p->args.bind_desc.set_index;
+                    uint64_t id = p->args.bind_desc.resource_id;
+                    int type = p->args.bind_desc.resource_type;
+
+                    if (type == 0) glBindBufferBase(GL_UNIFORM_BUFFER, idx, (GLuint)id);
+                    else if (type == 1) glBindTextureUnit(idx, (GLuint)id);
+                    else if (type == 2) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, idx, (GLuint)id);
+                    else if (type == 3) glBindImageTexture(idx, (GLuint)id, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+                }
+                break;
+
+            case SIT_OP_BIND_VERTEX_BUFFER:
+                glVertexArrayVertexBuffer(sit_render.gl.global_vao_id, p->args.bind_vbo.binding,
+                                          (GLuint)p->args.bind_vbo.buffer_id,
+                                          (GLintptr)p->args.bind_vbo.offset,
+                                          (GLsizei)p->args.bind_vbo.stride);
+                break;
+
+            case SIT_OP_BIND_INDEX_BUFFER:
+                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)p->args.bind_ibo.buffer_id);
+                break;
+
+            case SIT_OP_DRAW:
+                glDrawArraysInstanced(GL_TRIANGLES, p->args.draw.first_v, p->args.draw.v_count, p->args.draw.i_count);
+                break;
+
+            case SIT_OP_DRAW_INDEXED:
+                glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES,
+                    p->args.draw_indexed.idx_count,
+                    GL_UNSIGNED_INT,
+                    (void*)((uintptr_t)(p->args.draw_indexed.first_idx * 4)),
+                    p->args.draw_indexed.inst_count,
+                    p->args.draw_indexed.v_offset,
+                    p->args.draw_indexed.first_inst);
+                break;
+
+            case SIT_OP_PIPELINE_BARRIER:
+                {
+                    GLbitfield barriers = 0;
+                    if (p->args.barrier.dst & SITUATION_BARRIER_VERTEX_SHADER_READ)
+                        barriers |= GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_UNIFORM_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT;
+                    if (p->args.barrier.dst & SITUATION_BARRIER_FRAGMENT_SHADER_READ)
+                        barriers |= GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT;
+                    if (p->args.barrier.dst & SITUATION_BARRIER_COMPUTE_SHADER_READ)
+                        barriers |= GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT;
+                    if (p->args.barrier.dst & SITUATION_BARRIER_TRANSFER_READ)
+                        barriers |= GL_BUFFER_UPDATE_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT;
+                    if (p->args.barrier.dst & SITUATION_BARRIER_INDIRECT_COMMAND_READ)
+                        barriers |= GL_COMMAND_BARRIER_BIT;
+
+                    if (barriers == 0) barriers = GL_ALL_BARRIER_BITS;
+                    glMemoryBarrier(barriers);
+                }
+                break;
+
+            case SIT_OP_DISPATCH:
+                glDispatchCompute(p->args.dispatch.x, p->args.dispatch.y, p->args.dispatch.z);
+                break;
+
+            case SIT_OP_PRESENT:
+                {
+                    GLuint tex = p->args.present.texture.gl_texture_id;
+                    GLuint fbo;
+                    glCreateFramebuffers(1, &fbo);
+                    glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, tex, 0);
+                    glBlitNamedFramebuffer(fbo, 0,
+                        0, 0, p->args.present.texture.width, p->args.present.texture.height,
+                        0, 0, sit_gs.main_window_width, sit_gs.main_window_height,
+                        GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                    glDeleteFramebuffers(1, &fbo);
+                }
+                break;
+
+            case SIT_OP_DRAW_TEXT:
+                #if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
+                {
+                    const char* text = (const char*)(buf->data_buffer + p->args.draw_text.text_offset);
+                    SituationFont font = p->args.draw_text.font;
+                    Vector2 pos = p->args.draw_text.pos;
+                    ColorRGBA color = p->args.draw_text.color;
+
+                    size_t len = strlen(text);
+                    if (len == 0) break;
+                    if (len > 2048) len = 2048;
+
+                    size_t vert_count = len * 6;
+                    size_t data_size = vert_count * 4 * sizeof(float);
+
+                    if (sit_render.text_batch_capacity < data_size) {
+                        sit_render.text_batch_scratch = (float*)SIT_REALLOC(sit_render.text_batch_scratch, data_size * 2);
+                        sit_render.text_batch_capacity = data_size * 2;
+                    }
+                    float* vertices = sit_render.text_batch_scratch;
+
+                    float x = pos.x;
+                    float y = pos.y;
+                    stbtt_bakedchar* cdata = (stbtt_bakedchar*)font.glyph_info;
+                    int v_idx = 0;
+
+                    for (size_t k = 0; k < len; k++) {
+                        if (text[k] >= 32 && text[k] < 128) {
+                            stbtt_aligned_quad q;
+                            stbtt_GetBakedQuad(cdata, font.atlas_width, font.atlas_height, text[k] - 32, &x, &y, &q, 1);
+                            vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t0;
+                            vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t1;
+                            vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t0;
+                            vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t0;
+                            vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t1;
+                            vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t1;
+                        }
+                    }
+                    int final_vert_count = v_idx / 4;
+
+                    glBindTextureUnit(SIT_SAMPLER_BINDING_ALBEDO, font.atlas_texture.gl_texture_id);
+                    glUseProgram(sit_render.gl.text_shader_program);
+
+                    if (data_size > 524288) data_size = 524288;
+                    glNamedBufferSubData(sit_render.gl.text_vbo, 0, data_size, vertices);
+
+                    Vector4 color_vec;
+                    SituationConvertColorToVector4(color, &color_vec);
+                    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec.raw);
+
+                    glBindVertexArray(sit_render.gl.text_vao);
+                    glDrawArrays(GL_TRIANGLES, 0, final_vert_count);
+
+                    // [CRITICAL] Restore global VAO state
+                    glBindVertexArray(sit_render.gl.global_vao_id);
+                }
+                #endif
+                break;
+        }
+        SIT_CHECK_GL_ERROR();
+    }
+
+    // Reset buffer after execution
+    buf->packet_count = 0;
+    buf->data_cursor = 0;
+}
+
 static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // --- 1. Context and Function Loading ---
     glfwMakeContextCurrent(sit_gs.sit_glfw_window); // Ensure context is current for GLAD
@@ -10484,6 +10866,11 @@ static void _SituationCleanupOpenGL(void) {
     if (sit_render.gl.vd_quad_vbo != 0) glDeleteBuffers(1, &sit_render.gl.vd_quad_vbo);
     if (sit_render.gl.composite_copy_texture_id != 0) glDeleteTextures(1, &sit_render.gl.composite_copy_texture_id);
     if (sit_render.gl.view_data_ubo_id != 0) glDeleteBuffers(1, &sit_render.gl.view_data_ubo_id);
+
+    // Cleanup Soft Command Buffer
+    if (sit_render.gl.soft_buffer.packets) SIT_FREE(sit_render.gl.soft_buffer.packets);
+    if (sit_render.gl.soft_buffer.data_buffer) SIT_FREE(sit_render.gl.soft_buffer.data_buffer);
+    memset(&sit_render.gl.soft_buffer, 0, sizeof(SituationGLSoftCommandBuffer));
 }
 #endif // SITUATION_USE_OPENGL
 
@@ -11207,18 +11594,16 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 #if defined(SITUATION_USE_OPENGL)
     {
         // --- 2. OpenGL Frame Setup ---
-        // Make the context current for this thread (often a no-op if already current).
+        // Make the context current for this thread.
         glfwMakeContextCurrent(sit_gs.sit_glfw_window);
 
-        // [2.3.14A] Invalidate shadow state at start of frame to recover from external changes (ImGui, etc.)
+        // [2.3.14A] Invalidate shadow state to recover from external changes.
         _SitGLInvalidateShadowState();
 
-        // Bind the default framebuffer (main window backbuffer).
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        // Set the viewport to the full window size.
-        glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
-        // OpenGL setup is generally straightforward and assumed to succeed
-        // if the context is valid.
+        // [Phase 1] Reset Soft Command Buffer
+        sit_render.gl.soft_buffer.packet_count = 0;
+        sit_render.gl.soft_buffer.data_cursor = 0;
+
         return true;
     }
 
@@ -11367,11 +11752,12 @@ SITAPI SituationError SituationEndFrame(void) {
 #if defined(SITUATION_USE_OPENGL)
     {
         // --- 2a. OpenGL Frame End ---
+
+        // [Phase 1] Execute Deferred Commands
+        _SituationGLExecuteCommands(&sit_render.gl.soft_buffer);
+
         // Swap the front and back buffers to display the rendered frame.
         glfwSwapBuffers(sit_gs.sit_glfw_window);
-        // Note: glfwSwapBuffers typically doesn't return an error code.
-        // Context loss or other severe issues would usually be caught elsewhere.
-        // For maximum robustness, one could check glfwGetError() here, but it's often omitted.
 
         // OpenGL path implicitly succeeds if glfwSwapBuffers doesn't crash.
         // Return success.
@@ -11533,9 +11919,8 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
 #if defined(SITUATION_USE_OPENGL)
     {
         // --- 2. OpenGL Path ---
-        // OpenGL uses immediate mode. There isn't a user-facing "command buffer" object
-        // in the same sense as Vulkan. Return NULL to indicate inapplicability.
-        return NULL;
+        // [Phase 1] Return the Soft Command Buffer
+        return (SituationCommandBuffer)&sit_render.gl.soft_buffer;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -11605,46 +11990,12 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
     if (!info) return SITUATION_ERROR_INVALID_PARAM;
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd;
-    GLbitfield clear_mask = 0;
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BEGIN_RENDER_PASS);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
-    // 1. Bind the correct framebuffer
-    if (info->display_id < 0) {
-        // Target: Main Window
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        sit_render.gl.current_fbo_id = 0;
-        glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
-    } else {
-        // Target: Virtual Display
-        if (info->display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[info->display_id]) {
-            return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
-        }
-        SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[info->display_id];
-        glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
-        sit_render.gl.current_fbo_id = vd->gl.fbo_id;
-        glViewport(0, 0, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
-    }
-
-    // 2. Set clear values and determine clear mask
-    if (info->color_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
-        glClearColor(
-            (float)info->color_attachment.clear.color.r / 255.0f,
-            (float)info->color_attachment.clear.color.g / 255.0f,
-            (float)info->color_attachment.clear.color.b / 255.0f,
-            (float)info->color_attachment.clear.color.a / 255.0f
-        );
-        clear_mask |= GL_COLOR_BUFFER_BIT;
-    }
-
-    if (info->depth_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
-        glClearDepth((double)info->depth_attachment.clear.depth);
-        clear_mask |= GL_DEPTH_BUFFER_BIT;
-    }
-
-    // 3. Perform the clear
-    if (clear_mask != 0) {
-        glClear(clear_mask);
-    }
+    p->args.begin_pass.display_id = info->display_id;
+    p->args.begin_pass.info = *info;
 
     return SITUATION_SUCCESS;
 
@@ -11686,8 +12037,8 @@ SITAPI void SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
     if (!SituationIsInitialized()) return;
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd;
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    _SitGLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS);
 #elif defined(SITUATION_USE_VULKAN)
     if (cmd == 0) return; // Basic validation
     vkCmdEndRenderPass((VkCommandBuffer)cmd);
@@ -11710,27 +12061,18 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
     }
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd;
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BEGIN_RENDER_PASS);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
-    if (display_id < 0) {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        sit_render.gl.current_fbo_id = 0;
-        glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
-    } else {
-        if (display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "CmdBeginRenderToDisplay");
-            return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
-        }
-        SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
-        glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
-        sit_render.gl.current_fbo_id = vd->gl.fbo_id;
-        glViewport(0, 0, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
-    }
-
-    glClearColor(clear_color.r / 255.0f, clear_color.g / 255.0f, clear_color.b / 255.0f, clear_color.a / 255.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glEnable(GL_DEPTH_TEST);
-    sit_render.gl.depth_test_enabled = true;
+    p->args.begin_pass.display_id = display_id;
+    // Construct info
+    memset(&p->args.begin_pass.info, 0, sizeof(SituationRenderPassInfo));
+    p->args.begin_pass.info.display_id = display_id;
+    p->args.begin_pass.info.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+    p->args.begin_pass.info.color_attachment.clear.color = clear_color;
+    p->args.begin_pass.info.depth_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+    p->args.begin_pass.info.depth_attachment.clear.depth = 1.0f;
 
 #elif defined(SITUATION_USE_VULKAN)
     VkRenderPassBeginInfo render_pass_info = {0};
@@ -11801,41 +12143,8 @@ SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
 
 #if defined(SITUATION_USE_OPENGL)
     {
-        (void)cmd; // OpenGL uses global state, command buffer not needed for this call.
-
-        // --- 2. OpenGL End Render Pass & State Reset ---
-        // Unbind any custom FBO, return to default framebuffer.
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    sit_render.gl.current_fbo_id = 0;
-
-        // --- State Resets (as per original snippet, noted as potentially intrusive) ---
-        // Unbind current shader program.
-        glUseProgram(0);
-        sit_render.gl.current_program_id = 0;
-        // Unbind current VAO.
-        glBindVertexArray(0);
-        sit_render.gl.current_vao_id = 0;
-        // Reset common blending state.
-        glEnable(GL_BLEND);
-        sit_render.gl.blend_enabled = true;
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        sit_render.gl.blend_src_rgb = GL_SRC_ALPHA;
-        sit_render.gl.blend_dst_rgb = GL_ONE_MINUS_SRC_ALPHA;
-        sit_render.gl.blend_src_alpha = GL_SRC_ALPHA;
-        sit_render.gl.blend_dst_alpha = GL_ONE_MINUS_SRC_ALPHA;
-        // Reset common depth test state.
-        glEnable(GL_DEPTH_TEST);
-        sit_render.gl.depth_test_enabled = true;
-        glDepthFunc(GL_LESS);
-        // --- End State Resets ---
-
-        // --- 3. OpenGL Error Checking ---
-        SIT_CHECK_GL_ERROR();
-        if (sit_render.gl.last_error != GL_NO_ERROR) {
-            // Error message likely set by SIT_CHECK_GL_ERROR
-            return SITUATION_ERROR_OPENGL_GENERAL; // Or a more specific error if possible
-        }
-
+        SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+        _SitGLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS);
         return SITUATION_SUCCESS;
     }
 
@@ -11913,17 +12222,14 @@ SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y
 
 #if defined(SITUATION_USE_OPENGL)
     {
-        (void)cmd; // OpenGL uses global state, command buffer not needed.
-
-        // --- 2. OpenGL Implementation ---
-        // Note: glViewport expects integer parameters for x,y,width,height.
-        // Casting float to int truncates towards zero.
-        // If precise sub-pixel viewport placement is needed, more care is required.
-        glViewport((GLint)x, (GLint)y, (GLsizei)width, (GLsizei)height);
-        // glViewport itself rarely generates errors for these inputs according to spec,
-        // but invalid context state might.
-        SIT_CHECK_GL_ERROR();
-        // Note: SIT_CHECK_GL_ERROR sets global error state, but function remains void.
+        SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+        SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_VIEWPORT);
+        if (p) {
+            p->args.viewport.x = x;
+            p->args.viewport.y = y;
+            p->args.viewport.w = width;
+            p->args.viewport.h = height;
+        }
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -11985,16 +12291,14 @@ SITAPI void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int
     }
 
 #if defined(SITUATION_USE_OPENGL)
-    // In OpenGL, scissor is a global state, so the command buffer is not used.
-    (void)cmd;
-
-    // OpenGL's glScissor applies the test to all subsequent drawing commands until changed.
-    // It's a simple, direct mapping.
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(x, y, width, height);
-
-    // Check for errors, especially if the context is in a bad state.
-    SIT_CHECK_GL_ERROR();
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_SCISSOR);
+    if (p) {
+        p->args.scissor.x = x;
+        p->args.scissor.y = y;
+        p->args.scissor.w = width;
+        p->args.scissor.h = height;
+    }
 
 #elif defined(SITUATION_USE_VULKAN)
     // In Vulkan, this is a command recorded into the command buffer.
@@ -12029,17 +12333,14 @@ SITAPI void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, uint32_t bi
     if (!SituationIsInitialized() || buffer.id == 0) { return; }
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd; // Ignore cmd for OpenGL
-    if (buffer.gl_buffer_id == 0) {
-        // Handle invalid buffer
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "SituationCmdBindVertexBuffer: Invalid buffer provided.");
-        return;
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_VERTEX_BUFFER);
+    if (p) {
+        p->args.bind_vbo.binding = binding;
+        p->args.bind_vbo.buffer_id = buffer.gl_buffer_id;
+        p->args.bind_vbo.offset = offset;
+        p->args.bind_vbo.stride = stride;
     }
-    // glVertexArrayVertexBuffer modifies the state of the VAO that is *currently bound*.
-    // Because sit_render.gl.global_vao_id is bound, this configures the user's VAO.
-    glVertexArrayVertexBuffer(sit_render.gl.global_vao_id, binding, buffer.gl_buffer_id, (GLintptr)offset, (GLsizei)stride);
-    SIT_CHECK_GL_ERROR();
-    // You might also store this binding info internally if needed for validation/debugging
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -12069,10 +12370,11 @@ SITAPI void SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuf
     }
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd;
-    // Binds the buffer to the GL_ELEMENT_ARRAY_BUFFER target of the global VAO.
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer.gl_buffer_id);
-    SIT_CHECK_GL_ERROR();
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_INDEX_BUFFER);
+    if (p) {
+        p->args.bind_ibo.buffer_id = buffer.gl_buffer_id;
+    }
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -12102,9 +12404,13 @@ SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd,
     if (texture.id == 0) return SITUATION_ERROR_RESOURCE_INVALID;
 
 #if defined(SITUATION_USE_OPENGL)
-    // The format must be specified for image load/store. Assuming RGBA8.
-    glBindImageTexture(binding, texture.gl_texture_id, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
-    SIT_CHECK_GL_ERROR();
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+
+    p->args.bind_desc.set_index = binding;
+    p->args.bind_desc.resource_id = texture.gl_texture_id;
+    p->args.bind_desc.resource_type = 3; // 3 = Image Texture (Storage)
     return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -12148,9 +12454,14 @@ SITAPI void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, 
     sit_render.frame_triangle_count += (vertex_count / 3) * instance_count;
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd;
-    glDrawArraysInstanced(GL_TRIANGLES, first_vertex, vertex_count, instance_count);
-    SIT_CHECK_GL_ERROR();
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW);
+    if (p) {
+        p->args.draw.v_count = vertex_count;
+        p->args.draw.i_count = instance_count;
+        p->args.draw.first_v = first_vertex;
+        p->args.draw.first_i = first_instance;
+    }
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -12180,11 +12491,15 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
     sit_render.frame_triangle_count += (index_count / 3) * instance_count;
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd;
-    // glDrawElementsBaseVertex uses the *currently bound* VAO (global_vao_id).
-    // It also uses the currently bound index buffer from that VAO.
-    glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, (void*)((uintptr_t)(first_index * sizeof(uint32_t))), instance_count, vertex_offset, first_instance);
-    SIT_CHECK_GL_ERROR();
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_INDEXED);
+    if (p) {
+        p->args.draw_indexed.idx_count = index_count;
+        p->args.draw_indexed.inst_count = instance_count;
+        p->args.draw_indexed.first_idx = first_index;
+        p->args.draw_indexed.v_offset = vertex_offset;
+        p->args.draw_indexed.first_inst = first_instance;
+    }
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -12212,11 +12527,37 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
 
 #if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
     // --- BATCHED TEXT RENDERING ---
-    // Instead of drawing one quad per char, we generate a vertex buffer for the whole string.
-
     size_t len = strlen(text);
     if (len == 0) return;
-    if (len > 2048) len = 2048; // Cap for temporary stack buffer safety if needed, or just use heap.
+    if (len > 2048) len = 2048;
+
+    // Update Stats
+    sit_render.debug_draw_command_issued_this_frame = true;
+    sit_render.frame_draw_calls++;
+    sit_render.frame_triangle_count += (len * 2);
+
+    Vector4 color_vec;
+    SituationConvertColorToVector4(color, &color_vec);
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+
+    // Copy text to command buffer data
+    void* text_ptr = _SitGLSoftDataPush(buf, text, len + 1);
+    if (!text_ptr) return;
+    size_t text_offset = (size_t)((uint8_t*)text_ptr - buf->data_buffer);
+
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_TEXT);
+    if (p) {
+        p->args.draw_text.font = font;
+        p->args.draw_text.pos = pos;
+        p->args.draw_text.color = color;
+        p->args.draw_text.text_offset = text_offset;
+    }
+
+#elif defined(SITUATION_USE_VULKAN)
+    // Bind Atlas
+    SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, font.atlas_texture);
 
     // 6 vertices per char (2 tris), 4 floats per vertex (x,y,u,v)
     size_t vert_count = len * 6;
@@ -12224,7 +12565,7 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
 
     // [PERF] Auto-grow scratch buffer
     if (sit_render.text_batch_capacity < data_size) {
-        sit_render.text_batch_scratch = (float*)SIT_REALLOC(sit_render.text_batch_scratch, data_size * 2); // Grow 2x
+        sit_render.text_batch_scratch = (float*)SIT_REALLOC(sit_render.text_batch_scratch, data_size * 2);
         sit_render.text_batch_capacity = data_size * 2;
     }
 
@@ -12242,61 +12583,18 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
             stbtt_GetBakedQuad(cdata, font.atlas_width, font.atlas_height, text[i] - 32, &x, &y, &q, 1);
 
             // Quad to 2 Triangles (CCW)
-            // V1 (TL)
             vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t0;
-            // V2 (BL)
             vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t1;
-            // V3 (TR)
             vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t0;
 
-            // V4 (TR)
             vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t0;
-            // V5 (BL)
             vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t1;
-            // V6 (BR)
             vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t1;
         }
     }
 
-    // Actual vertex count used (might be less if chars were skipped)
     int final_vert_count = v_idx / 4;
     if (final_vert_count == 0) { return; }
-
-    // Update Stats
-    sit_render.debug_draw_command_issued_this_frame = true;
-    sit_render.frame_draw_calls++;
-    sit_render.frame_triangle_count += final_vert_count / 3;
-
-    Vector4 color_vec;
-    SituationConvertColorToVector4(color, &color_vec);
-
-    // Bind Atlas (Common)
-    SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, font.atlas_texture);
-
-#if defined(SITUATION_USE_OPENGL)
-    glUseProgram(sit_render.gl.text_shader_program);
-    sit_render.gl.current_program_id = sit_render.gl.text_shader_program;
-
-    // Upload Batched Data to Dynamic VBO
-    // Ensure we don't overflow the pre-allocated 512KB buffer
-    if (data_size > 524288) {
-        data_size = 524288;
-        // Clamp vertex count to match truncated data to avoid GPU OOB read
-        final_vert_count = (int)(data_size / (4 * sizeof(float)));
-    }
-
-    glNamedBufferSubData(sit_render.gl.text_vbo, 0, data_size, vertices);
-
-    // Set Uniforms
-    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec.raw);
-
-    glBindVertexArray(sit_render.gl.text_vao);
-    sit_render.gl.current_vao_id = sit_render.gl.text_vao;
-    glDrawArrays(GL_TRIANGLES, 0, final_vert_count);
-    glBindVertexArray(0);
-    sit_render.gl.current_vao_id = 0;
-
-#elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
     if (sit_render.vk.text_pipeline == VK_NULL_HANDLE) { return; }
 
@@ -12332,7 +12630,14 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
 SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture) {
     if (!SituationIsInitialized()) return;
 
-#if defined(SITUATION_USE_VULKAN)
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_PRESENT);
+    if (p) {
+        p->args.present.texture = texture;
+    }
+
+#elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
     if (vk_cmd == VK_NULL_HANDLE) return;
 
@@ -12372,24 +12677,6 @@ SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture tex
 
     // 6. Transition Source back to GENERAL (ready for next compute frame)
     _SituationVulkanTransitionImageLayout(vk_cmd, texture.image, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
-
-#elif defined(SITUATION_USE_OPENGL)
-    (void)cmd;
-    // 1. Generate a temporary FBO for the read source
-    // (Creating per-frame is slow but robust for a simple API. Optimization: cache in texture struct)
-    GLuint fbo;
-    glCreateFramebuffers(1, &fbo);
-    glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, texture.gl_texture_id, 0);
-
-    // 2. Blit to default framebuffer (0)
-    // Destination is the backbuffer
-    glBlitNamedFramebuffer(fbo, 0,
-                           0, 0, texture.width, texture.height,
-                           0, 0, sit_gs.main_window_width, sit_gs.main_window_height,
-                           GL_COLOR_BUFFER_BIT, GL_LINEAR);
-
-    glDeleteFramebuffers(1, &fbo);
-    SIT_CHECK_GL_ERROR();
 #endif
 }
 
@@ -12533,31 +12820,11 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
 
 #if defined(SITUATION_USE_OPENGL)
     {
-        (void)cmd; // OpenGL uses global state, command buffer not needed for this call.
+        SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+        SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_PIPELINE);
+        if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
-#ifndef NDEBUG
-        // --- 2. OpenGL Debug Validation ---
-        // In debug builds, verify the Program ID is valid before using it.
-        if (!glIsProgram(shader.id)) {
-            char detail[128];
-            snprintf(detail, sizeof(detail), "Attempted to bind an invalid shader program (ID: %llu)", (unsigned long long)shader.id);
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, detail);
-            // SIT_CHECK_GL_ERROR(); // Can check for unrelated errors, but not necessary here.
-            return SITUATION_ERROR_RESOURCE_INVALID; // Or SITUATION_ERROR_INVALID_PARAM
-        }
-#endif
-
-        // --- 3. OpenGL Bind Execution ---
-        glUseProgram(shader.id);
-        sit_render.gl.current_program_id = shader.id;
-
-        // --- 4. OpenGL Error Checking ---
-        SIT_CHECK_GL_ERROR();
-        if (sit_render.gl.last_error != GL_NO_ERROR) {
-            // Error message likely set by SIT_CHECK_GL_ERROR
-            return SITUATION_ERROR_OPENGL_GENERAL; // Or a more specific error if possible
-        }
-
+        p->args.bind_pipeline.shader_id = shader.gl_program_id;
         return SITUATION_SUCCESS;
     }
 
@@ -12636,23 +12903,12 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
     sit_render.frame_triangle_count += (mesh.index_count / 3); // Assuming non-instanced single mesh
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd;
-    if (mesh.id == 0) return SITUATION_ERROR_RESOURCE_INVALID;
-
-    // 1. Bind the mesh's own private, pre-configured VAO.
-    // This single call restores its VBO, EBO, and vertex attribute layout.
-    glBindVertexArray(mesh.vao_id);
-    sit_render.gl.current_vao_id = mesh.vao_id;
-
-    // 2. Issue the draw call.
-    glDrawElements(GL_TRIANGLES, mesh.index_count, GL_UNSIGNED_INT, (void*)0);
-
-    // 3. Unbind the VAO to be tidy (optional but good practice).
-    glBindVertexArray(0);
-    sit_render.gl.current_vao_id = 0;
-
-    SIT_CHECK_GL_ERROR();
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_MESH);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    p->args.draw_mesh.mesh = mesh;
     return SITUATION_SUCCESS;
+
 #elif defined(SITUATION_USE_VULKAN)
     {
         // --- 2. Vulkan Input Validation ---
@@ -12728,24 +12984,13 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4
     int use_texture = 0; // False
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd;
-    if (sit_render.gl.quad_shader_program == 0) return;
-
-    glUseProgram(sit_render.gl.quad_shader_program);
-    sit_render.gl.current_program_id = sit_render.gl.quad_shader_program;
-    glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model);
-    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color.raw);
-
-    // Set new uniforms
-    glUniform4fv(5, 1, (const GLfloat*)uv_rect.raw); // Location 5 from shader
-    glUniform1i(6, use_texture);                 // Location 6 from shader
-
-    glBindVertexArray(sit_render.gl.quad_vao);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-    sit_render.gl.current_vao_id = 0;
-    glUseProgram(0);
-    sit_render.gl.current_program_id = 0;
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_QUAD);
+    if (p) {
+        glm_mat4_copy(model, p->args.draw_quad.model);
+        p->args.draw_quad.color = color;
+        p->args.draw_quad.uv_rect = uv_rect;
+    }
 
 #elif defined(SITUATION_USE_VULKAN)
     if (sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return;
@@ -12821,48 +13066,21 @@ SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t con
 
 #if defined(SITUATION_USE_OPENGL)
     {
-        (void)cmd; // OpenGL uses global state, command buffer not needed for this call.
-        GLuint current_program = 0;
-        glGetIntegerv(GL_CURRENT_PROGRAM, (GLint*)&current_program);
-        if (current_program == 0) {
-            // No program is bound. This is not necessarily an error, but worth noting.
-            // The call will be a no-op, which is valid OpenGL behavior.
-            // Optionally log this in debug builds.
-            // fprintf(stderr, "WARNING: SituationCmdSetPushConstant called with no program bound (glUseProgram(0)).\n");
-            return;
-        }
+        SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
 
-        // --- 2. OpenGL Implementation (glProgramUniform*) ---
-        // Determine the correct glUniform* function based on size.
-        // This is a simplified mapping for common types.
-        GLenum error_code = GL_NO_ERROR;
-        if (size == sizeof(mat4)) {
-            glProgramUniformMatrix4fv(current_program, (GLint)contract_id, 1, GL_FALSE, (const GLfloat*)data);
-        } else if (size == sizeof(vec4)) {
-            glProgramUniform4fv(current_program, (GLint)contract_id, 1, (const GLfloat*)data);
-        } else if (size == sizeof(vec3)) { // Add vec3 support
-            glProgramUniform3fv(current_program, (GLint)contract_id, 1, (const GLfloat*)data);
-        } else if (size == sizeof(vec2)) { // Add vec2 support
-            glProgramUniform2fv(current_program, (GLint)contract_id, 1, (const GLfloat*)data);
-        } else if (size == sizeof(float)) {
-            glProgramUniform1fv(current_program, (GLint)contract_id, 1, (const GLfloat*)data);
-        } else if (size == sizeof(int)) {
-            glProgramUniform1iv(current_program, (GLint)contract_id, 1, (const GLint*)data);
-        } else {
-            // Unsupported size/type. This is a potential logic error by the caller.
-            char error_msg[256];
-            snprintf(error_msg, sizeof(error_msg),
-                     "Unsupported push constant size (%zu bytes) for contract_id %u in OpenGL path.",
-                     size, contract_id);
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, error_msg);
-            // Cannot proceed with glUniform call.
-            return;
-        }
+        // Allocate space in the data buffer
+        void* ptr = _SitGLSoftDataPush(buf, data, size);
+        if (!ptr) return;
 
-        // Check for OpenGL errors after the call.
-        SIT_CHECK_GL_ERROR();
-        // Note: SIT_CHECK_GL_ERROR sets the global error state if glGetError() is not GL_NO_ERROR.
-        // The function itself (SituationCmdSetPushConstant) remains void.
+        // Calculate offset relative to buffer start
+        size_t offset = (size_t)((uint8_t*)ptr - buf->data_buffer);
+
+        SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_PUSH_CONSTANT);
+        if (p) {
+            p->args.push_constant.offset = contract_id;
+            p->args.push_constant.size = size;
+            p->args.push_constant.data_offset = offset;
+        }
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -13043,22 +13261,18 @@ SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, 
     }
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd; // Command buffer is unused in OpenGL for this operation.
-    GLenum target;
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
-    // Determine the correct buffer target based on the usage flags it was created with.
-    // This requires that the usage flags are stored in the buffer handle.
+    p->args.bind_desc.set_index = set_index;
+    p->args.bind_desc.resource_id = buffer.gl_buffer_id;
+
     if (buffer.usage_flags & SITUATION_BUFFER_USAGE_STORAGE_BUFFER) {
-        target = GL_SHADER_STORAGE_BUFFER;
+        p->args.bind_desc.resource_type = 2; // 2 = SSBO
     } else {
-        // Default to uniform buffer if not explicitly a storage buffer.
-        target = GL_UNIFORM_BUFFER;
+        p->args.bind_desc.resource_type = 0; // 0 = UBO
     }
-
-    // In OpenGL, the descriptor set index maps directly to an indexed binding point.
-    glBindBufferBase(target, set_index, buffer.gl_buffer_id);
-    SIT_CHECK_GL_ERROR();
-
     return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -13119,10 +13333,13 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
     }
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd;
-    // In OpenGL, the descriptor set index maps to the texture image unit.
-    glBindTextureUnit(set_index, texture.gl_texture_id);
-    SIT_CHECK_GL_ERROR();
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+
+    p->args.bind_desc.set_index = set_index;
+    p->args.bind_desc.resource_id = texture.gl_texture_id;
+    p->args.bind_desc.resource_type = 1; // 1 = Sampled Texture
     return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -15442,14 +15659,11 @@ SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, Situatio
     // If your compute pipeline setup doesn't use this, you can omit step 3.
 
 #elif defined(SITUATION_USE_OPENGL)
-    // --- OpenGL Implementation ---
-    // Bind the OpenGL Compute Program using glUseProgram.
-    glUseProgram(pipeline.gl_program_id);
-    sit_render.gl.current_program_id = pipeline.gl_program_id;
-    SIT_CHECK_GL_ERROR();
-    // Note: Error handling for glUseProgram is often omitted as it typically only fails
-    //       if the program is invalid, which should be caught during creation.
-    //       You can add SIT_CHECK_GL_ERROR() if robustness is critical here.
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_PIPELINE);
+    if (p) {
+        p->args.bind_pipeline.shader_id = pipeline.gl_program_id;
+    }
 #endif
 }
 
@@ -15507,77 +15721,11 @@ SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src
     if (!SituationIsInitialized()) { return; } // Silently return if the library isn't initialized.
 
 #if defined(SITUATION_USE_OPENGL)
-    {
-        (void)cmd; // Command buffer is unused in OpenGL immediate mode for memory barriers.
-
-        GLbitfield combined_barrier_bits = 0;
-
-        // --- Determine Combined OpenGL Barrier Bits ---
-        // Source: What stages/types wrote the data?
-        if (src_flags & SITUATION_BARRIER_COMPUTE_SHADER_WRITE) {
-            combined_barrier_bits |= GL_SHADER_STORAGE_BARRIER_BIT;
-        }
-        if (src_flags & SITUATION_BARRIER_FRAGMENT_SHADER_WRITE) {
-            combined_barrier_bits |= GL_SHADER_IMAGE_ACCESS_BARRIER_BIT; // For imageStore
-            // Note: glClearBuffer* might use GL_FRAMEBUFFER_BARRIER_BIT, but imageStore typically needs SHADER_IMAGE_ACCESS
-        }
-        if (src_flags & SITUATION_BARRIER_VERTEX_SHADER_WRITE) {
-            // Vertex shader writes are uncommon without extensions like Transform Feedback.
-            // If used (e.g., SSBO writes), SHADER_STORAGE_BARRIER_BIT is appropriate.
-            combined_barrier_bits |= GL_SHADER_STORAGE_BARRIER_BIT;
-        }
-        if (src_flags & SITUATION_BARRIER_TRANSFER_WRITE) {
-            combined_barrier_bits |= GL_BUFFER_UPDATE_BARRIER_BIT; // For glBufferSubData, etc.
-            // Could also use GL_PIXEL_BUFFER_BARRIER_BIT for PBO operations if used.
-        }
-
-        // Destination: What stages/types will read/use the data?
-        if (dst_flags & SITUATION_BARRIER_COMPUTE_SHADER_READ) {
-            combined_barrier_bits |= GL_SHADER_STORAGE_BARRIER_BIT; // For reading SSBOs
-        }
-        if (dst_flags & SITUATION_BARRIER_COMPUTE_SHADER_WRITE) {
-            // If a subsequent compute dispatch *writes* to the same resource, ensure prior writes are visible.
-            combined_barrier_bits |= GL_SHADER_STORAGE_BARRIER_BIT;
-        }
-        if (dst_flags & SITUATION_BARRIER_VERTEX_SHADER_READ) {
-            // Reading from SSBOs or textures in the vertex shader.
-            combined_barrier_bits |= GL_SHADER_STORAGE_BARRIER_BIT; // For SSBOs
-            combined_barrier_bits |= GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT; // If reading from a vertex buffer that was written to
-            // combined_barrier_bits |= GL_ELEMENT_ARRAY_BARRIER_BIT; // If reading index buffer written by transfer
-        }
-        if (dst_flags & SITUATION_BARRIER_FRAGMENT_SHADER_READ) {
-            combined_barrier_bits |= GL_TEXTURE_FETCH_BARRIER_BIT; // For sampling textures
-            combined_barrier_bits |= GL_SHADER_STORAGE_BARRIER_BIT; // For reading SSBOs in fragment shader
-        }
-        if (dst_flags & SITUATION_BARRIER_TRANSFER_READ) {
-            // Reading data in a transfer operation (e.g., glReadPixels, CopyBuffer/TextureSubData src)
-            combined_barrier_bits |= GL_BUFFER_UPDATE_BARRIER_BIT; // If reading from a buffer written by shader
-            // Could also use GL_PIXEL_BUFFER_BARRIER_BIT for PBO operations if used.
-        }
-        if (dst_flags & SITUATION_BARRIER_TRANSFER_WRITE) {
-             // If the destination is a transfer write (e.g., CopyBuffer/TextureSubData dst), ensure previous writes to the *source* are visible.
-             // This is implicitly handled by the src_flags barrier above. The dst_flags barrier is more about what *reads* the result of the transfer.
-             // However, to ensure the *destination* buffer/image is ready to be written to by a transfer after being written by a shader, we might need a barrier.
-             // But the typical pattern is the src barrier ensures the data is ready for transfer read.
-             // Let's add a general buffer/image barrier for transfer destinations if they were written to.
-             // This is tricky with the current src/dst flag abstraction.
-             // A simpler interpretation: if we are about to do a transfer write, ensure prior shader writes to that resource are visible.
-             // The src barrier should cover this. Adding it here might be redundant.
-             // Let's omit it for now to avoid over-syncing. The src_flags should be the primary driver.
-             // combined_barrier_bits |= GL_BUFFER_UPDATE_BARRIER_BIT; // Potentially redundant
-        }
-        if (dst_flags & SITUATION_BARRIER_INDIRECT_COMMAND_READ) {
-            // Reading indirect draw/dispatch arguments.
-            combined_barrier_bits |= GL_COMMAND_BARRIER_BIT;
-        }
-
-        // --- Issue the Barrier ---
-        if (combined_barrier_bits != 0) {
-            glMemoryBarrier(combined_barrier_bits);
-            SIT_CHECK_GL_ERROR();
-            // Note: glMemoryBarrier errors are rare but can occur with invalid bit combinations
-            // or driver issues. SIT_CHECK_GL_ERROR handles this.
-        }
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_PIPELINE_BARRIER);
+    if (p) {
+        p->args.barrier.src = src_flags;
+        p->args.barrier.dst = dst_flags;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -15696,14 +15844,12 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
     }
 
 #if defined(SITUATION_USE_OPENGL)
-    {
-        (void)cmd; // OpenGL uses the currently bound program state, command buffer not needed for the dispatch call itself.
-        // --- 2. OpenGL Dispatch ---
-        glDispatchCompute(group_count_x, group_count_y, group_count_z);
-        SIT_CHECK_GL_ERROR();
-        // Note: Error handling for glDispatchCompute is often limited. Invalid group counts
-        // might not generate an error until submission/draw, or might be silently clamped.
-        // SIT_CHECK_GL_ERROR() catches errors from the call itself (e.g., invalid context).
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DISPATCH);
+    if (p) {
+        p->args.dispatch.x = group_count_x;
+        p->args.dispatch.y = group_count_y;
+        p->args.dispatch.z = group_count_z;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
