@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.15 "Velocity"
+*   Core API library v2.3.17 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 16
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_PATCH 17
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -713,6 +713,33 @@ typedef enum {
 #define SIT_MOD_CAPS_LOCK          0x0010
 #define SIT_MOD_NUM_LOCK           0x0020
 
+/**
+ * @brief Basic Math Types
+ */
+typedef struct ColorHSV { float h, s, v; } ColorHSV; // Hue = 0.0f to 360.0f degrees, Saturation = 0.0f grayscale to 1.0f color, Value/Brightness = 0.0f to 1.0f
+typedef struct ColorYPQA { unsigned char y, p, q, a; } ColorYPQA; // Luminance (0-255), Phase (0-255), Quadrature (0-255), Alpha (0-255)
+typedef struct ColorRGBA { unsigned char r, g, b, a; } ColorRGBA;
+typedef ColorRGBA Color;
+
+typedef union Vector2 {
+    struct { float x, y; };
+    float raw[2];
+} Vector2;
+
+typedef union Vector3 {
+    struct { float x, y, z; };
+    struct { float r, g, b; };
+    float raw[3];
+} Vector3;
+
+typedef union Vector4 {
+    struct { float x, y, z, w; };
+    struct { float r, g, b, a; };
+    float raw[4];
+} Vector4;
+
+typedef struct Rectangle { float x, y, width, height; } Rectangle;
+
 //==================================================================================
 //  Callback Type Definitions - v2.3.4 "Velocity" Standard
 //==================================================================================
@@ -846,32 +873,6 @@ struct SituationScopedString {
 }
 #endif
 
-/**
- * @brief Basic Math Types
- */
-typedef struct ColorHSV { float h, s, v; } ColorHSV; // Hue = 0.0f to 360.0f degrees, Saturation = 0.0f grayscale to 1.0f color, Value/Brightness = 0.0f to 1.0f
-typedef struct ColorYPQA { unsigned char y, p, q, a; } ColorYPQA; // Luminance (0-255), Phase (0-255), Quadrature (0-255), Alpha (0-255)
-typedef struct ColorRGBA { unsigned char r, g, b, a; } ColorRGBA;
-typedef ColorRGBA Color;
-
-typedef union Vector2 {
-    struct { float x, y; };
-    float raw[2];
-} Vector2;
-
-typedef union Vector3 {
-    struct { float x, y, z; };
-    struct { float r, g, b; };
-    float raw[3];
-} Vector3;
-
-typedef union Vector4 {
-    struct { float x, y, z, w; };
-    struct { float r, g, b, a; };
-    float raw[4];
-} Vector4;
-
-typedef struct Rectangle { float x, y, width, height; } Rectangle;
 
 typedef struct SituationImage {
     void *data;                                     // Image raw data
@@ -2850,6 +2851,54 @@ typedef struct {
     int cursor_count;
 } _SituationInputState;
 
+// [NEW] Render State Container
+typedef struct {
+    // -------------------------------------------------------------------------
+    // Graphics Backend State
+    // -------------------------------------------------------------------------
+    SituationRendererType renderer_type;                      // The active rendering API (OpenGL or Vulkan)
+    bool debug_draw_command_issued_this_frame;                // Debug flag to detect illegal state changes during a frame
+
+#if defined(SITUATION_USE_VULKAN)
+    _SituationVulkanState vk;                                 // Encapsulated Vulkan-specific state handles
+#elif defined(SITUATION_USE_OPENGL)
+    _SituationGLState gl;                                     // Encapsulated OpenGL-specific state handles
+#endif
+
+    // -------------------------------------------------------------------------
+    // Virtual Display Subsystem
+    // -------------------------------------------------------------------------
+    SituationVirtualDisplay virtual_display_slots[SITUATION_MAX_VIRTUAL_DISPLAYS]; // Static pool for virtual displays
+    bool virtual_display_slots_used[SITUATION_MAX_VIRTUAL_DISPLAYS];               // Allocation map for the virtual display pool
+    int active_virtual_display_count;                         // Count of currently allocated virtual displays
+
+    // -------------------------------------------------------------------------
+    // Profiling
+    // -------------------------------------------------------------------------
+    uint32_t frame_draw_calls;                                // Counter for draw commands issued this frame
+    uint32_t frame_triangle_count;                            // Estimate of triangles drawn this frame
+    double last_vd_composite_time_ms;                         // Profiling timer for the composition pass
+
+    // -------------------------------------------------------------------------
+    // Internal Resource Tracking (Linked Lists)
+    // -------------------------------------------------------------------------
+    _SituationMeshNode* all_meshes;                           // Head of the mesh tracking list
+    _SituationShaderNode* all_shaders;                        // Head of the shader tracking list
+    _SituationComputePipelineNode* all_compute_pipelines;     // Head of the compute pipeline tracking list
+    _SituationTextureNode* all_textures;                      // Head of the texture tracking list
+    _SituationBufferNode* all_buffers;                        // Head of the buffer tracking list
+    _SituationModelNode* all_models;                          // Head of the model tracking list
+
+    // -------------------------------------------------------------------------
+    // Feature Capabilities
+    // -------------------------------------------------------------------------
+    uint64_t enabled_features_mask;                           // Bitmask of SituationRenderFeature flags enabled on the current backend
+
+    // [PERF] Text Batch Scratch Buffer
+    float* text_batch_scratch;
+    size_t text_batch_capacity;
+} _SituationRenderState;
+
 /**
  * @brief [INTERNAL] The central monolithic state container for the entire library.
  *
@@ -2892,26 +2941,10 @@ typedef struct {
     uint32_t inactive_profile_window_flags;                   // Target window flags to apply when unfocused
 
     // -------------------------------------------------------------------------
-    // Graphics Backend State
-    // -------------------------------------------------------------------------
-    SituationRendererType renderer_type;                      // The active rendering API (OpenGL or Vulkan)
-    bool debug_draw_command_issued_this_frame;                // Debug flag to detect illegal state changes during a frame
-
-#if defined(SITUATION_USE_VULKAN)
-    _SituationVulkanState vk;                                 // Encapsulated Vulkan-specific state handles
-#elif defined(SITUATION_USE_OPENGL)
-    _SituationGLState gl;                                     // Encapsulated OpenGL-specific state handles
-#endif
-
-    // -------------------------------------------------------------------------
     // Display & Virtual Display Subsystems
     // -------------------------------------------------------------------------
     SituationDisplayInfo* cached_physical_displays_array;     // Array of detected physical monitors
     int cached_physical_display_count;                        // Number of valid entries in the display array
-
-    SituationVirtualDisplay virtual_display_slots[SITUATION_MAX_VIRTUAL_DISPLAYS]; // Static pool for virtual displays
-    bool virtual_display_slots_used[SITUATION_MAX_VIRTUAL_DISPLAYS];               // Allocation map for the virtual display pool
-    int active_virtual_display_count;                         // Count of currently allocated virtual displays
 
     // -------------------------------------------------------------------------
     // Timing & Profiling
@@ -2924,10 +2957,6 @@ typedef struct {
     int    fps_frame_counter;                                 // Accumulator for frames rendered this second
     double fps_last_update_time;                              // Timestamp of the last FPS calculation
     int    current_fps;                                       // The most recently calculated FPS value
-
-    uint32_t frame_draw_calls;                                // Counter for draw commands issued this frame
-    uint32_t frame_triangle_count;                            // Estimate of triangles drawn this frame
-    double last_vd_composite_time_ms;                         // Profiling timer for the composition pass
 
     // -------------------------------------------------------------------------
     // Application Callbacks
@@ -2950,25 +2979,6 @@ typedef struct {
     int    dropped_file_count;                                // Number of paths dropped this frame
     bool   file_was_dropped_this_frame;                       // Flag indicating if a drop event occurred
 
-    // -------------------------------------------------------------------------
-    // Internal Resource Tracking (Linked Lists)
-    // -------------------------------------------------------------------------
-    _SituationMeshNode* all_meshes;                           // Head of the mesh tracking list
-    _SituationShaderNode* all_shaders;                        // Head of the shader tracking list
-    _SituationComputePipelineNode* all_compute_pipelines;     // Head of the compute pipeline tracking list
-    _SituationTextureNode* all_textures;                      // Head of the texture tracking list
-    _SituationBufferNode* all_buffers;                        // Head of the buffer tracking list
-    _SituationModelNode* all_models;                          // Head of the model tracking list
-
-    // -------------------------------------------------------------------------
-    // Feature Capabilities
-    // -------------------------------------------------------------------------
-    uint64_t enabled_features_mask;                           // Bitmask of SituationRenderFeature flags enabled on the current backend
-
-    // [PERF] Text Batch Scratch Buffer
-    float* text_batch_scratch;
-    size_t text_batch_capacity;
-
 } _SituationGlobalStateContainer;
 
 #ifdef SITUATION_ENABLE_THREADING
@@ -2982,6 +2992,7 @@ static void _SitParallelWorker(void* data, void* ctx);                          
 // initialization order, memory lifetime, and future multi-context support.
 typedef struct SituationContext {
     _SituationGlobalStateContainer gs;
+    _SituationRenderState render; // [NEW]
     _SituationAudioState audio;
     _SituationInputState input; // [NEW]
 } SituationContext;
@@ -2991,6 +3002,7 @@ static SituationContext* _sit_current_context = NULL;
 // Macros to maintain backward compatibility with existing internal code that uses sit_gs/sit_audio.
 // These resolve to the current active context.
 #define sit_gs (_sit_current_context->gs)
+#define sit_render (_sit_current_context->render)
 #define sit_audio (_sit_current_context->audio)
 #define sit_input (_sit_current_context->input) // [NEW]
 
@@ -3932,7 +3944,7 @@ static GLint _sit_uniform_map_get(_SituationUniformMap* map, const char* key) {
  *   - **Solution:** The `SituationDestroy*` functions no longer destroy resources immediately. Instead, they call a `_SituationDeferDestroy*` helper, which adds the resource's handles to a queue (the "graveyard").
  *
  * @subsection How It Works
- *   1. **Queuing:** When a resource is "destroyed," it's added to the graveyard associated with the *current* frame being recorded (`sit_gs.vk.current_frame_index`).
+ *   1. **Queuing:** When a resource is "destroyed," it's added to the graveyard associated with the *current* frame being recorded (`sit_render.vk.current_frame_index`).
  *   2. **Waiting:** The main render loop proceeds as normal. At the beginning of a new frame `N`, the engine calls `vkWaitForFences` to ensure that frame `N - max_frames_in_flight` has finished rendering on the GPU.
  *   3. **Flushing:** Only after the fence confirms the GPU is done with that old frame do we call `_SituationFlushGraveyard`. This function iterates through the old frame's graveyard queue and calls the real `vkDestroy*` / `vmaDestroy*` functions.
  *   - **Result:** This guarantees that resources are only deleted after the GPU is confirmed to be finished with them, eliminating all `vkDeviceWaitIdle` stalls from the resource management path.
@@ -4012,22 +4024,22 @@ static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
  * @param frame_index The index of the frame whose graveyard should be flushed.
  */
 static void _SituationFlushGraveyard(uint32_t frame_index) {
-    if (!sit_gs.vk.graveyards) return;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[frame_index];
+    if (!sit_render.vk.graveyards) return;
+    SituationGraveyard* gy = &sit_render.vk.graveyards[frame_index];
 
     // Buffers
     for (int i = 0; i < gy->buffer_count; ++i) {
         if (gy->buffers[i] != VK_NULL_HANDLE) {
-            vmaDestroyBuffer(sit_gs.vk.vma_allocator, gy->buffers[i], gy->buffer_allocations[i]);
+            vmaDestroyBuffer(sit_render.vk.vma_allocator, gy->buffers[i], gy->buffer_allocations[i]);
         }
     }
     gy->buffer_count = 0;
 
     // Images
     for (int i = 0; i < gy->image_count; ++i) {
-        if (gy->samplers[i] != VK_NULL_HANDLE) vkDestroySampler(sit_gs.vk.device, gy->samplers[i], NULL);
-        if (gy->image_views[i] != VK_NULL_HANDLE) vkDestroyImageView(sit_gs.vk.device, gy->image_views[i], NULL);
-        if (gy->images[i] != VK_NULL_HANDLE) vmaDestroyImage(sit_gs.vk.vma_allocator, gy->images[i], gy->image_allocations[i]);
+        if (gy->samplers[i] != VK_NULL_HANDLE) vkDestroySampler(sit_render.vk.device, gy->samplers[i], NULL);
+        if (gy->image_views[i] != VK_NULL_HANDLE) vkDestroyImageView(sit_render.vk.device, gy->image_views[i], NULL);
+        if (gy->images[i] != VK_NULL_HANDLE) vmaDestroyImage(sit_render.vk.vma_allocator, gy->images[i], gy->image_allocations[i]);
     }
     gy->image_count = 0;
 
@@ -4036,7 +4048,7 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
         for (int i = 0; i < gy->descriptor_set_count; ++i) {
             if (gy->descriptor_pools[i] != VK_NULL_HANDLE) {
                 // If a pool is provided, we free the set back to it (e.g., asset pool)
-                vkFreeDescriptorSets(sit_gs.vk.device, gy->descriptor_pools[i], 1, &gy->descriptor_sets[i]);
+                vkFreeDescriptorSets(sit_render.vk.device, gy->descriptor_pools[i], 1, &gy->descriptor_sets[i]);
             }
             // If pool is NULL, it's from the linear allocator (dynamic manager) and we intentionally skip freeing
             // to avoid fragmentation/performance hits. It will be reclaimed when the pool is reset/destroyed.
@@ -4046,20 +4058,20 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
 
     // Pipelines
     for (int i = 0; i < gy->pipeline_count; ++i) {
-        if (gy->pipelines[i] != VK_NULL_HANDLE) vkDestroyPipeline(sit_gs.vk.device, gy->pipelines[i], NULL);
-        if (gy->pipeline_layouts[i] != VK_NULL_HANDLE) vkDestroyPipelineLayout(sit_gs.vk.device, gy->pipeline_layouts[i], NULL);
+        if (gy->pipelines[i] != VK_NULL_HANDLE) vkDestroyPipeline(sit_render.vk.device, gy->pipelines[i], NULL);
+        if (gy->pipeline_layouts[i] != VK_NULL_HANDLE) vkDestroyPipelineLayout(sit_render.vk.device, gy->pipeline_layouts[i], NULL);
     }
     gy->pipeline_count = 0;
 
     // Framebuffers
     for (int i = 0; i < gy->framebuffer_count; ++i) {
-        if (gy->framebuffers[i] != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_gs.vk.device, gy->framebuffers[i], NULL);
+        if (gy->framebuffers[i] != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_render.vk.device, gy->framebuffers[i], NULL);
     }
     gy->framebuffer_count = 0;
 
     // Render Passes
     for (int i = 0; i < gy->render_pass_count; ++i) {
-        if (gy->render_passes[i] != VK_NULL_HANDLE) vkDestroyRenderPass(sit_gs.vk.device, gy->render_passes[i], NULL);
+        if (gy->render_passes[i] != VK_NULL_HANDLE) vkDestroyRenderPass(sit_render.vk.device, gy->render_passes[i], NULL);
     }
     gy->render_pass_count = 0;
 }
@@ -4074,8 +4086,8 @@ static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocati
     if (buffer == VK_NULL_HANDLE) return;
     // The resource is added to the graveyard of the *current* frame.
     // It will be destroyed when this frame's fence is signaled in a future SituationAcquireFrameCommandBuffer call.
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    uint32_t gy_idx = sit_render.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->buffer_count >= gy->buffer_capacity) {
         gy->buffer_capacity *= 2;
         gy->buffers = (VkBuffer*)SIT_REALLOC(gy->buffers, sizeof(VkBuffer) * gy->buffer_capacity);
@@ -4096,8 +4108,8 @@ static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocati
  */
 static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler) {
     if (image == VK_NULL_HANDLE && view == VK_NULL_HANDLE && sampler == VK_NULL_HANDLE) return;
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    uint32_t gy_idx = sit_render.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->image_count >= gy->image_capacity) {
         gy->image_capacity *= 2;
         gy->images = (VkImage*)SIT_REALLOC(gy->images, sizeof(VkImage) * gy->image_capacity);
@@ -4121,8 +4133,8 @@ static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation,
  */
 static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool) {
     if (set == VK_NULL_HANDLE) return;
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    uint32_t gy_idx = sit_render.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->descriptor_set_count >= gy->descriptor_set_capacity) {
         gy->descriptor_set_capacity *= 2;
         gy->descriptor_sets = (VkDescriptorSet*)SIT_REALLOC(gy->descriptor_sets, sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
@@ -4141,8 +4153,8 @@ static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescripto
  */
 static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout) {
     if (pipeline == VK_NULL_HANDLE) return;
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    uint32_t gy_idx = sit_render.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->pipeline_count >= gy->pipeline_capacity) {
         gy->pipeline_capacity *= 2;
         gy->pipelines = (VkPipeline*)SIT_REALLOC(gy->pipelines, sizeof(VkPipeline) * gy->pipeline_capacity);
@@ -4159,8 +4171,8 @@ static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout
  */
 static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
     if (framebuffer == VK_NULL_HANDLE) return;
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    uint32_t gy_idx = sit_render.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->framebuffer_count >= gy->framebuffer_capacity) {
         gy->framebuffer_capacity *= 2;
         gy->framebuffers = (VkFramebuffer*)SIT_REALLOC(gy->framebuffers, sizeof(VkFramebuffer) * gy->framebuffer_capacity);
@@ -4174,8 +4186,8 @@ static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
  */
 static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass) {
     if (render_pass == VK_NULL_HANDLE) return;
-    uint32_t gy_idx = sit_gs.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_gs.vk.graveyards[gy_idx];
+    uint32_t gy_idx = sit_render.vk.current_frame_index;
+    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->render_pass_count >= gy->render_pass_capacity) {
         gy->render_pass_capacity *= 2;
         gy->render_passes = (VkRenderPass*)SIT_REALLOC(gy->render_passes, sizeof(VkRenderPass) * gy->render_pass_capacity);
@@ -4754,7 +4766,7 @@ static void _SituationGLFWWindowIconifyCallback(GLFWwindow* window, int iconifie
  *   The function's primary responsibility is to update the library's internal state and trigger necessary backend-specific actions:
  *   1.  **State Update:** It updates the library's cached render dimensions (`sit_gs.main_window_width`/`height`) and sets the `was_window_resized_last_frame` flag for the polling API.
  *   2.  **OpenGL Backend:** It immediately updates the OpenGL state by calling `glViewport` and recalculating internal orthographic projection matrices. This is safe because OpenGL is an immediate-mode API.
- *   3.  **Vulkan Backend:** It **does not** perform any immediate resource recreation. Instead, it simply sets the `sit_gs.vk.framebuffer_resized` flag. This is a critical design choice, as recreating the Vulkan swapchain is a complex, blocking operation that cannot be safely performed inside an asynchronous callback. The main render loop will detect this flag and handle the recreation gracefully.
+ *   3.  **Vulkan Backend:** It **does not** perform any immediate resource recreation. Instead, it simply sets the `sit_render.vk.framebuffer_resized` flag. This is a critical design choice, as recreating the Vulkan swapchain is a complex, blocking operation that cannot be safely performed inside an asynchronous callback. The main render loop will detect this flag and handle the recreation gracefully.
  *   4.  **User Callback:** Finally, it invokes the optional user-defined callback set via `SituationSetResizeCallback`, allowing the application to respond to the size change.
  *
  * @param window The GLFW window that received the event (unused).
@@ -4779,27 +4791,27 @@ static void _SituationGLFWFramebufferSizeCallback(GLFWwindow* window, int width,
     glViewport(0, 0, width, height);
 
     // Update orthographic projection matrix for Virtual Display compositing
-    glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, sit_gs.gl.vd_ortho_projection);
+    glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, sit_render.gl.vd_ortho_projection);
 
     // Resize the texture used for advanced compositing
-    if (sit_gs.gl.composite_copy_texture_id != 0) {
-        glBindTexture(GL_TEXTURE_2D, sit_gs.gl.composite_copy_texture_id);
+    if (sit_render.gl.composite_copy_texture_id != 0) {
+        glBindTexture(GL_TEXTURE_2D, sit_render.gl.composite_copy_texture_id);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
     // Update the projection matrix for the internal quad renderer.
-    if (sit_gs.gl.quad_shader_program) {
+    if (sit_render.gl.quad_shader_program) {
         mat4 proj_quad;
         glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, proj_quad);
-        glProgramUniformMatrix4fv(sit_gs.gl.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)proj_quad);
+        glProgramUniformMatrix4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)proj_quad);
     }
 
 #elif defined(SITUATION_USE_VULKAN)
     // For Vulkan, we CANNOT recreate the swapchain here because this callback can be called from within other functions (like glfwPollEvents) and
     // we must not interrupt the main loop.
     // Instead, we just set a flag to be handled at the start of the next frame.
-    sit_gs.vk.framebuffer_resized = true;
+    sit_render.vk.framebuffer_resized = true;
 #endif
 
     // --- Call user-defined resize callback ---
@@ -4940,23 +4952,23 @@ static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, dou
  */
 static void _SitGLBackupState(_SitGLStateBackup* s) {
     // [PERF] Copy from Shadow State, avoid driver query (glGet)
-    s->program = sit_gs.gl.current_program_id;
-    s->vao = sit_gs.gl.current_vao_id;
-    s->fbo = sit_gs.gl.current_fbo_id;
+    s->program = sit_render.gl.current_program_id;
+    s->vao = sit_render.gl.current_vao_id;
+    s->fbo = sit_render.gl.current_fbo_id;
 
     // Backup Capabilities
-    s->blend = (sit_gs.gl.blend_enabled == -1) ? glIsEnabled(GL_BLEND) : (GLboolean)sit_gs.gl.blend_enabled;
-    s->depth_test = (sit_gs.gl.depth_test_enabled == -1) ? glIsEnabled(GL_DEPTH_TEST) : (GLboolean)sit_gs.gl.depth_test_enabled;
-    s->cull_face = (sit_gs.gl.cull_face_enabled == -1) ? glIsEnabled(GL_CULL_FACE) : (GLboolean)sit_gs.gl.cull_face_enabled;
-    s->scissor_test = (sit_gs.gl.scissor_test_enabled == -1) ? glIsEnabled(GL_SCISSOR_TEST) : (GLboolean)sit_gs.gl.scissor_test_enabled;
+    s->blend = (sit_render.gl.blend_enabled == -1) ? glIsEnabled(GL_BLEND) : (GLboolean)sit_render.gl.blend_enabled;
+    s->depth_test = (sit_render.gl.depth_test_enabled == -1) ? glIsEnabled(GL_DEPTH_TEST) : (GLboolean)sit_render.gl.depth_test_enabled;
+    s->cull_face = (sit_render.gl.cull_face_enabled == -1) ? glIsEnabled(GL_CULL_FACE) : (GLboolean)sit_render.gl.cull_face_enabled;
+    s->scissor_test = (sit_render.gl.scissor_test_enabled == -1) ? glIsEnabled(GL_SCISSOR_TEST) : (GLboolean)sit_render.gl.scissor_test_enabled;
 
     // Backup Blend State
-    s->blend_src_rgb = sit_gs.gl.blend_src_rgb;
-    s->blend_dst_rgb = sit_gs.gl.blend_dst_rgb;
-    s->blend_src_alpha = sit_gs.gl.blend_src_alpha;
-    s->blend_dst_alpha = sit_gs.gl.blend_dst_alpha;
-    s->blend_equ_rgb = sit_gs.gl.blend_eq_rgb;
-    s->blend_equ_alpha = sit_gs.gl.blend_eq_alpha;
+    s->blend_src_rgb = sit_render.gl.blend_src_rgb;
+    s->blend_dst_rgb = sit_render.gl.blend_dst_rgb;
+    s->blend_src_alpha = sit_render.gl.blend_src_alpha;
+    s->blend_dst_alpha = sit_render.gl.blend_dst_alpha;
+    s->blend_equ_rgb = sit_render.gl.blend_eq_rgb;
+    s->blend_equ_alpha = sit_render.gl.blend_eq_alpha;
 }
 
 /**
@@ -4993,18 +5005,18 @@ static void _SitGLRestoreState(_SitGLStateBackup* s) {
  * @details [2.3.14A] Invalidates the internal shadow state tracking to recover from external GL modifications (e.g. ImGui).
  */
 static void _SitGLInvalidateShadowState(void) {
-    sit_gs.gl.current_program_id = 0;
-    sit_gs.gl.current_vao_id = 0;
-    sit_gs.gl.current_fbo_id = 0;
+    sit_render.gl.current_program_id = 0;
+    sit_render.gl.current_vao_id = 0;
+    sit_render.gl.current_fbo_id = 0;
 
     // Force mismatch by setting to -1 (unknown state)
-    sit_gs.gl.blend_enabled = -1;
-    sit_gs.gl.blend_src_rgb = GL_NONE;
-    sit_gs.gl.depth_test_enabled = -1;
-    sit_gs.gl.cull_face_enabled = -1;
-    sit_gs.gl.scissor_test_enabled = -1;
+    sit_render.gl.blend_enabled = -1;
+    sit_render.gl.blend_src_rgb = GL_NONE;
+    sit_render.gl.depth_test_enabled = -1;
+    sit_render.gl.cull_face_enabled = -1;
+    sit_render.gl.scissor_test_enabled = -1;
 
-    sit_gs.gl.shadow_state_dirty = true;
+    sit_render.gl.shadow_state_dirty = true;
 }
 
 /**
@@ -5195,9 +5207,9 @@ static void _SituationFullCleanupOnError(void) {
     {
         // For Vulkan, wait for the logical device to be idle.
         // This ensures all submitted work on all queues is finished.
-        // It's safe to call this even if the device creation failed, as sit_gs.vk.device would be VK_NULL_HANDLE.
-        if (sit_gs.vk.device != VK_NULL_HANDLE) {
-            VkResult result = vkDeviceWaitIdle(sit_gs.vk.device);
+        // It's safe to call this even if the device creation failed, as sit_render.vk.device would be VK_NULL_HANDLE.
+        if (sit_render.vk.device != VK_NULL_HANDLE) {
+            VkResult result = vkDeviceWaitIdle(sit_render.vk.device);
             // Ignore the result. If it fails, proceeding with cleanup is still the best option.
             // Potential failures (VK_ERROR_DEVICE_LOST) indicate a serious problem, but cleanup should still be attempted to free other resources (GLFW, audio context).
             if (result != VK_SUCCESS) {
@@ -5912,7 +5924,7 @@ static GLenum _SituationMapDataTypeToGL(SituationDataType type) {
  *          It creates a dedicated Vertex Array Object (VAO) and Vertex Buffer Object (VBO) containing a static full-screen quad (positions and UVs).
  *
  * @par State Isolation
- * This function isolates the internal rendering state from the user's application state. It binds its own VAO (`sit_gs.gl.vd_quad_vao`), configures the vertex attributes (Position location 0, UV location 2), and then explicitly restores the user's global VAO (`sit_gs.gl.global_vao_id`) before returning.
+ * This function isolates the internal rendering state from the user's application state. It binds its own VAO (`sit_render.gl.vd_quad_vao`), configures the vertex attributes (Position location 0, UV location 2), and then explicitly restores the user's global VAO (`sit_render.gl.global_vao_id`) before returning.
  *
  * @return `true` on successful creation of VAO and VBO resources.
  * @return `false` if OpenGL resource creation fails.
@@ -5922,10 +5934,10 @@ static GLenum _SituationMapDataTypeToGL(SituationDataType type) {
  */
 static bool _SituationInitGLVirtualDisplayRenderer(void) {
     // 1. Create Private VAO/VBO for full-screen quads
-    glCreateVertexArrays(1, &sit_gs.gl.vd_quad_vao);
-    glCreateBuffers(1, &sit_gs.gl.vd_quad_vbo);
+    glCreateVertexArrays(1, &sit_render.gl.vd_quad_vao);
+    glCreateBuffers(1, &sit_render.gl.vd_quad_vbo);
 
-    if (sit_gs.gl.vd_quad_vao == 0 || sit_gs.gl.vd_quad_vbo == 0) return false;
+    if (sit_render.gl.vd_quad_vao == 0 || sit_render.gl.vd_quad_vbo == 0) return false;
 
     // Full screen quad (Clip space -1 to 1, UV 0 to 1)
     // Format: X, Y, U, V
@@ -5936,28 +5948,28 @@ static bool _SituationInitGLVirtualDisplayRenderer(void) {
          1.0f,  1.0f,  1.0f, 0.0f  // Top-right
     };
 
-    glNamedBufferStorage(sit_gs.gl.vd_quad_vbo, sizeof(quad_vertices), quad_vertices, 0);
+    glNamedBufferStorage(sit_render.gl.vd_quad_vbo, sizeof(quad_vertices), quad_vertices, 0);
 
     // 2. Configure VAO
-    glBindVertexArray(sit_gs.gl.vd_quad_vao);
+    glBindVertexArray(sit_render.gl.vd_quad_vao);
 
     // Bind VBO to binding index 0
-    glVertexArrayVertexBuffer(sit_gs.gl.vd_quad_vao, 0, sit_gs.gl.vd_quad_vbo, 0, 4 * sizeof(float));
+    glVertexArrayVertexBuffer(sit_render.gl.vd_quad_vao, 0, sit_render.gl.vd_quad_vbo, 0, 4 * sizeof(float));
 
     // Pos (Location 0): 2 floats, offset 0
-    glEnableVertexArrayAttrib(sit_gs.gl.vd_quad_vao, SIT_ATTR_POSITION);
-    glVertexArrayAttribFormat(sit_gs.gl.vd_quad_vao, SIT_ATTR_POSITION, 2, GL_FLOAT, GL_FALSE, 0);
-    glVertexArrayAttribBinding(sit_gs.gl.vd_quad_vao, SIT_ATTR_POSITION, 0);
+    glEnableVertexArrayAttrib(sit_render.gl.vd_quad_vao, SIT_ATTR_POSITION);
+    glVertexArrayAttribFormat(sit_render.gl.vd_quad_vao, SIT_ATTR_POSITION, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(sit_render.gl.vd_quad_vao, SIT_ATTR_POSITION, 0);
 
     // UV (Location 2 as per contract): 2 floats, offset 2*float
-    glEnableVertexArrayAttrib(sit_gs.gl.vd_quad_vao, SIT_ATTR_TEXCOORD_0);
-    glVertexArrayAttribFormat(sit_gs.gl.vd_quad_vao, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float));
-    glVertexArrayAttribBinding(sit_gs.gl.vd_quad_vao, SIT_ATTR_TEXCOORD_0, 0);
+    glEnableVertexArrayAttrib(sit_render.gl.vd_quad_vao, SIT_ATTR_TEXCOORD_0);
+    glVertexArrayAttribFormat(sit_render.gl.vd_quad_vao, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float));
+    glVertexArrayAttribBinding(sit_render.gl.vd_quad_vao, SIT_ATTR_TEXCOORD_0, 0);
 
     glBindVertexArray(0); // Unbind private VAO
 
     // Restore global VAO
-    glBindVertexArray(sit_gs.gl.global_vao_id);
+    glBindVertexArray(sit_render.gl.global_vao_id);
 
     return true;
 }
@@ -5969,7 +5981,7 @@ static bool _SituationInitGLVirtualDisplayRenderer(void) {
  * @par Initialization Sequence
  *   1.  **Context & Function Loading:** It makes the GLFW window's OpenGL context current for the calling thread and then uses GLAD to load all necessary modern OpenGL function pointers.
  *   2.  **Version & Extension Validation:** It verifies that the available OpenGL version meets the library's minimum requirement (e.g., OpenGL 4.6) and that critical extensions (like `GL_ARB_direct_state_access`) are supported.
- *   3.  **Global VAO Abstraction:** It creates and binds a single, global Vertex Array Object (`sit_gs.gl.global_vao_id`).
+ *   3.  **Global VAO Abstraction:** It creates and binds a single, global Vertex Array Object (`sit_render.gl.global_vao_id`).
  *           This VAO remains active for all user rendering commands, providing a crucial abstraction layer that simplifies vertex attribute management and is essential for the `SituationCreateMesh` and `SituationCmd*` API to function correctly.
  *   4.  **Internal Renderers:** It initializes the library's private rendering modules, such as the 2D quad renderer and the virtual display compositors. These modules create their own private VAOs and shaders to ensure their state does not interfere with the user's global VAO.
  *   5.  **Global UBO:** It creates and binds the global Uniform Buffer Object for per-view data (e.g., camera matrices) to its standard binding point (`SIT_UBO_BINDING_VIEW_DATA`).
@@ -6012,9 +6024,9 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     // Note: Absence of ARB_gl_spirv is NOT a fatal error. It just means we must fallback to GLSL.
     // The refactored _SituationCreateGLComputeProgram handles this logic.
-    sit_gs.gl.arb_spirv_available = GLAD_GL_ARB_gl_spirv;
+    sit_render.gl.arb_spirv_available = GLAD_GL_ARB_gl_spirv;
     // Optional debug log:
-    // if (!sit_gs.gl.arb_spirv_available) {
+    // if (!sit_render.gl.arb_spirv_available) {
     //     fprintf(stdout, "INFO: GL_ARB_gl_spirv not available. OpenGL compute shaders will use standard GLSL path.\n");
     // }
 #endif // SITUATION_ENABLE_SHADER_COMPILER
@@ -6023,30 +6035,30 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // Create and bind the SINGLE, GLOBAL VAO for all USER rendering.
     // This VAO will remain bound for the entire duration of the user's render loop.
     // All subsequent user calls (like SituationCreateMesh, SituationCmdBindVertexBuffer) will implicitly modify THIS VAO's state because it's the currently bound one.
-    glCreateVertexArrays(1, &sit_gs.gl.global_vao_id);
-    if (sit_gs.gl.global_vao_id == 0) {
+    glCreateVertexArrays(1, &sit_render.gl.global_vao_id);
+    if (sit_render.gl.global_vao_id == 0) {
          _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to create global VAO for user rendering.");
          return SITUATION_ERROR_OPENGL_GENERAL;
     }
-    glBindVertexArray(sit_gs.gl.global_vao_id);
+    glBindVertexArray(sit_render.gl.global_vao_id);
     SIT_CHECK_GL_ERROR(); // Check for errors after binding
 
     // --- 4. Internal Renderer Initialization ---
     // Initialize internal renderers (Quad Renderer, Virtual Display Renderer).
     // These functions MUST create, configure, and then unbind their own PRIVATE VAOs/VBOs.
-    // They MUST leave sit_gs.gl.global_vao_id bound upon successful return.
+    // They MUST leave sit_render.gl.global_vao_id bound upon successful return.
     if (!_SituationInitQuadRenderer(sit_gs.main_window_width, sit_gs.main_window_height)) {
         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal quad renderer.");
         // Cleanup global VAO on failure of dependent subsystem
-        glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
-        sit_gs.gl.global_vao_id = 0;
+        glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
+        sit_render.gl.global_vao_id = 0;
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
 
     if (!_SituationInitTextRenderer()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal text renderer.");
-        glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
-        sit_gs.gl.global_vao_id = 0;
+        glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
+        sit_render.gl.global_vao_id = 0;
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
 
@@ -6055,72 +6067,72 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     SituationError shader_err_code = SITUATION_SUCCESS;
 
     // a. Create Shaders for Virtual Display Compositing
-    sit_gs.gl.vd_shader_program_id = _SituationCreateGLShaderProgram(SIT_VD_VERTEX_SHADER_SRC, SIT_VD_FRAGMENT_SHADER_SRC, &shader_err_code);
+    sit_render.gl.vd_shader_program_id = _SituationCreateGLShaderProgram(SIT_VD_VERTEX_SHADER_SRC, SIT_VD_FRAGMENT_SHADER_SRC, &shader_err_code);
     if (shader_err_code != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(shader_err_code, "_SituationInitOpenGL: Failed to create standard virtual display shader.");
         // Cleanup global VAO
-        glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
-        sit_gs.gl.global_vao_id = 0;
+        glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
+        sit_render.gl.global_vao_id = 0;
         // Assume _SituationInitQuadRenderer cleaned up after itself on failure
         return shader_err_code;
     }
 
-    sit_gs.gl.composite_shader_program_id = _SituationCreateGLShaderProgram(SIT_COMPOSITE_VERTEX_SHADER_SRC, SIT_COMPOSITE_FRAGMENT_SHADER_SRC, &shader_err_code);
+    sit_render.gl.composite_shader_program_id = _SituationCreateGLShaderProgram(SIT_COMPOSITE_VERTEX_SHADER_SRC, SIT_COMPOSITE_FRAGMENT_SHADER_SRC, &shader_err_code);
     if (shader_err_code != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(shader_err_code, "_SituationInitOpenGL: Failed to create advanced compositing shader.");
         // Cleanup global VAO and first shader
-        glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
-        sit_gs.gl.global_vao_id = 0;
-        glDeleteProgram(sit_gs.gl.vd_shader_program_id);
-        sit_gs.gl.vd_shader_program_id = 0;
+        glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
+        sit_render.gl.global_vao_id = 0;
+        glDeleteProgram(sit_render.gl.vd_shader_program_id);
+        sit_render.gl.vd_shader_program_id = 0;
         // Assume _SituationInitQuadRenderer cleaned up after itself on failure
         return shader_err_code;
     }
 
     // b. Initialize the Virtual Display Quad Renderer
-    // This function is responsible for creating sit_gs.gl.vd_quad_vao/vbo, configuring them for a simple textured quad, and unbinding them, ensuring sit_gs.gl.global_vao_id is bound again at the end.
+    // This function is responsible for creating sit_render.gl.vd_quad_vao/vbo, configuring them for a simple textured quad, and unbinding them, ensuring sit_render.gl.global_vao_id is bound again at the end.
     // You need to implement this function, similar to _SituationInitQuadRenderer.
     if (!_SituationInitGLVirtualDisplayRenderer()) { // <-- You need this function
          _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal virtual display renderer.");
          // Cleanup global VAO and shaders
-        glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
-        sit_gs.gl.global_vao_id = 0;
-        glDeleteProgram(sit_gs.gl.vd_shader_program_id);
-        sit_gs.gl.vd_shader_program_id = 0;
-        glDeleteProgram(sit_gs.gl.composite_shader_program_id);
-        sit_gs.gl.composite_shader_program_id = 0;
+        glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
+        sit_render.gl.global_vao_id = 0;
+        glDeleteProgram(sit_render.gl.vd_shader_program_id);
+        sit_render.gl.vd_shader_program_id = 0;
+        glDeleteProgram(sit_render.gl.composite_shader_program_id);
+        sit_render.gl.composite_shader_program_id = 0;
         // Assume _SituationInitQuadRenderer cleaned up after itself on failure
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
 
     // c. Create UBO for View/Projection data (used by user shaders, potentially internal ones too)
-    glCreateBuffers(1, &sit_gs.gl.view_data_ubo_id);
-    if (sit_gs.gl.view_data_ubo_id == 0) {
+    glCreateBuffers(1, &sit_render.gl.view_data_ubo_id);
+    if (sit_render.gl.view_data_ubo_id == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to create View UBO.");
         // Cleanup global VAO, shaders, and VD renderer resources
-        glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id);
-        sit_gs.gl.global_vao_id = 0;
-        glDeleteProgram(sit_gs.gl.vd_shader_program_id);
-        sit_gs.gl.vd_shader_program_id = 0;
-        glDeleteProgram(sit_gs.gl.composite_shader_program_id);
-        sit_gs.gl.composite_shader_program_id = 0;
+        glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
+        sit_render.gl.global_vao_id = 0;
+        glDeleteProgram(sit_render.gl.vd_shader_program_id);
+        sit_render.gl.vd_shader_program_id = 0;
+        glDeleteProgram(sit_render.gl.composite_shader_program_id);
+        sit_render.gl.composite_shader_program_id = 0;
         // Assume _SituationInitVirtualDisplayRenderer cleaned up after itself on failure
         // Assume _SituationInitQuadRenderer cleaned up after itself on failure
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
     // Allocate storage. Initial data can be set later or here if needed.
-    glNamedBufferStorage(sit_gs.gl.view_data_ubo_id, sizeof(ViewDataUBO), NULL, GL_DYNAMIC_STORAGE_BIT);
+    glNamedBufferStorage(sit_render.gl.view_data_ubo_id, sizeof(ViewDataUBO), NULL, GL_DYNAMIC_STORAGE_BIT);
     // Bind it to the standard binding point. This binding is persistent.
-    glBindBufferBase(GL_UNIFORM_BUFFER, SIT_UBO_BINDING_VIEW_DATA, sit_gs.gl.view_data_ubo_id);
+    glBindBufferBase(GL_UNIFORM_BUFFER, SIT_UBO_BINDING_VIEW_DATA, sit_render.gl.view_data_ubo_id);
     SIT_CHECK_GL_ERROR();
 
 
     // d. Initialize Virtual Display Slots (Data structures)
     for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
-        sit_gs.virtual_display_slots_used[i] = false;
-        // Ensure other members of sit_gs.virtual_display_slots[i] are initialized if needed
+        sit_render.virtual_display_slots_used[i] = false;
+        // Ensure other members of sit_render.virtual_display_slots[i] are initialized if needed
     }
-    sit_gs.active_virtual_display_count = 0;
+    sit_render.active_virtual_display_count = 0;
     // Note: Virtual Display *textures/framebuffers* are created on-demand when VDs are created by the user.
 
     // --- 5. Initial GL State Configuration ---
@@ -6134,70 +6146,70 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // --- 6. Finalize ---
     // CRITICAL: Ensure the global_vao_id is the active VAO at the end of initialization.
     // While it should already be bound from step 3, re-binding explicitly after potentially complex internal renderer setups is a good defensive practice.
-    glBindVertexArray(sit_gs.gl.global_vao_id);
+    glBindVertexArray(sit_render.gl.global_vao_id);
     SIT_CHECK_GL_ERROR();
 
     // Set the renderer type
-    sit_gs.renderer_type = SIT_RENDERER_OPENGL;
+    sit_render.renderer_type = SIT_RENDERER_OPENGL;
 
     // --- Populate Enabled Features Mask for OpenGL ---
-    sit_gs.enabled_features_mask = 0; // Clear first
+    sit_render.enabled_features_mask = 0; // Clear first
     // Basic features implied by GL 4.6
-    sit_gs.enabled_features_mask |= SIT_FEATURE_GEOMETRY_SHADER;
-    sit_gs.enabled_features_mask |= SIT_FEATURE_TESSELLATION_SHADER;
-    sit_gs.enabled_features_mask |= SIT_FEATURE_WIDE_LINES;
-    sit_gs.enabled_features_mask |= SIT_FEATURE_FILL_MODE_NON_SOLID;
-    sit_gs.enabled_features_mask |= SIT_FEATURE_SAMPLER_ANISOTROPY;
-    sit_gs.enabled_features_mask |= SIT_FEATURE_COMPUTE_SHADER;
-    sit_gs.enabled_features_mask |= SIT_FEATURE_INT64;
-    sit_gs.enabled_features_mask |= SIT_FEATURE_FLOAT64;
-    sit_gs.enabled_features_mask |= SIT_FEATURE_DRAW_INDIRECT_COUNT; // Core in 4.6 (GL_ARB_indirect_parameters)
-    sit_gs.enabled_features_mask |= SIT_FEATURE_MULTI_DRAW_INDIRECT; // Core in 4.3
-    sit_gs.enabled_features_mask |= SIT_FEATURE_MULTI_VIEWPORT;      // Core in 4.1 (GL_ARB_viewport_array)
+    sit_render.enabled_features_mask |= SIT_FEATURE_GEOMETRY_SHADER;
+    sit_render.enabled_features_mask |= SIT_FEATURE_TESSELLATION_SHADER;
+    sit_render.enabled_features_mask |= SIT_FEATURE_WIDE_LINES;
+    sit_render.enabled_features_mask |= SIT_FEATURE_FILL_MODE_NON_SOLID;
+    sit_render.enabled_features_mask |= SIT_FEATURE_SAMPLER_ANISOTROPY;
+    sit_render.enabled_features_mask |= SIT_FEATURE_COMPUTE_SHADER;
+    sit_render.enabled_features_mask |= SIT_FEATURE_INT64;
+    sit_render.enabled_features_mask |= SIT_FEATURE_FLOAT64;
+    sit_render.enabled_features_mask |= SIT_FEATURE_DRAW_INDIRECT_COUNT; // Core in 4.6 (GL_ARB_indirect_parameters)
+    sit_render.enabled_features_mask |= SIT_FEATURE_MULTI_DRAW_INDIRECT; // Core in 4.3
+    sit_render.enabled_features_mask |= SIT_FEATURE_MULTI_VIEWPORT;      // Core in 4.1 (GL_ARB_viewport_array)
 
     // Extension-based features
 #if defined(GLAD_GL_NV_shader_buffer_load) && defined(GLAD_GL_EXT_buffer_reference)
     if (GLAD_GL_NV_shader_buffer_load || GLAD_GL_EXT_buffer_reference) {
-        sit_gs.enabled_features_mask |= SIT_FEATURE_BINDLESS_BUFFERS;
+        sit_render.enabled_features_mask |= SIT_FEATURE_BINDLESS_BUFFERS;
     }
 #endif
 #if defined(GLAD_GL_ARB_bindless_texture)
     if (GLAD_GL_ARB_bindless_texture) {
-        sit_gs.enabled_features_mask |= SIT_FEATURE_BINDLESS_TEXTURES;
+        sit_render.enabled_features_mask |= SIT_FEATURE_BINDLESS_TEXTURES;
     }
 #endif
 #if defined(GLAD_GL_NV_mesh_shader) && defined(GLAD_GL_EXT_mesh_shader)
     if (GLAD_GL_NV_mesh_shader || GLAD_GL_EXT_mesh_shader) {
-        sit_gs.enabled_features_mask |= SIT_FEATURE_MESH_SHADER;
+        sit_render.enabled_features_mask |= SIT_FEATURE_MESH_SHADER;
     }
 #endif
 #if defined(GLAD_GL_KHR_shader_subgroup)
     if (GLAD_GL_KHR_shader_subgroup) {
-        sit_gs.enabled_features_mask |= SIT_FEATURE_SUBGROUP_OPERATIONS;
+        sit_render.enabled_features_mask |= SIT_FEATURE_SUBGROUP_OPERATIONS;
     }
 #endif
 #if defined(GLAD_GL_AMD_gpu_shader_half_float) || defined(GLAD_GL_NV_gpu_shader5)
     if (GLAD_GL_AMD_gpu_shader_half_float || GLAD_GL_NV_gpu_shader5) {
-        sit_gs.enabled_features_mask |= SIT_FEATURE_FLOAT16;
+        sit_render.enabled_features_mask |= SIT_FEATURE_FLOAT16;
     }
 #endif
 #if defined(GLAD_GL_NV_shader_atomic_float)
     if (GLAD_GL_NV_shader_atomic_float) {
-        sit_gs.enabled_features_mask |= SIT_FEATURE_ATOMIC_FLOAT;
+        sit_render.enabled_features_mask |= SIT_FEATURE_ATOMIC_FLOAT;
     }
 #endif
 #if defined(GLAD_GL_EXT_texture_compression_s3tc)
     if (GLAD_GL_EXT_texture_compression_s3tc) {
-        sit_gs.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_BC;
+        sit_render.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_BC;
     }
 #endif
 #if defined(GLAD_GL_KHR_texture_compression_astc_ldr)
     if (GLAD_GL_KHR_texture_compression_astc_ldr) {
-        sit_gs.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_ASTC;
+        sit_render.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_ASTC;
     }
 #endif
     // Standard GL framebuffers can usually handle 10-bit if requested
-    sit_gs.enabled_features_mask |= SIT_FEATURE_HDR_OUTPUT;
+    sit_render.enabled_features_mask |= SIT_FEATURE_HDR_OUTPUT;
 
     return SITUATION_SUCCESS;
 }
@@ -6445,7 +6457,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             .offset = 0,
             .size = sizeof(mat4) + sizeof(float)
         };
-        VkDescriptorSetLayout layouts[] = { sit_gs.vk.view_data_ubo_layout, sit_gs.vk.image_sampler_layout };
+        VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.image_sampler_layout };
         VkPipelineLayoutCreateInfo pipeline_layout_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 2,
@@ -6453,7 +6465,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             .pushConstantRangeCount = 1,
             .pPushConstantRanges = &push_constant_range
         };
-        if (vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &vd_compositing_pipeline_layout) != VK_SUCCESS) goto cleanup;
+        if (vkCreatePipelineLayout(sit_render.vk.device, &pipeline_layout_info, NULL, &vd_compositing_pipeline_layout) != VK_SUCCESS) goto cleanup;
 
         VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
         VkVertexInputAttributeDescription attr_descs[2] = {
@@ -6483,9 +6495,9 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
         if (!vs_spirv.data || !fs_spirv.data) goto cleanup;
 
         VkDescriptorSetLayout layouts[] = {
-            sit_gs.vk.view_data_ubo_layout,
-            sit_gs.vk.image_sampler_layout,
-            sit_gs.vk.image_sampler_layout
+            sit_render.vk.view_data_ubo_layout,
+            sit_render.vk.image_sampler_layout,
+            sit_render.vk.image_sampler_layout
         };
 
         VkPushConstantRange push_constant_range = {
@@ -6502,7 +6514,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             .pPushConstantRanges = &push_constant_range
         };
 
-        if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &advanced_compositing_pipeline_layout) != VK_SUCCESS) goto cleanup;
+        if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &advanced_compositing_pipeline_layout) != VK_SUCCESS) goto cleanup;
 
         VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
         VkVertexInputAttributeDescription attr_descs[2] = {
@@ -6532,7 +6544,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
         fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_TEXT_FRAGMENT_SHADER, "internal_text.frag", shaderc_fragment_shader);
         if (!vs_spirv.data || !fs_spirv.data) goto cleanup;
 
-        VkDescriptorSetLayout layouts[] = { sit_gs.vk.view_data_ubo_layout, sit_gs.vk.image_sampler_layout };
+        VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.image_sampler_layout };
         VkPushConstantRange push_constant_range = {
             .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
             .offset = 0,
@@ -6547,7 +6559,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             .pPushConstantRanges = &push_constant_range
         };
 
-        if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &text_pipeline_layout) != VK_SUCCESS) goto cleanup;
+        if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &text_pipeline_layout) != VK_SUCCESS) goto cleanup;
 
         VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 4 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
         VkVertexInputAttributeDescription attr_descs[2] = {
@@ -6569,31 +6581,31 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     }
 
     // --- Success ---
-    sit_gs.vk.quad_pipeline_layout = quad_pipeline_layout;
-    sit_gs.vk.quad_pipeline = quad_pipeline;
-    sit_gs.vk.quad_vertex_buffer = quad_vertex_buffer;
-    sit_gs.vk.quad_vertex_buffer_memory = quad_vertex_buffer_memory;
-    sit_gs.vk.text_pipeline = text_pipeline;
-    sit_gs.vk.text_pipeline_layout = text_pipeline_layout;
-    sit_gs.vk.vd_compositing_pipeline_layout = vd_compositing_pipeline_layout;
-    sit_gs.vk.vd_compositing_pipeline = vd_compositing_pipeline;
-    sit_gs.vk.advanced_compositing_pipeline_layout = advanced_compositing_pipeline_layout;
-    sit_gs.vk.advanced_compositing_pipeline = advanced_compositing_pipeline;
+    sit_render.vk.quad_pipeline_layout = quad_pipeline_layout;
+    sit_render.vk.quad_pipeline = quad_pipeline;
+    sit_render.vk.quad_vertex_buffer = quad_vertex_buffer;
+    sit_render.vk.quad_vertex_buffer_memory = quad_vertex_buffer_memory;
+    sit_render.vk.text_pipeline = text_pipeline;
+    sit_render.vk.text_pipeline_layout = text_pipeline_layout;
+    sit_render.vk.vd_compositing_pipeline_layout = vd_compositing_pipeline_layout;
+    sit_render.vk.vd_compositing_pipeline = vd_compositing_pipeline;
+    sit_render.vk.advanced_compositing_pipeline_layout = advanced_compositing_pipeline_layout;
+    sit_render.vk.advanced_compositing_pipeline = advanced_compositing_pipeline;
 
     return SITUATION_SUCCESS;
 
 cleanup:
     _SituationFreeSpirvBlob(&vs_spirv);
     _SituationFreeSpirvBlob(&fs_spirv);
-    if (quad_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, quad_pipeline_layout, NULL);
-    if (quad_pipeline) vkDestroyPipeline(sit_gs.vk.device, quad_pipeline, NULL);
-    if (quad_vertex_buffer) vmaDestroyBuffer(sit_gs.vk.vma_allocator, quad_vertex_buffer, quad_vertex_buffer_memory);
-    if (text_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, text_pipeline_layout, NULL);
-    if (text_pipeline) vkDestroyPipeline(sit_gs.vk.device, text_pipeline, NULL);
-    if (vd_compositing_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, vd_compositing_pipeline_layout, NULL);
-    if (vd_compositing_pipeline) vkDestroyPipeline(sit_gs.vk.device, vd_compositing_pipeline, NULL);
-    if (advanced_compositing_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, advanced_compositing_pipeline_layout, NULL);
-    if (advanced_compositing_pipeline) vkDestroyPipeline(sit_gs.vk.device, advanced_compositing_pipeline, NULL);
+    if (quad_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, quad_pipeline_layout, NULL);
+    if (quad_pipeline) vkDestroyPipeline(sit_render.vk.device, quad_pipeline, NULL);
+    if (quad_vertex_buffer) vmaDestroyBuffer(sit_render.vk.vma_allocator, quad_vertex_buffer, quad_vertex_buffer_memory);
+    if (text_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, text_pipeline_layout, NULL);
+    if (text_pipeline) vkDestroyPipeline(sit_render.vk.device, text_pipeline, NULL);
+    if (vd_compositing_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, vd_compositing_pipeline_layout, NULL);
+    if (vd_compositing_pipeline) vkDestroyPipeline(sit_render.vk.device, vd_compositing_pipeline, NULL);
+    if (advanced_compositing_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, advanced_compositing_pipeline_layout, NULL);
+    if (advanced_compositing_pipeline) vkDestroyPipeline(sit_render.vk.device, advanced_compositing_pipeline, NULL);
     return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
 
 #endif // SITUATION_ENABLE_SHADER_COMPILER
@@ -6614,34 +6626,34 @@ static void _SituationVulkanCreateScreenCopyResource(void) {
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
     _SituationVulkanCreateImage(
-        sit_gs.vk.swapchain_extent.width,
-        sit_gs.vk.swapchain_extent.height,
+        sit_render.vk.swapchain_extent.width,
+        sit_render.vk.swapchain_extent.height,
         1,
-        sit_gs.vk.swapchain_image_format, // Match swapchain format
+        sit_render.vk.swapchain_image_format, // Match swapchain format
         VK_IMAGE_TILING_OPTIMAL,
         usage,
         VMA_MEMORY_USAGE_GPU_ONLY,
-        &sit_gs.vk.screen_copy_image,
-        &sit_gs.vk.screen_copy_memory
+        &sit_render.vk.screen_copy_image,
+        &sit_render.vk.screen_copy_memory
     );
 
     // 2. Create View
-    sit_gs.vk.screen_copy_view = _SituationVulkanCreateImageView(
-        sit_gs.vk.screen_copy_image,
-        sit_gs.vk.swapchain_image_format,
+    sit_render.vk.screen_copy_view = _SituationVulkanCreateImageView(
+        sit_render.vk.screen_copy_image,
+        sit_render.vk.swapchain_image_format,
         VK_IMAGE_ASPECT_COLOR_BIT
     );
 
     // 3. Create Persistent Descriptor Set (Using standard image_sampler_layout)
-    // We reuse the Quad/VD sampler (sit_gs.vk.vd_compositing_pipeline has a sampler we can reuse, or just make a new one if needed. Actually, we need a sampler).
+    // We reuse the Quad/VD sampler (sit_render.vk.vd_compositing_pipeline has a sampler we can reuse, or just make a new one if needed. Actually, we need a sampler).
     // Let's steal the sampler from the first active VD or create a global linear sampler.
-    // For safety, let's assume sit_gs.vk.quad_pipeline_layout doesn't have one.
+    // For safety, let's assume sit_render.vk.quad_pipeline_layout doesn't have one.
     // We will use the sampler from the Virtual Display that invokes the draw, OR creates a static one.
     // **Optimization:** Re-use the existing VD sampler logic inside the render loop.
 
     // Allocate Set
-    sit_gs.vk.screen_copy_descriptor_set = _SituationVulkanAllocateDescriptorSet(sit_gs.vk.image_sampler_layout);
-    if (sit_gs.vk.screen_copy_descriptor_set == VK_NULL_HANDLE) {
+    sit_render.vk.screen_copy_descriptor_set = _SituationVulkanAllocateDescriptorSet(sit_render.vk.image_sampler_layout);
+    if (sit_render.vk.screen_copy_descriptor_set == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate descriptor set for Screen Copy.");
     }
 
@@ -6656,18 +6668,18 @@ static void _SituationVulkanCreateScreenCopyResource(void) {
  *          Called during swapchain cleanup.
  */
 static void _SituationVulkanDestroyScreenCopyResource(void) {
-    if (sit_gs.vk.screen_copy_descriptor_set) {
+    if (sit_render.vk.screen_copy_descriptor_set) {
         // If pool allows freeing:
-        // vkFreeDescriptorSets(sit_gs.vk.device, sit_gs.vk.descriptor_pool, 1, &sit_gs.vk.screen_copy_descriptor_set);
-        sit_gs.vk.screen_copy_descriptor_set = VK_NULL_HANDLE;
+        // vkFreeDescriptorSets(sit_render.vk.device, sit_render.vk.descriptor_pool, 1, &sit_render.vk.screen_copy_descriptor_set);
+        sit_render.vk.screen_copy_descriptor_set = VK_NULL_HANDLE;
     }
-    if (sit_gs.vk.screen_copy_view) {
-        vkDestroyImageView(sit_gs.vk.device, sit_gs.vk.screen_copy_view, NULL);
-        sit_gs.vk.screen_copy_view = VK_NULL_HANDLE;
+    if (sit_render.vk.screen_copy_view) {
+        vkDestroyImageView(sit_render.vk.device, sit_render.vk.screen_copy_view, NULL);
+        sit_render.vk.screen_copy_view = VK_NULL_HANDLE;
     }
-    if (sit_gs.vk.screen_copy_image) {
-        vmaDestroyImage(sit_gs.vk.vma_allocator, sit_gs.vk.screen_copy_image, sit_gs.vk.screen_copy_memory);
-        sit_gs.vk.screen_copy_image = VK_NULL_HANDLE;
+    if (sit_render.vk.screen_copy_image) {
+        vmaDestroyImage(sit_render.vk.vma_allocator, sit_render.vk.screen_copy_image, sit_render.vk.screen_copy_memory);
+        sit_render.vk.screen_copy_image = VK_NULL_HANDLE;
     }
 }
 
@@ -6675,7 +6687,7 @@ static void _SituationVulkanDestroyScreenCopyResource(void) {
  * @brief [INTERNAL] Allocates and begins recording a temporary, primary-level Vulkan command buffer.
  *
  * @details This helper function is a standard and convenient way to execute short, one-off sequences of Vulkan commands (e.g., image layout transitions, buffer copies, setting image data). It simplifies the process by:
- * 1.  Allocating a single primary command buffer from the library's main command pool (`sit_gs.vk.command_pool`).
+ * 1.  Allocating a single primary command buffer from the library's main command pool (`sit_render.vk.command_pool`).
  * 2.  Beginning recording on that buffer with the `VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT` flag, indicating it will be submitted once and then discarded.
  *
  * @par Typical Usage Pattern
@@ -6707,7 +6719,7 @@ static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "_SituationVulkanBeginSingleTimeCommands: Library not initialized.");
         return VK_NULL_HANDLE;
     }
-    if (sit_gs.vk.device == VK_NULL_HANDLE || sit_gs.vk.command_pool == VK_NULL_HANDLE) {
+    if (sit_render.vk.device == VK_NULL_HANDLE || sit_render.vk.command_pool == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanBeginSingleTimeCommands: Vulkan device or command pool is NULL.");
         return VK_NULL_HANDLE;
     }
@@ -6717,11 +6729,11 @@ static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; // Mandatory sType
     alloc_info.pNext = NULL; // No extension structures
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; // Primary command buffer
-    alloc_info.commandPool = sit_gs.vk.command_pool; // Use the library's main command pool
+    alloc_info.commandPool = sit_render.vk.command_pool; // Use the library's main command pool
     alloc_info.commandBufferCount = 1; // Allocate one command buffer
 
     VkCommandBuffer command_buffer = VK_NULL_HANDLE; // Initialize handle
-    VkResult result = vkAllocateCommandBuffers(sit_gs.vk.device, &alloc_info, &command_buffer);
+    VkResult result = vkAllocateCommandBuffers(sit_render.vk.device, &alloc_info, &command_buffer);
     if (result != VK_SUCCESS) {
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
@@ -6749,7 +6761,7 @@ static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
         // --- CRITICAL CLEANUP ---
         // If vkBeginCommandBuffer fails, we must free the allocated command buffer to prevent a resource leak.
-        vkFreeCommandBuffers(sit_gs.vk.device, sit_gs.vk.command_pool, 1, &command_buffer);
+        vkFreeCommandBuffers(sit_render.vk.device, sit_render.vk.command_pool, 1, &command_buffer);
         // --- END CRITICAL CLEANUP ---
         return VK_NULL_HANDLE; // Return invalid handle on begin failure
     }
@@ -6767,10 +6779,10 @@ static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
  *
  * @details This helper function completes the lifecycle of a temporary command buffer created by `_SituationVulkanBeginSingleTimeCommands`. It performs the following essential steps:
  * 1.  Ends the recording of the command buffer.
- * 2.  Submits the command buffer to the graphics queue (`sit_gs.vk.graphics_queue`) for execution.
+ * 2.  Submits the command buffer to the graphics queue (`sit_render.vk.graphics_queue`) for execution.
  * 3.  Waits for the graphics queue to become idle (`vkQueueWaitIdle`), ensuring that all commands recorded in the buffer have finished executing on the GPU.
  *     This makes the function synchronous.
- * 4.  Frees the command buffer back to the pool (`sit_gs.vk.command_pool`) from which it was allocated.
+ * 4.  Frees the command buffer back to the pool (`sit_render.vk.command_pool`) from which it was allocated.
  *
  * @par Typical Usage Pattern
  * This function is always paired with `_SituationVulkanBeginSingleTimeCommands`.
@@ -6801,7 +6813,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanEndSingleTimeCommands: command_buffer is VK_NULL_HANDLE.");
         return;
     }
-    // Note: We don't check sit_gs.vk.device/queue/pool here as they should be valid if this function is called correctly after Begin. A check could be added if paranoia dictates.
+    // Note: We don't check sit_render.vk.device/queue/pool here as they should be valid if this function is called correctly after Begin. A check could be added if paranoia dictates.
 
     // --- 2. End Recording the Command Buffer ---
     VkResult result = vkEndCommandBuffer(command_buffer);
@@ -6814,7 +6826,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
         // If vkEndCommandBuffer fails, the command buffer is in an undefined state.
         // Attempting to submit it would be incorrect.
         // The safest approach is to free it immediately to prevent leaks, even though submission/waiting will be skipped.
-        vkFreeCommandBuffers(sit_gs.vk.device, sit_gs.vk.command_pool, 1, &command_buffer);
+        vkFreeCommandBuffers(sit_render.vk.device, sit_render.vk.command_pool, 1, &command_buffer);
         // --- END CRITICAL DECISION ---
         return; // Exit early, do not proceed with submission/waiting
     }
@@ -6831,7 +6843,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
     submit_info.signalSemaphoreCount = 0; // No semaphores to signal upon completion
     submit_info.pSignalSemaphores = NULL;
 
-    result = vkQueueSubmit(sit_gs.vk.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+    result = vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
     if (result != VK_SUCCESS) {
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
@@ -6840,7 +6852,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
         // --- CRITICAL CLEANUP ---
         // Even if submission fails, we must still free the command buffer
         // to prevent a resource leak.
-        vkFreeCommandBuffers(sit_gs.vk.device, sit_gs.vk.command_pool, 1, &command_buffer);
+        vkFreeCommandBuffers(sit_render.vk.device, sit_render.vk.command_pool, 1, &command_buffer);
         // --- END CRITICAL CLEANUP ---
         return; // Exit early, do not proceed with waiting
     }
@@ -6848,7 +6860,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
     // --- 4. Wait for the Submitted Commands to Finish ---
     // This is the synchronous part. It blocks the CPU thread until the GPU is completely done executing the commands in `command_buffer`.
     // This ensures resources used by those commands are no longer in use.
-    result = vkQueueWaitIdle(sit_gs.vk.graphics_queue);
+    result = vkQueueWaitIdle(sit_render.vk.graphics_queue);
     if (result != VK_SUCCESS) {
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
@@ -6861,7 +6873,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
 
     // --- 5. Free the Command Buffer ---
     // Regardless of whether the wait succeeded (in terms of device health), we must free the command buffer to prevent leaks.
-    vkFreeCommandBuffers(sit_gs.vk.device, sit_gs.vk.command_pool, 1, &command_buffer);
+    vkFreeCommandBuffers(sit_render.vk.device, sit_render.vk.command_pool, 1, &command_buffer);
     // After this call, `command_buffer` is an invalid handle and must not be used.
 }
 
@@ -7271,7 +7283,7 @@ static void _SituationFreeSpirvBlob(_SituationSpirvBlob* blob) {
  *         - The `code_size` is 0.
  *         - The call to `vkCreateShaderModule` fails (e.g., due to invalid SPIR-V, driver issues, or device loss). A specific error message is set in the library's global error state via `_SituationSetErrorFromCode`.
  *
- * @note This function requires that `sit_gs.vk.device` is a valid and initialized `VkDevice` handle. This is guaranteed by the library's Vulkan initialization sequence if this function is called correctly.
+ * @note This function requires that `sit_render.vk.device` is a valid and initialized `VkDevice` handle. This is guaranteed by the library's Vulkan initialization sequence if this function is called correctly.
  * @note The caller is responsible for destroying the returned `VkShaderModule` using `vkDestroyShaderModule` when it is no longer needed, typically after the pipeline using it has been created.
  * @warning The SPIR-V data pointed to by `code` is not validated by this function for correctness beyond basic size and pointer checks. Passing invalid SPIR-V can lead to errors during pipeline creation or runtime.
  *
@@ -7311,7 +7323,7 @@ static VkShaderModule _SituationCreateVulkanShaderModule(const char* code, size_
     // This is the actual Vulkan API call that creates the shader module object.
     VkShaderModule shader_module = VK_NULL_HANDLE; // Initialize handle
     VkResult result = vkCreateShaderModule(
-        sit_gs.vk.device,       // The logical device the module is associated with
+        sit_render.vk.device,       // The logical device the module is associated with
         &create_info,           // Creation parameters
         NULL,                   // Optional allocation callbacks (use default)
         &shader_module          // Output: the created VkShaderModule handle
@@ -7392,8 +7404,8 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
     SIT_FREE(fs_code);
 
     if (vs_module == VK_NULL_HANDLE || fs_module == VK_NULL_HANDLE) {
-        if(vs_module) vkDestroyShaderModule(sit_gs.vk.device, vs_module, NULL);
-        if(fs_module) vkDestroyShaderModule(sit_gs.vk.device, fs_module, NULL);
+        if(vs_module) vkDestroyShaderModule(sit_render.vk.device, vs_module, NULL);
+        if(fs_module) vkDestroyShaderModule(sit_render.vk.device, fs_module, NULL);
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create shader modules");
         return shader;
     }
@@ -7421,8 +7433,8 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
     // This defines what uniforms/push constants the pipeline will use. A real engine has a complex system for this.
     // For now, we assume a simple, empty layout created during init.
     // VkPipelineLayoutCreateInfo pipeline_layout_info = ...
-    // vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &shader.pipeline_layout);
-    shader.pipeline_layout = sit_gs.vk.quad_pipeline_layout; // REUSING A PRE-CREATED ONE for simplicity
+    // vkCreatePipelineLayout(sit_render.vk.device, &pipeline_layout_info, NULL, &shader.pipeline_layout);
+    shader.pipeline_layout = sit_render.vk.quad_pipeline_layout; // REUSING A PRE-CREATED ONE for simplicity
 
     // 6. Create the Graphics Pipeline
     VkGraphicsPipelineCreateInfo pipeline_info = { .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
@@ -7437,10 +7449,10 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
     pipeline_info.pColorBlendState = &color_blending;
     pipeline_info.pDynamicState = &dynamic_state_info;
     pipeline_info.layout = shader.pipeline_layout;
-    pipeline_info.renderPass = sit_gs.vk.main_window_render_pass; // This pipeline is compatible with the main render pass
+    pipeline_info.renderPass = sit_render.vk.main_window_render_pass; // This pipeline is compatible with the main render pass
     pipeline_info.subpass = 0;
 
-    VkResult result = vkCreateGraphicsPipelines(sit_gs.vk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &shader.pipeline);
+    VkResult result = vkCreateGraphicsPipelines(sit_render.vk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &shader.pipeline);
     if (result != VK_SUCCESS) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "vkCreateGraphicsPipelines failed: VkResult = %d", (int)result);
@@ -7448,14 +7460,14 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
 
         // Clean up shader modules (existing)
         if (vs_module != VK_NULL_HANDLE) {
-            vkDestroyShaderModule(sit_gs.vk.device, vs_module, NULL);
+            vkDestroyShaderModule(sit_render.vk.device, vs_module, NULL);
         }
         if (fs_module != VK_NULL_HANDLE) {
-            vkDestroyShaderModule(sit_gs.vk.device, fs_module, NULL);
+            vkDestroyShaderModule(sit_render.vk.device, fs_module, NULL);
         }
         // Clean up pipeline layout if it was created (NEW FIX)
         if (shader.pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(sit_gs.vk.device, shader.pipeline_layout, NULL);
+            vkDestroyPipelineLayout(sit_render.vk.device, shader.pipeline_layout, NULL);
         }
         if (error_code) *error_code = SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
 
@@ -7490,14 +7502,14 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
     VkDescriptorSet out_set = VK_NULL_HANDLE;
 
     // Try allocating from current active pool
-    if (sit_gs.vk.descriptor_manager.count > 0) {
-        alloc_info.descriptorPool = sit_gs.vk.descriptor_manager.pools[sit_gs.vk.descriptor_manager.current_index];
-        res = vkAllocateDescriptorSets(sit_gs.vk.device, &alloc_info, &out_set);
+    if (sit_render.vk.descriptor_manager.count > 0) {
+        alloc_info.descriptorPool = sit_render.vk.descriptor_manager.pools[sit_render.vk.descriptor_manager.current_index];
+        res = vkAllocateDescriptorSets(sit_render.vk.device, &alloc_info, &out_set);
     }
 
     // Only attempt to grow if the pool is actually full or fragmented.
     // Fail fast on Host Memory or Device Lost errors.
-    if (res == VK_ERROR_OUT_OF_POOL_MEMORY || res == VK_ERROR_FRAGMENTED_POOL || sit_gs.vk.descriptor_manager.count == 0) {
+    if (res == VK_ERROR_OUT_OF_POOL_MEMORY || res == VK_ERROR_FRAGMENTED_POOL || sit_render.vk.descriptor_manager.count == 0) {
         // Define pool sizes (Big enough to avoid frequent resizing)
         VkDescriptorPoolSize pool_sizes[] = {
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
@@ -7515,30 +7527,30 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
         };
 
         VkDescriptorPool new_pool;
-        if (vkCreateDescriptorPool(sit_gs.vk.device, &pool_info, NULL, &new_pool) != VK_SUCCESS) {
+        if (vkCreateDescriptorPool(sit_render.vk.device, &pool_info, NULL, &new_pool) != VK_SUCCESS) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_POOL_EXHAUSTED, "Critical: Failed to grow descriptor pool.");
             return VK_NULL_HANDLE;
         }
 
         // Add to manager list (Dynamic array logic)
-        if (sit_gs.vk.descriptor_manager.count >= sit_gs.vk.descriptor_manager.capacity) {
-            int new_cap = (sit_gs.vk.descriptor_manager.capacity == 0) ? 1 : sit_gs.vk.descriptor_manager.capacity * 2;
-            void* new_pools = SIT_REALLOC(sit_gs.vk.descriptor_manager.pools, new_cap * sizeof(VkDescriptorPool));
+        if (sit_render.vk.descriptor_manager.count >= sit_render.vk.descriptor_manager.capacity) {
+            int new_cap = (sit_render.vk.descriptor_manager.capacity == 0) ? 1 : sit_render.vk.descriptor_manager.capacity * 2;
+            void* new_pools = SIT_REALLOC(sit_render.vk.descriptor_manager.pools, new_cap * sizeof(VkDescriptorPool));
             if (!new_pools) {
                 _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to resize descriptor pool list.");
-                vkDestroyDescriptorPool(sit_gs.vk.device, new_pool, NULL);
+                vkDestroyDescriptorPool(sit_render.vk.device, new_pool, NULL);
                 return VK_NULL_HANDLE;
             }
-            sit_gs.vk.descriptor_manager.pools = (VkDescriptorPool*)new_pools;
-            sit_gs.vk.descriptor_manager.capacity = new_cap;
+            sit_render.vk.descriptor_manager.pools = (VkDescriptorPool*)new_pools;
+            sit_render.vk.descriptor_manager.capacity = new_cap;
         }
-        sit_gs.vk.descriptor_manager.pools[sit_gs.vk.descriptor_manager.count] = new_pool;
-        sit_gs.vk.descriptor_manager.current_index = sit_gs.vk.descriptor_manager.count; // Set as active
-        sit_gs.vk.descriptor_manager.count++;
+        sit_render.vk.descriptor_manager.pools[sit_render.vk.descriptor_manager.count] = new_pool;
+        sit_render.vk.descriptor_manager.current_index = sit_render.vk.descriptor_manager.count; // Set as active
+        sit_render.vk.descriptor_manager.count++;
 
         // Try allocating again from new pool
         alloc_info.descriptorPool = new_pool;
-        if (vkAllocateDescriptorSets(sit_gs.vk.device, &alloc_info, &out_set) != VK_SUCCESS) {
+        if (vkAllocateDescriptorSets(sit_render.vk.device, &alloc_info, &out_set) != VK_SUCCESS) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Allocation failed even after pool growth.");
             return VK_NULL_HANDLE;
         }
@@ -7585,7 +7597,7 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     // --- Phase 2: Determine Dynamic Frame Count & Allocate Per-Frame State ---
     uint32_t desired_frames = (init_info->max_frames_in_flight > 1) ? init_info->max_frames_in_flight : 2;
     _SituationVulkanSwapchainSupportDetails support_details;
-    _SituationVulkanQuerySwapchainSupport(sit_gs.vk.physical_device, &support_details);
+    _SituationVulkanQuerySwapchainSupport(sit_render.vk.physical_device, &support_details);
 
     uint32_t image_count = support_details.capabilities.minImageCount + 1;
     if (support_details.capabilities.maxImageCount > 0 && image_count > support_details.capabilities.maxImageCount) {
@@ -7593,28 +7605,28 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     }
     _SituationVulkanFreeSwapchainSupportDetails(&support_details);
 
-    sit_gs.vk.max_frames_in_flight = (desired_frames < image_count) ? desired_frames : image_count;
-    printf("Situation [Vulkan]: Using %u frames in flight.\n", sit_gs.vk.max_frames_in_flight);
+    sit_render.vk.max_frames_in_flight = (desired_frames < image_count) ? desired_frames : image_count;
+    printf("Situation [Vulkan]: Using %u frames in flight.\n", sit_render.vk.max_frames_in_flight);
 
-    uint32_t frame_count = sit_gs.vk.max_frames_in_flight;
+    uint32_t frame_count = sit_render.vk.max_frames_in_flight;
     // Use SIT_CALLOC to zero-initialize all handles to NULL
-    sit_gs.vk.command_buffers = SIT_CALLOC(frame_count, sizeof(VkCommandBuffer));
-    sit_gs.vk.image_available_semaphores = SIT_CALLOC(frame_count, sizeof(VkSemaphore));
-    sit_gs.vk.render_finished_semaphores = SIT_CALLOC(frame_count, sizeof(VkSemaphore));
-    sit_gs.vk.in_flight_fences = SIT_CALLOC(frame_count, sizeof(VkFence));
-    sit_gs.vk.view_proj_ubo_buffer = SIT_CALLOC(frame_count, sizeof(VkBuffer));
-    sit_gs.vk.view_proj_ubo_memory = SIT_CALLOC(frame_count, sizeof(VmaAllocation));
-    sit_gs.vk.view_proj_ubo_descriptor_set = SIT_CALLOC(frame_count, sizeof(VkDescriptorSet));
-    sit_gs.vk.graveyards = SIT_CALLOC(frame_count, sizeof(SituationGraveyard));
+    sit_render.vk.command_buffers = SIT_CALLOC(frame_count, sizeof(VkCommandBuffer));
+    sit_render.vk.image_available_semaphores = SIT_CALLOC(frame_count, sizeof(VkSemaphore));
+    sit_render.vk.render_finished_semaphores = SIT_CALLOC(frame_count, sizeof(VkSemaphore));
+    sit_render.vk.in_flight_fences = SIT_CALLOC(frame_count, sizeof(VkFence));
+    sit_render.vk.view_proj_ubo_buffer = SIT_CALLOC(frame_count, sizeof(VkBuffer));
+    sit_render.vk.view_proj_ubo_memory = SIT_CALLOC(frame_count, sizeof(VmaAllocation));
+    sit_render.vk.view_proj_ubo_descriptor_set = SIT_CALLOC(frame_count, sizeof(VkDescriptorSet));
+    sit_render.vk.graveyards = SIT_CALLOC(frame_count, sizeof(SituationGraveyard));
 
-    if (!sit_gs.vk.command_buffers || !sit_gs.vk.image_available_semaphores || !sit_gs.vk.render_finished_semaphores || !sit_gs.vk.in_flight_fences || !sit_gs.vk.view_proj_ubo_buffer || !sit_gs.vk.view_proj_ubo_memory || !sit_gs.vk.view_proj_ubo_descriptor_set || !sit_gs.vk.graveyards) {
+    if (!sit_render.vk.command_buffers || !sit_render.vk.image_available_semaphores || !sit_render.vk.render_finished_semaphores || !sit_render.vk.in_flight_fences || !sit_render.vk.view_proj_ubo_buffer || !sit_render.vk.view_proj_ubo_memory || !sit_render.vk.view_proj_ubo_descriptor_set || !sit_render.vk.graveyards) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Per-frame Vulkan resource arrays");
         _SituationCleanupVulkan(); // The main cleanup function will free any non-NULL arrays
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
     for (uint32_t i = 0; i < frame_count; i++) {
-        _SituationInitGraveyard(&sit_gs.vk.graveyards[i]);
+        _SituationInitGraveyard(&sit_render.vk.graveyards[i]);
     }
 
     // --- Phase 3 & 4: Frame-Independent and Descriptor Infrastructure ---
@@ -7641,12 +7653,12 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     VkDescriptorPoolCreateInfo pool_info = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, .maxSets = total_max_sets, .poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]), .pPoolSizes = pool_sizes };
 
     // 1. Create the initial pool
-    if (vkCreateDescriptorPool(sit_gs.vk.device, &pool_info, NULL, &sit_gs.vk.persistent_descriptor_pool) != VK_SUCCESS) {
+    if (vkCreateDescriptorPool(sit_render.vk.device, &pool_info, NULL, &sit_render.vk.persistent_descriptor_pool) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create unified descriptor pool.");
         _SituationCleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
-    sit_gs.vk.descriptor_pool = sit_gs.vk.persistent_descriptor_pool;
+    sit_render.vk.descriptor_pool = sit_render.vk.persistent_descriptor_pool;
 
     // 1b. Create a separate pool specifically for assets
     VkDescriptorPoolSize asset_pool_sizes[] = {
@@ -7661,24 +7673,24 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         .poolSizeCount = 2,
         .pPoolSizes = asset_pool_sizes
     };
-    vkCreateDescriptorPool(sit_gs.vk.device, &asset_pool_info, NULL, &sit_gs.vk.asset_descriptor_pool);
+    vkCreateDescriptorPool(sit_render.vk.device, &asset_pool_info, NULL, &sit_render.vk.asset_descriptor_pool);
 
     // 2. Seed the Dynamic Manager with this pool
     // This ensures subsequent allocations use this pool instead of creating a new one immediately.
-    sit_gs.vk.descriptor_manager.capacity = 4;
-    sit_gs.vk.descriptor_manager.pools = (VkDescriptorPool*)SIT_MALLOC(sizeof(VkDescriptorPool) * 4);
-    if (!sit_gs.vk.descriptor_manager.pools) {
+    sit_render.vk.descriptor_manager.capacity = 4;
+    sit_render.vk.descriptor_manager.pools = (VkDescriptorPool*)SIT_MALLOC(sizeof(VkDescriptorPool) * 4);
+    if (!sit_render.vk.descriptor_manager.pools) {
         _SituationCleanupVulkan();
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
-    sit_gs.vk.descriptor_manager.pools[0] = sit_gs.vk.persistent_descriptor_pool;
-    sit_gs.vk.descriptor_manager.count = 1;
-    sit_gs.vk.descriptor_manager.current_index = 0;
+    sit_render.vk.descriptor_manager.pools[0] = sit_render.vk.persistent_descriptor_pool;
+    sit_render.vk.descriptor_manager.count = 1;
+    sit_render.vk.descriptor_manager.current_index = 0;
 
     // Create Descriptor Set Layouts... (Rest of function continues below)
     VkDescriptorSetLayoutBinding ubo_binding = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo ubo_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &ubo_binding };
-    if (vkCreateDescriptorSetLayout(sit_gs.vk.device, &ubo_layout_info, NULL, &sit_gs.vk.ubo_layout) != VK_SUCCESS) {
+    if (vkCreateDescriptorSetLayout(sit_render.vk.device, &ubo_layout_info, NULL, &sit_render.vk.ubo_layout) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create UBO layout.");
         _SituationCleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
@@ -7686,7 +7698,7 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
 
     VkDescriptorSetLayoutBinding ssbo_binding = { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo ssbo_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &ssbo_binding };
-    if (vkCreateDescriptorSetLayout(sit_gs.vk.device, &ssbo_layout_info, NULL, &sit_gs.vk.ssbo_layout) != VK_SUCCESS) {
+    if (vkCreateDescriptorSetLayout(sit_render.vk.device, &ssbo_layout_info, NULL, &sit_render.vk.ssbo_layout) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create SSBO layout.");
         _SituationCleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
@@ -7695,21 +7707,21 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     // Create layouts for internal renderers
     VkDescriptorSetLayoutBinding ubo_layout_binding_internal = { SIT_UBO_BINDING_VIEW_DATA, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo ubo_layout_info_internal = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &ubo_layout_binding_internal };
-    if (vkCreateDescriptorSetLayout(sit_gs.vk.device, &ubo_layout_info_internal, NULL, &sit_gs.vk.view_data_ubo_layout) != VK_SUCCESS) {
+    if (vkCreateDescriptorSetLayout(sit_render.vk.device, &ubo_layout_info_internal, NULL, &sit_render.vk.view_data_ubo_layout) != VK_SUCCESS) {
         _SituationCleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
     VkDescriptorSetLayoutBinding sampler_layout_binding = { SIT_SAMPLER_BINDING_VD_SOURCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo sampler_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &sampler_layout_binding };
-    if (vkCreateDescriptorSetLayout(sit_gs.vk.device, &sampler_layout_info, NULL, &sit_gs.vk.image_sampler_layout) != VK_SUCCESS) {
+    if (vkCreateDescriptorSetLayout(sit_render.vk.device, &sampler_layout_info, NULL, &sit_render.vk.image_sampler_layout) != VK_SUCCESS) {
          _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
     // Bindings for storage images usually happen in Compute or Fragment stages
     VkDescriptorSetLayoutBinding storage_img_binding = { 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo storage_img_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &storage_img_binding };
-    if (vkCreateDescriptorSetLayout(sit_gs.vk.device, &storage_img_info, NULL, &sit_gs.vk.storage_image_layout) != VK_SUCCESS) {
+    if (vkCreateDescriptorSetLayout(sit_render.vk.device, &storage_img_info, NULL, &sit_render.vk.storage_image_layout) != VK_SUCCESS) {
          _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
@@ -7720,17 +7732,17 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     for (uint32_t i = 0; i < frame_count; i++) {
         VkDeviceSize buffer_size = sizeof(ViewDataUBO);
         // Passing NULL cmd forces synchronous upload for init
-        if (_SituationVulkanCreateAndUploadBuffer(VK_NULL_HANDLE, NULL, buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &sit_gs.vk.view_proj_ubo_buffer[i], &sit_gs.vk.view_proj_ubo_memory[i]) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
+        if (_SituationVulkanCreateAndUploadBuffer(VK_NULL_HANDLE, NULL, buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &sit_render.vk.view_proj_ubo_buffer[i], &sit_render.vk.view_proj_ubo_memory[i]) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
 
-        sit_gs.vk.view_proj_ubo_descriptor_set[i] = _SituationVulkanAllocateDescriptorSet(sit_gs.vk.view_data_ubo_layout);
-        if (sit_gs.vk.view_proj_ubo_descriptor_set[i] == VK_NULL_HANDLE) {
+        sit_render.vk.view_proj_ubo_descriptor_set[i] = _SituationVulkanAllocateDescriptorSet(sit_render.vk.view_data_ubo_layout);
+        if (sit_render.vk.view_proj_ubo_descriptor_set[i] == VK_NULL_HANDLE) {
             _SituationCleanupVulkan();
             return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
         }
 
-        VkDescriptorBufferInfo buffer_info = { sit_gs.vk.view_proj_ubo_buffer[i], 0, buffer_size };
-        VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, sit_gs.vk.view_proj_ubo_descriptor_set[i], SIT_UBO_BINDING_VIEW_DATA, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, NULL, &buffer_info, NULL };
-        vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write, 0, NULL);
+        VkDescriptorBufferInfo buffer_info = { sit_render.vk.view_proj_ubo_buffer[i], 0, buffer_size };
+        VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, sit_render.vk.view_proj_ubo_descriptor_set[i], SIT_UBO_BINDING_VIEW_DATA, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, NULL, &buffer_info, NULL };
+        vkUpdateDescriptorSets(sit_render.vk.device, 1, &write, 0, NULL);
     }
 
     if (_SituationVulkanInitComputeLayouts() != SITUATION_SUCCESS) {
@@ -7756,12 +7768,12 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
 #else
     printf("Situation [Vulkan]: Shader compiler disabled. Internal renderers (Quad, VD) are unavailable.\n");
     // Zero out handles to be safe
-    sit_gs.vk.quad_pipeline = VK_NULL_HANDLE;
-    sit_gs.vk.vd_compositing_pipeline = VK_NULL_HANDLE;
-    sit_gs.vk.advanced_compositing_pipeline = VK_NULL_HANDLE;
+    sit_render.vk.quad_pipeline = VK_NULL_HANDLE;
+    sit_render.vk.vd_compositing_pipeline = VK_NULL_HANDLE;
+    sit_render.vk.advanced_compositing_pipeline = VK_NULL_HANDLE;
 #endif
 
-    sit_gs.renderer_type = SIT_RENDERER_VULKAN;
+    sit_render.renderer_type = SIT_RENDERER_VULKAN;
     return SITUATION_SUCCESS;
 }
 
@@ -7895,7 +7907,7 @@ static const char** _SituationVulkanGetRequiredExtensions(uint32_t* out_extensio
  * @return SITUATION_ERROR_VULKAN_INSTANCE_FAILED if `vkCreateInstance` fails for any reason (e.g., driver issues, unsupported API version, missing extensions).
  *
  * @note This function relies on `_SituationVulkanGetRequiredExtensions` to determine the list of necessary instance extensions.
- * @note The created `VkInstance` handle is stored in `sit_gs.vk.instance`.
+ * @note The created `VkInstance` handle is stored in `sit_render.vk.instance`.
  *
  * @see _SituationInitVulkan(), _SituationVulkanGetRequiredExtensions()
  */
@@ -8020,7 +8032,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
 
     // --- 8. Create the Vulkan Instance ---
     // This is the actual API call that creates the VkInstance handle.
-    VkResult create_result = vkCreateInstance(&create_info, NULL, &sit_gs.vk.instance);
+    VkResult create_result = vkCreateInstance(&create_info, NULL, &sit_render.vk.instance);
     if (create_result != VK_SUCCESS) {
         // vkCreateInstance failed. This could be due to various reasons:
         // - Unsupported API version (app_info.apiVersion)
@@ -8037,7 +8049,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
 
     // --- 9. Success ---
     // If we reach here, the VkInstance was created successfully.
-    // The handle is stored in sit_gs.vk.instance for use by subsequent Vulkan functions.
+    // The handle is stored in sit_render.vk.instance for use by subsequent Vulkan functions.
     return SITUATION_SUCCESS;
 }
 
@@ -8139,7 +8151,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback( VkDebugUtil
  * 2.  Preparing a `VkDebugUtilsMessengerCreateInfoEXT` struct with the desired message severity levels, message types, and the callback function pointer.
  * 3.  Dynamically loading the `vkCreateDebugUtilsMessengerEXT` function pointer using `vkGetInstanceProcAddr`, as it's an extension function.
  * 4.  Calling the loaded function to create the messenger object.
- * 5.  Storing the created messenger handle in `sit_gs.vk.debug_messenger` for later destruction.
+ * 5.  Storing the created messenger handle in `sit_render.vk.debug_messenger` for later destruction.
  *
  * @param init_info A pointer to the `SituationInitInfo` struct provided during `SituationInit`. This is used to check if validation is enabled.
  *                  This pointer must not be NULL.
@@ -8148,8 +8160,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback( VkDebugUtil
  * @return SITUATION_ERROR_INVALID_PARAM if `init_info` is NULL.
  * @return SITUATION_ERROR_VULKAN_INSTANCE_FAILED if the required `vkCreateDebugUtilsMessengerEXT` function pointer cannot be loaded, or if the call to create the messenger fails. A specific error message is set.
  *
- * @note This function must be called after the Vulkan instance (`sit_gs.vk.instance`) has been successfully created.
- * @note The created messenger (`sit_gs.vk.debug_messenger`) is destroyed by `_SituationCleanupVulkan`.
+ * @note This function must be called after the Vulkan instance (`sit_render.vk.instance`) has been successfully created.
+ * @note The created messenger (`sit_render.vk.debug_messenger`) is destroyed by `_SituationCleanupVulkan`.
  * @warning This function should only be called when using the Vulkan backend (`SITUATION_USE_VULKAN` is defined).
  *
  * @see _SituationVulkanDebugCallback(), _SituationInitVulkan(), _SituationVulkanCreateInstance(), _SituationCleanupVulkan(), vkCreateDebugUtilsMessengerEXT()
@@ -8166,7 +8178,7 @@ static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInf
     // This is a normal and common path.
     if (!init_info->enable_vulkan_validation) {
         // Ensure the debug messenger handle is clean/invalid if not used.
-        sit_gs.vk.debug_messenger = VK_NULL_HANDLE;
+        sit_render.vk.debug_messenger = VK_NULL_HANDLE;
         return SITUATION_SUCCESS;
     }
 
@@ -8202,7 +8214,7 @@ static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInf
     // so it's not automatically loaded with the standard Vulkan loader.
     // We must retrieve its function pointer manually using vkGetInstanceProcAddr.
     PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT_func =
-        (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(sit_gs.vk.instance, "vkCreateDebugUtilsMessengerEXT");
+        (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(sit_render.vk.instance, "vkCreateDebugUtilsMessengerEXT");
 
     // Check if the function pointer was successfully loaded.
     if (vkCreateDebugUtilsMessengerEXT_func == NULL) {
@@ -8210,17 +8222,17 @@ static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInf
         // VK_EXT_debug_utils extension is not available or not properly loaded.
         _SituationSetErrorFromCode( SITUATION_ERROR_VULKAN_INSTANCE_FAILED, "_SituationVulkanSetupDebugMessenger: Failed to load vkCreateDebugUtilsMessengerEXT function pointer. Check if VK_EXT_debug_utils is supported." );
         // Ensure the handle is explicitly invalid.
-        sit_gs.vk.debug_messenger = VK_NULL_HANDLE;
+        sit_render.vk.debug_messenger = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_INSTANCE_FAILED;
     }
 
     // --- 5. Create the Debug Messenger ---
     // Call the loaded function to create the VkDebugUtilsMessengerEXT object.
     VkResult result = vkCreateDebugUtilsMessengerEXT_func(
-        sit_gs.vk.instance, // The Vulkan instance
+        sit_render.vk.instance, // The Vulkan instance
         &create_info,       // Creation parameters
         NULL,               // Optional allocation callbacks (use default)
-        &sit_gs.vk.debug_messenger // Output: the created messenger handle
+        &sit_render.vk.debug_messenger // Output: the created messenger handle
     );
 
     // --- 6. Handle Creation Result ---
@@ -8235,13 +8247,13 @@ static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInf
         );
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_INSTANCE_FAILED, error_detail);
         // Ensure the global handle is explicitly invalid on failure.
-        sit_gs.vk.debug_messenger = VK_NULL_HANDLE;
+        sit_render.vk.debug_messenger = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_INSTANCE_FAILED;
     }
 
     // --- 7. Success ---
     // If we reach here, the VkDebugUtilsMessengerEXT was created successfully.
-    // The handle is stored in sit_gs.vk.debug_messenger.
+    // The handle is stored in sit_render.vk.debug_messenger.
     // It will receive messages from the validation layers until it is destroyed by _SituationCleanupVulkan (which should use vkDestroyDebugUtilsMessengerEXT).
     // The next step in Vulkan initialization is typically picking a physical device.
     return SITUATION_SUCCESS;
@@ -8284,7 +8296,7 @@ static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t heigh
     VmaAllocationCreateInfo alloc_info = {0};
     alloc_info.usage = memory_usage;
 
-    if (vmaCreateImage(sit_gs.vk.vma_allocator, &image_info, &alloc_info, out_image, out_allocation, NULL) != VK_SUCCESS) {
+    if (vmaCreateImage(sit_render.vk.vma_allocator, &image_info, &alloc_info, out_image, out_allocation, NULL) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create/allocate image.");
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
@@ -8300,12 +8312,12 @@ static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t heigh
  *
  * @return SITUATION_SUCCESS on successful creation of the Vulkan surface.
  * @return SITUATION_ERROR_INVALID_PARAM if required prerequisites are not met:
- *         - `sit_gs.vk.instance` is `VK_NULL_HANDLE`.
+ *         - `sit_render.vk.instance` is `VK_NULL_HANDLE`.
  *         - `sit_gs.sit_glfw_window` is `NULL`.
  * @return SITUATION_ERROR_VULKAN_INIT_FAILED if `glfwCreateWindowSurface` fails to create the surface. This can happen due to incompatibilities between the Vulkan instance and the GLFW window, or platform-specific issues. A specific error message is set.
  *
- * @note This function must be called after the Vulkan instance (`sit_gs.vk.instance`) and the GLFW window (`sit_gs.sit_glfw_window`) have been successfully created.
- * @note The created `VkSurfaceKHR` handle is stored in `sit_gs.vk.surface`.
+ * @note This function must be called after the Vulkan instance (`sit_render.vk.instance`) and the GLFW window (`sit_gs.sit_glfw_window`) have been successfully created.
+ * @note The created `VkSurfaceKHR` handle is stored in `sit_render.vk.surface`.
  * @note This function relies on the `VK_KHR_surface` extension being enabled (which is typically done automatically by GLFW when `glfwCreateWindowSurface` is called) and the appropriate platform-specific surface extension (e.g., `VK_KHR_win32_surface`, `VK_KHR_xcb_surface`).
  * @warning This function should only be called when using the Vulkan backend (`SITUATION_USE_VULKAN` is defined).
  *
@@ -8315,7 +8327,7 @@ static SituationError _SituationVulkanCreateSurface(void) {
     // --- 1. Input Validation (Defensive for internal helper) ---
     // Check if the prerequisite Vulkan instance and GLFW window handles are valid.
     // While the library's init sequence should guarantee this, checking adds robustness.
-    if (sit_gs.vk.instance == VK_NULL_HANDLE) {
+    if (sit_render.vk.instance == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateSurface: Vulkan instance is NULL. Call _SituationVulkanCreateInstance first." );
         return SITUATION_ERROR_INVALID_PARAM;
     }
@@ -8329,10 +8341,10 @@ static SituationError _SituationVulkanCreateSurface(void) {
     // It creates a VkSurfaceKHR object associated with the GLFW window.
     // The VkAllocationCallbacks parameter is NULL, using default allocation.
     VkResult result = glfwCreateWindowSurface(
-        sit_gs.vk.instance,         // The Vulkan instance
+        sit_render.vk.instance,         // The Vulkan instance
         sit_gs.sit_glfw_window,     // The GLFW window
         NULL,                       // Optional allocation callbacks
-        &sit_gs.vk.surface          // Output: the created VkSurfaceKHR handle
+        &sit_render.vk.surface          // Output: the created VkSurfaceKHR handle
     );
 
     // --- 3. Handle Result ---
@@ -8352,13 +8364,13 @@ static SituationError _SituationVulkanCreateSurface(void) {
         );
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_INIT_FAILED, error_detail);
         // Ensure the global surface handle is explicitly invalid on failure.
-        sit_gs.vk.surface = VK_NULL_HANDLE;
+        sit_render.vk.surface = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_INIT_FAILED;
     }
 
     // --- 4. Success ---
     // If we reach here, the VkSurfaceKHR was created successfully by GLFW.
-    // The handle is stored in sit_gs.vk.surface and will be used subsequently
+    // The handle is stored in sit_render.vk.surface and will be used subsequently
     // for swapchain creation and eventually presentation.
     // The next step in Vulkan init is typically picking a physical device
     // that supports this surface.
@@ -8380,7 +8392,7 @@ static SituationError _SituationVulkanCreateSurface(void) {
  *   3.  Devices that pass the essential checks are then scored based on desirable properties, with a strong preference given to discrete GPUs over integrated ones.
  *   4.  The device with the highest score is selected as the primary GPU for the application.
  *
- * Upon successful selection, this function stores the chosen `VkPhysicalDevice` handle in `sit_gs.vk.physical_device` and caches its graphics and present queue family indices for later use in logical device creation.
+ * Upon successful selection, this function stores the chosen `VkPhysicalDevice` handle in `sit_render.vk.physical_device` and caches its graphics and present queue family indices for later use in logical device creation.
  *
  * @return SITUATION_SUCCESS if a suitable physical device is found and selected.
  * @return SITUATION_ERROR_VULKAN_DEVICE_FAILED if no Vulkan-capable GPUs are found, or if none of the found GPUs meet the minimum suitability requirements.
@@ -8392,14 +8404,14 @@ static SituationError _SituationVulkanCreateSurface(void) {
  */
 static SituationError _SituationVulkanPickPhysicalDevice(void) {
     uint32_t device_count = 0;
-    vkEnumeratePhysicalDevices(sit_gs.vk.instance, &device_count, NULL);
+    vkEnumeratePhysicalDevices(sit_render.vk.instance, &device_count, NULL);
     if (device_count == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DEVICE_FAILED, "Failed to find GPUs with Vulkan support.");
         return SITUATION_ERROR_VULKAN_DEVICE_FAILED;
     }
 
     VkPhysicalDevice* devices = (VkPhysicalDevice*)SIT_MALLOC(sizeof(VkPhysicalDevice) * device_count);
-    vkEnumeratePhysicalDevices(sit_gs.vk.instance, &device_count, devices);
+    vkEnumeratePhysicalDevices(sit_render.vk.instance, &device_count, devices);
 
     int max_score = 0;
     VkPhysicalDevice best_device = VK_NULL_HANDLE;
@@ -8421,10 +8433,10 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
     }
 
     // Store the best device and its queue family indices
-    sit_gs.vk.physical_device = best_device;
-    _SituationQueueFamilyIndices indices = _SituationVulkanFindQueueFamilies(best_device, sit_gs.vk.surface);
-    sit_gs.vk.graphics_family_index = indices.graphics_family;
-    sit_gs.vk.present_family_index = indices.present_family;
+    sit_render.vk.physical_device = best_device;
+    _SituationQueueFamilyIndices indices = _SituationVulkanFindQueueFamilies(best_device, sit_render.vk.surface);
+    sit_render.vk.graphics_family_index = indices.graphics_family;
+    sit_render.vk.present_family_index = indices.present_family;
 
     // Log the chosen device for debugging
     VkPhysicalDeviceProperties properties;
@@ -8457,20 +8469,20 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
  */
 static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInfo* init_info) {
     // --- Queue Create Info (Your existing code is good) ---
-    uint32_t queue_family_indices[] = { sit_gs.vk.graphics_family_index, sit_gs.vk.present_family_index };
+    uint32_t queue_family_indices[] = { sit_render.vk.graphics_family_index, sit_render.vk.present_family_index };
     VkDeviceQueueCreateInfo queue_create_infos[2] = {0};
     float queue_priority = 1.0f;
     uint32_t unique_queue_family_count = 1;
 
     queue_create_infos[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queue_create_infos[0].queueFamilyIndex = sit_gs.vk.graphics_family_index;
+    queue_create_infos[0].queueFamilyIndex = sit_render.vk.graphics_family_index;
     queue_create_infos[0].queueCount = 1;
     queue_create_infos[0].pQueuePriorities = &queue_priority;
 
-    if (sit_gs.vk.graphics_family_index != sit_gs.vk.present_family_index) {
+    if (sit_render.vk.graphics_family_index != sit_render.vk.present_family_index) {
         unique_queue_family_count = 2;
         queue_create_infos[1].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_create_infos[1].queueFamilyIndex = sit_gs.vk.present_family_index;
+        queue_create_infos[1].queueFamilyIndex = sit_render.vk.present_family_index;
         queue_create_infos[1].queueCount = 1;
         queue_create_infos[1].pQueuePriorities = &queue_priority;
     }
@@ -8493,9 +8505,9 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
 
     // Check for optional extensions
     uint32_t available_ext_count = 0;
-    vkEnumerateDeviceExtensionProperties(sit_gs.vk.physical_device, NULL, &available_ext_count, NULL);
+    vkEnumerateDeviceExtensionProperties(sit_render.vk.physical_device, NULL, &available_ext_count, NULL);
     VkExtensionProperties* available_exts = (VkExtensionProperties*)SIT_MALLOC(sizeof(VkExtensionProperties) * available_ext_count);
-    vkEnumerateDeviceExtensionProperties(sit_gs.vk.physical_device, NULL, &available_ext_count, available_exts);
+    vkEnumerateDeviceExtensionProperties(sit_render.vk.physical_device, NULL, &available_ext_count, available_exts);
 
     bool mesh_shader_supported = false;
     bool ray_tracing_supported = false;
@@ -8522,7 +8534,7 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
 
     if (mesh_shader_supported) {
         device_extensions[extension_count++] = "VK_EXT_mesh_shader";
-        sit_gs.enabled_features_mask |= SIT_FEATURE_MESH_SHADER;
+        sit_render.enabled_features_mask |= SIT_FEATURE_MESH_SHADER;
         mesh_features.meshShader = VK_TRUE;
     }
 
@@ -8530,7 +8542,7 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
         device_extensions[extension_count++] = "VK_KHR_ray_tracing_pipeline";
         device_extensions[extension_count++] = "VK_KHR_acceleration_structure"; // Prerequisite
         device_extensions[extension_count++] = "VK_KHR_deferred_host_operations"; // Prerequisite
-        sit_gs.enabled_features_mask |= SIT_FEATURE_RAY_TRACING;
+        sit_render.enabled_features_mask |= SIT_FEATURE_RAY_TRACING;
 
         ray_tracing_features.rayTracingPipeline = VK_TRUE;
         accel_features.accelerationStructure = VK_TRUE;
@@ -8548,7 +8560,7 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     supported_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     supported_features2.pNext = &supported_vk12;
 
-    vkGetPhysicalDeviceFeatures2(sit_gs.vk.physical_device, &supported_features2);
+    vkGetPhysicalDeviceFeatures2(sit_render.vk.physical_device, &supported_features2);
 
     // 2. Prepare the structures for creation (enable what we found)
     VkPhysicalDeviceVulkan12Features enable_vk12 = {0};
@@ -8570,7 +8582,7 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     // Enable Buffer Device Address (Critical for Bindless)
     if (supported_vk12.bufferDeviceAddress) {
         enable_vk12.bufferDeviceAddress = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_BINDLESS_BUFFERS;
+        sit_render.enabled_features_mask |= SIT_FEATURE_BINDLESS_BUFFERS;
     } else {
         printf("Situation [Vulkan]: Warning - bufferDeviceAddress not supported. Bindless features disabled.\n");
     }
@@ -8582,76 +8594,76 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
         if (supported_vk12.shaderSampledImageArrayNonUniformIndexing && supported_vk12.runtimeDescriptorArray) {
              enable_vk12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
              enable_vk12.runtimeDescriptorArray = VK_TRUE;
-             sit_gs.enabled_features_mask |= SIT_FEATURE_BINDLESS_TEXTURES;
+             sit_render.enabled_features_mask |= SIT_FEATURE_BINDLESS_TEXTURES;
         }
     }
 
     // Enable Float16 (Half-float)
     if (supported_vk12.shaderFloat16) {
         enable_vk12.shaderFloat16 = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_FLOAT16;
+        sit_render.enabled_features_mask |= SIT_FEATURE_FLOAT16;
     }
 
     // Enable Draw Indirect Count
     if (supported_vk12.drawIndirectCount) {
         enable_vk12.drawIndirectCount = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_DRAW_INDIRECT_COUNT;
+        sit_render.enabled_features_mask |= SIT_FEATURE_DRAW_INDIRECT_COUNT;
     }
 
     // Enable Standard Features (Compute, Geometry, etc.)
     // Vulkan 1.0 features are in supported_features2.features
     if (supported_features2.features.geometryShader) {
         device_features.geometryShader = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_GEOMETRY_SHADER;
+        sit_render.enabled_features_mask |= SIT_FEATURE_GEOMETRY_SHADER;
     }
     if (supported_features2.features.tessellationShader) {
         device_features.tessellationShader = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_TESSELLATION_SHADER;
+        sit_render.enabled_features_mask |= SIT_FEATURE_TESSELLATION_SHADER;
     }
     if (supported_features2.features.wideLines) {
         device_features.wideLines = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_WIDE_LINES;
+        sit_render.enabled_features_mask |= SIT_FEATURE_WIDE_LINES;
     }
     if (supported_features2.features.fillModeNonSolid) {
         device_features.fillModeNonSolid = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_FILL_MODE_NON_SOLID;
+        sit_render.enabled_features_mask |= SIT_FEATURE_FILL_MODE_NON_SOLID;
     }
     if (supported_features2.features.samplerAnisotropy) {
         device_features.samplerAnisotropy = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_SAMPLER_ANISOTROPY;
+        sit_render.enabled_features_mask |= SIT_FEATURE_SAMPLER_ANISOTROPY;
     }
     if (supported_features2.features.shaderInt64) {
         device_features.shaderInt64 = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_INT64;
+        sit_render.enabled_features_mask |= SIT_FEATURE_INT64;
     }
     if (supported_features2.features.shaderFloat64) {
         device_features.shaderFloat64 = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_FLOAT64;
+        sit_render.enabled_features_mask |= SIT_FEATURE_FLOAT64;
     }
     if (supported_features2.features.multiViewport) {
         device_features.multiViewport = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_MULTI_VIEWPORT;
+        sit_render.enabled_features_mask |= SIT_FEATURE_MULTI_VIEWPORT;
     }
     if (supported_features2.features.multiDrawIndirect) {
         device_features.multiDrawIndirect = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_MULTI_DRAW_INDIRECT;
+        sit_render.enabled_features_mask |= SIT_FEATURE_MULTI_DRAW_INDIRECT;
     }
     if (supported_features2.features.textureCompressionBC) {
         device_features.textureCompressionBC = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_BC;
+        sit_render.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_BC;
     }
     if (supported_features2.features.textureCompressionASTC_LDR) {
         device_features.textureCompressionASTC_LDR = VK_TRUE;
-        sit_gs.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_ASTC;
+        sit_render.enabled_features_mask |= SIT_FEATURE_TEXTURE_COMPRESSION_ASTC;
     }
 
     // Compute is mandatory in Vulkan, but good to track
-    sit_gs.enabled_features_mask |= SIT_FEATURE_COMPUTE_SHADER;
+    sit_render.enabled_features_mask |= SIT_FEATURE_COMPUTE_SHADER;
 
     // Subgroup Operations (Core in 1.1)
     // We can assume basic subgroup support if we are on Vulkan 1.2, but let's check properties if we were being pedantic.
     // For now, enable the flag as it's standard.
-    sit_gs.enabled_features_mask |= SIT_FEATURE_SUBGROUP_OPERATIONS;
+    sit_render.enabled_features_mask |= SIT_FEATURE_SUBGROUP_OPERATIONS;
 
 
     // --- Device Create Info ---
@@ -8674,14 +8686,14 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     }
 
     // --- Create the Device ---
-    if (vkCreateDevice(sit_gs.vk.physical_device, &create_info, NULL, &sit_gs.vk.device) != VK_SUCCESS) {
+    if (vkCreateDevice(sit_render.vk.physical_device, &create_info, NULL, &sit_render.vk.device) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DEVICE_FAILED, "Failed to create logical device");
         return SITUATION_ERROR_VULKAN_DEVICE_FAILED;
     }
 
     // --- Get Queue Handles (Good as is) ---
-    vkGetDeviceQueue(sit_gs.vk.device, sit_gs.vk.graphics_family_index, 0, &sit_gs.vk.graphics_queue);
-    vkGetDeviceQueue(sit_gs.vk.device, sit_gs.vk.present_family_index, 0, &sit_gs.vk.present_queue);
+    vkGetDeviceQueue(sit_render.vk.device, sit_render.vk.graphics_family_index, 0, &sit_render.vk.graphics_queue);
+    vkGetDeviceQueue(sit_render.vk.device, sit_render.vk.present_family_index, 0, &sit_render.vk.present_queue);
 
     return SITUATION_SUCCESS;
 }
@@ -8693,12 +8705,12 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
  *          VMA handles memory type selection, sub-allocation, and defragmentation internally.
  *
  * @return SITUATION_SUCCESS on successful creation of the VMA allocator.
- * @return SITUATION_ERROR_INVALID_PARAM if required Vulkan handles (instance, physicalDevice, device) in `sit_gs.vk` are invalid.
+ * @return SITUATION_ERROR_INVALID_PARAM if required Vulkan handles (instance, physicalDevice, device) in `sit_render.vk` are invalid.
  * @return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED if `vmaCreateAllocator` fails for any reason (e.g., incompatible Vulkan version, driver issues, internal VMA error). A specific error message is set.
  *
  * @note This function must be called after the Vulkan instance, physical device, and logical device have been successfully created and their handles
- *       stored in `sit_gs.vk.instance`, `sit_gs.vk.physical_device`, and `sit_gs.vk.device` respectively.
- * @note The created `VmaAllocator` handle is stored in `sit_gs.vk.vma_allocator`.
+ *       stored in `sit_render.vk.instance`, `sit_render.vk.physical_device`, and `sit_render.vk.device` respectively.
+ * @note The created `VmaAllocator` handle is stored in `sit_render.vk.vma_allocator`.
  * @note The target Vulkan API version is specified as `VK_API_VERSION_1_1`.
  *       Ensure this aligns with the version used in `VkApplicationInfo` and is supported by the chosen physical device and driver.
  *
@@ -8708,9 +8720,9 @@ static SituationError _SituationVulkanCreateAllocator(void) {
     // --- 1. Input Validation (Defensive for internal helper) ---
     // Check if the prerequisite Vulkan handles are valid before passing them to VMA.
     // While the library's init sequence should guarantee this, a check adds robustness.
-    if (sit_gs.vk.instance == VK_NULL_HANDLE ||
-        sit_gs.vk.physical_device == VK_NULL_HANDLE ||
-        sit_gs.vk.device == VK_NULL_HANDLE) {
+    if (sit_render.vk.instance == VK_NULL_HANDLE ||
+        sit_render.vk.physical_device == VK_NULL_HANDLE ||
+        sit_render.vk.device == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateAllocator: Vulkan instance, physical device, or logical device is NULL." );
         return SITUATION_ERROR_INVALID_PARAM;
     }
@@ -8719,9 +8731,9 @@ static SituationError _SituationVulkanCreateAllocator(void) {
     VmaAllocatorCreateInfo allocator_info = {0}; // Explicitly zero-initialize
     allocator_info.sType = VMA_STRUCTURE_TYPE_ALLOCATOR_CREATE_INFO; // Set sType for completeness/extensibility
     allocator_info.vulkanApiVersion = VK_API_VERSION_1_2; // Specify target Vulkan API version
-    allocator_info.instance = sit_gs.vk.instance; // Link to Vulkan instance
-    allocator_info.physicalDevice = sit_gs.vk.physical_device; // Link to physical device
-    allocator_info.device = sit_gs.vk.device; // Link to logical device
+    allocator_info.instance = sit_render.vk.instance; // Link to Vulkan instance
+    allocator_info.physicalDevice = sit_render.vk.physical_device; // Link to physical device
+    allocator_info.device = sit_render.vk.device; // Link to logical device
     // allocator_info.pAllocationCallbacks = NULL; // Use default allocation callbacks
     // allocator_info.pDeviceMemoryCallbacks = NULL; // No custom memory callbacks
     // allocator_info.pHeapSizeLimit = NULL; // No heap size limits
@@ -8729,7 +8741,7 @@ static SituationError _SituationVulkanCreateAllocator(void) {
 
     // --- 3. Create the VMA Allocator ---
     // This is the actual call to the VMA library to create the allocator instance.
-    VkResult result = vmaCreateAllocator(&allocator_info, &sit_gs.vk.vma_allocator);
+    VkResult result = vmaCreateAllocator(&allocator_info, &sit_render.vk.vma_allocator);
     if (result != VK_SUCCESS) {
         // vmaCreateAllocator failed. This usually indicates a problem with
         // the provided Vulkan handles, an unsupported API version, or an internal VMA issue.
@@ -8742,13 +8754,13 @@ static SituationError _SituationVulkanCreateAllocator(void) {
         );
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, error_detail);
         // Ensure the handle is explicitly invalid on failure.
-        sit_gs.vk.vma_allocator = VK_NULL_HANDLE;
+        sit_render.vk.vma_allocator = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
     }
 
     // --- 4. Success ---
     // If we reach here, the VmaAllocator was created successfully.
-    // The handle is stored in sit_gs.vk.vma_allocator for use by subsequent
+    // The handle is stored in sit_render.vk.vma_allocator for use by subsequent
     // buffer/image creation functions that rely on VMA.
     return SITUATION_SUCCESS;
 }
@@ -8793,22 +8805,22 @@ static void _SituationVulkanFreeSwapchainSupportDetails(SituationSwapchainSuppor
  */
 static void _SituationVulkanQuerySwapchainSupport(VkPhysicalDevice device, SituationSwapchainSupportDetails* out_details) {
     // Get the basic surface capabilities (min/max image count, extent, etc.)
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, sit_gs.vk.surface, &out_details->capabilities);
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, sit_render.vk.surface, &out_details->capabilities);
 
     // Get the supported surface formats
-    vkGetPhysicalDeviceSurfaceFormatsKHR(device, sit_gs.vk.surface, &out_details->format_count, NULL);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device, sit_render.vk.surface, &out_details->format_count, NULL);
     if (out_details->format_count != 0) {
         out_details->formats = (VkSurfaceFormatKHR*)SIT_MALLOC(sizeof(VkSurfaceFormatKHR) * out_details->format_count);
-        vkGetPhysicalDeviceSurfaceFormatsKHR(device, sit_gs.vk.surface, &out_details->format_count, out_details->formats);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(device, sit_render.vk.surface, &out_details->format_count, out_details->formats);
     } else {
         out_details->formats = NULL;
     }
 
     // Get the supported presentation modes
-    vkGetPhysicalDeviceSurfacePresentModesKHR(device, sit_gs.vk.surface, &out_details->present_mode_count, NULL);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(device, sit_render.vk.surface, &out_details->present_mode_count, NULL);
     if (out_details->present_mode_count != 0) {
         out_details->present_modes = (VkPresentModeKHR*)SIT_MALLOC(sizeof(VkPresentModeKHR) * out_details->present_mode_count);
-        vkGetPhysicalDeviceSurfacePresentModesKHR(device, sit_gs.vk.surface, &out_details->present_mode_count, out_details->present_modes);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(device, sit_render.vk.surface, &out_details->present_mode_count, out_details->present_modes);
     } else {
         out_details->present_modes = NULL;
     }
@@ -8841,7 +8853,7 @@ static int _SituationIsDeviceSuitable(VkPhysicalDevice device) {
     // --- 1. Essential Feature Checks (Pass/Fail) ---
 
     // Check if the device supports required queue families
-    _SituationQueueFamilyIndices indices = _SituationVulkanFindQueueFamilies(device, sit_gs.vk.surface);
+    _SituationQueueFamilyIndices indices = _SituationVulkanFindQueueFamilies(device, sit_render.vk.surface);
     if (!indices.graphics_family_has_value || !indices.present_family_has_value) {
         return 0; // Not suitable
     }
@@ -8951,7 +8963,7 @@ static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysical
  *   5.  **Create Swapchain:** It populates the `VkSwapchainCreateInfoKHR` struct with the chosen settings and creates the `VkSwapchainKHR` object.
  *   6.  **Retrieve Images:** It retrieves the handles to the created `VkImage`s within the swapchain.
  *
- * Upon success, it stores the swapchain handle, image format, extent, and image handles in the global state (`sit_gs.vk`).
+ * Upon success, it stores the swapchain handle, image format, extent, and image handles in the global state (`sit_render.vk`).
  *
  * @return SITUATION_SUCCESS on successful creation of the swapchain and retrieval of its images.
  * @return SITUATION_ERROR_VULKAN_UNSUPPORTED if the physical device does not offer any compatible formats or present modes.
@@ -8964,7 +8976,7 @@ static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysical
  */
 static SituationError _SituationVulkanCreateSwapchain(void) {
     _SituationVulkanSwapchainSupportDetails swapchain_support = {0};
-    _SituationVulkanQuerySwapchainSupport(sit_gs.vk.physical_device, &swapchain_support);
+    _SituationVulkanQuerySwapchainSupport(sit_render.vk.physical_device, &swapchain_support);
 
     if (swapchain_support.format_count == 0 || swapchain_support.present_mode_count == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "GPU does not support any suitable swapchain formats or present modes.");
@@ -9006,7 +9018,7 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
 
     VkSwapchainCreateInfoKHR create_info = {0};
     create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    create_info.surface = sit_gs.vk.surface;
+    create_info.surface = sit_render.vk.surface;
     create_info.minImageCount = image_count;
     create_info.imageFormat = surface_format.format;
     create_info.imageColorSpace = surface_format.colorSpace;
@@ -9014,7 +9026,7 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
     create_info.imageArrayLayers = 1;
     create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
-    _SituationQueueFamilyIndices indices = _SituationVulkanFindQueueFamilies(sit_gs.vk.physical_device, sit_gs.vk.surface);
+    _SituationQueueFamilyIndices indices = _SituationVulkanFindQueueFamilies(sit_render.vk.physical_device, sit_render.vk.surface);
     uint32_t queueFamilyIndices[] = {indices.graphics_family, indices.present_family};
     if (indices.graphics_family != indices.present_family) {
         create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -9029,18 +9041,18 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
     create_info.clipped = VK_TRUE;
     create_info.oldSwapchain = VK_NULL_HANDLE;
 
-    if (vkCreateSwapchainKHR(sit_gs.vk.device, &create_info, NULL, &sit_gs.vk.swapchain) != VK_SUCCESS) {
+    if (vkCreateSwapchainKHR(sit_render.vk.device, &create_info, NULL, &sit_render.vk.swapchain) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED, "Failed to create swap chain");
         _SituationVulkanFreeSwapchainSupportDetails(&swapchain_support);
         return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED;
     }
 
-    vkGetSwapchainImagesKHR(sit_gs.vk.device, sit_gs.vk.swapchain, &image_count, NULL);
-    sit_gs.vk.swapchain_images = (VkImage*)SIT_MALLOC(sizeof(VkImage) * image_count);
-    vkGetSwapchainImagesKHR(sit_gs.vk.device, sit_gs.vk.swapchain, &image_count, sit_gs.vk.swapchain_images);
-    sit_gs.vk.swapchain_image_format = surface_format.format;
-    sit_gs.vk.swapchain_extent = extent;
-    sit_gs.vk.swapchain_image_count = image_count;
+    vkGetSwapchainImagesKHR(sit_render.vk.device, sit_render.vk.swapchain, &image_count, NULL);
+    sit_render.vk.swapchain_images = (VkImage*)SIT_MALLOC(sizeof(VkImage) * image_count);
+    vkGetSwapchainImagesKHR(sit_render.vk.device, sit_render.vk.swapchain, &image_count, sit_render.vk.swapchain_images);
+    sit_render.vk.swapchain_image_format = surface_format.format;
+    sit_render.vk.swapchain_extent = extent;
+    sit_render.vk.swapchain_image_count = image_count;
 
     _SituationVulkanFreeSwapchainSupportDetails(&swapchain_support);
     return SITUATION_SUCCESS;
@@ -9054,16 +9066,16 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
  * @return SITUATION_SUCCESS if all image views are created successfully.
  * @return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED if any of the `vkCreateImageView` calls fail.
  *
- * @note This function must be called after `_SituationVulkanCreateSwapchain` has successfully retrieved the swapchain images. The created handles are stored in the `sit_gs.vk.swapchain_image_views` array.
+ * @note This function must be called after `_SituationVulkanCreateSwapchain` has successfully retrieved the swapchain images. The created handles are stored in the `sit_render.vk.swapchain_image_views` array.
  * @warning This function is for internal use by `_SituationInitVulkan` and `_SituationVulkanRecreateSwapchain`.
  *
  * @see _SituationVulkanCreateSwapchain(), _SituationVulkanCreateImageView()
  */
 static SituationError _SituationVulkanCreateImageViews(void) {
-    sit_gs.vk.swapchain_image_views = (VkImageView*)SIT_MALLOC(sizeof(VkImageView) * sit_gs.vk.swapchain_image_count);
-    for (uint32_t i = 0; i < sit_gs.vk.swapchain_image_count; i++) {
-        sit_gs.vk.swapchain_image_views[i] = _SituationVulkanCreateImageView(sit_gs.vk.swapchain_images[i], sit_gs.vk.swapchain_image_format, VK_IMAGE_ASPECT_COLOR_BIT);
-        if(sit_gs.vk.swapchain_image_views[i] == VK_NULL_HANDLE) {
+    sit_render.vk.swapchain_image_views = (VkImageView*)SIT_MALLOC(sizeof(VkImageView) * sit_render.vk.swapchain_image_count);
+    for (uint32_t i = 0; i < sit_render.vk.swapchain_image_count; i++) {
+        sit_render.vk.swapchain_image_views[i] = _SituationVulkanCreateImageView(sit_render.vk.swapchain_images[i], sit_render.vk.swapchain_image_format, VK_IMAGE_ASPECT_COLOR_BIT);
+        if(sit_render.vk.swapchain_image_views[i] == VK_NULL_HANDLE) {
              _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED, "Failed to create image views");
              return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED;
         }
@@ -9091,17 +9103,17 @@ static SituationError _SituationVulkanCreateImageViews(void) {
  * @see _SituationVulkanFindSupportedFormat(), _SituationVulkanCreateFramebuffers()
  */
 static SituationError _SituationVulkanCreateRenderPass(void) {
-    sit_gs.vk.depth_format = _SituationVulkanFindSupportedFormat(
+    sit_render.vk.depth_format = _SituationVulkanFindSupportedFormat(
         (VkFormat[]){VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT}, 3,
         VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
     );
-    if (sit_gs.vk.depth_format == VK_FORMAT_UNDEFINED) {
+    if (sit_render.vk.depth_format == VK_FORMAT_UNDEFINED) {
          _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "Failed to find a supported depth format");
          return SITUATION_ERROR_VULKAN_UNSUPPORTED;
     }
 
     VkAttachmentDescription color_attachment = {0};
-    color_attachment.format = sit_gs.vk.swapchain_image_format;
+    color_attachment.format = sit_render.vk.swapchain_image_format;
     color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
     color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -9111,7 +9123,7 @@ static SituationError _SituationVulkanCreateRenderPass(void) {
     color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     VkAttachmentDescription depth_attachment = {0};
-    depth_attachment.format = sit_gs.vk.depth_format;
+    depth_attachment.format = sit_render.vk.depth_format;
     depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
     depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -9147,7 +9159,7 @@ static SituationError _SituationVulkanCreateRenderPass(void) {
     render_pass_info.dependencyCount = 1;
     render_pass_info.pDependencies = &dependency;
 
-    if (vkCreateRenderPass(sit_gs.vk.device, &render_pass_info, NULL, &sit_gs.vk.main_window_render_pass) != VK_SUCCESS) {
+    if (vkCreateRenderPass(sit_render.vk.device, &render_pass_info, NULL, &sit_render.vk.main_window_render_pass) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_RENDERPASS_FAILED, "Failed to create render pass");
         return SITUATION_ERROR_VULKAN_RENDERPASS_FAILED;
     }
@@ -9169,14 +9181,14 @@ static SituationError _SituationVulkanCreateRenderPass(void) {
  * @see _SituationVulkanCreateImage(), _SituationVulkanCreateImageView(), _SituationVulkanCreateFramebuffers()
  */
 static SituationError _SituationVulkanCreateDepthResources(void) {
-    if (_SituationVulkanCreateImage(sit_gs.vk.swapchain_extent.width, sit_gs.vk.swapchain_extent.height, sit_gs.vk.depth_format,
+    if (_SituationVulkanCreateImage(sit_render.vk.swapchain_extent.width, sit_render.vk.swapchain_extent.height, sit_render.vk.depth_format,
                                   VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VMA_MEMORY_USAGE_GPU_ONLY,
-                                  &sit_gs.vk.depth_image, &sit_gs.vk.depth_image_memory) != SITUATION_SUCCESS) {
+                                  &sit_render.vk.depth_image, &sit_render.vk.depth_image_memory) != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create depth image");
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
-    sit_gs.vk.depth_image_view = _SituationVulkanCreateImageView(sit_gs.vk.depth_image, sit_gs.vk.depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
-    if(sit_gs.vk.depth_image_view == VK_NULL_HANDLE){
+    sit_render.vk.depth_image_view = _SituationVulkanCreateImageView(sit_render.vk.depth_image, sit_render.vk.depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
+    if(sit_render.vk.depth_image_view == VK_NULL_HANDLE){
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create depth image view");
         return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED;
     }
@@ -9195,16 +9207,16 @@ static SituationError _SituationVulkanCreateDepthResources(void) {
  * @return SITUATION_SUCCESS on successful creation of all framebuffers.
  * @return SITUATION_ERROR_MEMORY_ALLOCATION if memory allocation fails for the internal array of `VkFramebuffer` handles.
  * @return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED if `vkCreateFramebuffer`fails for any of the framebuffers. A specific error message is set.
- *         Any successfully created framebuffers *before* the failure point will be left in the `sit_gs.vk.main_window_framebuffers` array and must be cleaned up by the caller (e.g., `_SituationVulkanCleanupSwapchain` or `_SituationCleanupVulkan`) to prevent leaks.
+ *         Any successfully created framebuffers *before* the failure point will be left in the `sit_render.vk.main_window_framebuffers` array and must be cleaned up by the caller (e.g., `_SituationVulkanCleanupSwapchain` or `_SituationCleanupVulkan`) to prevent leaks.
  *
  * @note This function requires that the following Vulkan resources are already created and valid:
- *       - `sit_gs.vk.device`
- *       - `sit_gs.vk.swapchain_image_views` (array of image views)
- *       - `sit_gs.vk.depth_image_view`
- *       - `sit_gs.vk.main_window_render_pass`
- *       - `sit_gs.vk.swapchain_extent`
- *       - `sit_gs.vk.swapchain_image_count`
- * @note The created array of `VkFramebuffer` handles is stored in `sit_gs.vk.main_window_framebuffers`. This array must be freed later by the cleanup process.
+ *       - `sit_render.vk.device`
+ *       - `sit_render.vk.swapchain_image_views` (array of image views)
+ *       - `sit_render.vk.depth_image_view`
+ *       - `sit_render.vk.main_window_render_pass`
+ *       - `sit_render.vk.swapchain_extent`
+ *       - `sit_render.vk.swapchain_image_count`
+ * @note The created array of `VkFramebuffer` handles is stored in `sit_render.vk.main_window_framebuffers`. This array must be freed later by the cleanup process.
  * @warning This function is for internal use by the Vulkan initialization and swapchain recreation processes and should not be called directly by user code.
  *
  * @see _SituationInitVulkan(), _SituationVulkanRecreateSwapchain(), _SituationVulkanCleanupSwapchain(), vkCreateFramebuffer()
@@ -9213,10 +9225,10 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
     // --- 1. Allocate Array for Framebuffer Handles ---
     // Allocate memory for the array that will hold the VkFramebuffer handles.
     // The number of framebuffers needed equals the number of swapchain images.
-    sit_gs.vk.main_window_framebuffers = (VkFramebuffer*)SIT_MALLOC(sizeof(VkFramebuffer) * sit_gs.vk.swapchain_image_count);
+    sit_render.vk.main_window_framebuffers = (VkFramebuffer*)SIT_MALLOC(sizeof(VkFramebuffer) * sit_render.vk.swapchain_image_count);
 
     // Check if the memory allocation for the framebuffer array was successful.
-    if (!sit_gs.vk.main_window_framebuffers) {
+    if (!sit_render.vk.main_window_framebuffers) {
         // Allocation failed. This is a critical error for this step.
         _SituationSetErrorFromCode(
             SITUATION_ERROR_MEMORY_ALLOCATION,
@@ -9228,14 +9240,14 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
 
     // --- 2. Create Framebuffers for Each Swapchain Image ---
     // Iterate through each swapchain image view to create its corresponding framebuffer.
-    for (uint32_t i = 0; i < sit_gs.vk.swapchain_image_count; i++) {
+    for (uint32_t i = 0; i < sit_render.vk.swapchain_image_count; i++) {
         // --- 2a. Define Framebuffer Attachments ---
         // Specify the attachments for this framebuffer:
         // 1. The swapchain image view (color attachment)
         // 2. The shared depth image view (depth attachment)
         VkImageView attachments[] = {
-            sit_gs.vk.swapchain_image_views[i], // Color attachment (index 0)
-            sit_gs.vk.depth_image_view          // Depth attachment (index 1)
+            sit_render.vk.swapchain_image_views[i], // Color attachment (index 0)
+            sit_render.vk.depth_image_view          // Depth attachment (index 1)
         };
 
         // --- 2b. Configure Framebuffer Creation Info ---
@@ -9244,21 +9256,21 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
         framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO; // Mandatory sType
         framebuffer_info.pNext = NULL; // No extension structures
         framebuffer_info.flags = 0; // No special flags for framebuffer creation
-        framebuffer_info.renderPass = sit_gs.vk.main_window_render_pass; // Link to the render pass
+        framebuffer_info.renderPass = sit_render.vk.main_window_render_pass; // Link to the render pass
         framebuffer_info.attachmentCount = 2; // We have two attachments (color and depth)
         framebuffer_info.pAttachments = attachments; // Pointer to the attachments array
         // Set the dimensions of the framebuffer to match the swapchain extent.
-        framebuffer_info.width = sit_gs.vk.swapchain_extent.width;
-        framebuffer_info.height = sit_gs.vk.swapchain_extent.height;
+        framebuffer_info.width = sit_render.vk.swapchain_extent.width;
+        framebuffer_info.height = sit_render.vk.swapchain_extent.height;
         framebuffer_info.layers = 1; // Number of layers (for array textures or VR, usually 1)
 
         // --- 2c. Create the VkFramebuffer Object ---
         // Call the Vulkan API to create the framebuffer object.
         VkResult result = vkCreateFramebuffer(
-            sit_gs.vk.device,           // The logical device
+            sit_render.vk.device,           // The logical device
             &framebuffer_info,          // Creation parameters
             NULL,                       // Optional allocation callbacks (use default)
-            &sit_gs.vk.main_window_framebuffers[i] // Output: the created VkFramebuffer handle
+            &sit_render.vk.main_window_framebuffers[i] // Output: the created VkFramebuffer handle
         );
 
         // --- 2d. Handle Creation Result ---
@@ -9276,26 +9288,26 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, error_detail);
 
             // --- 2e. Critical: Handle Partial Success and Cleanup ---
-            // If framebuffer creation fails at index `i`, it means framebuffers from index 0 to `i-1` *might* have been successfully created and stored in `sit_gs.vk.main_window_framebuffers[0]` to `[i-1]`.
+            // If framebuffer creation fails at index `i`, it means framebuffers from index 0 to `i-1` *might* have been successfully created and stored in `sit_render.vk.main_window_framebuffers[0]` to `[i-1]`.
             //
             // It is the responsibility of the *caller* of this function (e.g., _SituationInitVulkan, _SituationVulkanRecreateSwapchain) to perform a full cleanup (e.g., by calling _SituationVulkanCleanupSwapchain) when any error is returned.
-            // That cleanup process will iterate through the `sit_gs.vk.main_window_framebuffers` array and destroy any non-VK_NULL_HANDLE entries, then free the array itself.
+            // That cleanup process will iterate through the `sit_render.vk.main_window_framebuffers` array and destroy any non-VK_NULL_HANDLE entries, then free the array itself.
             //
             // This function does *not* attempt to destroy the potentially successfully created framebuffers here. It simply reports the error and returns. This simplifies error handling in this function and relies on the robustness of the overall Vulkan cleanup sequence.
             //
-            // Note: The `sit_gs.vk.main_window_framebuffers` array itself is left allocated but partially populated. The cleanup function must handle this state correctly.
+            // Note: The `sit_render.vk.main_window_framebuffers` array itself is left allocated but partially populated. The cleanup function must handle this state correctly.
 
             // Return the specific error code to signal failure to the caller.
             return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED;
         }
 
         // If we reach here, the framebuffer at index `i` was created successfully.
-        // Its handle is stored in `sit_gs.vk.main_window_framebuffers[i]`.
+        // Its handle is stored in `sit_render.vk.main_window_framebuffers[i]`.
         // The loop will continue to create the remaining framebuffers.
     }
 
     // --- 3. Success ---
-    // If the loop completes without returning an error, all framebuffers have been successfully created and their handles are stored in the `sit_gs.vk.main_window_framebuffers` array.
+    // If the loop completes without returning an error, all framebuffers have been successfully created and their handles are stored in the `sit_render.vk.main_window_framebuffers` array.
     // The next step in Vulkan initialization is typically creating command buffers or synchronization objects.
     return SITUATION_SUCCESS;
 }
@@ -9307,14 +9319,14 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
  * @details This helper function is responsible for creating the main `VkCommandPool` used by the Situation library for allocating command buffers.
  *          This pool is specifically created for the graphics queue family, as all recorded commands (graphics, compute, transfer) in `situation.h` are submitted to the graphics queue.
  *          The pool is created with the `VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT` flag. This flag is essential because it allows individual command buffers allocated from this pool to be reset using `vkResetCommandBuffer`.
- *          This is necessary for the library's command buffer model, where a single command buffer (e.g., `sit_gs.vk.command_buffers[frame_index]`) is reset and re-recorded every frame.
+ *          This is necessary for the library's command buffer model, where a single command buffer (e.g., `sit_render.vk.command_buffers[frame_index]`) is reset and re-recorded every frame.
  *
  * @return SITUATION_SUCCESS on successful creation of the command pool.
- * @return SITUATION_ERROR_INVALID_PARAM if the Vulkan device (`sit_gs.vk.device`) is `VK_NULL_HANDLE` or if the graphics queue family index (`sit_gs.vk.graphics_family_index`) is invalid (e.g., `UINT32_MAX`).
+ * @return SITUATION_ERROR_INVALID_PARAM if the Vulkan device (`sit_render.vk.device`) is `VK_NULL_HANDLE` or if the graphics queue family index (`sit_render.vk.graphics_family_index`) is invalid (e.g., `UINT32_MAX`).
  * @return SITUATION_ERROR_VULKAN_COMMAND_FAILED if `vkCreateCommandPool` fails to create the pool. This can happen due to invalid device handle, invalid queue family index, or driver issues. A specific error message is set.
  *
- * @note This function must be called after the Vulkan logical device (`sit_gs.vk.device`) and the graphics queue family index (`sit_gs.vk.graphics_family_index`) have been successfully determined (e.g., in `_SituationVulkanCreateLogicalDevice`).
- * @note The created `VkCommandPool` handle is stored in `sit_gs.vk.command_pool`.
+ * @note This function must be called after the Vulkan logical device (`sit_render.vk.device`) and the graphics queue family index (`sit_render.vk.graphics_family_index`) have been successfully determined (e.g., in `_SituationVulkanCreateLogicalDevice`).
+ * @note The created `VkCommandPool` handle is stored in `sit_render.vk.command_pool`.
  * @note This command pool is used by `_SituationVulkanCreateCommandBuffers` to allocate the per-frame command buffers.
  * @warning This function is for internal use by the Vulkan initialization process (`_SituationInitVulkan`) and should not be called directly by user code.
  *
@@ -9323,14 +9335,14 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
 static SituationError _SituationVulkanCreateCommandPool(void) {
     // --- 1. Input Validation (Defensive for internal helper) ---
     // Check if the prerequisite Vulkan device handle is valid.
-    if (sit_gs.vk.device == VK_NULL_HANDLE) {
+    if (sit_render.vk.device == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateCommandPool: Vulkan device is NULL. Call _SituationVulkanCreateLogicalDevice first." );
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
     // Check if the graphics queue family index is valid.
     // UINT32_MAX is often used as an "unset" value.
-    if (sit_gs.vk.graphics_family_index == UINT32_MAX) {
+    if (sit_render.vk.graphics_family_index == UINT32_MAX) {
         _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateCommandPool: Graphics queue family index is invalid (UINT32_MAX). Ensure _SituationVulkanPickPhysicalDevice/_SituationVulkanCreateLogicalDevice ran successfully." );
         return SITUATION_ERROR_INVALID_PARAM;
     }
@@ -9347,23 +9359,23 @@ static SituationError _SituationVulkanCreateCommandPool(void) {
     // --- END CRITICAL FLAG ---
     // Specify the queue family that command buffers from this pool will be submitted to.
     // All library commands go to the graphics queue.
-    pool_info.queueFamilyIndex = sit_gs.vk.graphics_family_index;
+    pool_info.queueFamilyIndex = sit_render.vk.graphics_family_index;
 
     // --- 3. Create the VkCommandPool ---
     // This is the actual Vulkan API call that creates the command pool object.
     VkResult result = vkCreateCommandPool(
-        sit_gs.vk.device,       // The logical device the pool is associated with
+        sit_render.vk.device,       // The logical device the pool is associated with
         &pool_info,             // Creation parameters
         NULL,                   // Optional allocation callbacks (use default)
-        &sit_gs.vk.command_pool // Output: the created VkCommandPool handle
+        &sit_render.vk.command_pool // Output: the created VkCommandPool handle
     );
 
     // --- 4. Handle Creation Result ---
     if (result != VK_SUCCESS) {
         // vkCreateCommandPool failed. This is a critical error for Vulkan setup.
         // Common reasons include:
-        // - Invalid device handle (sit_gs.vk.device)
-        // - Invalid queue family index (sit_gs.vk.graphics_family_index)
+        // - Invalid device handle (sit_render.vk.device)
+        // - Invalid queue family index (sit_render.vk.graphics_family_index)
         // - Driver issues or resource exhaustion.
         char error_detail[256];
         snprintf(
@@ -9374,13 +9386,13 @@ static SituationError _SituationVulkanCreateCommandPool(void) {
         );
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
         // Ensure the global command pool handle is explicitly invalid on failure.
-        sit_gs.vk.command_pool = VK_NULL_HANDLE;
+        sit_render.vk.command_pool = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
     }
 
     // --- 5. Success ---
     // If we reach here, the VkCommandPool was created successfully.
-    // The handle is stored in sit_gs.vk.command_pool.
+    // The handle is stored in sit_render.vk.command_pool.
     // The next step in Vulkan initialization is typically allocating command buffers from this pool using _SituationVulkanCreateCommandBuffers.
     return SITUATION_SUCCESS;
 }
@@ -9388,14 +9400,14 @@ static SituationError _SituationVulkanCreateCommandPool(void) {
 // --- Command Buffer Creation ---
 /**
  * @brief [INTERNAL] Allocates the primary command buffers for each in-flight frame.
- * @details This function allocates a dedicated, primary-level `VkCommandBuffer` for each frame that can be processed concurrently (determined by `sit_gs.vk.max_frames_in_flight`).
+ * @details This function allocates a dedicated, primary-level `VkCommandBuffer` for each frame that can be processed concurrently (determined by `sit_render.vk.max_frames_in_flight`).
  *          These command buffers are long-lived; one is used for each frame in a round-robin fashion. At the beginning of a frame, the corresponding command buffer is reset and then used to record all rendering and compute commands for that frame.
  *          They are allocated from the library's main command pool, which is created with the `VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT` flag to allow this per-frame reset behavior.
  *
  * @return `SITUATION_SUCCESS` if all command buffers are allocated successfully.
  * @return `SITUATION_ERROR_VULKAN_COMMAND_FAILED` if the `vkAllocateCommandBuffers` call fails.
  *
- * @note This function must be called after the logical device and the main command pool have been created. The allocated handles are stored in the `sit_gs.vk.command_buffers` array.
+ * @note This function must be called after the logical device and the main command pool have been created. The allocated handles are stored in the `sit_render.vk.command_buffers` array.
  * @warning This function is for internal use by `_SituationInitVulkan` only.
  *
  * @see _SituationInitVulkan(), _SituationVulkanCreateCommandPool(), SituationGetMainCommandBuffer()
@@ -9403,12 +9415,12 @@ static SituationError _SituationVulkanCreateCommandPool(void) {
 static SituationError _SituationVulkanCreateCommandBuffers(void) {
     VkCommandBufferAllocateInfo alloc_info = {0};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = sit_gs.vk.command_pool;
+    alloc_info.commandPool = sit_render.vk.command_pool;
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     // --- Use the dynamic value from the global state ---
-    alloc_info.commandBufferCount = sit_gs.vk.max_frames_in_flight;
+    alloc_info.commandBufferCount = sit_render.vk.max_frames_in_flight;
 
-    if (vkAllocateCommandBuffers(sit_gs.vk.device, &alloc_info, sit_gs.vk.command_buffers) != VK_SUCCESS) {
+    if (vkAllocateCommandBuffers(sit_render.vk.device, &alloc_info, sit_render.vk.command_buffers) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to allocate command buffers");
         return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
     }
@@ -9419,7 +9431,7 @@ static SituationError _SituationVulkanCreateCommandBuffers(void) {
 /**
  * @brief [INTERNAL] Creates the synchronization objects (semaphores and fences) for each in-flight frame.
  * @details This function creates the Vulkan synchronization primitives required to manage the render loop and ensure correct ordering between the CPU and GPU, as well as between different GPU operations.
- *          For each frame that can be "in-flight" simultaneously (determined by `sit_gs.vk.max_frames_in_flight`), this function creates:
+ *          For each frame that can be "in-flight" simultaneously (determined by `sit_render.vk.max_frames_in_flight`), this function creates:
  *   - **An `image_available_semaphore`:** This semaphore is signaled by `vkAcquireNextImageKHR` when a swapchain image is ready to be rendered to. The command buffer submission will wait on this semaphore.
  *   - **A `render_finished_semaphore`:** This semaphore is signaled by the `vkQueueSubmit` call when the command buffer has finished execution. The presentation engine will wait on this semaphore before showing the image on screen.
  *   - **An `in_flight_fence`:** This fence is signaled by `vkQueueSubmit` and is used by the CPU (`vkWaitForFences`) to wait until the frame has completely finished rendering.
@@ -9440,10 +9452,10 @@ static SituationError _SituationVulkanCreateSyncObjects(void) {
     VkFenceCreateInfo fence_info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT};
 
     // --- Loop using the dynamic value from the global state ---
-    for (uint32_t i = 0; i < sit_gs.vk.max_frames_in_flight; i++) {
-        if (vkCreateSemaphore(sit_gs.vk.device, &semaphore_info, NULL, &sit_gs.vk.image_available_semaphores[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(sit_gs.vk.device, &semaphore_info, NULL, &sit_gs.vk.render_finished_semaphores[i]) != VK_SUCCESS ||
-            vkCreateFence(sit_gs.vk.device, &fence_info, NULL, &sit_gs.vk.in_flight_fences[i]) != VK_SUCCESS) {
+    for (uint32_t i = 0; i < sit_render.vk.max_frames_in_flight; i++) {
+        if (vkCreateSemaphore(sit_render.vk.device, &semaphore_info, NULL, &sit_render.vk.image_available_semaphores[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(sit_render.vk.device, &semaphore_info, NULL, &sit_render.vk.render_finished_semaphores[i]) != VK_SUCCESS ||
+            vkCreateFence(sit_render.vk.device, &fence_info, NULL, &sit_render.vk.in_flight_fences[i]) != VK_SUCCESS) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to create synchronization objects for a frame");
             return SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED;
         }
@@ -9466,7 +9478,7 @@ static SituationError _SituationVulkanCreateSyncObjects(void) {
  * @return The first `VkFormat` from the `candidates` array that is supported with the specified `tiling` and `features`.
  * @return `VK_FORMAT_UNDEFINED` if none of the `candidates` support the requested `tiling` and `features`.
  *
- * @note This function relies on `sit_gs.vk.physical_device` being a valid handle to an enumerated physical device. This is guaranteed by the library's initialization sequence if this function is called.
+ * @note This function relies on `sit_render.vk.physical_device` being a valid handle to an enumerated physical device. This is guaranteed by the library's initialization sequence if this function is called.
  * @warning The order of formats in the `candidates` array is important.
  *          The function returns the *first* supported format found. Place preferred formats (e.g., higher precision) earlier in the list.
  *
@@ -9492,7 +9504,7 @@ static VkFormat _SituationVulkanFindSupportedFormat(
         // --- 3. Query Format Properties ---
         // Get the properties supported by the physical device for this format.
         VkFormatProperties props;
-        vkGetPhysicalDeviceFormatProperties(sit_gs.vk.physical_device, format, &props);
+        vkGetPhysicalDeviceFormatProperties(sit_render.vk.physical_device, format, &props);
 
         // --- 4. Check for Required Features based on Tiling ---
         // Determine if the format supports the needed features for the requested tiling.
@@ -9526,23 +9538,23 @@ static VkFormat _SituationVulkanFindSupportedFormat(
  * @details This function performs the following cleanup steps:
  *          1.  Waits for the device to be idle (`vkDeviceWaitIdle`) to ensure no commands are currently using the resources to be destroyed.
  *          2.  Destroys the main window's depth image view and the depth image itself (along with its VMA allocation).
- *          3.  Iterates through and destroys all main window framebuffers stored in `sit_gs.vk.main_window_framebuffers`.
- *          4.  Frees the `sit_gs.vk.main_window_framebuffers` array itself.
- *          5.  Iterates through and destroys all swapchain image views stored in `sit_gs.vk.swapchain_image_views`.
- *          6.  Frees the `sit_gs.vk.swapchain_image_views` array itself.
- *          7.  Destroys the `VkSwapchainKHR` handle (`sit_gs.vk.swapchain`).
+ *          3.  Iterates through and destroys all main window framebuffers stored in `sit_render.vk.main_window_framebuffers`.
+ *          4.  Frees the `sit_render.vk.main_window_framebuffers` array itself.
+ *          5.  Iterates through and destroys all swapchain image views stored in `sit_render.vk.swapchain_image_views`.
+ *          6.  Frees the `sit_render.vk.swapchain_image_views` array itself.
+ *          7.  Destroys the `VkSwapchainKHR` handle (`sit_render.vk.swapchain`).
  *
  *          Crucially, it leaves core, swapchain-independent resources intact, such as:
- *          - The `VkDevice` (`sit_gs.vk.device`)
- *          - The `VkPhysicalDevice` (`sit_gs.vk.physical_device`)
- *          - The `VkRenderPass` (`sit_gs.vk.main_window_render_pass`)
+ *          - The `VkDevice` (`sit_render.vk.device`)
+ *          - The `VkPhysicalDevice` (`sit_render.vk.physical_device`)
+ *          - The `VkRenderPass` (`sit_render.vk.main_window_render_pass`)
  *          - The `VkCommandPool` and command buffers
  *          - Descriptor sets, pools, and layouts
  *          - The `VkInstance` and `VkSurfaceKHR`
  *
  * @note This function should only be called when it's safe to destroy these resources, typically just before `_SituationVulkanCreateSwapchain` is called.
  * @note It is the caller's responsibility to ensure that:
- *       1. The Vulkan device (`sit_gs.vk.device`) is valid.
+ *       1. The Vulkan device (`sit_render.vk.device`) is valid.
  *       2. Any command buffers recording commands that use these resources have finished.
  *       3. This function is part of a coordinated swapchain recreation sequence.
  *
@@ -9552,7 +9564,7 @@ static VkFormat _SituationVulkanFindSupportedFormat(
  */
 static void _SituationVulkanCleanupSwapchain(void) {
     // --- 1. Validate Device Handle (Robustness) ---
-    if (sit_gs.vk.device == VK_NULL_HANDLE) {
+    if (sit_render.vk.device == VK_NULL_HANDLE) {
         // Nothing to clean up if the device isn't created.
         // This can happen during partial init/cleanup.
         return;
@@ -9561,7 +9573,7 @@ static void _SituationVulkanCleanupSwapchain(void) {
     // --- 2. Ensure GPU is Finished Using Resources ---
     // Wait for the device to be idle to guarantee no commands are using swapchain-derived resources.
     // This is the simplest and safest way, though it stalls the GPU pipeline.
-    VkResult wait_result = vkDeviceWaitIdle(sit_gs.vk.device);
+    VkResult wait_result = vkDeviceWaitIdle(sit_render.vk.device);
     if (wait_result != VK_SUCCESS) {
         // Log a warning, but proceed with cleanup to avoid leaking resources if possible.
         fprintf(stderr, "WARNING: vkDeviceWaitIdle failed (0x%x) in _SituationVulkanCleanupSwapchain. Proceeding with cleanup.\n", wait_result);
@@ -9570,62 +9582,62 @@ static void _SituationVulkanCleanupSwapchain(void) {
 
     // --- 3. Destroy Depth Resources ---
     // These are specific to the swapchain's extent/format.
-    if (sit_gs.vk.depth_image_view != VK_NULL_HANDLE) {
-        vkDestroyImageView(sit_gs.vk.device, sit_gs.vk.depth_image_view, NULL);
-        sit_gs.vk.depth_image_view = VK_NULL_HANDLE;
+    if (sit_render.vk.depth_image_view != VK_NULL_HANDLE) {
+        vkDestroyImageView(sit_render.vk.device, sit_render.vk.depth_image_view, NULL);
+        sit_render.vk.depth_image_view = VK_NULL_HANDLE;
     }
     // Use the internal helper if one exists, otherwise call VMA directly.
     // Assuming _SituationVulkanDestroyImage helper exists and handles VMA destruction:
-    if (sit_gs.vk.depth_image != VK_NULL_HANDLE) {
-        _SituationVulkanDestroyImage(sit_gs.vk.depth_image, sit_gs.vk.depth_image_memory);
-        // Or directly: vmaDestroyImage(sit_gs.vk.vma_allocator, sit_gs.vk.depth_image, sit_gs.vk.depth_image_memory);
-        sit_gs.vk.depth_image = VK_NULL_HANDLE;
-        sit_gs.vk.depth_image_memory = VK_NULL_HANDLE;
+    if (sit_render.vk.depth_image != VK_NULL_HANDLE) {
+        _SituationVulkanDestroyImage(sit_render.vk.depth_image, sit_render.vk.depth_image_memory);
+        // Or directly: vmaDestroyImage(sit_render.vk.vma_allocator, sit_render.vk.depth_image, sit_render.vk.depth_image_memory);
+        sit_render.vk.depth_image = VK_NULL_HANDLE;
+        sit_render.vk.depth_image_memory = VK_NULL_HANDLE;
     }
 
     // --- 4. Destroy Main Window Framebuffers ---
-    if (sit_gs.vk.main_window_framebuffers) { // Check if array was allocated
-        for (uint32_t i = 0; i < sit_gs.vk.swapchain_image_count; i++) {
-            if (sit_gs.vk.main_window_framebuffers[i] != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(sit_gs.vk.device, sit_gs.vk.main_window_framebuffers[i], NULL);
+    if (sit_render.vk.main_window_framebuffers) { // Check if array was allocated
+        for (uint32_t i = 0; i < sit_render.vk.swapchain_image_count; i++) {
+            if (sit_render.vk.main_window_framebuffers[i] != VK_NULL_HANDLE) {
+                vkDestroyFramebuffer(sit_render.vk.device, sit_render.vk.main_window_framebuffers[i], NULL);
                 // Optional: Set to NULL for extra safety in debug builds if array might be reused
-                // sit_gs.vk.main_window_framebuffers[i] = VK_NULL_HANDLE;
+                // sit_render.vk.main_window_framebuffers[i] = VK_NULL_HANDLE;
             }
         }
         // Free the array holding the framebuffer handles.
-        SIT_FREE(sit_gs.vk.main_window_framebuffers);
-        sit_gs.vk.main_window_framebuffers = NULL; // Important: Nullify the pointer after freeing.
+        SIT_FREE(sit_render.vk.main_window_framebuffers);
+        sit_render.vk.main_window_framebuffers = NULL; // Important: Nullify the pointer after freeing.
     }
-    // Note: sit_gs.vk.swapchain_image_count retains its value, as it's needed by _SituationVulkanCreateFramebuffers
+    // Note: sit_render.vk.swapchain_image_count retains its value, as it's needed by _SituationVulkanCreateFramebuffers
     // which will be called next in the recreation sequence.
 
     // --- 5. Destroy Swapchain Image Views & Images ---
-    if (sit_gs.vk.swapchain_image_views) { // Check if array was allocated
-        for (uint32_t i = 0; i < sit_gs.vk.swapchain_image_count; i++) {
-            if (sit_gs.vk.swapchain_image_views[i] != VK_NULL_HANDLE) {
-                vkDestroyImageView(sit_gs.vk.device, sit_gs.vk.swapchain_image_views[i], NULL);
+    if (sit_render.vk.swapchain_image_views) { // Check if array was allocated
+        for (uint32_t i = 0; i < sit_render.vk.swapchain_image_count; i++) {
+            if (sit_render.vk.swapchain_image_views[i] != VK_NULL_HANDLE) {
+                vkDestroyImageView(sit_render.vk.device, sit_render.vk.swapchain_image_views[i], NULL);
                 // Optional: Set to NULL for extra safety in debug builds
-                // sit_gs.vk.swapchain_image_views[i] = VK_NULL_HANDLE;
+                // sit_render.vk.swapchain_image_views[i] = VK_NULL_HANDLE;
             }
         }
         // Free the array holding the image view handles.
-        SIT_FREE(sit_gs.vk.swapchain_image_views);
-        sit_gs.vk.swapchain_image_views = NULL; // Important: Nullify the pointer after freeing.
+        SIT_FREE(sit_render.vk.swapchain_image_views);
+        sit_render.vk.swapchain_image_views = NULL; // Important: Nullify the pointer after freeing.
     }
 
     // Note: We do NOT destroy the VkImages themselves here, as they are owned
     // by the swapchain extension, but we must free our C array holding the handles.
-    if (sit_gs.vk.swapchain_images) {
-        SIT_FREE(sit_gs.vk.swapchain_images);
-        sit_gs.vk.swapchain_images = NULL;
+    if (sit_render.vk.swapchain_images) {
+        SIT_FREE(sit_render.vk.swapchain_images);
+        sit_render.vk.swapchain_images = NULL;
     }
 
     // --- 6. Destroy the Swapchain Object ---
-    if (sit_gs.vk.swapchain != VK_NULL_HANDLE) {
-        vkDestroySwapchainKHR(sit_gs.vk.device, sit_gs.vk.swapchain, NULL);
-        sit_gs.vk.swapchain = VK_NULL_HANDLE;
+    if (sit_render.vk.swapchain != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(sit_render.vk.device, sit_render.vk.swapchain, NULL);
+        sit_render.vk.swapchain = VK_NULL_HANDLE;
     }
-    // sit_gs.vk.swapchain_image_count could be reset here, but it's often left
+    // sit_render.vk.swapchain_image_count could be reset here, but it's often left
     // for the recreation process to potentially reuse if the new swapchain has the same count.
     // It's set correctly by _SituationVulkanCreateSwapchain.
 }
@@ -9666,8 +9678,8 @@ static void _SituationVulkanRecreateSwapchain(void) {
     // --- 2. Ensure GPU is Idle Before Recreation ---
     // Although CleanupSwapchain also does this, an extra wait here is defensive
     // and ensures any commands using the *old* swapchain are definitely finished.
-    if (sit_gs.vk.device != VK_NULL_HANDLE) { // Defensive check
-        VkResult wait_result = vkDeviceWaitIdle(sit_gs.vk.device);
+    if (sit_render.vk.device != VK_NULL_HANDLE) { // Defensive check
+        VkResult wait_result = vkDeviceWaitIdle(sit_render.vk.device);
         if (wait_result != VK_SUCCESS) {
             fprintf(stderr, "WARNING: vkDeviceWaitIdle failed (0x%x) before swapchain recreation. Attempting recreation anyway.\n", wait_result);
             // Depending on strictness, could return or set a global error here.
@@ -9695,9 +9707,9 @@ static void _SituationVulkanRecreateSwapchain(void) {
         _SituationSetErrorFromCode(create_views_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateImageViews.");
         // State: Swapchain exists, but no image views.
         // Clean up the swapchain we just made.
-        if (sit_gs.vk.swapchain != VK_NULL_HANDLE) {
-            vkDestroySwapchainKHR(sit_gs.vk.device, sit_gs.vk.swapchain, NULL);
-            sit_gs.vk.swapchain = VK_NULL_HANDLE;
+        if (sit_render.vk.swapchain != VK_NULL_HANDLE) {
+            vkDestroySwapchainKHR(sit_render.vk.device, sit_render.vk.swapchain, NULL);
+            sit_render.vk.swapchain = VK_NULL_HANDLE;
         }
         return;
     }
@@ -9725,7 +9737,7 @@ static void _SituationVulkanRecreateSwapchain(void) {
 
     // --- 4. Success ---
     // If all steps succeeded, the swapchain and its dependent resources are now successfully recreated and ready for use in the rendering loop.
-    // The global state (sit_gs.vk.*) should now reflect the new configuration.
+    // The global state (sit_render.vk.*) should now reflect the new configuration.
     // fprintf(stderr, "INFO: Vulkan swapchain successfully recreated.\n"); // Optional debug log
 }
 
@@ -9745,11 +9757,11 @@ SITAPI void SituationPollInputEvents(void) {
     if (!SituationIsInitialized()) return;
 
     // [NEW] Reset Profiler Counters
-    sit_gs.frame_draw_calls = 0;
-    sit_gs.frame_triangle_count = 0;
+    sit_render.frame_draw_calls = 0;
+    sit_render.frame_triangle_count = 0;
 
     // Reset consistency check flag
-    sit_gs.debug_draw_command_issued_this_frame = false;
+    sit_render.debug_draw_command_issued_this_frame = false;
 
 	// Process Main Thread Audio Capture
     if (sit_audio.audio_capture_on_main_thread && sit_audio.capture_callback) {
@@ -9939,8 +9951,8 @@ SITAPI void SituationUpdateTimers(void) {
     // --- 5. Update Virtual Display Timers ---
     double current_time_for_vdisplays = sit_gs.timer_system_instance.is_initialized ? sit_gs.timer_system_instance.current_system_time_seconds : sit_gs.current_time;
     for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
-        if (sit_gs.virtual_display_slots_used[i]) {
-            SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[i];
+        if (sit_render.virtual_display_slots_used[i]) {
+            SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[i];
             vd->frame_delta_time_seconds = (current_time_for_vdisplays - vd->last_update_time_seconds);
             vd->elapsed_time_seconds += vd->frame_delta_time_seconds * vd->frame_time_multiplier;
             vd->frame_count++;
@@ -10011,7 +10023,7 @@ SITAPI void SituationShutdown(void) {
 
     // Wait for the GPU to finish any in-flight work before we start tearing things down. This is especially critical for Vulkan.
 #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device != VK_NULL_HANDLE) vkDeviceWaitIdle(sit_gs.vk.device);
+    if (sit_render.vk.device != VK_NULL_HANDLE) vkDeviceWaitIdle(sit_render.vk.device);
 #elif defined(SITUATION_USE_OPENGL)
     if (sit_gs.sit_glfw_window) glFinish();
 #endif
@@ -10031,7 +10043,7 @@ SITAPI void SituationShutdown(void) {
     // 4. --- FINAL STATE RESET ---
     if (_sit_current_context) {
         // Cleanup text scratch
-        if (sit_gs.text_batch_scratch) { SIT_FREE(sit_gs.text_batch_scratch); }
+        if (sit_render.text_batch_scratch) { SIT_FREE(sit_render.text_batch_scratch); }
 
         sit_gs.is_initialized = false;
         _SituationSetError("Shutdown complete");
@@ -10112,7 +10124,7 @@ static void _SituationCleanupSubsystems(void) {
  */
 static void _SituationCleanupRenderer(void) {
     for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
-        if (sit_gs.virtual_display_slots_used[i]) {
+        if (sit_render.virtual_display_slots_used[i]) {
             SituationDestroyVirtualDisplay(i);
         }
     }
@@ -10172,7 +10184,7 @@ static void _SituationCleanupPlatform(void) {
  * @par Backend-Specific Implementation
  * - **OpenGL:**
  *   1.  Compiles and links a dedicated shader program from the internal `SIT_QUAD_VERTEX_SHADER` and `SIT_QUAD_FRAGMENT_SHADER` sources.
- *   2.  Creates a **private** Vertex Array Object (`sit_gs.gl.quad_vao`) and Vertex Buffer Object (`sit_gs.gl.quad_vbo`). This is a crucial step to isolate the quad renderer's state from the main user-facing VAO (`sit_gs.gl.global_vao_id`).
+ *   2.  Creates a **private** Vertex Array Object (`sit_render.gl.quad_vao`) and Vertex Buffer Object (`sit_render.gl.quad_vbo`). This is a crucial step to isolate the quad renderer's state from the main user-facing VAO (`sit_render.gl.global_vao_id`).
  *   3.  Uploads a static, 4-vertex triangle strip to the VBO.
  *   4.  Configures the private VAO with the correct vertex attribute layout for the simple 2D vertex format.
  *   5.  Sets the initial orthographic projection matrix uniform in the shader.
@@ -10202,9 +10214,9 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     SituationError shader_err_code = SITUATION_SUCCESS;
 
     // 1. Compile and link the internal quad shader program.
-    sit_gs.gl.quad_shader_program = _SituationCreateGLShaderProgram(SIT_QUAD_VERTEX_SHADER, SIT_QUAD_FRAGMENT_SHADER, &shader_err_code);
+    sit_render.gl.quad_shader_program = _SituationCreateGLShaderProgram(SIT_QUAD_VERTEX_SHADER, SIT_QUAD_FRAGMENT_SHADER, &shader_err_code);
 
-    if (shader_err_code != SITUATION_SUCCESS || sit_gs.gl.quad_shader_program == 0) {
+    if (shader_err_code != SITUATION_SUCCESS || sit_render.gl.quad_shader_program == 0) {
         // Error message should already be set by _SituationCreateGLShaderProgram
         return false;
     }
@@ -10221,54 +10233,54 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     // --- [PRIVATE VAO/VBO SETUP for Quad Renderer] ---
 
     // 3. Create the PRIVATE VAO and VBO for the quad renderer.
-    glCreateVertexArrays(1, &sit_gs.gl.quad_vao);
-    if (sit_gs.gl.quad_vao == 0) {
+    glCreateVertexArrays(1, &sit_render.gl.quad_vao);
+    if (sit_render.gl.quad_vao == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitQuadRenderer: Failed to create private quad VAO.");
         // Cleanup shader program on VAO creation failure
-        glDeleteProgram(sit_gs.gl.quad_shader_program);
-        sit_gs.gl.quad_shader_program = 0;
+        glDeleteProgram(sit_render.gl.quad_shader_program);
+        sit_render.gl.quad_shader_program = 0;
         return false;
     }
     SIT_CHECK_GL_ERROR(); // Check for errors during VAO creation
 
-    glCreateBuffers(1, &sit_gs.gl.quad_vbo);
-    if (sit_gs.gl.quad_vbo == 0) {
+    glCreateBuffers(1, &sit_render.gl.quad_vbo);
+    if (sit_render.gl.quad_vbo == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitQuadRenderer: Failed to create private quad VBO.");
         // Cleanup shader program and VAO on VBO creation failure
-        glDeleteProgram(sit_gs.gl.quad_shader_program);
-        sit_gs.gl.quad_shader_program = 0;
-        glDeleteVertexArrays(1, &sit_gs.gl.quad_vao);
-        sit_gs.gl.quad_vao = 0;
+        glDeleteProgram(sit_render.gl.quad_shader_program);
+        sit_render.gl.quad_shader_program = 0;
+        glDeleteVertexArrays(1, &sit_render.gl.quad_vao);
+        sit_render.gl.quad_vao = 0;
         return false;
     }
     SIT_CHECK_GL_ERROR(); // Check for errors during VBO creation
 
     // 4. Allocate and populate the VBO's storage with the quad vertex data.
     // Using glNamedBufferStorage for DSA (Direct State Access).
-    glNamedBufferStorage(sit_gs.gl.quad_vbo, sizeof(quad_vertices), quad_vertices, 0); // Static data
+    glNamedBufferStorage(sit_render.gl.quad_vbo, sizeof(quad_vertices), quad_vertices, 0); // Static data
     SIT_CHECK_GL_ERROR(); // Check for errors during buffer storage
 
     // 5. Temporarily bind OUR private VAO to configure it.
-    glBindVertexArray(sit_gs.gl.quad_vao);
-    // sit_gs.gl.current_vao_id = sit_gs.gl.quad_vao; // Don't track internal temporary binds as they are restored immediately
+    glBindVertexArray(sit_render.gl.quad_vao);
+    // sit_render.gl.current_vao_id = sit_render.gl.quad_vao; // Don't track internal temporary binds as they are restored immediately
     SIT_CHECK_GL_ERROR(); // Check for errors during VAO binding
 
     // 6. Configure the VAO state: Bind VBO, set vertex attributes.
     // Bind the VBO to the VAO's binding index 0.
-    glVertexArrayVertexBuffer(sit_gs.gl.quad_vao, 0, sit_gs.gl.quad_vbo, 0, 2 * sizeof(float)); // Binding index 0, stride 2 floats
+    glVertexArrayVertexBuffer(sit_render.gl.quad_vao, 0, sit_render.gl.quad_vbo, 0, 2 * sizeof(float)); // Binding index 0, stride 2 floats
     SIT_CHECK_GL_ERROR();
 
     // Set up vertex attribute format for position (Location 0)
-    glVertexArrayAttribFormat(sit_gs.gl.quad_vao, SIT_ATTR_POSITION, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribFormat(sit_render.gl.quad_vao, SIT_ATTR_POSITION, 2, GL_FLOAT, GL_FALSE, 0);
     SIT_CHECK_GL_ERROR();
-    glVertexArrayAttribBinding(sit_gs.gl.quad_vao, SIT_ATTR_POSITION, 0);
+    glVertexArrayAttribBinding(sit_render.gl.quad_vao, SIT_ATTR_POSITION, 0);
     SIT_CHECK_GL_ERROR();
-    glEnableVertexArrayAttrib(sit_gs.gl.quad_vao, SIT_ATTR_POSITION);
+    glEnableVertexArrayAttrib(sit_render.gl.quad_vao, SIT_ATTR_POSITION);
     SIT_CHECK_GL_ERROR();
 
     // 7. *** CRITICAL *** Unbind our private VAO.
     glBindVertexArray(0); // Explicit unbind for safety and clarity
-    // sit_gs.gl.current_vao_id = 0;
+    // sit_render.gl.current_vao_id = 0;
     SIT_CHECK_GL_ERROR();
 
     // --- End of Private VAO/VBO Setup ---
@@ -10277,13 +10289,13 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     // This matrix maps from screen pixel coordinates (0,0 top-left) to clip space.
     mat4 proj_quad;
     glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, proj_quad); // Top-left is (0,0)
-    glProgramUniformMatrix4fv(sit_gs.gl.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)proj_quad);
+    glProgramUniformMatrix4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)proj_quad);
     SIT_CHECK_GL_ERROR(); // Check for errors setting the uniform
 
     // 9. CRITICAL: Ensure the global_vao_id is bound again before returning.
     // This reinforces that the user's rendering state is ready.
-    glBindVertexArray(sit_gs.gl.global_vao_id);
-    sit_gs.gl.current_vao_id = sit_gs.gl.global_vao_id;
+    glBindVertexArray(sit_render.gl.global_vao_id);
+    sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
     SIT_CHECK_GL_ERROR();
 
     return true; // Indicate success
@@ -10312,8 +10324,8 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 
     // Define Layouts: Set 0 = View UBO, Set 1 = Texture Sampler (for font atlas)
     VkDescriptorSetLayout set_layouts[] = {
-        sit_gs.vk.view_data_ubo_layout,
-        sit_gs.vk.image_sampler_layout
+        sit_render.vk.view_data_ubo_layout,
+        sit_render.vk.image_sampler_layout
     };
 
     VkPipelineLayoutCreateInfo pipeline_layout_info = {0};
@@ -10323,7 +10335,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     pipeline_layout_info.pushConstantRangeCount = 1;
     pipeline_layout_info.pPushConstantRanges = &push_constant_range;
 
-    if (vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &sit_gs.vk.quad_pipeline_layout) != VK_SUCCESS) {
+    if (vkCreatePipelineLayout(sit_render.vk.device, &pipeline_layout_info, NULL, &sit_render.vk.quad_pipeline_layout) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create quad pipeline layout.");
         _SituationFreeSpirvBlob(&vs_spirv);
         _SituationFreeSpirvBlob(&fs_spirv);
@@ -10335,10 +10347,10 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     VkVertexInputAttributeDescription attr_desc = { .binding = 0, .location = SIT_ATTR_POSITION, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 };
 
     // 4. Call the generic pipeline creator with the quad's specific configuration.
-    sit_gs.vk.quad_pipeline = _SituationVulkanCreateGraphicsPipeline(
+    sit_render.vk.quad_pipeline = _SituationVulkanCreateGraphicsPipeline(
         vs_spirv.data, vs_spirv.size,
         fs_spirv.data, fs_spirv.size,
-        sit_gs.vk.quad_pipeline_layout,
+        sit_render.vk.quad_pipeline_layout,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, // Quads are drawn as a strip
         1, &binding_desc,
         1, &attr_desc
@@ -10347,7 +10359,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     _SituationFreeSpirvBlob(&vs_spirv);
     _SituationFreeSpirvBlob(&fs_spirv);
 
-    if(sit_gs.vk.quad_pipeline == VK_NULL_HANDLE) return false;
+    if(sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return false;
 
     // 5. Create and upload the vertex buffer for the quad.
     // Unit Quad: (0,0) to (1,1)
@@ -10357,7 +10369,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
         0.0f, 1.0f,
         1.0f, 1.0f
     };
-    if (_SituationVulkanCreateAndUploadBuffer(VK_NULL_HANDLE, quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &sit_gs.vk.quad_vertex_buffer, &sit_gs.vk.quad_vertex_buffer_memory) != SITUATION_SUCCESS) {
+    if (_SituationVulkanCreateAndUploadBuffer(VK_NULL_HANDLE, quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &sit_render.vk.quad_vertex_buffer, &sit_render.vk.quad_vertex_buffer_memory) != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create quad vertex buffer.");
         return false;
     }
@@ -10373,31 +10385,31 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 static bool _SituationInitTextRenderer(void) {
 #if defined(SITUATION_USE_OPENGL)
     SituationError shader_err;
-    sit_gs.gl.text_shader_program = _SituationCreateGLShaderProgram(SIT_TEXT_VERTEX_SHADER, SIT_TEXT_FRAGMENT_SHADER, &shader_err);
+    sit_render.gl.text_shader_program = _SituationCreateGLShaderProgram(SIT_TEXT_VERTEX_SHADER, SIT_TEXT_FRAGMENT_SHADER, &shader_err);
     if (shader_err != SITUATION_SUCCESS) return false;
 
-    glCreateVertexArrays(1, &sit_gs.gl.text_vao);
-    glCreateBuffers(1, &sit_gs.gl.text_vbo);
+    glCreateVertexArrays(1, &sit_render.gl.text_vao);
+    glCreateBuffers(1, &sit_render.gl.text_vbo);
 
     // Pre-allocate a dynamic buffer (512KB = ~5400 characters)
-    glNamedBufferData(sit_gs.gl.text_vbo, 524288, NULL, GL_DYNAMIC_DRAW);
+    glNamedBufferData(sit_render.gl.text_vbo, 524288, NULL, GL_DYNAMIC_DRAW);
 
-    glBindVertexArray(sit_gs.gl.text_vao);
-    // sit_gs.gl.current_vao_id = sit_gs.gl.text_vao;
-    glVertexArrayVertexBuffer(sit_gs.gl.text_vao, 0, sit_gs.gl.text_vbo, 0, 4 * sizeof(float)); // Stride: x,y,u,v
+    glBindVertexArray(sit_render.gl.text_vao);
+    // sit_render.gl.current_vao_id = sit_render.gl.text_vao;
+    glVertexArrayVertexBuffer(sit_render.gl.text_vao, 0, sit_render.gl.text_vbo, 0, 4 * sizeof(float)); // Stride: x,y,u,v
 
     // Pos: 2 floats, offset 0
-    glEnableVertexArrayAttrib(sit_gs.gl.text_vao, SIT_ATTR_POSITION);
-    glVertexArrayAttribFormat(sit_gs.gl.text_vao, SIT_ATTR_POSITION, 2, GL_FLOAT, GL_FALSE, 0);
-    glVertexArrayAttribBinding(sit_gs.gl.text_vao, SIT_ATTR_POSITION, 0);
+    glEnableVertexArrayAttrib(sit_render.gl.text_vao, SIT_ATTR_POSITION);
+    glVertexArrayAttribFormat(sit_render.gl.text_vao, SIT_ATTR_POSITION, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(sit_render.gl.text_vao, SIT_ATTR_POSITION, 0);
 
     // UV: 2 floats, offset 8
-    glEnableVertexArrayAttrib(sit_gs.gl.text_vao, SIT_ATTR_TEXCOORD_0);
-    glVertexArrayAttribFormat(sit_gs.gl.text_vao, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float));
-    glVertexArrayAttribBinding(sit_gs.gl.text_vao, SIT_ATTR_TEXCOORD_0, 0);
+    glEnableVertexArrayAttrib(sit_render.gl.text_vao, SIT_ATTR_TEXCOORD_0);
+    glVertexArrayAttribFormat(sit_render.gl.text_vao, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float));
+    glVertexArrayAttribBinding(sit_render.gl.text_vao, SIT_ATTR_TEXCOORD_0, 0);
 
     glBindVertexArray(0);
-    // sit_gs.gl.current_vao_id = 0;
+    // sit_render.gl.current_vao_id = 0;
     return true;
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -10423,24 +10435,24 @@ static bool _SituationInitTextRenderer(void) {
  */
 static void _SituationCleanupQuadRenderer(void) {
 #if defined(SITUATION_USE_OPENGL)
-    if (sit_gs.gl.quad_shader_program) { glDeleteProgram(sit_gs.gl.quad_shader_program); sit_gs.gl.quad_shader_program = 0; }
-    if (sit_gs.gl.quad_vao) { glDeleteVertexArrays(1, &sit_gs.gl.quad_vao); sit_gs.gl.quad_vao = 0; }
-    if (sit_gs.gl.quad_vbo) { glDeleteBuffers(1, &sit_gs.gl.quad_vbo); sit_gs.gl.quad_vbo = 0; }
+    if (sit_render.gl.quad_shader_program) { glDeleteProgram(sit_render.gl.quad_shader_program); sit_render.gl.quad_shader_program = 0; }
+    if (sit_render.gl.quad_vao) { glDeleteVertexArrays(1, &sit_render.gl.quad_vao); sit_render.gl.quad_vao = 0; }
+    if (sit_render.gl.quad_vbo) { glDeleteBuffers(1, &sit_render.gl.quad_vbo); sit_render.gl.quad_vbo = 0; }
 
     // Cleanup Text Renderer
-    if (sit_gs.gl.text_shader_program) { glDeleteProgram(sit_gs.gl.text_shader_program); sit_gs.gl.text_shader_program = 0; }
-    if (sit_gs.gl.text_vao) { glDeleteVertexArrays(1, &sit_gs.gl.text_vao); sit_gs.gl.text_vao = 0; }
-    if (sit_gs.gl.text_vbo) { glDeleteBuffers(1, &sit_gs.gl.text_vbo); sit_gs.gl.text_vbo = 0; }
+    if (sit_render.gl.text_shader_program) { glDeleteProgram(sit_render.gl.text_shader_program); sit_render.gl.text_shader_program = 0; }
+    if (sit_render.gl.text_vao) { glDeleteVertexArrays(1, &sit_render.gl.text_vao); sit_render.gl.text_vao = 0; }
+    if (sit_render.gl.text_vbo) { glDeleteBuffers(1, &sit_render.gl.text_vbo); sit_render.gl.text_vbo = 0; }
 
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.device) {
-        if (sit_gs.vk.quad_pipeline) vkDestroyPipeline(sit_gs.vk.device, sit_gs.vk.quad_pipeline, NULL);
-        if (sit_gs.vk.quad_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, sit_gs.vk.quad_pipeline_layout, NULL);
-        if (sit_gs.vk.quad_vertex_buffer) vmaDestroyBuffer(sit_gs.vk.vma_allocator, sit_gs.vk.quad_vertex_buffer, sit_gs.vk.quad_vertex_buffer_memory);
+    if (sit_render.vk.device) {
+        if (sit_render.vk.quad_pipeline) vkDestroyPipeline(sit_render.vk.device, sit_render.vk.quad_pipeline, NULL);
+        if (sit_render.vk.quad_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, sit_render.vk.quad_pipeline_layout, NULL);
+        if (sit_render.vk.quad_vertex_buffer) vmaDestroyBuffer(sit_render.vk.vma_allocator, sit_render.vk.quad_vertex_buffer, sit_render.vk.quad_vertex_buffer_memory);
 
         // Text Renderer Cleanup
-        if (sit_gs.vk.text_pipeline) vkDestroyPipeline(sit_gs.vk.device, sit_gs.vk.text_pipeline, NULL);
-        if (sit_gs.vk.text_pipeline_layout) vkDestroyPipelineLayout(sit_gs.vk.device, sit_gs.vk.text_pipeline_layout, NULL);
+        if (sit_render.vk.text_pipeline) vkDestroyPipeline(sit_render.vk.device, sit_render.vk.text_pipeline, NULL);
+        if (sit_render.vk.text_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, sit_render.vk.text_pipeline_layout, NULL);
     }
 #endif
 }
@@ -10465,13 +10477,13 @@ static void _SituationCleanupOpenGL(void) {
     // The OpenGL context is still active here.
     // Clean up all library-managed GL objects.
     _SituationCleanupQuadRenderer();
-    if (sit_gs.gl.vd_shader_program_id != 0) glDeleteProgram(sit_gs.gl.vd_shader_program_id);
-    if (sit_gs.gl.composite_shader_program_id != 0) glDeleteProgram(sit_gs.gl.composite_shader_program_id);
-    if (sit_gs.gl.global_vao_id != 0) { glDeleteVertexArrays(1, &sit_gs.gl.global_vao_id); sit_gs.gl.global_vao_id = 0; }
-    if (sit_gs.gl.vd_quad_vao != 0) glDeleteVertexArrays(1, &sit_gs.gl.vd_quad_vao);
-    if (sit_gs.gl.vd_quad_vbo != 0) glDeleteBuffers(1, &sit_gs.gl.vd_quad_vbo);
-    if (sit_gs.gl.composite_copy_texture_id != 0) glDeleteTextures(1, &sit_gs.gl.composite_copy_texture_id);
-    if (sit_gs.gl.view_data_ubo_id != 0) glDeleteBuffers(1, &sit_gs.gl.view_data_ubo_id);
+    if (sit_render.gl.vd_shader_program_id != 0) glDeleteProgram(sit_render.gl.vd_shader_program_id);
+    if (sit_render.gl.composite_shader_program_id != 0) glDeleteProgram(sit_render.gl.composite_shader_program_id);
+    if (sit_render.gl.global_vao_id != 0) { glDeleteVertexArrays(1, &sit_render.gl.global_vao_id); sit_render.gl.global_vao_id = 0; }
+    if (sit_render.gl.vd_quad_vao != 0) glDeleteVertexArrays(1, &sit_render.gl.vd_quad_vao);
+    if (sit_render.gl.vd_quad_vbo != 0) glDeleteBuffers(1, &sit_render.gl.vd_quad_vbo);
+    if (sit_render.gl.composite_copy_texture_id != 0) glDeleteTextures(1, &sit_render.gl.composite_copy_texture_id);
+    if (sit_render.gl.view_data_ubo_id != 0) glDeleteBuffers(1, &sit_render.gl.view_data_ubo_id);
 }
 #endif // SITUATION_USE_OPENGL
 
@@ -10496,75 +10508,75 @@ static void _SituationCleanupOpenGL(void) {
 static void _SituationCleanupVulkan(void) {
     _SituationCleanupQuadRenderer();
     _SituationVulkanCleanupSwapchain();
-    for (uint32_t i = 0; i < sit_gs.vk.max_frames_in_flight; i++) {
-        vkDestroySemaphore(sit_gs.vk.device, sit_gs.vk.render_finished_semaphores[i], NULL);
-        vkDestroySemaphore(sit_gs.vk.device, sit_gs.vk.image_available_semaphores[i], NULL);
-        vkDestroyFence(sit_gs.vk.device, sit_gs.vk.in_flight_fences[i], NULL);
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, sit_gs.vk.view_proj_ubo_buffer[i], sit_gs.vk.view_proj_ubo_memory[i]);
+    for (uint32_t i = 0; i < sit_render.vk.max_frames_in_flight; i++) {
+        vkDestroySemaphore(sit_render.vk.device, sit_render.vk.render_finished_semaphores[i], NULL);
+        vkDestroySemaphore(sit_render.vk.device, sit_render.vk.image_available_semaphores[i], NULL);
+        vkDestroyFence(sit_render.vk.device, sit_render.vk.in_flight_fences[i], NULL);
+        vmaDestroyBuffer(sit_render.vk.vma_allocator, sit_render.vk.view_proj_ubo_buffer[i], sit_render.vk.view_proj_ubo_memory[i]);
     }
     // --- Free the arrays themselves ---
-    SIT_FREE(sit_gs.vk.command_buffers);
-    SIT_FREE(sit_gs.vk.image_available_semaphores);
-    SIT_FREE(sit_gs.vk.render_finished_semaphores);
-    SIT_FREE(sit_gs.vk.in_flight_fences);
-    SIT_FREE(sit_gs.vk.view_proj_ubo_buffer);
-    SIT_FREE(sit_gs.vk.view_proj_ubo_memory);
-    SIT_FREE(sit_gs.vk.view_proj_ubo_descriptor_set);
+    SIT_FREE(sit_render.vk.command_buffers);
+    SIT_FREE(sit_render.vk.image_available_semaphores);
+    SIT_FREE(sit_render.vk.render_finished_semaphores);
+    SIT_FREE(sit_render.vk.in_flight_fences);
+    SIT_FREE(sit_render.vk.view_proj_ubo_buffer);
+    SIT_FREE(sit_render.vk.view_proj_ubo_memory);
+    SIT_FREE(sit_render.vk.view_proj_ubo_descriptor_set);
 
     // Clean up graveyards
-    if (sit_gs.vk.graveyards) {
-        for (uint32_t i = 0; i < sit_gs.vk.max_frames_in_flight; i++) {
+    if (sit_render.vk.graveyards) {
+        for (uint32_t i = 0; i < sit_render.vk.max_frames_in_flight; i++) {
             _SituationFlushGraveyard(i); // Important: Flush resources first!
-            _SituationCleanupGraveyard(&sit_gs.vk.graveyards[i]);
+            _SituationCleanupGraveyard(&sit_render.vk.graveyards[i]);
         }
-        SIT_FREE(sit_gs.vk.graveyards);
+        SIT_FREE(sit_render.vk.graveyards);
     }
 
-    for (int i = 0; i < sizeof(sit_gs.vk.compute_layouts) / sizeof(sit_gs.vk.compute_layouts[0]); ++i) {
-        if (sit_gs.vk.compute_layouts[i] != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(sit_gs.vk.device, sit_gs.vk.compute_layouts[i], NULL);
+    for (int i = 0; i < sizeof(sit_render.vk.compute_layouts) / sizeof(sit_render.vk.compute_layouts[0]); ++i) {
+        if (sit_render.vk.compute_layouts[i] != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(sit_render.vk.device, sit_render.vk.compute_layouts[i], NULL);
         }
     }
 
-    vkDestroyCommandPool(sit_gs.vk.device, sit_gs.vk.command_pool, NULL);
-    vkDestroyRenderPass(sit_gs.vk.device, sit_gs.vk.main_window_render_pass, NULL);
-    vmaDestroyAllocator(sit_gs.vk.vma_allocator);
-    vkDestroyDescriptorSetLayout(sit_gs.vk.device, sit_gs.vk.ssbo_layout, NULL);
-    vkDestroyDescriptorSetLayout(sit_gs.vk.device, sit_gs.vk.ubo_layout, NULL);
-    vkDestroyDescriptorSetLayout(sit_gs.vk.device, sit_gs.vk.storage_buffer_layout, NULL);
-    vkDestroyDescriptorSetLayout(sit_gs.vk.device, sit_gs.vk.image_sampler_layout, NULL);
-    vkDestroyDescriptorSetLayout(sit_gs.vk.device, sit_gs.vk.view_data_ubo_layout, NULL);
+    vkDestroyCommandPool(sit_render.vk.device, sit_render.vk.command_pool, NULL);
+    vkDestroyRenderPass(sit_render.vk.device, sit_render.vk.main_window_render_pass, NULL);
+    vmaDestroyAllocator(sit_render.vk.vma_allocator);
+    vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.ssbo_layout, NULL);
+    vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.ubo_layout, NULL);
+    vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.storage_buffer_layout, NULL);
+    vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.image_sampler_layout, NULL);
+    vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.view_data_ubo_layout, NULL);
 
     // --- Safe Descriptor Pool Cleanup ---
 
     // 1. Destroy any pools created dynamically by the Manager
-    if (sit_gs.vk.descriptor_manager.pools) {
-        for (int i = 0; i < sit_gs.vk.descriptor_manager.count; ++i) {
+    if (sit_render.vk.descriptor_manager.pools) {
+        for (int i = 0; i < sit_render.vk.descriptor_manager.count; ++i) {
             // Safety Check: Don't double-free if the persistent pool somehow ended up in this list
-            if (sit_gs.vk.descriptor_manager.pools[i] != sit_gs.vk.persistent_descriptor_pool) {
-                vkDestroyDescriptorPool(sit_gs.vk.device, sit_gs.vk.descriptor_manager.pools[i], NULL);
+            if (sit_render.vk.descriptor_manager.pools[i] != sit_render.vk.persistent_descriptor_pool) {
+                vkDestroyDescriptorPool(sit_render.vk.device, sit_render.vk.descriptor_manager.pools[i], NULL);
             }
         }
-        SIT_FREE(sit_gs.vk.descriptor_manager.pools);
-        sit_gs.vk.descriptor_manager.pools = NULL;
+        SIT_FREE(sit_render.vk.descriptor_manager.pools);
+        sit_render.vk.descriptor_manager.pools = NULL;
     }
 
     // 2. Destroy the initial Persistent Pool (created in Init)
-    if (sit_gs.vk.persistent_descriptor_pool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(sit_gs.vk.device, sit_gs.vk.persistent_descriptor_pool, NULL);
-        sit_gs.vk.persistent_descriptor_pool = VK_NULL_HANDLE;
+    if (sit_render.vk.persistent_descriptor_pool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(sit_render.vk.device, sit_render.vk.persistent_descriptor_pool, NULL);
+        sit_render.vk.persistent_descriptor_pool = VK_NULL_HANDLE;
     }
     // ------------------------------------------
 
-    vkDestroyDevice(sit_gs.vk.device, NULL);
-    if (sit_gs.vk.debug_messenger != VK_NULL_HANDLE) {
-        PFN_vkDestroyDebugUtilsMessengerEXT func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(sit_gs.vk.instance, "vkDestroyDebugUtilsMessengerEXT");
+    vkDestroyDevice(sit_render.vk.device, NULL);
+    if (sit_render.vk.debug_messenger != VK_NULL_HANDLE) {
+        PFN_vkDestroyDebugUtilsMessengerEXT func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(sit_render.vk.instance, "vkDestroyDebugUtilsMessengerEXT");
         if (func != NULL) {
-            func(sit_gs.vk.instance, sit_gs.vk.debug_messenger, NULL);
+            func(sit_render.vk.instance, sit_render.vk.debug_messenger, NULL);
         }
     }
-    vkDestroySurfaceKHR(sit_gs.vk.instance, sit_gs.vk.surface, NULL);
-    vkDestroyInstance(sit_gs.vk.instance, NULL);
+    vkDestroySurfaceKHR(sit_render.vk.instance, sit_render.vk.surface, NULL);
+    vkDestroyInstance(sit_render.vk.instance, NULL);
 }
 
 /**
@@ -10578,43 +10590,43 @@ static void _SituationCleanupVulkan(void) {
     VkPushConstantRange push_constant = { .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = 64 };
 
     // Layout 1: SIT_COMPUTE_LAYOUT_ONE_SSBO
-    set_layouts[0] = sit_gs.vk.ssbo_layout;
+    set_layouts[0] = sit_render.vk.ssbo_layout;
     layout_info.setLayoutCount = 1;
     layout_info.pSetLayouts = set_layouts;
     layout_info.pushConstantRangeCount = 0;
-    if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &sit_gs.vk.compute_layouts[SIT_COMPUTE_LAYOUT_ONE_SSBO]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+    if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_ONE_SSBO]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
 
     // Layout 2: SIT_COMPUTE_LAYOUT_TWO_SSBOS
-    set_layouts[0] = sit_gs.vk.ssbo_layout;
-    set_layouts[1] = sit_gs.vk.ssbo_layout; // Same layout used for two different sets
+    set_layouts[0] = sit_render.vk.ssbo_layout;
+    set_layouts[1] = sit_render.vk.ssbo_layout; // Same layout used for two different sets
     layout_info.setLayoutCount = 2;
-    if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &sit_gs.vk.compute_layouts[SIT_COMPUTE_LAYOUT_TWO_SSBOS]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+    if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_TWO_SSBOS]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
 
     // Layout 3: SIT_COMPUTE_LAYOUT_IMAGE_AND_SSBO
-    set_layouts[0] = sit_gs.vk.storage_image_layout;
-    set_layouts[1] = sit_gs.vk.ssbo_layout;
+    set_layouts[0] = sit_render.vk.storage_image_layout;
+    set_layouts[1] = sit_render.vk.ssbo_layout;
     layout_info.setLayoutCount = 2;
-    if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &sit_gs.vk.compute_layouts[SIT_COMPUTE_LAYOUT_IMAGE_AND_SSBO]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+    if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_IMAGE_AND_SSBO]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
 
     // Layout 4: SIT_COMPUTE_LAYOUT_PUSH_CONSTANT
     layout_info.setLayoutCount = 0;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push_constant;
-    if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &sit_gs.vk.compute_layouts[SIT_COMPUTE_LAYOUT_PUSH_CONSTANT]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+    if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_PUSH_CONSTANT]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
 
     // Layout 5: SIT_COMPUTE_LAYOUT_EMPTY
     layout_info.setLayoutCount = 0;
     layout_info.pushConstantRangeCount = 0;
-    if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &sit_gs.vk.compute_layouts[SIT_COMPUTE_LAYOUT_EMPTY]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+    if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_EMPTY]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
 
     // Layout 6: SIT_COMPUTE_LAYOUT_BUFFER_IMAGE
     // Set 0: SSBO (Buffer), Set 1: Storage Image
-    set_layouts[0] = sit_gs.vk.ssbo_layout;
-    set_layouts[1] = sit_gs.vk.storage_image_layout;
+    set_layouts[0] = sit_render.vk.ssbo_layout;
+    set_layouts[1] = sit_render.vk.storage_image_layout;
     layout_info.setLayoutCount = 2;
     layout_info.pSetLayouts = set_layouts;
     layout_info.pushConstantRangeCount = 0;
-    if (vkCreatePipelineLayout(sit_gs.vk.device, &layout_info, NULL, &sit_gs.vk.compute_layouts[SIT_COMPUTE_LAYOUT_BUFFER_IMAGE]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+    if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_BUFFER_IMAGE]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
 
     return SITUATION_SUCCESS;
 }
@@ -10682,18 +10694,18 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
     pipeline_layout_info.pPushConstantRanges = NULL; // No push constant ranges provided
 
     VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-    VkResult result = vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &pipeline_layout);
+    VkResult result = vkCreatePipelineLayout(sit_render.vk.device, &pipeline_layout_info, NULL, &pipeline_layout);
     if (result != VK_SUCCESS) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "_SituationVulkanCreateComputePipeline: vkCreatePipelineLayout failed (VkResult = %d).", (int)result);
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, err_msg);
 
         // Destroy the layout we just created
-        vkDestroyPipelineLayout(sit_gs.vk.device, pipeline_layout, NULL);
+        vkDestroyPipelineLayout(sit_render.vk.device, pipeline_layout, NULL);
         pipeline_layout = VK_NULL_HANDLE;
 
         // Existing cleanup
-        vkDestroyShaderModule(sit_gs.vk.device, cs_module, NULL);
+        vkDestroyShaderModule(sit_render.vk.device, cs_module, NULL);
         return pipeline;
     }
     // pipeline_layout is now a valid VkPipelineLayout handle that needs to be destroyed later.
@@ -10717,7 +10729,7 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
 
     VkPipeline vk_pipeline = VK_NULL_HANDLE;
     // Note: The first VK_NULL_HANDLE is the VkPipelineCache (optional, using NULL for default behavior).
-    result = vkCreateComputePipelines(sit_gs.vk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &vk_pipeline);
+    result = vkCreateComputePipelines(sit_render.vk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &vk_pipeline);
     if (result != VK_SUCCESS) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "_SituationVulkanCreateComputePipeline: vkCreateComputePipelines failed (VkResult = %d).", (int)result);
@@ -10725,10 +10737,10 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
 
         // --- Cleanup on Pipeline Creation Failure ---
         // Destroy the pipeline layout created successfully in step 3.
-        vkDestroyPipelineLayout(sit_gs.vk.device, pipeline_layout, NULL);
+        vkDestroyPipelineLayout(sit_render.vk.device, pipeline_layout, NULL);
         pipeline_layout = VK_NULL_HANDLE; // Defensive clear
         // Destroy the shader module created successfully in step 2.
-        vkDestroyShaderModule(sit_gs.vk.device, cs_module, NULL);
+        vkDestroyShaderModule(sit_render.vk.device, cs_module, NULL);
         cs_module = VK_NULL_HANDLE; // Defensive clear
 
         return pipeline; // Return invalid pipeline
@@ -10738,7 +10750,7 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
     // --- 5. Post-Creation Cleanup ---
     // The VkShaderModule is baked into the VkPipeline.
     // As per Vulkan spec, we can destroy our reference to the module now.
-    vkDestroyShaderModule(sit_gs.vk.device, cs_module, NULL);
+    vkDestroyShaderModule(sit_render.vk.device, cs_module, NULL);
     cs_module = VK_NULL_HANDLE; // Defensive clear (handle is no longer valid for this scope)
 
     // --- 6. Success: Populate and Return the Struct ---
@@ -10886,7 +10898,7 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
     VkBufferCreateInfo bufferInfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bufferSize, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
     VmaAllocationCreateInfo allocInfo = { .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT, .usage = VMA_MEMORY_USAGE_GPU_TO_CPU };
 
-    if (vmaCreateBuffer(sit_gs.vk.vma_allocator, &bufferInfo, &allocInfo, &dstBuffer, &dstAllocation, NULL) != VK_SUCCESS) {
+    if (vmaCreateBuffer(sit_render.vk.vma_allocator, &bufferInfo, &allocInfo, &dstBuffer, &dstAllocation, NULL) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create host-visible buffer for screenshot.");
         return NULL;
     }
@@ -10919,9 +10931,9 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
 
     // --- Step 3: Map the memory, copy it, and clean up ---
     void* mappedData;
-    if (vmaMapMemory(sit_gs.vk.vma_allocator, dstAllocation, &mappedData) != VK_SUCCESS) {
+    if (vmaMapMemory(sit_render.vk.vma_allocator, dstAllocation, &mappedData) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to map screenshot buffer.");
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, dstBuffer, dstAllocation);
+        vmaDestroyBuffer(sit_render.vk.vma_allocator, dstBuffer, dstAllocation);
         return NULL;
     }
 
@@ -10933,8 +10945,8 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Final screenshot image buffer.");
     }
 
-    vmaUnmapMemory(sit_gs.vk.vma_allocator, dstAllocation);
-    vmaDestroyBuffer(sit_gs.vk.vma_allocator, dstBuffer, dstAllocation);
+    vmaUnmapMemory(sit_render.vk.vma_allocator, dstAllocation);
+    vmaDestroyBuffer(sit_render.vk.vma_allocator, dstBuffer, dstAllocation);
 
     return finalImageData;
 }
@@ -11063,7 +11075,7 @@ static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, 
  * @see SituationGetVulkanInstance(), SituationGetGLFWwindow()
  */
 SITAPI SituationRendererType SituationGetRendererType(void) {
-    return sit_gs.renderer_type;
+    return sit_render.renderer_type;
 }
 
 // --- Callbacks and Event Handling ---
@@ -11164,7 +11176,7 @@ SITAPI const char* SituationGetArgumentValue(const char* arg_name) {
  *   - Sets the viewport to cover the entire window area.
  *   - This function typically always succeeds if the library is initialized and the OpenGL context is valid, returning `true`.
  * - **Vulkan:**
- *   - Waits for the GPU to finish processing the commands associated with the frame identified by `sit_gs.vk.current_frame_index`.
+ *   - Waits for the GPU to finish processing the commands associated with the frame identified by `sit_render.vk.current_frame_index`.
  *   - Attempts to acquire the next image from the swapchain. This image will be the target for rendering this frame.
  *   - If the swapchain is out of date (e.g., due to a window resize), this function internally calls `_SituationVulkanRecreateSwapchain` to handle the recreation process. In this specific case, it returns `false` to signal that the frame setup was interrupted and should be retried.
  *   - Resets the fence associated with the current frame index to the unsignaled state.
@@ -11217,9 +11229,9 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // 2.1. Wait for the previous frame (using this frame's fence) to finish.
         // This ensures the command buffer and swapchain image are free to be reused.
         VkResult wait_result = vkWaitForFences(
-            sit_gs.vk.device,
+            sit_render.vk.device,
             1,
-            &sit_gs.vk.in_flight_fences[sit_gs.vk.current_frame_index],
+            &sit_render.vk.in_flight_fences[sit_render.vk.current_frame_index],
             VK_TRUE,           // waitAll
             UINT64_MAX         // timeout
         );
@@ -11230,15 +11242,15 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 
         // --- FLUSH GRAVEYARD ---
         // The GPU is done with this frame, so we can safely destroy deferred resources.
-        _SituationFlushGraveyard(sit_gs.vk.current_frame_index);
+        _SituationFlushGraveyard(sit_render.vk.current_frame_index);
 
         // 2.2. Acquire the next swapchain image.
         uint32_t image_index;
         VkResult acquire_result = vkAcquireNextImageKHR(
-            sit_gs.vk.device,
-            sit_gs.vk.swapchain,
+            sit_render.vk.device,
+            sit_render.vk.swapchain,
             UINT64_MAX, // timeout
-            sit_gs.vk.image_available_semaphores[sit_gs.vk.current_frame_index], // Signal this semaphore when the image is acquired
+            sit_render.vk.image_available_semaphores[sit_render.vk.current_frame_index], // Signal this semaphore when the image is acquired
             VK_NULL_HANDLE,                                                     // No fence to signal
             &image_index                                                        // Output: index of the acquired image
         );
@@ -11265,22 +11277,22 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 
         // 2.4. Update Global State.
         // Store the index of the swapchain image we will render to this frame.
-        sit_gs.vk.current_image_index = image_index;
+        sit_render.vk.current_image_index = image_index;
 
         // 2.5. Prepare Command Buffer for Recording.
         // Reset the fence to the unsignaled state *before* resetting the command buffer.
         VkResult reset_fence_result = vkResetFences(
-            sit_gs.vk.device,
+            sit_render.vk.device,
             1,
-            &sit_gs.vk.in_flight_fences[sit_gs.vk.current_frame_index]
+            &sit_render.vk.in_flight_fences[sit_render.vk.current_frame_index]
         );
         if (reset_fence_result != VK_SUCCESS) {
              _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to reset frame fence in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
 
-        // Get the command buffer for this frame (assuming this helper function exists and returns the correct buffer from sit_gs.vk.command_buffers).
-        VkCommandBuffer cmd = SituationGetMainCommandBuffer(); // Or directly access: sit_gs.vk.command_buffers[sit_gs.vk.current_frame_index]
+        // Get the command buffer for this frame (assuming this helper function exists and returns the correct buffer from sit_render.vk.command_buffers).
+        VkCommandBuffer cmd = SituationGetMainCommandBuffer(); // Or directly access: sit_render.vk.command_buffers[sit_render.vk.current_frame_index]
         if (cmd == VK_NULL_HANDLE) {
              _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get main command buffer for frame in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
@@ -11386,7 +11398,7 @@ SITAPI SituationError SituationEndFrame(void) {
         VkSubmitInfo submit_info = {0};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-        VkSemaphore wait_semaphores[] = { sit_gs.vk.image_available_semaphores[sit_gs.vk.current_frame_index] };
+        VkSemaphore wait_semaphores[] = { sit_render.vk.image_available_semaphores[sit_render.vk.current_frame_index] };
         VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
         submit_info.waitSemaphoreCount = 1;
         submit_info.pWaitSemaphores = wait_semaphores;
@@ -11395,13 +11407,13 @@ SITAPI SituationError SituationEndFrame(void) {
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &cmd;
 
-        VkSemaphore signal_semaphores[] = { sit_gs.vk.render_finished_semaphores[sit_gs.vk.current_frame_index] };
+        VkSemaphore signal_semaphores[] = { sit_render.vk.render_finished_semaphores[sit_render.vk.current_frame_index] };
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores = signal_semaphores;
 
         // Submit the command buffer, waiting on the acquire semaphore and signaling the render finish semaphore.
         // The fence associated with this frame is signaled when the submission completes.
-        if (vkQueueSubmit(sit_gs.vk.graphics_queue, 1, &submit_info, sit_gs.vk.in_flight_fences[sit_gs.vk.current_frame_index]) != VK_SUCCESS) {
+        if (vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit_info, sit_render.vk.in_flight_fences[sit_render.vk.current_frame_index]) != VK_SUCCESS) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "Failed to submit draw command buffer!");
             return SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED;
         }
@@ -11411,19 +11423,19 @@ SITAPI SituationError SituationEndFrame(void) {
         present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         present_info.waitSemaphoreCount = 1;
         present_info.pWaitSemaphores = signal_semaphores; // Wait for rendering to finish
-        VkSwapchainKHR swapchains[] = { sit_gs.vk.swapchain };
+        VkSwapchainKHR swapchains[] = { sit_render.vk.swapchain };
         present_info.swapchainCount = 1;
         present_info.pSwapchains = swapchains;
-        present_info.pImageIndices = &sit_gs.vk.current_image_index; // Present the image we acquired/used this frame
+        present_info.pImageIndices = &sit_render.vk.current_image_index; // Present the image we acquired/used this frame
 
         // Perform the presentation.
-        VkResult result = vkQueuePresentKHR(sit_gs.vk.present_queue, &present_info);
+        VkResult result = vkQueuePresentKHR(sit_render.vk.present_queue, &present_info);
 
         // 4. Handle Presentation Result & Swapchain State.
-        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || sit_gs.vk.framebuffer_resized) {
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || sit_render.vk.framebuffer_resized) {
             // The swapchain is out of date or not optimal. Recreate it.
             // Reset the resize flag if it was set.
-            sit_gs.vk.framebuffer_resized = false;
+            sit_render.vk.framebuffer_resized = false;
             _SituationVulkanRecreateSwapchain();
             // Note: We don't return an error here. Recreating the swapchain is handled internally.
             // The application should check for swapchain recreation needs in SituationAcquireFrameCommandBuffer.
@@ -11434,11 +11446,11 @@ SITAPI SituationError SituationEndFrame(void) {
         }
 
         // Store the index of the image we just submitted for presentation.
-        sit_gs.vk.last_presented_image_index = sit_gs.vk.current_image_index;
+        sit_render.vk.last_presented_image_index = sit_render.vk.current_image_index;
 
         // 5. Advance Frame Index for Next Frame's Synchronization.
         // Use the dynamically determined max frames in flight, not a compile-time constant.
-        sit_gs.vk.current_frame_index = (sit_gs.vk.current_frame_index + 1) % sit_gs.vk.max_frames_in_flight;
+        sit_render.vk.current_frame_index = (sit_render.vk.current_frame_index + 1) % sit_render.vk.max_frames_in_flight;
     }
 #endif // SITUATION_USE_VULKAN
 
@@ -11495,12 +11507,12 @@ SITAPI SituationError SituationEndFrame(void) {
  *
  * @par Backend-Specific Behavior
  * - **OpenGL:** OpenGL operates in immediate mode and does not use explicit command buffers in the same way Vulkan does. Therefore, this function returns `NULL`.
- * - **Vulkan:** Returns the `VkCommandBuffer` associated with the current frame index (`sit_gs.vk.current_frame_index`). This buffer is managed internally by the library and is reset and begun at the start of the frame by `SituationAcquireFrameCommandBuffer`.
+ * - **Vulkan:** Returns the `VkCommandBuffer` associated with the current frame index (`sit_render.vk.current_frame_index`). This buffer is managed internally by the library and is reset and begun at the start of the frame by `SituationAcquireFrameCommandBuffer`.
  *
  * @return A `SituationCommandBuffer` handle.
  *         - In Vulkan, this is a valid handle for the current frame's primary command buffer.
  *         - In OpenGL, this function returns `NULL`.
- * @return `NULL` if the library is not initialized, or if called at an inappropriate time (e.g., before `SituationAcquireFrameCommandBuffer` or after `SituationEndFrame` in Vulkan, if `sit_gs.vk.current_frame_index` is invalid).
+ * @return `NULL` if the library is not initialized, or if called at an inappropriate time (e.g., before `SituationAcquireFrameCommandBuffer` or after `SituationEndFrame` in Vulkan, if `sit_render.vk.current_frame_index` is invalid).
  *
  * @note It is the caller's responsibility to ensure that:
  *       1. The library is initialized.
@@ -11530,17 +11542,17 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
     {
         // --- 2. Vulkan Path ---
         // Retrieve the command buffer for the current frame index.
-        // This assumes sit_gs.vk.current_frame_index is valid (set by SituationAcquireFrameCommandBuffer).
+        // This assumes sit_render.vk.current_frame_index is valid (set by SituationAcquireFrameCommandBuffer).
 
         // Optional: Add a bounds check for robustness, though SituationAcquireFrameCommandBuffer should manage this.
-        if (sit_gs.vk.current_frame_index >= sit_gs.vk.max_frames_in_flight) {
+        if (sit_render.vk.current_frame_index >= sit_render.vk.max_frames_in_flight) {
             // This indicates a potential logic error or state issue.
             _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Current frame index is out of bounds for command buffer access.");
             return NULL;
         }
 
         // Get the VkCommandBuffer from the internal array.
-        VkCommandBuffer vk_cmd = sit_gs.vk.command_buffers[sit_gs.vk.current_frame_index];
+        VkCommandBuffer vk_cmd = sit_render.vk.command_buffers[sit_render.vk.current_frame_index];
 
         // Optional: Check if vk_cmd is VK_NULL_HANDLE, though SituationAcquireFrameCommandBuffer should provide a valid one.
         if (vk_cmd == VK_NULL_HANDLE) {
@@ -11600,16 +11612,16 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
     if (info->display_id < 0) {
         // Target: Main Window
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        sit_gs.gl.current_fbo_id = 0;
+        sit_render.gl.current_fbo_id = 0;
         glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
     } else {
         // Target: Virtual Display
-        if (info->display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[info->display_id]) {
+        if (info->display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[info->display_id]) {
             return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
         }
-        SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[info->display_id];
+        SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[info->display_id];
         glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
-        sit_gs.gl.current_fbo_id = vd->gl.fbo_id;
+        sit_render.gl.current_fbo_id = vd->gl.fbo_id;
         glViewport(0, 0, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
     }
 
@@ -11702,23 +11714,23 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
 
     if (display_id < 0) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        sit_gs.gl.current_fbo_id = 0;
+        sit_render.gl.current_fbo_id = 0;
         glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
     } else {
-        if (display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
+        if (display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "CmdBeginRenderToDisplay");
             return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
         }
-        SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[display_id];
+        SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
         glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
-        sit_gs.gl.current_fbo_id = vd->gl.fbo_id;
+        sit_render.gl.current_fbo_id = vd->gl.fbo_id;
         glViewport(0, 0, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
     }
 
     glClearColor(clear_color.r / 255.0f, clear_color.g / 255.0f, clear_color.b / 255.0f, clear_color.a / 255.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
-    sit_gs.gl.depth_test_enabled = true;
+    sit_render.gl.depth_test_enabled = true;
 
 #elif defined(SITUATION_USE_VULKAN)
     VkRenderPassBeginInfo render_pass_info = {0};
@@ -11732,16 +11744,16 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
     render_pass_info.pClearValues = clear_values;
 
     if (display_id < 0) {
-        render_pass_info.renderPass = sit_gs.vk.main_window_render_pass;
-        render_pass_info.framebuffer = sit_gs.vk.main_window_framebuffers[sit_gs.vk.current_image_index];
+        render_pass_info.renderPass = sit_render.vk.main_window_render_pass;
+        render_pass_info.framebuffer = sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
         render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
-        render_pass_info.renderArea.extent = sit_gs.vk.swapchain_extent;
+        render_pass_info.renderArea.extent = sit_render.vk.swapchain_extent;
     } else {
-        if (display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
+        if (display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "CmdBeginRenderToDisplay");
             return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
         }
-        SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[display_id];
+        SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
         render_pass_info.renderPass = vd->vk.render_pass;
         render_pass_info.framebuffer = vd->vk.framebuffer;
         render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
@@ -11794,32 +11806,32 @@ SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
         // --- 2. OpenGL End Render Pass & State Reset ---
         // Unbind any custom FBO, return to default framebuffer.
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    sit_gs.gl.current_fbo_id = 0;
+    sit_render.gl.current_fbo_id = 0;
 
         // --- State Resets (as per original snippet, noted as potentially intrusive) ---
         // Unbind current shader program.
         glUseProgram(0);
-        sit_gs.gl.current_program_id = 0;
+        sit_render.gl.current_program_id = 0;
         // Unbind current VAO.
         glBindVertexArray(0);
-        sit_gs.gl.current_vao_id = 0;
+        sit_render.gl.current_vao_id = 0;
         // Reset common blending state.
         glEnable(GL_BLEND);
-        sit_gs.gl.blend_enabled = true;
+        sit_render.gl.blend_enabled = true;
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        sit_gs.gl.blend_src_rgb = GL_SRC_ALPHA;
-        sit_gs.gl.blend_dst_rgb = GL_ONE_MINUS_SRC_ALPHA;
-        sit_gs.gl.blend_src_alpha = GL_SRC_ALPHA;
-        sit_gs.gl.blend_dst_alpha = GL_ONE_MINUS_SRC_ALPHA;
+        sit_render.gl.blend_src_rgb = GL_SRC_ALPHA;
+        sit_render.gl.blend_dst_rgb = GL_ONE_MINUS_SRC_ALPHA;
+        sit_render.gl.blend_src_alpha = GL_SRC_ALPHA;
+        sit_render.gl.blend_dst_alpha = GL_ONE_MINUS_SRC_ALPHA;
         // Reset common depth test state.
         glEnable(GL_DEPTH_TEST);
-        sit_gs.gl.depth_test_enabled = true;
+        sit_render.gl.depth_test_enabled = true;
         glDepthFunc(GL_LESS);
         // --- End State Resets ---
 
         // --- 3. OpenGL Error Checking ---
         SIT_CHECK_GL_ERROR();
-        if (sit_gs.gl.last_error != GL_NO_ERROR) {
+        if (sit_render.gl.last_error != GL_NO_ERROR) {
             // Error message likely set by SIT_CHECK_GL_ERROR
             return SITUATION_ERROR_OPENGL_GENERAL; // Or a more specific error if possible
         }
@@ -12024,8 +12036,8 @@ SITAPI void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, uint32_t bi
         return;
     }
     // glVertexArrayVertexBuffer modifies the state of the VAO that is *currently bound*.
-    // Because sit_gs.gl.global_vao_id is bound, this configures the user's VAO.
-    glVertexArrayVertexBuffer(sit_gs.gl.global_vao_id, binding, buffer.gl_buffer_id, (GLintptr)offset, (GLsizei)stride);
+    // Because sit_render.gl.global_vao_id is bound, this configures the user's VAO.
+    glVertexArrayVertexBuffer(sit_render.gl.global_vao_id, binding, buffer.gl_buffer_id, (GLintptr)offset, (GLsizei)stride);
     SIT_CHECK_GL_ERROR();
     // You might also store this binding info internally if needed for validation/debugging
 
@@ -12105,7 +12117,7 @@ SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd,
     vkCmdBindDescriptorSets(
         (VkCommandBuffer)cmd,
         VK_PIPELINE_BIND_POINT_COMPUTE,
-        sit_gs.vk.current_compute_pipeline_layout,
+        sit_render.vk.current_compute_pipeline_layout,
         binding,  // FIX: Was '0' in original code
         1,
         &texture.descriptor_set,
@@ -12130,10 +12142,10 @@ SITAPI void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, 
         return;
     }
     // Mark that a draw command has happened this frame
-    sit_gs.debug_draw_command_issued_this_frame = true;
-    sit_gs.frame_draw_calls++;
+    sit_render.debug_draw_command_issued_this_frame = true;
+    sit_render.frame_draw_calls++;
     // Triangle count approximation for standard topology (Triangle List)
-    sit_gs.frame_triangle_count += (vertex_count / 3) * instance_count;
+    sit_render.frame_triangle_count += (vertex_count / 3) * instance_count;
 
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
@@ -12163,9 +12175,9 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
         return;
     }
     // Update Stats
-    sit_gs.debug_draw_command_issued_this_frame = true;
-    sit_gs.frame_draw_calls++;
-    sit_gs.frame_triangle_count += (index_count / 3) * instance_count;
+    sit_render.debug_draw_command_issued_this_frame = true;
+    sit_render.frame_draw_calls++;
+    sit_render.frame_triangle_count += (index_count / 3) * instance_count;
 
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
@@ -12211,12 +12223,12 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     size_t data_size = vert_count * 4 * sizeof(float);
 
     // [PERF] Auto-grow scratch buffer
-    if (sit_gs.text_batch_capacity < data_size) {
-        sit_gs.text_batch_scratch = (float*)SIT_REALLOC(sit_gs.text_batch_scratch, data_size * 2); // Grow 2x
-        sit_gs.text_batch_capacity = data_size * 2;
+    if (sit_render.text_batch_capacity < data_size) {
+        sit_render.text_batch_scratch = (float*)SIT_REALLOC(sit_render.text_batch_scratch, data_size * 2); // Grow 2x
+        sit_render.text_batch_capacity = data_size * 2;
     }
 
-    float* vertices = sit_gs.text_batch_scratch;
+    float* vertices = sit_render.text_batch_scratch;
     if (!vertices) return;
 
     float x = pos.x;
@@ -12251,9 +12263,9 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     if (final_vert_count == 0) { return; }
 
     // Update Stats
-    sit_gs.debug_draw_command_issued_this_frame = true;
-    sit_gs.frame_draw_calls++;
-    sit_gs.frame_triangle_count += final_vert_count / 3;
+    sit_render.debug_draw_command_issued_this_frame = true;
+    sit_render.frame_draw_calls++;
+    sit_render.frame_triangle_count += final_vert_count / 3;
 
     Vector4 color_vec;
     SituationConvertColorToVector4(color, &color_vec);
@@ -12262,8 +12274,8 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, font.atlas_texture);
 
 #if defined(SITUATION_USE_OPENGL)
-    glUseProgram(sit_gs.gl.text_shader_program);
-    sit_gs.gl.current_program_id = sit_gs.gl.text_shader_program;
+    glUseProgram(sit_render.gl.text_shader_program);
+    sit_render.gl.current_program_id = sit_render.gl.text_shader_program;
 
     // Upload Batched Data to Dynamic VBO
     // Ensure we don't overflow the pre-allocated 512KB buffer
@@ -12273,20 +12285,20 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
         final_vert_count = (int)(data_size / (4 * sizeof(float)));
     }
 
-    glNamedBufferSubData(sit_gs.gl.text_vbo, 0, data_size, vertices);
+    glNamedBufferSubData(sit_render.gl.text_vbo, 0, data_size, vertices);
 
     // Set Uniforms
     glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec.raw);
 
-    glBindVertexArray(sit_gs.gl.text_vao);
-    sit_gs.gl.current_vao_id = sit_gs.gl.text_vao;
+    glBindVertexArray(sit_render.gl.text_vao);
+    sit_render.gl.current_vao_id = sit_render.gl.text_vao;
     glDrawArrays(GL_TRIANGLES, 0, final_vert_count);
     glBindVertexArray(0);
-    sit_gs.gl.current_vao_id = 0;
+    sit_render.gl.current_vao_id = 0;
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-    if (sit_gs.vk.text_pipeline == VK_NULL_HANDLE) { return; }
+    if (sit_render.vk.text_pipeline == VK_NULL_HANDLE) { return; }
 
     // Upload to temporary vertex buffer
     VkBuffer temp_buffer;
@@ -12294,14 +12306,14 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     if (_SituationVulkanCreateAndUploadBuffer(vk_cmd, vertices, v_idx * sizeof(float), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &temp_buffer, &temp_alloc) == SITUATION_SUCCESS) {
         // _SituationVulkanCreateAndUploadBuffer destroys the STAGING buffer, but we must destroy the DESTINATION buffer (temp_buffer)
 
-        vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.text_pipeline);
+        vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.text_pipeline);
 
         // Bind Vertex Buffer
         VkDeviceSize offsets[] = {0};
         vkCmdBindVertexBuffers(vk_cmd, 0, 1, &temp_buffer, offsets);
 
         // Push Color
-        vkCmdPushConstants(vk_cmd, sit_gs.vk.text_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(Vector4), color_vec.raw);
+        vkCmdPushConstants(vk_cmd, sit_render.vk.text_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(Vector4), color_vec.raw);
 
         vkCmdDraw(vk_cmd, final_vert_count, 1, 0, 0);
 
@@ -12325,7 +12337,7 @@ SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture tex
     if (vk_cmd == VK_NULL_HANDLE) return;
 
     // 1. Get the current swapchain image we are targeting
-    VkImage swapchainImage = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
+    VkImage swapchainImage = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
     if (swapchainImage == VK_NULL_HANDLE) return;
 
     // 2. Transition Swapchain to TRANSFER_DST
@@ -12347,8 +12359,8 @@ SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture tex
 
     blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.dstSubresource.layerCount = 1;
-    blit.dstOffsets[1].x = sit_gs.vk.swapchain_extent.width;
-    blit.dstOffsets[1].y = sit_gs.vk.swapchain_extent.height;
+    blit.dstOffsets[1].x = sit_render.vk.swapchain_extent.width;
+    blit.dstOffsets[1].y = sit_render.vk.swapchain_extent.height;
     blit.dstOffsets[1].z = 1;
 
     vkCmdBlitImage(vk_cmd, texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -12391,7 +12403,7 @@ SITAPI uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer) {
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
         .buffer = buffer.vk_buffer
     };
-    return vkGetBufferDeviceAddress(sit_gs.vk.device, &info);
+    return vkGetBufferDeviceAddress(sit_render.vk.device, &info);
     // If compiling against 1.0/1.1 with extensions, use vkGetBufferDeviceAddressKHR
 
 #elif defined(SITUATION_USE_OPENGL)
@@ -12462,10 +12474,10 @@ SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t 
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdSetVertexAttribute: Unsupported data type.");
         return;
     }
-    glVertexArrayAttribFormat(sit_gs.gl.global_vao_id, location, size, gl_type, normalized ? GL_TRUE : GL_FALSE, (GLuint)offset);
+    glVertexArrayAttribFormat(sit_render.gl.global_vao_id, location, size, gl_type, normalized ? GL_TRUE : GL_FALSE, (GLuint)offset);
     // We assume the binding index matches the location for simplicity in this abstraction
-    glVertexArrayAttribBinding(sit_gs.gl.global_vao_id, location, location);
-    glEnableVertexArrayAttrib(sit_gs.gl.global_vao_id, location);
+    glVertexArrayAttribBinding(sit_render.gl.global_vao_id, location, location);
+    glEnableVertexArrayAttrib(sit_render.gl.global_vao_id, location);
     SIT_CHECK_GL_ERROR();
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -12489,7 +12501,7 @@ SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t 
  * - **OpenGL:** This function is a wrapper around `glUseProgram`. It activates the shader program associated with the `SituationShader` handle. The command buffer parameter `cmd` is ignored as OpenGL uses global state.
  *               In debug builds (`NDEBUG` not defined), it validates the program ID using `glIsProgram` to catch potential errors early.
  * - **Vulkan:** Records a `vkCmdBindPipeline` command into the provided command buffer for the `VK_PIPELINE_BIND_POINT_GRAPHICS` bind point.
- *               It also updates the internal global state `sit_gs.vk.current_pipeline_layout_for_push_constants` with the pipeline's layout, which is essential for subsequent `SituationCmdSetPushConstant` and descriptor set binding operations.
+ *               It also updates the internal global state `sit_render.vk.current_pipeline_layout_for_push_constants` with the pipeline's layout, which is essential for subsequent `SituationCmdSetPushConstant` and descriptor set binding operations.
  *
  * @param cmd The command buffer into which the bind command will be recorded (Vulkan) or ignored (OpenGL).
  * @param shader The `SituationShader` handle representing the graphics pipeline to bind.
@@ -12514,7 +12526,7 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
         _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to bind an invalid shader handle.");
         // Invalidate the cached layout so subsequent PushConstant calls don't crash Vulkan
         #if defined(SITUATION_USE_VULKAN)
-        sit_gs.vk.current_pipeline_layout_for_push_constants = VK_NULL_HANDLE;
+        sit_render.vk.current_pipeline_layout_for_push_constants = VK_NULL_HANDLE;
         #endif
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
@@ -12537,11 +12549,11 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
 
         // --- 3. OpenGL Bind Execution ---
         glUseProgram(shader.id);
-        sit_gs.gl.current_program_id = shader.id;
+        sit_render.gl.current_program_id = shader.id;
 
         // --- 4. OpenGL Error Checking ---
         SIT_CHECK_GL_ERROR();
-        if (sit_gs.gl.last_error != GL_NO_ERROR) {
+        if (sit_render.gl.last_error != GL_NO_ERROR) {
             // Error message likely set by SIT_CHECK_GL_ERROR
             return SITUATION_ERROR_OPENGL_GENERAL; // Or a more specific error if possible
         }
@@ -12563,12 +12575,12 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
         vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shader.vk_pipeline);
 
         // Store pipelines for stride-based switching
-        sit_gs.vk.current_pbr_pipeline = shader.vk_pipeline;
-        sit_gs.vk.current_legacy_pipeline = shader.vk_pipeline_legacy;
+        sit_render.vk.current_pbr_pipeline = shader.vk_pipeline;
+        sit_render.vk.current_legacy_pipeline = shader.vk_pipeline_legacy;
 
         // Update the global state so subsequent commands (Push Constants, Descriptor Sets)
         // know which pipeline layout to use.
-        sit_gs.vk.current_pipeline_layout_for_push_constants = shader.vk_pipeline_layout;
+        sit_render.vk.current_pipeline_layout_for_push_constants = shader.vk_pipeline_layout;
 
         // Note: vkCmdBindPipeline itself doesn't return VkResult.
         // Errors would be validation layer reports or occur during command buffer submission.
@@ -12619,9 +12631,9 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
     // Update Stats
-    sit_gs.debug_draw_command_issued_this_frame = true;
-    sit_gs.frame_draw_calls++;
-    sit_gs.frame_triangle_count += (mesh.index_count / 3); // Assuming non-instanced single mesh
+    sit_render.debug_draw_command_issued_this_frame = true;
+    sit_render.frame_draw_calls++;
+    sit_render.frame_triangle_count += (mesh.index_count / 3); // Assuming non-instanced single mesh
 
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
@@ -12630,14 +12642,14 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
     // 1. Bind the mesh's own private, pre-configured VAO.
     // This single call restores its VBO, EBO, and vertex attribute layout.
     glBindVertexArray(mesh.vao_id);
-    sit_gs.gl.current_vao_id = mesh.vao_id;
+    sit_render.gl.current_vao_id = mesh.vao_id;
 
     // 2. Issue the draw call.
     glDrawElements(GL_TRIANGLES, mesh.index_count, GL_UNSIGNED_INT, (void*)0);
 
     // 3. Unbind the VAO to be tidy (optional but good practice).
     glBindVertexArray(0);
-    sit_gs.gl.current_vao_id = 0;
+    sit_render.gl.current_vao_id = 0;
 
     SIT_CHECK_GL_ERROR();
     return SITUATION_SUCCESS;
@@ -12655,12 +12667,12 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
         // Select pipeline variant based on mesh stride
         VkPipeline pipeline_to_use = VK_NULL_HANDLE;
         // Legacy (32-byte)
-        if (mesh.vertex_stride == 32 && sit_gs.vk.current_legacy_pipeline != VK_NULL_HANDLE) {
-            pipeline_to_use = sit_gs.vk.current_legacy_pipeline;
+        if (mesh.vertex_stride == 32 && sit_render.vk.current_legacy_pipeline != VK_NULL_HANDLE) {
+            pipeline_to_use = sit_render.vk.current_legacy_pipeline;
         }
         // PBR (48-byte)
-        else if (mesh.vertex_stride == 48 && sit_gs.vk.current_pbr_pipeline != VK_NULL_HANDLE) {
-            pipeline_to_use = sit_gs.vk.current_pbr_pipeline;
+        else if (mesh.vertex_stride == 48 && sit_render.vk.current_pbr_pipeline != VK_NULL_HANDLE) {
+            pipeline_to_use = sit_render.vk.current_pbr_pipeline;
         }
 
         // Only re-bind if we found a specific match (otherwise assume current bound is correct or generic)
@@ -12707,9 +12719,9 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
  */
 SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color) {
     if (!SituationIsInitialized()) return;
-    sit_gs.debug_draw_command_issued_this_frame = true;
-    sit_gs.frame_draw_calls++;
-    sit_gs.frame_triangle_count += 2;
+    sit_render.debug_draw_command_issued_this_frame = true;
+    sit_render.frame_draw_calls++;
+    sit_render.frame_triangle_count += 2;
 
     // Default UV Rect: Offset (0,0), Scale (1,1)
     Vector4 uv_rect = {{0.0f, 0.0f, 1.0f, 1.0f}};
@@ -12717,10 +12729,10 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4
 
 #if defined(SITUATION_USE_OPENGL)
     (void)cmd;
-    if (sit_gs.gl.quad_shader_program == 0) return;
+    if (sit_render.gl.quad_shader_program == 0) return;
 
-    glUseProgram(sit_gs.gl.quad_shader_program);
-    sit_gs.gl.current_program_id = sit_gs.gl.quad_shader_program;
+    glUseProgram(sit_render.gl.quad_shader_program);
+    sit_render.gl.current_program_id = sit_render.gl.quad_shader_program;
     glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model);
     glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color.raw);
 
@@ -12728,20 +12740,20 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4
     glUniform4fv(5, 1, (const GLfloat*)uv_rect.raw); // Location 5 from shader
     glUniform1i(6, use_texture);                 // Location 6 from shader
 
-    glBindVertexArray(sit_gs.gl.quad_vao);
+    glBindVertexArray(sit_render.gl.quad_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
-    sit_gs.gl.current_vao_id = 0;
+    sit_render.gl.current_vao_id = 0;
     glUseProgram(0);
-    sit_gs.gl.current_program_id = 0;
+    sit_render.gl.current_program_id = 0;
 
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.quad_pipeline == VK_NULL_HANDLE) return;
+    if (sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
-    vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.quad_pipeline);
+    vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline);
 
-    VkBuffer vertex_buffers[] = { sit_gs.vk.quad_vertex_buffer };
+    VkBuffer vertex_buffers[] = { sit_render.vk.quad_vertex_buffer };
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
 
@@ -12759,7 +12771,7 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4
     push_data.use_texture = use_texture;
 
     // Note: vkCmdPushConstants size must update to match the larger struct
-    vkCmdPushConstants(vk_cmd, sit_gs.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
+    vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
     vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 #endif
 }
@@ -12774,7 +12786,7 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4
  * - **OpenGL:** Uses `glProgramUniform*` functions as a direct and efficient equivalent.
  *               It queries the currently bound program (`glGetCurrentProgram`) and updates the uniform  at the location specified by `contract_id`. Supported data types are limited to common cases (`mat4`, `vec4`, `vec3`, `vec2`, `float`, `int`) based on `size`. Other sizes will trigger an error message.
  * - **Vulkan:** Records a `vkCmdPushConstants` command into the provided command buffer.
- *   The data is written to the push constant block of the pipeline layout last bound via `vkCmdPushConstants` or assumed to be correctly set in `sit_gs.vk.current_pipeline_layout_for_push_constants`. The data is made available to all graphics shader stages (`VK_SHADER_STAGE_ALL_GRAPHICS`).
+ *   The data is written to the push constant block of the pipeline layout last bound via `vkCmdPushConstants` or assumed to be correctly set in `sit_render.vk.current_pipeline_layout_for_push_constants`. The data is made available to all graphics shader stages (`VK_SHADER_STAGE_ALL_GRAPHICS`).
  *   The pipeline *must* have been created with a push constant range that includes the specified `contract_id` (offset) and `size`.
  *
  * @param cmd The command buffer for the current frame (Vulkan) or ignored (OpenGL).
@@ -12863,16 +12875,16 @@ SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t con
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
         // Check if we have a valid layout before pushing
-        if (sit_gs.vk.current_pipeline_layout_for_push_constants == VK_NULL_HANDLE) {
+        if (sit_render.vk.current_pipeline_layout_for_push_constants == VK_NULL_HANDLE) {
              // Silently return or log warning. The shader bind failed previously, so we can't push.
              return;
         }
         // --- 3. Vulkan Implementation (vkCmdPushConstants) ---
-        // Assumes sit_gs.vk.current_pipeline_layout_for_push_constants is valid and corresponds to the currently bound pipeline that uses these push constants.
+        // Assumes sit_render.vk.current_pipeline_layout_for_push_constants is valid and corresponds to the currently bound pipeline that uses these push constants.
         // Uses VK_SHADER_STAGE_ALL_GRAPHICS for broad compatibility, though specifying exact stages is more optimal.
         vkCmdPushConstants(
             vk_cmd,
-            sit_gs.vk.current_pipeline_layout_for_push_constants, // Pipeline Layout
+            sit_render.vk.current_pipeline_layout_for_push_constants, // Pipeline Layout
             VK_SHADER_STAGE_ALL_GRAPHICS,                         // Shader Stages (Consider making this more specific)
             contract_id,                                          // Offset
             (uint32_t)size,                                       // Size
@@ -12896,7 +12908,7 @@ SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t con
  * @return The count of draw calls recorded so far in the current frame.
  */
 SITAPI uint32_t SituationGetDrawCallCount(void) {
-    return sit_gs.frame_draw_calls;
+    return sit_render.frame_draw_calls;
 }
 
 /**
@@ -12919,9 +12931,9 @@ SITAPI uint64_t SituationGetVRAMUsage(void) {
 
     // --- 1. VULKAN (Most Accurate) ---
 #if defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.vma_allocator) {
+    if (sit_render.vk.vma_allocator) {
         VmaTotalStatistics stats;
-        vmaCalculateStatistics(sit_gs.vk.vma_allocator, &stats);
+        vmaCalculateStatistics(sit_render.vk.vma_allocator, &stats);
         return stats.total.statistics.allocationBytes;
     }
 #endif
@@ -13064,12 +13076,12 @@ SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, 
     VkPipelineBindPoint bind_point;
     VkPipelineLayout layout;
 
-    if (sit_gs.vk.current_compute_pipeline_layout != VK_NULL_HANDLE) {
+    if (sit_render.vk.current_compute_pipeline_layout != VK_NULL_HANDLE) {
         bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
-        layout = sit_gs.vk.current_compute_pipeline_layout;
-    } else if (sit_gs.vk.current_pipeline_layout_for_push_constants != VK_NULL_HANDLE) {
+        layout = sit_render.vk.current_compute_pipeline_layout;
+    } else if (sit_render.vk.current_pipeline_layout_for_push_constants != VK_NULL_HANDLE) {
         bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        layout = sit_gs.vk.current_pipeline_layout_for_push_constants;
+        layout = sit_render.vk.current_pipeline_layout_for_push_constants;
     } else {
         _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED, "Cannot bind descriptor set; no pipeline is currently bound.");
         return SITUATION_ERROR_RENDER_COMMAND_FAILED;
@@ -13124,12 +13136,12 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
     // Determine the active pipeline (graphics or compute).
     VkPipelineBindPoint bind_point;
     VkPipelineLayout layout;
-    if (sit_gs.vk.current_compute_pipeline_layout != VK_NULL_HANDLE) {
+    if (sit_render.vk.current_compute_pipeline_layout != VK_NULL_HANDLE) {
         bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
-        layout = sit_gs.vk.current_compute_pipeline_layout;
-    } else if (sit_gs.vk.current_pipeline_layout_for_push_constants != VK_NULL_HANDLE) {
+        layout = sit_render.vk.current_compute_pipeline_layout;
+    } else if (sit_render.vk.current_pipeline_layout_for_push_constants != VK_NULL_HANDLE) {
         bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        layout = sit_gs.vk.current_pipeline_layout_for_push_constants;
+        layout = sit_render.vk.current_pipeline_layout_for_push_constants;
     } else {
         _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED, "Cannot bind texture set; no pipeline is currently bound.");
         return SITUATION_ERROR_RENDER_COMMAND_FAILED;
@@ -13308,7 +13320,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     if (_SituationVulkanCreateImage(image.width, image.height, mip_levels, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
                                   vk_usage, VMA_MEMORY_USAGE_GPU_ONLY,
                                   &texture.image, &texture.allocation) != SITUATION_SUCCESS) {
-        if (cmd == VK_NULL_HANDLE) vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+        if (cmd == VK_NULL_HANDLE) vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
         else _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
         return texture;
     }
@@ -13336,7 +13348,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     if (cmd == VK_NULL_HANDLE) {
         _SituationVulkanEndSingleTimeCommands(command_buffer);
         // --- Step 4: Cleanup Staging Buffer (Synchronous) ---
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+        vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
     } else {
         // --- Step 4: Defer Cleanup Staging Buffer (Asynchronous) ---
         _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
@@ -13363,7 +13375,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     sampler_info.minLod = 0.0f;
     sampler_info.maxLod = (float)mip_levels; // Use all available mip levels
 
-    if (vkCreateSampler(sit_gs.vk.device, &sampler_info, NULL, &texture.sampler) != VK_SUCCESS) {
+    if (vkCreateSampler(sit_render.vk.device, &sampler_info, NULL, &texture.sampler) != VK_SUCCESS) {
         // ... cleanup ...
         return (SituationTexture){0};
     }
@@ -13373,21 +13385,21 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     VkDescriptorSetLayout layout_to_use;
 
     if (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) {
-        layout_to_use = sit_gs.vk.storage_image_layout;
+        layout_to_use = sit_render.vk.storage_image_layout;
         descriptor_type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     } else {
-        layout_to_use = sit_gs.vk.image_sampler_layout;
+        layout_to_use = sit_render.vk.image_sampler_layout;
         descriptor_type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
 
     // Use the Asset Pool
     VkDescriptorSetAllocateInfo asset_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = sit_gs.vk.asset_descriptor_pool,
+        .descriptorPool = sit_render.vk.asset_descriptor_pool,
         .descriptorSetCount = 1,
         .pSetLayouts = &layout_to_use
     };
-    vkAllocateDescriptorSets(sit_gs.vk.device, &asset_alloc_info, &texture.descriptor_set);
+    vkAllocateDescriptorSets(sit_render.vk.device, &asset_alloc_info, &texture.descriptor_set);
 
     if (texture.descriptor_set == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
@@ -13419,7 +13431,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     write.descriptorCount = 1;
     write.pImageInfo = &image_info;
 
-    vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write, 0, NULL);
+    vkUpdateDescriptorSets(sit_render.vk.device, 1, &write, 0, NULL);
 
     // --- Final ---
     texture.id = (uint64_t)(uintptr_t)texture.image;
@@ -13433,8 +13445,8 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
             _SituationTextureNode* node = (_SituationTextureNode*)SIT_MALLOC(sizeof(_SituationTextureNode));
             if (node) {
                 node->texture = texture;
-                node->next = sit_gs.all_textures;
-                sit_gs.all_textures = node;
+                node->next = sit_render.all_textures;
+                sit_render.all_textures = node;
             } else {
                 _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for texture");
                 SituationDestroyTexture(&texture);
@@ -13483,7 +13495,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
     }
 
     // --- 2. Resource Manager: Remove from tracking list ---
-    _SituationTextureNode* current = sit_gs.all_textures;
+    _SituationTextureNode* current = sit_render.all_textures;
     _SituationTextureNode* prev = NULL;
 
     while (current != NULL) {
@@ -13491,7 +13503,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
             if (prev) {
                 prev->next = current->next;
             } else {
-                sit_gs.all_textures = current->next;
+                sit_render.all_textures = current->next;
             }
             // [HOT-RELOAD] Free the stored path string
             if (current->source_path) SIT_FREE(current->source_path);
@@ -13516,7 +13528,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
         // --- 3. Vulkan Destruction ---
         // Defer destruction to avoid stalling.
         if (texture->descriptor_set != VK_NULL_HANDLE) {
-             _SituationDeferDestroyDescriptorSet(texture->descriptor_set, sit_gs.vk.asset_descriptor_pool);
+             _SituationDeferDestroyDescriptorSet(texture->descriptor_set, sit_render.vk.asset_descriptor_pool);
         }
 
         _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
@@ -13596,19 +13608,19 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
     VmaAllocationCreateInfo staging_alloc_info = {0};
     staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
 
-    if (vmaCreateBuffer(sit_gs.vk.vma_allocator, &staging_buffer_info, &staging_alloc_info, &staging_buffer, &staging_allocation, NULL) != VK_SUCCESS) {
+    if (vmaCreateBuffer(sit_render.vk.vma_allocator, &staging_buffer_info, &staging_alloc_info, &staging_buffer, &staging_allocation, NULL) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create staging buffer.");
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
 
     // --- 3. Upload Data to Staging Buffer ---
     void* mapped_data = NULL;
-    if (vmaMapMemory(sit_gs.vk.vma_allocator, staging_allocation, &mapped_data) != VK_SUCCESS) {
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+    if (vmaMapMemory(sit_render.vk.vma_allocator, staging_allocation, &mapped_data) != VK_SUCCESS) {
+        vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
         return SITUATION_ERROR_BUFFER_MAP_FAILED;
     }
     memcpy(mapped_data, data, (size_t)size);
-    vmaUnmapMemory(sit_gs.vk.vma_allocator, staging_allocation);
+    vmaUnmapMemory(sit_render.vk.vma_allocator, staging_allocation);
 
     // --- 4. Create Final GPU-Local Buffer ---
     VkBufferCreateInfo buffer_info = {0};
@@ -13619,9 +13631,9 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
     VmaAllocationCreateInfo alloc_info = {0};
     alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-    if (vmaCreateBuffer(sit_gs.vk.vma_allocator, &buffer_info, &alloc_info, out_buffer, out_allocation, NULL) != VK_SUCCESS) {
+    if (vmaCreateBuffer(sit_render.vk.vma_allocator, &buffer_info, &alloc_info, out_buffer, out_allocation, NULL) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create device-local buffer.");
-        vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+        vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
 
@@ -13656,8 +13668,8 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
         // === SYNCHRONOUS PATH (Legacy/Init) ===
         VkCommandBuffer temp_cmd = _SituationVulkanBeginSingleTimeCommands();
         if (temp_cmd == VK_NULL_HANDLE) {
-            vmaDestroyBuffer(sit_gs.vk.vma_allocator, *out_buffer, *out_allocation);
-            vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+            vmaDestroyBuffer(sit_render.vk.vma_allocator, *out_buffer, *out_allocation);
+            vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
             *out_buffer = VK_NULL_HANDLE;
             return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
         }
@@ -13670,10 +13682,10 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
         // SAFE CLEANUP [2.3.14A]:
         // If we are initializing, Graveyards might not be ready or flushed yet.
         // Explicit destroy is fine here because we waited on the queue via EndSingleTimeCommands.
-        if (sit_gs.vk.graveyards) {
+        if (sit_render.vk.graveyards) {
             _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
         } else {
-            vmaDestroyBuffer(sit_gs.vk.vma_allocator, staging_buffer, staging_allocation);
+            vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
         }
 
         return SITUATION_SUCCESS;
@@ -13705,8 +13717,8 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
  * @warning This is a **synchronous** operation. It allocates a command buffer, submits it, and stalls the CPU (`vkQueueWaitIdle`) until the GPU transfer is complete.
  */
 static SituationError _SituationVulkanReadBackBuffer(VkBuffer src_buffer, VmaAllocation src_alloc, size_t size, size_t offset, void* out_data) {
-    VkDevice device = sit_gs.vk.device;
-    VmaAllocator allocator = sit_gs.vk.vma_allocator;
+    VkDevice device = sit_render.vk.device;
+    VmaAllocator allocator = sit_render.vk.vma_allocator;
 
     // 1. Check if directly mappable
     VmaAllocationInfo alloc_info;
@@ -13843,7 +13855,7 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         glNamedBufferStorage(buffer.gl_buffer_id, size, initial_data, gl_storage_flags);
 
         SIT_CHECK_GL_ERROR();
-        if (sit_gs.gl.last_error != GL_NO_ERROR) {
+        if (sit_render.gl.last_error != GL_NO_ERROR) {
             // Error message should be set by SIT_CHECK_GL_ERROR
             local_err = SITUATION_ERROR_OPENGL_GENERAL;
             glDeleteBuffers(1, &buffer.gl_buffer_id);
@@ -13921,7 +13933,7 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
             }
 
             VkResult result = vmaCreateBuffer(
-                sit_gs.vk.vma_allocator,
+                sit_render.vk.vma_allocator,
                 &buffer_info,
                 &alloc_info,
                 &buffer.vk_buffer,
@@ -13941,16 +13953,16 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         // Determine the correct descriptor type based on primary usage.
         // A buffer might have multiple usage flags, but we typically bind it as one type.
         VkDescriptorType descriptor_type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // Default
-        VkDescriptorSetLayout layout_to_use = sit_gs.vk.ubo_layout; // Default layout
+        VkDescriptorSetLayout layout_to_use = sit_render.vk.ubo_layout; // Default layout
 
         // Prioritize Storage Buffer if flagged as such, as it's more general.
         if (usage_flags & SITUATION_BUFFER_USAGE_STORAGE_BUFFER) {
             descriptor_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            layout_to_use = sit_gs.vk.ssbo_layout;
+            layout_to_use = sit_render.vk.ssbo_layout;
         } else if (usage_flags & SITUATION_BUFFER_USAGE_UNIFORM_BUFFER) {
             // UBO flag takes precedence if SSBO isn't set
             descriptor_type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            layout_to_use = sit_gs.vk.ubo_layout;
+            layout_to_use = sit_render.vk.ubo_layout;
         }
         // Add logic for other types if needed (e.g., using SSBO layout for UBO if that's preferred)
 
@@ -13985,7 +13997,7 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         descriptor_write.descriptorCount = 1;
         descriptor_write.pBufferInfo = &buffer_info;
 
-        vkUpdateDescriptorSets(sit_gs.vk.device, 1, &descriptor_write, 0, NULL);
+        vkUpdateDescriptorSets(sit_render.vk.device, 1, &descriptor_write, 0, NULL);
         // --- END NEW ---
 
         // --- 2.4. Assign ID (using VkBuffer handle as unique ID) ---
@@ -13998,8 +14010,8 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         _SituationBufferNode* node = (_SituationBufferNode*)SIT_MALLOC(sizeof(_SituationBufferNode));
         if (node) {
             node->buffer = buffer;
-            node->next = sit_gs.all_buffers;
-            sit_gs.all_buffers = node;
+            node->next = sit_render.all_buffers;
+            sit_render.all_buffers = node;
         } else {
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for buffer");
             local_err = SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -14010,10 +14022,10 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
 #elif defined(SITUATION_USE_VULKAN)
             // Free the descriptor set if it was allocated
             if (buffer.descriptor_set != VK_NULL_HANDLE) {
-                vkFreeDescriptorSets(sit_gs.vk.device, sit_gs.vk.persistent_descriptor_pool, 1, &buffer.descriptor_set);
+                vkFreeDescriptorSets(sit_render.vk.device, sit_render.vk.persistent_descriptor_pool, 1, &buffer.descriptor_set);
                 buffer.descriptor_set = VK_NULL_HANDLE;
             }
-            vmaDestroyBuffer(sit_gs.vk.vma_allocator, buffer.vk_buffer, buffer.vma_allocation);
+            vmaDestroyBuffer(sit_render.vk.vma_allocator, buffer.vk_buffer, buffer.vma_allocation);
             buffer.vk_buffer = VK_NULL_HANDLE;
             buffer.vma_allocation = VK_NULL_HANDLE;
 #endif
@@ -14054,7 +14066,7 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
 
     // --- 2. Resource Manager: Remove from internal tracking list ---
     // This prevents the shutdown sequence from reporting this buffer as a leak.
-    _SituationBufferNode* current = sit_gs.all_buffers;
+    _SituationBufferNode* current = sit_render.all_buffers;
     _SituationBufferNode* prev = NULL;
 
     while (current != NULL) {
@@ -14062,7 +14074,7 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
             if (prev) {
                 prev->next = current->next; // Unlink from middle/end of the list
             } else {
-                sit_gs.all_buffers = current->next; // Unlink from the head of the list
+                sit_render.all_buffers = current->next; // Unlink from the head of the list
             }
             SIT_FREE(current); // Free the tracking node itself
             break; // Found and removed, can exit the loop
@@ -14235,7 +14247,7 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create index buffer for mesh.");
         // Cleanup vertex buffer immediately if synchronous, or defer if async
         if (cmd == VK_NULL_HANDLE) {
-             vmaDestroyBuffer(sit_gs.vk.vma_allocator, mesh.vertex_buffer, mesh.vertex_buffer_memory);
+             vmaDestroyBuffer(sit_render.vk.vma_allocator, mesh.vertex_buffer, mesh.vertex_buffer_memory);
         } else {
              _SituationDeferDestroyBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory);
         }
@@ -14257,8 +14269,8 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
         _SituationMeshNode* node = (_SituationMeshNode*)SIT_MALLOC(sizeof(_SituationMeshNode));
         if (node) {
             node->mesh = mesh;
-            node->next = sit_gs.all_meshes;
-            sit_gs.all_meshes = node;
+            node->next = sit_render.all_meshes;
+            sit_render.all_meshes = node;
         } else {
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for mesh");
             SituationDestroyMesh(&mesh); // Clean up the GPU resource we just made
@@ -14294,7 +14306,7 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
 
     // --- 2. Resource Manager: Remove from internal tracking list ---
     // This prevents the shutdown sequence from reporting this mesh as a leak.
-    _SituationMeshNode* current = sit_gs.all_meshes;
+    _SituationMeshNode* current = sit_render.all_meshes;
     _SituationMeshNode* prev = NULL;
 
     while (current != NULL) {
@@ -14302,7 +14314,7 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
             if (prev) {
                 prev->next = current->next; // Unlink from middle/end of the list
             } else {
-                sit_gs.all_meshes = current->next; // Unlink from the head of the list
+                sit_render.all_meshes = current->next; // Unlink from the head of the list
             }
             SIT_FREE(current); // Free the tracking node itself
             break; // Found and removed, can exit the loop
@@ -14324,7 +14336,7 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
 #elif defined(SITUATION_USE_VULKAN)
     {
         // For Vulkan, defer destruction to the Graveyard to avoid stalling the GPU.
-        if (sit_gs.vk.device) {
+        if (sit_render.vk.device) {
             if (mesh->vertex_buffer != VK_NULL_HANDLE) {
                 _SituationDeferDestroyBuffer(mesh->vertex_buffer, mesh->vertex_buffer_memory);
             }
@@ -14828,8 +14840,8 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
         _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
         if (node) {
             node->pipeline = pipeline;
-            node->next = sit_gs.all_compute_pipelines;
-            sit_gs.all_compute_pipelines = node;
+            node->next = sit_render.all_compute_pipelines;
+            sit_render.all_compute_pipelines = node;
             // Optional: node->was_spirv_used = false; // Since we passed GLSL directly
         } else {
             // This is a non-fatal but serious issue: the GPU resource was created but we failed to track it. We must warn the user that they are now responsible for cleanup.
@@ -14862,12 +14874,12 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
 
     // 2. --- Select the pre-created Pipeline Layout ---
     // Validate the user-provided layout type to prevent out-of-bounds access.
-    if (layout_type < 0 || layout_type >= (sizeof(sit_gs.vk.compute_layouts) / sizeof(sit_gs.vk.compute_layouts[0]))) {
+    if (layout_type < 0 || layout_type >= (sizeof(sit_render.vk.compute_layouts) / sizeof(sit_render.vk.compute_layouts[0]))) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "An invalid SituationComputeLayoutType was specified.");
         _SituationFreeSpirvBlob(&cs_spirv); // Clean up the compiled SPIR-V
         return pipeline;
     }
-    VkPipelineLayout selected_layout = sit_gs.vk.compute_layouts[layout_type];
+    VkPipelineLayout selected_layout = sit_render.vk.compute_layouts[layout_type];
 
     // 3. --- Create the Vulkan Pipeline from SPIR-V and the selected layout ---
     pipeline = _SituationVulkanCreateComputePipeline(cs_spirv.data, cs_spirv.size, selected_layout);
@@ -14886,8 +14898,8 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
         _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
         if (node) {
             node->pipeline = pipeline;
-            node->next = sit_gs.all_compute_pipelines;
-            sit_gs.all_compute_pipelines = node;
+            node->next = sit_render.all_compute_pipelines;
+            sit_render.all_compute_pipelines = node;
         } else {
             // This is a non-fatal but serious issue: the GPU resource was created but we failed to track it. Warn the user they are now responsible for cleanup.
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
@@ -14953,12 +14965,12 @@ SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compu
     pipeline = SituationCreateComputePipelineFromMemory(source, layout_type);
 
     // --- 4. [HOT-RELOAD] Store Path and Layout in Tracking Node ---
-    // SituationCreateComputePipelineFromMemory prepends the new node to the head of sit_gs.all_compute_pipelines.
+    // SituationCreateComputePipelineFromMemory prepends the new node to the head of sit_render.all_compute_pipelines.
     // We check if the ID matches to be absolutely safe.
-    if (pipeline.id != 0 && sit_gs.all_compute_pipelines && sit_gs.all_compute_pipelines->pipeline.id == pipeline.id) {
-        sit_gs.all_compute_pipelines->source_path = _sit_strdup(compute_shader_path);
-        sit_gs.all_compute_pipelines->layout_type = layout_type;
-        sit_gs.all_compute_pipelines->mod_time = SituationGetFileModTime(compute_shader_path);
+    if (pipeline.id != 0 && sit_render.all_compute_pipelines && sit_render.all_compute_pipelines->pipeline.id == pipeline.id) {
+        sit_render.all_compute_pipelines->source_path = _sit_strdup(compute_shader_path);
+        sit_render.all_compute_pipelines->layout_type = layout_type;
+        sit_render.all_compute_pipelines->mod_time = SituationGetFileModTime(compute_shader_path);
     }
 
     // --- 5. Cleanup ---
@@ -14990,13 +15002,13 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
     if (!pipeline || pipeline->id == 0) return;
 
     // --- Resource Manager: Remove from Tracking List ---
-    _SituationComputePipelineNode* current = sit_gs.all_compute_pipelines;
+    _SituationComputePipelineNode* current = sit_render.all_compute_pipelines;
     _SituationComputePipelineNode* prev = NULL;
 
     while (current != NULL) {
         if (current->pipeline.id == pipeline->id) {
             if (prev) prev->next = current->next;
-            else sit_gs.all_compute_pipelines = current->next;
+            else sit_render.all_compute_pipelines = current->next;
 
             // [HOT-RELOAD] Free the stored path string
             if (current->source_path) SIT_FREE(current->source_path);
@@ -15070,39 +15082,39 @@ static void _SituationCleanupDanglingResources(void) {
     // It iterates through the tracking lists and frees everything, logging warnings.
 
     // Clean up Meshes
-    while (sit_gs.all_meshes != NULL) {
-        fprintf(stderr, "SITUATION WARNING: Leaked SituationMesh (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_gs.all_meshes->mesh.id);
+    while (sit_render.all_meshes != NULL) {
+        fprintf(stderr, "SITUATION WARNING: Leaked SituationMesh (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_render.all_meshes->mesh.id);
         // Note: The Destroy function will internally remove the node from the list, advancing the head.
-        SituationDestroyMesh(&sit_gs.all_meshes->mesh);
+        SituationDestroyMesh(&sit_render.all_meshes->mesh);
     }
 
     // Clean up Graphics Shaders
-    while (sit_gs.all_shaders != NULL) {
-        fprintf(stderr, "SITUATION WARNING: Leaked SituationShader (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_gs.all_shaders->shader.id);
-        SituationUnloadShader(&sit_gs.all_shaders->shader);
+    while (sit_render.all_shaders != NULL) {
+        fprintf(stderr, "SITUATION WARNING: Leaked SituationShader (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_render.all_shaders->shader.id);
+        SituationUnloadShader(&sit_render.all_shaders->shader);
     }
 
     // Clean up Compute Pipelines
-    while (sit_gs.all_compute_pipelines != NULL) {
-        fprintf(stderr, "SITUATION WARNING: Leaked SituationComputePipeline (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_gs.all_compute_pipelines->pipeline.id);
-        SituationDestroyComputePipeline(&sit_gs.all_compute_pipelines->pipeline);
+    while (sit_render.all_compute_pipelines != NULL) {
+        fprintf(stderr, "SITUATION WARNING: Leaked SituationComputePipeline (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_render.all_compute_pipelines->pipeline.id);
+        SituationDestroyComputePipeline(&sit_render.all_compute_pipelines->pipeline);
     }
 
     // Clean up Textures
-    while (sit_gs.all_textures != NULL) {
-        fprintf(stderr, "SITUATION WARNING: Leaked SituationTexture (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_gs.all_textures->texture.id);
-        SituationDestroyTexture(&sit_gs.all_textures->texture);
+    while (sit_render.all_textures != NULL) {
+        fprintf(stderr, "SITUATION WARNING: Leaked SituationTexture (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_render.all_textures->texture.id);
+        SituationDestroyTexture(&sit_render.all_textures->texture);
     }
 
     // Clean up Buffers
-    while (sit_gs.all_buffers != NULL) {
-        fprintf(stderr, "SITUATION WARNING: Leaked SituationBuffer (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_gs.all_buffers->buffer.id);
-        SituationDestroyBuffer(&sit_gs.all_buffers->buffer);
+    while (sit_render.all_buffers != NULL) {
+        fprintf(stderr, "SITUATION WARNING: Leaked SituationBuffer (ID: %llu). Automatically cleaning up.\n", (unsigned long long)sit_render.all_buffers->buffer.id);
+        SituationDestroyBuffer(&sit_render.all_buffers->buffer);
     }
 
     // Virtual Displays are in a static array, so we can just loop through them.
     for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
-        if (sit_gs.virtual_display_slots_used[i]) {
+        if (sit_render.virtual_display_slots_used[i]) {
             fprintf(stderr, "SITUATION WARNING: Leaked SituationVirtualDisplay (ID: %d). Automatically cleaning up.\n", i);
             SituationDestroyVirtualDisplay(i);
         }
@@ -15153,7 +15165,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
 
 #if !defined(NDEBUG) && defined(SITUATION_USE_OPENGL)
     // Consistency Enforcement
-    if (sit_gs.debug_draw_command_issued_this_frame) {
+    if (sit_render.debug_draw_command_issued_this_frame) {
         fprintf(stderr, "SITUATION CRITICAL WARNING: Buffer updated AFTER draw commands in the same frame!\n"
                         "    This causes divergent behavior between OpenGL (Immediate) and Vulkan (Deferred).\n"
                         "    Fix: Move SituationUpdateBuffer() calls before any SituationCmdDraw*() calls.\n");
@@ -15167,7 +15179,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         // --- 2. OpenGL Implementation ---
         glNamedBufferSubData(buffer.gl_buffer_id, (GLintptr)offset, (GLsizeiptr)size, data);
         SIT_CHECK_GL_ERROR();
-        if (sit_gs.gl.last_error != GL_NO_ERROR) {
+        if (sit_render.gl.last_error != GL_NO_ERROR) {
             // Error message likely set by SIT_CHECK_GL_ERROR
             return SITUATION_ERROR_OPENGL_GENERAL; // Or a more specific OpenGL error if available
         }
@@ -15177,8 +15189,8 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
 #elif defined(SITUATION_USE_VULKAN)
     {
         // --- 2. Vulkan Implementation (Using Staging Buffer for GPU_LOCAL Memory) ---
-        VkDevice device = sit_gs.vk.device;
-        VmaAllocator allocator = sit_gs.vk.vma_allocator;
+        VkDevice device = sit_render.vk.device;
+        VmaAllocator allocator = sit_render.vk.vma_allocator;
 
         // 2.2. Handle Non-Mappable Buffers (e.g., GPU_ONLY) - Use Staging Buffer
         // This is the more common and robust path for performance-oriented buffers.
@@ -15218,7 +15230,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
             VkCommandBufferAllocateInfo alloc_info_cmd = {0};
             alloc_info_cmd.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
             alloc_info_cmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            alloc_info_cmd.commandPool = sit_gs.vk.command_pool; // Assuming main pool can be used
+            alloc_info_cmd.commandPool = sit_render.vk.command_pool; // Assuming main pool can be used
             alloc_info_cmd.commandBufferCount = 1;
             result = vkAllocateCommandBuffers(device, &alloc_info_cmd, &transfer_cmd);
             if (result != VK_SUCCESS) {
@@ -15232,7 +15244,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
             begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             result = vkBeginCommandBuffer(transfer_cmd, &begin_info);
             if (result != VK_SUCCESS) {
-                vkFreeCommandBuffers(device, sit_gs.vk.command_pool, 1, &transfer_cmd);
+                vkFreeCommandBuffers(device, sit_render.vk.command_pool, 1, &transfer_cmd);
                 vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
                 _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to begin temporary command buffer for buffer update.");
                 return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
@@ -15265,7 +15277,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
 
             result = vkEndCommandBuffer(transfer_cmd);
             if (result != VK_SUCCESS) {
-                vkFreeCommandBuffers(device, sit_gs.vk.command_pool, 1, &transfer_cmd);
+                vkFreeCommandBuffers(device, sit_render.vk.command_pool, 1, &transfer_cmd);
                 vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
                 _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to end temporary command buffer for buffer update.");
                 return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
@@ -15279,24 +15291,24 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
 
             // Submit to the graphics queue and wait for completion.
             // This is a synchronous, blocking operation.
-            result = vkQueueSubmit(sit_gs.vk.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+            result = vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
             if (result != VK_SUCCESS) {
-                vkFreeCommandBuffers(device, sit_gs.vk.command_pool, 1, &transfer_cmd);
+                vkFreeCommandBuffers(device, sit_render.vk.command_pool, 1, &transfer_cmd);
                 vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
                 _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to submit buffer update command.");
                 return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
             }
 
-            result = vkQueueWaitIdle(sit_gs.vk.graphics_queue); // Wait for the copy to finish
+            result = vkQueueWaitIdle(sit_render.vk.graphics_queue); // Wait for the copy to finish
             if (result != VK_SUCCESS) {
-                vkFreeCommandBuffers(device, sit_gs.vk.command_pool, 1, &transfer_cmd);
+                vkFreeCommandBuffers(device, sit_render.vk.command_pool, 1, &transfer_cmd);
                 vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
                 _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to wait for buffer update command to finish.");
                 return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
             }
 
             // --- e. Cleanup Temporary Resources ---
-            vkFreeCommandBuffers(device, sit_gs.vk.command_pool, 1, &transfer_cmd);
+            vkFreeCommandBuffers(device, sit_render.vk.command_pool, 1, &transfer_cmd);
             vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
 
             return SITUATION_SUCCESS;
@@ -15345,7 +15357,7 @@ SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offs
     // --- 2. OpenGL Implementation ---
     glGetNamedBufferSubData(buffer.gl_buffer_id, (GLintptr)offset, (GLsizeiptr)size, out_data);
     SIT_CHECK_GL_ERROR();
-    if (sit_gs.gl.last_error != GL_NO_ERROR) {
+    if (sit_render.gl.last_error != GL_NO_ERROR) {
         return SITUATION_ERROR_BUFFER_MAP_FAILED;
     }
     return SITUATION_SUCCESS;
@@ -15368,7 +15380,7 @@ SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offs
  *
  * @par Backend-Specific Behavior
  * - **OpenGL:** Calls `glUseProgram(pipeline.gl_program_id)` to activate the OpenGL Compute Program associated with the `SituationComputePipeline` handle.
- * - **Vulkan:** Records a `vkCmdBindPipeline` command into the provided command buffer for the `VK_PIPELINE_BIND_POINT_COMPUTE` bind point. It also updates the internal global state `sit_gs.vk.current_compute_pipeline_layout` with the pipeline's layout.
+ * - **Vulkan:** Records a `vkCmdBindPipeline` command into the provided command buffer for the `VK_PIPELINE_BIND_POINT_COMPUTE` bind point. It also updates the internal global state `sit_render.vk.current_compute_pipeline_layout` with the pipeline's layout.
  *   This layout is essential for subsequent `vkCmdBindDescriptorSets` (called by `SituationCmdBindComputeBuffer`) and `vkCmdPushConstants` (called by `SituationCmdSetPushConstant`) commands to specify the correct pipeline interface.
  *
  * @param cmd The command buffer into which the bind command will be recorded.
@@ -15390,7 +15402,7 @@ SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, Situatio
          _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Invalid compute pipeline handle provided.");
 		// Invalidate cached layout
         #if defined(SITUATION_USE_VULKAN)
-        sit_gs.vk.current_compute_pipeline_layout = VK_NULL_HANDLE;
+        sit_render.vk.current_compute_pipeline_layout = VK_NULL_HANDLE;
         #endif
         return;
     }
@@ -15407,7 +15419,7 @@ SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, Situatio
 
     // 2. Store the VkPipelineLayout for subsequent operations like push constants
     //    or binding descriptor sets that conform to this pipeline's layout.
-    sit_gs.vk.current_compute_pipeline_layout = pipeline.vk_pipeline_layout; // Assuming this global/state member exists
+    sit_render.vk.current_compute_pipeline_layout = pipeline.vk_pipeline_layout; // Assuming this global/state member exists
 
     // 3. (Optional/Advanced) If the compute pipeline itself requires a specific descriptor set
     //    to be bound (e.g., for push constants if they use a descriptor set, or other
@@ -15433,7 +15445,7 @@ SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, Situatio
     // --- OpenGL Implementation ---
     // Bind the OpenGL Compute Program using glUseProgram.
     glUseProgram(pipeline.gl_program_id);
-    sit_gs.gl.current_program_id = pipeline.gl_program_id;
+    sit_render.gl.current_program_id = pipeline.gl_program_id;
     SIT_CHECK_GL_ERROR();
     // Note: Error handling for glUseProgram is often omitted as it typically only fails
     //       if the program is invalid, which should be caught during creation.
@@ -15707,10 +15719,10 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
         // 2.2. (Optional but Robust) Validate that a Compute Pipeline is Bound
         // While Vulkan drivers will error if no pipeline is bound, checking here provides
         // clearer feedback. This requires tracking the last bound compute pipeline layout
-        // or a simple boolean flag in the global state (e.g., sit_gs.vk.is_compute_pipeline_bound).
+        // or a simple boolean flag in the global state (e.g., sit_render.vk.is_compute_pipeline_bound).
         // Uncomment the lines below if such state tracking is implemented.
         /*
-        if (sit_gs.vk.current_compute_pipeline_layout == VK_NULL_HANDLE) {
+        if (sit_render.vk.current_compute_pipeline_layout == VK_NULL_HANDLE) {
              _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED, "Cannot dispatch compute work; no compute pipeline is currently bound. Call SituationCmdBindComputePipeline first.");
              return;
         }
@@ -15751,7 +15763,7 @@ SITAPI bool SituationIsInitialized(void) {
 SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature) {
     if (!SituationIsInitialized()) return false;
     // Check against the mask populated during backend initialization
-    return (sit_gs.enabled_features_mask & feature) != 0;
+    return (sit_render.enabled_features_mask & feature) != 0;
 }
 
 /**
@@ -16122,7 +16134,7 @@ SITAPI const char* SituationGetGPUName(void) {
     return "Unknown OpenGL Device";
 
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.physical_device != VK_NULL_HANDLE) {
+    if (sit_render.vk.physical_device != VK_NULL_HANDLE) {
         // We use a static buffer to return a valid const char* pointer without SIT_MALLOC.
         // This is not thread-safe if called concurrently, but getting GPU name is usually a setup-time task.
         static char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
@@ -16130,7 +16142,7 @@ SITAPI const char* SituationGetGPUName(void) {
         // Only query if we haven't already (simple optimization)
         if (device_name[0] == '\0') {
             VkPhysicalDeviceProperties properties;
-            vkGetPhysicalDeviceProperties(sit_gs.vk.physical_device, &properties);
+            vkGetPhysicalDeviceProperties(sit_render.vk.physical_device, &properties);
             strncpy(device_name, properties.deviceName, VK_MAX_PHYSICAL_DEVICE_NAME_SIZE);
         }
         return device_name;
@@ -17967,7 +17979,7 @@ static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t heigh
     VmaAllocationCreateInfo alloc_info = {0};
     alloc_info.usage = memory_usage;
 
-    if (vmaCreateImage(sit_gs.vk.vma_allocator, &image_info, &alloc_info, out_image, out_allocation, NULL) != VK_SUCCESS) {
+    if (vmaCreateImage(sit_render.vk.vma_allocator, &image_info, &alloc_info, out_image, out_allocation, NULL) != VK_SUCCESS) {
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
     }
     return SITUATION_SUCCESS;
@@ -17983,8 +17995,8 @@ static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t heigh
  * @param allocation The associated `VmaAllocation` handle to free.
  */
 static void _SituationVulkanDestroyImage(VkImage image, VmaAllocation allocation) {
-    if (image != VK_NULL_HANDLE && sit_gs.vk.vma_allocator != VK_NULL_HANDLE) {
-        vmaDestroyImage(sit_gs.vk.vma_allocator, image, allocation);
+    if (image != VK_NULL_HANDLE && sit_render.vk.vma_allocator != VK_NULL_HANDLE) {
+        vmaDestroyImage(sit_render.vk.vma_allocator, image, allocation);
     }
 }
 
@@ -18010,7 +18022,7 @@ static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat forma
     view_info.subresourceRange.layerCount = 1;
 
     VkImageView image_view;
-    if (vkCreateImageView(sit_gs.vk.device, &view_info, NULL, &image_view) != VK_SUCCESS) {
+    if (vkCreateImageView(sit_render.vk.device, &view_info, NULL, &image_view) != VK_SUCCESS) {
         return VK_NULL_HANDLE;
     }
     return image_view;
@@ -18035,7 +18047,7 @@ static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_
     create_info.pCode = (const uint32_t*)code;
 
     VkShaderModule shader_module;
-    VkResult result = vkCreateShaderModule(sit_gs.vk.device, &create_info, NULL, &shader_module);
+    VkResult result = vkCreateShaderModule(sit_render.vk.device, &create_info, NULL, &shader_module);
     if (result != VK_SUCCESS) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "vkCreateShaderModule failed: VkResult = %d", (int)result);
@@ -18078,8 +18090,8 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
 
     if (vs_module == VK_NULL_HANDLE || fs_module == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create shader modules from SPIR-V.");
-        if(vs_module) vkDestroyShaderModule(sit_gs.vk.device, vs_module, NULL);
-        if(fs_module) vkDestroyShaderModule(sit_gs.vk.device, fs_module, NULL);
+        if(vs_module) vkDestroyShaderModule(sit_render.vk.device, vs_module, NULL);
+        if(fs_module) vkDestroyShaderModule(sit_render.vk.device, fs_module, NULL);
         return VK_NULL_HANDLE;
     }
 
@@ -18129,20 +18141,20 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     pipeline_info.pColorBlendState = &color_blending;
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = pipelineLayout;
-    pipeline_info.renderPass = sit_gs.vk.main_window_render_pass;
+    pipeline_info.renderPass = sit_render.vk.main_window_render_pass;
     pipeline_info.subpass = 0;
     pipeline_info.basePipelineHandle = VK_NULL_HANDLE;
 
     // 4. Create the final graphics pipeline object.
     VkPipeline pipeline;
-    if (vkCreateGraphicsPipelines(sit_gs.vk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(sit_render.vk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pipeline) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "vkCreateGraphicsPipelines failed.");
         pipeline = VK_NULL_HANDLE; // Ensure we return NULL on failure
     }
 
     // 5. Clean up the temporary shader modules, as they are now baked into the pipeline.
-    vkDestroyShaderModule(sit_gs.vk.device, vs_module, NULL);
-    vkDestroyShaderModule(sit_gs.vk.device, fs_module, NULL);
+    vkDestroyShaderModule(sit_render.vk.device, vs_module, NULL);
+    vkDestroyShaderModule(sit_render.vk.device, fs_module, NULL);
 
     return pipeline;
 }
@@ -18180,7 +18192,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create virtual display");
         return -1;
     }
-    if (sit_gs.active_virtual_display_count >= SITUATION_MAX_VIRTUAL_DISPLAYS) {
+    if (sit_render.active_virtual_display_count >= SITUATION_MAX_VIRTUAL_DISPLAYS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT, "Maximum virtual displays reached");
         return -1;
     }
@@ -18188,7 +18200,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
     // --- 2. Find Free Slot ---
     int new_id = -1;
     for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
-        if (!sit_gs.virtual_display_slots_used[i]) {
+        if (!sit_render.virtual_display_slots_used[i]) {
             new_id = i;
             break;
         }
@@ -18196,7 +18208,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
     if (new_id == -1) return -1; // Should not happen given count check
 
     // --- 3. Initialize Slot ---
-    SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[new_id];
+    SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[new_id];
     memset(vd, 0, sizeof(SituationVirtualDisplay)); // Crucial: Start with clean slate for safe cleanup
 
     vd->id = new_id;
@@ -18219,7 +18231,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
     // =================================================================
 
     VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM;
-    VkFormat depth_format = sit_gs.vk.depth_format;
+    VkFormat depth_format = sit_render.vk.depth_format;
 
     // --- Step 1: Create Color Image ---
     if (success) {
@@ -18269,7 +18281,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
         sampler_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
         sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 
-        if (vkCreateSampler(sit_gs.vk.device, &sampler_info, NULL, &vd->sampler) != VK_SUCCESS) success = false;
+        if (vkCreateSampler(sit_render.vk.device, &sampler_info, NULL, &vd->sampler) != VK_SUCCESS) success = false;
     }
 
     // --- Step 6: Create Render Pass ---
@@ -18310,7 +18322,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
         render_pass_info.subpassCount = 1;
         render_pass_info.pSubpasses = &subpass;
 
-        if (vkCreateRenderPass(sit_gs.vk.device, &render_pass_info, NULL, &vd->render_pass) != VK_SUCCESS) success = false;
+        if (vkCreateRenderPass(sit_render.vk.device, &render_pass_info, NULL, &vd->render_pass) != VK_SUCCESS) success = false;
     }
 
     // --- Step 7: Create Framebuffer ---
@@ -18325,12 +18337,12 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
         framebuffer_info.height = (uint32_t)vd->resolution.y;
         framebuffer_info.layers = 1;
 
-        if (vkCreateFramebuffer(sit_gs.vk.device, &framebuffer_info, NULL, &vd->framebuffer) != VK_SUCCESS) success = false;
+        if (vkCreateFramebuffer(sit_render.vk.device, &framebuffer_info, NULL, &vd->framebuffer) != VK_SUCCESS) success = false;
     }
 
     // --- Step 8: Allocate Descriptor Set ---
     if (success) {
-        vd->descriptor_set = _SituationVulkanAllocateDescriptorSet(sit_gs.vk.image_sampler_layout);
+        vd->descriptor_set = _SituationVulkanAllocateDescriptorSet(sit_render.vk.image_sampler_layout);
         if (vd->descriptor_set == VK_NULL_HANDLE) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for VD.");
             success = false;
@@ -18353,19 +18365,19 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
         write_set.descriptorCount = 1;
         write_set.pImageInfo = &image_desc_info;
 
-        vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write_set, 0, NULL);
+        vkUpdateDescriptorSets(sit_render.vk.device, 1, &write_set, 0, NULL);
     }
 
     // --- Failure Cleanup (Vulkan) ---
     if (!success) {
         // Check non-null before destroying. VD is zeroed at start, so this is safe.
-        if (vd->framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_gs.vk.device, vd->framebuffer, NULL);
-        if (vd->render_pass != VK_NULL_HANDLE) vkDestroyRenderPass(sit_gs.vk.device, vd->render_pass, NULL);
-        if (vd->sampler != VK_NULL_HANDLE) vkDestroySampler(sit_gs.vk.device, vd->sampler, NULL);
-        if (vd->depth_image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_gs.vk.device, vd->depth_image_view, NULL);
-        if (vd->depth_image != VK_NULL_HANDLE) vmaDestroyImage(sit_gs.vk.vma_allocator, vd->depth_image, vd->depth_image_memory);
-        if (vd->image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_gs.vk.device, vd->image_view, NULL);
-        if (vd->image != VK_NULL_HANDLE) vmaDestroyImage(sit_gs.vk.vma_allocator, vd->image, vd->image_memory);
+        if (vd->framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_render.vk.device, vd->framebuffer, NULL);
+        if (vd->render_pass != VK_NULL_HANDLE) vkDestroyRenderPass(sit_render.vk.device, vd->render_pass, NULL);
+        if (vd->sampler != VK_NULL_HANDLE) vkDestroySampler(sit_render.vk.device, vd->sampler, NULL);
+        if (vd->depth_image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_render.vk.device, vd->depth_image_view, NULL);
+        if (vd->depth_image != VK_NULL_HANDLE) vmaDestroyImage(sit_render.vk.vma_allocator, vd->depth_image, vd->depth_image_memory);
+        if (vd->image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_render.vk.device, vd->image_view, NULL);
+        if (vd->image != VK_NULL_HANDLE) vmaDestroyImage(sit_render.vk.vma_allocator, vd->image, vd->image_memory);
         // Note: descriptor set is freed when its pool is destroyed, we don't free individual sets on failure usually
         return -1;
     }
@@ -18404,7 +18416,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
     }
 
     SIT_CHECK_GL_ERROR();
-    if (sit_gs.gl.last_error != GL_NO_ERROR) success = false;
+    if (sit_render.gl.last_error != GL_NO_ERROR) success = false;
 
     // --- Failure Cleanup (OpenGL) ---
     if (!success) {
@@ -18416,8 +18428,8 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
 #endif
 
     // --- 4. Finalize ---
-    sit_gs.virtual_display_slots_used[new_id] = true;
-    sit_gs.active_virtual_display_count++;
+    sit_render.virtual_display_slots_used[new_id] = true;
+    sit_render.active_virtual_display_count++;
     return new_id;
 }
 
@@ -18437,10 +18449,10 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
  */
 SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
+    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
         return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
     }
-    SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[display_id];
+    SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
 
 #if defined(SITUATION_USE_VULKAN)
     // Defer all destruction to the Graveyard to avoid stalling.
@@ -18459,8 +18471,8 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
 #endif
 
     memset(vd, 0, sizeof(SituationVirtualDisplay));
-    sit_gs.virtual_display_slots_used[display_id] = false;
-    sit_gs.active_virtual_display_count--;
+    sit_render.virtual_display_slots_used[display_id] = false;
+    sit_render.active_virtual_display_count--;
     return SITUATION_SUCCESS;
 }
 
@@ -18483,11 +18495,11 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     if (!SituationIsInitialized()) {
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
-    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
+    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
         return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
     }
 
-    SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[display_id];
+    SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
 
     // If the mode isn't changing, do nothing.
     if (vd->scaling_mode == scaling_mode) {
@@ -18536,7 +18548,7 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     sampler_info.compareEnable = VK_FALSE;
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 
-    if (vkCreateSampler(sit_gs.vk.device, &sampler_info, NULL, &vd->sampler) != VK_SUCCESS) {
+    if (vkCreateSampler(sit_render.vk.device, &sampler_info, NULL, &vd->sampler) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to re-create sampler for scaling mode change");
         // The VD is now in a bad state with a destroyed sampler.
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
@@ -18557,7 +18569,7 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     write_set.descriptorCount = 1;
     write_set.pImageInfo = &image_desc_info;
 
-    vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write_set, 0, NULL);
+    vkUpdateDescriptorSets(sit_render.vk.device, 1, &write_set, 0, NULL);
 
     return SITUATION_SUCCESS;
 
@@ -18601,8 +18613,8 @@ static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
  */
 SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     // --- Initial Checks ---
-    if (!SituationIsInitialized() || sit_gs.active_virtual_display_count == 0) {
-        sit_gs.last_vd_composite_time_ms = 0.0;
+    if (!SituationIsInitialized() || sit_render.active_virtual_display_count == 0) {
+        sit_render.last_vd_composite_time_ms = 0.0;
         return;
     }
 
@@ -18613,24 +18625,24 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     SituationVirtualDisplay* visible_vds_to_render[SITUATION_MAX_VIRTUAL_DISPLAYS];
     int visible_count = 0;
     for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
-        if (sit_gs.virtual_display_slots_used[i] && sit_gs.virtual_display_slots[i].visible &&
-            sit_gs.virtual_display_slots[i].opacity > 0.001f) {
+        if (sit_render.virtual_display_slots_used[i] && sit_render.virtual_display_slots[i].visible &&
+            sit_render.virtual_display_slots[i].opacity > 0.001f) {
 
             // In OpenGL, we must also check that the texture handle is valid.
         #if defined(SITUATION_USE_OPENGL)
-            if (sit_gs.virtual_display_slots[i].gl.texture_id != 0) {
-                 visible_vds_to_render[visible_count++] = &sit_gs.virtual_display_slots[i];
+            if (sit_render.virtual_display_slots[i].gl.texture_id != 0) {
+                 visible_vds_to_render[visible_count++] = &sit_render.virtual_display_slots[i];
             }
         #elif defined(SITUATION_USE_VULKAN)
             // For Vulkan, we would check its image/view handles.
-            if (sit_gs.virtual_display_slots[i].vk.image_view != VK_NULL_HANDLE) {
-                 visible_vds_to_render[visible_count++] = &sit_gs.virtual_display_slots[i];
+            if (sit_render.virtual_display_slots[i].vk.image_view != VK_NULL_HANDLE) {
+                 visible_vds_to_render[visible_count++] = &sit_render.virtual_display_slots[i];
             }
         #endif
         }
     }
     if (visible_count == 0) {
-        sit_gs.last_vd_composite_time_ms = 0.0;
+        sit_render.last_vd_composite_time_ms = 0.0;
         return;
     }
 
@@ -18649,8 +18661,8 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     glDisable(GL_CULL_FACE); // Ensure we draw the quad regardless of winding
 
     // 1. Bind OUR PRIVATE VAO for compositing.
-    glBindVertexArray(sit_gs.gl.vd_quad_vao);
-    // sit_gs.gl.current_vao_id = sit_gs.gl.vd_quad_vao; // Assuming internal use doesn't require tracking for backup/restore as backup is already done
+    glBindVertexArray(sit_render.gl.vd_quad_vao);
+    // sit_render.gl.current_vao_id = sit_render.gl.vd_quad_vao; // Assuming internal use doesn't require tracking for backup/restore as backup is already done
 
     // Get the dimensions of the current render target
     float target_width = (float)sit_gs.main_window_width;
@@ -18703,30 +18715,30 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
         bool use_advanced_shader = (vd->blend_mode >= SITUATION_BLEND_OVERLAY);
         if (use_advanced_shader) {
             // --- ADVANCED SHADER PATH ---
-            glBindTexture(GL_TEXTURE_2D, sit_gs.gl.composite_copy_texture_id);
+            glBindTexture(GL_TEXTURE_2D, sit_render.gl.composite_copy_texture_id);
             glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
 
-            glProgramUniformMatrix4fv(sit_gs.gl.composite_shader_program_id, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_gs.gl.vd_ortho_projection);
-            glProgramUniformMatrix4fv(sit_gs.gl.composite_shader_program_id, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
-            glProgramUniform1i(sit_gs.gl.composite_shader_program_id, SIT_UNIFORM_LOC_BLEND_MODE, vd->blend_mode);
-            glProgramUniform1f(sit_gs.gl.composite_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
+            glProgramUniformMatrix4fv(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_render.gl.vd_ortho_projection);
+            glProgramUniformMatrix4fv(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
+            glProgramUniform1i(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_BLEND_MODE, vd->blend_mode);
+            glProgramUniform1f(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
 
-            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_1, sit_gs.gl.composite_copy_texture_id); // Destination
+            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_1, sit_render.gl.composite_copy_texture_id); // Destination
             glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->gl.texture_id);                  // Source
 
-            glUseProgram(sit_gs.gl.composite_shader_program_id);
-            sit_gs.gl.current_program_id = sit_gs.gl.composite_shader_program_id;
+            glUseProgram(sit_render.gl.composite_shader_program_id);
+            sit_render.gl.current_program_id = sit_render.gl.composite_shader_program_id;
             glDisable(GL_BLEND); // Blending handled in shader
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
         } else {
             // --- SIMPLE SHADER PATH ---
-            glProgramUniformMatrix4fv(sit_gs.gl.vd_shader_program_id, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_gs.gl.vd_ortho_projection);
-            glProgramUniformMatrix4fv(sit_gs.gl.vd_shader_program_id, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
-            glProgramUniform1f(sit_gs.gl.vd_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
+            glProgramUniformMatrix4fv(sit_render.gl.vd_shader_program_id, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_render.gl.vd_ortho_projection);
+            glProgramUniformMatrix4fv(sit_render.gl.vd_shader_program_id, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
+            glProgramUniform1f(sit_render.gl.vd_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
 
-            glUseProgram(sit_gs.gl.vd_shader_program_id);
-            sit_gs.gl.current_program_id = sit_gs.gl.vd_shader_program_id;
+            glUseProgram(sit_render.gl.vd_shader_program_id);
+            sit_render.gl.current_program_id = sit_render.gl.vd_shader_program_id;
             glEnable(GL_BLEND);
             glBlendEquation(GL_FUNC_ADD);
             switch (vd->blend_mode) {
@@ -18748,22 +18760,22 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
 
     SIT_CHECK_GL_ERROR();
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_gs.vk.vd_compositing_pipeline == VK_NULL_HANDLE) return;
+    if (sit_render.vk.vd_compositing_pipeline == VK_NULL_HANDLE) return;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
     // --- 1. UBO Update (Same as before) ---
-    float target_width = (float)sit_gs.vk.swapchain_extent.width;
-    float target_height = (float)sit_gs.vk.swapchain_extent.height;
+    float target_width = (float)sit_render.vk.swapchain_extent.width;
+    float target_height = (float)sit_render.vk.swapchain_extent.height;
     ViewDataUBO ubo_data;
     glm_mat4_identity(ubo_data.view);
     glm_ortho(0.0f, target_width, target_height, 0.0f, -1.0f, 1.0f, ubo_data.projection);
     void* mapped_data;
-    vmaMapMemory(sit_gs.vk.vma_allocator, sit_gs.vk.view_proj_ubo_memory[sit_gs.vk.current_frame_index], &mapped_data);
+    vmaMapMemory(sit_render.vk.vma_allocator, sit_render.vk.view_proj_ubo_memory[sit_render.vk.current_frame_index], &mapped_data);
     memcpy(mapped_data, &ubo_data, sizeof(ViewDataUBO));
-    vmaUnmapMemory(sit_gs.vk.vma_allocator, sit_gs.vk.view_proj_ubo_memory[sit_gs.vk.current_frame_index]);
+    vmaUnmapMemory(sit_render.vk.vma_allocator, sit_render.vk.view_proj_ubo_memory[sit_render.vk.current_frame_index]);
 
     // --- 2. Global Setup ---
-    VkBuffer vertex_buffers[] = { sit_gs.vk.quad_vertex_buffer };
+    VkBuffer vertex_buffers[] = { sit_render.vk.quad_vertex_buffer };
     VkDeviceSize offsets[] = { 0 };
 
     // Track render pass state to minimize switching
@@ -18771,9 +18783,9 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
 
     // Pre-fill the RenderPassBeginInfo struct for reuse
     VkRenderPassBeginInfo rp_info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-    rp_info.renderPass = sit_gs.vk.main_window_render_pass;
-    rp_info.framebuffer = sit_gs.vk.main_window_framebuffers[sit_gs.vk.current_image_index];
-    rp_info.renderArea.extent = sit_gs.vk.swapchain_extent;
+    rp_info.renderPass = sit_render.vk.main_window_render_pass;
+    rp_info.framebuffer = sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
+    rp_info.renderArea.extent = sit_render.vk.swapchain_extent;
     // Note: If main_window_render_pass was created with LOAD_OP_CLEAR, this will clear the background.
     // To overlay without clearing, use a separate render pass with LOAD_OP_LOAD.
 
@@ -18832,37 +18844,37 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
                 is_render_pass_active = false;
             }
 
-            VkImage swapchainImg = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
+            VkImage swapchainImg = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
 
             // 2. Barriers: Prepare Swapchain for Read, CopyTarget for Write
             _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            _SituationVulkanTransitionImageLayout(vk_cmd, sit_gs.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            _SituationVulkanTransitionImageLayout(vk_cmd, sit_render.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
             // 3. Perform Copy
-            VkImageCopy region = { .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .extent = {sit_gs.vk.swapchain_extent.width, sit_gs.vk.swapchain_extent.height, 1} };
-            vkCmdCopyImage(vk_cmd, swapchainImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sit_gs.vk.screen_copy_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            VkImageCopy region = { .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .extent = {sit_render.vk.swapchain_extent.width, sit_render.vk.swapchain_extent.height, 1} };
+            vkCmdCopyImage(vk_cmd, swapchainImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sit_render.vk.screen_copy_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
             // 4. Barriers: Restore Swapchain for Drawing, CopyTarget for Reading
             _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-            _SituationVulkanTransitionImageLayout(vk_cmd, sit_gs.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            _SituationVulkanTransitionImageLayout(vk_cmd, sit_render.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
             // 5. Update Descriptor for Screen Copy (Bind the texture we just filled)
-            VkDescriptorImageInfo copy_info = { .sampler = vd->sampler, .imageView = sit_gs.vk.screen_copy_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            VkWriteDescriptorSet write = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = sit_gs.vk.screen_copy_descriptor_set, .dstBinding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .pImageInfo = &copy_info };
-            vkUpdateDescriptorSets(sit_gs.vk.device, 1, &write, 0, NULL);
+            VkDescriptorImageInfo copy_info = { .sampler = vd->sampler, .imageView = sit_render.vk.screen_copy_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet write = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = sit_render.vk.screen_copy_descriptor_set, .dstBinding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .pImageInfo = &copy_info };
+            vkUpdateDescriptorSets(sit_render.vk.device, 1, &write, 0, NULL);
 
             // 6. Restart Render Pass
             vkCmdBeginRenderPass(vk_cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
             is_render_pass_active = true;
 
             // 7. Draw
-            vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline);
+            vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.advanced_compositing_pipeline);
             vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
 
             // Bind Sets: 0=GlobalUBO, 1=VDSampler, 2=ScreenCopy
-            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 0, 1, &sit_gs.vk.view_proj_ubo_descriptor_set[sit_gs.vk.current_frame_index], 0, NULL);
-            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 1, 1, &vd->descriptor_set, 0, NULL);
-            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.advanced_compositing_pipeline_layout, 2, 1, &sit_gs.vk.screen_copy_descriptor_set, 0, NULL);
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.advanced_compositing_pipeline_layout, 0, 1, &sit_render.vk.view_proj_ubo_descriptor_set[sit_render.vk.current_frame_index], 0, NULL);
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.advanced_compositing_pipeline_layout, 1, 1, &vd->descriptor_set, 0, NULL);
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.advanced_compositing_pipeline_layout, 2, 1, &sit_render.vk.screen_copy_descriptor_set, 0, NULL);
 
 			// Define a layout-compatible byte buffer to avoid anonymous struct issues
             struct { mat4 m; int b; float o; } pc;
@@ -18870,7 +18882,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
             pc.b = vd->blend_mode;
             pc.o = vd->opacity;
 
-            vkCmdPushConstants(vk_cmd, sit_gs.vk.advanced_compositing_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(pc), &pc);
+            vkCmdPushConstants(vk_cmd, sit_render.vk.advanced_compositing_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(pc), &pc);
             vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 
         } else {
@@ -18885,17 +18897,17 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
             }
 
             // 2. Draw
-            vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline);
+            vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.vd_compositing_pipeline);
             vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
 
-            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline_layout, 0, 1, &sit_gs.vk.view_proj_ubo_descriptor_set[sit_gs.vk.current_frame_index], 0, NULL);
-            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_gs.vk.vd_compositing_pipeline_layout, 1, 1, &vd->descriptor_set, 0, NULL);
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.vd_compositing_pipeline_layout, 0, 1, &sit_render.vk.view_proj_ubo_descriptor_set[sit_render.vk.current_frame_index], 0, NULL);
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.vd_compositing_pipeline_layout, 1, 1, &vd->descriptor_set, 0, NULL);
 
             struct { mat4 m; float o; } pc;
             glm_mat4_copy(model_matrix, pc.m);
             pc.o = vd->opacity;
 
-            vkCmdPushConstants(vk_cmd, sit_gs.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+            vkCmdPushConstants(vk_cmd, sit_render.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
             vkCmdDraw(vk_cmd, 4, 1, 0, 0);
         }
     }
@@ -18906,7 +18918,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     }
 #endif
     double end_time = glfwGetTime();
-    sit_gs.last_vd_composite_time_ms = (end_time - start_time) * 1000.0;
+    sit_render.last_vd_composite_time_ms = (end_time - start_time) * 1000.0;
 }
 
 /**
@@ -18927,10 +18939,10 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
  */
 SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, float opacity, int z_order, bool visible, double frame_time_mult, SituationBlendMode blend_mode) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
+    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
         return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
     }
-    SituationVirtualDisplay* vd = &sit_gs.virtual_display_slots[display_id];
+    SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
 
     bool visual_property_changed = false;
     if (vd->offset.x != offset.x || vd->offset.y != offset.y) visual_property_changed = true;
@@ -18966,11 +18978,11 @@ SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, 
  *         Check `SituationGetLastErrorMsg()` if NULL is returned unexpectedly.
  */
 SITAPI SituationVirtualDisplay* SituationGetVirtualDisplay(int display_id) {
-    if (!SituationIsInitialized() || display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
+    if (!SituationIsInitialized() || display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "GetVirtualDisplay");
         return NULL;
     }
-    return &sit_gs.virtual_display_slots[display_id];
+    return &sit_render.virtual_display_slots[display_id];
 }
 
 /**
@@ -18983,10 +18995,10 @@ SITAPI SituationVirtualDisplay* SituationGetVirtualDisplay(int display_id) {
  * @param is_dirty True to mark as dirty (needs redraw), False to mark as clean.
  */
 SITAPI void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty) {
-    if (!SituationIsInitialized() || display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
+    if (!SituationIsInitialized() || display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
         return;
     }
-    sit_gs.virtual_display_slots[display_id].is_dirty = is_dirty;
+    sit_render.virtual_display_slots[display_id].is_dirty = is_dirty;
 }
 
 /**
@@ -18998,10 +19010,10 @@ SITAPI void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty) {
  * @return True if the display is marked dirty, False otherwise or if the ID is invalid.
  */
 SITAPI bool SituationIsVirtualDisplayDirty(int display_id) {
-    if (!SituationIsInitialized() || display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_gs.virtual_display_slots_used[display_id]) {
+    if (!SituationIsInitialized() || display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
         return false; // Or some error indication
     }
-    return sit_gs.virtual_display_slots[display_id].is_dirty;
+    return sit_render.virtual_display_slots[display_id].is_dirty;
 }
 
 /**
@@ -19014,7 +19026,7 @@ SITAPI bool SituationIsVirtualDisplayDirty(int display_id) {
  */
 SITAPI double SituationGetLastVDCompositeTimeMS(void) {
     if (!SituationIsInitialized()) return 0.0;
-    return sit_gs.last_vd_composite_time_ms;
+    return sit_render.last_vd_composite_time_ms;
 }
 
 /**
@@ -19167,9 +19179,9 @@ SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generat
     SituationUnloadImage(img);
 
     // [HOT-RELOAD] Capture path
-    if (tex.id != 0 && sit_gs.all_textures && sit_gs.all_textures->texture.id == tex.id) {
-        sit_gs.all_textures->source_path = _sit_strdup(file_path);
-        sit_gs.all_textures->mod_time = SituationGetFileModTime(file_path);
+    if (tex.id != 0 && sit_render.all_textures && sit_render.all_textures->texture.id == tex.id) {
+        sit_render.all_textures->source_path = _sit_strdup(file_path);
+        sit_render.all_textures->mod_time = SituationGetFileModTime(file_path);
     }
     return tex;
 }
@@ -19342,8 +19354,8 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
             node->model = model; // Copy struct by value (contains pointers to meshes)
             node->source_path = _sit_strdup(file_path);
             node->mod_time = SituationGetFileModTime(file_path);
-            node->next = sit_gs.all_models;
-            sit_gs.all_models = node;
+            node->next = sit_render.all_models;
+            sit_render.all_models = node;
         }
     }
 
@@ -19378,12 +19390,12 @@ SITAPI void SituationUnloadModel(SituationModel* model) {
     if (!model || model->id == 0) return;
 
     // [HOT-RELOAD] Remove from tracking list
-    _SituationModelNode* current = sit_gs.all_models;
+    _SituationModelNode* current = sit_render.all_models;
     _SituationModelNode* prev = NULL;
     while (current) {
         if (current->model.id == model->id) {
             if (prev) prev->next = current->next;
-            else sit_gs.all_models = current->next;
+            else sit_render.all_models = current->next;
 
             if (current->source_path) SIT_FREE(current->source_path);
             SIT_FREE(current);
@@ -19613,11 +19625,11 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
 
     // --- 6. Return Result ---
     // [HOT-RELOAD] Capture paths in the node
-    if (shader.id != 0 && sit_gs.all_shaders && sit_gs.all_shaders->shader.id == shader.id) {
-        sit_gs.all_shaders->vs_path = _sit_strdup(vs_path);
-        sit_gs.all_shaders->fs_path = _sit_strdup(fs_path);
-        sit_gs.all_shaders->vs_mod_time = SituationGetFileModTime(vs_path);
-        sit_gs.all_shaders->fs_mod_time = SituationGetFileModTime(fs_path);
+    if (shader.id != 0 && sit_render.all_shaders && sit_render.all_shaders->shader.id == shader.id) {
+        sit_render.all_shaders->vs_path = _sit_strdup(vs_path);
+        sit_render.all_shaders->fs_path = _sit_strdup(fs_path);
+        sit_render.all_shaders->vs_mod_time = SituationGetFileModTime(vs_path);
+        sit_render.all_shaders->fs_mod_time = SituationGetFileModTime(fs_path);
     }
     // The returned handle will be valid (id != 0) if compilation was successful, or invalid (id == 0) if it failed.
     return shader;
@@ -19659,11 +19671,11 @@ SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const 
 
     if (vs_spirv.data && fs_spirv.data) {
     #if defined(SITUATION_USE_VULKAN)
-        VkDescriptorSetLayout layouts[] = { sit_gs.vk.view_data_ubo_layout, sit_gs.vk.image_sampler_layout };
+        VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.image_sampler_layout };
         VkPushConstantRange push_constant_range = { .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS, .offset = 0, .size = 128 };
         VkPipelineLayoutCreateInfo pipeline_layout_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 2, .pSetLayouts = layouts, .pushConstantRangeCount = 1, .pPushConstantRanges = &push_constant_range };
 
-        if (vkCreatePipelineLayout(sit_gs.vk.device, &pipeline_layout_info, NULL, &shader.vk_pipeline_layout) == VK_SUCCESS) {
+        if (vkCreatePipelineLayout(sit_render.vk.device, &pipeline_layout_info, NULL, &shader.vk_pipeline_layout) == VK_SUCCESS) {
             // 1. PBR Pipeline (48-byte stride: Pos, Norm, Tan, UV)
             VkVertexInputBindingDescription binding_desc_pbr = { .binding = 0, .stride = (3 + 3 + 4 + 2) * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
             VkVertexInputAttributeDescription attr_descs_pbr[4] = {
@@ -19687,9 +19699,9 @@ SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const 
                 shader.id = (uint32_t)(uintptr_t)shader.vk_pipeline;
             } else {
                 // Cleanup on partial failure
-                if (shader.vk_pipeline) vkDestroyPipeline(sit_gs.vk.device, shader.vk_pipeline, NULL);
-                if (shader.vk_pipeline_legacy) vkDestroyPipeline(sit_gs.vk.device, shader.vk_pipeline_legacy, NULL);
-                vkDestroyPipelineLayout(sit_gs.vk.device, shader.vk_pipeline_layout, NULL);
+                if (shader.vk_pipeline) vkDestroyPipeline(sit_render.vk.device, shader.vk_pipeline, NULL);
+                if (shader.vk_pipeline_legacy) vkDestroyPipeline(sit_render.vk.device, shader.vk_pipeline_legacy, NULL);
+                vkDestroyPipelineLayout(sit_render.vk.device, shader.vk_pipeline_layout, NULL);
                 shader.vk_pipeline_layout = VK_NULL_HANDLE;
             }
         } else {
@@ -19725,8 +19737,8 @@ SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const 
         _SituationShaderNode* node = (_SituationShaderNode*)SIT_MALLOC(sizeof(_SituationShaderNode));
         if (node) {
             node->shader = shader;
-            node->next = sit_gs.all_shaders;
-            sit_gs.all_shaders = node;
+            node->next = sit_render.all_shaders;
+            sit_render.all_shaders = node;
         } else {
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for shader");
             SituationUnloadShader(&shader); // Clean up the GPU resource we just made
@@ -19763,7 +19775,7 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
     }
 
     // --- 2. Resource Manager: Remove from internal tracking list ---
-    _SituationShaderNode* current = sit_gs.all_shaders;
+    _SituationShaderNode* current = sit_render.all_shaders;
     _SituationShaderNode* prev = NULL;
     while (current != NULL) {
         // Compare by the unique ID.
@@ -19771,7 +19783,7 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
             if (prev) {
                 prev->next = current->next; // Unlink from middle/end of the list
             } else {
-                sit_gs.all_shaders = current->next; // Unlink from the head of the list
+                sit_render.all_shaders = current->next; // Unlink from the head of the list
             }
 
 			// [HOT-RELOAD] Free paths
@@ -19857,7 +19869,7 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
     if (location == -1) {
         // Ensure the correct shader is active before querying its uniforms
         glUseProgram(shader.id);
-        sit_gs.gl.current_program_id = shader.id;
+        sit_render.gl.current_program_id = shader.id;
         location = glGetUniformLocation(shader.id, uniform_name);
 
         if (location != -1) {
@@ -19872,7 +19884,7 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
     // 3. Set the uniform value based on its type
     // glUseProgram is already called if we had to query, but it's safe to call again.
     glUseProgram(shader.id);
-    sit_gs.gl.current_program_id = shader.id;
+    sit_render.gl.current_program_id = shader.id;
     switch(type) {
         case SIT_UNIFORM_FLOAT: glUniform1fv(location, 1, (const GLfloat*)data); break;
         case SIT_UNIFORM_VEC2:  glUniform2fv(location, 1, (const GLfloat*)data); break;
@@ -19989,7 +20001,7 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
     // 1. Retrieve source paths and tracking node
     char* vs_path = NULL;
     char* fs_path = NULL;
-    _SituationShaderNode* old_node = sit_gs.all_shaders;
+    _SituationShaderNode* old_node = sit_render.all_shaders;
     while (old_node) {
         if (old_node->shader.id == shader->id) {
             if (old_node->vs_path && old_node->fs_path) {
@@ -20024,20 +20036,20 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
 
     // 3a. Remove the NEW tracking node created by LoadShader.
     // We want to keep the OLD node (to preserve list position for iterators) but update its content.
-    if (sit_gs.all_shaders && sit_gs.all_shaders->shader.id == new_shader.id) {
-        _SituationShaderNode* new_node = sit_gs.all_shaders;
-        sit_gs.all_shaders = new_node->next; // Unlink
+    if (sit_render.all_shaders && sit_render.all_shaders->shader.id == new_shader.id) {
+        _SituationShaderNode* new_node = sit_render.all_shaders;
+        sit_render.all_shaders = new_node->next; // Unlink
         // Free node strings (they are duplicates of what we already have in old_node)
         if (new_node->vs_path) SIT_FREE(new_node->vs_path);
         if (new_node->fs_path) SIT_FREE(new_node->fs_path);
         SIT_FREE(new_node);
     } else {
         // Fallback search if it wasn't at head (unlikely)
-        _SituationShaderNode* curr = sit_gs.all_shaders;
+        _SituationShaderNode* curr = sit_render.all_shaders;
         _SituationShaderNode* prev = NULL;
         while (curr) {
             if (curr->shader.id == new_shader.id) {
-                if (prev) prev->next = curr->next; else sit_gs.all_shaders = curr->next;
+                if (prev) prev->next = curr->next; else sit_render.all_shaders = curr->next;
                 if (curr->vs_path) SIT_FREE(curr->vs_path);
                 if (curr->fs_path) SIT_FREE(curr->fs_path);
                 SIT_FREE(curr);
@@ -20089,7 +20101,7 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     if (!SituationIsInitialized() || !texture || texture->id == 0) return false;
 
     char* path = NULL;
-    _SituationTextureNode* old_node = sit_gs.all_textures;
+    _SituationTextureNode* old_node = sit_render.all_textures;
     while (old_node) {
         if (old_node->texture.id == texture->id) {
             if (old_node->source_path) path = _sit_strdup(old_node->source_path);
@@ -20115,17 +20127,17 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     // 2. Swap and Cleanup
 
     // 2a. Remove NEW tracking node (created by LoadTexture)
-    if (sit_gs.all_textures && sit_gs.all_textures->texture.id == new_texture.id) {
-        _SituationTextureNode* new_node = sit_gs.all_textures;
-        sit_gs.all_textures = new_node->next;
+    if (sit_render.all_textures && sit_render.all_textures->texture.id == new_texture.id) {
+        _SituationTextureNode* new_node = sit_render.all_textures;
+        sit_render.all_textures = new_node->next;
         if (new_node->source_path) SIT_FREE(new_node->source_path);
         SIT_FREE(new_node);
     } else {
-        _SituationTextureNode* curr = sit_gs.all_textures;
+        _SituationTextureNode* curr = sit_render.all_textures;
         _SituationTextureNode* prev = NULL;
         while (curr) {
             if (curr->texture.id == new_texture.id) {
-                if (prev) prev->next = curr->next; else sit_gs.all_textures = curr->next;
+                if (prev) prev->next = curr->next; else sit_render.all_textures = curr->next;
                 if (curr->source_path) SIT_FREE(curr->source_path);
                 SIT_FREE(curr);
                 break;
@@ -20139,7 +20151,7 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     #if defined(SITUATION_USE_OPENGL)
         glDeleteTextures(1, &texture->gl_texture_id);
     #elif defined(SITUATION_USE_VULKAN)
-        if (texture->descriptor_set != VK_NULL_HANDLE) _SituationDeferDestroyDescriptorSet(texture->descriptor_set, sit_gs.vk.asset_descriptor_pool);
+        if (texture->descriptor_set != VK_NULL_HANDLE) _SituationDeferDestroyDescriptorSet(texture->descriptor_set, sit_render.vk.asset_descriptor_pool);
         _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
     #endif
 
@@ -20171,7 +20183,7 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     if (!SituationIsInitialized() || !model || model->id == 0) return false;
 
     char* path = NULL;
-    _SituationModelNode* old_node = sit_gs.all_models;
+    _SituationModelNode* old_node = sit_render.all_models;
     while (old_node) {
         if (old_node->model.id == model->id) {
             if (old_node->source_path) path = _sit_strdup(old_node->source_path);
@@ -20197,17 +20209,17 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     // 2. Swap and Cleanup
 
     // 2a. Remove the NEW model tracking node (created by LoadModel)
-    if (sit_gs.all_models && sit_gs.all_models->model.id == new_model.id) {
-        _SituationModelNode* new_node = sit_gs.all_models;
-        sit_gs.all_models = new_node->next;
+    if (sit_render.all_models && sit_render.all_models->model.id == new_model.id) {
+        _SituationModelNode* new_node = sit_render.all_models;
+        sit_render.all_models = new_node->next;
         if (new_node->source_path) SIT_FREE(new_node->source_path);
         SIT_FREE(new_node);
     } else {
-        _SituationModelNode* curr = sit_gs.all_models;
+        _SituationModelNode* curr = sit_render.all_models;
         _SituationModelNode* prev = NULL;
         while (curr) {
             if (curr->model.id == new_model.id) {
-                if (prev) prev->next = curr->next; else sit_gs.all_models = curr->next;
+                if (prev) prev->next = curr->next; else sit_render.all_models = curr->next;
                 if (curr->source_path) SIT_FREE(curr->source_path);
                 SIT_FREE(curr);
                 break;
@@ -20262,7 +20274,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     // 2. Lookup the original creation info from the internal tracker
     char* original_path = NULL;
     SituationComputeLayoutType original_layout = SIT_COMPUTE_LAYOUT_EMPTY;
-    _SituationComputePipelineNode* old_node = sit_gs.all_compute_pipelines;
+    _SituationComputePipelineNode* old_node = sit_render.all_compute_pipelines;
 
     while (old_node) {
         if (old_node->pipeline.id == pipeline->id) {
@@ -20292,18 +20304,18 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     // 4. Swap and Cleanup
 
     // 4a. Remove NEW tracking node (created by CreateComputePipeline)
-    if (sit_gs.all_compute_pipelines && sit_gs.all_compute_pipelines->pipeline.id == new_pipeline.id) {
-        _SituationComputePipelineNode* new_node = sit_gs.all_compute_pipelines;
-        sit_gs.all_compute_pipelines = new_node->next;
+    if (sit_render.all_compute_pipelines && sit_render.all_compute_pipelines->pipeline.id == new_pipeline.id) {
+        _SituationComputePipelineNode* new_node = sit_render.all_compute_pipelines;
+        sit_render.all_compute_pipelines = new_node->next;
         if (new_node->source_path) SIT_FREE(new_node->source_path);
         SIT_FREE(new_node);
     } else {
         // Search
-        _SituationComputePipelineNode* curr = sit_gs.all_compute_pipelines;
+        _SituationComputePipelineNode* curr = sit_render.all_compute_pipelines;
         _SituationComputePipelineNode* prev = NULL;
         while (curr) {
             if (curr->pipeline.id == new_pipeline.id) {
-                if (prev) prev->next = curr->next; else sit_gs.all_compute_pipelines = curr->next;
+                if (prev) prev->next = curr->next; else sit_render.all_compute_pipelines = curr->next;
                 if (curr->source_path) SIT_FREE(curr->source_path);
                 SIT_FREE(curr);
                 break;
@@ -20342,7 +20354,7 @@ SITAPI void SituationCheckHotReloads(void) {
     if (!SituationIsInitialized()) return;
 
     // --- Check Shaders ---
-    _SituationShaderNode* shader_node = sit_gs.all_shaders;
+    _SituationShaderNode* shader_node = sit_render.all_shaders;
     while (shader_node) {
         _SituationShaderNode* next_node = shader_node->next; // Save next in case current node is somehow corrupted/freed (though our new reload logic prevents this)
         if (shader_node->vs_path && shader_node->fs_path) {
@@ -20361,7 +20373,7 @@ SITAPI void SituationCheckHotReloads(void) {
     }
 
     // --- Check Compute Pipelines ---
-    _SituationComputePipelineNode* cp_node = sit_gs.all_compute_pipelines;
+    _SituationComputePipelineNode* cp_node = sit_render.all_compute_pipelines;
     while (cp_node) {
         _SituationComputePipelineNode* next_node = cp_node->next;
         if (cp_node->source_path) {
@@ -20376,7 +20388,7 @@ SITAPI void SituationCheckHotReloads(void) {
     }
 
     // --- Check Textures ---
-    _SituationTextureNode* tex_node = sit_gs.all_textures;
+    _SituationTextureNode* tex_node = sit_render.all_textures;
     while (tex_node) {
         _SituationTextureNode* next_node = tex_node->next;
         if (tex_node->source_path) {
@@ -20391,7 +20403,7 @@ SITAPI void SituationCheckHotReloads(void) {
     }
 
     // --- Check Models ---
-    _SituationModelNode* model_node = sit_gs.all_models;
+    _SituationModelNode* model_node = sit_render.all_models;
     while (model_node) {
         _SituationModelNode* next_node = model_node->next;
         if (model_node->source_path) {
@@ -25922,10 +25934,10 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
 #elif defined(SITUATION_USE_VULKAN)
     // 1. Identify the source image.
     // 'current_image_index' holds the index of the swapchain image we are currently drawing to.
-    VkImage srcImage = sit_gs.vk.swapchain_images[sit_gs.vk.current_image_index];
+    VkImage srcImage = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
     if (srcImage == VK_NULL_HANDLE) {
         char err_msg[128];
-        snprintf(err_msg, sizeof(err_msg), "Cannot get screenshot: source swapchain image index %u is invalid", sit_gs.vk.current_image_index);
+        snprintf(err_msg, sizeof(err_msg), "Cannot get screenshot: source swapchain image index %u is invalid", sit_render.vk.current_image_index);
 		_SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID, err_msg);
         return (SituationImage){0};
 	}

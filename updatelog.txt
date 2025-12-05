@@ -1,3 +1,21 @@
+Date: 2025-12-05
+Version: 2.3.17 "Velocity" (Refactor: Render State Separation)
+
+## DESCRIPTION
+This release implements a massive architectural refactor to decouple the rendering state from the core global state. This change is purely structural and preserves identical API behavior and performance, but paves the way for future multi-context support and cleaner internal modularity.
+
+## ARCHITECTURAL CHANGES
+*   **State Decoupling:** The monolithic `_SituationGlobalStateContainer` has been split. A new `_SituationRenderState` struct now encapsulates all graphics-related state (Vulkan handles, OpenGL context data, virtual displays, resource trackers).
+*   **Context Object:** Introduced a heap-allocated `SituationContext` that holds the Global, Render, Audio, and Input states, replacing static global variables with a structured context pointer.
+    *   **Access:** Internal access is now routed through context-aware macros (`sit_render`, `sit_gs`, etc.) that resolve to the active context instance.
+*   **Memory Management:** `SituationInit` now allocates the context on the heap (previously BSS/static), and `SituationShutdown` frees it. This ensures cleaner memory lifetime management and better compatibility with hot-reloading entire DLLs.
+
+## MIGRATION
+*   **Internal:** All internal references to `sit_gs.vk` or `sit_gs.gl` have been updated to `sit_render.vk` and `sit_render.gl`.
+*   **Public API:** No breaking changes to the public API surface.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-12-03
 Version: 2.3.16A "Velocity" (Hotfix: Vector & Docs)
 
