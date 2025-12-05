@@ -17,7 +17,7 @@
 // --- Game State ---
 // We keep track of the player's position and color here.
 static vec3 player_pos = {0.0f, 0.0f, 0.0f};
-static vec4 player_color = {0.0f, 1.0f, 1.0f, 1.0f}; // Start Cyan
+static Vector4 player_color = {{0.0f, 1.0f, 1.0f, 1.0f}}; // Start Cyan
 
 int main(int argc, char** argv) {
     // 1. Initialize
@@ -48,9 +48,9 @@ int main(int argc, char** argv) {
         // B. Mouse Interaction
         if (SituationIsMouseButtonPressed(0)) { // 0 is Left Click
             // Randomize RGB, keep Alpha at 1.0
-            player_color[0] = (float)(rand() % 100) / 100.0f;
-            player_color[1] = (float)(rand() % 100) / 100.0f;
-            player_color[2] = (float)(rand() % 100) / 100.0f;
+            player_color.raw[0] = (float)(rand() % 100) / 100.0f;
+            player_color.raw[1] = (float)(rand() % 100) / 100.0f;
+            player_color.raw[2] = (float)(rand() % 100) / 100.0f;
         }
 
         // --- RENDER LOGIC ---

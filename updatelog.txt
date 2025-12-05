@@ -1,3 +1,19 @@
+Date: 2025-12-06
+Version: 2.3.18 "Velocity" (Phase 1: Deferred OpenGL)
+
+## DESCRIPTION
+This release implements Phase 1 of the OpenGL backend refactor, introducing a Soft Command Buffer for deferred execution. It addresses a critical regression where `SIT_OP_DRAW_MESH` would leave a mesh-specific VAO bound, breaking subsequent generic draw calls. It also fixes a memory leak in the soft buffer cleanup logic.
+
+## ARCHITECTURAL CHANGES
+*   **Soft Command Buffer:** Introduced `SituationSoftCommandBuffer` and `SitOpCode` infrastructure for OpenGL.
+*   **Deferred Execution:** Refactored all `SituationCmd*` functions to record packets instead of executing GL calls directly. Implemented `_SituationGLExecuteCommands` to replay recorded commands at `SituationEndFrame`.
+
+## CRITICAL FIXES
+*   **VAO State Corruption:** `SIT_OP_DRAW_MESH` now explicitly restores `sit_render.gl.global_vao_id` after execution. This prevents subsequent generic draw calls (like `SituationCmdDrawQuad`) from failing due to incorrect vertex attribute bindings.
+*   **Memory Leak:** Added cleanup logic for `soft_buffer.packets` and `soft_buffer.data_buffer` in `_SituationCleanupOpenGL`.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-12-05
 Version: 2.3.17 "Velocity" (Refactor: Render State Separation)
 

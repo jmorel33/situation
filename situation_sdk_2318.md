@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.17 "Velocity" |
+| **Version** | 2.3.18 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -37,13 +37,14 @@ The library is engineered around three architectural pillars:
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
 
-### New in v2.3.17 "Velocity" (Refactor: Render State Separation)
+### New in v2.3.18 "Velocity" (Phase 1: Deferred OpenGL Architecture)
 
-This release implements a massive architectural refactor to decouple the rendering state from the core global state. This change is purely structural and preserves identical API behavior and performance, but paves the way for future multi-context support and cleaner internal modularity.
+This release introduces the **Soft Command Buffer** architecture for the OpenGL backend, unifying the execution model with Vulkan's deferred paradigm.
 
 **Key Enhancements:**
-*   **State Decoupling:** The monolithic `_SituationGlobalStateContainer` has been split. A new `_SituationRenderState` struct now encapsulates all graphics-related state (Vulkan handles, OpenGL context data, virtual displays, resource trackers).
-*   **Context Object:** Introduced a heap-allocated `SituationContext` that holds the Global, Render, Audio, and Input states, replacing static global variables with a structured context pointer.
+*   **Soft Command Buffer:** OpenGL commands are now recorded into a binary instruction stream (`SituationGLSoftCommandBuffer`) instead of being executed immediately. This enables "Update-Before-Draw" validation and lays the groundwork for multi-threaded command recording in Phase 2.
+*   **Unified Execution:** `SituationEndFrame` now replays the recorded command stream, ensuring that both backends share the same temporal execution characteristics.
+*   **Critical Fix:** Resolved a VAO state corruption issue where mesh drawing would clobber the global state, ensuring compatibility with external middleware.
 
 ### New in v2.3.16 "Velocity" (Task Safety Hotfix)
 
@@ -220,7 +221,7 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
 - [7.0 Threading & Async](#70-threading--async)
   - [7.1 Generational Task System](#71-generational-task-system)
   - [7.2 Job Submission & Control](#72-job-submission--control)
-  - [7.3 Dependency Graph (v2.3.16)](#73-dependency-graph-v2316)
+  - [7.3 Dependency Graph](#73-dependency-graph)
   - [7.4 Parallel Dispatch](#74-parallel-dispatch)
 - [Appendix A: Error Omniscience](#appendix-a-error-omniscience)
 - [Appendix B: Perf Codex](#appendix-b-perf-codex)
@@ -3446,7 +3447,7 @@ The Threading module provides a hardened, high-performance **Generational Task S
 <a id="71-generational-task-system"></a>
 ### 7.1 Generational Task System
 
-The `SituationThreadPool` (v2.3.15+) uses a dual-priority ring buffer architecture with O(1) generational validation.
+The `SituationThreadPool` uses a dual-priority ring buffer architecture with O(1) generational validation.
 
 **Key Features:**
 *   **Zero Allocation:** The job queue is a fixed-size ring buffer. Submitting a job involves no `malloc` calls (unless the payload > 64 bytes).
@@ -3486,6 +3487,12 @@ SituationJobId SituationSubmitJobEx(
     *   `SIT_SUBMIT_BLOCK_IF_FULL`: Spin-wait if the queue is full (use sparingly).
     *   `SIT_SUBMIT_RUN_IF_FULL`: **Recommended.** If queue is full, execute immediately on the calling thread. Prevents drops/stalls.
 
+**Return Value (SituationJobId):**
+A 32-bit integer handle that uniquely identifies the job instance. It is bit-packed as follows:
+*   **Queue Index (1 bit):** Indicates High (1) or Low (0) priority queue.
+*   **Generation (15 bits):** A validation counter that increments every time the slot is reused, preventing ABA problems.
+*   **Slot Index (16 bits):** The index into the ring buffer array.
+
 #### SituationSubmitJob (Legacy Wrapper)
 
 A macro for simple pointer passing. Equivalent to `SituationSubmitJobEx` with default priority and no copy.
@@ -3502,7 +3509,7 @@ bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId id);
 
 **Behavior:**
 *   Checks the generation counter in the handle against the slot.
-*   If they match, the job is pending/running -> Blocks until complete.
+*   If they match, the job is pending/running -> Blocks (yields/sleeps) until the `is_completed` flag is set.
 *   If they differ, the job (and likely several others) is already finished -> Returns `true` immediately.
 
  #### SituationLoadSoundFromFileAsync
@@ -3521,8 +3528,8 @@ bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId id);
  *   Submits a job to the pool that calls `SituationLoadSoundFromFile` with mode `SITUATION_AUDIO_LOAD_FULL` (decode to RAM).
  *   **Safety:** Do not touch `out_sound` until `SituationWaitForJob` returns true.
 
-<a id="73-dependency-graph-v2316"></a>
-### 7.3 Dependency Graph (v2.3.16)
+<a id="73-dependency-graph"></a>
+### 7.3 Dependency Graph
 
 The Task System allows you to express dependencies between jobs, ensuring that a "Consumer" job does not start until its "Producer" job has completed.
 
@@ -3533,8 +3540,8 @@ bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prerequ
 ```
 
 **Constraints:**
-*   **1:1 Continuation:** In v2.3.16, a prerequisite can trigger only *one* direct continuation. For Fan-Out (one job triggering many), use a "Dispatcher" job that submits the children.
-*   **Cycle Detection:** The system will return `false` (and set error `SITUATION_ERROR_THREAD_CYCLE`) if adding the link would create a loop.
+*   **1:1 Continuation:** A prerequisite can trigger only *one* direct continuation (using lock-free CAS). For Fan-Out (one job triggering many), use a "Dispatcher" job that submits the children.
+*   **Cycle Detection:** The system performs a depth-limited check (max 32) and will return `false` (and set error `SITUATION_ERROR_THREAD_CYCLE`) if adding the link would create a loop.
 
 #### SituationAddJobDependencies (Fan-In)
 
