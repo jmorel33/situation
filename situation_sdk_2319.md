@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.18 "Velocity" |
+| **Version** | 2.3.19 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -36,6 +36,16 @@ The library is engineered around three architectural pillars:
 
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
+
+### New in v2.3.19 "Velocity" (Phase 2: Render Thread)
+
+This release activates the **Threaded Rendering Architecture**. The OpenGL backend now executes all rendering commands on a dedicated background thread, decoupling the main application loop from driver stalls and VSync blocks.
+
+**Key Enhancements:**
+*   **Render Thread:** Implemented `_SituationRenderThreadEntry`. The main thread records commands into double-buffered Soft Command Buffers, which are consumed by the dedicated Render Thread.
+*   **Context Handover:** The main thread now manages a hidden `loader_window` (shared context) for async asset loading, while the Render Thread owns the main window context for presentation.
+*   **Synchronization:** Introduced `render_queue_mutex` and `main_wait_cv` to manage frame submission and backpressure (max 2 frames in flight).
+*   **Shared VAO Architecture:** `SituationCreateMesh` now uses a global shared VAO (`mesh_vao_id`) to enable seamless mesh sharing between the loader and render threads.
 
 ### New in v2.3.18 "Velocity" (Phase 1: Deferred OpenGL Architecture)
 

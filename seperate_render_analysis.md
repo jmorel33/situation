@@ -113,17 +113,33 @@ If the Main Thread modifies a `SituationMesh` or `UniformBuffer` while the Rende
 *   **Step 3:** [Done] Create a `_SituationGLExecuteCommands(SituationSoftCommandBuffer* buf)` function that contains the switch-case interpreter.
 *   **Verification:** Run this on the Main Thread first. Behavior should be identical, just buffered.
 
-### Phase 2: Thread Infrastructure [NEXT]
-*   **Goal:** Spin up the Render Thread.
-*   **Step 1:** Implement `_SituationRenderThreadEntry` loop.
-    *   Needs to handle context current switching.
-*   **Step 2:** Implement `FrameQueue` (Size 2 or 3).
-    *   Main Thread pushes `FrameData` (containing `SoftCommandBuffer` for GL or `VkCommandBuffer` for VK).
+### Phase 2: Thread Infrastructure [COMPLETE]
+*   **Goal:** Spin up the Render Thread and establish the Producer/Consumer loop.
+*   **Step 1:** [Done] Implement `_SituationRenderThreadEntry` loop.
+    *   Handles context acquisition (`glfwMakeContextCurrent`).
+    *   Implements a condition-variable based wait loop.
+*   **Step 2:** [Done] Implement `FrameQueue`.
+    *   Main Thread pushes `FrameData` (containing `SoftCommandBuffer`).
     *   Render Thread pops `FrameData`.
-*   **Step 3:** Update `SituationInit` to spawn the thread.
-*   **Step 4:** Update `SituationEndFrame` to push to queue instead of presenting.
+*   **Step 3:** [Done] Update `SituationInit` to spawn the thread and create a shared "Loader Context" for the Main Thread.
+*   **Step 4:** [Done] Update `SituationEndFrame` to push to queue and `SituationAcquireFrameCommandBuffer` to wait for free slots (Backpressure).
+*   **Constraint:** Currently uses a **Shared Global VAO** (`mesh_vao_id`) for all meshes. This works perfectly but requires re-binding VBOs on every draw call (`glVertexArrayVertexBuffer`), which has a small CPU overhead compared to baking VAOs.
 
-### Phase 3: Synchronization & Latency
+### Phase 2.5: High-Performance Mesh Architecture (Lazy VAO Cache) [PLANNED]
+*   **Context:** VAO objects (Vertex Array Objects) are **not shared** between OpenGL contexts.
+    *   *Problem:* We create meshes on the Main Thread (Loader Context), but we draw them on the Render Thread (Main Context). We cannot create a VAO on Main and use it on Render.
+    *   *Current Solution (Phase 2):* We use a single global VAO on the Render Thread and bind the shared VBOs dynamically. This works but isn't optimal.
+*   **Goal:** Restore per-mesh VAOs for maximum performance without threading violations.
+*   **Strategy: Lazy Initialization on Render Thread.**
+    1.  **Main Thread:** Creates VBO/EBO (Shared Resources). Assigns a unique ID.
+    2.  **Render Thread:** Maintains a `HashTable<MeshID, VaoID>`.
+    3.  **On Draw (Render Thread):**
+        *   Look up MeshID in the map.
+        *   **If Missing:** Create a new VAO *right now*, configure attributes (using data from the command packet), and store it in the map.
+        *   **If Present:** Bind the cached VAO.
+    4.  **On Destroy:** Main Thread pushes a `SIT_OP_DESTROY_CACHED_VAO` command to the Render Thread to clean up the map entry.
+
+### Phase 3: Synchronization & Latency [PENDING]
 *   **Goal:** Prevent "runaway" Main Thread.
 *   **Mechanism:** If the `FrameQueue` is full (Render Thread is stuck on VSync), the Main Thread must block in `SituationAcquireFrame`.
 *   **Result:** We get "Triple Buffering" behavior for free. Smooth framerates, no tearing.
