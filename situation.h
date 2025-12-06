@@ -2989,10 +2989,11 @@ typedef struct {
 
     bool thread_active;
     bool thread_shutdown_req;
+#endif
 
     // Tracks current frame index for the MAIN thread (producing)
+    // [PLATINUM] Moved outside #ifdef to ensure consistent frame tracking in both threaded and non-threaded modes.
     int current_frame_index;
-#endif
 
 } _SituationRenderState;
 
@@ -11984,16 +11985,17 @@ SITAPI SituationError SituationEndFrame(void) {
         sit_render.frames_pending++;
         cnd_signal(&sit_render.render_queue_cv);
         mtx_unlock(&sit_render.render_queue_mutex);
-
-        // Advance index for next frame
-        sit_render.current_frame_index = (sit_render.current_frame_index + 1) % SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT;
         #else
         // [Phase 1] Execute Deferred Commands Immediately
-        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[0]);
+        // [PLATINUM] Use the correct frame index even in single-threaded mode for consistency.
+        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index]);
 
         // Swap the front and back buffers to display the rendered frame.
         glfwSwapBuffers(sit_gs.sit_glfw_window);
         #endif
+
+        // [PLATINUM] Unify frame index advancement across both paths.
+        sit_render.current_frame_index = (sit_render.current_frame_index + 1) % SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT;
 
         // OpenGL path implicitly succeeds if glfwSwapBuffers doesn't crash.
         // Return success.
@@ -12179,11 +12181,8 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
     {
         // --- 2. OpenGL Path ---
         // [Phase 2] Return the Soft Command Buffer for current frame
-        #if !defined(__STDC_NO_THREADS__)
+        // [PLATINUM] Unified logic: Always return the buffer for the current frame index.
         return (SituationCommandBuffer)&sit_render.gl.soft_buffers[sit_render.current_frame_index];
-        #else
-        return (SituationCommandBuffer)&sit_render.gl.soft_buffers[0];
-        #endif
     }
 
 #elif defined(SITUATION_USE_VULKAN)
