@@ -1,4 +1,4 @@
-Date: 2025-12-05
+Date: 2025-12-06
 Version: 2.3.19 "Velocity" (Phase 2: Threading Infrastructure)
 
 ## DESCRIPTION
@@ -18,28 +18,6 @@ This release delivers the core infrastructure for the decoupled rendering system
 ## CRITICAL FIXES
 *   **Race Condition Prevention:** `SIT_OP_BEGIN_RENDER_PASS` and `SIT_OP_PRESENT` now capture the current window resolution at record-time (on the Main Thread), preventing race conditions where the Render Thread might read a changing `main_window_width/height` during a resize event.
 *   **Fallback Path:** Restored the non-threaded execution path in `SituationEndFrame`. The library continues to function correctly (albeit synchronously) on platforms without C11 thread support (`__STDC_NO_THREADS__`).
-
-## DEFERRED IMPLEMENTATION (Phase 2.5)
-*   **Shared Global VAO Strategy:** To resolve immediate context sharing issues (VAOs are not shared between contexts), the current implementation uses a single, global shared VAO (`mesh_vao_id`) for all meshes.
-    *   *Impact:* This works correctly but incurs a small CPU overhead as VBOs must be re-bound for every draw call.
-    *   *Plan:* Phase 2.5 will introduce a "Lazy Per-Mesh VAO Cache" on the Render Thread to restore maximum performance by caching fully configured VAOs.
-
---------------------------------------------------------------------------------
-Date: 2025-12-05
-Version: 2.3.19 "Velocity" (Phase 2: Threading Infrastructure)
-
-## DESCRIPTION
-This release delivers the core infrastructure for the decoupled rendering system (Phase 2). It successfully establishes the Render Thread, Frame Queue, and Context Handover mechanisms, enabling the main thread to produce frames while the background thread consumes and renders them. This separation paves the way for higher frame rates and smoother gameplay by unblocking logic updates from VSync.
-
-## ARCHITECTURAL CHANGES
-*   **Render Thread:** Implemented `_SituationRenderThreadEntry`. The main thread records commands into double-buffered Soft Command Buffers, which are pushed to a thread-safe ring buffer and consumed by the Render Thread.
-*   **Context Handover (OpenGL):**
-    *   **Main Thread (Loader):** Now manages a hidden `loader_window` (shared context) for async asset loading.
-    *   **Render Thread (Presenter):** Takes ownership of the main window context (`glfwMakeContextCurrent`) to perform presentation (`glfwSwapBuffers`).
-*   **Frame Queue & Backpressure:** Implemented a ring buffer for frame submission. `SituationAcquireFrameCommandBuffer` now waits on a condition variable if the queue is full (Backpressure), ensuring the main thread doesn't overrun the GPU.
-
-## CRITICAL FIXES
-*   **Race Condition Prevention:** `SIT_OP_BEGIN_RENDER_PASS` and `SIT_OP_PRESENT` now capture the current window resolution at record-time (on the Main Thread), preventing race conditions where the Render Thread might read a changing `main_window_width/height` during a resize event.
 
 ## DEFERRED IMPLEMENTATION (Phase 2.5)
 *   **Shared Global VAO Strategy:** To resolve immediate context sharing issues (VAOs are not shared between contexts), the current implementation uses a single, global shared VAO (`mesh_vao_id`) for all meshes.
