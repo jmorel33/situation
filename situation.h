@@ -12027,20 +12027,7 @@ SITAPI SituationError SituationEndFrame(void) {
         cnd_signal(&sit_render.render_queue_cv);
         mtx_unlock(&sit_render.render_queue_mutex);
         #else
-        // 1. End recording the primary command buffer for this frame.
-        // Get the command buffer first and validate it.
-        VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
-        if (cmd == VK_NULL_HANDLE) { // Check if SituationGetMainCommandBuffer returned NULL
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get main command buffer for ending frame.");
-             return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
-        }
-
-        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to end recording command buffer!");
-            return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
-        }
-
-        // 2. Submit the command buffer to the graphics queue.
+        // 2. Submit the command buffer to the graphics queue (Single-Threaded Path).
         VkSubmitInfo submit_info = {0};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 

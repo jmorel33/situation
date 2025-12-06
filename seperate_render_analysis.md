@@ -2,17 +2,17 @@
 
 ## 1. Executive Summary
 
-**Verdict:** Feasible, but requires significant architectural refactoring for the OpenGL backend.
+**Verdict:** **Phase 1 and Phase 2 are 100% COMPLETE for both OpenGL and Vulkan.**
 
 Moving rendering to a dedicated thread ("Decoupled Rendering") is the standard for high-performance engines. It unblocks the Main Thread (Game Logic) from VSync and driver stalls.
 
-*   **Vulkan Feasibility:** **High.** Vulkan is designed for threading. The main challenge is synchronizing the Swapchain Acquire/Present cycle and managing command pool ownership.
-*   **OpenGL Feasibility:** **Medium.** OpenGL contexts are thread-bound. The context must be moved to the render thread. The immediate-mode nature of the current `Situation` OpenGL backend requires a new intermediate "Command List" abstraction to record commands on Main and replay them on Render.
+*   **Vulkan Feasibility:** **High.** Vulkan is naturally threaded. `Situation` now implements a robust threaded submission model where the Main Thread records command buffers, and the Render Thread handles queue submission and presentation.
+*   **OpenGL Feasibility:** **Medium.** OpenGL contexts are thread-bound. The context has been successfully moved to the render thread. The immediate-mode nature of `Situation`'s OpenGL backend has been fully abstracted using the "Phantom Command Buffer" (Soft Command Buffer), allowing recording on Main and replay on Render.
 
 ## 2. Architectural Gap Analysis
 
 ### 2.1. Current State (Coupled)
-Currently, `Situation` executes a linear, single-threaded frame:
+Historically, `Situation` executed a linear, single-threaded frame:
 ```c
 while (!Close) {
     PollInput();      // Main Thread
@@ -22,38 +22,33 @@ while (!Close) {
     EndFrame();       // Main Thread (Blocks on Present/VSync)
 }
 ```
-This means if VSync is on (60 FPS), the *entire* game logic is capped at 60Hz. If a frame takes 17ms, the game slows down.
+This capped game logic at the VSync rate (e.g., 60Hz).
 
 ### 2.2. The Target State (Decoupled)
-We aim for two independent timelines:
+We have achieved two independent timelines:
 
 **Main Thread (Logic - "Producer"):**
 Runs as fast as possible (e.g., 144Hz+).
 1.  Polls Input.
 2.  Runs Physics/Game Logic.
-3.  *Generates* a lightweight list of render commands (The "Draw Packet").
-4.  Pushes the packet to a thread-safe queue.
+3.  *Generates* a lightweight list of render commands (The "Draw Packet" / Recorded Command Buffer).
+4.  Pushes the frame index to a thread-safe queue.
 
 **Render Thread (GPU - "Consumer"):**
 Runs at VSync (e.g., 60Hz).
-1.  Pops the latest complete Draw Packet.
-2.  Acquires Swapchain Image.
-3.  Translates Packet -> GL/VK API Calls.
-4.  Presents.
+1.  Pops the latest complete Frame Index.
+2.  **Vulkan:** Submits the pre-recorded `VkCommandBuffer` to the queue and presents.
+3.  **OpenGL:** Replays the `SituationSoftCommandBuffer` and swaps buffers.
 
 ### 2.3. The "Airgap" Problem
-The `Situation` API exposes direct control to the user in the render loop:
-```c
-SituationCmdDrawMesh(cmd, mesh); // In GL, this calls glDrawElements immediately!
-```
-To decouple this, `SituationCmdDrawMesh` **cannot** call `glDrawElements` on the Main Thread anymore, because the Main Thread won't have the GL Context.
+To decouple this, `SituationCmdDrawMesh` **cannot** call `glDrawElements` on the Main Thread anymore, because the Main Thread does not have the GL Context.
 
 ## 3. The Titanium Solution: "Phantom Command Buffers"
 
-The solution is to unify the backends under a strict Command Buffer model. In Vulkan, we already have `VkCommandBuffer`. For OpenGL, we must invent one.
+The solution unifies the backends under a strict Command Buffer model.
 
 ### 3.1. The Phantom Buffer (Soft Command Buffer)
-We introduce a ring-buffer based opcode system for OpenGL.
+We introduced a ring-buffer based opcode system for OpenGL.
 
 **Struct Definition (Internal):**
 ```c
@@ -74,15 +69,6 @@ typedef struct {
         // ...
     } args;
 } SitCommandPacket;
-
-typedef struct {
-    SitCommandPacket* commands;
-    size_t count;
-    size_t capacity;
-    uint8_t* data_buffer; // For variable length data (PushConstants, BufferUpdates)
-    size_t data_cursor;
-    size_t data_capacity;
-} SituationSoftCommandBuffer;
 ```
 
 **New Workflow (OpenGL):**
@@ -119,10 +105,11 @@ If the Main Thread modifies a `SituationMesh` or `UniformBuffer` while the Rende
     *   Handles context acquisition (`glfwMakeContextCurrent`).
     *   Implements a condition-variable based wait loop.
 *   **Step 2:** [Done] Implement `FrameQueue`.
-    *   Main Thread pushes `FrameData` (containing `SoftCommandBuffer`).
+    *   Main Thread pushes `FrameData` (containing `SoftCommandBuffer` or `VkCommandBuffer` index).
     *   Render Thread pops `FrameData`.
 *   **Step 3:** [Done] Update `SituationInit` to spawn the thread and create a shared "Loader Context" for the Main Thread.
 *   **Step 4:** [Done] Update `SituationEndFrame` to push to queue and `SituationAcquireFrameCommandBuffer` to wait for free slots (Backpressure).
+*   **Vulkan Support:** The Render Thread logic explicitly handles Vulkan by submitting the recorded `VkCommandBuffer` to the queue and presenting the swapchain. The `_SituationRenderThreadEntry` function contains dedicated paths for both backends.
 *   **Constraint:** Currently uses a **Shared Global VAO** (`mesh_vao_id`) for all meshes. This works perfectly but requires re-binding VBOs on every draw call (`glVertexArrayVertexBuffer`), which has a small CPU overhead compared to baking VAOs.
 
 ### Phase 2.5: High-Performance Mesh Architecture (Lazy VAO Cache) [PLANNED]
