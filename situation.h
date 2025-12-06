@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 18
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -2490,7 +2490,9 @@ typedef enum {
     SIT_OP_DISPATCH,
     SIT_OP_BIND_COMPUTE_PIPELINE,
     SIT_OP_PRESENT,
-    SIT_OP_DRAW_TEXT // Special op for deferred text drawing
+    SIT_OP_DRAW_TEXT, // Special op for deferred text drawing
+    SIT_OP_UPDATE_BUFFER,
+    SIT_OP_SET_VERTEX_ATTRIBUTE
 } SitOpCode;
 
 typedef struct {
@@ -2512,6 +2514,8 @@ typedef struct {
         struct { uint32_t x, y, z; } dispatch;
         struct { SituationTexture texture; } present;
         struct { SituationFont font; Vector2 pos; ColorRGBA color; size_t text_offset; } draw_text; // Store text in data_buffer
+        struct { uint64_t buffer_id; size_t offset; size_t size; size_t data_offset; } update_buffer;
+        struct { uint32_t location; int size; int type; int normalized; size_t offset; } set_vertex_attr;
     } args;
 } SitCommandPacket;
 
@@ -6369,6 +6373,33 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                     glBindVertexArray(sit_render.gl.global_vao_id);
                 }
                 #endif
+                break;
+
+            case SIT_OP_UPDATE_BUFFER:
+                {
+                    void* data = buf->data_buffer + p->args.update_buffer.data_offset;
+                    glNamedBufferSubData((GLuint)p->args.update_buffer.buffer_id,
+                                         (GLintptr)p->args.update_buffer.offset,
+                                         (GLsizeiptr)p->args.update_buffer.size,
+                                         data);
+                }
+                break;
+
+            case SIT_OP_SET_VERTEX_ATTRIBUTE:
+                {
+                    GLenum gl_type = _SituationMapDataTypeToGL((SituationDataType)p->args.set_vertex_attr.type);
+                    if (gl_type != 0) {
+                        uint32_t loc = p->args.set_vertex_attr.location;
+                        glVertexArrayAttribFormat(sit_render.gl.global_vao_id, loc,
+                                                  p->args.set_vertex_attr.size,
+                                                  gl_type,
+                                                  p->args.set_vertex_attr.normalized ? GL_TRUE : GL_FALSE,
+                                                  (GLuint)p->args.set_vertex_attr.offset);
+                        // Assumption: Binding index matches location for simplicity
+                        glVertexArrayAttribBinding(sit_render.gl.global_vao_id, loc, loc);
+                        glEnableVertexArrayAttrib(sit_render.gl.global_vao_id, loc);
+                    }
+                }
                 break;
         }
         SIT_CHECK_GL_ERROR();
@@ -12755,17 +12786,19 @@ SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t 
     if (!SituationIsInitialized()) return;
 
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd;
-    GLenum gl_type = _SituationMapDataTypeToGL(type);
-    if (gl_type == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdSetVertexAttribute: Unsupported data type.");
+    if (_SituationMapDataTypeToGL(type) == 0) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdSetVertexAttribute: Invalid data type.");
         return;
     }
-    glVertexArrayAttribFormat(sit_render.gl.global_vao_id, location, size, gl_type, normalized ? GL_TRUE : GL_FALSE, (GLuint)offset);
-    // We assume the binding index matches the location for simplicity in this abstraction
-    glVertexArrayAttribBinding(sit_render.gl.global_vao_id, location, location);
-    glEnableVertexArrayAttrib(sit_render.gl.global_vao_id, location);
-    SIT_CHECK_GL_ERROR();
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_VERTEX_ATTRIBUTE);
+    if (p) {
+        p->args.set_vertex_attr.location = location;
+        p->args.set_vertex_attr.size = size;
+        p->args.set_vertex_attr.type = (int)type;
+        p->args.set_vertex_attr.normalized = normalized ? 1 : 0;
+        p->args.set_vertex_attr.offset = offset;
+    }
 
 #elif defined(SITUATION_USE_VULKAN)
     // FIX: Explicitly report that this is not supported in the Vulkan backend.
@@ -15393,14 +15426,31 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
 
 #if defined(SITUATION_USE_OPENGL)
     {
-        // --- 2. OpenGL Implementation ---
-        glNamedBufferSubData(buffer.gl_buffer_id, (GLintptr)offset, (GLsizeiptr)size, data);
-        SIT_CHECK_GL_ERROR();
-        if (sit_render.gl.last_error != GL_NO_ERROR) {
-            // Error message likely set by SIT_CHECK_GL_ERROR
-            return SITUATION_ERROR_OPENGL_GENERAL; // Or a more specific OpenGL error if available
+        // --- 2. OpenGL Implementation (Deferred) ---
+        // We acquire the main command buffer (soft buffer) to record this update.
+        // This mimics Vulkan's staging behavior: copy data now, execute transfer later.
+        SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+        if (!cmd) return SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER;
+
+        SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+
+        // Allocate space in the data buffer
+        void* ptr = _SitGLSoftDataPush(buf, data, size);
+        if (!ptr) return SITUATION_ERROR_MEMORY_ALLOCATION;
+
+        // Calculate offset relative to buffer start
+        size_t data_offset = (size_t)((uint8_t*)ptr - buf->data_buffer);
+
+        SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_UPDATE_BUFFER);
+        if (p) {
+            p->args.update_buffer.buffer_id = buffer.gl_buffer_id;
+            p->args.update_buffer.offset = offset;
+            p->args.update_buffer.size = size;
+            p->args.update_buffer.data_offset = data_offset;
+            return SITUATION_SUCCESS;
+        } else {
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
-        return SITUATION_SUCCESS;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
