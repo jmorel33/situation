@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 18
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_PATCH 19
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -416,14 +416,16 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
 #endif
 
 // --- Threading Support Configuration ---
+#if !defined(__STDC_NO_THREADS__)
+    #include <threads.h>
+    #include <stdatomic.h>
+    #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+        #include <stdalign.h> // For alignas/_Alignas
+    #endif
+#endif
+
 #ifdef SITUATION_ENABLE_THREADING
-    #if !defined(__STDC_NO_THREADS__)
-        #include <threads.h>
-        #include <stdatomic.h>
-        #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-            #include <stdalign.h> // For alignas/_Alignas
-        #endif
-    #else
+    #if defined(__STDC_NO_THREADS__)
         #error "SITUATION_ENABLE_THREADING requires C11 <threads.h> support."
     #endif
 
@@ -1168,7 +1170,8 @@ typedef struct {
     VkBuffer index_buffer;
     VmaAllocation index_buffer_memory;
 #elif defined(SITUATION_USE_OPENGL)
-    GLuint vao_id; // Vertex Array Object
+    // Note: VAOs are no longer stored per-mesh to support context sharing.
+    // We use a shared global mesh VAO.
     GLuint vbo_id; // Vertex Buffer Object
     GLuint ebo_id; // Element (Index) Buffer Object
 #endif
@@ -2492,13 +2495,14 @@ typedef enum {
     SIT_OP_PRESENT,
     SIT_OP_DRAW_TEXT, // Special op for deferred text drawing
     SIT_OP_UPDATE_BUFFER,
-    SIT_OP_SET_VERTEX_ATTRIBUTE
+    SIT_OP_SET_VERTEX_ATTRIBUTE,
+    SIT_OP_SET_UNIFORM
 } SitOpCode;
 
 typedef struct {
     SitOpCode opcode;
     union {
-        struct { int display_id; SituationRenderPassInfo info; } begin_pass;
+        struct { int display_id; int target_w; int target_h; SituationRenderPassInfo info; } begin_pass;
         struct { float x, y, w, h; } viewport;
         struct { int x, y, w, h; } scissor;
         struct { uint64_t shader_id; } bind_pipeline;
@@ -2512,10 +2516,11 @@ typedef struct {
         struct { uint32_t idx_count, inst_count, first_idx; int32_t v_offset; uint32_t first_inst; } draw_indexed;
         struct { uint32_t src, dst; } barrier;
         struct { uint32_t x, y, z; } dispatch;
-        struct { SituationTexture texture; } present;
+        struct { SituationTexture texture; int target_w; int target_h; } present;
         struct { SituationFont font; Vector2 pos; ColorRGBA color; size_t text_offset; } draw_text; // Store text in data_buffer
         struct { uint64_t buffer_id; size_t offset; size_t size; size_t data_offset; } update_buffer;
         struct { uint32_t location; int size; int type; int normalized; size_t offset; } set_vertex_attr;
+        struct { uint64_t shader_id; GLint location; int type; size_t data_offset; } set_uniform;
     } args;
 } SitCommandPacket;
 
@@ -2663,6 +2668,10 @@ typedef struct {
     // --- Graveyard (Deferred Deletion Queue) ---
     struct SituationGraveyard* graveyards;                       // Array of deletion queues (one per frame in flight)
 
+    // --- Threading Signals ---
+    atomic_bool recreate_swapchain_request;                      // Signal from Render Thread to Main Thread
+    uint32_t acquired_image_indices[SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT]; // Image index for each frame slot
+
 } _SituationVulkanState;
 
 // --- Vulkan Graveyard Definition ---
@@ -2730,6 +2739,7 @@ typedef struct SituationGraveyard {
     // -------------------------------------------------------------------------
     GLuint view_data_ubo_id;                    // Handle to the global View/Projection UBO
     GLuint global_vao_id;                       // The "Public" VAO active during user rendering commands
+    GLuint mesh_vao_id;                         // [2.3.19] Shared VAO for standard meshes (PBR layout)
     GLuint current_program_id;                  // Cache of the currently bound shader program ID
 
     // Shadow State (Tracks what we *think* the driver state is)
@@ -2749,7 +2759,10 @@ typedef struct SituationGraveyard {
     bool shadow_state_dirty;                    // [2.3.14A] Flag to indicate external state changes
 
     // [Phase 1] Soft Command Buffer for Deferred Rendering
-    SituationGLSoftCommandBuffer soft_buffer;
+    SituationGLSoftCommandBuffer soft_buffers[SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT];
+
+    // [Phase 2] Context Sharing for Threaded Rendering
+    GLFWwindow* loader_window; // Invisible window for main-thread resource loading
 } _SituationGLState;
 #endif // SITUATION_USE_OPENGL
 
@@ -2958,6 +2971,29 @@ typedef struct {
     // [PERF] Text Batch Scratch Buffer
     float* text_batch_scratch;
     size_t text_batch_capacity;
+
+#if !defined(__STDC_NO_THREADS__)
+    // Threading
+    thrd_t render_thread;
+    mtx_t render_queue_mutex;
+    cnd_t render_queue_cv;
+    cnd_t main_wait_cv; // For backpressure
+
+    // Internal Frame Structure (Definition local to _SituationRenderThreadEntry usually,
+    // but queue stores indices or pointers)
+    // We store indices into the per-frame buffers (soft_buffers or command_buffers)
+    int render_queue[SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT]; // Ring buffer of frame indices to render
+    int render_queue_head;
+    int render_queue_tail;
+    int frames_pending;
+
+    bool thread_active;
+    bool thread_shutdown_req;
+
+    // Tracks current frame index for the MAIN thread (producing)
+    int current_frame_index;
+#endif
+
 } _SituationRenderState;
 
 /**
@@ -3046,6 +3082,10 @@ typedef struct {
 // --- Forward Declarations for Threading Internal Helpers ---
 static int _SituationWorkerEntry(void* arg);                                                    // [THREAD] Internal worker thread loop
 static void _SitParallelWorker(void* data, void* ctx);                                          // [THREAD] Internal helper for parallel dispatch
+#endif
+
+#if !defined(__STDC_NO_THREADS__)
+static int _SituationRenderThreadEntry(void* arg);                                              // [THREAD] Render thread loop
 #endif
 
 // --- Context Architecture (v2.3.7+) ---
@@ -6141,7 +6181,8 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                     if (p->args.begin_pass.display_id < 0) {
                         glBindFramebuffer(GL_FRAMEBUFFER, 0);
                         sit_render.gl.current_fbo_id = 0;
-                        glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
+                        // Use captured resolution from packet to avoid race condition
+                        glViewport(0, 0, p->args.begin_pass.target_w, p->args.begin_pass.target_h);
                     } else {
                         int did = p->args.begin_pass.display_id;
                         if (did < SITUATION_MAX_VIRTUAL_DISPLAYS && sit_render.virtual_display_slots_used[did]) {
@@ -6190,8 +6231,18 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
 
             case SIT_OP_DRAW_MESH:
                 {
-                    GLuint vao = p->args.draw_mesh.mesh.vao_id;
+                    // [2.3.19] Use Shared Mesh VAO
+                    GLuint vao = sit_render.gl.mesh_vao_id;
                     glBindVertexArray(vao);
+
+                    // Bind the mesh-specific buffers to the shared VAO
+                    // Binding Point 0 matches the layout configured in InitOpenGL
+                    glVertexArrayVertexBuffer(vao, 0,
+                                              p->args.draw_mesh.mesh.vbo_id,
+                                              0,
+                                              (GLsizei)p->args.draw_mesh.mesh.vertex_stride);
+                    glVertexArrayElementBuffer(vao, p->args.draw_mesh.mesh.ebo_id);
+
                     sit_render.gl.current_vao_id = vao;
                     glDrawElements(GL_TRIANGLES, p->args.draw_mesh.mesh.index_count, GL_UNSIGNED_INT, (void*)0);
 
@@ -6308,9 +6359,10 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                     GLuint fbo;
                     glCreateFramebuffers(1, &fbo);
                     glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, tex, 0);
+                    // Use captured resolution to avoid race with main thread resize
                     glBlitNamedFramebuffer(fbo, 0,
                         0, 0, p->args.present.texture.width, p->args.present.texture.height,
-                        0, 0, sit_gs.main_window_width, sit_gs.main_window_height,
+                        0, 0, p->args.present.target_w, p->args.present.target_h,
                         GL_COLOR_BUFFER_BIT, GL_LINEAR);
                     glDeleteFramebuffers(1, &fbo);
                 }
@@ -6401,6 +6453,27 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                     }
                 }
                 break;
+
+            case SIT_OP_SET_UNIFORM:
+                {
+                    void* data = buf->data_buffer + p->args.set_uniform.data_offset;
+                    GLint loc = p->args.set_uniform.location;
+                    GLuint prog = (GLuint)p->args.set_uniform.shader_id;
+                    int type = p->args.set_uniform.type;
+
+                    switch (type) {
+                        case SIT_UNIFORM_FLOAT: glProgramUniform1fv(prog, loc, 1, (const GLfloat*)data); break;
+                        case SIT_UNIFORM_VEC2:  glProgramUniform2fv(prog, loc, 1, (const GLfloat*)data); break;
+                        case SIT_UNIFORM_VEC3:  glProgramUniform3fv(prog, loc, 1, (const GLfloat*)data); break;
+                        case SIT_UNIFORM_VEC4:  glProgramUniform4fv(prog, loc, 1, (const GLfloat*)data); break;
+                        case SIT_UNIFORM_INT:   glProgramUniform1iv(prog, loc, 1, (const GLint*)data); break;
+                        case SIT_UNIFORM_IVEC2: glProgramUniform2iv(prog, loc, 1, (const GLint*)data); break;
+                        case SIT_UNIFORM_IVEC3: glProgramUniform3iv(prog, loc, 1, (const GLint*)data); break;
+                        case SIT_UNIFORM_IVEC4: glProgramUniform4iv(prog, loc, 1, (const GLint*)data); break;
+                        case SIT_UNIFORM_MAT4:  glProgramUniformMatrix4fv(prog, loc, 1, GL_FALSE, (const GLfloat*)data); break;
+                    }
+                }
+                break;
         }
         SIT_CHECK_GL_ERROR();
     }
@@ -6445,12 +6518,41 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
 #endif // SITUATION_ENABLE_SHADER_COMPILER
 
     // --- 3. VAO Abstraction Initialization ---
-    // Create and bind the SINGLE, GLOBAL VAO for all USER rendering.
-    // This VAO will remain bound for the entire duration of the user's render loop.
-    // All subsequent user calls (like SituationCreateMesh, SituationCmdBindVertexBuffer) will implicitly modify THIS VAO's state because it's the currently bound one.
+    // Create and bind the SINGLE, GLOBAL VAO for all USER rendering (Dynamic/Custom).
     glCreateVertexArrays(1, &sit_render.gl.global_vao_id);
-    if (sit_render.gl.global_vao_id == 0) {
-         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to create global VAO for user rendering.");
+
+    // [2.3.19] Create the Shared Mesh VAO (PBR Standard Layout)
+    // This enables context sharing for meshes, as VAOs are not shared but VBOs are.
+    // We configure this VAO once on the render thread and bind shared VBOs to it at draw time.
+    glCreateVertexArrays(1, &sit_render.gl.mesh_vao_id);
+
+    // Configure Mesh VAO Layout (Interleaved: Pos3, Norm3, Tan4, UV2)
+    // Stride = 12 floats (48 bytes)
+    // Binding Index 0
+    GLuint mvao = sit_render.gl.mesh_vao_id;
+
+    // Pos (0)
+    glEnableVertexArrayAttrib(mvao, SIT_ATTR_POSITION);
+    glVertexArrayAttribFormat(mvao, SIT_ATTR_POSITION, 3, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(mvao, SIT_ATTR_POSITION, 0);
+
+    // Norm (1)
+    glEnableVertexArrayAttrib(mvao, SIT_ATTR_NORMAL);
+    glVertexArrayAttribFormat(mvao, SIT_ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float));
+    glVertexArrayAttribBinding(mvao, SIT_ATTR_NORMAL, 0);
+
+    // Tan (4)
+    glEnableVertexArrayAttrib(mvao, SIT_ATTR_TANGENT);
+    glVertexArrayAttribFormat(mvao, SIT_ATTR_TANGENT, 4, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
+    glVertexArrayAttribBinding(mvao, SIT_ATTR_TANGENT, 0);
+
+    // UV (2)
+    glEnableVertexArrayAttrib(mvao, SIT_ATTR_TEXCOORD_0);
+    glVertexArrayAttribFormat(mvao, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 10 * sizeof(float));
+    glVertexArrayAttribBinding(mvao, SIT_ATTR_TEXCOORD_0, 0);
+
+    if (sit_render.gl.global_vao_id == 0 || sit_render.gl.mesh_vao_id == 0) {
+         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to create global VAOs.");
          return SITUATION_ERROR_OPENGL_GENERAL;
     }
     glBindVertexArray(sit_render.gl.global_vao_id);
@@ -6623,6 +6725,34 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
 #endif
     // Standard GL framebuffers can usually handle 10-bit if requested
     sit_render.enabled_features_mask |= SIT_FEATURE_HDR_OUTPUT;
+
+    // [Phase 2] Initialize Threading & Context Handover
+    #if !defined(__STDC_NO_THREADS__)
+    sit_render.thread_active = true;
+    sit_render.thread_shutdown_req = false;
+    sit_render.frames_pending = 0;
+    sit_render.render_queue_head = 0;
+    sit_render.render_queue_tail = 0;
+    mtx_init(&sit_render.render_queue_mutex, mtx_plain);
+    cnd_init(&sit_render.render_queue_cv);
+    cnd_init(&sit_render.main_wait_cv);
+
+    // 1. Create Loader Window (Hidden, Shares Context with Main Window)
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    sit_render.gl.loader_window = glfwCreateWindow(640, 480, "Situation Loader", NULL, sit_gs.sit_glfw_window);
+
+    // 2. Release Main Window Context (so Render Thread can take it)
+    glfwMakeContextCurrent(NULL);
+
+    // 3. Spawn Render Thread
+    if (thrd_create(&sit_render.render_thread, _SituationRenderThreadEntry, NULL) != thrd_success) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to spawn render thread.");
+        return SITUATION_ERROR_INIT_FAILED;
+    }
+
+    // 4. Acquire Loader Context on Main Thread (for Async Asset Loading)
+    glfwMakeContextCurrent(sit_render.gl.loader_window);
+    #endif
 
     return SITUATION_SUCCESS;
 }
@@ -10887,21 +11017,51 @@ static void _SituationCleanupQuadRenderer(void) {
  */
 #if defined(SITUATION_USE_OPENGL)
 static void _SituationCleanupOpenGL(void) {
+    // [Phase 2] Shutdown Render Thread
+    #if !defined(__STDC_NO_THREADS__)
+    if (sit_render.thread_active) {
+        mtx_lock(&sit_render.render_queue_mutex);
+        sit_render.thread_shutdown_req = true;
+        cnd_signal(&sit_render.render_queue_cv);
+        mtx_unlock(&sit_render.render_queue_mutex);
+
+        thrd_join(sit_render.render_thread, NULL);
+
+        mtx_destroy(&sit_render.render_queue_mutex);
+        cnd_destroy(&sit_render.render_queue_cv);
+        cnd_destroy(&sit_render.main_wait_cv);
+        sit_render.thread_active = false;
+    }
+
+    if (sit_render.gl.loader_window) {
+        glfwDestroyWindow(sit_render.gl.loader_window);
+        sit_render.gl.loader_window = NULL;
+    }
+
+    // Re-acquire main context for cleanup (Render Thread released it)
+    if (sit_gs.sit_glfw_window) {
+        glfwMakeContextCurrent(sit_gs.sit_glfw_window);
+    }
+    #endif
+
     // The OpenGL context is still active here.
     // Clean up all library-managed GL objects.
     _SituationCleanupQuadRenderer();
     if (sit_render.gl.vd_shader_program_id != 0) glDeleteProgram(sit_render.gl.vd_shader_program_id);
     if (sit_render.gl.composite_shader_program_id != 0) glDeleteProgram(sit_render.gl.composite_shader_program_id);
     if (sit_render.gl.global_vao_id != 0) { glDeleteVertexArrays(1, &sit_render.gl.global_vao_id); sit_render.gl.global_vao_id = 0; }
+    if (sit_render.gl.mesh_vao_id != 0) { glDeleteVertexArrays(1, &sit_render.gl.mesh_vao_id); sit_render.gl.mesh_vao_id = 0; }
     if (sit_render.gl.vd_quad_vao != 0) glDeleteVertexArrays(1, &sit_render.gl.vd_quad_vao);
     if (sit_render.gl.vd_quad_vbo != 0) glDeleteBuffers(1, &sit_render.gl.vd_quad_vbo);
     if (sit_render.gl.composite_copy_texture_id != 0) glDeleteTextures(1, &sit_render.gl.composite_copy_texture_id);
     if (sit_render.gl.view_data_ubo_id != 0) glDeleteBuffers(1, &sit_render.gl.view_data_ubo_id);
 
-    // Cleanup Soft Command Buffer
-    if (sit_render.gl.soft_buffer.packets) SIT_FREE(sit_render.gl.soft_buffer.packets);
-    if (sit_render.gl.soft_buffer.data_buffer) SIT_FREE(sit_render.gl.soft_buffer.data_buffer);
-    memset(&sit_render.gl.soft_buffer, 0, sizeof(SituationGLSoftCommandBuffer));
+    // Cleanup Soft Command Buffers
+    for (int i = 0; i < SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT; i++) {
+        if (sit_render.gl.soft_buffers[i].packets) SIT_FREE(sit_render.gl.soft_buffers[i].packets);
+        if (sit_render.gl.soft_buffers[i].data_buffer) SIT_FREE(sit_render.gl.soft_buffers[i].data_buffer);
+    }
+    memset(sit_render.gl.soft_buffers, 0, sizeof(sit_render.gl.soft_buffers));
 }
 #endif // SITUATION_USE_OPENGL
 
@@ -11625,15 +11785,24 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 #if defined(SITUATION_USE_OPENGL)
     {
         // --- 2. OpenGL Frame Setup ---
-        // Make the context current for this thread.
-        glfwMakeContextCurrent(sit_gs.sit_glfw_window);
 
+        // [Phase 2] Backpressure & Thread Handoff
+        #if !defined(__STDC_NO_THREADS__)
+        mtx_lock(&sit_render.render_queue_mutex);
+        while (sit_render.frames_pending >= SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT) {
+            cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
+        }
+        mtx_unlock(&sit_render.render_queue_mutex);
+        #else
+        // Make the context current for this thread (Single Threaded Mode)
+        glfwMakeContextCurrent(sit_gs.sit_glfw_window);
         // [2.3.14A] Invalidate shadow state to recover from external changes.
         _SitGLInvalidateShadowState();
+        #endif
 
         // [Phase 1] Reset Soft Command Buffer
-        sit_render.gl.soft_buffer.packet_count = 0;
-        sit_render.gl.soft_buffer.data_cursor = 0;
+        sit_render.gl.soft_buffers[sit_render.current_frame_index].packet_count = 0;
+        sit_render.gl.soft_buffers[sit_render.current_frame_index].data_cursor = 0;
 
         return true;
     }
@@ -11659,6 +11828,28 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // --- FLUSH GRAVEYARD ---
         // The GPU is done with this frame, so we can safely destroy deferred resources.
         _SituationFlushGraveyard(sit_render.vk.current_frame_index);
+
+        // 2.15 Check for Swapchain Recreation Request from Render Thread
+        if (atomic_exchange(&sit_render.vk.recreate_swapchain_request, false)) {
+            // Wait for Render Thread to be idle before recreating
+            #if !defined(__STDC_NO_THREADS__)
+            mtx_lock(&sit_render.render_queue_mutex);
+            while (sit_render.frames_pending > 0) {
+                // We can't wait on a CV here because the render thread consumes frames.
+                // But if frames_pending > 0, the render thread is working.
+                // We must wait for it to finish.
+                // Since Main Thread is the producer, we just stop producing.
+                // We need to wait for idle.
+                // Simple spin/yield wait:
+                mtx_unlock(&sit_render.render_queue_mutex);
+                thrd_yield();
+                mtx_lock(&sit_render.render_queue_mutex);
+            }
+            mtx_unlock(&sit_render.render_queue_mutex);
+            #endif
+            _SituationVulkanRecreateSwapchain();
+            return false;
+        }
 
         // 2.2. Acquire the next swapchain image.
         uint32_t image_index;
@@ -11694,6 +11885,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // 2.4. Update Global State.
         // Store the index of the swapchain image we will render to this frame.
         sit_render.vk.current_image_index = image_index;
+        sit_render.vk.acquired_image_indices[sit_render.vk.current_frame_index] = image_index; // Store for Render Thread
 
         // 2.5. Prepare Command Buffer for Recording.
         // Reset the fence to the unsignaled state *before* resetting the command buffer.
@@ -11784,11 +11976,24 @@ SITAPI SituationError SituationEndFrame(void) {
     {
         // --- 2a. OpenGL Frame End ---
 
-        // [Phase 1] Execute Deferred Commands
-        _SituationGLExecuteCommands(&sit_render.gl.soft_buffer);
+        // [Phase 2] Threaded Submission
+        #if !defined(__STDC_NO_THREADS__)
+        mtx_lock(&sit_render.render_queue_mutex);
+        sit_render.render_queue[sit_render.render_queue_head] = sit_render.current_frame_index;
+        sit_render.render_queue_head = (sit_render.render_queue_head + 1) % SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT;
+        sit_render.frames_pending++;
+        cnd_signal(&sit_render.render_queue_cv);
+        mtx_unlock(&sit_render.render_queue_mutex);
+
+        // Advance index for next frame
+        sit_render.current_frame_index = (sit_render.current_frame_index + 1) % SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT;
+        #else
+        // [Phase 1] Execute Deferred Commands Immediately
+        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[0]);
 
         // Swap the front and back buffers to display the rendered frame.
         glfwSwapBuffers(sit_gs.sit_glfw_window);
+        #endif
 
         // OpenGL path implicitly succeeds if glfwSwapBuffers doesn't crash.
         // Return success.
@@ -11798,6 +12003,28 @@ SITAPI SituationError SituationEndFrame(void) {
     {
         // --- 2b. Vulkan Frame End ---
 
+        // 1. End recording the primary command buffer for this frame.
+        // Get the command buffer first and validate it.
+        VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
+        if (cmd == VK_NULL_HANDLE) { // Check if SituationGetMainCommandBuffer returned NULL
+             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get main command buffer for ending frame.");
+             return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
+        }
+
+        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to end recording command buffer!");
+            return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
+        }
+
+        // [Phase 2] Threaded Submission (Vulkan)
+        #if !defined(__STDC_NO_THREADS__)
+        mtx_lock(&sit_render.render_queue_mutex);
+        sit_render.render_queue[sit_render.render_queue_head] = sit_render.vk.current_frame_index;
+        sit_render.render_queue_head = (sit_render.render_queue_head + 1) % sit_render.vk.max_frames_in_flight;
+        sit_render.frames_pending++;
+        cnd_signal(&sit_render.render_queue_cv);
+        mtx_unlock(&sit_render.render_queue_mutex);
+        #else
         // 1. End recording the primary command buffer for this frame.
         // Get the command buffer first and validate it.
         VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
@@ -11864,6 +12091,7 @@ SITAPI SituationError SituationEndFrame(void) {
 
         // Store the index of the image we just submitted for presentation.
         sit_render.vk.last_presented_image_index = sit_render.vk.current_image_index;
+        #endif
 
         // 5. Advance Frame Index for Next Frame's Synchronization.
         // Use the dynamically determined max frames in flight, not a compile-time constant.
@@ -11950,8 +12178,12 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
 #if defined(SITUATION_USE_OPENGL)
     {
         // --- 2. OpenGL Path ---
-        // [Phase 1] Return the Soft Command Buffer
-        return (SituationCommandBuffer)&sit_render.gl.soft_buffer;
+        // [Phase 2] Return the Soft Command Buffer for current frame
+        #if !defined(__STDC_NO_THREADS__)
+        return (SituationCommandBuffer)&sit_render.gl.soft_buffers[sit_render.current_frame_index];
+        #else
+        return (SituationCommandBuffer)&sit_render.gl.soft_buffers[0];
+        #endif
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -12026,6 +12258,9 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
     if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     p->args.begin_pass.display_id = info->display_id;
+    // Capture current window resolution to prevent race conditions on render thread
+    p->args.begin_pass.target_w = sit_gs.main_window_width;
+    p->args.begin_pass.target_h = sit_gs.main_window_height;
     p->args.begin_pass.info = *info;
 
     return SITUATION_SUCCESS;
@@ -12097,6 +12332,10 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
     if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     p->args.begin_pass.display_id = display_id;
+    // Capture resolution for thread safety
+    p->args.begin_pass.target_w = sit_gs.main_window_width;
+    p->args.begin_pass.target_h = sit_gs.main_window_height;
+
     // Construct info
     memset(&p->args.begin_pass.info, 0, sizeof(SituationRenderPassInfo));
     p->args.begin_pass.info.display_id = display_id;
@@ -12666,6 +12905,8 @@ SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture tex
     SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_PRESENT);
     if (p) {
         p->args.present.texture = texture;
+        p->args.present.target_w = sit_gs.main_window_width;
+        p->args.present.target_h = sit_gs.main_window_height;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -14423,62 +14664,19 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
     mesh.index_count = index_count;
 
 #if defined(SITUATION_USE_OPENGL)
-    // --- OpenGL: Create a self-contained mesh object with its own VAO ---
+    // --- OpenGL: Create buffers only (Shared VAO model) ---
+    // This fixes context sharing issues where VAOs created on main thread are invalid on render thread.
+    // The render thread will bind these buffers to the global mesh_vao_id at draw time.
 
-    // 1. Create all necessary OpenGL objects: one VAO to hold the state, and two buffers for the data.
-    //    We use Direct State Access (DSA) for a cleaner, object-oriented approach.
-    glCreateVertexArrays(1, &mesh.vao_id);
     glCreateBuffers(1, &mesh.vbo_id);
     glCreateBuffers(1, &mesh.ebo_id);
 
-    // 2. Upload the vertex and index data to their respective buffers.
-    //    GL_STATIC_DRAW is a hint that this data will not be modified frequently.
+    // Upload the vertex and index data.
     glNamedBufferData(mesh.vbo_id, vertex_count * final_stride, final_vertex_data, GL_STATIC_DRAW);
     glNamedBufferData(mesh.ebo_id, index_count * sizeof(uint32_t), index_data, GL_STATIC_DRAW);
 
-    // 3. Configure the VAO: This is where we describe the layout of the vertex data.
-    //    We are telling the VAO, "When you are used for drawing..."
-
-    // "...use `mesh.vbo_id` as the source for vertex data for binding point 0."
-    glVertexArrayVertexBuffer(mesh.vao_id, 0, mesh.vbo_id, 0, final_stride);
-
-    // "...use `mesh.ebo_id` as the source for indices."
-    glVertexArrayElementBuffer(mesh.vao_id, mesh.ebo_id);
-
-    // "...enable vertex attribute location 0 (Position)."
-    glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_POSITION);
-    // "...and tell it to find its data at binding point 0, with 3 floats, starting at offset 0."
-    glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_POSITION, 3, GL_FLOAT, GL_FALSE, 0);
-    glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_POSITION, 0);
-
-    // "...enable vertex attribute location 1 (Normal)."
-    glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_NORMAL);
-    // "...and tell it to find its data at binding point 0, with 3 floats, starting after the position data."
-    glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float));
-    glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_NORMAL, 0);
-
-    // Tangent (Location 4): 4 floats, offset 6*float
-    if (final_stride >= (3 + 3 + 4) * sizeof(float)) {
-        glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_TANGENT);
-        glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_TANGENT, 4, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
-        glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_TANGENT, 0);
-    }
-
-    // Conditionally enable texture coordinates if the vertex stride is large enough to contain them.
-    if (final_stride >= (3 + 3 + 4 + 2) * sizeof(float)) {
-        // New Stride: Pos(3) + Norm(3) + Tan(4) + UV(2) -> Offset 10
-        glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_TEXCOORD_0);
-        glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 10 * sizeof(float));
-        glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 0);
-    } else if (final_stride >= (3 + 3 + 2) * sizeof(float)) {
-        // Legacy Stride: Pos(3) + Norm(3) + UV(2) -> Offset 6
-        glEnableVertexArrayAttrib(mesh.vao_id, SIT_ATTR_TEXCOORD_0);
-        glVertexArrayAttribFormat(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
-        glVertexArrayAttribBinding(mesh.vao_id, SIT_ATTR_TEXCOORD_0, 0);
-    }
-
-    // The VAO is now fully configured and self-contained. The VAO's ID serves as the public handle ID for the mesh.
-    mesh.id = mesh.vao_id;
+    // ID is VBO ID (since no private VAO)
+    mesh.id = mesh.vbo_id;
     SIT_CHECK_GL_ERROR();
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -14576,12 +14774,10 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
     // --- 3. Backend-Specific Destruction ---
 #if defined(SITUATION_USE_OPENGL)
     {
-        // For OpenGL, we must delete the VAO and the two buffers it references.
-        // It's safe to call glDelete* on an ID of 0.
-        glDeleteVertexArrays(1, &mesh->vao_id);
+        // For OpenGL, just delete the buffers.
         glDeleteBuffers(1, &mesh->vbo_id);
         glDeleteBuffers(1, &mesh->ebo_id);
-        SIT_CHECK_GL_ERROR(); // Check for any errors during deletion.
+        SIT_CHECK_GL_ERROR();
     }
 #elif defined(SITUATION_USE_VULKAN)
     {
@@ -20077,23 +20273,38 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
         }
     }
 
-    // 3. Set the uniform value based on its type
-    // glUseProgram is already called if we had to query, but it's safe to call again.
-    glUseProgram(shader.id);
-    sit_render.gl.current_program_id = shader.id;
+    // 3. Defer the uniform update to the soft command buffer
+    SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+    if (!cmd) return SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER;
+
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+
+    // Determine size based on type
+    size_t data_size = 0;
     switch(type) {
-        case SIT_UNIFORM_FLOAT: glUniform1fv(location, 1, (const GLfloat*)data); break;
-        case SIT_UNIFORM_VEC2:  glUniform2fv(location, 1, (const GLfloat*)data); break;
-        case SIT_UNIFORM_VEC3:  glUniform3fv(location, 1, (const GLfloat*)data); break;
-        case SIT_UNIFORM_VEC4:  glUniform4fv(location, 1, (const GLfloat*)data); break;
-        case SIT_UNIFORM_INT:   glUniform1iv(location, 1, (const GLint*)data); break;
-        case SIT_UNIFORM_IVEC2: glUniform2iv(location, 1, (const GLint*)data); break;
-        case SIT_UNIFORM_IVEC3: glUniform3iv(location, 1, (const GLint*)data); break;
-        case SIT_UNIFORM_IVEC4: glUniform4iv(location, 1, (const GLint*)data); break;
-        case SIT_UNIFORM_MAT4:  glUniformMatrix4fv(location, 1, GL_FALSE, (const GLfloat*)data); break;
+        case SIT_UNIFORM_FLOAT: data_size = sizeof(float); break;
+        case SIT_UNIFORM_VEC2:  data_size = sizeof(float) * 2; break;
+        case SIT_UNIFORM_VEC3:  data_size = sizeof(float) * 3; break;
+        case SIT_UNIFORM_VEC4:  data_size = sizeof(float) * 4; break;
+        case SIT_UNIFORM_INT:   data_size = sizeof(int); break;
+        case SIT_UNIFORM_IVEC2: data_size = sizeof(int) * 2; break;
+        case SIT_UNIFORM_IVEC3: data_size = sizeof(int) * 3; break;
+        case SIT_UNIFORM_IVEC4: data_size = sizeof(int) * 4; break;
+        case SIT_UNIFORM_MAT4:  data_size = sizeof(float) * 16; break;
         default: return SITUATION_ERROR_INVALID_PARAM;
     }
-    SIT_CHECK_GL_ERROR();
+
+    void* ptr = _SitGLSoftDataPush(buf, data, data_size);
+    if (!ptr) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    size_t offset = (size_t)((uint8_t*)ptr - buf->data_buffer);
+
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_UNIFORM);
+    if (p) {
+        p->args.set_uniform.shader_id = shader.id;
+        p->args.set_uniform.location = location;
+        p->args.set_uniform.type = (int)type;
+        p->args.set_uniform.data_offset = offset;
+    }
 
 #elif defined(SITUATION_USE_VULKAN)
     // Named uniforms are not the primary way of passing data in Vulkan. Push constants and UBOs are preferred.
@@ -26504,6 +26715,7 @@ SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out, bool js
     else fprintf(out, "=========================================\n\n");
 }
 
+
 // ==================================================================================
 //  Worker Thread Implementation (Updated)
 // ==================================================================================
@@ -27111,6 +27323,133 @@ SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
 }
 
 #endif // SITUATION_ENABLE_THREADING
+
+// ==================================================================================
+//  Render Thread Implementation (Phase 2)
+// ==================================================================================
+
+#if !defined(__STDC_NO_THREADS__)
+/**
+ * @brief [INTERNAL] The dedicated Render Thread loop.
+ * @details Consumes frame commands from the Main Thread and executes them.
+ *          This isolates the graphics API (OpenGL/Vulkan) from the main application loop,
+ *          smoothing out frame times and preventing vsync blocks from stalling game logic.
+ */
+static int _SituationRenderThreadEntry(void* arg) {
+    (void)arg;
+
+    // [OpenGL] We must acquire the context here.
+    // Note: Initialization (SituationInit) happens on Main.
+    // The Main thread must release the context (glfwMakeContextCurrent(NULL)) before triggering this thread.
+    #if defined(SITUATION_USE_OPENGL)
+    // We assume Main thread has released context.
+    // Attempt to make current. If it fails, we are in trouble.
+    // Ideally, we should check a flag or wait for a specific "Context Ready" signal,
+    // but for now we rely on the architecture of SituationInit spawning this last.
+    if (sit_gs.sit_glfw_window) {
+        glfwMakeContextCurrent(sit_gs.sit_glfw_window);
+    }
+    #endif
+
+    while (true) {
+        mtx_lock(&sit_render.render_queue_mutex);
+
+        // Wait for work or shutdown
+        // We check if the queue is empty.
+        // Note: frames_pending counts "items in queue" + "items being processed".
+        // But here we just want to know if there is an item IN THE QUEUE to pop.
+        // Queue is empty if head == tail.
+        while (sit_render.render_queue_head == sit_render.render_queue_tail && !sit_render.thread_shutdown_req) {
+            cnd_wait(&sit_render.render_queue_cv, &sit_render.render_queue_mutex);
+        }
+
+        // Shutdown Check
+        if (sit_render.thread_shutdown_req && sit_render.render_queue_head == sit_render.render_queue_tail) {
+            mtx_unlock(&sit_render.render_queue_mutex);
+            break;
+        }
+
+        // Dequeue Frame Index
+        int frame_index = sit_render.render_queue[sit_render.render_queue_tail];
+        sit_render.render_queue_tail = (sit_render.render_queue_tail + 1) % SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT;
+
+        // Note: We do NOT decrement frames_pending here. We are still "working" on this frame.
+        // We decrement it only after we are fully done rendering.
+
+        mtx_unlock(&sit_render.render_queue_mutex);
+
+        // --- EXECUTE FRAME ---
+
+        #if defined(SITUATION_USE_OPENGL)
+        // 1. Execute Soft Command Buffer
+        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[frame_index]);
+
+        // 2. Present
+        // Note: If using VSync, this blocks! This is why we are on a separate thread.
+        glfwSwapBuffers(sit_gs.sit_glfw_window);
+
+        #elif defined(SITUATION_USE_VULKAN)
+        VkCommandBuffer cmd = sit_render.vk.command_buffers[frame_index];
+
+        // 1. Submit
+        VkSubmitInfo submit_info = {0};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+        VkSemaphore wait_semaphores[] = { sit_render.vk.image_available_semaphores[frame_index] };
+        VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+        submit_info.waitSemaphoreCount = 1;
+        submit_info.pWaitSemaphores = wait_semaphores;
+        submit_info.pWaitDstStageMask = wait_stages;
+
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &cmd;
+
+        VkSemaphore signal_semaphores[] = { sit_render.vk.render_finished_semaphores[frame_index] };
+        submit_info.signalSemaphoreCount = 1;
+        submit_info.pSignalSemaphores = signal_semaphores;
+
+        // Use the fence associated with this frame index
+        if (vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit_info, sit_render.vk.in_flight_fences[frame_index]) != VK_SUCCESS) {
+            // Logging from thread is tricky but we can set the global error.
+             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "RenderThread: Failed to submit draw command buffer!");
+        }
+
+        // 2. Present
+        VkPresentInfoKHR present_info = {0};
+        present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        present_info.waitSemaphoreCount = 1;
+        present_info.pWaitSemaphores = signal_semaphores;
+        VkSwapchainKHR swapchains[] = { sit_render.vk.swapchain };
+        present_info.swapchainCount = 1;
+        present_info.pSwapchains = swapchains;
+        present_info.pImageIndices = &sit_render.vk.acquired_image_indices[frame_index];
+
+        // Perform the presentation.
+        VkResult result = vkQueuePresentKHR(sit_render.vk.present_queue, &present_info);
+
+        // Handle Presentation Result
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+            atomic_store(&sit_render.vk.recreate_swapchain_request, true);
+        } else if (result != VK_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "RenderThread: Failed to present swap chain image!");
+        }
+        #endif
+
+        // --- FRAME COMPLETE ---
+        mtx_lock(&sit_render.render_queue_mutex);
+        sit_render.frames_pending--; // NOW we are done. Slot `frame_index` is truly free.
+        cnd_signal(&sit_render.main_wait_cv); // Wake Main Thread if it was blocked on full queue
+        mtx_unlock(&sit_render.render_queue_mutex);
+    }
+
+    #if defined(SITUATION_USE_OPENGL)
+    // Release context before exiting, just to be clean.
+    glfwMakeContextCurrent(NULL);
+    #endif
+
+    return 0;
+}
+#endif
 
 #endif // SITUATION_IMPLEMENTATION
 #endif // SITUATION_H
