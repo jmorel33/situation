@@ -61,6 +61,7 @@ typedef enum {
     SIT_OP_DRAW_MESH,
     SIT_OP_BIND_PIPELINE,
     SIT_OP_SET_SCISSOR,
+    SIT_OP_UPDATE_BUFFER, // [New]
     // ...
 } SitOpCode;
 
@@ -69,6 +70,7 @@ typedef struct {
     union {
         struct { uint64_t mesh_id; } draw;
         struct { float x, y, w, h; } viewport;
+        struct { uint64_t buffer_id; size_t offset; size_t size; size_t data_offset; } update_buffer;
         // ...
     } args;
 } SitCommandPacket;
@@ -77,6 +79,9 @@ typedef struct {
     SitCommandPacket* commands;
     size_t count;
     size_t capacity;
+    uint8_t* data_buffer; // For variable length data (PushConstants, BufferUpdates)
+    size_t data_cursor;
+    size_t data_capacity;
 } SituationSoftCommandBuffer;
 ```
 
@@ -91,24 +96,32 @@ If the Main Thread modifies a `SituationMesh` or `UniformBuffer` while the Rende
 
 **The Rules of the Airgap:**
 1.  **Immutable Resources:** Meshes and Textures are immutable once uploaded. To change them, you destroy and recreate (or use specific thread-safe update APIs).
+    *   *Resource Creation:* Creating resources (Textures, Meshes) requires a GL Context.
+        *   *Option A (Shared Context):* Main Thread keeps a shared context for uploads.
+        *   *Option B (Deferral):* All creation is deferred. `SituationCreateTexture` returns a handle, but upload happens on Render Thread. (Preferred for simplicity).
 2.  **Transient Data (Uniforms):** `SituationCmdSetPushConstant` copies data *by value* into the command packet. This is safe.
 3.  **Dynamic Buffers (UBOs):** If the user maps a pointer and writes to it, we have a race.
-    *   *Solution:* We must enforce `SituationUpdateBuffer`. This function will now allocate from a "Frame Linear Allocator" (staging memory) and encode a copy operation. The staging memory is kept alive until the Render Thread finishes the frame.
+    *   *Solution:* We must enforce `SituationUpdateBuffer`. This function will now allocate from a "Frame Linear Allocator" (staging memory) in the soft buffer and encode a copy operation. The staging memory is kept alive until the Render Thread finishes the frame.
 
 ## 4. Implementation Roadmap
 
-### Phase 1: The Soft Command Buffer (Refactor OpenGL)
+### Phase 1: The Soft Command Buffer (Refactor OpenGL) [COMPLETE]
 *   **Goal:** Make the OpenGL backend "deferred" like Vulkan.
-*   **Step 1:** Create the `SituationSoftCommandBuffer` struct.
-*   **Step 2:** Rewrite all `SituationCmd*` functions to write opcodes if the backend is OpenGL.
-*   **Step 3:** Create a `_SituationGLExecuteCommands(SituationSoftCommandBuffer* buf)` function that contains the switch-case interpreter.
+*   **Step 1:** [Done] Create the `SituationSoftCommandBuffer` struct.
+*   **Step 2:** [Done] Rewrite all `SituationCmd*` functions to write opcodes if the backend is OpenGL.
+    *   *Status:* All render commands, including `SituationUpdateBuffer` (Critical for UBOs) and `SituationCmdSetVertexAttribute`, now utilize the soft command buffer.
+*   **Step 3:** [Done] Create a `_SituationGLExecuteCommands(SituationSoftCommandBuffer* buf)` function that contains the switch-case interpreter.
 *   **Verification:** Run this on the Main Thread first. Behavior should be identical, just buffered.
 
-### Phase 2: Thread Infrastructure
+### Phase 2: Thread Infrastructure [NEXT]
 *   **Goal:** Spin up the Render Thread.
-*   **Step 1:** Move `glfwMakeContextCurrent` to the new thread (OpenGL).
-*   **Step 2:** Move `vkQueueSubmit` / `vkQueuePresent` to the new thread (Vulkan).
-*   **Step 3:** Implement a thread-safe `FrameQueue` (Size 2 or 3). Main pushes, Render pops.
+*   **Step 1:** Implement `_SituationRenderThreadEntry` loop.
+    *   Needs to handle context current switching.
+*   **Step 2:** Implement `FrameQueue` (Size 2 or 3).
+    *   Main Thread pushes `FrameData` (containing `SoftCommandBuffer` for GL or `VkCommandBuffer` for VK).
+    *   Render Thread pops `FrameData`.
+*   **Step 3:** Update `SituationInit` to spawn the thread.
+*   **Step 4:** Update `SituationEndFrame` to push to queue instead of presenting.
 
 ### Phase 3: Synchronization & Latency
 *   **Goal:** Prevent "runaway" Main Thread.
@@ -142,6 +155,7 @@ void _SituationRenderThreadEntry(void* arg) {
         FrameData* frame = _SitFrameQueuePop(); // Blocks if empty
 
         if (backend == VULKAN) {
+             // Wait for semaphores, then submit
              vkQueueSubmit(..., frame->vk_cmd_buffer);
              vkQueuePresent(...);
         } else {

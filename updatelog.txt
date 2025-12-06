@@ -1,4 +1,17 @@
-Date: 2025-12-06
+Date: 2025-12-05
+Version: 2.3.18A "Velocity" (Hotfix: Phase 1 Completion)
+
+## DESCRIPTION
+This release completes Phase 1 of the OpenGL backend refactor by implementing the missing deferred operations for buffer updates and vertex attribute configuration. This ensures that all `SituationCmd*` and `SituationUpdate*` calls respect the "Soft Command Buffer" architecture, preventing any immediate GL calls during the render recording phase.
+
+## CRITICAL FIXES
+*   **Deferred Buffer Updates:** Implemented `SIT_OP_UPDATE_BUFFER`. `SituationUpdateBuffer` now correctly records an update packet instead of calling `glNamedBufferSubData` immediately.
+*   **Deferred Vertex Attributes:** Implemented `SIT_OP_SET_VERTEX_ATTRIBUTE`. `SituationCmdSetVertexAttribute` now records a configuration packet.
+*   **Soft Command Buffer Execution:** Updated `_SituationGLExecuteCommands` to handle the new opcodes, ensuring data and state changes occur in the correct order during replay.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-12-05
 Version: 2.3.18 "Velocity" (Phase 1: Deferred OpenGL)
 
 ## DESCRIPTION
