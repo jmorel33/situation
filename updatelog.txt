@@ -1,3 +1,16 @@
+Date: 2025-12-07
+Version: 2.3.20 "Velocity" (Phase 2.5: High-Performance Mesh Architecture)
+
+## DESCRIPTION
+This PR implements Phase 2.5 of the rendering engine refactor, introducing a High-Performance Mesh Architecture with a Lazy VAO Cache.
+
+## KEY CHANGES
+*   **Lazy VAO Cache:** Replaces the shared global VAO with a per-mesh VAO cache. VAOs are created and configured lazily on the Render Thread inside `_SituationGLExecuteCommands` using `_SitGLGetCachedVAO`. This restores optimal VAO usage while respecting OpenGL context rules.
+*   **OpenGL Graveyard:** Implements a deferred deletion system (`_SituationGLGraveyard`). Resources destroyed on the Main Thread (`SituationDestroyMesh`, etc.) are queued and safely deleted on the Render Thread via `_SitGLFlushGraveyard` to prevent race conditions.
+*   **Renaming:** Renamed internal graveyards to `_SituationVKGraveyard` and `_SituationGLGraveyard` for clarity.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-12-06
 Version: 2.3.19 "Velocity" (Phase 2: Threading Infrastructure)
 

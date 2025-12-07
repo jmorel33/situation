@@ -2551,29 +2551,43 @@ typedef struct _SitGLVaoCacheEntry {
     GLuint vao_id;                  // Value: The VAO configured for this mesh
     struct _SitGLVaoCacheEntry* next; // Chaining for collisions
 } _SitGLVaoCacheEntry;
-
-// [Phase 2.5] Deferred Deletion Queue (Graveyard)
-typedef struct {
-    ma_mutex lock;                  // Thread safety for Main (Push) vs Render (Pop)
-
-    uint64_t* mesh_ids_to_clean;    // Mesh IDs (to clean VAO cache)
-    size_t mesh_count;
-    size_t mesh_capacity;
-
-    GLuint* buffers_to_delete;      // VBO/EBO/UBO IDs
-    size_t buffer_count;
-    size_t buffer_capacity;
-
-    GLuint* textures_to_delete;     // Texture IDs
-    size_t texture_count;
-    size_t texture_capacity;
-
-    // We can add shaders/programs if needed later
-} _SitGLDeletionQueue;
 #endif
 
 #if defined(SITUATION_USE_VULKAN)
 // --- VULKAN IMPLEMENTATION SECTION ---
+
+// --- Vulkan Graveyard Definition ---
+typedef struct _SituationVKGraveyard {
+    VkBuffer* buffers;
+    VmaAllocation* buffer_allocations;
+    int buffer_count;
+    int buffer_capacity;
+
+    VkImage* images;
+    VmaAllocation* image_allocations;
+    VkImageView* image_views;
+    VkSampler* samplers;
+    int image_count;
+    int image_capacity;
+
+    VkDescriptorSet* descriptor_sets;
+    VkDescriptorPool* descriptor_pools; // [NEW] Track pool for freeing
+    int descriptor_set_count;
+    int descriptor_set_capacity;
+
+    VkPipeline* pipelines;
+    VkPipelineLayout* pipeline_layouts;
+    int pipeline_count;
+    int pipeline_capacity;
+
+    VkFramebuffer* framebuffers;
+    int framebuffer_count;
+    int framebuffer_capacity;
+
+    VkRenderPass* render_passes;
+    int render_pass_count;
+    int render_pass_capacity;
+} _SituationVKGraveyard;
 
 /**
  * @brief [INTERNAL] Vulkan backend state container.
@@ -2692,7 +2706,7 @@ typedef struct {
     VkDescriptorSet screen_copy_descriptor_set;                  // Descriptor set for reading screen copy
 
     // --- Graveyard (Deferred Deletion Queue) ---
-    struct SituationGraveyard* graveyards;                       // Array of deletion queues (one per frame in flight)
+    struct _SituationVKGraveyard* graveyards;                       // Array of deletion queues (one per frame in flight)
 
     // --- Threading Signals ---
     atomic_bool recreate_swapchain_request;                      // Signal from Render Thread to Main Thread
@@ -2700,40 +2714,26 @@ typedef struct {
 
 } _SituationVulkanState;
 
-// --- Vulkan Graveyard Definition ---
-typedef struct SituationGraveyard {
-    VkBuffer* buffers;
-    VmaAllocation* buffer_allocations;
-    int buffer_count;
-    int buffer_capacity;
-
-    VkImage* images;
-    VmaAllocation* image_allocations;
-    VkImageView* image_views;
-    VkSampler* samplers;
-    int image_count;
-    int image_capacity;
-
-    VkDescriptorSet* descriptor_sets;
-    VkDescriptorPool* descriptor_pools; // [NEW] Track pool for freeing
-    int descriptor_set_count;
-    int descriptor_set_capacity;
-
-    VkPipeline* pipelines;
-    VkPipelineLayout* pipeline_layouts;
-    int pipeline_count;
-    int pipeline_capacity;
-
-    VkFramebuffer* framebuffers;
-    int framebuffer_count;
-    int framebuffer_capacity;
-
-    VkRenderPass* render_passes;
-    int render_pass_count;
-    int render_pass_capacity;
-} SituationGraveyard;
-
 #elif defined(SITUATION_USE_OPENGL)
+// [Phase 2.5] Deferred Deletion Queue (Graveyard)
+typedef struct {
+    ma_mutex lock;                  // Thread safety for Main (Push) vs Render (Pop)
+
+    uint64_t* mesh_ids_to_clean;    // Mesh IDs (to clean VAO cache)
+    size_t mesh_count;
+    size_t mesh_capacity;
+
+    GLuint* buffers_to_delete;      // VBO/EBO/UBO IDs
+    size_t buffer_count;
+    size_t buffer_capacity;
+
+    GLuint* textures_to_delete;     // Texture IDs
+    size_t texture_count;
+    size_t texture_capacity;
+
+    // We can add shaders/programs if needed later
+} _SituationGLGraveyard;
+
 /**
  * @brief [INTERNAL] OpenGL backend state container.
  * @details Holds all global OpenGL objects and state variables managed by the library.
@@ -2792,7 +2792,7 @@ typedef struct SituationGraveyard {
 
     // [Phase 2.5] Lazy VAO Cache & Graveyard
     _SitGLVaoCacheEntry* vao_cache[256]; // Simple hash table
-    _SitGLDeletionQueue graveyard;
+    _SituationGLGraveyard graveyard;
 } _SituationGLState;
 #endif // SITUATION_USE_OPENGL
 
@@ -3643,8 +3643,8 @@ static void _SituationVulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buff
 static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkImageLayout srcImageLayout, uint32_t width, uint32_t height);
 
 // --- Vulkan Graveyard Helpers ---
-static void _SituationInitGraveyard(SituationGraveyard* gy);
-static void _SituationCleanupGraveyard(SituationGraveyard* gy);
+static void _SituationInitGraveyard(_SituationVKGraveyard* gy);
+static void _SituationCleanupGraveyard(_SituationVKGraveyard* gy);
 static void _SituationFlushGraveyard(uint32_t frame_index);
 static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation);
 static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler);
@@ -4102,10 +4102,10 @@ static GLint _sit_uniform_map_get(_SituationUniformMap* map, const char* key) {
  * @brief [INTERNAL] Initializes a single graveyard structure.
  * @details Allocates the initial memory for the resource handle arrays used to track deferred resources.
  *          Each type of resource (buffers, images, pipelines) has its own dynamic array.
- * @param gy Pointer to the `SituationGraveyard` struct to initialize.
+ * @param gy Pointer to the `_SituationVKGraveyard` struct to initialize.
  */
-static void _SituationInitGraveyard(SituationGraveyard* gy) {
-    memset(gy, 0, sizeof(SituationGraveyard));
+static void _SituationInitGraveyard(_SituationVKGraveyard* gy) {
+    memset(gy, 0, sizeof(_SituationVKGraveyard));
     // Pre-allocate some capacity to avoid initial reallocs
     gy->buffer_capacity = 16;
     gy->buffers = (VkBuffer*)SIT_MALLOC(sizeof(VkBuffer) * gy->buffer_capacity);
@@ -4136,9 +4136,9 @@ static void _SituationInitGraveyard(SituationGraveyard* gy) {
  * @brief [INTERNAL] Frees the CPU memory used by a graveyard's internal arrays.
  * @details This function only frees the containers (C arrays), not the Vulkan objects themselves.
  *          It assumes that `_SituationFlushGraveyard` has already been called to release the GPU resources.
- * @param gy Pointer to the `SituationGraveyard` struct to clean up.
+ * @param gy Pointer to the `_SituationVKGraveyard` struct to clean up.
  */
-static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
+static void _SituationCleanupGraveyard(_SituationVKGraveyard* gy) {
     // Ensure everything is flushed first (though device should be idle by now if called from CleanupVulkan)
     // Just free the arrays
     SIT_FREE(gy->buffers);
@@ -4153,7 +4153,7 @@ static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
     SIT_FREE(gy->pipeline_layouts);
     SIT_FREE(gy->framebuffers);
     SIT_FREE(gy->render_passes);
-    memset(gy, 0, sizeof(SituationGraveyard));
+    memset(gy, 0, sizeof(_SituationVKGraveyard));
 }
 
 /**
@@ -4165,7 +4165,7 @@ static void _SituationCleanupGraveyard(SituationGraveyard* gy) {
  */
 static void _SituationFlushGraveyard(uint32_t frame_index) {
     if (!sit_render.vk.graveyards) return;
-    SituationGraveyard* gy = &sit_render.vk.graveyards[frame_index];
+    _SituationVKGraveyard* gy = &sit_render.vk.graveyards[frame_index];
 
     // Buffers
     for (int i = 0; i < gy->buffer_count; ++i) {
@@ -4227,7 +4227,7 @@ static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocati
     // The resource is added to the graveyard of the *current* frame.
     // It will be destroyed when this frame's fence is signaled in a future SituationAcquireFrameCommandBuffer call.
     uint32_t gy_idx = sit_render.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
+    _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->buffer_count >= gy->buffer_capacity) {
         gy->buffer_capacity *= 2;
         gy->buffers = (VkBuffer*)SIT_REALLOC(gy->buffers, sizeof(VkBuffer) * gy->buffer_capacity);
@@ -4249,7 +4249,7 @@ static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocati
 static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler) {
     if (image == VK_NULL_HANDLE && view == VK_NULL_HANDLE && sampler == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_render.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
+    _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->image_count >= gy->image_capacity) {
         gy->image_capacity *= 2;
         gy->images = (VkImage*)SIT_REALLOC(gy->images, sizeof(VkImage) * gy->image_capacity);
@@ -4274,7 +4274,7 @@ static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation,
 static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool) {
     if (set == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_render.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
+    _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->descriptor_set_count >= gy->descriptor_set_capacity) {
         gy->descriptor_set_capacity *= 2;
         gy->descriptor_sets = (VkDescriptorSet*)SIT_REALLOC(gy->descriptor_sets, sizeof(VkDescriptorSet) * gy->descriptor_set_capacity);
@@ -4294,7 +4294,7 @@ static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescripto
 static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout) {
     if (pipeline == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_render.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
+    _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->pipeline_count >= gy->pipeline_capacity) {
         gy->pipeline_capacity *= 2;
         gy->pipelines = (VkPipeline*)SIT_REALLOC(gy->pipelines, sizeof(VkPipeline) * gy->pipeline_capacity);
@@ -4312,7 +4312,7 @@ static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout
 static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
     if (framebuffer == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_render.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
+    _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->framebuffer_count >= gy->framebuffer_capacity) {
         gy->framebuffer_capacity *= 2;
         gy->framebuffers = (VkFramebuffer*)SIT_REALLOC(gy->framebuffers, sizeof(VkFramebuffer) * gy->framebuffer_capacity);
@@ -4327,7 +4327,7 @@ static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
 static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass) {
     if (render_pass == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_render.vk.current_frame_index;
-    SituationGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
+    _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
     if (gy->render_pass_count >= gy->render_pass_capacity) {
         gy->render_pass_capacity *= 2;
         gy->render_passes = (VkRenderPass*)SIT_REALLOC(gy->render_passes, sizeof(VkRenderPass) * gy->render_pass_capacity);
@@ -5265,35 +5265,51 @@ static void _SitGLFlushGraveyard(void) {
     // 1. Extract queues under lock
     ma_mutex_lock(&sit_render.gl.graveyard.lock);
 
+    // [OPTIMIZATION] Early exit if empty to avoid allocation churn
+    if (sit_render.gl.graveyard.buffer_count == 0 &&
+        sit_render.gl.graveyard.texture_count == 0 &&
+        sit_render.gl.graveyard.mesh_count == 0) {
+        ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+        return;
+    }
+
     size_t buf_count = sit_render.gl.graveyard.buffer_count;
-    GLuint* bufs = sit_render.gl.graveyard.buffers_to_delete; // Steal pointer? No, might realloc.
-    // Better to copy or just process under lock?
-    // Processing GL calls under lock is fine if main thread is just pushing IDs.
-    // However, glDeleteBuffers is fast.
 
-    // Let's swap the arrays to minimize lock time
+    // Swap the arrays to minimize lock time
     GLuint* temp_bufs = sit_render.gl.graveyard.buffers_to_delete;
-    size_t temp_buf_cap = sit_render.gl.graveyard.buffer_capacity;
-
     GLuint* temp_texs = sit_render.gl.graveyard.textures_to_delete;
     size_t temp_tex_count = sit_render.gl.graveyard.texture_count;
-    size_t temp_tex_cap = sit_render.gl.graveyard.texture_capacity;
-
     uint64_t* temp_meshes = sit_render.gl.graveyard.mesh_ids_to_clean;
     size_t temp_mesh_count = sit_render.gl.graveyard.mesh_count;
-    size_t temp_mesh_cap = sit_render.gl.graveyard.mesh_capacity;
 
     // Reset struct with new small arrays
+    // [SAFETY] Check for allocation failure
+    GLuint* new_bufs = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
+    GLuint* new_texs = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
+    uint64_t* new_meshes = (uint64_t*)SIT_MALLOC(32 * sizeof(uint64_t));
+
+    if (!new_bufs || !new_texs || !new_meshes) {
+        // Allocation failed. We cannot swap.
+        // Best effort: Leave existing arrays and try again next frame.
+        if (new_bufs) SIT_FREE(new_bufs);
+        if (new_texs) SIT_FREE(new_texs);
+        if (new_meshes) SIT_FREE(new_meshes);
+
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate new graveyard queues during flush.");
+        ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+        return;
+    }
+
     sit_render.gl.graveyard.buffer_capacity = 32;
-    sit_render.gl.graveyard.buffers_to_delete = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
+    sit_render.gl.graveyard.buffers_to_delete = new_bufs;
     sit_render.gl.graveyard.buffer_count = 0;
 
     sit_render.gl.graveyard.texture_capacity = 32;
-    sit_render.gl.graveyard.textures_to_delete = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
+    sit_render.gl.graveyard.textures_to_delete = new_texs;
     sit_render.gl.graveyard.texture_count = 0;
 
     sit_render.gl.graveyard.mesh_capacity = 32;
-    sit_render.gl.graveyard.mesh_ids_to_clean = (uint64_t*)SIT_MALLOC(32 * sizeof(uint64_t));
+    sit_render.gl.graveyard.mesh_ids_to_clean = new_meshes;
     sit_render.gl.graveyard.mesh_count = 0;
 
     ma_mutex_unlock(&sit_render.gl.graveyard.lock);
@@ -8384,7 +8400,7 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     sit_render.vk.view_proj_ubo_buffer = SIT_CALLOC(frame_count, sizeof(VkBuffer));
     sit_render.vk.view_proj_ubo_memory = SIT_CALLOC(frame_count, sizeof(VmaAllocation));
     sit_render.vk.view_proj_ubo_descriptor_set = SIT_CALLOC(frame_count, sizeof(VkDescriptorSet));
-    sit_render.vk.graveyards = SIT_CALLOC(frame_count, sizeof(SituationGraveyard));
+    sit_render.vk.graveyards = SIT_CALLOC(frame_count, sizeof(_SituationVKGraveyard));
 
     if (!sit_render.vk.command_buffers || !sit_render.vk.image_available_semaphores || !sit_render.vk.render_finished_semaphores || !sit_render.vk.in_flight_fences || !sit_render.vk.view_proj_ubo_buffer || !sit_render.vk.view_proj_ubo_memory || !sit_render.vk.view_proj_ubo_descriptor_set || !sit_render.vk.graveyards) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Per-frame Vulkan resource arrays");

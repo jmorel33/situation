@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.19 "Velocity"_
+_Core API library v2.3.20 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.18** implements **Phase 1 of the OpenGL Deferred Rendering Architecture**. It introduces a "Soft Command Buffer" for the OpenGL backend, transitioning it from immediate execution to a deferred model similar to Vulkan. This release also addresses critical regressions in VAO state management and fixes memory leaks in the soft buffer implementation.
+**Version 2.3.20** implements **Phase 2.5 of the Rendering Engine Refactor**, introducing a **High-Performance Mesh Architecture**. It replaces the shared global VAO with a lazy, per-mesh VAO cache that is created and configured on the Render Thread. This restores optimal performance while respecting OpenGL context threading rules. It also introduces an **OpenGL Graveyard** for safe, deferred resource destruction.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Render Lists (Momentum Phase 2):** Decoupling draw command generation from submission to allow multi-threaded rendering recording.
@@ -282,7 +282,7 @@ This library does not use garbage collection.
 
 The documentation for "Situation" is split into two key documents:
 
-1.  [**Core API Library Reference Manual (situation_sdk_2319.md)**](situation_sdk_2319.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
+1.  [**Core API Library Reference Manual (situation_sdk_2320.md)**](situation_sdk_2320.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
 2.  [**Situation API Programming Guide (situation_api.md)**](situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
 
 </details>
