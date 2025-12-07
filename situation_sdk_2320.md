@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.19 "Velocity" |
+| **Version** | 2.3.20 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -36,6 +36,14 @@ The library is engineered around three architectural pillars:
 
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
+
+### New in v2.3.20 "Velocity" (Phase 2.5: High-Performance Mesh Architecture)
+
+This release implements Phase 2.5 of the rendering engine refactor, restoring optimal VAO usage while respecting OpenGL context threading rules.
+
+**Key Enhancements:**
+*   **Lazy VAO Cache:** Replaces the shared global VAO with a per-mesh VAO cache. VAOs are created and configured lazily on the Render Thread inside `_SituationGLExecuteCommands` using `_SitGLGetCachedVAO`. This restores performance while maintaining thread safety.
+*   **OpenGL Graveyard:** Implements a deferred deletion system (`_SituationGLGraveyard`). Resources destroyed on the Main Thread (`SituationDestroyMesh`, etc.) are queued and safely deleted on the Render Thread via `_SitGLFlushGraveyard` to prevent race conditions.
 
 ### New in v2.3.19 "Velocity" (Phase 2: Render Thread)
 
