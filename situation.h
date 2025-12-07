@@ -552,7 +552,7 @@ typedef enum {
 /**
  * @brief Configuration Defines
  */
-#define SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT 2
+#define SITUATION_MAX_FRAMES_IN_FLIGHT 2
 
 #define SITUATION_MAX_STORAGE_DEVICES 8
 #define SITUATION_MAX_NETWORK_ADAPTERS 8
@@ -1494,7 +1494,7 @@ typedef struct {
 
     // ── Vulkan-Specific Options ──
     bool         enable_vulkan_validation;       // Enable VK_LAYER_KHRONOS_validation (debug builds only - auto-disabled in release)
-    uint32_t     max_frames_in_flight;           // Override SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT (usually 2 or 3)
+    uint32_t     max_frames_in_flight;           // Override SITUATION_MAX_FRAMES_IN_FLIGHT (usually 2 or 3)
 
     // Optional: Provide custom Vulkan instance extensions (e.g. for VR, ray tracing, etc.)
     const char** required_vulkan_extensions;     // Array of extension names (null or empty = use defaults)
@@ -2710,7 +2710,7 @@ typedef struct _SituationVKGraveyard {
 
     // --- Threading Signals ---
     atomic_bool recreate_swapchain_request;                      // Signal from Render Thread to Main Thread
-    uint32_t acquired_image_indices[SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT]; // Image index for each frame slot
+    uint32_t acquired_image_indices[SITUATION_MAX_FRAMES_IN_FLIGHT]; // Image index for each frame slot
 
 } _SituationVulkanState;
 
@@ -2785,7 +2785,7 @@ typedef struct {
     bool shadow_state_dirty;                    // [2.3.14A] Flag to indicate external state changes
 
     // [Phase 1] Soft Command Buffer for Deferred Rendering
-    SituationGLSoftCommandBuffer soft_buffers[SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT];
+    SituationGLSoftCommandBuffer soft_buffers[SITUATION_MAX_FRAMES_IN_FLIGHT];
 
     // [Phase 2] Context Sharing for Threaded Rendering
     GLFWwindow* loader_window; // Invisible window for main-thread resource loading
@@ -3012,7 +3012,7 @@ typedef struct {
     // Internal Frame Structure (Definition local to _SituationRenderThreadEntry usually,
     // but queue stores indices or pointers)
     // We store indices into the per-frame buffers (soft_buffers or command_buffers)
-    int render_queue[SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT]; // Ring buffer of frame indices to render
+    int render_queue[SITUATION_MAX_FRAMES_IN_FLIGHT]; // Ring buffer of frame indices to render
     int render_queue_head;
     int render_queue_tail;
     int frames_pending;
@@ -11316,7 +11316,7 @@ static void _SituationCleanupOpenGL(void) {
     memset(&sit_render.gl.graveyard, 0, sizeof(sit_render.gl.graveyard));
 
     // Cleanup Soft Command Buffers
-    for (int i = 0; i < SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT; i++) {
+    for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; i++) {
         if (sit_render.gl.soft_buffers[i].packets) SIT_FREE(sit_render.gl.soft_buffers[i].packets);
         if (sit_render.gl.soft_buffers[i].data_buffer) SIT_FREE(sit_render.gl.soft_buffers[i].data_buffer);
     }
@@ -12048,7 +12048,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // [Phase 2] Backpressure & Thread Handoff
         #if !defined(__STDC_NO_THREADS__)
         mtx_lock(&sit_render.render_queue_mutex);
-        while (sit_render.frames_pending >= SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT) {
+        while (sit_render.frames_pending >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
             cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
         }
         mtx_unlock(&sit_render.render_queue_mutex);
@@ -12088,7 +12088,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // Ensure we don't overrun the CPU render queue, even if the GPU is keeping up.
         #if !defined(__STDC_NO_THREADS__)
         mtx_lock(&sit_render.render_queue_mutex);
-        while (sit_render.frames_pending >= SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT) {
+        while (sit_render.frames_pending >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
             cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
         }
         mtx_unlock(&sit_render.render_queue_mutex);
@@ -12249,7 +12249,7 @@ SITAPI SituationError SituationEndFrame(void) {
         #if !defined(__STDC_NO_THREADS__)
         mtx_lock(&sit_render.render_queue_mutex);
         sit_render.render_queue[sit_render.render_queue_head] = sit_render.current_frame_index;
-        sit_render.render_queue_head = (sit_render.render_queue_head + 1) % SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT;
+        sit_render.render_queue_head = (sit_render.render_queue_head + 1) % SITUATION_MAX_FRAMES_IN_FLIGHT;
         sit_render.frames_pending++;
         cnd_signal(&sit_render.render_queue_cv);
         mtx_unlock(&sit_render.render_queue_mutex);
@@ -12263,7 +12263,7 @@ SITAPI SituationError SituationEndFrame(void) {
         #endif
 
         // [PLATINUM] Unify frame index advancement across both paths.
-        sit_render.current_frame_index = (sit_render.current_frame_index + 1) % SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT;
+        sit_render.current_frame_index = (sit_render.current_frame_index + 1) % SITUATION_MAX_FRAMES_IN_FLIGHT;
 
         // OpenGL path implicitly succeeds if glfwSwapBuffers doesn't crash.
         // Return success.
@@ -27626,7 +27626,7 @@ static int _SituationRenderThreadEntry(void* arg) {
 
         // Dequeue Frame Index
         int frame_index = sit_render.render_queue[sit_render.render_queue_tail];
-        sit_render.render_queue_tail = (sit_render.render_queue_tail + 1) % SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT;
+        sit_render.render_queue_tail = (sit_render.render_queue_tail + 1) % SITUATION_MAX_FRAMES_IN_FLIGHT;
 
         // Note: We do NOT decrement frames_pending here. We are still "working" on this frame.
         // We decrement it only after we are fully done rendering.
