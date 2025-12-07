@@ -1,4 +1,25 @@
 Date: 2025-12-07
+Version: 2.3.21 "Velocity" (Render Thread Polish)
+
+## DESCRIPTION
+This release polishes the v2.3.20 render thread isolation with four targeted refinements, boosting robustness, debuggability, and integration without perf hits or API breaks. It addresses GL context pitfalls, graceful shutdowns, queue visibility, and seamless integration for MT-enabled flows.
+
+## NEW FEATURES
+*   **Metrics API:** Introduced `SituationGetRenderQueueDepth()` to expose the current depth of the render thread's queue. This allows UI overlays to visualize backpressure (e.g., "Queue: 2/3") in real-time.
+*   **EndFrame Integration:** `SituationEndFrame` now automatically queues frames when the render thread is enabled. Users enable threading via `SituationInitInfo.render_thread_count > 0`, and the loop handles the rest transparently.
+
+## CRITICAL FIXES & SAFETY
+*   **Context Handover (GL):** Implemented `_SituationInitRenderThread` with explicit GL context release on the main thread before spawning the render thread. This prevents "current context" conflicts that could crash drivers on thread startup.
+*   **Shutdown Robustness:** Hardened `_SituationDestroyRenderThread` with a comprehensive shutdown sequence:
+    *   Sets shutdown flag.
+    *   Broadcasts condition variables to wake both producer (Main) and consumer (Render) threads if blocked.
+    *   Joins the thread to ensure clean termination before resource cleanup.
+    *   Releases the GL context on the render thread before exit.
+*   **Error Reporting:** Added `SITUATION_ERROR_THREAD_CREATION_FAILED` (-83) to report thread spawning failures specifically.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-12-07
 Version: 2.3.20 "Velocity" (Phase 2.5: High-Performance Mesh Architecture)
 
 ## DESCRIPTION

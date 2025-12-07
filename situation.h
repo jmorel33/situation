@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 20
+#define SITUATION_VERSION_PATCH 21
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -254,6 +254,7 @@ typedef enum {
 	SITUATION_ERROR_THREAD_QUEUE_FULL  						=  -80,  // Threading Error: Thread Queue Full
 	SITUATION_ERROR_THREAD_VIOLATION   						=  -81,  // Main-thread-only function called from worker thread
     SITUATION_ERROR_THREAD_CYCLE                = -82, // [NEW v2.3.16] Dependency cycle or depth limit exceeded
+    SITUATION_ERROR_THREAD_CREATION_FAILED      = -83, // Failed to spawn a new thread (thrd_create)
 
     // ── Platform & Windowing Errors (100–199) ───────────────────────────
     SITUATION_ERROR_GLFW_FAILED                             = -100, // Any GLFW function returned an error
@@ -1504,6 +1505,10 @@ typedef struct {
     uint32_t     flags;  // Bitfield:
                          //   SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD → route mic capture callbacks to main thread
                          //   (future-proof expansion slot)
+
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+    int          render_thread_count; // Number of render threads to spawn (0 = Single Threaded)
+#endif
 } SituationInitInfo;
 
 /**
@@ -1917,6 +1922,9 @@ SITAPI void SituationImageDrawTextFormatted(SituationImage *dst, SituationFont f
 // --- Profiling & Diagnostics ---
 SITAPI uint32_t SituationGetDrawCallCount(void); 										// Number of draw commands this frame
 SITAPI uint64_t SituationGetVRAMUsage(void);     										// Total GPU memory allocated (Bytes)
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+SITAPI size_t SituationGetRenderQueueDepth(void);                                       // Get the current depth of the render queue
+#endif
 
 // --- Frame Lifecycle & Command Buffer ---
 SITAPI bool SituationAcquireFrameCommandBuffer(void);                                   // Prepare the backend for a new frame of rendering commands.
@@ -3019,6 +3027,11 @@ typedef struct {
 
     bool thread_active;
     bool thread_shutdown_req;
+
+    #if defined(SITUATION_ENABLE_RENDER_THREAD)
+    bool enabled;
+    atomic_size_t render_queue_depth;  // [NEW] Tracks head-tail diff
+    #endif
 #endif
 
     // Tracks current frame index for the MAIN thread (producing)
@@ -3117,6 +3130,10 @@ static void _SitParallelWorker(void* data, void* ctx);                          
 
 #if !defined(__STDC_NO_THREADS__)
 static int _SituationRenderThreadEntry(void* arg);                                              // [THREAD] Render thread loop
+
+// [v2.3.21] Render Thread Lifecycle Helpers
+static bool _SituationInitRenderThread(const SituationInitInfo* info);
+static void _SituationDestroyRenderThread(void);
 #endif
 
 // --- Context Architecture (v2.3.7+) ---
@@ -4423,6 +4440,7 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
         case SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION: base_msg = "Architectural rule broken: Update called after Draw"; break;
 		case SITUATION_ERROR_THREAD_QUEUE_FULL:  	 	  base_msg = "Threading Error: Thread Queue Full"; break;
 		case SITUATION_ERROR_THREAD_VIOLATION:   		  base_msg = "Main-thread-only function called from worker thread"; break;
+        case SITUATION_ERROR_THREAD_CREATION_FAILED:      base_msg = "Failed to create thread"; break;
 
         // --- Platform & Window Errors (100-199) ---
         case SITUATION_ERROR_GLFW_FAILED:                 base_msg = "An underlying GLFW library operation failed"; break;
@@ -5604,6 +5622,92 @@ SITAPI const char* SituationGetVersionString(void) {
     return version_str;
 }
 
+#if !defined(__STDC_NO_THREADS__)
+static bool _SituationInitRenderThread(const SituationInitInfo* info) {
+    #if defined(SITUATION_ENABLE_RENDER_THREAD)
+    if (info->render_thread_count == 0) return true;
+
+    sit_render.enabled = true;
+    sit_render.thread_active = true;
+    sit_render.thread_shutdown_req = false;
+    sit_render.frames_pending = 0;
+    atomic_init(&sit_render.render_queue_depth, 0);
+    sit_render.render_queue_head = 0;
+    sit_render.render_queue_tail = 0;
+
+    mtx_init(&sit_render.render_queue_mutex, mtx_plain);
+    cnd_init(&sit_render.render_queue_cv);
+    cnd_init(&sit_render.main_wait_cv);
+
+    // [Polish 1] GL Handover: Release from main before spawn
+    #if defined(SITUATION_USE_OPENGL)
+    if (sit_gs.sit_glfw_window) {
+        glfwMakeContextCurrent(NULL); // Safe: Render thread will reacquire
+    }
+    #endif
+
+    if (thrd_create(&sit_render.render_thread, _SituationRenderThreadEntry, NULL) != thrd_success) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Failed to spawn render thread");
+        #if defined(SITUATION_USE_OPENGL)
+        if (sit_gs.sit_glfw_window) glfwMakeContextCurrent(sit_gs.sit_glfw_window); // Reacquire on fail
+        #endif
+        return false;
+    }
+
+    // Note: Main thread must NOT call GL/VK cmds post-handover. Use render queue for all GPU work.
+
+    // For OpenGL, Main thread typically needs a shared context for asset loading.
+    // _SituationInitOpenGL created 'loader_window' for this.
+    // We should make THAT current now if it exists.
+    #if defined(SITUATION_USE_OPENGL)
+    if (sit_render.gl.loader_window) {
+        glfwMakeContextCurrent(sit_render.gl.loader_window);
+    }
+    #endif
+
+    return true;
+    #else
+    return true;
+    #endif
+}
+
+static void _SituationDestroyRenderThread(void) {
+    #if defined(SITUATION_ENABLE_RENDER_THREAD)
+    if (!sit_render.enabled || !sit_render.thread_active) return;
+
+    if (sit_render.thread_shutdown_req) return;
+
+    atomic_store(&sit_render.thread_shutdown_req, true);
+
+    // Broadcast to wake everyone
+    mtx_lock(&sit_render.render_queue_mutex);
+    cnd_broadcast(&sit_render.render_queue_cv);
+    mtx_unlock(&sit_render.render_queue_mutex);
+
+    cnd_broadcast(&sit_render.main_wait_cv);
+
+    // Join (Timeout not supported in std C11, assuming blocking is acceptable or OS specific logic handled elsewhere)
+    thrd_join(sit_render.render_thread, NULL);
+
+    // Fence for cleanup vis
+    atomic_thread_fence(memory_order_release);
+
+    mtx_destroy(&sit_render.render_queue_mutex);
+    cnd_destroy(&sit_render.render_queue_cv);
+    cnd_destroy(&sit_render.main_wait_cv);
+
+    sit_render.thread_active = false;
+    sit_render.enabled = false;
+
+    // [GL] Release context
+    #if defined(SITUATION_USE_OPENGL)
+    glfwMakeContextCurrent(NULL);
+    #endif
+
+    #endif
+}
+#endif
+
 //----------------------------------------------------------------------------------------------------------
 // --- Core Lifecycle Implementation ---
 //----------------------------------------------------------------------------------------------------------
@@ -5757,6 +5861,15 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     // Save the argc/argv for later access via SituationGetArgument* functions.
     sit_gs.argc = argc;
     sit_gs.argv = argv; // Store the pointer. The application must keep argv alive.
+
+    // --- 5.5 Render Thread Initialization ---
+    // [v2.3.21] Initialize render thread if requested. This MUST happen after renderer init.
+    #if !defined(__STDC_NO_THREADS__)
+    if (!_SituationInitRenderThread(init_info)) {
+        _SituationFullCleanupOnError();
+        return SITUATION_ERROR_THREAD_CREATION_FAILED;
+    }
+    #endif
 
     // --- 6. Mark as Successfully Initialized ---
     // All steps completed successfully. Set the global initialized flag.
@@ -6966,32 +7079,15 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
-    // [Phase 2] Initialize Threading & Context Handover
+    // [Phase 2] Initialize Threading Support (Loader Window Only)
     #if !defined(__STDC_NO_THREADS__)
-    sit_render.thread_active = true;
-    sit_render.thread_shutdown_req = false;
-    sit_render.frames_pending = 0;
-    sit_render.render_queue_head = 0;
-    sit_render.render_queue_tail = 0;
-    mtx_init(&sit_render.render_queue_mutex, mtx_plain);
-    cnd_init(&sit_render.render_queue_cv);
-    cnd_init(&sit_render.main_wait_cv);
-
     // 1. Create Loader Window (Hidden, Shares Context with Main Window)
+    // This window is used by the main thread for async asset loading while the render thread uses the main window.
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     sit_render.gl.loader_window = glfwCreateWindow(640, 480, "Situation Loader", NULL, sit_gs.sit_glfw_window);
 
-    // 2. Release Main Window Context (so Render Thread can take it)
-    glfwMakeContextCurrent(NULL);
-
-    // 3. Spawn Render Thread
-    if (thrd_create(&sit_render.render_thread, _SituationRenderThreadEntry, NULL) != thrd_success) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to spawn render thread.");
-        return SITUATION_ERROR_INIT_FAILED;
-    }
-
-    // 4. Acquire Loader Context on Main Thread (for Async Asset Loading)
-    glfwMakeContextCurrent(sit_render.gl.loader_window);
+    // [v2.3.21] Thread spawning logic moved to _SituationInitRenderThread in SituationInit
+    // Note: Context handover logic is also moved there.
     #endif
 
     return SITUATION_SUCCESS;
@@ -10814,6 +10910,12 @@ SITAPI void SituationShutdown(void) {
     // --- Call the auto-cleanup function ---
     _SituationCleanupDanglingResources();
 
+    // 0. --- SHUTDOWN RENDER THREAD ---
+    // [v2.3.21] Must stop render thread before destroying renderer resources
+    #if !defined(__STDC_NO_THREADS__)
+    _SituationDestroyRenderThread();
+    #endif
+
     // 1. --- CLEANUP THE RENDERER ---
     _SituationCleanupRenderer();    // This is the main dispatch for backend-specific cleanup.
 
@@ -11257,29 +11359,16 @@ static void _SituationCleanupQuadRenderer(void) {
  */
 #if defined(SITUATION_USE_OPENGL)
 static void _SituationCleanupOpenGL(void) {
-    // [Phase 2] Shutdown Render Thread
+    // [Phase 2] Loader Window Cleanup
     #if !defined(__STDC_NO_THREADS__)
-    if (sit_render.thread_active) {
-        mtx_lock(&sit_render.render_queue_mutex);
-        sit_render.thread_shutdown_req = true;
-        cnd_signal(&sit_render.render_queue_cv);
-        mtx_unlock(&sit_render.render_queue_mutex);
-
-        thrd_join(sit_render.render_thread, NULL);
-
-        mtx_destroy(&sit_render.render_queue_mutex);
-        cnd_destroy(&sit_render.render_queue_cv);
-        cnd_destroy(&sit_render.main_wait_cv);
-        sit_render.thread_active = false;
-    }
-
     if (sit_render.gl.loader_window) {
         glfwDestroyWindow(sit_render.gl.loader_window);
         sit_render.gl.loader_window = NULL;
     }
+    // [v2.3.21] Render thread shutdown logic moved to _SituationDestroyRenderThread in SituationShutdown
 
-    // Re-acquire main context for cleanup (Render Thread released it)
-    if (sit_gs.sit_glfw_window) {
+    // Ensure we have a context for cleanup (re-acquire if needed)
+    if (sit_gs.sit_glfw_window && glfwGetCurrentContext() == NULL) {
         glfwMakeContextCurrent(sit_gs.sit_glfw_window);
     }
     #endif
@@ -12247,12 +12336,24 @@ SITAPI SituationError SituationEndFrame(void) {
 
         // [Phase 2] Threaded Submission
         #if !defined(__STDC_NO_THREADS__)
-        mtx_lock(&sit_render.render_queue_mutex);
-        sit_render.render_queue[sit_render.render_queue_head] = sit_render.current_frame_index;
-        sit_render.render_queue_head = (sit_render.render_queue_head + 1) % SITUATION_MAX_FRAMES_IN_FLIGHT;
-        sit_render.frames_pending++;
-        cnd_signal(&sit_render.render_queue_cv);
-        mtx_unlock(&sit_render.render_queue_mutex);
+        #if defined(SITUATION_ENABLE_RENDER_THREAD)
+        if (sit_render.enabled) {
+            mtx_lock(&sit_render.render_queue_mutex);
+            sit_render.render_queue[sit_render.render_queue_head] = sit_render.current_frame_index;
+            sit_render.render_queue_head = (sit_render.render_queue_head + 1) % SITUATION_MAX_FRAMES_IN_FLIGHT;
+            sit_render.frames_pending++;
+
+            atomic_fetch_add(&sit_render.render_queue_depth, 1); // [Metrics]
+
+            cnd_signal(&sit_render.render_queue_cv);
+            mtx_unlock(&sit_render.render_queue_mutex);
+        } else
+        #endif
+        // If threading disabled at runtime but compiled in, fallback to immediate execution below
+        {
+            _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index]);
+            glfwSwapBuffers(sit_gs.sit_glfw_window);
+        }
         #else
         // [Phase 1] Execute Deferred Commands Immediately
         // [PLATINUM] Use the correct frame index even in single-threaded mode for consistency.
@@ -12288,12 +12389,74 @@ SITAPI SituationError SituationEndFrame(void) {
 
         // [Phase 2] Threaded Submission (Vulkan)
         #if !defined(__STDC_NO_THREADS__)
-        mtx_lock(&sit_render.render_queue_mutex);
-        sit_render.render_queue[sit_render.render_queue_head] = sit_render.vk.current_frame_index;
-        sit_render.render_queue_head = (sit_render.render_queue_head + 1) % sit_render.vk.max_frames_in_flight;
-        sit_render.frames_pending++;
-        cnd_signal(&sit_render.render_queue_cv);
-        mtx_unlock(&sit_render.render_queue_mutex);
+        #if defined(SITUATION_ENABLE_RENDER_THREAD)
+        if (sit_render.enabled) {
+            mtx_lock(&sit_render.render_queue_mutex);
+            sit_render.render_queue[sit_render.render_queue_head] = sit_render.vk.current_frame_index;
+            sit_render.render_queue_head = (sit_render.render_queue_head + 1) % sit_render.vk.max_frames_in_flight;
+            sit_render.frames_pending++;
+
+            atomic_fetch_add(&sit_render.render_queue_depth, 1); // [Metrics]
+
+            cnd_signal(&sit_render.render_queue_cv);
+            mtx_unlock(&sit_render.render_queue_mutex);
+        } else
+        #endif
+        {
+            // 2. Submit the command buffer to the graphics queue (Single-Threaded Path).
+            VkSubmitInfo submit_info = {0};
+            submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+            VkSemaphore wait_semaphores[] = { sit_render.vk.image_available_semaphores[sit_render.vk.current_frame_index] };
+            VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+            submit_info.waitSemaphoreCount = 1;
+            submit_info.pWaitSemaphores = wait_semaphores;
+            submit_info.pWaitDstStageMask = wait_stages;
+
+            submit_info.commandBufferCount = 1;
+            submit_info.pCommandBuffers = &cmd;
+
+            VkSemaphore signal_semaphores[] = { sit_render.vk.render_finished_semaphores[sit_render.vk.current_frame_index] };
+            submit_info.signalSemaphoreCount = 1;
+            submit_info.pSignalSemaphores = signal_semaphores;
+
+            // Submit the command buffer, waiting on the acquire semaphore and signaling the render finish semaphore.
+            // The fence associated with this frame is signaled when the submission completes.
+            if (vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit_info, sit_render.vk.in_flight_fences[sit_render.vk.current_frame_index]) != VK_SUCCESS) {
+                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "Failed to submit draw command buffer!");
+                return SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED;
+            }
+
+            // 3. Present the rendered image to the screen.
+            VkPresentInfoKHR present_info = {0};
+            present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            present_info.waitSemaphoreCount = 1;
+            present_info.pWaitSemaphores = signal_semaphores; // Wait for rendering to finish
+            VkSwapchainKHR swapchains[] = { sit_render.vk.swapchain };
+            present_info.swapchainCount = 1;
+            present_info.pSwapchains = swapchains;
+            present_info.pImageIndices = &sit_render.vk.current_image_index; // Present the image we acquired/used this frame
+
+            // Perform the presentation.
+            VkResult result = vkQueuePresentKHR(sit_render.vk.present_queue, &present_info);
+
+            // 4. Handle Presentation Result & Swapchain State.
+            if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || sit_render.vk.framebuffer_resized) {
+                // The swapchain is out of date or not optimal. Recreate it.
+                // Reset the resize flag if it was set.
+                sit_render.vk.framebuffer_resized = false;
+                _SituationVulkanRecreateSwapchain();
+                // Note: We don't return an error here. Recreating the swapchain is handled internally.
+                // The application should check for swapchain recreation needs in SituationAcquireFrameCommandBuffer.
+            } else if (result != VK_SUCCESS) {
+                // An unexpected error occurred during presentation.
+                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Failed to present swap chain image!");
+                return SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED;
+            }
+
+            // Store the index of the image we just submitted for presentation.
+            sit_render.vk.last_presented_image_index = sit_render.vk.current_image_index;
+        }
         #else
         // 2. Submit the command buffer to the graphics queue (Single-Threaded Path).
         VkSubmitInfo submit_info = {0};
@@ -13656,6 +13819,13 @@ SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t con
 SITAPI uint32_t SituationGetDrawCallCount(void) {
     return sit_render.frame_draw_calls;
 }
+
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+SITAPI size_t SituationGetRenderQueueDepth(void) {
+    if (!SituationIsInitialized() || !sit_render.enabled) return 0;
+    return atomic_load(&sit_render.render_queue_depth);
+}
+#endif
 
 /**
  * @brief Gets the estimated total video memory (VRAM) allocated by the application.
@@ -27627,6 +27797,11 @@ static int _SituationRenderThreadEntry(void* arg) {
         // Dequeue Frame Index
         int frame_index = sit_render.render_queue[sit_render.render_queue_tail];
         sit_render.render_queue_tail = (sit_render.render_queue_tail + 1) % SITUATION_MAX_FRAMES_IN_FLIGHT;
+
+        // [Metrics]
+        #if defined(SITUATION_ENABLE_RENDER_THREAD)
+        atomic_fetch_sub(&sit_render.render_queue_depth, 1);
+        #endif
 
         // Note: We do NOT decrement frames_pending here. We are still "working" on this frame.
         // We decrement it only after we are fully done rendering.
