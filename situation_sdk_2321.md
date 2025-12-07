@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.20 "Velocity" |
+| **Version** | 2.3.21 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -36,6 +36,16 @@ The library is engineered around three architectural pillars:
 
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
+
+### New in v2.3.21 "Velocity" (Render Thread Polish)
+
+This release polishes the Threaded Rendering implementation introduced in v2.3.19. It focuses on safety (Context Handover), observability (Queue Metrics), and integration (EndFrame Bridge).
+
+**Key Enhancements:**
+*   **Context Handover:** To prevent "Double-Current" crashes in OpenGL, `SituationInit` now explicitly releases the GL context on the Main Thread before spawning the Render Thread.
+*   **Queue Visibility:** Introduced `SituationGetRenderQueueDepth()` to monitor backpressure. This atomic counter allows UI overlays (like debug HUDs) to display "Queue: 2/3" warnings in real-time without locking.
+*   **Shutdown Robustness:** The Render Thread shutdown sequence now employs a broadcast-and-join strategy with a 1-second timeout, preventing "Zombie Threads" on exit.
+*   **EndFrame Integration:** `SituationEndFrame` now automatically detects if the Render Thread is active and routes execution to `_SituationQueueFrameIndex`. This allows developers to toggle threading via `SituationInitInfo.render_thread_count` without changing their frame loop code.
 
 ### New in v2.3.20 "Velocity" (Phase 2.5: High-Performance Mesh Architecture)
 
