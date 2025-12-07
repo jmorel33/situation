@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.19 "Velocity"
+*   Core API library v2.3.20 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
@@ -12083,6 +12083,16 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
              _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to wait for frame fence in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
+
+        // [Phase 3] Backpressure (Vulkan)
+        // Ensure we don't overrun the CPU render queue, even if the GPU is keeping up.
+        #if !defined(__STDC_NO_THREADS__)
+        mtx_lock(&sit_render.render_queue_mutex);
+        while (sit_render.frames_pending >= SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT) {
+            cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
+        }
+        mtx_unlock(&sit_render.render_queue_mutex);
+        #endif
 
         // --- FLUSH GRAVEYARD ---
         // The GPU is done with this frame, so we can safely destroy deferred resources.
