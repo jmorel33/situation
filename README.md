@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.21 "Velocity"_
+_Core API library v2.3.22 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,10 +8,10 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.21** polishes the **Threaded Rendering Architecture**, introducing critical safety and usability refinements. It adds robust **OpenGL Context Handover** to prevent driver crashes, **Queue Visibility Metrics** for real-time backpressure monitoring, and seamless **EndFrame Integration** to make threading an easy toggle.
+**Version 2.3.22** introduces **Momentum Bridge** (Render Lists) and **Hybrid Backpressure**, fortifying the threading architecture for heavy workloads. It adds robust **Latency Stats** for drift-proof monitoring and extends platform support to Windows ARM64.
 
 Our immediate development roadmap is focused on expanding the library's capability:
-*   **Render Lists (Momentum Phase 2):** Decoupling draw command generation from submission to allow multi-threaded rendering recording.
+*   **Momentum Phase 3:** Complete multi-threaded rendering replay optimization.
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
 *   **Async Compute**: Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
 *   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
@@ -282,7 +282,7 @@ This library does not use garbage collection.
 
 The documentation for "Situation" is split into two key documents:
 
-1.  [**Core API Library Reference Manual (situation_sdk_2321.md)**](situation_sdk_2321.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
+1.  [**Core API Library Reference Manual (situation_sdk_2322.md)**](situation_sdk_2322.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
 2.  [**Situation API Programming Guide (situation_api.md)**](situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
 
 </details>

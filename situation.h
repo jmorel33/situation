@@ -1527,6 +1527,8 @@ typedef enum {
 // [v2.3.22] Opaque Render List Handle (Momentum)
 typedef struct SituationRenderList_t* SituationRenderList;
 
+SITAPI void SituationSubmitRenderList(SituationRenderList list);
+
 SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);
 
 /**
@@ -12430,6 +12432,8 @@ SITAPI SituationError SituationEndFrame(void) {
                             _mm_pause(); 
                             #elif defined(__aarch64__)
                             __asm__ __volatile__("yield");
+                            #elif defined(_M_ARM64)
+                            __yield();
                             #endif
                         }
                         break;
@@ -12519,6 +12523,8 @@ SITAPI SituationError SituationEndFrame(void) {
                             _mm_pause(); 
                             #elif defined(__aarch64__)
                             __asm__ __volatile__("yield");
+                            #elif defined(_M_ARM64)
+                            __yield();
                             #endif
                         }
                         break;
@@ -14060,12 +14066,16 @@ SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRende
 #endif
 }
 
-static void _SituationQueueRenderList(SituationRenderList list, int frame_idx) {
+SITAPI void SituationSubmitRenderList(SituationRenderList list) {
     if (!list || list->is_recording) {
         _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "List unfinished—wait gen job.");
         return;
     }
+    // In immediate mode (GL non-threaded), we just replay.
+    // In threaded mode, we would queue this. For now, Momentum Phase 2 reuses the immediate replay.
+    // The user calls this instead of Replay if they want abstraction.
 #if defined(SITUATION_USE_OPENGL)
+    int frame_idx = sit_render.current_frame_index;
     if (frame_idx >= 0 && frame_idx < SITUATION_MAX_FRAMES_IN_FLIGHT) {
         SituationCommandBuffer cmd = (SituationCommandBuffer)&sit_render.gl.soft_buffers[frame_idx];
         SituationReplayRenderList(cmd, list);
