@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.21 "Velocity" |
+| **Version** | 2.3.22 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -36,6 +36,16 @@ The library is engineered around three architectural pillars:
 
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
+
+### New in v2.3.22 "Velocity" (Backpressure & Metrics Hotfix)
+
+This release focuses on resilience under load and smoother integration for complex rendering pipelines.
+
+**Key Enhancements:**
+*   **Momentum Bridge (Render Lists):** Introduced `SituationSubmitRenderList()` to streamline the submission of recorded command lists (Momentum style). This bridges the gap between manual list management and the Render Thread's execution model, allowing developers to submit entire atomic lists of commands with a single call.
+*   **Hybrid Backpressure:** The backpressure system (which prevents the CPU from outrunning the GPU) now employs a smarter hybrid strategy. It uses spin-loops with pause hints (`_mm_pause` / `__yield`) for short waits, falling back to OS sleeps for longer delays. This significantly reduces CPU usage during VSync waits while maintaining low latency.
+*   **Drift-Proof Metrics:** Added `SituationGetRenderLatencyStats(avg, max)` which uses monotonic clocks (`CLOCK_MONOTONIC` / `QPC`) to provide rock-solid latency measurements, immune to system time changes or drift.
+*   **ARM64 Support:** Added proper `__yield()` support for Windows on ARM (`_M_ARM64`) builds, ensuring correct spin-loop behavior on Snapdragon devices.
 
 ### New in v2.3.21 "Velocity" (Render Thread Polish)
 
@@ -251,6 +261,7 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
   - [7.2 Job Submission & Control](#72-job-submission--control)
   - [7.3 Dependency Graph](#73-dependency-graph)
   - [7.4 Parallel Dispatch](#74-parallel-dispatch)
+  - [7.5 Render Lists (Momentum Bridge)](#75-render-lists-momentum-bridge)
 - [Appendix A: Error Omniscience](#appendix-a-error-omniscience)
 - [Appendix B: Perf Codex](#appendix-b-perf-codex)
 
@@ -3606,6 +3617,33 @@ void SituationDispatchParallel(
 
 **"Helping" Strategy:**
 While waiting for the workers to finish the batches, the calling thread does not sleep. It actively "helps" by stealing jobs from the High Priority queue. This ensures maximum CPU utilization and prevents the main thread from idling during heavy workloads.
+
+<a id="75-render-lists-momentum-bridge"></a>
+### 7.5 Render Lists (Momentum Bridge)
+
+With the introduction of the Render Thread, splitting command recording from submission becomes powerful. The "Momentum" architecture (Phase 3 preview) allows you to record commands into a `SituationRenderList` on any thread, and then submit them atomically.
+
+#### SituationSubmitRenderList
+
+```c:disable-run
+void SituationSubmitRenderList(SituationRenderList list);
+```
+
+**Usage:**
+1.  **Record:** Create a `SituationRenderList` and record `SituationCmd*` calls into it (using the list as the command buffer handle).
+2.  **Submit:** Call `SituationSubmitRenderList(list)` on the Main Thread.
+3.  **Execute:** The engine takes ownership, replays the commands into the active frame buffer (Immediate Mode) or queues them for the Render Thread (Threaded Mode), and then resets the list for reuse.
+
+```c:disable-run
+// Example: Multi-threaded recording
+// Thread A:
+SituationBeginList(my_list);
+SituationCmdDrawMesh(my_list, ...);
+SituationEndList(my_list);
+
+// Main Thread:
+SituationSubmitRenderList(my_list);
+```
 
 <a id="appendix-a-error-omniscience"></a>
 

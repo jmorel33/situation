@@ -7,9 +7,11 @@ Armors v2.3.21 MT with hybrid backpressure (pause-hinted spins), Momentum queuin
 
 ## RESILIENCE
 *   **Hybrid Backpressure:** Policies (SPIN w/ _mm_pause/ARM yield | YIELD | SLEEP 1ms); EndFrame applies on full queue.
+*   **ARM64 Compatibility:** Added `__yield()` support for MSVC ARM64 (_M_ARM64) builds in spin loops.
 
 ## INTEGRATION
 *   **Momentum Bridge:** Replay lists to per-frame cmds → queue indices; reset safe via offsets.
+*   **Render Lists:** Promoted `_SituationQueueRenderList` to public `SituationSubmitRenderList` for streamlined render list submission.
 
 ## METRICS
 *   **Latency Stats:** Monotonic clocks (CLOCK_MONOTONIC/QPC); `GetRenderLatencyStats(avg/max_ns)` for stutter hunts.

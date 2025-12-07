@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.13_
+_Core API library v2.3.22 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -26,7 +26,7 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 ---
 
-# Situation v2.3.15 API Programming Guide
+# Situation v2.3.22 API Programming Guide
 
 "Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
 
@@ -5177,6 +5177,36 @@ SituationSubmitJobEx(&pool, ProcessRender, &my_data, sizeof(RenderData), SIT_SUB
 Legacy wrapper for simple pointer passing. Equivalent to `SituationSubmitJobEx` with default flags.
 ```c
 #define SituationSubmitJob(pool, func, user_ptr) ...
+```
+
+---
+#### `SituationSubmitRenderList` (Momentum)
+Submits a pre-recorded list of render commands (`SituationRenderList`) to the main execution queue. This allows recording on any thread and submitting on the main thread.
+```c
+void SituationSubmitRenderList(SituationRenderList list);
+```
+**Usage Example:**
+```c
+// Record on worker thread
+SituationBeginList(list);
+SituationCmdDrawMesh(list, mesh);
+SituationEndList(list);
+
+// Submit on main thread
+SituationSubmitRenderList(list);
+```
+
+---
+#### `SituationGetRenderLatencyStats` (Latency Metrics)
+Retrieves high-precision, drift-proof latency statistics.
+```c
+void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);
+```
+**Usage Example:**
+```c
+uint64_t avg, max;
+SituationGetRenderLatencyStats(&avg, &max);
+printf("Latency: Avg %.2fms, Max %.2fms\n", avg / 1e6, max / 1e6);
 ```
 
 ---
