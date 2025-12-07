@@ -1,3 +1,29 @@
+--------------------------------------------------------------------------------
+Date: 2025-12-07
+Version: 2.3.22 "Velocity" (Backpressure & Metrics Hotfix)
+
+## DESCRIPTION
+Armors v2.3.21 MT with hybrid backpressure (pause-hinted spins), Momentum queuing (replay → auto-push), and drift-proof latency metrics—burst-resilient decoupling.
+
+## RESILIENCE
+*   **Hybrid Backpressure:** Policies (SPIN w/ _mm_pause/ARM yield | YIELD | SLEEP 1ms); EndFrame applies on full queue.
+
+## INTEGRATION
+*   **Momentum Bridge:** Replay lists to per-frame cmds → queue indices; reset safe via offsets.
+
+## METRICS
+*   **Latency Stats:** Monotonic clocks (CLOCK_MONOTONIC/QPC); `GetRenderLatencyStats(avg/max_ns)` for stutter hunts.
+
+## SAFETY
+*   **Timed Joins:** 1s loop (100ms ticks, log every 500ms); new `-84` for timeouts.
+
+## VALIDATION
+*   SPIN: <50% CPU during bursts; no thrash.
+*   Latency: ±1ns; no neg on drifts.
+*   Replay: 10k packets MT → FPS match.
+
+--------------------------------------------------------------------------------
+
 Date: 2025-12-06
 Version: 2.3.21 "Velocity" (Render Thread Polish)
 

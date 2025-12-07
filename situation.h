@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.20 "Velocity"
+*   Core API library v2.3.22 "Velocity"
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 21
+#define SITUATION_VERSION_PATCH 22
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -255,6 +255,8 @@ typedef enum {
 	SITUATION_ERROR_THREAD_VIOLATION   						=  -81,  // Main-thread-only function called from worker thread
     SITUATION_ERROR_THREAD_CYCLE                = -82, // [NEW v2.3.16] Dependency cycle or depth limit exceeded
     SITUATION_ERROR_THREAD_CREATION_FAILED      = -83, // Failed to spawn a new thread (thrd_create)
+    SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT = -84, // Render thread join timeout
+    SITUATION_ERROR_RENDER_LIST_INCOMPLETE      = -85, // Render list incomplete (Momentum)
 
     // ── Platform & Windowing Errors (100–199) ───────────────────────────
     SITUATION_ERROR_GLFW_FAILED                             = -100, // Any GLFW function returned an error
@@ -1508,8 +1510,24 @@ typedef struct {
 
 #if defined(SITUATION_ENABLE_RENDER_THREAD)
     int          render_thread_count; // Number of render threads to spawn (0 = Single Threaded)
+    // [v2.3.22] Backpressure Policy
+    // Determines behavior when the render queue is full (Depth >= Max Frames)
+    // 0: Spin (Low Latency, High CPU), 1: Yield (Balanced), 2: Sleep (Low CPU)
+    int          backpressure_policy;
 #endif
 } SituationInitInfo;
+
+// [v2.3.22] Render Queue Backpressure Policies
+typedef enum {
+    SIT_RENDER_BACKPRESSURE_SPIN  = 0, // Busy-wait loop (Highest responsiveness, uses CPU)
+    SIT_RENDER_BACKPRESSURE_YIELD = 1, // Yield thread slice (OS decides, good balance)
+    SIT_RENDER_BACKPRESSURE_SLEEP = 2  // Sleep 1ms (Low CPU usage, worst latency)
+} SituationRenderBackpressurePolicy;
+
+// [v2.3.22] Opaque Render List Handle (Momentum)
+typedef struct SituationRenderList_t* SituationRenderList;
+
+SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);
 
 /**
  * @brief Flags representing optional GPU capabilities and advanced feature sets.
@@ -1924,6 +1942,7 @@ SITAPI uint32_t SituationGetDrawCallCount(void); 										// Number of draw com
 SITAPI uint64_t SituationGetVRAMUsage(void);     										// Total GPU memory allocated (Bytes)
 #if defined(SITUATION_ENABLE_RENDER_THREAD)
 SITAPI size_t SituationGetRenderQueueDepth(void);                                       // Get the current depth of the render queue
+SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);         // Get render thread latency metrics
 #endif
 
 // --- Frame Lifecycle & Command Buffer ---
@@ -2230,6 +2249,11 @@ SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, 
 //----------------------------------------------------------------------------------
 #ifdef SITUATION_IMPLEMENTATION
 
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__)
+    #include <immintrin.h>
+#endif
+#include <time.h>
+
 // Internal: Assert main thread
 static void _SituationSetErrorFromCode(SituationError err, const char* detail);
 
@@ -2237,6 +2261,26 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail);
 static thrd_t sit_gs_main_thread_id;
 static bool sit_gs_thread_id_set = false;
 #endif
+
+// [v2.3.22] Metrics Globals
+static atomic_uint_least64_t sit_metric_submit_timestamps[SITUATION_MAX_FRAMES_IN_FLIGHT];
+static atomic_uint_least64_t sit_metric_latency_sum_ns;
+static atomic_uint_least64_t sit_metric_latency_count;
+
+static uint64_t _SitGetMonotonicTimeNS(void) {
+    #if defined(_WIN32)
+    static LARGE_INTEGER freq;
+    static bool init = false;
+    if (!init) { QueryPerformanceFrequency(&freq); init = true; }
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return (uint64_t)((now.QuadPart * 1000000000ULL) / freq.QuadPart);
+    #else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+    #endif
+}
 
 static void _SituationAssertMainThread(const char* file, int line) {
 #ifndef NDEBUG
@@ -2478,6 +2522,17 @@ typedef struct {
     int event; // GLFW_CONNECTED or GLFW_DISCONNECTED
 } _SituationJoystickEvent;
 
+
+// [v2.3.22] Momentum Render List (Opaque Impl)
+struct SituationRenderList_t {
+    uint8_t* packet_buffer;
+    size_t packet_count;
+    size_t packet_capacity;
+    uint8_t* data_buffer;
+    size_t data_cursor;
+    size_t data_capacity;
+    bool is_recording;
+};
 
 #if defined(SITUATION_USE_OPENGL)
 // --- OpenGL State Hardening Helpers ---
@@ -3025,8 +3080,8 @@ typedef struct {
     int render_queue_tail;
     int frames_pending;
 
-    bool thread_active;
-    bool thread_shutdown_req;
+    atomic_bool thread_active;
+    atomic_bool thread_shutdown_req;
 
     #if defined(SITUATION_ENABLE_RENDER_THREAD)
     bool enabled;
@@ -3037,6 +3092,9 @@ typedef struct {
     // Tracks current frame index for the MAIN thread (producing)
     // [PLATINUM] Moved outside #ifdef to ensure consistent frame tracking in both threaded and non-threaded modes.
     int current_frame_index;
+
+    // [v2.3.22] Metrics
+    atomic_uint_least64_t max_render_latency_ns;
 
 } _SituationRenderState;
 
@@ -5628,8 +5686,8 @@ static bool _SituationInitRenderThread(const SituationInitInfo* info) {
     if (info->render_thread_count == 0) return true;
 
     sit_render.enabled = true;
-    sit_render.thread_active = true;
-    sit_render.thread_shutdown_req = false;
+    atomic_init(&sit_render.thread_active, true);
+    atomic_init(&sit_render.thread_shutdown_req, false);
     sit_render.frames_pending = 0;
     atomic_init(&sit_render.render_queue_depth, 0);
     sit_render.render_queue_head = 0;
@@ -5673,9 +5731,9 @@ static bool _SituationInitRenderThread(const SituationInitInfo* info) {
 
 static void _SituationDestroyRenderThread(void) {
     #if defined(SITUATION_ENABLE_RENDER_THREAD)
-    if (!sit_render.enabled || !sit_render.thread_active) return;
+    if (!sit_render.enabled || !atomic_load(&sit_render.thread_active)) return;
 
-    if (sit_render.thread_shutdown_req) return;
+    if (atomic_load(&sit_render.thread_shutdown_req)) return;
 
     atomic_store(&sit_render.thread_shutdown_req, true);
 
@@ -5686,8 +5744,32 @@ static void _SituationDestroyRenderThread(void) {
 
     cnd_broadcast(&sit_render.main_wait_cv);
 
-    // Join (Timeout not supported in std C11, assuming blocking is acceptable or OS specific logic handled elsewhere)
-    thrd_join(sit_render.render_thread, NULL);
+    // [v2.3.22] Timed Join (Polling thread_active for 1s before join)
+    // C11 thrd_join is blocking, so we poll for the thread to mark itself inactive first.
+    // If it doesn't deactivate within the timeout, we log an error but proceed to block-join.
+    struct timespec ts = {0, 100000000}; // 100ms
+    int ticks = 10;
+    bool timed_out = true;
+
+    for (int i = 0; i < ticks; ++i) {
+        if (!atomic_load(&sit_render.thread_active)) {
+            timed_out = false;
+            break;
+        }
+        if (i % 5 == 0 && i > 0) {
+            fprintf(stderr, "[WARN] Render join tick %d/10...\n", i);
+        }
+        thrd_sleep(&ts, NULL);
+    }
+
+    if (timed_out) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT, "Render thread join timeout—aborted.");
+        // Proceed to join anyway to avoid leaking a running thread, but the error is logged.
+    }
+
+    if (thrd_join(sit_render.render_thread, NULL) != thrd_success) {
+         _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Render thread join failed.");
+    }
 
     // Fence for cleanup vis
     atomic_thread_fence(memory_order_release);
@@ -5696,7 +5778,7 @@ static void _SituationDestroyRenderThread(void) {
     cnd_destroy(&sit_render.render_queue_cv);
     cnd_destroy(&sit_render.main_wait_cv);
 
-    sit_render.thread_active = false;
+    atomic_store(&sit_render.thread_active, false);
     sit_render.enabled = false;
 
     // [GL] Release context
@@ -12338,12 +12420,48 @@ SITAPI SituationError SituationEndFrame(void) {
         #if !defined(__STDC_NO_THREADS__)
         #if defined(SITUATION_ENABLE_RENDER_THREAD)
         if (sit_render.enabled) {
+            // [v2.3.22] Backpressure Policy
+            size_t depth = atomic_load(&sit_render.render_queue_depth);
+            if (depth >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                switch (sit_gs.init_info.backpressure_policy) {
+                    case SIT_RENDER_BACKPRESSURE_SPIN:
+                        while (atomic_load(&sit_render.render_queue_depth) >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                            #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__)
+                            _mm_pause(); 
+                            #elif defined(__aarch64__)
+                            __asm__ __volatile__("yield");
+                            #endif
+                        }
+                        break;
+                    case SIT_RENDER_BACKPRESSURE_YIELD:
+                         while (atomic_load(&sit_render.render_queue_depth) >= SITUATION_MAX_FRAMES_IN_FLIGHT) thrd_yield();
+                         break;
+                    case SIT_RENDER_BACKPRESSURE_SLEEP:
+                    default:
+                         mtx_lock(&sit_render.render_queue_mutex);
+                         while (sit_render.frames_pending >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                             cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
+                         }
+                         mtx_unlock(&sit_render.render_queue_mutex);
+                         break;
+                }
+            }
+
             mtx_lock(&sit_render.render_queue_mutex);
+            // Double-check under lock if we didn't use CV
+            if (sit_gs.init_info.backpressure_policy != SIT_RENDER_BACKPRESSURE_SLEEP) {
+                 while (sit_render.frames_pending >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                     cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
+                 }
+            }
+            
             sit_render.render_queue[sit_render.render_queue_head] = sit_render.current_frame_index;
             sit_render.render_queue_head = (sit_render.render_queue_head + 1) % SITUATION_MAX_FRAMES_IN_FLIGHT;
             sit_render.frames_pending++;
 
-            atomic_fetch_add(&sit_render.render_queue_depth, 1); // [Metrics]
+            // [v2.3.22] Record Submit Timestamp for Latency
+            atomic_store(&sit_metric_submit_timestamps[sit_render.current_frame_index], _SitGetMonotonicTimeNS());
+            atomic_fetch_add(&sit_render.render_queue_depth, 1);
 
             cnd_signal(&sit_render.render_queue_cv);
             mtx_unlock(&sit_render.render_queue_mutex);
@@ -12391,12 +12509,48 @@ SITAPI SituationError SituationEndFrame(void) {
         #if !defined(__STDC_NO_THREADS__)
         #if defined(SITUATION_ENABLE_RENDER_THREAD)
         if (sit_render.enabled) {
+             // [v2.3.22] Backpressure Policy
+            size_t depth = atomic_load(&sit_render.render_queue_depth);
+            if (depth >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                switch (sit_gs.init_info.backpressure_policy) {
+                    case SIT_RENDER_BACKPRESSURE_SPIN:
+                        while (atomic_load(&sit_render.render_queue_depth) >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                            #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__)
+                            _mm_pause(); 
+                            #elif defined(__aarch64__)
+                            __asm__ __volatile__("yield");
+                            #endif
+                        }
+                        break;
+                    case SIT_RENDER_BACKPRESSURE_YIELD:
+                         while (atomic_load(&sit_render.render_queue_depth) >= SITUATION_MAX_FRAMES_IN_FLIGHT) thrd_yield();
+                         break;
+                    case SIT_RENDER_BACKPRESSURE_SLEEP:
+                    default:
+                         mtx_lock(&sit_render.render_queue_mutex);
+                         while (sit_render.frames_pending >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                             cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
+                         }
+                         mtx_unlock(&sit_render.render_queue_mutex);
+                         break;
+                }
+            }
+
             mtx_lock(&sit_render.render_queue_mutex);
+            // Double-check under lock if we didn't use CV
+            if (sit_gs.init_info.backpressure_policy != SIT_RENDER_BACKPRESSURE_SLEEP) {
+                 while (sit_render.frames_pending >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                     cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
+                 }
+            }
+
             sit_render.render_queue[sit_render.render_queue_head] = sit_render.vk.current_frame_index;
             sit_render.render_queue_head = (sit_render.render_queue_head + 1) % sit_render.vk.max_frames_in_flight;
             sit_render.frames_pending++;
 
-            atomic_fetch_add(&sit_render.render_queue_depth, 1); // [Metrics]
+            // [v2.3.22] Record Submit Timestamp for Latency
+            atomic_store(&sit_metric_submit_timestamps[sit_render.vk.current_frame_index], _SitGetMonotonicTimeNS());
+            atomic_fetch_add(&sit_render.render_queue_depth, 1);
 
             cnd_signal(&sit_render.render_queue_cv);
             mtx_unlock(&sit_render.render_queue_mutex);
@@ -13825,6 +13979,101 @@ SITAPI size_t SituationGetRenderQueueDepth(void) {
     if (!SituationIsInitialized() || !sit_render.enabled) return 0;
     return atomic_load(&sit_render.render_queue_depth);
 }
+
+SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns) {
+    if (max_ns) *max_ns = atomic_load(&sit_render.max_render_latency_ns);
+    if (avg_ns) {
+        uint64_t cnt = atomic_load(&sit_metric_latency_count);
+        *avg_ns = cnt ? atomic_load(&sit_metric_latency_sum_ns) / cnt : 0;
+    }
+}
+
+// [v2.3.22] Momentum Implementation
+SITAPI SituationRenderList SituationCreateRenderList(void) {
+    SituationRenderList list = (SituationRenderList)SIT_CALLOC(1, sizeof(struct SituationRenderList_t));
+    if (list) {
+        list->packet_capacity = 128;
+#if defined(SITUATION_USE_OPENGL)
+        list->packet_buffer = (uint8_t*)SIT_MALLOC(list->packet_capacity * sizeof(SitCommandPacket));
+#else
+        list->packet_buffer = NULL; // Vulkan/None
+#endif
+        list->data_capacity = 1024;
+        list->data_buffer = (uint8_t*)SIT_MALLOC(list->data_capacity);
+    }
+    return list;
+}
+
+SITAPI void SituationDestroyRenderList(SituationRenderList list) {
+    if (!list) return;
+    if (list->packet_buffer) SIT_FREE(list->packet_buffer);
+    if (list->data_buffer) SIT_FREE(list->data_buffer);
+    SIT_FREE(list);
+}
+
+SITAPI void SituationResetRenderList(SituationRenderList list) {
+    if (!list) return;
+    list->packet_count = 0;
+    list->data_cursor = 0;
+    list->is_recording = false;
+}
+
+SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRenderList list) {
+    if (!cmd || !list || list->packet_count == 0) return;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* src_packets = (SitCommandPacket*)list->packet_buffer;
+    if (!src_packets) return;
+
+    if (buf->packet_count + list->packet_count > buf->packet_capacity) {
+        size_t new_cap = buf->packet_capacity + list->packet_count + 64;
+        SitCommandPacket* new_ptr = (SitCommandPacket*)SIT_REALLOC(buf->packets, new_cap * sizeof(SitCommandPacket));
+        if (!new_ptr) return;
+        buf->packets = new_ptr;
+        buf->packet_capacity = new_cap;
+    }
+    if (buf->data_cursor + list->data_cursor > buf->data_capacity) {
+         size_t new_cap = buf->data_capacity + list->data_cursor + 1024;
+         uint8_t* new_ptr = (uint8_t*)SIT_REALLOC(buf->data_buffer, new_cap);
+         if (!new_ptr) return;
+         buf->data_buffer = new_ptr;
+         buf->data_capacity = new_cap;
+    }
+
+    size_t base_data_offset = buf->data_cursor;
+    if (list->data_cursor > 0) {
+        memcpy(buf->data_buffer + base_data_offset, list->data_buffer, list->data_cursor);
+        buf->data_cursor += list->data_cursor;
+    }
+
+    for (size_t i = 0; i < list->packet_count; ++i) {
+        SitCommandPacket p = src_packets[i];
+        switch (p.opcode) {
+            case SIT_OP_SET_PUSH_CONSTANT: p.args.push_constant.data_offset += base_data_offset; break;
+            case SIT_OP_DRAW_TEXT:         p.args.draw_text.text_offset += base_data_offset; break;
+            case SIT_OP_UPDATE_BUFFER:     p.args.update_buffer.data_offset += base_data_offset; break;
+            case SIT_OP_SET_UNIFORM:       p.args.set_uniform.data_offset += base_data_offset; break;
+            default: break;
+        }
+        buf->packets[buf->packet_count++] = p;
+    }
+#endif
+}
+
+static void _SituationQueueRenderList(SituationRenderList list, int frame_idx) {
+    if (!list || list->is_recording) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "List unfinished—wait gen job.");
+        return;
+    }
+#if defined(SITUATION_USE_OPENGL)
+    if (frame_idx >= 0 && frame_idx < SITUATION_MAX_FRAMES_IN_FLIGHT) {
+        SituationCommandBuffer cmd = (SituationCommandBuffer)&sit_render.gl.soft_buffers[frame_idx];
+        SituationReplayRenderList(cmd, list);
+        SituationResetRenderList(list);
+    }
+#endif
+}
+
 #endif
 
 /**
@@ -27815,7 +28064,6 @@ static int _SituationRenderThreadEntry(void* arg) {
         _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[frame_index]);
 
         // 2. Present
-        // Note: If using VSync, this blocks! This is why we are on a separate thread.
         glfwSwapBuffers(sit_gs.sit_glfw_window);
 
         // 3. [Phase 2.5] Flush Graveyard
@@ -27868,6 +28116,22 @@ static int _SituationRenderThreadEntry(void* arg) {
         }
         #endif
 
+        // [v2.3.22] Metrics: Record Latency
+        #if defined(SITUATION_ENABLE_RENDER_THREAD)
+        uint64_t submit_ts = atomic_load(&sit_metric_submit_timestamps[frame_index]);
+        if (submit_ts > 0) {
+            uint64_t now = _SitGetMonotonicTimeNS();
+            uint64_t latency = (now >= submit_ts) ? (now - submit_ts) : 0;
+            
+            // Atomic Max
+            uint64_t current_max = atomic_load(&sit_render.max_render_latency_ns);
+            while (latency > current_max && !atomic_compare_exchange_weak(&sit_render.max_render_latency_ns, &current_max, latency));
+            
+            atomic_fetch_add(&sit_metric_latency_sum_ns, latency);
+            atomic_fetch_add(&sit_metric_latency_count, 1);
+        }
+        #endif
+
         // --- FRAME COMPLETE ---
         mtx_lock(&sit_render.render_queue_mutex);
         sit_render.frames_pending--; // NOW we are done. Slot `frame_index` is truly free.
@@ -27879,6 +28143,9 @@ static int _SituationRenderThreadEntry(void* arg) {
     // Release context before exiting, just to be clean.
     glfwMakeContextCurrent(NULL);
     #endif
+
+    // [v2.3.22] Mark thread as inactive for timeout join polling
+    atomic_store(&sit_render.thread_active, false);
 
     return 0;
 }
