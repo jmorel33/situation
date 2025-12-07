@@ -257,6 +257,7 @@ typedef enum {
     SITUATION_ERROR_THREAD_CREATION_FAILED      = -83, // Failed to spawn a new thread (thrd_create)
     SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT = -84, // Render thread join timeout
     SITUATION_ERROR_RENDER_LIST_INCOMPLETE      = -85, // Render list incomplete (Momentum)
+    SITUATION_ERROR_ARM_INTRINSICS_FAILED       = -86, // ARM-specific WFE/SEV intrinsic failure
 
     // ── Platform & Windowing Errors (100–199) ───────────────────────────
     SITUATION_ERROR_GLFW_FAILED                             = -100, // Any GLFW function returned an error
@@ -1497,6 +1498,7 @@ typedef struct {
 
     // ── Vulkan-Specific Options ──
     bool         enable_vulkan_validation;       // Enable VK_LAYER_KHRONOS_validation (debug builds only - auto-disabled in release)
+    bool         force_single_queue;             // Force shared compute/graphics queue (debug/compatibility)
     uint32_t     max_frames_in_flight;           // Override SITUATION_MAX_FRAMES_IN_FLIGHT (usually 2 or 3)
 
     // Optional: Provide custom Vulkan instance extensions (e.g. for VR, ray tracing, etc.)
@@ -2674,9 +2676,11 @@ typedef struct _SituationVKGraveyard {
     // -------------------------------------------------------------------------
     // Queues
     // -------------------------------------------------------------------------
-    VkQueue graphics_queue;                     // Queue handle for graphics/compute operations
+    VkQueue graphics_queue;                     // Queue handle for graphics operations
+    VkQueue compute_queue;                      // Queue handle for compute operations
     VkQueue present_queue;                      // Queue handle for presentation operations
     uint32_t graphics_family_index;             // Family index of the graphics queue
+    uint32_t compute_family_index;              // Family index of the compute queue
     uint32_t present_family_index;              // Family index of the present queue
 
     // -------------------------------------------------------------------------
@@ -2701,10 +2705,13 @@ typedef struct _SituationVKGraveyard {
     // Per-Frame Synchronization & State
     // -------------------------------------------------------------------------
     VkCommandPool command_pool;                 // Main pool for allocating command buffers
+    VkCommandPool compute_command_pool;         // Pool for compute command buffers [NEW]
     uint32_t max_frames_in_flight;              // Number of frames processed concurrently (e.g., 2)
     VkCommandBuffer* command_buffers;           // Array of per-frame command buffers
+    VkCommandBuffer* compute_command_buffers;   // Array of per-frame compute command buffers [NEW]
     VkSemaphore* image_available_semaphores;    // Semaphores signaled when image is acquired
     VkSemaphore* render_finished_semaphores;    // Semaphores signaled when rendering completes
+    VkSemaphore* compute_finished_semaphores;   // Semaphores signaled when compute queue completes
     VkFence* in_flight_fences;                  // Fences signaled when frame execution finishes
     uint32_t current_frame_index;               // Index of the frame currently being recorded (0..max-1)
     uint32_t current_image_index;               // Index of the swapchain image currently acquired
@@ -3095,8 +3102,15 @@ typedef struct {
     // [PLATINUM] Moved outside #ifdef to ensure consistent frame tracking in both threaded and non-threaded modes.
     int current_frame_index;
 
+    // [v2.3.23] Async Compute Flag (for current recording frame)
+    bool frame_has_async_compute;
+
     // [v2.3.22] Metrics
     atomic_uint_least64_t max_render_latency_ns;
+
+    // [v2.3.23] Default Debug Font
+    SituationTexture default_font_atlas;
+    SituationFont    default_font;
 
 } _SituationRenderState;
 
@@ -3638,8 +3652,10 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
 typedef struct {
     uint32_t graphics_family;
     uint32_t present_family;
+    uint32_t compute_family;
     bool graphics_family_has_value;
     bool present_family_has_value;
+    bool compute_family_has_value;
 } _SituationQueueFamilyIndices;
 
 typedef struct {
@@ -4501,6 +4517,9 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
 		case SITUATION_ERROR_THREAD_QUEUE_FULL:  	 	  base_msg = "Threading Error: Thread Queue Full"; break;
 		case SITUATION_ERROR_THREAD_VIOLATION:   		  base_msg = "Main-thread-only function called from worker thread"; break;
         case SITUATION_ERROR_THREAD_CREATION_FAILED:      base_msg = "Failed to create thread"; break;
+        case SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT: base_msg = "Render thread join timeout—aborted"; break;
+        case SITUATION_ERROR_RENDER_LIST_INCOMPLETE:      base_msg = "Render list missing mandatory commands"; break;
+        case SITUATION_ERROR_ARM_INTRINSICS_FAILED:       base_msg = "ARM intrinsic (WFE/SEV) execution failed"; break;
 
         // --- Platform & Window Errors (100-199) ---
         case SITUATION_ERROR_GLFW_FAILED:                 base_msg = "An underlying GLFW library operation failed"; break;
@@ -6813,8 +6832,36 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                     stbtt_bakedchar* cdata = (stbtt_bakedchar*)font.glyph_info;
                     int v_idx = 0;
 
+                    bool is_grid_font = (font.glyph_info == NULL && font.atlas_texture.id == sit_render.default_font.atlas_texture.id);
+
                     for (size_t k = 0; k < len; k++) {
-                        if (text[k] >= 32 && text[k] < 128) {
+                        if (is_grid_font) {
+                            unsigned char c = (unsigned char)text[k];
+                            if (c < 128) {
+                                int col = c % 16;
+                                int row = c / 16;
+                                float u0 = col / 16.0f;
+                                float v0 = row / 8.0f;
+                                float u1 = (col + 1) / 16.0f;
+                                float v1 = (row + 1) / 8.0f;
+
+                                float qx0 = x;
+                                float qy0 = y;
+                                float qx1 = x + 8.0f;
+                                float qy1 = y + 8.0f;
+
+                                x += 8.0f;
+
+                                vertices[v_idx++] = qx0; vertices[v_idx++] = qy0; vertices[v_idx++] = u0; vertices[v_idx++] = v0;
+                                vertices[v_idx++] = qx0; vertices[v_idx++] = qy1; vertices[v_idx++] = u0; vertices[v_idx++] = v1;
+                                vertices[v_idx++] = qx1; vertices[v_idx++] = qy0; vertices[v_idx++] = u1; vertices[v_idx++] = v0;
+
+                                vertices[v_idx++] = qx1; vertices[v_idx++] = qy0; vertices[v_idx++] = u1; vertices[v_idx++] = v0;
+                                vertices[v_idx++] = qx0; vertices[v_idx++] = qy1; vertices[v_idx++] = u0; vertices[v_idx++] = v1;
+                                vertices[v_idx++] = qx1; vertices[v_idx++] = qy1; vertices[v_idx++] = u1; vertices[v_idx++] = v1;
+                            }
+                        }
+                        else if (text[k] >= 32 && text[k] < 128) {
                             stbtt_aligned_quad q;
                             stbtt_GetBakedQuad(cdata, font.atlas_width, font.atlas_height, text[k] - 32, &x, &y, &q, 1);
                             vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t0;
@@ -6988,6 +7035,8 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         sit_render.gl.global_vao_id = 0;
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
+
+    _SituationInitDefaultFont();
 
     if (!_SituationInitTextRenderer()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal text renderer.");
@@ -8553,6 +8602,11 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     if (_SituationVulkanSetupDebugMessenger(init_info) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_INSTANCE_FAILED; }
     if (_SituationVulkanCreateSurface() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_INIT_FAILED; }
     if (_SituationVulkanPickPhysicalDevice() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DEVICE_FAILED; }
+
+    if (init_info && init_info->force_single_queue) {
+        sit_render.vk.compute_family_index = sit_render.vk.graphics_family_index;
+    }
+
     if (_SituationVulkanCreateLogicalDevice(init_info) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DEVICE_FAILED; }
     if (_SituationVulkanCreateAllocator() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
     if (_SituationVulkanCreateCommandPool() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_COMMAND_FAILED; }
@@ -8721,6 +8775,8 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         _SituationCleanupVulkan();
         return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
     }
+
+    _SituationInitDefaultFont();
 
     // 2. Initialize Virtual Display Renderers
     // (We keep _SituationVulkanInitInternalRenderers for VDs, but we must strip the quad logic from it)
@@ -9400,6 +9456,7 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
     _SituationQueueFamilyIndices indices = _SituationVulkanFindQueueFamilies(best_device, sit_render.vk.surface);
     sit_render.vk.graphics_family_index = indices.graphics_family;
     sit_render.vk.present_family_index = indices.present_family;
+    sit_render.vk.compute_family_index = indices.compute_family_has_value ? indices.compute_family : indices.graphics_family;
 
     // Log the chosen device for debugging
     VkPhysicalDeviceProperties properties;
@@ -9431,23 +9488,32 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
  * @see _SituationInitVulkan(), _SituationVulkanPickPhysicalDevice(), vkCreateDevice(), vkGetDeviceQueue()
  */
 static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInfo* init_info) {
-    // --- Queue Create Info (Your existing code is good) ---
-    uint32_t queue_family_indices[] = { sit_render.vk.graphics_family_index, sit_render.vk.present_family_index };
-    VkDeviceQueueCreateInfo queue_create_infos[2] = {0};
+    // --- Queue Create Info ---
+    // [v2.3.23] Updated to support up to 3 distinct queues (Graphics, Present, Compute)
+    VkDeviceQueueCreateInfo queue_create_infos[3] = {0};
     float queue_priority = 1.0f;
-    uint32_t unique_queue_family_count = 1;
+    uint32_t unique_queue_families[3];
+    uint32_t unique_queue_family_count = 0;
 
-    queue_create_infos[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queue_create_infos[0].queueFamilyIndex = sit_render.vk.graphics_family_index;
-    queue_create_infos[0].queueCount = 1;
-    queue_create_infos[0].pQueuePriorities = &queue_priority;
+    // Helper to add unique family
+    // Always add Graphics first
+    unique_queue_families[unique_queue_family_count++] = sit_render.vk.graphics_family_index;
 
-    if (sit_render.vk.graphics_family_index != sit_render.vk.present_family_index) {
-        unique_queue_family_count = 2;
-        queue_create_infos[1].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_create_infos[1].queueFamilyIndex = sit_render.vk.present_family_index;
-        queue_create_infos[1].queueCount = 1;
-        queue_create_infos[1].pQueuePriorities = &queue_priority;
+    // Add Present if distinct
+    bool present_unique = true;
+    for(uint32_t i=0; i<unique_queue_family_count; i++) if(unique_queue_families[i] == sit_render.vk.present_family_index) present_unique = false;
+    if(present_unique) unique_queue_families[unique_queue_family_count++] = sit_render.vk.present_family_index;
+
+    // Add Compute if distinct
+    bool compute_unique = true;
+    for(uint32_t i=0; i<unique_queue_family_count; i++) if(unique_queue_families[i] == sit_render.vk.compute_family_index) compute_unique = false;
+    if(compute_unique) unique_queue_families[unique_queue_family_count++] = sit_render.vk.compute_family_index;
+
+    for (uint32_t i = 0; i < unique_queue_family_count; i++) {
+        queue_create_infos[i].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queue_create_infos[i].queueFamilyIndex = unique_queue_families[i];
+        queue_create_infos[i].queueCount = 1;
+        queue_create_infos[i].pQueuePriorities = &queue_priority;
     }
 
     // --- Device Features (Good as is) ---
@@ -9654,9 +9720,10 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
         return SITUATION_ERROR_VULKAN_DEVICE_FAILED;
     }
 
-    // --- Get Queue Handles (Good as is) ---
+    // --- Get Queue Handles ---
     vkGetDeviceQueue(sit_render.vk.device, sit_render.vk.graphics_family_index, 0, &sit_render.vk.graphics_queue);
     vkGetDeviceQueue(sit_render.vk.device, sit_render.vk.present_family_index, 0, &sit_render.vk.present_queue);
+    vkGetDeviceQueue(sit_render.vk.device, sit_render.vk.compute_family_index, 0, &sit_render.vk.compute_queue);
 
     return SITUATION_SUCCESS;
 }
@@ -9898,15 +9965,16 @@ static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysical
             indices.graphics_family_has_value = true;
         }
 
+        if (queue_families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+            indices.compute_family = i;
+            indices.compute_family_has_value = true;
+        }
+
         VkBool32 present_support = false;
         vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &present_support);
         if (present_support) {
             indices.present_family = i;
             indices.present_family_has_value = true;
-        }
-
-        if (indices.graphics_family_has_value && indices.present_family_has_value) {
-            break;
         }
     }
 
@@ -11177,6 +11245,63 @@ static void _SituationCleanupPlatform(void) {
  *
  * @see _SituationCleanupQuadRenderer(), SituationCmdDrawQuad(), SituationCmdDrawText()
  */
+static void _SituationInitDefaultFont(void) {
+    // Basic 8x8 font bitmap (1-bit depth). 128 chars.
+    // Layout: 16 chars per row, 8 rows.
+    const int tex_w = 128;
+    const int tex_h = 64;
+    size_t data_size = tex_w * tex_h * 4; // RGBA
+    uint8_t* pixels = (uint8_t*)SIT_CALLOC(1, data_size);
+
+    if (!pixels) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate default font atlas.");
+        return;
+    }
+
+    // Procedural generation: draw char code index as a binary pattern
+    for (int cy = 0; cy < 8; cy++) {
+        for (int cx = 0; cx < 16; cx++) {
+            int char_code = cy * 16 + cx;
+            int base_x = cx * 8;
+            int base_y = cy * 8;
+
+            for (int y = 0; y < 8; y++) {
+                for (int x = 0; x < 8; x++) {
+                    // Simple box with a dot pattern for identity
+                    bool on = (x==0 || x==7 || y==0 || y==7); // Border
+                    // Inner pattern based on bits
+                    if (x >= 2 && x <= 5 && y >= 2 && y <= 5) {
+                        int bit_idx = (y-2)*4 + (x-2);
+                        if ((char_code >> bit_idx) & 1) on = !on;
+                    }
+                    if (char_code == 32) on = false; // Space
+
+                    uint8_t val = on ? 255 : 0;
+                    int p_idx = ((base_y + y) * tex_w + (base_x + x)) * 4;
+                    pixels[p_idx + 0] = 255;
+                    pixels[p_idx + 1] = 255;
+                    pixels[p_idx + 2] = 255;
+                    pixels[p_idx + 3] = val; // Alpha
+                }
+            }
+        }
+    }
+
+    SituationImage img = { .width = tex_w, .height = tex_h, .channels = 4, .data = pixels };
+    sit_render.default_font_atlas = SituationCreateTexture(img, false);
+    SIT_FREE(pixels);
+
+    // Setup font struct
+    // Note: We don't have STB baked data, so we rely on SituationCmdDrawText fallback for default font
+    sit_render.default_font = (SituationFont){
+        .atlas_texture = sit_render.default_font_atlas,
+        .atlas_width = tex_w,
+        .atlas_height = tex_h,
+        .font_height_pixels = 8.0f,
+        .glyph_info = NULL // Signal to use fallback grid logic
+    };
+}
+
 static bool _SituationInitQuadRenderer(int width, int height) {
 #if defined(SITUATION_USE_OPENGL)
     // --- OpenGL Quad Renderer Initialization ---
@@ -12430,10 +12555,20 @@ SITAPI SituationError SituationEndFrame(void) {
                         while (atomic_load(&sit_render.render_queue_depth) >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
                             #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__)
                             _mm_pause(); 
-                            #elif defined(__aarch64__)
-                            __asm__ __volatile__("yield");
-                            #elif defined(_M_ARM64)
-                            __yield();
+                            #elif defined(__aarch64__) || defined(_M_ARM64)
+                                #if defined(__has_builtin)
+                                    #if __has_builtin(__builtin_arm_wfe)
+                                    __builtin_arm_wfe();
+                                    #else
+                                    __asm__ __volatile__("yield");
+                                    #endif
+                                #else
+                                    #if defined(_MSC_VER)
+                                    __yield();
+                                    #else
+                                    __asm__ __volatile__("yield");
+                                    #endif
+                                #endif
                             #endif
                         }
                         break;
@@ -12521,10 +12656,20 @@ SITAPI SituationError SituationEndFrame(void) {
                         while (atomic_load(&sit_render.render_queue_depth) >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
                             #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__)
                             _mm_pause(); 
-                            #elif defined(__aarch64__)
-                            __asm__ __volatile__("yield");
-                            #elif defined(_M_ARM64)
-                            __yield();
+                            #elif defined(__aarch64__) || defined(_M_ARM64)
+                                #if defined(__has_builtin)
+                                    #if __has_builtin(__builtin_arm_wfe)
+                                    __builtin_arm_wfe();
+                                    #else
+                                    __asm__ __volatile__("yield");
+                                    #endif
+                                #else
+                                    #if defined(_MSC_VER)
+                                    __yield();
+                                    #else
+                                    __asm__ __volatile__("yield");
+                                    #endif
+                                #endif
                             #endif
                         }
                         break;
@@ -13370,11 +13515,21 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
  * @note Requires a valid orthographic projection matrix to be active in the view UBO (which `SituationAcquireFrameCommandBuffer` sets up by default).
  */
 SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color) {
-    if (!SituationIsInitialized() || font.atlas_texture.id == 0 || !text || !font.glyph_info) return;
+    if (!SituationIsInitialized() || !text) return;
 
-#if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
+    // [v2.3.23] Default Debug Font Fallback
+    SituationFont use_font = font;
+    if (use_font.atlas_texture.id == 0) {
+        use_font = sit_render.default_font;
+        if (use_font.atlas_texture.id == 0) return;
+    }
+
+    bool is_grid_font = (use_font.glyph_info == NULL && use_font.atlas_texture.id == sit_render.default_font.atlas_texture.id);
+    if (!is_grid_font && !use_font.glyph_info) return;
+
     // --- BATCHED TEXT RENDERING ---
     size_t len = strlen(text);
+#if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
     if (len == 0) return;
     if (len > 2048) len = 2048;
 
@@ -13396,7 +13551,7 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
 
     SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_TEXT);
     if (p) {
-        p->args.draw_text.font = font;
+        p->args.draw_text.font = use_font;
         p->args.draw_text.pos = pos;
         p->args.draw_text.color = color;
         p->args.draw_text.text_offset = text_offset;
@@ -13404,7 +13559,7 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
 
 #elif defined(SITUATION_USE_VULKAN)
     // Bind Atlas
-    SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, font.atlas_texture);
+    SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, use_font.atlas_texture);
 
     // 6 vertices per char (2 tris), 4 floats per vertex (x,y,u,v)
     size_t vert_count = len * 6;
@@ -13421,13 +13576,39 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
 
     float x = pos.x;
     float y = pos.y;
-    stbtt_bakedchar* cdata = (stbtt_bakedchar*)font.glyph_info;
+    stbtt_bakedchar* cdata = (stbtt_bakedchar*)use_font.glyph_info;
     int v_idx = 0;
 
     for (size_t i = 0; i < len; i++) {
-        if (text[i] >= 32 && text[i] < 128) {
+        if (is_grid_font) {
+            unsigned char c = (unsigned char)text[i];
+            if (c < 128) {
+                int col = c % 16;
+                int row = c / 16;
+                float u0 = col / 16.0f;
+                float v0 = row / 8.0f;
+                float u1 = (col + 1) / 16.0f;
+                float v1 = (row + 1) / 8.0f;
+
+                float qx0 = x;
+                float qy0 = y;
+                float qx1 = x + 8.0f;
+                float qy1 = y + 8.0f;
+
+                x += 8.0f;
+
+                vertices[v_idx++] = qx0; vertices[v_idx++] = qy0; vertices[v_idx++] = u0; vertices[v_idx++] = v0;
+                vertices[v_idx++] = qx0; vertices[v_idx++] = qy1; vertices[v_idx++] = u0; vertices[v_idx++] = v1;
+                vertices[v_idx++] = qx1; vertices[v_idx++] = qy0; vertices[v_idx++] = u1; vertices[v_idx++] = v0;
+
+                vertices[v_idx++] = qx1; vertices[v_idx++] = qy0; vertices[v_idx++] = u1; vertices[v_idx++] = v0;
+                vertices[v_idx++] = qx0; vertices[v_idx++] = qy1; vertices[v_idx++] = u0; vertices[v_idx++] = v1;
+                vertices[v_idx++] = qx1; vertices[v_idx++] = qy1; vertices[v_idx++] = u1; vertices[v_idx++] = v1;
+            }
+        }
+        else if (text[i] >= 32 && text[i] < 128) {
             stbtt_aligned_quad q;
-            stbtt_GetBakedQuad(cdata, font.atlas_width, font.atlas_height, text[i] - 32, &x, &y, &q, 1);
+            stbtt_GetBakedQuad(cdata, use_font.atlas_width, use_font.atlas_height, text[i] - 32, &x, &y, &q, 1);
 
             // Quad to 2 Triangles (CCW)
             vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t0;
@@ -15115,6 +15296,24 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
             );
 
             if (result != VK_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to create graphics command pool.");
+        sit_render.vk.command_pool = VK_NULL_HANDLE;
+        return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
+    }
+
+    // [v2.3.23] Create separate pool for Compute (even if same family, cleaner for reset)
+    pool_info.queueFamilyIndex = sit_render.vk.compute_family_index;
+    if (vkCreateCommandPool(sit_render.vk.device, &pool_info, NULL, &sit_render.vk.compute_command_pool) != VK_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to create compute command pool.");
+        sit_render.vk.compute_command_pool = VK_NULL_HANDLE;
+        return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
+    }
+
+    return SITUATION_SUCCESS;
+}
+
+static SituationError _SituationVulkanCreateCommandPool_Old(void) {
+    if (0) {
                 _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create empty Vulkan buffer.");
                 local_err = SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
                 memset(&buffer, 0, sizeof(buffer));
