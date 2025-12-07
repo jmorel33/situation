@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 19
+#define SITUATION_VERSION_PATCH 20
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -2544,6 +2544,32 @@ typedef struct {
     GLboolean cull_face;
     GLboolean scissor_test;
 } _SitGLStateBackup;
+
+// [Phase 2.5] Lazy VAO Cache Entry
+typedef struct _SitGLVaoCacheEntry {
+    uint64_t mesh_id;               // Key: The mesh ID (which matches VBO ID)
+    GLuint vao_id;                  // Value: The VAO configured for this mesh
+    struct _SitGLVaoCacheEntry* next; // Chaining for collisions
+} _SitGLVaoCacheEntry;
+
+// [Phase 2.5] Deferred Deletion Queue (Graveyard)
+typedef struct {
+    ma_mutex lock;                  // Thread safety for Main (Push) vs Render (Pop)
+
+    uint64_t* mesh_ids_to_clean;    // Mesh IDs (to clean VAO cache)
+    size_t mesh_count;
+    size_t mesh_capacity;
+
+    GLuint* buffers_to_delete;      // VBO/EBO/UBO IDs
+    size_t buffer_count;
+    size_t buffer_capacity;
+
+    GLuint* textures_to_delete;     // Texture IDs
+    size_t texture_count;
+    size_t texture_capacity;
+
+    // We can add shaders/programs if needed later
+} _SitGLDeletionQueue;
 #endif
 
 #if defined(SITUATION_USE_VULKAN)
@@ -2763,6 +2789,10 @@ typedef struct SituationGraveyard {
 
     // [Phase 2] Context Sharing for Threaded Rendering
     GLFWwindow* loader_window; // Invisible window for main-thread resource loading
+
+    // [Phase 2.5] Lazy VAO Cache & Graveyard
+    _SitGLVaoCacheEntry* vao_cache[256]; // Simple hash table
+    _SitGLDeletionQueue graveyard;
 } _SituationGLState;
 #endif // SITUATION_USE_OPENGL
 
@@ -3498,6 +3528,14 @@ static void _SituationCheckGLError(const char* location);
 static void _SitGLBackupState(_SitGLStateBackup* s);
 static void _SitGLRestoreState(_SitGLStateBackup* s);
 static void _SitGLInvalidateShadowState(void); // [2.3.14A]
+
+// [Phase 2.5]
+static GLuint _SitGLGetCachedVAO(SituationMesh mesh);
+static void _SitGLDeferDestroyBuffer(GLuint id);
+static void _SitGLDeferDestroyTexture(GLuint id);
+static void _SitGLDeferCleanMeshVAO(uint64_t mesh_id);
+static void _SitGLFlushGraveyard(void);
+
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
 // Forward declare the SPIR-V blob struct as it's used here
 struct _SituationSpirvBlob;
@@ -5121,6 +5159,180 @@ static void _SitGLInvalidateShadowState(void) {
     sit_render.gl.shadow_state_dirty = true;
 }
 
+// [Phase 2.5]
+static GLuint _SitGLGetCachedVAO(SituationMesh mesh) {
+    if (mesh.id == 0) return 0;
+
+    // 1. Check Cache
+    // Hash is trivial since id is u64. Use simple mod.
+    int bucket = (int)(mesh.id % 256);
+    _SitGLVaoCacheEntry* entry = sit_render.gl.vao_cache[bucket];
+    while (entry) {
+        if (entry->mesh_id == mesh.id) return entry->vao_id;
+        entry = entry->next;
+    }
+
+    // 2. Not Found -> Create
+    GLuint vao;
+    glCreateVertexArrays(1, &vao);
+
+    // Configure VAO Layout based on Stride (matches SituationCreateMesh logic)
+    // Legacy (32-byte): Pos(0), Norm(1), UV(2)
+    // PBR (48-byte): Pos(0), Norm(1), Tan(4), UV(2)
+
+    // Binding Index 0 for VBO
+    glVertexArrayVertexBuffer(vao, 0, mesh.vbo_id, 0, (GLsizei)mesh.vertex_stride);
+    glVertexArrayElementBuffer(vao, mesh.ebo_id);
+
+    // Pos (0) - Always present
+    glEnableVertexArrayAttrib(vao, SIT_ATTR_POSITION);
+    glVertexArrayAttribFormat(vao, SIT_ATTR_POSITION, 3, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(vao, SIT_ATTR_POSITION, 0);
+
+    // Norm (1) - Always present
+    glEnableVertexArrayAttrib(vao, SIT_ATTR_NORMAL);
+    glVertexArrayAttribFormat(vao, SIT_ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float));
+    glVertexArrayAttribBinding(vao, SIT_ATTR_NORMAL, 0);
+
+    if (mesh.vertex_stride == 48) {
+        // PBR Layout
+        // Tan (4)
+        glEnableVertexArrayAttrib(vao, SIT_ATTR_TANGENT);
+        glVertexArrayAttribFormat(vao, SIT_ATTR_TANGENT, 4, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
+        glVertexArrayAttribBinding(vao, SIT_ATTR_TANGENT, 0);
+
+        // UV (2)
+        glEnableVertexArrayAttrib(vao, SIT_ATTR_TEXCOORD_0);
+        glVertexArrayAttribFormat(vao, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 10 * sizeof(float));
+        glVertexArrayAttribBinding(vao, SIT_ATTR_TEXCOORD_0, 0);
+    } else {
+        // Legacy Layout
+        // UV (2)
+        glEnableVertexArrayAttrib(vao, SIT_ATTR_TEXCOORD_0);
+        glVertexArrayAttribFormat(vao, SIT_ATTR_TEXCOORD_0, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
+        glVertexArrayAttribBinding(vao, SIT_ATTR_TEXCOORD_0, 0);
+    }
+
+    // 3. Add to Cache
+    _SitGLVaoCacheEntry* new_entry = (_SitGLVaoCacheEntry*)SIT_MALLOC(sizeof(_SitGLVaoCacheEntry));
+    if (new_entry) {
+        new_entry->mesh_id = mesh.id;
+        new_entry->vao_id = vao;
+        new_entry->next = sit_render.gl.vao_cache[bucket];
+        sit_render.gl.vao_cache[bucket] = new_entry;
+    }
+
+    return vao;
+}
+
+static void _SitGLDeferDestroyBuffer(GLuint id) {
+    if (id == 0) return;
+    ma_mutex_lock(&sit_render.gl.graveyard.lock);
+    if (sit_render.gl.graveyard.buffer_count >= sit_render.gl.graveyard.buffer_capacity) {
+        size_t new_cap = sit_render.gl.graveyard.buffer_capacity * 2;
+        sit_render.gl.graveyard.buffers_to_delete = (GLuint*)SIT_REALLOC(sit_render.gl.graveyard.buffers_to_delete, new_cap * sizeof(GLuint));
+        sit_render.gl.graveyard.buffer_capacity = new_cap;
+    }
+    sit_render.gl.graveyard.buffers_to_delete[sit_render.gl.graveyard.buffer_count++] = id;
+    ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+}
+
+static void _SitGLDeferDestroyTexture(GLuint id) {
+    if (id == 0) return;
+    ma_mutex_lock(&sit_render.gl.graveyard.lock);
+    if (sit_render.gl.graveyard.texture_count >= sit_render.gl.graveyard.texture_capacity) {
+        size_t new_cap = sit_render.gl.graveyard.texture_capacity * 2;
+        sit_render.gl.graveyard.textures_to_delete = (GLuint*)SIT_REALLOC(sit_render.gl.graveyard.textures_to_delete, new_cap * sizeof(GLuint));
+        sit_render.gl.graveyard.texture_capacity = new_cap;
+    }
+    sit_render.gl.graveyard.textures_to_delete[sit_render.gl.graveyard.texture_count++] = id;
+    ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+}
+
+static void _SitGLDeferCleanMeshVAO(uint64_t mesh_id) {
+    if (mesh_id == 0) return;
+    ma_mutex_lock(&sit_render.gl.graveyard.lock);
+    if (sit_render.gl.graveyard.mesh_count >= sit_render.gl.graveyard.mesh_capacity) {
+        size_t new_cap = sit_render.gl.graveyard.mesh_capacity * 2;
+        sit_render.gl.graveyard.mesh_ids_to_clean = (uint64_t*)SIT_REALLOC(sit_render.gl.graveyard.mesh_ids_to_clean, new_cap * sizeof(uint64_t));
+        sit_render.gl.graveyard.mesh_capacity = new_cap;
+    }
+    sit_render.gl.graveyard.mesh_ids_to_clean[sit_render.gl.graveyard.mesh_count++] = mesh_id;
+    ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+}
+
+static void _SitGLFlushGraveyard(void) {
+    // 1. Extract queues under lock
+    ma_mutex_lock(&sit_render.gl.graveyard.lock);
+
+    size_t buf_count = sit_render.gl.graveyard.buffer_count;
+    GLuint* bufs = sit_render.gl.graveyard.buffers_to_delete; // Steal pointer? No, might realloc.
+    // Better to copy or just process under lock?
+    // Processing GL calls under lock is fine if main thread is just pushing IDs.
+    // However, glDeleteBuffers is fast.
+
+    // Let's swap the arrays to minimize lock time
+    GLuint* temp_bufs = sit_render.gl.graveyard.buffers_to_delete;
+    size_t temp_buf_cap = sit_render.gl.graveyard.buffer_capacity;
+
+    GLuint* temp_texs = sit_render.gl.graveyard.textures_to_delete;
+    size_t temp_tex_count = sit_render.gl.graveyard.texture_count;
+    size_t temp_tex_cap = sit_render.gl.graveyard.texture_capacity;
+
+    uint64_t* temp_meshes = sit_render.gl.graveyard.mesh_ids_to_clean;
+    size_t temp_mesh_count = sit_render.gl.graveyard.mesh_count;
+    size_t temp_mesh_cap = sit_render.gl.graveyard.mesh_capacity;
+
+    // Reset struct with new small arrays
+    sit_render.gl.graveyard.buffer_capacity = 32;
+    sit_render.gl.graveyard.buffers_to_delete = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
+    sit_render.gl.graveyard.buffer_count = 0;
+
+    sit_render.gl.graveyard.texture_capacity = 32;
+    sit_render.gl.graveyard.textures_to_delete = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
+    sit_render.gl.graveyard.texture_count = 0;
+
+    sit_render.gl.graveyard.mesh_capacity = 32;
+    sit_render.gl.graveyard.mesh_ids_to_clean = (uint64_t*)SIT_MALLOC(32 * sizeof(uint64_t));
+    sit_render.gl.graveyard.mesh_count = 0;
+
+    ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+
+    // 2. Process Deletions
+    if (buf_count > 0 && temp_bufs) {
+        glDeleteBuffers((GLsizei)buf_count, temp_bufs);
+    }
+    if (temp_tex_count > 0 && temp_texs) {
+        glDeleteTextures((GLsizei)temp_tex_count, temp_texs);
+    }
+    if (temp_mesh_count > 0 && temp_meshes) {
+        for (size_t i = 0; i < temp_mesh_count; ++i) {
+            uint64_t id = temp_meshes[i];
+            int bucket = (int)(id % 256);
+            _SitGLVaoCacheEntry* entry = sit_render.gl.vao_cache[bucket];
+            _SitGLVaoCacheEntry* prev = NULL;
+            while (entry) {
+                if (entry->mesh_id == id) {
+                    if (prev) prev->next = entry->next;
+                    else sit_render.gl.vao_cache[bucket] = entry->next;
+
+                    glDeleteVertexArrays(1, &entry->vao_id);
+                    SIT_FREE(entry);
+                    break;
+                }
+                prev = entry;
+                entry = entry->next;
+            }
+        }
+    }
+
+    // 3. Free temp arrays
+    if (temp_bufs) SIT_FREE(temp_bufs);
+    if (temp_texs) SIT_FREE(temp_texs);
+    if (temp_meshes) SIT_FREE(temp_meshes);
+}
+
+
 /**
  * @brief [INTERNAL] Checks for and logs any pending OpenGL errors.
  *
@@ -6232,20 +6444,13 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
 
             case SIT_OP_DRAW_MESH:
                 {
-                    // [2.3.19] Use Shared Mesh VAO
-                    GLuint vao = sit_render.gl.mesh_vao_id;
-                    glBindVertexArray(vao);
-
-                    // Bind the mesh-specific buffers to the shared VAO
-                    // Binding Point 0 matches the layout configured in InitOpenGL
-                    glVertexArrayVertexBuffer(vao, 0,
-                                              p->args.draw_mesh.mesh.vbo_id,
-                                              0,
-                                              (GLsizei)p->args.draw_mesh.mesh.vertex_stride);
-                    glVertexArrayElementBuffer(vao, p->args.draw_mesh.mesh.ebo_id);
-
-                    sit_render.gl.current_vao_id = vao;
-                    glDrawElements(GL_TRIANGLES, p->args.draw_mesh.mesh.index_count, GL_UNSIGNED_INT, (void*)0);
+                    // [Phase 2.5] Use Lazy Cache for VAOs
+                    GLuint vao = _SitGLGetCachedVAO(p->args.draw_mesh.mesh);
+                    if (vao) {
+                        glBindVertexArray(vao);
+                        sit_render.gl.current_vao_id = vao;
+                        glDrawElements(GL_TRIANGLES, p->args.draw_mesh.mesh.index_count, GL_UNSIGNED_INT, (void*)0);
+                    }
 
                     // [CRITICAL] Restore global VAO state for subsequent generic draw calls
                     glBindVertexArray(sit_render.gl.global_vao_id);
@@ -6726,6 +6931,24 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
 #endif
     // Standard GL framebuffers can usually handle 10-bit if requested
     sit_render.enabled_features_mask |= SIT_FEATURE_HDR_OUTPUT;
+
+    // [Phase 2.5] Initialize VAO Cache & Graveyard
+    // Zero cache is handled by SIT_CALLOC of context.
+    // Initialize Graveyard
+    if (ma_mutex_init(&sit_render.gl.graveyard.lock) != MA_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to init GL graveyard mutex.");
+        return SITUATION_ERROR_INIT_FAILED;
+    }
+    // Pre-allocate arrays
+    sit_render.gl.graveyard.mesh_capacity = 32;
+    sit_render.gl.graveyard.mesh_ids_to_clean = (uint64_t*)SIT_MALLOC(32 * sizeof(uint64_t));
+    sit_render.gl.graveyard.buffer_capacity = 32;
+    sit_render.gl.graveyard.buffers_to_delete = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
+    sit_render.gl.graveyard.texture_capacity = 32;
+    sit_render.gl.graveyard.textures_to_delete = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
+    if (!sit_render.gl.graveyard.mesh_ids_to_clean || !sit_render.gl.graveyard.buffers_to_delete || !sit_render.gl.graveyard.textures_to_delete) {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
 
     // [Phase 2] Initialize Threading & Context Handover
     #if !defined(__STDC_NO_THREADS__)
@@ -11057,6 +11280,25 @@ static void _SituationCleanupOpenGL(void) {
     if (sit_render.gl.composite_copy_texture_id != 0) glDeleteTextures(1, &sit_render.gl.composite_copy_texture_id);
     if (sit_render.gl.view_data_ubo_id != 0) glDeleteBuffers(1, &sit_render.gl.view_data_ubo_id);
 
+    // [Phase 2.5] Cleanup VAO Cache
+    for (int i = 0; i < 256; i++) {
+        _SitGLVaoCacheEntry* entry = sit_render.gl.vao_cache[i];
+        while (entry) {
+            _SitGLVaoCacheEntry* next = entry->next;
+            if (entry->vao_id) glDeleteVertexArrays(1, &entry->vao_id);
+            SIT_FREE(entry);
+            entry = next;
+        }
+        sit_render.gl.vao_cache[i] = NULL;
+    }
+
+    // Cleanup Graveyard
+    if (sit_render.gl.graveyard.mesh_ids_to_clean) SIT_FREE(sit_render.gl.graveyard.mesh_ids_to_clean);
+    if (sit_render.gl.graveyard.buffers_to_delete) SIT_FREE(sit_render.gl.graveyard.buffers_to_delete);
+    if (sit_render.gl.graveyard.textures_to_delete) SIT_FREE(sit_render.gl.graveyard.textures_to_delete);
+    ma_mutex_uninit(&sit_render.gl.graveyard.lock);
+    memset(&sit_render.gl.graveyard, 0, sizeof(sit_render.gl.graveyard));
+
     // Cleanup Soft Command Buffers
     for (int i = 0; i < SITUATION_VULKAN_MAX_FRAMES_IN_FLIGHT; i++) {
         if (sit_render.gl.soft_buffers[i].packets) SIT_FREE(sit_render.gl.soft_buffers[i].packets);
@@ -13995,9 +14237,8 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
 #if defined(SITUATION_USE_OPENGL)
     {
         // --- 3. OpenGL Destruction ---
-        glDeleteTextures(1, &texture->gl_texture_id);
-        SIT_CHECK_GL_ERROR();
-        // Note: OpenGL driver handles resource lifecycle.
+        // [Phase 2.5] Defer destruction
+        _SitGLDeferDestroyTexture(texture->gl_texture_id);
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -14563,9 +14804,8 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
     // --- 3. Backend-Specific Destruction ---
 #if defined(SITUATION_USE_OPENGL)
     {
-        // For OpenGL, we simply delete the buffer name. The driver manages the memory.
-        glDeleteBuffers(1, &buffer->gl_buffer_id);
-        SIT_CHECK_GL_ERROR(); // Check for errors, e.g., if the context was lost.
+        // [Phase 2.5] Defer destruction
+        _SitGLDeferDestroyBuffer(buffer->gl_buffer_id);
     }
 #elif defined(SITUATION_USE_VULKAN)
     {
@@ -14760,10 +15000,13 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
     // --- 3. Backend-Specific Destruction ---
 #if defined(SITUATION_USE_OPENGL)
     {
-        // For OpenGL, just delete the buffers.
-        glDeleteBuffers(1, &mesh->vbo_id);
-        glDeleteBuffers(1, &mesh->ebo_id);
-        SIT_CHECK_GL_ERROR();
+        // [Phase 2.5] Defer destruction to avoid race with Render Thread
+        // 1. Queue VAO cleanup (using mesh.id)
+        _SitGLDeferCleanMeshVAO(mesh->id);
+
+        // 2. Queue Buffer cleanup
+        _SitGLDeferDestroyBuffer(mesh->vbo_id);
+        _SitGLDeferDestroyBuffer(mesh->ebo_id);
     }
 #elif defined(SITUATION_USE_VULKAN)
     {
@@ -27373,6 +27616,9 @@ static int _SituationRenderThreadEntry(void* arg) {
         // 2. Present
         // Note: If using VSync, this blocks! This is why we are on a separate thread.
         glfwSwapBuffers(sit_gs.sit_glfw_window);
+
+        // 3. [Phase 2.5] Flush Graveyard
+        _SitGLFlushGraveyard();
 
         #elif defined(SITUATION_USE_VULKAN)
         VkCommandBuffer cmd = sit_render.vk.command_buffers[frame_index];
