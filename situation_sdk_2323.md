@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.22 "Velocity" |
+| **Version** | 2.3.23 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -37,15 +37,23 @@ The library is engineered around three architectural pillars:
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
 
+### New in v2.3.23 "Velocity" (Multi-Queue & Metrics)
+
+This release focuses on advanced hardware utilization and observability, bringing professional profiling tools directly into the API.
+
+**Key Enhancements:**
+*   **Built-in Metrics Overlay:** Introduced `SituationDrawMetricsOverlay(cmd, position, color)`. This single call renders a professional-grade performance HUD displaying FPS, Frame Time, Render Queue Depth, Latency (avg/max), Draw Calls, Triangle Count, and VRAM usage. It uses the internal text batcher for zero-allocation rendering.
+*   **Multi-Queue Synchronization (Vulkan):** The backend now automatically configures resources with `VK_SHARING_MODE_CONCURRENT` when distinct Graphics and Compute queues are detected. This eliminates the need for complex manual Queue Family Ownership Transfers and barriers, ensuring seamless resource sharing between compute and graphics operations.
+*   **ARM64 Optimizations:** Added `__yield()` intrinsic support for Windows on ARM64 (`_M_ARM64`). This ensures that spin-locks on Snapdragon X Elite devices yield execution resources correctly, preventing battery drain and thermal throttling during synchronization waits.
+
 ### New in v2.3.22 "Velocity" (Backpressure & Metrics Hotfix)
 
 This release focuses on resilience under load and smoother integration for complex rendering pipelines.
 
 **Key Enhancements:**
-*   **Momentum Bridge (Render Lists):** Introduced `SituationSubmitRenderList()` to streamline the submission of recorded command lists (Momentum style). This bridges the gap between manual list management and the Render Thread's execution model, allowing developers to submit entire atomic lists of commands with a single call.
-*   **Hybrid Backpressure:** The backpressure system (which prevents the CPU from outrunning the GPU) now employs a smarter hybrid strategy. It uses spin-loops with pause hints (`_mm_pause` / `__yield`) for short waits, falling back to OS sleeps for longer delays. This significantly reduces CPU usage during VSync waits while maintaining low latency.
-*   **Drift-Proof Metrics:** Added `SituationGetRenderLatencyStats(avg, max)` which uses monotonic clocks (`CLOCK_MONOTONIC` / `QPC`) to provide rock-solid latency measurements, immune to system time changes or drift.
-*   **ARM64 Support:** Added proper `__yield()` support for Windows on ARM (`_M_ARM64`) builds, ensuring correct spin-loop behavior on Snapdragon devices.
+*   **Momentum Bridge (Render Lists):** Introduced `SituationSubmitRenderList()` to streamline the submission of recorded command lists.
+*   **Hybrid Backpressure:** The backpressure system now employs a smarter hybrid strategy (Spin + Sleep) to reduce CPU usage during VSync waits while maintaining low latency.
+*   **Drift-Proof Metrics:** Added `SituationGetRenderLatencyStats(avg, max)` which uses monotonic clocks (`CLOCK_MONOTONIC` / `QPC`) to provide rock-solid latency measurements.
 
 ### New in v2.3.21 "Velocity" (Render Thread Polish)
 
@@ -210,6 +218,8 @@ Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on
     - [Compute Pipelines](#compute-pipelines)
     - [Storage Buffers (SSBOs)](#storage-buffers-ssbos)
     - [Dispatch & Synchronization Barriers](#dispatch--synchronization-barriers)
+  - [3.8 Debugging & Profiling](#38-debugging--profiling)
+  - [3.9 Text Rendering](#39-text-rendering)
 - [4.0 Audio Engine](#40-audio-engine)
   - [4.1 Audio Context & Device Management](#41-audio-context)
     - [4.1.1 Device Enumeration](#411-device-enumeration)
@@ -2365,6 +2375,124 @@ Miss a barrier? Debug aborts with "Memory Hazard: Compute wrote SSBO, Vertex rea
 | **Compute Write → Compute Read** | Multi-pass physics | `SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE, SITUATION_BARRIER_COMPUTE_SHADER_READ)` |
 
 > **Titanium Tip:** OpenGL emulates barriers as `glMemoryBarrier`—costs cycles. Vulkan barriers are often free (execution dependency only).
+
+**Multi-Queue Synchronization (v2.3.23):**
+On systems where Compute and Graphics run on different Queue Families (e.g., AMD async compute), `SituationCmdPipelineBarrier` automatically handles the **Queue Family Ownership Transfer**. It injects the required release barrier on the source queue and acquire barrier on the destination queue, ensuring the memory is visible and available to the target engine.
+
+<a id="38-debugging--profiling"></a>
+
+## 3.8 Debugging & Profiling
+
+Profiling is not optional. Situation provides built-in tools to visualize performance metrics directly within your application, bypassing the need for external overlays (like RTSS) during development.
+
+### 3.8.1 The Metrics Overlay
+
+#### SituationDrawMetricsOverlay
+
+```c:disable-run
+void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 position, ColorRGBA color);
+```
+
+**Behavior:**
+Renders a compact, semi-transparent HUD at the specified screen coordinates using the provided color tint. It displays real-time statistics gathered by the internal profiler.
+
+**Metrics Displayed:**
+*   **FPS:** Current Frames Per Second.
+*   **Frame Time:** CPU wall-clock time per frame (ms).
+*   **Queue:** Render Queue Depth (Backpressure indicator). e.g., "0/2" is good, "2/2" means CPU is waiting for GPU.
+*   **Latency:** Average and Maximum input-to-present latency (ms). Drift-proof via `CLOCK_MONOTONIC`.
+*   **Draws:** Number of draw calls issued this frame.
+*   **Tris:** Number of triangles submitted.
+*   **VRAM:** Current GPU memory usage.
+
+**Usage:**
+
+```c:disable-run
+SituationCmdBeginRenderPass(cmd, &screen_pass);
+    // Draw Game...
+
+    // Draw HUD on top (White text at 10,10)
+    if (show_debug_stats) {
+        SituationDrawMetricsOverlay(cmd, (Vector2){10.0f, 10.0f}, (ColorRGBA){255, 255, 255, 255});
+    }
+SituationCmdEndRenderPass(cmd);
+```
+
+<a id="39-text-rendering"></a>
+
+## 3.9 Text Rendering
+
+Situation provides a high-performance, GPU-accelerated text rendering system suitable for real-time UIs, debug displays, and game text. Unlike the CPU-side `SituationImageDrawText` (which modifies pixel data), this system uses a **Font Atlas** and batched quad rendering to draw text directly to the command buffer with zero per-frame allocation.
+
+### 3.9.1 The Font Workflow
+
+To render text, you must first prepare a font atlas. This converts vector glyphs (TTF/OTF) into a GPU-compatible texture.
+
+1.  **Load:** Load the font file into memory.
+2.  **Bake:** Rasterize the glyphs into a texture atlas.
+3.  **Draw:** Record draw commands using the atlas.
+
+**Snippet Supreme: Text Setup**
+```c:disable-run
+// 1. Load Font
+SituationFont font = SituationLoadFont("assets/fonts/Inter-Regular.ttf");
+
+// 2. Bake Atlas (e.g., 24px height)
+// This creates the GPU texture and calculates UVs
+if (!SituationBakeFontAtlas(&font, 24.0f)) {
+    printf("Failed to bake font atlas.\n");
+}
+
+// ... Main Loop ...
+if (SituationAcquireFrameCommandBuffer()) {
+    SituationCmdBeginRenderPass(cmd, &pass);
+        // 3. Draw
+        SituationCmdDrawText(cmd, font, "Hello World", (Vector2){10, 10}, WHITE);
+    SituationCmdEndRenderPass(cmd);
+    SituationEndFrame();
+}
+
+// 4. Cleanup
+SituationUnloadFont(font); // Destroys texture and CPU data
+```
+
+### 3.9.2 Drawing Text
+
+#### SituationCmdDrawText
+
+```c:disable-run
+void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color);
+```
+
+**Behavior:** Draws a string using the font's baked size and standard spacing.
+**Performance:** Commands are batched. You can call this hundreds of times per frame with minimal overhead.
+
+#### SituationCmdDrawTextEx (Advanced)
+
+```c:disable-run
+void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color);
+```
+
+**Features:**
+*   **Scaling:** `fontSize` allows you to scale the text. Note that since this uses a baked bitmap atlas, scaling up significantly beyond the baked size will look pixelated (linear filtering) or blocky (nearest). Scaling down works well.
+*   **Spacing:** Adjust the tracking (horizontal space) between characters.
+
+**Example:**
+```c:disable-run
+// Draw text at 2x size with wide spacing
+SituationCmdDrawTextEx(cmd, font, "BIG TEXT", (Vector2){100, 100}, 48.0f, 2.0f, RED);
+```
+
+### 3.9.3 The Default Font
+
+If you need quick debug text without loading assets, the library provides a built-in 8x8 pixel-art font (Code Page 437).
+
+**Usage:** Simply pass a zeroed `SituationFont` struct to the draw commands.
+
+```c:disable-run
+SituationFont defaultFont = {0}; // Triggers default font fallback
+SituationCmdDrawText(cmd, defaultFont, "Debug Info", (Vector2){10, 10}, GREEN);
+```
 
 <a id="40-audio-engine"></a>
 

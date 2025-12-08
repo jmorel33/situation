@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.22 "Velocity"_
+_Core API library v2.3.23 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Version 2.3.22** introduces **Momentum Bridge** (Render Lists) and **Hybrid Backpressure**, fortifying the threading architecture for heavy workloads. It adds robust **Latency Stats** for drift-proof monitoring and extends platform support to Windows ARM64.
+Current Version: **v2.3.23 "Velocity"**
+
+**Version 2.3.23** introduces **Multi-Queue Synchronization** (Vulkan) for overlapping compute and graphics workloads, **ARM64 Optimizations** (WFE/Yield) for battery-efficient spinning, and a built-in **Metrics Overlay** for instant performance visibility. It builds upon the **Momentum Bridge** and **Hybrid Backpressure** introduced in v2.3.22.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Momentum Phase 3:** Complete multi-threaded rendering replay optimization.
@@ -282,7 +284,7 @@ This library does not use garbage collection.
 
 The documentation for "Situation" is split into two key documents:
 
-1.  [**Core API Library Reference Manual (situation_sdk_2322.md)**](situation_sdk_2322.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
+1.  [**Core API Library Reference Manual (situation_sdk_2323.md)**](situation_sdk_2323.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
 2.  [**Situation API Programming Guide (situation_api.md)**](situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
 
 </details>
