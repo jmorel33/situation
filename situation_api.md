@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.22 "Velocity"_
+_Core API library v2.3.23 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -26,7 +26,7 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 ---
 
-# Situation v2.3.22 API Programming Guide
+# Situation v2.3.23 API Programming Guide
 
 "Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
 
@@ -839,60 +839,27 @@ printf("GPU: %s\n", gpu_name);
 
 ---
 #### `SituationGetVRAMUsage`
-Gets the estimated total and used Video RAM (VRAM) in bytes. This is a best-effort query and may not be perfectly accurate on all platforms.
+Gets the estimated total Video RAM (VRAM) usage in bytes. This is a best-effort query and may not be perfectly accurate on all platforms.
 ```c
-SITAPI void SituationGetVRAMUsage(uint64_t* out_total_bytes, uint64_t* out_used_bytes);
+SITAPI uint64_t SituationGetVRAMUsage(void);
 ```
 **Usage Example:**
 ```c
-uint64_t total_vram, used_vram;
-SituationGetVRAMUsage(&total_vram, &used_vram);
-printf("VRAM Usage: %.2f MB / %.2f MB\n",
-       (double)used_vram / (1024.0 * 1024.0),
-       (double)total_vram / (1024.0 * 1024.0));
+uint64_t vram_usage = SituationGetVRAMUsage();
+printf("VRAM Usage: %.2f MB\n", (double)vram_usage / (1024.0 * 1024.0));
 ```
 
 ---
 #### `SituationGetDrawCallCount`
 Gets the number of draw calls submitted in the last completed frame. This is a key performance metric for identifying rendering bottlenecks.
 ```c
-SITAPI int SituationGetDrawCallCount(void);
+SITAPI uint32_t SituationGetDrawCallCount(void);
 ```
 **Usage Example:**
 ```c
 // In the update loop, display the draw call count in the window title.
 char title[256];
-sprintf(title, "My App | FPS: %d | Draw Calls: %d",
-        SituationGetFPS(), SituationGetDrawCallCount());
-SituationSetWindowTitle(title);
-```
-
----
-#### `SituationGetVRAMUsage`
-Gets the estimated total and used Video RAM (VRAM) in bytes. This is a best-effort query and may not be perfectly accurate on all platforms.
-```c
-SITAPI void SituationGetVRAMUsage(uint64_t* out_total_bytes, uint64_t* out_used_bytes);
-```
-**Usage Example:**
-```c
-uint64_t total_vram, used_vram;
-SituationGetVRAMUsage(&total_vram, &used_vram);
-printf("VRAM Usage: %.2f MB / %.2f MB\n",
-       (double)used_vram / (1024.0 * 1024.0),
-       (double)total_vram / (1024.0 * 1024.0));
-```
-
----
-#### `SituationGetDrawCallCount`
-Gets the number of draw calls submitted in the last completed frame. This is a key performance metric for identifying rendering bottlenecks.
-```c
-SITAPI int SituationGetDrawCallCount(void);
-```
-**Usage Example:**
-```c
-// In the update loop, display the draw call count in the window title.
-char title[256];
-sprintf(title, "My App | FPS: %d | Draw Calls: %d",
+sprintf(title, "My App | FPS: %d | Draw Calls: %u",
         SituationGetFPS(), SituationGetDrawCallCount());
 SituationSetWindowTitle(title);
 ```

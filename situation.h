@@ -1947,6 +1947,9 @@ SITAPI size_t SituationGetRenderQueueDepth(void);                               
 SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);         // Get render thread latency metrics
 #endif
 
+// [v2.3.23] Debug Overlay
+SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 position, ColorRGBA color); // Draws FPS, Latency, and Memory stats
+
 // --- Frame Lifecycle & Command Buffer ---
 SITAPI bool SituationAcquireFrameCommandBuffer(void);                                   // Prepare the backend for a new frame of rendering commands.
 SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void);                      // Get the primary command buffer for the current frame.
@@ -1971,6 +1974,7 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
 SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);                     // Begins a render pass with detailed configuration.
 SITAPI void SituationCmdEndRenderPass(SituationCommandBuffer cmd);                                                                      // Ends the current render pass.
 SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color);		// Draws a text string using GPU-accelerated textured quads.
+SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color); // Advanced text drawing (scaling/spacing).
 SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture);  // Submits a command to copy a texture to the main window's swapchain (Compute-Only).
 SITAPI SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture); // Binds a texture as a sampled image (sampler2D) to a binding point.
 
@@ -2875,6 +2879,7 @@ typedef enum {
     SIT_OP_BIND_COMPUTE_PIPELINE,
     SIT_OP_PRESENT,
     SIT_OP_DRAW_TEXT, // Special op for deferred text drawing
+    SIT_OP_DRAW_TEXT_EX, // [v2.3.23] Extended text op
     SIT_OP_UPDATE_BUFFER,
     SIT_OP_SET_VERTEX_ATTRIBUTE,
     SIT_OP_SET_UNIFORM
@@ -2899,6 +2904,7 @@ typedef struct {
         struct { uint32_t x, y, z; } dispatch;
         struct { SituationTexture texture; int target_w; int target_h; } present;
         struct { SituationFont font; Vector2 pos; ColorRGBA color; size_t text_offset; } draw_text; // Store text in data_buffer
+        struct { SituationFont font; Vector2 pos; float fontSize; float spacing; ColorRGBA color; size_t text_offset; } draw_text_ex; // [v2.3.23]
         struct { uint64_t buffer_id; size_t offset; size_t size; size_t data_offset; } update_buffer;
         struct { uint32_t location; int size; int type; int normalized; size_t offset; } set_vertex_attr;
         struct { uint64_t shader_id; GLint location; int type; size_t data_offset; } set_uniform;
@@ -7095,12 +7101,29 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                 break;
 
             case SIT_OP_DRAW_TEXT:
+            case SIT_OP_DRAW_TEXT_EX:
                 #if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
                 {
-                    const char* text = (const char*)(buf->data_buffer + p->args.draw_text.text_offset);
-                    SituationFont font = p->args.draw_text.font;
-                    Vector2 pos = p->args.draw_text.pos;
-                    ColorRGBA color = p->args.draw_text.color;
+                    const char* text;
+                    SituationFont font;
+                    Vector2 pos;
+                    ColorRGBA color;
+                    float fontSize = 0.0f;
+                    float spacing = 0.0f;
+
+                    if (p->opcode == SIT_OP_DRAW_TEXT) {
+                         text = (const char*)(buf->data_buffer + p->args.draw_text.text_offset);
+                         font = p->args.draw_text.font;
+                         pos = p->args.draw_text.pos;
+                         color = p->args.draw_text.color;
+                    } else {
+                         text = (const char*)(buf->data_buffer + p->args.draw_text_ex.text_offset);
+                         font = p->args.draw_text_ex.font;
+                         pos = p->args.draw_text_ex.pos;
+                         color = p->args.draw_text_ex.color;
+                         fontSize = p->args.draw_text_ex.fontSize;
+                         spacing = p->args.draw_text_ex.spacing;
+                    }
 
                     size_t len = strlen(text);
                     if (len == 0) break;
@@ -7122,6 +7145,12 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
 
                     bool is_grid_font = (font.glyph_info == NULL && font.atlas_texture.id == sit_render.default_font.atlas_texture.id);
 
+                    // Use provided font size or default to font's native size
+                    float target_size = (fontSize > 0.0f) ? fontSize : font.font_height_pixels;
+                    // For grid font, scale ratio. For STB, it's baked, so we can't easily rescale without artifacts unless signed distance field.
+                    // But for simple scaling (like pixel art), scaling the quad is fine.
+                    float scale_factor = (font.font_height_pixels > 0.0f) ? (target_size / font.font_height_pixels) : 1.0f;
+
                     for (size_t k = 0; k < len; k++) {
                         if (is_grid_font) {
                             unsigned char c = (unsigned char)text[k];
@@ -7133,12 +7162,14 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                                 float u1 = (col + 1) / 16.0f;
                                 float v1 = (row + 1) / 8.0f;
 
+                                float size_px = 8.0f * scale_factor;
                                 float qx0 = x;
                                 float qy0 = y;
-                                float qx1 = x + 8.0f;
-                                float qy1 = y + 8.0f;
+                                float qx1 = x + size_px;
+                                float qy1 = y + size_px;
 
-                                x += 8.0f;
+                                // Advance
+                                x += size_px + spacing;
 
                                 vertices[v_idx++] = qx0; vertices[v_idx++] = qy0; vertices[v_idx++] = u0; vertices[v_idx++] = v0;
                                 vertices[v_idx++] = qx0; vertices[v_idx++] = qy1; vertices[v_idx++] = u0; vertices[v_idx++] = v1;
@@ -7150,11 +7181,31 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                             }
                         }
                         else if (text[k] >= 32 && text[k] < 128) {
+                            float x_before = x;
                             stbtt_aligned_quad q;
                             stbtt_GetBakedQuad(cdata, font.atlas_width, font.atlas_height, text[k] - 32, &x, &y, &q, 1);
+
+                            if (scale_factor != 1.0f || spacing != 0.0f) {
+                                float w = q.x1 - q.x0;
+                                float h = q.y1 - q.y0;
+                                float y_off = q.y0 - y;
+
+                                float x0 = x_before + (q.x0 - x_before) * scale_factor;
+                                float y0 = y + y_off * scale_factor;
+                                float x1 = x0 + w * scale_factor;
+                                float y1 = y0 + h * scale_factor;
+
+                                q.x0 = x0; q.y0 = y0;
+                                q.x1 = x1; q.y1 = y1;
+
+                                float advance = x - x_before;
+                                x = x_before + (advance * scale_factor) + spacing;
+                            }
+
                             vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t0;
                             vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t1;
                             vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t0;
+
                             vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t0;
                             vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t1;
                             vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t1;
@@ -13885,6 +13936,10 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
  * @note Requires a valid orthographic projection matrix to be active in the view UBO (which `SituationAcquireFrameCommandBuffer` sets up by default).
  */
 SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color) {
+    SituationCmdDrawTextEx(cmd, font, text, pos, 0.0f, 0.0f, color);
+}
+
+SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color) {
     if (!SituationIsInitialized() || !text) return;
 
     // [v2.3.23] Default Debug Font Fallback
@@ -13919,12 +13974,14 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     if (!text_ptr) return;
     size_t text_offset = (size_t)((uint8_t*)text_ptr - buf->data_buffer);
 
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_TEXT);
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_TEXT_EX);
     if (p) {
-        p->args.draw_text.font = use_font;
-        p->args.draw_text.pos = pos;
-        p->args.draw_text.color = color;
-        p->args.draw_text.text_offset = text_offset;
+        p->args.draw_text_ex.font = use_font;
+        p->args.draw_text_ex.pos = pos;
+        p->args.draw_text_ex.color = color;
+        p->args.draw_text_ex.text_offset = text_offset;
+        p->args.draw_text_ex.fontSize = fontSize;
+        p->args.draw_text_ex.spacing = spacing;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -13949,6 +14006,9 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     stbtt_bakedchar* cdata = (stbtt_bakedchar*)use_font.glyph_info;
     int v_idx = 0;
 
+    float target_size = (fontSize > 0.0f) ? fontSize : use_font.font_height_pixels;
+    float scale_factor = (use_font.font_height_pixels > 0.0f) ? (target_size / use_font.font_height_pixels) : 1.0f;
+
     for (size_t i = 0; i < len; i++) {
         if (is_grid_font) {
             unsigned char c = (unsigned char)text[i];
@@ -13960,12 +14020,13 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
                 float u1 = (col + 1) / 16.0f;
                 float v1 = (row + 1) / 8.0f;
 
+                float size_px = 8.0f * scale_factor;
                 float qx0 = x;
                 float qy0 = y;
-                float qx1 = x + 8.0f;
-                float qy1 = y + 8.0f;
+                float qx1 = x + size_px;
+                float qy1 = y + size_px;
 
-                x += 8.0f;
+                x += size_px + spacing;
 
                 vertices[v_idx++] = qx0; vertices[v_idx++] = qy0; vertices[v_idx++] = u0; vertices[v_idx++] = v0;
                 vertices[v_idx++] = qx0; vertices[v_idx++] = qy1; vertices[v_idx++] = u0; vertices[v_idx++] = v1;
@@ -13977,8 +14038,26 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
             }
         }
         else if (text[i] >= 32 && text[i] < 128) {
+            float x_before = x;
             stbtt_aligned_quad q;
             stbtt_GetBakedQuad(cdata, use_font.atlas_width, use_font.atlas_height, text[i] - 32, &x, &y, &q, 1);
+
+            if (scale_factor != 1.0f || spacing != 0.0f) {
+                float w = q.x1 - q.x0;
+                float h = q.y1 - q.y0;
+                float y_off = q.y0 - y;
+
+                float x0 = x_before + (q.x0 - x_before) * scale_factor;
+                float y0 = y + y_off * scale_factor;
+                float x1 = x0 + w * scale_factor;
+                float y1 = y0 + h * scale_factor;
+
+                q.x0 = x0; q.y0 = y0;
+                q.x1 = x1; q.y1 = y1;
+
+                float advance = x - x_before;
+                x = x_before + (advance * scale_factor) + spacing;
+            }
 
             // Quad to 2 Triangles (CCW)
             vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t0;
@@ -14542,6 +14621,56 @@ SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns) {
     if (avg_ns) {
         uint64_t cnt = atomic_load(&sit_metric_latency_count);
         *avg_ns = cnt ? atomic_load(&sit_metric_latency_sum_ns) / cnt : 0;
+    }
+}
+
+SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 position, ColorRGBA color) {
+    if (!SituationIsInitialized()) return;
+
+    // Use the default font if no user font is bound/available
+    // SituationCmdDrawText handles default font fallback if user font is empty.
+    SituationFont font = {0};
+
+    char buffer[256];
+    float line_height = 10.0f; // 8x8 font + 2px padding
+    float y = position.y;
+
+    // 1. FPS & Frame Time
+    snprintf(buffer, sizeof(buffer), "FPS: %d  (%.2f ms)", sit_gs.current_fps, sit_gs.frame_time * 1000.0f);
+    SituationCmdDrawText(cmd, font, buffer, (Vector2){position.x, y}, color);
+    y += line_height;
+
+    // 2. Render Queue Depth (if threading)
+    #if defined(SITUATION_ENABLE_RENDER_THREAD)
+    if (sit_render.enabled) {
+        size_t depth = atomic_load(&sit_render.render_queue_depth);
+        snprintf(buffer, sizeof(buffer), "Queue Depth: %zu / %d", depth, SITUATION_MAX_FRAMES_IN_FLIGHT);
+        SituationCmdDrawText(cmd, font, buffer, (Vector2){position.x, y}, color);
+        y += line_height;
+    }
+    #endif
+
+    // 3. Latency
+    uint64_t avg_lat = 0, max_lat = 0;
+    #if defined(SITUATION_ENABLE_RENDER_THREAD)
+    SituationGetRenderLatencyStats(&avg_lat, &max_lat);
+    #endif
+    if (avg_lat > 0) {
+        snprintf(buffer, sizeof(buffer), "Lat: %.2f ms (Max: %.2f)", avg_lat / 1000000.0, max_lat / 1000000.0);
+        SituationCmdDrawText(cmd, font, buffer, (Vector2){position.x, y}, color);
+        y += line_height;
+    }
+
+    // 4. Draw Calls & Triangles
+    snprintf(buffer, sizeof(buffer), "Draws: %u  Tris: %u", sit_render.frame_draw_calls, sit_render.frame_triangle_count);
+    SituationCmdDrawText(cmd, font, buffer, (Vector2){position.x, y}, color);
+    y += line_height;
+
+    // 5. VRAM
+    uint64_t vram = SituationGetVRAMUsage();
+    if (vram > 0) {
+        snprintf(buffer, sizeof(buffer), "VRAM: %.2f MB", vram / (1024.0 * 1024.0));
+        SituationCmdDrawText(cmd, font, buffer, (Vector2){position.x, y}, color);
     }
 }
 
