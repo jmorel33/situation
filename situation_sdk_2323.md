@@ -3817,3 +3817,37 @@ Baseline performance targets for a "Titanium" grade application (Core i7 / GTX 1
 | **Texture Upload (4K)** | **N/A** | **~20ms** | Do this during load screens or async. |
 | **Shader Compile** | **N/A** | **~100ms** | Per shader. Cache your pipelines! |
 | **Hot-Reload Trigger** | **< 200ms** | **150ms** | Includes debounce and re-compile. |
+
+## Compatibility & Portability
+
+The Situation SDK is designed to be cross-platform, targeting Windows, Linux, and macOS. However, due to the header-only nature and bundled dependencies, there are specific considerations for each platform.
+
+### Linux Support
+*   **Compilation:** The library compiles cleanly on Linux with GCC/Clang.
+*   **Dependencies:** The repository includes a pre-compiled `libglfw3.a` in `ext/glfw/lib`, but this is a **Windows PE/COFF** binary. It will **not** link on Linux.
+*   **Resolution:** Linux users must link against their system's GLFW library.
+    *   **Debian/Ubuntu:** `sudo apt install libglfw3-dev`
+    *   **Build Flag:** Use `-lglfw` or `-lglfw3` instead of linking the bundled static library.
+    *   **Headers:** The bundled headers in `ext/glfw/include` are cross-platform and safe to use.
+
+### ARM64 Support (ARM Resilience)
+Version 2.3.23 "Velocity" introduces verified support for ARM64 architectures (e.g., Apple Silicon, Raspberry Pi 4/5, Linux ARM servers).
+
+*   **Spinlocks:** The internal backpressure mechanisms now utilize architecture-specific intrinsics for power-efficient waiting:
+    *   **x86_64:** `_mm_pause()`
+    *   **ARM64:** `__builtin_arm_wfe()` (Wait For Event) where supported, falling back to `__asm__ __volatile__("yield")`.
+*   **Vectorization:** The library relies on the compiler's auto-vectorization. `Vector` types are union-based and do not force specific SIMD alignment, ensuring compatibility with standard AAPCS64 calling conventions.
+
+### Compiler Support
+*   **C Standard:** Requires **C11** (`-std=c11`) for `threads.h` and anonymous unions.
+*   **Verified Compilers:**
+    *   **GCC:** 9.0+
+    *   **Clang:** 10.0+
+    *   **MSVC:** VS2019+ (C11 mode)
+
+### Graphics Backends
+*   **OpenGL:** Requires **OpenGL 4.6 Core Profile**.
+    *   *Note:* macOS does not support OpenGL 4.6 natively. macOS users must use the Vulkan backend (via MoltenVK) or remain on older versions of the library if OpenGL is strictly required.
+*   **Vulkan:** Requires **Vulkan 1.2+**.
+    *   Supports `bufferDeviceAddress` and descriptor indexing.
+    *   Requires `shaderc` for runtime shader compilation (optional if pre-compiled SPIR-V is used).
