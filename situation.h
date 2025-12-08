@@ -13939,6 +13939,23 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
     SituationCmdDrawTextEx(cmd, font, text, pos, 0.0f, 0.0f, color);
 }
 
+/**
+ * @brief Draws a text string using GPU-accelerated textured quads with extended styling.
+ * @details Records a batch of draw commands to render text using the internal text renderer pipeline.
+ *          This function supports custom font sizing and character spacing adjustments at runtime.
+ *
+ * @par Performance
+ * Vertices are generated on the CPU and uploaded to a dynamic vertex buffer (staging path on Vulkan, direct DSA on OpenGL).
+ * Characters are batched into a single draw call whenever possible.
+ *
+ * @param cmd The command buffer to record into.
+ * @param font The font to use. Must have been baked with `SituationBakeFontAtlas`.
+ * @param text The text string to render.
+ * @param pos The screen position (top-left) in pixels.
+ * @param fontSize The desired font height in pixels. Pass 0.0f to use the native baked size.
+ * @param spacing Additional spacing between characters in pixels. Can be negative.
+ * @param color The text color tint.
+ */
 SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color) {
     if (!SituationIsInitialized() || !text) return;
 
@@ -14104,6 +14121,24 @@ SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont fon
 #endif
 }
 
+/**
+ * @brief Submits a command to copy a texture to the main window's swapchain.
+ * @details This function is designed for Compute-Only applications or custom rendering pipelines where the final image is generated in a texture/image rather than drawn directly to the backbuffer via a Render Pass.
+ *          It effectively "presents" the texture by blitting it onto the swapchain's current image.
+ *
+ * @par Backend-Specific Behavior
+ * - **Vulkan:** Records a sequence of layout transitions and a `vkCmdBlitImage` command.
+ *   1. Transitions the Swapchain Image to `VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL`.
+ *   2. Transitions the Source Texture to `VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL`.
+ *   3. Blits the source to the swapchain (scaling if necessary).
+ *   4. Transitions the Swapchain Image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR` (ready for presentation).
+ *   5. Transitions the Source Texture back to `VK_IMAGE_LAYOUT_GENERAL` (ready for next compute frame).
+ *
+ * - **OpenGL:** Creates a temporary Framebuffer Object (FBO) attached to the source texture and performs a `glBlitNamedFramebuffer` to the default backbuffer (FBO 0).
+ *
+ * @param cmd The command buffer to record into.
+ * @param texture The source texture containing the frame to present. Must be valid.
+ */
 SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture) {
     if (!SituationIsInitialized()) return;
 
@@ -14159,6 +14194,18 @@ SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture tex
 #endif
 }
 
+/**
+ * @brief Retrieves the GPU device address of a buffer for bindless access.
+ * @details This function returns a 64-bit pointer (BDA) that can be passed to shaders to access the buffer directly, bypassing descriptor sets.
+ *          This is essential for modern "Bindless" rendering techniques and ray tracing.
+ *
+ * @par Backend-Specific Behavior
+ * - **Vulkan:** Returns the address via `vkGetBufferDeviceAddress`. Requires the `bufferDeviceAddress` feature to be enabled during initialization (handled automatically if supported).
+ * - **OpenGL:** Returns the address via `glGetNamedBufferParameterui64v` (NV_shader_buffer_load / EXT_buffer_reference). It also automatically ensures the buffer is made resident (`glMakeNamedBufferResidentNV`), which is required for the address to be valid.
+ *
+ * @param buffer The buffer handle to query.
+ * @return The 64-bit GPU address, or 0 if the feature is unsupported or the buffer is invalid.
+ */
 SITAPI uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer) {
     if (buffer.id == 0) return 0;
 
@@ -14186,6 +14233,17 @@ SITAPI uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer) {
     return 0;
 }
 
+/**
+ * @brief Retrieves a bindless texture handle for the given texture.
+ * @details Allows the texture to be accessed in shaders via a 64-bit handle (e.g., `sampler2D` can be constructed from a `uint64_t`), bypassing texture units.
+ *
+ * @par Backend-Specific Behavior
+ * - **OpenGL:** Uses `glGetTextureHandleARB` and ensures the handle is resident (`glMakeTextureHandleResidentARB`).
+ * - **Vulkan:** Currently returns 0 (Unimplemented). Vulkan bindless texturing typically uses Descriptor Indexing rather than raw 64-bit handles in the same way OpenGL does.
+ *
+ * @param texture The texture to query.
+ * @return A 64-bit bindless handle, or 0 if unsupported.
+ */
 SITAPI uint64_t SituationGetTextureHandle(SituationTexture texture) {
     if (texture.id == 0) return 0;
 
@@ -14208,6 +14266,16 @@ SITAPI uint64_t SituationGetTextureHandle(SituationTexture texture) {
     return 0;
 }
 
+/**
+ * @brief Binds a texture as a sampled image (sampler2D) to a specific binding point.
+ * @details This is a semantic alias for `SituationCmdBindTextureSet`, specifically intending usage as a sampled texture (vs storage).
+ *          It ensures clarity in user code when distiguishing between read-only textures and read-write images.
+ *
+ * @param cmd The command buffer.
+ * @param binding The shader binding point (set index).
+ * @param texture The texture to bind.
+ * @return SITUATION_SUCCESS on success.
+ */
 SITAPI SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture) {
     // Maps directly to the existing unified binding function
     return SituationCmdBindTextureSet(cmd, binding, texture);
@@ -14611,11 +14679,26 @@ SITAPI uint32_t SituationGetDrawCallCount(void) {
 }
 
 #if defined(SITUATION_ENABLE_RENDER_THREAD)
+/**
+ * @brief Retrieves the current depth of the render thread's command queue.
+ * @details This function returns the number of frames currently waiting to be processed by the render thread.
+ *          It is primarily used for implementing backpressure mechanisms to prevent the main thread from getting too far ahead of the GPU.
+ *
+ * @return The number of pending frames in the ring buffer. Returns 0 if threading is disabled or not initialized.
+ */
 SITAPI size_t SituationGetRenderQueueDepth(void) {
     if (!SituationIsInitialized() || !sit_render.enabled) return 0;
     return atomic_load(&sit_render.render_queue_depth);
 }
 
+/**
+ * @brief Retrieves latency metrics for the threaded renderer.
+ * @details Provides atomic snapshots of the time delta between frame submission (Main Thread) and frame execution (Render Thread).
+ *          Useful for diagnosing input lag or stall issues.
+ *
+ * @param[out] avg_ns Pointer to receive the average latency in nanoseconds. Can be NULL.
+ * @param[out] max_ns Pointer to receive the maximum recorded latency in nanoseconds. Can be NULL.
+ */
 SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns) {
     if (max_ns) *max_ns = atomic_load(&sit_render.max_render_latency_ns);
     if (avg_ns) {
@@ -14623,7 +14706,18 @@ SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns) {
         *avg_ns = cnt ? atomic_load(&sit_metric_latency_sum_ns) / cnt : 0;
     }
 }
+#endif
 
+/**
+ * @brief Renders a built-in debug overlay with performance statistics.
+ * @details Draws a lightweight textual overlay displaying FPS, Frame Time, Render Queue Depth,
+ *          Render Thread Latency, Draw Calls, Triangle Count, and VRAM usage.
+ *          Uses the internal debug font and requires no external assets.
+ *
+ * @param cmd The command buffer to record drawing commands into.
+ * @param position The top-left screen position to start drawing the text.
+ * @param color The text color.
+ */
 SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 position, ColorRGBA color) {
     if (!SituationIsInitialized()) return;
 
@@ -14675,6 +14769,15 @@ SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 posi
 }
 
 // [v2.3.22] Momentum Implementation
+
+/**
+ * @brief Creates a new Render List for recording and replaying graphics commands.
+ * @details Part of the **"Momentum"** module (v2.3.22). A Render List is a recorded sequence of draw commands that can be captured once and replayed many times.
+ *          This is useful for optimizing static geometry or UI elements, allowing them to be drawn without traversing the scene graph or issuing individual API calls every frame.
+ *
+ * @return A valid `SituationRenderList` handle, or NULL on allocation failure.
+ * @see SituationDestroyRenderList(), SituationReplayRenderList()
+ */
 SITAPI SituationRenderList SituationCreateRenderList(void) {
     SituationRenderList list = (SituationRenderList)SIT_CALLOC(1, sizeof(struct SituationRenderList_t));
     if (list) {
@@ -14690,6 +14793,10 @@ SITAPI SituationRenderList SituationCreateRenderList(void) {
     return list;
 }
 
+/**
+ * @brief Destroys a Render List and frees its recorded data.
+ * @param list The Render List handle to destroy.
+ */
 SITAPI void SituationDestroyRenderList(SituationRenderList list) {
     if (!list) return;
     if (list->packet_buffer) SIT_FREE(list->packet_buffer);
@@ -14697,6 +14804,11 @@ SITAPI void SituationDestroyRenderList(SituationRenderList list) {
     SIT_FREE(list);
 }
 
+/**
+ * @brief Clears a Render List, preparing it for new recording.
+ * @details Resets the internal write cursors but keeps the allocated memory buffers to minimize allocation overhead during re-recording.
+ * @param list The Render List to reset.
+ */
 SITAPI void SituationResetRenderList(SituationRenderList list) {
     if (!list) return;
     list->packet_count = 0;
@@ -14704,6 +14816,14 @@ SITAPI void SituationResetRenderList(SituationRenderList list) {
     list->is_recording = false;
 }
 
+/**
+ * @brief Replays the commands recorded in a Render List into the target command buffer.
+ * @details This function copies the recorded packet stream from the Render List into the active frame's command buffer.
+ *          This effectively "pastes" the draw calls into the current frame.
+ *
+ * @param cmd The target command buffer (e.g., the main frame buffer).
+ * @param list The source Render List containing the recorded commands.
+ */
 SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRenderList list) {
     if (!cmd || !list || list->packet_count == 0) return;
 #if defined(SITUATION_USE_OPENGL)
@@ -14746,6 +14866,13 @@ SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRende
 #endif
 }
 
+/**
+ * @brief Submits a Render List for execution in the current frame.
+ * @details This is a convenience wrapper. In the current implementation, it acts as an immediate replay of the list into the current frame's command buffer.
+ *          It is intended to support future asynchronous submission models.
+ *
+ * @param list The Render List to submit.
+ */
 SITAPI void SituationSubmitRenderList(SituationRenderList list) {
     if (!list || list->is_recording) {
         _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "List unfinished—wait gen job.");
