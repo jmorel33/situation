@@ -15,21 +15,7 @@ Hardens v2.3.23 MT: Race-free refcounts, FPS-relative adaptive policies, basic h
 ## VALIDATION
 *   <0.05ms overhead; TSan clean.
 --------------------------------------------------------------------------------
-Date: 2025-12-10
-Version: 2.3.24a "Safety Zenith"
 
-## DESCRIPTION
-Hardens v2.3.23 MT: Race-free refcounts, FPS-relative adaptive policies, basic histogram—leak-free, self-tuning queue.
-
-## SAFETY
-*   **Refcounts:** fetch_sub==1 flush—0 leaks 20k handoffs.
-*   **Adaptive:** Relative thresh (144Hz=6.9ms spike → SLEEP).
-
-## METRICS
-*   **Basic Histogram:** Sum/count avg; max atomic.
-
-## VALIDATION
-*   <0.05ms overhead; TSan clean.
 Date: 2025-12-09
 Version: 2.3.23 "Velocity" (Multi-Queue & ARM Hotfix)
 
