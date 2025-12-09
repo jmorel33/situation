@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 23
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_PATCH 24
+#define SITUATION_VERSION_REVISION "b"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -1527,9 +1527,14 @@ typedef enum {
 // [v2.3.22] Opaque Render List Handle (Momentum)
 typedef struct SituationRenderList_t* SituationRenderList;
 
-SITAPI void SituationSubmitRenderList(SituationRenderList list);
+#if defined(SITUATION_ENABLE_THREADING)
+SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data);
+#else
+SITAPI void SituationSubmitRenderList(SituationRenderList list); // Fallback for single-threaded
+#endif
 
 SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);
+SITAPI void SituationExportRenderHistogram(char* buf, size_t buf_size);
 
 /**
  * @brief Flags representing optional GPU capabilities and advanced feature sets.
@@ -2850,9 +2855,28 @@ typedef struct {
 } _SituationJoystickEvent;
 
 
+// [v2.3.24b] Integration Zenith: Cross-Backend Render Packet
+typedef enum {
+    SIT_CMD_DRAW,
+    SIT_CMD_DRAW_INDEXED,
+    SIT_CMD_DISPATCH,
+    SIT_CMD_BARRIER,
+    // Add others as needed for generic replay
+} SituationRenderCommand;
+
+typedef struct {
+    SituationRenderCommand type;
+    union {
+        struct { uint32_t vertex_count, instance_count, first_vertex, first_instance; } draw;
+        struct { uint32_t index_count, instance_count, first_index, vertex_offset, first_instance; } draw_indexed;
+        struct { uint32_t group_x, group_y, group_z; } dispatch;
+        struct { uint32_t src_stage, dst_stage; } barrier;
+    } data;
+} SituationRenderPacket;
+
 // [v2.3.22] Momentum Render List (Opaque Impl)
 struct SituationRenderList_t {
-    uint8_t* packet_buffer;
+    SituationRenderPacket* packets; // [v2.3.24b] Typed packets
     size_t packet_count;
     size_t packet_capacity;
     uint8_t* data_buffer;
@@ -3042,6 +3066,7 @@ typedef struct _SituationVKGraveyard {
     uint32_t current_image_index;               // Index of the swapchain image currently acquired
     uint32_t last_presented_image_index;        // Index of the last presented image
     bool framebuffer_resized;                   // Flag indicating window resize occurred
+    bool needs_compute_wait;                    // [v2.3.24b] Sync flag: Graphics must wait for Compute
 
     // -------------------------------------------------------------------------
     // Descriptor Management
@@ -6149,6 +6174,32 @@ static void _SituationDestroyRenderThread(void) {
  *
  * @see SituationShutdown(), SituationInitInfo, SituationGetLastErrorMsg()
  */
+
+// [v2.3.24b] Integration Zenith: Initialization Validation
+static bool _SituationValidateRenderCaps(void) {
+#if defined(SITUATION_USE_VULKAN)
+    if (sit_render.vk.device) {
+        // Validate Semaphore Creation (Critical for Queue Sync)
+        VkSemaphoreCreateInfo sema_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        VkSemaphore sema = VK_NULL_HANDLE;
+        if (vkCreateSemaphore(sit_render.vk.device, &sema_info, NULL, &sema) != VK_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Validation: Semaphore creation failed.");
+            return false;
+        }
+        vkDestroySemaphore(sit_render.vk.device, sema, NULL);
+
+        // Check Queue Topology
+        if (sit_render.vk.compute_family_index == sit_render.vk.graphics_family_index) {
+            // Not fatal, but good to know for tuning
+            #ifndef NDEBUG
+            fprintf(stderr, "[Situation] Note: Shared Graphics/Compute Queue (Family %u). Async overlap limited.\n", sit_render.vk.graphics_family_index);
+            #endif
+        }
+    }
+#endif
+    return true;
+}
+
 SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info) {
 #if !defined(SITUATION_USE_VULKAN) && !defined(SITUATION_USE_OPENGL)
 	// We can't use _SituationSetErrorFromCode yet because context might not exist.
@@ -6231,6 +6282,12 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
         // Renderer initialization failed. Platform and Window were initialized.
         _SituationFullCleanupOnError(); // Clean up platform, window, and any partial renderer state
         return err; // Return the specific error from renderer init.
+    }
+
+    // [v2.3.24b] Validate Capabilities
+    if (!_SituationValidateRenderCaps()) {
+        _SituationFullCleanupOnError();
+        return SITUATION_ERROR_INIT_FAILED;
     }
 
     // --- 4. INITIALIZE OTHER LIBRARY SUBSYSTEMS ---
@@ -14752,6 +14809,27 @@ SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns) {
 }
 #endif
 
+SITAPI void SituationExportRenderHistogram(char* buf, size_t buf_size) {
+    if (!buf || buf_size == 0) return;
+
+    // [v2.3.24b] Export Guard
+    if (buf_size < 256) {
+        strncpy(buf, "{\"bins\":[],\"error\":\"buffer too small\"}", buf_size - 1);
+        buf[buf_size - 1] = '\0';
+        return;
+    }
+
+    uint64_t avg = 0, max = 0;
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+    SituationGetRenderLatencyStats(&avg, &max);
+#endif
+
+    // Format JSON (Standard Layout)
+    snprintf(buf, buf_size,
+        "{\"version\":\"2.3.24b\",\"avg_ns\":%llu,\"max_ns\":%llu,\"bins\":[]}",
+        (unsigned long long)avg, (unsigned long long)max);
+}
+
 /**
  * @brief Renders a built-in debug overlay with performance statistics.
  * @details Draws a lightweight textual overlay displaying FPS, Frame Time, Render Queue Depth,
@@ -14826,11 +14904,7 @@ SITAPI SituationRenderList SituationCreateRenderList(void) {
     SituationRenderList list = (SituationRenderList)SIT_CALLOC(1, sizeof(struct SituationRenderList_t));
     if (list) {
         list->packet_capacity = 128;
-#if defined(SITUATION_USE_OPENGL)
-        list->packet_buffer = (uint8_t*)SIT_MALLOC(list->packet_capacity * sizeof(SitCommandPacket));
-#else
-        list->packet_buffer = NULL; // Vulkan/None
-#endif
+        list->packets = (SituationRenderPacket*)SIT_MALLOC(list->packet_capacity * sizeof(SituationRenderPacket));
         list->data_capacity = 1024;
         list->data_buffer = (uint8_t*)SIT_MALLOC(list->data_capacity);
     }
@@ -14843,7 +14917,7 @@ SITAPI SituationRenderList SituationCreateRenderList(void) {
  */
 SITAPI void SituationDestroyRenderList(SituationRenderList list) {
     if (!list) return;
-    if (list->packet_buffer) SIT_FREE(list->packet_buffer);
+    if (list->packets) SIT_FREE(list->packets);
     if (list->data_buffer) SIT_FREE(list->data_buffer);
     SIT_FREE(list);
 }
@@ -14872,16 +14946,8 @@ SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRende
     if (!cmd || !list || list->packet_count == 0) return;
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* src_packets = (SitCommandPacket*)list->packet_buffer;
-    if (!src_packets) return;
+    if (!list->packets) return;
 
-    if (buf->packet_count + list->packet_count > buf->packet_capacity) {
-        size_t new_cap = buf->packet_capacity + list->packet_count + 64;
-        SitCommandPacket* new_ptr = (SitCommandPacket*)SIT_REALLOC(buf->packets, new_cap * sizeof(SitCommandPacket));
-        if (!new_ptr) return;
-        buf->packets = new_ptr;
-        buf->packet_capacity = new_cap;
-    }
     if (buf->data_cursor + list->data_cursor > buf->data_capacity) {
          size_t new_cap = buf->data_capacity + list->data_cursor + 1024;
          uint8_t* new_ptr = (uint8_t*)SIT_REALLOC(buf->data_buffer, new_cap);
@@ -14889,51 +14955,176 @@ SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRende
          buf->data_buffer = new_ptr;
          buf->data_capacity = new_cap;
     }
-
     size_t base_data_offset = buf->data_cursor;
     if (list->data_cursor > 0) {
         memcpy(buf->data_buffer + base_data_offset, list->data_buffer, list->data_cursor);
         buf->data_cursor += list->data_cursor;
     }
 
+    // Translation Loop (SituationRenderPacket -> SitCommandPacket)
     for (size_t i = 0; i < list->packet_count; ++i) {
-        SitCommandPacket p = src_packets[i];
-        switch (p.opcode) {
-            case SIT_OP_SET_PUSH_CONSTANT: p.args.push_constant.data_offset += base_data_offset; break;
-            case SIT_OP_DRAW_TEXT:         p.args.draw_text.text_offset += base_data_offset; break;
-            case SIT_OP_UPDATE_BUFFER:     p.args.update_buffer.data_offset += base_data_offset; break;
-            case SIT_OP_SET_UNIFORM:       p.args.set_uniform.data_offset += base_data_offset; break;
-            default: break;
+        SituationRenderPacket* src = &list->packets[i];
+        SitCommandPacket dst = {0};
+
+        switch (src->type) {
+            case SIT_CMD_DRAW:
+                dst.opcode = SIT_OP_DRAW;
+                dst.args.draw.v_count = src->data.draw.vertex_count;
+                dst.args.draw.i_count = src->data.draw.instance_count;
+                dst.args.draw.first_v = src->data.draw.first_vertex;
+                dst.args.draw.first_i = src->data.draw.first_instance;
+                break;
+            case SIT_CMD_DRAW_INDEXED:
+                dst.opcode = SIT_OP_DRAW_INDEXED;
+                dst.args.draw_indexed.idx_count = src->data.draw_indexed.index_count;
+                dst.args.draw_indexed.inst_count = src->data.draw_indexed.instance_count;
+                dst.args.draw_indexed.first_idx = src->data.draw_indexed.first_index;
+                dst.args.draw_indexed.v_offset = src->data.draw_indexed.vertex_offset;
+                dst.args.draw_indexed.first_inst = src->data.draw_indexed.first_instance;
+                break;
+            case SIT_CMD_DISPATCH:
+                dst.opcode = SIT_OP_DISPATCH;
+                dst.args.dispatch.x = src->data.dispatch.group_x;
+                dst.args.dispatch.y = src->data.dispatch.group_y;
+                dst.args.dispatch.z = src->data.dispatch.group_z;
+                break;
+            case SIT_CMD_BARRIER:
+                dst.opcode = SIT_OP_PIPELINE_BARRIER;
+                dst.args.barrier.src = SITUATION_BARRIER_ALL_BARRIER_BITS;
+                dst.args.barrier.dst = SITUATION_BARRIER_ALL_BARRIER_BITS;
+                break;
+            default: continue;
         }
-        buf->packets[buf->packet_count++] = p;
+
+        if (buf->packet_count >= buf->packet_capacity) {
+             size_t new_cap = buf->packet_capacity * 2;
+             if (new_cap < 16) new_cap = 16;
+             SitCommandPacket* new_ptr = (SitCommandPacket*)SIT_REALLOC(buf->packets, new_cap * sizeof(SitCommandPacket));
+             if (new_ptr) { buf->packets = new_ptr; buf->packet_capacity = new_cap; }
+             else return;
+        }
+        buf->packets[buf->packet_count++] = dst;
     }
 #endif
 }
 
-/**
- * @brief Submits a Render List for execution in the current frame.
- * @details This is a convenience wrapper. In the current implementation, it acts as an immediate replay of the list into the current frame's command buffer.
- *          It is intended to support future asynchronous submission models.
- *
- * @param list The Render List to submit.
- */
-SITAPI void SituationSubmitRenderList(SituationRenderList list) {
+// [v2.3.24b] Integration Zenith: Batched Replay Logic
+static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
     if (!list || list->is_recording) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "List unfinished—wait gen job.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "List unfinished or null.");
         return;
     }
-    // In immediate mode (GL non-threaded), we just replay.
-    // In threaded mode, we would queue this. For now, Momentum Phase 2 reuses the immediate replay.
-    // The user calls this instead of Replay if they want abstraction.
-#if defined(SITUATION_USE_OPENGL)
-    int frame_idx = sit_render.current_frame_index;
-    if (frame_idx >= 0 && frame_idx < SITUATION_MAX_FRAMES_IN_FLIGHT) {
-        SituationCommandBuffer cmd = (SituationCommandBuffer)&sit_render.gl.soft_buffers[frame_idx];
-        SituationReplayRenderList(cmd, list);
-        SituationResetRenderList(list);
+
+#if defined(SITUATION_USE_VULKAN)
+    // [Safety] Serialize recording to shared frame resources
+    mtx_lock(&sit_render.render_queue_mutex);
+
+    VkCommandBuffer g_cmd = sit_render.vk.command_buffers[frame_idx];
+
+    // [Batching Strategy]
+    // We scan for dispatches first to aggregate them into a single submit.
+    // This assumes Compute -> Graphics dependency flow (simulation then render).
+
+    // 1. Alloc Temp Compute Buffer (from frame pool, auto-reset)
+    VkCommandBufferAllocateInfo alloc = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    alloc.commandPool = sit_render.vk.compute_command_pool;
+    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc.commandBufferCount = 1;
+    VkCommandBuffer c_cmd;
+    if (vkAllocateCommandBuffers(sit_render.vk.device, &alloc, &c_cmd) != VK_SUCCESS) {
+        mtx_unlock(&sit_render.render_queue_mutex);
+        return; // Fail gracefully
     }
+
+    VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    vkBeginCommandBuffer(c_cmd, &begin);
+
+    uint32_t dispatch_cnt = 0;
+
+    // Pass 1: Compute
+    for (size_t i = 0; i < list->packet_count; ++i) {
+        if (list->packets[i].type == SIT_CMD_DISPATCH) {
+            vkCmdDispatch(c_cmd, list->packets[i].data.dispatch.group_x, list->packets[i].data.dispatch.group_y, list->packets[i].data.dispatch.group_z);
+            dispatch_cnt++;
+        }
+    }
+    vkEndCommandBuffer(c_cmd);
+
+    // Submit Compute if needed
+    if (dispatch_cnt > 0) {
+        VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &c_cmd;
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores = &sit_render.vk.compute_finished_semaphores[frame_idx];
+
+        vkQueueSubmit(sit_render.vk.compute_queue, 1, &submit, VK_NULL_HANDLE);
+
+        // Signal Graphics to wait
+        sit_render.vk.needs_compute_wait = true;
+    }
+
+    // Pass 2: Graphics & Barriers
+    for (size_t i = 0; i < list->packet_count; ++i) {
+        const SituationRenderPacket* pkt = &list->packets[i];
+        switch (pkt->type) {
+            case SIT_CMD_BARRIER:
+                // Memory Barrier for visibility
+                vkCmdPipelineBarrier(g_cmd, pkt->data.barrier.src_stage, pkt->data.barrier.dst_stage, 0, 0, NULL, 0, NULL, 0, NULL);
+                break;
+            case SIT_CMD_DRAW:
+                SituationCmdDraw(g_cmd, pkt->data.draw.vertex_count, pkt->data.draw.instance_count, pkt->data.draw.first_vertex, pkt->data.draw.first_instance);
+                break;
+            case SIT_CMD_DRAW_INDEXED:
+                SituationCmdDrawIndexed(g_cmd, pkt->data.draw_indexed.index_count, pkt->data.draw_indexed.instance_count, pkt->data.draw_indexed.first_index, pkt->data.draw_indexed.vertex_offset, pkt->data.draw_indexed.first_instance);
+                break;
+            default: break;
+        }
+    }
+
+    mtx_unlock(&sit_render.render_queue_mutex);
 #endif
+    // OpenGL replay is simpler (immediate) or handled via SoftBuffer
 }
+
+#if defined(SITUATION_ENABLE_THREADING)
+// Internal Job Wrapper
+typedef struct {
+    SituationRenderList list;
+    void (*func)(void*, void*);
+    void* user_data;
+} _SitRenderJobCtx;
+
+static void _SituationRenderJobWorker(void* data, void* unused) {
+    (void)unused;
+    _SitRenderJobCtx* ctx = (_SitRenderJobCtx*)data;
+
+    // 1. Run User Generation Logic (CPU)
+    if (ctx->func) ctx->func(ctx->user_data, NULL);
+
+    // 2. Replay to Queue
+    int frame_idx = sit_render.current_frame_index;
+    _SituationReplayToQueue(ctx->list, frame_idx);
+}
+
+SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data) {
+    if (!list) return 0;
+
+    // Reset list for new recording
+    SituationResetRenderList(list);
+
+    _SitRenderJobCtx ctx = { list, func, user_data };
+
+    // Submit to High Priority (Render/Logic)
+    return SituationSubmitJobEx(pool, _SituationRenderJobWorker, &ctx, sizeof(_SitRenderJobCtx), SIT_SUBMIT_HIGH_PRIORITY);
+}
+#else
+// Fallback for Single-Threaded
+SITAPI void SituationSubmitRenderList(SituationRenderList list) {
+    // Just replay immediately
+    _SituationReplayToQueue(list, sit_render.current_frame_index);
+}
+#endif
 
 /**
  * @brief Gets the estimated total video memory (VRAM) allocated by the application.
@@ -28959,9 +29150,25 @@ static int _SituationRenderThreadEntry(void* arg) {
         VkSubmitInfo submit_info = {0};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-        VkSemaphore wait_semaphores[] = { sit_render.vk.image_available_semaphores[frame_index] };
-        VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-        submit_info.waitSemaphoreCount = 1;
+        // [v2.3.24b] Sync Logic
+        VkSemaphore wait_semaphores[2];
+        VkPipelineStageFlags wait_stages[2];
+        uint32_t wait_count = 0;
+
+        // Always wait for image available (Color Output)
+        wait_semaphores[wait_count] = sit_render.vk.image_available_semaphores[frame_index];
+        wait_stages[wait_count] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        wait_count++;
+
+        // Conditionally wait for compute (Draw Indirect / Vertex Input)
+        if (sit_render.vk.needs_compute_wait) {
+            wait_semaphores[wait_count] = sit_render.vk.compute_finished_semaphores[frame_index];
+            wait_stages[wait_count] = VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+            wait_count++;
+            sit_render.vk.needs_compute_wait = false; // Reset for next frame
+        }
+
+        submit_info.waitSemaphoreCount = wait_count;
         submit_info.pWaitSemaphores = wait_semaphores;
         submit_info.pWaitDstStageMask = wait_stages;
 

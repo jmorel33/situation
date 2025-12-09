@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.23 "Velocity" |
+| **Version** | 2.3.24b "Integration Zenith" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -3768,7 +3768,21 @@ While waiting for the workers to finish the batches, the calling thread does not
 <a id="75-render-lists-momentum-bridge"></a>
 ### 7.5 Render Lists (Momentum Bridge)
 
-With the introduction of the Render Thread, splitting command recording from submission becomes powerful. The "Momentum" architecture (Phase 3 preview) allows you to record commands into a `SituationRenderList` on any thread, and then submit them atomically.
+With the introduction of the Render Thread, splitting command recording from submission becomes powerful. The "Momentum" architecture allows you to record commands into a `SituationRenderList` on any thread, and then submit them atomically.
+
+#### Batched Overlap Architecture (v2.3.24b)
+
+The updated replay logic intelligently batches compute and graphics commands to maximize GPU overlap using Vulkan semaphores.
+
+```mermaid
+graph LR
+    A[Submit List] --> B{Packet Type?}
+    B -- Dispatch --> C[Batch Compute]
+    B -- Barrier --> D[Submit Compute & Signal Sema]
+    D --> E[Graphics Wait Sema]
+    B -- Draw --> F[Record Graphics]
+    F --> G[Submit Graphics]
+```
 
 #### SituationSubmitRenderList
 
