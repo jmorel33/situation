@@ -14891,8 +14891,6 @@ SITAPI void SituationSubmitRenderList(SituationRenderList list) {
 #endif
 }
 
-#endif
-
 /**
  * @brief Gets the estimated total video memory (VRAM) allocated by the application.
  *
