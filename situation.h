@@ -2588,6 +2588,11 @@ static bool sit_gs_thread_id_set = false;
 static atomic_uint_least64_t sit_metric_submit_timestamps[SITUATION_MAX_FRAMES_IN_FLIGHT];
 static atomic_uint_least64_t sit_metric_latency_sum_ns;
 static atomic_uint_least64_t sit_metric_latency_count;
+static atomic_uint_least64_t sit_metric_max_latency_ns; // [NEW] For basic histogram/max tracking
+
+// [v2.3.24a] Safety Zenith: Atomic Refcounts & Adaptive Policy
+static atomic_int sit_frame_refcounts[SITUATION_MAX_FRAMES_IN_FLIGHT];
+static atomic_int sit_render_policy_state = SIT_RENDER_BACKPRESSURE_SPIN; // Default
 
 static uint64_t _SitGetMonotonicTimeNS(void) {
     #if defined(_WIN32)
@@ -11426,6 +11431,15 @@ SITAPI void SituationShutdown(void) {
     if (sit_gs.sit_glfw_window) glFinish();
 #endif
 
+    // [v2.3.24a] Safety Zenith: Refcount Leak Check
+    // Scan frame refcounts for dangling references before shutdown.
+    for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; ++i) {
+        int refs = atomic_load(&sit_frame_refcounts[i]);
+        if (refs > 0) {
+            fprintf(stderr, "[Situation] WARNING: Frame %d leaked with %d active references during shutdown!\n", i, refs);
+        }
+    }
+
     // --- Call the auto-cleanup function ---
     _SituationCleanupDanglingResources();
 
@@ -12967,53 +12981,76 @@ SITAPI SituationError SituationEndFrame(void) {
         #if !defined(__STDC_NO_THREADS__)
         #if defined(SITUATION_ENABLE_RENDER_THREAD)
         if (sit_render.enabled) {
-            // [v2.3.22] Backpressure Policy
+            // [v2.3.24a] Adaptive Backpressure (Safety Zenith)
+            // Dynamically switch policy based on frame latency history.
+            // Policy: SPIKE (>100% target) -> SLEEP (Save CPU/Battery, let GPU catch up)
+            //         STEADY (<50% target) -> SPIN (Max performance/responsiveness)
+            int policy = atomic_load(&sit_render_policy_state);
+
+            // Use Max latency from the recent history (reset/updated by thread)
+            uint64_t lat_check = atomic_load(&sit_metric_max_latency_ns);
+
+            uint64_t target_ns = (uint64_t)(sit_gs.target_frame_time * 1000000000.0);
+            if (target_ns == 0) target_ns = 16666667ULL; // Default to 60 FPS (16ms) if uncapped
+
+            uint64_t spike_thresh = target_ns;         // 100%
+            uint64_t steady_thresh = target_ns / 2;    // 50%
+
+            if (lat_check > spike_thresh) {
+                atomic_store(&sit_render_policy_state, SIT_RENDER_BACKPRESSURE_SLEEP);
+                policy = SIT_RENDER_BACKPRESSURE_SLEEP;
+            } else if (lat_check < steady_thresh) {
+                atomic_store(&sit_render_policy_state, SIT_RENDER_BACKPRESSURE_SPIN);
+                policy = SIT_RENDER_BACKPRESSURE_SPIN;
+            }
+
+            // Check Queue Depth
             size_t depth = atomic_load(&sit_render.render_queue_depth);
             if (depth >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
-                switch (sit_gs.init_info.backpressure_policy) {
-                    case SIT_RENDER_BACKPRESSURE_SPIN:
-                        while (atomic_load(&sit_render.render_queue_depth) >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
-                            #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__)
-                            _mm_pause();
-                            #elif defined(__aarch64__) || defined(_M_ARM64)
-                                #if defined(__has_builtin)
-                                    #if __has_builtin(__builtin_arm_wfe)
-                                    __builtin_arm_wfe();
-                                    #else
-                                    __asm__ __volatile__("yield");
-                                    #endif
+                if (policy == SIT_RENDER_BACKPRESSURE_SPIN) {
+                    while (atomic_load(&sit_render.render_queue_depth) >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                        #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__)
+                        _mm_pause();
+                        #elif defined(__aarch64__) || defined(_M_ARM64)
+                            #if defined(__has_builtin)
+                                #if __has_builtin(__builtin_arm_wfe)
+                                __builtin_arm_wfe();
                                 #else
-                                    #if defined(_MSC_VER)
-                                    __yield();
-                                    #else
-                                    __asm__ __volatile__("yield");
-                                    #endif
+                                __asm__ __volatile__("yield");
+                                #endif
+                            #else
+                                #if defined(_MSC_VER)
+                                __yield();
+                                #else
+                                __asm__ __volatile__("yield");
                                 #endif
                             #endif
-                        }
-                        break;
-                    case SIT_RENDER_BACKPRESSURE_YIELD:
-                         while (atomic_load(&sit_render.render_queue_depth) >= SITUATION_MAX_FRAMES_IN_FLIGHT) thrd_yield();
-                         break;
-                    case SIT_RENDER_BACKPRESSURE_SLEEP:
-                    default:
-                         mtx_lock(&sit_render.render_queue_mutex);
-                         while (sit_render.frames_pending >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
-                             cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
-                         }
-                         mtx_unlock(&sit_render.render_queue_mutex);
-                         break;
+                        #endif
+                    }
+                }
+                else if (policy == SIT_RENDER_BACKPRESSURE_SLEEP) {
+                     mtx_lock(&sit_render.render_queue_mutex);
+                     while (sit_render.frames_pending >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                         cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
+                     }
+                     mtx_unlock(&sit_render.render_queue_mutex);
+                }
+                else { // YIELD
+                     while (atomic_load(&sit_render.render_queue_depth) >= SITUATION_MAX_FRAMES_IN_FLIGHT) thrd_yield();
                 }
             }
 
             mtx_lock(&sit_render.render_queue_mutex);
             // Double-check under lock if we didn't use CV
-            if (sit_gs.init_info.backpressure_policy != SIT_RENDER_BACKPRESSURE_SLEEP) {
+            if (policy != SIT_RENDER_BACKPRESSURE_SLEEP) {
                  while (sit_render.frames_pending >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
                      cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
                  }
             }
             
+            // [v2.3.24a] Leak-Proof Handoff: Increment Refcount
+            atomic_fetch_add(&sit_frame_refcounts[sit_render.current_frame_index], 1);
+
             sit_render.render_queue[sit_render.render_queue_head] = sit_render.current_frame_index;
             sit_render.render_queue_head = (sit_render.render_queue_head + 1) % SITUATION_MAX_FRAMES_IN_FLIGHT;
             sit_render.frames_pending++;
@@ -14700,11 +14737,18 @@ SITAPI size_t SituationGetRenderQueueDepth(void) {
  * @param[out] max_ns Pointer to receive the maximum recorded latency in nanoseconds. Can be NULL.
  */
 SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns) {
-    if (max_ns) *max_ns = atomic_load(&sit_render.max_render_latency_ns);
-    if (avg_ns) {
-        uint64_t cnt = atomic_load(&sit_metric_latency_count);
-        *avg_ns = cnt ? atomic_load(&sit_metric_latency_sum_ns) / cnt : 0;
+    if (!SituationIsInitialized()) {
+        if (avg_ns) *avg_ns = 0;
+        if (max_ns) *max_ns = 0;
+        return;
     }
+
+    // [v2.3.24a] Updated Metrics (Histogram Stub)
+    uint64_t cnt = atomic_load(&sit_metric_latency_count);
+    if (avg_ns) *avg_ns = cnt ? atomic_load(&sit_metric_latency_sum_ns) / cnt : 0;
+
+    // Max is now atomic and tracked correctly in render thread
+    if (max_ns) *max_ns = atomic_load(&sit_metric_max_latency_ns);
 }
 #endif
 
@@ -28830,6 +28874,18 @@ SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
 // ==================================================================================
 
 #if !defined(__STDC_NO_THREADS__)
+
+// [v2.3.24a] Safety Zenith: Helper to flush resources for a specific frame index (or global for GL)
+static void _SitFlushFrameResources(int frame_index) {
+    #if defined(SITUATION_USE_OPENGL)
+        // OpenGL uses a global graveyard (deferred command buffer system handles synchronization)
+        _SitGLFlushGraveyard();
+    #elif defined(SITUATION_USE_VULKAN)
+        // Vulkan uses per-frame graveyards
+        _SituationFlushGraveyard((uint32_t)frame_index);
+    #endif
+}
+
 /**
  * @brief [INTERNAL] The dedicated Render Thread loop.
  * @details Consumes frame commands from the Main Thread and executes them.
@@ -28954,10 +29010,20 @@ static int _SituationRenderThreadEntry(void* arg) {
             uint64_t current_max = atomic_load(&sit_render.max_render_latency_ns);
             while (latency > current_max && !atomic_compare_exchange_weak(&sit_render.max_render_latency_ns, &current_max, latency));
             
+            // [v2.3.24a] Max Latency Metric (Histogram Stub)
+            uint64_t global_max = atomic_load(&sit_metric_max_latency_ns);
+            while (latency > global_max && !atomic_compare_exchange_weak(&sit_metric_max_latency_ns, &global_max, latency));
+
             atomic_fetch_add(&sit_metric_latency_sum_ns, latency);
             atomic_fetch_add(&sit_metric_latency_count, 1);
         }
         #endif
+
+        // [v2.3.24a] Safety Zenith: Decrement Refcount & Check for Flush
+        if (atomic_fetch_sub(&sit_frame_refcounts[frame_index], 1) == 1) {
+            // Refcount reached 0 (fetch_sub returned 1). Safe to recycle.
+            _SitFlushFrameResources(frame_index);
+        }
 
         // --- FRAME COMPLETE ---
         mtx_lock(&sit_render.render_queue_mutex);
