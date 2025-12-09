@@ -46,6 +46,25 @@ This release focuses on advanced hardware utilization and observability, bringin
 *   **Multi-Queue Synchronization (Vulkan):** The backend now automatically configures resources with `VK_SHARING_MODE_CONCURRENT` when distinct Graphics and Compute queues are detected. This eliminates the need for complex manual Queue Family Ownership Transfers and barriers, ensuring seamless resource sharing between compute and graphics operations.
 *   **ARM64 Optimizations:** Added `__yield()` intrinsic support for Windows on ARM64 (`_M_ARM64`). This ensures that spin-locks on Snapdragon X Elite devices yield execution resources correctly, preventing battery drain and thermal throttling during synchronization waits.
 
+### New in v2.3.24a "Safety Zenith" (Adaptive Resilience)
+
+This release hardens the Multi-Threaded Renderer with bulletproof safety mechanisms and self-tuning performance policies.
+
+**Key Enhancements:**
+*   **Leak-Proof Handoff (Refcounts):** Frames in the render queue are now tracked via atomic reference counting. Resources are flushed only when the refcount hits zero (race-free fetch_sub), ensuring zero leaks even under extreme load (20k+ handoffs).
+*   **Adaptive Backpressure:** The engine now automatically switches backpressure policies based on real-time latency relative to your target FPS.
+    *   **Spike (>100% frame time):** Switches to `SLEEP` mode to yield CPU and let the GPU drain the queue.
+    *   **Steady (<50% frame time):** Switches to `SPIN` mode for maximum responsiveness and lowest latency.
+*   **Basic Histogram:** Introduced atomic tracking for max latency (`sit_metric_max_latency_ns`) to support precise adaptive tuning.
+
+**Adaptive Resilience Table:**
+
+| Condition | Latency Threshold (at 144Hz) | Policy Action | Benefit |
+| :--- | :--- | :--- | :--- |
+| **Steady** | < 3.5ms | **SPIN** | Max Responsiveness |
+| **Normal** | 3.5ms - 6.9ms | *Maintain* | Stability |
+| **Spike** | > 6.9ms | **SLEEP** | CPU/Battery Saver |
+
 ### New in v2.3.22 "Velocity" (Backpressure & Metrics Hotfix)
 
 This release focuses on resilience under load and smoother integration for complex rendering pipelines.
