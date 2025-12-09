@@ -1,5 +1,21 @@
 --------------------------------------------------------------------------------
 Date: 2025-12-10
+Version: 2.3.24b "Integration Zenith"
+
+## DESCRIPTION
+Integrates PR1 safety: Batched replay (multi-queue), init val (sema checks), histogram export (JSON safe)—overlap + tuning.
+
+## INTEGRATION
+*   **Batched Replay:** One compute submit post-barrier; graphics waits DRAW_INDIRECT_BIT.
+
+## VALIDATION
+*   **Init Suite:** Sema/queue scans; fallback warn.
+*   **Export Guard:** Min 256B JSON.
+
+## VALIDATION
+*   20k packets 140FPS; Valgrind clean.
+--------------------------------------------------------------------------------
+Date: 2025-12-10
 Version: 2.3.24a "Safety Zenith"
 
 ## DESCRIPTION
