@@ -1,3 +1,18 @@
+Date: 2025-12-11
+Version: 2.3.25 "Polish Zenith" (Micro-Hotfix)
+
+## DESCRIPTION
+Tweaks v2.3.24b metrics: Namespace unify, TS store, once-warn drift, retry log—silent & accurate.
+
+## FIXES
+*   **Namespace:** sit_frame_ -> sit_render—consistency.
+*   **TS Store:** Push monotonic—non-zero latencies.
+*   **Warn Polish:** Drift log once; retries >50 flagged.
+
+## VALIDATION
+*   1k frames: Accurate avg/max; no spam; TSan clean.
+
+--------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 Date: 2025-12-10
 Version: 2.3.24b "Integration Zenith"

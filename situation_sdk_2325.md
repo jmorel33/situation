@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.24b "Integration Zenith" |
+| **Version** | 2.3.25 "Polish Zenith" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -36,6 +36,18 @@ The library is engineered around three architectural pillars:
 
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
+
+### New in v2.3.25 "Polish Zenith" (Metric Stability)
+
+This update represents the final layer of polish for the "Zenith" safety initiative, focusing on metric precision, thread safety, and code hygiene.
+
+**Key Enhancements:**
+*   **Refcount Parity:** Fixed a critical asymmetry in the Vulkan backend where frame reference counts were not being incremented before submission. This ensures that the Render Thread never reclaims a frame slot that is still being processed by the GPU, matching the robust behavior of the OpenGL path.
+*   **Metric Polish:**
+    *   **Monotonic Timestamps:** Queue insertion now explicitly captures monotonic time (`_SitGetMonotonicTimeNS`) to prevent negative latency calculations (drift).
+    *   **Drift-Warn:** Added a "Once-Warn" atomic flag. If clock drift is detected, the engine logs it exactly once per session and clamps the value, preventing `stderr` spam while maintaining awareness.
+    *   **Contention Safety:** The atomic metric collection loops (CAS) now feature a 50-retry limit. If the thread cannot update the max latency due to extreme contention, it logs a warning and proceeds, preventing potential live-locks.
+*   **Namespace Unification:** All global metric variables (`sit_metric_*`) and refcounts (`sit_frame_refcounts`) have been moved into the main `_SituationRenderState` struct (`sit_render`). This cleans up the global namespace and ensures all renderer-related state is centralized and cache-coherent.
 
 ### New in v2.3.23 "Velocity" (Multi-Queue & Metrics)
 
