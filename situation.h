@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 24
-#define SITUATION_VERSION_REVISION "b"
+#define SITUATION_VERSION_PATCH 25
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -2588,14 +2588,7 @@ static thrd_t sit_gs_main_thread_id;
 static bool sit_gs_thread_id_set = false;
 #endif
 
-// [v2.3.22] Metrics Globals
-static atomic_uint_least64_t sit_metric_submit_timestamps[SITUATION_MAX_FRAMES_IN_FLIGHT];
-static atomic_uint_least64_t sit_metric_latency_sum_ns;
-static atomic_uint_least64_t sit_metric_latency_count;
-static atomic_uint_least64_t sit_metric_max_latency_ns; // [NEW] For basic histogram/max tracking
-
 // [v2.3.24a] Safety Zenith: Atomic Refcounts & Adaptive Policy
-static atomic_int sit_frame_refcounts[SITUATION_MAX_FRAMES_IN_FLIGHT];
 static atomic_int sit_render_policy_state = SIT_RENDER_BACKPRESSURE_SPIN; // Default
 
 static uint64_t _SitGetMonotonicTimeNS(void) {
@@ -3454,8 +3447,13 @@ typedef struct {
     // [v2.3.23] Async Compute Flag (for current recording frame)
     bool frame_has_async_compute;
 
-    // [v2.3.22] Metrics
-    atomic_uint_least64_t max_render_latency_ns;
+    // [v2.3.25] Metrics & Tracking (Moved from globals)
+    atomic_uint_least64_t submit_timestamps[SITUATION_MAX_FRAMES_IN_FLIGHT];
+    atomic_uint_least64_t metric_latency_sum_ns;
+    atomic_uint_least64_t metric_latency_count;
+    atomic_uint_least64_t metric_max_latency_ns; // For histogram/max tracking
+    atomic_int frame_refcounts[SITUATION_MAX_FRAMES_IN_FLIGHT];
+    atomic_bool drift_warned;
 
     // [v2.3.23] Default Debug Font
     SituationTexture default_font_atlas;
@@ -11490,7 +11488,7 @@ SITAPI void SituationShutdown(void) {
     // [v2.3.24a] Safety Zenith: Refcount Leak Check
     // Scan frame refcounts for dangling references before shutdown.
     for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; ++i) {
-        int refs = atomic_load(&sit_frame_refcounts[i]);
+        int refs = atomic_load(&sit_render.frame_refcounts[i]);
         if (refs > 0) {
             fprintf(stderr, "[Situation] WARNING: Frame %d leaked with %d active references during shutdown!\n", i, refs);
         }
@@ -13044,7 +13042,7 @@ SITAPI SituationError SituationEndFrame(void) {
             int policy = atomic_load(&sit_render_policy_state);
 
             // Use Max latency from the recent history (reset/updated by thread)
-            uint64_t lat_check = atomic_load(&sit_metric_max_latency_ns);
+            uint64_t lat_check = atomic_load(&sit_render.metric_max_latency_ns);
 
             uint64_t target_ns = (uint64_t)(sit_gs.target_frame_time * 1000000000.0);
             if (target_ns == 0) target_ns = 16666667ULL; // Default to 60 FPS (16ms) if uncapped
@@ -13105,14 +13103,16 @@ SITAPI SituationError SituationEndFrame(void) {
             }
             
             // [v2.3.24a] Leak-Proof Handoff: Increment Refcount
-            atomic_fetch_add(&sit_frame_refcounts[sit_render.current_frame_index], 1);
+            atomic_fetch_add(&sit_render.frame_refcounts[sit_render.current_frame_index], 1);
 
             sit_render.render_queue[sit_render.render_queue_head] = sit_render.current_frame_index;
             sit_render.render_queue_head = (sit_render.render_queue_head + 1) % SITUATION_MAX_FRAMES_IN_FLIGHT;
             sit_render.frames_pending++;
 
             // [v2.3.22] Record Submit Timestamp for Latency
-            atomic_store(&sit_metric_submit_timestamps[sit_render.current_frame_index], _SitGetMonotonicTimeNS());
+            // [v2.3.25] Store explicitly for drift check
+            uint64_t now = _SitGetMonotonicTimeNS();
+            atomic_store(&sit_render.submit_timestamps[sit_render.current_frame_index], now);
             atomic_fetch_add(&sit_render.render_queue_depth, 1);
 
             cnd_signal(&sit_render.render_queue_cv);
@@ -13208,12 +13208,16 @@ SITAPI SituationError SituationEndFrame(void) {
                  }
             }
 
+            // [v2.3.25] Missing Refcount Increment
+            atomic_fetch_add(&sit_render.frame_refcounts[sit_render.vk.current_frame_index], 1);
+
             sit_render.render_queue[sit_render.render_queue_head] = sit_render.vk.current_frame_index;
             sit_render.render_queue_head = (sit_render.render_queue_head + 1) % sit_render.vk.max_frames_in_flight;
             sit_render.frames_pending++;
 
             // [v2.3.22] Record Submit Timestamp for Latency
-            atomic_store(&sit_metric_submit_timestamps[sit_render.vk.current_frame_index], _SitGetMonotonicTimeNS());
+            uint64_t now = _SitGetMonotonicTimeNS();
+            atomic_store(&sit_render.submit_timestamps[sit_render.vk.current_frame_index], now);
             atomic_fetch_add(&sit_render.render_queue_depth, 1);
 
             cnd_signal(&sit_render.render_queue_cv);
@@ -14800,11 +14804,11 @@ SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns) {
     }
 
     // [v2.3.24a] Updated Metrics (Histogram Stub)
-    uint64_t cnt = atomic_load(&sit_metric_latency_count);
-    if (avg_ns) *avg_ns = cnt ? atomic_load(&sit_metric_latency_sum_ns) / cnt : 0;
+    uint64_t cnt = atomic_load(&sit_render.metric_latency_count);
+    if (avg_ns) *avg_ns = cnt ? atomic_load(&sit_render.metric_latency_sum_ns) / cnt : 0;
 
     // Max is now atomic and tracked correctly in render thread
-    if (max_ns) *max_ns = atomic_load(&sit_metric_max_latency_ns);
+    if (max_ns) *max_ns = atomic_load(&sit_render.metric_max_latency_ns);
 }
 #endif
 
@@ -29207,26 +29211,37 @@ static int _SituationRenderThreadEntry(void* arg) {
 
         // [v2.3.22] Metrics: Record Latency
         #if defined(SITUATION_ENABLE_RENDER_THREAD)
-        uint64_t submit_ts = atomic_load(&sit_metric_submit_timestamps[frame_index]);
+        uint64_t submit_ts = atomic_load(&sit_render.submit_timestamps[frame_index]);
         if (submit_ts > 0) {
             uint64_t now = _SitGetMonotonicTimeNS();
-            uint64_t latency = (now >= submit_ts) ? (now - submit_ts) : 0;
             
-            // Atomic Max
-            uint64_t current_max = atomic_load(&sit_render.max_render_latency_ns);
-            while (latency > current_max && !atomic_compare_exchange_weak(&sit_render.max_render_latency_ns, &current_max, latency));
+            // [v2.3.25] Drift Check with Once-Warn
+            uint64_t latency = 0;
+            if (now < submit_ts) {
+                if (!atomic_exchange(&sit_render.drift_warned, true)) {
+                    fprintf(stderr, "[METRIC] First clock drift detected; clamped 0.\n");
+                }
+                latency = 0;
+            } else {
+                latency = now - submit_ts;
+            }
             
             // [v2.3.24a] Max Latency Metric (Histogram Stub)
-            uint64_t global_max = atomic_load(&sit_metric_max_latency_ns);
-            while (latency > global_max && !atomic_compare_exchange_weak(&sit_metric_max_latency_ns, &global_max, latency));
+            // Use retry-limited loop for high contention safety
+            uint64_t global_max = atomic_load(&sit_render.metric_max_latency_ns);
+            int retries = 0;
+            while (latency > global_max && !atomic_compare_exchange_weak(&sit_render.metric_max_latency_ns, &global_max, latency)) {
+                 retries++;
+                 if (retries > 50) { fprintf(stderr, "[METRIC] Max retries %d—high contention?\n", retries); break; }
+            }
 
-            atomic_fetch_add(&sit_metric_latency_sum_ns, latency);
-            atomic_fetch_add(&sit_metric_latency_count, 1);
+            atomic_fetch_add(&sit_render.metric_latency_sum_ns, latency);
+            atomic_fetch_add(&sit_render.metric_latency_count, 1);
         }
         #endif
 
         // [v2.3.24a] Safety Zenith: Decrement Refcount & Check for Flush
-        if (atomic_fetch_sub(&sit_frame_refcounts[frame_index], 1) == 1) {
+        if (atomic_fetch_sub(&sit_render.frame_refcounts[frame_index], 1) == 1) {
             // Refcount reached 0 (fetch_sub returned 1). Safe to recycle.
             _SitFlushFrameResources(frame_index);
         }
