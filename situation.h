@@ -1527,15 +1527,6 @@ typedef enum {
 // [v2.3.22] Opaque Render List Handle (Momentum)
 typedef struct SituationRenderList_t* SituationRenderList;
 
-#if defined(SITUATION_ENABLE_THREADING)
-SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data);
-#else
-SITAPI void SituationSubmitRenderList(SituationRenderList list); // Fallback for single-threaded
-#endif
-
-SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);
-SITAPI void SituationExportRenderHistogram(char* buf, size_t buf_size);
-
 /**
  * @brief Flags representing optional GPU capabilities and advanced feature sets.
  * @details Used with SituationIsFeatureSupported() to check runtime availability. These flags cover core
@@ -1947,6 +1938,7 @@ SITAPI void SituationImageDrawTextFormatted(SituationImage *dst, SituationFont f
 // --- Profiling & Diagnostics ---
 SITAPI uint32_t SituationGetDrawCallCount(void); 										// Number of draw commands this frame
 SITAPI uint64_t SituationGetVRAMUsage(void);     										// Total GPU memory allocated (Bytes)
+SITAPI void SituationExportRenderHistogram(char* buf, size_t buf_size);
 #if defined(SITUATION_ENABLE_RENDER_THREAD)
 SITAPI size_t SituationGetRenderQueueDepth(void);                                       // Get the current depth of the render queue
 SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);         // Get render thread latency metrics
@@ -1957,6 +1949,12 @@ SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 posi
 
 // --- Frame Lifecycle & Command Buffer ---
 SITAPI bool SituationAcquireFrameCommandBuffer(void);                                   // Prepare the backend for a new frame of rendering commands.
+#if defined(SITUATION_ENABLE_THREADING)
+SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data);
+#else
+SITAPI void SituationSubmitRenderList(SituationRenderList list); // Fallback for single-threaded
+#endif
+SITAPI void SituationResetRenderList(SituationRenderList list);
 SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void);                      // Get the primary command buffer for the current frame.
 SITAPI SituationCommandBuffer SituationGetComputeCommandBuffer(void);                   // [v2.3.23] Get the compute-specific command buffer (Vulkan only).
 SITAPI SituationError SituationEndFrame(void);                                          // Submit all commands for the frame and present the result.
@@ -2295,6 +2293,7 @@ typedef struct _SituationSpirvBlob {
 #endif
 
 // Forward declarations for deferred destruction helpers (Graveyard)
+static void _SituationReplayToQueue(SituationRenderList list, int frame_idx);
 static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation);
 static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler);
 static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool);
@@ -17765,7 +17764,7 @@ SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src
         if (src_stage_mask != 0 || dst_stage_mask != 0) {
             // --- Basic Memory Barrier (No image/buffer memory transitions assumed) ---
             // For image/buffer layout transitions, VkImageMemoryBarrier or VkBufferMemoryBarrier structs would need to be set up and passed to vkCmdPipelineBarrier.
-            VkMemoryBarrier memory_barrier = {0};
+            VkMemoryBarrier memory_barrier = {};
             memory_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
             memory_barrier.srcAccessMask = src_access_mask;
             memory_barrier.dstAccessMask = dst_access_mask;
@@ -22086,7 +22085,7 @@ SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_
 #elif defined(SITUATION_USE_VULKAN)
     // For this deprecated function, we issue a very broad, "sledgehammer" barrier.
     // It's not optimal but guarantees correctness for simple use cases.
-    VkMemoryBarrier memory_barrier = {0};
+    VkMemoryBarrier memory_barrier = {};
     memory_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     memory_barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
     memory_barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
