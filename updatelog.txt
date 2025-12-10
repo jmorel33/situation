@@ -1,3 +1,18 @@
+Date: 2025-12-12
+Version: 2.3.26 "Silent Zenith" (Micro-Polish)
+
+## DESCRIPTION
+Tweaks v2.3.25 metrics: Release-mute warns, namespace unify, retry thresh 20—silent prod.
+
+## FIXES
+*   **Warn Mute:** #ifndef NDEBUG on drift log.
+*   **Namespace:** sit_frame_ -> sit_render.
+*   **Retry:** Log >20 for early hint.
+
+## VALIDATION
+*   Silent under load; consistent.
+
+--------------------------------------------------------------------------------
 Date: 2025-12-11
 Version: 2.3.25 "Polish Zenith" (Micro-Hotfix)
 
