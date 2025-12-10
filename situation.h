@@ -29218,9 +29218,11 @@ static int _SituationRenderThreadEntry(void* arg) {
             // [v2.3.25] Drift Check with Once-Warn
             uint64_t latency = 0;
             if (now < submit_ts) {
+                #ifndef NDEBUG
                 if (!atomic_exchange(&sit_render.drift_warned, true)) {
-                    fprintf(stderr, "[METRIC] First clock drift detected; clamped 0.\n");
+                    fprintf(stderr, "[METRIC] First drift; clamped 0.\n");
                 }
+                #endif
                 latency = 0;
             } else {
                 latency = now - submit_ts;
@@ -29232,7 +29234,7 @@ static int _SituationRenderThreadEntry(void* arg) {
             int retries = 0;
             while (latency > global_max && !atomic_compare_exchange_weak(&sit_render.metric_max_latency_ns, &global_max, latency)) {
                  retries++;
-                 if (retries > 50) { fprintf(stderr, "[METRIC] Max retries %d—high contention?\n", retries); break; }
+                 if (retries > 20) { fprintf(stderr, "[METRIC] Retries %d—contention hint.\n", retries); break; }
             }
 
             atomic_fetch_add(&sit_render.metric_latency_sum_ns, latency);
@@ -29240,7 +29242,7 @@ static int _SituationRenderThreadEntry(void* arg) {
         }
         #endif
 
-        // [v2.3.24a] Safety Zenith: Decrement Refcount & Check for Flush
+        // Refcount (Unify)
         if (atomic_fetch_sub(&sit_render.frame_refcounts[frame_index], 1) == 1) {
             // Refcount reached 0 (fetch_sub returned 1). Safe to recycle.
             _SitFlushFrameResources(frame_index);
