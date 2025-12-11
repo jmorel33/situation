@@ -26720,24 +26720,41 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
     if (type == SITUATION_FILTER_NONE) {
         sound->effects.filter_enabled = false;
     } else {
-        // Note: Coefficient calculation for lowpass/highpass is pending.
-        // Disabling filter for now to satisfy build.
-        /*
-        ma_biquad_config bq_config;
+        double sampleRate = (double)sound->decoder.outputSampleRate;
+        double w0 = 2.0 * M_PI * cutoff_hz / sampleRate;
+        double alpha = sin(w0) / (2.0 * q_factor);
+        double cos_w0 = cos(w0);
+
+        double b0, b1, b2, a0, a1, a2;
+
         if (type == SITUATION_FILTER_LOWPASS) {
-            bq_config = ma_biquad_config_init(ma_format_f32, sound->decoder.outputChannels, (ma_uint32)sound->decoder.outputSampleRate, ma_biquad_type_lowpass, cutoff_hz, q_factor, 0);
-        } else if(type == SITUATION_FILTER_HIGHPASS) {
-            bq_config = ma_biquad_config_init(ma_format_f32, sound->decoder.outputChannels, (ma_uint32)sound->decoder.outputSampleRate, ma_biquad_type_highpass, cutoff_hz, q_factor, 0);
+            b0 = (1.0 - cos_w0) / 2.0;
+            b1 = 1.0 - cos_w0;
+            b2 = (1.0 - cos_w0) / 2.0;
+            a0 = 1.0 + alpha;
+            a1 = -2.0 * cos_w0;
+            a2 = 1.0 - alpha;
+        } else { // HIGHPASS (Default fallback if not LOWPASS)
+            b0 = (1.0 + cos_w0) / 2.0;
+            b1 = -(1.0 + cos_w0);
+            b2 = (1.0 + cos_w0) / 2.0;
+            a0 = 1.0 + alpha;
+            a1 = -2.0 * cos_w0;
+            a2 = 1.0 - alpha;
         }
+
+        ma_biquad_config bq_config = ma_biquad_config_init(ma_format_f32, sound->decoder.outputChannels, b0, b1, b2, a0, a1, a2);
+
         ma_result res = ma_biquad_init(&bq_config, NULL, &sound->effects.biquad);
         if (res == MA_SUCCESS) {
             sound->effects.filter_enabled = true;
             sound->effects.filter_type = type;
             sound->effects.filter_cutoff_hz = cutoff_hz;
             sound->effects.filter_q = q_factor;
+        } else {
+             sound->effects.filter_enabled = false;
+             _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "Failed to initialize biquad filter.");
         }
-        */
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationSetSoundFilter not fully implemented (coefficients missing).");
     }
     ma_mutex_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
