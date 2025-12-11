@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.25 "Polish Zenith" |
+| **Version** | 2.3.26 "Silent Zenith" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -36,131 +36,6 @@ The library is engineered around three architectural pillars:
 
 > **Gotcha: Why manual RAII?**
 > "Situation" does not use a Garbage Collector. Resources (Textures, Meshes) must be explicitly destroyed. This trade-off ensures **Predictable Performance**—you will never suffer a frame-rate spike because the GC decided to run during a boss fight.
-
-### New in v2.3.25 "Polish Zenith" (Metric Stability)
-
-This update represents the final layer of polish for the "Zenith" safety initiative, focusing on metric precision, thread safety, and code hygiene.
-
-**Key Enhancements:**
-*   **Refcount Parity:** Fixed a critical asymmetry in the Vulkan backend where frame reference counts were not being incremented before submission. This ensures that the Render Thread never reclaims a frame slot that is still being processed by the GPU, matching the robust behavior of the OpenGL path.
-*   **Metric Polish:**
-    *   **Monotonic Timestamps:** Queue insertion now explicitly captures monotonic time (`_SitGetMonotonicTimeNS`) to prevent negative latency calculations (drift).
-    *   **Drift-Warn:** Added a "Once-Warn" atomic flag. If clock drift is detected, the engine logs it exactly once per session and clamps the value, preventing `stderr` spam while maintaining awareness.
-    *   **Contention Safety:** The atomic metric collection loops (CAS) now feature a 50-retry limit. If the thread cannot update the max latency due to extreme contention, it logs a warning and proceeds, preventing potential live-locks.
-*   **Namespace Unification:** All global metric variables (`sit_metric_*`) and refcounts (`sit_frame_refcounts`) have been moved into the main `_SituationRenderState` struct (`sit_render`). This cleans up the global namespace and ensures all renderer-related state is centralized and cache-coherent.
-
-### New in v2.3.23 "Velocity" (Multi-Queue & Metrics)
-
-This release focuses on advanced hardware utilization and observability, bringing professional profiling tools directly into the API.
-
-**Key Enhancements:**
-*   **Built-in Metrics Overlay:** Introduced `SituationDrawMetricsOverlay(cmd, position, color)`. This single call renders a professional-grade performance HUD displaying FPS, Frame Time, Render Queue Depth, Latency (avg/max), Draw Calls, Triangle Count, and VRAM usage. It uses the internal text batcher for zero-allocation rendering.
-*   **Multi-Queue Synchronization (Vulkan):** The backend now automatically configures resources with `VK_SHARING_MODE_CONCURRENT` when distinct Graphics and Compute queues are detected. This eliminates the need for complex manual Queue Family Ownership Transfers and barriers, ensuring seamless resource sharing between compute and graphics operations.
-*   **ARM64 Optimizations:** Added `__yield()` intrinsic support for Windows on ARM64 (`_M_ARM64`). This ensures that spin-locks on Snapdragon X Elite devices yield execution resources correctly, preventing battery drain and thermal throttling during synchronization waits.
-
-### New in v2.3.24a "Safety Zenith" (Adaptive Resilience)
-
-This release hardens the Multi-Threaded Renderer with bulletproof safety mechanisms and self-tuning performance policies.
-
-**Key Enhancements:**
-*   **Leak-Proof Handoff (Refcounts):** Frames in the render queue are now tracked via atomic reference counting. Resources are flushed only when the refcount hits zero (race-free fetch_sub), ensuring zero leaks even under extreme load (20k+ handoffs).
-*   **Adaptive Backpressure:** The engine now automatically switches backpressure policies based on real-time latency relative to your target FPS.
-    *   **Spike (>100% frame time):** Switches to `SLEEP` mode to yield CPU and let the GPU drain the queue.
-    *   **Steady (<50% frame time):** Switches to `SPIN` mode for maximum responsiveness and lowest latency.
-*   **Basic Histogram:** Introduced atomic tracking for max latency (`sit_metric_max_latency_ns`) to support precise adaptive tuning.
-
-**Adaptive Resilience Table:**
-
-| Condition | Latency Threshold (at 144Hz) | Policy Action | Benefit |
-| :--- | :--- | :--- | :--- |
-| **Steady** | < 3.5ms | **SPIN** | Max Responsiveness |
-| **Normal** | 3.5ms - 6.9ms | *Maintain* | Stability |
-| **Spike** | > 6.9ms | **SLEEP** | CPU/Battery Saver |
-
-### New in v2.3.22 "Velocity" (Backpressure & Metrics Hotfix)
-
-This release focuses on resilience under load and smoother integration for complex rendering pipelines.
-
-**Key Enhancements:**
-*   **Momentum Bridge (Render Lists):** Introduced `SituationSubmitRenderList()` to streamline the submission of recorded command lists.
-*   **Hybrid Backpressure:** The backpressure system now employs a smarter hybrid strategy (Spin + Sleep) to reduce CPU usage during VSync waits while maintaining low latency.
-*   **Drift-Proof Metrics:** Added `SituationGetRenderLatencyStats(avg, max)` which uses monotonic clocks (`CLOCK_MONOTONIC` / `QPC`) to provide rock-solid latency measurements.
-
-### New in v2.3.21 "Velocity" (Render Thread Polish)
-
-This release polishes the Threaded Rendering implementation introduced in v2.3.19. It focuses on safety (Context Handover), observability (Queue Metrics), and integration (EndFrame Bridge).
-
-**Key Enhancements:**
-*   **Context Handover:** To prevent "Double-Current" crashes in OpenGL, `SituationInit` now explicitly releases the GL context on the Main Thread before spawning the Render Thread.
-*   **Queue Visibility:** Introduced `SituationGetRenderQueueDepth()` to monitor backpressure. This atomic counter allows UI overlays (like debug HUDs) to display "Queue: 2/3" warnings in real-time without locking.
-*   **Shutdown Robustness:** The Render Thread shutdown sequence now employs a broadcast-and-join strategy with a 1-second timeout, preventing "Zombie Threads" on exit.
-*   **EndFrame Integration:** `SituationEndFrame` now automatically detects if the Render Thread is active and routes execution to `_SituationQueueFrameIndex`. This allows developers to toggle threading via `SituationInitInfo.render_thread_count` without changing their frame loop code.
-
-### New in v2.3.20 "Velocity" (Phase 2.5: High-Performance Mesh Architecture)
-
-This release implements Phase 2.5 of the rendering engine refactor, restoring optimal VAO usage while respecting OpenGL context threading rules.
-
-**Key Enhancements:**
-*   **Lazy VAO Cache:** Replaces the shared global VAO with a per-mesh VAO cache. VAOs are created and configured lazily on the Render Thread inside `_SituationGLExecuteCommands` using `_SitGLGetCachedVAO`. This restores performance while maintaining thread safety.
-*   **OpenGL Graveyard:** Implements a deferred deletion system (`_SituationGLGraveyard`). Resources destroyed on the Main Thread (`SituationDestroyMesh`, etc.) are queued and safely deleted on the Render Thread via `_SitGLFlushGraveyard` to prevent race conditions.
-
-### New in v2.3.19 "Velocity" (Phase 2: Render Thread)
-
-This release activates the **Threaded Rendering Architecture**. The OpenGL backend now executes all rendering commands on a dedicated background thread, decoupling the main application loop from driver stalls and VSync blocks.
-
-**Key Enhancements:**
-*   **Render Thread:** Implemented `_SituationRenderThreadEntry`. The main thread records commands into double-buffered Soft Command Buffers, which are consumed by the dedicated Render Thread.
-*   **Context Handover:** The main thread now manages a hidden `loader_window` (shared context) for async asset loading, while the Render Thread owns the main window context for presentation.
-*   **Synchronization:** Introduced `render_queue_mutex` and `main_wait_cv` to manage frame submission and backpressure (max 2 frames in flight).
-*   **Shared VAO Architecture:** `SituationCreateMesh` now uses a global shared VAO (`mesh_vao_id`) to enable seamless mesh sharing between the loader and render threads.
-
-### New in v2.3.18 "Velocity" (Phase 1: Deferred OpenGL Architecture)
-
-This release introduces the **Soft Command Buffer** architecture for the OpenGL backend, unifying the execution model with Vulkan's deferred paradigm.
-
-**Key Enhancements:**
-*   **Soft Command Buffer:** OpenGL commands are now recorded into a binary instruction stream (`SituationGLSoftCommandBuffer`) instead of being executed immediately. This enables "Update-Before-Draw" validation and lays the groundwork for multi-threaded command recording in Phase 2.
-*   **Unified Execution:** `SituationEndFrame` now replays the recorded command stream, ensuring that both backends share the same temporal execution characteristics.
-*   **Critical Fix:** Resolved a VAO state corruption issue where mesh drawing would clobber the global state, ensuring compatibility with external middleware.
-
-### New in v2.3.16 "Velocity" (Task Safety Hotfix)
-
-This update integrates critical safety hardening for the Generational Task System. It focuses on making dependency chains robust against deadlocks and contention.
-
-**Key Enhancements:**
-*   **Lock-Free Dependency Linking:** `SituationAddJobDependency` now utilizes `atomic_compare_exchange` (CAS) to link jobs. This removes mutex locks from the dependency graph construction path, allowing for high-frequency submission from multiple threads without contention.
-*   **Cycle Detection:** The system now performs a depth-limited traversal (32 hops) when adding dependencies. It proactively detects and rejects circular dependencies (e.g., A->B->A), returning `SITUATION_ERROR_THREAD_CYCLE` instead of allowing a runtime deadlock.
-*   **Head-of-Line Blocking Mitigation:** Worker threads now cooperatively yield (`thrd_yield()`) if the job at the head of their queue is blocked by unsatisfied dependencies. This prevents CPU spinning and allows other threads to process the prerequisites.
-*   **Graph Visualization:** Added `SituationDumpTaskGraph`, a debug utility that snapshots the state of all active jobs, queues, and dependencies to JSON or text format.
-
-### New in v2.3.15 "Velocity" (Threading Overhaul)
-
-This release replaced the legacy linear-scan threading model with a hardened **Generational Task System**.
-
-### New in v2.3.14A "Velocity" (Refinement)
-
-This patch release focuses on thread safety and developer quality-of-life improvements.
-
-**Key Enhancements:**
-*   **Audio Snapshot Mixing:** The audio callback now uses a O(1) snapshotting strategy instead of a `try_lock` loop. This eliminates potential race conditions and audio dropouts when loading assets on the main thread.
-*   **Mesh Auto-Padding:** `SituationCreateMesh` now detects legacy 32-byte vertex data (Pos/Norm/UV) and automatically upgrades it to the standard 48-byte PBR format (Pos/Norm/Tan/UV) by inserting default tangent vectors. This simplifies migration from older projects.
-*   **Shadow State Invalidation:** The OpenGL backend now correctly invalidates its internal state tracker at the start of each frame, ensuring compatibility with external middleware (like ImGui) that modifies GL state directly.
-
-### New in v2.3.14 "Velocity" (Stability & Performance)
-
-This release is a major stability and performance hardening update. It addresses critical bottlenecks in both rendering backends and expands PBR support.
-
-**Key Enhancements:**
-*   **Tangent Space Support:** `SituationCreateMesh` now supports and automatically extracts Tangent vectors (12-float stride), enabling correct Normal Mapping in PBR shaders.
-*   **Vulkan Optimization:** Introduced a dedicated `AssetDescriptorPool` to prevent fragmentation during level loading.
-*   **OpenGL Optimization:** Implemented "Shadow State" tracking to eliminate redundant `glGetIntegerv` calls from the hot loop.
-*   **Text Rendering:** Switched to a persistent scratch buffer allocation strategy, eliminating per-frame `malloc/free` overhead.
-
-### New in v2.3.8 "Velocity"
-
-This release shifts focus from pure stability to Developer Efficiency. The "Velocity" module introduces a comprehensive suite of Hot-Reloading tools.
-
-Developers can now modify Shaders, Compute Pipelines, Textures, and 3D Models on disk and reload them instantly into the running application via the API. The engine handles the complex task of stalling the GPU, destroying old resources, and seamlessly swapping in new assets while maintaining existing handle IDs. This drastically accelerates the iteration loop for visual programming and content creation.
 
 ## Table of Contents
 
@@ -375,6 +250,11 @@ typedef struct {
     // Bitmask of initialization flags.
     // SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD: Routes capture callbacks to main thread.
     uint32_t flags;
+
+    // --- Threading ---
+    // 0 = Single Threaded (Default).
+    // 1 = Enable Render Thread (Decouples Rendering from Logic).
+    int render_thread_count;
 } SituationInitInfo;
 ```
 
@@ -1438,6 +1318,12 @@ SituationError SituationEndFrame(void);
 
 **Synchronization:** This function may block if VSync is enabled or if the GPU is heavily loaded (backpressure).
 
+**Adaptive Backpressure (Resilience):**
+The engine employs a hybrid strategy to handle backpressure (when the CPU produces frames faster than the GPU can consume them):
+*   **Steady State (< 3.5ms latency):** Uses `SPIN` waits for maximum responsiveness.
+*   **High Load (> 6.9ms latency):** Switches to `SLEEP` to yield CPU resources and prevent thermal throttling.
+*   **ARM64:** Utilizes architecture-specific intrinsics (`wfe` / `yield`) for power-efficient waiting.
+
 <a id="315-usage-pattern"></a>
 ### 3.1.5 Usage Pattern
 
@@ -1778,18 +1664,21 @@ A Mesh is a container for geometric data. It consists of a Vertex Buffer (points
 
 The library expects a standard vertex layout for most helper functions (`SituationCreateMesh`, `SituationDrawModel`).
 
-**Standard Vertex Format:**
+**Standard Vertex Format (PBR):**
 
 ```c:disable-run
 typedef struct {
-    vec3 position;  // Location (x, y, z)
-    vec3 normal;    // Surface direction (nx, ny, nz)
-    vec2 uv;        // Texture coordinates (u, v)
-} SituationVertex;
+    Vector3 position;  // Location (x, y, z)
+    Vector3 normal;    // Surface direction (nx, ny, nz)
+    Vector4 tangent;   // Tangent vector (.w stores sign of bitangent)
+    Vector2 uv;        // Texture coordinates (u, v)
+} SituationVertexPBR;
 ```
 
-**Stride:** sizeof(float) * 8 (32 bytes).
-**Custom Layouts:** You can use custom layouts by creating raw `SituationBuffer` objects and binding them manually, but `SituationMesh` is optimized for this standard format.
+**Stride:** `sizeof(float) * 12` (48 bytes).
+
+**Legacy Support:**
+The previous 32-byte format (Pos/Norm/UV) is still supported. `SituationCreateMesh` automatically detects if `vertex_stride` is 32 bytes and upgrades the data to the PBR format by calculating default tangent vectors (e.g., `(1, 0, 0, 1)`).
 
 <a id="342-creating-meshes"></a>
 ### 3.4.2 Creating Meshes
@@ -2425,7 +2314,7 @@ void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 position, C
 ```
 
 **Behavior:**
-Renders a compact, semi-transparent HUD at the specified screen coordinates using the provided color tint. It displays real-time statistics gathered by the internal profiler.
+Renders a compact, semi-transparent HUD at the specified screen coordinates using the provided color tint. It displays real-time statistics gathered by the internal profiler. It utilizes the internal text batcher for zero-allocation rendering, ensuring no performance impact on the frame.
 
 **Metrics Displayed:**
 *   **FPS:** Current Frames Per Second.
@@ -2448,6 +2337,28 @@ SituationCmdBeginRenderPass(cmd, &screen_pass);
     }
 SituationCmdEndRenderPass(cmd);
 ```
+
+### 3.8.2 Programmatic Metrics
+
+For custom logging or telemetry, you can access the raw profiling data.
+
+#### SituationGetRenderLatencyStats
+
+```c:disable-run
+void SituationGetRenderLatencyStats(double* out_avg_ms, double* out_max_ms);
+```
+
+**Returns:** The average and maximum Input-to-Present latency over the last second.
+**Precision:** Uses monotonic timestamps (`CLOCK_MONOTONIC`) to prevent drift.
+
+#### SituationGetRenderQueueDepth
+
+```c:disable-run
+int SituationGetRenderQueueDepth(void);
+```
+
+**Returns:** The number of frames currently queued for the Render Thread.
+**Usage:** Use this to detect CPU/GPU bottlenecks. A consistently full queue indicates the GPU cannot keep up with the CPU.
 
 <a id="39-text-rendering"></a>
 
@@ -3610,22 +3521,17 @@ sequenceDiagram
 | **Virus Scanner** | Opens file for reading immediately after write. | **Absorbed.** (Debounce waits). |
 | **Git Pull** | Rapidly updates 50 files. | **Batched.** (Single reload trigger). |
 
-```mermaid
-sequenceDiagram
-    participant Editor
-    participant OS
-    participant Situation
-    participant GPU
+#### SituationCheckHotReloads
 
-    Editor->>OS: Write Chunk 1
-    OS->>Situation: File Changed Event
-    Situation->>Situation: Start Timer (100ms)
-    Editor->>OS: Write Chunk 2
-    OS->>Situation: File Changed Event
-    Situation->>Situation: Reset Timer (100ms)
-    Note over Situation: ...Silence...
-    Situation->>GPU: Timer Expired -> Trigger Reload!
+```c:disable-run
+void SituationCheckHotReloads(void);
 ```
+
+**Behavior:**
+Checks for any pending file modification events. If the debounce timer has expired for a modified asset, it triggers the appropriate reload function (e.g., `SituationReloadShader`).
+
+**Usage:**
+Call this once per frame in your update loop (Phase 2), or less frequently (e.g., every 10 frames) if you want to minimize overhead in development builds.
 
 **Usage Warning:**
 If you delete a file that is currently being watched by the Hot-Reloader, the library will deregister the watch silently. If you restore the file, you must manually trigger a reload or restart the app to re-establish the link.
@@ -3739,7 +3645,7 @@ bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prerequ
 
 **Constraints:**
 *   **1:1 Continuation:** A prerequisite can trigger only *one* direct continuation (using lock-free CAS). For Fan-Out (one job triggering many), use a "Dispatcher" job that submits the children.
-*   **Cycle Detection:** The system performs a depth-limited check (max 32) and will return `false` (and set error `SITUATION_ERROR_THREAD_CYCLE`) if adding the link would create a loop.
+*   **Cycle Detection:** The system performs a depth-limited check (max 32) and will return `false` (and set error `SITUATION_ERROR_THREAD_CYCLE` code `-82`) if adding the link would create a loop.
 
 #### SituationAddJobDependencies (Fan-In)
 
@@ -3748,6 +3654,15 @@ bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prer
 ```
 
 **Usage:** Use this when one job (e.g., "Finalize Frame") must wait for multiple parallel tasks (e.g., "Physics", "AI", "Animation") to finish.
+
+#### SituationDumpTaskGraph
+
+```c:disable-run
+void SituationDumpTaskGraph(bool json_format);
+```
+
+**Usage:** Prints a snapshot of the current job graph (active jobs, dependencies, priorities) to `stderr`.
+**Debug:** Useful for diagnosing deadlocks or visualizing complex dependency chains.
 
 **Visual Vault: Dependency Flow**
 ```mermaid
@@ -3795,6 +3710,15 @@ graph LR
     B -- Draw --> F[Record Graphics]
     F --> G[Submit Graphics]
 ```
+
+#### SituationBeginList / SituationEndList
+
+```c:disable-run
+void SituationBeginList(SituationRenderList list);
+void SituationEndList(SituationRenderList list);
+```
+
+**Usage:** Marks the start and end of command recording for a render list. The `list` handle acts as a `SituationCommandBuffer` during this block.
 
 #### SituationSubmitRenderList
 
@@ -3876,9 +3800,9 @@ The Situation SDK is designed to be cross-platform, targeting Windows, Linux, an
     *   **Headers:** The bundled headers in `ext/glfw/include` are cross-platform and safe to use.
 
 ### ARM64 Support (ARM Resilience)
-Version 2.3.23 "Velocity" introduces verified support for ARM64 architectures (e.g., Apple Silicon, Raspberry Pi 4/5, Linux ARM servers).
+The library provides verified support for ARM64 architectures (e.g., Apple Silicon, Raspberry Pi 4/5, Linux ARM servers).
 
-*   **Spinlocks:** The internal backpressure mechanisms now utilize architecture-specific intrinsics for power-efficient waiting:
+*   **Spinlocks:** The internal backpressure mechanisms utilize architecture-specific intrinsics for power-efficient waiting:
     *   **x86_64:** `_mm_pause()`
     *   **ARM64:** `__builtin_arm_wfe()` (Wait For Event) where supported, falling back to `__asm__ __volatile__("yield")`.
 *   **Vectorization:** The library relies on the compiler's auto-vectorization. `Vector` types are union-based and do not force specific SIMD alignment, ensuring compatibility with standard AAPCS64 calling conventions.
