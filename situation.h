@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library v2.3.23 "Velocity"
+*   Core API library (see version in Version Macros)
 *   (c) 2025 Jacques Morel
 *   MIT Licensed
 *
@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 25
+#define SITUATION_VERSION_PATCH 26
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -25759,7 +25759,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
     } else { // Use device default format preferences, or sensible common defaults
         device_config.playback.format = ma_format_f32; // Prefer float32 for easier mixing
         device_config.playback.channels = 2;           // Stereo default
-        device_config.sampleRate = 48000;              // Common default sample rate
+        device_config.sampleRate = 0;              // Common default sample rate
         // To use device's native format:
         // device_config.playback.format = ma_format_unknown; // Let miniaudio pick
         // device_config.playback.nativeChannelCount = 0; // Use device native or best match
