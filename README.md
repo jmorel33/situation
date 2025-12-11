@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.25 "Polish Zenith"_
+_Core API library v2.3.26 "Polish Zenith"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,7 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.25 "Polish Zenith"**
+Current Version: **v2.3.26 "Polish Zenith"**
 
 **Version 2.3.25** achieves metric and stability perfection by implementing **Namespace Unification** for internal renderer states and fixing a critical **Vulkan Refcount Asymmetry**. It introduces a monotonic timestamping system for drift-proof latency tracking, a **"Once-Warn"** mechanism for clock drift to prevent log spam, and robust thread contention handling in the metric collection loops. This update ensures that the safety features of the "Zenith" series are not only functional but also observably precise and thread-safe under extreme load.
 
