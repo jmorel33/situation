@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.27 "Titanium Core"_
+_Core API library v2.3.27B "Titanium Core B"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,9 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.27 "Titanium Core"**
+Current Version: **v2.3.27B "Titanium Core B"**
 
-**Version 2.3.27** marks the transition to **"Titanium"** status—a comprehensive architectural hardening focused on absolute thread safety and zero-allocation hot paths. This release eliminates critical race conditions in the Audio and Rendering subsystems via a **"Lock-the-World"** mixing strategy and a **Deferred Submission Queue** for multi-threaded rendering. It introduces a **Persistent Ring Buffer** for Vulkan text rendering (eliminating per-draw allocations for UI) and implements a **Linear Descriptor Allocation** strategy to permanently solve Vulkan memory fragmentation during long sessions.
+**Version 2.3.27B** is a rapid hardening patch atop v2.3.27's architectural overhaul, addressing post-release audit findings for concurrency deadlocks, memory leaks, and subtle races. It fortifies core invariants—recursive mutexes for safe audio callbacks, refcounted descriptor recycling to end OOM pitfalls, and in-flight guards for MT render lists—elevating the library from "Production-Ready" to "Audit-Proof" for mission-critical, long-haul deployments without sacrificing zero-allocation hot paths.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Dynamic UBOs (v2.4):** Implementing `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` to allow race-free, high-frequency uniform updates without staging barriers.

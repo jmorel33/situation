@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 27
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "B"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -1315,6 +1315,7 @@ typedef struct {
         VkSampler       sampler;             // Sampler used when sampling this VD as a texture
         VkRenderPass    render_pass;         // Dedicated render pass (one per VD for maximum compatibility/flexibility)
         VkDescriptorSet descriptor_set;      // Pre-allocated descriptor set for ultra-fast compositing (Velocity era)
+        VkDescriptorPool descriptor_pool;    // [FIX v2.3.27B]
     };
 #elif defined(SITUATION_USE_OPENGL)
     struct {
@@ -2811,11 +2812,17 @@ typedef struct _SituationTextureNode {
     SituationTexture texture;
     char* source_path; // [HOT-RELOAD] Only set if loaded via SituationLoadTexture
     long mod_time;     // [HOT-RELOAD] Last modification time
+#if defined(SITUATION_USE_VULKAN)
+    VkDescriptorPool descriptor_pool; // Track which pool owns the set
+#endif
     struct _SituationTextureNode* next;
 } _SituationTextureNode;
 
 typedef struct _SituationBufferNode {
     SituationBuffer buffer;
+#if defined(SITUATION_USE_VULKAN)
+    VkDescriptorPool descriptor_pool; // Track which pool owns the set
+#endif
     struct _SituationBufferNode* next;
 } _SituationBufferNode;
 
@@ -2875,6 +2882,7 @@ struct SituationRenderList_t {
     size_t data_cursor;
     size_t data_capacity;
     bool is_recording;
+    atomic_int in_flight_count;     // [FIX v2.3.27B] Track active usage to prevent reset-while-reading race
 };
 
 #if defined(SITUATION_USE_OPENGL)
@@ -2939,6 +2947,9 @@ typedef struct {
     uint8_t* data_buffer;
     size_t data_cursor;
     size_t data_capacity;
+    
+    // [FIX v2.3.27B] Circuit breaker for OOM handling
+    bool is_broken; 
 } SituationGLSoftCommandBuffer;
 
 typedef struct {
@@ -3126,12 +3137,15 @@ typedef struct _SituationVKGraveyard {
     VmaAllocation screen_copy_memory;                            // Memory for screen copy
     VkImageView screen_copy_view;                                // View for screen copy
     VkDescriptorSet screen_copy_descriptor_set;                  // Descriptor set for reading screen copy
-
+    
+    VkDescriptorPool screen_copy_descriptor_pool;                // [FIX v2.3.27B] Track the pool that owns the screen copy set
+    
     // --- Graveyard (Deferred Deletion Queue) ---
-    struct _SituationVKGraveyard* graveyards;                       // Array of deletion queues (one per frame in flight)
+    struct _SituationVKGraveyard* graveyards;                    // Array of deletion queues (one per frame in flight)
 
     // --- Threading Signals ---
     atomic_bool recreate_swapchain_request;                      // Signal from Render Thread to Main Thread
+    bool swapchain_valid; // [FIX v2.3.27B]
     uint32_t acquired_image_indices[SITUATION_MAX_FRAMES_IN_FLIGHT]; // Image index for each frame slot
     
 } _SituationVulkanState;
@@ -3344,7 +3358,9 @@ typedef struct {
 
     SituationSound* queued_sounds[SITUATION_MAX_AUDIO_SOUNDS_QUEUED]; // Array of active sounds being mixed
     int queued_sound_count;                                           // Number of active sounds
-    ma_mutex audio_queue_mutex;                                       // Mutex protecting the sound queue
+    // [FIX v2.3.27B] Use C11 Recursive Mutex to prevent deadlocks when 
+    // API functions are called from within audio callbacks/processors.
+    mtx_t audio_queue_mutex;                                       // Mutex protecting the sound queue
 
     // Pre-allocated temp buffers for the audio callback (avoids SIT_MALLOC on audio thread)
     float* audio_callback_decoder_temp_buffer;            // Scratch buffer for decoding PCM
@@ -3493,7 +3509,7 @@ typedef struct {
     // -------------------------------------------------------------------------
     char last_error_msg[SITUATION_MAX_ERROR_MSG_LEN];         // Buffer for the last reported error message
     ma_mutex error_mutex;                                     // Mutex protecting concurrent access to the error buffer
-    bool is_initialized;                                      // Flag indicating if SituationInit() has completed successfully
+    atomic_bool is_initialized;                               // Flag indicating if SituationInit() has completed successfully
     bool is_com_initialized;                                  // Flag indicating if Windows COM was initialized by this library
 
     // -------------------------------------------------------------------------
@@ -4046,7 +4062,7 @@ static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, 
 
 
 // --- Vulkan Resource Management Helpers ---
-static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayout layout);
+static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool* out_pool);
 static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags);
 static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation);
 static void _SituationVulkanDestroyImage(VkImage image, VmaAllocation allocation);
@@ -4612,22 +4628,15 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
     gy->image_count = 0;
 
     // Descriptor Sets
-    /*if (gy->descriptor_set_count > 0) {
+    if (gy->descriptor_set_count > 0) {
         for (int i = 0; i < gy->descriptor_set_count; ++i) {
-            if (gy->descriptor_pools[i] != VK_NULL_HANDLE) {
-                // If a pool is provided, we free the set back to it (e.g., asset pool)
+            // [FIX v2.3.27B] Actually free the sets.
+            // Note: If pool is NULL (legacy), we skip. But new logic ensures pool is passed.
+            if (gy->descriptor_pools[i] != VK_NULL_HANDLE && gy->descriptor_sets[i] != VK_NULL_HANDLE) {
                 vkFreeDescriptorSets(sit_render.vk.device, gy->descriptor_pools[i], 1, &gy->descriptor_sets[i]);
             }
-            // If pool is NULL, it's from the linear allocator (dynamic manager) and we intentionally skip freeing
-            // to avoid fragmentation/performance hits. It will be reclaimed when the pool is reset/destroyed.
         }
-    }*/
-    // Descriptor Sets
-    // [v2.3.27] Linear Allocation Strategy:
-    // We DO NOT call vkFreeDescriptorSets. Doing so causes fragmentation.
-    // Instead, we let the sets persist in the pool. The memory is reclaimed
-    // when the entire pool is destroyed at shutdown.
-    // We just reset the counter to discard the handles from the tracking array.
+    }
     gy->descriptor_set_count = 0;
 
     // Pipelines
@@ -6349,7 +6358,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
 
     // --- 6. Mark as Successfully Initialized ---
     // All steps completed successfully. Set the global initialized flag.
-    sit_gs.is_initialized = true;
+    atomic_store(&sit_gs.is_initialized, true);
 
     // Clear any lingering error message and set a success indicator.
     _SituationSetError("SituationInit: No error. Initialization successful.");
@@ -6674,8 +6683,15 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     sit_audio.is_miniaudio_context_initialized = true;
 
     // Initialize the mutex that protects the sound playback queue.
-    if (ma_mutex_init(&sit_audio.audio_queue_mutex) != MA_SUCCESS) {
+    /*if (ma_mutex_init(&sit_audio.audio_queue_mutex) != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to initialize audio queue mutex");
+        return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
+    }*/
+    // [FIX v2.3.27B] Initialize recursive mutex
+    // This allows the same thread (Audio Thread) to re-acquire the lock if a 
+    // user processor calls a Situation API function.
+    if (mtx_init(&sit_audio.audio_queue_mutex, mtx_recursive) != thrd_success) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to initialize recursive audio mutex");
         return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
     }
 
@@ -6932,11 +6948,16 @@ static bool _SituationInitGLVirtualDisplayRenderer(void) {
  *         Returns NULL if memory allocation fails.
  */
 static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, SitOpCode opcode) {
+    // [FIX v2.3.27B] Fail fast if buffer is already compromised
+    if (buf->is_broken) return NULL;
+
     if (buf->packet_count >= buf->packet_capacity) {
         size_t new_cap = (buf->packet_capacity == 0) ? 64 : buf->packet_capacity * 2;
         SitCommandPacket* new_ptr = (SitCommandPacket*)SIT_REALLOC(buf->packets, new_cap * sizeof(SitCommandPacket));
+        
         if (!new_ptr) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer packets realloc failed");
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer packets realloc failed. Frame dropped.");
+            buf->is_broken = true; // Trip the breaker
             return NULL;
         }
         buf->packets = new_ptr;
@@ -6960,13 +6981,17 @@ static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, Si
  *         Always use offsets for long-term storage.
  */
 static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* data, size_t size) {
+    // [FIX v2.3.27B] Fail fast
+    if (buf->is_broken) return NULL;
+
     if (buf->data_cursor + size > buf->data_capacity) {
         size_t new_cap = (buf->data_capacity == 0) ? 4096 : buf->data_capacity * 2;
         while (buf->data_cursor + size > new_cap) new_cap *= 2;
 
         uint8_t* new_ptr = (uint8_t*)SIT_REALLOC(buf->data_buffer, new_cap);
         if (!new_ptr) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer data realloc failed");
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer data realloc failed. Frame dropped.");
+            buf->is_broken = true; // Trip the breaker
             return NULL;
         }
         buf->data_buffer = new_ptr;
@@ -6976,7 +7001,7 @@ static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* d
     void* dest = buf->data_buffer + buf->data_cursor;
     if (data) memcpy(dest, data, size);
     buf->data_cursor += size;
-    return dest; // Pointer to data inside buffer (valid until realloc)
+    return dest; 
 }
 
 /**
@@ -6995,7 +7020,14 @@ static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* d
  */
 static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
     if (buf->packet_count == 0) return;
-
+    // [FIX v2.3.27B] Do not execute incomplete/corrupted buffers
+    if (buf->is_broken) {
+        // Reset state for next frame and return
+        buf->packet_count = 0;
+        buf->data_cursor = 0;
+        buf->is_broken = false; // Reset flag for next attempt
+        return;
+    }
     // --- [v2.3.27] State Hardening: Reset critical state ---
     // We cannot assume the state from the previous frame persists,
     // because external code (ImGui, etc.) might have run in between.
@@ -8087,7 +8119,7 @@ static void _SituationVulkanCreateScreenCopyResource(void) {
         sit_render.vk.swapchain_extent.width,
         sit_render.vk.swapchain_extent.height,
         1,
-        sit_render.vk.swapchain_image_format, // Match swapchain format
+        sit_render.vk.swapchain_image_format,
         VK_IMAGE_TILING_OPTIMAL,
         usage,
         VMA_MEMORY_USAGE_GPU_ONLY,
@@ -8103,14 +8135,12 @@ static void _SituationVulkanCreateScreenCopyResource(void) {
     );
 
     // 3. Create Persistent Descriptor Set (Using standard image_sampler_layout)
-    // We reuse the Quad/VD sampler (sit_render.vk.vd_compositing_pipeline has a sampler we can reuse, or just make a new one if needed. Actually, we need a sampler).
-    // Let's steal the sampler from the first active VD or create a global linear sampler.
-    // For safety, let's assume sit_render.vk.quad_pipeline_layout doesn't have one.
-    // We will use the sampler from the Virtual Display that invokes the draw, OR creates a static one.
-    // **Optimization:** Re-use the existing VD sampler logic inside the render loop.
+    // [FIX v2.3.27B] Capture the pool so we can free this set on resize/shutdown
+    sit_render.vk.screen_copy_descriptor_set = _SituationVulkanAllocateDescriptorSet(
+        sit_render.vk.image_sampler_layout,
+        &sit_render.vk.screen_copy_descriptor_pool 
+    );
 
-    // Allocate Set
-    sit_render.vk.screen_copy_descriptor_set = _SituationVulkanAllocateDescriptorSet(sit_render.vk.image_sampler_layout);
     if (sit_render.vk.screen_copy_descriptor_set == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate descriptor set for Screen Copy.");
     }
@@ -8126,18 +8156,29 @@ static void _SituationVulkanCreateScreenCopyResource(void) {
  *          Called during swapchain cleanup.
  */
 static void _SituationVulkanDestroyScreenCopyResource(void) {
-    if (sit_render.vk.screen_copy_descriptor_set) {
-        // If pool allows freeing:
-        // vkFreeDescriptorSets(sit_render.vk.device, sit_render.vk.descriptor_pool, 1, &sit_render.vk.screen_copy_descriptor_set);
+    if (sit_render.vk.screen_copy_descriptor_set != VK_NULL_HANDLE) {
+        // [FIX v2.3.27B] Explicitly free the set to prevent memory leaks during resize
+        if (sit_render.vk.screen_copy_descriptor_pool != VK_NULL_HANDLE) {
+            vkFreeDescriptorSets(
+                sit_render.vk.device, 
+                sit_render.vk.screen_copy_descriptor_pool, 
+                1, 
+                &sit_render.vk.screen_copy_descriptor_set
+            );
+        }
         sit_render.vk.screen_copy_descriptor_set = VK_NULL_HANDLE;
+        sit_render.vk.screen_copy_descriptor_pool = VK_NULL_HANDLE;
     }
-    if (sit_render.vk.screen_copy_view) {
+
+    if (sit_render.vk.screen_copy_view != VK_NULL_HANDLE) {
         vkDestroyImageView(sit_render.vk.device, sit_render.vk.screen_copy_view, NULL);
         sit_render.vk.screen_copy_view = VK_NULL_HANDLE;
     }
-    if (sit_render.vk.screen_copy_image) {
+
+    if (sit_render.vk.screen_copy_image != VK_NULL_HANDLE) {
         vmaDestroyImage(sit_render.vk.vma_allocator, sit_render.vk.screen_copy_image, sit_render.vk.screen_copy_memory);
         sit_render.vk.screen_copy_image = VK_NULL_HANDLE;
+        sit_render.vk.screen_copy_memory = VK_NULL_HANDLE;
     }
 }
 
@@ -8949,7 +8990,7 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
  * @return A valid `VkDescriptorSet` handle on success.
  * @return `VK_NULL_HANDLE` if allocation fails even after creating a new pool (a true out-of-memory condition).
  */
-static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayout layout) {
+static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool* out_pool) {
     VkDescriptorSetAllocateInfo alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorSetCount = 1,
@@ -8963,6 +9004,10 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
     if (sit_render.vk.descriptor_manager.count > 0) {
         alloc_info.descriptorPool = sit_render.vk.descriptor_manager.pools[sit_render.vk.descriptor_manager.current_index];
         res = vkAllocateDescriptorSets(sit_render.vk.device, &alloc_info, &out_set);
+        if (res == VK_SUCCESS) {
+            if (out_pool) *out_pool = sit_render.vk.descriptor_manager.pools[sit_render.vk.descriptor_manager.current_index];
+            return out_set;
+        }
     }
 
     // Only attempt to grow if the pool is actually full or fragmented.
@@ -8978,10 +9023,8 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
 
         VkDescriptorPoolCreateInfo pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            // [v2.3.27] REMOVED VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
-            // This tells the driver we will never free individual sets, allowing
-            // it to use a high-performance bump allocator.
-            .flags = 0, 
+            // [FIX v2.3.27B] Re-enable freeing to prevent memory leaks
+            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, 
             .maxSets = 1000 * 4,
             .poolSizeCount = 4,
             .pPoolSizes = pool_sizes
@@ -9015,6 +9058,7 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Allocation failed even after pool growth.");
             return VK_NULL_HANDLE;
         }
+        if (out_pool) *out_pool = new_pool;
     }
 
     return out_set;
@@ -9120,39 +9164,24 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
 
     VkDescriptorPoolCreateInfo pool_info = { 
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, 
-        .flags = 0, // [v2.3.27] No FREE_BIT
+        // [FIX v2.3.27B] Re-enable FREE_BIT to allow reclaiming memory for individual sets.
+        // This is critical for preventing OOM during asset streaming.
+        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, 
         .maxSets = total_max_sets, 
         .poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]), 
         .pPoolSizes = pool_sizes 
     };
 
-    // 1. Create the initial pool
+    // 1. Create the initial persistent pool
     if (vkCreateDescriptorPool(sit_render.vk.device, &pool_info, NULL, &sit_render.vk.persistent_descriptor_pool) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create unified descriptor pool.");
         _SituationCleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
+    
+    // Set as the active pool for the dynamic manager to start with
     sit_render.vk.descriptor_pool = sit_render.vk.persistent_descriptor_pool;
-
-    // [v2.3.27] REMOVED separate asset_descriptor_pool. 
-    // Textures will now use the dynamic manager below.
-    //sit_render.vk.asset_descriptor_pool = VK_NULL_HANDLE; 
-
-/*    // 1b. Create a separate pool specifically for assets
-    VkDescriptorPoolSize asset_pool_sizes[] = {
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 }, // Allow 4k textures
-        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024 }
-    };
-
-    VkDescriptorPoolCreateInfo asset_pool_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = 4096,
-        .poolSizeCount = 2,
-        .pPoolSizes = asset_pool_sizes
-    };
-    vkCreateDescriptorPool(sit_render.vk.device, &asset_pool_info, NULL, &sit_render.vk.asset_descriptor_pool);
-*/
+    
     // 2. Seed the Dynamic Manager with this pool
     // This ensures subsequent allocations use this pool instead of creating a new one immediately.
     sit_render.vk.descriptor_manager.capacity = 4;
@@ -9238,7 +9267,9 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         // Passing NULL cmd forces synchronous upload for init
         if (_SituationVulkanCreateAndUploadBuffer(VK_NULL_HANDLE, NULL, buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &sit_render.vk.view_proj_ubo_buffer[i], &sit_render.vk.view_proj_ubo_memory[i]) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
 
-        sit_render.vk.view_proj_ubo_descriptor_set[i] = _SituationVulkanAllocateDescriptorSet(sit_render.vk.view_data_ubo_layout);
+        // [FIX v2.3.27B] Updated to pass NULL for pool tracking (View UBOs persist until shutdown)
+        sit_render.vk.view_proj_ubo_descriptor_set[i] = _SituationVulkanAllocateDescriptorSet(sit_render.vk.view_data_ubo_layout, NULL);
+        
         if (sit_render.vk.view_proj_ubo_descriptor_set[i] == VK_NULL_HANDLE) {
             _SituationCleanupVulkan();
             return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
@@ -10569,6 +10600,7 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
     create_info.oldSwapchain = VK_NULL_HANDLE;
 
     if (vkCreateSwapchainKHR(sit_render.vk.device, &create_info, NULL, &sit_render.vk.swapchain) != VK_SUCCESS) {
+        sit_render.vk.swapchain_valid = false;
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED, "Failed to create swap chain");
         _SituationVulkanFreeSwapchainSupportDetails(&swapchain_support);
         return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED;
@@ -10582,6 +10614,7 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
     sit_render.vk.swapchain_image_count = image_count;
 
     _SituationVulkanFreeSwapchainSupportDetails(&swapchain_support);
+    sit_render.vk.swapchain_valid = true;
     return SITUATION_SUCCESS;
 }
 
@@ -11123,6 +11156,7 @@ static void _SituationVulkanCleanupSwapchain(void) {
         fprintf(stderr, "WARNING: vkDeviceWaitIdle failed (0x%x) in _SituationVulkanCleanupSwapchain. Proceeding with cleanup.\n", wait_result);
         // Depending on policy, you might choose to return or assert here if the device is in a bad state.
     }
+    sit_render.vk.swapchain_valid = false;
 
     // --- 3. Destroy Depth Resources ---
     // These are specific to the swapchain's extent/format.
@@ -11389,32 +11423,12 @@ SITAPI void SituationPollInputEvents(void) {
     // --- [POLL] GATHER NEW EVENTS FROM THE OPERATING SYSTEM ---
     // This call triggers all the GLFW callbacks (_SituationGLFWKeyCallback, etc.), which will populate our `current_state` and event queue buffers for this frame.
     glfwPollEvents();
-}
+    
+    // ========================================================================
+    // [FIX v2.3.27B] MOVED JOYSTICK LOGIC HERE FOR ATOMIC INPUT UPDATES
+    // ========================================================================
 
-/**
- * @brief Updates all internal timers and calculates the delta time for the current frame.
- * @details This is the second of the two core functions that form the new main loop. Its sole responsibility is to advance the library's internal clocks.
- *          This function should be called **once per frame**, immediately after `SituationPollInputEvents()` but before your main application logic.
- *
- * @par Function Workflow
- *   1.  **Calculates Delta Time:** It measures the time elapsed since the last frame and updates the value retrieved by `SituationGetFrameTime()`.
- *   2.  **Updates Temporal Oscillators:** It advances the state of the Temporal Oscillator system, triggering any oscillators whose periods have elapsed.
- *   3.  **Updates Joystick/Gamepad State:** It processes the joystick connection event queue and polls the state of connected gamepads to detect button press/release events for the current frame.
- *   4.  **Updates Virtual Display Clocks:** It advances the internal `elapsed_time_seconds` for each active virtual display.
- *
- * @note Calling this function is essential for `SituationGetFrameTime()` to return a correct, updated value for the current frame.
- *
- * @see SituationPollInputEvents(), SituationGetFrameTime(), SituationUpdate()
- */
-SITAPI void SituationUpdateTimers(void) {
-    if (!SituationIsInitialized()) return;
-
-    // --- 1. Global Frame Time Calculation ---
-    sit_gs.current_time = glfwGetTime();
-    sit_gs.frame_time = sit_gs.current_time - sit_gs.previous_time;
-    sit_gs.previous_time = sit_gs.current_time;
-
-    // --- 2. Process Joystick Connection Events (Thread-Safe) ---
+    // --- Process Joystick Connection Events (Thread-Safe) ---
     ma_mutex_lock(&sit_input.joysticks.event_queue_mutex);
     for (int i = 0; i < sit_input.joysticks.event_queue_count; i++) {
         _SituationJoystickEvent ev = sit_input.joysticks.event_queue[i];
@@ -11442,8 +11456,7 @@ SITAPI void SituationUpdateTimers(void) {
     sit_input.joysticks.event_queue_count = 0;
     ma_mutex_unlock(&sit_input.joysticks.event_queue_mutex);
 
-
-    // --- 3. Poll Gamepad State & Detect Press Events ---
+    // --- Poll Gamepad State & Detect Press Events ---
     for (int jid = 0; jid < SITUATION_MAX_JOYSTICKS; jid++) {
         if (sit_input.joysticks.state[jid].is_present && sit_input.joysticks.state[jid].is_gamepad) {
             // Copy current state to last state BEFORE polling new state.
@@ -11472,8 +11485,32 @@ SITAPI void SituationUpdateTimers(void) {
             }
         }
     }
+}
 
-    // --- 4. Update Temporal Oscillator System ---
+/**
+ * @brief Updates all internal timers and calculates the delta time for the current frame.
+ * @details This is the second of the two core functions that form the new main loop. Its sole responsibility is to advance the library's internal clocks.
+ *          This function should be called **once per frame**, immediately after `SituationPollInputEvents()` but before your main application logic.
+ *
+ * @par Function Workflow
+ *   1.  **Calculates Delta Time:** It measures the time elapsed since the last frame and updates the value retrieved by `SituationGetFrameTime()`.
+ *   2.  **Updates Temporal Oscillators:** It advances the state of the Temporal Oscillator system, triggering any oscillators whose periods have elapsed.
+ *   3.  **Updates Joystick/Gamepad State:** It processes the joystick connection event queue and polls the state of connected gamepads to detect button press/release events for the current frame.
+ *   4.  **Updates Virtual Display Clocks:** It advances the internal `elapsed_time_seconds` for each active virtual display.
+ *
+ * @note Calling this function is essential for `SituationGetFrameTime()` to return a correct, updated value for the current frame.
+ *
+ * @see SituationPollInputEvents(), SituationGetFrameTime(), SituationUpdate()
+ */
+SITAPI void SituationUpdateTimers(void) {
+    if (!SituationIsInitialized()) return;
+
+    // --- 1. Global Frame Time Calculation ---
+    sit_gs.current_time = glfwGetTime();
+    sit_gs.frame_time = sit_gs.current_time - sit_gs.previous_time;
+    sit_gs.previous_time = sit_gs.current_time;
+
+    // --- 2. Update Temporal Oscillator System ---
     if (sit_gs.timer_system_instance.is_initialized) {
         SituationTimerSystem* ts = &sit_gs.timer_system_instance;
         memcpy(ts->state_previous, ts->state_current, sizeof(ts->state_current));
@@ -11492,7 +11529,7 @@ SITAPI void SituationUpdateTimers(void) {
         }
     }
 
-    // --- 5. Update Virtual Display Timers ---
+    // --- 3. Update Virtual Display Timers ---
     double current_time_for_vdisplays = sit_gs.timer_system_instance.is_initialized ? sit_gs.timer_system_instance.current_system_time_seconds : sit_gs.current_time;
     for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
         if (sit_render.virtual_display_slots_used[i]) {
@@ -11562,6 +11599,11 @@ SITAPI void SituationUpdate(void) {
  * @see SituationInit(), _SituationCleanupDanglingResources()
  */
 SITAPI void SituationShutdown(void) {
+    if (!_sit_current_context) return;
+    // [FIX v2.3.27B] Atomic check-and-set
+    if (!atomic_exchange(&sit_gs.is_initialized, false)) {
+        return; // Already shut down or shutting down
+    }
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_SHUTDOWN_FAILED, "Not initialized"); return; }
     if (sit_gs.exit_callback != NULL) { sit_gs.exit_callback(sit_gs.exit_callback_user_data); }
 
@@ -11604,7 +11646,7 @@ SITAPI void SituationShutdown(void) {
         // Cleanup text scratch
         if (sit_render.text_batch_scratch) { SIT_FREE(sit_render.text_batch_scratch); }
 
-        sit_gs.is_initialized = false;
+        atomic_store(&sit_gs.is_initialized, false);
         _SituationSetError("Shutdown complete");
 
         // Free the context
@@ -11649,9 +11691,13 @@ static void _SituationCleanupSubsystems(void) {
     sit_audio.audio_callback_converter_temp_buffer = NULL;
 
     // Uninitialize mutexes.
-    ma_mutex_uninit(&sit_audio.audio_queue_mutex);
+    // [FIX v2.3.27B] Destroy the C11 recursive mutex used for the audio queue
+    mtx_destroy(&sit_audio.audio_queue_mutex);
+
+    // Input mutexes use standard miniaudio wrappers (non-recursive)
     ma_mutex_uninit(&sit_input.keyboard.event_queue_mutex);
     ma_mutex_uninit(&sit_input.mouse.mutex);
+    
     // Cleanup capture resources
     if (sit_audio.audio_capture_on_main_thread) {
         ma_mutex_uninit(&sit_audio.audio_capture_mutex);
@@ -12886,7 +12932,8 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // [Phase 1] Reset Soft Command Buffer
         sit_render.gl.soft_buffers[sit_render.current_frame_index].packet_count = 0;
         sit_render.gl.soft_buffers[sit_render.current_frame_index].data_cursor = 0;
-
+        // [FIX v2.3.27B] Reset breaker
+        sit_render.gl.soft_buffers[sit_render.current_frame_index].is_broken = false; 
         return true;
     }
 
@@ -13137,6 +13184,9 @@ SITAPI SituationError SituationEndFrame(void) {
             // "Paste" the recorded commands into the real command buffer
             SituationReplayRenderList(main_cmd, list);
             
+            // [FIX v2.3.27B] Mark as finished
+            atomic_fetch_sub(&list->in_flight_count, 1);
+            
             // Advance tail
             tail = (tail + 1) % 256;
         }
@@ -13366,6 +13416,11 @@ SITAPI SituationError SituationEndFrame(void) {
             present_info.pSwapchains = swapchains;
             present_info.pImageIndices = &sit_render.vk.current_image_index; // Present the image we acquired/used this frame
 
+            // [FIX v2.3.27B] Safety check
+            if (!sit_render.vk.swapchain_valid) {
+                return SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID;
+            }
+        
             // Perform the presentation.
             VkResult result = vkQueuePresentKHR(sit_render.vk.present_queue, &present_info);
 
@@ -15054,6 +15109,9 @@ SITAPI SituationRenderList SituationCreateRenderList(void) {
         list->packets = (SituationRenderPacket*)SIT_MALLOC(list->packet_capacity * sizeof(SituationRenderPacket));
         list->data_capacity = 1024;
         list->data_buffer = (uint8_t*)SIT_MALLOC(list->data_capacity);
+        
+        // [FIX v2.3.27B]
+        atomic_init(&list->in_flight_count, 0);
     }
     return list;
 }
@@ -15064,6 +15122,17 @@ SITAPI SituationRenderList SituationCreateRenderList(void) {
  */
 SITAPI void SituationDestroyRenderList(SituationRenderList list) {
     if (!list) return;
+    
+    // [FIX v2.3.27B] Ensure we don't free memory being read by the GPU thread
+    while (atomic_load(&list->in_flight_count) > 0) {
+        // Simple yield loop
+         #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__)
+        _mm_pause(); 
+        #elif defined(__aarch64__) || defined(_M_ARM64)
+        __asm__ __volatile__("yield");
+        #endif
+    }
+    
     if (list->packets) SIT_FREE(list->packets);
     if (list->data_buffer) SIT_FREE(list->data_buffer);
     SIT_FREE(list);
@@ -15076,6 +15145,26 @@ SITAPI void SituationDestroyRenderList(SituationRenderList list) {
  */
 SITAPI void SituationResetRenderList(SituationRenderList list) {
     if (!list) return;
+
+    // [FIX v2.3.27B] Wait for in-flight usage to complete
+    // We use a simple spin-wait here because this condition should be extremely rare
+    // (typically only happens if the Main Thread is lapping the Render Thread).
+    int retries = 0;
+    while (atomic_load(&list->in_flight_count) > 0) {
+        #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__)
+        _mm_pause(); 
+        #elif defined(__aarch64__) || defined(_M_ARM64)
+        __asm__ __volatile__("yield");
+        #endif
+        
+        retries++;
+        if (retries > 100000) {
+             // If we are stuck here, it's a deadlock or logic error. Break to avoid hanging.
+             _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "ResetRenderList timeout: List stuck in flight.");
+             break; 
+        }
+    }
+
     list->packet_count = 0;
     list->data_cursor = 0;
     list->is_recording = false;
@@ -15270,11 +15359,12 @@ static void _SituationEnqueueRenderList(SituationRenderList list) {
     int next_head = (head + 1) % 256;
 
     if (next_head != tail) {
+        // [FIX v2.3.27B] Mark as in-flight before queueing
+        atomic_fetch_add(&list->in_flight_count, 1);
+        
         sit_render.momentum_queue[head] = list;
         atomic_store(&sit_render.momentum_head, next_head);
     } else {
-        // Queue full: We must drop it to prevent deadlock/corruption.
-        // In debug, we log this.
         _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Momentum render queue full. Frame data dropped.");
     }
 
@@ -15823,9 +15913,9 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
         descriptor_type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
 
-    // [v2.3.27] Use Dynamic Manager (Auto-Growing)
-    // Replaces manual allocation from fixed-size asset pool
-    texture.descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use);
+    // [FIX v2.3.27B] Capture the pool
+    VkDescriptorPool used_pool = VK_NULL_HANDLE;
+    texture.descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use, &used_pool);
 
     if (texture.descriptor_set == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
@@ -15886,6 +15976,10 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
             _SituationTextureNode* node = (_SituationTextureNode*)SIT_MALLOC(sizeof(_SituationTextureNode));
             if (node) {
                 node->texture = texture;
+                // [FIX v2.3.27B] Store pool in node
+                #if defined(SITUATION_USE_VULKAN)
+                node->descriptor_pool = used_pool; 
+                #endif
                 node->next = sit_render.all_textures;
                 sit_render.all_textures = node;
             } else {
@@ -15930,62 +16024,70 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
  */
 SITAPI void SituationDestroyTexture(SituationTexture* texture) {
     // --- 1. Input Validation ---
-	if (!texture->id) {
-        SITUATION_LOG_WARNING(SITUATION_ERROR_INVALID_PARAM, "Null texture ID in DestroyTexture");
+    if (!texture || !texture->id) {
+        // Silent return is standard for destroy functions on null/empty handles
         return;
     }
 
-    // --- 2. Resource Manager: Remove from tracking list ---
+    // --- 2. Resource Manager: Find and Unlink Node ---
+    // We need the node to retrieve the descriptor pool handle (Vulkan)
     _SituationTextureNode* current = sit_render.all_textures;
     _SituationTextureNode* prev = NULL;
+    _SituationTextureNode* target_node = NULL;
 
     while (current != NULL) {
         if (current->texture.id == texture->id) {
+            target_node = current;
+            // Unlink from list
             if (prev) {
                 prev->next = current->next;
             } else {
                 sit_render.all_textures = current->next;
             }
-            // [HOT-RELOAD] Free the stored path string
-            if (current->source_path) SIT_FREE(current->source_path);
-            SIT_FREE(current);
-            break; // Found and removed, stop searching
+            break; // Found it
         }
         prev = current;
         current = current->next;
     }
-    // If the texture wasn't found in the list, it's an inconsistency, but proceeding with backend destruction is still the correct action for the resource itself.
 
+    // --- 3. Backend Destruction ---
 #if defined(SITUATION_USE_OPENGL)
-    {
-        // --- 3. OpenGL Destruction ---
-        // [Phase 2.5] Defer destruction
-        _SitGLDeferDestroyTexture(texture->gl_texture_id);
-    }
+    // [Phase 2.5] Defer destruction
+    _SitGLDeferDestroyTexture(texture->gl_texture_id);
 
 #elif defined(SITUATION_USE_VULKAN)
-    {
-        // --- 3. Vulkan Destruction ---
-        
-        // [v2.3.27] Linear Allocation: We do NOT free descriptor sets.
-        // We simply invalidate the handle. The memory is reclaimed at shutdown.
-        texture->descriptor_set = VK_NULL_HANDLE;
-
-        // Destroy images/views as normal (these MUST still be destroyed)
-        _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
-
-        // Reset handles
-        texture->image = VK_NULL_HANDLE;
-        texture->image_view = VK_NULL_HANDLE;
-        texture->sampler = VK_NULL_HANDLE;
-        texture->allocation = VK_NULL_HANDLE;
+    // [FIX v2.3.27B] Retrieve the pool from the tracking node
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (target_node) {
+        pool = target_node->descriptor_pool;
     }
+
+    // Defer destruction of the descriptor set using the correct pool.
+    // If pool is VK_NULL_HANDLE (unlikely unless corruption), the graveyard will just drop the handle (leak), which is safe.
+    if (texture->descriptor_set != VK_NULL_HANDLE) {
+        _SituationDeferDestroyDescriptorSet(texture->descriptor_set, pool);
+    }
+
+    // Defer destruction of image resources
+    _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
+
+    // Reset handles to prevent use-after-free
+    texture->descriptor_set = VK_NULL_HANDLE;
+    texture->image = VK_NULL_HANDLE;
+    texture->image_view = VK_NULL_HANDLE;
+    texture->sampler = VK_NULL_HANDLE;
+    texture->allocation = VK_NULL_HANDLE;
 #endif
 
-    // --- 4. Invalidate the User-Facing Handle ---
-    // Zero out the entire user-facing struct to invalidate it and prevent accidental reuse.
+    // --- 4. Cleanup Tracking Node ---
+    if (target_node) {
+        // [HOT-RELOAD] Free the stored path string
+        if (target_node->source_path) SIT_FREE(target_node->source_path);
+        SIT_FREE(target_node);
+    }
+
+    // --- 5. Invalidate the User-Facing Handle ---
     memset(texture, 0, sizeof(SituationTexture));
-    // After this call, texture->id is 0, indicating it's no longer valid.
 }
 
 
@@ -16419,7 +16521,9 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         // Add logic for other types if needed (e.g., using SSBO layout for UBO if that's preferred)
 
         // Allocate the descriptor set - Use dynamic allocator
-        buffer.descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use);
+        // [FIX v2.3.27B] Capture pool
+        VkDescriptorPool used_pool = VK_NULL_HANDLE;
+        buffer.descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use, &used_pool);
 
         if (buffer.descriptor_set == VK_NULL_HANDLE) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for buffer.");
@@ -16464,6 +16568,9 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
             node->buffer = buffer;
             node->next = sit_render.all_buffers;
             sit_render.all_buffers = node;
+            #if defined(SITUATION_USE_VULKAN)
+            node->descriptor_pool = used_pool;
+            #endif
         } else {
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for buffer");
             local_err = SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -16511,25 +16618,25 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
 SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
     // --- 1. Input Validation ---
     // Silently succeed if trying to destroy a NULL pointer or an already-invalid handle.
-    // This is a robust pattern that simplifies user code, preventing crashes from double-frees.
     if (!buffer || buffer->id == 0) {
         return;
     }
 
-    // --- 2. Resource Manager: Remove from internal tracking list ---
-    // This prevents the shutdown sequence from reporting this buffer as a leak.
+    // --- 2. Resource Manager: Find and Unlink Node ---
     _SituationBufferNode* current = sit_render.all_buffers;
     _SituationBufferNode* prev = NULL;
+    _SituationBufferNode* target_node = NULL;
 
     while (current != NULL) {
         if (current->buffer.id == buffer->id) {
+            target_node = current;
+            // Unlink from list
             if (prev) {
-                prev->next = current->next; // Unlink from middle/end of the list
+                prev->next = current->next;
             } else {
-                sit_render.all_buffers = current->next; // Unlink from the head of the list
+                sit_render.all_buffers = current->next;
             }
-            SIT_FREE(current); // Free the tracking node itself
-            break; // Found and removed, can exit the loop
+            break; // Found it
         }
         prev = current;
         current = current->next;
@@ -16537,24 +16644,32 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
 
     // --- 3. Backend-Specific Destruction ---
 #if defined(SITUATION_USE_OPENGL)
-    {
-        // [Phase 2.5] Defer destruction
-        _SitGLDeferDestroyBuffer(buffer->gl_buffer_id);
-    }
+    // [Phase 2.5] Defer destruction
+    _SitGLDeferDestroyBuffer(buffer->gl_buffer_id);
 #elif defined(SITUATION_USE_VULKAN)
-    {
-        // For Vulkan, defer destruction to the Graveyard to avoid stalling.
-        if (buffer->descriptor_set != VK_NULL_HANDLE) {
-            _SituationDeferDestroyDescriptorSet(buffer->descriptor_set, VK_NULL_HANDLE);
-        }
+    // [FIX v2.3.27B] Retrieve the pool from the tracking node
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (target_node) {
+        pool = target_node->descriptor_pool;
+    }
 
-        if (buffer->vk_buffer != VK_NULL_HANDLE) {
-            _SituationDeferDestroyBuffer(buffer->vk_buffer, buffer->vma_allocation);
-        }
+    // For Vulkan, defer destruction to the Graveyard to avoid stalling.
+    if (buffer->descriptor_set != VK_NULL_HANDLE) {
+        // Pass the retrieved pool so the set can be freed properly
+        _SituationDeferDestroyDescriptorSet(buffer->descriptor_set, pool);
+    }
+
+    if (buffer->vk_buffer != VK_NULL_HANDLE) {
+        _SituationDeferDestroyBuffer(buffer->vk_buffer, buffer->vma_allocation);
     }
 #endif
 
-    // --- 4. Invalidate the User-Facing Handle ---
+    // --- 4. Cleanup Tracking Node ---
+    if (target_node) {
+        SIT_FREE(target_node);
+    }
+
+    // --- 5. Invalidate the User-Facing Handle ---
     // Zero out the entire struct to prevent accidental use of dangling pointers or stale handles.
     // This correctly sets buffer->id to 0, marking it as invalid for future calls.
     memset(buffer, 0, sizeof(SituationBuffer));
@@ -18109,7 +18224,7 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
  * @note This function is safe to call at any time, from any thread, even before `SituationInit()` or after a crash.
  */
 SITAPI bool SituationIsInitialized(void) {
-    return _sit_current_context && sit_gs.is_initialized;
+    return _sit_current_context && atomic_load(&sit_gs.is_initialized);
 }
 
 /**
@@ -20697,7 +20812,12 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
 
     // --- Step 8: Allocate Descriptor Set ---
     if (success) {
-        vd->descriptor_set = _SituationVulkanAllocateDescriptorSet(sit_render.vk.image_sampler_layout);
+        // [FIX v2.3.27B] Allocate and capture the pool handle
+        vd->descriptor_set = _SituationVulkanAllocateDescriptorSet(
+            sit_render.vk.image_sampler_layout, 
+            &vd->descriptor_pool // Store pool in the VD struct
+        );
+
         if (vd->descriptor_set == VK_NULL_HANDLE) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for VD.");
             success = false;
@@ -20811,7 +20931,12 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
 
 #if defined(SITUATION_USE_VULKAN)
     // Defer all destruction to the Graveyard to avoid stalling.
-    if (vd->descriptor_set != VK_NULL_HANDLE) _SituationDeferDestroyDescriptorSet(vd->descriptor_set, VK_NULL_HANDLE);
+    
+    // [FIX v2.3.27B] Pass the specific pool that owns this descriptor set
+    if (vd->descriptor_set != VK_NULL_HANDLE) {
+        _SituationDeferDestroyDescriptorSet(vd->descriptor_set, vd->descriptor_pool);
+    }
+    
     if (vd->framebuffer != VK_NULL_HANDLE) _SituationDeferDestroyFramebuffer(vd->framebuffer);
     if (vd->render_pass != VK_NULL_HANDLE) _SituationDeferDestroyRenderPass(vd->render_pass);
 
@@ -22470,23 +22595,24 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
 SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     if (!SituationIsInitialized() || !texture || texture->id == 0) return false;
 
+    // 1. Retrieve Path (Existing logic)
     char* path = NULL;
-    _SituationTextureNode* old_node = sit_render.all_textures;
-    while (old_node) {
-        if (old_node->texture.id == texture->id) {
-            if (old_node->source_path) path = _sit_strdup(old_node->source_path);
+    _SituationTextureNode* node = sit_render.all_textures;
+    while (node) {
+        if (node->texture.id == texture->id) {
+            if (node->source_path) path = _sit_strdup(node->source_path);
             break;
         }
-        old_node = old_node->next;
+        node = node->next;
     }
 
     if (!path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Texture was not loaded from file via SituationLoadTexture.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Texture path not found.");
         return false;
     }
 
-    // 1. Load NEW texture first (Fail-Safe)
-    SituationTexture new_texture = SituationLoadTexture(path, true); // Assume mips enabled
+    // 2. Load NEW texture first (Fail-Safe)
+    SituationTexture new_texture = SituationLoadTexture(path, true); 
     SIT_FREE(path);
 
     if (new_texture.id == 0) {
@@ -22494,19 +22620,34 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
         return false;
     }
 
-    // 2. Swap and Cleanup
+    // 3. Swap and Cleanup
 
-    // 2a. Remove NEW tracking node (created by LoadTexture)
+    // Capture new pool info
+    #if defined(SITUATION_USE_VULKAN)
+    VkDescriptorPool new_pool_handle = VK_NULL_HANDLE;
+    #endif
+
+    // 3a. Remove the NEW tracking node created by LoadTexture
     if (sit_render.all_textures && sit_render.all_textures->texture.id == new_texture.id) {
         _SituationTextureNode* new_node = sit_render.all_textures;
+        
+        #if defined(SITUATION_USE_VULKAN)
+        new_pool_handle = new_node->descriptor_pool;
+        #endif
+        
         sit_render.all_textures = new_node->next;
         if (new_node->source_path) SIT_FREE(new_node->source_path);
         SIT_FREE(new_node);
     } else {
+        // Fallback search
         _SituationTextureNode* curr = sit_render.all_textures;
         _SituationTextureNode* prev = NULL;
         while (curr) {
             if (curr->texture.id == new_texture.id) {
+                #if defined(SITUATION_USE_VULKAN)
+                new_pool_handle = curr->descriptor_pool;
+                #endif
+                
                 if (prev) prev->next = curr->next; else sit_render.all_textures = curr->next;
                 if (curr->source_path) SIT_FREE(curr->source_path);
                 SIT_FREE(curr);
@@ -22517,19 +22658,26 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
         }
     }
 
-    // 2b. Destroy OLD resources manually
+    // 3b. Destroy OLD resources manually
     #if defined(SITUATION_USE_OPENGL)
-        glDeleteTextures(1, &texture->gl_texture_id);
+        _SitGLDeferDestroyTexture(texture->gl_texture_id);
     #elif defined(SITUATION_USE_VULKAN)
-        // [v2.3.27] Linear Allocation: Do not free descriptor set.
-        // Only destroy the heavy image resources.
+        // Use the pool from the OLD node
+        VkDescriptorPool old_pool = (node) ? node->descriptor_pool : VK_NULL_HANDLE;
+        
+        if (texture->descriptor_set != VK_NULL_HANDLE) {
+            _SituationDeferDestroyDescriptorSet(texture->descriptor_set, old_pool);
+        }
         _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
     #endif
 
-    // 2c. Update handles
+    // 3c. Update handles
     *texture = new_texture;
-    if (old_node) {
-        old_node->texture = new_texture;
+    if (node) {
+        node->texture = new_texture;
+        #if defined(SITUATION_USE_VULKAN)
+        node->descriptor_pool = new_pool_handle;
+        #endif
     }
 
     printf("[Situation] Hot-Reloaded Texture\n");
@@ -25540,11 +25688,13 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
     memset(pOutput, 0, frameCount * bytes_per_frame);
 
     // --- CRITICAL SECTION START ---
-    ma_mutex_lock(&pGs->audio_queue_mutex);
+    /*ma_mutex_lock(&pGs->audio_queue_mutex);*/
+    mtx_lock(&pGs->audio_queue_mutex);
 
     // Optimization: If no sounds are playing, unlock and return silence immediately.
     if (pGs->queued_sound_count == 0) {
-        ma_mutex_unlock(&pGs->audio_queue_mutex);
+        /*ma_mutex_unlock(&pGs->audio_queue_mutex);*/
+        mtx_unlock(&pGs->audio_queue_mutex);
         return;
     }
 
@@ -25743,7 +25893,8 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         }
     }
 
-    ma_mutex_unlock(&pGs->audio_queue_mutex);
+    /*ma_mutex_unlock(&pGs->audio_queue_mutex);*/
+    mtx_unlock(&pGs->audio_queue_mutex);
     // --- CRITICAL SECTION END ---
 }
 
@@ -26579,9 +26730,9 @@ SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound_to_play) {
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    ma_mutex_lock(&sit_audio.audio_queue_mutex); // Lock
+    mtx_lock(&sit_audio.audio_queue_mutex);
     if (sit_audio.queued_sound_count >= SITUATION_MAX_AUDIO_SOUNDS_QUEUED) {
-        ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock on early exit
+        mtx_unlock(&sit_audio.audio_queue_mutex);
         return SITUATION_ERROR_AUDIO_SOUND_LIMIT;
     }
 
@@ -26601,7 +26752,7 @@ SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound_to_play) {
     sound_to_play->cursor_frames = 0;
 
     sit_audio.queued_sounds[sit_audio.queued_sound_count++] = sound_to_play;
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -26623,7 +26774,7 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
     if (!SituationIsInitialized() || !sound_to_stop) return SITUATION_ERROR_INVALID_PARAM;
     bool found_and_removed = false;
 
-    ma_mutex_lock(&sit_audio.audio_queue_mutex); // Lock
+    mtx_lock(&sit_audio.audio_queue_mutex);
     for (int i = 0; i < sit_audio.queued_sound_count; ++i) {
         if (sit_audio.queued_sounds[i] == sound_to_stop) {
             // Simple removal: replace with last element and decrement count
@@ -26633,7 +26784,7 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
             break;
         }
     }
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return found_and_removed ? SITUATION_SUCCESS : SITUATION_ERROR_INVALID_PARAM;
 }
 
@@ -26650,9 +26801,9 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
  */
 SITAPI SituationError SituationStopAllLoadedSounds(void) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    ma_mutex_lock(&sit_audio.audio_queue_mutex); // Lock
+    mtx_lock(&sit_audio.audio_queue_mutex);
     sit_audio.queued_sound_count = 0;
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -26907,10 +27058,10 @@ SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch)
     if (!sound || !sound->converter_initialized) return SITUATION_ERROR_INVALID_PARAM;
     if (pitch <= 0.0f) pitch = 0.01f; // Prevent zero or negative pitch
 
-    ma_mutex_lock(&sit_audio.audio_queue_mutex);
+    mtx_lock(&sit_audio.audio_queue_mutex);
     sound->pitch = pitch;
     ma_result res = ma_data_converter_set_rate(&sound->converter, (ma_uint32)(sound->decoder.outputSampleRate * pitch), sit_audio.miniaudio_device.sampleRate);
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+    mtx_unlock(&sit_audio.audio_queue_mutex);
 
     if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONVERTER;
     return SITUATION_SUCCESS;
@@ -26948,7 +27099,7 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
     if (cutoff_hz <= 0) type = SITUATION_FILTER_NONE;
     if (q_factor <= 0) q_factor = 0.707f; // Default Q
 
-    ma_mutex_lock(&sit_audio.audio_queue_mutex);
+    mtx_lock(&sit_audio.audio_queue_mutex);
     if (type == SITUATION_FILTER_NONE) {
         sound->effects.filter_enabled = false;
     } else {
@@ -26988,7 +27139,7 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
              _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "Failed to initialize biquad filter.");
         }
     }
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -27009,7 +27160,7 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
-    ma_mutex_lock(&sit_audio.audio_queue_mutex);
+    mtx_lock(&sit_audio.audio_queue_mutex);
     sound->effects.echo_enabled = enabled;
     if (enabled) {
         if (delay_sec < 0) delay_sec = 0;
@@ -27036,7 +27187,7 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
         sound->effects.echo_feedback = feedback;
         sound->effects.echo_wet_mix = wet_mix;
     }
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -27058,7 +27209,7 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
-    ma_mutex_lock(&sit_audio.audio_queue_mutex);
+    mtx_lock(&sit_audio.audio_queue_mutex);
 
     sound->effects.reverb_enabled = enabled;
     if (sound->effects.reverb_state) {
@@ -27073,7 +27224,7 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
     sound->effects.reverb_wet_mix = wet_mix;
     sound->effects.reverb_dry_mix = dry_mix;
 
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -27091,7 +27242,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    ma_mutex_lock(&sit_audio.audio_queue_mutex);
+    mtx_lock(&sit_audio.audio_queue_mutex);
 
     void* new_processors = SIT_REALLOC(sound->processors, (sound->processor_count + 1) * sizeof(SituationAudioProcessorCallback));
     if (!new_processors) {
@@ -27115,7 +27266,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
     sound->processors[sound->processor_count - 1] = processor;
     sound->processor_user_data[sound->processor_count - 1] = user_data;
 
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+    mtx_unlock(&sit_audio.audio_queue_mutex);
 
     return SITUATION_SUCCESS;
 }
@@ -27133,7 +27284,7 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    ma_mutex_lock(&sit_audio.audio_queue_mutex);
+    mtx_lock(&sit_audio.audio_queue_mutex);
 
     int found_index = -1;
     for (int i = 0; i < sound->processor_count; ++i) {
@@ -27160,7 +27311,7 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
         }
     }
 
-    ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
