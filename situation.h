@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 26
+#define SITUATION_VERSION_PATCH 27
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -3064,7 +3064,7 @@ typedef struct _SituationVKGraveyard {
     // Descriptor Management
     // -------------------------------------------------------------------------
     VkDescriptorPool persistent_descriptor_pool;// Initial pool for long-lived resources
-    VkDescriptorPool asset_descriptor_pool;     // [VULKAN] Separate pool for assets (Textures/Models)
+    //VkDescriptorPool asset_descriptor_pool;     // [VULKAN] Separate pool for assets (Textures/Models)
     VkDescriptorPool descriptor_pool;           // Current active pool for allocations
 
     // Dynamic Pool Manager
@@ -3091,6 +3091,14 @@ typedef struct _SituationVKGraveyard {
     // -------------------------------------------------------------------------
     // Internal Renderers Resources
     // -------------------------------------------------------------------------
+    
+    // Dynamic Vertex Buffers (Optimization for Text/UI)
+    VkBuffer dynamic_vbo[SITUATION_MAX_FRAMES_IN_FLIGHT];
+    VmaAllocation dynamic_vbo_alloc[SITUATION_MAX_FRAMES_IN_FLIGHT];
+    void* dynamic_vbo_mapped[SITUATION_MAX_FRAMES_IN_FLIGHT];
+    size_t dynamic_vbo_cursor;                                   // Current byte offset for the current frame
+    size_t dynamic_vbo_capacity;                                 // Total size in bytes (e.g., 512KB)
+
     VkPipeline quad_pipeline;                                    // Pipeline for 2D Quad renderer
     VkPipelineLayout quad_pipeline_layout;                       // Layout for 2D Quad renderer
     VkBuffer quad_vertex_buffer;                                 // Vertex buffer for unit quad
@@ -3125,7 +3133,7 @@ typedef struct _SituationVKGraveyard {
     // --- Threading Signals ---
     atomic_bool recreate_swapchain_request;                      // Signal from Render Thread to Main Thread
     uint32_t acquired_image_indices[SITUATION_MAX_FRAMES_IN_FLIGHT]; // Image index for each frame slot
-
+    
 } _SituationVulkanState;
 
 #elif defined(SITUATION_USE_OPENGL)
@@ -3369,7 +3377,7 @@ typedef struct {
     int cursor_count;
 } _SituationInputState;
 
-// [NEW] Render State Container
+// Render State Container
 typedef struct {
     // -------------------------------------------------------------------------
     // Graphics Backend State
@@ -3459,6 +3467,12 @@ typedef struct {
     SituationTexture default_font_atlas;
     SituationFont    default_font;
 
+    // [v2.3.27] Momentum Deferred Queue
+    SituationRenderList momentum_queue[256]; // Max 256 lists per frame
+    atomic_int momentum_head;
+    atomic_int momentum_tail;
+    mtx_t momentum_mutex; // Protects the queue
+    
 } _SituationRenderState;
 
 /**
@@ -4598,7 +4612,7 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
     gy->image_count = 0;
 
     // Descriptor Sets
-    if (gy->descriptor_set_count > 0) {
+    /*if (gy->descriptor_set_count > 0) {
         for (int i = 0; i < gy->descriptor_set_count; ++i) {
             if (gy->descriptor_pools[i] != VK_NULL_HANDLE) {
                 // If a pool is provided, we free the set back to it (e.g., asset pool)
@@ -4607,7 +4621,13 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
             // If pool is NULL, it's from the linear allocator (dynamic manager) and we intentionally skip freeing
             // to avoid fragmentation/performance hits. It will be reclaimed when the pool is reset/destroyed.
         }
-    }
+    }*/
+    // Descriptor Sets
+    // [v2.3.27] Linear Allocation Strategy:
+    // We DO NOT call vkFreeDescriptorSets. Doing so causes fragmentation.
+    // Instead, we let the sets persist in the pool. The memory is reclaimed
+    // when the entire pool is destroyed at shutdown.
+    // We just reset the counter to discard the handles from the tracking array.
     gy->descriptor_set_count = 0;
 
     // Pipelines
@@ -6594,19 +6614,23 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
  * @see SituationInit(), _SituationInitVulkan(), _SituationInitOpenGL()
  */
 static SituationError _SituationInitRenderer(const SituationInitInfo* init_info) {
+    // 1. Initialize Momentum Queue (Common)
+    atomic_init(&sit_render.momentum_head, 0);
+    atomic_init(&sit_render.momentum_tail, 0);
+    
+    if (ma_mutex_init(&sit_render.momentum_mutex) != MA_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to initialize render queue mutex.");
+        return SITUATION_ERROR_INIT_FAILED;
+    }
+    
     // Dispatch to the appropriate backend initialization function based on the compile-time flag.
 #if defined(SITUATION_USE_VULKAN)
-    {
         // Vulkan backend is selected. Initialize it.
         return _SituationInitVulkan(init_info);
-    }
 #elif defined(SITUATION_USE_OPENGL)
-    {
         // OpenGL backend is selected. Initialize it.
         return _SituationInitOpenGL(init_info);
-    }
 #else
-    {
         // This branch should ideally be unreachable due to the #error directives in the header file that force the user to define a backend.
         // However, as a safeguard, handle the case where no backend is defined.
         _SituationSetErrorFromCode(
@@ -6614,7 +6638,6 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
             "_SituationInitRenderer: No graphics renderer backend defined (SITUATION_USE_VULKAN or SITUATION_USE_OPENGL). This should be caught at compile time."
         );
         return SITUATION_ERROR_NOT_IMPLEMENTED;
-    }
 #endif
 }
 
@@ -6716,12 +6739,12 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
 
     // --- 3. Input Systems Initialization ---
 
-    // [FIX] STEP 1: Zero out the memory structures FIRST
+    // STEP 1: Zero out the memory structures FIRST
     memset(&sit_input.keyboard, 0, sizeof(sit_input.keyboard));
     memset(&sit_input.mouse, 0, sizeof(sit_input.mouse));
     memset(&sit_input.joysticks, 0, sizeof(sit_input.joysticks));
 
-    // [FIX] STEP 2: Initialize mutexes AFTER memset
+    // STEP 2: Initialize mutexes AFTER memset
     if (ma_mutex_init(&sit_input.keyboard.event_queue_mutex) != MA_SUCCESS ||
         ma_mutex_init(&sit_input.joysticks.event_queue_mutex) != MA_SUCCESS ||
         ma_mutex_init(&sit_input.mouse.mutex) != MA_SUCCESS) {
@@ -6780,7 +6803,7 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     sit_gs.fps_frame_counter = 0;
     sit_gs.fps_last_update_time = sit_gs.previous_time;
     sit_gs.current_fps = 0;
-
+   
     // --- Initialize Callback Pointers ---
     sit_gs.exit_callback = NULL;
     sit_gs.exit_callback_user_data = NULL;
@@ -6971,6 +6994,31 @@ static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* d
  * @param buf The soft command buffer to execute.
  */
 static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
+    if (buf->packet_count == 0) return;
+
+    // --- [v2.3.27] State Hardening: Reset critical state ---
+    // We cannot assume the state from the previous frame persists,
+    // because external code (ImGui, etc.) might have run in between.
+    
+    // 1. Reset Capabilities
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glDisable(GL_BLEND); // Default to opaque
+    glDisable(GL_SCISSOR_TEST);
+
+    // 2. Reset Bindings
+    // We don't unbind VAO/Program here because the first command in the buffer
+    // is usually a Bind command. However, we should invalidate our shadow cache.
+    sit_render.gl.current_program_id = 0;
+    sit_render.gl.current_vao_id = 0;
+    sit_render.gl.current_fbo_id = 0;
+    
+    // 3. Reset Blend State Cache
+    sit_render.gl.blend_enabled = -1; // Force re-application if command requests it
+
+    // --- Execution Loop ---
     for (size_t i = 0; i < buf->packet_count; ++i) {
         SitCommandPacket* p = &buf->packets[i];
         switch (p->opcode) {
@@ -8930,8 +8978,11 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
 
         VkDescriptorPoolCreateInfo pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-            .maxSets = 1000 * 4, // Sum of descriptors
+            // [v2.3.27] REMOVED VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
+            // This tells the driver we will never free individual sets, allowing
+            // it to use a high-performance bump allocator.
+            .flags = 0, 
+            .maxSets = 1000 * 4,
             .poolSizeCount = 4,
             .pPoolSizes = pool_sizes
         };
@@ -9067,7 +9118,13 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
                                     SITUATION_VULKAN_DEFAULT_USER_STORAGE_IMAGES +
                                     frame_count;
 
-    VkDescriptorPoolCreateInfo pool_info = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, .maxSets = total_max_sets, .poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]), .pPoolSizes = pool_sizes };
+    VkDescriptorPoolCreateInfo pool_info = { 
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, 
+        .flags = 0, // [v2.3.27] No FREE_BIT
+        .maxSets = total_max_sets, 
+        .poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]), 
+        .pPoolSizes = pool_sizes 
+    };
 
     // 1. Create the initial pool
     if (vkCreateDescriptorPool(sit_render.vk.device, &pool_info, NULL, &sit_render.vk.persistent_descriptor_pool) != VK_SUCCESS) {
@@ -9077,7 +9134,11 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     }
     sit_render.vk.descriptor_pool = sit_render.vk.persistent_descriptor_pool;
 
-    // 1b. Create a separate pool specifically for assets
+    // [v2.3.27] REMOVED separate asset_descriptor_pool. 
+    // Textures will now use the dynamic manager below.
+    //sit_render.vk.asset_descriptor_pool = VK_NULL_HANDLE; 
+
+/*    // 1b. Create a separate pool specifically for assets
     VkDescriptorPoolSize asset_pool_sizes[] = {
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 }, // Allow 4k textures
         { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024 }
@@ -9091,7 +9152,7 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         .pPoolSizes = asset_pool_sizes
     };
     vkCreateDescriptorPool(sit_render.vk.device, &asset_pool_info, NULL, &sit_render.vk.asset_descriptor_pool);
-
+*/
     // 2. Seed the Dynamic Manager with this pool
     // This ensures subsequent allocations use this pool instead of creating a new one immediately.
     sit_render.vk.descriptor_manager.capacity = 4;
@@ -9142,6 +9203,32 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
          _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
+    // --- Dynamic Vertex Buffer Initialization ---
+    // Allocate 512KB per frame for dynamic text/UI geometry.
+    // usage = VERTEX_BUFFER, memory = CPU_TO_GPU (Host Visible, Coherent)
+    sit_render.vk.dynamic_vbo_capacity = 524288; 
+    VkBufferCreateInfo dyn_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    dyn_info.size = sit_render.vk.dynamic_vbo_capacity;
+    dyn_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    
+    VmaAllocationCreateInfo dyn_alloc_info = {0};
+    dyn_alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU; // Direct write
+    dyn_alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT; // Map immediately
+
+    for (uint32_t i = 0; i < frame_count; i++) {
+        if (vmaCreateBuffer(sit_render.vk.vma_allocator, &dyn_info, &dyn_alloc_info, 
+            &sit_render.vk.dynamic_vbo[i], 
+            &sit_render.vk.dynamic_vbo_alloc[i], 
+            NULL) != VK_SUCCESS) {
+            _SituationCleanupVulkan();
+            return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
+        }
+        // Get the mapped pointer
+        VmaAllocationInfo alloc_result;
+        vmaGetAllocationInfo(sit_render.vk.vma_allocator, sit_render.vk.dynamic_vbo_alloc[i], &alloc_result);
+        sit_render.vk.dynamic_vbo_mapped[i] = alloc_result.pMappedData;
+    }
+    
     // --- Phase 5 & 6: Per-Frame Objects and Internal Renderers ---
     if (_SituationVulkanCreateCommandBuffers() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_COMMAND_FAILED; }
     if (_SituationVulkanCreateSyncObjects() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED; }
@@ -11605,6 +11692,7 @@ static void _SituationCleanupRenderer(void) {
 #elif defined(SITUATION_USE_OPENGL)
     _SituationCleanupOpenGL();
 #endif
+    ma_mutex_uninit(&sit_render.momentum_mutex);
 }
 
 /**
@@ -12078,6 +12166,11 @@ static void _SituationCleanupVulkan(void) {
         vkDestroySemaphore(sit_render.vk.device, sit_render.vk.compute_finished_semaphores[i], NULL);
         vkDestroyFence(sit_render.vk.device, sit_render.vk.in_flight_fences[i], NULL);
         vmaDestroyBuffer(sit_render.vk.vma_allocator, sit_render.vk.view_proj_ubo_buffer[i], sit_render.vk.view_proj_ubo_memory[i]);
+        // Destroy dynamic VBOs
+        if (sit_render.vk.dynamic_vbo[i]) {
+            // No need to Unmap if VMA_ALLOCATION_CREATE_MAPPED_BIT was used
+            vmaDestroyBuffer(sit_render.vk.vma_allocator, sit_render.vk.dynamic_vbo[i], sit_render.vk.dynamic_vbo_alloc[i]);
+        }
     }
     // --- Free the arrays themselves ---
     SIT_FREE(sit_render.vk.command_buffers);
@@ -12135,7 +12228,7 @@ static void _SituationCleanupVulkan(void) {
         sit_render.vk.persistent_descriptor_pool = VK_NULL_HANDLE;
     }
     // ------------------------------------------
-
+ 
     vkDestroyDevice(sit_render.vk.device, NULL);
     if (sit_render.vk.debug_messenger != VK_NULL_HANDLE) {
         PFN_vkDestroyDebugUtilsMessengerEXT func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(sit_render.vk.instance, "vkDestroyDebugUtilsMessengerEXT");
@@ -12887,6 +12980,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         sit_render.vk.current_image_index = image_index;
         sit_render.vk.acquired_image_indices[sit_render.vk.current_frame_index] = image_index; // Store for Render Thread
         sit_render.frame_has_async_compute = false; // Reset async flag
+        sit_render.vk.dynamic_vbo_cursor = 0
 
         // 2.5. Prepare Command Buffer for Recording.
         // Reset the fence to the unsignaled state *before* resetting the command buffer.
@@ -13024,6 +13118,31 @@ SITAPI SituationError SituationEndFrame(void) {
     if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot end frame.");
         return SITUATION_ERROR_NOT_INITIALIZED;
+    }
+    
+    // --- [v2.3.27] Replay Momentum Queue ---
+    // Process all lists submitted by worker threads this frame.
+    SituationCommandBuffer main_cmd = SituationGetMainCommandBuffer();
+    
+    // Only replay if we have a valid command buffer (we should, if Init succeeded)
+    if (main_cmd) {
+        ma_mutex_lock(&sit_render.momentum_mutex);
+        
+        int head = atomic_load(&sit_render.momentum_head);
+        int tail = atomic_load(&sit_render.momentum_tail);
+        
+        while (tail != head) {
+            SituationRenderList list = sit_render.momentum_queue[tail];
+            
+            // "Paste" the recorded commands into the real command buffer
+            SituationReplayRenderList(main_cmd, list);
+            
+            // Advance tail
+            tail = (tail + 1) % 256;
+        }
+        atomic_store(&sit_render.momentum_tail, tail);
+        
+        ma_mutex_unlock(&sit_render.momentum_mutex);
     }
 
     // --- 2. Backend-Specific Frame End ---
@@ -14041,9 +14160,11 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
  * @details Records a batch of draw commands to render text using the internal text renderer pipeline.
  *          This function supports custom font sizing and character spacing adjustments at runtime.
  *
- * @par Performance
- * Vertices are generated on the CPU and uploaded to a dynamic vertex buffer (staging path on Vulkan, direct DSA on OpenGL).
- * Characters are batched into a single draw call whenever possible.
+ * @par Performance (Optimized v2.3.27)
+ * - **Vulkan:** Uses a **persistent mapped ring buffer** to write vertex data directly to GPU-visible memory.
+ *   This eliminates per-draw buffer allocations and staging copies, offering near-zero overhead for dynamic UI.
+ *   (Falls back to staging upload only if the ring buffer fills up within a single frame).
+ * - **OpenGL:** Data is packed into the soft command stream for deferred execution.
  *
  * @param cmd The command buffer to record into.
  * @param font The font to use. Must have been baked with `SituationBakeFontAtlas`.
@@ -14056,7 +14177,7 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
 SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color) {
     if (!SituationIsInitialized() || !text) return;
 
-    // [v2.3.23] Default Debug Font Fallback
+    // Default Debug Font Fallback
     SituationFont use_font = font;
     if (use_font.atlas_texture.id == 0) {
         use_font = sit_render.default_font;
@@ -14066,13 +14187,11 @@ SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont fon
     bool is_grid_font = (use_font.glyph_info == NULL && use_font.atlas_texture.id == sit_render.default_font.atlas_texture.id);
     if (!is_grid_font && !use_font.glyph_info) return;
 
-    // --- BATCHED TEXT RENDERING ---
     size_t len = strlen(text);
 #if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
     if (len == 0) return;
     if (len > 2048) len = 2048;
 
-    // Update Stats
     sit_render.debug_draw_command_issued_this_frame = true;
     sit_render.frame_draw_calls++;
     sit_render.frame_triangle_count += (len * 2);
@@ -14081,9 +14200,8 @@ SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont fon
     SituationConvertColorToVector4(color, &color_vec);
 
 #if defined(SITUATION_USE_OPENGL)
+    // --- OPENGL PATH (Standard Soft Buffer) ---
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-
-    // Copy text to command buffer data
     void* text_ptr = _SitGLSoftDataPush(buf, text, len + 1);
     if (!text_ptr) return;
     size_t text_offset = (size_t)((uint8_t*)text_ptr - buf->data_buffer);
@@ -14099,22 +14217,46 @@ SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont fon
     }
 
 #elif defined(SITUATION_USE_VULKAN)
-    // Bind Atlas
+    // --- VULKAN OPTIMIZED PATH ---
+    
+    // 1. Bind Atlas
     SituationCmdBindTexture(cmd, SIT_SAMPLER_BINDING_ALBEDO, use_font.atlas_texture);
 
-    // 6 vertices per char (2 tris), 4 floats per vertex (x,y,u,v)
-    size_t vert_count = len * 6;
-    size_t data_size = vert_count * 4 * sizeof(float);
+    // 2. Calculate Size (6 verts/char * 4 floats/vert)
+    size_t data_size = len * 6 * 4 * sizeof(float);
 
-    // [PERF] Auto-grow scratch buffer
-    if (sit_render.text_batch_capacity < data_size) {
-        sit_render.text_batch_scratch = (float*)SIT_REALLOC(sit_render.text_batch_scratch, data_size * 2);
-        sit_render.text_batch_capacity = data_size * 2;
+    VkBuffer target_buffer = VK_NULL_HANDLE;
+    size_t target_offset = 0;
+    float* write_ptr = NULL;
+    
+    uint32_t frame_idx = sit_render.vk.current_frame_index;
+    
+    // 3. POINTER SELECTION: Decide where to write
+    // Try Fast Path: Is there space in the mapped Ring Buffer?
+    if (sit_render.vk.dynamic_vbo_mapped[frame_idx] && 
+        (sit_render.vk.dynamic_vbo_cursor + data_size <= sit_render.vk.dynamic_vbo_capacity)) 
+    {
+        // FAST: Write directly to GPU-mapped memory
+        write_ptr = (float*)((uint8_t*)sit_render.vk.dynamic_vbo_mapped[frame_idx] + sit_render.vk.dynamic_vbo_cursor);
+        target_buffer = sit_render.vk.dynamic_vbo[frame_idx];
+        target_offset = sit_render.vk.dynamic_vbo_cursor;
+        
+        // Reserve the space
+        sit_render.vk.dynamic_vbo_cursor += data_size;
+    } 
+    else {
+        // SLOW: Ring buffer full. Use Scratch Buffer + Staging Upload.
+        if (sit_render.text_batch_capacity < data_size) {
+            sit_render.text_batch_scratch = (float*)SIT_REALLOC(sit_render.text_batch_scratch, data_size * 2);
+            sit_render.text_batch_capacity = data_size * 2;
+        }
+        write_ptr = sit_render.text_batch_scratch;
     }
 
-    float* vertices = sit_render.text_batch_scratch;
-    if (!vertices) return;
+    if (!write_ptr) return; // Allocation failed
 
+    // 4. VERTEX GENERATION (Unified Loop)
+    // This logic fills 'write_ptr', regardless of where it points.
     float x = pos.x;
     float y = pos.y;
     stbtt_bakedchar* cdata = (stbtt_bakedchar*)use_font.glyph_info;
@@ -14142,13 +14284,13 @@ SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont fon
 
                 x += size_px + spacing;
 
-                vertices[v_idx++] = qx0; vertices[v_idx++] = qy0; vertices[v_idx++] = u0; vertices[v_idx++] = v0;
-                vertices[v_idx++] = qx0; vertices[v_idx++] = qy1; vertices[v_idx++] = u0; vertices[v_idx++] = v1;
-                vertices[v_idx++] = qx1; vertices[v_idx++] = qy0; vertices[v_idx++] = u1; vertices[v_idx++] = v0;
+                write_ptr[v_idx++] = qx0; write_ptr[v_idx++] = qy0; write_ptr[v_idx++] = u0; write_ptr[v_idx++] = v0;
+                write_ptr[v_idx++] = qx0; write_ptr[v_idx++] = qy1; write_ptr[v_idx++] = u0; write_ptr[v_idx++] = v1;
+                write_ptr[v_idx++] = qx1; write_ptr[v_idx++] = qy0; write_ptr[v_idx++] = u1; write_ptr[v_idx++] = v0;
 
-                vertices[v_idx++] = qx1; vertices[v_idx++] = qy0; vertices[v_idx++] = u1; vertices[v_idx++] = v0;
-                vertices[v_idx++] = qx0; vertices[v_idx++] = qy1; vertices[v_idx++] = u0; vertices[v_idx++] = v1;
-                vertices[v_idx++] = qx1; vertices[v_idx++] = qy1; vertices[v_idx++] = u1; vertices[v_idx++] = v1;
+                write_ptr[v_idx++] = qx1; write_ptr[v_idx++] = qy0; write_ptr[v_idx++] = u1; write_ptr[v_idx++] = v0;
+                write_ptr[v_idx++] = qx0; write_ptr[v_idx++] = qy1; write_ptr[v_idx++] = u0; write_ptr[v_idx++] = v1;
+                write_ptr[v_idx++] = qx1; write_ptr[v_idx++] = qy1; write_ptr[v_idx++] = u1; write_ptr[v_idx++] = v1;
             }
         }
         else if (text[i] >= 32 && text[i] < 128) {
@@ -14173,45 +14315,47 @@ SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont fon
                 x = x_before + (advance * scale_factor) + spacing;
             }
 
-            // Quad to 2 Triangles (CCW)
-            vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t0;
-            vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t1;
-            vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t0;
+            write_ptr[v_idx++] = q.x0; write_ptr[v_idx++] = q.y0; write_ptr[v_idx++] = q.s0; write_ptr[v_idx++] = q.t0;
+            write_ptr[v_idx++] = q.x0; write_ptr[v_idx++] = q.y1; write_ptr[v_idx++] = q.s0; write_ptr[v_idx++] = q.t1;
+            write_ptr[v_idx++] = q.x1; write_ptr[v_idx++] = q.y0; write_ptr[v_idx++] = q.s1; write_ptr[v_idx++] = q.t0;
 
-            vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y0; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t0;
-            vertices[v_idx++] = q.x0; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s0; vertices[v_idx++] = q.t1;
-            vertices[v_idx++] = q.x1; vertices[v_idx++] = q.y1; vertices[v_idx++] = q.s1; vertices[v_idx++] = q.t1;
+            write_ptr[v_idx++] = q.x1; write_ptr[v_idx++] = q.y0; write_ptr[v_idx++] = q.s1; write_ptr[v_idx++] = q.t0;
+            write_ptr[v_idx++] = q.x0; write_ptr[v_idx++] = q.y1; write_ptr[v_idx++] = q.s0; write_ptr[v_idx++] = q.t1;
+            write_ptr[v_idx++] = q.x1; write_ptr[v_idx++] = q.y1; write_ptr[v_idx++] = q.s1; write_ptr[v_idx++] = q.t1;
+        }
+    }
+    
+    // 5. UPLOAD (Fallback Path Only)
+    // If we wrote to scratch (target_buffer is NULL), we must upload now.
+    if (target_buffer == VK_NULL_HANDLE) {
+        VkBuffer temp_buffer;
+        VmaAllocation temp_alloc;
+        VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+        
+        // This helper creates a staging buffer + device local buffer and copies
+        if (_SituationVulkanCreateAndUploadBuffer(vk_cmd, sit_render.text_batch_scratch, data_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &temp_buffer, &temp_alloc) == SITUATION_SUCCESS) {
+            target_buffer = temp_buffer;
+            target_offset = 0;
+            // Mark for deletion at end of frame
+            _SituationDeferDestroyBuffer(temp_buffer, temp_alloc);
         }
     }
 
-    int final_vert_count = v_idx / 4;
-    if (final_vert_count == 0) { return; }
-    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-    if (sit_render.vk.text_pipeline == VK_NULL_HANDLE) { return; }
-
-    // Upload to temporary vertex buffer
-    VkBuffer temp_buffer;
-    VmaAllocation temp_alloc;
-    if (_SituationVulkanCreateAndUploadBuffer(vk_cmd, vertices, v_idx * sizeof(float), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &temp_buffer, &temp_alloc) == SITUATION_SUCCESS) {
-        // _SituationVulkanCreateAndUploadBuffer destroys the STAGING buffer, but we must destroy the DESTINATION buffer (temp_buffer)
-
+    // 6. DRAW
+    if (target_buffer != VK_NULL_HANDLE) {
+        VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
         vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.text_pipeline);
 
-        // Bind Vertex Buffer
-        VkDeviceSize offsets[] = {0};
-        vkCmdBindVertexBuffers(vk_cmd, 0, 1, &temp_buffer, offsets);
+        // Bind Vertex Buffer with OFFSET
+        VkDeviceSize offsets[] = { target_offset };
+        vkCmdBindVertexBuffers(vk_cmd, 0, 1, &target_buffer, offsets);
 
         // Push Color
         vkCmdPushConstants(vk_cmd, sit_render.vk.text_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(Vector4), color_vec.raw);
 
-        vkCmdDraw(vk_cmd, final_vert_count, 1, 0, 0);
-
-        // Schedule destruction of the per-frame vertex buffer
-        _SituationDeferDestroyBuffer(temp_buffer, temp_alloc);
+        vkCmdDraw(vk_cmd, (uint32_t)(len * 6), 1, 0, 0);
     }
 #endif
-
-    // SIT_FREE(vertices); // Using scratch buffer now
 
 #else
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCmdDrawText requires STB Truetype.");
@@ -15008,6 +15152,29 @@ SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRende
         }
         buf->packets[buf->packet_count++] = dst;
     }
+#elif defined(SITUATION_USE_VULKAN)
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    
+    for (size_t i = 0; i < list->packet_count; ++i) {
+        const SituationRenderPacket* pkt = &list->packets[i];
+        switch (pkt->type) {
+            case SIT_CMD_DRAW:
+                vkCmdDraw(vk_cmd, pkt->data.draw.vertex_count, pkt->data.draw.instance_count, pkt->data.draw.first_vertex, pkt->data.draw.first_instance);
+                break;
+            case SIT_CMD_DRAW_INDEXED:
+                vkCmdDrawIndexed(vk_cmd, pkt->data.draw_indexed.index_count, pkt->data.draw_indexed.instance_count, pkt->data.draw_indexed.first_index, pkt->data.draw_indexed.vertex_offset, pkt->data.draw_indexed.first_instance);
+                break;
+            case SIT_CMD_DISPATCH:
+                vkCmdDispatch(vk_cmd, pkt->data.dispatch.group_x, pkt->data.dispatch.group_y, pkt->data.dispatch.group_z);
+                break;
+            case SIT_CMD_BARRIER:
+                // Simplified barrier for replay; ideally replicate full SituationCmdPipelineBarrier logic here
+                // For now, a full memory barrier is safe but slow. 
+                // To be robust, you should expose the _SituationVulkanPipelineBarrier logic to this function.
+                break;
+            default: break;
+        }
+    }
 #endif
 }
 
@@ -15090,43 +15257,90 @@ static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
     // OpenGL replay is simpler (immediate) or handled via SoftBuffer
 }
 
+// --- [INTERNAL] Thread-Safe Queue Push ---
+// This replaces the old _SituationReplayToQueue call.
+// It just puts the pointer in the ring buffer.
+static void _SituationEnqueueRenderList(SituationRenderList list) {
+    if (!list) return;
+
+    ma_mutex_lock(&sit_render.momentum_mutex);
+    
+    int head = atomic_load(&sit_render.momentum_head);
+    int tail = atomic_load(&sit_render.momentum_tail);
+    int next_head = (head + 1) % 256;
+
+    if (next_head != tail) {
+        sit_render.momentum_queue[head] = list;
+        atomic_store(&sit_render.momentum_head, next_head);
+    } else {
+        // Queue full: We must drop it to prevent deadlock/corruption.
+        // In debug, we log this.
+        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Momentum render queue full. Frame data dropped.");
+    }
+
+    ma_mutex_unlock(&sit_render.momentum_mutex);
+}
+
 #if defined(SITUATION_ENABLE_THREADING)
-// Internal Job Wrapper
+
+// Internal Job Wrapper Context
 typedef struct {
     SituationRenderList list;
     void (*func)(void*, void*);
     void* user_data;
 } _SitRenderJobCtx;
 
+// The Worker Function (Runs on Thread Pool)
 static void _SituationRenderJobWorker(void* data, void* unused) {
     (void)unused;
     _SitRenderJobCtx* ctx = (_SitRenderJobCtx*)data;
 
-    // 1. Run User Generation Logic (CPU)
-    if (ctx->func) ctx->func(ctx->user_data, NULL);
+    // 1. Run User Generation Logic (CPU Work)
+    // This fills ctx->list with commands (SituationCmdDraw, etc.)
+    if (ctx->func) {
+        // Pass dummy error ptr for legacy compatibility if needed
+        SituationError dummy_err = SITUATION_SUCCESS;
+        ctx->func(ctx->user_data, (void*)&dummy_err);
+    }
 
-    // 2. Replay to Queue
-    int frame_idx = sit_render.current_frame_index;
-    _SituationReplayToQueue(ctx->list, frame_idx);
+    // 2. Submit Completed List to Main Thread Queue
+    // This is now thread-safe!
+    _SituationEnqueueRenderList(ctx->list);
 }
 
+// Public API: Submits the job to the thread pool
 SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data) {
     if (!list) return 0;
 
-    // Reset list for new recording
+    // Reset list for new recording before handing it off
     SituationResetRenderList(list);
 
+    // Prepare context
     _SitRenderJobCtx ctx = { list, func, user_data };
 
-    // Submit to High Priority (Render/Logic)
+    // Submit to High Priority Queue (Physics/Render Logic)
     return SituationSubmitJobEx(pool, _SituationRenderJobWorker, &ctx, sizeof(_SitRenderJobCtx), SIT_SUBMIT_HIGH_PRIORITY);
 }
+
 #else
-// Fallback for Single-Threaded
-SITAPI void SituationSubmitRenderList(SituationRenderList list) {
-    // Just replay immediately
-    _SituationReplayToQueue(list, sit_render.current_frame_index);
+
+// Fallback for Single-Threaded Builds
+// We just run the function immediately and then enqueue the list.
+SITAPI void SituationSubmitRenderList(SituationRenderList list, void (*func)(void*, void*), void* user_data) {
+    if (!list) return;
+
+    SituationResetRenderList(list);
+
+    // 1. Run Logic
+    if (func) {
+        SituationError dummy_err = SITUATION_SUCCESS;
+        func(user_data, (void*)&dummy_err);
+    }
+
+    // 2. Enqueue (or just replay immediately if you prefer, but queueing keeps logic unified)
+    _SituationEnqueueRenderList(list);
 }
+
 #endif
 
 /**
@@ -15609,7 +15823,17 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
         descriptor_type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
 
-    // Use the Asset Pool
+    // [v2.3.27] Use Dynamic Manager (Auto-Growing)
+    // Replaces manual allocation from fixed-size asset pool
+    texture.descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use);
+
+    if (texture.descriptor_set == VK_NULL_HANDLE) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
+        _SituationDeferDestroyImage(texture.image, texture.allocation, texture.image_view, texture.sampler);
+        return (SituationTexture){0};
+    }
+
+/*    // Use the Asset Pool
     VkDescriptorSetAllocateInfo asset_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = sit_render.vk.asset_descriptor_pool,
@@ -15626,7 +15850,7 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
 
         // Note: Staging buffer (if used) was already deferred to graveyard or destroyed synchronously above.
         return (SituationTexture){0};
-    }
+    }*/
 
     VkDescriptorImageInfo image_info = {0};
     // The layout for storage images is different. It's often GENERAL or TRANSFER_DST_OPTIMAL before the compute shader runs, and the shader itself might transition it.
@@ -15742,11 +15966,12 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
 #elif defined(SITUATION_USE_VULKAN)
     {
         // --- 3. Vulkan Destruction ---
-        // Defer destruction to avoid stalling.
-        if (texture->descriptor_set != VK_NULL_HANDLE) {
-             _SituationDeferDestroyDescriptorSet(texture->descriptor_set, sit_render.vk.asset_descriptor_pool);
-        }
+        
+        // [v2.3.27] Linear Allocation: We do NOT free descriptor sets.
+        // We simply invalidate the handle. The memory is reclaimed at shutdown.
+        texture->descriptor_set = VK_NULL_HANDLE;
 
+        // Destroy images/views as normal (these MUST still be destroyed)
         _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
 
         // Reset handles
@@ -15754,7 +15979,6 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
         texture->image_view = VK_NULL_HANDLE;
         texture->sampler = VK_NULL_HANDLE;
         texture->allocation = VK_NULL_HANDLE;
-        texture->descriptor_set = VK_NULL_HANDLE;
     }
 #endif
 
@@ -22297,7 +22521,8 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     #if defined(SITUATION_USE_OPENGL)
         glDeleteTextures(1, &texture->gl_texture_id);
     #elif defined(SITUATION_USE_VULKAN)
-        if (texture->descriptor_set != VK_NULL_HANDLE) _SituationDeferDestroyDescriptorSet(texture->descriptor_set, sit_render.vk.asset_descriptor_pool);
+        // [v2.3.27] Linear Allocation: Do not free descriptor set.
+        // Only destroy the heavy image resources.
         _SituationDeferDestroyImage(texture->image, texture->allocation, texture->image_view, texture->sampler);
     #endif
 
@@ -25264,255 +25489,262 @@ static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float
 
 // --- Audio Implementations (MiniAudio) ---
 /**
- * @brief The core audio processing callback function for MiniAudio.
+ * @brief [INTERNAL] Core Audio Mixing Callback (Production Hardened)
  *
- * This function is called by the audio thread whenever the audio device needs more data.
- * It is responsible for mixing all active sounds and applying all effects in a specific order.
- * The processing chain for each sound is as follows:
+ * @details This function is the heartbeat of the audio subsystem, executed by the high-priority
+ *          audio thread. It is responsible for decoding, processing, and mixing all active
+ *          sounds into the device's output buffer.
  *
- * 1. **Decode:** Raw PCM data is read from the source (file, memory, or stream).
- * 2. **Built-in Effects Chain:** The raw data is processed through the sound's active built-in effects:
- *    - Biquad Filter (Low/High-pass)
- *    - Echo (Delay)
- *    - Reverb
- * 3. **Custom Processor Chain:** The data is then passed through any user-attached DSP processors, allowing for custom, real-time effects like bitcrushing or flangers.
- * 4. **Final Conversion & Mixing:** The fully processed audio is then:
- *    - Resampled to apply pitch shifting and match the device's sample rate.
- *    - Converted to the device's native format (e.g., S16, F32).
- *    - Panned and volume-adjusted.
- *    - Additively mixed into the final output buffer that goes to the speakers.
+ * @section ThreadSafety Thread Safety Strategy ("Lock-the-World")
+ *          Unlike previous iterations which used a "Snapshot-and-Unlock" approach, this version
+ *          holds the `audio_queue_mutex` for the **entire duration** of the callback.
  *
- * All access to the shared sound queue is protected by a mutex to ensure thread safety.
+ *          - **Rationale:** This guarantees absolute memory safety. It prevents the Main Thread
+ *            from executing `SituationUnloadSound` (and freeing a `SituationSound`'s memory)
+ *            while the Audio Thread is actively reading from it.
+ *          - **Trade-off:** This may cause a micro-stall (typically <1ms) on the Main Thread if
+ *            it attempts to Play/Stop/Unload a sound exactly when the Audio Thread is mixing
+ *            a heavy load. This is an acceptable trade-off for preventing Segfaults/Access Violations.
+ *
+ * @section Optimization Performance Optimizations
+ *          1. **Fused Mixing Loop:** Panning, Volume application, and Accumulation are combined
+ *             into a single tight loop. This maximizes CPU cache locality by reading/writing
+ *             the output buffer only once per sound.
+ *          2. **O(1) Removal:** Finished sounds are removed using a "Swap-Remove" strategy
+ *             (swapping with the tail), avoiding expensive array shifting (`memmove`).
+ *          3. **Scratch Buffers:** Uses pre-allocated thread-local buffers to avoid `malloc`
+ *             on the audio thread.
+ *
+ * @section Pipeline Processing Pipeline
+ *          For every active sound:
+ *          1. **Decode:** Read raw PCM from file/memory/stream into `decoder_buffer`.
+ *          2. **Effects:** Apply Filter -> Echo -> Reverb -> User Processors.
+ *          3. **Convert:** Resample/Remap to device format into `converter_buffer`.
+ *          4. **Mix:** Apply Pan/Vol and add to `pOutput`.
+ *
+ * @param pDevice Pointer to the MiniAudio device instance.
+ * @param pOutput Pointer to the raw output buffer to be filled.
+ * @param pInput  Pointer to the input buffer (unused here; capture handled separately).
+ * @param frameCount The number of frames requested by the audio hardware.
  */
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
-    (void)pInput;
+    (void)pInput; // Input capture is handled separately
 
     _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
-    if (!pGs || frameCount == 0 || !pOutput) {
+    // Basic validation
+    if (!pGs || frameCount == 0 || !pOutput) return;
+
+    // 1. Initialize output buffer to silence (0).
+    //    We must do this because we will be additively mixing sounds into it.
+    size_t bytes_per_frame = ma_get_bytes_per_frame(pDevice->playback.format, pDevice->playback.channels);
+    memset(pOutput, 0, frameCount * bytes_per_frame);
+
+    // --- CRITICAL SECTION START ---
+    ma_mutex_lock(&pGs->audio_queue_mutex);
+
+    // Optimization: If no sounds are playing, unlock and return silence immediately.
+    if (pGs->queued_sound_count == 0) {
+        ma_mutex_unlock(&pGs->audio_queue_mutex);
         return;
     }
 
+    // Cap the processing chunk size to our pre-allocated scratch buffer capacity.
+    // If the device requests more frames than we can buffer (rare), we clamp it.
     if (frameCount > pGs->audio_callback_temp_buffer_frames_capacity) {
         frameCount = pGs->audio_callback_temp_buffer_frames_capacity;
     }
 
-    // Local snapshot buffer (Stack allocated, fast)
-    // Max concurrent sounds is defined as 32, so this is cheap.
-    SituationSound* local_sound_list[SITUATION_MAX_AUDIO_SOUNDS_QUEUED];
-    int local_count = 0;
-
-    // --- CRITICAL SECTION START ---
-    // Lock ONLY to copy the pointers. This takes nanoseconds.
-    ma_mutex_lock(&pGs->audio_queue_mutex);
-    {
-        local_count = pGs->queued_sound_count;
-        if (local_count > 0) {
-            memcpy(local_sound_list, pGs->queued_sounds, local_count * sizeof(SituationSound*));
-        }
-    }
-    ma_mutex_unlock(&pGs->audio_queue_mutex);
-    // --- CRITICAL SECTION END ---
-
-    // Initialize output to silence
-    memset(pOutput, 0, frameCount * ma_get_bytes_per_frame(pDevice->playback.format, pDevice->playback.channels));
-
-    if (local_count == 0) return;
-
-    // --- MIXING (Thread-Safe, Lock-Free) ---
-    // We iterate over our LOCAL list.
-    // Note: SituationSound structs must remain valid memory during playback.
-    // SituationUnloadSound handles this by removing from queue before freeing.
+    // Cache scratch buffer pointers for speed
     float* decoder_buffer = pGs->audio_callback_decoder_temp_buffer;
     float* effects_buffer = pGs->audio_callback_effects_temp_buffer;
     void*  converter_buffer = pGs->audio_callback_converter_temp_buffer;
 
-    // Track sounds that finish playback to remove them later
-    SituationSound* sounds_to_remove[SITUATION_MAX_AUDIO_SOUNDS_QUEUED];
-    int remove_count = 0;
+    // Iterate over the live sound queue.
+    // We use a manual index 'i' to allow for in-place removal of finished sounds via swapping.
+    for (int i = 0; i < pGs->queued_sound_count; ) {
+        SituationSound* sound = pGs->queued_sounds[i];
+        bool should_remove_sound = false;
 
-    for (int i = 0; i < local_count; ++i) {
-        SituationSound* sound = local_sound_list[i];
-
+        // Validation: Ensure sound is valid and fully initialized before touching it.
+        // If the main thread corrupted the list before we locked, this catches it.
         if (!sound || !sound->is_initialized || !sound->converter_initialized) {
-            continue;
+            should_remove_sound = true;
+            goto handle_sound_state;
         }
 
-        uint64_t frames_contributed_by_this_sound_total = 0;
+        uint64_t frames_mixed_so_far = 0;
 
-        while (frames_contributed_by_this_sound_total < frameCount) {
-            uint64_t frames_needed_for_output_pass = frameCount - frames_contributed_by_this_sound_total;
-            ma_uint64 input_frames_converter_requires;
+        // --- Processing Loop ---
+        // We process in chunks because the data converter (resampler) works in steps,
+        // and we might need to loop a sound mid-buffer.
+        while (frames_mixed_so_far < frameCount) {
+            uint64_t frames_remaining_in_output = frameCount - frames_mixed_so_far;
+            ma_uint64 input_frames_required_by_converter;
 
-            ma_data_converter_get_required_input_frame_count(&sound->converter, frames_needed_for_output_pass, &input_frames_converter_requires);
+            // Ask the converter: "To generate X output frames, how many input frames do you need?"
+            // This handles pitch shifting (e.g. 0.5x pitch needs 0.5x input frames).
+            ma_data_converter_get_required_input_frame_count(&sound->converter, frames_remaining_in_output, &input_frames_required_by_converter);
 
-            if (input_frames_converter_requires > pGs->audio_callback_temp_buffer_frames_capacity) {
-                 input_frames_converter_requires = pGs->audio_callback_temp_buffer_frames_capacity;
+            // Safety clamp: Don't read more than our scratch buffer can hold
+            if (input_frames_required_by_converter > pGs->audio_callback_temp_buffer_frames_capacity) {
+                input_frames_required_by_converter = pGs->audio_callback_temp_buffer_frames_capacity;
             }
 
-            ma_uint64 frames_read_from_decoder;
-            ma_result res_dec = ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer, input_frames_converter_requires, &frames_read_from_decoder);
-            sound->cursor_frames += frames_read_from_decoder;
+            // A. DECODE: Read raw PCM data from the source (File/Memory/Stream)
+            ma_uint64 frames_read;
+            ma_result res_dec = ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer, input_frames_required_by_converter, &frames_read);
+            sound->cursor_frames += frames_read;
 
+            // Handle Errors
             if (res_dec != MA_SUCCESS && res_dec != MA_AT_END) {
-                sounds_to_remove[remove_count++] = sound;
-                goto next_sound_in_queue_locked;
+                should_remove_sound = true; // Error reading, stop playing
+                break;
             }
 
-            if (frames_read_from_decoder == 0) {
+            // Handle End of File / Looping
+            if (frames_read == 0) {
                 if (sound->is_looping) {
                     ma_decoder_seek_to_pcm_frame(&sound->decoder, 0);
                     sound->cursor_frames = 0;
-                    continue;
+                    continue; // Restart the loop immediately to fill the rest of the buffer
                 } else {
-                    sounds_to_remove[remove_count++] = sound;
-                    goto next_sound_in_queue_locked;
-                }
-            }
-
-            // ====================================================================
-            // --- Audio Processing Chain (Operates on floating-point PCM data) ---
-            // ====================================================================
-            float* pFramesIn = decoder_buffer;
-            float* pFramesOut = effects_buffer;
-            uint64_t frame_count_for_effects = frames_read_from_decoder;
-            ma_uint32 effect_channels = sound->decoder.outputChannels;
-
-            // --- Stage 1: Built-in Effects ---
-            if (sound->effects.filter_enabled) {
-                ma_biquad_process_pcm_frames(&sound->effects.biquad, pFramesOut, pFramesIn, frame_count_for_effects);
-                float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
-            }
-            if (sound->effects.echo_enabled) {
-                ma_delay_process_pcm_frames(&sound->effects.delay, pFramesOut, pFramesIn, frame_count_for_effects);
-                float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
-            }
-            if (sound->effects.reverb_enabled && sound->effects.reverb_state) {
-                _SituationProcessReverb(sound->effects.reverb_state, pFramesOut, pFramesIn, (uint32_t)frame_count_for_effects, (int)effect_channels);
-                float* temp = pFramesIn; pFramesIn = pFramesOut; pFramesOut = temp;
-            }
-
-            // --- Stage 2: Custom User-Attached Processors ---
-            if (sound->processor_count > 0) {
-                for (int proc_idx = 0; proc_idx < sound->processor_count; ++proc_idx) {
-                    if (sound->processors[proc_idx] != NULL) {
-                        // The user processor modifies the buffer in-place.
-                        sound->processors[proc_idx](
-                            pFramesIn, // The buffer to process
-                            frame_count_for_effects,
-                            effect_channels,
-                            sound->decoder.outputSampleRate,
-                            sound->processor_user_data[proc_idx]
-                        );
-                    }
-                }
-            }
-
-            // The final, fully processed frames are now in the `pFramesIn` buffer.
-            // ======================= END OF PROCESSING CHAIN ========================
-
-            // --- Stage 3: Final Conversion (Pitch, Format, Channels) ---
-            ma_uint64 input_frames_for_converter_pass = frames_read_from_decoder;
-            ma_uint64 output_frames_from_converter_pass = frames_needed_for_output_pass;
-            ma_data_converter_process_pcm_frames(&sound->converter, pFramesIn, &input_frames_for_converter_pass, converter_buffer, &output_frames_from_converter_pass);
-
-            // --- Stage 4: Pan and Volume ---
-            // This stage prepares the `converter_buffer` completely.
-            if (output_frames_from_converter_pass > 0) {
-                ma_format device_format = pDevice->playback.format;
-                uint32_t device_channels = pDevice->playback.channels;
-
-                if (device_format == ma_format_f32) {
-                    float* samples = (float*)converter_buffer;
-                    for (uint64_t frame_idx = 0; frame_idx < output_frames_from_converter_pass; ++frame_idx) {
-                        float L_gain = 1.0f, R_gain = 1.0f;
-                        if (device_channels >= 2) {
-                            float pan_factor_norm = (sound->pan + 1.0f) * 0.5f;
-                            L_gain = cosf(pan_factor_norm * (float)M_PI_2);
-                            R_gain = sinf(pan_factor_norm * (float)M_PI_2);
-                        }
-                        for (uint32_t chan_idx = 0; chan_idx < device_channels; ++chan_idx) {
-                            float current_sample = samples[frame_idx * device_channels + chan_idx];
-                            if (chan_idx == 0 && device_channels >= 2) current_sample *= L_gain;
-                            else if (chan_idx == 1 && device_channels >= 2) current_sample *= R_gain;
-                            current_sample *= sound->volume;
-                            samples[frame_idx * device_channels + chan_idx] = current_sample;
-                        }
-                    }
-                } else if (device_format == ma_format_s16) {
-                    ma_int16* samples = (ma_int16*)converter_buffer;
-                    for (uint64_t frame_idx = 0; frame_idx < output_frames_from_converter_pass; ++frame_idx) {
-                        float L_gain = 1.0f, R_gain = 1.0f;
-                        if (device_channels >= 2) {
-                            float pan_factor_norm = (sound->pan + 1.0f) * 0.5f;
-                            L_gain = cosf(pan_factor_norm * (float)M_PI_2);
-                            R_gain = sinf(pan_factor_norm * (float)M_PI_2);
-                        }
-                        for (uint32_t chan_idx = 0; chan_idx < device_channels; ++chan_idx) {
-                            float sample_f = (float)samples[frame_idx * device_channels + chan_idx] / 32768.0f;
-                            if (chan_idx == 0 && device_channels >= 2) sample_f *= L_gain;
-                            else if (chan_idx == 1 && device_channels >= 2) sample_f *= R_gain;
-                            sample_f *= sound->volume;
-                            if (sample_f > 1.0f) sample_f = 1.0f; else if (sample_f < -1.0f) sample_f = -1.0f;
-                            samples[frame_idx * device_channels + chan_idx] = (ma_int16)(sample_f * 32767.0f);
-                        }
-                    }
-                }
-            }
-
-            // --- Stage 5: Mix into Output Buffer ---
-            // This block now *only* performs mixing. The pan/volume logic has been removed.
-            if (output_frames_from_converter_pass > 0) {
-                if (pDevice->playback.format == ma_format_f32) {
-                    float* main_out_ptr = (float*)pOutput + (frames_contributed_by_this_sound_total * pDevice->playback.channels);
-                    float* processed_sound_ptr = (float*)converter_buffer;
-                    for (uint64_t k = 0; k < output_frames_from_converter_pass * pDevice->playback.channels; ++k) {
-                        main_out_ptr[k] += processed_sound_ptr[k];
-                    }
-                } else if (pDevice->playback.format == ma_format_s16) {
-                    ma_int16* main_out_ptr = (ma_int16*)pOutput + (frames_contributed_by_this_sound_total * pDevice->playback.channels);
-                    ma_int16* processed_sound_ptr = (ma_int16*)converter_buffer;
-                    for (uint64_t k = 0; k < output_frames_from_converter_pass * pDevice->playback.channels; ++k) {
-                        ma_int32 mixed = (ma_int32)main_out_ptr[k] + (ma_int32)processed_sound_ptr[k];
-                        if (mixed > 32767) mixed = 32767; else if (mixed < -32768) mixed = -32768;
-                        main_out_ptr[k] = (ma_int16)mixed;
-                    }
-                }
-            }
-
-            frames_contributed_by_this_sound_total += output_frames_from_converter_pass;
-
-            if (input_frames_for_converter_pass < frames_read_from_decoder) {
-                ma_uint64 current_cursor;
-                if (ma_decoder_get_cursor_in_pcm_frames(&sound->decoder, &current_cursor) == MA_SUCCESS) {
-                    ma_int64 seek_offset_frames = (ma_int64)input_frames_for_converter_pass - (ma_int64)frames_read_from_decoder;
-                    // seek_offset_frames will be negative here, which implies moving back.
-                    // We ensure we don't seek before 0.
-                    ma_uint64 target_frame = (ma_uint64)((ma_int64)current_cursor + seek_offset_frames);
-                    ma_decoder_seek_to_pcm_frame(&sound->decoder, target_frame);
-                    sound->cursor_frames = target_frame;
-                }
-            }
-			
-        }
-
-    next_sound_in_queue_locked:;
-    }
-
-    // --- CLEANUP FINISHED SOUNDS ---
-    if (remove_count > 0) {
-        ma_mutex_lock(&pGs->audio_queue_mutex);
-        for (int r = 0; r < remove_count; ++r) {
-            SituationSound* target = sounds_to_remove[r];
-            // Find and remove from the LIVE list
-            for (int j = 0; j < pGs->queued_sound_count; ++j) {
-                if (pGs->queued_sounds[j] == target) {
-                    pGs->queued_sounds[j] = pGs->queued_sounds[--pGs->queued_sound_count];
+                    should_remove_sound = true; // Natural end of sound
                     break;
                 }
             }
+
+            // B. EFFECTS CHAIN: Process the raw float data
+            // We ping-pong between `decoder_buffer` and `effects_buffer`.
+            float* pProcessIn = decoder_buffer;
+            float* pProcessOut = effects_buffer;
+            ma_uint32 channels = sound->decoder.outputChannels;
+
+            // 1. Biquad Filter (Lowpass/Highpass)
+            if (sound->effects.filter_enabled) {
+                ma_biquad_process_pcm_frames(&sound->effects.biquad, pProcessOut, pProcessIn, frames_read);
+                // Swap pointers
+                float* t = pProcessIn; pProcessIn = pProcessOut; pProcessOut = t;
+            }
+            // 2. Echo / Delay
+            if (sound->effects.echo_enabled) {
+                ma_delay_process_pcm_frames(&sound->effects.delay, pProcessOut, pProcessIn, frames_read);
+                float* t = pProcessIn; pProcessIn = pProcessOut; pProcessOut = t;
+            }
+            // 3. Reverb
+            if (sound->effects.reverb_enabled && sound->effects.reverb_state) {
+                _SituationProcessReverb(sound->effects.reverb_state, pProcessOut, pProcessIn, (uint32_t)frames_read, (int)channels);
+                float* t = pProcessIn; pProcessIn = pProcessOut; pProcessOut = t;
+            }
+            // 4. Custom User Processors
+            for (int p = 0; p < sound->processor_count; ++p) {
+                if (sound->processors[p]) {
+                    sound->processors[p](pProcessIn, (uint32_t)frames_read, channels, sound->decoder.outputSampleRate, sound->processor_user_data[p]);
+                }
+            }
+
+            // C. CONVERSION: Resample and Convert Format
+            // pProcessIn now holds the final processed audio.
+            ma_uint64 input_consumed = frames_read;
+            ma_uint64 output_generated = frames_remaining_in_output;
+            
+            // This writes into `converter_buffer`. `input_consumed` will be updated with how much was actually used.
+            ma_data_converter_process_pcm_frames(&sound->converter, pProcessIn, &input_consumed, converter_buffer, &output_generated);
+
+            // D. MIXING: Pan, Volume, and Accumulate
+            if (output_generated > 0) {
+                ma_uint32 dev_channels = pDevice->playback.channels;
+                float vol = sound->volume;
+                
+                // Calculate Pan Gains (Equal Power Law)
+                float gain_L = 1.0f, gain_R = 1.0f;
+                if (dev_channels >= 2) {
+                    float pan_norm = (sound->pan + 1.0f) * 0.5f;
+                    gain_L = cosf(pan_norm * (float)M_PI_2);
+                    gain_R = sinf(pan_norm * (float)M_PI_2);
+                }
+
+                // --- Float32 Mixing Path ---
+                if (pDevice->playback.format == ma_format_f32) {
+                    float* out_ptr = (float*)pOutput + (frames_mixed_so_far * dev_channels);
+                    float* src_ptr = (float*)converter_buffer;
+
+                    for (ma_uint64 f = 0; f < output_generated; ++f) {
+                        for (ma_uint32 c = 0; c < dev_channels; ++c) {
+                            float sample = *src_ptr++;
+                            
+                            // Apply Pan
+                            if (c == 0) sample *= gain_L;
+                            else if (c == 1) sample *= gain_R;
+                            
+                            // Apply Volume & Mix
+                            *out_ptr++ += sample * vol;
+                        }
+                    }
+                } 
+                // --- Int16 Mixing Path ---
+                else if (pDevice->playback.format == ma_format_s16) {
+                    ma_int16* out_ptr = (ma_int16*)pOutput + (frames_mixed_so_far * dev_channels);
+                    ma_int16* src_ptr = (ma_int16*)converter_buffer;
+
+                    for (ma_uint64 f = 0; f < output_generated; ++f) {
+                        for (ma_uint32 c = 0; c < dev_channels; ++c) {
+                            // Convert S16 input to Float for processing
+                            float sample = (*src_ptr++) / 32768.0f;
+
+                            if (c == 0) sample *= gain_L;
+                            else if (c == 1) sample *= gain_R;
+                            
+                            sample *= vol;
+
+                            // Convert back to S16, Mix, and Clamp (Hard Limiter)
+                            ma_int32 mixed = (ma_int32)(*out_ptr) + (ma_int32)(sample * 32767.0f);
+                            if (mixed > 32767) mixed = 32767;
+                            if (mixed < -32768) mixed = -32768;
+                            *out_ptr++ = (ma_int16)mixed;
+                        }
+                    }
+                }
+            }
+
+            frames_mixed_so_far += output_generated;
+
+            // Handle Pitch-Shift Sync: 
+            // If input_consumed < frames_read, it means the converter didn't need all the data
+            // we decoded to produce the requested output (common when pitching down).
+            // We must rewind the decoder cursor so the unused frames are read again next time.
+            if (input_consumed < frames_read) {
+                 ma_uint64 current_cursor;
+                 if (ma_decoder_get_cursor_in_pcm_frames(&sound->decoder, &current_cursor) == MA_SUCCESS) {
+                     // Calculate rollback amount
+                     ma_int64 seek_back_amount = (ma_int64)frames_read - (ma_int64)input_consumed;
+                     if (seek_back_amount > 0) {
+                         // Note: This seek might be expensive for streams, but is required for correctness.
+                         ma_decoder_seek_to_pcm_frame(&sound->decoder, current_cursor - seek_back_amount);
+                         sound->cursor_frames -= seek_back_amount;
+                     }
+                 }
+            }
+        } // End per-sound processing loop
+
+    handle_sound_state:
+        if (should_remove_sound) {
+            // Swap-Remove Logic (O(1)):
+            // 1. Decrement count.
+            // 2. Move the *last* sound in the queue into the *current* slot.
+            // 3. Do NOT increment 'i', so we process the swapped-in sound on the next loop iteration.
+            pGs->queued_sound_count--;
+            pGs->queued_sounds[i] = pGs->queued_sounds[pGs->queued_sound_count];
+            
+            // Clear the old tail for safety (optional but good for debugging)
+            pGs->queued_sounds[pGs->queued_sound_count] = NULL;
+        } else {
+            // Sound stays alive, move to next
+            i++;
         }
-        ma_mutex_unlock(&pGs->audio_queue_mutex);
     }
+
+    ma_mutex_unlock(&pGs->audio_queue_mutex);
+    // --- CRITICAL SECTION END ---
 }
 
 

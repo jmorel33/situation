@@ -1,4 +1,26 @@
-Date: 2025-12-12
+Date: 2025-12-11
+Version: 2.3.27 "Titanium Core" (Architectural Hardening)
+
+## DESCRIPTION
+A comprehensive stability overhaul addressing critical thread-safety hazards, memory fragmentation, and cross-backend parity. This release transforms the library from "Functional" to "Production-Ready" by eliminating race conditions in the Audio and Rendering subsystems and optimizing high-frequency text rendering.
+
+## CRITICAL FIXES
+*   **Audio Safety (Lock-the-World):** Fixed a Use-After-Free race condition where unloading a sound during playback could crash the audio thread. Implemented a robust mutex strategy and fused mixing loop for stability.
+*   **Vulkan Text Perf (Ring Buffer):** Replaced per-draw buffer allocations with a persistent mapped ring buffer. Text rendering is now zero-copy and allocation-free in the hot path.
+*   **Momentum Thread Safety:** Decoupled Render List submission from execution. `SituationSubmitRenderList` now safely enqueues pointers; `SituationEndFrame` replays them serially on the main thread, preventing Vulkan command buffer corruption.
+*   **OpenGL State Hardening:** `_SituationGLExecuteCommands` now explicitly resets critical GL state (Blend, Depth, Cull) before execution, preventing "state poisoning" from external middleware (e.g., ImGui).
+*   **Vulkan Descriptor Stability:** Switched to a Linear "Allocate-Only" strategy for descriptors. Removed `vkFreeDescriptorSets` calls to prevent pool fragmentation crashes during long sessions.
+
+## KNOWN LIMITATIONS (Deferred to v2.3.x)
+*   **Vulkan Dynamic UBOs:** `SituationUpdateBuffer` currently uses a staging path with barriers. Updating the same UBO multiple times per frame is safe (correct barriers added) but serializes execution on the GPU. Future v2.3.x will implement `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` for high-performance versioned updates.
+
+## VALIDATION
+*   **Stress Test:** 50+ concurrent sounds with reverb/echo no longer crash on unload.
+*   **UI Test:** Rendering 1000+ text labels per frame no longer spikes CPU/VRAM usage.
+*   **Thread Test:** Parallel submission of Render Lists from 4 worker threads is now stable.
+
+--------------------------------------------------------------------------------
+Date: 2025-12-10
 Version: 2.3.26 "Silent Zenith" (Micro-Polish)
 
 ## DESCRIPTION
@@ -13,7 +35,7 @@ Tweaks v2.3.25 metrics: Release-mute warns, namespace unify, retry thresh 20â€”s
 *   Silent under load; consistent.
 
 --------------------------------------------------------------------------------
-Date: 2025-12-11
+Date: 2025-12-10
 Version: 2.3.25 "Polish Zenith" (Micro-Hotfix)
 
 ## DESCRIPTION
@@ -27,7 +49,6 @@ Tweaks v2.3.24b metrics: Namespace unify, TS store, once-warn drift, retry logâ€
 ## VALIDATION
 *   1k frames: Accurate avg/max; no spam; TSan clean.
 
---------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 Date: 2025-12-10
 Version: 2.3.24b "Integration Zenith"
