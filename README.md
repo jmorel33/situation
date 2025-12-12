@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.26 "Polish Zenith"_
+_Core API library v2.3.27 "Titanium Core"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,12 +8,12 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.26 "Polish Zenith"**
+Current Version: **v2.3.27 "Titanium Core"**
 
-**Version 2.3.25** achieves metric and stability perfection by implementing **Namespace Unification** for internal renderer states and fixing a critical **Vulkan Refcount Asymmetry**. It introduces a monotonic timestamping system for drift-proof latency tracking, a **"Once-Warn"** mechanism for clock drift to prevent log spam, and robust thread contention handling in the metric collection loops. This update ensures that the safety features of the "Zenith" series are not only functional but also observably precise and thread-safe under extreme load.
+**Version 2.3.27** marks the transition to **"Titanium"** status—a comprehensive architectural hardening focused on absolute thread safety and zero-allocation hot paths. This release eliminates critical race conditions in the Audio and Rendering subsystems via a **"Lock-the-World"** mixing strategy and a **Deferred Submission Queue** for multi-threaded rendering. It introduces a **Persistent Ring Buffer** for Vulkan text rendering (eliminating per-draw allocations for UI) and implements a **Linear Descriptor Allocation** strategy to permanently solve Vulkan memory fragmentation during long sessions.
 
 Our immediate development roadmap is focused on expanding the library's capability:
-*   **Momentum Phase 3:** Complete multi-threaded rendering replay optimization.
+*   **Dynamic UBOs (v2.4):** Implementing `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` to allow race-free, high-frequency uniform updates without staging barriers.
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
 *   **Async Compute**: Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
 *   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
@@ -28,13 +28,13 @@ It provides deep **Awareness** of the host system through APIs for querying hard
 
 This foundation enables precise **Control** over the entire application stack:
 *   **Threading:** A completely new **Generational Task System** supporting fork-join parallelism (`ParallelFor`), priority scheduling (High/Low rings), and backpressure handling (`RUN_IF_FULL`).
-*   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management.
+*   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management with explicit **State Hardening** to prevent context poisoning from external middleware (e.g., ImGui).
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events ensures no input is ever lost during frame spikes.
-*   **Audio:** A professional-grade pipeline supporting **safe RAM preloading** via background threads (Async Load), disk streaming for music, **thread-safe capture (recording)**, and real-time effects (Reverb, Delay, Filter).
-*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.2**. It manages complex resources—shaders, meshes, and **dynamically allocated descriptor sets**—automatically. It includes high-level utilities for **Compute Shaders (with #include support)**, **Virtual Display Compositing**, and high-quality text rendering.
+*   **Audio:** A professional-grade pipeline featuring a **thread-safe mixing architecture**, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
+*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.2**. It manages complex resources automatically, utilizing **Linear Descriptor Allocation** to prevent fragmentation. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering powered by **Zero-Copy Ring Buffers**.
 *   **Hot-Reloading:** A suite of tools for live-reloading assets (Shaders, Textures, Models) at runtime, safely handling GPU synchronization and resource rebuilding.
 
-Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
+Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls, Latency Histograms)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
 
 > **CRITICAL ARCHITECTURAL NOTE:** To guarantee identical behavior between OpenGL (Immediate) and Vulkan (Deferred), developers must **update all buffer data before recording draw commands** within a frame. *The library actively enforces this rule in debug builds and will report a runtime error if violated.*
 
@@ -63,7 +63,7 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 *   **Unified Command Architecture:** Write your rendering code once using abstract `SituationCmd*` functions. The library compiles this into direct state changes for **OpenGL 4.6** or optimized command buffers for **Vulkan 1.2**.
 *   **Generational Task System:** A C11-native, lock-free thread pool supporting fork-join parallelism (`ParallelFor`), priority scheduling, and backpressure handling.
 *   **"Hardened" Audio Engine:** A professional audio pipeline built on miniaudio. It features **thread-safe asset loading** (decoding SFX to RAM to prevent stalling), background music streaming, real-time DSP effects (Reverb/Delay), and low-latency microphone capture.
-*   **Dynamic Resource Management:** No arbitrary limits. The Vulkan backend features a **Dynamic Descriptor Manager** that automatically grows resource pools as you load assets, supporting scenes with thousands of textures and buffers.
+*   **Dynamic Resource Management:** No arbitrary limits. The Vulkan backend features a **Dynamic Descriptor Manager** with a linear allocation strategy that automatically grows resource pools as you load assets, supporting scenes with thousands of textures and buffers without fragmentation.
 *   **O(1) Input System:** A lock-free, ring-buffered input architecture ensures that no keypress or mouse click is ever lost, even during frame-rate spikes.
 *   **Virtual Display Compositor:** Render your game to low-resolution off-screen targets (e.g., 320x240) and composite them to the main screen with precise control over scaling algorithms (Integer, Fit, Stretch) and blend modes.
 *   **First-Class Compute:** Compute Shaders are not an afterthought. The API treats Compute Pipelines and Storage Buffers (SSBOs) as primary citizens, enabling complex simulations and post-processing.
@@ -237,7 +237,7 @@ The full source code for all examples can be found in the `/examples` directory.
 To maintain consistency between the **Immediate Mode** nature of OpenGL and the **Deferred** nature of Vulkan command buffers, you must strictly adhere to this order in your render loop:
 1.  **Update Data:** Call `SituationUpdateBuffer`, `SituationCmdSetPushConstant`, or texture uploads.
 2.  **Record Commands:** Call `SituationCmdDraw*`.
-**Why?** In Vulkan, commands recorded now are executed later. If you update a buffer *after* recording a draw call but *before* the frame ends, the GPU will read the *new* data for the *old* draw call. In Debug builds, the library actively monitors this and will report architectural violations.
+**Why?** In Vulkan, commands recorded now are executed later. If you update a buffer after recording a draw call but before the frame ends, the GPU will read the new data for the old draw call. In Debug builds, the library actively monitors this and will report architectural violations.
 
 #### 2. Thread Safety
 *   **Main Thread:** Windowing, Rendering commands, and Event Polling must occur here.
@@ -272,7 +272,7 @@ This library does not use garbage collection.
 *   **Cause:** Screenshots **must** use the `.png` extension. Check that your filename ends in `.png` and that you haven't disabled STB support without providing an alternative writer.
 
 **Q: Audio crackles or pops when loading a level?**
-*   **Cause:** You might be streaming too many sounds from disk at once. Switch your SFX loading mode to `SITUATION_AUDIO_LOAD_FULL` to decode them to RAM, removing the disk I/O bottleneck from the audio thread.
+*   **Cause:** You might be streaming too many sounds from disk at once. Switch your SFX loading mode to SITUATION_AUDIO_LOAD_FULL to decode them to RAM, removing the disk I/O bottleneck from the audio thread.
 
 **Q: My 3D Model renders black?**
 *   **Cause:** The model loader likely failed to find the texture files relative to the model. Check the console output; the library logs warnings if specific texture paths in a GLTF file could not be resolved.
