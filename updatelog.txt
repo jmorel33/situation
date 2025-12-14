@@ -1,3 +1,20 @@
+Date: 2025-12-13
+Version: 2.3.29 "Velocity" (Dynamic UBOs)
+
+## DESCRIPTION
+This release implements proper support for Dynamic Uniform Buffer Objects (Dynamic UBOs) in the Vulkan backend, enabling efficient rendering by binding different ranges of a single large buffer without re-binding descriptor sets. This addresses a key performance limitation in scenarios requiring frequent per-draw data updates.
+
+## NEW FEATURES
+*   **Dynamic UBO Support:** Introduced `SITUATION_BUFFER_USAGE_DYNAMIC_UNIFORM`. When creating a buffer with this flag, the Vulkan backend now allocates a descriptor set using the new `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` layout.
+*   **Dynamic Binding API:** Added `SituationCmdBindDescriptorSetDynamic`. This new API allows binding a descriptor set with a dynamic offset, essential for utilizing the Dynamic UBO capability.
+*   **Backward Compatibility:** Updated `SituationCmdBindDescriptorSet` to seamlessly handle dynamic buffers by defaulting the offset to 0, ensuring existing code continues to function correctly while enabling the new optimization.
+
+## ARCHITECTURAL CHANGES
+*   **Dynamic Layout:** A new `dynamic_ubo_layout` is initialized in the Vulkan render state to support the dynamic descriptor type.
+*   **Cleanup:** The system correctly cleans up the new layout resource during shutdown.
+
+--------------------------------------------------------------------------------
+
 Version: 2.3.28 "Titanium Core C" (Velocity & Concurrency)
 
 ## DESCRIPTION

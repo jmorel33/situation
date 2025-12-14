@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 28
+#define SITUATION_VERSION_PATCH 29
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -1982,6 +1982,7 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
 SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color);                                                // [High-Level] Record a command to draw a simple, colored 2D quad.
 SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);               // [Core] Set a small block of per-draw uniform data (push constant).
 SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer);            // [Core] Binds a buffer's descriptor set (UBO/SSBO) to a set index.
+SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset); // [Core] Binds a dynamic buffer descriptor set with an offset.
 SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);             // [Core] Binds a texture's descriptor set (sampler/storage) to a set index.
 SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture);           // [Core] Binds a texture as a storage image for compute shaders.
 SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset); // [Core] Define the format of a vertex attribute for the active VAO.
@@ -3113,6 +3114,7 @@ typedef struct {
 
     // Standard Layouts
     VkDescriptorSetLayout ubo_layout;           // Layout for generic UBOs
+    VkDescriptorSetLayout dynamic_ubo_layout;   // Layout for dynamic UBOs
     VkDescriptorSetLayout ssbo_layout;          // Layout for generic SSBOs
     VkDescriptorSetLayout view_data_ubo_layout; // Layout for the global View UBO
     VkDescriptorSetLayout image_sampler_layout; // Layout for combined image samplers
@@ -9303,6 +9305,14 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         _SituationCleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
+
+    VkDescriptorSetLayoutBinding dynamic_ubo_binding = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT, NULL };
+    VkDescriptorSetLayoutCreateInfo dynamic_ubo_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &dynamic_ubo_binding };
+    if (vkCreateDescriptorSetLayout(sit_render.vk.device, &dynamic_ubo_layout_info, NULL, &sit_render.vk.dynamic_ubo_layout) != VK_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create dynamic UBO layout.");
+        _SituationCleanupVulkan();
+        return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+    }
     
     // Set as the active pool for the dynamic manager to start with
     sit_render.vk.descriptor_pool = sit_render.vk.persistent_descriptor_pool;
@@ -12381,6 +12391,7 @@ static void _SituationCleanupVulkan(void) {
     vmaDestroyAllocator(sit_render.vk.vma_allocator);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.ssbo_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.ubo_layout, NULL);
+    vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.dynamic_ubo_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.storage_buffer_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.image_sampler_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.view_data_ubo_layout, NULL);
@@ -15657,9 +15668,16 @@ SITAPI uint64_t SituationGetVRAMUsage(void) {
  *
  * @see SituationCreateBuffer(), SituationCmdBindTextureSet()
  */
+// Forward declaration
+SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset);
+
 SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer) {
+    // Forward to Dynamic variant with 0 offset.
+    return SituationCmdBindDescriptorSetDynamic(cmd, set_index, buffer, 0);
+}
+
+SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset) {
     if (!SituationIsInitialized()) {
-        // No error message set here as this is a common check.
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (buffer.id == 0) {
@@ -15674,6 +15692,12 @@ SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, 
 
     p->args.bind_desc.set_index = set_index;
     p->args.bind_desc.resource_id = buffer.gl_buffer_id;
+
+    // Note: OpenGL backend currently ignores dynamic offsets in deferred mode.
+    // Full support would require extending the command packet or using a dedicated opcode.
+    if (dynamic_offset > 0) {
+        // Warning: Offset ignored.
+    }
 
     if (buffer.usage_flags & SITUATION_BUFFER_USAGE_STORAGE_BUFFER) {
         p->args.bind_desc.resource_type = 2; // 2 = SSBO
@@ -15708,8 +15732,18 @@ SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, 
         return SITUATION_ERROR_RENDER_COMMAND_FAILED;
     }
 
+    // Determine if we need to pass dynamic offsets
+    uint32_t offset_count = 0;
+    const uint32_t* p_offsets = NULL;
+
+    // Check if the buffer was created with Dynamic flag
+    if ((buffer.usage_flags & SITUATION_BUFFER_USAGE_DYNAMIC_UNIFORM) == SITUATION_BUFFER_USAGE_DYNAMIC_UNIFORM) {
+        offset_count = 1;
+        p_offsets = &dynamic_offset;
+    }
+
     // Record the command to bind the buffer's pre-packaged descriptor set.
-    vkCmdBindDescriptorSets(vk_cmd, bind_point, layout, set_index, 1, &buffer.descriptor_set, 0, NULL);
+    vkCmdBindDescriptorSets(vk_cmd, bind_point, layout, set_index, 1, &buffer.descriptor_set, offset_count, p_offsets);
 
     return SITUATION_SUCCESS;
 #endif
@@ -16618,8 +16652,14 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
             layout_to_use = sit_render.vk.ssbo_layout;
         } else if (usage_flags & SITUATION_BUFFER_USAGE_UNIFORM_BUFFER) {
             // UBO flag takes precedence if SSBO isn't set
-            descriptor_type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            layout_to_use = sit_render.vk.ubo_layout;
+            // Check for Dynamic UBO first
+            if ((usage_flags & SITUATION_BUFFER_USAGE_DYNAMIC_UNIFORM) == SITUATION_BUFFER_USAGE_DYNAMIC_UNIFORM) {
+                descriptor_type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+                layout_to_use = sit_render.vk.dynamic_ubo_layout;
+            } else {
+                descriptor_type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                layout_to_use = sit_render.vk.ubo_layout;
+            }
         }
         // Add logic for other types if needed (e.g., using SSBO layout for UBO if that's preferred)
 
@@ -27641,7 +27681,7 @@ SITAPI double SituationTimerGetTime(void) {
  * @param mods Modifier mask (bitfield: `SITUATION_MOD_SHIFT` (1<<0), `SITUATION_MOD_CONTROL` (1<<1), `SITUATION_MOD_ALT` (1<<2), `SITUATION_MOD_ALTGR` (1<<3)).
  * @param[out] out_char Pointer to receive the Unicode codepoint (UTF-32); 0 on failure.
  *
- * @return SITUATION_SUCCESS if mapped successfully; SITUATION_ERROR_INPUT_MAPPING_FAILED otherwise (e.g., invalid scancode/layout).
+ * @return SITUATION_SUCCESS if mapped successfully; SITUATION_ERROR_INVALID_PARAM otherwise (e.g., invalid scancode/layout).
  *
  * @see SituationGetKeyScancode() for logical-to-physical mapping.
  * @see SituationSetCharCallback() for asynchronous text input events.
@@ -27664,7 +27704,7 @@ SITAPI int SituationGetCharFromScancode(int window, int scancode, int mods, uint
     // VK code from scancode via MapVirtualKey
     UINT vk = MapVirtualKeyEx(scancode, MAPVK_VSC_TO_VK_EX, layout);
     *out_char = ToUnicodeEx(vk, scancode, key_state, (WCHAR*)out_char, 1, 0, layout);
-    return (*out_char > 0) ? SITUATION_SUCCESS : SITUATION_ERROR_INPUT_MAPPING_FAILED;
+    return (*out_char > 0) ? SITUATION_SUCCESS : SITUATION_ERROR_INVALID_PARAM;
 
 #elif defined(__APPLE__)
     // macOS: TIS/UCKeyTranslate (Carbon, handles layouts)
@@ -27681,14 +27721,14 @@ SITAPI int SituationGetCharFromScancode(int window, int scancode, int mods, uint
         return SITUATION_SUCCESS;
     }
     CFRelease(source);
-    return SITUATION_ERROR_INPUT_MAPPING_FAILED;
+    return SITUATION_ERROR_INVALID_PARAM;
 
 #else  // Linux/X11
     // XKB (via xkbcommon—add as opt dep, or fallback to XLookupString)
     // Simplified: Use GLFW's char callback as proxy (OS-handled)
     // For direct: xkb_keysym_get_utf32(xkb_state_key_get_one_sym(state, scancode + 8 /*XKB shift*/))
     // Stub for now—recommend char callback
-    return SITUATION_ERROR_INPUT_MAPPING_FAILED;
+    return SITUATION_ERROR_INVALID_PARAM;
 #endif
 }
 
