@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.27B "Titanium Core B"_
+_Core API library v2.3.28 "Titanium Core C"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,9 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.27B "Titanium Core B"**
+Current Version: **v2.3.28 "Titanium Core C"**
 
-**Version 2.3.27B** is a rapid hardening patch atop v2.3.27's architectural overhaul, addressing post-release audit findings for concurrency deadlocks, memory leaks, and subtle races. It fortifies core invariants—recursive mutexes for safe audio callbacks, refcounted descriptor recycling to end OOM pitfalls, and in-flight guards for MT render lists—elevating the library from "Production-Ready" to "Audit-Proof" for mission-critical, long-haul deployments without sacrificing zero-allocation hot paths.
+**Version 2.3.28** is the definitive stability release in the "Titanium" series, delivering "Velocity" architecture enhancements that eliminate the final remaining bottlenecks. It introduces **Zero-Allocation Hot Paths** for Vulkan buffers (via persistent ring buffers), **Snapshot-Safe Audio Mixing** to eradicate lock contention, and **Intelligent Descriptor Recycling** to prevent memory bloat. This release transforms the library from "Robust" to "High-Velocity," ensuring stable frame times and minimal CPU overhead even under extreme load.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Dynamic UBOs (v2.4):** Implementing `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` to allow race-free, high-frequency uniform updates without staging barriers.
@@ -30,9 +30,9 @@ This foundation enables precise **Control** over the entire application stack:
 *   **Threading:** A completely new **Generational Task System** supporting fork-join parallelism (`ParallelFor`), priority scheduling (High/Low rings), and backpressure handling (`RUN_IF_FULL`).
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management with explicit **State Hardening** to prevent context poisoning from external middleware (e.g., ImGui).
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events ensures no input is ever lost during frame spikes.
-*   **Audio:** A professional-grade pipeline featuring a **thread-safe mixing architecture**, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
-*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.2**. It manages complex resources automatically, utilizing **Linear Descriptor Allocation** to prevent fragmentation. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering powered by **Zero-Copy Ring Buffers**.
-*   **Hot-Reloading:** A suite of tools for live-reloading assets (Shaders, Textures, Models) at runtime, safely handling GPU synchronization and resource rebuilding.
+*   **Audio:** A professional-grade pipeline featuring a **Snapshot-and-Unlock mixing architecture** for zero-stall concurrency, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
+*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.2**. It manages complex resources automatically, utilizing **Best-Fit Descriptor Recycling** and **Persistent Staging Rings** to eliminate fragmentation and allocation overhead. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering powered by **Zero-Copy Ring Buffers**.
+*   **Hot-Reloading:** A suite of tools for live-reloading assets (Shaders, Textures, Models) at runtime, safely handling GPU synchronization and resource rebuilding with **Debounced IO Polling** to prevent CPU storms.
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls, Latency Histograms)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
 
