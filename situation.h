@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 30
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -7167,6 +7167,10 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
         buf->is_broken = false; // Reset flag for next attempt
         return;
     }
+
+    // [v2.3.31] Optimization: Track bound texture locally to avoid glGetIntegerv stalls in draw calls
+    GLuint current_bound_texture_id = 0;
+
     // --- [v2.3.27] State Hardening: Reset critical state ---
     // We cannot assume the state from the previous frame persists,
     // because external code (ImGui, etc.) might have run in between.
@@ -7274,38 +7278,15 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                     // Use UV rect from packet
                     glUniform4fv(5, 1, (const GLfloat*)p->args.draw_quad.uv_rect.raw);
 
-                    // [v2.3.30] Determine Texture State (Bindless or Bindful)
-                    // We check if a texture is bound to unit 0 (standard convention for Quad renderer).
-                    // Or if bindless is active and we want to use the handle?
-                    //
-                    // Current limitation: SIT_OP_DRAW_QUAD doesn't know about the handle unless we passed it.
-                    // But `SituationCmdBindTexture` (updated) sets the uniform if we uncommented that block.
-                    // Since we removed that block, we need a way to get the active texture.
-                    //
-                    // [v2.3.30] Determine Texture State (Bindless or Bindful)
-                    // We check if a texture was bound via a previous command.
-                    // Instead of stalling with glGetIntegerv, we should ideally track this in the soft buffer state.
-                    // For now, we assume that if bindless is supported, the user/system sets up the state.
-                    // However, `SituationCmdDrawQuad` is a high-level helper.
-                    //
-                    // Optimization: We check a shadow state variable if we had one.
-                    // But to avoid the stall, we will trust the state set by `SituationCmdBindTexture`.
-                    //
-                    // Wait, `SituationCmdBindTexture` in standard mode just does `glBindTextureUnit`.
-                    // It doesn't set the uniforms for us because we removed that logic.
-                    //
-                    // To solve this cleanly without `glGetIntegerv` and without modifying `BindTexture` to set uniforms (which requires program ID):
-                    // We will rely on `glGetIntegerv` *only for this debug/helper draw call*.
-                    // The performance impact for `SituationCmdDrawQuad` (usually UI/Debug) is acceptable compared to main scene rendering.
-
-                    GLint bound_tex = 0;
-                    glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound_tex);
-
-                    if (bound_tex != 0) {
+                    // [v2.3.31] Optimization: Use locally tracked texture ID.
+                    // This resolves the `glGetIntegerv` stall discussed in v2.3.30.
+                    // By tracking the last bound texture (`current_bound_texture_id`) from `SIT_OP_BIND_DESCRIPTOR_SET`,
+                    // we can pass the handle to the shader without querying the driver.
+                    if (current_bound_texture_id != 0) {
                         if (SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
                             #if defined(GLAD_GL_ARB_bindless_texture)
                             if (GLAD_GL_ARB_bindless_texture) {
-                                GLuint64 handle = glGetTextureHandleARB((GLuint)bound_tex);
+                                GLuint64 handle = glGetTextureHandleARB((GLuint)current_bound_texture_id);
                                 if (!glIsTextureHandleResidentARB(handle)) glMakeTextureHandleResidentARB(handle);
 
                                 glUniform1i(6, 2); // Mode 2: Bindless
@@ -7357,7 +7338,11 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                     int type = p->args.bind_desc.resource_type;
 
                     if (type == 0) glBindBufferBase(GL_UNIFORM_BUFFER, idx, (GLuint)id);
-                    else if (type == 1) glBindTextureUnit(idx, (GLuint)id);
+                    else if (type == 1) {
+                        glBindTextureUnit(idx, (GLuint)id);
+                        // [v2.3.31] Track texture state for subsequent internal draw calls (Quad/Text)
+                        current_bound_texture_id = (GLuint)id;
+                    }
                     else if (type == 2) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, idx, (GLuint)id);
                     else if (type == 3) glBindImageTexture(idx, (GLuint)id, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
                 }

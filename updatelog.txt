@@ -1,3 +1,9 @@
+v2.3.30A (Hotfix) - Performance & Roadmap Correction
+- [Fix] Performance Regression: Removed `glGetIntegerv` from `SIT_OP_DRAW_QUAD` handler.
+  - Replaced slow driver query with local state tracking (`current_bound_texture_id`) in `_SituationGLExecuteCommands`.
+  - Eliminates pipeline stall when drawing quads (e.g., UI/Debug) in OpenGL backend.
+- [Doc] Updated README roadmap to correctly reflect that Dynamic UBOs were implemented in v2.3.29.
+--------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 v2.3.30 (Bindless Revolution)
 --------------------------------------------------------------------------------

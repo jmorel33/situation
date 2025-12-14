@@ -8,12 +8,12 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.30 "Titanium Core C"**
+Current Version: **v2.3.30A "Titanium Core C"**
 
-**Version 2.3.30** introduces the "Bindless Revolution" to Situation. It brings full support for modern **Bindless Textures** (via `GL_ARB_bindless_texture`), allowing internal and user shaders to access textures directly through 64-bit handles, drastically reducing CPU overhead from driver validation. This release also includes upgraded internal renderers (Quad, Text) that automatically leverage bindless paths when available, ensuring maximum throughput on modern hardware.
+**Version 2.3.30A** is a performance-focused hotfix that eliminates a major pipeline stall in the OpenGL backend. It removes `glGetIntegerv` from the critical `SIT_OP_DRAW_QUAD` path, replacing it with local state tracking (`current_bound_texture_id`) to maintain compatibility with modern bindless rendering without CPU-GPU synchronization penalties. This release also updates the roadmap to reflect the completed state of Dynamic UBOs.
 
 Our immediate development roadmap is focused on expanding the library's capability:
-*   **Dynamic UBOs (v2.4):** Implementing `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` to allow race-free, high-frequency uniform updates without staging barriers.
+*   **Dynamic UBOs (v2.3.29):** Implemented `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` to allow race-free, high-frequency uniform updates without staging barriers.
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
 *   **Async Compute**: Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
 *   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
