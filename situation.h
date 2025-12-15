@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 30
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_PATCH 31
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -577,6 +577,7 @@ typedef enum {
 
 /* === Graphics & Rendering Limits === */
 #define SITUATION_MAX_VIRTUAL_DISPLAYS          16   /* Max offscreen render targets (e.g., for UI/post-fx). */
+#define SITUATION_MAX_TEXTURES                  4096
 
 /* === Audio Subsystem Limits === */
 #define SITUATION_MAX_AUDIO_SOUNDS_QUEUED       32   /* Max concurrent sounds in mixing queue (e.g., SFX layers). */
@@ -928,6 +929,7 @@ typedef enum {
     SIT_COMPUTE_LAYOUT_PUSH_CONSTANT,               // A layout for shaders that use a 64-byte push constant for small data.
     SIT_COMPUTE_LAYOUT_EMPTY,                       // A layout for simple shaders that take no external resources.
     SIT_COMPUTE_LAYOUT_BUFFER_IMAGE,                // A layout for shaders that use one SSBO (Set 0) and one Storage Image (Set 1).
+    SIT_COMPUTE_LAYOUT_TERMINAL,
 } SituationComputeLayoutType;
 
 /**
@@ -1135,13 +1137,16 @@ typedef struct {
     uint64_t id;
 
 #if defined(SITUATION_IMPLEMENTATION)
-    // Backend-specific handles, hidden from the public API user.
 #if defined(SITUATION_USE_VULKAN)
     VkPipeline vk_pipeline;
     VkPipelineLayout vk_pipeline_layout;
 #elif defined(SITUATION_USE_OPENGL)
     GLuint gl_program_id;
+    uint64_t _pad[1]; 
 #endif
+#else
+    // OPAQUE PADDING: Space for 2 handles
+    uint64_t _internal_padding[2];
 #endif
 } SituationComputePipeline;
 
@@ -1151,19 +1156,21 @@ typedef struct {
 typedef struct {
     uint64_t id;
     size_t size_in_bytes;
-    SituationBufferUsageFlags usage_flags; // Abstract flags stored for backend logic
+    SituationBufferUsageFlags usage_flags;
+
 #if defined(SITUATION_IMPLEMENTATION)
 #if defined(SITUATION_USE_VULKAN)
     VkBuffer vk_buffer;
     VmaAllocation vma_allocation;
-    VkBufferUsageFlags vk_usage_flags; // Store the flags used for creation
-    // --- Persistent Descriptor Set for this buffer ---
-    VkDescriptorSet descriptor_set; // Add this line
-    // --- Optional: Store layout if needed for updates or debugging ---
-    // VkDescriptorSetLayout descriptor_layout; // Uncomment if needed
+    VkBufferUsageFlags vk_usage_flags;
+    VkDescriptorSet descriptor_set;
 #elif defined(SITUATION_USE_OPENGL)
     GLuint gl_buffer_id;
+    uint64_t _pad[3]; 
 #endif
+#else
+    // OPAQUE PADDING: Space for VkBuffer, VmaAllocation, Flags, DescriptorSet
+    uint64_t _internal_padding[4]; 
 #endif
 } SituationBuffer;
 
@@ -1173,24 +1180,25 @@ typedef struct {
         The library manages the creation and destruction of these resources.
  */
 typedef struct {
-    uint64_t id; // Internal identifier or handle
+    uint64_t id; 
     int index_count;
-    int vertex_count;       // [NEW] Needed for readback
-    size_t vertex_stride;   // [NEW] Needed for readback
+    int vertex_count;       
+    size_t vertex_stride;   
 
 #if defined(SITUATION_IMPLEMENTATION)
-    // Backend-specific handles, hidden from the public API user.
 #if defined(SITUATION_USE_VULKAN)
     VkBuffer vertex_buffer;
     VmaAllocation vertex_buffer_memory;
     VkBuffer index_buffer;
     VmaAllocation index_buffer_memory;
 #elif defined(SITUATION_USE_OPENGL)
-    // Note: VAOs are no longer stored per-mesh to support context sharing.
-    // We use a shared global mesh VAO.
-    GLuint vbo_id; // Vertex Buffer Object
-    GLuint ebo_id; // Element (Index) Buffer Object
+    GLuint vbo_id; 
+    GLuint ebo_id; 
+    uint64_t _pad[2];
 #endif
+#else
+    // OPAQUE PADDING: Space for 4 Vulkan handles
+    uint64_t _internal_padding[4];
 #endif
 } SituationMesh;
 
@@ -1213,19 +1221,21 @@ typedef enum {
 
 // --- Shader Handle ---
 typedef struct {
-    uint64_t id; // Public identifier for the shader
+    uint64_t id; 
 
 #if defined(SITUATION_IMPLEMENTATION)
-    // Backend-specific handles, hidden from the public API user
 #if defined(SITUATION_USE_OPENGL)
-    GLuint gl_program_id; // OpenGL shader program ID
-    // Use a pointer to our internal hash map struct
+    GLuint gl_program_id; 
     struct _SituationUniformMap* uniform_map;
+    uint64_t _pad[1]; // Pad to match Vulkan size
 #elif defined(SITUATION_USE_VULKAN)
     VkPipeline vk_pipeline;
-    VkPipeline vk_pipeline_legacy; // 32-byte stride variant
+    VkPipeline vk_pipeline_legacy;
     VkPipelineLayout vk_pipeline_layout;
 #endif
+#else
+    // OPAQUE PADDING: Space for 3 handles
+    uint64_t _internal_padding[3];
 #endif
 } SituationShader;
 
@@ -1234,11 +1244,11 @@ typedef struct {
  */
 typedef struct {
     uint64_t id;            // Public identifier
-    int width;
+    int width;              // Keep metadata for convenience
     int height;
 
 #if defined(SITUATION_IMPLEMENTATION)
-    // Backend-specific handles, hidden from the public API user.
+    // Backend-specific handles (Internal use only)
 #if defined(SITUATION_USE_VULKAN)
     VkImage image;
     VkImageView image_view;
@@ -1247,7 +1257,14 @@ typedef struct {
     VkDescriptorSet descriptor_set;
 #elif defined(SITUATION_USE_OPENGL)
     GLuint gl_texture_id;
+    uint64_t _pad[4]; // Pad GL to match Vulkan size roughly
 #endif
+#else
+    // OPAQUE PADDING: 
+    // Reserves space for backend handles so sizeof(SituationTexture) 
+    // is identical in both App and Library code.
+    // 5 pointers * 8 bytes = 40 bytes.
+    uint64_t _internal_padding[5]; 
 #endif
 } SituationTexture;
 
@@ -1967,7 +1984,8 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void);                           
 #if defined(SITUATION_ENABLE_THREADING)
 SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data);
 #else
-SITAPI void SituationSubmitRenderList(SituationRenderList list); // Fallback for single-threaded
+SITAPI void SituationSubmitRenderList(SituationRenderList list, void (*func)(void*, void*), void* user_data);
+SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRenderList list);
 #endif
 SITAPI void SituationResetRenderList(SituationRenderList list);
 SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void);                      // Get the primary command buffer for the current frame.
@@ -1980,6 +1998,7 @@ SITAPI void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int
 SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader);                                     // Binds a graphics pipeline (shader program) for subsequent draws.
 SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh);                                             // [High-Level] Records a command to draw a complete, pre-configured mesh.
 SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color);                                                // [High-Level] Record a command to draw a simple, colored 2D quad.
+SITAPI void SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, ColorRGBA tint); // [High-Level] Draw a part of a texture defined by a rectangle.
 SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);               // [Core] Set a small block of per-draw uniform data (push constant).
 SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer);            // [Core] Binds a buffer's descriptor set (UBO/SSBO) to a set index.
 SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset); // [Core] Binds a dynamic buffer descriptor set with an offset.
@@ -3024,7 +3043,7 @@ typedef struct _SituationVKGraveyard {
     int render_pass_capacity;
 } _SituationVKGraveyard;
 
-#define SITUATION_STAGING_BUFFER_SIZE (32 * 1024 * 1024) // 32MB per frame
+#define SITUATION_STAGING_BUFFER_SIZE (128 * 1024 * 1024) // 128MB per frame
 
 typedef struct {
     VkBuffer buffer;
@@ -3510,6 +3529,8 @@ typedef struct {
     atomic_uint_least64_t metric_max_latency_ns; // For histogram/max tracking
     atomic_int frame_refcounts[SITUATION_MAX_FRAMES_IN_FLIGHT];
     atomic_bool drift_warned;
+
+    SituationTexture internal_textures[1024]; // The real GPU data lives here
 
     // [v2.3.23] Default Debug Font
     SituationTexture default_font_atlas;
@@ -4150,7 +4171,7 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     uint32_t vertexAttributeCount,
     const VkVertexInputAttributeDescription* pVertexAttributeDescriptions);
 static SituationError _SituationVulkanInitComputeLayouts(void);
-static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint8_t* cs_spirv_data, size_t cs_spirv_size);
+static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint8_t* cs_spirv_data, size_t cs_spirv_size, VkPipelineLayout layout);
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
 static shaderc_include_result* _SituationShaderIncluderResolve(void* user_data, const char* requested_source, int type, const char* requesting_source, size_t include_depth);// [INTERNAL] Callback for shaderc to resolve and load #include files from disk.
 static void _SituationShaderIncluderRelease(void* user_data, shaderc_include_result* include_result);// [INTERNAL] Callback for shaderc to free memory allocated during #include resolution.
@@ -12567,6 +12588,20 @@ static void _SituationCleanupVulkan(void) {
     layout_info.pushConstantRangeCount = 0;
     if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_BUFFER_IMAGE]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
 
+
+    // Layout 7: SIT_COMPUTE_LAYOUT_TERMINAL
+    // Set 0: SSBO (Buffer), Set 1: Storage Image (Output), Set 2: Combined Image Sampler (Font)
+    set_layouts[0] = sit_render.vk.ssbo_layout;
+    set_layouts[1] = sit_render.vk.storage_image_layout;
+    set_layouts[2] = sit_render.vk.image_sampler_layout;
+    layout_info.setLayoutCount = 3;
+    layout_info.pSetLayouts = set_layouts;
+    
+    // We reuse the push_constant range defined at top of function (64 bytes)
+    layout_info.pushConstantRangeCount = 1;
+    layout_info.pPushConstantRanges = &push_constant;
+
+    if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_TERMINAL]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
     return SITUATION_SUCCESS;
 }
 
@@ -12596,7 +12631,7 @@ static void _SituationCleanupVulkan(void) {
  * @warning The SPIR-V data pointed to by `cs_spirv_data` is not validated by this function for semantic correctness beyond basic Vulkan object creation. Passing invalid SPIR-V can lead to errors during pipeline creation or undefined behavior at runtime.
  * @see _SituationVulkanCreateShaderModule(), SituationCreateComputePipelineFromMemory(), SituationDestroyComputePipeline()
  */
-static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint8_t* cs_spirv_data, size_t cs_spirv_size) {
+static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint8_t* cs_spirv_data, size_t cs_spirv_size, VkPipelineLayout layout) {
     SituationComputePipeline pipeline = {0}; // Initialize to invalid state
 
     // --- 1. Pre-condition Checks ---
@@ -12621,48 +12656,15 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
     }
     // cs_module is now a valid VkShaderModule handle that needs to be destroyed later.
 
-    // --- 3. Create VkPipelineLayout ---
-    // Initializes to zero/default values.
-    VkPipelineLayoutCreateInfo pipeline_layout_info = {0};
-    pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    // pNext = NULL by default
-    // flags = 0 by default
-    pipeline_layout_info.setLayoutCount = 0;         // No descriptor set layouts for basic pipeline
-    pipeline_layout_info.pSetLayouts = NULL;         // No descriptor set layouts provided
-    pipeline_layout_info.pushConstantRangeCount = 0; // No push constant ranges
-    pipeline_layout_info.pPushConstantRanges = NULL; // No push constant ranges provided
-
-    VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-    VkResult result = vkCreatePipelineLayout(sit_render.vk.device, &pipeline_layout_info, NULL, &pipeline_layout);
-    if (result != VK_SUCCESS) {
-        char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "_SituationVulkanCreateComputePipeline: vkCreatePipelineLayout failed (VkResult = %d).", (int)result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, err_msg);
-
-        // Destroy the layout we just created
-        vkDestroyPipelineLayout(sit_render.vk.device, pipeline_layout, NULL);
-        pipeline_layout = VK_NULL_HANDLE;
-
-        // Existing cleanup
-        vkDestroyShaderModule(sit_render.vk.device, cs_module, NULL);
-        return pipeline;
-    }
-    // pipeline_layout is now a valid VkPipelineLayout handle that needs to be destroyed later.
-
     // --- 4. Create VkPipeline ---
     // Initializes to zero/default values.
     VkComputePipelineCreateInfo pipeline_info = {0};
     pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    // pNext = NULL by default
-    // flags = 0 by default
     pipeline_info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    // stage.pNext = NULL by default
-    // stage.flags = 0 by default
     pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     pipeline_info.stage.module = cs_module; // Use the created shader module
     pipeline_info.stage.pName = "main";     // Standard entry point name
-    // stage.pSpecializationInfo = NULL by default (No specialization constants)
-    pipeline_info.layout = pipeline_layout; // Use the created pipeline layout
+    pipeline_info.layout = layout; // Use the provided pipeline layout
     // pipeline_info.basePipelineHandle = VK_NULL_HANDLE by default (Not deriving from another pipeline)
     // pipeline_info.basePipelineIndex = 0 by default
 
@@ -12676,8 +12678,6 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
 
         // --- Cleanup on Pipeline Creation Failure ---
         // Destroy the pipeline layout created successfully in step 3.
-        vkDestroyPipelineLayout(sit_render.vk.device, pipeline_layout, NULL);
-        pipeline_layout = VK_NULL_HANDLE; // Defensive clear
         // Destroy the shader module created successfully in step 2.
         vkDestroyShaderModule(sit_render.vk.device, cs_module, NULL);
         cs_module = VK_NULL_HANDLE; // Defensive clear
@@ -12695,7 +12695,7 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
     // --- 6. Success: Populate and Return the Struct ---
     // Assign the successfully created Vulkan handles to the return struct.
     pipeline.vk_pipeline = vk_pipeline;
-    pipeline.vk_pipeline_layout = pipeline_layout;
+    pipeline.vk_pipeline_layout = layout;
 
     // Important: The caller (e.g., SituationCreateComputePipelineFromMemory) is responsible for setting pipeline.id and adding it to resource tracking.
     // This function only sets the Vulkan-specific handles.
@@ -13263,7 +13263,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         sit_render.vk.current_image_index = image_index;
         sit_render.vk.acquired_image_indices[sit_render.vk.current_frame_index] = image_index; // Store for Render Thread
         sit_render.frame_has_async_compute = false; // Reset async flag
-        sit_render.vk.dynamic_vbo_cursor = 0
+        sit_render.vk.dynamic_vbo_cursor = 0;
 
         // 2.5. Prepare Command Buffer for Recording.
         // Reset the fence to the unsignaled state *before* resetting the command buffer.
@@ -15045,6 +15045,112 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
  * @param model The 4x4 model matrix (position, rotation, scale) for the quad.
  * @param color The color of the quad as a normalized vec4 (r, g, b, a).
  */
+/**
+ * @brief Draws a part of a texture (defined by a rectangle) on screen.
+ * @details This function allows you to draw a specific rectangular region (source) of a texture
+ *          scaled to fit a destination rectangle on the screen. It also supports rotation
+ *          around a custom origin and color tinting.
+ *
+ * @param cmd The command buffer to record into.
+ * @param texture The texture to draw.
+ * @param source The rectangular part of the texture to draw.
+ * @param dest The screen rectangle to draw the texture into.
+ * @param origin The point within the destination rectangle to rotate around (relative to top-left).
+ * @param rotation The rotation angle in degrees (clockwise).
+ * @param tint The color tint to apply to the texture (WHITE for no tint).
+ */
+SITAPI void SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, ColorRGBA tint) {
+    if (!SituationIsInitialized()) return;
+
+    // 1. Bind Texture (Set 0, Binding 0)
+    // This handles descriptor binding (Vulkan) or texture binding + uniform setting (OpenGL)
+    SituationCmdBindSampledTexture(cmd, 0, texture);
+
+    // 2. Calculate UV Rect
+    float tw = (float)texture.width;
+    float th = (float)texture.height;
+    if (tw <= 0) tw = 1.0f;
+    if (th <= 0) th = 1.0f;
+
+    Vector4 uv_rect;
+    uv_rect.x = source.x / tw;
+    uv_rect.y = source.y / th;
+    uv_rect.z = source.width / tw;
+    uv_rect.w = source.height / th;
+
+    // 3. Calculate Model Matrix
+    // Transform: Translate(dest) * Rotate(rot) * Translate(-origin) * Scale(dest.wh)
+    mat4 model;
+    glm_mat4_identity(model);
+
+    // Translation to destination position (top-left)
+    glm_translate(model, (vec3){dest.x, dest.y, 0.0f});
+
+    // Rotation
+    if (rotation != 0.0f) {
+        glm_rotate(model, glm_rad(rotation), (vec3){0.0f, 0.0f, 1.0f});
+    }
+
+    // Origin offset (Pivot) - Only if not zero
+    if (origin.x != 0.0f || origin.y != 0.0f) {
+        glm_translate(model, (vec3){-origin.x, -origin.y, 0.0f});
+    }
+
+    // Scale to destination size
+    // Note: If width/height are negative, it might flip, but UVs handle flipping too usually.
+    glm_scale(model, (vec3){dest.width, dest.height, 1.0f});
+
+    // 4. Convert Color
+    Vector4 color_vec;
+    SituationConvertColorToVector4(tint, &color_vec);
+
+    // 5. Submit Draw Call (Internal Quad)
+    sit_render.debug_draw_command_issued_this_frame = true;
+    sit_render.frame_draw_calls++;
+    sit_render.frame_triangle_count += 2;
+
+    int use_texture = 1; // True
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+
+    // The texture bind above handled the state setting. We just push the geometry.
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_QUAD);
+    if (p) {
+        glm_mat4_copy(model, p->args.draw_quad.model);
+        p->args.draw_quad.color = color_vec;
+        p->args.draw_quad.uv_rect = uv_rect;
+    }
+
+#elif defined(SITUATION_USE_VULKAN)
+    if (sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return;
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+
+    vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline);
+
+    VkBuffer vertex_buffers[] = { sit_render.vk.quad_vertex_buffer };
+    VkDeviceSize offsets[] = { 0 };
+    vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
+
+    // We MUST use the push constant to enable texturing in the shader.
+    // The shader likely branches on `use_texture`.
+    struct {
+        mat4 model;
+        vec4 color;
+        vec4 uv_rect;
+        int use_texture;
+    } push_data;
+
+    glm_mat4_copy(model, push_data.model);
+    glm_vec4_copy(color_vec.raw, push_data.color);
+    glm_vec4_copy(uv_rect.raw, push_data.uv_rect);
+    push_data.use_texture = use_texture; // 1
+
+    vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
+    vkCmdDraw(vk_cmd, 4, 1, 0, 0);
+#endif
+}
+
 SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color) {
     if (!SituationIsInitialized()) return;
     sit_render.debug_draw_command_issued_this_frame = true;
@@ -17603,6 +17709,7 @@ static GLuint _SituationCreateGLComputeProgram(const void* source_data, Situatio
  * @see SituationCmdBindComputePipeline()
  * @see SituationCmdDispatch()
  */
+ */
 SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type) {
     SituationComputePipeline pipeline = {0}; // Always initialize to an invalid state.
 
@@ -17753,6 +17860,16 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
     // If invalid, .id will be zero, and an error message will be set.
     return pipeline;
 }
+
+
+/**
+ * @brief Creates a compute pipeline by loading GLSL source code from a file.
+ *
+
+
+/**
+ * @brief Creates a compute pipeline by loading GLSL source code from a file.
+ *
 
 
 /**
