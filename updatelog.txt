@@ -1,3 +1,34 @@
+Date: 2025-12-14
+Version: 2.3.31A "Velocity" (Hotfix: Compilation & Thread Safety)
+
+## DESCRIPTION
+This is a critical hotfix addressing several compilation errors and thread-safety hazards introduced during the recent texture system refactor. It ensures proper visibility of internal helpers, fixes type mismatches in mutex usage, and corrects structural errors in the render thread loop.
+
+## CRITICAL FIXES
+*   **Compilation Fix:** Moved the `_SitGetTextureSlot` forward declaration to the top of the implementation block to resolve "implicit declaration" errors and visibility issues with internal structs.
+*   **Mutex Safety:** Resolved a type mismatch where `sit_render.momentum_mutex` and `sit_audio.audio_queue_mutex` (declared as C11 `mtx_t`) were being accessed via Miniaudio's `ma_mutex_*` API. Replaced all invalid calls with standard C11 `mtx_*` equivalents (`mtx_lock`, `mtx_unlock`, `mtx_destroy`), ensuring correct locking behavior and preventing undefined behavior.
+*   **Render Thread Logic:** Fixed a syntax error in `_SituationRenderThreadEntry` where a missing closing brace caused compilation failure.
+*   **API Resilience:** Added missing return statements to `SituationCmdBeginRenderToDisplay` to prevent "control reaches end of non-void function" warnings.
+
+## VALIDATION
+*   **Compilation:** Clean compilation with `-Wall -Wextra` on standard GCC setup.
+*   **Thread Safety:** Verified mutex initialization and locking calls align with C11 threading primitives.
+
+--------------------------------------------------------------------------------
+
+Date: 2025-12-13
+Version: 2.3.31 "Velocity" (Texture System Refactor)
+
+## DESCRIPTION
+This release executes a major refactor of the Texture System to align with Bindless architecture standards. It replaces direct texture handles with a Registry ID system (Generation + Index), enabling robust hot-reloading and eliminating use-after-free risks for GPU resources.
+
+## ARCHITECTURAL CHANGES
+*   **Registry ID System:** Textures are now referenced by a 64-bit ID combining a generation counter and a slot index. This allows O(1) lookups while preventing access to stale or destroyed resources.
+*   **Bindless Compliance:** The new ID structure prepares the engine for full Bindless Descriptor support, where resources are accessed directly by index in shaders.
+*   **Safe Hot-Reloading:** The Registry system ensures that reloading a texture updates the underlying GPU resource while keeping the handle ID valid for the user application, or safely invalidates it if necessary.
+
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 v2.3.30A (Hotfix) - Performance & Roadmap Correction
 - [Fix] Performance Regression: Removed `glGetIntegerv` from `SIT_OP_DRAW_QUAD` handler.
   - Replaced slow driver query with local state tracking (`current_bound_texture_id`) in `_SituationGLExecuteCommands`.
