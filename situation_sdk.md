@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.26 "Silent Zenith" |
+| **Version** | 2.3.31A "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
 | **License** | MIT License |
@@ -1829,6 +1829,13 @@ This section distinguishes between CPU-side pixel data and GPU-side texture reso
 Situation separates image data into two distinct types:
 *   `SituationImage` (CPU): Raw pixel data in system RAM. You can read/write pixels here.
 *   `SituationTexture` (GPU): An optimized resource in Video RAM. You can sample this in shaders, but you cannot read pixels directly.
+
+### Texture Registry & Safety
+As of v2.3.31, textures are managed via a **Registry ID System**. A `SituationTexture` handle is not a raw pointer; it is a 64-bit ID containing:
+*   **Slot Index:** The location in the internal resource array.
+*   **Generation Counter:** A validation ID that increments every time the slot is reused.
+
+This ensures **O(1) Validation** and prevents "Use-After-Free" errors. If you destroy a texture and try to draw with the old handle, the system detects the generation mismatch and safely ignores the command or logs an error, rather than crashing the GPU driver.
 
 <a id="351-image-manipulation-cpu"></a>
 ### 3.5.1 Image Manipulation (CPU)

@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.23 "Velocity"_
+_Core API library v2.3.31A "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -3968,7 +3968,7 @@ bool SituationIsMouseButtonReleased(int button);
 #### `SituationSetMousePosition`
 Sets the mouse cursor position within the window.
 ```c
-void SituationSetMousePosition(int x, int y);
+void SituationSetMousePosition(Vector2 pos);
 ```
 ---
 #### Gamepad Input
@@ -4336,16 +4336,16 @@ SituationError SituationResumeAudioContext(void);
 #### Sound Loading and Management
 ---
 #### `SituationLoadSoundFromFile` / `SituationUnloadSound`
-Loads a sound from a file (WAV, MP3, OGG, FLAC) entirely into memory for low-latency playback. This is ideal for sound effects. `SituationUnloadSound` frees the sound's memory.
+Loads a sound from a file (WAV, MP3, OGG, FLAC). The `mode` parameter determines whether to decode fully to RAM (`SITUATION_AUDIO_LOAD_FULL`, `AUTO`) or stream from disk (`SITUATION_AUDIO_LOAD_STREAM`). `SituationUnloadSound` frees the sound's memory.
 ```c
-SituationError SituationLoadSoundFromFile(const char* file_path, bool looping, SituationSound* out_sound);
+SituationError SituationLoadSoundFromFile(const char* file_path, SituationAudioLoadMode mode, bool looping, SituationSound* out_sound);
 void SituationUnloadSound(SituationSound* sound);
 ```
 **Usage Example:**
 ```c
 // At init:
 SituationSound jump_sound;
-SituationLoadSoundFromFile("sounds/jump.wav", false, &jump_sound);
+SituationLoadSoundFromFile("sounds/jump.wav", SITUATION_AUDIO_LOAD_AUTO, false, &jump_sound);
 
 // During gameplay:
 if (SituationIsKeyPressed(SIT_KEY_SPACE)) {
@@ -4643,7 +4643,7 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
 **Usage Example:**
 ```c
 SituationSound my_sound;
-SituationLoadSoundFromFile("sounds/footstep.wav", false, &my_sound);
+SituationLoadSoundFromFile("sounds/footstep.wav", SITUATION_AUDIO_LOAD_AUTO, false, &my_sound);
 // Apply a reverb to simulate a large room
 SituationSetSoundReverb(&my_sound, true, 0.8f, 0.5f, 0.6f, 0.4f);
 SituationPlayLoadedSound(&my_sound);
@@ -5736,21 +5736,15 @@ This is the core of 2D rendering, allowing you to draw images and sprite sheets 
 First, load your image file into a `SituationTexture` handle using the functions described in section `4.6.3`.
 - `SituationTexture my_sprite = SituationCreateTexture(SituationLoadImage("assets/player.png"), true);`
 
-##### 4.10.3.2 Drawing a Full Texture (SituationCmdDrawTexture)
-This high-level command draws a texture with transformations and a color tint.
-- **Signature:** `SITAPI void SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, vec2 position, vec4 tint);`
+##### 4.10.3.2 Drawing a Texture (SituationCmdDrawTexture)
+This unified high-level command draws a texture (or part of it) with full control over source region, destination rectangle, rotation, origin, and color tint.
+- **Signature:** `SITAPI void SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, ColorRGBA tint);`
 - `texture`: The `SituationTexture` to draw.
-- `position`: The top-left destination coordinate `(x, y)` on the render target.
-- `tint`: A `vec4` color multiplier. White `{1,1,1,1}` draws the texture with its original colors.
-
-##### 4.10.3.3 Advanced Sprite Drawing (SituationCmdDrawTextureEx)
-For sprite sheets, rotation, and scaling, an extended version provides more control.
-- **Signature:** `SITAPI void SituationCmdDrawTextureEx(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source_rect, Rectangle dest_rect, vec2 origin, float rotation, vec4 tint);`
-- `source_rect`: The rectangular region of the texture to draw (for sprite sheets).
-- `dest_rect`: The destination rectangle on the screen, defining position and size.
+- `source`: The rectangular region of the texture to draw (for sprite sheets). Use a full rect `{0,0,w,h}` for the whole texture.
+- `dest`: The destination rectangle on the screen, defining position and size.
 - `origin`: The rotation pivot point, relative to the top-left of the destination rectangle. `(0,0)` pivots from the top-left corner.
-- `rotation`: The rotation in degrees.
-- `tint`: The color tint.
+- `rotation`: The rotation in degrees (clockwise).
+- `tint`: A `ColorRGBA` multiplier. White `{255,255,255,255}` draws the texture with its original colors.
 
 #### 4.10.4  Text Rendering
 The library includes a powerful text rendering system suitable for UI, HUDs, and any in-game text. For a full API reference, see section `4.9`.
