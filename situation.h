@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 31
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -2281,6 +2281,10 @@ SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, 
     #include <immintrin.h>
 #endif
 #include <time.h>
+
+// Forward declaration of Texture Slot struct and getter
+struct _SituationTextureSlot;
+static struct _SituationTextureSlot* _SitGetTextureSlot(SituationTexture handle);
 
 #if defined(SITUATION_USE_VULKAN)
 
@@ -6793,7 +6797,7 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
     atomic_init(&sit_render.momentum_head, 0);
     atomic_init(&sit_render.momentum_tail, 0);
     
-    if (ma_mutex_init(&sit_render.momentum_mutex) != MA_SUCCESS) {
+    if (mtx_init(&sit_render.momentum_mutex, mtx_recursive) != thrd_success) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to initialize render queue mutex.");
         return SITUATION_ERROR_INIT_FAILED;
     }
@@ -12001,7 +12005,7 @@ static void _SituationCleanupRenderer(void) {
 #elif defined(SITUATION_USE_OPENGL)
     _SituationCleanupOpenGL();
 #endif
-    ma_mutex_uninit(&sit_render.momentum_mutex);
+    mtx_destroy(&sit_render.momentum_mutex);
 }
 
 /**
@@ -13421,7 +13425,7 @@ SITAPI SituationError SituationEndFrame(void) {
     
     // Only replay if we have a valid command buffer (we should, if Init succeeded)
     if (main_cmd) {
-        ma_mutex_lock(&sit_render.momentum_mutex);
+        mtx_lock(&sit_render.momentum_mutex);
         
         int head = atomic_load(&sit_render.momentum_head);
         int tail = atomic_load(&sit_render.momentum_tail);
@@ -13440,7 +13444,7 @@ SITAPI SituationError SituationEndFrame(void) {
         }
         atomic_store(&sit_render.momentum_tail, tail);
         
-        ma_mutex_unlock(&sit_render.momentum_mutex);
+        mtx_unlock(&sit_render.momentum_mutex);
     }
 
     // --- 2. Backend-Specific Frame End ---
@@ -14004,6 +14008,7 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
 
     vkCmdBeginRenderPass((VkCommandBuffer)cmd, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 #endif
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -15710,7 +15715,7 @@ static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
 static void _SituationEnqueueRenderList(SituationRenderList list) {
     if (!list) return;
 
-    ma_mutex_lock(&sit_render.momentum_mutex);
+    mtx_lock(&sit_render.momentum_mutex);
     
     int head = atomic_load(&sit_render.momentum_head);
     int tail = atomic_load(&sit_render.momentum_tail);
@@ -15726,7 +15731,7 @@ static void _SituationEnqueueRenderList(SituationRenderList list) {
         _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Momentum render queue full. Frame data dropped.");
     }
 
-    ma_mutex_unlock(&sit_render.momentum_mutex);
+    mtx_unlock(&sit_render.momentum_mutex);
 }
 
 #if defined(SITUATION_ENABLE_THREADING)
@@ -27152,7 +27157,7 @@ SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound_to_play) {
             ma_decoder_seek_to_pcm_frame(&sound_to_play->decoder, 0);
             sound_to_play->cursor_frames = 0;
             // Converter state is generally reset by processing new input from frame 0
-            ma_mutex_unlock(&sit_audio.audio_queue_mutex); // Unlock
+            mtx_unlock(&sit_audio.audio_queue_mutex); // Unlock
             return SITUATION_SUCCESS;
         }
     }
@@ -27587,7 +27592,7 @@ SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled,
         ma_delay_config delay_config = ma_delay_config_init(sound->decoder.outputChannels, sound->decoder.outputSampleRate, delay_frames, feedback);
         if (ma_delay_init(&delay_config, NULL, &sound->effects.delay) != MA_SUCCESS) {
             sound->effects.echo_enabled = false; // Disable if init fails
-            ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+            mtx_unlock(&sit_audio.audio_queue_mutex);
             return SITUATION_ERROR_AUDIO_CONTEXT;
         }
         ma_delay_set_wet(&sound->effects.delay, wet_mix);
@@ -27656,7 +27661,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
 
     void* new_processors = SIT_REALLOC(sound->processors, (sound->processor_count + 1) * sizeof(SituationAudioProcessorCallback));
     if (!new_processors) {
-        ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+        mtx_unlock(&sit_audio.audio_queue_mutex);
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to SIT_REALLOC processor list.");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
@@ -27666,7 +27671,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
     if (!new_user_datas) {
         // This is tricky. The first SIT_REALLOC succeeded. We should try to shrink it back.
         sound->processors = SIT_REALLOC(sound->processors, sound->processor_count * sizeof(SituationAudioProcessorCallback));
-        ma_mutex_unlock(&sit_audio.audio_queue_mutex);
+        mtx_unlock(&sit_audio.audio_queue_mutex);
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to SIT_REALLOC processor user data list.");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
@@ -30156,6 +30161,7 @@ static int _SituationRenderThreadEntry(void* arg) {
         // cnd_signal(&sit_render.main_wait_cv); // Already done above
         
         mtx_unlock(&sit_render.render_queue_mutex);
+    }
 
     #if defined(SITUATION_USE_OPENGL)
     // Release context before exiting, just to be clean.
