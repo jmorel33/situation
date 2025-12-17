@@ -8,9 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.31A "Velocity"**
+Current Version: **v2.3.32 "Velocity"**
 
-**Version 2.3.31A** is a critical hotfix following the major **Texture System Refactor (v2.3.31)**. This refactor introduced a **Registry ID System** for textures, replacing raw pointers with safe, generational handles to prevent use-after-free errors and enable robust hot-reloading. This update aligns the engine with **Bindless Rendering** standards, ensuring future-proof resource management. The "A" hotfix resolves thread-safety hazards and compilation issues on strict C11 compilers.
+**Version 2.3.32** updates the library to target **Vulkan 1.4**, preparing the engine for modern, high-performance rendering techniques including full Bindless Descriptor support and Dynamic Uniform Buffer Objects (Dynamic UBOs). This update aligns the API with the latest industry standards used in AAA development.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Texture Registry (v2.3.31):** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.
@@ -31,7 +31,7 @@ This foundation enables precise **Control** over the entire application stack:
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management with explicit **State Hardening** to prevent context poisoning from external middleware (e.g., ImGui).
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events ensures no input is ever lost during frame spikes.
 *   **Audio:** A professional-grade pipeline featuring a **Snapshot-and-Unlock mixing architecture** for zero-stall concurrency, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
-*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.2**. It manages complex resources automatically, utilizing **Best-Fit Descriptor Recycling** and **Persistent Staging Rings** to eliminate fragmentation and allocation overhead. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering powered by **Zero-Copy Ring Buffers**.
+*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.4**. It manages complex resources automatically, utilizing **Best-Fit Descriptor Recycling** and **Persistent Staging Rings** to eliminate fragmentation and allocation overhead. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering powered by **Zero-Copy Ring Buffers**.
 *   **Hot-Reloading:** A suite of tools for live-reloading assets (Shaders, Textures, Models) at runtime, safely handling GPU synchronization and resource rebuilding with **Debounced IO Polling** to prevent CPU storms.
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls, Latency Histograms)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
@@ -61,7 +61,7 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 
 ### **Key Capabilities**
 
-*   **Unified Command Architecture:** Write your rendering code once using abstract `SituationCmd*` functions. The library compiles this into direct state changes for **OpenGL 4.6** or optimized command buffers for **Vulkan 1.2**.
+*   **Unified Command Architecture:** Write your rendering code once using abstract `SituationCmd*` functions. The library compiles this into direct state changes for **OpenGL 4.6** or optimized command buffers for **Vulkan 1.4**.
 *   **Generational Task System:** A C11-native, lock-free thread pool supporting fork-join parallelism (`ParallelFor`), priority scheduling, and backpressure handling.
 *   **"Hardened" Audio Engine:** A professional audio pipeline built on miniaudio. It features **thread-safe asset loading** (decoding SFX to RAM to prevent stalling), background music streaming, real-time DSP effects (Reverb/Delay), and low-latency microphone capture.
 *   **Dynamic Resource Management:** No arbitrary limits. The Vulkan backend features a **Dynamic Descriptor Manager** with a linear allocation strategy that automatically grows resource pools as you load assets, supporting scenes with thousands of textures and buffers without fragmentation.
@@ -72,16 +72,7 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 
 </details>
 
----
 
-<details>
-<summary><h2>8. Version History</h2></summary>
-
-For a detailed history of changes, improvements, and fixes, please refer to the [**Update Log**](UPDATELOG.md).
-
-</details>
-
----
 
 <details>
 <summary><h2>2. Getting Started</h2></summary>
@@ -152,6 +143,13 @@ int main(int argc, char** argv) {
 </details>
 
 ---
+
+
+
+
+
+
+
 
 <details>
 <summary><h2>3. Core Concepts & Architecture</h2></summary>
@@ -315,3 +313,12 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+---
+
+<details>
+<summary><h2>8. Version History</h2></summary>
+
+For a detailed history of changes, improvements, and fixes, please refer to the [**Update Log**](UPDATELOG.md).
+
+</details>

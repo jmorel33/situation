@@ -3,9 +3,9 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.31A "Velocity" |
+| **Version** | 2.3.32 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
-| **Backends** | OpenGL 4.6 Core / Vulkan 1.2+ |
+| **Backends** | OpenGL 4.6 Core / Vulkan 1.4+ |
 | **License** | MIT License |
 | **Author** | Jacques Morel |
 
@@ -3824,6 +3824,6 @@ The library provides verified support for ARM64 architectures (e.g., Apple Silic
 ### Graphics Backends
 *   **OpenGL:** Requires **OpenGL 4.6 Core Profile**.
     *   *Note:* macOS does not support OpenGL 4.6 natively. macOS users must use the Vulkan backend (via MoltenVK) or remain on older versions of the library if OpenGL is strictly required.
-*   **Vulkan:** Requires **Vulkan 1.2+**.
+*   **Vulkan:** Requires **Vulkan 1.4+**.
     *   Supports `bufferDeviceAddress` and descriptor indexing.
     *   Requires `shaderc` for runtime shader compilation (optional if pre-compiled SPIR-V is used).

@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 31
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_PATCH 32
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -9787,7 +9787,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
     // Engine version: Consider using a central #define for SITUATION_VERSION_MAJOR/MINOR/PATCH
     app_info.engineVersion = VK_MAKE_VERSION(2, 6, 0); // Bumped version
     // Specify the target Vulkan API version. Ensure consistency with VMA and device requirements.
-    app_info.apiVersion = VK_API_VERSION_1_2; // Target Vulkan 1.2
+    app_info.apiVersion = VK_API_VERSION_1_4; // Target Vulkan 1.4
 
     // --- 4. Specify Instance Creation Parameters ---
     VkInstanceCreateInfo create_info = {0}; // Explicitly zero-initialize
@@ -10526,7 +10526,7 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
  * @note This function must be called after the Vulkan instance, physical device, and logical device have been successfully created and their handles
  *       stored in `sit_render.vk.instance`, `sit_render.vk.physical_device`, and `sit_render.vk.device` respectively.
  * @note The created `VmaAllocator` handle is stored in `sit_render.vk.vma_allocator`.
- * @note The target Vulkan API version is specified as `VK_API_VERSION_1_1`.
+ * @note The target Vulkan API version is specified as `VK_API_VERSION_1_4`.
  *       Ensure this aligns with the version used in `VkApplicationInfo` and is supported by the chosen physical device and driver.
  *
  * @see _SituationInitVulkan(), _SituationVulkanCreateInstance(), _SituationVulkanPickPhysicalDevice(), _SituationVulkanCreateLogicalDevice() _SituationCleanupVulkan() (for destruction)
@@ -10545,7 +10545,7 @@ static SituationError _SituationVulkanCreateAllocator(void) {
     // --- 2. Configure VMA Creation Info ---
     VmaAllocatorCreateInfo allocator_info = {0}; // Explicitly zero-initialize
     allocator_info.sType = VMA_STRUCTURE_TYPE_ALLOCATOR_CREATE_INFO; // Set sType for completeness/extensibility
-    allocator_info.vulkanApiVersion = VK_API_VERSION_1_2; // Specify target Vulkan API version
+    allocator_info.vulkanApiVersion = VK_API_VERSION_1_4; // Specify target Vulkan API version
     allocator_info.instance = sit_render.vk.instance; // Link to Vulkan instance
     allocator_info.physicalDevice = sit_render.vk.physical_device; // Link to physical device
     allocator_info.device = sit_render.vk.device; // Link to logical device
