@@ -48,6 +48,7 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 - [5. Examples & Tutorials](#5-examples--tutorials)
 - [6. Frequently Asked Questions (FAQ) & Troubleshooting](#6-frequently-asked-questions-faq--troubleshooting)
 - [7. API Reference](#7-api-reference)
+- [8. Version History](#8-version-history)
 
 ---
 
@@ -68,6 +69,15 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 *   **Virtual Display Compositor:** Render your game to low-resolution off-screen targets (e.g., 320x240) and composite them to the main screen with precise control over scaling algorithms (Integer, Fit, Stretch) and blend modes.
 *   **First-Class Compute:** Compute Shaders are not an afterthought. The API treats Compute Pipelines and Storage Buffers (SSBOs) as primary citizens, enabling complex simulations and post-processing.
 *   **Deep System Awareness:** Query precise hardware details (GPU Name, dedicated VRAM usage, Monitor topology) to auto-configure your application's quality settings.
+
+</details>
+
+---
+
+<details>
+<summary><h2>8. Version History</h2></summary>
+
+For a detailed history of changes, improvements, and fixes, please refer to the [**Update Log**](UPDATELOG.md).
 
 </details>
 
