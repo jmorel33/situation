@@ -1,3 +1,16 @@
+## [2.3.32 "Velocity" (Vulkan 1.4 Upgrade)] - 2025-12-14
+
+### Description
+
+This release updates the engine to target **Vulkan 1.4**, preparing the architecture for modern high-performance rendering techniques such as full Bindless Descriptor support and Dynamic Uniform Buffer Objects (Dynamic UBOs). This strategic update aligns the library with the latest industry standards used in AAA development, enabling more efficient GPU resource management and execution.
+
+### Architectural Updates
+
+*   **Vulkan 1.4 Target:** The `VkApplicationInfo` and `VmaAllocatorCreateInfo` structures now explicitly request `VK_API_VERSION_1_4`. This ensures the application is initialized with a Vulkan 1.4 context, unlocking access to core features like `VK_KHR_dynamic_rendering`, `VK_KHR_maintenance4`, and improved synchronization primitives that were previously extensions.
+*   **Documentation Alignment:** All documentation and version strings have been updated to reflect the new API target. The README.md section order has also been corrected for better readability.
+
+---
+
 # Situation Update Log
 
 This document tracks the evolution of the Situation library, detailing new features, architectural changes, and critical fixes.
