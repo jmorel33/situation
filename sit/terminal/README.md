@@ -1,4 +1,4 @@
- terminal.h - Enhanced Terminal Emulation Library
+# terminal.h - Enhanced Terminal Emulation Library v1.1
 (c) 2025 Jacques Morel
 
 <details>
@@ -36,8 +36,11 @@ This library provides a comprehensive terminal emulation solution, aiming for co
 
 The library processes a stream of input characters (typically from a host application or PTY) and updates an internal screen buffer. This buffer, representing the terminal display, is then rendered to the screen. It handles a wide range of escape sequences to control cursor movement, text attributes, colors, screen clearing, scrolling, and various terminal modes.
 
+**v1.1 Major Change:** The rendering engine now utilizes a **Compute Shader** pipeline via Shader Storage Buffer Objects (SSBO), providing high-performance, GPU-accelerated text rendering and full integration with the Situation library's resource management.
+
 ## Key Features
 
+-   **Compute Shader Rendering:** High-performance SSBO-based text rendering pipeline.
 -   VT52, VT100, VT220, VT320, VT420, and xterm compatibility levels.
 -   256-color and 24-bit True Color (RGB) support for text.
 -   Advanced cursor styling (block, underline, bar) with blink options.
