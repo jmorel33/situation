@@ -46,7 +46,7 @@ The library processes a stream of input characters (typically from a host applic
 -   Alternate screen buffer implementation.
 -   Scrolling regions and margins (including VT420 left/right margins).
 -   Bracketed paste mode (CSI ? 2004 h/l).
--   Sixel graphics display (basic support).
+-   Sixel graphics parsing (rendering currently unimplemented).
 -   Soft font downloading (DECDLD - basic framework).
 -   User-Defined Keys (DECUDK).
 -   Window title and icon name control via OSC sequences.
@@ -64,7 +64,7 @@ The terminal operates around a central `Terminal` structure that holds the entir
 
 -   `InitTerminal()`: Sets up the default terminal state: screen buffers (arrays of `EnhancedTermChar`), cursor, modes (DECModes, ANSIModes), color palettes, character sets (`CharsetState`), tab stops, keyboard (`VTKeyboard`), performance settings, and initializes the Situation font texture.
 -   `UpdateTerminal()`: This is the main update tick. It calls `ProcessPipeline()` to handle incoming data, updates cursor and text blink timers, and flushes any responses queued for the host application via the `ResponseCallback`.
--   `DrawTerminal()`: Renders the current state of the active screen buffer to the Situation window. It iterates through each `EnhancedTermChar` cell, resolves its foreground and background colors (from `ExtendedColor`), applies attributes (bold, underline, etc.), and draws the character glyph from the `font_texture`. It also handles drawing Sixel graphics and the cursor.
+-   `DrawTerminal()`: Renders the current state of the active screen buffer to the Situation window. It uses a **Compute Shader** pipeline to efficiently render the terminal state (characters, attributes, colors) from an SSBO to a storage image, which is then presented.
 
 ### 3.2. Input Pipeline and Character Processing
 
@@ -95,13 +95,11 @@ The terminal operates around a central `Terminal` structure that holds the entir
 ### 3.5. Rendering
 
 -   `DrawTerminal()` is responsible for visualizing the terminal state.
--   It iterates through the `terminal.screen` buffer (a 2D array of `EnhancedTermChar`).
--   For each cell, it resolves `fg_color` and `bg_color` (handling palette-indexed, 256-color, and RGB true color via `ExtendedColor`), applies attributes like
-    `reverse`, `bold` (often by selecting a bright color variant for standard ANSI colors), `faint`, `blink` (by alternating visibility based on `terminal.text_blink_state`).
--   It draws the cell background, then the character glyph (looked up in `font_texture`, a pre-rendered bitmap of CP437 characters). Text decorations like `underline`,
-    `strikethrough`, and `overline` are drawn as lines.
--   Sixel graphics (`terminal.sixel`) are overlaid if active.
--   The `terminal.cursor` is drawn based on its `shape`, `visible`, and `blink_state`.
+-   It uses a **Compute Shader Pipeline** to offload rendering to the GPU.
+-   `UpdateTerminalSSBO()` uploads the current screen state (characters, colors, attributes) to a Shader Storage Buffer Object (SSBO).
+-   A compute shader is dispatched with one thread per character cell. It reads the SSBO, samples the `font_texture`, resolves attributes (colors, blink, reverse), and writes the final pixel color to a storage image.
+-   This storage image is then presented to the screen via `SituationCmdPresent`.
+-   **Note:** Sixel graphics (`terminal.sixel`) are parsed but not yet rendered by the compute pipeline.
 
 ### 3.6. Callbacks
 
@@ -239,7 +237,7 @@ Other source files can simply include "terminal.h" for declarations.
 
 ## Dependencies
 
--   Situation (version 4.0 or later recommended): Used for window creation, graphics rendering, input handling (keyboard/mouse), and font texture management.
+-   Situation (version 2.3.x or later): Used for window creation, graphics rendering, input handling (keyboard/mouse), and font texture management.
 -   Standard C11 libraries: `stdio.h`, `stdlib.h`, `string.h`, `stdbool.h`, `ctype.h`, `stdarg.h`, `math.h`, `time.h`.
 
 ## License

@@ -2659,6 +2659,8 @@ Defines a set of common, pre-configured layouts for compute pipelines, telling t
 | `SIT_COMPUTE_LAYOUT_IMAGE_AND_SSBO`| The pipeline expects one Storage Image at set 0 and one SSBO at set 1. |
 | `SIT_COMPUTE_LAYOUT_PUSH_CONSTANT`| The pipeline uses a 64-byte push constant for small, high-frequency data. |
 | `SIT_COMPUTE_LAYOUT_EMPTY`| The pipeline does not take any external resources. |
+| `SIT_COMPUTE_LAYOUT_BUFFER_IMAGE`| The pipeline expects one SSBO at set 0 and one Storage Image at set 1. |
+| `SIT_COMPUTE_LAYOUT_TERMINAL`| A specialized layout for terminal emulators: SSBO (Set 0), Storage Image (Set 1), and Font Sampler (Set 2). |
 
 ---
 #### Resource Handles
@@ -5792,6 +5794,27 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 <details>
 <summary><h3>Examples & Tutorials</h3></summary>
+
+### 5.1 Terminal Module
+The "Terminal" module is a comprehensive extension subsystem that provides a complete VT100/xterm-compatible terminal emulator. It is located in `sit/terminal/` and integrates deeply with the Situation rendering and input pipeline.
+
+#### 5.1.1 Overview
+The terminal library emulates a wide range of standards (VT52 through VT420/xterm) and supports modern features like True Color (24-bit), mouse tracking (SGR), and bracketed paste. It uses a **Compute Shader** based rendering pipeline (`SIT_COMPUTE_LAYOUT_TERMINAL`) to efficiently render the character grid, attributes, and colors on the GPU.
+
+#### 5.1.2 Key APIs
+-   `InitTerminal()`: Initializes the terminal state and compute resources.
+-   `UpdateTerminal()`: Processes input, updates state, and manages the host-terminal pipeline.
+-   `DrawTerminal()`: Renders the terminal to the screen using a compute shader dispatch.
+-   `PipelineWrite...()`: Functions to send data (text, escape sequences) to the terminal emulation.
+-   `SetVTLevel()`: Configures the emulation compliance level.
+
+#### 5.1.3 Integration
+The terminal module relies on the `SIT_COMPUTE_LAYOUT_TERMINAL` layout defined in `situation.h`. This layout configures the descriptor sets required by the terminal's compute shader:
+1.  **Set 0 (SSBO):** Contains the terminal grid data (`GPUCell` array).
+2.  **Set 1 (Storage Image):** The target image for the rendered output.
+3.  **Set 2 (Sampler):** The font atlas texture.
+
+For detailed documentation, see the [Terminal Technical Reference](sit/terminal/terminal.md) and [Terminal README](sit/terminal/README.md).
 
 ### 6.1 Basic Triangle Rendering
 This example demonstrates the minimal steps required to render a single, colored triangle using `situation.h`. It covers window setup, shader creation, mesh definition, and the core rendering loop.
