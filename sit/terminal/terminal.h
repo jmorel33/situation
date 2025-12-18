@@ -19,8 +19,7 @@
 #ifndef TERMINAL_H
 #define TERMINAL_H
 
-#define SITUATION_IMPLEMENTATION
-#include "situation.h"  // Ensure full impl
+#include "situation.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -63,7 +62,7 @@ typedef void (*BellCallback)(void);                                 // For audib
 // External declarations for users of the library (if not header-only)
 extern Terminal terminal;
 //extern VTKeyboard vt_keyboard;
-extern Texture2D font_texture;
+// extern Texture2D font_texture; // Moved to struct
 extern RGB_Color color_palette[256]; // Full 256 color palette
 extern Color ansi_colors[16];        // Raylib Color type for the 16 base ANSI colors
 // extern unsigned char font_data[256 * 32]; // Defined in implementation
@@ -97,8 +96,8 @@ typedef enum {
 // PARSE STATES
 // =============================================================================
 typedef enum {
-    VT_PARSE_NORMAL, 
-    VT_PARSE_ESCAPE, 
+    VT_PARSE_NORMAL,
+    VT_PARSE_ESCAPE,
     PARSE_CSI,          // Control Sequence Introducer (ESC [)
     PARSE_OSC,          // Operating System Command (ESC ])
     PARSE_DCS,          // Device Control String (ESC P)
@@ -242,7 +241,7 @@ typedef struct {
     unsigned int ch;             // Unicode codepoint (or ASCII/charset specific value)
     ExtendedColor fg_color;
     ExtendedColor bg_color;
-    
+
     // Text attributes
     bool bold;
     bool faint;                 // DEC-specific or ECMA-48
@@ -257,11 +256,11 @@ typedef struct {
     bool double_width;          // DECDWL - character takes two cells wide
     bool double_height_top;     // DECDHL - top half of double-height char
     bool double_height_bottom;  // DECDHL - bottom half of double-height char
-    
+
     // VT specific attributes
     bool protected_cell;         // DECSCA - protected from erasure (partial impl.)
     bool soft_hyphen;            // Character is a soft hyphen
-    
+
     // Rendering hints
     bool dirty;                  // Cell needs redraw
     bool combining;              // Unicode combining character (affects rendering)
@@ -382,9 +381,9 @@ typedef struct {
 typedef struct {
     VTLevel level;        // Current conformance level (e.g., VT220)
     bool strict_mode;     // Enforce strict conformance? (vs. permissive)
-    
+
     VTFeatures features;  // Feature flags derived from the level
-    
+
     // Compliance tracking for diagnostics
     struct {
         int unsupported_sequences;
@@ -425,12 +424,12 @@ typedef struct {
     bool meta_sends_escape;   // Does Alt/Meta key prefix char with ESC?
     bool delete_sends_del;    // DEL key sends DEL (0x7F) or BS (0x08)
     bool backarrow_sends_bs;  // Backarrow key sends BS (0x08) or DEL (0x7F)
-    
+
     int keyboard_dialect;        // Tracks NRCS dialect for CSI ?26 n (1=North American, 2=British, etc.)
-        
+
     // Function key definitions (programmable or standard)
     char function_keys[24][32];  // F1-F24 sequences (can be overridden by DECUDK)
-    
+
     // Key mapping table (example, might not be fully used if GenerateVTSequence is comprehensive)
     // struct {
     //     int raylib_key;
@@ -440,11 +439,11 @@ typedef struct {
     //     char alt[16];
     //     char app[16]; // For application modes
     // } key_mappings[256]; // Max Raylib key codes
-    
+
     // Buffered input for key events
     VTKeyEvent buffer[512]; // Circular buffer for key events
     int buffer_head, buffer_tail, buffer_count;
-    
+
     // Statistics
     size_t total_events;
     size_t dropped_events;      // If buffer overflows
@@ -474,6 +473,119 @@ typedef struct {
 } TerminalStatus;
 
 // =============================================================================
+// TERMINAL COMPUTE SHADER & GPU STRUCTURES
+// =============================================================================
+
+#define TERMINAL_COMPUTE_SHADER_SRC \
+"#version 450\n" \
+"layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n" \
+"\n" \
+"struct GPUCell {\n" \
+"    uint char_code;\n" \
+"    uint fg_color;\n" \
+"    uint bg_color;\n" \
+"    uint flags;\n" \
+"};\n" \
+"\n" \
+"layout(std430, set = 0, binding = 0) readonly buffer TerminalBuffer {\n" \
+"    GPUCell cells[];\n" \
+"} terminal_data;\n" \
+"\n" \
+"layout(set = 1, binding = 0, rgba8) writeonly uniform image2D output_image;\n" \
+"\n" \
+"layout(set = 2, binding = 0) uniform sampler2D font_texture;\n" \
+"\n" \
+"layout(push_constant) uniform PushConstants {\n" \
+"    vec2 screen_size;\n" \
+"    vec2 char_size;\n" \
+"    vec2 grid_size;\n" \
+"    float time;\n" \
+"    uint cursor_index;\n" \
+"    uint cursor_blink_state;\n" \
+"    uint text_blink_state;\n" \
+"} pc;\n" \
+"\n" \
+"vec4 UnpackColor(uint c) {\n" \
+"    return vec4(float(c & 0xFF), float((c >> 8) & 0xFF), float((c >> 16) & 0xFF), float((c >> 24) & 0xFF)) / 255.0;\n" \
+"}\n" \
+"\n" \
+"void main() {\n" \
+"    uvec2 pixel_coords = gl_GlobalInvocationID.xy;\n" \
+"    if (pixel_coords.x >= uint(pc.screen_size.x) || pixel_coords.y >= uint(pc.screen_size.y)) return;\n" \
+"\n" \
+"    uint cell_x = pixel_coords.x / uint(pc.char_size.x);\n" \
+"    uint cell_y = pixel_coords.y / uint(pc.char_size.y);\n" \
+"    uint cell_index = cell_y * uint(pc.grid_size.x) + cell_x;\n" \
+"\n" \
+"    if (cell_index >= terminal_data.cells.length()) return;\n" \
+"\n" \
+"    GPUCell cell = terminal_data.cells[cell_index];\n" \
+"    vec4 fg = UnpackColor(cell.fg_color);\n" \
+"    vec4 bg = UnpackColor(cell.bg_color);\n" \
+"    uint flags = cell.flags;\n" \
+"\n" \
+"    // Handle Reverse Video\n" \
+"    if ((flags & (1 << 5)) != 0) {\n" \
+"        vec4 tmp = fg; fg = bg; bg = tmp;\n" \
+"    }\n" \
+"\n" \
+"    // Handle Cursor\n" \
+"    if (cell_index == pc.cursor_index && pc.cursor_blink_state != 0) {\n" \
+"        vec4 tmp = fg; fg = bg; bg = tmp;\n" \
+"    }\n" \
+"\n" \
+"    uint char_code = cell.char_code;\n" \
+"    uint glyph_col = char_code % 16;\n" \
+"    uint glyph_row = char_code / 16;\n" \
+"    \n" \
+"    uint in_char_x = pixel_coords.x % uint(pc.char_size.x);\n" \
+"    uint in_char_y = pixel_coords.y % uint(pc.char_size.y);\n" \
+"\n" \
+"    ivec2 tex_size = textureSize(font_texture, 0);\n" \
+"    vec2 uv = vec2(float(glyph_col * pc.char_size.x + in_char_x) / float(tex_size.x),\n" \
+"                   float(glyph_row * pc.char_size.y + in_char_y) / float(tex_size.y));\n" \
+"\n" \
+"    float sample_val = texture(font_texture, uv).r;\n" \
+"\n" \
+"    // Handle Bold (if not reversed, brighten FG? logic simplified here)\n" \
+"    // ...\n" \
+"\n" \
+"    vec4 pixel_color = mix(bg, fg, sample_val);\n" \
+"\n" \
+"    // Text Blink\n" \
+"    if ((flags & (1 << 4)) != 0 && pc.text_blink_state == 0) {\n" \
+"       pixel_color = bg;\n" \
+"    }\n" \
+"\n" \
+"    imageStore(output_image, ivec2(pixel_coords), pixel_color);\n" \
+"}\n"
+
+typedef struct {
+    uint32_t char_code;
+    uint32_t fg_color;
+    uint32_t bg_color;
+    uint32_t flags;
+} GPUCell;
+
+typedef struct {
+    Vector2 screen_size;
+    Vector2 char_size;
+    Vector2 grid_size;
+    float time;
+    uint32_t cursor_index;
+    uint32_t cursor_blink_state;
+    uint32_t text_blink_state;
+} TerminalPushConstants;
+
+#define GPU_ATTR_BOLD       (1 << 0)
+#define GPU_ATTR_FAINT      (1 << 1)
+#define GPU_ATTR_ITALIC     (1 << 2)
+#define GPU_ATTR_UNDERLINE  (1 << 3)
+#define GPU_ATTR_BLINK      (1 << 4)
+#define GPU_ATTR_REVERSE    (1 << 5)
+#define GPU_ATTR_STRIKE     (1 << 6)
+
+// =============================================================================
 // MAIN ENHANCED TERMINAL STRUCTURE
 // =============================================================================
 typedef struct {
@@ -486,16 +598,16 @@ typedef struct {
     EnhancedCursor cursor;
     EnhancedCursor saved_cursor; // For DECSC/DECRC and other save/restore ops
     bool saved_cursor_valid;
-    
+
     // Terminal identification & conformance
     VTConformance conformance;
     char device_attributes[128];    // Primary DA string (e.g., CSI c)
     char secondary_attributes[128]; // Secondary DA string (e.g., CSI > c)
-    
+
     // Mode management
     DECModes dec_modes;
     ANSIModes ansi_modes;
-    
+
     // Current character attributes for new text
     ExtendedColor current_fg;
     ExtendedColor current_bg;
@@ -506,22 +618,22 @@ typedef struct {
     bool protected_mode; // For DECSCA
     bool text_blink_state;      // Current on/off state for text blinking
     double text_blink_timer;    // Timer for text blink interval
-    
+
     // Scrolling and margins
     int scroll_top, scroll_bottom;  // Defines the scroll region (0-indexed)
     int left_margin, right_margin;  // Defines left/right margins (0-indexed, VT420+)
-    
+
     // Character handling
     CharsetState charset;
     TabStops tab_stops;
-    
+
     // Enhanced features
     BracketedPaste bracketed_paste;
     ProgrammableKeys programmable_keys; // For DECUDK
     SixelGraphics sixel;
     SoftFont soft_font;                 // For DECDLD
     TitleManager title;
-    
+
     // Mouse support state
     struct {
         MouseTrackingMode mode; // Mouse tracking mode
@@ -537,13 +649,13 @@ typedef struct {
         int cursor_x; // Current mouse cursor X cell position
         int cursor_y; // Current mouse cursor Y cell position
     } mouse;
-    
+
     // Input/Output pipeline (enhanced)
     unsigned char input_pipeline[16384]; // Buffer for incoming data from host
     int input_pipeline_length; // Input pipeline length0
     int pipeline_head, pipeline_tail, pipeline_count;
     bool pipeline_overflow;
-    
+
     struct {
         bool cursor_key_mode; // DECCKM mode
         bool application_mode; // Application mode
@@ -560,7 +672,7 @@ typedef struct {
         int dropped_events; // Dropped events due to overflow
         char function_keys[24][32]; // Function key sequences (F1–F24)
     } vt_keyboard; // Keyboard state
-    
+
     // Performance and processing control
     struct {
         int chars_per_frame;      // Max chars to process from pipeline per frame
@@ -572,7 +684,7 @@ typedef struct {
         // double burst_time_limit;  // Max time for a burst
         bool adaptive_processing; // Adjust chars_per_frame based on performance
     } VTperformance;
-    
+
     // Response system (data to send back to host)
     char answerback_buffer[OUTPUT_BUFFER_SIZE]; // Buffer for responses to host
     int response_length; // Response buffer length
@@ -584,7 +696,7 @@ typedef struct {
     int escape_pos;
     int escape_params[MAX_ESCAPE_PARAMS];   // Parsed numeric parameters for CSI
     int param_count;
-        
+
     // Status and diagnostics
     struct {
         // bool error_recovery; // Attempt to recover from invalid sequences
@@ -593,7 +705,7 @@ typedef struct {
         int error_count;        // Generic error counter
         bool debugging;         // General debugging flag for verbose logs
     } status;
-    
+
     // Feature toggles / options
     struct {
         bool conformance_checking; // Enable stricter checks and logging
@@ -601,14 +713,14 @@ typedef struct {
         bool debug_sequences;      // Log unknown/unsupported sequences
         bool log_unsupported;      // Alias or part of debug_sequences
     } options;
-    
+
     // Fields for RayLib_terminal_console.c
     bool echo_enabled;
     bool input_enabled;
     bool password_mode;
     bool raw_mode;
     bool paused;
-    
+
     bool printer_available;      // Tracks printer availability for CSI ?15 n
     bool auto_print_enabled; // Tracks CSI 4 i / CSI 5 i state
     bool printer_controller_enabled; // Tracks CSI ?4 i / CSI ?5 i state
@@ -627,9 +739,17 @@ typedef struct {
         uint32_t last_checksum;  // Last computed checksum
     } checksum;                  // For CSI ?63 n
     char tertiary_attributes[128]; // For CSI = c
-    
+
     double visual_bell_timer; // Timer for visual bell effect
-    
+
+    // Graphics resources for Compute Shader
+    SituationComputePipeline compute_pipeline;
+    SituationBuffer terminal_buffer; // SSBO
+    SituationTexture output_texture; // Storage Image
+    SituationTexture font_texture;   // Font Atlas
+    GPUCell* gpu_staging_buffer;
+    bool compute_initialized;
+
 } Terminal;
 
 // =============================================================================
@@ -810,7 +930,7 @@ void Script_SetColor(int fg, int bg);
 // Fixed global variable definitions
 Terminal terminal = {0};
 //VTKeyboard vt_keyboard = {0};   // deprecated
-RGLTexture font_texture = {0};  // SIT/RGL BRIDGE: The font texture is now an RGLTexture
+// RGLTexture font_texture = {0};  // Moved to terminal struct
 ResponseCallback response_callback = NULL;
 TitleCallback title_callback = NULL;
 BellCallback bell_callback = NULL;
@@ -883,9 +1003,9 @@ void InitColorPalette(void) {
 }
 
 void InitVTConformance(void) {
-    terminal.conformance.level = VT_LEVEL_XTERM; 
+    terminal.conformance.level = VT_LEVEL_XTERM;
     terminal.conformance.strict_mode = false;
-    SetVTLevel(terminal.conformance.level); 
+    SetVTLevel(terminal.conformance.level);
     terminal.conformance.compliance.unsupported_sequences = 0;
     terminal.conformance.compliance.partial_implementations = 0;
     terminal.conformance.compliance.extensions_used = 0;
@@ -904,11 +1024,11 @@ void InitTabStops(void) {
 
 void InitCharacterSets(void) {
     terminal.charset.g0 = CHARSET_ASCII;
-    terminal.charset.g1 = CHARSET_DEC_SPECIAL; 
-    terminal.charset.g2 = CHARSET_ASCII;       
-    terminal.charset.g3 = CHARSET_ASCII;       
-    terminal.charset.gl = &terminal.charset.g0; 
-    terminal.charset.gr = &terminal.charset.g1; 
+    terminal.charset.g1 = CHARSET_DEC_SPECIAL;
+    terminal.charset.g2 = CHARSET_ASCII;
+    terminal.charset.g3 = CHARSET_ASCII;
+    terminal.charset.gl = &terminal.charset.g0;
+    terminal.charset.gr = &terminal.charset.g1;
     terminal.charset.single_shift_2 = false;
     terminal.charset.single_shift_3 = false;
 }
@@ -948,16 +1068,16 @@ void InitVTKeyboard(void) {
 }
 
 void InitTerminal(void) {
-    InitFontData(); 
+    InitFontData();
     InitColorPalette();
-    InitVTConformance(); 
+    InitVTConformance();
     InitTabStops();
     InitCharacterSets();
     InitVTKeyboard();
-    InitSixelGraphics(); 
-    
+    InitSixelGraphics();
+
     EnhancedTermChar default_char = {
-        .ch = ' ', 
+        .ch = ' ',
         .fg_color = {.color_mode = 0, .value.index = COLOR_WHITE},
         .bg_color = {.color_mode = 0, .value.index = COLOR_BLACK},
         .dirty = true
@@ -969,7 +1089,7 @@ void InitTerminal(void) {
             terminal.alt_screen[y][x] = default_char;
         }
     }
-    
+
     // Initialize mouse state
     terminal.mouse.enabled = true; // Assume mouse is enabled by default
     terminal.mouse.mode = MOUSE_TRACKING_OFF; // Default to no mouse tracking
@@ -1001,58 +1121,58 @@ void InitTerminal(void) {
     terminal.scroll_top = 0;
     terminal.scroll_bottom = DEFAULT_TERM_HEIGHT - 1;
     // Initialize other fields as needed
-    
+
     terminal.dec_modes.application_cursor_keys = false;
     terminal.dec_modes.origin_mode = false;
-    terminal.dec_modes.auto_wrap_mode = true; 
+    terminal.dec_modes.auto_wrap_mode = true;
     terminal.dec_modes.cursor_visible = true;
     terminal.dec_modes.alternate_screen = false;
-    terminal.dec_modes.insert_mode = false; 
-    terminal.dec_modes.new_line_mode = false; 
-    terminal.dec_modes.column_mode_132 = false; 
-    terminal.ansi_modes.insert_replace = false; 
+    terminal.dec_modes.insert_mode = false;
+    terminal.dec_modes.new_line_mode = false;
+    terminal.dec_modes.column_mode_132 = false;
+    terminal.ansi_modes.insert_replace = false;
     terminal.ansi_modes.line_feed_new_line = true;
     terminal.dec_modes.local_echo = false;
-    
-    ResetAllAttributes(); 
-    
+
+    ResetAllAttributes();
+
     terminal.scroll_top = 0;
     terminal.scroll_bottom = DEFAULT_TERM_HEIGHT - 1;
     terminal.left_margin = 0;
     terminal.right_margin = DEFAULT_TERM_WIDTH - 1;
-    
+
     terminal.bracketed_paste.enabled = false;
     terminal.bracketed_paste.active = false;
-    terminal.bracketed_paste.buffer = NULL; 
-    
+    terminal.bracketed_paste.buffer = NULL;
+
     terminal.programmable_keys.keys = NULL;
     terminal.programmable_keys.count = 0;
     terminal.programmable_keys.capacity = 0;
-    
+
     strcpy(terminal.title.terminal_name, "Enhanced VT Terminal (Raylib)");
-    VTSetWindowTitle("Terminal"); 
-    SetIconTitle("Term");         
-    
-    ClearPipeline(); 
-    
-    terminal.VTperformance.chars_per_frame = 200; 
-    terminal.VTperformance.target_frame_time = 1.0 / 60.0; 
-    terminal.VTperformance.time_budget = terminal.VTperformance.target_frame_time * 0.5; 
-    terminal.VTperformance.avg_process_time = 0.000001; 
+    VTSetWindowTitle("Terminal");
+    SetIconTitle("Term");
+
+    ClearPipeline();
+
+    terminal.VTperformance.chars_per_frame = 200;
+    terminal.VTperformance.target_frame_time = 1.0 / 60.0;
+    terminal.VTperformance.time_budget = terminal.VTperformance.target_frame_time * 0.5;
+    terminal.VTperformance.avg_process_time = 0.000001;
     terminal.VTperformance.burst_mode = false;
-    terminal.VTperformance.burst_threshold = sizeof(terminal.input_pipeline) / 2; 
+    terminal.VTperformance.burst_threshold = sizeof(terminal.input_pipeline) / 2;
     terminal.VTperformance.adaptive_processing = true;
-    
+
     terminal.parse_state = VT_PARSE_NORMAL;
     terminal.escape_pos = 0;
     terminal.param_count = 0;
-    
+
     terminal.response_length = 0;
-    
+
     terminal.options.conformance_checking = true;
     terminal.options.vttest_mode = false;
-    terminal.options.debug_sequences = false; 
-    terminal.options.log_unsupported = true;  
+    terminal.options.debug_sequences = false;
+    terminal.options.log_unsupported = true;
 
     // Initialize fields for RayLib_terminal_console.c
     terminal.echo_enabled = true;
@@ -1060,7 +1180,7 @@ void InitTerminal(void) {
     terminal.password_mode = false;
     terminal.raw_mode = false;
     terminal.paused = false;
-    
+
     terminal.printer_available = false; // Default: no printer
     terminal.auto_print_enabled = false;
     terminal.printer_controller_enabled = false;
@@ -1069,11 +1189,12 @@ void InitTerminal(void) {
     terminal.locator_events.report_on_request_only = true; // Default behavior
     terminal.locator_enabled = false;  // Default: no locator device
     terminal.programmable_keys.udk_locked = false; // Default: UDKs unlocked
-    
+
     strncpy(terminal.answerback_buffer, "terminal_v2 VT420", MAX_COMMAND_BUFFER - 1);
     terminal.answerback_buffer[MAX_COMMAND_BUFFER - 1] = '\0';
-    
+
     CreateFontTexture();
+    InitTerminalCompute();
 }
 
 
@@ -1120,25 +1241,25 @@ void ProcessStringTerminator(unsigned char ch) {
 }
 
 void ProcessCharsetCommand(unsigned char ch) {
-    terminal.escape_buffer[terminal.escape_pos++] = ch; 
+    terminal.escape_buffer[terminal.escape_pos++] = ch;
 
-    if (terminal.escape_pos >= 2) { 
+    if (terminal.escape_pos >= 2) {
         char designator = terminal.escape_buffer[0];
         char charset_char = terminal.escape_buffer[1];
-        CharacterSet selected_cs = CHARSET_ASCII; 
+        CharacterSet selected_cs = CHARSET_ASCII;
 
         switch (charset_char) {
             case 'A': selected_cs = CHARSET_UK; break;
             case 'B': selected_cs = CHARSET_ASCII; break;
             case '0': selected_cs = CHARSET_DEC_SPECIAL; break;
-            case '1': 
-            case '2': 
+            case '1':
+            case '2':
                 if (terminal.options.debug_sequences) {
                     LogUnsupportedSequence("DEC Alternate Character ROM not fully supported, using ASCII/DEC Special");
                 }
                 selected_cs = (charset_char == '1') ? CHARSET_ASCII : CHARSET_DEC_SPECIAL;
                 break;
-            case '<': selected_cs = CHARSET_DEC_MULTINATIONAL; break; 
+            case '<': selected_cs = CHARSET_DEC_MULTINATIONAL; break;
             default:
                 if (terminal.options.debug_sequences) {
                     char debug_msg[64];
@@ -1147,14 +1268,14 @@ void ProcessCharsetCommand(unsigned char ch) {
                 }
                 break;
         }
-        
+
         switch (designator) {
             case '(': terminal.charset.g0 = selected_cs; break;
             case ')': terminal.charset.g1 = selected_cs; break;
             case '*': terminal.charset.g2 = selected_cs; break;
             case '+': terminal.charset.g3 = selected_cs; break;
         }
-        
+
         terminal.parse_state = VT_PARSE_NORMAL;
         terminal.escape_pos = 0;
     }
@@ -1187,8 +1308,8 @@ void ProcessGenericStringChar(unsigned char ch, VTParseState next_state_on_escap
         }
         // BEL is not a standard terminator for these, ST is.
     } else { // Buffer overflow
-        terminal.escape_buffer[sizeof(terminal.escape_buffer) - 1] = '\0'; 
-        if (execute_command_func) execute_command_func(); 
+        terminal.escape_buffer[sizeof(terminal.escape_buffer) - 1] = '\0';
+        if (execute_command_func) execute_command_func();
         terminal.parse_state = VT_PARSE_NORMAL;
         terminal.escape_pos = 0;
         char log_msg[64];
@@ -1211,16 +1332,16 @@ void ProcessChar(unsigned char ch) {
         case PARSE_DCS:                 ProcessDCSChar(ch); break;
         case PARSE_SIXEL_ST:            ProcessSixelSTChar(ch); break;
         case PARSE_VT52:                ProcessVT52Char(ch); break;
-        case PARSE_SIXEL:               ProcessSixelChar(ch); break; 
+        case PARSE_SIXEL:               ProcessSixelChar(ch); break;
         case PARSE_CHARSET:             ProcessCharsetCommand(ch); break;
         case PARSE_HASH:                ProcessHashChar(ch); break;
         case PARSE_PERCENT:             ProcessPercentChar(ch); break;
-        case PARSE_APC:                 ProcessAPCChar(ch); break; 
-        case PARSE_PM:                  ProcessPMChar(ch); break;  
-        case PARSE_SOS:                 ProcessSOSChar(ch); break; 
-        default: 
+        case PARSE_APC:                 ProcessAPCChar(ch); break;
+        case PARSE_PM:                  ProcessPMChar(ch); break;
+        case PARSE_SOS:                 ProcessSOSChar(ch); break;
+        default:
             terminal.parse_state = VT_PARSE_NORMAL;
-            ProcessNormalChar(ch); 
+            ProcessNormalChar(ch);
             break;
     }
 }
@@ -1470,22 +1591,22 @@ void ExecuteDECSERA(void) { // Selective Erase Rectangular Area
 
 void ProcessOSCChar(unsigned char ch) {
     if (terminal.escape_pos < sizeof(terminal.escape_buffer) - 1) {
-        terminal.escape_buffer[terminal.escape_pos++] = ch; 
+        terminal.escape_buffer[terminal.escape_pos++] = ch;
 
-        if (ch == '\a') { 
-            terminal.escape_buffer[terminal.escape_pos - 1] = '\0'; 
+        if (ch == '\a') {
+            terminal.escape_buffer[terminal.escape_pos - 1] = '\0';
             ExecuteOSCCommand();
             terminal.parse_state = VT_PARSE_NORMAL;
             terminal.escape_pos = 0;
-        } else if (ch == '\\' && terminal.escape_pos >= 2 && terminal.escape_buffer[terminal.escape_pos - 2] == '\x1B') { 
-            terminal.escape_buffer[terminal.escape_pos - 2] = '\0'; 
+        } else if (ch == '\\' && terminal.escape_pos >= 2 && terminal.escape_buffer[terminal.escape_pos - 2] == '\x1B') {
+            terminal.escape_buffer[terminal.escape_pos - 2] = '\0';
             ExecuteOSCCommand();
             terminal.parse_state = VT_PARSE_NORMAL;
             terminal.escape_pos = 0;
         }
-    } else { 
-        terminal.escape_buffer[sizeof(terminal.escape_buffer) - 1] = '\0'; 
-        ExecuteOSCCommand(); 
+    } else {
+        terminal.escape_buffer[sizeof(terminal.escape_buffer) - 1] = '\0';
+        ExecuteOSCCommand();
         terminal.parse_state = VT_PARSE_NORMAL;
         terminal.escape_pos = 0;
         LogUnsupportedSequence("OSC sequence too long, truncated");
@@ -1552,8 +1673,8 @@ void ProcessDCSChar(unsigned char ch) {
 // =============================================================================
 
 void CreateFontTexture(void) {
-    if (font_texture.id != 0) {
-        RGL_UnloadTexture(font_texture);
+    if (terminal.font_texture.generation != 0) {
+        SituationDestroyTexture(&terminal.font_texture);
     }
 
     const int chars_per_row = 16;
@@ -1561,14 +1682,13 @@ void CreateFontTexture(void) {
     const int atlas_width = chars_per_row * DEFAULT_CHAR_WIDTH;
     const int atlas_height = (num_chars / chars_per_row) * DEFAULT_CHAR_HEIGHT;
 
-    // Create a CPU-side buffer for the texture data (single channel).
-    unsigned char* pixels = (unsigned char*)calloc(atlas_width * atlas_height, sizeof(unsigned char));
-    if (!pixels) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate pixel buffer for terminal font.");
-        return;
-    }
+    // Create a CPU-side image (RGBA)
+    SituationImage img = SituationCreateImage(atlas_width, atlas_height, 4);
+    if (!img.data) return;
 
-    // Unpack the font data into the 2D texture buffer.
+    unsigned char* pixels = (unsigned char*)img.data;
+
+    // Unpack the font data
     for (int i = 0; i < num_chars; i++) {
         int glyph_col = i % chars_per_row;
         int glyph_row = i / chars_per_row;
@@ -1576,44 +1696,47 @@ void CreateFontTexture(void) {
         int dest_y_start = glyph_row * DEFAULT_CHAR_HEIGHT;
 
         for (int y = 0; y < DEFAULT_CHAR_HEIGHT; y++) {
-            // Your font data has 32 bytes per char, we only use the first 8 for an 8x16 font.
-            // Let's assume you meant 16 bytes for 8x16.
-            unsigned char byte = cp437_font__8x16[i * 16 + y]; // Assuming 16 bytes for 8x16 font
+            unsigned char byte = cp437_font__8x16[i * 16 + y];
             for (int x = 0; x < DEFAULT_CHAR_WIDTH; x++) {
+                int px_idx = ((dest_y_start + y) * atlas_width + (dest_x_start + x)) * 4;
                 if ((byte >> (7 - x)) & 1) {
-                    pixels[(dest_y_start + y) * atlas_width + (dest_x_start + x)] = 255;
+                    pixels[px_idx + 0] = 255;
+                    pixels[px_idx + 1] = 255;
+                    pixels[px_idx + 2] = 255;
+                    pixels[px_idx + 3] = 255;
+                } else {
+                    pixels[px_idx + 0] = 0;
+                    pixels[px_idx + 1] = 0;
+                    pixels[px_idx + 2] = 0;
+                    pixels[px_idx + 3] = 0;
                 }
             }
         }
     }
 
-    // Use RGL to create the texture from our raw pixel data.
-    RGLTextureParams params = {
-        .wrap_s = GL_CLAMP_TO_EDGE,
-        .wrap_t = GL_CLAMP_TO_EDGE,
-        .min_filter = GL_NEAREST, // Pixel-perfect filtering
-        .mag_filter = GL_NEAREST,
-        .generate_mipmaps = false
-    };
+    terminal.font_texture = SituationCreateTexture(img, false);
+    SituationUnloadImage(img);
+}
 
-    // RGL_LoadTextureWithParams is for files. We need a new RGL function for raw data.
-    // Let's assume we add this to RGL:
-    // RGLTexture RGL_LoadTextureFromRaw(const unsigned char* data, int width, int height, int format, const RGLTextureParams* params);
-    // For now, we will adapt the existing debug text system's method.
-    
-    glGenTextures(1, &font_texture.id);
-    glBindTexture(GL_TEXTURE_2D, font_texture.id);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, atlas_width, atlas_height, 0, GL_RED, GL_UNSIGNED_BYTE, pixels);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glBindTexture(GL_TEXTURE_2D, 0);
+void InitTerminalCompute(void) {
+    if (terminal.compute_initialized) return;
 
-    font_texture.width = atlas_width;
-    font_texture.height = atlas_height;
-    
-    free(pixels);
+    // 1. Create SSBO
+    size_t buffer_size = DEFAULT_TERM_WIDTH * DEFAULT_TERM_HEIGHT * sizeof(GPUCell);
+    terminal.terminal_buffer = SituationCreateBuffer(buffer_size, NULL, SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST);
+
+    // 2. Create Storage Image (Output)
+    SituationImage empty_img = SituationCreateImage(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, 4); // RGBA
+    // We can init to black if we want, but compute will overwrite.
+    terminal.output_texture = SituationCreateTextureEx(empty_img, false, SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_TRANSFER_SRC);
+    SituationUnloadImage(empty_img);
+
+    // 3. Create Compute Pipeline
+    terminal.compute_pipeline = SituationCreateComputePipelineFromMemory(TERMINAL_COMPUTE_SHADER_SRC, SIT_COMPUTE_LAYOUT_TERMINAL);
+
+    terminal.gpu_staging_buffer = (GPUCell*)calloc(DEFAULT_TERM_WIDTH * DEFAULT_TERM_HEIGHT, sizeof(GPUCell));
+
+    terminal.compute_initialized = true;
 }
 
 // =============================================================================
@@ -1622,7 +1745,7 @@ void CreateFontTexture(void) {
 
 unsigned int TranslateCharacter(unsigned char ch, CharsetState* state) {
     CharacterSet active_set = *state->gl;
-    
+
     // Handle single shift states
     if (state->single_shift_2) {
         active_set = state->g2;
@@ -1631,26 +1754,26 @@ unsigned int TranslateCharacter(unsigned char ch, CharsetState* state) {
         active_set = state->g3;
         state->single_shift_3 = false;
     }
-    
+
     switch (active_set) {
         case CHARSET_ASCII:
             return ch;
-            
+
         case CHARSET_DEC_SPECIAL:
             return TranslateDECSpecial(ch);
-            
+
         case CHARSET_UK:
             return (ch == 0x23) ? 0x00A3 : ch; // # -> £
-            
+
         case CHARSET_DEC_MULTINATIONAL:
             return TranslateDECMultinational(ch);
-            
+
         case CHARSET_ISO_LATIN_1:
             return ch; // Direct mapping for Latin-1
-            
+
         case CHARSET_UTF8:
             return ch; // UTF-8 handled separately
-            
+
         default:
             return ch;
     }
@@ -1737,7 +1860,7 @@ int NextTabStop(int current_column) {
             return i;
         }
     }
-    
+
     // If no explicit tab stop found, use default spacing
     int next = ((current_column / terminal.tab_stops.default_width) + 1) * terminal.tab_stops.default_width;
     return (next < DEFAULT_TERM_WIDTH) ? next : DEFAULT_TERM_WIDTH - 1;
@@ -1749,7 +1872,7 @@ int PreviousTabStop(int current_column) {
             return i;
         }
     }
-    
+
     // If no explicit tab stop found, use default spacing
     int prev = ((current_column - 1) / terminal.tab_stops.default_width) * terminal.tab_stops.default_width;
     return (prev >= 0) ? prev : 0;
@@ -1763,7 +1886,7 @@ void ClearCell(EnhancedTermChar* cell) {
     cell->ch = ' ';
     cell->fg_color = terminal.current_fg;
     cell->bg_color = terminal.current_bg;
-    
+
     // Copy all current attributes
     cell->bold = terminal.bold_mode;
     cell->faint = terminal.faint_mode;
@@ -1776,14 +1899,14 @@ void ClearCell(EnhancedTermChar* cell) {
     cell->overline = terminal.overline_mode;
     cell->double_underline = terminal.double_underline_mode;
     cell->protected_cell = terminal.protected_mode;
-    
+
     // Reset special attributes
     cell->double_width = false;
     cell->double_height_top = false;
     cell->double_height_bottom = false;
     cell->soft_hyphen = false;
     cell->combining = false;
-    
+
     cell->dirty = true;
 }
 
@@ -1796,7 +1919,7 @@ void ScrollUpRegion(int top, int bottom, int lines) {
                 terminal.screen[y][x].dirty = true;
             }
         }
-        
+
         // Clear bottom line
         for (int x = terminal.left_margin; x <= terminal.right_margin; x++) {
             ClearCell(&terminal.screen[bottom][x]);
@@ -1813,7 +1936,7 @@ void ScrollDownRegion(int top, int bottom, int lines) {
                 terminal.screen[y][x].dirty = true;
             }
         }
-        
+
         // Clear top line
         for (int x = terminal.left_margin; x <= terminal.right_margin; x++) {
             ClearCell(&terminal.screen[top][x]);
@@ -1825,7 +1948,7 @@ void InsertLinesAt(int row, int count) {
     if (row < terminal.scroll_top || row > terminal.scroll_bottom) {
         return;
     }
-    
+
     // Move existing lines down
     for (int y = terminal.scroll_bottom; y >= row + count; y--) {
         if (y - count >= row) {
@@ -1835,7 +1958,7 @@ void InsertLinesAt(int row, int count) {
             }
         }
     }
-    
+
     // Clear inserted lines
     for (int y = row; y < row + count && y <= terminal.scroll_bottom; y++) {
         for (int x = terminal.left_margin; x <= terminal.right_margin; x++) {
@@ -1848,7 +1971,7 @@ void DeleteLinesAt(int row, int count) {
     if (row < terminal.scroll_top || row > terminal.scroll_bottom) {
         return;
     }
-    
+
     // Move remaining lines up
     for (int y = row; y <= terminal.scroll_bottom - count; y++) {
         for (int x = terminal.left_margin; x <= terminal.right_margin; x++) {
@@ -1856,7 +1979,7 @@ void DeleteLinesAt(int row, int count) {
             terminal.screen[y][x].dirty = true;
         }
     }
-    
+
     // Clear bottom lines
     for (int y = terminal.scroll_bottom - count + 1; y <= terminal.scroll_bottom; y++) {
         if (y >= 0) {
@@ -1875,7 +1998,7 @@ void InsertCharactersAt(int row, int col, int count) {
             terminal.screen[row][x].dirty = true;
         }
     }
-    
+
     // Clear inserted positions
     for (int x = col; x < col + count && x <= terminal.right_margin; x++) {
         ClearCell(&terminal.screen[row][x]);
@@ -1888,7 +2011,7 @@ void DeleteCharactersAt(int row, int col, int count) {
         terminal.screen[row][x] = terminal.screen[row][x + count];
         terminal.screen[row][x].dirty = true;
     }
-    
+
     // Clear rightmost positions
     for (int x = terminal.right_margin - count + 1; x <= terminal.right_margin; x++) {
         if (x >= 0) {
@@ -1910,13 +2033,13 @@ void InsertCharacterAtCursor(unsigned int ch) {
         // Insert mode: shift existing characters right
         InsertCharactersAt(terminal.cursor.y, terminal.cursor.x, 1);
     }
-    
+
     // Place character at cursor position
     EnhancedTermChar* cell = &terminal.screen[terminal.cursor.y][terminal.cursor.x];
     cell->ch = ch;
     cell->fg_color = terminal.current_fg;
     cell->bg_color = terminal.current_bg;
-    
+
     // Apply current attributes
     cell->bold = terminal.bold_mode;
     cell->faint = terminal.faint_mode;
@@ -1929,7 +2052,7 @@ void InsertCharacterAtCursor(unsigned int ch) {
     cell->overline = terminal.overline_mode;
     cell->double_underline = terminal.double_underline_mode;
     cell->protected_cell = terminal.protected_mode;
-    
+
     cell->dirty = true;
 }
 
@@ -1943,17 +2066,17 @@ void ProcessNormalChar(unsigned char ch) {
         ProcessControlChar(ch);
         return;
     }
-    
+
     // Translate character through active character set
     unsigned int unicode_ch = TranslateCharacter(ch, &terminal.charset);
-    
+
     // Handle character display
     if (terminal.cursor.x > terminal.right_margin) {
         if (terminal.dec_modes.auto_wrap_mode) {
             // Auto-wrap to next line
             terminal.cursor.x = terminal.left_margin;
             terminal.cursor.y++;
-            
+
             if (terminal.cursor.y > terminal.scroll_bottom) {
                 terminal.cursor.y = terminal.scroll_bottom;
                 ScrollUpRegion(terminal.scroll_top, terminal.scroll_bottom, 1);
@@ -1963,10 +2086,10 @@ void ProcessNormalChar(unsigned char ch) {
             terminal.cursor.x = terminal.right_margin;
         }
     }
-    
+
     // Insert character (handles insert mode internally)
     InsertCharacterAtCursor(unicode_ch);
-    
+
     // Advance cursor
     terminal.cursor.x++;
 }
@@ -2062,69 +2185,69 @@ void ProcessEscapeChar(unsigned char ch) {
             memset(terminal.escape_params, 0, sizeof(terminal.escape_params));
             terminal.param_count = 0;
             break;
-            
+
         // OSC - Operating System Command
         case ']':
             terminal.parse_state = PARSE_OSC;
             terminal.escape_pos = 0;
             break;
-            
+
         // DCS - Device Control String
         case 'P':
             terminal.parse_state = PARSE_DCS;
             terminal.escape_pos = 0;
             break;
-            
+
         // APC - Application Program Command
         case '_':
             terminal.parse_state = PARSE_APC;
             terminal.escape_pos = 0;
             break;
-            
+
         // PM - Privacy Message
         case '^':
             terminal.parse_state = PARSE_PM;
             terminal.escape_pos = 0;
             break;
-            
+
         // SOS - Start of String
         case 'X':
             terminal.parse_state = PARSE_SOS;
             terminal.escape_pos = 0;
             break;
-            
+
         // Character set selection
         case '(':
             terminal.parse_state = PARSE_CHARSET;
             terminal.escape_buffer[0] = '(';
             terminal.escape_pos = 1;
             break;
-            
+
         case ')':
             terminal.parse_state = PARSE_CHARSET;
             terminal.escape_buffer[0] = ')';
             terminal.escape_pos = 1;
             break;
-            
+
         case '*':
             terminal.parse_state = PARSE_CHARSET;
             terminal.escape_buffer[0] = '*';
             terminal.escape_pos = 1;
             break;
-            
+
         case '+':
             terminal.parse_state = PARSE_CHARSET;
             terminal.escape_buffer[0] = '+';
             terminal.escape_pos = 1;
             break;
-            
+
         // Single character commands
         case '7': // DECSC - Save Cursor
             terminal.saved_cursor = terminal.cursor;
             terminal.saved_cursor_valid = true;
             terminal.parse_state = VT_PARSE_NORMAL;
             break;
-            
+
         case '8': // DECRC - Restore Cursor
             if (terminal.saved_cursor_valid) {
                 terminal.cursor = terminal.saved_cursor;
@@ -2139,7 +2262,7 @@ void ProcessEscapeChar(unsigned char ch) {
         case '%': // Select Character Set
             terminal.parse_state = PARSE_PERCENT;
             break;
-            
+
         case 'D': // IND - Index
             terminal.cursor.y++;
             if (terminal.cursor.y > terminal.scroll_bottom) {
@@ -2148,7 +2271,7 @@ void ProcessEscapeChar(unsigned char ch) {
             }
             terminal.parse_state = VT_PARSE_NORMAL;
             break;
-            
+
         case 'E': // NEL - Next Line
             terminal.cursor.x = terminal.left_margin;
             terminal.cursor.y++;
@@ -2158,12 +2281,12 @@ void ProcessEscapeChar(unsigned char ch) {
             }
             terminal.parse_state = VT_PARSE_NORMAL;
             break;
-            
+
         case 'H': // HTS - Set Tab Stop
             SetTabStop(terminal.cursor.x);
             terminal.parse_state = VT_PARSE_NORMAL;
             break;
-            
+
         case 'M': // RI - Reverse Index
             terminal.cursor.y--;
             if (terminal.cursor.y < terminal.scroll_top) {
@@ -2172,36 +2295,36 @@ void ProcessEscapeChar(unsigned char ch) {
             }
             terminal.parse_state = VT_PARSE_NORMAL;
             break;
-            
+
         case 'N': // SS2 - Single Shift 2
             terminal.charset.single_shift_2 = true;
             terminal.parse_state = VT_PARSE_NORMAL;
             break;
-            
+
         case 'O': // SS3 - Single Shift 3
             terminal.charset.single_shift_3 = true;
             terminal.parse_state = VT_PARSE_NORMAL;
             break;
-            
+
         case 'Z': // DECID - Identify Terminal
             QueueResponse(terminal.device_attributes);
             terminal.parse_state = VT_PARSE_NORMAL;
             break;
-            
+
         case 'c': // RIS - Reset to Initial State
             InitTerminal();
             break;
-            
+
         case '=': // DECKPAM - Keypad Application Mode
             terminal.vt_keyboard.keypad_mode = true;
             terminal.parse_state = VT_PARSE_NORMAL;
             break;
-            
+
         case '>': // DECKPNM - Keypad Numeric Mode
             terminal.vt_keyboard.keypad_mode = false;
             terminal.parse_state = VT_PARSE_NORMAL;
             break;
-            
+
         case '<': // Enter VT52 mode (if enabled)
             if (terminal.conformance.features.vt52_mode) {
                 terminal.parse_state = PARSE_VT52;
@@ -2212,7 +2335,7 @@ void ProcessEscapeChar(unsigned char ch) {
                 }
             }
             break;
-            
+
         default:
             // Unknown escape sequence
             if (terminal.options.debug_sequences) {
@@ -2233,7 +2356,7 @@ bool PipelineWriteChar(unsigned char ch) {
         terminal.pipeline_overflow = true;
         return false;
     }
-    
+
     terminal.input_pipeline[terminal.pipeline_head] = ch;
     terminal.pipeline_head = (terminal.pipeline_head + 1) % sizeof(terminal.input_pipeline);
     terminal.pipeline_count++;
@@ -2242,7 +2365,7 @@ bool PipelineWriteChar(unsigned char ch) {
 
 bool PipelineWriteString(const char* str) {
     if (!str) return false;
-    
+
     while (*str) {
         if (!PipelineWriteChar(*str)) {
             return false;
@@ -2258,7 +2381,7 @@ bool PipelineWriteFormat(const char* format, ...) {
     va_start(args, format);
     vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
-    
+
     return PipelineWriteString(buffer);
 }
 
@@ -2328,7 +2451,7 @@ void EnableMouseFeature(const char* feature, bool enable) {
         // Enable/disable SGR mouse reporting mode (CSI ?1006 h/l)
         terminal.mouse.sgr_mode = enable;
         // Update mouse mode to SGR if enabled and tracking is active
-        if (enable && terminal.mouse.mode != MOUSE_TRACKING_OFF && 
+        if (enable && terminal.mouse.mode != MOUSE_TRACKING_OFF &&
             terminal.mouse.mode != MOUSE_TRACKING_URXVT && terminal.mouse.mode != MOUSE_TRACKING_PIXEL) {
             terminal.mouse.mode = MOUSE_TRACKING_SGR;
         } else if (!enable && terminal.mouse.mode == MOUSE_TRACKING_SGR) {
@@ -2400,8 +2523,8 @@ void UpdateMouse(void) {
     // Get mouse position and convert to cell coordinates
     vec2 mouse_pos;
     SituationGetMousePosition(mouse_pos);
-    int cell_x = (int)(mouse_pos.x / (DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE)) + 1;  
-    int cell_y = (int)(mouse_pos.y / (DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE)) + 1; 
+    int cell_x = (int)(mouse_pos.x / (DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE)) + 1;
+    int cell_y = (int)(mouse_pos.y / (DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE)) + 1;
 
     // Clamp to terminal bounds
     if (cell_x < 1) cell_x = 1;
@@ -2409,7 +2532,7 @@ void UpdateMouse(void) {
     if (cell_y < 1) cell_y = 1;
     if (cell_y > DEFAULT_TERM_HEIGHT) cell_y = DEFAULT_TERM_HEIGHT;
 
-    int pixel_x = (int)mouse_pos.x + 1; 
+    int pixel_x = (int)mouse_pos.x + 1;
     int pixel_y = (int)mouse_pos.y + 1;
 
     // Update custom cursor position
@@ -2417,7 +2540,7 @@ void UpdateMouse(void) {
     terminal.mouse.cursor_y = cell_y;
 
     // Get button states
-    bool current_buttons_state[3]; 
+    bool current_buttons_state[3];
     current_buttons_state[0] = SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_LEFT);
     current_buttons_state[1] = SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_MIDDLE);
     current_buttons_state[2] = SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_RIGHT);
@@ -2425,75 +2548,75 @@ void UpdateMouse(void) {
     // Get wheel movement
     float wheel_move = SituationGetMouseWheelMove();
     char mouse_report[64];
-    
+
     // Handle button press/release events
     for (size_t i = 0; i < 3; i++) {
-        if (current_buttons_state[i] != terminal.mouse.buttons[i]) { 
+        if (current_buttons_state[i] != terminal.mouse.buttons[i]) {
             terminal.mouse.buttons[i] = current_buttons_state[i];
             bool pressed = current_buttons_state[i];
-            int report_button_code = i; 
+            int report_button_code = i;
             mouse_report[0] = '\0';
 
             if (terminal.mouse.sgr_mode || terminal.mouse.mode == MOUSE_TRACKING_URXVT || terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
                 if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) report_button_code += 4;
-                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) report_button_code += 8; 
+                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) report_button_code += 8;
                 if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) report_button_code += 16;
 
                 if (terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
-                     snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%d%c", 
+                     snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%d%c",
                              report_button_code, pixel_x, pixel_y, pressed ? 'M' : 'm');
                 } else {
-                     snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%d%c", 
+                     snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%d%c",
                              report_button_code, cell_x, cell_y, pressed ? 'M' : 'm');
                 }
             } else if (terminal.mouse.mode >= MOUSE_TRACKING_VT200 && terminal.mouse.mode <= MOUSE_TRACKING_ANY_EVENT) {
-                int cb_button = pressed ? i : 3; 
+                int cb_button = pressed ? i : 3;
                 int cb = 32 + cb_button;
                 if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) cb += 4;
-                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) cb += 8; 
+                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) cb += 8;
                 if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) cb += 16;
-                snprintf(mouse_report, sizeof(mouse_report), "\x1B[M%c%c%c", 
+                snprintf(mouse_report, sizeof(mouse_report), "\x1B[M%c%c%c",
                         (char)cb, (char)(32 + cell_x), (char)(32 + cell_y));
             } else if (terminal.mouse.mode == MOUSE_TRACKING_X10) {
-                if (pressed) { 
+                if (pressed) {
                     int cb = 32 + i;
-                    snprintf(mouse_report, sizeof(mouse_report), "\x1B[M%c%c%c", 
+                    snprintf(mouse_report, sizeof(mouse_report), "\x1B[M%c%c%c",
                             (char)cb, (char)(32 + cell_x), (char)(32 + cell_y));
                 }
             }
             if (mouse_report[0]) QueueResponse(mouse_report);
         }
     }
-    
+
     // Handle wheel events
     if (wheel_move != 0) {
-        int report_button_code = (wheel_move > 0) ? 64 : 65; 
+        int report_button_code = (wheel_move > 0) ? 64 : 65;
         mouse_report[0] = '\0';
         if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) report_button_code += 4;
-        if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) report_button_code += 8; 
+        if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) report_button_code += 8;
         if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) report_button_code += 16;
 
         if (terminal.mouse.sgr_mode || terminal.mouse.mode == MOUSE_TRACKING_URXVT || terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
              if (terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
-                snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%dM", 
-                        report_button_code, pixel_x, pixel_y); 
+                snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%dM",
+                        report_button_code, pixel_x, pixel_y);
              } else {
-                snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%dM", 
+                snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%dM",
                         report_button_code, cell_x, cell_y);
              }
         } else if (terminal.mouse.mode >= MOUSE_TRACKING_VT200 && terminal.mouse.mode <= MOUSE_TRACKING_ANY_EVENT) {
-            int cb = 32 + ((wheel_move > 0) ? 0 : 1) + 64; 
+            int cb = 32 + ((wheel_move > 0) ? 0 : 1) + 64;
             if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) cb += 4;
-            if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) cb += 8; 
+            if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) cb += 8;
             if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) cb += 16;
-            snprintf(mouse_report, sizeof(mouse_report), "\x1B[M%c%c%c", 
+            snprintf(mouse_report, sizeof(mouse_report), "\x1B[M%c%c%c",
                     (char)cb, (char)(32 + cell_x), (char)(32 + cell_y));
         }
         if (mouse_report[0]) QueueResponse(mouse_report);
     }
 
     // Handle motion events
-    if (cell_x != terminal.mouse.last_x || cell_y != terminal.mouse.last_y || 
+    if (cell_x != terminal.mouse.last_x || cell_y != terminal.mouse.last_y ||
         (terminal.mouse.mode == MOUSE_TRACKING_PIXEL && (pixel_x != terminal.mouse.last_pixel_x || pixel_y != terminal.mouse.last_pixel_y))) {
         bool report_move = false;
         int sgr_motion_code = 35; // Motion no button for SGR
@@ -2510,12 +2633,12 @@ void UpdateMouse(void) {
         if (report_move) {
             mouse_report[0] = '\0';
             if (terminal.mouse.sgr_mode || terminal.mouse.mode == MOUSE_TRACKING_URXVT || terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
-                if(current_buttons_state[0]) sgr_motion_code = 32; 
-                else if(current_buttons_state[1]) sgr_motion_code = 33; 
-                else if(current_buttons_state[2]) sgr_motion_code = 34; 
+                if(current_buttons_state[0]) sgr_motion_code = 32;
+                else if(current_buttons_state[1]) sgr_motion_code = 33;
+                else if(current_buttons_state[2]) sgr_motion_code = 34;
 
                 if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) sgr_motion_code += 4;
-                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) sgr_motion_code += 8; 
+                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) sgr_motion_code += 8;
                 if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) sgr_motion_code += 16;
 
                 if (terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
@@ -2523,13 +2646,13 @@ void UpdateMouse(void) {
                 } else {
                     snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%dM", sgr_motion_code, cell_x, cell_y);
                 }
-            } else { 
-                if(current_buttons_state[0]) vt200_motion_cb = 32 + 0; 
-                else if(current_buttons_state[1]) vt200_motion_cb = 32 + 1; 
-                else if(current_buttons_state[2]) vt200_motion_cb = 32 + 2; 
-                
+            } else {
+                if(current_buttons_state[0]) vt200_motion_cb = 32 + 0;
+                else if(current_buttons_state[1]) vt200_motion_cb = 32 + 1;
+                else if(current_buttons_state[2]) vt200_motion_cb = 32 + 2;
+
                 if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) vt200_motion_cb += 4;
-                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) vt200_motion_cb += 8; 
+                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) vt200_motion_cb += 8;
                 if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) vt200_motion_cb += 16;
                 snprintf(mouse_report, sizeof(mouse_report), "\x1B[M%c%c%c", (char)vt200_motion_cb, (char)(32 + cell_x), (char)(32 + cell_y));
             }
@@ -2664,7 +2787,7 @@ void HandleControlKey(VTKeyEvent* event) {
                 event->sequence[0] = '\0';
                 break;
         }
-        
+
         if (event->sequence[0] != '\0') {
             event->sequence[1] = '\0';
         }
@@ -2691,7 +2814,7 @@ void HandleAltKey(VTKeyEvent* event) {
 void GenerateVTSequence(VTKeyEvent* event) {
     // Clear sequence
     memset(event->sequence, 0, sizeof(event->sequence));
-    
+
     // Handle special keys first
     switch (event->key_code) {
         // Arrow keys
@@ -2702,7 +2825,7 @@ void GenerateVTSequence(VTKeyEvent* event) {
                 strcpy(event->sequence, "\x1B[A"); // Normal mode
             }
             break;
-            
+
         case SIT_KEY_DOWN:
             if (terminal.vt_keyboard.cursor_key_mode) {
                 strcpy(event->sequence, "\x1BOB");
@@ -2710,7 +2833,7 @@ void GenerateVTSequence(VTKeyEvent* event) {
                 strcpy(event->sequence, "\x1B[B");
             }
             break;
-            
+
         case SIT_KEY_RIGHT:
             if (terminal.vt_keyboard.cursor_key_mode) {
                 strcpy(event->sequence, "\x1BOC");
@@ -2718,7 +2841,7 @@ void GenerateVTSequence(VTKeyEvent* event) {
                 strcpy(event->sequence, "\x1B[C");
             }
             break;
-            
+
         case SIT_KEY_LEFT:
             if (terminal.vt_keyboard.cursor_key_mode) {
                 strcpy(event->sequence, "\x1BOD");
@@ -2726,7 +2849,7 @@ void GenerateVTSequence(VTKeyEvent* event) {
                 strcpy(event->sequence, "\x1B[D");
             }
             break;
-            
+
         // Function keys
         case SIT_KEY_F1:  strcpy(event->sequence, "\x1BOP"); break;
         case SIT_KEY_F2:  strcpy(event->sequence, "\x1BOQ"); break;
@@ -2740,7 +2863,7 @@ void GenerateVTSequence(VTKeyEvent* event) {
         case SIT_KEY_F10: strcpy(event->sequence, "\x1B[21~"); break;
         case SIT_KEY_F11: strcpy(event->sequence, "\x1B[23~"); break;
         case SIT_KEY_F12: strcpy(event->sequence, "\x1B[24~"); break;
-            
+
         // Home/End
         case SIT_KEY_HOME:
             if (terminal.vt_keyboard.cursor_key_mode) {
@@ -2749,7 +2872,7 @@ void GenerateVTSequence(VTKeyEvent* event) {
                 strcpy(event->sequence, "\x1B[H");
             }
             break;
-            
+
         case SIT_KEY_END:
             if (terminal.vt_keyboard.cursor_key_mode) {
                 strcpy(event->sequence, "\x1BOF");
@@ -2757,57 +2880,57 @@ void GenerateVTSequence(VTKeyEvent* event) {
                 strcpy(event->sequence, "\x1B[F");
             }
             break;
-            
+
         // Page Up/Down
         case SIT_KEY_PAGE_UP:   strcpy(event->sequence, "\x1B[5~"); break;
         case SIT_KEY_PAGE_DOWN: strcpy(event->sequence, "\x1B[6~"); break;
-        
+
         // Insert/Delete
         case SIT_KEY_INSERT: strcpy(event->sequence, "\x1B[2~"); break;
         case SIT_KEY_DELETE: strcpy(event->sequence, "\x1B[3~"); break;
-        
+
         // Control characters
         case SIT_KEY_ENTER:     strcpy(event->sequence, "\r"); break;
         case SIT_KEY_TAB:       strcpy(event->sequence, "\t"); break;
         case SIT_KEY_BACKSPACE: strcpy(event->sequence, "\b"); break;
         case SIT_KEY_ESCAPE:    strcpy(event->sequence, "\x1B"); break;
-        
+
         // Keypad (when in application mode)
         case SIT_KEY_KP_0: case SIT_KEY_KP_1: case SIT_KEY_KP_2: case SIT_KEY_KP_3: case SIT_KEY_KP_4:
         case SIT_KEY_KP_5: case SIT_KEY_KP_6: case SIT_KEY_KP_7: case SIT_KEY_KP_8: case SIT_KEY_KP_9:
             if (terminal.vt_keyboard.keypad_mode) {
-                snprintf(event->sequence, sizeof(event->sequence), "\x1BO%c", 
+                snprintf(event->sequence, sizeof(event->sequence), "\x1BO%c",
                         'p' + (event->key_code - KEY_KP_0));
             } else {
-                snprintf(event->sequence, sizeof(event->sequence), "%c", 
+                snprintf(event->sequence, sizeof(event->sequence), "%c",
                         '0' + (event->key_code - KEY_KP_0));
             }
             break;
-            
+
         case SIT_KEY_KP_DECIMAL:
             strcpy(event->sequence, terminal.vt_keyboard.keypad_mode ? "\x1BOn" : ".");
             break;
-            
+
         case SIT_KEY_KP_ENTER:
             strcpy(event->sequence, terminal.vt_keyboard.keypad_mode ? "\x1BOM" : "\r");
             break;
-            
+
         case SIT_KEY_KP_ADD:
             strcpy(event->sequence, terminal.vt_keyboard.keypad_mode ? "\x1BOk" : "+");
             break;
-            
+
         case SIT_KEY_KP_SUBTRACT:
             strcpy(event->sequence, terminal.vt_keyboard.keypad_mode ? "\x1BOm" : "-");
             break;
-            
+
         case SIT_KEY_KP_MULTIPLY:
             strcpy(event->sequence, terminal.vt_keyboard.keypad_mode ? "\x1BOj" : "*");
             break;
-            
+
         case SIT_KEY_KP_DIVIDE:
             strcpy(event->sequence, terminal.vt_keyboard.keypad_mode ? "\x1BOo" : "/");
             break;
-            
+
         default:
             // Handle regular keys with modifiers
             if (event->ctrl) {
@@ -3074,11 +3197,11 @@ void ProcessPipeline(void) {
     if (terminal.pipeline_count == 0) {
         return;
     }
-    
+
     double start_time = SituationTimerGetTime();
     int chars_processed = 0;
     int target_chars = terminal.VTperformance.chars_per_frame;
-    
+
     // Adaptive processing based on buffer level
     if (terminal.pipeline_count > terminal.VTperformance.burst_threshold) {
         target_chars *= 2; // Burst mode
@@ -3087,26 +3210,26 @@ void ProcessPipeline(void) {
         target_chars = terminal.pipeline_count; // Process all remaining
         terminal.VTperformance.burst_mode = false;
     }
-    
+
     while (chars_processed < target_chars && terminal.pipeline_count > 0) {
         // Check time budget
         if (SituationTimerGetTime() - start_time > terminal.VTperformance.time_budget) {
             break;
         }
-        
+
         unsigned char ch = terminal.input_pipeline[terminal.pipeline_tail];
         terminal.pipeline_tail = (terminal.pipeline_tail + 1) % sizeof(terminal.input_pipeline);
         terminal.pipeline_count--;
-        
+
         ProcessChar(ch);
         chars_processed++;
     }
-    
+
     // Update performance metrics
     if (chars_processed > 0) {
         double total_time = SituationTimerGetTime() - start_time;
         double time_per_char = total_time / chars_processed;
-        terminal.VTperformance.avg_process_time = 
+        terminal.VTperformance.avg_process_time =
             terminal.VTperformance.avg_process_time * 0.9 + time_per_char * 0.1;
     }
 }
@@ -3117,9 +3240,9 @@ void ProcessPipeline(void) {
 
 void LogUnsupportedSequence(const char* sequence) {
     if (!terminal.options.log_unsupported) return;
-    
+
     terminal.conformance.compliance.unsupported_sequences++;
-    
+
     // Use strcpy instead of strncpy to avoid truncation warnings
     size_t len = strlen(sequence);
     if (len >= sizeof(terminal.conformance.compliance.last_unsupported)) {
@@ -3127,13 +3250,13 @@ void LogUnsupportedSequence(const char* sequence) {
     }
     memcpy(terminal.conformance.compliance.last_unsupported, sequence, len);
     terminal.conformance.compliance.last_unsupported[len] = '\0';
-    
+
     if (terminal.options.debug_sequences) {
         char debug_msg[128];
-        snprintf(debug_msg, sizeof(debug_msg), 
-                "Unsupported: %s (total: %d)\n", 
+        snprintf(debug_msg, sizeof(debug_msg),
+                "Unsupported: %s (total: %d)\n",
                 sequence, terminal.conformance.compliance.unsupported_sequences);
-        
+
         if (response_callback) {
             response_callback(debug_msg, strlen(debug_msg));
         }
@@ -3147,27 +3270,27 @@ void LogUnsupportedSequence(const char* sequence) {
 int ParseCSIParams(const char* params, int* out_params, int max_params) {
     terminal.param_count = 0;
     memset(terminal.escape_params, 0, sizeof(terminal.escape_params));
-    
+
     if (!params || strlen(params) == 0) {
         return 0;
     }
-    
+
     const char* parse_start = params;
     if (params[0] == '?') {
         parse_start = params + 1;
     }
-    
+
     if (strlen(parse_start) == 0) {
         return 0;
     }
-    
+
     char param_buffer[512];
     strncpy(param_buffer, parse_start, sizeof(param_buffer) - 1);
     param_buffer[sizeof(param_buffer) - 1] = '\0';
-    
+
     char* saveptr;
     char* token = strtok_r(param_buffer, ";", &saveptr);
-    
+
     while (token != NULL && terminal.param_count < max_params) {
         if (strlen(token) == 0) {
             terminal.escape_params[terminal.param_count] = 0;
@@ -3220,7 +3343,7 @@ int GetCSIParam(int index, int default_value) {
 void ExecuteCUU(void) { // Cursor Up
     int n = GetCSIParam(0, 1);
     int new_y = terminal.cursor.y - n;
-    
+
     if (terminal.dec_modes.origin_mode) {
         terminal.cursor.y = (new_y < terminal.scroll_top) ? terminal.scroll_top : new_y;
     } else {
@@ -3231,7 +3354,7 @@ void ExecuteCUU(void) { // Cursor Up
 void ExecuteCUD(void) { // Cursor Down
     int n = GetCSIParam(0, 1);
     int new_y = terminal.cursor.y + n;
-    
+
     if (terminal.dec_modes.origin_mode) {
         terminal.cursor.y = (new_y > terminal.scroll_bottom) ? terminal.scroll_bottom : new_y;
     } else {
@@ -3269,15 +3392,15 @@ void ExecuteCHA(void) { // Cursor Horizontal Absolute
 void ExecuteCUP(void) { // Cursor Position
     int row = GetCSIParam(0, 1) - 1; // Convert to 0-based
     int col = GetCSIParam(1, 1) - 1;
-    
+
     if (terminal.dec_modes.origin_mode) {
         row += terminal.scroll_top;
         col += terminal.left_margin;
     }
-    
+
     terminal.cursor.y = (row < 0) ? 0 : (row >= DEFAULT_TERM_HEIGHT) ? DEFAULT_TERM_HEIGHT - 1 : row;
     terminal.cursor.x = (col < 0) ? 0 : (col >= DEFAULT_TERM_WIDTH) ? DEFAULT_TERM_WIDTH - 1 : col;
-    
+
     // Clamp to scrolling region if in origin mode
     if (terminal.dec_modes.origin_mode) {
         if (terminal.cursor.y < terminal.scroll_top) terminal.cursor.y = terminal.scroll_top;
@@ -3289,10 +3412,10 @@ void ExecuteCUP(void) { // Cursor Position
 
 void ExecuteVPA(void) { // Vertical Position Absolute
     int n = GetCSIParam(0, 1) - 1; // Convert to 0-based
-    
+
     if (terminal.dec_modes.origin_mode) {
         n += terminal.scroll_top;
-        terminal.cursor.y = (n < terminal.scroll_top) ? terminal.scroll_top : 
+        terminal.cursor.y = (n < terminal.scroll_top) ? terminal.scroll_top :
                            (n > terminal.scroll_bottom) ? terminal.scroll_bottom : n;
     } else {
         terminal.cursor.y = (n < 0) ? 0 : (n >= DEFAULT_TERM_HEIGHT) ? DEFAULT_TERM_HEIGHT - 1 : n;
@@ -3305,7 +3428,7 @@ void ExecuteVPA(void) { // Vertical Position Absolute
 
 void ExecuteED(void) { // Erase in Display
     int n = GetCSIParam(0, 0);
-    
+
     switch (n) {
         case 0: // Clear from cursor to end of screen
             // Clear current line from cursor
@@ -3319,7 +3442,7 @@ void ExecuteED(void) { // Erase in Display
                 }
             }
             break;
-            
+
         case 1: // Clear from beginning of screen to cursor
             // Clear lines before cursor
             for (int y = 0; y < terminal.cursor.y; y++) {
@@ -3332,7 +3455,7 @@ void ExecuteED(void) { // Erase in Display
                 ClearCell(&terminal.screen[terminal.cursor.y][x]);
             }
             break;
-            
+
         case 2: // Clear entire screen
         case 3: // Clear entire screen and scrollback (xterm extension)
             for (int y = 0; y < DEFAULT_TERM_HEIGHT; y++) {
@@ -3341,7 +3464,7 @@ void ExecuteED(void) { // Erase in Display
                 }
             }
             break;
-            
+
         default:
             LogUnsupportedSequence("Unknown ED parameter");
             break;
@@ -3350,26 +3473,26 @@ void ExecuteED(void) { // Erase in Display
 
 void ExecuteEL(void) { // Erase in Line
     int n = GetCSIParam(0, 0);
-    
+
     switch (n) {
         case 0: // Clear from cursor to end of line
             for (int x = terminal.cursor.x; x < DEFAULT_TERM_WIDTH; x++) {
                 ClearCell(&terminal.screen[terminal.cursor.y][x]);
             }
             break;
-            
+
         case 1: // Clear from beginning of line to cursor
             for (int x = 0; x <= terminal.cursor.x; x++) {
                 ClearCell(&terminal.screen[terminal.cursor.y][x]);
             }
             break;
-            
+
         case 2: // Clear entire line
             for (int x = 0; x < DEFAULT_TERM_WIDTH; x++) {
                 ClearCell(&terminal.screen[terminal.cursor.y][x]);
             }
             break;
-            
+
         default:
             LogUnsupportedSequence("Unknown EL parameter");
             break;
@@ -3378,7 +3501,7 @@ void ExecuteEL(void) { // Erase in Line
 
 void ExecuteECH(void) { // Erase Character
     int n = GetCSIParam(0, 1);
-    
+
     for (int i = 0; i < n && terminal.cursor.x + i < DEFAULT_TERM_WIDTH; i++) {
         ClearCell(&terminal.screen[terminal.cursor.y][terminal.cursor.x + i]);
     }
@@ -3428,10 +3551,10 @@ void ExecuteSD(void) { // Scroll Down
 
 int ProcessExtendedColor(ExtendedColor* color, int param_index) {
     int consumed = 0;
-    
+
     if (param_index + 1 < terminal.param_count) {
         int color_type = terminal.escape_params[param_index + 1];
-        
+
         if (color_type == 5 && param_index + 2 < terminal.param_count) {
             // 256-color mode: ESC[38;5;n or ESC[48;5;n
             int color_index = terminal.escape_params[param_index + 2];
@@ -3440,19 +3563,19 @@ int ProcessExtendedColor(ExtendedColor* color, int param_index) {
                 color->value.index = color_index;
             }
             consumed = 2;
-            
+
         } else if (color_type == 2 && param_index + 4 < terminal.param_count) {
             // True color mode: ESC[38;2;r;g;b or ESC[48;2;r;g;b
             int r = terminal.escape_params[param_index + 2] & 0xFF;
             int g = terminal.escape_params[param_index + 3] & 0xFF;
             int b = terminal.escape_params[param_index + 4] & 0xFF;
-            
+
             color->color_mode = 1;
             color->value.rgb = (RGB_Color){r, g, b, 255};
             consumed = 4;
         }
     }
-    
+
     return consumed;
 }
 
@@ -3461,7 +3584,7 @@ void ResetAllAttributes(void) {
     terminal.current_fg.value.index = COLOR_WHITE;
     terminal.current_bg.color_mode = 0;
     terminal.current_bg.value.index = COLOR_BLACK;
-    
+
     terminal.bold_mode = false;
     terminal.faint_mode = false;
     terminal.italic_mode = false;
@@ -3481,89 +3604,89 @@ void ExecuteSGR(void) {
         ResetAllAttributes();
         return;
     }
-    
+
     for (int i = 0; i < terminal.param_count; i++) {
         int param = terminal.escape_params[i];
-        
+
         switch (param) {
             case 0: // Reset all
                 ResetAllAttributes();
                 break;
-                
+
             // Intensity
             case 1: terminal.bold_mode = true; break;
             case 2: terminal.faint_mode = true; break;
             case 22: terminal.bold_mode = terminal.faint_mode = false; break;
-                
+
             // Style
             case 3: terminal.italic_mode = true; break;
             case 23: terminal.italic_mode = false; break;
-            
+
             case 4: terminal.underline_mode = true; break;
             case 21: terminal.double_underline_mode = true; break;
             case 24: terminal.underline_mode = terminal.double_underline_mode = false; break;
-            
+
             case 5: case 6: terminal.blink_mode = true; break;
             case 25: terminal.blink_mode = false; break;
-            
+
             case 7: terminal.reverse_mode = true; break;
             case 27: terminal.reverse_mode = false; break;
-            
+
             case 8: terminal.conceal_mode = true; break;
             case 28: terminal.conceal_mode = false; break;
-            
+
             case 9: terminal.strikethrough_mode = true; break;
             case 29: terminal.strikethrough_mode = false; break;
-            
+
             case 53: terminal.overline_mode = true; break;
             case 55: terminal.overline_mode = false; break;
-            
+
             // Standard colors (30-37, 40-47)
             case 30: case 31: case 32: case 33:
             case 34: case 35: case 36: case 37:
                 terminal.current_fg.color_mode = 0;
                 terminal.current_fg.value.index = param - 30;
                 break;
-                
+
             case 40: case 41: case 42: case 43:
             case 44: case 45: case 46: case 47:
                 terminal.current_bg.color_mode = 0;
                 terminal.current_bg.value.index = param - 40;
                 break;
-                
+
             // Bright colors (90-97, 100-107)
             case 90: case 91: case 92: case 93:
             case 94: case 95: case 96: case 97:
                 terminal.current_fg.color_mode = 0;
                 terminal.current_fg.value.index = param - 90 + 8;
                 break;
-                
+
             case 100: case 101: case 102: case 103:
             case 104: case 105: case 106: case 107:
                 terminal.current_bg.color_mode = 0;
                 terminal.current_bg.value.index = param - 100 + 8;
                 break;
-                
+
             // Extended colors
             case 38: // Set foreground color
                 i += ProcessExtendedColor(&terminal.current_fg, i);
                 break;
-                
+
             case 48: // Set background color
                 i += ProcessExtendedColor(&terminal.current_bg, i);
                 break;
-                
+
             // Default colors
             case 39:
                 terminal.current_fg.color_mode = 0;
                 terminal.current_fg.value.index = COLOR_WHITE;
                 break;
-                
+
             case 49:
                 terminal.current_bg.color_mode = 0;
                 terminal.current_bg.value.index = COLOR_BLACK;
                 break;
-                
+
             default:
                 if (terminal.options.debug_sequences) {
                     char debug_msg[64];
@@ -3612,7 +3735,7 @@ void SwitchScreenBuffer(bool to_alternate) {
             }
         }
         terminal.dec_modes.alternate_screen = true;
-        
+
     } else if (!to_alternate && terminal.dec_modes.alternate_screen) {
         // Restore screen from alternate buffer
         memcpy(terminal.screen, terminal.alt_screen, sizeof(terminal.screen));
@@ -3637,29 +3760,29 @@ static void SetTerminalModeInternal(int mode, bool enable, bool private_mode) {
                 terminal.dec_modes.application_cursor_keys = enable;
                 terminal.vt_keyboard.cursor_key_mode = enable;
                 break;
-                
+
             case 2: // DECANM - ANSI Mode
                 // Switch between VT52 and ANSI mode
                 if (!enable && terminal.conformance.features.vt52_mode) {
                     terminal.parse_state = PARSE_VT52;
                 }
                 break;
-                
+
             case 3: // DECCOLM - Column Mode
                 // Set 132-column mode (resize not fully implemented)
                 terminal.dec_modes.column_mode_132 = enable;
                 break;
-                
+
             case 4: // DECSCLM - Scrolling Mode
                 // Enable/disable smooth scrolling
                 terminal.dec_modes.smooth_scroll = enable;
                 break;
-                
+
             case 5: // DECSCNM - Screen Mode
                 // Enable/disable reverse video
                 terminal.dec_modes.reverse_video = enable;
                 break;
-                
+
             case 6: // DECOM - Origin Mode
                 // Enable/disable origin mode, adjust cursor position
                 terminal.dec_modes.origin_mode = enable;
@@ -3671,44 +3794,44 @@ static void SetTerminalModeInternal(int mode, bool enable, bool private_mode) {
                     terminal.cursor.y = 0;
                 }
                 break;
-                
+
             case 7: // DECAWM - Auto Wrap Mode
                 // Enable/disable auto wrap
                 terminal.dec_modes.auto_wrap_mode = enable;
                 break;
-                
+
             case 8: // DECARM - Auto Repeat Mode
                 // Enable/disable auto repeat keys
                 terminal.dec_modes.auto_repeat_keys = enable;
                 break;
-                
+
             case 9: // X10 Mouse Tracking
                 // Enable/disable X10 mouse tracking
                 terminal.mouse.mode = enable ? MOUSE_TRACKING_X10 : MOUSE_TRACKING_OFF;
                 terminal.mouse.enabled = enable;
                 break;
-                
+
             case 12: // DECSET 12 - Local Echo / Send/Receive
                 // Enable/disable local echo mode
                 terminal.dec_modes.local_echo = enable;
                 break;
-                
+
             case 25: // DECTCEM - Text Cursor Enable Mode
                 // Enable/disable text cursor visibility
                 terminal.dec_modes.cursor_visible = enable;
                 terminal.cursor.visible = enable;
                 break;
-                
+
             case 40: // Allow 80/132 Column Mode
                 // Placeholder for column mode switching (resize not implemented)
                 break;
-                
+
             case 47: // Alternate Screen Buffer
             case 1047: // Alternate Screen Buffer (xterm)
                 // Switch between main and alternate screen buffers
                 SwitchScreenBuffer(enable);
                 break;
-                
+
             case 1048: // Save/Restore Cursor
                 // Save or restore cursor state
                 if (enable) {
@@ -3718,7 +3841,7 @@ static void SetTerminalModeInternal(int mode, bool enable, bool private_mode) {
                     terminal.cursor = terminal.saved_cursor;
                 }
                 break;
-                
+
             case 1049: // Alternate Screen + Save/Restore Cursor
                 // Save/restore cursor and switch screen buffer
                 if (enable) {
@@ -3735,68 +3858,68 @@ static void SetTerminalModeInternal(int mode, bool enable, bool private_mode) {
                     }
                 }
                 break;
-                
+
             case 1000: // VT200 Mouse Tracking
                 // Enable/disable VT200 mouse tracking
                 terminal.mouse.mode = enable ? (terminal.mouse.sgr_mode ? MOUSE_TRACKING_SGR : MOUSE_TRACKING_VT200) : MOUSE_TRACKING_OFF;
                 terminal.mouse.enabled = enable;
                 break;
-                
+
             case 1001: // VT200 Highlight Mouse Tracking
                 // Enable/disable VT200 highlight tracking
                 terminal.mouse.mode = enable ? MOUSE_TRACKING_VT200_HIGHLIGHT : MOUSE_TRACKING_OFF;
                 terminal.mouse.enabled = enable;
                 break;
-                
+
             case 1002: // Button Event Mouse Tracking
                 // Enable/disable button-event tracking
                 terminal.mouse.mode = enable ? MOUSE_TRACKING_BTN_EVENT : MOUSE_TRACKING_OFF;
                 terminal.mouse.enabled = enable;
                 break;
-                
+
             case 1003: // Any Event Mouse Tracking
                 // Enable/disable any-event tracking
                 terminal.mouse.mode = enable ? MOUSE_TRACKING_ANY_EVENT : MOUSE_TRACKING_OFF;
                 terminal.mouse.enabled = enable;
                 break;
-                
+
             case 1004: // Focus In/Out Events
                 // Enable/disable focus tracking
                 terminal.mouse.focus_tracking = enable;
                 break;
-                
+
             case 1005: // UTF-8 Mouse Mode
                 // Placeholder for UTF-8 mouse encoding (not implemented)
                 break;
-                
+
             case 1006: // SGR Mouse Mode
                 // Enable/disable SGR mouse reporting
                 terminal.mouse.sgr_mode = enable;
-                if (enable && terminal.mouse.mode != MOUSE_TRACKING_OFF && 
+                if (enable && terminal.mouse.mode != MOUSE_TRACKING_OFF &&
                     terminal.mouse.mode != MOUSE_TRACKING_URXVT && terminal.mouse.mode != MOUSE_TRACKING_PIXEL) {
                     terminal.mouse.mode = MOUSE_TRACKING_SGR;
                 } else if (!enable && terminal.mouse.mode == MOUSE_TRACKING_SGR) {
                     terminal.mouse.mode = MOUSE_TRACKING_VT200;
                 }
                 break;
-                
+
             case 1015: // URXVT Mouse Mode
                 // Enable/disable URXVT mouse reporting
                 terminal.mouse.mode = enable ? MOUSE_TRACKING_URXVT : MOUSE_TRACKING_OFF;
                 terminal.mouse.enabled = enable;
                 break;
-                
+
             case 1016: // Pixel Position Mouse Mode
                 // Enable/disable pixel position mouse reporting
                 terminal.mouse.mode = enable ? MOUSE_TRACKING_PIXEL : MOUSE_TRACKING_OFF;
                 terminal.mouse.enabled = enable;
                 break;
-                
+
             case 2004: // Bracketed Paste Mode
                 // Enable/disable bracketed paste
                 terminal.bracketed_paste.enabled = enable;
                 break;
-                
+
             default:
                 // Log unsupported DEC modes
                 if (terminal.options.debug_sequences) {
@@ -3813,12 +3936,12 @@ static void SetTerminalModeInternal(int mode, bool enable, bool private_mode) {
                 // Enable/disable insert mode
                 terminal.dec_modes.insert_mode = enable;
                 break;
-                
+
             case 20: // LNM - Line Feed/New Line Mode
                 // Enable/disable line feed/new line mode
                 terminal.ansi_modes.line_feed_new_line = enable;
                 break;
-                
+
             default:
                 // Log unsupported ANSI modes
                 if (terminal.options.debug_sequences) {
@@ -4070,7 +4193,7 @@ void QueueResponse(const char* response) {
             len = sizeof(terminal.answerback_buffer) - 1;
         }
     }
-    
+
     if (len > 0) {
         memcpy(terminal.answerback_buffer + terminal.response_length, response, len);
         terminal.response_length += len;
@@ -4147,7 +4270,7 @@ static void ExecuteDSR(void) {
             case 56: QueueResponse("\x1B[?56;0n"); break;
             case 62: {
                 char response[32];
-                snprintf(response, sizeof(response), "\x1B[?62;%zu;%zun", 
+                snprintf(response, sizeof(response), "\x1B[?62;%zu;%zun",
                          terminal.macro_space.used, terminal.macro_space.total);
                 QueueResponse(response);
                 break;
@@ -4156,7 +4279,7 @@ static void ExecuteDSR(void) {
                 int page = (terminal.param_count > 1) ? terminal.escape_params[1] : 1;
                 terminal.checksum.last_checksum = ComputeScreenChecksum(page);
                 char response[64];
-                snprintf(response, sizeof(response), "\x1B[?63;%d;%d;%04Xn", 
+                snprintf(response, sizeof(response), "\x1B[?63;%d;%d;%04Xn",
                          page, terminal.checksum.algorithm, terminal.checksum.last_checksum);
                 QueueResponse(response);
                 break;
@@ -4177,12 +4300,12 @@ static void ExecuteDSR(void) {
 void ExecuteDECSTBM(void) { // Set Top and Bottom Margins
     int top = GetCSIParam(0, 1) - 1;    // Convert to 0-based
     int bottom = GetCSIParam(1, DEFAULT_TERM_HEIGHT) - 1;
-    
+
     // Validate parameters
     if (top >= 0 && top < DEFAULT_TERM_HEIGHT && bottom >= top && bottom < DEFAULT_TERM_HEIGHT) {
         terminal.scroll_top = top;
         terminal.scroll_bottom = bottom;
-        
+
         // Move cursor to home position
         if (terminal.dec_modes.origin_mode) {
             terminal.cursor.x = terminal.left_margin;
@@ -4199,15 +4322,15 @@ void ExecuteDECSLRM(void) { // Set Left and Right Margins (VT420)
         LogUnsupportedSequence("DECSLRM requires VT420 mode");
         return;
     }
-    
+
     int left = GetCSIParam(0, 1) - 1;    // Convert to 0-based
     int right = GetCSIParam(1, DEFAULT_TERM_WIDTH) - 1;
-    
+
     // Validate parameters
     if (left >= 0 && left < DEFAULT_TERM_WIDTH && right >= left && right < DEFAULT_TERM_WIDTH) {
         terminal.left_margin = left;
         terminal.right_margin = right;
-        
+
         // Move cursor to home position
         if (terminal.dec_modes.origin_mode) {
             terminal.cursor.x = terminal.left_margin;
@@ -4262,53 +4385,53 @@ static void ExecuteDECRQPSR(void) {
 
 void ExecuteDECLL(void) { // Load LEDs
     int n = GetCSIParam(0, 0);
-    
+
     // DECLL - Load LEDs (VT220+ feature)
     // Parameters: 0=all off, 1=LED1 on, 2=LED2 on, 4=LED3 on, 8=LED4 on
     // Modern terminals don't have LEDs, so this is mostly ignored
-    
+
     if (terminal.options.debug_sequences) {
         char debug_msg[64];
         snprintf(debug_msg, sizeof(debug_msg), "DECLL: LED state %d", n);
         LogUnsupportedSequence(debug_msg);
     }
-    
+
     // Could be used for visual indicators in a GUI implementation
     // For now, just acknowledge the command
 }
 
 void ExecuteDECSTR(void) { // Soft Terminal Reset
     // Reset terminal to power-on defaults but keep communication settings
-    
+
     // Reset display modes
     terminal.dec_modes.cursor_visible = true;
     terminal.dec_modes.auto_wrap_mode = true;
     terminal.dec_modes.origin_mode = false;
     terminal.dec_modes.insert_mode = false;
     terminal.dec_modes.application_cursor_keys = false;
-    
+
     // Reset character attributes
     ResetAllAttributes();
-    
+
     // Reset scrolling region
     terminal.scroll_top = 0;
     terminal.scroll_bottom = DEFAULT_TERM_HEIGHT - 1;
     terminal.left_margin = 0;
     terminal.right_margin = DEFAULT_TERM_WIDTH - 1;
-    
+
     // Reset character sets
     InitCharacterSets();
-    
+
     // Reset tab stops
     InitTabStops();
-    
+
     // Home cursor
     terminal.cursor.x = 0;
     terminal.cursor.y = 0;
-    
+
     // Clear saved cursor
     terminal.saved_cursor_valid = false;
-    
+
     if (terminal.options.debug_sequences) {
         LogUnsupportedSequence("DECSTR: Soft terminal reset");
     }
@@ -4318,7 +4441,7 @@ void ExecuteDECSCL(void) { // Select Conformance Level
     int level = GetCSIParam(0, 61);
     int c1_control = GetCSIParam(1, 0);
     (void)c1_control;  // Mark as intentionally unused
-    
+
     // Set conformance level based on parameter
     switch (level) {
         case 61: SetVTLevel(VT_LEVEL_100); break;
@@ -4333,7 +4456,7 @@ void ExecuteDECSCL(void) { // Select Conformance Level
             }
             break;
     }
-    
+
     // c1_control: 0=8-bit controls, 1=7-bit controls, 2=8-bit controls
     // Modern implementations typically use 7-bit controls
 }
@@ -4342,10 +4465,10 @@ void ExecuteDECSCL(void) { // Select Conformance Level
 void ExecuteDECRQM(void) { // Request Mode
     int mode = GetCSIParam(0, 0);
     bool private_mode = (terminal.escape_buffer[0] == '?');
-    
+
     char response[32];
     int mode_state = 0; // 0=not recognized, 1=set, 2=reset, 3=permanently set, 4=permanently reset
-    
+
     if (private_mode) {
         // Check DEC private modes
         switch (mode) {
@@ -4431,13 +4554,13 @@ void ExecuteDECRQM(void) { // Request Mode
         }
         snprintf(response, sizeof(response), "\x1B[%d;%d$y", mode, mode_state);
     }
-    
+
     QueueResponse(response);
 }
 
 void ExecuteDECSCUSR(void) { // Set Cursor Style
     int style = GetCSIParam(0, 1);
-    
+
     switch (style) {
         case 0: case 1: // Default or blinking block
             terminal.cursor.shape = CURSOR_BLOCK_BLINK;
@@ -4476,7 +4599,7 @@ void ExecuteDECSCUSR(void) { // Set Cursor Style
 void ExecuteCSI_P(void) { // Various P commands
     // This handles CSI sequences ending in 'p' with different intermediates
     char* params = terminal.escape_buffer;
-    
+
     if (strstr(params, "!") != NULL) {
         // DECSTR - Soft Terminal Reset
         ExecuteDECSTR();
@@ -4502,7 +4625,7 @@ void ExecuteCSI_P(void) { // Various P commands
 
 void ExecuteWindowOps(void) { // Window manipulation (xterm extension)
     int operation = GetCSIParam(0, 0);
-    
+
     switch (operation) {
         case 1: // De-iconify window
         case 2: // Iconify window
@@ -4519,16 +4642,16 @@ void ExecuteWindowOps(void) { // Window manipulation (xterm extension)
                 LogUnsupportedSequence(debug_msg);
             }
             break;
-            
+
         case 9: // Maximize/restore window
         case 10: // Full-screen toggle
             // Modern security restrictions typically block these
             break;
-            
+
         case 11: // Report window state
             QueueResponse("\x1B[1t"); // Always report "not iconified"
             break;
-            
+
         case 13: // Report window position
         case 14: // Report window size in pixels
         case 18: // Report text area size
@@ -4542,16 +4665,16 @@ void ExecuteWindowOps(void) { // Window manipulation (xterm extension)
                 QueueResponse(response);
             }
             break;
-            
+
         case 19: // Report screen size
             {
                 char response[32];
-                snprintf(response, sizeof(response), "\x1B[9;%d;%dt", 
+                snprintf(response, sizeof(response), "\x1B[9;%d;%dt",
                         GetScreenHeight() / DEFAULT_CHAR_HEIGHT, GetScreenWidth() / DEFAULT_CHAR_WIDTH);
                 QueueResponse(response);
             }
             break;
-            
+
         case 20: // Report icon label
             {
                 char response[256];
@@ -4559,7 +4682,7 @@ void ExecuteWindowOps(void) { // Window manipulation (xterm extension)
                 QueueResponse(response);
             }
             break;
-            
+
         case 21: // Report window title
             {
                 char response[256];
@@ -4567,7 +4690,7 @@ void ExecuteWindowOps(void) { // Window manipulation (xterm extension)
                 QueueResponse(response);
             }
             break;
-            
+
         default:
             if (terminal.options.debug_sequences) {
                 char debug_msg[64];
@@ -4587,7 +4710,7 @@ void ExecuteRestoreCursor(void) { // Restore cursor (non-ANSI.SYS)
 
 void ExecuteDECREQTPARM(void) { // Request Terminal Parameters
     int parm = GetCSIParam(0, 0);
-    
+
     char response[32];
     // Report terminal parameters
     // Format: CSI sol ; par ; nbits ; xspeed ; rspeed ; clkmul ; flags x
@@ -4598,7 +4721,7 @@ void ExecuteDECREQTPARM(void) { // Request Terminal Parameters
 
 void ExecuteDECTST(void) { // Invoke Confidence Test
     int test = GetCSIParam(0, 0);
-    
+
     switch (test) {
         case 1: // Power-up self test
         case 2: // Data loop back test
@@ -4612,7 +4735,7 @@ void ExecuteDECTST(void) { // Invoke Confidence Test
                 LogUnsupportedSequence(debug_msg);
             }
             break;
-            
+
         default:
             if (terminal.options.debug_sequences) {
                 char debug_msg[64];
@@ -4638,7 +4761,7 @@ void ExecuteDECVERP(void) { // Verify Parity
 // Complete the missing API functions from earlier phases
 void ExecuteTBC(void) { // Tab Clear
     int n = GetCSIParam(0, 0);
-    
+
     switch (n) {
         case 0: // Clear tab stop at current column
             ClearTabStop(terminal.cursor.x);
@@ -4651,7 +4774,7 @@ void ExecuteTBC(void) { // Tab Clear
 
 void ExecuteCTC(void) { // Cursor Tabulation Control
     int n = GetCSIParam(0, 0);
-    
+
     switch (n) {
         case 0: // Set tab stop at current column
             SetTabStop(terminal.cursor.x);
@@ -4979,11 +5102,11 @@ void VTSetWindowTitle(const char* title) {
     strncpy(terminal.title.window_title, title, MAX_TITLE_LENGTH - 1);
     terminal.title.window_title[MAX_TITLE_LENGTH - 1] = '\0';
     terminal.title.title_changed = true;
-    
+
     if (title_callback) {
         title_callback(terminal.title.window_title, false);
     }
-    
+
     // Also set Raylib window title
     SetWindowTitle(terminal.title.window_title);
 }
@@ -4992,7 +5115,7 @@ void SetIconTitle(const char* title) {
     strncpy(terminal.title.icon_title, title, MAX_TITLE_LENGTH - 1);
     terminal.title.icon_title[MAX_TITLE_LENGTH - 1] = '\0';
     terminal.title.icon_changed = true;
-    
+
     if (title_callback) {
         title_callback(terminal.title.icon_title, true);
     }
@@ -5017,10 +5140,10 @@ void ProcessColorCommand(const char* data) {
     // Format: color_index;rgb:rr/gg/bb or color_index;?
     char* semicolon = strchr(data, ';');
     if (!semicolon) return;
-    
+
     int color_index = atoi(data);
     char* color_spec = semicolon + 1;
-    
+
     if (color_spec[0] == '?') {
         // Query color
         char response[128];
@@ -5050,21 +5173,21 @@ void ResetColorPalette(const char* data) {
         // Reset specific colors (comma-separated list)
         char* data_copy = strdup(data);
         char* token = strtok(data_copy, ";");
-        
+
         while (token != NULL) {
             int color_index = atoi(token);
             if (color_index >= 0 && color_index < 16) {
                 // Reset to default ANSI color
                 color_palette[color_index] = (RGB_Color){
-                    ansi_colors[color_index].r, 
-                    ansi_colors[color_index].g, 
-                    ansi_colors[color_index].b, 
+                    ansi_colors[color_index].r,
+                    ansi_colors[color_index].g,
+                    ansi_colors[color_index].b,
                     255
                 };
             }
             token = strtok(NULL, ";");
         }
-        
+
         free(data_copy);
     }
 }
@@ -5078,7 +5201,7 @@ void ProcessForegroundColorCommand(const char* data) {
             RGB_Color c = color_palette[fg.value.index];
             snprintf(response, sizeof(response), "\x1B]10;rgb:%02x/%02x/%02x\x1B\\", c.r, c.g, c.b);
         } else if (fg.color_mode == 1) {
-            snprintf(response, sizeof(response), "\x1B]10;rgb:%02x/%02x/%02x\x1B\\", 
+            snprintf(response, sizeof(response), "\x1B]10;rgb:%02x/%02x/%02x\x1B\\",
                     fg.value.rgb.r, fg.value.rgb.g, fg.value.rgb.b);
         }
         QueueResponse(response);
@@ -5095,7 +5218,7 @@ void ProcessBackgroundColorCommand(const char* data) {
             RGB_Color c = color_palette[bg.value.index];
             snprintf(response, sizeof(response), "\x1B]11;rgb:%02x/%02x/%02x\x1B\\", c.r, c.g, c.b);
         } else if (bg.color_mode == 1) {
-            snprintf(response, sizeof(response), "\x1B]11;rgb:%02x/%02x/%02x\x1B\\", 
+            snprintf(response, sizeof(response), "\x1B]11;rgb:%02x/%02x/%02x\x1B\\",
                     bg.value.rgb.r, bg.value.rgb.g, bg.value.rgb.b);
         }
         QueueResponse(response);
@@ -5111,7 +5234,7 @@ void ProcessCursorColorCommand(const char* data) {
             RGB_Color c = color_palette[cursor_color.value.index];
             snprintf(response, sizeof(response), "\x1B]12;rgb:%02x/%02x/%02x\x1B\\", c.r, c.g, c.b);
         } else if (cursor_color.color_mode == 1) {
-            snprintf(response, sizeof(response), "\x1B]12;rgb:%02x/%02x/%02x\x1B\\", 
+            snprintf(response, sizeof(response), "\x1B]12;rgb:%02x/%02x/%02x\x1B\\",
                     cursor_color.value.rgb.r, cursor_color.value.rgb.g, cursor_color.value.rgb.b);
         }
         QueueResponse(response);
@@ -5128,7 +5251,7 @@ void ProcessFontCommand(const char* data) {
 void ProcessClipboardCommand(const char* data) {
     // Clipboard operations: c;base64data or c;?
     char clipboard_type = data[0];
-    
+
     if (data[1] == ';' && data[2] == '?') {
         // Query clipboard
         char response[64];
@@ -5144,68 +5267,68 @@ void ProcessClipboardCommand(const char* data) {
 
 void ExecuteOSCCommand(void) {
     char* params = terminal.escape_buffer;
-    
+
     // Find the command number
     char* semicolon = strchr(params, ';');
     if (!semicolon) {
         LogUnsupportedSequence("Malformed OSC sequence");
         return;
     }
-    
+
     *semicolon = '\0';
     int command = atoi(params);
     char* data = semicolon + 1;
-    
+
     switch (command) {
         case 0: // Set window and icon title
         case 2: // Set window title
             VTSetWindowTitle(data);
             break;
-            
+
         case 1: // Set icon title
             SetIconTitle(data);
             break;
-            
+
         case 4: // Set/query color palette
             ProcessColorCommand(data);
             break;
-            
+
         case 10: // Query/set foreground color
             ProcessForegroundColorCommand(data);
             break;
-            
+
         case 11: // Query/set background color
             ProcessBackgroundColorCommand(data);
             break;
-            
+
         case 12: // Query/set cursor color
             ProcessCursorColorCommand(data);
             break;
-            
+
         case 50: // Set font
             ProcessFontCommand(data);
             break;
-            
+
         case 52: // Clipboard operations
             ProcessClipboardCommand(data);
             break;
-            
+
         case 104: // Reset color palette
             ResetColorPalette(data);
             break;
-            
+
         case 110: // Reset foreground color
             ResetForegroundColor();
             break;
-            
+
         case 111: // Reset background color
             ResetBackgroundColor();
             break;
-            
+
         case 112: // Reset cursor color
             ResetCursorColor();
             break;
-            
+
         default:
             if (terminal.options.debug_sequences) {
                 char debug_msg[128];
@@ -5223,9 +5346,9 @@ void ExecuteOSCCommand(void) {
 void ProcessTermcapRequest(const char* request) {
     // XTGETTCAP - Get terminal capability
     // This is an xterm extension for querying termcap/terminfo values
-    
+
     char response[256];
-    
+
     if (strcmp(request, "Co") == 0) {
         // Number of colors
         snprintf(response, sizeof(response), "\x1BP1+r436f=323536\x1B\\"); // "256" in hex
@@ -5243,24 +5366,24 @@ void ProcessTermcapRequest(const char* request) {
         // Unknown capability
         snprintf(response, sizeof(response), "\x1BP0+r%s\x1B\\", request);
     }
-    
+
     QueueResponse(response);
 }
 
 void DefineUserKey(int key_code, const char* sequence) {
     // Expand programmable keys array if needed
     if (terminal.programmable_keys.count >= terminal.programmable_keys.capacity) {
-        size_t new_capacity = terminal.programmable_keys.capacity == 0 ? 16 : 
+        size_t new_capacity = terminal.programmable_keys.capacity == 0 ? 16 :
                              terminal.programmable_keys.capacity * 2;
-        
-        ProgrammableKey* new_keys = realloc(terminal.programmable_keys.keys, 
+
+        ProgrammableKey* new_keys = realloc(terminal.programmable_keys.keys,
                                            new_capacity * sizeof(ProgrammableKey));
         if (!new_keys) return;
-        
+
         terminal.programmable_keys.keys = new_keys;
         terminal.programmable_keys.capacity = new_capacity;
     }
-    
+
     // Find existing key or add new one
     ProgrammableKey* key = NULL;
     for (size_t i = 0; i < terminal.programmable_keys.count; i++) {
@@ -5270,12 +5393,12 @@ void DefineUserKey(int key_code, const char* sequence) {
             break;
         }
     }
-    
+
     if (!key) {
         key = &terminal.programmable_keys.keys[terminal.programmable_keys.count++];
         key->key_code = key_code;
     }
-    
+
     // Store new sequence
     key->sequence_length = strlen(sequence);
     key->sequence = malloc(key->sequence_length + 1);
@@ -5289,22 +5412,22 @@ void ProcessUserDefinedKeys(const char* data) {
         LogUnsupportedSequence("User defined keys not supported");
         return;
     }
-    
+
     char* data_copy = strdup(data);
     char* token = strtok(data_copy, ";");
-    
+
     while (token != NULL) {
         char* slash = strchr(token, '/');
         if (slash) {
             *slash = '\0';
             int key_code = atoi(token);
             char* key_string = slash + 1;
-            
+
             DefineUserKey(key_code, key_string);
         }
         token = strtok(NULL, ";");
     }
-    
+
     free(data_copy);
 }
 
@@ -5322,11 +5445,11 @@ void ProcessSoftFontDownload(const char* data) {
         LogUnsupportedSequence("Soft fonts not supported");
         return;
     }
-    
+
     // Parse soft font data format
     // This is a complex format - implementing basic framework
     terminal.soft_font.active = true;
-    
+
     if (terminal.options.debug_sequences) {
         LogUnsupportedSequence("Soft font download partially implemented");
     }
@@ -5335,14 +5458,14 @@ void ProcessSoftFontDownload(const char* data) {
 void ProcessStatusRequest(const char* request) {
     // DECRQSS - Request Status String
     char response[128];
-    
+
     if (strcmp(request, "m") == 0) {
         // Request SGR status
         snprintf(response, sizeof(response), "\x1BPm%dm\x1B\\", 0); // Simplified
         QueueResponse(response);
     } else if (strcmp(request, "r") == 0) {
         // Request scrolling region
-        snprintf(response, sizeof(response), "\x1BPr%d;%dr\x1B\\", 
+        snprintf(response, sizeof(response), "\x1BPr%d;%dr\x1B\\",
                 terminal.scroll_top + 1, terminal.scroll_bottom + 1);
         QueueResponse(response);
     } else {
@@ -5375,7 +5498,7 @@ void ExecuteDCSAnswerback(void) {
 
 void ExecuteDCSCommand(void) {
     char* params = terminal.escape_buffer;
-    
+
     if (strncmp(params, "1;1|", 4) == 0) {
         // DECUDK - User Defined Keys
         ProcessUserDefinedKeys(params + 4);
@@ -5520,35 +5643,35 @@ void ProcessPercentChar(unsigned char ch) {
 void ProcessVT52Char(unsigned char ch) {
     static bool expect_param = false;
     static char vt52_command = 0;
-    
+
     if (!expect_param) {
         switch (ch) {
             case 'A': // Cursor up
                 if (terminal.cursor.y > 0) terminal.cursor.y--;
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case 'B': // Cursor down
                 if (terminal.cursor.y < DEFAULT_TERM_HEIGHT - 1) terminal.cursor.y++;
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case 'C': // Cursor right
                 if (terminal.cursor.x < DEFAULT_TERM_WIDTH - 1) terminal.cursor.x++;
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case 'D': // Cursor left
                 if (terminal.cursor.x > 0) terminal.cursor.x--;
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case 'H': // Home cursor
                 terminal.cursor.x = 0;
                 terminal.cursor.y = 0;
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case 'I': // Reverse line feed
                 terminal.cursor.y--;
                 if (terminal.cursor.y < 0) {
@@ -5557,7 +5680,7 @@ void ProcessVT52Char(unsigned char ch) {
                 }
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case 'J': // Clear to end of screen
                 // Clear from cursor to end of line
                 for (int x = terminal.cursor.x; x < DEFAULT_TERM_WIDTH; x++) {
@@ -5571,50 +5694,50 @@ void ProcessVT52Char(unsigned char ch) {
                 }
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case 'K': // Clear to end of line
                 for (int x = terminal.cursor.x; x < DEFAULT_TERM_WIDTH; x++) {
                     ClearCell(&terminal.screen[terminal.cursor.y][x]);
                 }
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case 'Y': // Direct cursor address
                 vt52_command = 'Y';
                 expect_param = true;
                 terminal.escape_pos = 0;
                 break;
-                
+
             case 'Z': // Identify
                 QueueResponse("\x1B/Z"); // VT52 identification
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case '=': // Enter alternate keypad mode
                 terminal.vt_keyboard.keypad_mode = true;
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case '>': // Exit alternate keypad mode
                 terminal.vt_keyboard.keypad_mode = false;
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case '<': // Enter ANSI mode
                 terminal.parse_state = VT_PARSE_NORMAL;
                 // Exit VT52 mode
                 break;
-                
+
             case 'F': // Enter graphics mode
                 terminal.charset.gl = &terminal.charset.g1; // Use G1 (DEC special)
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             case 'G': // Exit graphics mode
                 terminal.charset.gl = &terminal.charset.g0; // Use G0 (ASCII)
                 terminal.parse_state = VT_PARSE_NORMAL;
                 break;
-                
+
             default:
                 // Unknown VT52 command
                 terminal.parse_state = VT_PARSE_NORMAL;
@@ -5636,11 +5759,11 @@ void ProcessVT52Char(unsigned char ch) {
                 // Second parameter: column
                 int row = terminal.escape_buffer[0] - 32; // VT52 uses offset of 32
                 int col = ch - 32;
-                
+
                 // Clamp to valid range
                 terminal.cursor.y = (row < 0) ? 0 : (row >= DEFAULT_TERM_HEIGHT) ? DEFAULT_TERM_HEIGHT - 1 : row;
                 terminal.cursor.x = (col < 0) ? 0 : (col >= DEFAULT_TERM_WIDTH) ? DEFAULT_TERM_WIDTH - 1 : col;
-                
+
                 expect_param = false;
                 terminal.parse_state = VT_PARSE_NORMAL;
             }
@@ -5738,80 +5861,34 @@ void InitSixelGraphics(void) {
 void ProcessSixelData(const char* data, size_t length) {
     // Basic sixel processing - this is a complex format
     // This implementation provides framework for sixel support
-    
+
     if (!terminal.conformance.features.vt320_mode) {
         LogUnsupportedSequence("Sixel graphics require VT320+ mode");
         return;
     }
-    
+
     // Allocate sixel buffer if needed
     if (!terminal.sixel.data) {
         terminal.sixel.width = DEFAULT_TERM_WIDTH * DEFAULT_CHAR_WIDTH;
         terminal.sixel.height = DEFAULT_TERM_HEIGHT * DEFAULT_CHAR_HEIGHT;
         terminal.sixel.data = calloc(terminal.sixel.width * terminal.sixel.height * 4, 1);
     }
-    
+
     terminal.sixel.active = true;
     terminal.sixel.x = terminal.cursor.x * DEFAULT_CHAR_WIDTH;
     terminal.sixel.y = terminal.cursor.y * DEFAULT_CHAR_HEIGHT;
-    
+
     // Basic sixel parsing would go here
     // For now, just mark as active for demonstration
-    
+
     if (terminal.options.debug_sequences) {
         LogUnsupportedSequence("Sixel graphics partially implemented");
     }
 }
 
 void DrawSixelGraphics(void) {
-    if (!terminal.conformance.features.sixel_graphics || !terminal.sixel.active || !terminal.sixel.data || terminal.sixel.width <= 0 || terminal.sixel.height <= 0) {
-        return;
-    }
-    
-    // Create texture from sixel data and draw it
-    // This would be the full implementation
-    // For now, just draw a placeholder rectangle
-    
-    // SIT/RGL BRIDGE
-    // We create a temporary texture from the raw sixel data each time we draw.
-    // This is because the sixel image can change at any time.
-
-    RGLTexture sixel_texture = {0};
-
-    // 1. Generate, bind, and upload texture data using raw OpenGL calls,
-    // as there is no RGL helper for loading from memory.
-    glGenTextures(1, &sixel_texture.id);
-    glBindTexture(GL_TEXTURE_2D, sixel_texture.id);
-
-    // Upload RGBA data
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, terminal.sixel.width, terminal.sixel.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, terminal.sixel.data);
-
-    // Set texture parameters for pixel-perfect rendering
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    sixel_texture.width = terminal.sixel.width;
-    sixel_texture.height = terminal.sixel.height;
-
-    // 2. Draw the texture.
-    if (sixel_texture.id != 0) {
-        Rectangle src_rect = {0.0f, 0.0f, (float)sixel_texture.width, (float)sixel_texture.height};
-        Rectangle dest_rect = {
-            (float)terminal.sixel.x * DEFAULT_WINDOW_SCALE,
-            (float)terminal.sixel.y * DEFAULT_WINDOW_SCALE,
-            (float)terminal.sixel.width * DEFAULT_WINDOW_SCALE,
-            (float)terminal.sixel.height * DEFAULT_WINDOW_SCALE
-        };
-        Vector2 origin = {0, 0};
-        SituationCmdDrawTexture(sixel_texture, src_rect, dest_rect, origin, 0.0f, WHITE);
-
-        // 3. Unload the texture from GPU memory after drawing.
-        RGL_UnloadTexture(sixel_texture);
-    }
+    // Sixel graphics not yet implemented for Compute Shader renderer
+    if (!terminal.conformance.features.sixel_graphics || !terminal.sixel.active) return;
 }
 
 // =============================================================================
@@ -5824,16 +5901,16 @@ void ExecuteRectangularOps(void) {
         LogUnsupportedSequence("Rectangular operations require VT420 mode");
         return;
     }
-    
+
     int top = GetCSIParam(0, 1) - 1;
     int left = GetCSIParam(1, 1) - 1;
     int bottom = GetCSIParam(2, DEFAULT_TERM_HEIGHT) - 1;
     int right = GetCSIParam(3, DEFAULT_TERM_WIDTH) - 1;
-    
+
     // Validate rectangle
     if (top >= 0 && left >= 0 && bottom >= top && right >= left &&
         bottom < DEFAULT_TERM_HEIGHT && right < DEFAULT_TERM_WIDTH) {
-        
+
         VTRectangle rect = {top, left, bottom, right, true};
         CopyRectangle(rect, terminal.cursor.x, terminal.cursor.y);
     }
@@ -5845,7 +5922,7 @@ void ExecuteRectangularOps2(void) {
         LogUnsupportedSequence("Rectangular operations require VT420 mode");
         return;
     }
-    
+
     // Calculate checksum and respond
     char response[32];
     snprintf(response, sizeof(response), "\x1BP%d!~0000\x1B\\", GetCSIParam(4, 0));
@@ -5855,11 +5932,11 @@ void ExecuteRectangularOps2(void) {
 void CopyRectangle(VTRectangle src, int dest_x, int dest_y) {
     int width = src.right - src.left + 1;
     int height = src.bottom - src.top + 1;
-    
+
     // Allocate temporary buffer for copy
     EnhancedTermChar* temp = malloc(width * height * sizeof(EnhancedTermChar));
     if (!temp) return;
-    
+
     // Copy source to temp buffer
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
@@ -5868,20 +5945,20 @@ void CopyRectangle(VTRectangle src, int dest_x, int dest_y) {
             }
         }
     }
-    
+
     // Copy from temp buffer to destination
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             int dst_y = dest_y + y;
             int dst_x = dest_x + x;
-            
+
             if (dst_y >= 0 && dst_y < DEFAULT_TERM_HEIGHT && dst_x >= 0 && dst_x < DEFAULT_TERM_WIDTH) {
                 terminal.screen[dst_y][dst_x] = temp[y * width + x];
                 terminal.screen[dst_y][dst_x].dirty = true;
             }
         }
     }
-    
+
     free(temp);
 }
 
@@ -5894,45 +5971,45 @@ void TestCursorMovement(void) {
     PipelineWriteString("\x1B[2J\x1B[H"); // Clear screen, home cursor
     PipelineWriteString("VT Cursor Movement Test\n");
     PipelineWriteString("Testing basic cursor operations...\n\n");
-    
+
     // Test cursor positioning
     PipelineWriteString("\x1B[5;10HPosition test");
     PipelineWriteString("\x1B[10;1H");
-    
+
     // Test cursor movement
     PipelineWriteString("Moving: ");
     PipelineWriteString("\x1B[5CRIGHT ");
     PipelineWriteString("\x1B[3DBACK ");
     PipelineWriteString("\x1B[2AUP ");
     PipelineWriteString("\x1B[1BDOWN\n");
-    
+
     // Test save/restore
     PipelineWriteString("\x1B[s"); // Save cursor
     PipelineWriteString("\x1B[15;20HTemp position");
     PipelineWriteString("\x1B[u"); // Restore cursor
     PipelineWriteString("Back to saved position\n");
-    
+
     PipelineWriteString("\nCursor test complete.\n");
 }
 
 void TestColors(void) {
     PipelineWriteString("\x1B[2J\x1B[H"); // Clear screen
     PipelineWriteString("VT Color Test\n\n");
-    
+
     // Test basic 16 colors
     PipelineWriteString("Basic 16 colors:\n");
     for (int i = 0; i < 8; i++) {
         PipelineWriteFormat("\x1B[%dm Color %d \x1B[0m", 30 + i, i);
         PipelineWriteFormat("\x1B[%dm Bright %d \x1B[0m\n", 90 + i, i + 8);
     }
-    
+
     // Test 256 colors (sample)
     PipelineWriteString("\n256-color sample:\n");
     for (int i = 16; i < 32; i++) {
         PipelineWriteFormat("\x1B[38;5;%dm███\x1B[0m", i);
     }
     PipelineWriteString("\n");
-    
+
     // Test true color
     PipelineWriteString("\nTrue color gradient:\n");
     for (int i = 0; i < 24; i++) {
@@ -5945,7 +6022,7 @@ void TestColors(void) {
 void TestCharacterSets(void) {
     PipelineWriteString("\x1B[2J\x1B[H"); // Clear screen
     PipelineWriteString("VT Character Set Test\n\n");
-    
+
     // Test DEC Special Graphics
     PipelineWriteString("DEC Special Graphics:\n");
     PipelineWriteString("\x1B(0"); // Select DEC special
@@ -5958,7 +6035,7 @@ void TestCharacterSets(void) {
     PipelineWriteString("             x\n");
     PipelineWriteString("             v\n");
     PipelineWriteString("\x1B(B"); // Back to ASCII
-    
+
     PipelineWriteString("\nASCII mode restored.\n");
     PipelineWriteString("Character set test complete.\n");
 }
@@ -5966,14 +6043,14 @@ void TestCharacterSets(void) {
 void TestMouseTracking(void) {
     PipelineWriteString("\x1B[2J\x1B[H"); // Clear screen
     PipelineWriteString("VT Mouse Tracking Test\n\n");
-    
+
     PipelineWriteString("Enabling mouse tracking...\n");
     PipelineWriteString("\x1B[?1000h"); // Enable mouse tracking
-    
+
     PipelineWriteString("Click anywhere to test mouse reporting.\n");
     PipelineWriteString("Mouse coordinates will be reported.\n");
     PipelineWriteString("Press ESC to disable mouse tracking.\n\n");
-    
+
     // Mouse tracking will be handled by the input system
     // Results will appear as the user interacts
 }
@@ -5981,18 +6058,18 @@ void TestMouseTracking(void) {
 void TestTerminalModes(void) {
     PipelineWriteString("\x1B[2J\x1B[H"); // Clear screen
     PipelineWriteString("VT Terminal Modes Test\n\n");
-    
+
     // Test insert mode
     PipelineWriteString("Testing insert mode:\n");
     PipelineWriteString("Original: ABCDEF\n");
     PipelineWriteString("ABCDEF\x1B[4D\x1B[4h***\x1B[4l");
     PipelineWriteString("\nAfter insert: AB***CDEF\n\n");
-    
+
     // Test alternate screen
     PipelineWriteString("Testing alternate screen buffer...\n");
     PipelineWriteString("Switching to alternate screen in 2 seconds...\n");
     // Would need timing mechanism for full demo
-    
+
     PipelineWriteString("\nMode test complete.\n");
 }
 
@@ -6000,19 +6077,19 @@ void RunAllTests(void) {
     PipelineWriteString("\x1B[2J\x1B[H"); // Clear screen
     PipelineWriteString("Running Complete VT Test Suite\n");
     PipelineWriteString("==============================\n\n");
-    
+
     TestCursorMovement();
     PipelineWriteString("\nPress any key to continue...\n");
     // Would wait for input in full implementation
-    
+
     TestColors();
     PipelineWriteString("\nPress any key to continue...\n");
-    
+
     TestCharacterSets();
     PipelineWriteString("\nPress any key to continue...\n");
-    
+
     TestTerminalModes();
-    
+
     PipelineWriteString("\n\nAll tests completed!\n");
     ShowTerminalInfo();
 }
@@ -6044,7 +6121,7 @@ void ShowTerminalInfo(void) {
     PipelineWriteFormat("VT Level: %d\n", terminal.conformance.level);
     PipelineWriteFormat("Primary DA: %s\n", terminal.device_attributes);
     PipelineWriteFormat("Secondary DA: %s\n", terminal.secondary_attributes);
-    
+
     PipelineWriteString("\nSupported Features:\n");
     PipelineWriteFormat("- VT52 Mode: %s\n", terminal.conformance.features.vt52_mode ? "Yes" : "No");
     PipelineWriteFormat("- VT100 Mode: %s\n", terminal.conformance.features.vt100_mode ? "Yes" : "No");
@@ -6052,25 +6129,25 @@ void ShowTerminalInfo(void) {
     PipelineWriteFormat("- VT320 Mode: %s\n", terminal.conformance.features.vt320_mode ? "Yes" : "No");
     PipelineWriteFormat("- VT420 Mode: %s\n", terminal.conformance.features.vt420_mode ? "Yes" : "No");
     PipelineWriteFormat("- xterm Mode: %s\n", terminal.conformance.features.xterm_mode ? "Yes" : "No");
-    
+
     PipelineWriteString("\nCurrent Settings:\n");
     PipelineWriteFormat("- Cursor Keys: %s\n", terminal.dec_modes.application_cursor_keys ? "Application" : "Normal");
     PipelineWriteFormat("- Keypad: %s\n", terminal.vt_keyboard.keypad_mode ? "Application" : "Numeric");
     PipelineWriteFormat("- Auto Wrap: %s\n", terminal.dec_modes.auto_wrap_mode ? "On" : "Off");
     PipelineWriteFormat("- Origin Mode: %s\n", terminal.dec_modes.origin_mode ? "On" : "Off");
     PipelineWriteFormat("- Insert Mode: %s\n", terminal.dec_modes.insert_mode ? "On" : "Off");
-    
-    PipelineWriteFormat("\nScrolling Region: %d-%d\n", 
+
+    PipelineWriteFormat("\nScrolling Region: %d-%d\n",
                        terminal.scroll_top + 1, terminal.scroll_bottom + 1);
-    PipelineWriteFormat("Margins: %d-%d\n", 
+    PipelineWriteFormat("Margins: %d-%d\n",
                        terminal.left_margin + 1, terminal.right_margin + 1);
-    
+
     PipelineWriteString("\nStatistics:\n");
     TerminalStatus status = GetTerminalStatus();
     PipelineWriteFormat("- Pipeline Usage: %zu/%d\n", status.pipeline_usage, (int)sizeof(terminal.input_pipeline));
     PipelineWriteFormat("- Key Buffer: %zu\n", status.key_usage);
     PipelineWriteFormat("- Unsupported Sequences: %d\n", terminal.conformance.compliance.unsupported_sequences);
-    
+
     if (terminal.conformance.compliance.last_unsupported[0]) {
         PipelineWriteFormat("- Last Unsupported: %s\n", terminal.conformance.compliance.last_unsupported);
     }
@@ -6435,7 +6512,7 @@ void UpdateTerminal(void) {
         if (event->sequence[0] != '\0') {
             // Send to host/console
             QueueResponse(event->sequence);
-            
+
             // LOCAL ECHO: Also display on terminal screen if local echo is enabled
             if (terminal.dec_modes.local_echo) {
                 // Process the sequence through the terminal's own input pipeline
@@ -6444,7 +6521,7 @@ void UpdateTerminal(void) {
                     PipelineWriteChar(event->sequence[i]);
                 }
             }
-            
+
             // Handle BEL (Ctrl+G) internally
             if (event->sequence[0] == 0x07) {
                 terminal.visual_bell_timer = 0.2f; // Trigger visual bell
@@ -6474,23 +6551,15 @@ void UpdateTerminal(void) {
         last_cursor_y = terminal.cursor.y;
     }
 
-    // Update cursor blink timer
+    // Update cursor blink state using Oscillator 250
     if (terminal.cursor.blink_enabled && terminal.dec_modes.cursor_visible) {
-        terminal.cursor.blink_timer += SituationGetFrameTime();
-        if (terminal.cursor.blink_timer >= 0.530f) {
-            terminal.cursor.blink_state = !terminal.cursor.blink_state;
-            terminal.cursor.blink_timer = 0.0f;
-        }
+        terminal.cursor.blink_state = SituationTimerGetOscillatorState(250);
     } else {
         terminal.cursor.blink_state = true;
     }
 
-    // Update text blink timer
-    terminal.text_blink_timer += SituationGetFrameTime();
-    if (terminal.text_blink_timer >= 0.530f) {
-        terminal.text_blink_state = !terminal.text_blink_state;
-        terminal.text_blink_timer = 0.0f;
-    }
+    // Update text blink state using Oscillator 255
+    terminal.text_blink_state = SituationTimerGetOscillatorState(255);
 
     // Update visual bell timer
     if (terminal.visual_bell_timer > 0) {
@@ -6554,187 +6623,89 @@ void UpdateTerminal(void) {
  * @see SixelGraphics for Sixel display state.
  * @see InitTerminal() where `font_texture` is created.
  */
-void DrawTerminal(void) {
-    SituationBeginFrame();
+void UpdateTerminalSSBO(void) {
+    if (!terminal.terminal_buffer.id || !terminal.gpu_staging_buffer) return;
 
-    SituationCmdClearBackground(BLACK); // Base window background, terminal cells will draw over this
+    size_t required_size = DEFAULT_TERM_WIDTH * DEFAULT_TERM_HEIGHT * sizeof(GPUCell);
 
     for (int y = 0; y < DEFAULT_TERM_HEIGHT; y++) {
         for (int x = 0; x < DEFAULT_TERM_WIDTH; x++) {
-            EnhancedTermChar* cell = &terminal.screen[y][x]; // Assumes 'terminal.screen' is the active buffer
-            Color fg_color_resolved = WHITE; // Default
-            Color bg_color_resolved = BLACK; // Default
+            EnhancedTermChar* cell = &terminal.screen[y][x];
+            GPUCell* gpu_cell = &terminal.gpu_staging_buffer[y * DEFAULT_TERM_WIDTH + x];
 
-            // Resolve Foreground Color
-            if (cell->fg_color.color_mode == 0) { // Indexed color
-                if (cell->fg_color.value.index >= 0 && cell->fg_color.value.index < 256) {
-                    if (cell->fg_color.value.index < 16) { // Standard 16 ANSI colors
-                        fg_color_resolved = ansi_colors[cell->fg_color.value.index];
-                    } else { // 256-color palette
-                        RGB_Color c_rgb = color_palette[cell->fg_color.value.index];
-                        fg_color_resolved = (Color){c_rgb.r, c_rgb.g, c_rgb.b, 255};
-                    }
-                }
-            } else { // RGB True Color
-                fg_color_resolved = (Color){cell->fg_color.value.rgb.r, cell->fg_color.value.rgb.g, cell->fg_color.value.rgb.b, cell->fg_color.value.rgb.a};
+            gpu_cell->char_code = cell->ch;
+
+            Color fg = {255, 255, 255, 255};
+            if (cell->fg_color.color_mode == 0) {
+                 if (cell->fg_color.value.index < 16) fg = ansi_colors[cell->fg_color.value.index];
+                 else {
+                     RGB_Color c = color_palette[cell->fg_color.value.index];
+                     fg = (Color){c.r, c.g, c.b, 255};
+                 }
+            } else {
+                fg = (Color){cell->fg_color.value.rgb.r, cell->fg_color.value.rgb.g, cell->fg_color.value.rgb.b, 255};
             }
+            gpu_cell->fg_color = (uint32_t)fg.r | ((uint32_t)fg.g << 8) | ((uint32_t)fg.b << 16) | ((uint32_t)fg.a << 24);
 
-            // Resolve Background Color
-            if (cell->bg_color.color_mode == 0) { // Indexed color
-                if (cell->bg_color.value.index >= 0 && cell->bg_color.value.index < 256) {
-                    if (cell->bg_color.value.index < 16) { // Standard 16 ANSI colors
-                        bg_color_resolved = ansi_colors[cell->bg_color.value.index];
-                    } else { // 256-color palette
-                        RGB_Color c_rgb = color_palette[cell->bg_color.value.index];
-                        bg_color_resolved = (Color){c_rgb.r, c_rgb.g, c_rgb.b, 255};
-                    }
-                }
-            } else { // RGB True Color
-                bg_color_resolved = (Color){cell->bg_color.value.rgb.r, cell->bg_color.value.rgb.g, cell->bg_color.value.rgb.b, cell->bg_color.value.rgb.a};
+            Color bg = {0, 0, 0, 255};
+            if (cell->bg_color.color_mode == 0) {
+                 if (cell->bg_color.value.index < 16) bg = ansi_colors[cell->bg_color.value.index];
+                 else {
+                     RGB_Color c = color_palette[cell->bg_color.value.index];
+                     bg = (Color){c.r, c.g, c.b, 255};
+                 }
+            } else {
+                bg = (Color){cell->bg_color.value.rgb.r, cell->bg_color.value.rgb.g, cell->bg_color.value.rgb.b, 255};
             }
+            gpu_cell->bg_color = (uint32_t)bg.r | ((uint32_t)bg.g << 8) | ((uint32_t)bg.b << 16) | ((uint32_t)bg.a << 24);
 
-            // Apply reverse video (cell-specific reverse XORed with global screen reverse)
-            bool actual_reverse = cell->reverse ^ terminal.dec_modes.reverse_video;
-            if (actual_reverse) {
-                Color temp_color = fg_color_resolved;
-                fg_color_resolved = bg_color_resolved;
-                bg_color_resolved = temp_color;
-            }
-
-            // Draw cell background
-            // Optimization: Only draw if not default black, or if char is space but needs to show a non-black (e.g., reversed) background
-            if (bg_color_resolved.r != 0 || bg_color_resolved.g != 0 || bg_color_resolved.b != 0 || (cell->ch == ' ' && actual_reverse)) { // If space and reversed, its "background" (original fg) might be non-black
-                SituationCmdDrawRectangle(x * DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE, y * DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE, DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE, DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE, bg_color_resolved);
-            }
-
-            // Draw character if not concealed and (not blinking or currently in blink-on state)
-            // Also, don't draw a normal space char unless it's reversed (to show its new "foreground", original bg)
-            if (!cell->conceal && (!cell->blink || terminal.text_blink_state) && (cell->ch != ' ' || actual_reverse)) {
-                Color final_fg_for_char = fg_color_resolved;
-                // Apply bold: for standard ANSI colors (0-7), bold often means using the bright version (8-15)
-                // This doesn't apply if the cell is already reversed, as the original fg is now the bg.
-                if (cell->bold && !actual_reverse) {
-                    if (cell->fg_color.color_mode == 0 && cell->fg_color.value.index < 8) { // Original FG was a standard, non-bright color
-                        final_fg_for_char = ansi_colors[cell->fg_color.value.index + 8];
-                    }
-                    // For 256-color or TrueColor, bold might mean a thicker font (not handled by color change here)
-                    // or no visual change if the font doesn't have a separate bold weight.
-                }
-
-                // Apply faint: dim the color
-                if (cell->faint) {
-                    final_fg_for_char.r = (unsigned char)(final_fg_for_char.r * 0.67f);
-                    final_fg_for_char.g = (unsigned char)(final_fg_for_char.g * 0.67f);
-                    final_fg_for_char.b = (unsigned char)(final_fg_for_char.b * 0.67f);
-                }
-
-                // Determine character code for font texture (CP437 based)
-                unsigned int char_to_render_raw = cell->ch;
-                // TODO: Implement proper Unicode to CP437 mapping or integrate a Unicode-capable font renderer.
-                // For this CP437 font, characters outside 0-255 are typically replaced.
-                unsigned char char_code_for_texture = (char_to_render_raw < 256) ? (unsigned char)char_to_render_raw : '?'; // Default fallback '?'
-
-                // Draw character glyph from font texture
-                int src_x_font = (char_code_for_texture % 16) * DEFAULT_CHAR_WIDTH; // Assuming 16 chars per row in font texture
-                int src_y_font = (char_code_for_texture / 16) * DEFAULT_CHAR_HEIGHT;
-                Rectangle src_rect = {(float)src_x_font, (float)src_y_font, (float)DEFAULT_CHAR_WIDTH, (float)DEFAULT_CHAR_HEIGHT};
-                Rectangle dest_rect = {(float)x * DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE, (float)y * DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE, (float)DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE, (float)DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE};
-                SituationCmdDrawTexture(font_texture, src_rect, dest_rect, (Vector2){0, 0}, 0.0f, final_fg_for_char);
-                
-                // Draw text decorations (underline, strikethrough, overline)
-                int line_thickness = (DEFAULT_WINDOW_SCALE > 1 ? DEFAULT_WINDOW_SCALE : 1); // Scale line thickness for visibility
-                if (cell->underline) {
-                    SituationCmdDrawLine((Vector2){dest_rect.x, dest_rect.y + dest_rect.height - line_thickness * 2}, (Vector2){dest_rect.x + dest_rect.width, dest_rect.y + dest_rect.height - line_thickness * 2}, (float)line_thickness, final_fg_for_char);
-                }
-                if (cell->double_underline) { // Draw two lines for double underline
-                    SituationCmdDrawLine((Vector2){dest_rect.x, dest_rect.y + dest_rect.height - line_thickness * 2 -1}, (Vector2){dest_rect.x + dest_rect.width, dest_rect.y + dest_rect.height - line_thickness * 2 -1}, (float)line_thickness, final_fg_for_char);
-                    SituationCmdDrawLine((Vector2){dest_rect.x, dest_rect.y + dest_rect.height - line_thickness}, (Vector2){dest_rect.x + dest_rect.width, dest_rect.y + dest_rect.height - line_thickness}, (float)line_thickness, final_fg_for_char);
-                }
-                if (cell->strikethrough) {
-                    SituationCmdDrawLine((Vector2){dest_rect.x, dest_rect.y + dest_rect.height / 2}, (Vector2){dest_rect.x + dest_rect.width, dest_rect.y + dest_rect.height / 2}, (float)line_thickness, final_fg_for_char);
-                }
-                if (cell->overline) {
-                    SituationCmdDrawLine((Vector2){dest_rect.x, dest_rect.y + line_thickness}, (Vector2){dest_rect.x + dest_rect.width, dest_rect.y + line_thickness}, (float)line_thickness, final_fg_for_char);
-                }
-            }
+            gpu_cell->flags = 0;
+            if (cell->bold) gpu_cell->flags |= GPU_ATTR_BOLD;
+            if (cell->faint) gpu_cell->flags |= GPU_ATTR_FAINT;
+            if (cell->italic) gpu_cell->flags |= GPU_ATTR_ITALIC;
+            if (cell->underline) gpu_cell->flags |= GPU_ATTR_UNDERLINE;
+            if (cell->blink) gpu_cell->flags |= GPU_ATTR_BLINK;
+            if (cell->reverse ^ terminal.dec_modes.reverse_video) gpu_cell->flags |= GPU_ATTR_REVERSE;
+            if (cell->strikethrough) gpu_cell->flags |= GPU_ATTR_STRIKE;
         }
     }
 
-    // Draw Sixel graphics if active (implementation is in Sixel-specific functions)
-    DrawSixelGraphics();
+    SituationUpdateBuffer(terminal.terminal_buffer, 0, required_size, terminal.gpu_staging_buffer);
+}
 
-    // Draw cursor if visible and in its "on" blink state
-    if (terminal.cursor.visible && (!terminal.cursor.blink_enabled || terminal.cursor.blink_state)) {
-        int cursor_draw_x_px = terminal.cursor.x * DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE;
-        int cursor_draw_y_px = terminal.cursor.y * DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE;
-        Color cursor_render_color = WHITE; // Default cursor color
+void DrawTerminal(void) {
+    if (!terminal.compute_initialized) return;
 
-        // Resolve cursor color from ExtendedColor struct
-        if (terminal.cursor.color.color_mode == 0) { // Indexed color
-            if (terminal.cursor.color.value.index >= 0 && terminal.cursor.color.value.index < 256) {
-                if (terminal.cursor.color.value.index < 16) { // Standard 16 ANSI colors
-                    cursor_render_color = ansi_colors[terminal.cursor.color.value.index];
-                } else { // 256-color palette
-                    RGB_Color c_rgb = color_palette[terminal.cursor.color.value.index];
-                    cursor_render_color = (Color){c_rgb.r, c_rgb.g, c_rgb.b, 255};
-                }
-            }
-        } else { // RGB True Color
-            cursor_render_color = (Color){terminal.cursor.color.value.rgb.r, terminal.cursor.color.value.rgb.g, terminal.cursor.color.value.rgb.b, terminal.cursor.color.value.rgb.a};
-        }
+    UpdateTerminalSSBO();
 
-        int cursor_line_thickness = (DEFAULT_WINDOW_SCALE > 1 ? 2 * DEFAULT_WINDOW_SCALE : 2); // Make cursor lines slightly thicker
-        int cursor_bar_width = (DEFAULT_WINDOW_SCALE > 1 ? DEFAULT_WINDOW_SCALE : 1); // Bar cursor width
-        switch (terminal.cursor.shape) {
-            case CURSOR_BLOCK:
-            case CURSOR_BLOCK_BLINK:
-                // A true block cursor inverts the underlying cell's character and colors.
-                // For simplicity, this often draws a solid block with the cursor color.
-                // To implement inversion:
-                // 1. Get EnhancedTermChar* cell_under_cursor = &terminal.screen[terminal.cursor.y][terminal.cursor.x];
-                // 2. Resolve cell_under_cursor's fg and bg colors (as done above).
-                // 3. Draw cell background with resolved_fg_under_cursor.
-                // 4. Draw cell_under_cursor->ch using resolved_bg_under_cursor.
-                // For now, drawing a solid block:
-                SituationCmdDrawRectangle(cursor_draw_x_px, cursor_draw_y_px, DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE, DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE, cursor_render_color);
-                break;
-            case CURSOR_UNDERLINE:
-            case CURSOR_UNDERLINE_BLINK:
-                SituationCmdDrawRectangle(cursor_draw_x_px, cursor_draw_y_px + DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE - cursor_line_thickness, DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE, cursor_line_thickness, cursor_render_color);
-                break;
-            case CURSOR_BAR:
-            case CURSOR_BAR_BLINK:
-                SituationCmdDrawRectangle(cursor_draw_x_px, cursor_draw_y_px, cursor_bar_width, DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE, cursor_render_color);
-                break;
-        }
+    if (SituationAcquireFrameCommandBuffer()) {
+        SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+
+        SituationCmdBindComputePipeline(cmd, terminal.compute_pipeline);
+
+        SituationCmdBindDescriptorSet(cmd, 0, terminal.terminal_buffer);
+        SituationCmdBindComputeTexture(cmd, 1, terminal.output_texture);
+        SituationCmdBindTextureSet(cmd, 2, terminal.font_texture);
+
+        TerminalPushConstants pc = {0};
+        pc.screen_size = (Vector2){{(float)DEFAULT_WINDOW_WIDTH, (float)DEFAULT_WINDOW_HEIGHT}};
+        pc.char_size = (Vector2){{(float)DEFAULT_CHAR_WIDTH, (float)DEFAULT_CHAR_HEIGHT}};
+        pc.grid_size = (Vector2){{(float)DEFAULT_TERM_WIDTH, (float)DEFAULT_TERM_HEIGHT}};
+        pc.time = (float)SituationTimerGetTime();
+        pc.cursor_index = terminal.cursor.y * DEFAULT_TERM_WIDTH + terminal.cursor.x;
+        pc.cursor_blink_state = terminal.cursor.blink_state ? 1 : 0;
+        pc.text_blink_state = terminal.text_blink_state ? 1 : 0;
+
+        SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
+
+        SituationCmdDispatch(cmd, DEFAULT_TERM_WIDTH, DEFAULT_TERM_HEIGHT, 1);
+
+        SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE, SITUATION_BARRIER_TRANSFER_READ);
+
+        SituationCmdPresent(cmd, terminal.output_texture);
+
+        SituationEndFrame();
     }
-
-    // Visual Bell Flash
-    if (terminal.visual_bell_timer > 0) {
-        // Draw a semi-transparent white overlay for the bell effect
-        // Alpha is proportional to remaining timer, creating a fade-out effect.
-        SituationCmdDrawRectangle(0, 0, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, Fade(WHITE, terminal.visual_bell_timer * 0.5f)); // Max alpha 0.5
-    }
-
-    // Render custom mouse cursor (diamond)
-    if (terminal.mouse.enabled && terminal.mouse.mode != MOUSE_TRACKING_OFF && terminal.mouse.cursor_x >= 1 && terminal.mouse.cursor_x <= DEFAULT_TERM_WIDTH && terminal.mouse.cursor_y >= 1 && terminal.mouse.cursor_y <= DEFAULT_TERM_HEIGHT) {
-        // Save current charset state
-        CharsetState saved_charset = terminal.charset;
-        // Switch to DEC Special Graphics
-        terminal.charset.gl = &terminal.charset.g0;
-        terminal.charset.g0 = CHARSET_DEC_SPECIAL;
-        // Diamond (◆, 0x60)
-        unsigned char char_code = 0x60;
-        int src_x_font = (char_code % 16) * DEFAULT_CHAR_WIDTH;
-        int src_y_font = (char_code / 16) * DEFAULT_CHAR_HEIGHT;
-        Rectangle src_rect = {(float)src_x_font, (float)src_y_font, (float)DEFAULT_CHAR_WIDTH, (float)DEFAULT_CHAR_HEIGHT};
-        Rectangle dest_rect = {(float)(terminal.mouse.cursor_x - 1) * DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE, (float)(terminal.mouse.cursor_y - 1) * DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE, (float)DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE, (float)DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE};
-        SituationCmdDrawTexture(font_texture, src_rect, dest_rect, (Vector2){0, 0}, 0.0f, WHITE);
-        // Restore charset state
-        terminal.charset = saved_charset;
-    }
-
-    SituationEndFrame();
 }
 
 
@@ -6756,7 +6727,15 @@ void DrawTerminal(void) {
  * and releases GPU resources.
  */
 void CleanupTerminal(void) {
-    RGL_UnloadTexture(font_texture); // SIT/RGL BRIDGE: Use RGL to unload the texture
+    if (terminal.font_texture.generation != 0) SituationDestroyTexture(&terminal.font_texture);
+    if (terminal.output_texture.generation != 0) SituationDestroyTexture(&terminal.output_texture);
+    if (terminal.terminal_buffer.id != 0) SituationDestroyBuffer(&terminal.terminal_buffer);
+    if (terminal.compute_pipeline.id != 0) SituationDestroyComputePipeline(&terminal.compute_pipeline);
+
+    if (terminal.gpu_staging_buffer) {
+        free(terminal.gpu_staging_buffer);
+        terminal.gpu_staging_buffer = NULL;
+    }
 
     // Free memory for programmable key sequences
     for (size_t i = 0; i < terminal.programmable_keys.count; i++) {
@@ -6792,10 +6771,10 @@ bool InitTerminalDisplay(void) {
     if (!SituationCreateVirtualDisplay(1, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)) {
         return false;
     }
-    
+
     // Set the virtual display as renderable
     SituationSetVirtualDisplayActive(1, true);
-    
+
     return true;
 }
 
