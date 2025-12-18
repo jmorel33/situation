@@ -2014,6 +2014,7 @@ SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src
 // --- Texture Management ---
 SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generate_mipmaps);// Loads a texture from disk and registers the path for hot-reloading.
 SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps); // Create a texture from a CPU-side image.
+SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool generate_mipmaps, SituationTextureUsageFlags flags); // Create a texture with specific usage flags.
 SITAPI void SituationDestroyTexture(SituationTexture* texture);                         // Unload a texture from GPU memory.
 
 // --- Compute Shader Pipeline ---
@@ -16185,18 +16186,12 @@ SITAPI SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32
  * @param generate_mipmaps If true, generates a full mipmap chain.
  * @return A valid `SituationTexture` handle, or `{0}` on failure.
  */
-SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps) {
+SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool generate_mipmaps, SituationTextureUsageFlags usage_flags) {
     SituationTexture texture = {0};
     if (!SituationIsImageValid(image)) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot create texture from invalid image.");
         return texture;
     }
-
-    // --- DEFAULT FLAGS ---
-    // Since this is the simple API, we assume generic usage.
-    // If you want Compute write access, we default to enabling it or add a CreateTextureEx function.
-    SituationTextureUsageFlags usage_flags = SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_TRANSFER_DST;
-    if (generate_mipmaps) usage_flags |= SITUATION_TEXTURE_USAGE_TRANSFER_SRC;
 
     // 1. Find Free Slot
     int slot_idx = -1;
@@ -16453,6 +16448,12 @@ SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool genera
     }
 
     return texture;
+}
+
+SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps) {
+    SituationTextureUsageFlags flags = SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_TRANSFER_DST;
+    if (generate_mipmaps) flags |= SITUATION_TEXTURE_USAGE_TRANSFER_SRC;
+    return SituationCreateTextureEx(image, generate_mipmaps, flags);
 }
 
 /**
