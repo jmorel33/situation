@@ -32,7 +32,7 @@
 
 ## Description
 
-This library provides a comprehensive terminal emulation solution, aiming for compatibility with VT52, VT100, VT220, VT320, VT420, and xterm standards, while also incorporating modern features like true color support, Sixel graphics, advanced mouse tracking, and bracketed paste mode. It is designed to be integrated into applications that require a text-based terminal interface, using the Raylib library for rendering, input, and window management.
+This library provides a comprehensive terminal emulation solution, aiming for compatibility with VT52, VT100, VT220, VT320, VT420, and xterm standards, while also incorporating modern features like true color support, Sixel graphics, advanced mouse tracking, and bracketed paste mode. It is designed to be integrated into applications that require a text-based terminal interface, using the Situation library for rendering, input, and window management.
 
 The library processes a stream of input characters (typically from a host application or PTY) and updates an internal screen buffer. This buffer, representing the terminal display, is then rendered to the screen. It handles a wide range of escape sequences to control cursor movement, text attributes, colors, screen clearing, scrolling, and various terminal modes.
 
@@ -62,9 +62,9 @@ The terminal operates around a central `Terminal` structure that holds the entir
 
 ### 3.1. Main Loop and Initialization
 
--   `InitTerminal()`: Sets up the default terminal state: screen buffers (arrays of `EnhancedTermChar`), cursor, modes (DECModes, ANSIModes), color palettes, character sets (`CharsetState`), tab stops, keyboard (`VTKeyboard`), performance settings, and initializes the Raylib font texture.
+-   `InitTerminal()`: Sets up the default terminal state: screen buffers (arrays of `EnhancedTermChar`), cursor, modes (DECModes, ANSIModes), color palettes, character sets (`CharsetState`), tab stops, keyboard (`VTKeyboard`), performance settings, and initializes the Situation font texture.
 -   `UpdateTerminal()`: This is the main update tick. It calls `ProcessPipeline()` to handle incoming data, updates cursor and text blink timers, and flushes any responses queued for the host application via the `ResponseCallback`.
--   `DrawTerminal()`: Renders the current state of the active screen buffer to the Raylib window. It iterates through each `EnhancedTermChar` cell, resolves its foreground and background colors (from `ExtendedColor`), applies attributes (bold, underline, etc.), and draws the character glyph from the `font_texture`. It also handles drawing Sixel graphics and the cursor.
+-   `DrawTerminal()`: Renders the current state of the active screen buffer to the Situation window. It iterates through each `EnhancedTermChar` cell, resolves its foreground and background colors (from `ExtendedColor`), applies attributes (bold, underline, etc.), and draws the character glyph from the `font_texture`. It also handles drawing Sixel graphics and the cursor.
 
 ### 3.2. Input Pipeline and Character Processing
 
@@ -84,12 +84,12 @@ The terminal operates around a central `Terminal` structure that holds the entir
 
 ### 3.4. Keyboard and Mouse Handling
 
--   `UpdateVTKeyboard()` (called by the application in its main loop) uses Raylib's input functions to detect key presses and releases.
+-   `UpdateVTKeyboard()` (called by the application in its main loop) uses Situation's input functions to detect key presses and releases.
 -   It considers modifier keys (Ctrl, Shift, Alt) and terminal modes like DECCKM (Application Cursor Keys) and DECKPAM/DECKPNM (Application Keypad).
--   `GenerateVTSequence()` converts these Raylib key events into the appropriate VT escape sequences (e.g., Up Arrow -> `ESC [ A` or `ESC O A`). These are
+-   `GenerateVTSequence()` converts these Situation key events into the appropriate VT escape sequences (e.g., Up Arrow -> `ESC [ A` or `ESC O A`). These are
     buffered in `vt_keyboard.buffer`.
 -   `GetVTKeyEvent()` allows the application to retrieve these processed key events. A typical terminal application would send these sequences to the connected host.
--   `UpdateMouse()` (also called by the application) uses Raylib's mouse functions. Based on the active `MouseTrackingMode` (e.g., X10, SGR), it generates VT mouse
+-   `UpdateMouse()` (also called by the application) uses Situation's mouse functions. Based on the active `MouseTrackingMode` (e.g., X10, SGR), it generates VT mouse
     report sequences and enqueues them into `terminal.input_pipeline` for processing, or sends them via `ResponseCallback` if configured.
 
 ### 3.5. Rendering
@@ -122,15 +122,15 @@ This library is designed as a single-header library.
     #include "terminal.h"
     ```
 -   In other files, just `#include "terminal.h"`.
--   Initialize Raylib: `InitWindow(...)`.
+-   Initialize Situation: `InitWindow(...)`.
 -   Initialize the terminal: `InitTerminal()`.
--   Set target FPS for Raylib: `SetTargetFPS(60)`.
+-   Set target FPS for Situation: `SetTargetFPS(60)`.
 -   Optionally, set terminal performance: `SetPipelineTargetFPS(60)`, `SetPipelineTimeBudget(0.5)`.
 -   In your main application loop:
     ```c
     // Process host inputs and terminal updates
-    UpdateVTKeyboard(); // Translates Raylib key events to VT sequences
-    UpdateMouse();      // Translates Raylib mouse events to VT sequences
+    UpdateVTKeyboard(); // Translates Situation key events to VT sequences
+    UpdateMouse();      // Translates Situation mouse events to VT sequences
     UpdateTerminal();   // Processes pipeline, timers, and callbacks
 
     // Render the terminal
@@ -239,7 +239,7 @@ Other source files can simply include "terminal.h" for declarations.
 
 ## Dependencies
 
--   Raylib (version 4.0 or later recommended): Used for window creation, graphics rendering, input handling (keyboard/mouse), and font texture management.
+-   Situation (version 4.0 or later recommended): Used for window creation, graphics rendering, input handling (keyboard/mouse), and font texture management.
 -   Standard C11 libraries: `stdio.h`, `stdlib.h`, `string.h`, `stdbool.h`, `ctype.h`, `stdarg.h`, `math.h`, `time.h`.
 
 ## License

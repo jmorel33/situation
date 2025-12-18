@@ -38,7 +38,7 @@
  *   - **Windows APIs:** Winsock2.h (for network info via situation.h)
 **********************************************************************************************/
 #if defined(_WIN32)
-  #define NOGDI             // Keep this to protect Raylib's Rectangle struct
+  #define NOGDI             // Keep this to protect Situation's Rectangle struct
   #define NOMINMAX
 #endif
 
@@ -46,8 +46,20 @@
     #include <winsock2.h> // Include before windows.h
 #endif
 
-#define MA_IMPLEMENTATION
-#include "C:/raylib/raylib/src/external/miniaudio.h" // Path to miniaudio.h
+// miniaudio is included by situation.h, but we need to define MA_IMPLEMENTATION if not done elsewhere.
+// situation.h implementation block includes miniaudio.h but might not define MA_IMPLEMENTATION unless configured.
+// However, situation.h includes miniaudio.h at the top level.
+// Let's assume standard inclusion.
+#define MA_NO_FLAC
+#define MA_NO_MP3
+// #define MA_IMPLEMENTATION // Removed to avoid potential redefinition if situation.h handles it or user does.
+// If situation.h does not implement it, the linker will complain, but typically situation.h is the single-file lib.
+// Wait, console.c defines SITUATION_IMPLEMENTATION, so situation.h WILL implement miniaudio if configured to do so.
+// But situation.h usually expects the user to include miniaudio implementation if it uses it internally or exposes it.
+// Looking at situation.h, it includes <miniaudio.h>.
+// Let's stick to including it from ext if needed, or relying on situation.h.
+// Since this is an example, it should work out of the box with the repo structure.
+// situation.h includes <miniaudio.h>, so we just rely on that.
 
 // --- situation.h Configuration ---
 #if defined(_WIN32) && !defined(_MSC_VER) && defined(SITUATION_ENABLE_DXGI)
@@ -60,11 +72,11 @@
 
 #define TERMINAL_IMPLEMENTATION
 // terminal.h should be included when NOUSER is effectively *defined* if it calls
-// Raylib functions like CloseWindow/ShowCursor that would clash.
+// Situation functions like CloseWindow/ShowCursor that would clash.
 // This is the trickiest part. If NOUSER is undefined here, terminal.h might get Windows API versions.
 // If NOUSER is defined here, situation.h might have issues if it's not robust.
 
-// For terminal.h, let's assume it primarily uses Raylib APIs.
+// For terminal.h, let's assume it primarily uses Situation APIs.
 // So, we need NOUSER to be active for terminal.h
 #if defined(_WIN32)
     #define NOUSER_FOR_TERMINAL
@@ -72,7 +84,7 @@
     #define NOUSER
 #endif
 
-#include "terminal.h"
+#include "sit/terminal/terminal.h"
 
 #if defined(_WIN32) && defined(NOUSER_FOR_TERMINAL)
     #pragma pop_macro("NOUSER")
@@ -86,7 +98,7 @@
 #include <stdio.h>
 #include <math.h>
 
-#define MAX_COMMAND_BUFFER 1024
+
 #define MAX_TOKENS 64
 #define MAX_HISTORY 32
 
@@ -733,6 +745,7 @@ static void ProcessCommand(const char* command) {
                 case VT_LEVEL_220:  PipelineWriteString("VT220"); break;
                 case VT_LEVEL_320:  PipelineWriteString("VT320"); break;
                 case VT_LEVEL_420:  PipelineWriteString("VT420"); break;
+                case VT_LEVEL_520:  PipelineWriteString("VT520"); break;
                 case VT_LEVEL_XTERM: PipelineWriteString("XTERM"); break;
                 default: PipelineWriteString("Unknown"); break;
             }
@@ -796,7 +809,7 @@ static void ProcessCommand(const char* command) {
             PipelineWriteFormat("\x1B[31mError getting display info: %s\x1B[0m\n", err_msg ? err_msg : "Unknown");
             if (err_msg) free(err_msg);
         }
-        PipelineWriteFormat("  Current Raylib Mon Index (from Situation): %d\n", SituationGetCurrentRaylibDisplayIndex());
+        PipelineWriteFormat("  Current Situation Mon Index (from Situation): %d\n", SituationGetCurrentMonitor());
     } else if (strcmp(cmd, "sys_audio") == 0) {
         PipelineWriteString("\n\x1B[1;33m--- Audio Playback Device Information ---\x1B[0m\n");
         int audio_device_count = 0;
@@ -1262,7 +1275,7 @@ void SitHelperPrintDisplayInfo(SituationDisplayInfo* displays, int count) {
     }
     PipelineWriteFormat("  Found \x1B[1;37m%d\x1B[0m physical display(s):\n", count);
     for (int i = 0; i < count; ++i) {
-        PipelineWriteFormat("  \x1B[1;34mDisplay [%d]:\x1B[0m \x1B[37m%s\x1B[0m (Raylib Idx: \x1B[37m%d\x1B[0m)\n", i, displays[i].name, displays[i].raylib_monitor_index);
+        PipelineWriteFormat("  \x1B[1;34mDisplay [%d]:\x1B[0m \x1B[37m%s\x1B[0m (Situation Idx: \x1B[37m%d\x1B[0m)\n", i, displays[i].name, displays[i].situation_monitor_id);
         PipelineWriteFormat("    Primary: \x1B[37m%s\x1B[0m\n", displays[i].is_primary ? "Yes" : "No");
         PipelineWriteFormat("    Current Mode: \x1B[37m%dx%d @ %dHz, %d-bit\x1B[0m\n",
                displays[i].current_mode.width, displays[i].current_mode.height,
@@ -1318,7 +1331,7 @@ int main(void) {
         char* err_msg = SituationGetLastErrorMsg();
         fprintf(stderr, "FATAL: SituationInit failed: %s\n", err_msg ? err_msg : "Unknown error");
         if (err_msg) free(err_msg);
-        // If SituationInit fails (which includes Raylib's InitWindow), we probably can't continue
+        // If SituationInit fails (which includes Situation's InitWindow), we probably can't continue
         return 1; 
     }
     SituationSetTargetFPS(target_fps); // Set after init
@@ -1354,7 +1367,7 @@ int main(void) {
     // Main loop
     while (!SituationWindowShouldClose() && !should_exit) { // Use Situation's wrapper
         // ***** NEW: Call SituationUpdate() *****
-        SituationUpdate();
+        SituationUpdate(); // Legacy update, wraps PollInput and UpdateTimers
         // **************************************
 
         if (console.prompt_pending && !console.in_command && !console.waiting_for_prompt_cursor_pos) {
@@ -1365,19 +1378,19 @@ int main(void) {
         // UpdateTerminal() likely handles input polling, processing, and drawing the terminal content
         UpdateTerminal(); 
 
-        // ***** NEW: Raylib Drawing Block (if terminal.h doesn't manage Begin/EndDrawing) *****
+        // ***** NEW: Situation Drawing Block (if terminal.h doesn't manage Begin/EndDrawing) *****
         // If UpdateTerminal() calls BeginDrawing/EndDrawing internally, this block is not needed here.
-        // If UpdateTerminal() just "draws" characters to a buffer that is then rendered by Raylib's
+        // If UpdateTerminal() just "draws" characters to a buffer that is then rendered by Situation's
         // DrawText or similar, then you need this block.
         // For now, I'll assume terminal.h draws as part of UpdateTerminal() OR you have a separate
         // TerminalRender() function. Let's wrap it conceptually.
         
-        // SituationBeginDrawing(); // Start Raylib drawing
+        // SituationBeginDrawing(); // Start Situation drawing
         //     // ClearBackground(BLACK); // Or let terminal.h handle background
         //     // TerminalRender(); // Hypothetical function to draw terminal content
-        //     // You could draw other Situation-managed elements here if needed (e.g., FPS counter from Raylib)
-        //     DrawFPS(10,10); // Example Raylib direct draw
-        // SituationEndDrawing(); // End Raylib drawing
+        //     // You could draw other Situation-managed elements here if needed (e.g., FPS counter from Situation)
+        //     DrawFPS(10,10); // Example Situation direct draw
+        // SituationEndDrawing(); // End Situation drawing
         //
         //  NOTE: Your terminal.h likely ALREADY calls BeginDrawing/EndDrawing.
         //  If so, this explicit block might be redundant or conflict. Ensure terminal.h uses Situation equivalents.

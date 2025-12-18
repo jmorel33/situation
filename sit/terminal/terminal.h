@@ -9,7 +9,7 @@
 *   DESCRIPTION:
 *       This library provides a comprehensive terminal emulation solution, aiming for compatibility with VT52, VT100, VT220, VT320, VT420, and xterm standards,
 *       while also incorporating modern features like true color support, Sixel graphics, advanced mouse tracking, and bracketed paste mode. It is designed to be
-*       integrated into applications that require a text-based terminal interface, using the Raylib library for rendering, input, and window management.
+*       integrated into applications that require a text-based terminal interface, using the Situation library for rendering, input, and window management.
 *
 *       The library processes a stream of input characters (typically from a host application or PTY) and updates an internal screen buffer. This buffer,
 *       representing the terminal display, is then rendered to the screen. It handles a wide range of escape sequences to control cursor movement, text attributes,
@@ -64,7 +64,7 @@ extern Terminal terminal;
 //extern VTKeyboard vt_keyboard;
 // extern Texture2D font_texture; // Moved to struct
 extern RGB_Color color_palette[256]; // Full 256 color palette
-extern Color ansi_colors[16];        // Raylib Color type for the 16 base ANSI colors
+extern Color ansi_colors[16];        // Situation Color type for the 16 base ANSI colors
 // extern unsigned char font_data[256 * 32]; // Defined in implementation
 extern ResponseCallback response_callback;
 extern TitleCallback title_callback;
@@ -80,6 +80,7 @@ typedef enum {
     VT_LEVEL_102 = 102,
     VT_LEVEL_132 = 132,
     VT_LEVEL_220 = 220,
+    VT_LEVEL_320 = 320,
     VT_LEVEL_340 = 340,
     VT_LEVEL_420 = 420,
     VT_LEVEL_510 = 510,
@@ -283,7 +284,7 @@ typedef struct {
 // PROGRAMMABLE KEYS
 // =============================================================================
 typedef struct {
-    int key_code;           // Raylib key code that triggers this
+    int key_code;           // Situation key code that triggers this
     char *sequence;         // String to send to host
     size_t sequence_length;
     bool active;            // Is this definition active
@@ -357,6 +358,7 @@ typedef struct {
     bool vt102_mode;
     bool vt132_mode;
     bool vt220_mode;
+    bool vt320_mode;
     bool vt340_mode;
     bool vt420_mode;
     bool vt510_mode;
@@ -404,7 +406,7 @@ typedef enum {
 } KeyPriority; // For prioritizing events in the buffer (e.g., Ctrl+C)
 
 typedef struct {
-    int key_code;           // Raylib key code (e.g., KEY_A, KEY_F1) or char code
+    int key_code;           // Situation key code (e.g., SIT_KEY_A, KEY_F1) or char code
     bool ctrl, shift, alt, meta; // Modifier states
     bool is_repeat;         // True if this is an auto-repeated key event
     bool is_extended;       // True for extended keys (e.g., numpad vs main keys if distinct)
@@ -432,13 +434,13 @@ typedef struct {
 
     // Key mapping table (example, might not be fully used if GenerateVTSequence is comprehensive)
     // struct {
-    //     int raylib_key;
+    //     int Situation_key;
     //     char normal[16];
     //     char shift[16];
     //     char ctrl[16];
     //     char alt[16];
     //     char app[16]; // For application modes
-    // } key_mappings[256]; // Max Raylib key codes
+    // } key_mappings[256]; // Max Situation key codes
 
     // Buffered input for key events
     VTKeyEvent buffer[512]; // Circular buffer for key events
@@ -714,7 +716,7 @@ typedef struct {
         bool log_unsupported;      // Alias or part of debug_sequences
     } options;
 
-    // Fields for RayLib_terminal_console.c
+    // Fields for terminal_console.c
     bool echo_enabled;
     bool input_enabled;
     bool password_mode;
@@ -787,10 +789,10 @@ void SetPipelineTimeBudget(double pct); // Percentage of frame time for pipeline
 // Mouse support (enhanced)
 void SetMouseTracking(MouseTrackingMode mode); // Explicitly set a mouse mode
 void EnableMouseFeature(const char* feature, bool enable); // e.g., "focus", "sgr"
-void UpdateMouse(void); // Process mouse input from Raylib and generate VT sequences
+void UpdateMouse(void); // Process mouse input from Situation and generate VT sequences
 
 // Keyboard support (VT compatible)
-void UpdateVTKeyboard(void); // Process keyboard input from Raylib
+void UpdateVTKeyboard(void); // Process keyboard input from Situation
 void UpdateKeyboard(void);  // Alias for compatibility
 bool GetKeyEvent(KeyEvent* event);  // Alias for compatibility
 void SetKeyboardMode(const char* mode, bool enable); // "application_cursor", "keypad_numeric"
@@ -835,7 +837,7 @@ void LoadSoftFont(const unsigned char* font_data, int char_start, int char_count
 void SelectSoftFont(bool enable); // Enable/disable use of loaded soft font
 
 // Title management
-void VTSetWindowTitle(const char* title); // Set window title (OSC 0, OSC 2)
+void VTSituationSetWindowTitle(const char* title); // Set window title (OSC 0, OSC 2)
 void SetIconTitle(const char* title);   // Set icon title (OSC 1)
 const char* GetWindowTitle(void);
 const char* GetIconTitle(void);
@@ -858,6 +860,9 @@ void VTSwapScreenBuffer(void); // Handles 1047/1049 logic
 
 // Internal rendering/parsing functions (potentially exposed for advanced use or testing)
 void CreateFontTexture(void);
+
+// Internal helper forward declaration
+void InitTerminalCompute(void);
 
 // Low-level char processing (called by ProcessPipeline via ProcessChar)
 void ProcessChar(unsigned char ch); // Main dispatcher for character processing
@@ -938,7 +943,7 @@ BellCallback bell_callback = NULL;
 // Color mappings - Fixed initialization
 RGB_Color color_palette[256];
 
-Color ansi_colors[16] = { // Raylib Color type
+Color ansi_colors[16] = { // Situation Color type
     {  0,   0,   0, 255}, // Black
     {170,   0,   0, 255}, // Red
     {  0, 170,   0, 255}, // Green
@@ -1149,8 +1154,8 @@ void InitTerminal(void) {
     terminal.programmable_keys.count = 0;
     terminal.programmable_keys.capacity = 0;
 
-    strcpy(terminal.title.terminal_name, "Enhanced VT Terminal (Raylib)");
-    VTSetWindowTitle("Terminal");
+    strcpy(terminal.title.terminal_name, "Enhanced VT Terminal (Situation)");
+    VTSituationSetWindowTitle("Terminal");
     SetIconTitle("Term");
 
     ClearPipeline();
@@ -1174,7 +1179,7 @@ void InitTerminal(void) {
     terminal.options.debug_sequences = false;
     terminal.options.log_unsupported = true;
 
-    // Initialize fields for RayLib_terminal_console.c
+    // Initialize fields for terminal_console.c
     terminal.echo_enabled = true;
     terminal.input_enabled = true;
     terminal.password_mode = false;
@@ -2511,18 +2516,17 @@ void UpdateMouse(void) {
 
     // Exit if mouse is disabled or tracking is off
     if (!terminal.mouse.enabled || terminal.mouse.mode == MOUSE_TRACKING_OFF) {
-        ShowCursor(); // Show system cursor
+        SituationShowCursor(); // Show system cursor
         terminal.mouse.cursor_x = -1; // Hide custom cursor
         terminal.mouse.cursor_y = -1;
         return;
     }
 
     // Hide system cursor during mouse tracking
-    HideCursor();
+    SituationHideCursor();
 
     // Get mouse position and convert to cell coordinates
-    vec2 mouse_pos;
-    SituationGetMousePosition(mouse_pos);
+    Vector2 mouse_pos = SituationGetMousePosition();
     int cell_x = (int)(mouse_pos.x / (DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE)) + 1;
     int cell_y = (int)(mouse_pos.y / (DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE)) + 1;
 
@@ -2541,9 +2545,9 @@ void UpdateMouse(void) {
 
     // Get button states
     bool current_buttons_state[3];
-    current_buttons_state[0] = SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_LEFT);
-    current_buttons_state[1] = SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_MIDDLE);
-    current_buttons_state[2] = SituationIsMouseButtonDown(SIT_MOUSE_BUTTON_RIGHT);
+    current_buttons_state[0] = SituationIsMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
+    current_buttons_state[1] = SituationIsMouseButtonDown(GLFW_MOUSE_BUTTON_MIDDLE);
+    current_buttons_state[2] = SituationIsMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT);
 
     // Get wheel movement
     float wheel_move = SituationGetMouseWheelMove();
@@ -2558,9 +2562,9 @@ void UpdateMouse(void) {
             mouse_report[0] = '\0';
 
             if (terminal.mouse.sgr_mode || terminal.mouse.mode == MOUSE_TRACKING_URXVT || terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
-                if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) report_button_code += 4;
-                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) report_button_code += 8;
-                if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) report_button_code += 16;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_SHIFT) || SituationIsKeyDown(SIT_KEY_RIGHT_SHIFT)) report_button_code += 4;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_ALT) || SituationIsKeyDown(SIT_KEY_RIGHT_ALT)) report_button_code += 8;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) || SituationIsKeyDown(SIT_KEY_RIGHT_CONTROL)) report_button_code += 16;
 
                 if (terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
                      snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%d%c",
@@ -2572,9 +2576,9 @@ void UpdateMouse(void) {
             } else if (terminal.mouse.mode >= MOUSE_TRACKING_VT200 && terminal.mouse.mode <= MOUSE_TRACKING_ANY_EVENT) {
                 int cb_button = pressed ? i : 3;
                 int cb = 32 + cb_button;
-                if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) cb += 4;
-                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) cb += 8;
-                if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) cb += 16;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_SHIFT) || SituationIsKeyDown(SIT_KEY_RIGHT_SHIFT)) cb += 4;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_ALT) || SituationIsKeyDown(SIT_KEY_RIGHT_ALT)) cb += 8;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) || SituationIsKeyDown(SIT_KEY_RIGHT_CONTROL)) cb += 16;
                 snprintf(mouse_report, sizeof(mouse_report), "\x1B[M%c%c%c",
                         (char)cb, (char)(32 + cell_x), (char)(32 + cell_y));
             } else if (terminal.mouse.mode == MOUSE_TRACKING_X10) {
@@ -2592,9 +2596,9 @@ void UpdateMouse(void) {
     if (wheel_move != 0) {
         int report_button_code = (wheel_move > 0) ? 64 : 65;
         mouse_report[0] = '\0';
-        if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) report_button_code += 4;
-        if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) report_button_code += 8;
-        if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) report_button_code += 16;
+        if (SituationIsKeyDown(SIT_KEY_LEFT_SHIFT) || SituationIsKeyDown(SIT_KEY_RIGHT_SHIFT)) report_button_code += 4;
+        if (SituationIsKeyDown(SIT_KEY_LEFT_ALT) || SituationIsKeyDown(SIT_KEY_RIGHT_ALT)) report_button_code += 8;
+        if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) || SituationIsKeyDown(SIT_KEY_RIGHT_CONTROL)) report_button_code += 16;
 
         if (terminal.mouse.sgr_mode || terminal.mouse.mode == MOUSE_TRACKING_URXVT || terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
              if (terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
@@ -2606,9 +2610,9 @@ void UpdateMouse(void) {
              }
         } else if (terminal.mouse.mode >= MOUSE_TRACKING_VT200 && terminal.mouse.mode <= MOUSE_TRACKING_ANY_EVENT) {
             int cb = 32 + ((wheel_move > 0) ? 0 : 1) + 64;
-            if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) cb += 4;
-            if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) cb += 8;
-            if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) cb += 16;
+            if (SituationIsKeyDown(SIT_KEY_LEFT_SHIFT) || SituationIsKeyDown(SIT_KEY_RIGHT_SHIFT)) cb += 4;
+            if (SituationIsKeyDown(SIT_KEY_LEFT_ALT) || SituationIsKeyDown(SIT_KEY_RIGHT_ALT)) cb += 8;
+            if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) || SituationIsKeyDown(SIT_KEY_RIGHT_CONTROL)) cb += 16;
             snprintf(mouse_report, sizeof(mouse_report), "\x1B[M%c%c%c",
                     (char)cb, (char)(32 + cell_x), (char)(32 + cell_y));
         }
@@ -2637,9 +2641,9 @@ void UpdateMouse(void) {
                 else if(current_buttons_state[1]) sgr_motion_code = 33;
                 else if(current_buttons_state[2]) sgr_motion_code = 34;
 
-                if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) sgr_motion_code += 4;
-                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) sgr_motion_code += 8;
-                if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) sgr_motion_code += 16;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_SHIFT) || SituationIsKeyDown(SIT_KEY_RIGHT_SHIFT)) sgr_motion_code += 4;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_ALT) || SituationIsKeyDown(SIT_KEY_RIGHT_ALT)) sgr_motion_code += 8;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) || SituationIsKeyDown(SIT_KEY_RIGHT_CONTROL)) sgr_motion_code += 16;
 
                 if (terminal.mouse.mode == MOUSE_TRACKING_PIXEL) {
                     snprintf(mouse_report, sizeof(mouse_report), "\x1B[<%d;%d;%dM", sgr_motion_code, pixel_x, pixel_y);
@@ -2651,9 +2655,9 @@ void UpdateMouse(void) {
                 else if(current_buttons_state[1]) vt200_motion_cb = 32 + 1;
                 else if(current_buttons_state[2]) vt200_motion_cb = 32 + 2;
 
-                if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) vt200_motion_cb += 4;
-                if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) vt200_motion_cb += 8;
-                if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) vt200_motion_cb += 16;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_SHIFT) || SituationIsKeyDown(SIT_KEY_RIGHT_SHIFT)) vt200_motion_cb += 4;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_ALT) || SituationIsKeyDown(SIT_KEY_RIGHT_ALT)) vt200_motion_cb += 8;
+                if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) || SituationIsKeyDown(SIT_KEY_RIGHT_CONTROL)) vt200_motion_cb += 16;
                 snprintf(mouse_report, sizeof(mouse_report), "\x1B[M%c%c%c", (char)vt200_motion_cb, (char)(32 + cell_x), (char)(32 + cell_y));
             }
             if (mouse_report[0]) QueueResponse(mouse_report);
@@ -2770,9 +2774,9 @@ void DefineFunctionKey(int key_num, const char* sequence) {
 
 void HandleControlKey(VTKeyEvent* event) {
     // Handle Ctrl+key combinations
-    if (event->key_code >= KEY_A && event->key_code <= KEY_Z) {
+    if (event->key_code >= SIT_KEY_A && event->key_code <= SIT_KEY_Z) {
         // Ctrl+A = 0x01, Ctrl+B = 0x02, etc.
-        int ctrl_char = event->key_code - KEY_A + 1;
+        int ctrl_char = event->key_code - SIT_KEY_A + 1;
         event->sequence[0] = (char)ctrl_char;
         event->sequence[1] = '\0';
     } else {
@@ -2781,7 +2785,7 @@ void HandleControlKey(VTKeyEvent* event) {
             case SIT_KEY_LEFT_BRACKET:  event->sequence[0] = 0x1B; break; // Ctrl+[ = ESC
             case SIT_KEY_BACKSLASH:  event->sequence[0] = 0x1C; break; // Ctrl+\ = FS
             case SIT_KEY_RIGHT_BRACKET: event->sequence[0] = 0x1D; break; // Ctrl+] = GS
-            case SIT_KEY_GRAVE:      event->sequence[0] = 0x1E; break; // Ctrl+^ = RS
+            case SIT_KEY_GRAVE_ACCENT:      event->sequence[0] = 0x1E; break; // Ctrl+^ = RS
             case SIT_KEY_MINUS:      event->sequence[0] = 0x1F; break; // Ctrl+_ = US
             default:
                 event->sequence[0] = '\0';
@@ -2802,8 +2806,8 @@ void HandleAltKey(VTKeyEvent* event) {
             letter = 'A' + (event->key_code - SIT_KEY_A);
         }
         snprintf(event->sequence, sizeof(event->sequence), "\x1B%c", letter);
-    } else if (event->key_code >= SIT_KEY_ZERO && event->key_code <= SIT_KEY_NINE) {
-        char digit = '0' + (event->key_code - SIT_KEY_ZERO);
+    } else if (event->key_code >= SIT_KEY_0 && event->key_code <= SIT_KEY_9) {
+        char digit = '0' + (event->key_code - SIT_KEY_0);
         snprintf(event->sequence, sizeof(event->sequence), "\x1B%c", digit);
     } else {
         // For other keys, just send ESC followed by the normal character
@@ -2900,10 +2904,10 @@ void GenerateVTSequence(VTKeyEvent* event) {
         case SIT_KEY_KP_5: case SIT_KEY_KP_6: case SIT_KEY_KP_7: case SIT_KEY_KP_8: case SIT_KEY_KP_9:
             if (terminal.vt_keyboard.keypad_mode) {
                 snprintf(event->sequence, sizeof(event->sequence), "\x1BO%c",
-                        'p' + (event->key_code - KEY_KP_0));
+                        'p' + (event->key_code - SIT_KEY_KP_0));
             } else {
                 snprintf(event->sequence, sizeof(event->sequence), "%c",
-                        '0' + (event->key_code - KEY_KP_0));
+                        '0' + (event->key_code - SIT_KEY_KP_0));
             }
             break;
 
@@ -2951,7 +2955,7 @@ void GenerateVTSequence(VTKeyEvent* event) {
 void UpdateVTKeyboard(void) {
     double current_time = SituationTimerGetTime();
 
-    // Process Raylib key presses - SKIP PRINTABLE ASCII KEYS
+    // Process Situation key presses - SKIP PRINTABLE ASCII KEYS
     int rk;
     while ((rk = SituationGetKeyPressed()) != 0) {
         // First, check if this key is a User-Defined Key (UDK)
@@ -4529,7 +4533,7 @@ void ExecuteDECRQM(void) { // Request Mode
                 mode_state = (terminal.conformance.level == VT_LEVEL_220) ? 1 : 2;
                 break;
             case 63: // DECSCL VT320
-                mode_state = (terminal.conformance.level == VT_LEVEL_320) ? 1 : 2;
+                mode_state = (terminal.conformance.level == VT_LEVEL_520) ? 1 : 2;
                 break;
             case 64: // DECSCL VT420
                 mode_state = (terminal.conformance.level == VT_LEVEL_420) ? 1 : 2;
@@ -4670,7 +4674,7 @@ void ExecuteWindowOps(void) { // Window manipulation (xterm extension)
             {
                 char response[32];
                 snprintf(response, sizeof(response), "\x1B[9;%d;%dt",
-                        GetScreenHeight() / DEFAULT_CHAR_HEIGHT, GetScreenWidth() / DEFAULT_CHAR_WIDTH);
+                        SituationGetScreenHeight() / DEFAULT_CHAR_HEIGHT, SituationGetScreenWidth() / DEFAULT_CHAR_WIDTH);
                 QueueResponse(response);
             }
             break;
@@ -5098,7 +5102,7 @@ L_CSI_END:
 // =============================================================================
 
 
-void VTSetWindowTitle(const char* title) {
+void VTSituationSetWindowTitle(const char* title) {
     strncpy(terminal.title.window_title, title, MAX_TITLE_LENGTH - 1);
     terminal.title.window_title[MAX_TITLE_LENGTH - 1] = '\0';
     terminal.title.title_changed = true;
@@ -5107,8 +5111,8 @@ void VTSetWindowTitle(const char* title) {
         title_callback(terminal.title.window_title, false);
     }
 
-    // Also set Raylib window title
-    SetWindowTitle(terminal.title.window_title);
+    // Also set Situation window title
+    SituationSetWindowTitle(terminal.title.window_title);
 }
 
 void SetIconTitle(const char* title) {
@@ -5282,7 +5286,7 @@ void ExecuteOSCCommand(void) {
     switch (command) {
         case 0: // Set window and icon title
         case 2: // Set window title
-            VTSetWindowTitle(data);
+            VTSituationSetWindowTitle(data);
             break;
 
         case 1: // Set icon title
@@ -5370,7 +5374,15 @@ void ProcessTermcapRequest(const char* request) {
     QueueResponse(response);
 }
 
-void DefineUserKey(int key_code, const char* sequence) {
+// Helper function to convert a single hex character to its integer value
+static int hex_char_to_int(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1; // Invalid hex char
+}
+
+void DefineUserKey(int key_code, const char* sequence, size_t sequence_len) {
     // Expand programmable keys array if needed
     if (terminal.programmable_keys.count >= terminal.programmable_keys.capacity) {
         size_t new_capacity = terminal.programmable_keys.capacity == 0 ? 16 :
@@ -5389,7 +5401,7 @@ void DefineUserKey(int key_code, const char* sequence) {
     for (size_t i = 0; i < terminal.programmable_keys.count; i++) {
         if (terminal.programmable_keys.keys[i].key_code == key_code) {
             key = &terminal.programmable_keys.keys[i];
-            free(key->sequence); // Free old sequence
+            if (key->sequence) free(key->sequence); // Free old sequence
             break;
         }
     }
@@ -5400,20 +5412,26 @@ void DefineUserKey(int key_code, const char* sequence) {
     }
 
     // Store new sequence
-    key->sequence_length = strlen(sequence);
-    key->sequence = malloc(key->sequence_length + 1);
-    strcpy(key->sequence, sequence);
+    key->sequence_length = sequence_len;
+    key->sequence = malloc(key->sequence_length);
+    if (key->sequence) {
+        memcpy(key->sequence, sequence, key->sequence_length);
+    }
     key->active = true;
 }
 
 void ProcessUserDefinedKeys(const char* data) {
     // Parse user defined key format: key/string;key/string;...
+    // The string is a sequence of hexadecimal pairs.
     if (!terminal.conformance.features.user_defined_keys) {
-        LogUnsupportedSequence("User defined keys not supported");
+        LogUnsupportedSequence("User defined keys require VT320 mode");
         return;
     }
 
     char* data_copy = strdup(data);
+    if (!data_copy) return;
+
+    // Use standard strtok for portability (single-threaded context)
     char* token = strtok(data_copy, ";");
 
     while (token != NULL) {
@@ -5421,9 +5439,40 @@ void ProcessUserDefinedKeys(const char* data) {
         if (slash) {
             *slash = '\0';
             int key_code = atoi(token);
-            char* key_string = slash + 1;
+            char* hex_string = slash + 1;
+            size_t hex_len = strlen(hex_string);
 
-            DefineUserKey(key_code, key_string);
+            if (hex_len % 2 != 0) {
+                // Invalid hex string length
+                LogUnsupportedSequence("Invalid hex string in DECUDK");
+                token = strtok(NULL, ";");
+                continue;
+            }
+
+            size_t decoded_len = hex_len / 2;
+            char* decoded_sequence = malloc(decoded_len);
+            if (!decoded_sequence) {
+                // Allocation failed
+                token = strtok(NULL, ";");
+                continue;
+            }
+
+            for (size_t i = 0; i < decoded_len; i++) {
+                int high = hex_char_to_int(hex_string[i * 2]);
+                int low = hex_char_to_int(hex_string[i * 2 + 1]);
+                if (high == -1 || low == -1) {
+                    // Invalid hex character
+                    free(decoded_sequence);
+                    decoded_sequence = NULL;
+                    break;
+                }
+                decoded_sequence[i] = (char)((high << 4) | low);
+            }
+
+            if (decoded_sequence) {
+                DefineUserKey(key_code, decoded_sequence, decoded_len);
+                free(decoded_sequence);
+            }
         }
         token = strtok(NULL, ";");
     }
@@ -6128,6 +6177,7 @@ void ShowTerminalInfo(void) {
     PipelineWriteFormat("- VT220 Mode: %s\n", terminal.conformance.features.vt220_mode ? "Yes" : "No");
     PipelineWriteFormat("- VT320 Mode: %s\n", terminal.conformance.features.vt320_mode ? "Yes" : "No");
     PipelineWriteFormat("- VT420 Mode: %s\n", terminal.conformance.features.vt420_mode ? "Yes" : "No");
+    PipelineWriteFormat("- VT520 Mode: %s\n", terminal.conformance.features.vt520_mode ? "Yes" : "No");
     PipelineWriteFormat("- xterm Mode: %s\n", terminal.conformance.features.xterm_mode ? "Yes" : "No");
 
     PipelineWriteString("\nCurrent Settings:\n");
@@ -6255,79 +6305,6 @@ void Script_SetColor(int fg, int bg) {
  * @see VTLevel enum for available levels.
  * @see terminal.h header documentation for a full list of KEY FEATURES and their typical VT level requirements.
  */
-void SetVTLevel(VTLevel level) {
-    terminal.conformance.level = level;
-
-    // Update feature flags based on the new level
-    terminal.conformance.features.vt52_mode = (level >= VT_LEVEL_52);
-    terminal.conformance.features.vt100_mode = (level >= VT_LEVEL_100 || level == VT_LEVEL_XTERM);
-    terminal.conformance.features.vt220_mode = (level >= VT_LEVEL_220 || level == VT_LEVEL_XTERM);
-    terminal.conformance.features.vt320_mode = (level >= VT_LEVEL_320 || level == VT_LEVEL_XTERM);
-    terminal.conformance.features.vt420_mode = (level >= VT_LEVEL_420 || level == VT_LEVEL_XTERM);
-    terminal.conformance.features.vt520_mode = (level >= VT_LEVEL_520 || level == VT_LEVEL_XTERM);
-    terminal.conformance.features.xterm_mode = (level == VT_LEVEL_XTERM);
-
-    // Update Device Attribute strings based on the level
-    // These are example DA strings; consult standards for exact values.
-    // The "\x1B[" part is crucial for CSI sequences.
-    if (level == VT_LEVEL_XTERM) {
-        // Example for a modern xterm supporting many features
-        strcpy(terminal.device_attributes, "\x1B[?41;1;2;6;7;8;9;15;18;21;22c"); // Includes 256 colors, TrueColor support indicators
-        strcpy(terminal.secondary_attributes, "\x1B[>41;400;0c"); // xterm, example version 400, no patches
-        strcpy(terminal.tertiary_attributes, "\x1B[>0;1;0c");
-    } else if (level >= VT_LEVEL_520) {
-        strcpy(terminal.device_attributes, "\x1B[?65;1;2;6;7;8;9;15;18;21;22;28;29c");
-        strcpy(terminal.secondary_attributes, "\x1B[>52;10;0c"); // Unique to VT520
-        strcpy(terminal.tertiary_attributes, "\x1B[>0;1;0c");
-    } else if (level >= VT_LEVEL_420) {
-        strcpy(terminal.device_attributes, "\x1B[?64;1;2;6;7;8;9;15;18;21;22;28;29c");
-        strcpy(terminal.secondary_attributes, "\x1B[>41;10;0c");
-        strcpy(terminal.tertiary_attributes, "\x1B[>0;1;0c");
-    } else if (level >= VT_LEVEL_320) {
-        strcpy(terminal.device_attributes, "\x1B[?63;1;2;6;7;8;9;15;18;21c"); // VT320
-        strcpy(terminal.secondary_attributes, "\x1B[>24;10;0c"); // VT320, with Sixel graphics support
-        strcpy(terminal.tertiary_attributes, "");
-    } else if (level >= VT_LEVEL_220) {
-        strcpy(terminal.device_attributes, "\x1B[?62;1;2;6;7;8;9;15c"); // VT220
-        strcpy(terminal.secondary_attributes, "\x1B[>1;10;0c"); // VT220, 7-bit controls, no Sixel
-        strcpy(terminal.tertiary_attributes, "");
-    } else if (level >= VT_LEVEL_100) {
-        strcpy(terminal.device_attributes, "\x1B[?6c"); // VT102 (common DA for VT100 compatibility)
-        // Or: strcpy(terminal.device_attributes, "\x1B[?1;2c"); // Original VT100 (AVO, no advanced video options)
-        strcpy(terminal.secondary_attributes, "\x1B[>0;95;0c"); // VT100, firmware version 95
-        strcpy(terminal.tertiary_attributes, "");
-    } else { // VT_LEVEL_52
-        strcpy(terminal.device_attributes, "\x1B/Z"); // VT52 identification sequence
-        strcpy(terminal.secondary_attributes, "");    // VT52 does not have a secondary DA response
-        strcpy(terminal.tertiary_attributes, "");
-    }
-}
-
-/**
- * @brief Retrieves the current VT compatibility level of the terminal.
- * @return The current VTLevel.
- */
-// --- VT Compliance Level Management ---
-
-/**
- * @brief Sets the terminal's VT compatibility level (e.g., VT100, VT220, XTERM).
- * This is a cornerstone for controlling the terminal's behavior. Changing the level:
- *  - Modifies which escape sequences the terminal recognizes and processes.
- *  - Alters the strings returned for Device Attribute (DA) requests (e.g., CSI c).
- *  - Enables or disables specific features associated with that level, such as:
- *    - Sixel graphics (typically VT240/VT3xx+ or XTERM).
- *    - Advanced mouse tracking modes (VT200+ or XTERM).
- *    - National Replacement Character Sets (NRCS), DEC Special Graphics.
- *    - Rectangular area operations (VT420+).
- *    - User-Defined Keys (DECUDK, VT320+).
- *    - Soft Fonts (DECDLD, VT220+).
- *  - Updates internal feature flags in `terminal.conformance.features`.
- * The library aims for compatibility with VT52, VT100, VT220, VT320, VT420, and xterm standards.
- *
- * @param level The desired VTLevel (e.g., VT_LEVEL_100, VT_LEVEL_XTERM).
- * @see VTLevel enum for available levels.
- * @see terminal.h header documentation for a full list of KEY FEATURES and their typical VT level requirements.
- */
 // Statically define the feature sets for each VT level for easy lookup.
 typedef struct {
     VTLevel level;
@@ -6340,13 +6317,14 @@ static const VTLevelFeatureMapping vt_level_mappings[] = {
     { VT_LEVEL_102, { .vt100_mode = true, .vt102_mode = true, .national_charsets = true } },
     { VT_LEVEL_132, { .vt100_mode = true, .vt102_mode = true, .vt132_mode = true, .national_charsets = true } },
     { VT_LEVEL_220, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true } },
-    { VT_LEVEL_340, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt340_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true } },
-    { VT_LEVEL_420, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt340_mode = true, .vt420_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true, .rectangular_operations = true, .selective_erase = true } },
-    { VT_LEVEL_510, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt340_mode = true, .vt420_mode = true, .vt510_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true, .rectangular_operations = true, .selective_erase = true } },
-    { VT_LEVEL_520, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt340_mode = true, .vt420_mode = true, .vt510_mode = true, .vt520_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true, .rectangular_operations = true, .selective_erase = true, .locator = true } },
-    { VT_LEVEL_525, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt340_mode = true, .vt420_mode = true, .vt510_mode = true, .vt520_mode = true, .vt525_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true, .rectangular_operations = true, .selective_erase = true, .locator = true, .true_color = true } },
+    { VT_LEVEL_320, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt320_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true } },
+    { VT_LEVEL_340, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt320_mode = true, .vt340_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true } },
+    { VT_LEVEL_420, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt320_mode = true, .vt340_mode = true, .vt420_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true, .rectangular_operations = true, .selective_erase = true } },
+    { VT_LEVEL_510, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt320_mode = true, .vt340_mode = true, .vt420_mode = true, .vt510_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true, .rectangular_operations = true, .selective_erase = true } },
+    { VT_LEVEL_520, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt320_mode = true, .vt340_mode = true, .vt420_mode = true, .vt510_mode = true, .vt520_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true, .rectangular_operations = true, .selective_erase = true, .locator = true } },
+    { VT_LEVEL_525, { .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt320_mode = true, .vt340_mode = true, .vt420_mode = true, .vt510_mode = true, .vt520_mode = true, .vt525_mode = true, .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true, .rectangular_operations = true, .selective_erase = true, .locator = true, .true_color = true } },
     { VT_LEVEL_XTERM, {
-        .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt340_mode = true, .vt420_mode = true, .vt520_mode = true, .xterm_mode = true,
+        .vt100_mode = true, .vt102_mode = true, .vt220_mode = true, .vt320_mode = true, .vt340_mode = true, .vt420_mode = true, .vt520_mode = true, .xterm_mode = true,
         .national_charsets = true, .soft_fonts = true, .user_defined_keys = true, .sixel_graphics = true,
         .rectangular_operations = true, .selective_erase = true, .locator = true, .true_color = true,
         .mouse_tracking = true, .alternate_screen = true, .window_manipulation = true
@@ -6367,8 +6345,8 @@ void SetVTLevel(VTLevel level) {
     }
 
     if (!level_found) {
-        // Log error, invalid level
-        return;
+        // Default to a safe baseline if unknown
+        terminal.conformance.features = vt_level_mappings[0].features;
     }
 
     terminal.conformance.level = level;
@@ -6379,32 +6357,39 @@ void SetVTLevel(VTLevel level) {
         strcpy(terminal.secondary_attributes, "\x1B[>41;400;0c");
         strcpy(terminal.tertiary_attributes, "\x1B[>0;1;0c");
     } else if (level >= VT_LEVEL_525) {
-        strcpy(terminal.device_attributes, "\x1B[?65;1;2;6;7;8;9;15;18;21;22;28;29c"); // VT525 with color
-        strcpy(terminal.secondary_attributes, "\x1B[>52;10;0c"); // VT520/525
+        strcpy(terminal.device_attributes, "\x1B[?65;1;2;6;7;8;9;15;18;21;22;28;29c");
+        strcpy(terminal.secondary_attributes, "\x1B[>52;10;0c");
+        strcpy(terminal.tertiary_attributes, "\x1B[>0;1;0c");
     } else if (level >= VT_LEVEL_520) {
         strcpy(terminal.device_attributes, "\x1B[?65;1;2;6;7;8;9;15;18;21;22;28;29c");
         strcpy(terminal.secondary_attributes, "\x1B[>52;10;0c");
+        strcpy(terminal.tertiary_attributes, "\x1B[>0;1;0c");
     } else if (level >= VT_LEVEL_420) {
         strcpy(terminal.device_attributes, "\x1B[?64;1;2;6;7;8;9;15;18;21;22;28;29c");
         strcpy(terminal.secondary_attributes, "\x1B[>41;10;0c");
-    } else if (level >= VT_LEVEL_340) {
+        strcpy(terminal.tertiary_attributes, "\x1B[>0;1;0c");
+    } else if (level >= VT_LEVEL_340 || level >= VT_LEVEL_320) {
         strcpy(terminal.device_attributes, "\x1B[?63;1;2;6;7;8;9;15;18;21c");
         strcpy(terminal.secondary_attributes, "\x1B[>24;10;0c");
+        strcpy(terminal.tertiary_attributes, "");
     } else if (level >= VT_LEVEL_220) {
         strcpy(terminal.device_attributes, "\x1B[?62;1;2;6;7;8;9;15c");
         strcpy(terminal.secondary_attributes, "\x1B[>1;10;0c");
+        strcpy(terminal.tertiary_attributes, "");
     } else if (level >= VT_LEVEL_102) {
         strcpy(terminal.device_attributes, "\x1B[?6c");
         strcpy(terminal.secondary_attributes, "\x1B[>0;95;0c");
+        strcpy(terminal.tertiary_attributes, "");
     } else if (level >= VT_LEVEL_100) {
         strcpy(terminal.device_attributes, "\x1B[?1;2c");
         strcpy(terminal.secondary_attributes, "\x1B[>0;95;0c");
+        strcpy(terminal.tertiary_attributes, "");
     } else { // VT52
         strcpy(terminal.device_attributes, "\x1B/Z");
         terminal.secondary_attributes[0] = '\0';
+        terminal.tertiary_attributes[0] = '\0';
     }
 }
-
 
 VTLevel GetVTLevel(void) {
     return terminal.conformance.level;
@@ -6417,7 +6402,7 @@ VTLevel GetVTLevel(void) {
  * The application hosting the terminal should call this function repeatedly (e.g., in its
  * main loop after `UpdateVTKeyboard()`) to obtain keyboard input.
  *
- * The `VTKeyboard` system, updated by `UpdateVTKeyboard()`, translates raw Raylib key
+ * The `VTKeyboard` system, updated by `UpdateVTKeyboard()`, translates raw Situation key
  * presses into appropriate VT sequences or characters. This processing considers:
  *  - Modifier keys (Shift, Ctrl, Alt/Meta).
  *  - Terminal modes such as:
@@ -6431,7 +6416,7 @@ VTLevel GetVTLevel(void) {
  *
  * @param event Pointer to a `VTKeyEvent` structure that will be filled with the event data.
  * @return `true` if a key event was retrieved from the buffer, `false` if the buffer is empty.
- * @see UpdateVTKeyboard() which captures Raylib input and populates the event buffer.
+ * @see UpdateVTKeyboard() which captures Situation input and populates the event buffer.
  * @see VTKeyEvent struct for details on the event data fields.
  * @note The terminal platform provides robust keyboard translation, ensuring that applications
  *       running within the terminal receive the correct input sequences based on active modes.
@@ -6580,7 +6565,7 @@ void UpdateTerminal(void) {
 }
 
 /**
- * @brief Renders the current visual state of the terminal to the Raylib window.
+ * @brief Renders the current visual state of the terminal to the Situation window.
  * This function must be called once per frame, within SituationBeginFrame()`
  * and `SituationEndFrame()` block. It translates the terminal's internal model into a
  * graphical representation.
@@ -6615,7 +6600,7 @@ void UpdateTerminal(void) {
  *  -   **Visual Bell**: If `terminal.visual_bell_timer` is active, a visual flash effect
  *      may be rendered.
  *
- * The terminal provides a faithful visual emulation, leveraging Raylib for efficient
+ * The terminal provides a faithful visual emulation, leveraging Situation for efficient
  * 2D rendering.
  *
  * @see EnhancedTermChar for the structure defining each character cell's properties.
@@ -6714,7 +6699,7 @@ void DrawTerminal(void) {
 /**
  * @brief Cleans up all resources allocated by the terminal library.
  * This function must be called when the application is shutting down, typically
- * after the main loop has exited and before closing the Raylib window (if Raylib
+ * after the main loop has exited and before closing the Situation window (if Situation
  * is managed by the application).
  *
  * Its responsibilities include deallocating:
@@ -6768,12 +6753,12 @@ void CleanupTerminal(void) {
 
 bool InitTerminalDisplay(void) {
     // Create a virtual display for the terminal
-    if (!SituationCreateVirtualDisplay(1, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)) {
+    if (!SituationCreateVirtualDisplay((Vector2){{(float)DEFAULT_WINDOW_WIDTH, (float)DEFAULT_WINDOW_HEIGHT}}, 1.0, 0, SITUATION_SCALING_INTEGER, SITUATION_BLEND_ALPHA)) {
         return false;
     }
 
     // Set the virtual display as renderable
-    SituationSetVirtualDisplayActive(1, true);
+    // SituationSetVirtualDisplayActive(1, true); // Not part of current API
 
     return true;
 }
@@ -6791,7 +6776,7 @@ static void HandleTerminalResponse(const char* response, int length) {
     PipelineWriteString(response);
 }
 int main(void) {
-    // Initialize Raylib window
+    // Initialize Situation window
     SituationInitInfo init_info = { .window_width = DEFAULT_WINDOW_WIDTH, .window_height = DEFAULT_WINDOW_HEIGHT, .window_title = "Terminal", .initial_active_window_flags = SITUATION_WINDOW_STATE_RESIZABLE };
     SituationInit(0, NULL, &init_info);
     SituationSetTargetFPS(60);
@@ -6843,111 +6828,3 @@ int main(void) {
 
 
 #endif // TERMINAL_H
-
-
-// Helper function to convert a single hex character to its integer value
-static int hex_char_to_int(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1; // Invalid hex char
-}
-
-void DefineUserKey(int key_code, const char* sequence, size_t sequence_len) {
-    // Expand programmable keys array if needed
-    if (terminal.programmable_keys.count >= terminal.programmable_keys.capacity) {
-        size_t new_capacity = terminal.programmable_keys.capacity == 0 ? 16 :
-                             terminal.programmable_keys.capacity * 2;
-
-        ProgrammableKey* new_keys = realloc(terminal.programmable_keys.keys,
-                                           new_capacity * sizeof(ProgrammableKey));
-        if (!new_keys) return;
-
-        terminal.programmable_keys.keys = new_keys;
-        terminal.programmable_keys.capacity = new_capacity;
-    }
-
-    // Find existing key or add new one
-    ProgrammableKey* key = NULL;
-    for (size_t i = 0; i < terminal.programmable_keys.count; i++) {
-        if (terminal.programmable_keys.keys[i].key_code == key_code) {
-            key = &terminal.programmable_keys.keys[i];
-            if (key->sequence) free(key->sequence); // Free old sequence
-            break;
-        }
-    }
-
-    if (!key) {
-        key = &terminal.programmable_keys.keys[terminal.programmable_keys.count++];
-        key->key_code = key_code;
-    }
-
-    // Store new sequence
-    key->sequence_length = sequence_len;
-    key->sequence = malloc(key->sequence_length);
-    if (key->sequence) {
-        memcpy(key->sequence, sequence, key->sequence_length);
-    }
-    key->active = true;
-}
-
-void ProcessUserDefinedKeys(const char* data) {
-    // Parse user defined key format: key/string;key/string;...
-    // The string is a sequence of hexadecimal pairs.
-    if (!terminal.conformance.features.vt320_mode) {
-        LogUnsupportedSequence("User defined keys require VT320 mode");
-        return;
-    }
-
-    char* data_copy = strdup(data);
-    if (!data_copy) return;
-
-    char* saveptr;
-    char* token = strtok_r(data_copy, ";", &saveptr);
-
-    while (token != NULL) {
-        char* slash = strchr(token, '/');
-        if (slash) {
-            *slash = '\0';
-            int key_code = atoi(token);
-            char* hex_string = slash + 1;
-            size_t hex_len = strlen(hex_string);
-
-            if (hex_len % 2 != 0) {
-                // Invalid hex string length
-                LogUnsupportedSequence("Invalid hex string in DECUDK");
-                token = strtok_r(NULL, ";", &saveptr);
-                continue;
-            }
-
-            size_t decoded_len = hex_len / 2;
-            char* decoded_sequence = malloc(decoded_len);
-            if (!decoded_sequence) {
-                // Allocation failed
-                token = strtok_r(NULL, ";", &saveptr);
-                continue;
-            }
-
-            for (size_t i = 0; i < decoded_len; i++) {
-                int high = hex_char_to_int(hex_string[i * 2]);
-                int low = hex_char_to_int(hex_string[i * 2 + 1]);
-                if (high == -1 || low == -1) {
-                    // Invalid hex character
-                    free(decoded_sequence);
-                    decoded_sequence = NULL;
-                    break;
-                }
-                decoded_sequence[i] = (char)((high << 4) | low);
-            }
-
-            if (decoded_sequence) {
-                DefineUserKey(key_code, decoded_sequence, decoded_len);
-                free(decoded_sequence);
-            }
-        }
-        token = strtok_r(NULL, ";", &saveptr);
-    }
-
-    free(data_copy);
-}
-void ProcessSoftFontDownload(const char* data) {
