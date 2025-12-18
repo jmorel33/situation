@@ -93,7 +93,7 @@ This document provides an exhaustive technical reference for `terminal.h`, an en
 
 ### 1.1. Description
 
-`terminal.h` is a comprehensive, single-header C library for terminal emulation. It is designed for integration into applications requiring a text-based user interface, such as embedded systems, remote access clients, or development tools. The library uses [Raylib](https://www.raylib.com/) for rendering, windowing, and input handling, providing a complete solution out of the box.
+`terminal.h` is a comprehensive, single-header C library for terminal emulation. It is designed for integration into applications requiring a text-based user interface, such as embedded systems, remote access clients, or development tools. The library uses [Situation](https://www.Situation.com/) for rendering, windowing, and input handling, providing a complete solution out of the box.
 
 The library emulates a wide range of historical and modern terminal standards, from the DEC VT52 to contemporary xterm extensions. It processes a stream of bytes, interprets control codes and escape sequences, and maintains an internal model of the terminal screen, which is then rendered to the display.
 
@@ -161,11 +161,11 @@ The visual state of the terminal is stored in one of two screen buffers, both of
 
 #### 1.3.5. The Rendering Engine
 
-The `DrawTerminal()` function is responsible for translating the in-memory screen buffer into pixels on the screen, using Raylib for all drawing operations.
+The `DrawTerminal()` function is responsible for translating the in-memory screen buffer into pixels on the screen, using Situation for all drawing operations.
 
 -   **Iteration:** The function iterates over every cell of the active screen buffer.
 -   **Attribute Resolution:** For each cell, it resolves all attributes:
-    -   It translates the `ExtendedColor` into a Raylib `Color`.
+    -   It translates the `ExtendedColor` into a Situation `Color`.
     -   It applies `bold` (often by selecting a bright color variant for the standard 16 ANSI colors).
     -   It handles `reverse` video by swapping the resolved foreground and background colors.
 -   **Drawing:**
@@ -555,7 +555,7 @@ This section provides a comprehensive reference for the public API of `terminal.
 These functions manage the initialization and destruction of the terminal instance.
 
 -   `void InitTerminal(void);`
-    Initializes the entire `Terminal` struct to a default state. This includes setting up screen buffers, default modes (e.g., auto-wrap on), tab stops, character sets, and the color palette. It also creates the font texture used for rendering. **Must be called once** after the Raylib window is created.
+    Initializes the entire `Terminal` struct to a default state. This includes setting up screen buffers, default modes (e.g., auto-wrap on), tab stops, character sets, and the color palette. It also creates the font texture used for rendering. **Must be called once** after the Situation window is created.
 
 -   `void CleanupTerminal(void);`
     Frees all resources allocated by the terminal. This includes the font texture, memory for programmable keys, and any other dynamically allocated buffers. **Must be called once** before the application exits to prevent memory leaks.
@@ -564,11 +564,11 @@ These functions manage the initialization and destruction of the terminal instan
     This is the main "tick" function for the terminal. It should be called once per frame. It drives all ongoing processes:
     -   Processes a batch of characters from the input pipeline.
     -   Updates internal timers for cursor and text blinking.
-    -   Polls Raylib for keyboard and mouse input and translates them into VT events.
+    -   Polls Situation for keyboard and mouse input and translates them into VT events.
     -   Invokes the `ResponseCallback` if any data is queued to be sent to the host.
 
 -   `void DrawTerminal(void);`
-    Renders the current state of the terminal to the screen. It iterates over the screen buffer, drawing each character with its correct attributes. It also handles drawing the cursor, Sixel graphics, and visual bell. Must be called within a Raylib `BeginDrawing()` / `EndDrawing()` block.
+    Renders the current state of the terminal to the screen. It iterates over the screen buffer, drawing each character with its correct attributes. It also handles drawing the cursor, Sixel graphics, and visual bell. Must be called within a Situation `BeginDrawing()` / `EndDrawing()` block.
 
 ### 5.2. Host Input (Pipeline) Management
 
@@ -737,7 +737,7 @@ This chapter provides a deeper, narrative look into the internal mechanics of th
     -   It looks at `cell->fg_color` (red).
     -   It looks at `cell->bg_color` (the default black).
     -   It checks for other attributes like `bold`, `underline`, etc.
-5.  **Raylib Calls:**
+5.  **Situation Calls:**
     -   It calls `DrawRectangle()` to draw the cell's background with the resolved background color.
     -   It looks up the glyph for 'H' in the `font_texture` and calls `DrawTextureRec()` to render it using the resolved foreground color (red).
 
@@ -747,7 +747,7 @@ This entire cycle, from ingestion to rendering, happens continuously, allowing t
 
 Concurrent to the host-to-terminal data flow, the library handles user input from the physical keyboard and mouse, translating it into byte sequences that a host application can understand.
 
-1.  **Polling:** In each frame, `UpdateTerminal()` calls `UpdateVTKeyboard()`. This function polls Raylib for any key presses, releases, or character inputs.
+1.  **Polling:** In each frame, `UpdateTerminal()` calls `UpdateVTKeyboard()`. This function polls Situation for any key presses, releases, or character inputs.
 2.  **Event Creation:** For each input, a `VTKeyEvent` struct is created, capturing the raw key code, modifier states (Ctrl, Alt, Shift), and a timestamp.
 3.  **Sequence Generation:** The core of the translation happens in `GenerateVTSequence()`. This function takes a `VTKeyEvent` and populates its `sequence` field based on a series of rules:
     -   **Control Keys:** `Ctrl+A` is translated to `0x01`, `Ctrl+[` to `ESC`, etc.
@@ -922,7 +922,7 @@ These two structs contain boolean flags that track the state of all major termin
 
 A structure containing a fully processed keyboard event, ready to be sent back to the host application.
 
--   `int key_code`: The original Raylib key code or Unicode character code that generated the event.
+-   `int key_code`: The original Situation key code or Unicode character code that generated the event.
 -   `bool ctrl`, `shift`, `alt`, `meta`: The state of the modifier keys at the time of the press.
 -   `char sequence[32]`: The final, translated byte sequence to be sent to the host (e.g., `"A"`, `"\x1B[A"`, or `"\x01"` for Ctrl+A).
 
