@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.30 "Titanium Core C"_
+_Core API library v2.3.32 "Titanium Core C"_
 
 _(c) 2025 Jacques Morel_
 
