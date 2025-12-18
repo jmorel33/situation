@@ -161,18 +161,16 @@ The visual state of the terminal is stored in one of two screen buffers, both of
 
 #### 1.3.5. The Rendering Engine
 
-The `DrawTerminal()` function is responsible for translating the in-memory screen buffer into pixels on the screen, using Situation for all drawing operations.
+The `DrawTerminal()` function leverages a high-performance **Compute Shader** pipeline to render the terminal state. This modern approach offloads the heavy lifting of attribute resolution and glyph compositing to the GPU.
 
--   **Iteration:** The function iterates over every cell of the active screen buffer.
--   **Attribute Resolution:** For each cell, it resolves all attributes:
-    -   It translates the `ExtendedColor` into a Situation `Color`.
-    -   It applies `bold` (often by selecting a bright color variant for the standard 16 ANSI colors).
-    -   It handles `reverse` video by swapping the resolved foreground and background colors.
--   **Drawing:**
-    1.  The background rectangle of the cell is drawn first with the final resolved background color.
-    2.  The character glyph is looked up in a pre-rendered font atlas (`font_texture`) and drawn with the final resolved foreground color.
-    3.  Decorative lines for `underline`, `strikethrough`, and `overline` are drawn on top.
-    4.  The cursor is drawn last, according to its shape, visibility, and blink state.
+-   **Data Upload:** The current state of the screen buffer (`EnhancedTermChar` array) is packed into a GPU-friendly format (`GPUCell`) and uploaded to a Shader Storage Buffer Object (SSBO) via `UpdateTerminalSSBO()`.
+-   **Compute Dispatch:** A compute shader is dispatched with one thread per character cell.
+-   **Parallel Rendering:** Each thread reads its corresponding cell data from the SSBO:
+    -   Resolves foreground and background colors (handling ANSI, palette, and RGB modes).
+    -   Applies attributes like bold, reverse video, and blink.
+    -   Samples the font atlas texture (`font_texture`) to retrieve the glyph.
+    -   Composites the result directly into a target Storage Image (`output_texture`).
+-   **Presentation:** Finally, `SituationCmdPresent` blits the rendered image to the swapchain for display.
 
 #### 1.3.6. The Output Pipeline (Response System)
 
@@ -536,7 +534,7 @@ Sixel is a bitmap graphics format designed for terminals, allowing for the displ
     -   **Repeat Introducers (`!`)**: To efficiently encode runs of identical sixel data.
     -   **Carriage Return (`$`) and New Line (`-`)**: For positioning the sixel "cursor".
     -   **Sixel Data Characters (`?`-`~`)**: Each character encodes a 6-pixel vertical strip.
--   **Rendering:** The parsed Sixel data is written into a pixel buffer (`terminal.sixel.data`). During the `DrawTerminal` call, if a Sixel image is active (`terminal.sixel.active`), this buffer is rendered to the screen at the cursor position where the Sixel sequence was initiated.
+-   **Rendering:** The parsed Sixel data is written into a pixel buffer (`terminal.sixel.data`). **Note:** Rendering of this buffer within the Compute Shader pipeline is currently **not implemented**. While the terminal correctly parses and stores the Sixel image, it will not yet appear on screen.
 -   **Termination:** The Sixel parser correctly handles the `ST` (`ESC \`) sequence to terminate the Sixel data stream and return to the normal parsing state.
 
 ### 4.6. Bracketed Paste Mode
@@ -555,7 +553,7 @@ This section provides a comprehensive reference for the public API of `terminal.
 These functions manage the initialization and destruction of the terminal instance.
 
 -   `void InitTerminal(void);`
-    Initializes the entire `Terminal` struct to a default state. This includes setting up screen buffers, default modes (e.g., auto-wrap on), tab stops, character sets, and the color palette. It also creates the font texture used for rendering. **Must be called once** after the Situation window is created.
+    Initializes the entire `Terminal` struct to a default state. This includes setting up screen buffers, default modes (e.g., auto-wrap on), tab stops, character sets, and the color palette. It also creates the font texture and initializes the Compute Shader pipeline resources (buffers, pipelines). **Must be called once** after the Situation window is created.
 
 -   `void CleanupTerminal(void);`
     Frees all resources allocated by the terminal. This includes the font texture, memory for programmable keys, and any other dynamically allocated buffers. **Must be called once** before the application exits to prevent memory leaks.
@@ -730,18 +728,18 @@ This chapter provides a deeper, narrative look into the internal mechanics of th
 
 ### 6.4. Stage 4: Rendering
 
-1.  **Drawing Frame:** `DrawTerminal()` is called within the application's drawing loop.
-2.  **Iteration:** It begins a nested loop through every `EnhancedTermChar` in the `screen` buffer.
-3.  **Decision:** When it gets to the cells for "Hello", it checks their `dirty` flag (or redraws all cells regardless, depending on optimization).
-4.  **Attribute Resolution:** For the 'H' cell:
-    -   It looks at `cell->fg_color` (red).
-    -   It looks at `cell->bg_color` (the default black).
-    -   It checks for other attributes like `bold`, `underline`, etc.
-5.  **Situation Calls:**
-    -   It calls `DrawRectangle()` to draw the cell's background with the resolved background color.
-    -   It looks up the glyph for 'H' in the `font_texture` and calls `DrawTextureRec()` to render it using the resolved foreground color (red).
+1.  **Drawing Frame:** `DrawTerminal()` is called within the application's rendering phase.
+2.  **SSBO Update:** `UpdateTerminalSSBO()` iterates through the `screen` buffer, converting each `EnhancedTermChar` into a compact `GPUCell` struct (packing character code, colors, and flags). This data is uploaded to the GPU's Shader Storage Buffer Object.
+3.  **Compute Dispatch:** `DrawTerminal()` records a dispatch command for the compute pipeline (`SIT_COMPUTE_LAYOUT_TERMINAL`).
+4.  **GPU Execution:**
+    -   The compute shader executes in parallel for every cell on the grid.
+    -   It reads the `GPUCell` data for its coordinate.
+    -   It samples the `font_texture` atlas based on the character code.
+    -   It mixes the foreground and background colors based on the sampled glyph and attributes (like reverse video or blink).
+    -   It writes the final pixel color to the `output_texture` storage image.
+5.  **Presentation:** The `output_texture` is presented to the screen.
 
-This entire cycle, from ingestion to rendering, happens continuously, allowing the terminal to process a stream of data and translate it into a visual representation.
+This entire cycle leverages the GPU for massive parallelism, ensuring the terminal remains responsive even at high resolutions.
 
 ### 6.5. Stage 5: Keyboard Input Processing
 
