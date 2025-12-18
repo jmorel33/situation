@@ -1,4 +1,4 @@
-// terminal.h - Enhanced Terminal Library Implementation Phase 5
+// terminal.h - Enhanced Terminal Library Implementation v1.1
 // Comprehensive VT52/VT100/VT220/VT320/VT420/xterm compatibility with modern features
 
 /**********************************************************************************************
@@ -10,6 +10,10 @@
 *       This library provides a comprehensive terminal emulation solution, aiming for compatibility with VT52, VT100, VT220, VT320, VT420, and xterm standards,
 *       while also incorporating modern features like true color support, Sixel graphics, advanced mouse tracking, and bracketed paste mode. It is designed to be
 *       integrated into applications that require a text-based terminal interface, using the Situation library for rendering, input, and window management.
+*
+*       v1.1 Major Update:
+*         - Rendering engine rewritten to use a Compute Shader pipeline via Shader Storage Buffer Objects (SSBO).
+*         - Full integration with the Situation library for robust resource management and windowing.
 *
 *       The library processes a stream of input characters (typically from a host application or PTY) and updates an internal screen buffer. This buffer,
 *       representing the terminal display, is then rendered to the screen. It handles a wide range of escape sequences to control cursor movement, text attributes,
@@ -336,6 +340,7 @@ typedef struct {
     int repeat_count;
     int params[MAX_ESCAPE_PARAMS];
     int param_count;
+    bool dirty;
 } SixelGraphics;
 
 // =============================================================================
@@ -496,6 +501,7 @@ typedef struct {
 "layout(set = 1, binding = 0, rgba8) writeonly uniform image2D output_image;\n" \
 "\n" \
 "layout(set = 2, binding = 0) uniform sampler2D font_texture;\n" \
+"layout(set = 3, binding = 0) uniform sampler2D sixel_texture;\n" \
 "\n" \
 "layout(push_constant) uniform PushConstants {\n" \
 "    vec2 screen_size;\n" \
@@ -515,10 +521,30 @@ typedef struct {
 "    uvec2 pixel_coords = gl_GlobalInvocationID.xy;\n" \
 "    if (pixel_coords.x >= uint(pc.screen_size.x) || pixel_coords.y >= uint(pc.screen_size.y)) return;\n" \
 "\n" \
+"    // Sixel Overlay Sampling\n" \
+"    vec2 uv_screen = vec2(pixel_coords) / pc.screen_size;\n" \
+"    vec4 sixel_color = texture(sixel_texture, uv_screen);\n" \
+"\n" \
 "    uint cell_x = pixel_coords.x / uint(pc.char_size.x);\n" \
 "    uint cell_y = pixel_coords.y / uint(pc.char_size.y);\n" \
-"    uint cell_index = cell_y * uint(pc.grid_size.x) + cell_x;\n" \
+"    uint row_start = cell_y * uint(pc.grid_size.x);\n" \
 "\n" \
+"    if (row_start >= terminal_data.cells.length()) return;\n" \
+"\n" \
+"    // Check line attributes from the first cell of the row\n" \
+"    uint line_flags = terminal_data.cells[row_start].flags;\n" \
+"    bool is_dw = (line_flags & (1 << 7)) != 0;\n" \
+"    bool is_dh_top = (line_flags & (1 << 8)) != 0;\n" \
+"    bool is_dh_bot = (line_flags & (1 << 9)) != 0;\n" \
+"\n" \
+"    uint eff_cell_x = cell_x;\n" \
+"    uint in_char_x = pixel_coords.x % uint(pc.char_size.x);\n" \
+"    if (is_dw) {\n" \
+"        eff_cell_x = cell_x / 2;\n" \
+"        in_char_x = (pixel_coords.x % (uint(pc.char_size.x) * 2)) / 2;\n" \
+"    }\n" \
+"\n" \
+"    uint cell_index = row_start + eff_cell_x;\n" \
 "    if (cell_index >= terminal_data.cells.length()) return;\n" \
 "\n" \
 "    GPUCell cell = terminal_data.cells[cell_index];\n" \
@@ -526,38 +552,43 @@ typedef struct {
 "    vec4 bg = UnpackColor(cell.bg_color);\n" \
 "    uint flags = cell.flags;\n" \
 "\n" \
-"    // Handle Reverse Video\n" \
-"    if ((flags & (1 << 5)) != 0) {\n" \
-"        vec4 tmp = fg; fg = bg; bg = tmp;\n" \
-"    }\n" \
+"    if ((flags & (1 << 5)) != 0) { vec4 t=fg; fg=bg; bg=t; }\n" \
 "\n" \
-"    // Handle Cursor\n" \
 "    if (cell_index == pc.cursor_index && pc.cursor_blink_state != 0) {\n" \
-"        vec4 tmp = fg; fg = bg; bg = tmp;\n" \
+"        vec4 t=fg; fg=bg; bg=t;\n" \
 "    }\n" \
 "\n" \
 "    uint char_code = cell.char_code;\n" \
 "    uint glyph_col = char_code % 16;\n" \
 "    uint glyph_row = char_code / 16;\n" \
 "    \n" \
-"    uint in_char_x = pixel_coords.x % uint(pc.char_size.x);\n" \
 "    uint in_char_y = pixel_coords.y % uint(pc.char_size.y);\n" \
+"    float u_pixel = float(in_char_x);\n" \
+"    float v_pixel = float(in_char_y);\n" \
+"    \n" \
+"    if (is_dh_top || is_dh_bot) {\n" \
+"        v_pixel = (v_pixel * 0.5) + (is_dh_bot ? (pc.char_size.y * 0.5) : 0.0);\n" \
+"    }\n" \
 "\n" \
 "    ivec2 tex_size = textureSize(font_texture, 0);\n" \
-"    vec2 uv = vec2(float(glyph_col * pc.char_size.x + in_char_x) / float(tex_size.x),\n" \
-"                   float(glyph_row * pc.char_size.y + in_char_y) / float(tex_size.y));\n" \
+"    vec2 uv = vec2(float(glyph_col * pc.char_size.x + u_pixel) / float(tex_size.x),\n" \
+"                   float(glyph_row * pc.char_size.y + v_pixel) / float(tex_size.y));\n" \
 "\n" \
-"    float sample_val = texture(font_texture, uv).r;\n" \
+"    float font_val = texture(font_texture, uv).r;\n" \
 "\n" \
-"    // Handle Bold (if not reversed, brighten FG? logic simplified here)\n" \
-"    // ...\n" \
+"    // Underline\n" \
+"    if ((flags & (1 << 3)) != 0 && in_char_y == uint(pc.char_size.y) - 1) font_val = 1.0;\n" \
+"    // Strike\n" \
+"    if ((flags & (1 << 6)) != 0 && in_char_y == uint(pc.char_size.y) / 2) font_val = 1.0;\n" \
 "\n" \
-"    vec4 pixel_color = mix(bg, fg, sample_val);\n" \
+"    vec4 pixel_color = mix(bg, fg, font_val);\n" \
 "\n" \
-"    // Text Blink\n" \
 "    if ((flags & (1 << 4)) != 0 && pc.text_blink_state == 0) {\n" \
 "       pixel_color = bg;\n" \
 "    }\n" \
+"\n" \
+"    // Sixel Blend\n" \
+"    pixel_color = mix(pixel_color, sixel_color, sixel_color.a);\n" \
 "\n" \
 "    imageStore(output_image, ivec2(pixel_coords), pixel_color);\n" \
 "}\n"
@@ -586,6 +617,9 @@ typedef struct {
 #define GPU_ATTR_BLINK      (1 << 4)
 #define GPU_ATTR_REVERSE    (1 << 5)
 #define GPU_ATTR_STRIKE     (1 << 6)
+#define GPU_ATTR_DOUBLE_WIDTH       (1 << 7)
+#define GPU_ATTR_DOUBLE_HEIGHT_TOP  (1 << 8)
+#define GPU_ATTR_DOUBLE_HEIGHT_BOT  (1 << 9)
 
 // =============================================================================
 // MAIN ENHANCED TERMINAL STRUCTURE
@@ -749,6 +783,8 @@ typedef struct {
     SituationBuffer terminal_buffer; // SSBO
     SituationTexture output_texture; // Storage Image
     SituationTexture font_texture;   // Font Atlas
+    SituationTexture sixel_texture;  // Sixel Graphics
+    SituationTexture dummy_sixel_texture; // Fallback 1x1 transparent texture
     GPUCell* gpu_staging_buffer;
     bool compute_initialized;
 
@@ -1738,6 +1774,14 @@ void InitTerminalCompute(void) {
 
     // 3. Create Compute Pipeline
     terminal.compute_pipeline = SituationCreateComputePipelineFromMemory(TERMINAL_COMPUTE_SHADER_SRC, SIT_COMPUTE_LAYOUT_TERMINAL);
+
+    // Create Dummy Sixel Texture (1x1 transparent)
+    SituationImage dummy_img = SituationCreateImage(1, 1, 4);
+    if (dummy_img.data) {
+        memset(dummy_img.data, 0, 4); // Clear to transparent
+        terminal.dummy_sixel_texture = SituationCreateTextureEx(dummy_img, false, SITUATION_TEXTURE_USAGE_SAMPLED);
+        SituationUnloadImage(dummy_img);
+    }
 
     terminal.gpu_staging_buffer = (GPUCell*)calloc(DEFAULT_TERM_WIDTH * DEFAULT_TERM_HEIGHT, sizeof(GPUCell));
 
@@ -4619,7 +4663,7 @@ void ExecuteCSI_P(void) { // Various P commands
     } else {
         // Unknown p command
         if (terminal.options.debug_sequences) {
-            char debug_msg[128];
+            char debug_msg[MAX_COMMAND_BUFFER + 64];
             snprintf(debug_msg, sizeof(debug_msg), "Unknown CSI p command: %s", params);
             LogUnsupportedSequence(debug_msg);
         }
@@ -4681,7 +4725,7 @@ void ExecuteWindowOps(void) { // Window manipulation (xterm extension)
 
         case 20: // Report icon label
             {
-                char response[256];
+                char response[MAX_TITLE_LENGTH + 32];
                 snprintf(response, sizeof(response), "\x1B]L%s\x1B\\", terminal.title.icon_title);
                 QueueResponse(response);
             }
@@ -4689,7 +4733,7 @@ void ExecuteWindowOps(void) { // Window manipulation (xterm extension)
 
         case 21: // Report window title
             {
-                char response[256];
+                char response[MAX_TITLE_LENGTH + 32];
                 snprintf(response, sizeof(response), "\x1B]l%s\x1B\\", terminal.title.window_title);
                 QueueResponse(response);
             }
@@ -4828,7 +4872,7 @@ void ExecuteCSI_Dollar(void) {
                 break;
             default:
                 if (terminal.options.debug_sequences) {
-                    char debug_msg[64];
+                    char debug_msg[128];
                     snprintf(debug_msg, sizeof(debug_msg), "Unknown CSI $ sequence with final char '%c'", final_char);
                     LogUnsupportedSequence(debug_msg);
                 }
@@ -4836,7 +4880,7 @@ void ExecuteCSI_Dollar(void) {
         }
     } else {
          if (terminal.options.debug_sequences) {
-            char debug_msg[64];
+            char debug_msg[MAX_COMMAND_BUFFER + 64];
             snprintf(debug_msg, sizeof(debug_msg), "Malformed CSI $ sequence in buffer: %s", terminal.escape_buffer);
             LogUnsupportedSequence(debug_msg);
         }
@@ -5930,6 +5974,8 @@ void ProcessSixelData(const char* data, size_t length) {
     // Basic sixel parsing would go here
     // For now, just mark as active for demonstration
 
+    terminal.sixel.dirty = true; // Mark for upload
+
     if (terminal.options.debug_sequences) {
         LogUnsupportedSequence("Sixel graphics partially implemented");
     }
@@ -6652,6 +6698,9 @@ void UpdateTerminalSSBO(void) {
             if (cell->blink) gpu_cell->flags |= GPU_ATTR_BLINK;
             if (cell->reverse ^ terminal.dec_modes.reverse_video) gpu_cell->flags |= GPU_ATTR_REVERSE;
             if (cell->strikethrough) gpu_cell->flags |= GPU_ATTR_STRIKE;
+            if (cell->double_width) gpu_cell->flags |= GPU_ATTR_DOUBLE_WIDTH;
+            if (cell->double_height_top) gpu_cell->flags |= GPU_ATTR_DOUBLE_HEIGHT_TOP;
+            if (cell->double_height_bottom) gpu_cell->flags |= GPU_ATTR_DOUBLE_HEIGHT_BOT;
         }
     }
 
@@ -6660,6 +6709,31 @@ void UpdateTerminalSSBO(void) {
 
 void DrawTerminal(void) {
     if (!terminal.compute_initialized) return;
+
+    // Handle Sixel Texture Creation/Upload
+    if (terminal.sixel.active && terminal.sixel.data) {
+        // Create if missing, resized, or dirty
+        if (terminal.sixel_texture.generation == 0 ||
+            terminal.sixel.width != terminal.sixel_texture.width ||
+            terminal.sixel.height != terminal.sixel_texture.height ||
+            terminal.sixel.dirty)
+        {
+            // Recreate/Upload logic
+            // Note: Optimally we would use UpdateTexture, but Situation API relies on CreateTexture for now or
+            // implies destroying and recreating for dynamic content like this until UpdateTexture is public/stable for raw bytes.
+            // Given Sixel isn't 60fps video, recreation is acceptable.
+
+            if (terminal.sixel_texture.generation != 0) SituationDestroyTexture(&terminal.sixel_texture);
+
+            SituationImage sixel_img = SituationCreateImage(terminal.sixel.width, terminal.sixel.height, 4);
+            if (sixel_img.data) {
+                memcpy(sixel_img.data, terminal.sixel.data, terminal.sixel.width * terminal.sixel.height * 4);
+                terminal.sixel_texture = SituationCreateTextureEx(sixel_img, false, SITUATION_TEXTURE_USAGE_SAMPLED);
+                SituationUnloadImage(sixel_img);
+            }
+            terminal.sixel.dirty = false;
+        }
+    }
 
     UpdateTerminalSSBO();
 
@@ -6671,6 +6745,13 @@ void DrawTerminal(void) {
         SituationCmdBindDescriptorSet(cmd, 0, terminal.terminal_buffer);
         SituationCmdBindComputeTexture(cmd, 1, terminal.output_texture);
         SituationCmdBindTextureSet(cmd, 2, terminal.font_texture);
+
+        // Bind Sixel texture if active, otherwise bind dummy transparent texture to prevent shader crash
+        if (terminal.sixel.active && terminal.sixel_texture.generation != 0) {
+            SituationCmdBindTextureSet(cmd, 3, terminal.sixel_texture);
+        } else {
+            SituationCmdBindTextureSet(cmd, 3, terminal.dummy_sixel_texture);
+        }
 
         TerminalPushConstants pc = {0};
         pc.screen_size = (Vector2){{(float)DEFAULT_WINDOW_WIDTH, (float)DEFAULT_WINDOW_HEIGHT}};
@@ -6714,6 +6795,8 @@ void DrawTerminal(void) {
 void CleanupTerminal(void) {
     if (terminal.font_texture.generation != 0) SituationDestroyTexture(&terminal.font_texture);
     if (terminal.output_texture.generation != 0) SituationDestroyTexture(&terminal.output_texture);
+    if (terminal.sixel_texture.generation != 0) SituationDestroyTexture(&terminal.sixel_texture);
+    if (terminal.dummy_sixel_texture.generation != 0) SituationDestroyTexture(&terminal.dummy_sixel_texture);
     if (terminal.terminal_buffer.id != 0) SituationDestroyBuffer(&terminal.terminal_buffer);
     if (terminal.compute_pipeline.id != 0) SituationDestroyComputePipeline(&terminal.compute_pipeline);
 
