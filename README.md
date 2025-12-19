@@ -8,9 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.32 "Velocity"**
+Current Version: **v2.3.32A "Velocity"**
 
-**Version 2.3.32** updates the library to target **Vulkan 1.4**, preparing the engine for modern, high-performance rendering techniques including full Bindless Descriptor support and Dynamic Uniform Buffer Objects (Dynamic UBOs). This update aligns the API with the latest industry standards used in AAA development.
+**Version 2.3.32A** adds native Virtual Terminal (VT) support for the Windows console subsystem, enabling ANSI colored output in logs and diagnostics. This quality-of-life update aligns the Windows developer experience with standard POSIX environments.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Texture Registry (v2.3.31):** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.

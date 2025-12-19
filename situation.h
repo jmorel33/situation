@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 32
-#define SITUATION_VERSION_REVISION ""
+#define SITUATION_VERSION_REVISION "A"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -6585,7 +6585,30 @@ static SituationError _SituationInitPlatform(void) {
 
 #if defined(_WIN32)
     {
-        // --- 1a. Initialize COM (Windows only) ---
+        // --- 1a. Initialize Console Virtual Terminal Processing (VT) ---
+        // Enables ANSI color codes in the Windows console (cmd.exe / PowerShell).
+        // This makes logs readable instead of full of junk characters.
+        #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+        #endif
+        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (hOut != INVALID_HANDLE_VALUE) {
+            DWORD dwMode = 0;
+            if (GetConsoleMode(hOut, &dwMode)) {
+                dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+                SetConsoleMode(hOut, dwMode);
+            }
+        }
+        HANDLE hErr = GetStdHandle(STD_ERROR_HANDLE);
+        if (hErr != INVALID_HANDLE_VALUE) {
+            DWORD dwMode = 0;
+            if (GetConsoleMode(hErr, &dwMode)) {
+                dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+                SetConsoleMode(hErr, dwMode);
+            }
+        }
+
+        // --- 1b. Initialize COM (Windows only) ---
         // COM is needed for various Windows APIs, particularly for filesystem operations like getting user directories (SHGetKnownFolderPath).
         // We initialize it in Apartment-Threaded mode, which is suitable for most single-threaded applications like this library.
         // COINIT_DISABLE_OLE1DDE disables legacy OLE1 DDE, which is recommended.

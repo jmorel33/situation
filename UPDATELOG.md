@@ -1,3 +1,19 @@
+# Situation Update Log
+
+This document tracks the evolution of the Situation library, detailing new features, architectural changes, and critical fixes.
+
+## [2.3.32A "Velocity" (VT Console Support)] - 2025-12-14
+
+### Description
+
+This update introduces native Virtual Terminal (VT) support for the Windows console subsystem. This enhancement enables correct rendering of ANSI escape codes in `cmd.exe` and PowerShell, allowing for colored text output in logs and diagnostic messages. This aligns the Windows development experience with Linux and macOS, where ANSI support is standard.
+
+### New Features
+
+*   **Windows Console VT Support:** Added logic to `_SituationInitPlatform` to explicitly enable `ENABLE_VIRTUAL_TERMINAL_PROCESSING` on the standard output and error handles. This ensures that `SituationLogWarning` and other console output functions can use color coding for better readability.
+
+---
+
 ## [2.3.32 "Velocity" (Vulkan 1.4 Upgrade)] - 2025-12-14
 
 ### Description
