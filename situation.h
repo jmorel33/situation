@@ -202,8 +202,20 @@ SITAPI void _SituationLogGLError(const char* file, int line);
     #include <unistd.h>         // For getuid (potentially), sysconf
     #include <sys/types.h>      // For getpwuid (potentially)
     #include <pwd.h>            // For getpwuid (potentially)
-    #include <sys/statvfs.h>    // For storage info on Linux
-    #include <sys/sysinfo.h>    // For RAM info on Linux
+    #include <sys/statvfs.h>    // For storage info on Linux/macOS
+    #if defined(__linux__)
+        #include <sys/sysinfo.h>    // For RAM info on Linux
+    #endif
+    #if defined(__APPLE__)
+        #include <sys/sysctl.h> // For sysctlbyname
+        #include <sys/mount.h>  // For statfs
+    #endif
+    #if defined(__linux__) || defined(__APPLE__)
+        #include <ifaddrs.h>    // For getifaddrs
+        #include <netinet/in.h> // For sockaddr_in
+        #include <arpa/inet.h>  // For inet_ntoa
+        #include <net/if.h>     // For IFF_LOOPBACK
+    #endif
 #endif
 
 /**
@@ -571,6 +583,7 @@ typedef enum {
 #define SITUATION_MAX_DEVICE_NAME_LEN           128  /* Max length for device strings (e.g., GPU/CPU names). */
 #define SITUATION_MAX_CPU_NAME_LEN              64   /* Max CPU model string length (e.g., "Intel i9-13900K"). */
 #define SITUATION_MAX_GPU_NAME_LEN              128  /* Max GPU model string length (e.g., "NVIDIA RTX 4090"). */
+#define SITUATION_MAX_MONITORS                  8    /* Max physical displays to track in device snapshot. */
 #define SITUATION_MAX_MONITOR_NAME_LEN          128  /* Max monitor EDID name length (e.g., "Dell UltraSharp"). */
 #define SITUATION_MAX_ERROR_MSG_LEN             2048 /* Max length for error messages and logs. */
 #define SITUATION_MAX_SHADER_LOG_LEN            2048 /* Max length for shader compilation logs. */
@@ -967,6 +980,11 @@ typedef struct {
     char network_adapter_names[SITUATION_MAX_NETWORK_ADAPTERS][SITUATION_MAX_DEVICE_NAME_LEN];
     int input_device_count;
     char input_device_names[SITUATION_MAX_INPUT_DEVICES][SITUATION_MAX_DEVICE_NAME_LEN];
+    int display_count;
+    char display_names[SITUATION_MAX_MONITORS][SITUATION_MAX_MONITOR_NAME_LEN];
+    int display_widths[SITUATION_MAX_MONITORS];
+    int display_heights[SITUATION_MAX_MONITORS];
+    int display_refresh_rates[SITUATION_MAX_MONITORS];
 } SituationDeviceInfo;
 
 /**
@@ -19014,7 +19032,173 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
         }
         SetupDiDestroyDeviceInfoList(hDevInfo);
     }
-    #else // Non-Windows basic info
+    #elif defined(__linux__) // Linux Implementation
+    // CPU Info
+    FILE* cpuinfo = fopen("/proc/cpuinfo", "r");
+    if (cpuinfo) {
+        char line[256];
+        bool found = false;
+        while (fgets(line, sizeof(line), cpuinfo)) {
+            if (strncmp(line, "model name", 10) == 0) {
+                char* start = strchr(line, ':');
+                if (start) {
+                    strncpy(info.cpu_name, start + 2, SITUATION_MAX_CPU_NAME_LEN-1); // +2 to skip ": "
+                    info.cpu_name[SITUATION_MAX_CPU_NAME_LEN-1] = '\0';
+                    // Remove newline
+                    size_t len = strlen(info.cpu_name);
+                    if (len > 0 && info.cpu_name[len-1] == '\n') info.cpu_name[len-1] = '\0';
+                    found = true;
+                    break;
+                }
+            }
+        }
+        fclose(cpuinfo);
+        if (!found) strncpy(info.cpu_name, "Linux CPU", SITUATION_MAX_CPU_NAME_LEN-1);
+    } else {
+        strncpy(info.cpu_name, "Unknown Linux CPU", SITUATION_MAX_CPU_NAME_LEN-1);
+    }
+    info.cpu_cores = get_nprocs();
+
+    // RAM Info
+    struct sysinfo si;
+    if (sysinfo(&si) == 0) {
+        info.total_ram_bytes = (uint64_t)si.totalram * si.mem_unit;
+        info.available_ram_bytes = (uint64_t)si.freeram * si.mem_unit;
+    }
+
+    // Storage Info (Root partition)
+    struct statvfs stat;
+    if (statvfs("/", &stat) == 0) {
+        info.storage_device_count = 1;
+        strncpy(info.storage_device_names[0], "/", SITUATION_MAX_DEVICE_NAME_LEN-1);
+        info.storage_capacity_bytes[0] = (uint64_t)stat.f_blocks * stat.f_frsize;
+        info.storage_free_bytes[0] = (uint64_t)stat.f_bfree * stat.f_frsize;
+    }
+
+    // Network Adapter Info
+    struct ifaddrs *ifaddr, *ifa;
+    if (getifaddrs(&ifaddr) != -1) {
+        for (ifa = ifaddr; ifa != NULL && info.network_adapter_count < SITUATION_MAX_NETWORK_ADAPTERS; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr == NULL) continue;
+            // Only care about AF_INET (IPv4) or AF_INET6 (IPv6) and not loopback
+            if ((ifa->ifa_addr->sa_family == AF_INET || ifa->ifa_addr->sa_family == AF_INET6) &&
+                !(ifa->ifa_flags & IFF_LOOPBACK)) {
+                // Check if we already added this interface (getifaddrs returns one entry per address per interface)
+                bool exists = false;
+                for(int i=0; i<info.network_adapter_count; ++i) {
+                    if (strcmp(info.network_adapter_names[i], ifa->ifa_name) == 0) { exists = true; break; }
+                }
+                if (!exists) {
+                    strncpy(info.network_adapter_names[info.network_adapter_count], ifa->ifa_name, SITUATION_MAX_DEVICE_NAME_LEN-1);
+                    info.network_adapter_names[info.network_adapter_count][SITUATION_MAX_DEVICE_NAME_LEN-1] = '\0';
+                    info.network_adapter_count++;
+                }
+            }
+        }
+        freeifaddrs(ifaddr);
+    }
+
+    // Input Device Info
+    FILE* bus_devices = fopen("/proc/bus/input/devices", "r");
+    if (bus_devices) {
+        char line[256];
+        char current_name[SITUATION_MAX_DEVICE_NAME_LEN] = {0};
+        while (fgets(line, sizeof(line), bus_devices) && info.input_device_count < SITUATION_MAX_INPUT_DEVICES) {
+            if (strncmp(line, "N: Name=", 8) == 0) {
+                // Extract name
+                strncpy(current_name, line + 9, SITUATION_MAX_DEVICE_NAME_LEN - 1); // Skip "N: Name=\""
+                size_t len = strlen(current_name);
+                if (len > 0 && current_name[len-1] == '\n') current_name[len-1] = '\0';
+                if (len > 0 && current_name[len-2] == '"') current_name[len-2] = '\0'; // Remove trailing quote
+                if (len > 0 && current_name[len-1] == '"') current_name[len-1] = '\0'; // Or just quote
+            } else if (strncmp(line, "H: Handlers=", 12) == 0) {
+                // Check if it has a relevant handler like kbd, mouse, js, or event
+                if (strstr(line, "kbd") || strstr(line, "mouse") || strstr(line, "js") || strstr(line, "event")) {
+                    if (strlen(current_name) > 0) {
+                        strncpy(info.input_device_names[info.input_device_count], current_name, SITUATION_MAX_DEVICE_NAME_LEN-1);
+                        info.input_device_names[info.input_device_count][SITUATION_MAX_DEVICE_NAME_LEN-1] = '\0';
+                        info.input_device_count++;
+                        current_name[0] = '\0'; // Reset
+                    }
+                }
+            }
+        }
+        fclose(bus_devices);
+    }
+
+    // GPU Info
+    if (sit_gs.sit_glfw_window && glad_glGetString) {
+        const char* gl_renderer = (const char*)glGetString(GL_RENDERER);
+        if (gl_renderer) { strncpy(info.gpu_name, gl_renderer, SITUATION_MAX_GPU_NAME_LEN-1);
+        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
+        else { strncpy(info.gpu_name, "Generic GPU (OpenGL name not available)", SITUATION_MAX_GPU_NAME_LEN-1);
+        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
+    } else {
+        strncpy(info.gpu_name, "Generic GPU", SITUATION_MAX_GPU_NAME_LEN-1);
+        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0';
+    }
+
+    #elif defined(__APPLE__) // macOS Implementation
+    // CPU Info
+    size_t size = sizeof(info.cpu_name);
+    if (sysctlbyname("machdep.cpu.brand_string", info.cpu_name, &size, NULL, 0) != 0) {
+        strncpy(info.cpu_name, "Apple CPU", SITUATION_MAX_CPU_NAME_LEN-1);
+    }
+    int core_count = 0;
+    size = sizeof(core_count);
+    if (sysctlbyname("hw.physicalcpu", &core_count, &size, NULL, 0) == 0) {
+        info.cpu_cores = core_count;
+    }
+
+    // RAM Info
+    int64_t memsize = 0;
+    size = sizeof(memsize);
+    if (sysctlbyname("hw.memsize", &memsize, &size, NULL, 0) == 0) {
+        info.total_ram_bytes = (uint64_t)memsize;
+        // Available RAM is complex on macOS (vm_stat), omitting for brevity/stability
+        info.available_ram_bytes = 0;
+    }
+
+    // Storage Info
+    struct statfs stats;
+    if (statfs("/", &stats) == 0) {
+        info.storage_device_count = 1;
+        strncpy(info.storage_device_names[0], "/", SITUATION_MAX_DEVICE_NAME_LEN-1);
+        info.storage_capacity_bytes[0] = (uint64_t)stats.f_blocks * stats.f_bsize;
+        info.storage_free_bytes[0] = (uint64_t)stats.f_bfree * stats.f_bsize;
+    }
+
+    // Network Adapter Info (Shared with Linux via getifaddrs)
+    struct ifaddrs *ifaddr, *ifa;
+    if (getifaddrs(&ifaddr) != -1) {
+        for (ifa = ifaddr; ifa != NULL && info.network_adapter_count < SITUATION_MAX_NETWORK_ADAPTERS; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr == NULL) continue;
+            if ((ifa->ifa_addr->sa_family == AF_INET || ifa->ifa_addr->sa_family == AF_INET6) &&
+                !(ifa->ifa_flags & IFF_LOOPBACK)) {
+                bool exists = false;
+                for(int i=0; i<info.network_adapter_count; ++i) {
+                    if (strcmp(info.network_adapter_names[i], ifa->ifa_name) == 0) { exists = true; break; }
+                }
+                if (!exists) {
+                    strncpy(info.network_adapter_names[info.network_adapter_count], ifa->ifa_name, SITUATION_MAX_DEVICE_NAME_LEN-1);
+                    info.network_adapter_names[info.network_adapter_count][SITUATION_MAX_DEVICE_NAME_LEN-1] = '\0';
+                    info.network_adapter_count++;
+                }
+            }
+        }
+        freeifaddrs(ifaddr);
+    }
+
+    // GPU Info
+    if (sit_gs.sit_glfw_window && glad_glGetString) {
+        const char* gl_renderer = (const char*)glGetString(GL_RENDERER);
+        if (gl_renderer) { strncpy(info.gpu_name, gl_renderer, SITUATION_MAX_GPU_NAME_LEN-1);
+        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
+    } else {
+        strncpy(info.gpu_name, "Generic GPU", SITUATION_MAX_GPU_NAME_LEN-1);
+    }
+
+    #else // Fallback for other platforms
     strncpy(info.cpu_name, "Generic CPU", SITUATION_MAX_CPU_NAME_LEN-1); info.cpu_name[SITUATION_MAX_CPU_NAME_LEN-1] = '\0';
     long nproc = sysconf(_SC_NPROCESSORS_ONLN);
     info.cpu_cores = (nproc > 0) ? (int)nproc : 1;
@@ -19029,8 +19213,31 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
         strncpy(info.gpu_name, "Generic GPU", SITUATION_MAX_GPU_NAME_LEN-1);
         info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0';
     }
-    // RAM, Storage, Network, Input would need platform-specific non-Win32 implementations (e.g., /proc/meminfo on Linux)
     #endif
+
+    // --- Common: Display Info (via GLFW) ---
+    // This runs on all platforms where GLFW is available (Windows, Linux, macOS)
+    int monitor_count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&monitor_count);
+    info.display_count = (monitor_count < SITUATION_MAX_MONITORS) ? monitor_count : SITUATION_MAX_MONITORS;
+
+    for (int i = 0; i < info.display_count; ++i) {
+        const char* name = glfwGetMonitorName(monitors[i]);
+        if (name) {
+            strncpy(info.display_names[i], name, SITUATION_MAX_MONITOR_NAME_LEN - 1);
+            info.display_names[i][SITUATION_MAX_MONITOR_NAME_LEN - 1] = '\0';
+        } else {
+            strncpy(info.display_names[i], "Unknown Display", SITUATION_MAX_MONITOR_NAME_LEN - 1);
+        }
+
+        const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
+        if (mode) {
+            info.display_widths[i] = mode->width;
+            info.display_heights[i] = mode->height;
+            info.display_refresh_rates[i] = mode->refreshRate;
+        }
+    }
+
     return info;
 }
 
