@@ -1,3 +1,11 @@
+--------------------------------------------------------------------------------
+v2.3.32B - Complete VT Sixel Support & Logging API (Terminal Deep Dive)
+--------------------------------------------------------------------------------
+- Implemented `ProcessSixelData` in `sit/terminal/terminal.h` for full Sixel graphics parsing support.
+- Added `SituationLog` and `SituationSetTraceLogLevel` to `situation.h` with ANSI color-coded output.
+- Fixed Linux compilation issue (`IFF_LOOPBACK` undefined) by adding `_DEFAULT_SOURCE`.
+- Verified and fixed missing function definitions in the single-header implementation.
+
 # Situation Update Log
 
 This document tracks the evolution of the Situation library, detailing new features, architectural changes, and critical fixes.
