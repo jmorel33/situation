@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 32
-#define SITUATION_VERSION_REVISION "B"
+#define SITUATION_VERSION_REVISION "C"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -12697,11 +12697,12 @@ static void _SituationCleanupVulkan(void) {
 
 
     // Layout 7: SIT_COMPUTE_LAYOUT_TERMINAL
-    // Set 0: SSBO (Buffer), Set 1: Storage Image (Output), Set 2: Combined Image Sampler (Font)
+    // Set 0: SSBO (Buffer), Set 1: Storage Image (Output), Set 2: Combined Image Sampler (Font), Set 3: Combined Image Sampler (Sixel)
     set_layouts[0] = sit_render.vk.ssbo_layout;
     set_layouts[1] = sit_render.vk.storage_image_layout;
     set_layouts[2] = sit_render.vk.image_sampler_layout;
-    layout_info.setLayoutCount = 3;
+    set_layouts[3] = sit_render.vk.image_sampler_layout;
+    layout_info.setLayoutCount = 4;
     layout_info.pSetLayouts = set_layouts;
     
     // We reuse the push_constant range defined at top of function (64 bytes)

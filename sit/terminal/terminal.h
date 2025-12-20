@@ -1737,7 +1737,13 @@ void CreateFontTexture(void) {
         int dest_y_start = glyph_row * DEFAULT_CHAR_HEIGHT;
 
         for (int y = 0; y < DEFAULT_CHAR_HEIGHT; y++) {
-            unsigned char byte = cp437_font__8x16[i * 16 + y];
+            unsigned char byte;
+            if (terminal.soft_font.active && terminal.soft_font.loaded[i]) {
+                byte = terminal.soft_font.font_data[i][y];
+            } else {
+                byte = cp437_font__8x16[i * 16 + y];
+            }
+
             for (int x = 0; x < DEFAULT_CHAR_WIDTH; x++) {
                 int px_idx = ((dest_y_start + y) * atlas_width + (dest_x_start + x)) * 4;
                 if ((byte >> (7 - x)) & 1) {
@@ -4675,25 +4681,56 @@ void ExecuteWindowOps(void) { // Window manipulation (xterm extension)
     int operation = GetCSIParam(0, 0);
 
     switch (operation) {
-        case 1: // De-iconify window
-        case 2: // Iconify window
-        case 3: // Move window to position
-        case 4: // Resize window
-        case 5: // Raise window
+        case 1: // De-iconify window (Restore)
+            SituationRestoreWindow();
+            break;
+        case 2: // Iconify window (Minimize)
+            SituationMinimizeWindow();
+            break;
+        case 3: // Move window to position (in pixels)
+            {
+                int x = GetCSIParam(1, 0);
+                int y = GetCSIParam(2, 0);
+                SituationSetWindowPosition(x, y);
+            }
+            break;
+        case 4: // Resize window (in pixels)
+            {
+                int height = GetCSIParam(1, DEFAULT_WINDOW_HEIGHT);
+                int width = GetCSIParam(2, DEFAULT_WINDOW_WIDTH);
+                SituationSetWindowSize(width, height);
+            }
+            break;
+        case 5: // Raise window (Bring to front)
+            SituationSetWindowFocused(); // Closest approximation
+            break;
         case 6: // Lower window
+            // Not directly supported by Situation/GLFW easily
+            if (terminal.options.debug_sequences) LogUnsupportedSequence("Window lower not supported");
+            break;
         case 7: // Refresh window
-        case 8: // Resize text area
-            // These operations would require window manager integration
-            if (terminal.options.debug_sequences) {
-                char debug_msg[64];
-                snprintf(debug_msg, sizeof(debug_msg), "Window operation %d not supported", operation);
-                LogUnsupportedSequence(debug_msg);
+            // Handled automatically by game loop
+            break;
+        case 8: // Resize text area (in chars)
+            {
+                int rows = GetCSIParam(1, DEFAULT_TERM_HEIGHT);
+                int cols = GetCSIParam(2, DEFAULT_TERM_WIDTH);
+                int width = cols * DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE;
+                int height = rows * DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE;
+                SituationSetWindowSize(width, height);
             }
             break;
 
         case 9: // Maximize/restore window
+            if (GetCSIParam(1, 0) == 1) SituationMaximizeWindow();
+            else SituationRestoreWindow();
+            break;
         case 10: // Full-screen toggle
-            // Modern security restrictions typically block these
+            if (GetCSIParam(1, 0) == 1) {
+                if (!SituationIsWindowFullscreen()) SituationToggleFullscreen();
+            } else {
+                if (SituationIsWindowFullscreen()) SituationToggleFullscreen();
+            }
             break;
 
         case 11: // Report window state
@@ -5532,20 +5569,112 @@ void ClearUserDefinedKeys(void) {
 }
 
 void ProcessSoftFontDownload(const char* data) {
-    // Simplified soft font loading
     // DECDLD format: Pfn; Pcn; Pe; Pcm; w; h; ... {data}
+    // Pfn: Font number (0 or 1)
+    // Pcn: Starting character number
+    // Pe: Erase control (0=erase all, 1=erase specific, 2=erase all)
+    // Pcm: Character matrix size (0=15x12??, 1=13x8, 2=8x10, etc.) - We only support 8x16 effectively
+    // w: Font width (1-80) - ignored, we force 8
+    // h: Font height (1-24) - ignored, we force 16
+    // data: Sixel-like encoded data
+
     if (!terminal.conformance.features.soft_fonts) {
         LogUnsupportedSequence("Soft fonts not supported");
         return;
     }
 
-    // Parse soft font data format
-    // This is a complex format - implementing basic framework
-    terminal.soft_font.active = true;
+    char* data_copy = strdup(data);
+    if (!data_copy) return;
 
-    if (terminal.options.debug_sequences) {
-        LogUnsupportedSequence("Soft font download partially implemented");
+    // Tokenize parameters
+    char* token = strtok(data_copy, ";");
+    int params[6] = {0};
+    int param_idx = 0;
+
+    // Parse up to 6 numeric parameters
+    while (token != NULL && param_idx < 6) {
+        // Check if we hit the data start '{'
+        char* brace = strchr(token, '{');
+        if (brace) {
+            *brace = '\0';
+            if (strlen(token) > 0) params[param_idx++] = atoi(token);
+            // Move token pointer to start of data
+            token = brace + 1;
+            break;
+        } else {
+            params[param_idx++] = atoi(token);
+            token = strtok(NULL, ";");
+        }
     }
+
+    // Parse sixel-encoded font data
+    if (token) {
+        int current_char = (param_idx >= 2) ? params[1] : 0;
+        unsigned char* data_ptr = (unsigned char*)token;
+        int sixel_row_base = 0; // 0, 6, 12...
+        int current_col = 0;
+
+        // Clear current char matrix before starting
+        if (current_char < 256) {
+            memset(terminal.soft_font.font_data[current_char], 0, 32);
+        }
+
+        while (*data_ptr != '\0') {
+            unsigned char ch = *data_ptr;
+
+            if (ch == '/' || ch == ';') {
+                // End of character
+                if (current_char < 256) {
+                    terminal.soft_font.loaded[current_char] = true;
+                }
+                current_char++;
+                if (current_char >= 256) break;
+
+                // Reset for next char
+                memset(terminal.soft_font.font_data[current_char], 0, 32);
+                sixel_row_base = 0;
+                current_col = 0;
+
+            } else if (ch == '-') {
+                // New sixel row (move down 6 pixels)
+                sixel_row_base += 6;
+                current_col = 0;
+
+            } else if (ch >= 63 && ch <= 126) {
+                // Sixel data byte
+                if (current_char < 256 && current_col < 8) { // Assuming 8px width
+                    int val = ch - 63;
+                    // Map 6 vertical bits to the bitmap
+                    for (int b = 0; b < 6; b++) {
+                        int pixel_y = sixel_row_base + b;
+                        if (pixel_y < 16) { // Limit to 16px height
+                            if ((val >> b) & 1) {
+                                // Set bit (7 - current_col) in row pixel_y
+                                terminal.soft_font.font_data[current_char][pixel_y] |= (1 << (7 - current_col));
+                            }
+                        }
+                    }
+                    current_col++;
+                }
+            }
+            // Ignore other chars (CR/LF/space)
+            data_ptr++;
+        }
+
+        // Mark last char as loaded if we processed some data
+        if (current_char < 256) {
+            terminal.soft_font.loaded[current_char] = true;
+        }
+
+        terminal.soft_font.active = true;
+        CreateFontTexture();
+
+        if (terminal.options.debug_sequences) {
+            LogUnsupportedSequence("Soft font downloaded and active");
+        }
+    }
+
+    free(data_copy);
 }
 
 void ProcessStatusRequest(const char* request) {
@@ -5599,8 +5728,12 @@ void ExecuteDCSCommand(void) {
         // DECUDK - Clear User Defined Keys
         ClearUserDefinedKeys();
     } else if (strncmp(params, "2;1|", 4) == 0) {
-        // DECDLD - Download Soft Font
+        // DECDLD - Download Soft Font (Variant?)
         ProcessSoftFontDownload(params + 4);
+    } else if (strstr(params, "{") != NULL) {
+        // Standard DECDLD - Download Soft Font (DCS ... { ...)
+        // We pass the whole string, ProcessSoftFontDownload will handle tokenization
+        ProcessSoftFontDownload(params);
     } else if (strncmp(params, "$q", 2) == 0) {
         // DECRQSS - Request Status String
         ProcessStatusRequest(params + 2);
@@ -5988,8 +6121,17 @@ void ProcessSixelData(const char* data, size_t length) {
 }
 
 void DrawSixelGraphics(void) {
-    // Sixel graphics not yet implemented for Compute Shader renderer
-    if (!terminal.conformance.features.sixel_graphics || !terminal.sixel.active) return;
+    if (!terminal.conformance.features.sixel_graphics || !terminal.sixel.active || !terminal.sixel.data) return;
+
+    // Check if we need to upload the texture (dirty or generation 0)
+    if (terminal.sixel.dirty || terminal.sixel_texture.generation == 0) {
+        // Upload logic is already in DrawTerminal(), so we can just mark it dirty.
+        // However, if we want this function to *force* an upload immediately (e.g. for progressive update),
+        // we can replicate the logic or rely on DrawTerminal being called next frame.
+        // Given the compute shader pipeline, immediate rendering isn't possible outside the command buffer flow.
+        // So this function essentially acts as a "mark for update" helper.
+        terminal.sixel.dirty = true;
+    }
 }
 
 // =============================================================================
