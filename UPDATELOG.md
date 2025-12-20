@@ -1,4 +1,14 @@
 --------------------------------------------------------------------------------
+v2.3.32C - Complete VT Support (Sixel, Soft Fonts, Window Ops, Pipeline Fix)
+--------------------------------------------------------------------------------
+- [Critical] Fixed `SIT_COMPUTE_LAYOUT_TERMINAL` in `situation.h` to include the 4th descriptor set (Sixel texture sampler), ensuring the Vulkan pipeline matches the Compute Shader expectations.
+- [Feature] Implemented `ProcessSoftFontDownload` (DECDLD) in `sit/terminal/terminal.h` with robust Sixel-encoded bitmap decoding and texture atlas regeneration.
+- [Feature] Updated `CreateFontTexture` to seamlessly support active Soft Fonts, falling back to the built-in font for missing glyphs.
+- [Feature] Implemented `ExecuteWindowOps` (CSI t), mapping terminal sequences to `Situation` window management APIs (Resize, Move, Restore, Minimize, Maximize, Fullscreen).
+- [Feature] Wired up `DrawSixelGraphics` to trigger dirty state updates for texture uploads.
+- [Improvement] Added support for standard DECDLD format (`DCS ... {`) in `ExecuteDCSCommand`.
+- [Version] Bumped version to v2.3.32C.
+--------------------------------------------------------------------------------
 v2.3.32B - Complete VT Sixel Support & Logging API (Terminal Deep Dive)
 --------------------------------------------------------------------------------
 - Implemented `ProcessSixelData` in `sit/terminal/terminal.h` for full Sixel graphics parsing support.
