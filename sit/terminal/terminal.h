@@ -788,6 +788,15 @@ typedef struct {
     GPUCell* gpu_staging_buffer;
     bool compute_initialized;
 
+    // UTF-8 decoding state
+    struct {
+        uint32_t codepoint;
+        int bytes_remaining;
+    } utf8;
+
+    // Last printed character (for REP command)
+    unsigned int last_char;
+
 } Terminal;
 
 // =============================================================================
@@ -1834,6 +1843,145 @@ unsigned int TranslateCharacter(unsigned char ch, CharsetState* state) {
     }
 }
 
+// Helper to map Unicode codepoints to CP437 glyph indices (0-255)
+// This is used because our font texture is fixed at 256 characters (CP437 layout)
+uint8_t MapUnicodeToCP437(uint32_t codepoint) {
+    if (codepoint < 128) return (uint8_t)codepoint;
+
+    // Direct mappings for common box drawing and symbols present in CP437
+    switch (codepoint) {
+        case 0x00C7: return 128; // Ç
+        case 0x00FC: return 129; // ü
+        case 0x00E9: return 130; // é
+        case 0x00E2: return 131; // â
+        case 0x00E4: return 132; // ä
+        case 0x00E0: return 133; // à
+        case 0x00E5: return 134; // å
+        case 0x00E7: return 135; // ç
+        case 0x00EA: return 136; // ê
+        case 0x00EB: return 137; // ë
+        case 0x00E8: return 138; // è
+        case 0x00EF: return 139; // ï
+        case 0x00EE: return 140; // î
+        case 0x00EC: return 141; // ì
+        case 0x00C4: return 142; // Ä
+        case 0x00C5: return 143; // Å
+        case 0x00C9: return 144; // É
+        case 0x00E6: return 145; // æ
+        case 0x00C6: return 146; // Æ
+        case 0x00F4: return 147; // ô
+        case 0x00F6: return 148; // ö
+        case 0x00F2: return 149; // ò
+        case 0x00FB: return 150; // û
+        case 0x00F9: return 151; // ù
+        case 0x00FF: return 152; // ÿ
+        case 0x00D6: return 153; // Ö
+        case 0x00DC: return 154; // Ü
+        case 0x00A2: return 155; // ¢
+        case 0x00A3: return 156; // £
+        case 0x00A5: return 157; // ¥
+        case 0x20A7: return 158; // ₧
+        case 0x0192: return 159; // ƒ
+        case 0x00E1: return 160; // á
+        case 0x00ED: return 161; // í
+        case 0x00F3: return 162; // ó
+        case 0x00FA: return 163; // ú
+        case 0x00F1: return 164; // ñ
+        case 0x00D1: return 165; // Ñ
+        case 0x00AA: return 166; // ª
+        case 0x00BA: return 167; // º
+        case 0x00BF: return 168; // ¿
+        case 0x2310: return 169; // ⌐
+        case 0x00AC: return 170; // ¬
+        case 0x00BD: return 171; // ½
+        case 0x00BC: return 172; // ¼
+        case 0x00A1: return 173; // ¡
+        case 0x00AB: return 174; // «
+        case 0x00BB: return 175; // »
+        case 0x2591: return 176; // ░
+        case 0x2592: return 177; // ▒
+        case 0x2593: return 178; // ▓
+        case 0x2502: return 179; // │
+        case 0x2524: return 180; // ┤
+        case 0x2561: return 181; // ╡
+        case 0x2562: return 182; // ╢
+        case 0x2556: return 183; // ╖
+        case 0x2555: return 184; // ╕
+        case 0x2563: return 185; // ╣
+        case 0x2551: return 186; // ║
+        case 0x2557: return 187; // ╗
+        case 0x255D: return 188; // ╝
+        case 0x255C: return 189; // ╜
+        case 0x255B: return 190; // ╛
+        case 0x2510: return 191; // ┐
+        case 0x2514: return 192; // └
+        case 0x2534: return 193; // ┴
+        case 0x252C: return 194; // ┬
+        case 0x251C: return 195; // ├
+        case 0x2500: return 196; // ─
+        case 0x253C: return 197; // ┼
+        case 0x255E: return 198; // ╞
+        case 0x255F: return 199; // ╟
+        case 0x255A: return 200; // ╚
+        case 0x2554: return 201; // ╔
+        case 0x2569: return 202; // ╩
+        case 0x2566: return 203; // ╦
+        case 0x2560: return 204; // ╠
+        case 0x2550: return 205; // ═
+        case 0x256C: return 206; // ╬
+        case 0x2567: return 207; // ╧
+        case 0x2568: return 208; // ╨
+        case 0x2564: return 209; // ╤
+        case 0x2565: return 210; // ╥
+        case 0x2559: return 211; // ╙
+        case 0x2558: return 212; // ╘
+        case 0x2552: return 213; // ╒
+        case 0x2553: return 214; // ╓
+        case 0x256B: return 215; // ╫
+        case 0x256A: return 216; // ╪
+        case 0x2518: return 217; // ┘
+        case 0x250C: return 218; // ┌
+        case 0x2588: return 219; // █
+        case 0x2584: return 220; // ▄
+        case 0x258C: return 221; // ▌
+        case 0x2590: return 222; // ▐
+        case 0x2580: return 223; // ▀
+        case 0x03B1: return 224; // α
+        case 0x00DF: return 225; // ß
+        case 0x0393: return 226; // Γ
+        case 0x03C0: return 227; // π
+        case 0x03A3: return 228; // Σ
+        case 0x03C3: return 229; // σ
+        case 0x00B5: return 230; // µ
+        case 0x03C4: return 231; // τ
+        case 0x03A6: return 232; // Φ
+        case 0x0398: return 233; // Θ
+        case 0x03A9: return 234; // Ω
+        case 0x03B4: return 235; // δ
+        case 0x221E: return 236; // ∞
+        case 0x03C6: return 237; // φ
+        case 0x03B5: return 238; // ε
+        case 0x2229: return 239; // ∩
+        case 0x2261: return 240; // ≡
+        case 0x00B1: return 241; // ±
+        case 0x2265: return 242; // ≥
+        case 0x2264: return 243; // ≤
+        case 0x2320: return 244; // ⌠
+        case 0x2321: return 245; // ⌡
+        case 0x00F7: return 246; // ÷
+        case 0x2248: return 247; // ≈
+        case 0x00B0: return 248; // °
+        case 0x2219: return 249; // ∙
+        case 0x00B7: return 250; // ·
+        case 0x221A: return 251; // √
+        case 0x207F: return 252; // ⁿ
+        case 0x00B2: return 253; // ²
+        case 0x25A0: return 254; // ■
+        case 0x00A0: return 255; // NBSP
+        default: return '?';     // Fallback
+    }
+}
+
 unsigned int TranslateDECSpecial(unsigned char ch) {
     // DEC Special Character Set translation
     switch (ch) {
@@ -2109,6 +2257,9 @@ void InsertCharacterAtCursor(unsigned int ch) {
     cell->protected_cell = terminal.protected_mode;
 
     cell->dirty = true;
+
+    // Track last printed character for REP command
+    terminal.last_char = ch;
 }
 
 // =============================================================================
@@ -2124,6 +2275,70 @@ void ProcessNormalChar(unsigned char ch) {
 
     // Translate character through active character set
     unsigned int unicode_ch = TranslateCharacter(ch, &terminal.charset);
+
+    // Handle UTF-8 decoding if enabled
+    if (*terminal.charset.gl == CHARSET_UTF8) {
+        if (terminal.utf8.bytes_remaining == 0) {
+            if (ch < 0x80) {
+                // 1-byte sequence (ASCII)
+                unicode_ch = ch;
+            } else if ((ch & 0xE0) == 0xC0) {
+                // 2-byte sequence
+                terminal.utf8.codepoint = ch & 0x1F;
+                terminal.utf8.bytes_remaining = 1;
+                return;
+            } else if ((ch & 0xF0) == 0xE0) {
+                // 3-byte sequence
+                terminal.utf8.codepoint = ch & 0x0F;
+                terminal.utf8.bytes_remaining = 2;
+                return;
+            } else if ((ch & 0xF8) == 0xF0) {
+                // 4-byte sequence
+                terminal.utf8.codepoint = ch & 0x07;
+                terminal.utf8.bytes_remaining = 3;
+                return;
+            } else {
+                // Invalid start byte
+                return;
+            }
+        } else {
+            // Continuation byte
+            if ((ch & 0xC0) == 0x80) {
+                terminal.utf8.codepoint = (terminal.utf8.codepoint << 6) | (ch & 0x3F);
+                terminal.utf8.bytes_remaining--;
+                if (terminal.utf8.bytes_remaining > 0) {
+                    return;
+                }
+                // Sequence complete
+                unicode_ch = terminal.utf8.codepoint;
+                // Map to internal glyph if possible
+                unicode_ch = MapUnicodeToCP437(unicode_ch);
+            } else {
+                // Invalid continuation byte, reset and fall through
+                terminal.utf8.bytes_remaining = 0;
+                terminal.utf8.codepoint = 0;
+                // If the byte itself is a valid start byte or ASCII, we should process it.
+                // Re-evaluate current char as if state was 0.
+                if (ch < 0x80) {
+                    unicode_ch = ch;
+                } else if ((ch & 0xE0) == 0xC0) {
+                    terminal.utf8.codepoint = ch & 0x1F;
+                    terminal.utf8.bytes_remaining = 1;
+                    return;
+                } else if ((ch & 0xF0) == 0xE0) {
+                    terminal.utf8.codepoint = ch & 0x0F;
+                    terminal.utf8.bytes_remaining = 2;
+                    return;
+                } else if ((ch & 0xF8) == 0xF0) {
+                    terminal.utf8.codepoint = ch & 0x07;
+                    terminal.utf8.bytes_remaining = 3;
+                    return;
+                } else {
+                    return; // Invalid start byte
+                }
+            }
+        }
+    }
 
     // Handle character display
     if (terminal.cursor.x > terminal.right_margin) {
@@ -3583,6 +3798,29 @@ void ExecuteICH(void) { // Insert Character
 void ExecuteDCH(void) { // Delete Character
     int n = GetCSIParam(0, 1);
     DeleteCharactersAt(terminal.cursor.y, terminal.cursor.x, n);
+}
+
+void ExecuteREP(void) { // Repeat Preceding Graphic Character
+    int n = GetCSIParam(0, 1);
+    if (n < 1) n = 1;
+    if (terminal.last_char > 0) {
+        for (int i = 0; i < n; i++) {
+            if (terminal.cursor.x > terminal.right_margin) {
+                if (terminal.dec_modes.auto_wrap_mode) {
+                    terminal.cursor.x = terminal.left_margin;
+                    terminal.cursor.y++;
+                    if (terminal.cursor.y > terminal.scroll_bottom) {
+                        terminal.cursor.y = terminal.scroll_bottom;
+                        ScrollUpRegion(terminal.scroll_top, terminal.scroll_bottom, 1);
+                    }
+                } else {
+                    terminal.cursor.x = terminal.right_margin;
+                }
+            }
+            InsertCharacterAtCursor(terminal.last_char);
+            terminal.cursor.x++;
+        }
+    }
 }
 
 // =============================================================================
@@ -5124,7 +5362,7 @@ L_CSI_X_ECH:          ExecuteECH(); goto L_CSI_END;                      // ECH 
 L_CSI_Z_CBT:          { int n=GetCSIParam(0,1); while(n-->0) terminal.cursor.x = PreviousTabStop(terminal.cursor.x); } goto L_CSI_END; // CBT - Cursor Backward Tab (CSI Pn Z)
 L_CSI_at_ASC:         ExecuteICH(); goto L_CSI_END;                      // ICH - Insert Character(s) (CSI Pn @)
 L_CSI_a_HPR:          { int n=GetCSIParam(0,1); terminal.cursor.x+=n; if(terminal.cursor.x<0)terminal.cursor.x=0; if(terminal.cursor.x>=DEFAULT_TERM_WIDTH)terminal.cursor.x=DEFAULT_TERM_WIDTH-1;} goto L_CSI_END; // HPR - Horizontal Position Relative (CSI Pn a)
-L_CSI_b_REP:          { int n=GetCSIParam(0,1); (void)n; if(terminal.options.debug_sequences) LogUnsupportedSequence("REP");} goto L_CSI_END; // REP - Repeat Preceding Graphic Character (CSI Pn b)
+L_CSI_b_REP:          ExecuteREP(); goto L_CSI_END;                      // REP - Repeat Preceding Graphic Character (CSI Pn b)
 L_CSI_c_DA:           ExecuteDA(private_mode); goto L_CSI_END;           // DA  - Device Attributes (CSI Ps c or CSI ? Ps c)
 L_CSI_e_VPR:          { int n=GetCSIParam(0,1); terminal.cursor.y+=n; if(terminal.cursor.y<0)terminal.cursor.y=0; if(terminal.cursor.y>=DEFAULT_TERM_HEIGHT)terminal.cursor.y=DEFAULT_TERM_HEIGHT-1;} goto L_CSI_END; // VPR - Vertical Position Relative (CSI Pn e)
 L_CSI_g_TBC:          ExecuteTBC(); goto L_CSI_END;                      // TBC - Tabulation Clear (CSI Ps g)

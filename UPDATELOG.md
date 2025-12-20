@@ -1,4 +1,13 @@
 --------------------------------------------------------------------------------
+v2.3.32D - Terminal VT UTF-8 & REP Support
+--------------------------------------------------------------------------------
+- [Feature] Implemented UTF-8 decoding in `ProcessNormalChar` (Terminal), enabling full multibyte Unicode support (e.g., Box Drawing characters, international text).
+- [Feature] Implemented `MapUnicodeToCP437` helper to map decoded Unicode codepoints to the internal CP437 font atlas indices.
+- [Feature] Implemented `ExecuteREP` (CSI b) for Repeat Preceding Graphic Character, significantly optimizing rendering for repetitive text patterns.
+- [Fix] Hardened `ProcessNormalChar` state machine to robustly handle invalid UTF-8 sequences by resetting state and reprocessing the byte.
+- [Fix] Fixed potential logic duplication in `ExecuteREP` by reusing core insertion logic.
+- [Version] Bumped version to v2.3.32D.
+--------------------------------------------------------------------------------
 v2.3.32C - Complete VT Support (Sixel, Soft Fonts, Window Ops, Pipeline Fix)
 --------------------------------------------------------------------------------
 - [Critical] Fixed `SIT_COMPUTE_LAYOUT_TERMINAL` in `situation.h` to include the 4th descriptor set (Sixel texture sampler), ensuring the Vulkan pipeline matches the Compute Shader expectations.
