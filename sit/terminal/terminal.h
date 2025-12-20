@@ -5971,14 +5971,20 @@ void ProcessSixelData(const char* data, size_t length) {
     terminal.sixel.x = terminal.cursor.x * DEFAULT_CHAR_WIDTH;
     terminal.sixel.y = terminal.cursor.y * DEFAULT_CHAR_HEIGHT;
 
-    // Basic sixel parsing would go here
-    // For now, just mark as active for demonstration
+    // Initialize internal sixel state for parsing
+    terminal.sixel.pos_x = 0;
+    terminal.sixel.pos_y = 0;
+    terminal.sixel.max_x = 0;
+    terminal.sixel.max_y = 0;
+    terminal.sixel.color_index = 0;
+    terminal.sixel.repeat_count = 1;
+
+    // Process the sixel data stream
+    for (size_t i = 0; i < length; i++) {
+        ProcessSixelChar(data[i]);
+    }
 
     terminal.sixel.dirty = true; // Mark for upload
-
-    if (terminal.options.debug_sequences) {
-        LogUnsupportedSequence("Sixel graphics partially implemented");
-    }
 }
 
 void DrawSixelGraphics(void) {

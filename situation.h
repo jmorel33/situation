@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 32
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_REVISION "B"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -89,6 +89,7 @@
  *
  * NOTE: These must be defined before ANY system headers are included.
  */
+#define _DEFAULT_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 
@@ -421,6 +422,20 @@ typedef enum {
  * @param fmt The printf-style format string for the message.
  * @param ... Variable arguments for the format string.
  */
+typedef enum {
+    SIT_LOG_ALL = 0,
+    SIT_LOG_TRACE,
+    SIT_LOG_DEBUG,
+    SIT_LOG_INFO,
+    SIT_LOG_WARNING,
+    SIT_LOG_ERROR,
+    SIT_LOG_FATAL,
+    SIT_LOG_NONE
+} SituationLogLevel;
+
+SITAPI void SituationLog(int msgType, const char* text, ...);
+SITAPI void SituationSetTraceLogLevel(int logType);
+
 SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
 #define SITUATION_LOG_WARNING SituationLogWarning
 
@@ -5014,6 +5029,40 @@ static void _SituationSetError(const char* msg) {
  * @note This function is for internal use only.
  * @see _SituationSetError(), SituationGetLastErrorMsg(), SituationError
  */
+static int _sit_trace_log_level = SIT_LOG_INFO;
+
+SITAPI void SituationSetTraceLogLevel(int logType) {
+    _sit_trace_log_level = logType;
+}
+
+SITAPI void SituationLog(int msgType, const char* text, ...) {
+    if (msgType < _sit_trace_log_level) return;
+
+    // ANSI Color Codes
+    const char* color_code = "\033[0m"; // Reset
+    const char* label = "[INFO]";
+
+    switch (msgType) {
+        case SIT_LOG_TRACE:   label = "[TRACE]"; color_code = "\033[90m"; break; // Gray
+        case SIT_LOG_DEBUG:   label = "[DEBUG]"; color_code = "\033[36m"; break; // Cyan
+        case SIT_LOG_INFO:    label = "[INFO]";  color_code = "\033[32m"; break; // Green
+        case SIT_LOG_WARNING: label = "[WARN]";  color_code = "\033[33m"; break; // Yellow
+        case SIT_LOG_ERROR:   label = "[ERROR]"; color_code = "\033[31m"; break; // Red
+        case SIT_LOG_FATAL:   label = "[FATAL]"; color_code = "\033[41m"; break; // Red Background
+        default: break;
+    }
+
+    va_list args;
+    va_start(args, text);
+
+    // Print to stdout with color
+    printf("%s%s ", color_code, label);
+    vprintf(text, args);
+    printf("\033[0m\n"); // Reset color and newline
+
+    va_end(args);
+}
+
 SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...) {
 #ifndef NDEBUG
     char _sit_err_buf[SITUATION_MAX_ERROR_MSG_LEN];
