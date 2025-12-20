@@ -483,25 +483,14 @@ typedef struct {
 // TERMINAL COMPUTE SHADER & GPU STRUCTURES
 // =============================================================================
 
-#define TERMINAL_COMPUTE_SHADER_SRC \
-"#version 450\n" \
-"layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n" \
-"\n" \
-"struct GPUCell {\n" \
-"    uint char_code;\n" \
-"    uint fg_color;\n" \
-"    uint bg_color;\n" \
-"    uint flags;\n" \
-"};\n" \
-"\n" \
-"layout(std430, set = 0, binding = 0) readonly buffer TerminalBuffer {\n" \
-"    GPUCell cells[];\n" \
-"} terminal_data;\n" \
-"\n" \
-"layout(set = 1, binding = 0, rgba8) writeonly uniform image2D output_image;\n" \
-"\n" \
-"layout(set = 2, binding = 0) uniform sampler2D font_texture;\n" \
-"layout(set = 3, binding = 0) uniform sampler2D sixel_texture;\n" \
+typedef struct {
+    uint32_t char_code;
+    uint32_t fg_color;
+    uint32_t bg_color;
+    uint32_t flags;
+} GPUCell;
+
+#define TERMINAL_SHADER_FOOTER \
 "\n" \
 "layout(push_constant) uniform PushConstants {\n" \
 "    vec2 screen_size;\n" \
@@ -593,12 +582,49 @@ typedef struct {
 "    imageStore(output_image, ivec2(pixel_coords), pixel_color);\n" \
 "}\n"
 
-typedef struct {
-    uint32_t char_code;
-    uint32_t fg_color;
-    uint32_t bg_color;
-    uint32_t flags;
-} GPUCell;
+#if defined(SITUATION_USE_VULKAN)
+#define TERMINAL_COMPUTE_SHADER_SRC \
+"#version 450\n" \
+"layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n" \
+"\n" \
+"struct GPUCell {\n" \
+"    uint char_code;\n" \
+"    uint fg_color;\n" \
+"    uint bg_color;\n" \
+"    uint flags;\n" \
+"};\n" \
+"\n" \
+"layout(std430, set = 0, binding = 0) readonly buffer TerminalBuffer {\n" \
+"    GPUCell cells[];\n" \
+"} terminal_data;\n" \
+"\n" \
+"layout(set = 1, binding = 0, rgba8) writeonly uniform image2D output_image;\n" \
+"\n" \
+"layout(set = 2, binding = 0) uniform sampler2D font_texture;\n" \
+"layout(set = 3, binding = 0) uniform sampler2D sixel_texture;\n" \
+TERMINAL_SHADER_FOOTER
+#elif defined(SITUATION_USE_OPENGL)
+#define TERMINAL_COMPUTE_SHADER_SRC \
+"#version 430\n" \
+"layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n" \
+"\n" \
+"struct GPUCell {\n" \
+"    uint char_code;\n" \
+"    uint fg_color;\n" \
+"    uint bg_color;\n" \
+"    uint flags;\n" \
+"};\n" \
+"\n" \
+"layout(std430, binding = 0) readonly buffer TerminalBuffer {\n" \
+"    GPUCell cells[];\n" \
+"} terminal_data;\n" \
+"\n" \
+"layout(binding = 1, rgba8) writeonly uniform image2D output_image;\n" \
+"\n" \
+"layout(binding = 2) uniform sampler2D font_texture;\n" \
+"layout(binding = 3) uniform sampler2D sixel_texture;\n" \
+TERMINAL_SHADER_FOOTER
+#endif
 
 typedef struct {
     Vector2 screen_size;
