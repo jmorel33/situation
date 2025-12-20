@@ -5571,21 +5571,84 @@ void ProcessFontCommand(const char* data) {
     }
 }
 
-void ProcessClipboardCommand(const char* data) {
-    // Clipboard operations: c;base64data or c;?
-    char clipboard_type = data[0];
+// Base64 decoding helper
+static int Base64Val(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
 
-    if (data[1] == ';' && data[2] == '?') {
-        // Query clipboard
-        char response[64];
-        snprintf(response, sizeof(response), "\x1B]52;%c;\x1B\\", clipboard_type);
-        QueueResponse(response);
-    } else if (data[1] == ';') {
-        // Set clipboard data (base64 encoded)
-        if (terminal.options.debug_sequences) {
-            LogUnsupportedSequence("Clipboard setting not implemented");
+static int DecodeBase64(const char* input, unsigned char* output, size_t out_max) {
+    size_t in_len = strlen(input);
+    size_t out_len = 0;
+    unsigned int val = 0;
+    int valb = -8;
+    for (size_t i = 0; i < in_len; i++) {
+        int c = Base64Val(input[i]);
+        if (c == -1) continue; // Skip whitespace/invalid
+        val = (val << 6) | c;
+        valb += 6;
+        if (valb >= 0) {
+            if (out_len < out_max) {
+                output[out_len++] = (unsigned char)((val >> valb) & 0xFF);
+            }
+            valb -= 8;
         }
     }
+    if (out_len < out_max) output[out_len] = 0;
+    return (int)out_len;
+}
+
+void ProcessClipboardCommand(const char* data) {
+    // Clipboard operations: c;base64data or c;?
+    // data format is: Pc;Pd
+    // Pc = clipboard selection (c, p, s, 0-7)
+    // Pd = data (base64) or ?
+
+    char* data_copy = strdup(data);
+    if (!data_copy) return;
+
+    char* semicolon = strchr(data_copy, ';');
+    if (!semicolon) {
+        free(data_copy);
+        return;
+    }
+
+    *semicolon = '\0';
+    char* pc_str = data_copy;
+    char* pd_str = semicolon + 1;
+    char clipboard_selector = pc_str[0];
+
+    if (strcmp(pd_str, "?") == 0) {
+        // Query clipboard
+        // Implementation: Get system clipboard, encode to base64, send response.
+        // Response: OSC 52 ; Pc ; Pd ST
+        // Not fully implemented as we need Base64 Encode function.
+        // For now, return empty or error.
+        // char response[64];
+        // snprintf(response, sizeof(response), "\x1B]52;%c;\x1B\\", clipboard_selector);
+        // QueueResponse(response);
+        if (terminal.options.debug_sequences) {
+            LogUnsupportedSequence("Clipboard query not fully implemented (requires encoding)");
+        }
+    } else {
+        // Set clipboard data (base64 encoded)
+        // We only support setting the standard clipboard ('c' or '0')
+        if (clipboard_selector == 'c' || clipboard_selector == '0') {
+            size_t decoded_size = strlen(pd_str); // Upper bound
+            unsigned char* decoded_data = malloc(decoded_size + 1);
+            if (decoded_data) {
+                DecodeBase64(pd_str, decoded_data, decoded_size + 1);
+                SituationSetClipboardText((const char*)decoded_data);
+                free(decoded_data);
+            }
+        }
+    }
+
+    free(data_copy);
 }
 
 void ExecuteOSCCommand(void) {
