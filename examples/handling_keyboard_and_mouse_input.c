@@ -23,7 +23,7 @@
 
 // --- State ---
 static vec2 g_pos = {0.0f, 0.0f};      // Position (World Space, 0,0 is center)
-static vec4 g_color = {1.0f, 1.0f, 1.0f, 1.0f}; // Current Color
+static Vector4 g_color = {{1.0f, 1.0f, 1.0f, 1.0f}}; // Current Color
 static float g_speed = 2.0f;           // Units per second
 
 // --- Logic ---
@@ -45,9 +45,9 @@ void update_game() {
     // We use 'IsKeyPressed' because we only want this to happen ONCE when the key is tapped.
     if (SituationIsKeyPressed(SIT_KEY_SPACE)) {
         // Randomize Color
-        g_color[0] = (float)(rand() % 100) / 100.0f;
-        g_color[1] = (float)(rand() % 100) / 100.0f;
-        g_color[2] = (float)(rand() % 100) / 100.0f;
+        g_color.r = (float)(rand() % 100) / 100.0f;
+        g_color.g = (float)(rand() % 100) / 100.0f;
+        g_color.b = (float)(rand() % 100) / 100.0f;
         printf("Color Changed!\n");
     }
 
@@ -55,8 +55,8 @@ void update_game() {
     // Button 0 = Left, 1 = Right, 2 = Middle
     if (SituationIsMouseButtonPressed(0)) {
         // Get Mouse Position (Pixels, Top-Left is 0,0)
-        vec2 mouse_pixels = {0};
-        glm_vec2_copy(SituationGetMousePosition(), mouse_pixels);
+        Vector2 mouse_pos = SituationGetMousePosition();
+        vec2 mouse_pixels = { mouse_pos.x, mouse_pos.y };
         
         // Convert Pixel Coordinates to World Coordinates (Approximate for this example)
         // The default Quad shader draws from -1.0 to 1.0.
@@ -74,7 +74,7 @@ void update_game() {
         // Reset
         g_pos[0] = 0.0f;
         g_pos[1] = 0.0f;
-        g_color[0] = 1.0f; g_color[1] = 1.0f; g_color[2] = 1.0f;
+        g_color.r = 1.0f; g_color.g = 1.0f; g_color.b = 1.0f;
     }
 }
 
