@@ -1,4 +1,11 @@
 --------------------------------------------------------------------------------
+v2.3.32E - SituationError Return Type Migration & Docs
+--------------------------------------------------------------------------------
+- [Breaking Change] Updated `SituationCmd*` functions to return `SituationError` instead of `void` for better error propagation (e.g., `SituationCmdDraw`, `SituationCmdEndRenderPass`).
+- [Breaking Change] Updated `SituationCmdDraw` and `SituationCmdDrawIndexed` parameter types (`int` -> `uint32_t`) and added `instance_count` to support instanced rendering directly.
+- [Docs] Updated `situation_api.md` to reflect new signatures and added documentation for `SituationCmdDrawText`, `SituationCmdDrawTextEx`, and `SituationCmdPresent`.
+- [Examples] Updated `examples/handling_keyboard_and_mouse_input.c` to use `Vector4` and fix `SituationGetMousePosition` usage.
+--------------------------------------------------------------------------------
 v2.3.32D - Terminal VT UTF-8 & REP Support
 --------------------------------------------------------------------------------
 - [Feature] Implemented UTF-8 decoding in `ProcessNormalChar` (Terminal), enabling full multibyte Unicode support (e.g., Box Drawing characters, international text).

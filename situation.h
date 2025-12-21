@@ -2008,25 +2008,25 @@ SITAPI SituationCommandBuffer SituationGetComputeCommandBuffer(void);           
 SITAPI SituationError SituationEndFrame(void);                                          // Submit all commands for the frame and present the result.
 
 // --- Abstracted Rendering Commands ---
-SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height);                           // Sets the dynamic viewport and scissor for the current render pass.
-SITAPI void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);                                    // Sets the dynamic scissor rectangle to clip rendering.
+SITAPI SituationError SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height);                           // Sets the dynamic viewport and scissor for the current render pass.
+SITAPI SituationError SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);                                    // Sets the dynamic scissor rectangle to clip rendering.
 SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader);                                     // Binds a graphics pipeline (shader program) for subsequent draws.
 SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh);                                             // [High-Level] Records a command to draw a complete, pre-configured mesh.
-SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color);                                                // [High-Level] Record a command to draw a simple, colored 2D quad.
-SITAPI void SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, ColorRGBA tint); // [High-Level] Draw a part of a texture defined by a rectangle.
-SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);               // [Core] Set a small block of per-draw uniform data (push constant).
+SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color);                                                // [High-Level] Record a command to draw a simple, colored 2D quad.
+SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, ColorRGBA tint); // [High-Level] Draw a part of a texture defined by a rectangle.
+SITAPI SituationError SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);               // [Core] Set a small block of per-draw uniform data (push constant).
 SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer);            // [Core] Binds a buffer's descriptor set (UBO/SSBO) to a set index.
 SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset); // [Core] Binds a dynamic buffer descriptor set with an offset.
 SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);             // [Core] Binds a texture's descriptor set (sampler/storage) to a set index.
 SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture);           // [Core] Binds a texture as a storage image for compute shaders.
-SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset); // [Core] Define the format of a vertex attribute for the active VAO.
-SITAPI void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance); // [Core] Record a non-indexed draw call.
-SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance); // [Core] Record an indexed draw call.
+SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset); // [Core] Define the format of a vertex attribute for the active VAO.
+SITAPI SituationError SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance); // [Core] Record a non-indexed draw call.
+SITAPI SituationError SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance); // [Core] Record an indexed draw call.
 SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);                     // Begins a render pass with detailed configuration.
-SITAPI void SituationCmdEndRenderPass(SituationCommandBuffer cmd);                                                                      // Ends the current render pass.
-SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color);		// Draws a text string using GPU-accelerated textured quads.
-SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color); // Advanced text drawing (scaling/spacing).
-SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture);                                                  // Submits a command to copy a texture to the main window's swapchain (Compute-Only).
+SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd);                                                                      // Ends the current render pass.
+SITAPI SituationError SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color);		// Draws a text string using GPU-accelerated textured quads.
+SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color); // Advanced text drawing (scaling/spacing).
+SITAPI SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture);                                                  // Submits a command to copy a texture to the main window's swapchain (Compute-Only).
 SITAPI SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture);                // Binds a texture as a sampled image (sampler2D) to a binding point.
 
 // --- Graphics Resource Management ---
@@ -14025,16 +14025,17 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
  * @note This function must be paired with a preceding `SituationCmdBegin...` call.
  * @warning Calling this function without an active render pass (Vulkan) will result in a validation error.
  */
-SITAPI void SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
-    if (!SituationIsInitialized()) return;
+SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    _SitGLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS);
+    if (!_SitGLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS)) return SITUATION_ERROR_MEMORY_ALLOCATION;
 #elif defined(SITUATION_USE_VULKAN)
-    if (cmd == 0) return; // Basic validation
+    if (cmd == 0) return SITUATION_ERROR_INVALID_PARAM; // Basic validation
     vkCmdEndRenderPass((VkCommandBuffer)cmd);
 #endif
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -14197,12 +14198,10 @@ SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
  *       3. The specified `width` and `height` are greater than zero.
  * @warning Providing a `width` or `height` of zero or negative values results in undefined behavior or errors, depending on the backend and driver.
  */
-SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height) {
+SITAPI SituationError SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height) {
     // --- 1. Input Validation ---
     if (!SituationIsInitialized()) {
-        // Silently return if not initialized, consistent with snippet behavior.
-        // Alternatively, could set an error: _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "...");
-        return;
+        return SITUATION_ERROR_NOT_INITIALIZED;
     }
 
     // While viewport dimensions *can* technically be negative in OpenGL spec,
@@ -14214,7 +14213,7 @@ SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y
         snprintf(error_msg, sizeof(error_msg),
                  "Invalid viewport dimensions: width=%.2f, height=%.2f. Dimensions must be positive.", width, height);
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, error_msg);
-        return;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
 
 #if defined(SITUATION_USE_OPENGL)
@@ -14226,6 +14225,8 @@ SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y
             p->args.viewport.y = y;
             p->args.viewport.w = width;
             p->args.viewport.h = height;
+        } else {
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
     }
 
@@ -14234,7 +14235,7 @@ SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y
         // --- 2. Vulkan Input Validation ---
         if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
             _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for setting viewport.");
-            return; // Even though void, we can return early on critical error.
+            return SITUATION_ERROR_INVALID_PARAM;
         }
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
@@ -14272,6 +14273,7 @@ SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y
 #endif
     // --- 4. Post-Operation ---
     // No general post-operation actions are required here.
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -14281,10 +14283,10 @@ SITAPI void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y
  * @param x, y The top-left corner of the scissor rectangle, in pixel coordinates.
  * @param width, height The dimensions of the scissor rectangle, in pixels.
  */
-SITAPI void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height) {
+SITAPI SituationError SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height) {
     // Basic validation: A scissor rectangle cannot have a negative size.
     if (!SituationIsInitialized() || width < 0 || height < 0) {
-        return;
+        return (width < 0 || height < 0) ? SITUATION_ERROR_INVALID_PARAM : SITUATION_ERROR_NOT_INITIALIZED;
     }
 
 #if defined(SITUATION_USE_OPENGL)
@@ -14295,6 +14297,8 @@ SITAPI void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int
         p->args.scissor.y = y;
         p->args.scissor.w = width;
         p->args.scissor.h = height;
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -14313,6 +14317,7 @@ SITAPI void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int
     vkCmdSetScissor((VkCommandBuffer)cmd, 0, 1, &scissor);
 
 #endif
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -14441,10 +14446,10 @@ SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd,
  * @param first_vertex The index of the first vertex to draw.
  * @param first_instance The instance ID of the first instance to draw.
  */
-SITAPI void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance) {
-    if (!SituationIsInitialized() || vertex_count == 0 || instance_count == 0) {
-        return;
-    }
+SITAPI SituationError SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (vertex_count == 0 || instance_count == 0) return SITUATION_SUCCESS; // No-op is success
+
     // Mark that a draw command has happened this frame
     sit_render.debug_draw_command_issued_this_frame = true;
     sit_render.frame_draw_calls++;
@@ -14459,13 +14464,16 @@ SITAPI void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, 
         p->args.draw.i_count = instance_count;
         p->args.draw.first_v = first_vertex;
         p->args.draw.first_i = first_instance;
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-    if (vk_cmd == VK_NULL_HANDLE) return;
+    if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
     vkCmdDraw(vk_cmd, vertex_count, instance_count, first_vertex, first_instance);
 #endif
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -14479,10 +14487,10 @@ SITAPI void SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, 
  * @param vertex_offset A value added to each index before looking up a vertex.
  * @param first_instance The instance ID of the first instance to draw.
  */
-SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance) {
-    if (!SituationIsInitialized() || index_count == 0 || instance_count == 0) {
-        return;
-    }
+SITAPI SituationError SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (index_count == 0 || instance_count == 0) return SITUATION_SUCCESS;
+
     // Update Stats
     sit_render.debug_draw_command_issued_this_frame = true;
     sit_render.frame_draw_calls++;
@@ -14497,13 +14505,16 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
         p->args.draw_indexed.first_idx = first_index;
         p->args.draw_indexed.v_offset = vertex_offset;
         p->args.draw_indexed.first_inst = first_instance;
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-    if (vk_cmd == VK_NULL_HANDLE) return;
+    if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
     vkCmdDrawIndexed(vk_cmd, index_count, instance_count, first_index, vertex_offset, first_instance);
 #endif
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -14520,8 +14531,8 @@ SITAPI void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_c
  *
  * @note Requires a valid orthographic projection matrix to be active in the view UBO (which `SituationAcquireFrameCommandBuffer` sets up by default).
  */
-SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color) {
-    SituationCmdDrawTextEx(cmd, font, text, pos, 0.0f, 0.0f, color);
+SITAPI SituationError SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color) {
+    return SituationCmdDrawTextEx(cmd, font, text, pos, 0.0f, 0.0f, color);
 }
 
 /**
@@ -14543,22 +14554,22 @@ SITAPI void SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font,
  * @param spacing Additional spacing between characters in pixels. Can be negative.
  * @param color The text color tint.
  */
-SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color) {
-    if (!SituationIsInitialized() || !text) return;
+SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color) {
+    if (!SituationIsInitialized() || !text) return SITUATION_ERROR_INVALID_PARAM;
 
     // Default Debug Font Fallback
     SituationFont use_font = font;
     if (use_font.atlas_texture.generation == 0) {
         use_font = sit_render.default_font;
-        if (use_font.atlas_texture.generation == 0) return;
+        if (use_font.atlas_texture.generation == 0) return SITUATION_ERROR_RESOURCE_INVALID;
     }
 
     bool is_grid_font = (use_font.glyph_info == NULL && use_font.atlas_texture.slot_index == sit_render.default_font.atlas_texture.slot_index && use_font.atlas_texture.generation == sit_render.default_font.atlas_texture.generation);
-    if (!is_grid_font && !use_font.glyph_info) return;
+    if (!is_grid_font && !use_font.glyph_info) return SITUATION_ERROR_RESOURCE_INVALID;
 
     size_t len = strlen(text);
 #if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
-    if (len == 0) return;
+    if (len == 0) return SITUATION_SUCCESS;
     if (len > 2048) len = 2048;
 
     sit_render.debug_draw_command_issued_this_frame = true;
@@ -14572,7 +14583,7 @@ SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont fon
     // --- OPENGL PATH (Standard Soft Buffer) ---
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
     void* text_ptr = _SitGLSoftDataPush(buf, text, len + 1);
-    if (!text_ptr) return;
+    if (!text_ptr) return SITUATION_ERROR_MEMORY_ALLOCATION;
     size_t text_offset = (size_t)((uint8_t*)text_ptr - buf->data_buffer);
 
     SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_TEXT_EX);
@@ -14589,6 +14600,8 @@ SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont fon
         // Instead, the executor (_SituationGLExecuteCommands) will detect if the feature is enabled
         // and resolve the handle from the font's atlas texture ID at draw time.
         // This keeps the packet size small and logic centralized in the executor.
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -14731,9 +14744,11 @@ SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont fon
         vkCmdDraw(vk_cmd, (uint32_t)(len * 6), 1, 0, 0);
     }
 #endif
+    return SITUATION_SUCCESS;
 
 #else
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCmdDrawText requires STB Truetype.");
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
 #endif
 }
 
@@ -14755,8 +14770,8 @@ SITAPI void SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont fon
  * @param cmd The command buffer to record into.
  * @param texture The source texture containing the frame to present. Must be valid.
  */
-SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture) {
-    if (!SituationIsInitialized()) return;
+SITAPI SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
@@ -14765,15 +14780,17 @@ SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture tex
         p->args.present.texture = texture;
         p->args.present.target_w = sit_gs.main_window_width;
         p->args.present.target_h = sit_gs.main_window_height;
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-    if (vk_cmd == VK_NULL_HANDLE) return;
+    if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
 
     // 1. Get the current swapchain image we are targeting
     VkImage swapchainImage = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
-    if (swapchainImage == VK_NULL_HANDLE) return;
+    if (swapchainImage == VK_NULL_HANDLE) return SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID;
 
     // 2. Transition Swapchain to TRANSFER_DST
     // Note: SituationAcquireFrameCommandBuffer normally leaves it in UNDEFINED or COLOR_ATTACHMENT_OPTIMAL.
@@ -14808,6 +14825,7 @@ SITAPI void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture tex
     // 6. Transition Source back to GENERAL (ready for next compute frame)
     _SituationVulkanTransitionImageLayout(vk_cmd, texture.image, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 #endif
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -14931,13 +14949,13 @@ SITAPI SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd,
  * @param normalized Whether fixed-point data should be normalized.
  * @param offset The byte offset of this attribute within the vertex structure.
  */
-SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset) {
-    if (!SituationIsInitialized()) return;
+SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
 #if defined(SITUATION_USE_OPENGL)
     if (_SituationMapDataTypeToGL(type) == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdSetVertexAttribute: Invalid data type.");
-        return;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
     SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_VERTEX_ATTRIBUTE);
@@ -14947,6 +14965,8 @@ SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t 
         p->args.set_vertex_attr.type = (int)type;
         p->args.set_vertex_attr.normalized = normalized ? 1 : 0;
         p->args.set_vertex_attr.offset = offset;
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -14958,7 +14978,9 @@ SITAPI void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t 
         "SituationCmdSetVertexAttribute is incompatible with Vulkan's architecture. "
         "Vulkan Pipelines are immutable; vertex attributes must be defined at pipeline creation time "
         "(inside SituationLoadShaderFromMemory logic), not dynamically on the command buffer.");
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
 #endif
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -15169,8 +15191,8 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
  * @param rotation The rotation angle in degrees (clockwise).
  * @param tint The color tint to apply to the texture (WHITE for no tint).
  */
-SITAPI void SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, ColorRGBA tint) {
-    if (!SituationIsInitialized()) return;
+SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, ColorRGBA tint) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
     // 1. Bind Texture (Set 0, Binding 0)
     // This handles descriptor binding (Vulkan) or texture binding + uniform setting (OpenGL)
@@ -15230,10 +15252,12 @@ SITAPI void SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture
         glm_mat4_copy(model, p->args.draw_quad.model);
         p->args.draw_quad.color = color_vec;
         p->args.draw_quad.uv_rect = uv_rect;
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return;
+    if (sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
     vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline);
@@ -15259,10 +15283,11 @@ SITAPI void SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture
     vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
     vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 #endif
+    return SITUATION_SUCCESS;
 }
 
-SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color) {
-    if (!SituationIsInitialized()) return;
+SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     sit_render.debug_draw_command_issued_this_frame = true;
     sit_render.frame_draw_calls++;
     sit_render.frame_triangle_count += 2;
@@ -15290,10 +15315,12 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4
         glm_mat4_copy(model, p->args.draw_quad.model);
         p->args.draw_quad.color = color;
         p->args.draw_quad.uv_rect = uv_rect;
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return;
+    if (sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
     vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline);
@@ -15319,6 +15346,7 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4
     vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
     vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 #endif
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -15347,20 +15375,20 @@ SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4
  *       3. The `size` and `contract_id` match the shader's expectations.
  * @warning Calling this in OpenGL when no program is bound (`glUseProgram(0)`) will result in no action being taken.
  */
-SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size) {
+SITAPI SituationError SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size) {
     // --- 1. Input Validation ---
     if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot set push constant.");
-        return;
+        return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (!data) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Push constant data pointer is NULL.");
-        return;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
     if (size == 0) {
         // Setting 0 bytes is likely an error.
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Push constant size is 0.");
-        return;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
     // Optionally, add a maximum size check based on API limits if known.
 
@@ -15370,7 +15398,7 @@ SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t con
 
         // Allocate space in the data buffer
         void* ptr = _SitGLSoftDataPush(buf, data, size);
-        if (!ptr) return;
+        if (!ptr) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
         // Calculate offset relative to buffer start
         size_t offset = (size_t)((uint8_t*)ptr - buf->data_buffer);
@@ -15380,6 +15408,8 @@ SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t con
             p->args.push_constant.offset = contract_id;
             p->args.push_constant.size = size;
             p->args.push_constant.data_offset = offset;
+        } else {
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
     }
 
@@ -15388,14 +15418,14 @@ SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t con
         // --- 2. Vulkan Input Validation ---
         if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
             _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for push constant update.");
-            return;
+            return SITUATION_ERROR_INVALID_PARAM;
         }
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
         // Check if we have a valid layout before pushing
         if (sit_render.vk.current_pipeline_layout_for_push_constants == VK_NULL_HANDLE) {
              // Silently return or log warning. The shader bind failed previously, so we can't push.
-             return;
+             return SITUATION_ERROR_PIPELINE_BIND_FAIL;
         }
         // --- 3. Vulkan Implementation (vkCmdPushConstants) ---
         // Assumes sit_render.vk.current_pipeline_layout_for_push_constants is valid and corresponds to the currently bound pipeline that uses these push constants.
@@ -15414,6 +15444,7 @@ SITAPI void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t con
 #endif
     // --- 4. Post-Operation ---
     // No general post-operation actions are required here.
+    return SITUATION_SUCCESS;
 }
 
 /**

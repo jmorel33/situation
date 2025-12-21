@@ -2743,7 +2743,7 @@ SituationCommandBuffer SituationGetMainCommandBuffer(void);
 Begins and ends a render pass. A render pass defines the render target (e.g., the main window or a virtual display) and how its attachments (color, depth) should be handled. All drawing commands must be recorded between these two calls.
 ```c
 SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);
-void SituationCmdEndRenderPass(SituationCommandBuffer cmd);
+SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd);
 ```
 **Usage Example:**
 ```c
@@ -2800,8 +2800,8 @@ printf("Primary monitor height: %d\n", primary_monitor_height);
 #### `SituationCmdSetViewport` / `SituationCmdSetScissor`
 Sets the dynamic viewport or scissor rectangle for the current render pass. The viewport transforms the normalized device coordinates to window coordinates, while the scissor rectangle discards fragments outside its bounds.
 ```c
-void SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height);
-void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);
+SituationError SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height);
+SituationError SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);
 ```
 **Usage Example:**
 ```c
@@ -2883,8 +2883,8 @@ SituationCmdBindShaderBuffer(cmd, 1, my_scene_ubo);
 #### `SituationCmdDraw` / `SituationCmdDrawIndexed`
 Records a non-indexed or indexed drawing command into the command buffer. `SituationCmdDraw` draws vertices sequentially from the bound vertex buffer, while `SituationCmdDrawIndexed` uses the bound index buffer to determine the order of vertices.
 ```c
-void SituationCmdDraw(SituationCommandBuffer cmd, int first_vertex, int vertex_count);
-void SituationCmdDrawIndexed(SituationCommandBuffer cmd, int first_index, int index_count, int vertex_offset);
+SituationError SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance);
+SituationError SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance);
 ```
 **Usage Example:**
 ```c
@@ -2892,7 +2892,7 @@ void SituationCmdDrawIndexed(SituationCommandBuffer cmd, int first_index, int in
 SituationCmdBindVertexBuffer(cmd, my_vbo);
 SituationCmdBindIndexBuffer(cmd, my_ibo);
 // Draw 36 indices, starting from the beginning of the index buffer.
-SituationCmdDrawIndexed(cmd, 0, 36, 0);
+SituationCmdDrawIndexed(cmd, 36, 1, 0, 0, 0);
 ```
 
 ---
@@ -2913,7 +2913,7 @@ SituationCmdDrawMesh(SituationGetMainCommandBuffer(), my_complex_model_mesh);
 #### `SituationCmdDrawQuad`
 Records a command to draw a simple, colored, and transformed 2D quad. This uses an internally managed quad mesh, so you don't need to create your own. It's useful for debug rendering, particles, or simple UI elements.
 ```c
-void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color);
+SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color);
 ```
 **Usage Example:**
 ```c
@@ -2923,7 +2923,7 @@ glm_translate_make(transform, (vec3){100.0f, 200.0f, 0.0f});
 glm_scale_uni(transform, 50.0f); // Make it 50x50 pixels
 
 // Define a color (in this case, magenta).
-vec4 quad_color = {1.0f, 0.0f, 1.0f, 1.0f};
+Vector4 quad_color = {{1.0f, 0.0f, 1.0f, 1.0f}};
 
 // Record the draw command.
 SituationCmdDrawQuad(SituationGetMainCommandBuffer(), transform, quad_color);
@@ -3396,7 +3396,7 @@ void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width,
 #### `SituationCmdSetPushConstant`
 [Core] Set a small block of per-draw uniform data (push constant).
 ```c
-void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);
+SituationError SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);
 ```
 
 ---
@@ -3424,21 +3424,21 @@ SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32
 #### `SituationCmdSetVertexAttribute`
 [Core] Define the format of a vertex attribute for the active VAO.
 ```c
-void SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset);
+SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset);
 ```
 
 ---
 #### `SituationCmdDrawIndexed`
 [Core] Record an indexed draw call.
 ```c
-void SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance);
+SituationError SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance);
 ```
 
 ---
 #### `SituationCmdEndRenderPass`
 Ends the current render pass.
 ```c
-void SituationCmdEndRenderPass(SituationCommandBuffer cmd);
+SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd);
 ```
 
 ---
@@ -5682,6 +5682,10 @@ The library also provides a simpler, deprecated function `SituationMemoryBarrier
             b. Destroys the Vulkan objects: `vkDestroyPipeline`, `vkDestroyPipelineLayout`.
     4.  Invalidates the handle by setting `pipeline->id = 0`.
 
+#### 4.7.7 Compute Presentation (SituationCmdPresent)
+- **Signature:** `SITAPI SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture);`
+- **Description:** Submits a command to copy a texture to the main window's swapchain. This is specifically designed for **Compute-Only** applications where there is no standard render pass (e.g., ray tracing or terminal emulators) and you need to display the result of a compute shader (a storage image) directly to the screen.
+
 </details>
 <details>
 <summary><h3>Text Rendering</h3></summary>
@@ -5709,6 +5713,17 @@ The library also provides a simpler, deprecated function `SituationMemoryBarrier
     - Destroys a loaded font, freeing the associated atlas texture and `stbtt_fontinfo` data.
     - Invalidates the handle.
 
+#### 4.9.4 GPU Text Drawing (Command Buffer)
+For best performance and integration with the rendering pipeline, use these command-buffer variants.
+
+- **`SituationCmdDrawText`**
+    - **Signature:** `SITAPI SituationError SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color);`
+    - Draws a text string using GPU-accelerated textured quads. This is the preferred method for rendering text within a render pass.
+
+- **`SituationCmdDrawTextEx`**
+    - **Signature:** `SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color);`
+    - Advanced version of `SituationCmdDrawText` that allows for custom scaling (`fontSize`) and character spacing (`spacing`).
+
 </details>
 <details>
 <summary><h3>2D Rendering & Drawing</h3></summary>
@@ -5724,9 +5739,9 @@ The library provides commands for rendering primitive geometric shapes, which fo
 
 ##### 4.10.2.1 Rectangles (SituationCmdDrawQuad)
 This is the primary function for drawing solid-colored rectangles. It uses the library's internal, optimized quad renderer.
-- **Signature:** `SITAPI void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color);`
+- **Signature:** `SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color);`
 - `model`: A `mat4` transformation matrix used to set the rectangle's position, size, and rotation. Use `cglm` helpers (`glm_translate`, `glm_scale`, `glm_rotate`) to build this matrix.
-- `color`: A normalized `vec4` representing the RGBA color of the quad.
+- `color`: A normalized `Vector4` representing the RGBA color of the quad.
 
 ##### 4.10.2.2 Lines & Circles (Concept)
 While not yet implemented, the API is designed to easily accommodate high-level commands for drawing other primitives like lines (`SituationCmdDrawLine`), circles (`SituationCmdDrawCircle`), and polygons.
@@ -5740,7 +5755,7 @@ First, load your image file into a `SituationTexture` handle using the functions
 
 ##### 4.10.3.2 Drawing a Texture (SituationCmdDrawTexture)
 This unified high-level command draws a texture (or part of it) with full control over source region, destination rectangle, rotation, origin, and color tint.
-- **Signature:** `SITAPI void SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, ColorRGBA tint);`
+- **Signature:** `SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, ColorRGBA tint);`
 - `texture`: The `SituationTexture` to draw.
 - `source`: The rectangular region of the texture to draw (for sprite sheets). Use a full rect `{0,0,w,h}` for the whole texture.
 - `dest`: The destination rectangle on the screen, defining position and size.
