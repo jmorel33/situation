@@ -27780,9 +27780,14 @@ SITAPI bool SituationSoundExportAsWav(const SituationSound* sound, const char* f
  * @see SituationGetSoundVolume(), SituationSetAudioMasterVolume()
  */
 SITAPI SituationError SituationSetSoundVolume(SituationSound* sound, float volume) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
+
+    mtx_lock(&sit_audio.audio_queue_mutex);
     // Volume can be > 1.0 for gain, typically non-negative.
     sound->volume = (volume < 0.0f) ? 0.0f : volume;
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+
     return SITUATION_SUCCESS;
 }
 
@@ -27813,11 +27818,17 @@ SITAPI float SituationGetSoundVolume(SituationSound* sound) {
  * @see SituationGetSoundPan()
  */
 SITAPI SituationError SituationSetSoundPan(SituationSound* sound, float pan) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
+
     // Clamp pan from -1.0 (left) to 1.0 (right)
     if (pan < -1.0f) pan = -1.0f;
     if (pan > 1.0f) pan = 1.0f;
+
+    mtx_lock(&sit_audio.audio_queue_mutex);
     sound->pan = pan;
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+
     return SITUATION_SUCCESS;
 }
 
