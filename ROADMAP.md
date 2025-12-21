@@ -8,34 +8,49 @@ This document outlines the roadmap to the big leagues.
 
 ---
 
-## 1. The "Bindless" Revolution (The GPU as a Pointer Machine)
+## 1. The "Bindless" Revolution & Universal Handles
 
 Legacy code uses `SituationCmdBindTexture` to map a texture to a slot. This is the "Old Way" (pre-2016) and is now deprecated.
 
 ### The AAA Way
-The GPU has access to every texture at once via a single massive descriptor array (Descriptor Indexing) or direct pointers (Bindless).
+The GPU has access to every texture at once via a single massive descriptor array (Descriptor Indexing) or direct pointers (Bindless). Resources are just numbers.
 
-### The Goal
-*   **Stop binding textures.** Pass a `uint32_t textureID` (or `uint64_t handle`) to the shader via a UBO or Push Constant.
-*   The shader executes: `color = texture(global_textures[textureID], uv)`.
-*   **Impact:** Render an entire scene with thousands of unique materials in a single draw call.
-
-### Current Status
-*   **OpenGL:** Fully supported via `SituationGetTextureHandle` (ARB_bindless_texture).
-*   **Vulkan:** Infrastructure is ready (`SIT_FEATURE_BINDLESS_TEXTURES`), but the user-facing API for retrieving handles is still in progress.
+### The Goal: Universal `uint64_t` Handles (Registry System)
+*   **Uniformity:** Every resource (Texture, Mesh, Shader, Buffer) must be addressable by a single, opaque `uint64_t` handle.
+*   **Architecture:** We are moving to a **Generational Index Registry** system. All resources will be stored in static arrays (Registries). Handles will be "tickets" containing `{ SlotIndex, Generation }`.
+*   **See:** `plan_registry_system.md` for the detailed architectural blueprint.
 
 ### Tasks
 - [x] **Feature Flags:** `SIT_FEATURE_BINDLESS_TEXTURES` and `SIT_FEATURE_BINDLESS_BUFFERS` defined.
 - [x] **API (Buffer):** `SituationGetBufferDeviceAddress` implemented (Vulkan/GL).
 - [x] **API (Texture - GL):** `SituationGetTextureHandle` implemented for OpenGL.
-- [ ] **API (Texture - VK):** Implement `SituationGetTextureHandle` for Vulkan (requires descriptor indexing).
-- [ ] **Internal Manager:** Refactor `DescriptorSet` manager to maintain a global "Bindless Array".
-- [ ] **Shader Compiler:** Update compiler to support `GL_EXT_nonuniform_qualifier` automatically.
-- [x] **Deprecation:** `SituationCmdBindTexture` is officially deprecated.
+- [ ] **Implementation (Shaders):** Refactor `SituationShader` to use the Registry System.
+- [ ] **Implementation (Buffers):** Refactor `SituationBuffer` to use the Registry System.
+- [ ] **Implementation (Meshes):** Refactor `SituationMesh` to use the Registry System.
+- [ ] **Cleanup:** Remove old Linked-List tracking system.
 
 ---
 
-## 2. GPU-Driven Rendering (Indirect Draw)
+## 2. SSBO-First Architecture (The Data-Driven Standard)
+
+Legacy vertex attributes (`glVertexAttribPointer`) are rigid, require complex VAO state management, and are often cache-inefficient.
+
+### The AAA Way: Vertex Pulling
+Instead of pushing data to the vertex shader, the shader **pulls** data from a massive SSBO (Shader Storage Buffer Object) using `gl_VertexIndex`.
+
+### The Goal
+*   **Deprecate Attributes:** Move away from `SituationCmdSetVertexAttribute`.
+*   **Structured Buffers:** All geometry, material data, and instance transforms live in SSBOs.
+*   **Buffer References:** Shaders receive a 64-bit pointer (`buffer_reference`) to their data in a Push Constant.
+
+### Tasks
+- [ ] **Mesh Refactor:** Update `SituationCreateMesh` to upload vertex data to `SITUATION_BUFFER_USAGE_STORAGE_BUFFER`.
+- [ ] **Standard Layouts:** Define strict STD430-compatible C structs for all mesh data.
+- [ ] **Shader Library:** Provide standard GLSL include files for "Pull-Model" vertex fetching.
+
+---
+
+## 3. GPU-Driven Rendering (Indirect Draw)
 
 Currently, the CPU iterates over objects and calls `SituationCmdDraw` for each one. This bottlenecks the CPU at approximately 5,000-10,000 objects.
 
@@ -57,7 +72,7 @@ The CPU uploads a buffer of structs (mesh ID, transform, material ID).
 
 ---
 
-## 3. The Render Graph (Frame Graph)
+## 4. The Render Graph (Frame Graph)
 
 Currently, synchronization relies on manual calls to `SituationCmdPipelineBarrier` and `SituationCmdBeginRenderPass`. This is brittle; reordering passes can break synchronization.
 
@@ -75,7 +90,7 @@ You describe **what** you want to do ("Pass A writes to Texture X", "Pass B read
 
 ---
 
-## 4. Asset Baking (The Pipeline)
+## 5. Asset Baking (The Pipeline)
 
 Currently, `.png` and `.gltf` files are loaded at runtime. This is slow and memory-inefficient.
 
@@ -94,7 +109,7 @@ Assets are "cooked" offline into binary formats that match the GPU's internal la
 
 ---
 
-## 5. Advanced Profiling (Tracy Integration)
+## 6. Advanced Profiling (Tracy Integration)
 
 Currently, `SituationGetFPS` acts as a speedometer. You need an X-Ray machine.
 
@@ -113,7 +128,7 @@ You need to see exactly how long the "Shadow Pass" took on the GPU vs. the CPU.
 
 ---
 
-## 6. Timeline Semaphores
+## 7. Timeline Semaphores
 
 Currently, synchronization is frame-to-frame (binary semaphores).
 
@@ -130,7 +145,7 @@ Granular synchronization allows the **Compute Queue** to run physics asynchronou
 
 ---
 
-## 7. Async I/O (Momentum v2.4)
+## 8. Async I/O (Momentum v2.4)
 
 Blocking file I/O causes frame spikes. We need a dedicated I/O highway.
 
@@ -145,7 +160,7 @@ Blocking file I/O causes frame spikes. We need a dedicated I/O highway.
 
 ---
 
-## 8. Virtual Mounts
+## 9. Virtual Mounts
 
 Loading loose files is messy. Packed archives are cleaner and faster.
 
@@ -159,7 +174,7 @@ Loading loose files is messy. Packed archives are cleaner and faster.
 
 ---
 
-## 9. Web & Reach (v2.5+)
+## 10. Web & Reach (v2.5+)
 
 Bringing the Titanium-grade experience to the browser.
 
@@ -173,7 +188,7 @@ Bringing the Titanium-grade experience to the browser.
 
 ---
 
-## 10. Ecosystem (v3.0)
+## 11. Ecosystem (v3.0)
 
 Tools to make development faster.
 
@@ -189,6 +204,6 @@ Tools to make development faster.
 
 ## Immediate "Next Step" for v2.4
 
-**Priority: Complete Bindless Vulkan.**
+**Priority: Complete Universal Handles & SSBO Integration.**
 
-We have the flags and the OpenGL implementation. The final hurdle is implementing `SituationGetTextureHandle` for Vulkan using descriptor indexing. This will unify the "Bindless" workflow across both backends and allow us to fully retire the legacy binding model.
+We are transitioning the entire engine to a **Registry System** (Generational Indices). This involves refactoring `SituationShader`, `SituationBuffer`, and `SituationMesh` to use opaque handles backed by static registries, enabling robust hot-reloading and bindless workflows.
