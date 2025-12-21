@@ -10,18 +10,19 @@ This document outlines the roadmap to the big leagues.
 
 ## 1. The "Bindless" Revolution (The GPU as a Pointer Machine)
 
-Currently, `SituationCmdBindTexture` maps a texture to a slot. This is the "Old Way" (pre-2016).
+Legacy code uses `SituationCmdBindTexture` to map a texture to a slot. This is the "Old Way" (pre-2016) and is now deprecated.
 
 ### The AAA Way
-The GPU has access to every texture at once via a single massive descriptor array (Descriptor Indexing).
+The GPU has access to every texture at once via a single massive descriptor array (Descriptor Indexing) or direct pointers (Bindless).
 
 ### The Goal
-*   **Stop binding textures.** Pass a `uint32_t textureID` to the shader via a UBO or Push Constant.
+*   **Stop binding textures.** Pass a `uint32_t textureID` (or `uint64_t handle`) to the shader via a UBO or Push Constant.
 *   The shader executes: `color = texture(global_textures[textureID], uv)`.
 *   **Impact:** Render an entire scene with thousands of unique materials in a single draw call.
 
 ### Current Status
-The high-level command buffer API still relies on `SituationCmdBindTextureSet` and `SituationCmdBindSampledTexture`, which enforce the slot-based model. A purely index-based workflow is not yet exposed to the user.
+*   **OpenGL:** Fully supported via `SituationGetTextureHandle` (ARB_bindless_texture).
+*   **Vulkan:** Infrastructure is ready (`SIT_FEATURE_BINDLESS_TEXTURES`), but the user-facing API for retrieving handles is still in progress.
 
 ### Tasks
 - [x] **Feature Flags:** `SIT_FEATURE_BINDLESS_TEXTURES` and `SIT_FEATURE_BINDLESS_BUFFERS` defined.
@@ -30,7 +31,7 @@ The high-level command buffer API still relies on `SituationCmdBindTextureSet` a
 - [ ] **API (Texture - VK):** Implement `SituationGetTextureHandle` for Vulkan (requires descriptor indexing).
 - [ ] **Internal Manager:** Refactor `DescriptorSet` manager to maintain a global "Bindless Array".
 - [ ] **Shader Compiler:** Update compiler to support `GL_EXT_nonuniform_qualifier` automatically.
-- [ ] **Deprecation:** Deprecate `SituationCmdBindTexture` in favor of passing texture indices.
+- [x] **Deprecation:** `SituationCmdBindTexture` is officially deprecated.
 
 ---
 
@@ -135,12 +136,12 @@ Blocking file I/O causes frame spikes. We need a dedicated I/O highway.
 
 ### The Goal
 *   Dedicated I/O queues for non-blocking asset streaming.
-*   Lock-free audio streaming.
+*   Lock-free audio streaming (Done).
 
 ### Tasks
 - [ ] **I/O Queue:** Implement a dedicated thread/queue for file operations.
 - [ ] **Streaming:** Update `SituationLoadTexture` to support async streaming.
-- [ ] **Audio:** Implement lock-free job system for audio processing.
+- [x] **Audio:** Implement lock-free job system for audio processing (`SituationLoadSoundFromFileAsync`).
 
 ---
 
@@ -188,8 +189,6 @@ Tools to make development faster.
 
 ## Immediate "Next Step" for v2.4
 
-**Priority: Bindless Textures.**
+**Priority: Complete Bindless Vulkan.**
 
-It fundamentally changes how you write shaders and engine code. It removes the concept of "Slots" and "Bindings" for assets, which is the biggest shackle holding back performance in modern APIs.
-
-You have the architecture. Now give it the power.
+We have the flags and the OpenGL implementation. The final hurdle is implementing `SituationGetTextureHandle` for Vulkan using descriptor indexing. This will unify the "Bindless" workflow across both backends and allow us to fully retire the legacy binding model.
