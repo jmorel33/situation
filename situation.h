@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 32
-#define SITUATION_VERSION_REVISION "F"
+#define SITUATION_VERSION_REVISION "G"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -1855,6 +1855,7 @@ SITAPI const char* SituationGetArgumentValue(const char* arg_name);             
 
 // --- System & Hardware Information ---
 SITAPI SituationDeviceInfo SituationGetDeviceInfo(void);                                // Get detailed information about system hardware (CPU, GPU, RAM, etc.).
+SITAPI uint32_t SituationGetCPUThreadCount(void);                                       // Get the number of logical CPU cores.
 SITAPI const char* SituationGetGPUName(void);											// Get the name of the active GPU.
 SITAPI char* SituationGetUserDirectory(void);                                           // Get the full path to the current user's home directory (caller must free).
 #if defined(_WIN32)
@@ -19034,6 +19035,38 @@ SITAPI void SituationUnloadDroppedFiles(char** paths, int count) {
  * @note This can be a moderately expensive call, as it may involve querying multiple system APIs. It is best to call it once at startup and cache the results if the information is needed frequently.
  * @warning The completeness of the returned data is highly dependent on the operating system. Features like VRAM size, storage info, and detailed network/input device names are most reliable on Windows.
  */
+/**
+ * @brief Returns the number of logical CPU cores (threads) available.
+ *        Falls back to 1 if query fails.
+ * @return uint32_t Number of threads (hyper-threading included)
+ */
+SITAPI uint32_t SituationGetCPUThreadCount(void) {
+#if defined(_WIN32)
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    return (uint32_t)sysinfo.dwNumberOfProcessors;
+
+#elif defined(__APPLE__)
+    int count;
+    size_t size = sizeof(count);
+    if (sysctlbyname("hw.logicalcpu", &count, &size, NULL, 0) == 0) {
+        return (uint32_t)(count > 0 ? count : 1);
+    }
+    // Fallback
+    if (sysctlbyname("hw.ncpu", &count, &size, NULL, 0) == 0) {
+        return (uint32_t)(count > 0 ? count : 1);
+    }
+    return 1;
+
+#elif defined(__linux__)
+    long cores = sysconf(_SC_NPROCESSORS_ONLN);
+    return (uint32_t)(cores > 0 ? cores : 1);
+
+#else
+    return 1;  // Minimal safe fallback
+#endif
+}
+
 SITUATION_DEVICE_INFO_DEPRECATED("Use the new, more specific functions like SituationGetCPUInfo(), SituationGetGPUInfo(), etc. This function will be removed in a future version.")
 SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
     SituationDeviceInfo info = {0};
@@ -19043,7 +19076,7 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
     // CPU Info
     SYSTEM_INFO sys_info_win;
     GetSystemInfo(&sys_info_win);
-    info.cpu_cores = sys_info_win.dwNumberOfProcessors;
+    info.cpu_cores = (int)SituationGetCPUThreadCount();
     HKEY hKey;
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         DWORD size_cpu_name = sizeof(info.cpu_name);
@@ -19200,7 +19233,7 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
     } else {
         strncpy(info.cpu_name, "Unknown Linux CPU", SITUATION_MAX_CPU_NAME_LEN-1);
     }
-    info.cpu_cores = get_nprocs();
+    info.cpu_cores = (int)SituationGetCPUThreadCount();
 
     // RAM Info
     struct sysinfo si;
@@ -19287,11 +19320,7 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
     if (sysctlbyname("machdep.cpu.brand_string", info.cpu_name, &size, NULL, 0) != 0) {
         strncpy(info.cpu_name, "Apple CPU", SITUATION_MAX_CPU_NAME_LEN-1);
     }
-    int core_count = 0;
-    size = sizeof(core_count);
-    if (sysctlbyname("hw.physicalcpu", &core_count, &size, NULL, 0) == 0) {
-        info.cpu_cores = core_count;
-    }
+    info.cpu_cores = (int)SituationGetCPUThreadCount();
 
     // RAM Info
     int64_t memsize = 0;
@@ -29848,13 +29877,7 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
 
     // Auto-detect threads if 0
     if (num_threads == 0) {
-        #if defined(_WIN32)
-            SYSTEM_INFO sysinfo; GetSystemInfo(&sysinfo); num_threads = sysinfo.dwNumberOfProcessors;
-        #elif defined(_SC_NPROCESSORS_ONLN)
-            num_threads = (size_t)sysconf(_SC_NPROCESSORS_ONLN);
-        #else
-            num_threads = 4;
-        #endif
+        num_threads = (size_t)SituationGetCPUThreadCount();
         num_threads = (num_threads > 1) ? num_threads - 1 : 1; // Leave one for main
     }
     if (num_threads > SITUATION_MAX_THREADS) num_threads = SITUATION_MAX_THREADS;

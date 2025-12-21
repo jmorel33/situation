@@ -1,4 +1,11 @@
 --------------------------------------------------------------------------------
+v2.3.32G - Cross-Platform CPU Thread Count Utility
+--------------------------------------------------------------------------------
+- [Feature] Added `SituationGetCPUThreadCount` to reliably query the number of logical CPU cores on Windows, macOS, and Linux.
+- [Improvement] Updated `SituationGetDeviceInfo` to use the new utility, standardizing `cpu_cores` to report logical cores across all platforms (fixing macOS inconsistency).
+- [Improvement] Updated `SituationCreateThreadPool` to use the new utility for auto-detecting thread counts, replacing ad-hoc logic.
+- [Version] Bumped version to v2.3.32G.
+--------------------------------------------------------------------------------
 v2.3.32F - Compute Limits Helper (Max Work Groups)
 --------------------------------------------------------------------------------
 - [Feature] Added `SituationGetMaxComputeWorkGroups` to query hardware limits for local work group counts (X, Y, Z) per dispatch.
