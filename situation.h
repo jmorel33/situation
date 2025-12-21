@@ -53,7 +53,7 @@
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
 #define SITUATION_VERSION_PATCH 32
-#define SITUATION_VERSION_REVISION "C"
+#define SITUATION_VERSION_REVISION "F"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -2056,6 +2056,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
 SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline);        // Destroy a compute pipeline and free its GPU resources.
 SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline); // Bind a compute pipeline for a subsequent dispatch.
 SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z); // Record a command to dispatch compute shader work groups.
+SITAPI void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t* z); // Query maximum compute work group count per dispatch.
 
 // --- GPU Buffer Management ---
 SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_data, SituationBufferUsageFlags usage_flags); // Create a generic GPU data buffer (e.g., SSBO).
@@ -18780,6 +18781,44 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
     // --- 4. Post-Dispatch (if needed) ---
     // No general post-dispatch actions are required here.
     // Synchronization is handled by the user via SituationMemoryBarrier.
+}
+
+/**
+ * @brief Queries the maximum number of work groups that can be dispatched in a single compute command.
+ * @details Returns the hardware limit for the number of local work groups in the X, Y, and Z dimensions.
+ *          This corresponds to `glDispatchCompute` or `vkCmdDispatch` arguments.
+ *          Note: This is the maximum count per dimension for a *single* dispatch, not the total number of concurrent groups.
+ * @param[out] x Pointer to store the maximum X dimension.
+ * @param[out] y Pointer to store the maximum Y dimension.
+ * @param[out] z Pointer to store the maximum Z dimension.
+ */
+SITAPI void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t* z) {
+    uint32_t max_x = 0, max_y = 0, max_z = 0;
+
+    if (SituationIsInitialized()) {
+#if defined(SITUATION_USE_VULKAN)
+        if (sit_render.vk.physical_device) {
+            VkPhysicalDeviceProperties props;
+            vkGetPhysicalDeviceProperties(sit_render.vk.physical_device, &props);
+            max_x = props.limits.maxComputeWorkGroupCount[0];
+            max_y = props.limits.maxComputeWorkGroupCount[1];
+            max_z = props.limits.maxComputeWorkGroupCount[2];
+        }
+#elif defined(SITUATION_USE_OPENGL)
+        // OpenGL 4.3+ required for Compute
+        GLint gx = 0, gy = 0, gz = 0;
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0, &gx);
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 1, &gy);
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 2, &gz);
+        max_x = (uint32_t)gx;
+        max_y = (uint32_t)gy;
+        max_z = (uint32_t)gz;
+#endif
+    }
+
+    if (x) *x = max_x;
+    if (y) *y = max_y;
+    if (z) *z = max_z;
 }
 
 /**
