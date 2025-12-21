@@ -1,4 +1,11 @@
 --------------------------------------------------------------------------------
+v2.3.32F - Compute Limits Helper (Max Work Groups)
+--------------------------------------------------------------------------------
+- [Feature] Added `SituationGetMaxComputeWorkGroups` to query hardware limits for local work group counts (X, Y, Z) per dispatch.
+- [Feature] Implemented backend-specific limit queries for both Vulkan (`maxComputeWorkGroupCount`) and OpenGL (`GL_MAX_COMPUTE_WORK_GROUP_COUNT`).
+- [Safety] Added `SituationIsInitialized` checks to `SituationGetMaxComputeWorkGroups` to prevent unsafe access to internal state.
+- [Version] Bumped version to v2.3.32F.
+--------------------------------------------------------------------------------
 v2.3.32E - SituationError Return Type Migration & Docs
 --------------------------------------------------------------------------------
 - [Breaking Change] Updated `SituationCmd*` functions to return `SituationError` instead of `void` for better error propagation (e.g., `SituationCmdDraw`, `SituationCmdEndRenderPass`).
