@@ -165,3 +165,58 @@ To make the Audio / Sound section fully multi-thread capable, the following step
 The `situation` audio engine is functional but fragile in a multi-threaded context. By moving to atomic parameters and enforcing consistent locking, we can solve the immediate race conditions. However, adopting a Handle-based resource system is the only way to guarantee safety against user-level threading errors (concurrent use and destroy).
 
 **Priority:** The "Immediate Safety Fixes" (Step 4.1) should be applied immediately to the v2.3.x branch to prevent undefined behavior in current applications.
+
+## 5. Holistic Audio Behavior (Updated v2.3.33)
+
+With the completion of the "Titanium Grade" audio refactor in version v2.3.33, the audio subsystem now operates as a fully thread-safe, high-performance engine capable of robust concurrency. This section details the complete lifecycle and behavior of the audio system "wholistically".
+
+### 5.1 Initialization (Main Thread)
+*   **Startup:** `SituationInit` (via `_SituationInitSubsystems`) initializes the `miniaudio` backend.
+*   **Context:** A global `_SituationAudioState` (accessed via `sit_audio`) is allocated.
+*   **Thread Spawning:** `miniaudio` automatically spawns a high-priority, dedicated **Audio Thread**. This thread is completely separate from the Main Thread and the Render Thread.
+*   **Pool Allocation:** A fixed-size Handle Pool (`SituationSoundSlot`) is initialized to track resource lifetimes safely.
+*   **Dynamic Queue:** A dynamic mixing queue (`active_voices`) is allocated with an initial capacity (default 32), ready to grow as needed.
+
+### 5.2 Resource Loading (Any Thread)
+*   **Async-Friendly:** Sounds can be loaded via `SituationLoadAudio` (returns a `SituationSoundHandle`).
+*   **Safety:** The Handle System uses a **Generational Index**. If a sound is unloaded and its slot reused, old handles become invalid immediately, preventing Use-After-Free crashes.
+*   **Loading Modes:**
+    *   `SITUATION_AUDIO_LOAD_FULL`: Decodes entire file to RAM. Safe for SFX.
+    *   `SITUATION_AUDIO_LOAD_STREAM`: Streams from disk. Optimized for Music.
+    *   `SITUATION_AUDIO_LOAD_AUTO`: Automatically selects mode based on duration (<10s = RAM).
+
+### 5.3 The Playback Cycle (Hybrid Threading)
+The system uses a **Snapshot-Mixing Strategy** to bridge the Main Thread and Audio Thread without stalls.
+
+1.  **Request (Main Thread):**
+    *   User calls `SituationPlayAudio(handle)`.
+    *   The function acquires `audio_queue_mutex`.
+    *   The sound pointer is added to the `active_voices` dynamic array.
+    *   Mutex is released. **Non-blocking** for the audio thread.
+
+2.  **Snapshot (Audio Thread - Phase 1):**
+    *   The Audio Thread wakes up (via `sit_miniaudio_data_callback`) to fill the audio buffer.
+    *   It briefly acquires `audio_queue_mutex`.
+    *   It copies the list of active sound pointers into a local, persistent **Snapshot Buffer**.
+    *   It releases the mutex immediately.
+    *   *Result:* The Main Thread is only blocked for the duration of a `memcpy` (nanoseconds), ensuring high frame rates.
+
+3.  **Mixing (Audio Thread - Phase 2):**
+    *   The Audio Thread iterates over its local Snapshot Buffer.
+    *   It reads parameters (Volume, Pan, Pitch) using **Atomic Loads** (`atomic_load`). This allows the Main Thread to fade volume or pan audio *while* it is being mixed, with zero tearing or race conditions.
+    *   It mixes the audio data into the output buffer.
+    *   If a sound finishes playing, it is marked for removal.
+
+4.  **Commit (Audio Thread - Phase 3):**
+    *   The Audio Thread re-acquires the mutex.
+    *   It removes finished sounds from the global `active_voices` list.
+    *   Mutex released.
+
+### 5.4 Synchronization & Safety Features
+*   **Atomic Parameters:** Real-time properties (`volume`, `pan`, `pitch`) are `_Atomic float`. This enables "Lock-Free" parameter updates.
+*   **Mutex Protection:** The topology (which sounds are playing) is protected by `audio_queue_mutex`.
+*   **Handle Verification:** Every API call (`SituationSetAudioVolume`, `SituationStopAudio`) validates the handle generation before accessing memory.
+*   **Dynamic Scalability:** The `active_voices` array grows automatically. The hard 32-voice limit is gone; the system scales to hundreds of voices (CPU permitting).
+
+### 5.5 Conclusion
+The Audio Subsystem is now a distinct, parallel engine. It runs asynchronously to the game loop, utilizing lock-free reads for performance and strict locking for topology changes. This architecture ensures that **audio never glitches due to low FPS**, and **game logic never stalls due to audio processing**.
