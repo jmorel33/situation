@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 33
+#define SITUATION_VERSION_PATCH 34
 #define SITUATION_VERSION_REVISION "A"
 
 /*
@@ -823,6 +823,11 @@ typedef void (*SituationFileSaveCallback)(
     bool         success,     // true if the file was written successfully.
     void*        user_data    // User data passed to the async function.
 ); // Callback for asynchronous file saving
+
+typedef void (*SituationFileTextLoadCallback)(
+    char*        text,        // The loaded null-terminated string (or NULL on failure). OWNED BY CALLER (must free).
+    void*        user_data    // User data passed to the async function.
+); // Callback for asynchronous text file loading
 
 typedef void (*SituationFocusCallback)(
     bool   gained_focus,      // true = window gained focus, false = lost focus
@@ -2269,6 +2274,8 @@ SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsig
 #ifdef SITUATION_ENABLE_THREADING
 SITAPI SituationJobId SituationLoadFileAsync(SituationThreadPool* pool, const char* file_path, SituationFileLoadCallback callback, void* user_data); // Asynchronously load a file.
 SITAPI SituationJobId SituationSaveFileAsync(SituationThreadPool* pool, const char* file_path, const void* data, size_t size, SituationFileSaveCallback callback, void* user_data); // Asynchronously save a file.
+SITAPI SituationJobId SituationLoadFileTextAsync(SituationThreadPool* pool, const char* file_path, SituationFileTextLoadCallback callback, void* user_data); // Asynchronously load a text file.
+SITAPI SituationJobId SituationSaveFileTextAsync(SituationThreadPool* pool, const char* file_path, const char* text, SituationFileSaveCallback callback, void* user_data); // Asynchronously save a text file.
 #endif
 SITAPI char* SituationLoadFileText(const char* file_path);                                                  // Load a text file into a null-terminated string (caller must free).
 SITAPI bool SituationSaveFileText(const char* file_path, const char* text);                                 // Save a null-terminated string to a text file.
@@ -18155,11 +18162,20 @@ SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compu
 
     // --- 4. [HOT-RELOAD] Store Path and Layout in Tracking Node ---
     // SituationCreateComputePipelineFromMemory prepends the new node to the head of sit_render.all_compute_pipelines.
-    // We check if the ID matches to be absolutely safe.
-    if (pipeline.id != 0 && sit_render.all_compute_pipelines && sit_render.all_compute_pipelines->pipeline.id == pipeline.id) {
-        sit_render.all_compute_pipelines->source_path = _sit_strdup(compute_shader_path);
-        sit_render.all_compute_pipelines->layout_type = layout_type;
-        sit_render.all_compute_pipelines->mod_time = SituationGetFileModTime(compute_shader_path);
+    // However, in a threaded environment, another thread might have pushed a node in between.
+    // We must search the list to find our specific pipeline ID.
+    if (pipeline.id != 0) {
+        _SituationComputePipelineNode* node = sit_render.all_compute_pipelines;
+        while (node) {
+            if (node->pipeline.id == pipeline.id) {
+                // Found our node! Update its tracking info.
+                node->source_path = _sit_strdup(compute_shader_path);
+                node->layout_type = layout_type;
+                node->mod_time = SituationGetFileModTime(compute_shader_path);
+                break;
+            }
+            node = node->next;
+        }
     }
 
     // --- 5. Cleanup ---
@@ -22781,9 +22797,18 @@ SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generat
     SituationUnloadImage(img);
 
     // [HOT-RELOAD] Capture path
-    if (tex.generation != 0 && sit_render.all_textures && sit_render.all_textures->texture.slot_index == tex.slot_index && sit_render.all_textures->texture.generation == tex.generation) {
-        sit_render.all_textures->source_path = _sit_strdup(file_path);
-        sit_render.all_textures->mod_time = SituationGetFileModTime(file_path);
+    if (tex.generation != 0) {
+        // Search for the node corresponding to this texture handle
+        _SituationTextureNode* node = sit_render.all_textures;
+        while (node) {
+            if (node->texture.slot_index == tex.slot_index && node->texture.generation == tex.generation) {
+                // Found our node! Update path.
+                node->source_path = _sit_strdup(file_path);
+                node->mod_time = SituationGetFileModTime(file_path);
+                break;
+            }
+            node = node->next;
+        }
     }
     return tex;
 }
@@ -23227,11 +23252,20 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
 
     // --- 6. Return Result ---
     // [HOT-RELOAD] Capture paths in the node
-    if (shader.id != 0 && sit_render.all_shaders && sit_render.all_shaders->shader.id == shader.id) {
-        sit_render.all_shaders->vs_path = _sit_strdup(vs_path);
-        sit_render.all_shaders->fs_path = _sit_strdup(fs_path);
-        sit_render.all_shaders->vs_mod_time = SituationGetFileModTime(vs_path);
-        sit_render.all_shaders->fs_mod_time = SituationGetFileModTime(fs_path);
+    if (shader.id != 0) {
+        // Search for the node corresponding to this shader ID
+        _SituationShaderNode* node = sit_render.all_shaders;
+        while (node) {
+            if (node->shader.id == shader.id) {
+                // Found our node! Update paths.
+                node->vs_path = _sit_strdup(vs_path);
+                node->fs_path = _sit_strdup(fs_path);
+                node->vs_mod_time = SituationGetFileModTime(vs_path);
+                node->fs_mod_time = SituationGetFileModTime(fs_path);
+                break;
+            }
+            node = node->next;
+        }
     }
     // The returned handle will be valid (id != 0) if compilation was successful, or invalid (id == 0) if it failed.
     return shader;
@@ -30920,6 +30954,122 @@ SITAPI SituationJobId SituationLoadFileAsync(SituationThreadPool* pool, const ch
     SituationJobId jid = SituationSubmitJobEx(pool, _SituationAsyncFileLoadWorker, &ctx, sizeof(_SitAsyncFileLoadCtx), SIT_SUBMIT_DEFAULT);
     if (jid == 0) {
         SIT_FREE(ctx.path);
+    }
+    return jid;
+}
+
+/**
+ * @brief [INTERNAL] Context for asynchronous text file loading.
+ */
+typedef struct {
+    char* path;
+    SituationFileTextLoadCallback callback;
+    void* user_data;
+} _SitAsyncFileTextLoadCtx;
+
+/**
+ * @brief [INTERNAL] Worker for async text file loading.
+ */
+static void _SituationAsyncFileTextLoadWorker(void* data, void* unused) {
+    (void)unused;
+    _SitAsyncFileTextLoadCtx* ctx = (_SitAsyncFileTextLoadCtx*)data;
+
+    char* text = SituationLoadFileText(ctx->path);
+
+    if (ctx->callback) {
+        ctx->callback(text, ctx->user_data);
+    } else {
+        if (text) SIT_FREE(text);
+    }
+
+    SIT_FREE(ctx->path);
+}
+
+/**
+ * @brief Asynchronously loads a text file from disk.
+ * @details Offloads the blocking `SituationLoadFileText` call to a background thread.
+ *          The user callback is invoked on the worker thread with the loaded string.
+ *
+ * @param pool The thread pool.
+ * @param file_path The path to load.
+ * @param callback Function to call when done.
+ * @param user_data User context pointer.
+ * @return Job ID or 0 on failure.
+ */
+SITAPI SituationJobId SituationLoadFileTextAsync(SituationThreadPool* pool, const char* file_path, SituationFileTextLoadCallback callback, void* user_data) {
+    if (!pool || !file_path) return 0;
+
+    _SitAsyncFileTextLoadCtx ctx;
+    ctx.path = _sit_strdup(file_path);
+    if (!ctx.path) return 0;
+    ctx.callback = callback;
+    ctx.user_data = user_data;
+
+    SituationJobId jid = SituationSubmitJobEx(pool, _SituationAsyncFileTextLoadWorker, &ctx, sizeof(_SitAsyncFileTextLoadCtx), SIT_SUBMIT_DEFAULT);
+    if (jid == 0) {
+        SIT_FREE(ctx.path);
+    }
+    return jid;
+}
+
+/**
+ * @brief [INTERNAL] Context for asynchronous text file saving.
+ */
+typedef struct {
+    char* path;
+    char* text_copy;
+    SituationFileSaveCallback callback;
+    void* user_data;
+} _SitAsyncFileTextSaveCtx;
+
+/**
+ * @brief [INTERNAL] Worker for async text file saving.
+ */
+static void _SituationAsyncFileTextSaveWorker(void* data, void* unused) {
+    (void)unused;
+    _SitAsyncFileTextSaveCtx* ctx = (_SitAsyncFileTextSaveCtx*)data;
+
+    bool success = SituationSaveFileText(ctx->path, ctx->text_copy);
+
+    if (ctx->callback) {
+        ctx->callback(success, ctx->user_data);
+    }
+
+    SIT_FREE(ctx->path);
+    SIT_FREE(ctx->text_copy);
+}
+
+/**
+ * @brief Asynchronously saves a string to a text file.
+ * @details Copies the input string to a temporary buffer and offloads the write to a worker thread.
+ *
+ * @param pool The thread pool.
+ * @param file_path The path to save to.
+ * @param text The null-terminated string to write.
+ * @param callback Function to call when done.
+ * @param user_data User context pointer.
+ * @return Job ID or 0 on failure.
+ */
+SITAPI SituationJobId SituationSaveFileTextAsync(SituationThreadPool* pool, const char* file_path, const char* text, SituationFileSaveCallback callback, void* user_data) {
+    if (!pool || !file_path || !text) return 0;
+
+    _SitAsyncFileTextSaveCtx ctx;
+    ctx.path = _sit_strdup(file_path);
+    if (!ctx.path) return 0;
+
+    ctx.text_copy = _sit_strdup(text);
+    if (!ctx.text_copy) {
+        SIT_FREE(ctx.path);
+        return 0;
+    }
+
+    ctx.callback = callback;
+    ctx.user_data = user_data;
+
+    SituationJobId jid = SituationSubmitJobEx(pool, _SituationAsyncFileTextSaveWorker, &ctx, sizeof(_SitAsyncFileTextSaveCtx), SIT_SUBMIT_DEFAULT);
+    if (jid == 0) {
+        SIT_FREE(ctx.path);
+        SIT_FREE(ctx.text_copy);
     }
     return jid;
 }
