@@ -541,6 +541,10 @@ typedef struct SituationThreadPool {
     cnd_t wake_condition;   // Wakes workers when work is added
     cnd_t idle_condition;   // Wakes main thread when all jobs complete
 
+    // Dedicated I/O Thread
+    thrd_t io_thread;
+    atomic_bool io_active;
+
     atomic_int active_jobs; // Total jobs currently running or pending
     atomic_bool shutdown;
     char _padding[64];      // Prevent false sharing on the shutdown flag
@@ -1591,6 +1595,9 @@ typedef struct {
     // 0: Spin (Low Latency, High CPU), 1: Yield (Balanced), 2: Sleep (Low CPU)
     int          backpressure_policy;
 #endif
+
+    // [v2.3.34] Async I/O
+    uint32_t     io_queue_capacity; // Size of the IO queue (Low Priority). Default: 1024.
 } SituationInitInfo;
 
 // [v2.3.22] Render Queue Backpressure Policies
@@ -3657,6 +3664,9 @@ typedef struct {
     atomic_int momentum_head;
     atomic_int momentum_tail;
     mtx_t momentum_mutex; // Protects the queue
+
+    // [v2.3.34] Thread Safety for Resource Lists (Hot-Reload offload)
+    mtx_t resource_registry_mutex;
     
 } _SituationRenderState;
 
@@ -6374,6 +6384,7 @@ static bool _SituationInitRenderThread(const SituationInitInfo* info) {
     sit_render.render_queue_tail = 0;
 
     mtx_init(&sit_render.render_queue_mutex, mtx_plain);
+    mtx_init(&sit_render.resource_registry_mutex, mtx_plain); // [v2.3.34]
     cnd_init(&sit_render.render_queue_cv);
     cnd_init(&sit_render.main_wait_cv);
 
@@ -16652,8 +16663,10 @@ SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool gene
                 #if defined(SITUATION_USE_VULKAN)
                 node->descriptor_pool = used_pool; 
                 #endif
+                mtx_lock(&sit_render.resource_registry_mutex);
                 node->next = sit_render.all_textures;
                 sit_render.all_textures = node;
+                mtx_unlock(&sit_render.resource_registry_mutex);
             } else {
                 _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for texture");
                 SituationDestroyTexture(&texture);
@@ -16712,6 +16725,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
     }
 
     // Cleanup Tracking Node
+    mtx_lock(&sit_render.resource_registry_mutex);
     _SituationTextureNode* current = sit_render.all_textures;
     _SituationTextureNode* prev = NULL;
     while (current != NULL) {
@@ -16726,6 +16740,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
         prev = current;
         current = current->next;
     }
+    mtx_unlock(&sit_render.resource_registry_mutex);
 
     // Backend Cleanup
 #if defined(SITUATION_USE_OPENGL)
@@ -17303,7 +17318,6 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
         prev = current;
         current = current->next;
     }
-
     // --- 3. Backend-Specific Destruction ---
 #if defined(SITUATION_USE_OPENGL)
     // [Phase 2.5] Defer destruction
@@ -18026,8 +18040,10 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
         _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
         if (node) {
             node->pipeline = pipeline;
+            mtx_lock(&sit_render.resource_registry_mutex);
             node->next = sit_render.all_compute_pipelines;
             sit_render.all_compute_pipelines = node;
+            mtx_unlock(&sit_render.resource_registry_mutex);
             // Optional: node->was_spirv_used = false; // Since we passed GLSL directly
         } else {
             // This is a non-fatal but serious issue: the GPU resource was created but we failed to track it. We must warn the user that they are now responsible for cleanup.
@@ -18084,8 +18100,10 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
         _SituationComputePipelineNode* node = (_SituationComputePipelineNode*)SIT_MALLOC(sizeof(_SituationComputePipelineNode));
         if (node) {
             node->pipeline = pipeline;
+            mtx_lock(&sit_render.resource_registry_mutex);
             node->next = sit_render.all_compute_pipelines;
             sit_render.all_compute_pipelines = node;
+            mtx_unlock(&sit_render.resource_registry_mutex);
         } else {
             // This is a non-fatal but serious issue: the GPU resource was created but we failed to track it. Warn the user they are now responsible for cleanup.
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
@@ -18207,6 +18225,7 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
     if (!pipeline || pipeline->id == 0) return;
 
     // --- Resource Manager: Remove from Tracking List ---
+    mtx_lock(&sit_render.resource_registry_mutex);
     _SituationComputePipelineNode* current = sit_render.all_compute_pipelines;
     _SituationComputePipelineNode* prev = NULL;
 
@@ -18224,6 +18243,7 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
         prev = current;
         current = current->next;
     }
+    mtx_unlock(&sit_render.resource_registry_mutex);
     // If the loop completes without finding the ID, it indicates an inconsistency (pipeline exists but isn't tracked), but proceeding with backend destruction is still the correct action for the resource itself.
 
     // --- 3. Backend-Specific Destruction ---
@@ -22981,8 +23001,10 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
             node->model = model; // Copy struct by value (contains pointers to meshes)
             node->source_path = _sit_strdup(file_path);
             node->mod_time = SituationGetFileModTime(file_path);
+            mtx_lock(&sit_render.resource_registry_mutex);
             node->next = sit_render.all_models;
             sit_render.all_models = node;
+            mtx_unlock(&sit_render.resource_registry_mutex);
         }
     }
 
@@ -23017,6 +23039,7 @@ SITAPI void SituationUnloadModel(SituationModel* model) {
     if (!model || model->id == 0) return;
 
     // [HOT-RELOAD] Remove from tracking list
+    mtx_lock(&sit_render.resource_registry_mutex);
     _SituationModelNode* current = sit_render.all_models;
     _SituationModelNode* prev = NULL;
     while (current) {
@@ -23031,6 +23054,7 @@ SITAPI void SituationUnloadModel(SituationModel* model) {
         prev = current;
         current = current->next;
     }
+    mtx_unlock(&sit_render.resource_registry_mutex);
 
     // --- 2. Unload all GPU Mesh Resources ---
     // Check if the meshes array was allocated before proceeding.
@@ -23253,6 +23277,7 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
     // --- 6. Return Result ---
     // [HOT-RELOAD] Capture paths in the node
     if (shader.id != 0) {
+        mtx_lock(&sit_render.resource_registry_mutex);
         // Search for the node corresponding to this shader ID
         _SituationShaderNode* node = sit_render.all_shaders;
         while (node) {
@@ -23266,6 +23291,7 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
             }
             node = node->next;
         }
+        mtx_unlock(&sit_render.resource_registry_mutex);
     }
     // The returned handle will be valid (id != 0) if compilation was successful, or invalid (id == 0) if it failed.
     return shader;
@@ -23373,8 +23399,10 @@ SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const 
         _SituationShaderNode* node = (_SituationShaderNode*)SIT_MALLOC(sizeof(_SituationShaderNode));
         if (node) {
             node->shader = shader;
+            mtx_lock(&sit_render.resource_registry_mutex);
             node->next = sit_render.all_shaders;
             sit_render.all_shaders = node;
+            mtx_unlock(&sit_render.resource_registry_mutex);
         } else {
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for shader");
             SituationUnloadShader(&shader); // Clean up the GPU resource we just made
@@ -23411,6 +23439,7 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
     }
 
     // --- 2. Resource Manager: Remove from internal tracking list ---
+    mtx_lock(&sit_render.resource_registry_mutex);
     _SituationShaderNode* current = sit_render.all_shaders;
     _SituationShaderNode* prev = NULL;
     while (current != NULL) {
@@ -24035,7 +24064,8 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
  * @note In Release builds (NDEBUG defined), this function returns immediately to ensure
  *       zero overhead in shipped applications, unless SITUATION_FORCE_HOTRELOAD is defined.
  */
-SITAPI void SituationCheckHotReloads(void) {
+// [v2.3.34] Hot-Reload Logic (Running on I/O Thread)
+static void _SituationPerformHotReloadPass(void) {
 #if defined(NDEBUG) && !defined(SITUATION_FORCE_HOTRELOAD)
     // Production Optimization: Compile out completely in Release builds.
     return;
@@ -24046,8 +24076,8 @@ SITAPI void SituationCheckHotReloads(void) {
     // Only query the filesystem every 500ms (0.5 seconds).
     // This reduces syscall overhead significantly while keeping updates snappy.
     static double last_check_time = 0.0;
-    double now = glfwGetTime();
-    const double POLL_INTERVAL = 0.5; 
+    double now = glfwGetTime(); // Thread-safe
+    const double POLL_INTERVAL = 0.5;
 
     if (now - last_check_time < POLL_INTERVAL) {
         return;
@@ -24055,10 +24085,12 @@ SITAPI void SituationCheckHotReloads(void) {
     last_check_time = now;
 
     // --- 2. Check Shaders ---
+    mtx_lock(&sit_render.resource_registry_mutex);
     _SituationShaderNode* shader_node = sit_render.all_shaders;
     while (shader_node) {
-        _SituationShaderNode* next_node = shader_node->next; 
-        
+        _SituationShaderNode* next_node = shader_node->next;
+        bool reloaded = false;
+
         // Only check if paths are valid (loaded from disk)
         if (shader_node->vs_path && shader_node->fs_path) {
             long vs_mod = SituationGetFileModTime(shader_node->vs_path);
@@ -24073,58 +24105,102 @@ SITAPI void SituationCheckHotReloads(void) {
                 shader_node->vs_mod_time = vs_mod;
                 shader_node->fs_mod_time = fs_mod;
 
+                mtx_unlock(&sit_render.resource_registry_mutex);
                 printf("[Situation] Hot-Reload: Detected change in shader.\n");
                 SituationReloadShader(&shader_node->shader);
+                mtx_lock(&sit_render.resource_registry_mutex);
+
+                reloaded = true;
             }
         }
-        shader_node = next_node;
+
+        if (reloaded) shader_node = sit_render.all_shaders;
+        else shader_node = next_node;
     }
+    mtx_unlock(&sit_render.resource_registry_mutex);
 
     // --- 3. Check Compute Pipelines ---
+    mtx_lock(&sit_render.resource_registry_mutex);
     _SituationComputePipelineNode* cp_node = sit_render.all_compute_pipelines;
     while (cp_node) {
         _SituationComputePipelineNode* next_node = cp_node->next;
+        bool reloaded = false;
+
         if (cp_node->source_path) {
             long mod = SituationGetFileModTime(cp_node->source_path);
             if (mod > cp_node->mod_time) {
                 cp_node->mod_time = mod;
+
+                mtx_unlock(&sit_render.resource_registry_mutex);
                 printf("[Situation] Hot-Reload: Detected change in Compute Pipeline.\n");
                 SituationReloadComputePipeline(&cp_node->pipeline);
+                mtx_lock(&sit_render.resource_registry_mutex);
+
+                reloaded = true;
             }
         }
-        cp_node = next_node;
+
+        if (reloaded) cp_node = sit_render.all_compute_pipelines;
+        else cp_node = next_node;
     }
+    mtx_unlock(&sit_render.resource_registry_mutex);
 
     // --- 4. Check Textures ---
+    mtx_lock(&sit_render.resource_registry_mutex);
     _SituationTextureNode* tex_node = sit_render.all_textures;
     while (tex_node) {
         _SituationTextureNode* next_node = tex_node->next;
+        bool reloaded = false;
+
         if (tex_node->source_path) {
             long mod = SituationGetFileModTime(tex_node->source_path);
             if (mod > tex_node->mod_time) {
                 tex_node->mod_time = mod;
+
+                mtx_unlock(&sit_render.resource_registry_mutex);
                 printf("[Situation] Hot-Reload: Detected change in Texture.\n");
                 SituationReloadTexture(&tex_node->texture);
+                mtx_lock(&sit_render.resource_registry_mutex);
+
+                reloaded = true;
             }
         }
-        tex_node = next_node;
+
+        if (reloaded) tex_node = sit_render.all_textures;
+        else tex_node = next_node;
     }
+    mtx_unlock(&sit_render.resource_registry_mutex);
 
     // --- 5. Check Models ---
+    mtx_lock(&sit_render.resource_registry_mutex);
     _SituationModelNode* model_node = sit_render.all_models;
     while (model_node) {
         _SituationModelNode* next_node = model_node->next;
+        bool reloaded = false;
+
         if (model_node->source_path) {
             long mod = SituationGetFileModTime(model_node->source_path);
             if (mod > model_node->mod_time) {
                 model_node->mod_time = mod;
+
+                mtx_unlock(&sit_render.resource_registry_mutex);
                 printf("[Situation] Hot-Reload: Detected change in Model.\n");
                 SituationReloadModel(&model_node->model);
+                mtx_lock(&sit_render.resource_registry_mutex);
+
+                reloaded = true;
             }
         }
-        model_node = next_node;
+
+        if (reloaded) model_node = sit_render.all_models;
+        else model_node = next_node;
     }
+    mtx_unlock(&sit_render.resource_registry_mutex);
 #endif
+}
+
+SITAPI void SituationCheckHotReloads(void) {
+    // Logic moved to I/O thread.
 }
 
 //==================================================================================
@@ -30435,6 +30511,79 @@ static int _SituationWorkerEntry(void* arg) {
  *
  * @warning This function must be called from the main thread.
  */
+// [v2.3.34] Dedicated I/O Thread Entry
+static int _SituationIOThreadEntry(void* arg) {
+    SituationThreadPool* pool = (SituationThreadPool*)arg;
+    atomic_store(&pool->io_active, true);
+
+    while (!atomic_load(&pool->shutdown)) {
+        // --- 1. Process Low Priority Queue (Index 0) ---
+        bool worked = false;
+        mtx_lock(&pool->queues[0].lock);
+        size_t head = atomic_load(&pool->queues[0].head);
+        size_t tail = atomic_load(&pool->queues[0].tail);
+
+        if (tail != head) {
+            size_t idx = tail & pool->queues[0].mask;
+            SituationJob* job = &pool->queues[0].jobs[idx];
+
+            if (atomic_load(&job->dependency_count) == 0) {
+                atomic_store(&pool->queues[0].tail, tail + 1);
+                mtx_unlock(&pool->queues[0].lock);
+
+                // Execute
+                void* d = job->uses_large_data ? job->large_data_ptr : job->storage;
+                if (job->func) {
+                    SituationError dummy = SITUATION_SUCCESS;
+                    job->func(d, (void*)&dummy);
+                }
+
+                // Continuation
+                uint32_t cont_id = atomic_load(&job->continuation_id);
+                if (cont_id != 0) {
+                    SituationJob* next_job = _SitGetJobFromId(pool, cont_id);
+                    if (next_job) {
+                        if (atomic_fetch_sub(&next_job->dependency_count, 1) == 1) cnd_signal(&pool->wake_condition);
+                    }
+                }
+
+                atomic_store(&job->is_completed, true);
+                uint16_t old = atomic_load(&job->generation);
+                atomic_store(&job->generation, (uint16_t)((old + 1) & SIT_ID_GEN_MASK));
+
+                if (atomic_fetch_sub(&pool->active_jobs, 1) == 1) cnd_broadcast(&pool->idle_condition);
+                worked = true;
+            } else {
+                mtx_unlock(&pool->queues[0].lock);
+            }
+        } else {
+            mtx_unlock(&pool->queues[0].lock);
+        }
+
+        // --- 2. Hot-Reload Polling ---
+        _SituationPerformHotReloadPass();
+
+        // --- 3. Sleep ---
+        if (!worked) {
+            struct timespec ts;
+            timespec_get(&ts, TIME_UTC);
+            ts.tv_nsec += 33000000; // 33ms
+            if (ts.tv_nsec >= 1000000000) {
+                ts.tv_sec += 1;
+                ts.tv_nsec -= 1000000000;
+            }
+
+            mtx_lock(&pool->queues[0].lock);
+            if (atomic_load(&pool->queues[0].head) == atomic_load(&pool->queues[0].tail) && !atomic_load(&pool->shutdown)) {
+                cnd_timedwait(&pool->wake_condition, &pool->queues[0].lock, &ts);
+            }
+            mtx_unlock(&pool->queues[0].lock);
+        }
+    }
+    atomic_store(&pool->io_active, false);
+    return 0;
+}
+
 SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size) {
     SIT_ASSERT_MAIN_THREAD();
     if (!pool) return false;
@@ -30485,6 +30634,11 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
             // Rollback logic omitted for brevity, assuming stable OS env
             return false;
         }
+    }
+
+    // [v2.3.34] Spawn Dedicated I/O Thread
+    if (thrd_create(&pool->io_thread, _SituationIOThreadEntry, pool) != thrd_success) {
+        return false;
     }
 
     pool->is_active = true;
