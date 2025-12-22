@@ -1,3 +1,11 @@
+## [v2.3.34 "Velocity" (Async I/O Package & Loader Hardening)] - 2025-12-21
+- [Feature] **Complete Async File API:** Implemented `SituationLoadFileTextAsync` and `SituationSaveFileTextAsync` to complement the existing binary `SituationLoadFileAsync` and `SituationSaveFileAsync` functions. This completes the Async I/O module, enabling non-blocking loading and saving of both binary data and text files on background threads.
+- [Safety] Fixed a race condition in `SituationLoadShader`, `SituationLoadTexture`, and `SituationCreateComputePipeline` where hot-reload tracking incorrectly assumed the new resource was always at the head of the list. Replaced with robust list traversal to ensure safe operation in threaded loading scenarios.
+- [Version] Bumped library version to 2.3.34.
+
+---
+
+
 ## [v2.3.33A - Cross-Platform Hidden Command Execution] - 2025-12-21
 - [Feature] Added `SituationExecuteCommand` to run system shell commands in a hidden window/process while capturing stdout/stderr output.
 - [Feature] Implemented cross-platform support using `CreateProcess` (Windows) and `fork/exec/pipe` (Linux/macOS) with output redirection.
