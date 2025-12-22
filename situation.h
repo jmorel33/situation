@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 32
-#define SITUATION_VERSION_REVISION "G"
+#define SITUATION_VERSION_PATCH 33
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -266,7 +266,7 @@ typedef enum {
     SITUATION_ERROR_TIMER_SYSTEM                           	=  -20,  // An error occurred within the internal timer/oscillator system
 	SITUATION_ERROR_THREAD_QUEUE_FULL  						=  -80,  // Threading Error: Thread Queue Full
 	SITUATION_ERROR_THREAD_VIOLATION   						=  -81,  // Main-thread-only function called from worker thread
-    SITUATION_ERROR_THREAD_CYCLE                            =  -82,  // [NEW v2.3.16] Dependency cycle or depth limit exceeded
+    SITUATION_ERROR_THREAD_CYCLE                            =  -82,  // Dependency cycle or depth limit exceeded
     SITUATION_ERROR_THREAD_CREATION_FAILED                  =  -83,  // Failed to spawn a new thread (thrd_create)
     SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT             =  -84,  // Render thread join timeout
     SITUATION_ERROR_RENDER_LIST_INCOMPLETE                  =  -85,  // Render list incomplete (Momentum)
@@ -495,7 +495,7 @@ typedef struct SituationJob {
     // Callback function: func(payload_ptr, user_context_ptr)
     void (*func)(void*, void*);
 
-    // [v2.3.16] Dependency Graph Support
+    // Dependency Graph Support
     atomic_int dependency_count;        // Wait counter: Job runs when this hits 0
     atomic_uint_least32_t continuation_id; // ID of job to trigger when this finishes (CAS target)
     uint8_t dep_depth;                  // Cycle detection depth counter (max 32)
@@ -1398,7 +1398,7 @@ typedef struct SituationFont {
 
 // --- Audio Control Structures ---
 
-// --- Audio Handle System (Hardened v2.3.16) ---
+// --- Audio Handle System ---
 typedef uint64_t SituationSoundHandle;
 #define SITUATION_NULL_HANDLE 0
 #define SITUATION_MAX_LOADED_SOUNDS 1024
@@ -2192,7 +2192,7 @@ SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback c
 SITAPI void SituationStopAudioCapture(void);
 
 // --- Sound Loading and Management ---
-// --- Audio Handle API (v2.3.16) ---
+// --- Audio Handle API ---
 SITAPI SituationSoundHandle SituationLoadAudio(const char* file_path, SituationAudioLoadMode mode, bool looping);
 SITAPI SituationError SituationPlayAudio(SituationSoundHandle handle);
 SITAPI void SituationUnloadAudio(SituationSoundHandle handle);
@@ -3433,7 +3433,7 @@ typedef struct {
     void* callback_user_data;                               // User context for connection callback
 } _SituationJoystickManager;
 
-// [v2.3.16] Internal Audio Slot
+// Internal Audio Slot
 typedef struct {
     SituationSound* sound;  // Pointer to heap-allocated sound (owned by slot)
     uint32_t generation;    // Increments on recycle
@@ -3444,7 +3444,7 @@ typedef struct {
     // -------------------------------------------------------------------------
     // Audio Subsystem (MiniAudio)
     // -------------------------------------------------------------------------
-    // [v2.3.16] Handle Pool
+    // Handle Pool
     SituationSoundSlot sound_pool[SITUATION_MAX_LOADED_SOUNDS];
     mtx_t pool_mutex;       // Protects allocation/deallocation of slots
 
@@ -28169,7 +28169,7 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
 }
 
 // ==================================================================================
-//  Audio Handle System Implementation (v2.3.16)
+//  Audio Handle System Implementation
 // ==================================================================================
 
 // Helper: Initialize the audio pool
@@ -29716,7 +29716,7 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count) {
 // ==================================================================================
 
 // ==================================================================================
-//  [v2.3.16] Cycle Detection & ID Helpers
+//  Cycle Detection & ID Helpers
 // ==================================================================================
 
 // ID Layout: [1 bit Queue] [15 bits Gen] [16 bits Slot]
@@ -29993,7 +29993,7 @@ static int _SituationWorkerEntry(void* arg) {
                 size_t idx = tail & pool->queues[q].mask;
                 SituationJob* potential = &pool->queues[q].jobs[idx];
 
-                // [v2.3.16] Dependency Check
+                // Dependency Check
                 // If job has dependencies (>0), we CANNOT run it.
                 // In a ring buffer, this causes Head-of-Line blocking.
                 // We yield this queue and try the other one.
@@ -30043,7 +30043,7 @@ static int _SituationWorkerEntry(void* arg) {
                 job_ptr->func(data_arg, (void*)&dummy_err);
             }
 
-            // 2. [v2.3.16] Handle Continuation
+            // 2. Handle Continuation
             uint32_t cont_id = atomic_load(&job_ptr->continuation_id);
             if (cont_id != 0) {
                 SituationJob* next_job = _SitGetJobFromId(pool, cont_id);
@@ -30233,7 +30233,7 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
     job->func = func;
     atomic_store(&job->is_completed, false);
 
-    // [v2.3.16] Reset Dependency Fields
+    // Reset Dependency Fields
     atomic_store(&job->dependency_count, 0);
     atomic_store(&job->continuation_id, 0);
     job->dep_depth = 0;
