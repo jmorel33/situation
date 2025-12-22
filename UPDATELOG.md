@@ -4,27 +4,37 @@
 - [Safety] Ensures no console windows pop up on Windows and no terminal allocation on Unix-like systems.
 - [API] Returns the process exit code and provides a heap-allocated output string that must be freed by the user.
 
+---
+
 ## [v2.3.33 "Velocity" - Audio Hardening (Titanium Standard)] - 2025-12-21
 - [Audio] Implemented the "Titanium Standard" Audio Action Plan (Section 4 of Audio Analysis).
 - [Safety] Enforced consistent locking across all audio setters (`SituationSetSoundVolume`, `SituationSetSoundPan`) to eliminate data races.
 - [Optimization] Converted real-time audio parameters (`volume`, `pan`, `pitch`) to `_Atomic float` for lock-free access on the mixing thread.
 - [Architecture] Introduced a Generational Handle System (`SituationSoundHandle`) to replace raw pointers, enabling O(1) validation and eliminating Use-After-Free errors.
 
+---
+
 ## [v2.3.32G - Cross-Platform CPU Thread Count Utility] - 2025-12-21
 - [Feature] Added `SituationGetCPUThreadCount` to reliably query the number of logical CPU cores on Windows, macOS, and Linux.
 - [Improvement] Updated `SituationGetDeviceInfo` to use the new utility, standardizing `cpu_cores` to report logical cores across all platforms (fixing macOS inconsistency).
 - [Improvement] Updated `SituationCreateThreadPool` to use the new utility for auto-detecting thread counts, replacing ad-hoc logic.
+
+---
 
 ## [v2.3.32F - Compute Limits Helper (Max Work Groups)] - 2025-12-21
 - [Feature] Added `SituationGetMaxComputeWorkGroups` to query hardware limits for local work group counts (X, Y, Z) per dispatch.
 - [Feature] Implemented backend-specific limit queries for both Vulkan (`maxComputeWorkGroupCount`) and OpenGL (`GL_MAX_COMPUTE_WORK_GROUP_COUNT`).
 - [Safety] Added `SituationIsInitialized` checks to `SituationGetMaxComputeWorkGroups` to prevent unsafe access to internal state.
 
+---
+
 ## [v2.3.32E - SituationError Return Type Migration & Docs] - 2025-12-20
 - [Breaking Change] Updated `SituationCmd*` functions to return `SituationError` instead of `void` for better error propagation (e.g., `SituationCmdDraw`, `SituationCmdEndRenderPass`).
 - [Breaking Change] Updated `SituationCmdDraw` and `SituationCmdDrawIndexed` parameter types (`int` -> `uint32_t`) and added `instance_count` to support instanced rendering directly.
 - [Docs] Updated `situation_api.md` to reflect new signatures and added documentation for `SituationCmdDrawText`, `SituationCmdDrawTextEx`, and `SituationCmdPresent`.
 - [Examples] Updated `examples/handling_keyboard_and_mouse_input.c` to use `Vector4` and fix `SituationGetMousePosition` usage.
+
+---
 
 ## [v2.3.32D - Terminal VT UTF-8 & REP Support] - 2025-12-20
 - [Feature] Implemented UTF-8 decoding in `ProcessNormalChar` (Terminal), enabling full multibyte Unicode support (e.g., Box Drawing characters, international text).
@@ -33,6 +43,8 @@
 - [Fix] Hardened `ProcessNormalChar` state machine to robustly handle invalid UTF-8 sequences by resetting state and reprocessing the byte.
 - [Fix] Fixed potential logic duplication in `ExecuteREP` by reusing core insertion logic.
 
+---
+
 ## [v2.3.32C - Complete VT Support (Sixel, Soft Fonts, Window Ops, Pipeline Fix)] - 2025-12-20
 - [Critical] Fixed `SIT_COMPUTE_LAYOUT_TERMINAL` in `situation.h` to include the 4th descriptor set (Sixel texture sampler), ensuring the Vulkan pipeline matches the Compute Shader expectations.
 - [Feature] Implemented `ProcessSoftFontDownload` (DECDLD) in `sit/terminal/terminal.h` with robust Sixel-encoded bitmap decoding and texture atlas regeneration.
@@ -40,6 +52,8 @@
 - [Feature] Implemented `ExecuteWindowOps` (CSI t), mapping terminal sequences to `Situation` window management APIs (Resize, Move, Restore, Minimize, Maximize, Fullscreen).
 - [Feature] Wired up `DrawSixelGraphics` to trigger dirty state updates for texture uploads.
 - [Improvement] Added support for standard DECDLD format (`DCS ... {`) in `ExecuteDCSCommand`.
+
+---
 
 ## [v2.3.32B - Complete VT Sixel Support & Logging API (Terminal Deep Dive)] - 2025-12-19
 - Implemented `ProcessSixelData` in `sit/terminal/terminal.h` for full Sixel graphics parsing support.
@@ -50,6 +64,8 @@
 # Situation Update Log
 
 This document tracks the evolution of the Situation library, detailing new features, architectural changes, and critical fixes.
+
+---
 
 ## [2.3.32A "Velocity" (VT Console Support)] - 2025-12-14
 
@@ -75,10 +91,6 @@ This release updates the engine to target **Vulkan 1.4**, preparing the architec
 *   **Documentation Alignment:** All documentation and version strings have been updated to reflect the new API target. The README.md section order has also been corrected for better readability.
 
 ---
-
-# Situation Update Log
-
-This document tracks the evolution of the Situation library, detailing new features, architectural changes, and critical fixes.
 
 ## [2.3.31A "Velocity" (Hotfix: Compilation & Thread Safety)] - 2025-12-14
 
