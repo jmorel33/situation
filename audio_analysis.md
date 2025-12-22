@@ -125,9 +125,9 @@ To make the Audio / Sound section fully multi-thread capable, the following step
     *   **Phase 2 (Public):** Introduce `SituationSound` (the handle) and deprecate `SituationSound*`.
 
 **Implementation Tasks:**
-- [ ] Define `SituationSoundSlot` struct with generation tracking.
-- [ ] Implement `_SitAudioGetSoundFromHandle(uint64_t handle)` with O(1) validation.
-- [ ] Refactor `SituationPlayLoadedSound` to accept handles.
+- [x] Define `SituationSoundSlot` struct with generation tracking.
+- [x] Implement `_SitAudioGetSoundFromHandle(uint64_t handle)` with O(1) validation.
+- [x] Refactor `SituationPlayLoadedSound` to accept handles.
 
 ### 4.4 Step 4: Dynamic Mixing Queue (Priority: Immediate)
 **Goal:** Remove the 32-voice hard limit and allow for scalable, high-polyphony audio scenes (e.g., bullet hell games).
