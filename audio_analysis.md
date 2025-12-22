@@ -154,9 +154,9 @@ To make the Audio / Sound section fully multi-thread capable, the following step
     *   `>0` = Fixed Cap (Pre-allocated).
 
 **Implementation Tasks:**
-- [ ] Replace `queued_sounds` with `SituationSound** voices` and `int voice_capacity`.
-- [ ] Implement `_SitAudioEnsureVoiceCapacity(int count)` helper.
-- [ ] Update `sit_miniaudio_data_callback` to use a persistent heap-allocated snapshot buffer instead of a stack array.
+- [x] Replace `queued_sounds` with `SituationSound** voices` and `int voice_capacity`.
+- [x] Implement `_SitAudioEnsureVoiceCapacity(int count)` helper. (Implemented inline in `SituationPlayLoadedSound` for efficiency).
+- [x] Update `sit_miniaudio_data_callback` to use a persistent heap-allocated snapshot buffer instead of a stack array.
 
 ---
 

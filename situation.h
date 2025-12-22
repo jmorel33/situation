@@ -1565,6 +1565,9 @@ typedef struct {
                          //   SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD → route mic capture callbacks to main thread
                          //   (future-proof expansion slot)
 
+    // ── Audio Configuration ──
+    uint32_t     max_audio_voices; // Max concurrent audio voices. 0 = Unlimited (Dynamic).
+
 #if defined(SITUATION_ENABLE_RENDER_THREAD)
     int          render_thread_count; // Number of render threads to spawn (0 = Single Threaded)
     // [v2.3.22] Backpressure Policy
@@ -3460,8 +3463,18 @@ typedef struct {
     bool is_miniaudio_device_internally_paused;           // True if playback is temporarily suspended (e.g. minimized)
     int current_miniaudio_device_audioinfo_id;         // ID of the currently selected output device
 
-    SituationSound* queued_sounds[SITUATION_MAX_AUDIO_SOUNDS_QUEUED]; // Array of active sounds being mixed
-    int queued_sound_count;                                           // Number of active sounds
+    // [v2.4] Dynamic Mixing Queue
+    // Replaces fixed `queued_sounds[32]` with resizable array.
+    SituationSound** active_voices;                    // Dynamic array of active sounds being mixed
+    int active_voice_count;                            // Number of active sounds
+    int active_voice_capacity;                         // Current capacity of the dynamic array
+    uint32_t config_max_voices;                        // Configured hard limit (0 = Unlimited)
+
+    // [v2.4] Audio Thread Snapshot Buffer
+    // Persistent scratch buffer to avoid stack allocation or malloc on the audio thread.
+    SituationSound** snapshot_buffer;                  // Dynamic array for mixer snapshot
+    int snapshot_buffer_capacity;                      // Capacity of the snapshot buffer
+
     // [FIX v2.3.27B] Use C11 Recursive Mutex to prevent deadlocks when 
     // API functions are called from within audio callbacks/processors.
     mtx_t audio_queue_mutex;                                       // Mutex protecting the sound queue
@@ -7025,6 +7038,27 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     sit_audio.audio_callback_temp_buffer_frames_capacity = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES;
 
     atomic_init(&sit_audio.is_processing_snapshot, false);
+
+    // [v2.4] Audio Queue Initialization
+    sit_audio.config_max_voices = init_info->max_audio_voices;
+    // Start with 32 voices by default, or the limit if it's smaller than 32
+    int initial_cap = 32;
+    if (sit_audio.config_max_voices > 0 && sit_audio.config_max_voices < 32) {
+        initial_cap = (int)sit_audio.config_max_voices;
+    }
+
+    sit_audio.active_voices = (SituationSound**)SIT_MALLOC(initial_cap * sizeof(SituationSound*));
+    if (!sit_audio.active_voices) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    sit_audio.active_voice_capacity = initial_cap;
+    sit_audio.active_voice_count = 0;
+
+    // Snapshot buffer (initialized to same capacity)
+    sit_audio.snapshot_buffer = (SituationSound**)SIT_MALLOC(initial_cap * sizeof(SituationSound*));
+    if (!sit_audio.snapshot_buffer) {
+        SIT_FREE(sit_audio.active_voices);
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    sit_audio.snapshot_buffer_capacity = initial_cap;
 
     // --- 2. Timer System Initialization ---
     SituationTimerSystem* ts = &sit_gs.timer_system_instance;
@@ -12090,6 +12124,12 @@ static void _SituationCleanupSubsystems(void) {
     sit_audio.audio_callback_decoder_temp_buffer = NULL;
     sit_audio.audio_callback_effects_temp_buffer = NULL;
     sit_audio.audio_callback_converter_temp_buffer = NULL;
+
+    // [v2.4] Cleanup Dynamic Audio Arrays
+    SIT_FREE(sit_audio.active_voices);
+    sit_audio.active_voices = NULL;
+    SIT_FREE(sit_audio.snapshot_buffer);
+    sit_audio.snapshot_buffer = NULL;
 
     // Uninitialize mutexes.
     // [FIX v2.3.27B] Destroy the C11 recursive mutex used for the audio queue
@@ -26786,16 +26826,33 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
     memset(pOutput, 0, frameCount * bytes_per_frame);
 
     // --- PHASE 1: SNAPSHOT ---
-    SituationSound* active_sounds[SITUATION_MAX_AUDIO_SOUNDS_QUEUED];
-    int active_count = 0;
-
-    // [SAFETY] Signal we are entering the danger zone
+    // [v2.4] Dynamic Snapshot
+    // Use persistent snapshot buffer instead of stack array.
+    // Resize buffer if needed (only grows).
     atomic_store(&pGs->is_processing_snapshot, true);
 
     mtx_lock(&pGs->audio_queue_mutex);
-    active_count = pGs->queued_sound_count;
+    int active_count = pGs->active_voice_count;
+
     if (active_count > 0) {
-        memcpy(active_sounds, pGs->queued_sounds, active_count * sizeof(SituationSound*));
+        // Grow snapshot buffer if needed
+        if (active_count > pGs->snapshot_buffer_capacity) {
+            // Note: We avoid SIT_REALLOC on audio thread if possible, but growth is rare.
+            // Using standard realloc here is acceptable for resize events.
+            // Ideally this would be pre-sized, but we need to match main thread growth.
+            // Since we hold the lock, main thread cannot grow active_voices while we do this.
+            void* new_buf = SIT_REALLOC(pGs->snapshot_buffer, active_count * sizeof(SituationSound*));
+            if (new_buf) {
+                pGs->snapshot_buffer = (SituationSound**)new_buf;
+                pGs->snapshot_buffer_capacity = active_count;
+            } else {
+                // Allocation fail: clamp to existing capacity
+                active_count = pGs->snapshot_buffer_capacity;
+            }
+        }
+
+        // Copy pointers
+        memcpy(pGs->snapshot_buffer, pGs->active_voices, active_count * sizeof(SituationSound*));
     }
     mtx_unlock(&pGs->audio_queue_mutex);
 
@@ -26803,6 +26860,9 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         atomic_store(&pGs->is_processing_snapshot, false);
         return;
     }
+
+    // Alias for readability in processing loop
+    SituationSound** active_sounds = pGs->snapshot_buffer;
 
     // --- PHASE 2: PROCESSING (Lock-Free) ---
     float* decoder_buffer = pGs->audio_callback_decoder_temp_buffer;
@@ -26813,7 +26873,11 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         frameCount = pGs->audio_callback_temp_buffer_frames_capacity;
     }
 
-    SituationSound* finished_sounds[SITUATION_MAX_AUDIO_SOUNDS_QUEUED];
+    // We can reuse the old stack limit for finished sounds, or allocate if we really expect
+    // >32 sounds to finish in a single 10ms callback (unlikely).
+    // For now, let's keep it fixed to avoid allocs, but use a larger constant or clamp.
+    #define SITUATION_MAX_FINISHED_BATCH 64
+    SituationSound* finished_sounds[SITUATION_MAX_FINISHED_BATCH];
     int finished_count = 0;
 
     for (int i = 0; i < active_count; ++i) {
@@ -26909,17 +26973,22 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                  ma_decoder_seek_to_pcm_frame(&sound->decoder, cur - (frames_read - consumed));
             }
         }
-        if (is_finished) finished_sounds[finished_count++] = sound;
+        if (is_finished) {
+            if (finished_count < SITUATION_MAX_FINISHED_BATCH) {
+                finished_sounds[finished_count++] = sound;
+            }
+        }
     }
 
     // --- PHASE 3: COMMIT ---
     if (finished_count > 0) {
         mtx_lock(&pGs->audio_queue_mutex);
         for (int f = 0; f < finished_count; ++f) {
-            for (int i = 0; i < pGs->queued_sound_count; ++i) {
-                if (pGs->queued_sounds[i] == finished_sounds[f]) {
-                    pGs->queued_sound_count--;
-                    pGs->queued_sounds[i] = pGs->queued_sounds[pGs->queued_sound_count];
+            for (int i = 0; i < pGs->active_voice_count; ++i) {
+                if (pGs->active_voices[i] == finished_sounds[f]) {
+                    // Fast Remove: Swap with last
+                    pGs->active_voice_count--;
+                    pGs->active_voices[i] = pGs->active_voices[pGs->active_voice_count];
                     break;
                 }
             }
@@ -27777,14 +27846,33 @@ SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound_to_play) {
     }
 
     mtx_lock(&sit_audio.audio_queue_mutex);
-    if (sit_audio.queued_sound_count >= SITUATION_MAX_AUDIO_SOUNDS_QUEUED) {
-        mtx_unlock(&sit_audio.audio_queue_mutex);
-        return SITUATION_ERROR_AUDIO_SOUND_LIMIT;
+
+    // [v2.4] Dynamic Capacity Check
+    if (sit_audio.active_voice_count >= sit_audio.active_voice_capacity) {
+        // Check if we hit the user-configured hard limit
+        if (sit_audio.config_max_voices > 0 && (uint32_t)sit_audio.active_voice_capacity >= sit_audio.config_max_voices) {
+            mtx_unlock(&sit_audio.audio_queue_mutex);
+            return SITUATION_ERROR_AUDIO_SOUND_LIMIT;
+        }
+
+        // Grow (Double capacity)
+        int new_cap = sit_audio.active_voice_capacity * 2;
+        if (sit_audio.config_max_voices > 0 && (uint32_t)new_cap > sit_audio.config_max_voices) {
+            new_cap = (int)sit_audio.config_max_voices;
+        }
+
+        SituationSound** new_array = (SituationSound**)SIT_REALLOC(sit_audio.active_voices, new_cap * sizeof(SituationSound*));
+        if (!new_array) {
+            mtx_unlock(&sit_audio.audio_queue_mutex);
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+        sit_audio.active_voices = new_array;
+        sit_audio.active_voice_capacity = new_cap;
     }
 
     // Check if already playing, if so, restart it
-    for (int i = 0; i < sit_audio.queued_sound_count; ++i) {
-        if (sit_audio.queued_sounds[i] == sound_to_play) {
+    for (int i = 0; i < sit_audio.active_voice_count; ++i) {
+        if (sit_audio.active_voices[i] == sound_to_play) {
             ma_decoder_seek_to_pcm_frame(&sound_to_play->decoder, 0);
             sound_to_play->cursor_frames = 0;
             // Converter state is generally reset by processing new input from frame 0
@@ -27797,7 +27885,7 @@ SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound_to_play) {
     ma_decoder_seek_to_pcm_frame(&sound_to_play->decoder, 0);
     sound_to_play->cursor_frames = 0;
 
-    sit_audio.queued_sounds[sit_audio.queued_sound_count++] = sound_to_play;
+    sit_audio.active_voices[sit_audio.active_voice_count++] = sound_to_play;
     mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
@@ -27821,11 +27909,11 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
     bool found_and_removed = false;
 
     mtx_lock(&sit_audio.audio_queue_mutex);
-    for (int i = 0; i < sit_audio.queued_sound_count; ++i) {
-        if (sit_audio.queued_sounds[i] == sound_to_stop) {
+    for (int i = 0; i < sit_audio.active_voice_count; ++i) {
+        if (sit_audio.active_voices[i] == sound_to_stop) {
             // Simple removal: replace with last element and decrement count
-            sit_audio.queued_sounds[i] = sit_audio.queued_sounds[--sit_audio.queued_sound_count];
-            // sit_audio.queued_sounds[sit_audio.queued_sound_count] = NULL; // Optional: clear the now unused slot
+            sit_audio.active_voices[i] = sit_audio.active_voices[--sit_audio.active_voice_count];
+            // sit_audio.active_voices[sit_audio.active_voice_count] = NULL; // Optional: clear the now unused slot
             found_and_removed = true;
             break;
         }
@@ -27848,7 +27936,7 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
 SITAPI SituationError SituationStopAllLoadedSounds(void) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     mtx_lock(&sit_audio.audio_queue_mutex);
-    sit_audio.queued_sound_count = 0;
+    sit_audio.active_voice_count = 0;
     mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
