@@ -1398,6 +1398,11 @@ typedef struct SituationFont {
 
 // --- Audio Control Structures ---
 
+// --- Audio Handle System (Hardened v2.3.16) ---
+typedef uint64_t SituationSoundHandle;
+#define SITUATION_NULL_HANDLE 0
+#define SITUATION_MAX_LOADED_SOUNDS 1024
+
 typedef struct {
     int sample_rate;
     int channels;
@@ -2187,6 +2192,14 @@ SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback c
 SITAPI void SituationStopAudioCapture(void);
 
 // --- Sound Loading and Management ---
+// --- Audio Handle API (v2.3.16) ---
+SITAPI SituationSoundHandle SituationLoadAudio(const char* file_path, SituationAudioLoadMode mode, bool looping);
+SITAPI SituationError SituationPlayAudio(SituationSoundHandle handle);
+SITAPI void SituationUnloadAudio(SituationSoundHandle handle);
+SITAPI SituationError SituationSetAudioVolume(SituationSoundHandle handle, float volume);
+SITAPI SituationError SituationSetAudioPan(SituationSoundHandle handle, float pan);
+SITAPI SituationError SituationSetAudioPitch(SituationSoundHandle handle, float pitch);
+
 SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, SituationAudioLoadMode mode, bool looping, SituationSound* out_sound); // Load a sound from a file.
 SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound); // Load a sound from a custom stream.
 SITAPI void SituationUnloadSound(SituationSound* sound);                                // Unload a sound and free its resources.
@@ -2322,6 +2335,10 @@ SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, 
 // Forward declaration of Texture Slot struct and getter
 struct _SituationTextureSlot;
 static struct _SituationTextureSlot* _SitGetTextureSlot(SituationTexture handle);
+
+// Forward declaration of Audio Handle Pool functions
+static void _SitAudioInitPool(void);
+static void _SitAudioCleanupPool(void);
 
 #if defined(SITUATION_USE_VULKAN)
 
@@ -3416,10 +3433,21 @@ typedef struct {
     void* callback_user_data;                               // User context for connection callback
 } _SituationJoystickManager;
 
+// [v2.3.16] Internal Audio Slot
+typedef struct {
+    SituationSound* sound;  // Pointer to heap-allocated sound (owned by slot)
+    uint32_t generation;    // Increments on recycle
+    bool is_active;         // Is this slot currently in use?
+} SituationSoundSlot;
+
  typedef struct {
     // -------------------------------------------------------------------------
     // Audio Subsystem (MiniAudio)
     // -------------------------------------------------------------------------
+    // [v2.3.16] Handle Pool
+    SituationSoundSlot sound_pool[SITUATION_MAX_LOADED_SOUNDS];
+    mtx_t pool_mutex;       // Protects allocation/deallocation of slots
+
     ma_context miniaudio_context;                         // The main MiniAudio context
     ma_device miniaudio_device;                           // The primary playback device
     bool is_miniaudio_context_initialized;                // True if the context was successfully created
@@ -6945,6 +6973,9 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
     sit_audio.is_miniaudio_context_initialized = true;
+
+    // Initialize the handle pool
+    _SitAudioInitPool();
 
     // Initialize the mutex that protects the sound playback queue.
     /*if (ma_mutex_init(&sit_audio.audio_queue_mutex) != MA_SUCCESS) {
@@ -12044,6 +12075,10 @@ static void _SituationCleanupSubsystems(void) {
         ma_context_uninit(&sit_audio.miniaudio_context);
         sit_audio.is_miniaudio_context_initialized = false;
     }
+
+    // Cleanup Handle Pool
+    _SitAudioCleanupPool();
+
     SIT_FREE(sit_audio.audio_callback_decoder_temp_buffer);
     SIT_FREE(sit_audio.audio_callback_effects_temp_buffer);
     SIT_FREE(sit_audio.audio_callback_converter_temp_buffer);
@@ -28131,6 +28166,175 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
 
     mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
+}
+
+// ==================================================================================
+//  Audio Handle System Implementation (v2.3.16)
+// ==================================================================================
+
+// Helper: Initialize the audio pool
+static void _SitAudioInitPool(void) {
+    // Initialize pool mutex
+    if (mtx_init(&sit_audio.pool_mutex, mtx_plain) != thrd_success) {
+        SITUATION_LOG_WARNING(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to init audio pool mutex");
+    }
+
+    for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
+        sit_audio.sound_pool[i].is_active = false;
+        sit_audio.sound_pool[i].generation = 1; // Start at 1 so 0 is invalid
+        sit_audio.sound_pool[i].sound = NULL;
+    }
+}
+
+// Helper: Cleanup the audio pool
+static void _SitAudioCleanupPool(void) {
+    for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
+        if (sit_audio.sound_pool[i].sound) {
+            // Unload internal resources
+            ma_decoder_uninit(&sit_audio.sound_pool[i].sound->decoder);
+            if(sit_audio.sound_pool[i].sound->is_preloaded && sit_audio.sound_pool[i].sound->preloaded_data) {
+                SIT_FREE(sit_audio.sound_pool[i].sound->preloaded_data);
+            }
+            // Free the sound struct itself
+            SIT_FREE(sit_audio.sound_pool[i].sound);
+            sit_audio.sound_pool[i].sound = NULL;
+        }
+    }
+    mtx_destroy(&sit_audio.pool_mutex);
+}
+
+// Helper: Allocate a slot
+static SituationSoundHandle _SitAudioAllocSlot(void) {
+    mtx_lock(&sit_audio.pool_mutex);
+    for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
+        if (!sit_audio.sound_pool[i].is_active) {
+            // Found free slot
+            if (!sit_audio.sound_pool[i].sound) {
+                sit_audio.sound_pool[i].sound = (SituationSound*)SIT_CALLOC(1, sizeof(SituationSound));
+                if (!sit_audio.sound_pool[i].sound) {
+                    mtx_unlock(&sit_audio.pool_mutex);
+                    return SITUATION_NULL_HANDLE;
+                }
+            } else {
+                // Reuse existing memory, just clear it
+                memset(sit_audio.sound_pool[i].sound, 0, sizeof(SituationSound));
+            }
+
+            sit_audio.sound_pool[i].is_active = true;
+            uint32_t gen = sit_audio.sound_pool[i].generation;
+            mtx_unlock(&sit_audio.pool_mutex);
+
+            // Construct handle: Index (32) | Generation (32)
+            return ((uint64_t)gen << 32) | (uint64_t)i;
+        }
+    }
+    mtx_unlock(&sit_audio.pool_mutex);
+    SITUATION_LOG_WARNING(SITUATION_ERROR_AUDIO_SOUND_LIMIT, "Audio pool full (max %d)", SITUATION_MAX_LOADED_SOUNDS);
+    return SITUATION_NULL_HANDLE;
+}
+
+// Helper: Get sound from handle (Validation)
+static SituationSound* _SitAudioGetSoundFromHandle(SituationSoundHandle handle) {
+    if (handle == SITUATION_NULL_HANDLE) return NULL;
+
+    uint32_t index = (uint32_t)(handle & 0xFFFFFFFF);
+    uint32_t gen = (uint32_t)(handle >> 32);
+
+    if (index >= SITUATION_MAX_LOADED_SOUNDS) return NULL;
+
+    // [Safety] Lock to prevent reading torn generation or active status during concurrent free
+    mtx_lock(&sit_audio.pool_mutex);
+    if (sit_audio.sound_pool[index].generation != gen || !sit_audio.sound_pool[index].is_active) {
+        mtx_unlock(&sit_audio.pool_mutex);
+        return NULL;
+    }
+    SituationSound* ptr = sit_audio.sound_pool[index].sound;
+    mtx_unlock(&sit_audio.pool_mutex);
+
+    return ptr;
+}
+
+// Helper: Free a slot
+static void _SitAudioFreeSlot(SituationSoundHandle handle) {
+    if (handle == SITUATION_NULL_HANDLE) return;
+
+    uint32_t index = (uint32_t)(handle & 0xFFFFFFFF);
+    uint32_t gen = (uint32_t)(handle >> 32);
+
+    mtx_lock(&sit_audio.pool_mutex);
+    if (index < SITUATION_MAX_LOADED_SOUNDS && sit_audio.sound_pool[index].generation == gen && sit_audio.sound_pool[index].is_active) {
+        // Increment generation to invalidate existing handles
+        sit_audio.sound_pool[index].generation++;
+        if (sit_audio.sound_pool[index].generation == 0) sit_audio.sound_pool[index].generation = 1; // Prevent null handle wrap-around
+
+        sit_audio.sound_pool[index].is_active = false;
+
+        SituationSound* snd = sit_audio.sound_pool[index].sound;
+        if (snd) {
+             ma_decoder_uninit(&snd->decoder);
+             if (snd->preloaded_data) SIT_FREE(snd->preloaded_data);
+             if (snd->processors) SIT_FREE(snd->processors);
+             if (snd->processor_user_data) SIT_FREE(snd->processor_user_data);
+             if (snd->effects.reverb_state) SIT_FREE(snd->effects.reverb_state);
+             memset(snd, 0, sizeof(SituationSound));
+        }
+    }
+    mtx_unlock(&sit_audio.pool_mutex);
+}
+
+// --- New Handle-Based API ---
+
+SITAPI SituationSoundHandle SituationLoadAudio(const char* file_path, SituationAudioLoadMode mode, bool looping) {
+    if (!file_path) return SITUATION_NULL_HANDLE;
+
+    SituationSoundHandle handle = _SitAudioAllocSlot();
+    if (handle == SITUATION_NULL_HANDLE) return SITUATION_NULL_HANDLE;
+
+    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    if (!snd) return SITUATION_NULL_HANDLE;
+
+    // Use existing loader logic
+    SituationError err = SituationLoadSoundFromFile(file_path, mode, looping, snd);
+    if (err != SITUATION_SUCCESS) {
+        _SitAudioFreeSlot(handle);
+        return SITUATION_NULL_HANDLE;
+    }
+
+    return handle;
+}
+
+SITAPI SituationError SituationPlayAudio(SituationSoundHandle handle) {
+    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    if (!snd) return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
+    return SituationPlayLoadedSound(snd);
+}
+
+SITAPI void SituationUnloadAudio(SituationSoundHandle handle) {
+    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    if (snd) {
+        // Stop it first
+        SituationStopLoadedSound(snd);
+        // Free slot
+        _SitAudioFreeSlot(handle);
+    }
+}
+
+SITAPI SituationError SituationSetAudioVolume(SituationSoundHandle handle, float volume) {
+    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    if (!snd) return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
+    return SituationSetSoundVolume(snd, volume);
+}
+
+SITAPI SituationError SituationSetAudioPan(SituationSoundHandle handle, float pan) {
+    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    if (!snd) return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
+    return SituationSetSoundPan(snd, pan);
+}
+
+SITAPI SituationError SituationSetAudioPitch(SituationSoundHandle handle, float pitch) {
+    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    if (!snd) return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
+    return SituationSetSoundPitch(snd, pitch);
 }
 
 
