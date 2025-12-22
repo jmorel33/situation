@@ -105,18 +105,58 @@ To make the Audio / Sound section fully multi-thread capable, the following step
 - [x] Update `SituationSetSoundPan` to use `atomic_store`.
 - [x] Update Audio Thread mixer loop to use `atomic_load` when reading these values.
 
-### 4.3 Step 3: Handle Verification System (Future - v2.4)
-**Goal:** Prevent Use-After-Free across threads.
-- [ ] Design `SituationAudioHandle` struct `{ uint32_t index; uint32_t generation; }`.
-- [ ] Create an internal `SituationSoundPool` with generational indexing (similar to Texture/Buffer handles).
-- [ ] Deprecate raw `SituationSound*` pointers in public API.
+### 4.3 Step 3: Handle Verification System (Priority: Immediate)
+**Goal:** Eliminate "Use-After-Free" errors by replacing raw pointers with a Generational Handle system, identical to the Texture Registry ID system.
 
-### 4.4 Step 4: Dynamic Mixing Queue (Future - v2.4)
-**Goal:** Remove the 32-voice limit.
-- [ ] Replace `queued_sounds[32]` fixed array in `_SituationAudioState` with a dynamic `SituationSound** active_voices` array.
-- [ ] Implement `active_voice_capacity` and `active_voice_count` tracking.
-- [ ] Update `SituationPlayLoadedSound` to grow the array using `SIT_REALLOC` (protected by mutex) when full.
-- [ ] Add `max_audio_voices` to `SituationInitInfo` to allow user configuration at startup.
+**Mechanism:**
+1.  **The Handle Structure:**
+    Instead of `SituationSound*`, the public API will consume a `SituationSoundHandle` (typedef `uint64_t`).
+    *   **Bits 0-31:** Index into the global sound pool.
+    *   **Bits 32-63:** Generation counter.
+
+2.  **The Sound Pool:**
+    The global `_SituationAudioState` will house a `SituationSoundPool` containing a fixed (or dynamic) array of `SituationSound` slots.
+    *   Each slot tracks its own generation.
+    *   When a sound is unloaded, the slot is marked free, and its generation is incremented.
+    *   **Validation:** Accessing a sound requires checking `pool[index].generation == handle.generation`. If they differ, the handle is stale (sound was unloaded), and the operation is safely ignored.
+
+3.  **API Migration Strategy:**
+    *   **Phase 1 (Internal):** Refactor internal storage to use the pool. Existing `SituationSound*` pointers in the API will be "faked" by returning `&pool[index]`.
+    *   **Phase 2 (Public):** Introduce `SituationSound` (the handle) and deprecate `SituationSound*`.
+
+**Implementation Tasks:**
+- [ ] Define `SituationSoundSlot` struct with generation tracking.
+- [ ] Implement `_SitAudioGetSoundFromHandle(uint64_t handle)` with O(1) validation.
+- [ ] Refactor `SituationPlayLoadedSound` to accept handles.
+
+### 4.4 Step 4: Dynamic Mixing Queue (Priority: Immediate)
+**Goal:** Remove the 32-voice hard limit and allow for scalable, high-polyphony audio scenes (e.g., bullet hell games).
+
+**Mechanism:**
+1.  **Dynamic Storage:**
+    Replace the fixed `queued_sounds[32]` array in `_SituationAudioState` with a dynamic `SituationSound** active_voices` array.
+    *   **Capacity:** Starts at 32, doubles geometrically (32 -> 64 -> 128) when full.
+    *   **Growth:** Performed in `SituationPlayLoadedSound` (Main Thread) under `audio_queue_mutex` lock.
+
+2.  **Thread-Safe Snapshotting:**
+    The Audio Thread currently allocates a snapshot on the stack (`SituationSound* snapshot[32]`). This must change.
+    *   **New Strategy:** The Audio Thread will maintain its own persistent `std::vector`-like scratch buffer (`snapshot_buffer`).
+    *   **Cycle:**
+        1. Lock Mutex.
+        2. Resize `snapshot_buffer` to match `active_voices_count` (if needed).
+        3. `memcpy` pointers from `active_voices` to `snapshot_buffer`.
+        4. Unlock Mutex.
+        5. Mix using `snapshot_buffer`.
+
+3.  **Configurability:**
+    Add `max_audio_voices` to `SituationInitInfo`.
+    *   `0` = Unlimited (Dynamic).
+    *   `>0` = Fixed Cap (Pre-allocated).
+
+**Implementation Tasks:**
+- [ ] Replace `queued_sounds` with `SituationSound** voices` and `int voice_capacity`.
+- [ ] Implement `_SitAudioEnsureVoiceCapacity(int count)` helper.
+- [ ] Update `sit_miniaudio_data_callback` to use a persistent heap-allocated snapshot buffer instead of a stack array.
 
 ---
 
