@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.32 "Titanium Core C"_
+_Core API library v2.3.33 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,9 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.32B "Velocity"**
+Current Version: **v2.3.33 "Velocity"**
 
-**Version 2.3.32B** completes the Virtual Terminal (VT) support by adding full Sixel graphics processing and a robust, ANSI-colored Logging API. It also addresses Linux compilation issues related to network interface flags.
+**Version 2.3.33** implements the "Titanium Standard" Audio Hardening Action Plan, introducing consistent locking, atomic parameters, and a generational handle system for the Audio engine.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Texture Registry (v2.3.31):** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.
