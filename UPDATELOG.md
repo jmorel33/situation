@@ -1,9 +1,30 @@
-## [v2.3.34 "Velocity" (Async I/O Package & Loader Hardening)] - 2025-12-21
-- [Feature] **Complete Async File API:** Implemented `SituationLoadFileTextAsync` and `SituationSaveFileTextAsync` to complement the existing binary `SituationLoadFileAsync` and `SituationSaveFileAsync` functions. This completes the Async I/O module, enabling non-blocking loading and saving of both binary data and text files on background threads.
-- [Safety] Fixed a race condition in `SituationLoadShader`, `SituationLoadTexture`, and `SituationCreateComputePipeline` where hot-reload tracking incorrectly assumed the new resource was always at the head of the list. Replaced with robust list traversal to ensure safe operation in threaded loading scenarios.
-- [Version] Bumped library version to 2.3.34.
+## [v2.3.34 "Velocity" (Async I/O & Loader Safety)] - 2025-12-21
+
+### Description
+
+This release fulfills the "Velocity" promise of a complete Asynchronous I/O system. It introduces a fully featured Async Text File API, mirroring the existing binary loaders, allowing developers to load level data, configuration files, and large text blobs on background threads without stalling the main loop. Additionally, it hardens the Hot-Reloading system against race conditions in multi-threaded environments.
+
+### New Features
+
+*   **Async Text API:** Completed the Async I/O suite with `SituationLoadFileTextAsync` and `SituationSaveFileTextAsync`.
+    *   **Architecture:** Leverages the `SituationThreadPool` (Small Object Optimization) to dispatch I/O tasks.
+    *   **Context Safety:** Inputs (file paths and content) are atomically duplicated (`_sit_strdup`) before job submission, ensuring thread safety and preventing use-after-free errors on the worker thread.
+    *   **Callback Model:** Uses `SituationFileTextLoadCallback` to return null-terminated, caller-owned strings directly to the main thread.
+
+### Critical Fixes
+
+*   **Loader Race Condition:** Fixed a thread-safety hazard in the Hot-Reload resource tracking logic for `SituationLoadShader`, `SituationLoadTexture`, and `SituationCreateComputePipeline`.
+    *   *The Issue:* Previously, the code assumed the newly created resource would always be at the *head* of the global tracking list (`sit_render.all_*`). In a threaded environment, another thread could insert a resource immediately after creation but before tracking, causing the wrong resource to be tagged.
+    *   *The Fix:* The tracking logic now performs a safe linked-list traversal to locate the *exact* resource ID before updating its source path and modification time.
+
+### API Changes
+
+*   **New Typedef:** Added `SituationFileTextLoadCallback` for async text loading results.
+*   **New Prototypes:** Added `SituationLoadFileTextAsync` and `SituationSaveFileTextAsync` to the public API.
 
 ---
+
+
 
 
 ## [v2.3.33A - Cross-Platform Hidden Command Execution] - 2025-12-21
