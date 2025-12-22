@@ -1,4 +1,12 @@
 --------------------------------------------------------------------------------
+v2.3.33A - Cross-Platform Hidden Command Execution
+--------------------------------------------------------------------------------
+- [Feature] Added `SituationExecuteCommand` to run system shell commands in a hidden window/process while capturing stdout/stderr output.
+- [Feature] Implemented cross-platform support using `CreateProcess` (Windows) and `fork/exec/pipe` (Linux/macOS) with output redirection.
+- [Safety] Ensures no console windows pop up on Windows and no terminal allocation on Unix-like systems.
+- [API] Returns the process exit code and provides a heap-allocated output string that must be freed by the user.
+- [Version] Bumped version to v2.3.33A.
+--------------------------------------------------------------------------------
 v2.3.32G - Cross-Platform CPU Thread Count Utility
 --------------------------------------------------------------------------------
 - [Feature] Added `SituationGetCPUThreadCount` to reliably query the number of logical CPU cores on Windows, macOS, and Linux.

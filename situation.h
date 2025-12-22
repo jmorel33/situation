@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 32
-#define SITUATION_VERSION_REVISION "G"
+#define SITUATION_VERSION_PATCH 33
+#define SITUATION_VERSION_REVISION "A"
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -204,6 +204,8 @@ SITAPI void _SituationLogGLError(const char* file, int line);
     #include <sys/types.h>      // For getpwuid (potentially)
     #include <pwd.h>            // For getpwuid (potentially)
     #include <sys/statvfs.h>    // For storage info on Linux/macOS
+    #include <sys/wait.h>       // For waitpid (SituationExecuteCommand)
+    #include <fcntl.h>          // For open, O_RDWR (SituationExecuteCommand)
     #if defined(__linux__)
         #include <sys/sysinfo.h>    // For RAM info on Linux
     #endif
@@ -271,6 +273,7 @@ typedef enum {
     SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT             =  -84,  // Render thread join timeout
     SITUATION_ERROR_RENDER_LIST_INCOMPLETE                  =  -85,  // Render list incomplete (Momentum)
     SITUATION_ERROR_ARM_INTRINSICS_FAILED                   =  -86,  // ARM-specific WFE/SEV intrinsic failure
+    SITUATION_ERROR_COMMAND_EXECUTION_FAILED                =  -90,  // External system command execution failed
 
     // ── Platform & Windowing Errors (100–199) ───────────────────────────
     SITUATION_ERROR_GLFW_FAILED                             = -100,  // Any GLFW function returned an error
@@ -1870,6 +1873,7 @@ SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacit
 #endif // _WIN32
 
 SITAPI void SituationOpenFile(const char* filePath);                                    // Open a file or folder with its default application.
+SITAPI int SituationExecuteCommand(const char *cmd, char **output);                     // Execute a shell command hidden, return exit code & combined output.
 
 //==================================================================================
 // Window and Display Module
@@ -19720,6 +19724,201 @@ SITAPI void SituationOpenFile(const char* filePath) {
     }
 #else
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationOpenFile is not supported on this platform.");
+#endif
+}
+
+/**
+ * @brief Executes a system command hidden from the user, capturing stdout/stderr.
+ *
+ * @details This function runs a shell command in a hidden manner (no window popup on Windows,
+ *          no new terminal on POSIX) and captures the combined output (stdout + stderr).
+ *
+ * @param cmd The full command line to execute (e.g., "dir C:\\Windows" or "ls -l /tmp").
+ *            On Windows, this is passed to `cmd.exe /C`. On POSIX, to `/bin/sh -c`.
+ * @param[out] output Pointer to a `char*` that will be allocated with the command output.
+ *                    The caller MUST free this string using `SituationFreeString()` or `SIT_FREE()`.
+ *                    If output is captured, this pointer is set. If no output or error, it may be NULL or empty string.
+ *
+ * @return The exit code of the process (0 usually means success).
+ * @return -1 if the process failed to launch or execution setup failed. In this case,
+ *         `SituationGetLastErrorMsg()` may provide more details.
+ */
+SITAPI int SituationExecuteCommand(const char *cmd, char **output) {
+    if (!cmd || !output) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cmd or Output pointer is NULL");
+        return -1;
+    }
+
+    *output = NULL;
+
+#ifdef _WIN32
+    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+    HANDLE hRead = NULL, hWrite = NULL;
+
+    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "CreatePipe failed");
+        return -1;
+    }
+    // Ensure the read handle to the pipe for STDOUT is not inherited.
+    if (!SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(hRead); CloseHandle(hWrite);
+        _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "SetHandleInformation failed");
+        return -1;
+    }
+
+    PROCESS_INFORMATION pi = {0};
+    STARTUPINFO si = { sizeof(STARTUPINFO) };
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.hStdOutput = hWrite;
+    si.hStdError  = hWrite;
+    si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE); // Inherit stdin? Or NULL? Snippet used GetStdHandle.
+    si.wShowWindow = SW_HIDE;
+
+    // Use cmd.exe /C to interpret the command.
+    // We construct "cmd.exe /C \"<cmd>\"" to handle shell features.
+    // Length calculation: "cmd.exe /C \"" (13) + cmd len + "\"" (1) + null (1) = len + 15
+    size_t cmd_len = strlen(cmd);
+    size_t full_len = cmd_len + 32; // Safety margin
+    char *cmdline = (char*)SIT_MALLOC(full_len);
+    if (!cmdline) {
+        CloseHandle(hRead); CloseHandle(hWrite);
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate cmdline buffer");
+        return -1;
+    }
+    snprintf(cmdline, full_len, "cmd.exe /C \"%s\"", cmd);
+
+    BOOL success = CreateProcessA(
+        NULL,           // Application Name
+        cmdline,        // Command Line
+        NULL,           // Process Attributes
+        NULL,           // Thread Attributes
+        TRUE,           // Inherit Handles
+        CREATE_NO_WINDOW, // Creation Flags
+        NULL,           // Environment
+        NULL,           // Current Directory
+        &si,            // Startup Info
+        &pi             // Process Information
+    );
+
+    SIT_FREE(cmdline);
+    CloseHandle(hWrite);  // Close write end in parent, otherwise ReadFile blocks forever
+
+    if (!success) {
+        CloseHandle(hRead);
+        _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "CreateProcessA failed");
+        return -1;
+    }
+
+    // Read output
+    char buf[4096];
+    DWORD bytesRead;
+    size_t total = 0;
+
+    // Initial empty string allocation so *output is valid even if empty
+    *output = (char*)SIT_CALLOC(1, 1);
+
+    while (ReadFile(hRead, buf, sizeof(buf)-1, &bytesRead, NULL) && bytesRead > 0) {
+        buf[bytesRead] = '\0';
+        char *tmp = (char*)SIT_REALLOC(*output, total + bytesRead + 1);
+        if (!tmp) {
+            SIT_FREE(*output);
+            *output = NULL;
+            CloseHandle(hRead);
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc output buffer");
+            return -1;
+        }
+        *output = tmp;
+        memcpy(*output + total, buf, bytesRead);
+        total += bytesRead;
+        (*output)[total] = '\0';
+    }
+
+    CloseHandle(hRead);
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exit_code;
+    GetExitCodeProcess(pi.hProcess, &exit_code);
+
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    return (int)exit_code;
+
+#else  // Linux & macOS
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "pipe() failed");
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        close(pipefd[0]); close(pipefd[1]);
+        _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "fork() failed");
+        return -1;
+    }
+
+    if (pid == 0) {  // Child
+        close(pipefd[0]);  // Close read end
+
+        // Redirect both stdout and stderr to write end of pipe
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
+
+        // To prevent any terminal allocation (extra safety on macOS/Linux)
+        int nullfd = open("/dev/null", O_RDWR);
+        if (nullfd != -1) {
+            dup2(nullfd, STDIN_FILENO);
+            close(nullfd);
+        }
+
+        // Use shell to interpret the command
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+
+        // If execl fails
+        _exit(127);
+    }
+
+    // Parent
+    close(pipefd[1]);  // Close write end
+
+    char buf[4096];
+    ssize_t bytesRead;
+    size_t total = 0;
+
+    // Initial empty string
+    *output = (char*)SIT_CALLOC(1, 1);
+
+    while ((bytesRead = read(pipefd[0], buf, sizeof(buf)-1)) > 0) {
+        buf[bytesRead] = '\0';
+        char *tmp = (char*)SIT_REALLOC(*output, total + bytesRead + 1);
+        if (!tmp) {
+            SIT_FREE(*output);
+            *output = NULL;
+            close(pipefd[0]);
+            int status;
+            waitpid(pid, &status, 0);
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc output buffer");
+            return -1;
+        }
+        *output = tmp;
+        memcpy(*output + total, buf, bytesRead);
+        total += bytesRead;
+        (*output)[total] = '\0';
+    }
+
+    close(pipefd[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    return -1;
 #endif
 }
 
