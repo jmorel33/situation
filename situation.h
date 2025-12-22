@@ -813,6 +813,17 @@ typedef void (*SituationFileDropCallback)(
     void*        user_data
 ); // Files/folders dragged from OS onto the window
 
+typedef void (*SituationFileLoadCallback)(
+    void*        data,        // The loaded file data (or NULL on failure). OWNED BY CALLER (must free).
+    size_t       size,        // Size of the loaded data in bytes.
+    void*        user_data    // User data passed to the async function.
+); // Callback for asynchronous file loading
+
+typedef void (*SituationFileSaveCallback)(
+    bool         success,     // true if the file was written successfully.
+    void*        user_data    // User data passed to the async function.
+); // Callback for asynchronous file saving
+
 typedef void (*SituationFocusCallback)(
     bool   gained_focus,      // true = window gained focus, false = lost focus
     void*  user_data
@@ -2015,8 +2026,8 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void);                           
 SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data);
 #else
 SITAPI void SituationSubmitRenderList(SituationRenderList list, void (*func)(void*, void*), void* user_data);
-SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRenderList list);
 #endif
+SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRenderList list);
 SITAPI void SituationResetRenderList(SituationRenderList list);
 SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void);                      // Get the primary command buffer for the current frame.
 SITAPI SituationCommandBuffer SituationGetComputeCommandBuffer(void);                   // [v2.3.23] Get the compute-specific command buffer (Vulkan only).
@@ -2255,6 +2266,10 @@ SITAPI long SituationGetFileModTime(const char* file_path);                     
 // --- File Operations ---
 SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read);           // Load an entire file into a memory buffer (caller must free).
 SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsigned int bytes_to_write);    // Save a block of memory to a file.
+#ifdef SITUATION_ENABLE_THREADING
+SITAPI SituationJobId SituationLoadFileAsync(SituationThreadPool* pool, const char* file_path, SituationFileLoadCallback callback, void* user_data); // Asynchronously load a file.
+SITAPI SituationJobId SituationSaveFileAsync(SituationThreadPool* pool, const char* file_path, const void* data, size_t size, SituationFileSaveCallback callback, void* user_data); // Asynchronously save a file.
+#endif
 SITAPI char* SituationLoadFileText(const char* file_path);                                                  // Load a text file into a null-terminated string (caller must free).
 SITAPI bool SituationSaveFileText(const char* file_path, const char* text);                                 // Save a null-terminated string to a text file.
 SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path);                              // Copy a file.
@@ -30849,6 +30864,131 @@ SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
         sizeof(_SitAsyncAudioCtx),
         SIT_SUBMIT_DEFAULT // Low Priority is correct for loading
     );
+}
+
+// --- Async File I/O Implementation ---
+
+/**
+ * @brief [INTERNAL] Context for asynchronous file loading.
+ */
+typedef struct {
+    char* path;
+    SituationFileLoadCallback callback;
+    void* user_data;
+} _SitAsyncFileLoadCtx;
+
+/**
+ * @brief [INTERNAL] Worker for async file loading.
+ */
+static void _SituationAsyncFileLoadWorker(void* data, void* unused) {
+    (void)unused;
+    _SitAsyncFileLoadCtx* ctx = (_SitAsyncFileLoadCtx*)data;
+
+    unsigned int bytes_read = 0;
+    unsigned char* file_data = SituationLoadFileData(ctx->path, &bytes_read);
+
+    if (ctx->callback) {
+        ctx->callback(file_data, (size_t)bytes_read, ctx->user_data);
+    } else {
+        // If no callback, we must free the data to avoid a leak!
+        if (file_data) SIT_FREE(file_data);
+    }
+
+    SIT_FREE(ctx->path);
+}
+
+/**
+ * @brief Asynchronously loads a file from disk.
+ * @details Offloads the blocking `SituationLoadFileData` call to a background thread.
+ *          The user callback is invoked on the worker thread with the loaded data.
+ *
+ * @param pool The thread pool.
+ * @param file_path The path to load.
+ * @param callback Function to call when done.
+ * @param user_data User context pointer.
+ * @return Job ID or 0 on failure.
+ */
+SITAPI SituationJobId SituationLoadFileAsync(SituationThreadPool* pool, const char* file_path, SituationFileLoadCallback callback, void* user_data) {
+    if (!pool || !file_path) return 0;
+
+    _SitAsyncFileLoadCtx ctx;
+    ctx.path = _sit_strdup(file_path);
+    if (!ctx.path) return 0;
+    ctx.callback = callback;
+    ctx.user_data = user_data;
+
+    SituationJobId jid = SituationSubmitJobEx(pool, _SituationAsyncFileLoadWorker, &ctx, sizeof(_SitAsyncFileLoadCtx), SIT_SUBMIT_DEFAULT);
+    if (jid == 0) {
+        SIT_FREE(ctx.path);
+    }
+    return jid;
+}
+
+/**
+ * @brief [INTERNAL] Context for asynchronous file saving.
+ */
+typedef struct {
+    char* path;
+    void* data_copy;
+    size_t size;
+    SituationFileSaveCallback callback;
+    void* user_data;
+} _SitAsyncFileSaveCtx;
+
+/**
+ * @brief [INTERNAL] Worker for async file saving.
+ */
+static void _SituationAsyncFileSaveWorker(void* data, void* unused) {
+    (void)unused;
+    _SitAsyncFileSaveCtx* ctx = (_SitAsyncFileSaveCtx*)data;
+
+    bool success = SituationSaveFileData(ctx->path, ctx->data_copy, (unsigned int)ctx->size);
+
+    if (ctx->callback) {
+        ctx->callback(success, ctx->user_data);
+    }
+
+    SIT_FREE(ctx->path);
+    SIT_FREE(ctx->data_copy);
+}
+
+/**
+ * @brief Asynchronously saves data to a file.
+ * @details Copies the input data to a temporary buffer and offloads the write to a worker thread.
+ *          This allows the caller to free their data immediately after this function returns.
+ *
+ * @param pool The thread pool.
+ * @param file_path The path to save to.
+ * @param data The data to write.
+ * @param size The size of the data in bytes.
+ * @param callback Function to call when done.
+ * @param user_data User context pointer.
+ * @return Job ID or 0 on failure.
+ */
+SITAPI SituationJobId SituationSaveFileAsync(SituationThreadPool* pool, const char* file_path, const void* data, size_t size, SituationFileSaveCallback callback, void* user_data) {
+    if (!pool || !file_path || !data || size == 0) return 0;
+
+    _SitAsyncFileSaveCtx ctx;
+    ctx.path = _sit_strdup(file_path);
+    if (!ctx.path) return 0;
+
+    ctx.data_copy = SIT_MALLOC(size);
+    if (!ctx.data_copy) {
+        SIT_FREE(ctx.path);
+        return 0;
+    }
+    memcpy(ctx.data_copy, data, size);
+
+    ctx.size = size;
+    ctx.callback = callback;
+    ctx.user_data = user_data;
+
+    SituationJobId jid = SituationSubmitJobEx(pool, _SituationAsyncFileSaveWorker, &ctx, sizeof(_SitAsyncFileSaveCtx), SIT_SUBMIT_DEFAULT);
+    if (jid == 0) {
+        SIT_FREE(ctx.path);
+        SIT_FREE(ctx.data_copy);
+    }
+    return jid;
 }
 
 #endif // SITUATION_ENABLE_THREADING
