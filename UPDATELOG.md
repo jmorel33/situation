@@ -1,3 +1,27 @@
+## [v2.3.34A "Trinity Threads" (Missing PR Restoration)] - 2025-12-21
+
+### Description
+
+This release restores the "Trinity Threads" architecture changes that were accidentally omitted in a previous merge. It completes the asynchronous I/O vision by introducing a dedicated I/O thread, thread-safe resource registry, and offloading hot-reload polling from the main thread.
+
+### New Features
+
+*   **Dedicated I/O Thread:** Introduced a specialized thread for handling low-priority jobs (Asset Loading) and periodic maintenance tasks.
+    *   **Hot-Reload Offloading:** The file system polling for hot-reloading (Shaders, Textures, Models) now runs exclusively on the I/O thread, eliminating file system stalls from the main thread.
+    *   **Priority Queue:** The thread pool now strictly segregates High Priority (Physics/Logic) and Low Priority (IO) work, with the I/O thread servicing the latter.
+
+### Architectural Changes
+
+*   **Thread-Safe Resource Registry:** Added a `resource_registry_mutex` to the render state.
+    *   **Protected Access:** All `SituationLoad*` and `SituationUnload*` functions now acquire this lock when modifying the global linked lists of tracked resources.
+    *   **Safe Traversal:** The hot-reload logic safely iterates these lists under lock, preventing race conditions during concurrent loading/unloading.
+
+### Critical Fixes
+
+*   **Restored Functionality:** Re-integrated the `_SituationIOThreadEntry` function and updated `SituationCreateThreadPool` to spawn the IO thread, ensuring the async architecture functions as designed.
+
+---
+
 ## [v2.3.34 "Velocity" (Async I/O & Loader Safety)] - 2025-12-21
 
 ### Description
