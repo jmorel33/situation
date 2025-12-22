@@ -98,12 +98,12 @@ To make the Audio / Sound section fully multi-thread capable, the following step
 
 ### 4.2 Step 2: Atomic Parameters (Lock-Free Optimization)
 **Goal:** Allow thread-safe parameter updates without the overhead of mutexes for high-frequency changes (e.g., volume fades).
-- [ ] Change `float volume` to `_Atomic float` (C11) or `atomic_uint_least32_t` (if float atomics are unsupported) in `SituationSound` struct.
-- [ ] Change `float pan` to `_Atomic float` in `SituationSound` struct.
-- [ ] Change `float pitch` to `_Atomic float` in `SituationSound` struct.
-- [ ] Update `SituationSetSoundVolume` to use `atomic_store`.
-- [ ] Update `SituationSetSoundPan` to use `atomic_store`.
-- [ ] Update Audio Thread mixer loop to use `atomic_load` when reading these values.
+- [x] Change `float volume` to `_Atomic float` (C11) or `atomic_uint_least32_t` (if float atomics are unsupported) in `SituationSound` struct.
+- [x] Change `float pan` to `_Atomic float` in `SituationSound` struct.
+- [x] Change `float pitch` to `_Atomic float` in `SituationSound` struct.
+- [x] Update `SituationSetSoundVolume` to use `atomic_store`.
+- [x] Update `SituationSetSoundPan` to use `atomic_store`.
+- [x] Update Audio Thread mixer loop to use `atomic_load` when reading these values.
 
 ### 4.3 Step 3: Handle Verification System (Future - v2.4)
 **Goal:** Prevent Use-After-Free across threads.

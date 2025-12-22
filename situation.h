@@ -1456,9 +1456,10 @@ typedef struct {
     uint64_t                    total_frames;           // Total length in frames (0 if streamed/unknown length)
 
     // ── Mixer Controls (per-instance) ──
-    float                       volume;                 // Linear volume multiplier (0.0f = silent, 1.0f = normal, >1.0f allowed)
-    float                       pan;                    // Stereo panning (-1.0f = full left, 0.0f = center, +1.0f = full right)
-    float                       pitch;                  // Playback speed/pitch shift (1.0f normal, 0.5f half-speed, 2.0f double-speed)
+    _Atomic float               volume;                 // Linear volume multiplier (0.0f = silent, 1.0f = normal, >1.0f allowed)
+    _Atomic float               pan;                    // Stereo panning (-1.0f = full left, 0.0f = center, +1.0f = full right)
+    _Atomic float               pitch;                  // Playback speed/pitch shift (1.0f normal, 0.5f half-speed, 2.0f double-speed)
+    float                       _internal_pitch_tracker; // Internal tracker to detect pitch changes on the audio thread
 
     // ── Custom Streaming Support (Instance-Specific Callbacks - Thread-Safe Design) ──
     // These are stored directly in the instance so each streamed sound can have its own callbacks/userdata.
@@ -26583,6 +26584,20 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         SituationSound* sound = active_sounds[i];
         if (!sound || !sound->is_initialized || !sound->converter_initialized) continue;
 
+        // [THREAD SAFETY] Handle Pitch Changes
+        // Check atomic pitch vs internal tracker. If changed, update the converter.
+        // This is safe because only the audio thread calls ma_data_converter_set_rate.
+        float target_pitch = atomic_load(&sound->pitch);
+        if (fabsf(target_pitch - sound->_internal_pitch_tracker) > 0.001f) {
+            if (target_pitch <= 0.0f) target_pitch = 0.01f;
+
+            // Calculate new input rate for the converter
+            ma_uint32 new_rate = (ma_uint32)((float)sound->decoder.outputSampleRate * target_pitch);
+            ma_data_converter_set_rate(&sound->converter, new_rate, pGs->miniaudio_device.sampleRate);
+
+            sound->_internal_pitch_tracker = target_pitch;
+        }
+
         bool is_finished = false;
         uint64_t frames_mixed_so_far = 0;
 
@@ -26618,11 +26633,11 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
             
             if (generated > 0) {
                 ma_uint32 dev_ch = pDevice->playback.channels;
-                float vol = sound->volume;
+                float vol = atomic_load(&sound->volume);
                 float gain_L = 1.0f, gain_R = 1.0f;
                 
                 if (dev_ch >= 2) {
-                    float pan = (sound->pan + 1.0f) * 0.5f;
+                    float pan = (atomic_load(&sound->pan) + 1.0f) * 0.5f;
                     gain_L = cosf(pan * (float)M_PI_2);
                     gain_R = sinf(pan * (float)M_PI_2);
                 }
@@ -27783,10 +27798,10 @@ SITAPI SituationError SituationSetSoundVolume(SituationSound* sound, float volum
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
 
-    mtx_lock(&sit_audio.audio_queue_mutex);
+    // [THREAD SAFETY] Atomic store (Lock-Free)
     // Volume can be > 1.0 for gain, typically non-negative.
-    sound->volume = (volume < 0.0f) ? 0.0f : volume;
-    mtx_unlock(&sit_audio.audio_queue_mutex);
+    float safe_vol = (volume < 0.0f) ? 0.0f : volume;
+    atomic_store(&sound->volume, safe_vol);
 
     return SITUATION_SUCCESS;
 }
@@ -27802,7 +27817,7 @@ SITAPI SituationError SituationSetSoundVolume(SituationSound* sound, float volum
  */
 SITAPI float SituationGetSoundVolume(SituationSound* sound) {
     if (!sound || !sound->is_initialized) return 0.0f; // Or some error indication
-    return sound->volume;
+    return atomic_load(&sound->volume);
 }
 
 /**
@@ -27825,9 +27840,8 @@ SITAPI SituationError SituationSetSoundPan(SituationSound* sound, float pan) {
     if (pan < -1.0f) pan = -1.0f;
     if (pan > 1.0f) pan = 1.0f;
 
-    mtx_lock(&sit_audio.audio_queue_mutex);
-    sound->pan = pan;
-    mtx_unlock(&sit_audio.audio_queue_mutex);
+    // [THREAD SAFETY] Atomic store (Lock-Free)
+    atomic_store(&sound->pan, pan);
 
     return SITUATION_SUCCESS;
 }
@@ -27843,7 +27857,7 @@ SITAPI SituationError SituationSetSoundPan(SituationSound* sound, float pan) {
  */
 SITAPI float SituationGetSoundPan(SituationSound* sound) {
     if (!sound || !sound->is_initialized) return 0.0f; // Or some error indication
-    return sound->pan;
+    return atomic_load(&sound->pan);
 }
 
 /**
@@ -27864,12 +27878,10 @@ SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch)
     if (!sound || !sound->converter_initialized) return SITUATION_ERROR_INVALID_PARAM;
     if (pitch <= 0.0f) pitch = 0.01f; // Prevent zero or negative pitch
 
-    mtx_lock(&sit_audio.audio_queue_mutex);
-    sound->pitch = pitch;
-    ma_result res = ma_data_converter_set_rate(&sound->converter, (ma_uint32)(sound->decoder.outputSampleRate * pitch), sit_audio.miniaudio_device.sampleRate);
-    mtx_unlock(&sit_audio.audio_queue_mutex);
+    // [THREAD SAFETY] Atomic store (Lock-Free)
+    // We defer the actual converter update to the audio thread to avoid race conditions.
+    atomic_store(&sound->pitch, pitch);
 
-    if (res != MA_SUCCESS) return SITUATION_ERROR_AUDIO_CONVERTER;
     return SITUATION_SUCCESS;
 }
 
@@ -27884,7 +27896,7 @@ SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch)
  */
 SITAPI float SituationGetSoundPitch(SituationSound* sound) {
     if (!sound || !sound->is_initialized) return 1.0f;
-    return sound->pitch;
+    return atomic_load(&sound->pitch);
 }
 
 /**
