@@ -18164,12 +18164,19 @@ SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compu
     pipeline = SituationCreateComputePipelineFromMemory(source, layout_type);
 
     // --- 4. [HOT-RELOAD] Store Path and Layout in Tracking Node ---
-    // SituationCreateComputePipelineFromMemory prepends the new node to the head of sit_render.all_compute_pipelines.
-    // We check if the ID matches to be absolutely safe.
-    if (pipeline.id != 0 && sit_render.all_compute_pipelines && sit_render.all_compute_pipelines->pipeline.id == pipeline.id) {
-        sit_render.all_compute_pipelines->source_path = _sit_strdup(compute_shader_path);
-        sit_render.all_compute_pipelines->layout_type = layout_type;
-        sit_render.all_compute_pipelines->mod_time = SituationGetFileModTime(compute_shader_path);
+    if (pipeline.id != 0) {
+        mtx_lock(&sit_render.resource_registry_mutex);
+        _SituationComputePipelineNode* node = sit_render.all_compute_pipelines;
+        while (node) {
+            if (node->pipeline.id == pipeline.id) {
+                node->source_path = _sit_strdup(compute_shader_path);
+                node->layout_type = layout_type;
+                node->mod_time = SituationGetFileModTime(compute_shader_path);
+                break;
+            }
+            node = node->next;
+        }
+        mtx_unlock(&sit_render.resource_registry_mutex);
     }
 
     // --- 5. Cleanup ---
@@ -18201,6 +18208,7 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
     if (!pipeline || pipeline->id == 0) return;
 
     // --- Resource Manager: Remove from Tracking List ---
+    mtx_lock(&sit_render.resource_registry_mutex);
     _SituationComputePipelineNode* current = sit_render.all_compute_pipelines;
     _SituationComputePipelineNode* prev = NULL;
 
@@ -18218,6 +18226,7 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
         prev = current;
         current = current->next;
     }
+    mtx_unlock(&sit_render.resource_registry_mutex);
     // If the loop completes without finding the ID, it indicates an inconsistency (pipeline exists but isn't tracked), but proceeding with backend destruction is still the correct action for the resource itself.
 
     // --- 3. Backend-Specific Destruction ---
@@ -22791,9 +22800,18 @@ SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generat
     SituationUnloadImage(img);
 
     // [HOT-RELOAD] Capture path
-    if (tex.generation != 0 && sit_render.all_textures && sit_render.all_textures->texture.slot_index == tex.slot_index && sit_render.all_textures->texture.generation == tex.generation) {
-        sit_render.all_textures->source_path = _sit_strdup(file_path);
-        sit_render.all_textures->mod_time = SituationGetFileModTime(file_path);
+    if (tex.generation != 0) {
+        mtx_lock(&sit_render.resource_registry_mutex);
+        _SituationTextureNode* node = sit_render.all_textures;
+        while (node) {
+            if (node->texture.slot_index == tex.slot_index && node->texture.generation == tex.generation) {
+                node->source_path = _sit_strdup(file_path);
+                node->mod_time = SituationGetFileModTime(file_path);
+                break;
+            }
+            node = node->next;
+        }
+        mtx_unlock(&sit_render.resource_registry_mutex);
     }
     return tex;
 }
@@ -23239,11 +23257,16 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
     // [HOT-RELOAD] Capture paths in the node
     if (shader.id != 0) {
         mtx_lock(&sit_render.resource_registry_mutex);
-        if (sit_render.all_shaders && sit_render.all_shaders->shader.id == shader.id) {
-            sit_render.all_shaders->vs_path = _sit_strdup(vs_path);
-            sit_render.all_shaders->fs_path = _sit_strdup(fs_path);
-            sit_render.all_shaders->vs_mod_time = SituationGetFileModTime(vs_path);
-            sit_render.all_shaders->fs_mod_time = SituationGetFileModTime(fs_path);
+        _SituationShaderNode* node = sit_render.all_shaders;
+        while (node) {
+            if (node->shader.id == shader.id) {
+                node->vs_path = _sit_strdup(vs_path);
+                node->fs_path = _sit_strdup(fs_path);
+                node->vs_mod_time = SituationGetFileModTime(vs_path);
+                node->fs_mod_time = SituationGetFileModTime(fs_path);
+                break;
+            }
+            node = node->next;
         }
         mtx_unlock(&sit_render.resource_registry_mutex);
     }
