@@ -34,12 +34,12 @@ DSA allows us to modify objects without binding them to the context. This elimin
 
 ### Action Items:
 *   **Texture Creation:** Replace glBindTexture + glTexImage2D with:
-    *   [ ] glCreateTextures(GL_TEXTURE_2D, ...)
-    *   [ ] glTextureStorage2D(...) (Immutable storage is faster/safer)
-    *   [ ] glTextureSubImage2D(...)
+    *   [x] glCreateTextures(GL_TEXTURE_2D, ...)
+    *   [x] glTextureStorage2D(...) (Immutable storage is faster/safer)
+    *   [x] glTextureSubImage2D(...)
 *   **Buffer Operations:** Replace glBindBuffer + glBufferData with:
-    *   [ ] glCreateBuffers(...)
-    *   [ ] glNamedBufferStorage(...)
+    *   [x] glCreateBuffers(...)
+    *   [x] glNamedBufferStorage(...)
 *   **Uniforms:** Replace glUseProgram + glUniform* with:
     *   [ ] glProgramUniform* (Updates uniforms without switching the active shader).
 
@@ -74,8 +74,8 @@ DSA allows us to modify objects without binding them to the context. This elimin
 ## Execution Plan & Timeline
 
 ### Step 1: The DSA Migration (Low Risk, High Cleanup)
-*   [ ] **Task:** Refactor SituationCreateTexture, SituationCreateBuffer, and SituationLoadShader to use glCreate* and glNamed* functions exclusively.
-*   [ ] **Verification:** Ensure no glBind* calls exist in asset creation logic.
+*   [x] **Task:** Refactor SituationCreateTexture, SituationCreateBuffer, and SituationLoadShader to use glCreate* and glNamed* functions exclusively.
+*   [x] **Verification:** Ensure no glBind* calls exist in asset creation logic.
 
 ### Step 2: Persistent Ring Buffer (High Impact)
 *   [ ] **Task:** Implement _SituationGLInitRingBuffer.
