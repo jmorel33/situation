@@ -1,4 +1,36 @@
-## [v2.3.34A "Trinity Threads" (Missing PR Restoration)] - 2025-12-21
+## [2.3.35D - Stability & Safety Hardening] - 2025-12-23
+This release addresses critical integration issues and runtime safety hazards identified in the v2.3.34 "Velocity" codebase.
+
+#### Critical Fixes
+- **Linkage:** Removed erroneous `static` keyword from `SituationGetMeshData` declaration in the public header. This fixes compilation errors when linking against the library.
+- **Vulkan Screenshots:** Fixed a severe race condition in `SituationLoadImageFromScreen` (and `SituationTakeScreenshot`). The function now correctly flushes the current command buffer and waits for the GPU to idle before attempting to transition the swapchain image layout, preventing validation errors and driver crashes.
+
+#### Threading & Safety
+- **Thread Pool Safety:** `SituationSubmitJobEx` now defaults to **Copy-by-Value** for data payloads larger than 64 bytes. This prevents "Stack Use-After-Free" crashes where a worker thread attempts to read a struct from a stack frame that has already unwound.
+    - Added internal flag to track and free these heap allocations automatically.
+    - **New Flag:** Added `SIT_SUBMIT_POINTER_ONLY` for advanced users who wish to opt-out of this safety copy (e.g., when passing pointers to static/global data).
+- **Audio Callbacks:** Fixed a potential 32-bit truncation issue in the audio stream thunk where `size_t` was implicitly cast to `ma_uint64`, ensuring stability on 32-bit build targets.
+
+#### Backend Internals
+- **Vulkan Buffer Usage:** `SituationCreateBuffer` now automatically appends the `VK_BUFFER_USAGE_TRANSFER_DST_BIT` flag. This ensures that buffers created for Uniforms or Storage can be legally updated via `SituationUpdateBuffer` without triggering Vulkan validation errors.
+- **Model Saving:** Added a preprocessor guard to `SituationSaveModelAsGltf`. Calls to this function will now trigger a compile-time `#error` if `CGLTF_WRITE_H` is not defined, preventing confusing runtime `NOT_IMPLEMENTED` returns.
+- **API Clarity:** Explicitly documented `SituationCmdSetVertexAttribute` as **[OpenGL Only]** to reflect the immutable nature of Vulkan pipelines.
+
+---
+
+## [v2.3.35C - API Refactor & Backend Isolation] - 2025-12-23
+- [API] Refactored core resource creation functions to return `SituationError` and output handles via pointers, replacing direct handle returns. This standardizes error handling across the entire API.
+  - Updated: `SituationCreateBuffer`, `SituationCreateMesh`, `SituationLoadImage`, `SituationLoadTexture`, `SituationLoadModel`, `SituationCreateTexture`, `SituationCreateTextureEx`.
+  - Updated: `SituationCreateComputePipeline`, `SituationCreateComputePipelineFromMemory`.
+  - Updated: `SituationLoadImageFromScreen`, `SituationTakeScreenshot`.
+- [Fix] Fixed internal variable scoping issues in the new implementations of `SituationCreateBuffer` and `SituationCreateMesh`.
+- [Fix] Added missing error checks in `SituationLoadModel` when creating textures.
+- [Fix] Verified `SituationRenderVirtualDisplays` backend guards to ensure no regression.
+- [Fix] Updated `SituationReloadTexture` implementation to handle the new `SituationLoadImage` signature correctly (though the function itself still returns `bool` for now).
+
+---
+
+## [v2.3.34A "Trinity Threads" (Missing PR Restoration)] - 2025-12-22
 
 ### Description
 
@@ -22,7 +54,7 @@ This release restores the "Trinity Threads" architecture changes that were accid
 
 ---
 
-## [v2.3.34 "Velocity" (Async I/O & Loader Safety)] - 2025-12-21
+## [v2.3.34 "Velocity" (Async I/O & Loader Safety)] - 2025-12-22
 
 ### Description
 
@@ -47,9 +79,6 @@ This release fulfills the "Velocity" promise of a complete Asynchronous I/O syst
 *   **New Prototypes:** Added `SituationLoadFileTextAsync` and `SituationSaveFileTextAsync` to the public API.
 
 ---
-
-
-
 
 ## [v2.3.33A - Cross-Platform Hidden Command Execution] - 2025-12-21
 - [Feature] Added `SituationExecuteCommand` to run system shell commands in a hidden window/process while capturing stdout/stderr output.
