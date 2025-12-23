@@ -19,12 +19,12 @@ Here is the concrete execution plan to "Max Out Core" (OpenGL 4.6).
     *   Place a Fence at the end of the frame.
 
 ### Code Change Requirements:
-*   Modify `_SituationInitOpenGL`: Allocate the global persistent staging buffer.
-*   Modify `SituationUpdateBuffer`:
-    *   Check if the update fits in the current ring segment.
-    *   memcpy directly to the persistent pointer.
-    *   No OpenGL API calls are made here. It is pure memory copy.
-*   Modify `SituationCreateBuffer`: Use glCreateBuffers + glNamedBufferStorage (DSA) with GL_DYNAMIC_STORAGE_BIT only if it cannot use the ring buffer strategy (e.g., static geometry).
+*   [ ] Modify `_SituationInitOpenGL`: Allocate the global persistent staging buffer.
+*   [ ] Modify `SituationUpdateBuffer`:
+    *   [ ] Check if the update fits in the current ring segment.
+    *   [ ] memcpy directly to the persistent pointer.
+    *   [ ] No OpenGL API calls are made here. It is pure memory copy.
+*   [ ] Modify `SituationCreateBuffer`: Use glCreateBuffers + glNamedBufferStorage (DSA) with GL_DYNAMIC_STORAGE_BIT only if it cannot use the ring buffer strategy (e.g., static geometry).
 
 ## Phase 2: The "Stateless" Renovation (Direct State Access)
 **Goal:** Remove the "Soft Command Buffer" overhead of tracking bindings (current_vao, current_program). Make the replay loop purely functional.
@@ -34,14 +34,14 @@ DSA allows us to modify objects without binding them to the context. This elimin
 
 ### Action Items:
 *   **Texture Creation:** Replace glBindTexture + glTexImage2D with:
-    *   glCreateTextures(GL_TEXTURE_2D, ...)
-    *   glTextureStorage2D(...) (Immutable storage is faster/safer)
-    *   glTextureSubImage2D(...)
+    *   [ ] glCreateTextures(GL_TEXTURE_2D, ...)
+    *   [ ] glTextureStorage2D(...) (Immutable storage is faster/safer)
+    *   [ ] glTextureSubImage2D(...)
 *   **Buffer Operations:** Replace glBindBuffer + glBufferData with:
-    *   glCreateBuffers(...)
-    *   glNamedBufferStorage(...)
+    *   [ ] glCreateBuffers(...)
+    *   [ ] glNamedBufferStorage(...)
 *   **Uniforms:** Replace glUseProgram + glUniform* with:
-    *   glProgramUniform* (Updates uniforms without switching the active shader).
+    *   [ ] glProgramUniform* (Updates uniforms without switching the active shader).
 
 **Benefit:** The SituationCmd* functions become thread-safe regarding GL state generation (though submission is still main-thread).
 
@@ -74,22 +74,22 @@ DSA allows us to modify objects without binding them to the context. This elimin
 ## Execution Plan & Timeline
 
 ### Step 1: The DSA Migration (Low Risk, High Cleanup)
-*   **Task:** Refactor SituationCreateTexture, SituationCreateBuffer, and SituationLoadShader to use glCreate* and glNamed* functions exclusively.
-*   **Verification:** Ensure no glBind* calls exist in asset creation logic.
+*   [ ] **Task:** Refactor SituationCreateTexture, SituationCreateBuffer, and SituationLoadShader to use glCreate* and glNamed* functions exclusively.
+*   [ ] **Verification:** Ensure no glBind* calls exist in asset creation logic.
 
 ### Step 2: Persistent Ring Buffer (High Impact)
-*   **Task:** Implement _SituationGLInitRingBuffer.
-*   **Task:** Rewrite SituationUpdateBuffer to use memcpy into the ring.
-*   **Task:** Rewrite SituationCmdDraw to bind the ring buffer offset.
+*   [ ] **Task:** Implement _SituationGLInitRingBuffer.
+*   [ ] **Task:** Rewrite SituationUpdateBuffer to use memcpy into the ring.
+*   [ ] **Task:** Rewrite SituationCmdDraw to bind the ring buffer offset.
 *   **Result:** SituationUpdateBuffer becomes nearly instant.
 
 ### Step 3: Bindless Textures (Modernization)
-*   **Task:** Enable GL_ARB_bindless_texture.
-*   **Task:** Update SituationTexture to hold the GLuint64 handle.
-*   **Task:** Update SituationCmdDrawQuad to pass the handle via uniform instead of binding.
+*   [ ] **Task:** Enable GL_ARB_bindless_texture.
+*   [ ] **Task:** Update SituationTexture to hold the GLuint64 handle.
+*   [ ] **Task:** Update SituationCmdDrawQuad to pass the handle via uniform instead of binding.
 
 ### Step 4: Multi-Draw Indirect (Optimization)
-*   **Task:** Add an MDI optimizer to the Soft Command Buffer replay.
+*   [ ] **Task:** Add an MDI optimizer to the Soft Command Buffer replay.
 
 ## Code Snippet: The New OpenGL "Zero-Copy" Update
 This replaces the slow glBufferSubData logic.
@@ -107,7 +107,7 @@ void _SituationInitGLRingBuffer() {
 SITAPI SituationError SituationUpdateBuffer(...) {
     // 1. Calculate offset in ring (aligned to 256 bytes)
     size_t offset = atomic_fetch_add(&sit_render.gl.ring_head, size);
-    
+
     // 2. Wait for fence if we wrapped around (Sync logic omitted for brevity)
     _SituationGLRingWait(offset);
 
