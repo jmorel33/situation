@@ -21238,7 +21238,7 @@ SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
     // The file on disk doesn't need to be null-terminated.
     unsigned int len = (unsigned int)strlen(text);
 
-    return SituationSaveFileData(file_path, text, len);
+    return (SituationSaveFileData(file_path, text, len) == SITUATION_SUCCESS);
 }
 
 /**
@@ -22884,7 +22884,9 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
             if (texture_uri) {
                 char* full_texture_path = SituationJoinPath(base_path, texture_uri);
                 // Load texture with mipmaps enabled
-                SituationError tex_err = SituationCreateTexture(SituationLoadImage(full_texture_path), true, &model.all_model_textures[i]);
+                SituationImage tex_img = SituationLoadImage(full_texture_path);
+                SituationError tex_err = SituationCreateTexture(tex_img, true, &model.all_model_textures[i]);
+                SituationUnloadImage(tex_img);
 
                 // Basic validation warning
                 if (tex_err != SITUATION_SUCCESS || model.all_model_textures[i].generation == 0) {
@@ -26159,7 +26161,7 @@ static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* i
     }
 
     // Save the buffer to disk using our existing library function
-    bool success = SituationSaveFileData(fileName, fileBuffer, fileSize);
+    bool success = (SituationSaveFileData(fileName, fileBuffer, fileSize) == SITUATION_SUCCESS);
     SIT_FREE(fileBuffer);
 
     if (!success) {
@@ -31070,7 +31072,9 @@ static void _SituationAsyncFileLoadWorker(void* data, void* unused) {
     _SitAsyncFileLoadCtx* ctx = (_SitAsyncFileLoadCtx*)data;
 
     unsigned int bytes_read = 0;
-    unsigned char* file_data = SituationLoadFileData(ctx->path, &bytes_read);
+    unsigned char* file_data = NULL;
+    SituationError err = SituationLoadFileData(ctx->path, &bytes_read, &file_data);
+    (void)err; // Suppress unused warning if callback doesn't care
 
     if (ctx->callback) {
         ctx->callback(file_data, (size_t)bytes_read, ctx->user_data);
@@ -31243,7 +31247,7 @@ static void _SituationAsyncFileSaveWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncFileSaveCtx* ctx = (_SitAsyncFileSaveCtx*)data;
 
-    bool success = SituationSaveFileData(ctx->path, ctx->data_copy, (unsigned int)ctx->size);
+    bool success = (SituationSaveFileData(ctx->path, ctx->data_copy, (unsigned int)ctx->size) == SITUATION_SUCCESS);
 
     if (ctx->callback) {
         ctx->callback(success, ctx->user_data);
