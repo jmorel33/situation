@@ -1879,7 +1879,7 @@ SITAPI float SituationGetFrameTime(void);                                       
 SITAPI int SituationGetFPS(void);                                                       // Get the current frames-per-second value.
 
 // --- Callbacks and Event Handling ---
-SITAPI char* SituationGetLastErrorMsg(void);                                            // Get the last error message as a string (caller must free).
+SITAPI SituationError SituationGetLastErrorMsg(char** out_msg);                         // Get the last error message as a string (caller must free).
 SITAPI void SituationSetExitCallback(void (*callback)(void* user_data), void* user_data); // Set a callback to run just before shutdown.
 SITAPI void SituationSetResizeCallback(void (*callback)(int width, int height, void* user_data), void* user_data); // Set a callback for window framebuffer resize events.
 SITAPI void SituationSetFocusCallback(SituationFocusCallback callback, void* user_data); // Set a callback for window focus events.
@@ -1946,7 +1946,7 @@ SITAPI Vector2 SituationGetWindowScaleDPI(void);                                
 // --- Physical Display (Monitor) Management ---
 SITAPI int SituationGetMonitorCount(void);                                              // Get the number of connected monitors.
 SITAPI int SituationGetCurrentMonitor(void);                                            // Get the index of the monitor the window is on.
-SITAPI SituationDisplayInfo* SituationGetDisplays(int* count);                          // Get information for all displays (caller must free).
+SITAPI SituationError SituationGetDisplays(SituationDisplayInfo** out_displays, int* out_count); // Get information for all displays (caller must free).
 SITAPI void SituationRefreshDisplays(void);                                             // Force a refresh of the cached display information.
 SITAPI SituationError SituationSetDisplayMode(int monitor_id, const SituationDisplayMode* mode, bool fullscreen); // Set the display mode for a monitor.
 SITAPI void SituationSetWindowMonitor(int monitor_id);                                  // Set the window to be fullscreen on a specific monitor.
@@ -1963,8 +1963,8 @@ SITAPI void SituationSetCursor(SituationCursor cursor);                         
 SITAPI void SituationShowCursor(void);                                                  // Show the mouse cursor.
 SITAPI void SituationHideCursor(void);                                                  // Hide the mouse cursor.
 SITAPI void SituationDisableCursor(void);                                               // Hide and lock the cursor, providing raw mouse motion.
-SITAPI const char* SituationGetClipboardText(void);                                     // Get text from the system clipboard.
-SITAPI void SituationSetClipboardText(const char* text);                                // Set text in the system clipboard.
+SITAPI SituationError SituationGetClipboardText(const char** out_text);                 // Get text from the system clipboard.
+SITAPI SituationError SituationSetClipboardText(const char* text);                      // Set text in the system clipboard.
 SITAPI bool SituationIsFileDropped(void);                                               // Check if a file was dropped into the window this frame.
 SITAPI char** SituationLoadDroppedFiles(int* count);                                    // Get the paths of dropped files (returns a copy, caller must free).
 SITAPI void SituationUnloadDroppedFiles(char** paths, int count);                       // Unload the file path list returned by SituationLoadDroppedFiles.
@@ -2083,9 +2083,9 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
 SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags); // Insert a fine-grained pipeline barrier for synchronization.
 
 // --- Texture Management ---
-SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generate_mipmaps);// Loads a texture from disk and registers the path for hot-reloading.
-SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps); // Create a texture from a CPU-side image.
-SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool generate_mipmaps, SituationTextureUsageFlags flags); // Create a texture with specific usage flags.
+SITAPI SituationError SituationLoadTexture(const char* file_path, bool generate_mipmaps, SituationTexture* out_texture);// Loads a texture from disk and registers the path for hot-reloading.
+SITAPI SituationError SituationCreateTexture(SituationImage image, bool generate_mipmaps, SituationTexture* out_texture); // Create a texture from a CPU-side image.
+SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool generate_mipmaps, SituationTextureUsageFlags flags, SituationTexture* out_texture); // Create a texture with specific usage flags.
 SITAPI void SituationDestroyTexture(SituationTexture* texture);                         // Unload a texture from GPU memory.
 
 // --- Compute Shader Pipeline ---
@@ -2103,9 +2103,9 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
 SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offset, size_t size, void* out_data); // Read data from a GPU buffer.
 
 // --- Virtual Displays (Render Targets) ---
-SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode); // Create an off-screen render target.
+SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode, int* out_id); // Create an off-screen render target.
 SITAPI SituationError SituationDestroyVirtualDisplay(int display_id);                   // Destroy a virtual display.
-SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd);                 // Composite all visible virtual displays to the current target.
+SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd);       // Composite all visible virtual displays to the current target.
 SITAPI SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, float opacity, int z_order, bool visible, double frame_time_mult, SituationBlendMode blend_mode); // Configure a virtual display's properties.
 SITAPI SituationVirtualDisplay* SituationGetVirtualDisplay(int display_id);             // Get a pointer to a virtual display's state.
 SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, SituationScalingMode scaling_mode); // Set the scaling/filtering mode for a virtual display.
@@ -2115,7 +2115,7 @@ SITAPI double SituationGetLastVDCompositeTimeMS(void);                          
 SITAPI void SituationGetVirtualDisplaySize(int display_id, int* width, int* height);    // Get the internal resolution of a virtual display.
 
 // --- 3D Model Utilities ---
-SITAPI SituationModel SituationLoadModel(const char* file_path);                        // Loads a complete 3D model and its textures from a GLTF file.
+SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* out_model); // Loads a complete 3D model and its textures from a GLTF file.
 SITAPI void SituationUnloadModel(SituationModel* model);                                // Frees all GPU and CPU resources associated with a loaded model.
 SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform); // Draws all sub-meshes of a model with a single root transformation.
 SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path);      // Exports a model to a human-readable .gltf and a .bin file for debugging.
@@ -2123,7 +2123,7 @@ static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
 
 // --- Image & Screenshot Utilities ---
 SITAPI SituationImage SituationLoadImageFromScreen(void);                               // Get a copy of the current screen backbuffer as an image.
-SITAPI bool SituationTakeScreenshot(const char *fileName);                              // Take a screenshot and save it to a file (PNG or BMP).
+SITAPI SituationError SituationTakeScreenshot(const char *fileName);                    // Take a screenshot and save it to a file (PNG or BMP).
 
 // --- Backend-Specific Accessors ---
 SITAPI SituationRendererType SituationGetRendererType(void);                            // Get the current active renderer type (OpenGL or Vulkan).
@@ -2151,7 +2151,7 @@ SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_
 // These functions allow you to reload assets from disk at runtime without restarting.
 // They handle GPU synchronization, resource destruction, and re-loading.
 // Returns true if the reload was successful. On failure, the old handle is usually invalid.
-SITAPI void SituationCheckHotReloads(void);                                             // Checks all tracked resources for file changes and reloads them if necessary.
+SITAPI SituationError SituationCheckHotReloads(void);                                   // Checks all tracked resources for file changes and reloads them if necessary.
 SITAPI bool SituationReloadShader(SituationShader* shader);                             // Recompiles and links a shader from its original source files (Synchronous/Stalls GPU).
 SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline);         // Recompiles a compute pipeline from its original source file (Synchronous/Stalls GPU).
 SITAPI bool SituationReloadTexture(SituationTexture* texture);                          // Re-reads image file and recreates the GPU texture resource (Synchronous/Stalls GPU).
@@ -2276,8 +2276,8 @@ SITAPI bool SituationDirectoryExists(const char* dir_path);                     
 SITAPI long SituationGetFileModTime(const char* file_path);                             // Get the last modification time of a file (Unix timestamp).
 
 // --- File Operations ---
-SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read);           // Load an entire file into a memory buffer (caller must free).
-SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsigned int bytes_to_write);    // Save a block of memory to a file.
+SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read, unsigned char** out_data);           // Load an entire file into a memory buffer (caller must free).
+SITAPI SituationError SituationSaveFileData(const char* file_path, const void* data, unsigned int bytes_to_write);    // Save a block of memory to a file.
 #ifdef SITUATION_ENABLE_THREADING
 SITAPI SituationJobId SituationLoadFileAsync(SituationThreadPool* pool, const char* file_path, SituationFileLoadCallback callback, void* user_data); // Asynchronously load a file.
 SITAPI SituationJobId SituationSaveFileAsync(SituationThreadPool* pool, const char* file_path, const void* data, size_t size, SituationFileSaveCallback callback, void* user_data); // Asynchronously save a file.
@@ -2694,7 +2694,7 @@ static const unsigned char sit_default_8x8_font[256 * 8] = {
 };
 
 // Internal: Assert main thread
-static void _SituationSetErrorFromCode(SituationError err, const char* detail);
+static SituationError _SituationSetErrorFromCode(SituationError err, const char* detail);
 
 #ifdef SITUATION_ENABLE_THREADING
 static thrd_t sit_gs_main_thread_id;
@@ -3794,7 +3794,7 @@ static SituationContext* _sit_current_context = NULL;
 // Core Lifecycle & Error Handling Helpers
 //==================================================================================
 static void _SituationSetError(const char* msg);                                                // [CORE] Sets the global last error message string.
-static void _SituationSetErrorFromCode(SituationError err, const char* detail);                 // [CORE] Sets the global error message from an error code and detail string.
+static SituationError _SituationSetErrorFromCode(SituationError err, const char* detail);                 // [CORE] Sets the global error message from an error code and detail string.
 static SituationError _SituationInitPlatform(void);                                             // [INIT] Initializes platform-specific dependencies (GLFW, COM).
 static SituationError _SituationInitWindow(const SituationInitInfo* init_info);                 // [INIT] Creates the main application window using GLFW.
 static SituationError _SituationInitRenderer(const SituationInitInfo* init_info);               // [INIT] Dispatches to the backend-specific graphics initializer (GL/VK).
@@ -4327,7 +4327,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback(VkDebugUtils
 
 static int _SituationWorkerEntry(void* arg); // Internal Worker Thread
 
-static void _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error);
+static SituationError _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error);
 static char* _sit_dirname(const char* path); // Forward declaration
 static bool _sit_directory_exists(const char* dir_path); // Forward declaration
 
@@ -5165,7 +5165,7 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...) {
  * @param err The `SituationError` code to translate.
  * @param detail An optional, more specific string describing the context of the error.
  */
-static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
+static SituationError _SituationSetErrorFromCode(SituationError err, const char* detail) {
     char buffer[SITUATION_MAX_ERROR_MSG_LEN];
     const char* base_msg = "Unknown Error";
 
@@ -5354,11 +5354,14 @@ static void _SituationSetErrorFromCode(SituationError err, const char* detail) {
  *
  * @see SituationFreeString(), _SituationSetError()
  */
-SITAPI char* SituationGetLastErrorMsg(void) {
+SITAPI SituationError SituationGetLastErrorMsg(char** out_msg) {
+    if (out_msg) *out_msg = NULL;
+    else return SITUATION_ERROR_INVALID_PARAM;
+
     // --- 1. Input/State Validation ---
     // Check if the context exists.
     if (!_sit_current_context) {
-        return NULL;
+        return SITUATION_ERROR_NOT_INITIALIZED;
     }
 
     // A mutex lock/unlock could be added here for perfect thread-safety if another thread could be setting an error while this one is reading.
@@ -5368,7 +5371,7 @@ SITAPI char* SituationGetLastErrorMsg(void) {
     // Check if the internal error message is empty.
     if (sit_gs.last_error_msg[0] == '\0') {
         ma_mutex_unlock(&sit_gs.error_mutex);
-        return NULL; // No error message has been set.
+        return SITUATION_SUCCESS; // No error set
     }
 
     // --- 2. Allocate Memory for the Copy ---
@@ -5377,14 +5380,9 @@ SITAPI char* SituationGetLastErrorMsg(void) {
 
     // Allocate memory for the copy, including space for the null terminator.
     char* msg_copy = (char*)SIT_MALLOC(msg_len + 1);
-
-    // --- 3. Handle Allocation Failure ---
     if (!msg_copy) {
         ma_mutex_unlock(&sit_gs.error_mutex);
-        // Unable to allocate memory for the error string copy.
-        // We can't return the error, but we also can't do much else.
-        // Returning NULL is the only option.
-        return NULL;
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
     // --- 4. Copy the Error Message ---
@@ -5395,7 +5393,8 @@ SITAPI char* SituationGetLastErrorMsg(void) {
 
     // --- 5. Return the Copy ---
     // The caller now owns this memory and is responsible for calling SituationFreeString().
-    return msg_copy;
+    *out_msg = msg_copy;
+    return SITUATION_SUCCESS;
 }
 
 // --- Updated/Added Documentation Block for _SituationGLFWErrorCallback ---
@@ -12325,7 +12324,7 @@ static void _SituationInitDefaultFont(void) {
     }
 
     SituationImage img = { .width = tex_w, .height = tex_h, .channels = 4, .data = pixels };
-    sit_render.default_font_atlas = SituationCreateTexture(img, false);
+    SituationCreateTexture(img, false, &sit_render.default_font_atlas);
     SIT_FREE(pixels);
 
     // Setup font struct
@@ -16424,11 +16423,14 @@ SITAPI SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32
  * @param generate_mipmaps If true, generates a full mipmap chain.
  * @return A valid `SituationTexture` handle, or `{0}` on failure.
  */
-SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool generate_mipmaps, SituationTextureUsageFlags usage_flags) {
-    SituationTexture texture = {0};
+SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool generate_mipmaps, SituationTextureUsageFlags usage_flags, SituationTexture* out_texture) {
+    if (out_texture) *out_texture = (SituationTexture){0};
+
     if (!SituationIsImageValid(image)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot create texture from invalid image.");
-        return texture;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot create texture from invalid image.");
+    }
+    if (!out_texture) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_texture cannot be NULL.");
     }
 
     // 1. Find Free Slot
@@ -16441,8 +16443,7 @@ SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool gene
     }
 
     if (slot_idx == -1) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Max texture limit reached (SITUATION_MAX_TEXTURES).");
-        return (SituationTexture){0};
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Max texture limit reached (SITUATION_MAX_TEXTURES).");
     }
 
     _SituationTextureSlot* slot = &sit_render.texture_registry[slot_idx];
@@ -16462,8 +16463,7 @@ SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool gene
     // If the texture ID is 0 here, it means the context is likely invalid.
     if (slot->gl_texture_id == 0) {
         slot->is_active = false;
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateTextures failed, context may be invalid.");
-        return (SituationTexture){0};
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateTextures failed, context may be invalid.");
     }
 
     int levels = 1;
@@ -16491,10 +16491,10 @@ SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool gene
     glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     SIT_CHECK_GL_ERROR();
 
-    texture.slot_index = slot_idx;
-    texture.generation = slot->generation;
-    texture.width = slot->width;
-    texture.height = slot->height;
+    out_texture->slot_index = slot_idx;
+    out_texture->generation = slot->generation;
+    out_texture->width = slot->width;
+    out_texture->height = slot->height;
 
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -16652,13 +16652,13 @@ SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool gene
 #endif
 
     // --- Resource Manager Hook ---
-    if (texture.generation != 0) {
+    if (out_texture->generation != 0) {
         // We must check if an error occurred during the GL calls above.
         // If it did, we should not add it to the tracking list.
         if (strcmp(sit_gs.last_error_msg, "No error") == 0) {
             _SituationTextureNode* node = (_SituationTextureNode*)SIT_MALLOC(sizeof(_SituationTextureNode));
             if (node) {
-                node->texture = texture;
+                node->texture = *out_texture;
                 // [FIX v2.3.27B] Store pool in node
                 #if defined(SITUATION_USE_VULKAN)
                 node->descriptor_pool = used_pool; 
@@ -16668,9 +16668,8 @@ SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool gene
                 sit_render.all_textures = node;
                 mtx_unlock(&sit_render.resource_registry_mutex);
             } else {
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for texture");
-                SituationDestroyTexture(&texture);
-                return (SituationTexture){0};
+                SituationDestroyTexture(out_texture);
+                return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for texture");
             }
         } else {
              // An error was logged by SIT_CHECK_GL_ERROR.
@@ -16683,17 +16682,17 @@ SITAPI SituationTexture SituationCreateTextureEx(SituationImage image, bool gene
 #elif defined(SITUATION_USE_VULKAN)
              // Vulkan path has its own error checking and cleanup. This path is for GL.
 #endif
-             return (SituationTexture){0};
+             return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED, "Failed to finalize texture creation.");
         }
     }
 
-    return texture;
+    return SITUATION_SUCCESS;
 }
 
-SITAPI SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps) {
+SITAPI SituationError SituationCreateTexture(SituationImage image, bool generate_mipmaps, SituationTexture* out_texture) {
     SituationTextureUsageFlags flags = SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_TRANSFER_DST;
     if (generate_mipmaps) flags |= SITUATION_TEXTURE_USAGE_TRANSFER_SRC;
-    return SituationCreateTextureEx(image, generate_mipmaps, flags);
+    return SituationCreateTextureEx(image, generate_mipmaps, flags, out_texture);
 }
 
 /**
@@ -18170,7 +18169,10 @@ SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compu
     char* source = SituationLoadFileText(compute_shader_path);
     if (!source) {
         char prefixed_error[SITUATION_MAX_ERROR_MSG_LEN];
-        snprintf( prefixed_error, sizeof(prefixed_error), "SituationCreateComputePipeline: Failed to load shader file '%s'. Reason: %s", compute_shader_path, SituationGetLastErrorMsg() );
+        char* last_err = NULL;
+        SituationGetLastErrorMsg(&last_err);
+        snprintf( prefixed_error, sizeof(prefixed_error), "SituationCreateComputePipeline: Failed to load shader file '%s'. Reason: %s", compute_shader_path, last_err ? last_err : "Unknown" );
+        if (last_err) SituationFreeString(last_err);
         _SituationSetError(prefixed_error);
         return pipeline;
     }
@@ -18993,13 +18995,18 @@ SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature) {
  *
  * @warning **Do not free** the returned pointer. If you need to persist the text, make a copy immediately (e.g., using `strdup`).
  */
-SITAPI const char* SituationGetClipboardText(void) {
+SITAPI SituationError SituationGetClipboardText(const char** out_text) {
+    if (out_text) *out_text = NULL;
+    else return SITUATION_ERROR_INVALID_PARAM;
+
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get clipboard text");
-        return NULL;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get clipboard text");
     }
     // GLFW handles all the complexity and memory management.
-    return glfwGetClipboardString(sit_gs.sit_glfw_window);
+    // Note: The string returned by glfwGetClipboardString is valid until the next call to it or when the window is closed.
+    // We return a const pointer directly.
+    *out_text = glfwGetClipboardString(sit_gs.sit_glfw_window);
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -19013,10 +19020,9 @@ SITAPI const char* SituationGetClipboardText(void) {
  *
  * @note This operation is generally fast but involves OS interaction.
  */
-SITAPI void SituationSetClipboardText(const char* text) {
+SITAPI SituationError SituationSetClipboardText(const char* text) {
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot set clipboard text");
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot set clipboard text");
     }
     if (!text) {
         // Setting an empty string is the correct way to "clear" the clipboard.
@@ -19024,6 +19030,7 @@ SITAPI void SituationSetClipboardText(const char* text) {
     }
     // GLFW handles all the complexity.
     glfwSetClipboardString(sit_gs.sit_glfw_window, text);
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -20898,7 +20905,7 @@ SITAPI void SituationFreeDirectoryFileList(char** file_list, int count) {
  * @param base_message A string describing the operation that failed (e.g., "Failed to create directory").
  * @param path The file or directory path that was involved in the failed operation.
  */
-static void _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error) {
+static SituationError _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error) {
     char platform_error_str[256] = {0};
     SituationError specific_error_code = default_error;
 
@@ -20985,7 +20992,7 @@ static void _SituationSetFilesystemError(const char* base_message, const char* p
     snprintf(final_message, sizeof(final_message), "%s: '%s' - %s", base_message, path, platform_error_str);
 
     // Use the specific error code we determined, with the full message as detail.
-    _SituationSetErrorFromCode(specific_error_code, final_message);
+    return _SituationSetErrorFromCode(specific_error_code, final_message);
 }
 
 /**
@@ -21024,17 +21031,13 @@ static char* SituationGetBasePathFromFile(const char* file_path) {
  * @param out_bytes_read A pointer that will be filled with the number of bytes read.
  * @return A new buffer containing the file data, or NULL on failure.
  */
-SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read) {
-    if (!file_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
-        if (out_bytes_read) *out_bytes_read = 0;
-        return NULL;
-    }
-    if (!out_bytes_read) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_bytes_read cannot be NULL.");
-        return NULL;
-    }
-    *out_bytes_read = 0;
+SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read, unsigned char** out_data) {
+    if (out_data) *out_data = NULL;
+    if (out_bytes_read) *out_bytes_read = 0;
+
+    if (!file_path) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
+    if (!out_bytes_read) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_bytes_read cannot be NULL.");
+    if (!out_data) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_data cannot be NULL.");
 
 #if defined(_WIN32)
     WCHAR* wide_path = _sit_utf8_to_wide(file_path);
@@ -21053,48 +21056,45 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
 
     LARGE_INTEGER file_size;
     if (!GetFileSizeEx(hFile, &file_size)) {
-        _SituationSetFilesystemError("Failed to get file size", file_path, SITUATION_ERROR_FILE_READ_FAILED);
         CloseHandle(hFile);
-        return NULL;
+        return _SituationSetFilesystemError("Failed to get file size", file_path, SITUATION_ERROR_FILE_READ_FAILED);
     }
 
     if (file_size.QuadPart > 0xFFFFFFFF) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_TOO_LARGE, "File is too large (>4GB).");
         CloseHandle(hFile);
-        return NULL;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_TOO_LARGE, "File is too large (>4GB).");
     }
 
     unsigned int size_to_read = (unsigned int)file_size.QuadPart;
     if (size_to_read == 0) {
         CloseHandle(hFile);
         *out_bytes_read = 0;
-        return (unsigned char*)SIT_MALLOC(1); // Return valid, empty buffer.
+        *out_data = (unsigned char*)SIT_MALLOC(1); // Return valid, empty buffer.
+        return SITUATION_SUCCESS;
     }
 
     unsigned char* buffer = (unsigned char*)SIT_MALLOC(size_to_read);
     if (!buffer) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
         CloseHandle(hFile);
-        return NULL;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
     }
 
     DWORD bytes_read_win = 0;
     if (!ReadFile(hFile, buffer, size_to_read, &bytes_read_win, NULL) || bytes_read_win != size_to_read) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error during file read.");
         SIT_FREE(buffer);
         CloseHandle(hFile);
-        return NULL;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error during file read.");
     }
 
     CloseHandle(hFile);
     *out_bytes_read = size_to_read;
-    return buffer;
+    *out_data = buffer;
+    return SITUATION_SUCCESS;
 
 #else // Standard C library implementation (POSIX)
     FILE* file = fopen(file_path, "rb");
     if (!file) {
-        _SituationSetFilesystemError("Failed to open file for reading", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
-        return NULL;
+        return _SituationSetFilesystemError("Failed to open file for reading", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
     }
 
     fseek(file, 0, SEEK_END);
@@ -21102,36 +21102,35 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
     fseek(file, 0, SEEK_SET);
 
     if (file_size < 0) {
-        _SituationSetFilesystemError("Failed to get file size", file_path, SITUATION_ERROR_FILE_READ_FAILED);
         fclose(file);
-        return NULL;
+        return _SituationSetFilesystemError("Failed to get file size", file_path, SITUATION_ERROR_FILE_READ_FAILED);
     }
 
     unsigned int size_to_read = (unsigned int)file_size;
     if (size_to_read == 0) {
         fclose(file);
         *out_bytes_read = 0;
-        return (unsigned char*)SIT_MALLOC(1);
+        *out_data = (unsigned char*)SIT_MALLOC(1);
+        return SITUATION_SUCCESS;
     }
 
     unsigned char* buffer = (unsigned char*)SIT_MALLOC(size_to_read);
     if (!buffer) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
         fclose(file);
-        return NULL;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
     }
 
     size_t read_count = fread(buffer, 1, size_to_read, file);
     if (read_count != size_to_read) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error during file read.");
         SIT_FREE(buffer);
         fclose(file);
-        return NULL;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error during file read.");
     }
 
     fclose(file);
     *out_bytes_read = size_to_read;
-    return buffer;
+    *out_data = buffer;
+    return SITUATION_SUCCESS;
 #endif
 }
 
@@ -21142,15 +21141,9 @@ SITAPI unsigned char* SituationLoadFileData(const char* file_path, unsigned int*
  * @param bytes_to_write The number of bytes to write from the data buffer.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsigned int bytes_to_write) {
-    if (!file_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
-        return false;
-    }
-    if (!data && bytes_to_write > 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "data cannot be NULL when bytes_to_write is > 0.");
-        return false;
-    }
+SITAPI SituationError SituationSaveFileData(const char* file_path, const void* data, unsigned int bytes_to_write) {
+    if (!file_path) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
+    if (!data && bytes_to_write > 0) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "data cannot be NULL when bytes_to_write is > 0.");
 
 #if defined(_WIN32)
     WCHAR* wide_path = _sit_utf8_to_wide(file_path);
@@ -21182,20 +21175,18 @@ SITAPI bool SituationSaveFileData(const char* file_path, const void* data, unsig
 #else // Standard C library implementation
     FILE* file = fopen(file_path, "wb");
     if (!file) {
-        _SituationSetFilesystemError("Failed to create file for writing", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
-        return false;
+        return _SituationSetFilesystemError("Failed to create file for writing", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
     }
 
     if (bytes_to_write > 0) {
         if (fwrite(data, 1, bytes_to_write, file) != bytes_to_write) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error during file write.");
             fclose(file);
-            return false;
+            return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error during file write.");
         }
     }
 
     fclose(file);
-    return true;
+    return SITUATION_SUCCESS;
 #endif
 }
 
@@ -21209,9 +21200,8 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
     if (!file_path) return NULL;
 
     unsigned int bytes_read = 0;
-    unsigned char* file_data = SituationLoadFileData(file_path, &bytes_read);
-
-    if (!file_data) {
+    unsigned char* file_data = NULL;
+    if (SituationLoadFileData(file_path, &bytes_read, &file_data) != SITUATION_SUCCESS || !file_data) {
         return NULL; // Load failed, error message is already set by the underlying function.
     }
 
@@ -21367,16 +21357,19 @@ static void _SituationCachePhysicalDisplays(void) {
  * @param count Pointer to an integer that will be filled with the number of displays found.
  * @return A pointer to a newly allocated array of SituationDisplayInfo structs, or NULL on failure.
  */
-SITAPI SituationDisplayInfo* SituationGetDisplays(int* count) {
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDisplays"); if (count) *count = 0; return NULL; }
+SITAPI SituationError SituationGetDisplays(SituationDisplayInfo** out_displays, int* out_count) {
+    if (out_count) *out_count = 0;
+    if (out_displays) *out_displays = NULL;
+    else return SITUATION_ERROR_INVALID_PARAM;
+
+    if (!SituationIsInitialized()) return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDisplays");
     if (!sit_gs.cached_physical_displays_array) _SituationCachePhysicalDisplays();
     if (!sit_gs.cached_physical_displays_array || sit_gs.cached_physical_display_count == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No cached displays or count is zero");
-        if (count) *count = 0;
-        return NULL;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No cached displays or count is zero");
     }
     SituationDisplayInfo* displays_copy = (SituationDisplayInfo*)SIT_MALLOC(sit_gs.cached_physical_display_count * sizeof(SituationDisplayInfo));
-    if (!displays_copy) { _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Copy of display infos"); if (count) *count = 0; return NULL; }
+    if (!displays_copy) return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Copy of display infos");
+
     for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
         memcpy(&displays_copy[i], &sit_gs.cached_physical_displays_array[i], sizeof(SituationDisplayInfo));
         if (sit_gs.cached_physical_displays_array[i].available_mode_count > 0 && sit_gs.cached_physical_displays_array[i].available_modes) {
@@ -21386,15 +21379,17 @@ SITAPI SituationDisplayInfo* SituationGetDisplays(int* count) {
             } else {
                 displays_copy[i].available_modes = NULL;
                 displays_copy[i].available_mode_count = 0;
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Copy of available modes for one display");
+                // Allocation failed for modes, but we continue with partial data or log warning?
+                // For robustness, just skip modes for this display.
             }
         } else {
             displays_copy[i].available_modes = NULL;
             displays_copy[i].available_mode_count = 0;
         }
     }
-    if (count) *count = sit_gs.cached_physical_display_count;
-    return displays_copy;
+    if (out_count) *out_count = sit_gs.cached_physical_display_count;
+    *out_displays = displays_copy;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -21814,15 +21809,16 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
  *
  * @note The caller is **responsible** for destroying the virtual display using `SituationDestroyVirtualDisplay()` to prevent GPU memory leaks.
  */
-SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode) {
+SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode, int* out_id) {
+    if (out_id) *out_id = -1;
+    else return SITUATION_ERROR_INVALID_PARAM;
+
     // --- 1. Validation ---
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create virtual display");
-        return -1;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create virtual display");
     }
     if (sit_render.active_virtual_display_count >= SITUATION_MAX_VIRTUAL_DISPLAYS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT, "Maximum virtual displays reached");
-        return -1;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT, "Maximum virtual displays reached");
     }
 
     // --- 2. Find Free Slot ---
@@ -21833,7 +21829,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
             break;
         }
     }
-    if (new_id == -1) return -1; // Should not happen given count check
+    if (new_id == -1) return SITUATION_ERROR_UNKNOWN_ERROR; // Should not happen given count check
 
     // --- 3. Initialize Slot ---
     SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[new_id];
@@ -22012,7 +22008,7 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
         if (vd->image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_render.vk.device, vd->image_view, NULL);
         if (vd->image != VK_NULL_HANDLE) vmaDestroyImage(sit_render.vk.vma_allocator, vd->image, vd->image_memory);
         // Note: descriptor set is freed when its pool is destroyed, we don't free individual sets on failure usually
-        return -1;
+        return SITUATION_ERROR_VULKAN_INIT_FAILED;
     }
 
 #elif defined(SITUATION_USE_OPENGL)
@@ -22056,14 +22052,15 @@ SITAPI int SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_m
         if (vd->gl.texture_id != 0) glDeleteTextures(1, &vd->gl.texture_id);
         if (vd->gl.depth_rbo_id != 0) glDeleteRenderbuffers(1, &vd->gl.depth_rbo_id);
         if (vd->gl.fbo_id != 0) glDeleteFramebuffers(1, &vd->gl.fbo_id);
-        return -1;
+        return SITUATION_ERROR_OPENGL_GENERAL;
     }
 #endif
 
     // --- 4. Finalize ---
     sit_render.virtual_display_slots_used[new_id] = true;
     sit_render.active_virtual_display_count++;
-    return new_id;
+    *out_id = new_id;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -22249,11 +22246,11 @@ static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
  *
  * @param cmd The command buffer (Vulkan) or ignored (OpenGL).
  */
-SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
+SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     // --- Initial Checks ---
     if (!SituationIsInitialized() || sit_render.active_virtual_display_count == 0) {
         sit_render.last_vd_composite_time_ms = 0.0;
-        return;
+        return SITUATION_SUCCESS;
     }
 
     // Start timing for profiling.
@@ -22281,7 +22278,7 @@ SITAPI void SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     }
     if (visible_count == 0) {
         sit_render.last_vd_composite_time_ms = 0.0;
-        return;
+        return SITUATION_SUCCESS;
     }
 
     qsort(visible_vds_to_render, visible_count, sizeof(SituationVirtualDisplay*), _SituationSortVirtualDisplaysCallback);
@@ -22809,19 +22806,20 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
  *
  * @return A valid `SituationTexture` handle, or `{0}` on failure.
  */
-SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generate_mipmaps) {
+SITAPI SituationError SituationLoadTexture(const char* file_path, bool generate_mipmaps, SituationTexture* out_texture) {
     SituationImage img = SituationLoadImage(file_path);
-    if (!SituationIsImageValid(img)) return (SituationTexture){0};
+    if (!SituationIsImageValid(img)) return SITUATION_ERROR_FILE_READ_FAILED; // SituationLoadImage sets specific error
 
-    SituationTexture tex = SituationCreateTexture(img, generate_mipmaps);
+    SituationError err = SituationCreateTexture(img, generate_mipmaps, out_texture);
     SituationUnloadImage(img);
+    if (err != SITUATION_SUCCESS) return err;
 
     // [HOT-RELOAD] Capture path
-    if (tex.generation != 0) {
+    if (out_texture && out_texture->generation != 0) {
         // Search for the node corresponding to this texture handle
         _SituationTextureNode* node = sit_render.all_textures;
         while (node) {
-            if (node->texture.slot_index == tex.slot_index && node->texture.generation == tex.generation) {
+            if (node->texture.slot_index == out_texture->slot_index && node->texture.generation == out_texture->generation) {
                 // Found our node! Update path.
                 node->source_path = _sit_strdup(file_path);
                 node->mod_time = SituationGetFileModTime(file_path);
@@ -22830,7 +22828,7 @@ SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generat
             node = node->next;
         }
     }
-    return tex;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -22850,7 +22848,10 @@ SITAPI SituationTexture SituationLoadTexture(const char* file_path, bool generat
  * @note This function relies on the helper `_SituationExtractGLTFPrimitive` to handle geometry processing.
  * @warning The caller is responsible for destroying the returned model using `SituationUnloadModel` to prevent GPU memory leaks.
  */
-SITAPI SituationModel SituationLoadModel(const char* file_path) {
+SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* out_model) {
+    if (out_model) *out_model = (SituationModel){0};
+    else return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_model cannot be NULL");
+
 #if defined(CGLTF_IMPLEMENTATION)
     SituationModel model = {0};
     cgltf_options options = {0};
@@ -22859,14 +22860,12 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
     // 1. Parse the GLTF file using cgltf
     cgltf_result result = cgltf_parse_file(&options, file_path, &data);
     if (result != cgltf_result_success) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Failed to parse GLTF file.");
-        return model;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Failed to parse GLTF file.");
     }
     result = cgltf_load_buffers(&options, data, file_path);
     if (result != cgltf_result_success) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Failed to load GLTF buffers.");
         cgltf_free(data);
-        return model;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Failed to load GLTF buffers.");
     }
 
     // 2. Load all textures referenced by the model
@@ -22876,9 +22875,8 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
         model.all_model_textures = SIT_CALLOC(model.texture_count, sizeof(SituationTexture));
 
         if (!model.all_model_textures) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadModel: Failed to allocate textures array.");
             cgltf_free(data);
-            return model;
+            return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadModel: Failed to allocate textures array.");
         }
         char* base_path = SituationGetBasePathFromFile(file_path);
         for (int i = 0; i < (int)data->textures_count; ++i) {
@@ -22886,11 +22884,11 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
             if (texture_uri) {
                 char* full_texture_path = SituationJoinPath(base_path, texture_uri);
                 // Load texture with mipmaps enabled
-                model.all_model_textures[i] = SituationCreateTexture(SituationLoadImage(full_texture_path), true);
+                SituationError tex_err = SituationCreateTexture(SituationLoadImage(full_texture_path), true, &model.all_model_textures[i]);
 
                 // Basic validation warning
-                if (model.all_model_textures[i].id == 0) {
-                    fprintf(stderr, "SITUATION WARNING: Model texture failed to load: %s\n", full_texture_path);
+                if (tex_err != SITUATION_SUCCESS || model.all_model_textures[i].generation == 0) {
+                    fprintf(stderr, "SITUATION WARNING: Model texture failed to load: %s (Error: %d)\n", full_texture_path, tex_err);
                 }
                 SIT_FREE(full_texture_path);
             }
@@ -23008,11 +23006,11 @@ SITAPI SituationModel SituationLoadModel(const char* file_path) {
         }
     }
 
-    return model;
+    if (out_model) *out_model = model;
+    return SITUATION_SUCCESS;
 #else
     (void)file_path;
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Model loading not available. Please implement cgltf.h.");
-    return (SituationModel){0};
+    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Model loading not available. Please implement cgltf.h.");
 #endif
 }
 
@@ -23911,10 +23909,11 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     }
 
     // 1. Load NEW model (Fail-Safe)
-    SituationModel new_model = SituationLoadModel(path);
+    SituationModel new_model;
+    SituationError err = SituationLoadModel(path, &new_model);
     SIT_FREE(path);
 
-    if (new_model.id == 0) {
+    if (err != SITUATION_SUCCESS || new_model.id == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Hot-reload model failed (file not found or parse error). Keeping old model.");
         return false;
     }
@@ -24199,8 +24198,9 @@ static void _SituationPerformHotReloadPass(void) {
 #endif
 }
 
-SITAPI void SituationCheckHotReloads(void) {
+SITAPI SituationError SituationCheckHotReloads(void) {
     // Logic moved to I/O thread.
+    return SITUATION_SUCCESS;
 }
 
 //==================================================================================
@@ -24438,8 +24438,8 @@ SITAPI void SituationSetWindowMonitor(int monitor_id) {
     if (!SituationIsInitialized()) return;
 
     int display_count = 0;
-    SituationDisplayInfo* displays = SituationGetDisplays(&display_count); // Uses your existing function
-    if (!displays) return;
+    SituationDisplayInfo* displays = NULL;
+    if (SituationGetDisplays(&displays, &display_count) != SITUATION_SUCCESS || !displays) return;
 
     if (monitor_id >= 0 && monitor_id < display_count) {
         SituationDisplayInfo* target_display = &displays[monitor_id];
@@ -26046,7 +26046,7 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
     SIT_FREE(bitmap); // Done with 1-channel
 
     // 5. Create GPU Texture
-    font->atlas_texture = SituationCreateTexture(img, false); // No mips needed for UI text usually
+    SituationCreateTexture(img, false, &font->atlas_texture); // No mips needed for UI text usually
     SituationUnloadImage(img);
 
     font->atlas_width = w;
@@ -30052,47 +30052,44 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
  *
  * @warning This is a synchronous operation that stalls the GPU. Do not call every frame.
  */
-SITAPI bool SituationTakeScreenshot(const char *fileName) {
+SITAPI SituationError SituationTakeScreenshot(const char *fileName) {
     if (!SituationIsInitialized() || !fileName) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot take screenshot: Invalid parameters.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot take screenshot: Invalid parameters.");
     }
 	char* dir = _sit_dirname(fileName);  // Internal helper to get parent dir
 	if (dir && !_sit_directory_exists(dir)) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "Screenshot directory does not exist: %s", dir);
-		_SituationSetErrorFromCode(SITUATION_ERROR_DIRECTORY_CREATION_FAILED, err_msg);
 		SituationFreeString(dir);
-		return false;
+		return _SituationSetErrorFromCode(SITUATION_ERROR_DIRECTORY_CREATION_FAILED, err_msg);
 	}
 	SituationFreeString(dir);
 
 	// 1. Validate Extension
     const char *ext = SituationGetFileExtension(fileName);
     if (!ext || _sit_strcasecmp(ext, ".png") != 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationTakeScreenshot supports only '.png' format.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationTakeScreenshot supports only '.png' format.");
     }
 
     // 2. Check for STB Writer
 #if !defined(STB_IMAGE_WRITE_IMPLEMENTATION)
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG support not available. Please implement stb_image_write.h.");
-    return false;
+    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG support not available. Please implement stb_image_write.h.");
 #else
     // 3. Capture and Save
     SituationImage image = SituationLoadImageFromScreen();
-    if (image.data == NULL) return false; // Error already set by LoadImage
+    if (image.data == NULL) return SITUATION_ERROR_TEXTURE_UPLOAD_FAILED; // Error already set by LoadImage, but we return a generic fail
 
     int stride = image.width * 4;
     // stbi_write_png returns 0 on failure
     bool success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, stride) != 0);
+    SituationUnloadImage(image);
+
 	if (!success) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "Failed to write PNG file: %s", fileName);
-		_SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, err_msg);
+		return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, err_msg);
 	}
-    SituationUnloadImage(image);
-    return success;
+    return SITUATION_SUCCESS;
 #endif
 }
 
