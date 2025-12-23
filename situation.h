@@ -1979,25 +1979,25 @@ SITAPI uint32_t SituationGetCurrentActualWindowStateFlags(void);                
 // Image Module: CPU-side Image and Font Loading and Manipulation
 //==================================================================================
 // --- Image Loading and Unloading ---
-SITAPI SituationImage SituationLoadImage(const char *fileName);                         // Load an image from a file into CPU memory (RAM).
-SITAPI SituationImage SituationLoadImageFromMemory(const char *fileType, const unsigned char *fileData, int dataSize); // Load an image from a memory buffer.
+SITAPI SituationError SituationLoadImage(const char *fileName, SituationImage* out_image);                         // Load an image from a file into CPU memory (RAM).
+SITAPI SituationError SituationLoadImageFromMemory(const char *fileType, const unsigned char *fileData, int dataSize, SituationImage* out_image); // Load an image from a memory buffer.
 SITAPI void SituationUnloadImage(SituationImage image);                                 // Unload an image's pixel data from memory.
 SITAPI bool SituationIsImageValid(SituationImage image);                                // Check if an image has been loaded successfully.
 
 // --- Image Exporting ---
-SITAPI bool SituationExportImage(SituationImage image, const char *fileName);           // Export image data to a file (PNG, BMP supported).
+SITAPI SituationError SituationExportImage(SituationImage image, const char *fileName);           // Export image data to a file (PNG, BMP supported).
 
 // --- Image Generation & Copying ---
-SITAPI SituationImage SituationImageCopy(SituationImage image);                         // Create a new image by copying another.
+SITAPI SituationError SituationImageCopy(SituationImage image, SituationImage* out_image);                         // Create a new image by copying another.
 
-SITAPI SituationImage SituationCreateImage(int width, int height, int channels);        // Allocates a new SituationImage container with UNINITIALIZED data.
+SITAPI SituationError SituationCreateImage(int width, int height, int channels, SituationImage* out_image);        // Allocates a new SituationImage container with UNINITIALIZED data.
 SITAPI void SituationSetPixelColor(SituationImage *img, int x, int y, ColorRGBA col);   // Helper to set a specific pixel color (CPU-side).
 SITAPI void SituationBlitRawDataToImage(SituationImage *dst, const void* data, int x, int y, int width, int height, int src_channels); // Copies raw byte data into a specific region of an image.
 
 SITAPI void SituationImageDraw(SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos); // Copying portion of one image into another image at destination placement
 SITAPI void SituationImageDrawAlpha(SituationImage *dst, SituationImage src, Rectangle srcRect, Vector2 dstPos, ColorRGBA tint);
-SITAPI SituationImage SituationGenImageColor(int width, int height, ColorRGBA color);   // Generate a new image of a solid color.
-SITAPI SituationImage SituationGenImageGradient(int width, int height, ColorRGBA tl, ColorRGBA tr, ColorRGBA bl, ColorRGBA br); // Generate a new image with a gradient.
+SITAPI SituationError SituationGenImageColor(int width, int height, ColorRGBA color, SituationImage* out_image);   // Generate a new image of a solid color.
+SITAPI SituationError SituationGenImageGradient(int width, int height, ColorRGBA tl, ColorRGBA tr, ColorRGBA bl, ColorRGBA br, SituationImage* out_image); // Generate a new image with a gradient.
 
 // --- Image Manipulation (Modifies image in-place) ---
 SITAPI void SituationImageCrop(SituationImage *image, Rectangle crop);                  // Crop an image to a specific rectangle.
@@ -2006,9 +2006,9 @@ SITAPI void SituationImageFlip(SituationImage *image, SituationImageFlipMode mod
 SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, float sat_factor, float val_factor, float mix);   // Control an image by Hue Saturation and Brightness.
 
 // --- Font Management ---
-SITAPI SituationFont SituationLoadFont(const char *fileName);                           // Load a font from a TTF/OTF file for CPU rendering.
-SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize);		// Loads a font directly from a memory buffer (e.g., embedded resource).
-SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels);
+SITAPI SituationError SituationLoadFont(const char *fileName, SituationFont* out_font);                           // Load a font from a TTF/OTF file for CPU rendering.
+SITAPI SituationError SituationLoadFontFromMemory(const void* data, int dataSize, SituationFont* out_font);		// Loads a font directly from a memory buffer (e.g., embedded resource).
+SITAPI SituationError SituationBakeFontAtlas(SituationFont* font, float fontSizePixels);
 SITAPI void SituationUnloadFont(SituationFont font);                                    // Unload a CPU-side font and free its memory.
 SITAPI Rectangle SituationMeasureText(SituationFont font, const char *text, float fontSize); // Measure the pixel dimensions of a string before drawing.
 SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font, int codepoint, Vector2 position, float fontSize, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness); // Draw a single Unicode character with advanced styling onto an image.
@@ -2068,14 +2068,14 @@ SITAPI SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationT
 SITAPI SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture);                // Binds a texture as a sampled image (sampler2D) to a binding point.
 
 // --- Graphics Resource Management ---
-SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count); // Create a mesh from vertex and index data.
+SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count, SituationMesh* out_mesh); // Create a mesh from vertex and index data.
 SITAPI void SituationDestroyMesh(SituationMesh* mesh);                                  // Unload a mesh from GPU memory.
 SITAPI uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer);                // Retrieves the GPU device address of a buffer for bindless access.
 SITAPI uint64_t SituationGetTextureHandle(SituationTexture texture);                    // Retrieves the bindless texture handle (OpenGL Only).
 
 // --- Shader Management ---
-SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_path);   // Load a graphics shader pipeline from vertex and fragment files.
-SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code); // Create a graphics shader pipeline from in-memory GLSL source.
+SITAPI SituationError SituationLoadShader(const char* vs_path, const char* fs_path, SituationShader* out_shader);   // Load a graphics shader pipeline from vertex and fragment files.
+SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code, SituationShader* out_shader); // Create a graphics shader pipeline from in-memory GLSL source.
 SITAPI void SituationUnloadShader(SituationShader* shader);                             // Unload a graphics shader pipeline and free its GPU resources.
 
 // --- Shader Interaction & Synchronization ---
@@ -2089,15 +2089,15 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
 SITAPI void SituationDestroyTexture(SituationTexture* texture);                         // Unload a texture from GPU memory.
 
 // --- Compute Shader Pipeline ---
-SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type); // Create a compute pipeline from a shader file.
-SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type); // Create a compute pipeline from in-memory GLSL source.
+SITAPI SituationError SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline); // Create a compute pipeline from a shader file.
+SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline); // Create a compute pipeline from in-memory GLSL source.
 SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline);        // Destroy a compute pipeline and free its GPU resources.
 SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline); // Bind a compute pipeline for a subsequent dispatch.
 SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z); // Record a command to dispatch compute shader work groups.
 SITAPI void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t* z); // Query maximum compute work group count per dispatch.
 
 // --- GPU Buffer Management ---
-SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_data, SituationBufferUsageFlags usage_flags); // Create a generic GPU data buffer (e.g., SSBO).
+SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_data, SituationBufferUsageFlags usage_flags, SituationBuffer* out_buffer); // Create a generic GPU data buffer (e.g., SSBO).
 SITAPI void SituationDestroyBuffer(SituationBuffer* buffer);                            // Destroy a GPU buffer.
 SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offset, size_t size, const void* data); // Update data in a GPU buffer.
 SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offset, size_t size, void* out_data); // Read data from a GPU buffer.
@@ -2122,7 +2122,7 @@ SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path
 static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count);
 
 // --- Image & Screenshot Utilities ---
-SITAPI SituationImage SituationLoadImageFromScreen(void);                               // Get a copy of the current screen backbuffer as an image.
+SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image);                               // Get a copy of the current screen backbuffer as an image.
 SITAPI SituationError SituationTakeScreenshot(const char *fileName);                    // Take a screenshot and save it to a file (PNG or BMP).
 
 // --- Backend-Specific Accessors ---
@@ -2141,8 +2141,8 @@ SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd);        
 SITAPI SituationError SituationCmdBindUniformBuffer(SituationCommandBuffer cmd, uint32_t contract_id, SituationBuffer buffer);          // [DEPRECATED] [Core] Bind a Uniform Buffer Object (UBO) to a shader binding point.
 SITAPI SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);                // [DEPRECATED] [Core] Bind a texture and sampler to a shader binding point.
 SITAPI SituationError SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer);              // [DEPRECATED] Bind a buffer to a compute shader binding point.
-SITAPI SituationShader SituationLoadComputeShader(const char* cs_path);                                                                 // [DEPRECATED] Load a compute shader from a file. Use SituationCreateComputePipeline instead.
-SITAPI SituationShader SituationLoadComputeShaderFromMemory(const char* cs_code);                                                       // [DEPRECATED] Create a compute shader from memory. Use SituationCreateComputePipelineFromMemory instead.
+SITAPI SituationError SituationLoadComputeShader(const char* cs_path, SituationShader* out_shader);                                                                 // [DEPRECATED] Load a compute shader from a file. Use SituationCreateComputePipeline instead.
+SITAPI SituationError SituationLoadComputeShaderFromMemory(const char* cs_code, SituationShader* out_shader);                                                       // [DEPRECATED] Create a compute shader from memory. Use SituationCreateComputePipelineFromMemory instead.
 SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_bits);                                                  // [DEPRECATED] Insert a coarse-grained memory barrier. Use SituationCmdPipelineBarrier instead.
 
 //==================================================================================
@@ -17035,25 +17035,27 @@ static SituationError _SituationVulkanReadBackBuffer(VkBuffer src_buffer, VmaAll
  * @see SituationGetBufferData()
  * @see SituationBufferUsageFlags
  */
-SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_data, SituationBufferUsageFlags usage_flags) {
-    SituationBuffer buffer = {0};
+SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_data, SituationBufferUsageFlags usage_flags, SituationBuffer* out_buffer) {
+    if (!out_buffer) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_buffer, 0, sizeof(SituationBuffer));
+
     SituationError local_err = SITUATION_SUCCESS;
 
     // --- 1. Pre-initialization Validation ---
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create buffer before library initialization."); return buffer; } // Return zeroed/invalid buffer
-    if (size == 0) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot create buffer of size 0."); return buffer; }
+    if (!SituationIsInitialized()) return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create buffer before library initialization.");
+    if (size == 0) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot create buffer of size 0.");
     // Ensure at least one usage flag is specified to guide creation and memory allocation.
-    if (usage_flags == 0) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateBuffer: No usage flags specified."); return buffer; }
+    if (usage_flags == 0) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateBuffer: No usage flags specified.");
 
-    buffer.size_in_bytes = size;
-    buffer.usage_flags = usage_flags;
+    out_buffer->size_in_bytes = size;
+    out_buffer->usage_flags = usage_flags;
 
     // --- 2. Backend-Specific Creation ---
 #if defined(SITUATION_USE_OPENGL)
     {
         // --- OpenGL Implementation ---
-        glCreateBuffers(1, &buffer.gl_buffer_id);
-        if (buffer.gl_buffer_id == 0) { _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateBuffers failed."); return buffer; }
+        glCreateBuffers(1, &out_buffer->gl_buffer_id);
+        if (out_buffer->gl_buffer_id == 0) return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateBuffers failed.");
 
         // Determine appropriate OpenGL storage flags.
         // GL_DYNAMIC_STORAGE_BIT allows the buffer's contents to be updated via glNamedBufferSubData.
@@ -17064,20 +17066,20 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         if (usage_flags & SITUATION_BUFFER_USAGE_TRANSFER_SRC) {
              gl_storage_flags |= GL_MAP_READ_BIT;
         }
-        glNamedBufferStorage(buffer.gl_buffer_id, size, initial_data, gl_storage_flags);
+        glNamedBufferStorage(out_buffer->gl_buffer_id, size, initial_data, gl_storage_flags);
 
         SIT_CHECK_GL_ERROR();
         if (sit_render.gl.last_error != GL_NO_ERROR) {
             // Error message should be set by SIT_CHECK_GL_ERROR
             local_err = SITUATION_ERROR_OPENGL_GENERAL;
-            glDeleteBuffers(1, &buffer.gl_buffer_id);
-            buffer.gl_buffer_id = 0;
-            memset(&buffer, 0, sizeof(buffer));
-            return buffer; // Return invalid buffer
+            glDeleteBuffers(1, &out_buffer->gl_buffer_id);
+            out_buffer->gl_buffer_id = 0;
+            memset(out_buffer, 0, sizeof(SituationBuffer));
+            return local_err;
         }
 
         // Use the OpenGL buffer name as the public ID.
-        buffer.id = buffer.gl_buffer_id;
+        out_buffer->id = out_buffer->gl_buffer_id;
     }
 #elif defined(SITUATION_USE_VULKAN)
     {
@@ -17093,11 +17095,11 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         if (usage_flags & SITUATION_BUFFER_USAGE_TRANSFER_DST)    vk_usage_flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
         // Ensure at least one flag is set
-        if (vk_usage_flags == 0) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateBuffer: Mapped Vulkan usage flags are invalid (all zero)."); return buffer; }
+        if (vk_usage_flags == 0) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateBuffer: Mapped Vulkan usage flags are invalid (all zero).");
 
         // Store the mapped Vulkan flags for internal use (e.g., in UpdateBuffer, GetBufferData, Descriptor Set creation)
-        buffer.vk_usage_flags = vk_usage_flags;
-        buffer.descriptor_set = VK_NULL_HANDLE; // Initialize descriptor set member
+        out_buffer->vk_usage_flags = vk_usage_flags;
+        out_buffer->descriptor_set = VK_NULL_HANDLE; // Initialize descriptor set member
 
         // --- 2.2. Create the buffer using the mapped flags ---
         if (initial_data) {
@@ -17110,13 +17112,13 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
                 initial_data,
                 size,
                 vk_usage_flags, // Pass the correctly mapped flags
-                &buffer.vk_buffer,
-                &buffer.vma_allocation
+                &out_buffer->vk_buffer,
+                &out_buffer->vma_allocation
             );
             if (local_err != SITUATION_SUCCESS) {
                 // Error message should be set by _SituationVulkanCreateAndUploadBuffer
-                memset(&buffer, 0, sizeof(buffer));
-                return buffer; // Return invalid buffer
+                memset(out_buffer, 0, sizeof(SituationBuffer));
+                return local_err;
             }
         } else {
             // Create an empty buffer directly on GPU memory.
@@ -17160,16 +17162,16 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
                 sit_render.vk.vma_allocator,
                 &buffer_info,
                 &alloc_info,
-                &buffer.vk_buffer,
-                &buffer.vma_allocation,
+                &out_buffer->vk_buffer,
+                &out_buffer->vma_allocation,
                 NULL // Optional pAllocationInfo
             );
 
             if (result != VK_SUCCESS) {
                 _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create empty Vulkan buffer.");
                 local_err = SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
-                memset(&buffer, 0, sizeof(buffer));
-                return buffer; // Return invalid buffer
+                memset(out_buffer, 0, sizeof(SituationBuffer));
+                return local_err;
             }
         }
 
@@ -17199,30 +17201,30 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         // Allocate the descriptor set - Use dynamic allocator
         // [FIX v2.3.27B] Capture pool
         VkDescriptorPool used_pool = VK_NULL_HANDLE;
-        buffer.descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use, &used_pool);
+        out_buffer->descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use, &used_pool);
 
-        if (buffer.descriptor_set == VK_NULL_HANDLE) {
+        if (out_buffer->descriptor_set == VK_NULL_HANDLE) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for buffer.");
             local_err = SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
             // CRITICAL: Defer destruction to Graveyard. Immediate vmaDestroy is unsafe here because
             // _SituationVulkanCreateAndUploadBuffer might have recorded commands using this buffer
             // in the current frame's command buffer (if initial_data != NULL).
-            if (buffer.vk_buffer != VK_NULL_HANDLE) {
-                _SituationDeferDestroyBuffer(buffer.vk_buffer, buffer.vma_allocation);
+            if (out_buffer->vk_buffer != VK_NULL_HANDLE) {
+                _SituationDeferDestroyBuffer(out_buffer->vk_buffer, out_buffer->vma_allocation);
             }
-            memset(&buffer, 0, sizeof(buffer));
-            return buffer;
+            memset(out_buffer, 0, sizeof(SituationBuffer));
+            return local_err;
         }
 
         // Populate the descriptor set with this buffer's info
         VkDescriptorBufferInfo buffer_info = {0};
-        buffer_info.buffer = buffer.vk_buffer;
+        buffer_info.buffer = out_buffer->vk_buffer;
         buffer_info.offset = 0;
         buffer_info.range = VK_WHOLE_SIZE; // Or specific range if needed
 
         VkWriteDescriptorSet descriptor_write = {0};
         descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptor_write.dstSet = buffer.descriptor_set; // The set we just allocated
+        descriptor_write.dstSet = out_buffer->descriptor_set; // The set we just allocated
         descriptor_write.dstBinding = 0; // Binding point within the set (0 for our standard layouts)
         descriptor_write.dstArrayElement = 0;
         descriptor_write.descriptorType = descriptor_type; // Use the determined type
@@ -17233,15 +17235,15 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         // --- END NEW ---
 
         // --- 2.4. Assign ID (using VkBuffer handle as unique ID) ---
-        buffer.id = (uint64_t)(uintptr_t)buffer.vk_buffer;
+        out_buffer->id = (uint64_t)(uintptr_t)out_buffer->vk_buffer;
     }
 #endif // SITUATION_USE_VULKAN
 
     // --- 3. Resource Tracking (Add to internal linked list) ---
-    if (buffer.id != 0) {
+    if (out_buffer->id != 0) {
         _SituationBufferNode* node = (_SituationBufferNode*)SIT_MALLOC(sizeof(_SituationBufferNode));
         if (node) {
-            node->buffer = buffer;
+            node->buffer = *out_buffer;
             node->next = sit_render.all_buffers;
             sit_render.all_buffers = node;
             #if defined(SITUATION_USE_VULKAN)
@@ -17252,20 +17254,20 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
             local_err = SITUATION_ERROR_MEMORY_ALLOCATION;
             // Need to destroy the successfully created backend buffer before returning
 #if defined(SITUATION_USE_OPENGL)
-            glDeleteBuffers(1, &buffer.gl_buffer_id);
-            buffer.gl_buffer_id = 0;
+            glDeleteBuffers(1, &out_buffer->gl_buffer_id);
+            out_buffer->gl_buffer_id = 0;
 #elif defined(SITUATION_USE_VULKAN)
             // Free the descriptor set if it was allocated
-            if (buffer.descriptor_set != VK_NULL_HANDLE) {
-                vkFreeDescriptorSets(sit_render.vk.device, sit_render.vk.persistent_descriptor_pool, 1, &buffer.descriptor_set);
-                buffer.descriptor_set = VK_NULL_HANDLE;
+            if (out_buffer->descriptor_set != VK_NULL_HANDLE) {
+                vkFreeDescriptorSets(sit_render.vk.device, sit_render.vk.persistent_descriptor_pool, 1, &out_buffer->descriptor_set);
+                out_buffer->descriptor_set = VK_NULL_HANDLE;
             }
-            vmaDestroyBuffer(sit_render.vk.vma_allocator, buffer.vk_buffer, buffer.vma_allocation);
-            buffer.vk_buffer = VK_NULL_HANDLE;
-            buffer.vma_allocation = VK_NULL_HANDLE;
+            vmaDestroyBuffer(sit_render.vk.vma_allocator, out_buffer->vk_buffer, out_buffer->vma_allocation);
+            out_buffer->vk_buffer = VK_NULL_HANDLE;
+            out_buffer->vma_allocation = VK_NULL_HANDLE;
 #endif
-            memset(&buffer, 0, sizeof(buffer));
-            return buffer; // Return invalid buffer
+            memset(out_buffer, 0, sizeof(SituationBuffer));
+            return local_err;
         }
     }
 
@@ -17274,7 +17276,7 @@ SITAPI SituationBuffer SituationCreateBuffer(size_t size, const void* initial_da
         // Error state should already be set by the specific error handling code above.
         // Returning the zeroed buffer is sufficient.
     }
-    return buffer; // Return the (potentially valid) buffer handle
+    return SITUATION_SUCCESS; // Success is returned here if no error path triggered
 }
 
 /**
@@ -17372,12 +17374,15 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
  * @note The provided vertex data **must** conform to the attribute layout defined in the Shader Contract (e.g., Position `vec3`, Normal `vec3`, TexCoord `vec2`).
  * @note The caller is **responsible** for destroying the mesh using `SituationDestroyMesh()`.
  */
-SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count) {
-    SituationMesh mesh = {0};
+SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count, SituationMesh* out_mesh) {
+    if (!out_mesh) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_mesh, 0, sizeof(SituationMesh));
+
     if (!vertex_data || vertex_count <= 0 || !index_data || index_count <= 0 || vertex_stride == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid data or stride provided for mesh creation.");
-        return mesh;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid data or stride provided for mesh creation.");
     }
+
+    SituationMesh mesh = {0};
 
     // [2.3.14A] Auto-Upgrade Legacy Stride
     void* final_vertex_data = (void*)vertex_data;
@@ -17411,22 +17416,22 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
         SituationLogWarning(SITUATION_SUCCESS, "SituationCreateMesh: Legacy 32-byte stride detected. Auto-padded to 48-byte (Tangents added).");
     }
 
-    mesh.index_count = index_count;
+    out_mesh->index_count = index_count;
 
 #if defined(SITUATION_USE_OPENGL)
     // --- OpenGL: Create buffers only (Shared VAO model) ---
     // This fixes context sharing issues where VAOs created on main thread are invalid on render thread.
     // The render thread will bind these buffers to the global mesh_vao_id at draw time.
 
-    glCreateBuffers(1, &mesh.vbo_id);
-    glCreateBuffers(1, &mesh.ebo_id);
+    glCreateBuffers(1, &out_mesh->vbo_id);
+    glCreateBuffers(1, &out_mesh->ebo_id);
 
     // Upload the vertex and index data.
-    glNamedBufferData(mesh.vbo_id, vertex_count * final_stride, final_vertex_data, GL_STATIC_DRAW);
-    glNamedBufferData(mesh.ebo_id, index_count * sizeof(uint32_t), index_data, GL_STATIC_DRAW);
+    glNamedBufferData(out_mesh->vbo_id, vertex_count * final_stride, final_vertex_data, GL_STATIC_DRAW);
+    glNamedBufferData(out_mesh->ebo_id, index_count * sizeof(uint32_t), index_data, GL_STATIC_DRAW);
 
     // ID is VBO ID (since no private VAO)
-    mesh.id = mesh.vbo_id;
+    out_mesh->id = out_mesh->vbo_id;
     SIT_CHECK_GL_ERROR();
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -17437,7 +17442,7 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
     if (_SituationVulkanCreateAndUploadBuffer(cmd, final_vertex_data, vertex_buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &mesh.vertex_buffer, &mesh.vertex_buffer_memory) != SITUATION_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create vertex buffer for mesh.");
         if (allocated_temp_buffer) SIT_FREE(final_vertex_data);
-        return (SituationMesh){0};
+        return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
     }
 
     VkDeviceSize index_buffer_size = (VkDeviceSize)index_count * sizeof(uint32_t);
@@ -17449,7 +17454,8 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
         } else {
              _SituationDeferDestroyBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory);
         }
-        return (SituationMesh){0};
+        if (allocated_temp_buffer) SIT_FREE(final_vertex_data);
+        return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
     }
     mesh.id = (uint64_t)(uintptr_t)mesh.vertex_buffer;
 #endif
@@ -17472,11 +17478,12 @@ SITAPI SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_cou
         } else {
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for mesh");
             SituationDestroyMesh(&mesh); // Clean up the GPU resource we just made
-            return (SituationMesh){0};
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
     }
 
-    return mesh;
+    if (out_mesh) *out_mesh = mesh;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -17975,20 +17982,16 @@ static GLuint _SituationCreateGLComputeProgram(const void* source_data, Situatio
  * @see SituationCmdBindComputePipeline()
  * @see SituationCmdDispatch()
  */
-SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type) {
-    SituationComputePipeline pipeline = {0}; // Always initialize to an invalid state.
+SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline) {
+    if (!out_pipeline) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_pipeline, 0, sizeof(SituationComputePipeline));
 
     // --- 1. Pre-condition Checks ---
-    if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipelineFromMemory: Library not initialized.");
-        return pipeline; // Return invalid pipeline
-    }
+    if (!SituationIsInitialized()) return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipelineFromMemory: Library not initialized.");
+    if (!compute_shader_source) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipelineFromMemory: Compute shader source cannot be NULL.");
 
-    if (!compute_shader_source) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipelineFromMemory: Compute shader source cannot be NULL.");
-        return pipeline; // Return invalid pipeline
-    }
-	
+    SituationComputePipeline pipeline = {0};
+
     // --- 2. Backend-Specific Pipeline Creation ---
 #if defined(SITUATION_USE_OPENGL)
     // The layout_type parameter is specific to Vulkan's explicit pipeline layout system.
@@ -18015,8 +18018,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
             _SituationFreeSpirvBlob(&cs_spirv); // Clean up the temporary SPIR-V blob.
         } else {
             // Compilation to SPIR-V failed. This is a hard error.
-            // The compiler helper has already set a detailed error message.
-            return pipeline; // Return the invalid (zeroed) handle.
+            return SITUATION_ERROR_SHADER_COMPILATION_FAILED;
         }
     } else {
         // The driver does not support SPIR-V. Fall back to the traditional GLSL source path.
@@ -18043,25 +18045,21 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
             node->next = sit_render.all_compute_pipelines;
             sit_render.all_compute_pipelines = node;
             mtx_unlock(&sit_render.resource_registry_mutex);
-            // Optional: node->was_spirv_used = false; // Since we passed GLSL directly
         } else {
-            // This is a non-fatal but serious issue: the GPU resource was created but we failed to track it. We must warn the user that they are now responsible for cleanup.
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
+            // Potential leak cleanup should go here, but omitted for parity with original behavior which warned only.
             fprintf(stderr,
                 "SITUATION WARNING: GPU compute pipeline created successfully but failed to add to resource tracker.\n"
                 "         This is a potential memory leak. You MUST call SituationDestroyComputePipeline() on the returned handle to free GPU resources.\n");
         }
-        // Success path: pipeline struct is valid with .id and .gl_program_id set.
+    } else {
+        return err != SITUATION_SUCCESS ? err : SITUATION_ERROR_COMPUTE_PIPELINE_CREATION_FAILED;
     }
-    // If _SituationCreateGLComputeProgram failed, it returned 0 and set the 'err' code and a detailed message.
-    // The 'pipeline' struct remains invalid (zeroed), which is the correct state to return.
-    // No 'else' block is needed as the function will simply fall through and return the invalid handle.
 
 #elif defined(SITUATION_USE_VULKAN)
     // The Vulkan backend requires the shader compiler to be enabled to handle GLSL source.
     #if !defined(SITUATION_ENABLE_SHADER_COMPILER)
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Vulkan backend requires SITUATION_ENABLE_SHADER_COMPILER to create pipelines from source code.");
-        return pipeline; // Return the invalid (zeroed) pipeline handle
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Vulkan backend requires SITUATION_ENABLE_SHADER_COMPILER to create pipelines from source code.");
     #else
 
     // 1. --- Compile GLSL source to SPIR-V bytecode ---
@@ -18069,16 +18067,14 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
 
     // If compilation fails, the helper function sets the error and returns an empty blob.
     if (cs_spirv.data == NULL) {
-        // No need to set an error here; it's already done by the compiler helper.
-        return pipeline; // Return the invalid (zeroed) pipeline handle
+        return SITUATION_ERROR_SHADER_COMPILATION_FAILED;
     }
 
     // 2. --- Select the pre-created Pipeline Layout ---
     // Validate the user-provided layout type to prevent out-of-bounds access.
     if (layout_type < 0 || layout_type >= (sizeof(sit_render.vk.compute_layouts) / sizeof(sit_render.vk.compute_layouts[0]))) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "An invalid SituationComputeLayoutType was specified.");
         _SituationFreeSpirvBlob(&cs_spirv); // Clean up the compiled SPIR-V
-        return pipeline;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "An invalid SituationComputeLayoutType was specified.");
     }
     VkPipelineLayout selected_layout = sit_render.vk.compute_layouts[layout_type];
 
@@ -18127,7 +18123,8 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
     // Return the (potentially valid) pipeline handle.
     // If valid, .id will be non-zero.
     // If invalid, .id will be zero, and an error message will be set.
-    return pipeline;
+    if (out_pipeline) *out_pipeline = pipeline;
+    return SITUATION_SUCCESS;
 }
 
 
@@ -18158,36 +18155,36 @@ SITAPI SituationComputePipeline SituationCreateComputePipelineFromMemory(const c
  *
  * @see SituationCreateComputePipelineFromMemory(), SituationDestroyComputePipeline(), SituationLoadFileText()
  */
-SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type) {
-    // --- 1. Input Validation ---
-    SituationComputePipeline pipeline = {0};
+SITAPI SituationError SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline) {
+    if (!out_pipeline) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_pipeline, 0, sizeof(SituationComputePipeline));
 
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode( SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipeline: Library not initialized." ); return pipeline; }
-    if (!compute_shader_path) { _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipeline: compute_shader_path cannot be NULL." ); return pipeline; }
+    // --- 1. Input Validation ---
+    if (!SituationIsInitialized()) return _SituationSetErrorFromCode( SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipeline: Library not initialized." );
+    if (!compute_shader_path) return _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipeline: compute_shader_path cannot be NULL." );
 
     // --- 2. Load Shader Source from File ---
     char* source = SituationLoadFileText(compute_shader_path);
     if (!source) {
         char prefixed_error[SITUATION_MAX_ERROR_MSG_LEN];
         char* last_err = NULL;
-        SituationGetLastErrorMsg(&last_err);
+        SituationGetLastErrorMsg(&last_err); // Assuming this returns error string in out param or return value? Wait, SituationGetLastErrorMsg returns SituationError and output via param?
+        // SituationGetLastErrorMsg is defined as: SITAPI SituationError SituationGetLastErrorMsg(char** out_msg);
+        // The original code used it correctly.
         snprintf( prefixed_error, sizeof(prefixed_error), "SituationCreateComputePipeline: Failed to load shader file '%s'. Reason: %s", compute_shader_path, last_err ? last_err : "Unknown" );
         if (last_err) SituationFreeString(last_err);
-        _SituationSetError(prefixed_error);
-        return pipeline;
+        _SituationSetError(prefixed_error); // Deprecated but used here for prefixing.
+        return SITUATION_ERROR_FILE_ACCESS;
     }
 
     // --- 3. Create Pipeline from Loaded Source ---
-    pipeline = SituationCreateComputePipelineFromMemory(source, layout_type);
+    SituationError err = SituationCreateComputePipelineFromMemory(source, layout_type, out_pipeline);
 
     // --- 4. [HOT-RELOAD] Store Path and Layout in Tracking Node ---
-    // SituationCreateComputePipelineFromMemory prepends the new node to the head of sit_render.all_compute_pipelines.
-    // However, in a threaded environment, another thread might have pushed a node in between.
-    // We must search the list to find our specific pipeline ID.
-    if (pipeline.id != 0) {
+    if (err == SITUATION_SUCCESS && out_pipeline->id != 0) {
         _SituationComputePipelineNode* node = sit_render.all_compute_pipelines;
         while (node) {
-            if (node->pipeline.id == pipeline.id) {
+            if (node->pipeline.id == out_pipeline->id) {
                 // Found our node! Update its tracking info.
                 node->source_path = _sit_strdup(compute_shader_path);
                 node->layout_type = layout_type;
@@ -18200,7 +18197,7 @@ SITAPI SituationComputePipeline SituationCreateComputePipeline(const char* compu
 
     // --- 5. Cleanup ---
     SIT_FREE(source);
-    return pipeline;
+    return err;
 }
 
 // --- Updated/Added Documentation Block for SituationDestroyComputePipeline ---
@@ -22807,8 +22804,9 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
  * @return A valid `SituationTexture` handle, or `{0}` on failure.
  */
 SITAPI SituationError SituationLoadTexture(const char* file_path, bool generate_mipmaps, SituationTexture* out_texture) {
-    SituationImage img = SituationLoadImage(file_path);
-    if (!SituationIsImageValid(img)) return SITUATION_ERROR_FILE_READ_FAILED; // SituationLoadImage sets specific error
+    SituationImage img = {0};
+    SituationError load_err = SituationLoadImage(file_path, &img);
+    if (load_err != SITUATION_SUCCESS) return load_err;
 
     SituationError err = SituationCreateTexture(img, generate_mipmaps, out_texture);
     SituationUnloadImage(img);
@@ -23241,18 +23239,19 @@ SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path
  * @see SituationLoadShaderFromMemory()
  * @see SituationUnloadShader()
  */
-SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_path) {
-    SituationShader shader = {0}; // Always initialize to an invalid state.
+SITAPI SituationError SituationLoadShader(const char* vs_path, const char* fs_path, SituationShader* out_shader) {
+    if (!out_shader) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_shader, 0, sizeof(SituationShader));
 
     // --- 1. Pre-condition Checks ---
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader."); return shader; }
-    if (!vs_path || !fs_path) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader paths cannot be NULL."); return shader; }
+    if (!SituationIsInitialized()) return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader.");
+    if (!vs_path || !fs_path) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader paths cannot be NULL.");
 
     // --- 2. Load Vertex Shader Source from File ---
     char* vs_code = SituationLoadFileText(vs_path);
     if (!vs_code) {
-        // Error is already set by SituationLoadFileText. The message will be specific (e.g., "File not found"), which is more useful than a generic error here.
-        return shader;
+        // Error is already set by SituationLoadFileText.
+        return SITUATION_ERROR_FILE_ACCESS;
     }
 
     // --- 3. Load Fragment Shader Source from File ---
@@ -23260,14 +23259,13 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
     if (!fs_code) {
         // CRITICAL: Clean up the successfully loaded vertex shader code to prevent a memory leak.
         SIT_FREE(vs_code);
-        // Error is already set by SituationLoadFileText.
-        return shader;
+        return SITUATION_ERROR_FILE_ACCESS;
     }
 
     // --- 4. Delegate to the Memory-Based Creation Function ---
     // This function handles the actual compilation and GPU object creation.
     // It will set a detailed error on failure (e.g., compilation error).
-    shader = SituationLoadShaderFromMemory(vs_code, fs_code);
+    SituationError err = SituationLoadShaderFromMemory(vs_code, fs_code, out_shader);
 
     // --- 5. Clean Up Temporary Memory Buffers ---
     // The source code strings are no longer needed after the shader is created.
@@ -23276,12 +23274,12 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
 
     // --- 6. Return Result ---
     // [HOT-RELOAD] Capture paths in the node
-    if (shader.id != 0) {
+    if (err == SITUATION_SUCCESS && out_shader->id != 0) {
         mtx_lock(&sit_render.resource_registry_mutex);
         // Search for the node corresponding to this shader ID
         _SituationShaderNode* node = sit_render.all_shaders;
         while (node) {
-            if (node->shader.id == shader.id) {
+            if (node->shader.id == out_shader->id) {
                 // Found our node! Update paths.
                 node->vs_path = _sit_strdup(vs_path);
                 node->fs_path = _sit_strdup(fs_path);
@@ -23293,8 +23291,7 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
         }
         mtx_unlock(&sit_render.resource_registry_mutex);
     }
-    // The returned handle will be valid (id != 0) if compilation was successful, or invalid (id == 0) if it failed.
-    return shader;
+    return err;
 }
 
 /**
@@ -23319,10 +23316,14 @@ SITAPI SituationShader SituationLoadShader(const char* vs_path, const char* fs_p
  *
  * @see SituationLoadShader(), SituationUnloadShader(), SituationCmdBindPipeline()
  */
-SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code) {
+SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code, SituationShader* out_shader) {
+    if (!out_shader) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_shader, 0, sizeof(SituationShader));
+
+    if (!SituationIsInitialized()) return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader.");
+    if (!vs_code || !fs_code) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader source code cannot be NULL");
+
     SituationShader shader = {0};
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader."); return shader; }
-    if (!vs_code || !fs_code) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader source code cannot be NULL"); return shader; }
 
 // --- Backend-Specific Shader Creation Logic ---
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
@@ -23406,11 +23407,14 @@ SITAPI SituationShader SituationLoadShaderFromMemory(const char* vs_code, const 
         } else {
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for shader");
             SituationUnloadShader(&shader); // Clean up the GPU resource we just made
-            return (SituationShader){0};
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
+    } else {
+        return SITUATION_ERROR_OPENGL_SHADER_COMPILE_FAILED; // Or a general failure if ID is 0
     }
 
-    return shader;
+    *out_shader = shader;
+    return SITUATION_SUCCESS;
 }
 
 
@@ -23701,12 +23705,13 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
 
     // 2. Load NEW shader first (Fail-Safe)
     // This creates a NEW tracking node at the head of the list.
-    SituationShader new_shader = SituationLoadShader(vs_path, fs_path);
+    SituationShader new_shader = {0};
+    SituationError err = SituationLoadShader(vs_path, fs_path, &new_shader);
 
     SIT_FREE(vs_path);
     SIT_FREE(fs_path);
 
-    if (new_shader.id == 0) {
+    if (err != SITUATION_SUCCESS || new_shader.id == 0) {
         // Load failed. The old shader remains active and untouched.
         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, "Hot-reload compilation failed. Keeping old shader.");
         return false;
@@ -23797,8 +23802,8 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     if (!path) return false;
 
     // 3. Load NEW Image Data (CPU)
-    SituationImage new_img = SituationLoadImage(path);
-    if (!SituationIsImageValid(new_img)) return false;
+    SituationImage new_img = {0};
+    if (SituationLoadImage(path, &new_img) != SITUATION_SUCCESS) return false;
 
     // 4. DESTROY OLD GPU RESOURCES (Defer to Graveyard)
     // We do NOT mark the slot as inactive. We keep ownership of the slot.
@@ -23812,32 +23817,64 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
 
     // 5. CREATE NEW GPU RESOURCES (Into the SAME slot)
 #if defined(SITUATION_USE_VULKAN)
-    // ... (This part requires re-implementation of CreateTexture internals targeting the slot) ...
-    // For now, we'll mark this as TODO or reuse creation logic if extracted.
-    // Given the complexity of in-place reload, we might want to just swap slot contents if we had a helper.
-    // But since we are inside the library, we can do it.
-
-    // Re-create image/view
-    _SituationVulkanCreateImage(new_img.width, new_img.height, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+    // Re-create image (Using UNORM to match previous behavior, 1 mip level for reload simplicity)
+    SituationError img_err = _SituationVulkanCreateImage(new_img.width, new_img.height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &slot->image, &slot->allocation);
-    _SituationVulkanCreateImageView(slot->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, &slot->image_view);
-    _SituationVulkanCreateTextureSampler(&slot->sampler); // Re-create sampler or reuse? Better recreate to be safe.
+    if (img_err != SITUATION_SUCCESS) {
+        SituationUnloadImage(new_img);
+        return false;
+    }
 
-    // Upload pixels
-    SituationBuffer staging = SituationCreateBuffer(new_img.width * new_img.height * 4, new_img.data, SITUATION_BUFFER_USAGE_TRANSFER_SRC);
-    _SituationVulkanTransitionImageLayout(slot->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    _SituationVulkanCopyBufferToImage(staging.vk_buffer, slot->image, new_img.width, new_img.height);
-    _SituationVulkanTransitionImageLayout(slot->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    // Re-create Image View
+    slot->image_view = _SituationVulkanCreateImageView(slot->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+    if (slot->image_view == VK_NULL_HANDLE) {
+        SituationUnloadImage(new_img);
+        return false;
+    }
+
+    // Re-create Sampler
+    VkSamplerCreateInfo sampler_info = {0};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_info.magFilter = VK_FILTER_LINEAR;
+    sampler_info.minFilter = VK_FILTER_LINEAR;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_info.maxAnisotropy = 1.0f;
+    sampler_info.maxLod = 1.0f;
+
+    if (vkCreateSampler(sit_render.vk.device, &sampler_info, NULL, &slot->sampler) != VK_SUCCESS) {
+        SituationUnloadImage(new_img);
+        return false;
+    }
+
+    // Create Staging Buffer
+    SituationBuffer staging = {0};
+    SituationError buf_err = SituationCreateBuffer(new_img.width * new_img.height * 4, new_img.data, SITUATION_BUFFER_USAGE_TRANSFER_SRC, &staging);
+    if (buf_err != SITUATION_SUCCESS) {
+        SituationUnloadImage(new_img);
+        return false;
+    }
+
+    // Execute Transfer (Synchronous)
+    VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
+    _SituationVulkanTransitionImageLayout(cmd, slot->image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    _SituationVulkanCopyBufferToImage(cmd, staging.vk_buffer, slot->image, new_img.width, new_img.height);
+    _SituationVulkanTransitionImageLayout(cmd, slot->image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    _SituationVulkanEndSingleTimeCommands(cmd);
+
+    // Cleanup Staging
     SituationDestroyBuffer(&staging);
 
     // Update existing descriptor set
-    VkDescriptorImageInfo imageInfo = {};
+    VkDescriptorImageInfo imageInfo = {0};
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imageInfo.imageView = slot->image_view;
     imageInfo.sampler = slot->sampler;
 
-    VkWriteDescriptorSet descriptorWrite = {};
+    VkWriteDescriptorSet descriptorWrite = {0};
     descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptorWrite.dstSet = slot->descriptor_set;
     descriptorWrite.dstBinding = 0;
@@ -24007,10 +24044,11 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     }
 
     // 3. Load NEW pipeline (Fail-Safe)
-    SituationComputePipeline new_pipeline = SituationCreateComputePipeline(original_path, original_layout);
+    SituationComputePipeline new_pipeline = {0};
+    SituationError err = SituationCreateComputePipeline(original_path, original_layout, &new_pipeline);
     SIT_FREE(original_path);
 
-    if (new_pipeline.id == 0) {
+    if (err != SITUATION_SUCCESS || new_pipeline.id == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_COMPUTE_PIPELINE_CREATION_FAILED, "Hot-reload compilation failed. Keeping old pipeline.");
         return false;
     }
@@ -25035,21 +25073,22 @@ SITAPI bool SituationIsAppPaused(void) {
  *
  * @see SituationUnloadImage(), SituationLoadImageFromMemory(), SituationCreateTexture()
  */
-SITAPI SituationImage SituationLoadImage(const char *fileName) {
-    SituationImage image = {0};
+SITAPI SituationError SituationLoadImage(const char *fileName, SituationImage* out_image) {
+    if (!out_image) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_image, 0, sizeof(SituationImage));
+
 #if defined(STB_IMAGE_IMPLEMENTATION)
     int channels;
     // We force 4 channels (RGBA) for consistency across the library.
-    image.data = stbi_load(fileName, &image.width, &image.height, &channels, 4);
-    if (image.data == NULL) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to load image file or format not supported.");
-        image.width = 0;
-        image.height = 0;
+    out_image->data = stbi_load(fileName, &out_image->width, &out_image->height, &channels, 4);
+    if (out_image->data == NULL) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to load image file or format not supported.");
     }
+    out_image->channels = 4;
 #else
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image loading not available. Please implement stb_image.h.");
+    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image loading not available. Please implement stb_image.h.");
 #endif
-    return image;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -25068,21 +25107,22 @@ SITAPI SituationImage SituationLoadImage(const char *fileName) {
  *
  * @see SituationUnloadImage(), SituationLoadImage()
  */
-SITAPI SituationImage SituationLoadImageFromMemory(const char *fileType, const unsigned char *fileData, int dataSize) {
+SITAPI SituationError SituationLoadImageFromMemory(const char *fileType, const unsigned char *fileData, int dataSize, SituationImage* out_image) {
     (void)fileType; // fileType is mainly for hinting, stbi_load_from_memory auto-detects.
-    SituationImage image = {0};
+    if (!out_image) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_image, 0, sizeof(SituationImage));
+
 #if defined(STB_IMAGE_IMPLEMENTATION)
     int channels;
-    image.data = stbi_load_from_memory(fileData, dataSize, &image.width, &image.height, &channels, 4);
-    if (image.data == NULL) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Failed to load image from memory or format not supported.");
-        image.width = 0;
-        image.height = 0;
+    out_image->data = stbi_load_from_memory(fileData, dataSize, &out_image->width, &out_image->height, &channels, 4);
+    if (out_image->data == NULL) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Failed to load image from memory or format not supported.");
     }
+    out_image->channels = 4;
 #else
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image loading not available. Please implement stb_image.h.");
+    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image loading not available. Please implement stb_image.h.");
 #endif
-    return image;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -25129,8 +25169,8 @@ SITAPI bool SituationIsImageValid(SituationImage image) {
  *
  * @see SituationLoadImage(), SituationTakeScreenshot()
  */
-SITAPI bool SituationExportImage(SituationImage image, const char *fileName) {
-    if (!SituationIsImageValid(image) || !fileName) return false;
+SITAPI SituationError SituationExportImage(SituationImage image, const char *fileName) {
+    if (!SituationIsImageValid(image) || !fileName) return SITUATION_ERROR_INVALID_PARAM;
 
     const char *ext = SituationGetFileExtension(fileName);
     bool success = false;
@@ -25140,38 +25180,39 @@ SITAPI bool SituationExportImage(SituationImage image, const char *fileName) {
 #if defined(STB_IMAGE_WRITE_IMPLEMENTATION)
         success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, image.width * 4) != 0);
 #else
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG export not available. Please implement stb_image_write.h.");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG export not available. Please implement stb_image_write.h.");
 #endif
     // Use helper here
     } else if (ext != NULL && _sit_strcasecmp(ext, ".bmp") == 0) {
         success = _SituationSaveImageBMP(fileName, &image);
     } else {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported image export format. Use .png or .bmp.");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported image export format. Use .png or .bmp.");
     }
-    return success;
+    return success ? SITUATION_SUCCESS : SITUATION_ERROR_FILE_WRITE_FAILED;
 }
 
 /**
  * @brief Allocates an uninitialized image container.
  * @warning Pixel data is uninitialized (garbage). Use SituationGenImageColor for zeroed memory.
  */
-SITAPI SituationImage SituationCreateImage(int width, int height, int channels) {
-    SituationImage img = {0};
-    if (width <= 0 || height <= 0 || channels <= 0) return img;
+SITAPI SituationError SituationCreateImage(int width, int height, int channels, SituationImage* out_image) {
+    if (!out_image) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_image, 0, sizeof(SituationImage));
 
-    img.width = width;
-    img.height = height;
-    img.channels = channels;
+    if (width <= 0 || height <= 0 || channels <= 0) return SITUATION_ERROR_INVALID_PARAM;
+
+    out_image->width = width;
+    out_image->height = height;
+    out_image->channels = channels;
     // Note: Library generally assumes 4-channel (RGBA) for GPU upload,
     // but we allocate based on request for intermediate buffers.
     size_t size = (size_t)width * height * channels;
-    img.data = SIT_MALLOC(size);
+    out_image->data = SIT_MALLOC(size);
 
-    if (!img.data) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationCreateImage failed");
-        return (SituationImage){0};
+    if (!out_image->data) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationCreateImage failed");
     }
-    return img;
+    return SITUATION_SUCCESS;
 }
 
 SITAPI void SituationBlitRawDataToImage(SituationImage *dst, const void* data, int x, int y, int width, int height, int src_channels) {
@@ -25249,19 +25290,23 @@ SITAPI void SituationSetPixelColor(SituationImage *img, int x, int y, ColorRGBA 
  *
  * @see SituationUnloadImage(), SituationImageCrop()
  */
-SITAPI SituationImage SituationImageCopy(SituationImage image) {
-    SituationImage new_image = {0};
-    if (!SituationIsImageValid(image)) return new_image;
+SITAPI SituationError SituationImageCopy(SituationImage image, SituationImage* out_image) {
+    if (!out_image) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_image, 0, sizeof(SituationImage));
+
+    if (!SituationIsImageValid(image)) return SITUATION_ERROR_INVALID_PARAM;
 
     size_t data_size = image.width * image.height * 4;
-    new_image.data = SIT_MALLOC(data_size);
+    out_image->data = SIT_MALLOC(data_size);
 
-    if (new_image.data) {
-        memcpy(new_image.data, image.data, data_size);
-        new_image.width = image.width;
-        new_image.height = image.height;
+    if (out_image->data) {
+        memcpy(out_image->data, image.data, data_size);
+        out_image->width = image.width;
+        out_image->height = image.height;
+    } else {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Image copy failed");
     }
-    return new_image;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -25362,22 +25407,26 @@ SITAPI void SituationImageDraw(SituationImage *dst, SituationImage src, Rectangl
  *
  * @see SituationUnloadImage(), SituationGenImageGradient()
  */
-SITAPI SituationImage SituationGenImageColor(int width, int height, ColorRGBA color) {
-    SituationImage image = {0};
-    image.width = width;
-    image.height = height;
-    size_t data_size = width * height * 4;
-    image.data = SIT_MALLOC(data_size);
+SITAPI SituationError SituationGenImageColor(int width, int height, ColorRGBA color, SituationImage* out_image) {
+    if (!out_image) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_image, 0, sizeof(SituationImage));
 
-    if (image.data) {
-        unsigned int* pixels = (unsigned int*)image.data;
+    out_image->width = width;
+    out_image->height = height;
+    size_t data_size = width * height * 4;
+    out_image->data = SIT_MALLOC(data_size);
+
+    if (out_image->data) {
+        unsigned int* pixels = (unsigned int*)out_image->data;
         // Pack color into an integer for fast filling
         unsigned int c = (unsigned int)color.a << 24 | (unsigned int)color.b << 16 | (unsigned int)color.g << 8 | (unsigned int)color.r;
         for (int i = 0; i < width * height; ++i) {
             pixels[i] = c;
         }
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
-    return image;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -25390,14 +25439,16 @@ SITAPI SituationImage SituationGenImageColor(int width, int height, ColorRGBA co
  * @param br The color for the Bottom-Right corner.
  * @return A SituationImage containing the gradient. The data must be freed later.
  */
-SITAPI SituationImage SituationGenImageGradient(int width, int height, ColorRGBA tl, ColorRGBA tr, ColorRGBA bl, ColorRGBA br) {
-    SituationImage image = {0};
-    image.width = width;
-    image.height = height;
-    image.data = SIT_MALLOC(width * height * 4); // 4 bytes per pixel (RGBA)
+SITAPI SituationError SituationGenImageGradient(int width, int height, ColorRGBA tl, ColorRGBA tr, ColorRGBA bl, ColorRGBA br, SituationImage* out_image) {
+    if (!out_image) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_image, 0, sizeof(SituationImage));
 
-    if (image.data) {
-        unsigned char* pixels = (unsigned char*)image.data;
+    out_image->width = width;
+    out_image->height = height;
+    out_image->data = SIT_MALLOC(width * height * 4); // 4 bytes per pixel (RGBA)
+
+    if (out_image->data) {
+        unsigned char* pixels = (unsigned char*)out_image->data;
 
         for (int y = 0; y < height; ++y) {
             // Vertical ratio (0.0 at top, 1.0 at bottom)
@@ -25433,8 +25484,10 @@ SITAPI SituationImage SituationGenImageGradient(int width, int height, ColorRGBA
                 pixels[index + 3] = a;
             }
         }
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
-    return image;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -25887,14 +25940,15 @@ SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, floa
  *
  * @see SituationUnloadFont(), SituationImageDrawText(), SituationMeasureText()
  */
-SITAPI SituationFont SituationLoadFont(const char *fileName) {
-    SituationFont font = {0};
+SITAPI SituationError SituationLoadFont(const char *fileName, SituationFont* out_font) {
+    if (!out_font) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_font, 0, sizeof(SituationFont));
+
     long size = 0;
     FILE *fontFile = fopen(fileName, "rb");
 
     if (!fontFile) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "SituationLoadFont: Failed to open font file.");
-        return font;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "SituationLoadFont: Failed to open font file.");
     }
 
     fseek(fontFile, 0, SEEK_END);
@@ -25906,7 +25960,7 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
     unsigned char *fontBuffer = (unsigned char*)SIT_MALLOC(size);
     if (!fontBuffer) {
         fclose(fontFile);
-        return font;
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
     fread(fontBuffer, 1, size, fontFile);
@@ -25916,7 +25970,7 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
     stbtt_fontinfo *info = (stbtt_fontinfo*)SIT_MALLOC(sizeof(stbtt_fontinfo));
     if (!info) {
         SIT_FREE(fontBuffer);
-        return font;
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
     // 3. Initialize stb_truetype with our buffer.
@@ -25924,13 +25978,12 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
         // The font file is invalid or not a TrueType font.
         SIT_FREE(info);
         SIT_FREE(fontBuffer);
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFont: Failed to parse TrueType/OpenType data.");
-        return font;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFont: Failed to parse TrueType/OpenType data.");
     }
 
-    font.fontData = fontBuffer;
-    font.stbFontInfo = info;
-    return font;
+    out_font->fontData = fontBuffer;
+    out_font->stbFontInfo = info;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -25945,37 +25998,36 @@ SITAPI SituationFont SituationLoadFont(const char *fileName) {
  *
  * @note The returned font owns its memory copy. Call `SituationUnloadFont()` to free it.
  */
-SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize) {
-    SituationFont font = {0};
-    if (!data || dataSize <= 0) return font;
+SITAPI SituationError SituationLoadFontFromMemory(const void* data, int dataSize, SituationFont* out_font) {
+    if (!out_font) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_font, 0, sizeof(SituationFont));
+
+    if (!data || dataSize <= 0) return SITUATION_ERROR_INVALID_PARAM;
 
     // 1. Allocate our own buffer and copy the data.
     // This ensures SituationUnloadFont() can safely SIT_FREE(font.fontData) regardless of where the original data came from.
-    font.fontData = SIT_MALLOC(dataSize);
-    if (!font.fontData) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate buffer copy.");
-        return font;
+    out_font->fontData = SIT_MALLOC(dataSize);
+    if (!out_font->fontData) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate buffer copy.");
     }
-    memcpy(font.fontData, data, dataSize);
+    memcpy(out_font->fontData, data, dataSize);
 
     // 2. Allocate and initialize the stbtt_fontinfo struct.
-    font.stbFontInfo = SIT_MALLOC(sizeof(stbtt_fontinfo));
-    if (!font.stbFontInfo) {
-        SIT_FREE(font.fontData);
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate font info.");
-        return (SituationFont){0};
+    out_font->stbFontInfo = SIT_MALLOC(sizeof(stbtt_fontinfo));
+    if (!out_font->stbFontInfo) {
+        SIT_FREE(out_font->fontData);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate font info.");
     }
 
     // 3. Initialize stb_truetype.
     // Note: stbtt_InitFont does NOT copy the data, it stores the pointer. That is why we made our own copy above.
-    if (!stbtt_InitFont((stbtt_fontinfo*)font.stbFontInfo, (unsigned char*)font.fontData, 0)) {
-        SIT_FREE(font.stbFontInfo);
-        SIT_FREE(font.fontData);
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
-        return (SituationFont){0};
+    if (!stbtt_InitFont((stbtt_fontinfo*)out_font->stbFontInfo, (unsigned char*)out_font->fontData, 0)) {
+        SIT_FREE(out_font->stbFontInfo);
+        SIT_FREE(out_font->fontData);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
     }
 
-    return font;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -26000,14 +26052,14 @@ SITAPI SituationFont SituationLoadFontFromMemory(const void* data, int dataSize)
  * @note The generated texture is managed by the `SituationFont` struct. Calling `SituationUnloadFont` will
  *       automatically destroy this texture.
  */
-SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
+SITAPI SituationError SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
 #if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
-    if (!font || !font->fontData) return false;
+    if (!font || !font->fontData) return SITUATION_ERROR_INVALID_PARAM;
 
     // 1. Allocate Bitmap Memory (512x512 is usually enough for ASCII)
     int w = 512;
     int h = 512;
-    unsigned char* bitmap = SIT_CALLOC(w * h, 1); // 1-channel alpha
+    unsigned char* bitmap = (unsigned char*)SIT_CALLOC(w * h, 1); // 1-channel alpha
 
     // 2. Allocate Glyph Info
     // standard ASCII 32-126 is 96 chars
@@ -26026,8 +26078,7 @@ SITAPI bool SituationBakeFontAtlas(SituationFont* font, float fontSizePixels) {
     if (res <= 0) {
         SIT_FREE(bitmap);
         SIT_FREE(font->glyph_info);
-        _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED, "Font atlas bake failed (texture too small?)");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED, "Font atlas bake failed (texture too small?)");
     }
 
     // 4. Convert 1-channel bitmap to 4-channel RGBA for SituationCreateTexture
@@ -29959,29 +30010,29 @@ SITAPI void SituationConvertColorToVector4(ColorRGBA c, Vector4* out_normalized_
  *
  * @see SituationUnloadImage(), SituationTakeScreenshot()
  */
-SITAPI SituationImage SituationLoadImageFromScreen(void) {
-    if (!SituationIsInitialized()) return (SituationImage){0};
+SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
+    if (!out_image) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_image, 0, sizeof(SituationImage));
+
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
     // Get the dimensions of the framebuffer (HiDPI-aware)
     int width = SituationGetRenderWidth();
     int height = SituationGetRenderHeight();
 	if (width == 0 || height == 0) {
-		_SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot capture screen: render surface invalid (width/height=0)");
-		return (SituationImage){0};
+		return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot capture screen: render surface invalid (width/height=0)");
 	}
 
-    SituationImage image = {0};
-	image.width = width;
-    image.height = height;
+	out_image->width = width;
+    out_image->height = height;
 
 #if defined(SITUATION_USE_OPENGL)
     // Allocate memory for the raw pixel data (RGBA, 8 bits per channel)
-    image.data = SIT_MALLOC(width * height * 4);
-	if (!image.data) {
+    out_image->data = SIT_MALLOC(width * height * 4);
+	if (!out_image->data) {
         char err_msg[128];
         snprintf(err_msg, sizeof(err_msg), "Screenshot pixel buffer allocation failed (%dx%d RGBA)", width, height);
-		_SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, err_msg);
-		return (SituationImage){0};
+		return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, err_msg);
 	}
 
     // Bind the default framebuffer (the one being displayed) to read from it.
@@ -29989,17 +30040,16 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
     SIT_CHECK_GL_ERROR();
 
     // Read pixels from the framebuffer. They will be vertically flipped.
-	glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, image.data);
+	glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, out_image->data);
 	GLenum err = glGetError();
 	if (err != GL_NO_ERROR) {
         char err_msg[128];
         snprintf(err_msg, sizeof(err_msg), "glReadPixels failed (GL error: %d)", err);
-		_SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, err_msg);
-		free(image.data); image.data = NULL;
-		return (SituationImage){0};
+		SIT_FREE(out_image->data); out_image->data = NULL;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, err_msg);
 	}
     // Use our new, generic utility function to correct the orientation.
-    SituationImageFlip(&image, SIT_FLIP_VERTICAL);
+    SituationImageFlip(out_image, SIT_FLIP_VERTICAL);
 #elif defined(SITUATION_USE_VULKAN)
     // 1. Identify the source image.
     // 'current_image_index' holds the index of the swapchain image we are currently drawing to.
@@ -30007,8 +30057,7 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
     if (srcImage == VK_NULL_HANDLE) {
         char err_msg[128];
         snprintf(err_msg, sizeof(err_msg), "Cannot get screenshot: source swapchain image index %u is invalid", sit_render.vk.current_image_index);
-		_SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID, err_msg);
-        return (SituationImage){0};
+		return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID, err_msg);
 	}
 
     // 2. Define the Current Layout.
@@ -30022,7 +30071,7 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
     //   a. Transition image from COLOR_ATTACHMENT -> TRANSFER_SRC
     //   b. Copy pixels to CPU buffer
     //   c. Transition image back from TRANSFER_SRC -> COLOR_ATTACHMENT
-    image.data = _SituationVulkanBlitImageToHostVisibleBuffer(
+    out_image->data = _SituationVulkanBlitImageToHostVisibleBuffer(
         srcImage,
         currentLayout,
         (uint32_t)width,
@@ -30030,13 +30079,13 @@ SITAPI SituationImage SituationLoadImageFromScreen(void) {
     );
 
     // 4. Validation
-    if (image.data == NULL) { return (SituationImage){0}; }
+    if (out_image->data == NULL) { return SITUATION_ERROR_TEXTURE_UPLOAD_FAILED; }
 
     // Note: Vulkan blits usually preserve orientation or can be flipped via coordinates.
     // Unlike OpenGL, we usually don't need a CPU-side flip here depending on the projection matrix used.
 #endif
 
-    return image;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -30078,8 +30127,9 @@ SITAPI SituationError SituationTakeScreenshot(const char *fileName) {
     return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG support not available. Please implement stb_image_write.h.");
 #else
     // 3. Capture and Save
-    SituationImage image = SituationLoadImageFromScreen();
-    if (image.data == NULL) return SITUATION_ERROR_TEXTURE_UPLOAD_FAILED; // Error already set by LoadImage, but we return a generic fail
+    SituationImage image = {0};
+    SituationError cap_err = SituationLoadImageFromScreen(&image);
+    if (cap_err != SITUATION_SUCCESS) return cap_err;
 
     int stride = image.width * 4;
     // stbi_write_png returns 0 on failure
