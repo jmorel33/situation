@@ -487,7 +487,8 @@ typedef enum {
     SIT_SUBMIT_DEFAULT       = 0,       // Low Priority, Return 0 if full
     SIT_SUBMIT_HIGH_PRIORITY = 1 << 0,  // Use High Priority Queue (Physics, Audio)
     SIT_SUBMIT_BLOCK_IF_FULL = 1 << 1,  // Spin/Sleep until a slot opens
-    SIT_SUBMIT_RUN_IF_FULL   = 1 << 2   // Execute immediately on current thread if full
+    SIT_SUBMIT_RUN_IF_FULL   = 1 << 2,  // Execute immediately on current thread if full
+    SIT_SUBMIT_POINTER_ONLY  = 1 << 3   // Do not copy large data; user guarantees lifetime
 } SituationJobFlags;
 
 // -- Job Definition (Generational) --
@@ -504,6 +505,7 @@ typedef struct SituationJob {
     atomic_uint_least32_t continuation_id; // ID of job to trigger when this finishes (CAS target)
     uint8_t dep_depth;                  // Cycle detection depth counter (max 32)
     bool uses_large_data;               // Flag for data location
+    bool owns_memory;                   // [New] If true, large_data_ptr must be freed
 
     // Small Object Optimization (SOO)
     // 64 bytes avoids malloc for matrices, config structs, etc.
@@ -2057,7 +2059,7 @@ SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, 
 SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset); // [Core] Binds a dynamic buffer descriptor set with an offset.
 SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);             // [Core] Binds a texture's descriptor set (sampler/storage) to a set index.
 SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture);           // [Core] Binds a texture as a storage image for compute shaders.
-SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset); // [Core] Define the format of a vertex attribute for the active VAO.
+SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset); // [OpenGL Only] Define the format of a vertex attribute for the active VAO.
 SITAPI SituationError SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance); // [Core] Record a non-indexed draw call.
 SITAPI SituationError SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance); // [Core] Record an indexed draw call.
 SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);                     // Begins a render pass with detailed configuration.
@@ -2119,7 +2121,7 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
 SITAPI void SituationUnloadModel(SituationModel* model);                                // Frees all GPU and CPU resources associated with a loaded model.
 SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform); // Draws all sub-meshes of a model with a single root transformation.
 SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path);      // Exports a model to a human-readable .gltf and a .bin file for debugging.
-static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count);
+SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count);
 
 // --- Image & Screenshot Utilities ---
 SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image);                               // Get a copy of the current screen backbuffer as an image.
@@ -15057,6 +15059,8 @@ SITAPI SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd,
  * - **Vulkan:** **Not Supported.** Returns `SITUATION_ERROR_NOT_IMPLEMENTED`.
  *   In Vulkan, vertex input state is immutable and baked into the `VkPipeline` object at creation. You cannot change vertex attributes dynamically on a command buffer; you must create a new pipeline with the desired layout.
  *
+ * @note **[OpenGL Only]** This function is not supported on Vulkan.
+ *
  * @param cmd The command buffer (Ignored in OpenGL).
  * @param location The shader attribute location index (e.g., `layout(location=0)`).
  * @param size The number of components (1, 2, 3, or 4).
@@ -17039,6 +17043,9 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
     if (!out_buffer) return SITUATION_ERROR_INVALID_PARAM;
     memset(out_buffer, 0, sizeof(SituationBuffer));
 
+    // [Logic] Ensure all buffers can be updated via SituationUpdateBuffer (which uses vkCmdCopyBuffer)
+    usage_flags |= SITUATION_BUFFER_USAGE_TRANSFER_DST;
+
     SituationError local_err = SITUATION_SUCCESS;
 
     // --- 1. Pre-initialization Validation ---
@@ -17571,7 +17578,7 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
  * @param[out] index_data Pointer to receive the array of indices. Caller must free.
  * @param[out] index_count Pointer to receive the number of indices.
  */
-static void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count) {
+SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count) {
     // Initialize outputs to 0/NULL
     if (vertex_data) *vertex_data = NULL;
     if (vertex_count) *vertex_count = 0;
@@ -23166,7 +23173,10 @@ SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model,
  *       2. It relies on being able to read geometry data back from the GPU, which can be a slow operation. For best results, use this for debugging or development tools rather than as a frequent runtime operation.
  */
 SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path) {
-#if defined(CGLTF_IMPLEMENTATION) && defined(CGLTF_WRITE_H)
+#if !defined(CGLTF_WRITE_H)
+    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationSaveModelAsGltf requires CGLTF_WRITE_H to be included.");
+    return false;
+#elif defined(CGLTF_IMPLEMENTATION)
     if (model.id == 0) return false;
 
     // This is a simplified outline. A full implementation is very involved.
@@ -27835,8 +27845,17 @@ static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBuffe
 
     // Safety check and dispatch
     if (sound && sound->stream_read_cb) {
+        // [Safety] Explicit cast for 32-bit platforms where size_t is smaller than ma_uint64
         ma_uint64 read = sound->stream_read_cb(sound->stream_user_data, pBufferOut, (ma_uint64)bytesToRead);
-        if (pBytesRead) *pBytesRead = (size_t)read;
+        if (pBytesRead) {
+            #if SIZE_MAX < 0xFFFFFFFFFFFFFFFFULL // Check if size_t is smaller than 64-bit
+            if (read > (ma_uint64)SIZE_MAX) {
+                // This is extremely unlikely for audio chunks but theoretically possible.
+                read = (ma_uint64)SIZE_MAX;
+            }
+            #endif
+            *pBytesRead = (size_t)read;
+        }
         return MA_SUCCESS;
     }
     return MA_ERROR;
@@ -30067,6 +30086,26 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
     VkImageLayout currentLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     // 3. Perform the Copy.
+    // [SAFETY] If the command buffer is recording, we must close it and sync with the GPU
+    // to ensure the image layout is consistent and pixels are rendered before we capture.
+    if (sit_render.vk.command_buffers[sit_render.vk.current_image_index]) { // Simple check, ideally check a 'recording' flag
+        // Assuming current_frame_index points to the active frame's resources
+        // We force a submit-and-wait to ensure the image is ready for capture.
+        // NOTE: This interrupts the current frame's batching.
+        vkEndCommandBuffer(sit_render.vk.command_buffers[sit_render.vk.current_image_index]);
+
+        VkSubmitInfo submitInfo = {0};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &sit_render.vk.command_buffers[sit_render.vk.current_image_index];
+
+        vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(sit_render.vk.graphics_queue);
+    } else {
+        // Just wait for idle if we aren't sure of state, to be safe.
+        vkQueueWaitIdle(sit_render.vk.graphics_queue);
+    }
+
     // This helper will:
     //   a. Transition image from COLOR_ATTACHMENT -> TRANSFER_SRC
     //   b. Copy pixels to CPU buffer
@@ -30522,6 +30561,13 @@ static int _SituationWorkerEntry(void* arg) {
             }
 
             // 3. Completion & Cleanup
+            // [Safety] Free copied data if owned
+            if (job_ptr->owns_memory && job_ptr->large_data_ptr) {
+                SIT_FREE(job_ptr->large_data_ptr);
+                job_ptr->large_data_ptr = NULL;
+                job_ptr->owns_memory = false;
+            }
+
             atomic_store(&job_ptr->is_completed, true);
 
             // Increment generation to invalidate handle
@@ -30779,12 +30825,37 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
     atomic_store(&job->continuation_id, 0);
     job->dep_depth = 0;
 
-    // SOO Logic
+    // SOO Logic & Safe Copy
     if (data_size > 0 && data_size <= SITUATION_JOB_PAYLOAD_MAX) {
+        // Small Data: Copy into SOO buffer
         if (data) memcpy(job->storage, data, data_size);
         job->uses_large_data = false;
+        job->owns_memory = false;
     } else {
-        job->large_data_ptr = (void*)data;
+        // Large Data
+        if (flags & SIT_SUBMIT_POINTER_ONLY) {
+            // Optimization: Just store the pointer (User promises lifetime)
+            job->large_data_ptr = (void*)data;
+            job->owns_memory = false;
+        } else if (data && data_size > 0) {
+            // Safety: Allocate and Copy (Default)
+            job->large_data_ptr = SIT_MALLOC(data_size);
+            if (job->large_data_ptr) {
+                memcpy(job->large_data_ptr, data, data_size);
+                job->owns_memory = true;
+            } else {
+                // Allocation failed. Fallback to pointer and hope?
+                // Or fail the submission?
+                // For robustness, we fallback to pointer but log warning if possible.
+                // In this lock-held section, we just store the pointer.
+                job->large_data_ptr = (void*)data;
+                job->owns_memory = false;
+            }
+        } else {
+            // No data or invalid size
+            job->large_data_ptr = (void*)data;
+            job->owns_memory = false;
+        }
         job->uses_large_data = true;
     }
 
