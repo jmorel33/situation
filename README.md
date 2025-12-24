@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.33 "Velocity"_
+_Core API library v2.3.36 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,14 +8,16 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.33 "Velocity"**
+Current Version: **v2.3.36 "Velocity"**
 
-**Version 2.3.33** implements the "Titanium Standard" Audio Hardening Action Plan, introducing consistent locking, atomic parameters, and a generational handle system for the Audio engine.
+**Version 2.3.36** marks the completion of the "Max Out Core" OpenGL upgrade plan. It finalizes the transition to a high-performance, parallel-friendly architecture by implementing **Multi-Draw Indirect (MDI)** batching, **Persistent Ring Buffers**, and **Bindless Textures** for the OpenGL backend, bringing it to performance parity with the Vulkan implementation.
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **OpenGL Optimization (v2.3.36):** Completed the "Max Out Core" plan with MDI batching, Zero-Copy Ring Buffers, and Bindless Textures.
 *   **Texture Registry (v2.3.31):** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.
+*   **Universal Handles (v2.4):** Transitioning all resources (Buffers, Shaders, Meshes) to the Registry System for uniform, bindless-ready access.
+*   **Async Compute:** Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
-*   **Async Compute**: Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
 *   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
 *   **Cross-Platform Expansion**: Formalizing support for Android and WebAssembly targets.
 *   **Web & Reach (Phase 4):** Full **Emscripten** (WASM) support and a **WebGPU (Dawn)** backend to bring Situation apps to the browser with near-native performance.
@@ -27,11 +29,11 @@ The library's philosophy is reflected in its name, granting developers complete 
 It provides deep **Awareness** of the host system through APIs for querying hardware **(GPU Name, VRAM)** and multi-monitor display information, and by handling operating system events like window focus and file drops.
 
 This foundation enables precise **Control** over the entire application stack:
-*   **Threading:** A completely new **Generational Task System** supporting fork-join parallelism (`ParallelFor`), priority scheduling (High/Low rings), and backpressure handling (`RUN_IF_FULL`).
+*   **Threading:** A completely new **Generational Task System** supporting fork-join parallelism (`ParallelFor`), priority scheduling (High/Low rings), backpressure handling (`RUN_IF_FULL`), and a **Dedicated I/O Thread** for non-blocking asset loading.
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management with explicit **State Hardening** to prevent context poisoning from external middleware (e.g., ImGui).
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events ensures no input is ever lost during frame spikes.
 *   **Audio:** A professional-grade pipeline featuring a **Snapshot-and-Unlock mixing architecture** for zero-stall concurrency, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
-*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.4**. It manages complex resources automatically, utilizing **Best-Fit Descriptor Recycling** and **Persistent Staging Rings** to eliminate fragmentation and allocation overhead. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering powered by **Zero-Copy Ring Buffers**.
+*   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.4**. It manages complex resources automatically, utilizing **Best-Fit Descriptor Recycling** and **Persistent Staging Rings** to eliminate fragmentation and allocation overhead. The OpenGL backend now features **Multi-Draw Indirect (MDI)** batching and **Bindless Textures** for console-like efficiency. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering powered by **Zero-Copy Ring Buffers**.
 *   **Hot-Reloading:** A suite of tools for live-reloading assets (Shaders, Textures, Models) at runtime, safely handling GPU synchronization and resource rebuilding with **Debounced IO Polling** to prevent CPU storms.
 
 Finally, its **Timing** capabilities range from high-resolution performance measurement **(FPS, Draw Calls, Latency Histograms)** and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
