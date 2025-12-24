@@ -1738,7 +1738,7 @@ SituationDisableCursor();
 
 ---
 #### `SituationGetClipboardText`
-Gets UTF-8 encoded text from the system clipboard. The returned pointer is managed by the library and should not be freed.
+Gets UTF-8 encoded text from the system clipboard. The returned string is heap-allocated and must be freed by the caller using `SituationFreeString`.
 ```c
 SituationError SituationGetClipboardText(const char** out_text);
 ```
@@ -1749,6 +1749,7 @@ if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_V)
     const char* clipboard_text = NULL;
     if (SituationGetClipboardText(&clipboard_text) == SITUATION_SUCCESS) {
         // Paste text into an input field.
+        SituationFreeString((char*)clipboard_text);
     }
 }
 ```
@@ -3323,7 +3324,7 @@ typedef struct SituationVirtualDisplay {
 #### `SituationCreateVirtualDisplay`
 Creates an off-screen render target (framebuffer object).
 ```c
-int SituationCreateVirtualDisplay(vec2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode);
+SituationError SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode, int* out_id);
 ```
 
 ---
@@ -3351,22 +3352,23 @@ SituationTexture SituationGetVirtualDisplayTexture(int display_id);
 #### `SituationRenderVirtualDisplays`
 Composites all visible virtual displays onto the current render target.
 ```c
-void SituationRenderVirtualDisplays(SituationCommandBuffer cmd);
+SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd);
 ```
 **Usage Example:**
 ```c
 // At init: Create a display for the 3D scene
-int scene_vd = SituationCreateVirtualDisplay((vec2){640, 360}, ...);
+int scene_vd;
+SituationCreateVirtualDisplay((Vector2){640, 360}, 1.0, 0, SITUATION_SCALING_FIT, SITUATION_BLEND_ALPHA, &scene_vd);
 
 // In render loop:
 // 1. Render scene to the virtual display
-SituationRenderPassInfo scene_pass = { .virtual_display_id = scene_vd, ... };
+SituationRenderPassInfo scene_pass = { .display_id = scene_vd };
 SituationCmdBeginRenderPass(cmd, &scene_pass);
 // ... draw 3D models ...
 SituationCmdEndRenderPass(cmd);
 
 // 2. Render to the main window
-SituationRenderPassInfo final_pass = { .virtual_display_id = -1, ... };
+SituationRenderPassInfo final_pass = { .display_id = -1 };
 SituationCmdBeginRenderPass(cmd, &final_pass);
 // This composites the 3D scene from its virtual display onto the main window
 SituationRenderVirtualDisplays(cmd);
@@ -3536,7 +3538,7 @@ SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd);
 #### `SituationLoadShaderFromMemory`
 Creates a graphics shader pipeline from in-memory GLSL source.
 ```c
-SituationShader SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code);
+SituationError SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code, SituationShader* out_shader);
 ```
 
 ---
@@ -3669,14 +3671,14 @@ SituationError SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, uint32_
 #### `SituationLoadComputeShader`
 [DEPRECATED] Loads a compute shader from a file. Use `SituationCreateComputePipeline` instead.
 ```c
-SituationShader SituationLoadComputeShader(const char* cs_path);
+SituationError SituationLoadComputeShader(const char* cs_path, SituationShader* out_shader);
 ```
 
 ---
 #### `SituationLoadComputeShaderFromMemory`
 [DEPRECATED] Creates a compute shader from memory. Use `SituationCreateComputePipelineFromMemory` instead.
 ```c
-SituationShader SituationLoadComputeShaderFromMemory(const char* cs_code);
+SituationError SituationLoadComputeShaderFromMemory(const char* cs_code, SituationShader* out_shader);
 ```
 
 ---
@@ -3959,17 +3961,18 @@ void SituationSetDropCallback(SituationDropCallback callback, void* user_data);
 #### Clipboard
 ---
 #### `SituationGetClipboardText`
-Gets UTF-8 encoded text from the system clipboard. The returned pointer is managed by the library and should not be freed.
+Gets UTF-8 encoded text from the system clipboard. The returned string is heap-allocated and must be freed by the caller using `SituationFreeString`.
 ```c
-const char* SituationGetClipboardText(void);
+SituationError SituationGetClipboardText(const char** out_text);
 ```
 **Usage Example:**
 ```c
 // In an input handler for Ctrl+V
 if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_V)) {
-    const char* clipboard_text = SituationGetClipboardText();
-    if (clipboard_text) {
+    const char* clipboard_text = NULL;
+    if (SituationGetClipboardText(&clipboard_text) == SITUATION_SUCCESS) {
         // Paste text into an input field.
+        SituationFreeString((char*)clipboard_text);
     }
 }
 ```
@@ -3977,7 +3980,7 @@ if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_V)
 #### `SituationSetClipboardText`
 Sets the system clipboard to the provided UTF-8 encoded text.
 ```c
-void SituationSetClipboardText(const char* text);
+SituationError SituationSetClipboardText(const char* text);
 ```
 **Usage Example:**
 ```c

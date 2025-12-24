@@ -1241,7 +1241,7 @@ The library supports getting and setting UTF-8 text to/from the system clipboard
 #### SituationSetClipboardText
 
 ```c:disable-run
-void SituationSetClipboardText(const char* text);
+SituationError SituationSetClipboardText(const char* text);
 ```
 
 **Behavior:** Copies the provided string to the OS clipboard.
@@ -1249,11 +1249,11 @@ void SituationSetClipboardText(const char* text);
 #### SituationGetClipboardText
 
 ```c:disable-run
-const char* SituationGetClipboardText(void);
+SituationError SituationGetClipboardText(const char** out_text);
 ```
 
-**Returns:** A pointer to the text currently in the clipboard.
-**Memory:** The returned string is managed internally by the library (or GLFW). Do not free it. If the clipboard is empty or does not contain text, returns NULL or an empty string.
+**Returns:** `SITUATION_SUCCESS` on success. `out_text` is populated with a heap-allocated copy of the clipboard text.
+**Memory:** The caller must free the returned string using `SituationFreeString`.
 
 #### Example: Implementing Copy/Paste
 
@@ -1265,9 +1265,10 @@ if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_C)
 
 // Paste (Ctrl+V)
 if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_V)) {
-    const char* text = SituationGetClipboardText();
-    if (text) {
+    const char* text = NULL;
+    if (SituationGetClipboardText(&text) == SITUATION_SUCCESS) {
         printf("Pasted: %s\n", text);
+        SituationFreeString((char*)text);
     }
 }
 ```
@@ -2132,7 +2133,7 @@ Once you have drawn into your virtual displays, you must composite them onto the
 #### SituationRenderVirtualDisplays
 
 ```c:disable-run
-void SituationRenderVirtualDisplays(SituationCommandBuffer cmd);
+SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd);
 ```
 
 **Behavior:**
