@@ -41,7 +41,7 @@ DSA allows us to modify objects without binding them to the context. This elimin
     *   [x] glCreateBuffers(...)
     *   [x] glNamedBufferStorage(...)
 *   **Uniforms:** Replace glUseProgram + glUniform* with:
-    *   [ ] glProgramUniform* (Updates uniforms without switching the active shader).
+    *   [x] glProgramUniform* (Updates uniforms without switching the active shader).
 
 **Benefit:** The SituationCmd* functions become thread-safe regarding GL state generation (though submission is still main-thread).
 
