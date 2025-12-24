@@ -242,6 +242,7 @@ typedef struct {
     // --- Vulkan Specific Configuration ---
     // Ignored if SITUATION_USE_OPENGL is defined.
     bool enable_vulkan_validation;      // Enables standard validation layers (LunarG).
+    bool force_single_queue;            // Force shared compute/graphics queue (debug).
     uint32_t max_frames_in_flight;      // Default: 2 (Double buffering).
     const char** required_vulkan_extensions; // Additional instance extensions.
     uint32_t required_vulkan_extension_count;
@@ -251,10 +252,21 @@ typedef struct {
     // SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD: Routes capture callbacks to main thread.
     uint32_t flags;
 
+    // --- Audio ---
+    uint32_t max_audio_voices; // Max concurrent audio voices. 0 = Unlimited (Dynamic).
+
     // --- Threading ---
     // 0 = Single Threaded (Default).
     // 1 = Enable Render Thread (Decouples Rendering from Logic).
     int render_thread_count;
+
+    // Backpressure Policy [v2.3.22]:
+    // 0: Spin (Low Latency), 1: Yield (Balanced), 2: Sleep (Low CPU)
+    int backpressure_policy;
+
+    // Async I/O [v2.3.34]:
+    // Size of the IO queue (Low Priority). Default: 1024.
+    uint32_t io_queue_capacity;
 } SituationInitInfo;
 ```
 
@@ -3598,15 +3610,15 @@ The Threading module provides a hardened, high-performance **Generational Task S
 <a id="71-generational-task-system"></a>
 ### 7.1 Generational Task System
 
-The `SituationThreadPool` uses a dual-priority ring buffer architecture with O(1) generational validation.
+The `SituationThreadPool` uses a dual-priority ring buffer architecture with O(1) generational validation. The system is designed to prevent "Head-of-Line Blocking," where a slow background task (like loading a 4K texture) delays a critical foreground task (like physics integration).
 
 **Key Features:**
-*   **Dedicated IO Thread:** (Since v2.3.34A "Trinity Threads") A separate thread services the Low Priority queue, ensuring asset loading never contends with gameplay logic or physics.
-*   **Zero Allocation:** The job queue is a fixed-size ring buffer. Submitting a job involves no `malloc` calls (unless the payload > 64 bytes).
+*   **Dedicated IO Thread:** (Since v2.3.34A "Trinity Threads") A separate, dedicated thread services the Low Priority queue exclusively. This ensures that asset loading and file I/O never contend with gameplay logic or physics workers, effectively decoupling the simulation from the disk.
+*   **Zero Allocation:** The job queue is a fixed-size ring buffer (configurable via `io_queue_capacity`). Submitting a job involves no `malloc` calls (unless the payload > 64 bytes).
 *   **O(1) Validation:** Handle IDs contain a "Generation Counter". If a slot is reused, the generation increments. This makes `SituationWaitForJob` instantaneous and safe against ABA problems.
-*   **Dual Priority:**
-    *   **High Priority (Index 1):** For frame-critical tasks like Physics steps or Audio DSP. Workers always check this queue first.
-    *   **Low Priority (Index 0):** For bulk IO tasks like Asset Loading.
+*   **Dual Priority Queues:**
+    *   **High Priority (Index 1):** Serviced by the general Worker Pool. Used for frame-critical tasks like Physics steps, Animation updates, or Audio DSP. Workers always drain this queue before checking low priority items.
+    *   **Low Priority (Index 0):** Serviced by the Dedicated I/O Thread. Used for bulk operations like Asset Loading, Decompression, and Autosaving.
 
 **Thread Safety:**
 *   **Main Thread Only:** You must create and destroy the pool from the main thread.
@@ -3664,29 +3676,47 @@ bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId id);
 
 #### Async Asset Loading
 
-These convenience helpers offload IO to the background thread.
+These convenience helpers offload I/O operations to the **Dedicated I/O Thread** (Low Priority Queue). They handle the complexity of allocating temporary buffers, duplicating paths for thread safety, and managing callbacks.
 
+**Audio (Decodes to RAM)**
+Loads and decodes an audio file entirely into memory. This is critical for preventing disk I/O stalls on the audio mixing thread.
 ```c:disable-run
-// Audio (Decodes to RAM)
 SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
                                                const char* file_path,
                                                bool looping,
                                                SituationSound* out_sound);
+```
 
-// Text File (Loads to string)
+**Text File (Loads to string)**
+Loads a text file and null-terminates it. Useful for shaders, JSON configs, or scripts.
+```c:disable-run
 SituationJobId SituationLoadFileTextAsync(SituationThreadPool* pool,
                                           const char* file_path,
                                           SituationFileTextLoadCallback callback,
                                           void* user_data);
+```
 
-// Binary File
+**Binary File (Raw Data)**
+Loads raw binary data. Useful for custom mesh formats, textures, or save games.
+```c:disable-run
 SituationJobId SituationLoadFileAsync(SituationThreadPool* pool,
                                       const char* file_path,
                                       SituationFileLoadCallback callback,
                                       void* user_data);
 ```
 
-**Safety:** The input strings (`file_path`, etc.) are duplicated internally, so you can free your local copies immediately after submission.
+**Atomic Writes (Save Async)**
+Writes data to a temporary file and performs an atomic rename, ensuring data integrity even if the app crashes during the write.
+```c:disable-run
+SituationJobId SituationSaveFileAsync(SituationThreadPool* pool,
+                                      const char* file_path,
+                                      const void* data,
+                                      size_t size,
+                                      SituationFileSaveCallback callback,
+                                      void* user_data);
+```
+
+**Safety:** The input strings (`file_path`, etc.) and data buffers (for writes) are **duplicated internally** or copied to the job's payload area. You can safeley free your local copies immediately after the function returns; the job system owns its own copy.
 
 <a id="73-dependency-graph"></a>
 ### 7.3 Dependency Graph

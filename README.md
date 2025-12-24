@@ -29,7 +29,7 @@ The library's philosophy is reflected in its name, granting developers complete 
 It provides deep **Awareness** of the host system through APIs for querying hardware **(GPU Name, VRAM)** and multi-monitor display information, and by handling operating system events like window focus and file drops.
 
 This foundation enables precise **Control** over the entire application stack:
-*   **Threading:** A completely new **Generational Task System** supporting fork-join parallelism (`ParallelFor`), priority scheduling (High/Low rings), backpressure handling (`RUN_IF_FULL`), and a **Dedicated I/O Thread** for non-blocking asset loading.
+*   **Threading:** A completely new **Generational Task System** supporting fork-join parallelism (`ParallelFor`), priority scheduling (High/Low rings), backpressure handling (`RUN_IF_FULL`), and a **Dedicated I/O Thread** for non-blocking asset loading. It features Small Object Optimization (SOO) for zero-allocation jobs and O(1) dependency resolution.
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management with explicit **State Hardening** to prevent context poisoning from external middleware (e.g., ImGui).
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events ensures no input is ever lost during frame spikes.
 *   **Audio:** A professional-grade pipeline featuring a **Snapshot-and-Unlock mixing architecture** for zero-stall concurrency, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
