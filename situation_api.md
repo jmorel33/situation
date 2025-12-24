@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.33 "Velocity"_
+_Core API library v2.3.36 "Velocity"_
 
 _(c) 2025 Jacques Morel_
 
@@ -480,27 +480,45 @@ This section provides a complete list of all functions available in the "Situati
 #### `SituationInitInfo`
 This struct is passed to `SituationInit()` to configure the application at startup. It allows for detailed control over the initial state of the window, rendering backend, and timing systems.
 ```c
-typedef struct SituationInitInfo {
-    const char* app_name;
-    const char* app_version;
-    int initial_width;
-    int initial_height;
-    uint32_t window_flags;
-    int target_fps;
-    int oscillator_count;
-    const double* oscillator_periods;
-    bool headless;
-    bool enable_validation;
+typedef struct {
+    // ── Window Creation Parameters ──
+    int          window_width;              // Initial window width in screen coordinates
+    int          window_height;             // Initial window height in screen coordinates
+    const char*  window_title;              // Window title bar text (UTF-8)
+
+    // ── Window State Flags (Applied via GLFW window hints or direct state changes) ──
+    uint32_t     initial_active_window_flags;    // Flags when window has focus (e.g. SIT_WINDOW_BORDERLESS | SIT_WINDOW_VSYNC)
+    uint32_t     initial_inactive_window_flags;  // Flags when window is unfocused (e.g. pause rendering or reduce refresh rate)
+
+    // ── Vulkan-Specific Options ──
+    bool         enable_vulkan_validation;       // Enable VK_LAYER_KHRONOS_validation (debug builds only - auto-disabled in release)
+    bool         force_single_queue;             // Force shared compute/graphics queue (debug/compatibility)
+    uint32_t     max_frames_in_flight;           // Override SITUATION_MAX_FRAMES_IN_FLIGHT (usually 2 or 3)
+
+    // Optional: Provide custom Vulkan instance extensions (e.g. for VR, ray tracing, etc.)
+    const char** required_vulkan_extensions;     // Array of extension names (null or empty = use defaults)
+    uint32_t     required_vulkan_extension_count;// Length of the above array
+
+    // ── Engine Feature Flags ──
+    uint32_t     flags;  // Bitfield: SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD
+
+    // ── Audio Configuration ──
+    uint32_t     max_audio_voices; // Max concurrent audio voices. 0 = Unlimited (Dynamic).
+
+    int          render_thread_count; // Number of render threads to spawn (0 = Single Threaded)
+    // [v2.3.22] Backpressure Policy: 0: Spin (Low Latency), 1: Yield (Balanced), 2: Sleep (Low CPU)
+    int          backpressure_policy;
+
+    // [v2.3.34] Async I/O
+    uint32_t     io_queue_capacity; // Size of the IO queue (Low Priority). Default: 1024.
 } SituationInitInfo;
 ```
--   `app_name`, `app_version`: The name and version of your application. Used by the backend where appropriate (e.g., Vulkan instance).
--   `initial_width`, `initial_height`: The desired initial dimensions for the main window's client area.
--   `window_flags`: A bitmask of `SituationWindowStateFlags` to set the initial state of the window (e.g., resizable, fullscreen).
--   `target_fps`: The desired target frame rate. The library will sleep to avoid exceeding this rate. Use `0` for an uncapped frame rate.
--   `oscillator_count`: The number of temporal oscillators to create at startup.
--   `oscillator_periods`: A pointer to an array of `double`s, where each element is the initial period (in seconds) for an oscillator. The array must have `oscillator_count` elements.
--   `headless`: If `true`, the library initializes without creating a window or graphics context. Useful for server-side applications or command-line tools.
--   `enable_validation`: If `true`, enables backend-specific validation layers (e.g., Vulkan validation layers) for enhanced debugging. This may impact performance and should typically be disabled in release builds.
+-   `window_width`, `window_height`: The desired initial dimensions for the main window's client area.
+-   `window_title`: The text to display in the window title bar.
+-   `initial_active_window_flags`: A bitmask of `SituationWindowStateFlags` to set the initial state of the window when focused.
+-   `initial_inactive_window_flags`: Flags to apply when the window loses focus (e.g., lower framerate).
+-   `enable_vulkan_validation`: Enables Vulkan validation layers for debugging.
+-   `io_queue_capacity`: The size of the low-priority IO queue for the dedicated IO thread.
 
 ---
 #### `SituationTimerSystem`
@@ -5111,7 +5129,8 @@ typedef enum {
     SIT_SUBMIT_DEFAULT       = 0,       // Low Priority, Return 0 if full
     SIT_SUBMIT_HIGH_PRIORITY = 1 << 0,  // Use High Priority Queue (Physics, Audio)
     SIT_SUBMIT_BLOCK_IF_FULL = 1 << 1,  // Spin/Sleep until a slot opens
-    SIT_SUBMIT_RUN_IF_FULL   = 1 << 2   // Execute immediately on current thread if full
+    SIT_SUBMIT_RUN_IF_FULL   = 1 << 2,  // Execute immediately on current thread if full
+    SIT_SUBMIT_POINTER_ONLY  = 1 << 3   // Do not copy large data; user guarantees lifetime
 } SituationJobFlags;
 ```
 
@@ -5239,6 +5258,61 @@ bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id);
 Blocks the calling thread until ALL queues are empty and no jobs are running.
 ```c
 void SituationWaitForAllJobs(SituationThreadPool* pool);
+```
+
+### Async I/O Functions
+These functions offload file operations to the dedicated I/O thread (Low Priority Queue).
+
+---
+#### `SituationLoadSoundFromFileAsync`
+Asynchronously loads an audio file from disk in a background thread. It performs a full decode to RAM to avoid main-thread disk I/O.
+```c
+SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound);
+```
+**Usage Example:**
+```c
+SituationSound music;
+SituationJobId job = SituationLoadSoundFromFileAsync(&pool, "music.mp3", true, &music);
+// ... later ...
+if (SituationWaitForJob(&pool, job)) {
+    SituationPlayLoadedSound(&music);
+}
+```
+
+---
+#### `SituationLoadFileAsync`
+Asynchronously loads a binary file from disk.
+```c
+SituationJobId SituationLoadFileAsync(SituationThreadPool* pool, const char* file_path, SituationFileLoadCallback callback, void* user_data);
+```
+**Usage Example:**
+```c
+void OnDataLoaded(void* data, size_t size, void* user) {
+    printf("Loaded %zu bytes.\n", size);
+    SIT_FREE(data); // You own the data!
+}
+SituationLoadFileAsync(&pool, "data.bin", OnDataLoaded, NULL);
+```
+
+---
+#### `SituationLoadFileTextAsync`
+Asynchronously loads a text file from disk.
+```c
+SituationJobId SituationLoadFileTextAsync(SituationThreadPool* pool, const char* file_path, SituationFileTextLoadCallback callback, void* user_data);
+```
+
+---
+#### `SituationSaveFileAsync`
+Asynchronously saves data to a file. The data is copied to a temporary buffer so the caller can free their copy immediately.
+```c
+SituationJobId SituationSaveFileAsync(SituationThreadPool* pool, const char* file_path, const void* data, size_t size, SituationFileSaveCallback callback, void* user_data);
+```
+
+---
+#### `SituationSaveFileTextAsync`
+Asynchronously saves a string to a text file.
+```c
+SituationJobId SituationSaveFileTextAsync(SituationThreadPool* pool, const char* file_path, const char* text, SituationFileSaveCallback callback, void* user_data);
 ```
 
 </details>
