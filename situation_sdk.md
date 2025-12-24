@@ -3,9 +3,9 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.33 "Velocity" |
+| **Version** | 2.3.36 "Velocity" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
-| **Backends** | OpenGL 4.6 Core / Vulkan 1.4+ |
+| **Backends** | OpenGL 4.6 Core (MDI) / Vulkan 1.4+ |
 | **License** | MIT License |
 | **Author** | Jacques Morel |
 
@@ -667,10 +667,30 @@ typedef struct {
 } SituationDeviceInfo;
 ```
 
+#### SituationExecuteCommand (System Control)
+
+Executes a system shell command in a hidden process and captures the output.
+
+```c:disable-run
+int SituationExecuteCommand(const char *cmd, char **output);
+```
+
+**Returns:** The exit code of the command (0 = Success).
+**Output:** The `output` pointer is filled with a heap-allocated string containing stdout/stderr. You must free this string.
+
 <a id="142-specialized-queries"></a>
 ### 1.4.2 Specialized Queries
 
 For specific runtime checks, lighter helper functions are available.
+
+#### SituationGetCPUThreadCount
+
+```c:disable-run
+uint32_t SituationGetCPUThreadCount(void);
+```
+
+**Returns:** The number of logical CPU cores available to the OS.
+**Usage:** Use this to tune thread pool size (`SituationCreateThreadPool`).
 
 #### SituationGetGPUName
 
@@ -680,6 +700,14 @@ const char* SituationGetGPUName(void);
 
 **Returns:** The name of the currently active GPU.
 **Usage:** Useful for logging or displaying in a "Settings" menu.
+
+#### SituationGetMaxComputeWorkGroups
+
+```c:disable-run
+void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t* z);
+```
+
+**Usage:** Query the hardware limits for compute shader dispatch sizes (e.g., [65535, 65535, 65535]).
 
 #### SituationGetVRAMUsage (Graphics Module)
 
@@ -1241,6 +1269,11 @@ if (SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) && SituationIsKeyPressed(SIT_KEY_V)
 
 The Graphics module is Situation's crown jewel: a **unified command buffer model** that erases the OpenGL/Vulkan divide. Forget backend ifs—write once, render everywhere. It's not a wrapper; it's a **deterministic recorder** that enforces "update-before-draw" and auto-syncs resources.
 
+With v2.3.36, the graphics engine now features:
+*   **OpenGL 4.6 Multi-Draw Indirect (MDI):** Automatically batches draw calls to reduce CPU overhead.
+*   **Bindless Textures:** Uses 64-bit handles for high-performance texture access on both backends.
+*   **Unified Error Handling:** All resource creation and command functions now return `SituationError` for precise failure propagation.
+
 **The Atomic Guarantee**
 > Commands are recorded to an emulated buffer (immediate on GL, deferred on VK). Barriers are explicit—miss one, and debug asserts abort with "UB Detected: Compute wrote, Vertex read without sync."
 
@@ -1492,10 +1525,11 @@ You can load shaders from disk files or from memory strings.
 #### SituationLoadShader
 
 ```c:disable-run
-SituationShader SituationLoadShader(const char* vs_path, const char* fs_path);
+SituationError SituationLoadShader(const char* vs_path, const char* fs_path, SituationShader* out_shader);
 ```
 
-**Arguments:** Paths to the Vertex Shader (.vert) and Fragment Shader (.frag).
+**Arguments:** Paths to the Vertex Shader (.vert) and Fragment Shader (.frag), and a pointer to receive the handle.
+**Returns:** `SITUATION_SUCCESS` or a compilation error code.
 **Behavior:**
 *   **OpenGL:** Compiles GLSL and links a Program.
 *   **Vulkan:** Compiles GLSL to SPIR-V (using shaderc), creates Shader Modules, and builds a VkPipeline.
@@ -1504,16 +1538,16 @@ SituationShader SituationLoadShader(const char* vs_path, const char* fs_path);
 
 **Snippet Supreme: Pipeline Creation**
 ```c:disable-run
-CSituationShader vs = SituationLoadShader("vert.glsl", SIT_SHADER_VERTEX);
-SituationShader fs = SituationLoadShader("frag.glsl", SIT_SHADER_FRAGMENT);
-SituationGraphicsPipeline pipe = SituationCreateGraphicsPipeline(vs, fs, &layout);
+SituationShader shader;
+if (SituationLoadShader("assets/basic.vert", "assets/basic.frag", &shader) == SITUATION_SUCCESS) {
+    // ...
+}
 ```
-> **Future Flame (v2.4):** Async pipeline compile is coming—`SituationQueueCreatePipelineAsync(q, vs, fs, &pipe)`—to eliminate frame stutter during level loads.
 
 #### SituationLoadShaderFromMemory
 
 ```c:disable-run
-SituationShader SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code);
+SituationError SituationLoadShaderFromMemory(const char* vs_code, const char* fs_code, SituationShader* out_shader);
 ```
 
 **Usage:** Useful for embedded tools, single-file examples, or procedurally generated shader code.
@@ -1686,16 +1720,17 @@ The previous 32-byte format (Pos/Norm/UV) is still supported. `SituationCreateMe
 #### SituationCreateMesh
 
 ```c:disable-run
-SituationMesh SituationCreateMesh(const void* vertex_data,
-                                  int vertex_count,
-                                  size_t vertex_stride,
-                                  const uint32_t* index_data,
-                                  int index_count);
+SituationError SituationCreateMesh(const void* vertex_data,
+                                   int vertex_count,
+                                   size_t vertex_stride,
+                                   const uint32_t* index_data,
+                                   int index_count,
+                                   SituationMesh* out_mesh);
 ```
 
 **Behavior:** Allocates GPU memory (VBO/EBO), uploads the data, and configures the input assembly state (VAO in OpenGL).
 **Auto-Padding:** If `vertex_stride` is 32 bytes (Legacy format: Pos/Norm/UV), the function automatically allocates a temporary buffer, inserts default Tangent vectors `(1, 0, 0, 1)`, and uploads the data as the standard 48-byte PBR format.
-**Return:** A ready-to-draw `SituationMesh` handle.
+**Output:** The `out_mesh` pointer is populated with the handle.
 
 #### SituationDestroyMesh
 
@@ -1720,7 +1755,7 @@ SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh me
 #### SituationCmdDrawQuad (High-Level Helper)
 
 ```c:disable-run
-void SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, vec4 color);
+SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color);
 ```
 
 **Behavior:** Draws a unit square using an internal shared mesh. Useful for UI, particles, or prototyping. No manual mesh creation required.
@@ -1873,7 +1908,7 @@ Once your `SituationImage` is ready, you upload it to the GPU.
 #### SituationCreateTexture
 
 ```c:disable-run
-SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps);
+SituationError SituationCreateTexture(SituationImage image, bool generate_mipmaps, SituationTexture* out_texture);
 ```
 
 **Behavior:** Allocates VRAM, copies pixels, and optionally generates a mipmap chain (for smoother minification).
@@ -1958,7 +1993,7 @@ uint64_t SituationGetTextureHandle(SituationTexture texture);
 ```
 
 **Returns:** A 64-bit handle (resident) for the texture.
-**Support:** OpenGL Only (via `GL_ARB_bindless_texture`). Returns 0 on Vulkan in v2.3.9.
+**Support:** OpenGL (via `GL_ARB_bindless_texture`) and Vulkan (via descriptor indexing).
 
 <a id="357-example-loading--using-a-texture"></a>
 ### 3.5.7 Example: Loading & Using a Texture
@@ -1976,7 +2011,8 @@ if (img.pixels == NULL) {
 SituationImageAdjustHSV(&img, 10.0f, 1.2f, 1.0f, 1.0f);
 
 // Upload to VRAM
-SituationTexture tex = SituationCreateTexture(img, true); // +Mipmaps
+SituationTexture tex;
+SituationCreateTexture(img, true, &tex); // +Mipmaps
 
 // CRITICAL: Free CPU RAM immediately
 SituationUnloadImage(img);
@@ -2163,15 +2199,13 @@ A Compute Pipeline encapsulates a single Compute Shader. Unlike graphics pipelin
 Creates a compute pipeline from a GLSL shader file.
 
 ```c:disable-run
-SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type);
+SituationError SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline);
 ```
 
 **Parameters:**
 *   `compute_shader_path`: Path to the `.comp` shader file.
 *   `layout_type`: Defines the resource bindings the shader expects.
-    *   `SIT_COMPUTE_LAYOUT_ONE_SSBO`: One buffer at binding 0.
-    *   `SIT_COMPUTE_LAYOUT_BUFFER_IMAGE`: One buffer at binding 0, one storage image at binding 1.
-    *   ...and others.
+*   `out_pipeline`: Pointer to receive the handle.
 
 #### SituationCmdBindComputePipeline
 
@@ -2203,10 +2237,12 @@ Shader Storage Buffer Objects (SSBOs) are large, writable data buffers. They are
 ```c:disable-run
 // Create a buffer for 1024 particles
 size_t size = 1024 * sizeof(Particle);
-SituationBuffer buffer = SituationCreateBuffer(
+SituationBuffer buffer;
+SituationCreateBuffer(
     size,
     initial_data,
-    SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST
+    SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST,
+    &buffer
 );
 ```
 
@@ -3416,6 +3452,8 @@ char* SituationLoadFileText(const char* file_path);
 *   **Line Endings:** Does not normalize CRLF to LF. The buffer contains exactly what was on disk.
 *   **BOM Stripping:** If the file has a UTF-8 Byte Order Mark (0xEF, 0xBB, 0xBF), the returned pointer is advanced past it.
 
+**Async Option:** See `SituationLoadFileTextAsync` in Section 7.2 to load text files without blocking the main thread.
+
 ### 6.2.3 Atomic Writes
 
 #### SituationSaveFileData / SituationSaveFileText
@@ -3429,6 +3467,8 @@ bool SituationSaveFileText(const char* path, const char* text);
 *   Opens with `wb` (write binary) or `w` (write text).
 *   Truncates the existing file immediately.
 *   Returns `false` if disk is full or path is read-only.
+
+**Async Option:** See `SituationSaveFileTextAsync` in Section 7.2.
 
 **Pro Tip:** For critical save data, do not overwrite `save.dat` directly. Write to `save.tmp`, then use `SituationMoveFile` to swap them. This prevents data corruption if the game crashes during the write.
 
@@ -3561,8 +3601,9 @@ The Threading module provides a hardened, high-performance **Generational Task S
 The `SituationThreadPool` uses a dual-priority ring buffer architecture with O(1) generational validation.
 
 **Key Features:**
+*   **Dedicated IO Thread:** (Since v2.3.34A "Trinity Threads") A separate thread services the Low Priority queue, ensuring asset loading never contends with gameplay logic or physics.
 *   **Zero Allocation:** The job queue is a fixed-size ring buffer. Submitting a job involves no `malloc` calls (unless the payload > 64 bytes).
-*   **O(1) Validation:** Handle IDs contain a "Generation Counter". If a slot is reused, the generation increments. This makes `SituationWaitForJob` instantaneous and safe against ABA problems (checking an old ID for a slot that now contains a new job).
+*   **O(1) Validation:** Handle IDs contain a "Generation Counter". If a slot is reused, the generation increments. This makes `SituationWaitForJob` instantaneous and safe against ABA problems.
 *   **Dual Priority:**
     *   **High Priority (Index 1):** For frame-critical tasks like Physics steps or Audio DSP. Workers always check this queue first.
     *   **Low Priority (Index 0):** For bulk IO tasks like Asset Loading.
@@ -3570,7 +3611,7 @@ The `SituationThreadPool` uses a dual-priority ring buffer architecture with O(1
 **Thread Safety:**
 *   **Main Thread Only:** You must create and destroy the pool from the main thread.
 *   **Any Thread:** You can submit jobs from any thread.
-*   **Safety Assertions:** The library uses `SIT_ASSERT_MAIN_THREAD()` in debug builds to catch API violations, such as calling `SituationCreateTexture` from a worker thread.
+*   **Safety Assertions:** The library uses `SIT_ASSERT_MAIN_THREAD()` in debug builds to catch API violations.
 
 <a id="72-job-submission--control"></a>
 ### 7.2 Job Submission & Control
@@ -3592,21 +3633,19 @@ SituationJobId SituationSubmitJobEx(
 **Parameters:**
 *   `data`: Pointer to your payload.
     *   **Small Object Optimization (SOO):** If `data_size <= 64`, the data is **copied** directly into the job slot. No allocation, no pointer management. Perfect for matrices or config structs.
-    *   **Large Data:** If `data_size > 64`, the pointer is stored as-is. You must ensure the memory remains valid until execution completes.
+    *   **Large Data:** If `data_size > 64`, the data is copied to the heap by default for safety (Copy-By-Value).
 *   `flags`:
     *   `SIT_SUBMIT_HIGH_PRIORITY`: Push to the high-priority queue.
-    *   `SIT_SUBMIT_BLOCK_IF_FULL`: Spin-wait if the queue is full (use sparingly).
-    *   `SIT_SUBMIT_RUN_IF_FULL`: **Recommended.** If queue is full, execute immediately on the calling thread. Prevents drops/stalls.
+    *   `SIT_SUBMIT_BLOCK_IF_FULL`: Spin-wait if the queue is full.
+    *   `SIT_SUBMIT_RUN_IF_FULL`: Execute immediately on the calling thread if queue is full.
+    *   `SIT_SUBMIT_POINTER_ONLY`: For large data (>64B), store only the pointer without copying. User guarantees lifetime.
 
 **Return Value (SituationJobId):**
-A 32-bit integer handle that uniquely identifies the job instance. It is bit-packed as follows:
-*   **Queue Index (1 bit):** Indicates High (1) or Low (0) priority queue.
-*   **Generation (15 bits):** A validation counter that increments every time the slot is reused, preventing ABA problems.
-*   **Slot Index (16 bits):** The index into the ring buffer array.
+A 32-bit integer handle that uniquely identifies the job instance.
 
 #### SituationSubmitJob (Legacy Wrapper)
 
-A macro for simple pointer passing. Equivalent to `SituationSubmitJobEx` with default priority and no copy.
+A macro for simple pointer passing. Equivalent to `SituationSubmitJobEx` with default priority and `SIT_SUBMIT_POINTER_ONLY`.
 
 ```c:disable-run
 SituationSubmitJob(pool, MyCallback, my_ptr);
@@ -3623,21 +3662,31 @@ bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId id);
 *   If they match, the job is pending/running -> Blocks (yields/sleeps) until the `is_completed` flag is set.
 *   If they differ, the job (and likely several others) is already finished -> Returns `true` immediately.
 
- #### SituationLoadSoundFromFileAsync
+#### Async Asset Loading
 
- A convenience helper for loading audio in the background.
+These convenience helpers offload IO to the background thread.
 
- ```c:disable-run
- SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
-                                                const char* file_path,
-                                                bool looping,
-                                                SituationSound* out_sound);
- ```
+```c:disable-run
+// Audio (Decodes to RAM)
+SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
+                                               const char* file_path,
+                                               bool looping,
+                                               SituationSound* out_sound);
 
- **Behavior:**
- *   Allocates a job context.
- *   Submits a job to the pool that calls `SituationLoadSoundFromFile` with mode `SITUATION_AUDIO_LOAD_FULL` (decode to RAM).
- *   **Safety:** Do not touch `out_sound` until `SituationWaitForJob` returns true.
+// Text File (Loads to string)
+SituationJobId SituationLoadFileTextAsync(SituationThreadPool* pool,
+                                          const char* file_path,
+                                          SituationFileTextLoadCallback callback,
+                                          void* user_data);
+
+// Binary File
+SituationJobId SituationLoadFileAsync(SituationThreadPool* pool,
+                                      const char* file_path,
+                                      SituationFileLoadCallback callback,
+                                      void* user_data);
+```
+
+**Safety:** The input strings (`file_path`, etc.) are duplicated internally, so you can free your local copies immediately after submission.
 
 <a id="73-dependency-graph"></a>
 ### 7.3 Dependency Graph

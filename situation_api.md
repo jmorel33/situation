@@ -26,7 +26,7 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 ---
 
-# Situation v2.3.23 API Programming Guide
+# Situation v2.3.36 API Programming Guide
 
 "Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
 
@@ -862,6 +862,36 @@ char title[256];
 sprintf(title, "My App | FPS: %d | Draw Calls: %u",
         SituationGetFPS(), SituationGetDrawCallCount());
 SituationSetWindowTitle(title);
+```
+
+---
+#### `SituationExecuteCommand`
+Executes a system shell command in a hidden process and captures the output (stdout/stderr).
+```c
+SITAPI int SituationExecuteCommand(const char *cmd, char **output);
+```
+**Usage Example:**
+```c
+char* output = NULL;
+int exit_code = SituationExecuteCommand("ls -la", &output);
+if (exit_code == 0 && output) {
+    printf("Command output:\n%s\n", output);
+    SituationFreeString(output);
+}
+```
+
+---
+#### `SituationGetCPUThreadCount`
+Gets the number of logical CPU cores.
+```c
+SITAPI uint32_t SituationGetCPUThreadCount(void);
+```
+
+---
+#### `SituationGetMaxComputeWorkGroups`
+Queries the maximum supported compute shader work group count (X, Y, Z).
+```c
+SITAPI void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t* z);
 ```
 
 ---
@@ -2952,21 +2982,19 @@ SituationShowCursor();
 #### `SituationCreateMesh`
 Creates a self-contained GPU mesh from vertex and index data. This operation uploads the provided data to video memory.
 ```c
-SituationMesh SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count);
+SituationError SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count, SituationMesh* out_mesh);
 ```
 **Usage Example:**
 ```c
 // Define vertex and index data for a quad.
-MyVertex vertices[] = {
-    {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    {{ 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f, 1.0f}},
-    {{ 0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f, 1.0f}},
-    {{-0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 0.0f, 1.0f}}
-};
-uint32_t indices[] = { 0, 1, 2, 2, 3, 0 };
+MyVertex vertices[] = { ... };
+uint32_t indices[] = { ... };
 
 // Create the mesh resource.
-SituationMesh quad_mesh = SituationCreateMesh(vertices, 4, sizeof(MyVertex), indices, 6);
+SituationMesh quad_mesh;
+if (SituationCreateMesh(vertices, 4, sizeof(MyVertex), indices, 6, &quad_mesh) == SITUATION_SUCCESS) {
+    // ...
+}
 ```
 
 ---
@@ -2987,12 +3015,13 @@ SituationDestroyMesh(&quad_mesh);
 #### `SituationLoadShader`
 Loads, compiles, and links a graphics shader pipeline from GLSL vertex and fragment shader files.
 ```c
-SituationShader SituationLoadShader(const char* vs_path, const char* fs_path);
+SituationError SituationLoadShader(const char* vs_path, const char* fs_path, SituationShader* out_shader);
 ```
 **Usage Example:**
 ```c
 // At application startup, load the main shader.
-SituationShader main_shader = SituationLoadShader("shaders/main.vert", "shaders/main.frag");
+SituationShader main_shader;
+SituationLoadShader("shaders/main.vert", "shaders/main.frag", &main_shader);
 ```
 
 ---
@@ -3011,14 +3040,16 @@ SituationUnloadShader(&main_shader);
 #### `SituationCreateTexture`
 Creates a GPU texture from a CPU-side `SituationImage`. This involves uploading the pixel data from RAM to VRAM.
 ```c
-SituationTexture SituationCreateTexture(SituationImage image, bool generate_mipmaps);
+SituationError SituationCreateTexture(SituationImage image, bool generate_mipmaps, SituationTexture* out_texture);
 ```
 **Usage Example:**
 ```c
 // Load a CPU image from a file.
-SituationImage cpu_image = SituationLoadImage("textures/player_character.png");
+SituationImage cpu_image;
+SituationLoadImage("textures/player_character.png", &cpu_image);
 // Create a GPU texture from the image, generating mipmaps for better quality.
-SituationTexture player_texture = SituationCreateTexture(cpu_image, true);
+SituationTexture player_texture;
+SituationCreateTexture(cpu_image, true, &player_texture);
 // The CPU-side image can now be unloaded as the data is on the GPU.
 SituationUnloadImage(cpu_image);
 ```
@@ -3097,7 +3128,7 @@ SituationUnloadModel(&player_model);
 #### `SituationCreateBuffer`
 Creates a generic GPU buffer and optionally initializes it with data. Buffers can be used for vertices, indices, uniforms (UBOs), or storage (SSBOs).
 ```c
-SituationBuffer SituationCreateBuffer(uint32_t usage_flags, const void* data, size_t size);
+SituationError SituationCreateBuffer(size_t size, const void* data, uint32_t usage_flags, SituationBuffer* out_buffer);
 ```
 **Usage Example:**
 ```c
@@ -3105,7 +3136,8 @@ SituationBuffer SituationCreateBuffer(uint32_t usage_flags, const void* data, si
 mat4 proj, view;
 // ... calculate projection and view matrices ...
 CameraMatrices ubo_data = { .projection = proj, .view = view };
-SituationBuffer camera_ubo = SituationCreateBuffer(SIT_BUFFER_USAGE_UNIFORM, &ubo_data, sizeof(ubo_data));
+SituationBuffer camera_ubo;
+SituationCreateBuffer(sizeof(ubo_data), &ubo_data, SITUATION_BUFFER_USAGE_UNIFORM_BUFFER, &camera_ubo);
 ```
 
 ---
@@ -3136,7 +3168,7 @@ SituationError SituationUpdateBuffer(SituationBuffer buffer, const void* data, s
 #### `SituationCreateComputePipeline` / `SituationDestroyComputePipeline`
 Creates a compute pipeline from a GLSL shader file.
 ```c
-SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type);
+SituationError SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline);
 void SituationDestroyComputePipeline(SituationComputePipeline* pipeline);
 ```
 
