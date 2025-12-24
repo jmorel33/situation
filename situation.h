@@ -3336,6 +3336,7 @@ typedef struct {
     GLuint current_program_id;                  // Cache of the currently bound shader program ID
 
     // Shadow State (Tracks what we *think* the driver state is)
+    GLuint current_bound_texture_id; // [v2.3.31] Track bound texture for legacy/quad draws
     GLuint current_vao_id;
     GLuint current_fbo_id;
     int    blend_enabled;
@@ -7449,7 +7450,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
     }
 
     // [v2.3.31] Optimization: Track bound texture locally to avoid glGetIntegerv stalls in draw calls
-    GLuint current_bound_texture_id = 0;
+    // GLuint current_bound_texture_id = 0; // REPLACED by sit_render.gl.current_bound_texture_id
 
     // --- [v2.3.27] State Hardening: Reset critical state ---
     // We cannot assume the state from the previous frame persists,
@@ -7469,7 +7470,8 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
     sit_render.gl.current_program_id = 0;
     sit_render.gl.current_vao_id = 0;
     sit_render.gl.current_fbo_id = 0;
-    
+    sit_render.gl.current_bound_texture_id = 0;
+
     // 3. Reset Blend State Cache
     sit_render.gl.blend_enabled = -1; // Force re-application if command requests it
 
@@ -7549,39 +7551,39 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
             case SIT_OP_DRAW_QUAD:
                 {
                     if (sit_render.gl.quad_shader_program == 0) break;
+                    // DSA: Update uniforms without binding first
+                    glProgramUniformMatrix4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)p->args.draw_quad.model);
+                    glProgramUniform4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)p->args.draw_quad.color.raw);
+                    // Use UV rect from packet
+                    glProgramUniform4fv(sit_render.gl.quad_shader_program, 5, 1, (const GLfloat*)p->args.draw_quad.uv_rect.raw);
+
                     glUseProgram(sit_render.gl.quad_shader_program);
                     sit_render.gl.current_program_id = sit_render.gl.quad_shader_program;
-
-                    glUniformMatrix4fv(SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)p->args.draw_quad.model);
-                    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)p->args.draw_quad.color.raw);
-
-                    // Use UV rect from packet
-                    glUniform4fv(5, 1, (const GLfloat*)p->args.draw_quad.uv_rect.raw);
 
                     // [v2.3.31] Optimization: Use locally tracked texture ID.
                     // This resolves the `glGetIntegerv` stall discussed in v2.3.30.
                     // By tracking the last bound texture (`current_bound_texture_id`) from `SIT_OP_BIND_DESCRIPTOR_SET`,
                     // we can pass the handle to the shader without querying the driver.
-                    if (current_bound_texture_id != 0) {
+                    if (sit_render.gl.current_bound_texture_id != 0) {
                         if (SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
                             #if defined(GLAD_GL_ARB_bindless_texture)
                             if (GLAD_GL_ARB_bindless_texture) {
-                                GLuint64 handle = glGetTextureHandleARB((GLuint)current_bound_texture_id);
+                                GLuint64 handle = glGetTextureHandleARB((GLuint)sit_render.gl.current_bound_texture_id);
                                 if (!glIsTextureHandleResidentARB(handle)) glMakeTextureHandleResidentARB(handle);
 
-                                glUniform1i(6, 2); // Mode 2: Bindless
-                                glUniformHandleui64ARB(7, handle);
+                                glProgramUniform1i(sit_render.gl.quad_shader_program, 6, 2); // Mode 2: Bindless
+                                glProgramUniformHandleui64ARB(sit_render.gl.quad_shader_program, 7, handle);
                             } else {
-                                glUniform1i(6, 1); // Mode 1: Bindful
+                                glProgramUniform1i(sit_render.gl.quad_shader_program, 6, 1); // Mode 1: Bindful
                             }
                             #else
-                            glUniform1i(6, 1); // Mode 1: Bindful fallback
+                            glProgramUniform1i(sit_render.gl.quad_shader_program, 6, 1); // Mode 1: Bindful fallback
                             #endif
                         } else {
-                            glUniform1i(6, 1); // Mode 1: Bindful
+                            glProgramUniform1i(sit_render.gl.quad_shader_program, 6, 1); // Mode 1: Bindful
                         }
                     } else {
-                        glUniform1i(6, 0); // Mode 0: No Texture
+                        glProgramUniform1i(sit_render.gl.quad_shader_program, 6, 0); // Mode 0: No Texture
                     }
 
                     glBindVertexArray(sit_render.gl.quad_vao);
@@ -7594,8 +7596,8 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
 
             case SIT_OP_SET_PUSH_CONSTANT:
                 {
-                    GLuint prog = 0;
-                    glGetIntegerv(GL_CURRENT_PROGRAM, (GLint*)&prog);
+                    // Optimization: Use tracked state to avoid glGetIntegerv stall
+                    GLuint prog = sit_render.gl.current_program_id;
                     if (prog) {
                         void* data = buf->data_buffer + p->args.push_constant.data_offset;
                         size_t sz = p->args.push_constant.size;
@@ -7841,27 +7843,25 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                     }
                     int final_vert_count = v_idx / 4;
 
-                    glUseProgram(sit_render.gl.text_shader_program);
-
                     // [v2.3.30] Bindless Text
                     if (SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
                         uint64_t handle = SituationGetTextureHandle(font.atlas_texture);
                         if (handle) {
                             // Location 6: u_use_bindless = 1
-                            glUniform1i(6, 1);
+                            glProgramUniform1i(sit_render.gl.text_shader_program, 6, 1);
                             // Location 7: u_TextureHandle (uint64 handle)
                             // We must use extension function for 64-bit handle
                             #if defined(GLAD_GL_ARB_bindless_texture)
-                            glUniformHandleui64ARB(7, handle);
+                            glProgramUniformHandleui64ARB(sit_render.gl.text_shader_program, 7, handle);
                             #endif
                         } else {
-                            glUniform1i(6, 0); // Fallback
+                            glProgramUniform1i(sit_render.gl.text_shader_program, 6, 0); // Fallback
                             _SituationTextureSlot* slot = _SitGetTextureSlot(font.atlas_texture);
                             if (slot) glBindTextureUnit(SIT_SAMPLER_BINDING_ALBEDO, slot->gl_texture_id);
                         }
                     } else {
                         // Standard Bind
-                        glUniform1i(6, 0);
+                        glProgramUniform1i(sit_render.gl.text_shader_program, 6, 0);
                         _SituationTextureSlot* slot = _SitGetTextureSlot(font.atlas_texture);
                         if (slot) glBindTextureUnit(SIT_SAMPLER_BINDING_ALBEDO, slot->gl_texture_id);
                     }
@@ -7871,7 +7871,10 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
 
                     Vector4 color_vec;
                     SituationConvertColorToVector4(color, &color_vec);
-                    glUniform4fv(SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec.raw);
+                    glProgramUniform4fv(sit_render.gl.text_shader_program, SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)color_vec.raw);
+
+                    glUseProgram(sit_render.gl.text_shader_program);
+                    sit_render.gl.current_program_id = sit_render.gl.text_shader_program;
 
                     glBindVertexArray(sit_render.gl.text_vao);
                     glDrawArrays(GL_TRIANGLES, 0, final_vert_count);
@@ -18579,7 +18582,6 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
                  node->buffer.dynamic_frame_index = sit_render.current_frame_index;
              }
              return SITUATION_SUCCESS;
-        }
 
         // This branch (Ring Buffer) returns success.
         // The fallback below is dead code for now, but kept if we switch back.
