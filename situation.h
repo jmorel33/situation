@@ -602,6 +602,7 @@ typedef enum {
   */
 
 /* === General System Limits === */
+#define SIT_GL_RING_SIZE                        (64 * 1024 * 1024) /* 64MB Persistent Ring Buffer for OpenGL Zero-Copy updates */
 #define SITUATION_MAX_FRAMES_IN_FLIGHT          2    /* Max overlapping frames for VK/GL swapchains (2-3 typical for V-Sync). */
 #define SITUATION_MAX_STORAGE_DEVICES           8    /* Max detected storage volumes (e.g., drives, mounts). */
 #define SITUATION_MAX_NETWORK_ADAPTERS          8    /* Max network interfaces (e.g., Ethernet/Wi-Fi). */
@@ -3028,7 +3029,8 @@ typedef enum {
     SIT_OP_DRAW_TEXT_EX, // [v2.3.23] Extended text op
     SIT_OP_UPDATE_BUFFER,
     SIT_OP_SET_VERTEX_ATTRIBUTE,
-    SIT_OP_SET_UNIFORM
+    SIT_OP_SET_UNIFORM,
+    SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING // [Phase 2] Temporary
 } SitOpCode;
 
 typedef struct {
@@ -3041,7 +3043,7 @@ typedef struct {
         struct { SituationMesh mesh; } draw_mesh;
         struct { mat4 model; Vector4 color; Vector4 uv_rect; } draw_quad;
         struct { uint32_t offset; size_t size; size_t data_offset; } push_constant;
-        struct { uint32_t set_index; uint64_t resource_id; int resource_type; size_t offset; size_t size; } bind_desc; // [Phase 1] Added offset
+        struct { uint32_t set_index; uint64_t resource_id; int resource_type; size_t offset; size_t size; uint32_t usage_flags; } bind_desc; // [Phase 2] Added size and usage_flags for Ring Buffer
         struct { uint32_t binding; uint64_t buffer_id; size_t offset; size_t stride; } bind_vbo;
         struct { uint64_t buffer_id; } bind_ibo;
         struct { uint32_t v_count, i_count, first_v, first_i; } draw;
@@ -4211,6 +4213,31 @@ static const char* SIT_TEXT_FRAGMENT_SHADER =
 //==================================================================================
 #if defined(SITUATION_USE_OPENGL)
 // --- OpenGL Helper Functions ---
+static void _SituationInitGLRingBuffer(void) {
+    if (sit_render.gl.ring_buffer_id != 0) return;
+
+    sit_render.gl.ring_size = SIT_GL_RING_SIZE;
+    GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+
+    glCreateBuffers(1, &sit_render.gl.ring_buffer_id);
+    glNamedBufferStorage(sit_render.gl.ring_buffer_id, sit_render.gl.ring_size, NULL, flags);
+    sit_render.gl.ring_data_ptr = glMapNamedBufferRange(sit_render.gl.ring_buffer_id, 0, sit_render.gl.ring_size, flags);
+
+    atomic_init(&sit_render.gl.ring_head, 0);
+
+    // [Phase 2] Fence Initialization
+    sit_render.gl.ring_fence_count = 3; // Triple buffer
+    sit_render.gl.current_fence_index = 0;
+    sit_render.gl.ring_fences = (GLsync*)SIT_CALLOC(sit_render.gl.ring_fence_count, sizeof(GLsync));
+    for(size_t i=0; i<sit_render.gl.ring_fence_count; i++) {
+        sit_render.gl.ring_fences[i] = 0;
+    }
+
+    if (!sit_render.gl.ring_data_ptr) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to map persistent ring buffer.");
+    }
+}
+
 static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info);
 static void _SituationCleanupOpenGL(void);
 // Removed static fwd decl
@@ -7586,49 +7613,50 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                 {
                     uint32_t idx = p->args.bind_desc.set_index;
                     uint64_t id = p->args.bind_desc.resource_id;
-                    int type = p->args.bind_desc.resource_type;
                     size_t offset = p->args.bind_desc.offset;
+                    size_t size = p->args.bind_desc.size;
+                    uint32_t usage = p->args.bind_desc.usage_flags;
 
-                    // [Phase 1] Support for Offset Binding (glBindBufferRange) for Ring Buffer
-                    if (type == 0) {
-                        if (offset > 0) {
-                            // Assuming max range for now (or sizeof(ViewDataUBO) if known?).
-                            // Since we don't pass 'size' here, we might need to assume the buffer size or pass it.
-                            // However, UBOs usually bind a range.
-                            // For simplicity in Phase 1, we assume a standard range or whole remaining buffer?
-                            // Wait, glBindBufferRange needs a size.
-                            // If we don't have size, we can't use Range safely without risking out-of-bounds?
-                            // Actually, Uniform Buffers have a defined layout size.
-                            // BUT, we don't know it here.
-                            //
-                            // CRITICAL FIX: To use the Ring Buffer, we MUST know the size of the block we are binding.
-                            // 'SituationCmdBindDescriptorSet' takes a 'SituationBuffer', which has 'size_in_bytes'.
-                            // We need to pass that size in the command packet too!
-                            //
-                            // Since we didn't add 'size' to the packet in the previous step (only 'offset'),
-                            // we are stuck.
-                            //
-                            // TEMPORARY: If it's the ring buffer, we assume we bind... what?
-                            // If we bind the whole ring buffer at an offset, that's fine for SSBOs.
-                            // For UBOs, binding too much is usually okay as long as the shader only reads what it needs.
-                            // GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT must be respected.
-                            // Let's try binding a large chunk (e.g. 64KB) or the rest of the buffer?
-                            // `ring_size - offset`?
-                            glBindBufferRange(GL_UNIFORM_BUFFER, idx, (GLuint)id, (GLintptr)offset, 65536); // Hacky safe-ish default?
-                        } else {
-                            glBindBufferBase(GL_UNIFORM_BUFFER, idx, (GLuint)id);
-                        }
+                    // [Phase 2] Ring Buffer Support (Dynamic Offset)
+                    // We now strictly use usage_flags to determine target (UBO/SSBO)
+                    GLenum target = GL_UNIFORM_BUFFER;
+                    if (usage & SITUATION_BUFFER_USAGE_STORAGE_BUFFER) target = GL_SHADER_STORAGE_BUFFER;
+
+                    if (size > 0) {
+                        glBindBufferRange(target, idx, (GLuint)id, (GLintptr)offset, (GLsizeiptr)size);
+                    } else {
+                        glBindBufferBase(target, idx, (GLuint)id);
                     }
-                    else if (type == 1) {
+                }
+                break;
+
+            /*
+            // [Phase 2 Cleanup] Legacy Texture Binding via Descriptor Set Opcode removed.
+            // Textures should use SIT_OP_BIND_TEXTURE_SET (if implemented) or handle this differently.
+            // Wait, previous code handled type==1 as glBindTextureUnit.
+            // SIT_OP_BIND_DESCRIPTOR_SET is documented as [Core] Binds a buffer's descriptor set.
+            // SituationCmdBindTextureSet uses SIT_OP_BIND_TEXTURE_SET? Let's check.
+            // SituationCmdBindTextureSet uses SIT_OP_BIND_DESCRIPTOR_SET with type=1 in previous versions?
+            // Let's verify SituationCmdBindTextureSet implementation.
+            */
+            case SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING:
+                {
+                    // [Phase 2] Legacy Texture/Image binding logic.
+                    // This handles SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING, which is used by
+                    // SituationCmdBindTextureSet to bind textures (type 1) and storage images (type 3).
+
+                    uint32_t idx = p->args.bind_desc.set_index;
+                    uint64_t id = p->args.bind_desc.resource_id;
+                    int type = p->args.bind_desc.resource_type;
+
+                    if (type == 1) { // 1 = Sampled Texture
                         glBindTextureUnit(idx, (GLuint)id);
                         // [v2.3.31] Track texture state for subsequent internal draw calls (Quad/Text)
-                        current_bound_texture_id = (GLuint)id;
+                        sit_render.gl.current_bound_texture_id = (GLuint)id;
                     }
-                    else if (type == 2) {
-                        if (offset > 0) glBindBufferRange(GL_SHADER_STORAGE_BUFFER, idx, (GLuint)id, (GLintptr)offset, 65536);
-                        else glBindBufferBase(GL_SHADER_STORAGE_BUFFER, idx, (GLuint)id);
+                    else if (type == 3) { // 3 = Storage Image
+                         glBindImageTexture(idx, (GLuint)id, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
                     }
-                    else if (type == 3) glBindImageTexture(idx, (GLuint)id, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
                 }
                 break;
 
@@ -8069,26 +8097,8 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     SIT_CHECK_GL_ERROR();
 
     // --- [Phase 1] Initialize Persistent Ring Buffer ---
-    // 64MB should be enough for most frame-transient data (matrices, particles, text).
-    sit_render.gl.ring_size = 64 * 1024 * 1024;
-    sit_render.gl.ring_head = 0;
-    sit_render.gl.ring_fence_count = 3; // Triple buffer
-    sit_render.gl.current_fence_index = 0;
-
-    GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
-    glCreateBuffers(1, &sit_render.gl.ring_buffer_id);
-    glNamedBufferStorage(sit_render.gl.ring_buffer_id, sit_render.gl.ring_size, NULL, flags);
-    sit_render.gl.ring_data_ptr = glMapNamedBufferRange(sit_render.gl.ring_buffer_id, 0, sit_render.gl.ring_size, flags);
-
-    if (!sit_render.gl.ring_data_ptr) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to map persistent ring buffer.");
-        return SITUATION_ERROR_OPENGL_GENERAL;
-    }
-
-    sit_render.gl.ring_fences = (GLsync*)SIT_CALLOC(sit_render.gl.ring_fence_count, sizeof(GLsync));
-    for(size_t i=0; i<sit_render.gl.ring_fence_count; i++) {
-        sit_render.gl.ring_fences[i] = 0; // 0 is not a valid fence object
-    }
+    _SituationInitGLRingBuffer();
+    if (!sit_render.gl.ring_data_ptr) return SITUATION_ERROR_OPENGL_GENERAL;
     SIT_CHECK_GL_ERROR();
 
     // d. Initialize Virtual Display Slots (Data structures)
@@ -13448,6 +13458,13 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
     {
         // --- 2. OpenGL Frame Setup ---
 
+        // [Phase 2] Reset Ring Buffer Allocator for this Frame (Paged Strategy)
+        // We divide the ring buffer into N pages, one per frame in flight.
+        // At the start of the frame, we reset the atomic head to the start of our assigned page.
+        // This implicitly assumes the previous frame using this page has finished (guaranteed by Backpressure/Fence wait below).
+        size_t page_size = sit_render.gl.ring_size / SITUATION_MAX_FRAMES_IN_FLIGHT;
+        atomic_store(&sit_render.gl.ring_head, sit_render.current_frame_index * page_size);
+
         // [Phase 2] Backpressure & Thread Handoff
         #if !defined(__STDC_NO_THREADS__)
         mtx_lock(&sit_render.render_queue_mutex);
@@ -16265,11 +16282,14 @@ SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffe
         // It was updated this frame! Use the global ring buffer + dynamic offset.
         p->args.bind_desc.resource_id = sit_render.gl.ring_buffer_id;
         p->args.bind_desc.offset = (size_t)node->buffer.dynamic_offset;
+        p->args.bind_desc.size = buffer.size_in_bytes; // [Phase 2] Required for glBindBufferRange
     } else {
         p->args.bind_desc.resource_id = buffer.gl_buffer_id;
         p->args.bind_desc.offset = 0;
+        p->args.bind_desc.size = 0; // Use whole buffer (glBindBufferBase)
     }
 
+    p->args.bind_desc.usage_flags = buffer.usage_flags; // [Phase 2] Required for target determination
     if (buffer.usage_flags & SITUATION_BUFFER_USAGE_STORAGE_BUFFER) {
         p->args.bind_desc.resource_type = 2; // 2 = SSBO
     } else {
@@ -16358,7 +16378,8 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
     }
 
     // Standard Bind (always safe fallback and required for non-bindless shaders)
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET);
+    // [Phase 2] Use Legacy Texture Opcode to avoid buffer logic in main opcode
+    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING);
     if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     p->args.bind_desc.set_index = set_index;
