@@ -3695,6 +3695,9 @@ typedef struct {
  *          The container is designed to be zero-initialized at startup (`memset` to 0), ensuring a
  *          safe default state for all pointers and flags. Backend-specific state is segregated
  *          into `vk` (Vulkan) and `gl` (OpenGL) substructures to keep the namespace clean.
+ */
+
+typedef struct {
     // -------------------------------------------------------------------------
     // Core Lifecycle & Error Handling
     // -------------------------------------------------------------------------
