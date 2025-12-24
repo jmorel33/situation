@@ -19,12 +19,12 @@ Here is the concrete execution plan to "Max Out Core" (OpenGL 4.6).
     *   Place a Fence at the end of the frame.
 
 ### Code Change Requirements:
-*   [ ] Modify `_SituationInitOpenGL`: Allocate the global persistent staging buffer.
-*   [ ] Modify `SituationUpdateBuffer`:
-    *   [ ] Check if the update fits in the current ring segment.
-    *   [ ] memcpy directly to the persistent pointer.
-    *   [ ] No OpenGL API calls are made here. It is pure memory copy.
-*   [ ] Modify `SituationCreateBuffer`: Use glCreateBuffers + glNamedBufferStorage (DSA) with GL_DYNAMIC_STORAGE_BIT only if it cannot use the ring buffer strategy (e.g., static geometry).
+*   [x] Modify `_SituationInitOpenGL`: Allocate the global persistent staging buffer.
+*   [x] Modify `SituationUpdateBuffer`:
+    *   [x] Check if the update fits in the current ring segment.
+    *   [x] memcpy directly to the persistent pointer.
+    *   [x] No OpenGL API calls are made here. It is pure memory copy.
+*   [x] Modify `SituationCreateBuffer`: Use glCreateBuffers + glNamedBufferStorage (DSA) with GL_DYNAMIC_STORAGE_BIT only if it cannot use the ring buffer strategy (e.g., static geometry).
 
 ## Phase 2: The "Stateless" Renovation (Direct State Access)
 **Goal:** Remove the "Soft Command Buffer" overhead of tracking bindings (current_vao, current_program). Make the replay loop purely functional.
@@ -78,9 +78,9 @@ DSA allows us to modify objects without binding them to the context. This elimin
 *   [x] **Verification:** Ensure no glBind* calls exist in asset creation logic.
 
 ### Step 2: Persistent Ring Buffer (High Impact)
-*   [ ] **Task:** Implement _SituationGLInitRingBuffer.
-*   [ ] **Task:** Rewrite SituationUpdateBuffer to use memcpy into the ring.
-*   [ ] **Task:** Rewrite SituationCmdDraw to bind the ring buffer offset.
+*   [x] **Task:** Implement _SituationGLInitRingBuffer.
+*   [x] **Task:** Rewrite SituationUpdateBuffer to use memcpy into the ring.
+*   [x] **Task:** Rewrite SituationCmdDraw to bind the ring buffer offset.
 *   **Result:** SituationUpdateBuffer becomes nearly instant.
 
 ### Step 3: Bindless Textures (Modernization)
