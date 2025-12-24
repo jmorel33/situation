@@ -105,7 +105,8 @@ int main(int argc, char** argv) {
     // Decodes to RAM on background thread (Low Priority), zero main-thread stalls
     SituationLoadSoundFromFileAsync(&pool, "bgm.mp3", true, &music);
     
-    SituationFont font = SituationLoadFont("font.ttf");
+    SituationFont font;
+    SituationLoadFont("font.ttf", &font);
     SituationBakeFontAtlas(&font, 24.0f); // Create GPU texture for the font
 
     // 4. Main Loop
