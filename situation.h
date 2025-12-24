@@ -52,8 +52,8 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 34
-#define SITUATION_VERSION_REVISION "A"
+#define SITUATION_VERSION_PATCH 36
+#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
@@ -3301,6 +3301,22 @@ typedef struct {
     // We can add shaders/programs if needed later
 } _SituationGLGraveyard;
 
+// [Phase 4] Multi-Draw Indirect Structures
+typedef struct {
+    uint32_t count;
+    uint32_t instanceCount;
+    uint32_t first;
+    uint32_t baseInstance;
+} SitDrawArraysIndirectCommand;
+
+typedef struct {
+    uint32_t count;
+    uint32_t instanceCount;
+    uint32_t firstIndex;
+    int32_t  baseVertex;
+    uint32_t baseInstance;
+} SitDrawElementsIndirectCommand;
+
 /**
  * @brief [INTERNAL] OpenGL backend state container.
  * @details Holds all global OpenGL objects and state variables managed by the library.
@@ -3370,6 +3386,12 @@ typedef struct {
     // [Phase 2.5] Lazy VAO Cache & Graveyard
     _SitGLVaoCacheEntry* vao_cache[256]; // Simple hash table
     _SituationGLGraveyard graveyard;
+
+    // [Phase 4] Multi-Draw Indirect
+    GLuint mdi_buffer_id;
+    void* mdi_data_ptr;
+    size_t mdi_ring_size;
+    atomic_size_t mdi_ring_head;
 } _SituationGLState;
 #endif // SITUATION_USE_OPENGL
 
@@ -3576,6 +3598,7 @@ typedef struct _SituationTextureSlot {
     VkDescriptorPool descriptor_pool; // Owner pool
 #elif defined(SITUATION_USE_OPENGL)
     GLuint gl_texture_id;
+    uint64_t gl_bindless_handle; // [Phase 3] Bindless Handle
 #endif
 } _SituationTextureSlot;
 
@@ -4227,7 +4250,24 @@ static void _SituationInitGLRingBuffer(void) {
     sit_render.gl.ring_data_ptr = glMapNamedBufferRange(sit_render.gl.ring_buffer_id, 0, sit_render.gl.ring_size, flags);
 
     atomic_init(&sit_render.gl.ring_head, 0);
+}
 
+// [Phase 4] Initialize MDI Buffer
+static void _SituationInitGLMDIBuffer(void) {
+    if (sit_render.gl.mdi_buffer_id != 0) return;
+
+    // [Phase 4] Allocate MDI buffer large enough for double buffering (1MB per frame)
+    sit_render.gl.mdi_ring_size = 1024 * 1024 * SITUATION_MAX_FRAMES_IN_FLIGHT;
+    GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+
+    glCreateBuffers(1, &sit_render.gl.mdi_buffer_id);
+    glNamedBufferStorage(sit_render.gl.mdi_buffer_id, sit_render.gl.mdi_ring_size, NULL, flags);
+    sit_render.gl.mdi_data_ptr = glMapNamedBufferRange(sit_render.gl.mdi_buffer_id, 0, sit_render.gl.mdi_ring_size, flags);
+
+    atomic_init(&sit_render.gl.mdi_ring_head, 0);
+}
+
+static void _SituationInitGLRingFences(void) {
     // [Phase 2] Fence Initialization
     sit_render.gl.ring_fence_count = 3; // Triple buffer
     sit_render.gl.current_fence_index = 0;
@@ -7453,7 +7493,7 @@ static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* d
  *
  * @param buf The soft command buffer to execute.
  */
-static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
+static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int frame_index) {
     if (buf->packet_count == 0) return;
     // [FIX v2.3.27B] Do not execute incomplete/corrupted buffers
     if (buf->is_broken) {
@@ -7489,6 +7529,11 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
 
     // 3. Reset Blend State Cache
     sit_render.gl.blend_enabled = -1; // Force re-application if command requests it
+
+    // 4. Set MDI Offset based on frame index (Double/Triple Buffering)
+    // Each frame gets a dedicated 1MB slice of the MDI ring buffer.
+    size_t mdi_frame_offset = (frame_index % SITUATION_MAX_FRAMES_IN_FLIGHT) * (1024 * 1024);
+    atomic_store(&sit_render.gl.mdi_ring_head, mdi_frame_offset);
 
     // --- Execution Loop ---
     for (size_t i = 0; i < buf->packet_count; ++i) {
@@ -7691,17 +7736,103 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
                 break;
 
             case SIT_OP_DRAW:
-                glDrawArraysInstanced(GL_TRIANGLES, p->args.draw.first_v, p->args.draw.v_count, p->args.draw.i_count);
+                {
+                    // [Phase 4] Multi-Draw Indirect Optimization
+                    // Check for subsequent draw commands with the same opcode
+                    size_t batch_count = 1;
+                    size_t lookahead = i + 1;
+                    while (lookahead < buf->packet_count) {
+                        if (buf->packets[lookahead].opcode == SIT_OP_DRAW) {
+                            batch_count++;
+                            lookahead++;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if (batch_count > 1 && sit_render.gl.mdi_data_ptr) {
+                        // Batch detected!
+                        // 1. Allocate space in MDI ring
+                        // Note: Simple linear allocator for now. Assuming 1MB is enough per frame.
+                        // Ideally check wrap-around/overflow.
+                        size_t cmd_size = sizeof(SitDrawArraysIndirectCommand);
+                        size_t total_size = batch_count * cmd_size;
+                        size_t offset = atomic_fetch_add(&sit_render.gl.mdi_ring_head, total_size);
+
+                        // Safety check: Ensure we stay within the CURRENT FRAME's slice
+                        if (offset + total_size <= mdi_frame_offset + (1024 * 1024)) {
+                            SitDrawArraysIndirectCommand* cmds = (SitDrawArraysIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
+
+                            // 2. Fill commands
+                            for (size_t k = 0; k < batch_count; ++k) {
+                                SitCommandPacket* next_p = &buf->packets[i + k];
+                                cmds[k].count = next_p->args.draw.v_count;
+                                cmds[k].instanceCount = next_p->args.draw.i_count;
+                                cmds[k].first = next_p->args.draw.first_v;
+                                cmds[k].baseInstance = next_p->args.draw.first_i;
+                            }
+
+                            // 3. Bind & Draw
+                            glBindBuffer(GL_DRAW_INDIRECT_BUFFER, sit_render.gl.mdi_buffer_id);
+                            glMultiDrawArraysIndirect(GL_TRIANGLES, (const void*)((uintptr_t)offset), (GLsizei)batch_count, 0);
+
+                            // 4. Advance
+                            i += (batch_count - 1); // Loop increments i one more time
+                        } else {
+                            // Overflow fallback: Draw individually
+                            glDrawArraysInstanced(GL_TRIANGLES, p->args.draw.first_v, p->args.draw.v_count, p->args.draw.i_count);
+                        }
+                    } else {
+                        // Single draw fallback
+                        glDrawArraysInstanced(GL_TRIANGLES, p->args.draw.first_v, p->args.draw.v_count, p->args.draw.i_count);
+                    }
+                }
                 break;
 
             case SIT_OP_DRAW_INDEXED:
-                glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES,
-                    p->args.draw_indexed.idx_count,
-                    GL_UNSIGNED_INT,
-                    (void*)((uintptr_t)(p->args.draw_indexed.first_idx * 4)),
-                    p->args.draw_indexed.inst_count,
-                    p->args.draw_indexed.v_offset,
-                    p->args.draw_indexed.first_inst);
+                {
+                    // [Phase 4] Multi-Draw Indirect Optimization
+                    size_t batch_count = 1;
+                    size_t lookahead = i + 1;
+                    while (lookahead < buf->packet_count) {
+                        if (buf->packets[lookahead].opcode == SIT_OP_DRAW_INDEXED) {
+                            batch_count++;
+                            lookahead++;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if (batch_count > 1 && sit_render.gl.mdi_data_ptr) {
+                        size_t cmd_size = sizeof(SitDrawElementsIndirectCommand);
+                        size_t total_size = batch_count * cmd_size;
+                        size_t offset = atomic_fetch_add(&sit_render.gl.mdi_ring_head, total_size);
+
+                        // Safety check: Ensure we stay within the CURRENT FRAME's slice
+                        if (offset + total_size <= mdi_frame_offset + (1024 * 1024)) {
+                            SitDrawElementsIndirectCommand* cmds = (SitDrawElementsIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
+
+                            for (size_t k = 0; k < batch_count; ++k) {
+                                SitCommandPacket* next_p = &buf->packets[i + k];
+                                cmds[k].count = next_p->args.draw_indexed.idx_count;
+                                cmds[k].instanceCount = next_p->args.draw_indexed.inst_count;
+                                cmds[k].firstIndex = next_p->args.draw_indexed.first_idx;
+                                cmds[k].baseVertex = next_p->args.draw_indexed.v_offset;
+                                cmds[k].baseInstance = next_p->args.draw_indexed.first_inst;
+                            }
+
+                            glBindBuffer(GL_DRAW_INDIRECT_BUFFER, sit_render.gl.mdi_buffer_id);
+                            glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, (const void*)((uintptr_t)offset), (GLsizei)batch_count, 0);
+
+                            i += (batch_count - 1);
+                        } else {
+                            // Overflow
+                            glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, p->args.draw_indexed.idx_count, GL_UNSIGNED_INT, (void*)((uintptr_t)(p->args.draw_indexed.first_idx * 4)), p->args.draw_indexed.inst_count, p->args.draw_indexed.v_offset, p->args.draw_indexed.first_inst);
+                        }
+                    } else {
+                        glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, p->args.draw_indexed.idx_count, GL_UNSIGNED_INT, (void*)((uintptr_t)(p->args.draw_indexed.first_idx * 4)), p->args.draw_indexed.inst_count, p->args.draw_indexed.v_offset, p->args.draw_indexed.first_inst);
+                    }
+                }
                 break;
 
             case SIT_OP_PIPELINE_BARRIER:
@@ -8129,6 +8260,11 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // --- [Phase 1] Initialize Persistent Ring Buffer ---
     _SituationInitGLRingBuffer();
     if (!sit_render.gl.ring_data_ptr) return SITUATION_ERROR_OPENGL_GENERAL;
+    SIT_CHECK_GL_ERROR();
+
+    // --- [Phase 4] Initialize Multi-Draw Indirect Buffer ---
+    _SituationInitGLMDIBuffer();
+    if (!sit_render.gl.mdi_data_ptr) return SITUATION_ERROR_OPENGL_GENERAL;
     SIT_CHECK_GL_ERROR();
 
     // d. Initialize Virtual Display Slots (Data structures)
@@ -13874,13 +14010,13 @@ SITAPI SituationError SituationEndFrame(void) {
         #endif
         // If threading disabled at runtime but compiled in, fallback to immediate execution below
         {
-            _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index]);
+            _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
             glfwSwapBuffers(sit_gs.sit_glfw_window);
         }
         #else
         // [Phase 1] Execute Deferred Commands Immediately
         // [PLATINUM] Use the correct frame index even in single-threaded mode for consistency.
-        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index]);
+        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
 
         // Swap the front and back buffers to display the rendered frame.
         glfwSwapBuffers(sit_gs.sit_glfw_window);
@@ -15841,6 +15977,7 @@ SITAPI SituationRenderList SituationCreateRenderList(void) {
         // [FIX v2.3.27B]
         atomic_init(&list->in_flight_count, 0);
     }
+
     return list;
 }
 
@@ -16627,6 +16764,19 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MIN_FILTER, generate_mipmaps ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
     glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     SIT_CHECK_GL_ERROR();
+
+    // [Phase 3] Bindless Texture: Make Resident immediately
+    if (SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
+        #if defined(GLAD_GL_ARB_bindless_texture)
+        if (GLAD_GL_ARB_bindless_texture) {
+            slot->gl_bindless_handle = glGetTextureHandleARB(slot->gl_texture_id);
+            if (slot->gl_bindless_handle) {
+                glMakeTextureHandleResidentARB(slot->gl_bindless_handle);
+                SIT_CHECK_GL_ERROR();
+            }
+        }
+        #endif
+    }
 
     out_texture->slot_index = slot_idx;
     out_texture->generation = slot->generation;
@@ -31650,7 +31800,7 @@ static int _SituationRenderThreadEntry(void* arg) {
 
         #if defined(SITUATION_USE_OPENGL)
         // 1. Execute Soft Command Buffer
-        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[frame_index]);
+        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[frame_index], frame_index);
 
         // 2. Present
         glfwSwapBuffers(sit_gs.sit_glfw_window);

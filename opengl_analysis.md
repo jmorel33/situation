@@ -84,12 +84,12 @@ DSA allows us to modify objects without binding them to the context. This elimin
 *   **Result:** SituationUpdateBuffer becomes nearly instant.
 
 ### Step 3: Bindless Textures (Modernization)
-*   [ ] **Task:** Enable GL_ARB_bindless_texture.
-*   [ ] **Task:** Update SituationTexture to hold the GLuint64 handle.
-*   [ ] **Task:** Update SituationCmdDrawQuad to pass the handle via uniform instead of binding.
+*   [x] **Task:** Enable GL_ARB_bindless_texture.
+*   [x] **Task:** Update SituationTexture to hold the GLuint64 handle.
+*   [x] **Task:** Update SituationCmdDrawQuad to pass the handle via uniform instead of binding.
 
 ### Step 4: Multi-Draw Indirect (Optimization)
-*   [ ] **Task:** Add an MDI optimizer to the Soft Command Buffer replay.
+*   [x] **Task:** Add an MDI optimizer to the Soft Command Buffer replay.
 
 ## Code Snippet: The New OpenGL "Zero-Copy" Update
 This replaces the slow glBufferSubData logic.
