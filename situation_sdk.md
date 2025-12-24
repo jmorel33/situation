@@ -1596,7 +1596,7 @@ Shaders need data (Matrices, Colors, Time). Situation provides two ways to send 
 The fastest way to send small data (like a Model Matrix or a Color tint).
 
 ```c:disable-run
-void SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);
+SituationError SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);
 ```
 
 **Limit:** Guaranteed 128 bytes (e.g., two mat4 matrices).
@@ -1635,7 +1635,7 @@ The "Velocity" feature set allows you to recompile shaders while the app is runn
 #### SituationReloadShader
 
 ```c:disable-run
-bool SituationReloadShader(SituationShader* shader);
+SituationError SituationReloadShader(SituationShader* shader);
 ```
 
 **Process:**
@@ -1966,7 +1966,7 @@ SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd, int bi
 #### SituationReloadTexture
 
 ```c:disable-run
-bool SituationReloadTexture(SituationTexture* texture);
+SituationError SituationReloadTexture(SituationTexture* texture);
 ```
 
 **Behavior:**
@@ -1991,7 +1991,7 @@ SituationError SituationLoadImageFromScreen(SituationImage* out_image);
 #### SituationTakeScreenshot
 
 ```c:disable-run
-bool SituationTakeScreenshot(const char* filename);
+SituationError SituationTakeScreenshot(const char* filename);
 ```
 
 **Format:** Must end in .png.
@@ -2229,13 +2229,13 @@ SituationError SituationCreateComputePipeline(const char* compute_shader_path, S
 Binds the pipeline for subsequent dispatch commands.
 
 ```c:disable-run
-void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline);
+SituationError SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline);
 ```
 
 #### SituationReloadComputePipeline
 
 ```c:disable-run
-bool SituationReloadComputePipeline(SituationComputePipeline* pipeline);
+SituationError SituationReloadComputePipeline(SituationComputePipeline* pipeline);
 ```
 
 **Behavior:**
@@ -2279,7 +2279,7 @@ For pipelines that generate an image without a rasterization pass (e.g., Ray Tra
 #### SituationCmdPresent
 
 ```c:disable-run
-void SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture);
+SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture);
 ```
 
 **Behavior:** Blits the given texture to the backbuffer and prepares it for presentation.
@@ -2305,7 +2305,7 @@ uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer);
 Executes the compute shader. You must specify the number of **Work Groups** to launch.
 
 ```c:disable-run
-void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
+SituationError SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
 ```
 
 **Usage:**
@@ -2602,8 +2602,8 @@ SituationError SituationSetAudioDevice(int internal_id, const SituationAudioForm
 These functions control the final output stage (the Master Bus) before data is sent to the DAC.
 
 *   `SituationSetAudioMasterVolume(float volume)`: Applies a linear gain. 1.0 is unity gain. Values > 1.0 are allowed but may cause digital clipping if the mix is hot.
-*   `SituationPauseAudioDevice()`: Stops the callback request from the OS. CPU usage for audio drops to near zero. Use this when the application loses focus.
-*   `SituationResumeAudioDevice()`: Restarts the callback.
+*   `SituationPauseAudioDevice()`: Returns `SituationError`. Stops the callback request from the OS. CPU usage for audio drops to near zero. Use this when the application loses focus.
+*   `SituationResumeAudioDevice()`: Returns `SituationError`. Restarts the callback.
 
 <a id="42-resource-management"></a>
 
@@ -2868,7 +2868,7 @@ When you are finished recording, you must explicitly stop the capture device to 
 #### SituationStopAudioCapture
 
 ```c:disable-run
-void SituationStopAudioCapture(void);
+SituationError SituationStopAudioCapture(void);
 ```
 
 **Behavior:**
@@ -3419,22 +3419,21 @@ These functions are atomic wrappers around standard C I/O (`stdio`), hardened ag
 #### SituationLoadFileData
 
 ```c:disable-run
-unsigned char* SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read);
+SituationError SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read, unsigned char** out_data);
 ```
 
 **The "Nuclear" Details:**
 *   **Allocation:** Uses `malloc`. The returned pointer is 16-byte aligned (on most platforms) to allow for SIMD operations on the loaded data.
 *   **Concurrency:** Opens the file in "Read-Shared" mode. This allows other processes (like your Text Editor) to keep the file open while the game reads it—essential for Hot-Reloading.
 *   **Limits:** Intended for assets that fit in RAM. Do not use this for 4GB video files; use the Streaming Audio/Video APIs instead.
-*   **Failure:** Returns `NULL` if the file doesn't exist or is locked exclusively. `*out_bytes_read` is set to 0.
+*   **Failure:** Returns an error code if the file doesn't exist or is locked exclusively. `*out_bytes_read` is set to 0.
 
 **Usage Pattern:**
 
 ```c:disable-run
 unsigned int size = 0;
-unsigned char* buffer = SituationLoadFileData("mesh.bin", &size);
-
-if (buffer) {
+unsigned char* buffer = NULL;
+if (SituationLoadFileData("mesh.bin", &size, &buffer) == SITUATION_SUCCESS) {
     // Process raw bytes...
     UploadGeometryToGPU(buffer, size);
 
@@ -3477,14 +3476,14 @@ char* SituationLoadFileText(const char* file_path);
 #### SituationSaveFileData / SituationSaveFileText
 
 ```c:disable-run
-bool SituationSaveFileData(const char* path, const void* data, unsigned int bytes);
-bool SituationSaveFileText(const char* path, const char* text);
+SituationError SituationSaveFileData(const char* path, const void* data, unsigned int bytes);
+SituationError SituationSaveFileText(const char* path, const char* text);
 ```
 
 **Behavior:**
 *   Opens with `wb` (write binary) or `w` (write text).
 *   Truncates the existing file immediately.
-*   Returns `false` if disk is full or path is read-only.
+*   Returns `false` (via error code) if disk is full or path is read-only.
 
 **Async Option:** See `SituationSaveFileTextAsync` in Section 7.2.
 
@@ -3498,7 +3497,7 @@ bool SituationSaveFileText(const char* path, const char* text);
 #### SituationCreateDirectory
 
 ```c:disable-run
-bool SituationCreateDirectory(const char* dir_path, bool create_parents);
+SituationError SituationCreateDirectory(const char* dir_path, bool create_parents);
 ```
 
 **Parameter `create_parents`:**
@@ -3510,7 +3509,7 @@ bool SituationCreateDirectory(const char* dir_path, bool create_parents);
 #### SituationDeleteDirectory
 
 ```c:disable-run
-bool SituationDeleteDirectory(const char* dir_path, bool recursive);
+SituationError SituationDeleteDirectory(const char* dir_path, bool recursive);
 ```
 
 **Parameter `recursive`:**
@@ -3522,10 +3521,10 @@ bool SituationDeleteDirectory(const char* dir_path, bool recursive);
 #### SituationListDirectoryFiles
 
 ```c:disable-run
-char** SituationListDirectoryFiles(const char* dir_path, int* out_count);
+SituationError SituationListDirectoryFiles(const char* dir_path, char*** out_files, int* out_count);
 ```
 
-**Returns:** An array of strings (`char**`).
+**Returns:** `SITUATION_SUCCESS` on success. `out_files` points to an array of strings.
 
 **Filtering:**
 *   Automatically skips `.` and `..`
@@ -3536,9 +3535,8 @@ This function allocates a block for the array and blocks for each string. You mu
 
 ```c:disable-run
 int count = 0;
-char** files = SituationListDirectoryFiles("saves/", &count);
-
-if (files) {
+char** files = NULL;
+if (SituationListDirectoryFiles("saves/", &files, &count) == SITUATION_SUCCESS) {
     for (int i=0; i<count; i++) {
         printf("Found save: %s\n", files[i]);
     }
