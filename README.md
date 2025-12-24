@@ -106,8 +106,9 @@ int main(int argc, char** argv) {
     SituationLoadSoundFromFileAsync(&pool, "bgm.mp3", true, &music);
     
     SituationFont font;
-    SituationLoadFont("font.ttf", &font);
-    SituationBakeFontAtlas(&font, 24.0f); // Create GPU texture for the font
+    if (SituationLoadFont("font.ttf", &font) == SITUATION_SUCCESS) {
+        SituationBakeFontAtlas(&font, 24.0f); // Create GPU texture for the font
+    }
 
     // 4. Main Loop
     while (!SituationWindowShouldClose()) {
@@ -128,7 +129,7 @@ int main(int argc, char** argv) {
             SituationCmdBeginRenderPass(cmd, &pass); 
             
             // Draw text directly using the internal batch renderer
-            SituationCmdDrawText(cmd, font, "Situation Engine Running...", (Vector2){50, 50}, (Color){255, 255, 255, 255});
+            SituationCmdDrawText(cmd, font, "Situation Engine Running...", (Vector2){50, 50}, (ColorRGBA){255, 255, 255, 255});
             
             SituationCmdEndRenderPass(cmd);
             SituationEndFrame();
