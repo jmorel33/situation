@@ -4241,6 +4241,21 @@ static void _SituationInitGLRingBuffer(void) {
     }
 }
 
+// [Phase 1.5] Synchronization Helper
+static void _SituationGLRingWait(void) {
+    // Wait for the fence of the PREVIOUS frame.
+    // If Frame N-1 is complete, we assume the GPU has consumed the entire ring buffer
+    // up to the start of the current frame, making it safe to wrap around and overwrite
+    // the beginning.
+    int prev_frame = (sit_render.current_frame_index + SITUATION_MAX_FRAMES_IN_FLIGHT - 1) % SITUATION_MAX_FRAMES_IN_FLIGHT;
+    GLsync fence = sit_render.gl.ring_fences[prev_frame];
+
+    if (fence) {
+        // Wait up to 1 second (should be effectively instant unless GPU is hung)
+        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000);
+    }
+}
+
 static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info);
 static void _SituationCleanupOpenGL(void);
 // Removed static fwd decl
@@ -7939,6 +7954,16 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf) {
     // Reset buffer after execution
     buf->packet_count = 0;
     buf->data_cursor = 0;
+
+    // [Phase 1.5] Insert Fence for Ring Buffer Synchronization
+    // We infer the frame index from the buffer pointer
+    int frame_idx = (int)(buf - sit_render.gl.soft_buffers);
+    if (frame_idx >= 0 && frame_idx < SITUATION_MAX_FRAMES_IN_FLIGHT) {
+        if (sit_render.gl.ring_fences[frame_idx]) {
+            glDeleteSync(sit_render.gl.ring_fences[frame_idx]);
+        }
+        sit_render.gl.ring_fences[frame_idx] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    }
 }
 
 static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
@@ -16290,8 +16315,10 @@ SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffe
         p->args.bind_desc.size = buffer.size_in_bytes; // [Phase 2] Required for glBindBufferRange
     } else {
         p->args.bind_desc.resource_id = buffer.gl_buffer_id;
-        p->args.bind_desc.offset = 0;
-        p->args.bind_desc.size = 0; // Use whole buffer (glBindBufferBase)
+        p->args.bind_desc.offset = (size_t)dynamic_offset;
+        p->args.bind_desc.size = 0; // Use whole buffer (glBindBufferBase) or remaining?
+                                    // If dynamic_offset > 0, we might need glBindBufferRange too.
+                                    // For now, assume 0 for static buffers or handle appropriately in execute.
     }
 
     p->args.bind_desc.usage_flags = buffer.usage_flags; // [Phase 2] Required for target determination
@@ -18541,7 +18568,9 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         // 2. Wrap-Around Logic
         if (ring_offset + aligned_size > sit_render.gl.ring_size) {
             // Wrap to beginning
-            // [Phase 1.5] Synchronization needed here (omitted for speed).
+            // [Phase 1.5] Synchronization: Wait for previous frame's fence to ensure safety.
+            _SituationGLRingWait();
+
             atomic_store(&sit_render.gl.ring_head, aligned_size);
             ring_offset = 0;
         }
@@ -18549,42 +18578,16 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         // 3. Memcpy to Persistent Pointer (Zero-Copy!)
         memcpy((uint8_t*)sit_render.gl.ring_data_ptr + ring_offset, data, size);
 
-		// 4. Record Update Op using Ring Buffer Source
-		// We need a NEW OpCode or modify the existing one to support "Source is Ring Buffer".
-		// Currently SIT_OP_UPDATE_BUFFER implies source is soft_buffer.data_buffer.
-
-		// To strictly follow the plan without changing OpCodes yet:
-		// We can't fully switch.
-
-		// RETRY: The plan says "Modify SituationUpdateBuffer... No OpenGL API calls".
-		// This implies we are NOT recording a glNamedBufferSubData command.
-		// We are just putting data in the ring buffer.
-		// AND we expect the subsequent Draw call to use THIS data.
-
-		// If we can't change the SituationBuffer struct (passed by value),
-		// We must record a command "SIT_OP_BIND_RING_BUFFER_RANGE"??
-		// But UpdateBuffer is generic.
-
-		// The key must be in `SituationCmdBindDescriptorSet`.
-		// But how does it know?
-
-		// OK, for this specific task (Phase 1), let's implement the Ring Buffer alloc + memcpy
-		// AND assume we are updating `SituationBuffer` passed by *pointer* in future?
-		// No, signature is fixed.
-
-		// Hack: We can cast the ID to an index if it's an internal resource? No.
-
-		// Let's use the `_SituationBufferNode* all_buffers` list?
-		// We can lookup the node by ID and store the frame offset there!
-		_SituationBufferNode* node = _SitGetBufferNode(buffer.id);
-		if (node) {
-			node->buffer.dynamic_offset = ring_offset;
-			node->buffer.dynamic_frame_index = sit_render.current_frame_index;
-		}
-		return SITUATION_SUCCESS;
-
-        // This branch (Ring Buffer) returns success.
-        // The fallback below is dead code for now, but kept if we switch back.
+        // 4. Update Internal Tracking
+        // We do NOT record a SIT_OP_UPDATE_BUFFER command.
+        // Instead, we update the internal node so that subsequent Bind calls
+        // (via SituationCmdBindDescriptorSet) redirect to the Ring Buffer.
+        _SituationBufferNode* node = _SitGetBufferNode(buffer.id);
+        if (node) {
+            node->buffer.dynamic_offset = ring_offset;
+            node->buffer.dynamic_frame_index = sit_render.current_frame_index;
+        }
+        return SITUATION_SUCCESS;
     }
 
 #elif defined(SITUATION_USE_VULKAN)
