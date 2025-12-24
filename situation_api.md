@@ -2090,15 +2090,16 @@ typedef struct GlyphInfo {
 #### `SituationLoadImage`
 Loads an image from a file into CPU memory (RAM). Supported formats include PNG, BMP, TGA, and JPEG. All loaded images are converted to a 32-bit RGBA format.
 ```c
-SituationImage SituationLoadImage(const char *fileName);
+SituationError SituationLoadImage(const char *fileName, SituationImage* out_image);
 ```
 **Usage Example:**
 ```c
 // Load an image to be used for a player sprite.
-SituationImage player_avatar = SituationLoadImage("assets/sprites/player.png");
-if (player_avatar.data) {
+SituationImage player_avatar;
+if (SituationLoadImage("assets/sprites/player.png", &player_avatar) == SITUATION_SUCCESS) {
     // The image is now in CPU memory, ready to be manipulated or uploaded to the GPU.
-    SituationTexture player_texture = SituationCreateTexture(player_avatar, true);
+    SituationTexture player_texture;
+    SituationCreateTexture(player_avatar, true, &player_texture);
     // Once uploaded to a texture, the CPU-side copy can often be safely unloaded.
     SituationUnloadImage(player_avatar);
 }
@@ -2120,13 +2121,14 @@ SituationUnloadImage(temp_image); // Free the memory when done.
 #### `SituationLoadImageFromMemory`
 Loads an image from a data buffer in memory. The `fileType` parameter must include the leading dot (e.g., `.png`).
 ```c
-SituationImage SituationLoadImageFromMemory(const char *fileType, const unsigned char *fileData, int dataSize);
+SituationError SituationLoadImageFromMemory(const char *fileType, const unsigned char *fileData, int dataSize, SituationImage* out_image);
 ```
 **Usage Example:**
 ```c
 // Assume 'g_embedded_player_png' is a byte array with an embedded PNG file,
 // and 'g_embedded_player_png_len' is its size.
-SituationImage player_img = SituationLoadImageFromMemory(".png", g_embedded_player_png, g_embedded_player_png_len);
+SituationImage player_img;
+SituationLoadImageFromMemory(".png", g_embedded_player_png, g_embedded_player_png_len, &player_img);
 // ... use player_img ...
 SituationUnloadImage(player_img);
 ```
@@ -2187,13 +2189,15 @@ SituationImage SituationImageCopy(SituationImage image);
 #### `SituationGenImageColor`
 Generates a new image filled with a single, solid color.
 ```c
-SituationImage SituationGenImageColor(int width, int height, ColorRGBA color);
+SituationError SituationGenImageColor(int width, int height, ColorRGBA color, SituationImage* out_image);
 ```
 **Usage Example:**
 ```c
 // Create a solid red 1x1 pixel image to use as a default texture.
-SituationImage red_pixel = SituationGenImageColor(1, 1, (ColorRGBA){255, 0, 0, 255});
-SituationTexture default_texture = SituationCreateTexture(red_pixel, false);
+SituationImage red_pixel;
+SituationGenImageColor(1, 1, (ColorRGBA){255, 0, 0, 255}, &red_pixel);
+SituationTexture default_texture;
+SituationCreateTexture(red_pixel, false, &default_texture);
 SituationUnloadImage(red_pixel);
 ```
 
@@ -2201,12 +2205,13 @@ SituationUnloadImage(red_pixel);
 #### `SituationGenImageGradient`
 Generates an image with a linear, radial, or square gradient.
 ```c
-SituationImage SituationGenImageGradient(int width, int height, int type, ColorRGBA start, ColorRGBA end);
+SituationError SituationGenImageGradient(int width, int height, ColorRGBA tl, ColorRGBA tr, ColorRGBA bl, ColorRGBA br, SituationImage* out_image);
 ```
 **Usage Example:**
 ```c
 // Create a vertical gradient from red to black
-SituationImage background = SituationGenImageGradient(1280, 720, 1, (ColorRGBA){255,0,0,255}, (ColorRGBA){0,0,0,255});
+SituationImage background;
+SituationGenImageGradient(1280, 720, (ColorRGBA){255,0,0,255}, (ColorRGBA){255,0,0,255}, (ColorRGBA){0,0,0,255}, (ColorRGBA){0,0,0,255}, &background);
 // ... use background ...
 SituationUnloadImage(background);
 ```
@@ -2302,7 +2307,7 @@ void SituationImagePremultiplyAlpha(SituationImage *image);
 #### `SituationLoadFont` / `SituationUnloadFont`
 Loads a font from a TTF/OTF file for CPU-side rendering, and later unloads it.
 ```c
-SituationFont SituationLoadFont(const char *fileName);
+SituationError SituationLoadFont(const char *fileName, SituationFont* out_font);
 void SituationUnloadFont(SituationFont font);
 ```
 
@@ -2310,7 +2315,7 @@ void SituationUnloadFont(SituationFont font);
 #### `SituationLoadFontFromMemory`
 Loads a font from a data buffer in memory.
 ```c
-SituationFont SituationLoadFontFromMemory(const unsigned char *fileData, int dataSize);
+SituationError SituationLoadFontFromMemory(const void *fileData, int dataSize, SituationFont* out_font);
 ```
 
 ---
@@ -2324,29 +2329,30 @@ SituationImage SituationGenImageFontAtlas(SituationFont font, int fontSize, int 
 #### `SituationMeasureText`
 Measures the dimensions of a string of text if it were to be rendered with a specific font, size, and spacing.
 ```c
-vec2 SituationMeasureText(SituationFont font, const char *text, float fontSize, float spacing);
+Rectangle SituationMeasureText(SituationFont font, const char *text, float fontSize);
 ```
 **Usage Example:**
 ```c
 const char* button_text = "Click Me!";
-vec2 text_size;
-glm_vec2_copy(SituationMeasureText(my_font, button_text, 20, 1), text_size);
+Rectangle text_size = SituationMeasureText(my_font, button_text, 20);
 // Now you can create a button rectangle that perfectly fits the text.
-Rectangle button_rect = { .x = 100, .y = 100, .width = text_size[0] + 20, .height = text_size[1] + 10 };
+Rectangle button_rect = { .x = 100, .y = 100, .width = text_size.width + 20, .height = text_size.height + 10 };
 ```
 
 ---
 #### `SituationImageDrawText`
 Draws a simple, tinted text string onto an image.
 ```c
-void SituationImageDrawText(SituationImage *dst, SituationFont font, const char *text, vec2 position, float fontSize, float spacing, ColorRGBA tint);
+void SituationImageDrawText(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, ColorRGBA tint);
 ```
 **Usage Example:**
 ```c
-SituationImage canvas = SituationGenImageColor(800, 600, (ColorRGBA){20, 20, 20, 255});
-SituationFont my_font = SituationLoadFont("fonts/my_font.ttf");
+SituationImage canvas;
+SituationGenImageColor(800, 600, (ColorRGBA){20, 20, 20, 255}, &canvas);
+SituationFont my_font;
+SituationLoadFont("fonts/my_font.ttf", &my_font);
 
-SituationImageDrawText(&canvas, my_font, "Hello, World!", (vec2){50, 50}, 40, 1, (ColorRGBA){255, 255, 255, 255});
+SituationImageDrawText(&canvas, my_font, "Hello, World!", (Vector2){50, 50}, 40, 1, (ColorRGBA){255, 255, 255, 255});
 
 // ... you can now upload 'canvas' to a GPU texture ...
 
@@ -3064,12 +3070,13 @@ SituationError SituationCreateTexture(SituationImage image, bool generate_mipmap
 ```c
 // Load a CPU image from a file.
 SituationImage cpu_image;
-SituationLoadImage("textures/player_character.png", &cpu_image);
-// Create a GPU texture from the image, generating mipmaps for better quality.
-SituationTexture player_texture;
-SituationCreateTexture(cpu_image, true, &player_texture);
-// The CPU-side image can now be unloaded as the data is on the GPU.
-SituationUnloadImage(cpu_image);
+if (SituationLoadImage("textures/player_character.png", &cpu_image) == SITUATION_SUCCESS) {
+    // Create a GPU texture from the image, generating mipmaps for better quality.
+    SituationTexture player_texture;
+    SituationCreateTexture(cpu_image, true, &player_texture);
+    // The CPU-side image can now be unloaded as the data is on the GPU.
+    SituationUnloadImage(cpu_image);
+}
 ```
 
 ---
@@ -3122,12 +3129,13 @@ printf("Texture format ID: %d\n", format);
 #### `SituationLoadModel`
 Loads a 3D model from a file (GLTF, OBJ). This function parses the model file and uploads all associated meshes and materials to the GPU.
 ```c
-SituationModel SituationLoadModel(const char* file_path);
+SituationError SituationLoadModel(const char* file_path, SituationModel* out_model);
 ```
 **Usage Example:**
 ```c
 // At application startup, load the player model.
-SituationModel player_model = SituationLoadModel("models/player.gltf");
+SituationModel player_model;
+SituationLoadModel("models/player.gltf", &player_model);
 ```
 
 ---
@@ -3146,7 +3154,7 @@ SituationUnloadModel(&player_model);
 #### `SituationCreateBuffer`
 Creates a generic GPU buffer and optionally initializes it with data. Buffers can be used for vertices, indices, uniforms (UBOs), or storage (SSBOs).
 ```c
-SituationError SituationCreateBuffer(size_t size, const void* data, uint32_t usage_flags, SituationBuffer* out_buffer);
+SituationError SituationCreateBuffer(size_t size, const void* data, SituationBufferUsageFlags usage_flags, SituationBuffer* out_buffer);
 ```
 **Usage Example:**
 ```c
@@ -3509,14 +3517,14 @@ SituationError SituationSetShaderUniform(SituationShader shader, const char* uni
 #### `SituationCreateComputePipeline`
 Creates a compute pipeline from a shader file.
 ```c
-SituationComputePipeline SituationCreateComputePipeline(const char* compute_shader_path);
+SituationError SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline);
 ```
 
 ---
 #### `SituationCreateComputePipelineFromMemory`
 Creates a compute pipeline from in-memory GLSL source.
 ```c
-SituationComputePipeline SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type);
+SituationError SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline);
 ```
 
 ---

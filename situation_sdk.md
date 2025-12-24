@@ -1652,7 +1652,8 @@ bool SituationReloadShader(SituationShader* shader);
 
 ```c:disable-run
 // 1. Load
-SituationShader shader = SituationLoadShader("assets/basic.vert", "assets/basic.frag");
+SituationShader shader;
+SituationLoadShader("assets/basic.vert", "assets/basic.frag", &shader);
 
 // 2. Render Loop
 SituationCmdBeginRenderPass(cmd, &pass);
@@ -1780,7 +1781,7 @@ The library includes a built-in loader for glTF 2.0 (.gltf / .glb) files. This i
 #### SituationLoadModel
 
 ```c:disable-run
-SituationModel SituationLoadModel(const char* file_path);
+SituationError SituationLoadModel(const char* file_path, SituationModel* out_model);
 ```
 
 **Features:**
@@ -1789,7 +1790,7 @@ SituationModel SituationLoadModel(const char* file_path);
 *   Loads embedded or external textures (Albedo, Normal, Metallic/Roughness).
 *   Supports PBR materials.
 
-**Return:** A `SituationModel` struct containing an array of meshes and textures.
+**Return:** `SITUATION_SUCCESS` or a specific error code. The loaded model is returned via `out_model`.
 
 #### SituationDrawModel
 
@@ -1856,9 +1857,11 @@ float vertices[] = {
 uint32_t indices[] = { 0, 1, 2 };
 
 // Create
-SituationMesh triangle = SituationCreateMesh(
+SituationMesh triangle;
+SituationCreateMesh(
     vertices, 3, 3 * sizeof(float), // Pos only (tightly packed)
-    indices, 3
+    indices, 3,
+    &triangle
 );
 
 // Draw
@@ -1979,10 +1982,10 @@ bool SituationReloadTexture(SituationTexture* texture);
 #### SituationLoadImageFromScreen
 
 ```c:disable-run
-SituationImage SituationLoadImageFromScreen(void);
+SituationError SituationLoadImageFromScreen(SituationImage* out_image);
 ```
 
-**Returns:** A CPU `SituationImage` containing the pixels of the current backbuffer.
+**Returns:** `SITUATION_SUCCESS` on success. The `out_image` is populated with pixels of the current backbuffer.
 **Performance:** This causes a pipeline stall (CPU waits for GPU). Do not use every frame.
 
 #### SituationTakeScreenshot
@@ -2012,9 +2015,8 @@ uint64_t SituationGetTextureHandle(SituationTexture texture);
 
 ```c:disable-run
 // Snippet Supreme: Zero-Leak Texture Loader
-SituationImage img = SituationLoadImage("assets/wall.png");
-
-if (img.pixels == NULL) {
+SituationImage img;
+if (SituationLoadImage("assets/wall.png", &img) != SITUATION_SUCCESS) {
     // Error handling
     return SITUATION_ERROR_FILE_NOT_FOUND;
 }
@@ -2074,17 +2076,18 @@ graph BT
 #### SituationCreateVirtualDisplay
 
 ```c:disable-run
-int SituationCreateVirtualDisplay(vec2 resolution,
+SituationError SituationCreateVirtualDisplay(Vector2 resolution,
                                   double frame_time_mult,
                                   int z_order,
                                   SituationScalingMode scaling_mode,
-                                  SituationBlendMode blend_mode);
+                                  SituationBlendMode blend_mode,
+                                  int* out_id);
 ```
 
 **Resolution:** The internal size (e.g., `{320, 240}`).
 **Frame Time Mult:** Controls update frequency. 1.0 = Every Frame. 0.5 = Every other frame (half framerate effect). 0.0 = Manual update only.
 **Z-Order:** Determines drawing order. Lower numbers are drawn first (background).
-**Returns:** An integer ID (>= 0).
+**Returns:** `SITUATION_SUCCESS` on success. `out_id` receives the new virtual display ID.
 
 **Scaling Modes**
 
@@ -2169,12 +2172,14 @@ void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty);
 
 ```c:disable-run
 // 1. Setup: Create a 320x180 buffer
-int game_vd = SituationCreateVirtualDisplay(
-    (vec2){320, 180},
+int game_vd;
+SituationCreateVirtualDisplay(
+    (Vector2){320, 180},
     1.0,
     0,
     SITUATION_SCALING_INTEGER,
-    SITUATION_BLEND_ALPHA
+    SITUATION_BLEND_ALPHA,
+    &game_vd
 );
 
 // 2. Render Loop
@@ -2432,7 +2437,8 @@ To render text, you must first prepare a font atlas. This converts vector glyphs
 **Snippet Supreme: Text Setup**
 ```c:disable-run
 // 1. Load Font
-SituationFont font = SituationLoadFont("assets/fonts/Inter-Regular.ttf");
+SituationFont font;
+SituationLoadFont("assets/fonts/Inter-Regular.ttf", &font);
 
 // 2. Bake Atlas (e.g., 24px height)
 // This creates the GPU texture and calculates UVs
