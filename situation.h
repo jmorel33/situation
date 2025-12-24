@@ -18549,39 +18549,39 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         // 3. Memcpy to Persistent Pointer (Zero-Copy!)
         memcpy((uint8_t*)sit_render.gl.ring_data_ptr + ring_offset, data, size);
 
-             // 4. Record Update Op using Ring Buffer Source
-             // We need a NEW OpCode or modify the existing one to support "Source is Ring Buffer".
-             // Currently SIT_OP_UPDATE_BUFFER implies source is soft_buffer.data_buffer.
+		// 4. Record Update Op using Ring Buffer Source
+		// We need a NEW OpCode or modify the existing one to support "Source is Ring Buffer".
+		// Currently SIT_OP_UPDATE_BUFFER implies source is soft_buffer.data_buffer.
 
-             // To strictly follow the plan without changing OpCodes yet:
-             // We can't fully switch.
+		// To strictly follow the plan without changing OpCodes yet:
+		// We can't fully switch.
 
-             // RETRY: The plan says "Modify SituationUpdateBuffer... No OpenGL API calls".
-             // This implies we are NOT recording a glNamedBufferSubData command.
-             // We are just putting data in the ring buffer.
-             // AND we expect the subsequent Draw call to use THIS data.
+		// RETRY: The plan says "Modify SituationUpdateBuffer... No OpenGL API calls".
+		// This implies we are NOT recording a glNamedBufferSubData command.
+		// We are just putting data in the ring buffer.
+		// AND we expect the subsequent Draw call to use THIS data.
 
-             // If we can't change the SituationBuffer struct (passed by value),
-             // We must record a command "SIT_OP_BIND_RING_BUFFER_RANGE"??
-             // But UpdateBuffer is generic.
+		// If we can't change the SituationBuffer struct (passed by value),
+		// We must record a command "SIT_OP_BIND_RING_BUFFER_RANGE"??
+		// But UpdateBuffer is generic.
 
-             // The key must be in `SituationCmdBindDescriptorSet`.
-             // But how does it know?
+		// The key must be in `SituationCmdBindDescriptorSet`.
+		// But how does it know?
 
-             // OK, for this specific task (Phase 1), let's implement the Ring Buffer alloc + memcpy
-             // AND assume we are updating `SituationBuffer` passed by *pointer* in future?
-             // No, signature is fixed.
+		// OK, for this specific task (Phase 1), let's implement the Ring Buffer alloc + memcpy
+		// AND assume we are updating `SituationBuffer` passed by *pointer* in future?
+		// No, signature is fixed.
 
-             // Hack: We can cast the ID to an index if it's an internal resource? No.
+		// Hack: We can cast the ID to an index if it's an internal resource? No.
 
-             // Let's use the `_SituationBufferNode* all_buffers` list?
-             // We can lookup the node by ID and store the frame offset there!
-             _SituationBufferNode* node = _SitGetBufferNode(buffer.id);
-             if (node) {
-                 node->buffer.dynamic_offset = ring_offset;
-                 node->buffer.dynamic_frame_index = sit_render.current_frame_index;
-             }
-             return SITUATION_SUCCESS;
+		// Let's use the `_SituationBufferNode* all_buffers` list?
+		// We can lookup the node by ID and store the frame offset there!
+		_SituationBufferNode* node = _SitGetBufferNode(buffer.id);
+		if (node) {
+			node->buffer.dynamic_offset = ring_offset;
+			node->buffer.dynamic_frame_index = sit_render.current_frame_index;
+		}
+		return SITUATION_SUCCESS;
 
         // This branch (Ring Buffer) returns success.
         // The fallback below is dead code for now, but kept if we switch back.
