@@ -65,16 +65,24 @@ static vec2 g_triangle_pos = {0.0f, 0.0f}; // CPU-side state
 
 // --- Setup ---
 int init_resources() {
-    g_pipeline = SituationLoadShaderFromMemory(vertex_shader_src, fragment_shader_src);
-    if (g_pipeline.id == 0) {
-        char* err = SituationGetLastErrorMsg();
-        fprintf(stderr, "%s\n", err);
-        free(err);
+    SituationError err;
+
+    err = SituationLoadShaderFromMemory(vertex_shader_src, fragment_shader_src, &g_pipeline);
+    if (err != SITUATION_SUCCESS) {
+        char* err_msg = SituationGetLastErrorMsg();
+        fprintf(stderr, "Shader Load Failed: %s\n", err_msg);
+        SituationFreeString(err_msg);
         return -1;
     }
 
-    g_mesh = SituationCreateMesh(triangle_vertices, 3, sizeof(Vertex), triangle_indices, 3);
-    return (g_mesh.id != 0) ? 0 : -1;
+    err = SituationCreateMesh(triangle_vertices, 3, sizeof(Vertex), triangle_indices, 3, &g_mesh);
+    if (err != SITUATION_SUCCESS) {
+        char* err_msg = SituationGetLastErrorMsg();
+        fprintf(stderr, "Mesh Creation Failed: %s\n", err_msg);
+        SituationFreeString(err_msg);
+        return -1;
+    }
+    return 0;
 }
 
 // --- Render Loop ---
