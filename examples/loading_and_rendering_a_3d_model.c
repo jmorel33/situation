@@ -66,17 +66,19 @@ static const char* fs_src =
 
 // --- Initialization ---
 int init_resources() {
+    SituationError err;
+
     // 1. Load Shader
-    g_shader = SituationLoadShaderFromMemory(vs_src, fs_src);
-    if (g_shader.id == 0) return -1;
+    err = SituationLoadShaderFromMemory(vs_src, fs_src, &g_shader);
+    if (err != SITUATION_SUCCESS) return -1;
 
     // 2. Load Model
     // This automatically loads the .glb file, parses the binary buffers,
     // creates the GPU Vertex/Index buffers, and loads embedded textures.
     printf("Loading model: %s ...\n", MODEL_PATH);
-    g_model = SituationLoadModel(MODEL_PATH);
+    err = SituationLoadModel(MODEL_PATH, &g_model);
 
-    if (g_model.id == 0) {
+    if (err != SITUATION_SUCCESS) {
         fprintf(stderr, "Failed to load model. Ensure '%s' exists.\n", MODEL_PATH);
         return -1;
     }

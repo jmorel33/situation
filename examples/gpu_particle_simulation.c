@@ -112,23 +112,28 @@ int init_resources() {
 
     // 2. Create Shared Buffer
     // This is the critical part. Usage flags allow it to be used for EVERYTHING.
-    g_particle_buffer = SituationCreateBuffer(
+    SituationError err = SituationCreateBuffer(
         PARTICLE_COUNT * sizeof(Particle),
         data,
-        SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_VERTEX_BUFFER
+        SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_VERTEX_BUFFER,
+        &g_particle_buffer
     );
     free(data);
+    if (err != SITUATION_SUCCESS) return -1;
 
     // 3. Create Pipelines
-    g_compute_pipeline = SituationCreateComputePipelineFromMemory(cs_src, SIT_COMPUTE_LAYOUT_ONE_SSBO);
-    g_render_pipeline = SituationLoadShaderFromMemory(vs_src, fs_src);
+    err = SituationCreateComputePipelineFromMemory(cs_src, SIT_COMPUTE_LAYOUT_ONE_SSBO, &g_compute_pipeline);
+    if (err != SITUATION_SUCCESS) return -1;
+
+    err = SituationLoadShaderFromMemory(vs_src, fs_src, &g_render_pipeline);
+    if (err != SITUATION_SUCCESS) return -1;
 
     // 4. Create Quad Mesh (for instancing)
     float quad_verts[] = { -1,-1,  1,-1,  1,1,  -1,1 };
     uint32_t quad_inds[] = { 0,1,2, 0,2,3 };
-    g_quad_mesh = SituationCreateMesh(quad_verts, 4, sizeof(float)*2, quad_inds, 6);
+    err = SituationCreateMesh(quad_verts, 4, sizeof(float)*2, quad_inds, 6, &g_quad_mesh);
+    if (err != SITUATION_SUCCESS) return -1;
 
-    if (g_particle_buffer.id == 0 || g_compute_pipeline.id == 0) return -1;
     return 0;
 }
 

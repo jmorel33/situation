@@ -74,38 +74,44 @@ int init_compute_resources() {
     // 2. Create Input Buffer (SSBO)
     // Usage: STORAGE (for shader) + TRANSFER_DST (to upload data)
     // Note: We pass 'host_data' here, so the library uploads it immediately.
-    g_input_buffer = SituationCreateBuffer(
+    SituationError err = SituationCreateBuffer(
         sizeof(host_data), 
         host_data, 
-        SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST
+        SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST,
+        &g_input_buffer
     );
+    if (err != SITUATION_SUCCESS) return -1;
 
     // 3. Create Output Buffer (SSBO)
     // Usage: STORAGE (for shader) + TRANSFER_SRC (to read back to CPU)
     // We pass NULL because we only care about allocating the space on GPU.
-    g_output_buffer = SituationCreateBuffer(
+    err = SituationCreateBuffer(
         sizeof(host_data), 
         NULL, 
-        SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_SRC
+        SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_SRC,
+        &g_output_buffer
     );
 
-    if (g_input_buffer.id == 0 || g_output_buffer.id == 0) {
-        fprintf(stderr, "Buffer Error: %s\n", SituationGetLastErrorMsg());
+    if (err != SITUATION_SUCCESS) {
+        char* err_msg = SituationGetLastErrorMsg();
+        fprintf(stderr, "Buffer Error: %s\n", err_msg);
+        SituationFreeString(err_msg);
         return -1;
     }
 
     // 4. Create Compute Pipeline
     // We specify SIT_COMPUTE_LAYOUT_TWO_SSBOS because our shader uses:
     // Set 0 (Input) and Set 1 (Output).
-    g_compute_pipeline = SituationCreateComputePipelineFromMemory(
+    err = SituationCreateComputePipelineFromMemory(
         compute_shader_src, 
-        SIT_COMPUTE_LAYOUT_TWO_SSBOS
+        SIT_COMPUTE_LAYOUT_TWO_SSBOS,
+        &g_compute_pipeline
     );
 
-    if (g_compute_pipeline.id == 0) {
-        char* err = SituationGetLastErrorMsg();
-        fprintf(stderr, "Pipeline Error: %s\n", err);
-        free(err);
+    if (err != SITUATION_SUCCESS) {
+        char* err_msg = SituationGetLastErrorMsg();
+        fprintf(stderr, "Pipeline Error: %s\n", err_msg);
+        SituationFreeString(err_msg);
         return -1;
     }
 

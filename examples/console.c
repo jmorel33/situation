@@ -1366,8 +1366,8 @@ int main(void) {
     
     // Main loop
     while (!SituationWindowShouldClose() && !should_exit) { // Use Situation's wrapper
-        // ***** NEW: Call SituationUpdate() *****
-        SituationUpdate(); // Legacy update, wraps PollInput and UpdateTimers
+        // ***** NEW: Call SITUATION_BEGIN_FRAME() *****
+        SITUATION_BEGIN_FRAME(); // Polls input + updates timers in correct order
         // **************************************
 
         if (console.prompt_pending && !console.in_command && !console.waiting_for_prompt_cursor_pos) {
