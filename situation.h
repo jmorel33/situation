@@ -602,7 +602,8 @@ typedef enum {
   */
 
 /* === General System Limits === */
-#define SIT_GL_RING_SIZE                        (64 * 1024 * 1024) /* 64MB Persistent Ring Buffer for OpenGL Zero-Copy updates */
+#define SITUATION_VK_STAGING_BUFFER_SIZE 		(128 * 1024 * 1024) /* 128 MB — great for large texture/model uploads in Vulkan */
+#define SITUATION_GL_RING_SIZE                  (64 * 1024 * 1024) /* 64MB Persistent Ring Buffer for OpenGL Zero-Copy updates */
 #define SITUATION_MAX_FRAMES_IN_FLIGHT          2    /* Max overlapping frames for VK/GL swapchains (2-3 typical for V-Sync). */
 #define SITUATION_MAX_STORAGE_DEVICES           8    /* Max detected storage volumes (e.g., drives, mounts). */
 #define SITUATION_MAX_NETWORK_ADAPTERS          8    /* Max network interfaces (e.g., Ethernet/Wi-Fi). */
@@ -3127,8 +3128,6 @@ typedef struct _SituationVKGraveyard {
     int render_pass_capacity;
 } _SituationVKGraveyard;
 
-#define SITUATION_STAGING_BUFFER_SIZE (128 * 1024 * 1024) // 128MB per frame
-
 typedef struct {
     VkBuffer buffer;
     VmaAllocation allocation;
@@ -4219,7 +4218,7 @@ static const char* SIT_TEXT_FRAGMENT_SHADER =
 static void _SituationInitGLRingBuffer(void) {
     if (sit_render.gl.ring_buffer_id != 0) return;
 
-    sit_render.gl.ring_size = SIT_GL_RING_SIZE;
+    sit_render.gl.ring_size = SITUATION_GL_RING_SIZE;
     GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
 
     glCreateBuffers(1, &sit_render.gl.ring_buffer_id);
@@ -4800,7 +4799,7 @@ static GLint _sit_uniform_map_get(_SituationUniformMap* map, const char* key) {
 static SituationError _SituationInitStagingBuffers(void) {
     for (uint32_t i = 0; i < sit_render.vk.max_frames_in_flight; i++) {
         _SituationStagingBuffer* sb = &sit_render.vk.staging_buffers[i];
-        sb->capacity = SITUATION_STAGING_BUFFER_SIZE;
+        sb->capacity = SITUATION_VK_STAGING_BUFFER_SIZE;
         sb->cursor = 0;
 
         VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
