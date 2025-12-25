@@ -19,6 +19,10 @@
 *       representing the terminal display, is then rendered to the screen. It handles a wide range of escape sequences to control cursor movement, text attributes,
 *       colors, screen clearing, scrolling, and various terminal modes.
 *
+*       LIMITATIONS:
+*         - Unicode: UTF-8 decoding is fully supported for input, but rendering is currently limited to the CP437 glyph set (256 characters).
+*                    Unsupported glyphs may render as '?' or mapped approximations.
+*
 **********************************************************************************************/
 #ifndef TERMINAL_H
 #define TERMINAL_H
@@ -1266,6 +1270,9 @@ void InitTerminal(void) {
     terminal.locator_enabled = false;  // Default: no locator device
     terminal.programmable_keys.udk_locked = false; // Default: UDKs unlocked
 
+    terminal.macro_space.used = 0;
+    terminal.macro_space.total = 4096; // 4KB macro buffer default
+
     strncpy(terminal.answerback_buffer, "terminal_v2 VT420", MAX_COMMAND_BUFFER - 1);
     terminal.answerback_buffer[MAX_COMMAND_BUFFER - 1] = '\0';
 
@@ -1759,8 +1766,8 @@ void CreateFontTexture(void) {
     const int atlas_height = (num_chars / chars_per_row) * DEFAULT_CHAR_HEIGHT;
 
     // Create a CPU-side image (RGBA)
-    SituationImage img = SituationCreateImage(atlas_width, atlas_height, 4);
-    if (!img.data) return;
+    SituationImage img = {0};
+    if (SituationCreateImage(atlas_width, atlas_height, 4, &img) != SITUATION_SUCCESS) return;
 
     unsigned char* pixels = (unsigned char*)img.data;
 
@@ -1796,7 +1803,7 @@ void CreateFontTexture(void) {
         }
     }
 
-    terminal.font_texture = SituationCreateTexture(img, false);
+    SituationCreateTexture(img, false, &terminal.font_texture);
     SituationUnloadImage(img);
 }
 
@@ -1805,22 +1812,23 @@ void InitTerminalCompute(void) {
 
     // 1. Create SSBO
     size_t buffer_size = DEFAULT_TERM_WIDTH * DEFAULT_TERM_HEIGHT * sizeof(GPUCell);
-    terminal.terminal_buffer = SituationCreateBuffer(buffer_size, NULL, SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST);
+    SituationCreateBuffer(buffer_size, NULL, SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST, &terminal.terminal_buffer);
 
     // 2. Create Storage Image (Output)
-    SituationImage empty_img = SituationCreateImage(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, 4); // RGBA
+    SituationImage empty_img = {0};
+    SituationCreateImage(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, 4, &empty_img); // RGBA
     // We can init to black if we want, but compute will overwrite.
-    terminal.output_texture = SituationCreateTextureEx(empty_img, false, SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_TRANSFER_SRC);
+    SituationCreateTextureEx(empty_img, false, SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_TRANSFER_SRC, &terminal.output_texture);
     SituationUnloadImage(empty_img);
 
     // 3. Create Compute Pipeline
-    terminal.compute_pipeline = SituationCreateComputePipelineFromMemory(TERMINAL_COMPUTE_SHADER_SRC, SIT_COMPUTE_LAYOUT_TERMINAL);
+    SituationCreateComputePipelineFromMemory(TERMINAL_COMPUTE_SHADER_SRC, SIT_COMPUTE_LAYOUT_TERMINAL, &terminal.compute_pipeline);
 
     // Create Dummy Sixel Texture (1x1 transparent)
-    SituationImage dummy_img = SituationCreateImage(1, 1, 4);
-    if (dummy_img.data) {
+    SituationImage dummy_img = {0};
+    if (SituationCreateImage(1, 1, 4, &dummy_img) == SITUATION_SUCCESS) {
         memset(dummy_img.data, 0, 4); // Clear to transparent
-        terminal.dummy_sixel_texture = SituationCreateTextureEx(dummy_img, false, SITUATION_TEXTURE_USAGE_SAMPLED);
+        SituationCreateTextureEx(dummy_img, false, SITUATION_TEXTURE_USAGE_SAMPLED, &terminal.dummy_sixel_texture);
         SituationUnloadImage(dummy_img);
     }
 
@@ -3280,8 +3288,13 @@ void UpdateVTKeyboard(void) {
         }
         if (udk_found) continue; // If UDK was handled, skip default processing for this key
 
+        // Determine modifier state correctly (IsKeyDown for held keys)
+        bool ctrl = SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) || SituationIsKeyDown(SIT_KEY_RIGHT_CONTROL);
+        bool alt = SituationIsKeyDown(SIT_KEY_LEFT_ALT) || SituationIsKeyDown(SIT_KEY_RIGHT_ALT);
 
-        if (rk >= 32 && rk <= 126) continue;  // Skip these, SituationGetCharPressed() will handle them
+        // Skip printable ASCII (32-126) because they are handled by GetCharPressed
+        // BUT we must allow them if CTRL or ALT is pressed, as they generate sequences (e.g. Ctrl+C)
+        if (rk >= 32 && rk <= 126 && !ctrl && !alt) continue;
 
         if (terminal.vt_keyboard.buffer_count < KEY_EVENT_BUFFER_SIZE) {
             VTKeyEvent* vt_event = &terminal.vt_keyboard.buffer[terminal.vt_keyboard.buffer_head];
@@ -3289,12 +3302,18 @@ void UpdateVTKeyboard(void) {
             vt_event->key_code = rk;
             vt_event->timestamp = current_time;
             vt_event->priority = KEY_PRIORITY_NORMAL;
-            vt_event->ctrl = SituationIsKeyPressed(SIT_KEY_LEFT_CONTROL) || SituationIsKeyPressed(SIT_KEY_RIGHT_CONTROL);
-            vt_event->shift = SituationIsKeyPressed(SIT_KEY_LEFT_SHIFT) || SituationIsKeyPressed(SIT_KEY_RIGHT_SHIFT);
-            vt_event->alt = SituationIsKeyPressed(SIT_KEY_LEFT_ALT) || SituationIsKeyPressed(SIT_KEY_RIGHT_ALT);
+            vt_event->ctrl = ctrl;
+            vt_event->shift = SituationIsKeyDown(SIT_KEY_LEFT_SHIFT) || SituationIsKeyDown(SIT_KEY_RIGHT_SHIFT);
+            vt_event->alt = alt;
 
-            // Generate VT sequence for special keys only
-            switch (rk) {
+            // Special handling for printable keys with modifiers
+            if (rk >= 32 && rk <= 126) {
+                if (ctrl) HandleControlKey(vt_event);
+                else if (alt) HandleAltKey(vt_event);
+            }
+            else {
+                // Generate VT sequence for special keys only
+                switch (rk) {
                 case SIT_KEY_UP:
                     snprintf(vt_event->sequence, sizeof(vt_event->sequence), terminal.vt_keyboard.cursor_key_mode ? "\x1BOA" : "\x1B[A");
                     if (vt_event->ctrl) snprintf(vt_event->sequence, sizeof(vt_event->sequence), "\x1B[1;5A");
@@ -3338,8 +3357,9 @@ void UpdateVTKeyboard(void) {
                 case SIT_KEY_ESCAPE:
                     snprintf(vt_event->sequence, sizeof(vt_event->sequence), "\x1B");
                     break;
-                default:
-                    continue; // Ignore unhandled special keys
+                    default:
+                        continue; // Ignore unhandled special keys
+                }
             }
 
             if (vt_event->sequence[0] != '\0') {
@@ -4749,6 +4769,9 @@ void ExecuteDECSTR(void) { // Soft Terminal Reset
 
     // Clear saved cursor
     terminal.saved_cursor_valid = false;
+
+    InitColorPalette();
+    InitSixelGraphics();
 
     if (terminal.options.debug_sequences) {
         LogUnsupportedSequence("DECSTR: Soft terminal reset");
@@ -6404,6 +6427,9 @@ void ProcessSixelChar(unsigned char ch) {
 
 void InitSixelGraphics(void) {
     terminal.sixel.active = false;
+    if (terminal.sixel.data) {
+        free(terminal.sixel.data);
+    }
     terminal.sixel.data = NULL;
     terminal.sixel.width = 0;
     terminal.sixel.height = 0;
@@ -7200,10 +7226,10 @@ void DrawTerminal(void) {
 
             if (terminal.sixel_texture.generation != 0) SituationDestroyTexture(&terminal.sixel_texture);
 
-            SituationImage sixel_img = SituationCreateImage(terminal.sixel.width, terminal.sixel.height, 4);
-            if (sixel_img.data) {
+            SituationImage sixel_img = {0};
+            if (SituationCreateImage(terminal.sixel.width, terminal.sixel.height, 4, &sixel_img) == SITUATION_SUCCESS) {
                 memcpy(sixel_img.data, terminal.sixel.data, terminal.sixel.width * terminal.sixel.height * 4);
-                terminal.sixel_texture = SituationCreateTextureEx(sixel_img, false, SITUATION_TEXTURE_USAGE_SAMPLED);
+                SituationCreateTextureEx(sixel_img, false, SITUATION_TEXTURE_USAGE_SAMPLED, &terminal.sixel_texture);
                 SituationUnloadImage(sixel_img);
             }
             terminal.sixel.dirty = false;
@@ -7311,7 +7337,8 @@ void CleanupTerminal(void) {
 
 bool InitTerminalDisplay(void) {
     // Create a virtual display for the terminal
-    if (!SituationCreateVirtualDisplay((Vector2){{(float)DEFAULT_WINDOW_WIDTH, (float)DEFAULT_WINDOW_HEIGHT}}, 1.0, 0, SITUATION_SCALING_INTEGER, SITUATION_BLEND_ALPHA)) {
+    int vd_id;
+    if (SituationCreateVirtualDisplay((Vector2){{(float)DEFAULT_WINDOW_WIDTH, (float)DEFAULT_WINDOW_HEIGHT}}, 1.0, 0, SITUATION_SCALING_INTEGER, SITUATION_BLEND_ALPHA, &vd_id) != SITUATION_SUCCESS) {
         return false;
     }
 
