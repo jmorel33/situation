@@ -103,9 +103,9 @@ static const float g_midi_note_frequencies[128] = {
 };
 ```
 
-## [ ] 4. Public API Definitions
+## [x] 4. Public API Definitions
 
-### [ ] 4.1. Core Generator
+### [x] 4.1. Core Generator
 
 ```c
 /**
@@ -124,7 +124,7 @@ SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float vol
                               float release_sec, float hold_sec);
 ```
 
-### [ ] 4.2. MIDI Wrapper
+### [x] 4.2. MIDI Wrapper
 
 ```c
 /**
@@ -136,7 +136,7 @@ SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume
                                   float attack, float decay, float sustain, float release, float hold);
 ```
 
-### [ ] 4.3. Panic
+### [x] 4.3. Panic
 
 ```c
 /**
@@ -145,9 +145,9 @@ SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume
 SITAPI void SituationStopAllTones(void);
 ```
 
-## [ ] 5. Implementation Logic & Hardening
+## [x] 5. Implementation Logic & Hardening
 
-### [ ] 5.1. Input Validation (Idiot-Proofing)
+### [x] 5.1. Input Validation (Idiot-Proofing)
 The API must reject invalid inputs to prevent undefined behavior or audio glitches.
 
 *   **Initialization Check:** Ensure `SituationIsInitialized()` returns true.
@@ -158,7 +158,7 @@ The API must reject invalid inputs to prevent undefined behavior or audio glitch
 *   **Waveform Type:** Validate enum range.
 *   **MIDI Note:** For `SituationPlayMidiNote`, clamp `note` between 0 and 127.
 
-### [ ] 5.2. Allocation Strategy (Voice Stealing)
+### [x] 5.2. Allocation Strategy (Voice Stealing)
 When `SituationPlayTone` is called:
 1.  **Thread Safety:** Lock `sit_audio.audio_queue_mutex` to prevent race conditions with the audio callback.
 2.  **Pool Iteration:** Iterate `tone_pool`. Look for `!active`.
@@ -175,7 +175,7 @@ When `SituationPlayTone` is called:
     *   Set `active = true`.
 5.  **Unlock:** Release `sit_audio.audio_queue_mutex`.
 
-### [ ] 5.3. The Mixing Pipeline (Audio Thread)
+### [x] 5.3. The Mixing Pipeline (Audio Thread)
 Inside `sit_miniaudio_data_callback`, after the standard sound mixing loop:
 
 **CRITICAL:** This runs on the audio thread. It must be fast.
@@ -268,7 +268,7 @@ for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
 mtx_unlock(&sit_audio.audio_queue_mutex);
 ```
 
-### [ ] 5.4. Cleanup (Avoid Leaks)
+### [x] 5.4. Cleanup (Avoid Leaks)
 `ma_waveform` generally doesn't hold heavy resources, but `ma_waveform_uninit` exists.
 In `_SituationCleanupSubsystems` (and `SituationStopAllTones`):
 1. Lock mutex.
@@ -277,9 +277,9 @@ In `_SituationCleanupSubsystems` (and `SituationStopAllTones`):
 4. Set `active = false`.
 5. Unlock mutex.
 
-## [ ] 6. Lifecycle Integration
+## [x] 6. Lifecycle Integration
 
-### [ ] 6.1. Init
+### [x] 6.1. Init
 In `_SituationInitSubsystems`:
 
 ```c
@@ -287,7 +287,7 @@ memset(sit_audio.tone_pool, 0, sizeof(sit_audio.tone_pool));
 // No special init needed for pool items until played, as they are POD + ma_waveform
 ```
 
-### [ ] 6.2. Shutdown
+### [x] 6.2. Shutdown
 In `_SituationCleanupSubsystems`:
 
 ```c
@@ -302,7 +302,7 @@ for(int i=0; i<SITUATION_MAX_TONES; ++i) {
 mtx_unlock(&sit_audio.audio_queue_mutex);
 ```
 
-## [ ] 7. Use Case Examples (for Documentation)
+## [x] 7. Use Case Examples (for Documentation)
 
 **1. UI Hover Sound (Short, High Pitch, Sine)**
 
