@@ -1991,3 +1991,16 @@ This version includes a comprehensive feature set across several core domains:
 *   **Manual Memory Management for Returned Data:** Functions that return dynamically allocated data (e.g., `SituationGetLastErrorMsg()`, `SituationGetDisplays()`) explicitly state that the caller is responsible for freeing the memory to prevent leaks.
 
 ---
+--------------------------------------------------------------------------------
+v2.3.38 (2025-??-??) - Resonance Module
+--------------------------------------------------------------------------------
+- [NEW] Added **Resonance Module** for procedural audio synthesis (zero-allocation).
+  - `SituationPlayTone`: Play sine, square, triangle, or saw waves with full ADSR envelopes.
+  - `SituationPlayMidiNote`: Play tones using MIDI note numbers (0-127).
+  - `SituationStopAllTones`: Panic function to stop all procedural sounds.
+  - Supports 64-voice polyphony with intelligent voice stealing (prioritizes releasing/oldest notes).
+  - Frame-perfect timing using integer frame counters instead of floats.
+  - Zero-allocation design: All voices pre-allocated in `sit_audio.tone_pool`.
+- [INT] Integrated Resonance mixer into the main audio callback (runs after SFX/DSP).
+- [INT] Added `SituationWaveType` enum and `SituationTone` structure.
+- [FIX] Updated cleanup routines to properly uninitialize synth waveforms.

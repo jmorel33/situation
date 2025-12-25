@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 37
+#define SITUATION_VERSION_PATCH 38
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -2261,6 +2261,11 @@ SITAPI void SituationUnloadSound(SituationSound* sound);                        
 SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound);                  // Play a loaded sound (restarts if already playing).
 SITAPI SituationError SituationStopLoadedSound(SituationSound* sound);                  // Stop a specific sound from playing.
 SITAPI SituationError SituationStopAllLoadedSounds(void);                               // Stop all currently playing sounds.
+
+// --- Resonance (Procedural Synthesis) ---
+SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec);
+SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec);
+SITAPI void SituationStopAllTones(void);
 
 // --- Sound Data Manipulation (Wave Utilities) ---
 SITAPI SituationError SituationSoundCopy(const SituationSound* source, SituationSound* out_destination);    // Create a new sound by copying the raw PCM data from a source.
@@ -7188,6 +7193,9 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
 
     // Initialize the handle pool
     _SitAudioInitPool();
+
+    // Initialize the tone pool [Resonance]
+    memset(sit_audio.tone_pool, 0, sizeof(sit_audio.tone_pool));
 
     // Initialize the mutex that protects the sound playback queue.
     /*if (ma_mutex_init(&sit_audio.audio_queue_mutex) != MA_SUCCESS) {
@@ -12455,6 +12463,7 @@ static void _SituationCleanupSubsystems(void) {
     // --- Audio System ---
     // Stop all sounds before uninitializing the device.
     SituationStopAllLoadedSounds();
+    SituationStopAllTones();     // [Resonance]
 	SituationStopAudioCapture(); // Stop recording if active
     if (sit_audio.is_miniaudio_device_active) {
         ma_device_uninit(&sit_audio.miniaudio_device);
@@ -27390,6 +27399,119 @@ static const float g_midi_note_frequencies[128] = {
     8372.02f,  8869.84f,  9397.27f,  9956.06f,  10548.1f,  11175.3f,  11839.8f,  12543.9f
 };
 
+// --- Resonance Implementation ---
+
+SITAPI void SituationStopAllTones(void) {
+    if (!SituationIsInitialized()) return;
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+        if (sit_audio.tone_pool[i].active) {
+            ma_waveform_uninit(&sit_audio.tone_pool[i].waveform);
+            sit_audio.tone_pool[i].active = false;
+        }
+    }
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+}
+
+SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec) {
+    if (!SituationIsInitialized()) return;
+    if (frequency <= 0.0f) {
+        SituationLogWarning(SITUATION_ERROR_INVALID_PARAM, "SituationPlayTone: Frequency must be > 0 (got %.2f)", frequency);
+        return;
+    }
+
+    // Clamp volume
+    if (volume < 0.0f) volume = 0.0f;
+    if (volume > 1.0f) volume = 1.0f;
+
+    // Clamp durations
+    if (attack_sec < 0.0f) attack_sec = 0.0f;
+    if (decay_sec < 0.0f) decay_sec = 0.0f;
+    if (release_sec < 0.0f) release_sec = 0.0f;
+    if (hold_sec < 0.0f) hold_sec = 0.0f;
+
+    mtx_lock(&sit_audio.audio_queue_mutex);
+
+    // 1. Find a slot
+    int slot = -1;
+    // First pass: empty slot
+    for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+        if (!sit_audio.tone_pool[i].active) {
+            slot = i;
+            break;
+        }
+    }
+
+    // Second pass: Steal released voice
+    if (slot == -1) {
+        for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+            if (sit_audio.tone_pool[i].state == SIT_ENV_RELEASE) {
+                slot = i;
+                break; // Just take the first one found for now
+            }
+        }
+    }
+
+    // Third pass: Steal oldest voice (highest cursor)
+    if (slot == -1) {
+        uint64_t max_cursor = 0;
+        for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+            if (sit_audio.tone_pool[i].cursor_frames > max_cursor) {
+                max_cursor = sit_audio.tone_pool[i].cursor_frames;
+                slot = i;
+            }
+        }
+    }
+
+    // Panic fallback: slot 0 (should rarely happen if pool is large enough)
+    if (slot == -1) slot = 0;
+
+    SituationTone* t = &sit_audio.tone_pool[slot];
+
+    // Cleanup previous if active
+    if (t->active) {
+        ma_waveform_uninit(&t->waveform);
+    }
+
+    // Configure
+    ma_waveform_config config;
+    ma_waveform_type ma_type = ma_waveform_type_sine;
+    switch (type) {
+        case SIT_WAVE_SINE: ma_type = ma_waveform_type_sine; break;
+        case SIT_WAVE_SQUARE: ma_type = ma_waveform_type_square; break;
+        case SIT_WAVE_TRIANGLE: ma_type = ma_waveform_type_triangle; break;
+        case SIT_WAVE_SAW: ma_type = ma_waveform_type_sawtooth; break;
+        default: break; // Noise not supported by basic ma_waveform
+    }
+
+    config = ma_waveform_config_init(sit_audio.miniaudio_device.playback.format, sit_audio.miniaudio_device.playback.channels, sit_audio.miniaudio_device.sampleRate, ma_type, (double)frequency, (double)volume);
+    ma_waveform_init(&config, &t->waveform);
+
+    t->volume_peak = volume;
+    t->pan = 0.0f; // Default center
+
+    t->state = SIT_ENV_ATTACK;
+    t->cursor_frames = 0;
+
+    uint32_t sr = sit_audio.miniaudio_device.sampleRate;
+    t->t_attack = (uint64_t)(attack_sec * sr);
+    t->t_decay = (uint64_t)(decay_sec * sr);
+    t->t_hold = (uint64_t)(hold_sec * sr);
+    t->t_release = (uint64_t)(release_sec * sr);
+    t->level_sustain = sustain_level;
+
+    t->active = true;
+
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+}
+
+SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume, float attack, float decay, float sustain, float release, float hold) {
+    if (note < 0) note = 0;
+    if (note > 127) note = 127;
+    float freq = g_midi_note_frequencies[note];
+    SituationPlayTone(type, freq, volume, attack, decay, sustain, release, hold);
+}
+
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
     (void)pInput; 
 
@@ -27569,6 +27691,108 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         }
         mtx_unlock(&pGs->audio_queue_mutex);
     }
+
+    // --- PHASE 4: RESONANCE (Procedural Mixing) ---
+    // [v2.3.38] Resonance Module Integration
+    // We do this AFTER sound effects to keep the pipelines separate and clean.
+    // Resonance voices are pre-allocated and don't need a snapshot buffer (fixed pool).
+
+    // Lock-Free Optimization: Check if *any* tone is active before locking?
+    // No, 'active' flags are not atomic. We must lock to be safe from 'PlayTone'.
+    // However, since PlayTone is rare compared to mixing, the lock contention is low.
+    mtx_lock(&pGs->audio_queue_mutex);
+
+    for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+        SituationTone* t = &pGs->tone_pool[i];
+        if (!t->active) continue;
+
+        // Process in chunks (e.g., per frame) for envelope precision
+        // Note: frameCount is usually small (10ms ~ 480 frames).
+        // Processing per-sample is expensive. Per-frame is better but complex to vectorize.
+        // For Resonance v1, we process per-block (simplest) or per-frame?
+        // Let's do per-frame as per design doc for accurate ADSR.
+
+        // Output format check
+        if (pDevice->playback.format == ma_format_f32) {
+            float* out_ptr = (float*)pOutput;
+            ma_uint32 channels = pDevice->playback.channels;
+
+            for (uint32_t f = 0; f < frameCount; ++f) {
+                // 1. Envelope Logic
+                float env_amp = 0.0f;
+                switch (t->state) {
+                    case SIT_ENV_ATTACK:
+                        if (t->cursor_frames >= t->t_attack) {
+                            t->state = SIT_ENV_DECAY;
+                            t->cursor_frames = 0;
+                            env_amp = 1.0f;
+                        } else {
+                            env_amp = (t->t_attack > 0) ? ((float)t->cursor_frames / (float)t->t_attack) : 1.0f;
+                        }
+                        break;
+                    case SIT_ENV_DECAY:
+                        if (t->cursor_frames >= t->t_decay) {
+                            t->state = SIT_ENV_SUSTAIN;
+                            t->cursor_frames = 0;
+                            env_amp = t->level_sustain;
+                        } else {
+                            float progress = (t->t_decay > 0) ? ((float)t->cursor_frames / (float)t->t_decay) : 1.0f;
+                            env_amp = 1.0f - (progress * (1.0f - t->level_sustain));
+                        }
+                        break;
+                    case SIT_ENV_SUSTAIN:
+                        if (t->cursor_frames >= t->t_hold) {
+                            t->state = SIT_ENV_RELEASE;
+                            t->cursor_frames = 0;
+                            env_amp = t->level_sustain;
+                        } else {
+                            env_amp = t->level_sustain;
+                        }
+                        break;
+                    case SIT_ENV_RELEASE:
+                        if (t->cursor_frames >= t->t_release) {
+                            t->active = false;
+                            env_amp = 0.0f;
+                        } else {
+                            float progress = (t->t_release > 0) ? ((float)t->cursor_frames / (float)t->t_release) : 1.0f;
+                            env_amp = t->level_sustain * (1.0f - progress);
+                        }
+                        break;
+                    default: env_amp = 0.0f; break;
+                }
+
+                if (!t->active) break;
+
+                // 2. Waveform
+                float sample = 0.0f;
+                // ma_waveform_read_pcm_frames reads doubles if configured, or floats?
+                // It reads into void* depending on config format. We init'd with device format.
+                // Device format is float (we assumed).
+                ma_waveform_read_pcm_frames(&t->waveform, &sample, 1, NULL);
+
+                // 3. Mix & Pan
+                float final_amp = sample * env_amp * t->volume_peak;
+                float gain_L = 1.0f, gain_R = 1.0f;
+                if (channels >= 2) {
+                    float pan_factor = (t->pan + 1.0f) * 0.5f;
+                    // Simple linear pan for speed, or use same trig as above
+                    gain_L = 1.0f - pan_factor;
+                    gain_R = pan_factor;
+                }
+
+                // Accumulate
+                float* frame_ptr = out_ptr + (f * channels);
+                for (ma_uint32 c = 0; c < channels; ++c) {
+                    if (c == 0) frame_ptr[0] += final_amp * gain_L;
+                    else if (c == 1) frame_ptr[1] += final_amp * gain_R;
+                    else frame_ptr[c] += final_amp; // Center for others?
+                }
+
+                t->cursor_frames++;
+            }
+        }
+    }
+    mtx_unlock(&pGs->audio_queue_mutex);
 
     // [SAFETY] Done processing
     atomic_store(&pGs->is_processing_snapshot, false);

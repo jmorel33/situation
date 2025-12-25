@@ -145,30 +145,49 @@ SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume
 SITAPI void SituationStopAllTones(void);
 ```
 
-## [ ] 5. Implementation Logic
+## [ ] 5. Implementation Logic & Hardening
 
-### [ ] 5.1. Allocation Strategy (Voice Stealing)
+### [ ] 5.1. Input Validation (Idiot-Proofing)
+The API must reject invalid inputs to prevent undefined behavior or audio glitches.
+
+*   **Initialization Check:** Ensure `SituationIsInitialized()` returns true.
+*   **Frequency:** Must be positive (`frequency > 0`). If <= 0, log a warning and return.
+*   **Volume:** Clamp between 0.0f and 1.0f.
+*   **Time Durations:**
+    *   `attack`, `decay`, `release`, `hold` must be non-negative. If negative, clamp to 0.0f.
+*   **Waveform Type:** Validate enum range.
+*   **MIDI Note:** For `SituationPlayMidiNote`, clamp `note` between 0 and 127.
+
+### [ ] 5.2. Allocation Strategy (Voice Stealing)
 When `SituationPlayTone` is called:
-1.  Lock `audio_queue_mutex`.
-2.  Iterate `tone_pool`. Look for `!active`.
-3.  If full: Find the "best" candidate to steal.
-    *   **Priority:** Voices in `SIT_ENV_RELEASE` phase are best to steal.
-    *   **Fallback:** The oldest voice (highest `cursor_frames`).
-4.  Configure the slot:
+1.  **Thread Safety:** Lock `sit_audio.audio_queue_mutex` to prevent race conditions with the audio callback.
+2.  **Pool Iteration:** Iterate `tone_pool`. Look for `!active`.
+3.  **Voice Stealing:** If all 64 voices are full:
+    *   **Priority 1:** Steal voices in `SIT_ENV_RELEASE` phase (already fading out). Pick the one closest to finishing.
+    *   **Priority 2:** Steal the oldest voice (highest `cursor_frames`).
+    *   **Click Prevention:** Ideally, stealing should cross-fade, but for a simple implementation, stealing implies an abrupt cut. *Mitigation:* The ADSR envelope logic will naturally start the new note at `env_amp = 0.0` (Attack phase), which prevents a click at the *start* of the new note. The cut of the old note might still click, but this is acceptable for a "Panic" steal scenario.
+4.  **Configuration:**
     *   Map `SituationWaveType` to `ma_waveform_type` (e.g., `ma_waveform_type_sine`).
-    *   `ma_waveform_init` with the device sample rate.
-    *   Convert all duration floats to frames: `frames = seconds * device.sampleRate`.
+    *   **Re-Initialize Waveform:** Use `ma_waveform_init(&config, &t->waveform)` to reset the generator state cleanly.
+    *   **Time conversion:** `frames = (uint64_t)(seconds * device_sample_rate)`.
+    *   **Numerical Stability:** Check for overflow when converting seconds to frames? (uint64 max is huge, practically impossible to overflow with reasonable seconds).
     *   Set `state = SIT_ENV_ATTACK`.
     *   Set `active = true`.
-5.  Unlock.
+5.  **Unlock:** Release `sit_audio.audio_queue_mutex`.
 
-### [ ] 5.2. The Mixing Pipeline (Audio Thread)
+### [ ] 5.3. The Mixing Pipeline (Audio Thread)
 Inside `sit_miniaudio_data_callback`, after the standard sound mixing loop:
+
+**CRITICAL:** This runs on the audio thread. It must be fast.
+**LOCKING:** We must lock `sit_audio.audio_queue_mutex` before iterating the tone pool to ensure we don't process a half-initialized voice.
 
 ```c
 // --- RESONANCE MIXER ---
 // Note: pOutput already contains mixed audio from standard sounds. We ADD to it.
 float* out_ptr = (float*)pOutput; // Assuming f32 format
+
+// Lock mutex for thread safety
+mtx_lock(&sit_audio.audio_queue_mutex);
 
 for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
     SituationTone* t = &sit_audio.tone_pool[i];
@@ -187,7 +206,8 @@ for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
                     t->cursor_frames = 0; // Reset local phase timer
                     env_amp = 1.0f;
                 } else {
-                    env_amp = (float)t->cursor_frames / (float)t->t_attack;
+                    // Prevent divide by zero if attack is 0
+                    env_amp = (t->t_attack > 0) ? ((float)t->cursor_frames / (float)t->t_attack) : 1.0f;
                 }
                 break;
 
@@ -197,7 +217,7 @@ for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
                     t->cursor_frames = 0;
                     env_amp = t->level_sustain;
                 } else {
-                    float progress = (float)t->cursor_frames / (float)t->t_decay;
+                    float progress = (t->t_decay > 0) ? ((float)t->cursor_frames / (float)t->t_decay) : 1.0f;
                     env_amp = 1.0f - (progress * (1.0f - t->level_sustain));
                 }
                 break;
@@ -217,7 +237,7 @@ for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
                     t->active = false; // Note finished
                     env_amp = 0.0f;
                 } else {
-                    float progress = (float)t->cursor_frames / (float)t->t_release;
+                    float progress = (t->t_release > 0) ? ((float)t->cursor_frames / (float)t->t_release) : 1.0f;
                     env_amp = t->level_sustain * (1.0f - progress);
                 }
                 break;
@@ -244,7 +264,18 @@ for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
         t->cursor_frames++;
     }
 }
+
+mtx_unlock(&sit_audio.audio_queue_mutex);
 ```
+
+### [ ] 5.4. Cleanup (Avoid Leaks)
+`ma_waveform` generally doesn't hold heavy resources, but `ma_waveform_uninit` exists.
+In `_SituationCleanupSubsystems` (and `SituationStopAllTones`):
+1. Lock mutex.
+2. Iterate pool.
+3. If `active`, call `ma_waveform_uninit(&t->waveform)`.
+4. Set `active = false`.
+5. Unlock mutex.
 
 ## [ ] 6. Lifecycle Integration
 
@@ -253,6 +284,7 @@ In `_SituationInitSubsystems`:
 
 ```c
 memset(sit_audio.tone_pool, 0, sizeof(sit_audio.tone_pool));
+// No special init needed for pool items until played, as they are POD + ma_waveform
 ```
 
 ### [ ] 6.2. Shutdown
@@ -260,11 +292,14 @@ In `_SituationCleanupSubsystems`:
 
 ```c
 // ma_waveform doesn't usually hold heap memory, but good to be explicit
+mtx_lock(&sit_audio.audio_queue_mutex);
 for(int i=0; i<SITUATION_MAX_TONES; ++i) {
     if(sit_audio.tone_pool[i].active) {
         ma_waveform_uninit(&sit_audio.tone_pool[i].waveform);
+        sit_audio.tone_pool[i].active = false;
     }
 }
+mtx_unlock(&sit_audio.audio_queue_mutex);
 ```
 
 ## [ ] 7. Use Case Examples (for Documentation)
