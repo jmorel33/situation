@@ -4,7 +4,7 @@
 **Module Name:** Resonance (Procedural Synthesis)
 **Goal:** Integrate a high-performance, zero-allocation, thread-safe software synthesizer into the Situation library.
 
-## [ ] 1. Architectural Philosophy
+## [x] 1. Architectural Philosophy
 The Resonance module is designed for procedural audio generation. Unlike the existing audio system which plays pre-recorded samples, Resonance generates waveforms in real-time.
 
 **Core Tenets**
@@ -13,9 +13,9 @@ The Resonance module is designed for procedural audio generation. Unlike the exi
 *   **Fire-and-Forget:** The API is designed for game feel (UI blips, loot drops, procedural music). You define the envelope (ADSR) and duration upfront, and the engine handles the lifecycle.
 *   **MiniAudio Integration:** Leverages ma_waveform for band-limited waveform generation (preventing aliasing artifacts on square/saw waves).
 
-## [ ] 2. Data Structures
+## [x] 2. Data Structures
 
-### [ ] 2.1. Enumerations (Public API)
+### [x] 2.1. Enumerations (Public API)
 We define the standard waveform shapes.
 
 ```c
@@ -28,7 +28,7 @@ typedef enum {
 } SituationWaveType;
 ```
 
-### [ ] 2.2. Internal Envelope State
+### [x] 2.2. Internal Envelope State
 The synth uses a Finite State Machine (FSM) for the ADSR envelope.
 
 ```c
@@ -41,7 +41,7 @@ typedef enum {
 } SituationEnvelopeState;
 ```
 
-### [ ] 2.3. The Voice Structure (Internal)
+### [x] 2.3. The Voice Structure (Internal)
 This struct represents a single "voice" of polyphony. It contains the waveform generator and the timing logic for the envelope.
 
 ```c
@@ -68,7 +68,7 @@ typedef struct {
 } SituationTone;
 ```
 
-### [ ] 2.4. Global State Update
+### [x] 2.4. Global State Update
 Update `_SituationAudioState` to include the pool and the MIDI table.
 
 ```c
@@ -83,7 +83,7 @@ typedef struct {
 } _SituationAudioState;
 ```
 
-## [ ] 3. The MIDI Frequency Table (Immutable Data)
+## [x] 3. The MIDI Frequency Table (Immutable Data)
 This table replaces runtime `pow()` calculations. It maps MIDI note numbers (0-127) to frequency (Hz).
 
 ```c
