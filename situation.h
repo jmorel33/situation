@@ -31391,6 +31391,11 @@ SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
         thrd_join(pool->threads[i], NULL);
     }
 
+    if (pool->io_thread) {
+        thrd_join(pool->io_thread, NULL);
+        pool->io_thread = 0;
+    }
+
     mtx_destroy(&pool->queues[0].lock);
     mtx_destroy(&pool->queues[1].lock);
     cnd_destroy(&pool->wake_condition);

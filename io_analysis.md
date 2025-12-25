@@ -22,7 +22,7 @@
         pool->io_thread = 0; // Clear handle
     }
     ```
-- [ ] Implement I/O thread join logic in `SituationDestroyThreadPool`.
+- [x] Implement I/O thread join logic in `SituationDestroyThreadPool`.
 
 ## Phase 2: Runtime Configuration
 **Context:** v2.3.36 hardcodes the I/O thread spawn and the hot-reload poll rate (0.5s). Users need control over this via `SituationInit`.
