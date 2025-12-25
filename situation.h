@@ -546,6 +546,7 @@ typedef struct SituationThreadPool {
     // Dedicated I/O Thread
     thrd_t io_thread;
     atomic_bool io_active;
+    double hot_reload_rate;
 
     atomic_int active_jobs; // Total jobs currently running or pending
     atomic_bool shutdown;
@@ -1605,6 +1606,10 @@ typedef struct {
 
     // [v2.3.34] Async I/O
     uint32_t     io_queue_capacity; // Size of the IO queue (Low Priority). Default: 1024.
+
+    // [v2.3.37] I/O Configuration
+    bool disable_io_thread;         // If true, runs I/O tasks on main thread (fallback)
+    double hot_reload_poll_rate;    // Seconds between checks (default 0.5). 0 = disable.
 } SituationInitInfo;
 
 // [v2.3.22] Render Queue Backpressure Policies
@@ -2036,6 +2041,9 @@ SITAPI size_t SituationGetRenderQueueDepth(void);                               
 SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);         // Get render thread latency metrics
 #endif
 
+// [v2.3.37] I/O Metrics
+SITAPI size_t SituationGetIOQueueDepth(void);                                           // Get the current depth of the IO/Low Priority queue
+
 // [v2.3.23] Debug Overlay
 SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 position, ColorRGBA color); // Draws FPS, Latency, and Memory stats
 
@@ -2333,7 +2341,7 @@ SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 
 #ifdef SITUATION_ENABLE_THREADING
 
-SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size); // Initializes the thread pool with dual-priority queues and worker threads.
+SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size, double hot_reload_rate, bool disable_io); // Initializes the thread pool with dual-priority queues and worker threads.
 SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool); // Shuts down the thread pool and releases resources.
 
 SITAPI SituationJobId SituationSubmitJobEx(
@@ -3787,6 +3795,10 @@ typedef struct {
     char** dropped_file_paths;                                // Array of paths dropped this frame (polling API)
     int    dropped_file_count;                                // Number of paths dropped this frame
     bool   file_was_dropped_this_frame;                       // Flag indicating if a drop event occurred
+
+#if defined(SITUATION_ENABLE_THREADING)
+    SituationThreadPool thread_pool;
+#endif
 
 } _SituationGlobalStateContainer;
 
@@ -7300,6 +7312,13 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     sit_gs.exit_callback_user_data = NULL;
     sit_gs.resize_callback = NULL;
     sit_gs.resize_callback_user_data = NULL;
+
+#if defined(SITUATION_ENABLE_THREADING)
+    if (!SituationCreateThreadPool(&sit_gs.thread_pool, 0, init_info->io_queue_capacity, init_info->hot_reload_poll_rate, init_info->disable_io_thread)) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Failed to create thread pool");
+        return SITUATION_ERROR_THREAD_CREATION_FAILED;
+    }
+#endif
 
     return SITUATION_SUCCESS;
 }
@@ -12357,6 +12376,10 @@ SITAPI void SituationShutdown(void) {
 
     // 3. --- CLEANUP CORE PLATFORM & WINDOW ---
     _SituationCleanupPlatform();
+
+#if defined(SITUATION_ENABLE_THREADING)
+    SituationDestroyThreadPool(&sit_gs.thread_pool);
+#endif
 
     // 4. --- FINAL STATE RESET ---
     if (_sit_current_context) {
@@ -30769,6 +30792,14 @@ SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out, bool js
     else fprintf(out, "=========================================\n\n");
 }
 
+SITAPI size_t SituationGetIOQueueDepth(void) {
+    if (!sit_gs.thread_pool.is_active) return 0;
+    // Queue 0 is Low Priority / IO
+    size_t head = atomic_load(&sit_gs.thread_pool.queues[0].head);
+    size_t tail = atomic_load(&sit_gs.thread_pool.queues[0].tail);
+    return head - tail;
+}
+
 
 // ==================================================================================
 //  Worker Thread Implementation (Updated)
@@ -30917,6 +30948,10 @@ static int _SituationIOThreadEntry(void* arg) {
     SituationThreadPool* pool = (SituationThreadPool*)arg;
     atomic_store(&pool->io_active, true);
 
+    // Rate Limiting for Hot-Reload
+    struct timespec last_hr_time;
+    timespec_get(&last_hr_time, TIME_UTC);
+
     while (!atomic_load(&pool->shutdown)) {
         // --- 1. Process Low Priority Queue (Index 0) ---
         bool worked = false;
@@ -30962,7 +30997,16 @@ static int _SituationIOThreadEntry(void* arg) {
         }
 
         // --- 2. Hot-Reload Polling ---
-        _SituationPerformHotReloadPass();
+        if (pool->hot_reload_rate > 0.0) {
+            struct timespec now;
+            timespec_get(&now, TIME_UTC);
+            double diff = (now.tv_sec - last_hr_time.tv_sec) + (now.tv_nsec - last_hr_time.tv_nsec) / 1e9;
+
+            if (diff >= pool->hot_reload_rate) {
+                _SituationPerformHotReloadPass();
+                last_hr_time = now;
+            }
+        }
 
         // --- 3. Sleep ---
         if (!worked) {
@@ -30985,7 +31029,7 @@ static int _SituationIOThreadEntry(void* arg) {
     return 0;
 }
 
-SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size) {
+SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size, double hot_reload_rate, bool disable_io) {
     SIT_ASSERT_MAIN_THREAD();
     if (!pool) return false;
     memset(pool, 0, sizeof(SituationThreadPool));
@@ -30997,6 +31041,7 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
     }
     if (num_threads > SITUATION_MAX_THREADS) num_threads = SITUATION_MAX_THREADS;
     pool->thread_count = num_threads;
+    pool->hot_reload_rate = hot_reload_rate; // [v2.3.37] Store rate
 
     // Round queue size up to next power of 2 for fast bitmasking
     size_t cap = 256;
@@ -31037,9 +31082,13 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
         }
     }
 
-    // [v2.3.34] Spawn Dedicated I/O Thread
-    if (thrd_create(&pool->io_thread, _SituationIOThreadEntry, pool) != thrd_success) {
-        return false;
+    // [v2.3.34] Spawn Dedicated I/O Thread (Conditional)
+    if (!disable_io) {
+        if (thrd_create(&pool->io_thread, _SituationIOThreadEntry, pool) != thrd_success) {
+            return false;
+        }
+    } else {
+        pool->io_thread = 0; // Explicitly null
     }
 
     pool->is_active = true;
@@ -31078,6 +31127,19 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
     int q_idx = (flags & SIT_SUBMIT_HIGH_PRIORITY) ? 1 : 0;
 
     mtx_lock(&pool->queues[q_idx].lock);
+
+    // [v2.3.37] Inline Fallback if I/O Thread Disabled (Queue 0 Only)
+    // If we submit a low-priority job but have no I/O thread, we must run it inline
+    // to prevent the job from sitting in the queue forever.
+    if (q_idx == 0 && pool->io_thread == 0) {
+        mtx_unlock(&pool->queues[q_idx].lock);
+        // Execute immediately
+        if (func) {
+            SituationError dummy_err = SITUATION_SUCCESS;
+            func((void*)data, (void*)&dummy_err);
+        }
+        return 0; // Treated as "done/inline"
+    }
 
     // Check Capacity (with Backpressure Handling)
     size_t head;
@@ -31389,6 +31451,11 @@ SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
 
     for (size_t i = 0; i < pool->thread_count; ++i) {
         thrd_join(pool->threads[i], NULL);
+    }
+
+    if (pool->io_thread) {
+        thrd_join(pool->io_thread, NULL);
+        pool->io_thread = 0;
     }
 
     mtx_destroy(&pool->queues[0].lock);
