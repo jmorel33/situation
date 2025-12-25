@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 36
+#define SITUATION_VERSION_PATCH 37
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -546,7 +546,7 @@ typedef struct SituationThreadPool {
     // Dedicated I/O Thread
     thrd_t io_thread;
     atomic_bool io_active;
-    double hot_reload_rate;
+    double hot_reload_rate; // [v2.3.37] Store rate
 
     atomic_int active_jobs; // Total jobs currently running or pending
     atomic_bool shutdown;
@@ -2042,7 +2042,7 @@ SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns); 
 #endif
 
 // [v2.3.37] I/O Metrics
-SITAPI size_t SituationGetIOQueueDepth(void);                                           // Get the current depth of the IO/Low Priority queue
+SITAPI size_t SituationGetIOQueueDepth(void);                                           // [v2.3.37] Get the current depth of the IO/Low Priority queue
 
 // [v2.3.23] Debug Overlay
 SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 position, ColorRGBA color); // Draws FPS, Latency, and Memory stats

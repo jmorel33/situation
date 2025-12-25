@@ -26,15 +26,18 @@ int main() {
     printf("Initializing...\n");
     SituationInitInfo info = {0};
     info.flags = 0;
-
     // We use headless or minimal init for test
     if (SituationInit(0, NULL, &info) != SITUATION_SUCCESS) {
-        printf("Init failed: %s\n", SituationGetLastErrorMsg());
+        char* msg = NULL;
+        SituationGetLastErrorMsg(&msg);
+        printf("Init failed: %s\n", msg ? msg : "Unknown");
+        SituationFreeString(msg);
         return 1;
     }
 
     SituationThreadPool pool;
-    if (!SituationCreateThreadPool(&pool, 2, 1024)) {
+    // Updated signature for SituationCreateThreadPool
+    if (!SituationCreateThreadPool(&pool, 2, 1024, 0.5, false)) {
         printf("Thread pool creation failed.\n");
         return 1;
     }
