@@ -2263,6 +2263,50 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound);          
 SITAPI SituationError SituationStopAllLoadedSounds(void);                               // Stop all currently playing sounds.
 
 // --- Resonance (Procedural Synthesis) ---
+/**
+ * @brief Handle for an actively playing procedural tone.
+ *        Invalid/expired handle is 0.
+ */
+typedef uint32_t SituationToneHandle;  // 0 = invalid
+
+/**
+ * @brief Plays an extended procedural tone with full control.
+ *
+ * @param type          Waveform type (Sine, Square, Triangle, Saw, Noise)
+ * @param frequency     Frequency in Hz (e.g., 440.0f). For noise: ignored (use 0.0f)
+ * @param volume        Peak volume (0.0 to 1.0)
+ * @param pan           Stereo panning (-1.0 left, 0.0 center, +1.0 right)
+ * @param attack_sec    Attack time in seconds
+ * @param decay_sec     Decay time in seconds
+ * @param sustain_level Sustain volume level (0.0 to 1.0)
+ * @param release_sec   Release time in seconds
+ * @param hold_sec      Hold duration in seconds. Use -1.0f for infinite sustain (key down)
+ *
+ * @return Handle to the playing tone, or 0 if no voice available (polyphony limit)
+ */
+SITAPI SituationToneHandle SituationPlayToneEx(
+    SituationWaveType type,
+    float frequency,
+    float volume,
+    float pan,
+    float attack_sec,
+    float decay_sec,
+    float sustain_level,
+    float release_sec,
+    float hold_sec
+);
+
+/**
+ * @brief Gracefully stops a tone by triggering its release envelope.
+ *        If the tone is already released or invalid, does nothing.
+ *
+ * @param handle The tone handle returned by SituationPlayToneEx()
+ */
+SITAPI void SituationStopTone(SituationToneHandle handle);
+
+/**
+ * @brief Legacy simple blip (kept for backward compatibility and quick UI sounds)
+ */
 SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec);
 SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec);
 SITAPI void SituationStopAllTones(void);
@@ -3546,25 +3590,31 @@ typedef enum {
 } SituationEnvelopeState;
 
 typedef struct {
-    bool active;                // Is this slot in use?
-    ma_waveform waveform;       // MiniAudio waveform generator state
+    bool active;
+    uint32_t generation;                // For handle validation (prevents reuse bugs)
 
-    // Mix Parameters
-    float volume_peak;          // Master volume for this note (0.0 - 1.0)
-    float pan;                  // Stereo pan (-1.0 to 1.0)
+    union {
+        ma_waveform waveform;
+        ma_noise    noise;
+    };
 
-    // Envelope State Machine
+    ma_format format;                   // Shared: f32
+    uint32_t channels;                  // Shared: 2 (stereo)
+
+    float volume_peak;
+    float pan;
+
     SituationEnvelopeState state;
-    uint64_t cursor_frames;     // How many frames have passed since trigger
+    uint64_t cursor_frames;
 
-    // Envelope Timings (in Frames) derived from input seconds
-    uint64_t t_attack;          // Duration of Attack
-    uint64_t t_decay;           // Duration of Decay
-    uint64_t t_hold;            // Duration of Sustain (Hold time)
-    uint64_t t_release;         // Duration of Release
+    uint64_t t_attack;
+    uint64_t t_decay;
+    uint64_t t_hold;                    // UINT64_MAX if infinite sustain
+    uint64_t t_release;
 
-    // Levels
-    float level_sustain;        // Volume level during hold phase (0.0 - 1.0)
+    float level_sustain;
+
+    SituationWaveType wave_type;        // Needed to know if we're using noise or waveform
 } SituationTone;
 
  typedef struct {
@@ -3624,6 +3674,7 @@ typedef struct {
 
     // Resonance Module State
     SituationTone tone_pool[SITUATION_MAX_TONES];
+    uint32_t tone_generations[SITUATION_MAX_TONES];
 } _SituationAudioState;
 
 // [NEW] Dedicated Input State Container
@@ -27405,30 +27456,59 @@ SITAPI void SituationStopAllTones(void) {
     if (!SituationIsInitialized()) return;
     mtx_lock(&sit_audio.audio_queue_mutex);
     for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
-        if (sit_audio.tone_pool[i].active) {
-            ma_waveform_uninit(&sit_audio.tone_pool[i].waveform);
-            sit_audio.tone_pool[i].active = false;
+        if (sit_audio.tone_pool[i].active && sit_audio.tone_pool[i].state != SIT_ENV_RELEASE) {
+             sit_audio.tone_pool[i].state = SIT_ENV_RELEASE;
+             sit_audio.tone_pool[i].cursor_frames = 0;
         }
     }
     mtx_unlock(&sit_audio.audio_queue_mutex);
 }
 
-SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec) {
-    if (!SituationIsInitialized()) return;
-    if (frequency <= 0.0f) {
+// Handle packing: 16-bit index + 16-bit generation
+#define TONE_INDEX_MASK   0x0000FFFFu
+#define TONE_GEN_MASK     0xFFFF0000u
+#define TONE_GEN_SHIFT    16
+
+static inline SituationToneHandle _MakeToneHandle(uint16_t index, uint16_t gen) {
+    return ((uint32_t)gen << TONE_GEN_SHIFT) | index;
+}
+
+static inline bool _IsValidToneHandle(SituationToneHandle handle) {
+    uint16_t index = handle & TONE_INDEX_MASK;
+    if (index >= SITUATION_MAX_TONES) return false;
+    uint16_t gen = handle >> TONE_GEN_SHIFT;
+    return sit_audio.tone_generations[index] == gen && sit_audio.tone_pool[index].active;
+}
+
+static inline SituationTone* _GetToneFromHandle(SituationToneHandle handle) {
+    uint16_t index = handle & TONE_INDEX_MASK;
+    return (index < SITUATION_MAX_TONES && _IsValidToneHandle(handle))
+        ? &sit_audio.tone_pool[index]
+        : NULL;
+}
+
+SITAPI SituationToneHandle SituationPlayToneEx(SituationWaveType type, float frequency, float volume, float pan, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec) {
+    if (!SituationIsInitialized()) return 0;
+
+    // Frequency ignored for noise, but must be >0 for others
+    if (type != SIT_WAVE_NOISE && frequency <= 0.0f) {
         SituationLogWarning(SITUATION_ERROR_INVALID_PARAM, "SituationPlayTone: Frequency must be > 0 (got %.2f)", frequency);
-        return;
+        return 0;
     }
 
     // Clamp volume
     if (volume < 0.0f) volume = 0.0f;
     if (volume > 1.0f) volume = 1.0f;
 
+    // Clamp pan
+    if (pan < -1.0f) pan = -1.0f;
+    if (pan > 1.0f) pan = 1.0f;
+
     // Clamp durations
     if (attack_sec < 0.0f) attack_sec = 0.0f;
     if (decay_sec < 0.0f) decay_sec = 0.0f;
     if (release_sec < 0.0f) release_sec = 0.0f;
-    if (hold_sec < 0.0f) hold_sec = 0.0f;
+    // hold_sec can be -1.0f for infinite
 
     mtx_lock(&sit_audio.audio_queue_mutex);
 
@@ -27442,53 +27522,74 @@ SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float vol
         }
     }
 
-    // Second pass: Steal released voice
+    // Second pass: Steal released voice (Furthest along in release phase preferred?)
+    // Actually, simply taking the first one in release state is usually fine,
+    // but taking the one with highest cursor in release means it's closest to ending.
     if (slot == -1) {
+        uint64_t max_release_cursor = 0;
+        int candidate = -1;
         for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
             if (sit_audio.tone_pool[i].state == SIT_ENV_RELEASE) {
-                slot = i;
-                break; // Just take the first one found for now
+                if (candidate == -1 || sit_audio.tone_pool[i].cursor_frames > max_release_cursor) {
+                    max_release_cursor = sit_audio.tone_pool[i].cursor_frames;
+                    candidate = i;
+                }
             }
         }
+        if (candidate != -1) slot = candidate;
     }
 
-    // Third pass: Steal oldest voice (highest cursor)
+    // Third pass: Steal oldest active voice (highest cursor)
     if (slot == -1) {
         uint64_t max_cursor = 0;
+        int candidate = -1;
         for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
             if (sit_audio.tone_pool[i].cursor_frames > max_cursor) {
                 max_cursor = sit_audio.tone_pool[i].cursor_frames;
-                slot = i;
+                candidate = i;
             }
         }
+        if (candidate != -1) slot = candidate;
     }
 
-    // Panic fallback: slot 0 (should rarely happen if pool is large enough)
-    if (slot == -1) slot = 0;
+    // Panic fallback: return failure if absolutely no slot found (should be impossible with stealing unless max_cursor logic fails)
+    if (slot == -1) {
+        mtx_unlock(&sit_audio.audio_queue_mutex);
+        return 0;
+    }
 
     SituationTone* t = &sit_audio.tone_pool[slot];
 
     // Cleanup previous if active
     if (t->active) {
-        ma_waveform_uninit(&t->waveform);
+        if (t->wave_type == SIT_WAVE_NOISE) {
+            ma_noise_uninit(&t->noise, NULL);
+        } else {
+            ma_waveform_uninit(&t->waveform);
+        }
     }
 
     // Configure
-    ma_waveform_config config;
-    ma_waveform_type ma_type = ma_waveform_type_sine;
-    switch (type) {
-        case SIT_WAVE_SINE: ma_type = ma_waveform_type_sine; break;
-        case SIT_WAVE_SQUARE: ma_type = ma_waveform_type_square; break;
-        case SIT_WAVE_TRIANGLE: ma_type = ma_waveform_type_triangle; break;
-        case SIT_WAVE_SAW: ma_type = ma_waveform_type_sawtooth; break;
-        default: break; // Noise not supported by basic ma_waveform
+    t->wave_type = type;
+    if (type == SIT_WAVE_NOISE) {
+        ma_noise_config cfg = ma_noise_config_init(sit_audio.miniaudio_device.playback.format, sit_audio.miniaudio_device.playback.channels, ma_noise_type_white, 0, 1.0);
+        ma_noise_init(&cfg, NULL, &t->noise);
+    } else {
+        ma_waveform_type ma_type = ma_waveform_type_sine;
+        switch (type) {
+            case SIT_WAVE_SINE: ma_type = ma_waveform_type_sine; break;
+            case SIT_WAVE_SQUARE: ma_type = ma_waveform_type_square; break;
+            case SIT_WAVE_TRIANGLE: ma_type = ma_waveform_type_triangle; break;
+            case SIT_WAVE_SAW: ma_type = ma_waveform_type_sawtooth; break;
+            default: break;
+        }
+        // Amplitude set to 1.0, controlled by mixer volume/envelope
+        ma_waveform_config config = ma_waveform_config_init(sit_audio.miniaudio_device.playback.format, sit_audio.miniaudio_device.playback.channels, sit_audio.miniaudio_device.sampleRate, ma_type, (double)frequency, 1.0);
+        ma_waveform_init(&config, &t->waveform);
     }
 
-    config = ma_waveform_config_init(sit_audio.miniaudio_device.playback.format, sit_audio.miniaudio_device.playback.channels, sit_audio.miniaudio_device.sampleRate, ma_type, (double)frequency, (double)volume);
-    ma_waveform_init(&config, &t->waveform);
-
     t->volume_peak = volume;
-    t->pan = 0.0f; // Default center
+    t->pan = pan;
 
     t->state = SIT_ENV_ATTACK;
     t->cursor_frames = 0;
@@ -27496,13 +27597,35 @@ SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float vol
     uint32_t sr = sit_audio.miniaudio_device.sampleRate;
     t->t_attack = (uint64_t)(attack_sec * sr);
     t->t_decay = (uint64_t)(decay_sec * sr);
-    t->t_hold = (uint64_t)(hold_sec * sr);
+    t->t_hold = (hold_sec < 0.0f) ? UINT64_MAX : (uint64_t)(hold_sec * sr);
     t->t_release = (uint64_t)(release_sec * sr);
     t->level_sustain = sustain_level;
 
     t->active = true;
 
+    // Update generation
+    sit_audio.tone_generations[slot]++;
+    if (sit_audio.tone_generations[slot] == 0) sit_audio.tone_generations[slot] = 1; // skip 0
+    t->generation = sit_audio.tone_generations[slot];
+
     mtx_unlock(&sit_audio.audio_queue_mutex);
+
+    return _MakeToneHandle((uint16_t)slot, (uint16_t)t->generation);
+}
+
+SITAPI void SituationStopTone(SituationToneHandle handle) {
+    if (!SituationIsInitialized()) return;
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    SituationTone* t = _GetToneFromHandle(handle);
+    if (t && t->state != SIT_ENV_RELEASE && t->state != SIT_ENV_IDLE) {
+        t->state = SIT_ENV_RELEASE;
+        t->cursor_frames = 0;
+    }
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+}
+
+SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec) {
+    SituationPlayToneEx(type, frequency, volume, 0.0f, attack_sec, decay_sec, sustain_level, release_sec, hold_sec);
 }
 
 SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume, float attack, float decay, float sustain, float release, float hold) {
@@ -27741,7 +27864,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                         }
                         break;
                     case SIT_ENV_SUSTAIN:
-                        if (t->cursor_frames >= t->t_hold) {
+                        if (t->t_hold != UINT64_MAX && t->cursor_frames >= t->t_hold) {
                             t->state = SIT_ENV_RELEASE;
                             t->cursor_frames = 0;
                             env_amp = t->level_sustain;
@@ -27751,6 +27874,10 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                         break;
                     case SIT_ENV_RELEASE:
                         if (t->cursor_frames >= t->t_release) {
+                            // Uninitialize backend resource when note dies naturally
+                            if (t->wave_type == SIT_WAVE_NOISE) ma_noise_uninit(&t->noise, NULL);
+                            else ma_waveform_uninit(&t->waveform);
+
                             t->active = false;
                             env_amp = 0.0f;
                         } else {
@@ -27761,14 +27888,16 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
                     default: env_amp = 0.0f; break;
                 }
 
+                // [FIX] Safety break: if the tone finished this frame, do NOT read from the uninitialized waveform/noise
                 if (!t->active) break;
 
                 // 2. Waveform
                 float sample = 0.0f;
-                // ma_waveform_read_pcm_frames reads doubles if configured, or floats?
-                // It reads into void* depending on config format. We init'd with device format.
-                // Device format is float (we assumed).
-                ma_waveform_read_pcm_frames(&t->waveform, &sample, 1, NULL);
+                if (t->wave_type == SIT_WAVE_NOISE) {
+                    ma_noise_read_pcm_frames(&t->noise, &sample, 1, NULL);
+                } else {
+                    ma_waveform_read_pcm_frames(&t->waveform, &sample, 1, NULL);
+                }
 
                 // 3. Mix & Pan
                 float final_amp = sample * env_amp * t->volume_peak;
