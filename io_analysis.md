@@ -38,7 +38,7 @@
         double hot_reload_poll_rate;    // Seconds between checks (default 0.5). 0 = disable.
     } SituationInitInfo;
     ```
-- [ ] Add `disable_io_thread` and `hot_reload_poll_rate` to `SituationInitInfo`.
+- [x] Add `disable_io_thread` and `hot_reload_poll_rate` to `SituationInitInfo`.
 
 ### 2.2. Pass Config to Thread Pool
 *   **Location:** `SituationThreadPool` (Struct)
@@ -49,18 +49,18 @@
         double hot_reload_rate;
     } SituationThreadPool;
     ```
-- [ ] Add `hot_reload_rate` to `SituationThreadPool`.
+- [x] Add `hot_reload_rate` to `SituationThreadPool`.
 
 ### 2.3. Update Initialization Logic
 *   **Location:** `SituationInit` and `SituationCreateThreadPool`
 *   **Action:** Pass the `init_info` settings down to `SituationCreateThreadPool`. In `SituationCreateThreadPool`: If `disable_io_thread` is true, do not `thrd_create` the `io_thread`. Store `hot_reload_poll_rate` in the pool struct.
-- [ ] Pass I/O config from `SituationInit` to `SituationCreateThreadPool`.
-- [ ] Implement conditional I/O thread creation in `SituationCreateThreadPool`.
+- [x] Pass I/O config from `SituationInit` to `SituationCreateThreadPool`.
+- [x] Implement conditional I/O thread creation in `SituationCreateThreadPool`.
 
 ### 2.4. Update I/O Thread Entry
 *   **Location:** `_SituationIOThreadEntry`
 *   **Action:** Replace the hardcoded `0.5` constant with `pool->hot_reload_rate`.
-- [ ] Use `pool->hot_reload_rate` instead of hardcoded constant in `_SituationIOThreadEntry`.
+- [x] Use `pool->hot_reload_rate` instead of hardcoded constant in `_SituationIOThreadEntry`.
 
 ## Phase 3: Fallback & Metrics
 **Context:** If the I/O thread is disabled (or fails to spawn), async loaders must still work (synchronously) to prevent the app from hanging.
@@ -69,7 +69,7 @@
 *   **Location:** `SituationSubmitJobEx`
 *   **Action:** Check if `pool->io_thread` exists. If not (and the job is low priority/IO), execute the function immediately inline (Synchronous Fallback).
 *   **Reasoning:** Ensures `SituationLoadFileAsync` still returns valid data even if threading is off.
-- [ ] Implement synchronous fallback in `SituationSubmitJobEx` when I/O thread is missing.
+- [x] Implement synchronous fallback in `SituationSubmitJobEx` when I/O thread is missing.
 
 ### 3.2. Add Queue Metric
 *   **Location:** Public API
@@ -81,4 +81,4 @@
         // atomic_load(head) - atomic_load(tail)
     }
     ```
-- [ ] Implement `SituationGetIOQueueDepth` function.
+- [x] Implement `SituationGetIOQueueDepth` function.

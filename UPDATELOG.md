@@ -1,3 +1,23 @@
+## [v2.3.37 "Trinity Polish" (Async I/O Hardening)] - 2025-12-25
+
+### Description
+
+This release solidifies the "Trinity" architecture by addressing critical thread-safety and runtime configuration issues in the I/O subsystem. It ensures clean shutdowns by properly joining the I/O thread, exposes configuration options to disable the I/O thread or adjust hot-reload polling, and adds robust fallback paths for single-threaded environments.
+
+### Critical Fixes
+
+*   **Shutdown Safety:** `SituationDestroyThreadPool` now explicitly joins the `io_thread` if it exists. This prevents race conditions where the application would exit while the I/O thread was still accessing memory or filesystem resources.
+*   **Fallback Execution:** `SituationSubmitJobEx` now includes a "Synchronous Fallback" path for Low Priority (I/O) jobs. If the I/O thread is disabled (via config or failure), these jobs are executed immediately on the calling thread, preventing infinite stalls.
+
+### New Features
+
+*   **Runtime Configuration:** Added `disable_io_thread` and `hot_reload_poll_rate` to `SituationInitInfo`.
+    *   **Disable IO Thread:** Useful for debugging or restricted environments (e.g., WASM) where spawning background threads is undesirable.
+    *   **Poll Rate Control:** Developers can now tune the hot-reload frequency (default 0.5s) or disable it entirely (0.0) to save CPU cycles in production.
+*   **I/O Metrics:** Added `SituationGetIOQueueDepth()` to monitor pending background tasks.
+
+---
+
 ## [v2.3.36 "Velocity" (OpenGL 4.6 Optimization Complete)] - 2025-12-24
 
 ### Description
