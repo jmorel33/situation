@@ -622,6 +622,7 @@ typedef enum {
 
 /* === Audio Subsystem Limits === */
 #define SITUATION_MAX_AUDIO_SOUNDS_QUEUED       32   /* Max concurrent sounds in mixing queue (e.g., SFX layers). */
+#define SITUATION_MAX_TONES                     64   /* 64-voice polyphony for procedural synthesis. */
 #define SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES 2048 /* Scratch frames for decode/effects/conversion (48kHz ~40ms). */
 
 /* === Input Subsystem Limits === */
@@ -1467,6 +1468,14 @@ typedef enum {
     SITUATION_AUDIO_LOAD_FULL,   // Force full decode to RAM (Safest, best for SFX)
     SITUATION_AUDIO_LOAD_STREAM  // Force disk streaming (Best for long Music)
 } SituationAudioLoadMode;
+
+typedef enum {
+    SIT_WAVE_SINE,      // Pure tone
+    SIT_WAVE_SQUARE,    // Retro/8-bit sound (has harmonics)
+    SIT_WAVE_TRIANGLE,  // Mellow, flute-like
+    SIT_WAVE_SAW,       // Harsh, string-like
+    SIT_WAVE_NOISE      // White noise (for percussion/explosions)
+} SituationWaveType;
 
 typedef enum {
     SITUATION_FILTER_NONE,
@@ -3523,6 +3532,36 @@ typedef struct {
     bool is_active;         // Is this slot currently in use?
 } SituationSoundSlot;
 
+typedef enum {
+    SIT_ENV_IDLE = 0,
+    SIT_ENV_ATTACK,     // Volume rising 0.0 -> 1.0
+    SIT_ENV_DECAY,      // Volume falling 1.0 -> Sustain Level
+    SIT_ENV_SUSTAIN,    // Volume holding at Sustain Level
+    SIT_ENV_RELEASE     // Volume falling Sustain Level -> 0.0
+} SituationEnvelopeState;
+
+typedef struct {
+    bool active;                // Is this slot in use?
+    ma_waveform waveform;       // MiniAudio waveform generator state
+
+    // Mix Parameters
+    float volume_peak;          // Master volume for this note (0.0 - 1.0)
+    float pan;                  // Stereo pan (-1.0 to 1.0)
+
+    // Envelope State Machine
+    SituationEnvelopeState state;
+    uint64_t cursor_frames;     // How many frames have passed since trigger
+
+    // Envelope Timings (in Frames) derived from input seconds
+    uint64_t t_attack;          // Duration of Attack
+    uint64_t t_decay;           // Duration of Decay
+    uint64_t t_hold;            // Duration of Sustain (Hold time)
+    uint64_t t_release;         // Duration of Release
+
+    // Levels
+    float level_sustain;        // Volume level during hold phase (0.0 - 1.0)
+} SituationTone;
+
  typedef struct {
     // -------------------------------------------------------------------------
     // Audio Subsystem (MiniAudio)
@@ -3577,6 +3616,9 @@ typedef struct {
     
     // [NEW] Safety flag for Snapshotting
     atomic_bool is_processing_snapshot; 
+
+    // Resonance Module State
+    SituationTone tone_pool[SITUATION_MAX_TONES];
 } _SituationAudioState;
 
 // [NEW] Dedicated Input State Container
@@ -27333,6 +27375,21 @@ static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float
  * @param pInput  Pointer to the input buffer (unused here; capture handled separately).
  * @param frameCount The number of frames requested by the audio hardware.
  */
+/* Implementation Section */
+static const float g_midi_note_frequencies[128] = {
+    8.1758f,   8.66196f,  9.17702f,  9.72272f,  10.3009f,  10.9134f,  11.5623f,  12.2499f,  12.9783f,  13.75f,    14.5676f,  15.4339f,
+    16.3516f,  17.3239f,  18.3540f,  19.4454f,  20.6017f,  21.8268f,  23.1247f,  24.4997f,  25.9565f,  27.5f,     29.1352f,  30.8677f,
+    32.7032f,  34.6478f,  36.7081f,  38.8909f,  41.2034f,  43.6535f,  46.2493f,  48.9994f,  51.9131f,  55.0f,     58.2705f,  61.7354f,
+    65.4064f,  69.2957f,  73.4162f,  77.7817f,  82.4069f,  87.3071f,  92.4986f,  97.9989f,  103.826f,  110.0f,    116.541f,  123.471f,
+    130.813f,  138.591f,  146.832f,  155.563f,  164.814f,  174.614f,  184.997f,  195.998f,  207.652f,  220.0f,    233.082f,  246.942f,
+    261.626f,  277.183f,  293.665f,  311.127f,  329.628f,  349.228f,  369.994f,  391.995f,  415.305f,  440.0f,    466.164f,  493.883f,
+    523.251f,  554.365f,  587.330f,  622.254f,  659.255f,  698.456f,  739.989f,  783.991f,  830.609f,  880.0f,    932.328f,  987.767f,
+    1046.50f,  1108.73f,  1174.66f,  1244.51f,  1318.51f,  1396.91f,  1479.98f,  1567.98f,  1661.22f,  1760.0f,   1864.66f,  1975.53f,
+    2093.00f,  2217.46f,  2349.32f,  2489.02f,  2637.02f,  2793.83f,  2959.96f,  3135.96f,  3322.44f,  3520.0f,   3729.31f,  3951.07f,
+    4186.01f,  4434.92f,  4698.64f,  4978.03f,  5274.04f,  5587.65f,  5919.91f,  6271.93f,  6644.88f,  7040.0f,   7458.62f,  7902.13f,
+    8372.02f,  8869.84f,  9397.27f,  9956.06f,  10548.1f,  11175.3f,  11839.8f,  12543.9f
+};
+
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
     (void)pInput; 
 
