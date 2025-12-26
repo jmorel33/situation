@@ -6,7 +6,7 @@ _(c) 2025 Jacques Morel_
 
 _MIT Licenced_
 
-Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
+Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](doc/C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
 Current Version: **v2.3.36 "Velocity"**
 
@@ -297,8 +297,8 @@ This library does not use garbage collection.
 
 The documentation for "Situation" is split into two key documents:
 
-1.  [**Core API Library Reference Manual (situation_sdk.md)**](situation_sdk.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
-2.  [**Situation API Programming Guide (situation_api.md)**](situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
+1.  [**Core API Library Reference Manual (situation_sdk.md)**](doc/situation_sdk.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
+2.  [**Situation API Programming Guide (situation_api.md)**](doc/situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
 
 </details>
 
@@ -323,6 +323,6 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 <details>
 <summary><h2>8. Version History</h2></summary>
 
-For a detailed history of changes, improvements, and fixes, please refer to the [**Update Log**](UPDATELOG.md).
+For a detailed history of changes, improvements, and fixes, please refer to the [**Update Log**](doc/UPDATELOG.md).
 
 </details>
