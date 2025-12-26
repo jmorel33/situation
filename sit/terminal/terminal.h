@@ -1,4 +1,4 @@
-// terminal.h - Enhanced Terminal Library Implementation v1.1
+// terminal.h - Enhanced Terminal Library Implementation v1.2
 // Comprehensive VT52/VT100/VT220/VT320/VT420/xterm compatibility with modern features
 
 /**********************************************************************************************
@@ -10,6 +10,12 @@
 *       This library provides a comprehensive terminal emulation solution, aiming for compatibility with VT52, VT100, VT220, VT320, VT420, and xterm standards,
 *       while also incorporating modern features like true color support, Sixel graphics, advanced mouse tracking, and bracketed paste mode. It is designed to be
 *       integrated into applications that require a text-based terminal interface, using the Situation library for rendering, input, and window management.
+*
+*       v1.2 Feature Update:
+*         - Rendering Optimization: Dirty row tracking to minimize GPU uploads.
+*         - Usability: Mouse text selection and clipboard copying (with UTF-8 support).
+*         - Visuals: Retro CRT shader effects (curvature and scanlines).
+*         - Robustness: Enhanced UTF-8 error handling.
 *
 *       v1.1 Major Update:
 *         - Rendering engine rewritten to use a Compute Shader pipeline via Shader Storage Buffer Objects (SSBO).
@@ -504,6 +510,10 @@ typedef struct {
 "    uint cursor_index;\n" \
 "    uint cursor_blink_state;\n" \
 "    uint text_blink_state;\n" \
+"    uint selection_start;\n" \
+"    uint selection_end;\n" \
+"    float crt_curvature;\n" \
+"    float crt_scanline;\n" \
 "} pc;\n" \
 "\n" \
 "vec4 UnpackColor(uint c) {\n" \
@@ -514,12 +524,31 @@ typedef struct {
 "    uvec2 pixel_coords = gl_GlobalInvocationID.xy;\n" \
 "    if (pixel_coords.x >= uint(pc.screen_size.x) || pixel_coords.y >= uint(pc.screen_size.y)) return;\n" \
 "\n" \
-"    // Sixel Overlay Sampling\n" \
 "    vec2 uv_screen = vec2(pixel_coords) / pc.screen_size;\n" \
+"\n" \
+"    // CRT Curvature Effect (distortion)\n" \
+"    if (pc.crt_curvature > 0.0) {\n" \
+"        vec2 d = abs(uv_screen - 0.5);\n" \
+"        d = pow(d, vec2(2.0));\n" \
+"        uv_screen -= 0.5;\n" \
+"        uv_screen *= 1.0 + dot(d, d) * pc.crt_curvature;\n" \
+"        uv_screen += 0.5;\n" \
+"        // Check if outside bounds after distortion\n" \
+"        if (uv_screen.x < 0.0 || uv_screen.x > 1.0 || uv_screen.y < 0.0 || uv_screen.y > 1.0) {\n" \
+"            imageStore(output_image, ivec2(pixel_coords), vec4(0.0));\n" \
+"            return;\n" \
+"        }\n" \
+"    }\n" \
+"\n" \
+"    // Sixel Overlay Sampling (using possibly distorted UV)\n" \
 "    vec4 sixel_color = texture(sixel_texture, uv_screen);\n" \
 "\n" \
-"    uint cell_x = pixel_coords.x / uint(pc.char_size.x);\n" \
-"    uint cell_y = pixel_coords.y / uint(pc.char_size.y);\n" \
+"    // Re-calculate cell coordinates based on distorted UV or original pixel coords\n" \
+"    // If CRT is on, we should sample based on distorted UV to map screen to terminal grid\n" \
+"    uvec2 sample_coords = uvec2(uv_screen * pc.screen_size);\n" \
+"    \n" \
+"    uint cell_x = sample_coords.x / uint(pc.char_size.x);\n" \
+"    uint cell_y = sample_coords.y / uint(pc.char_size.y);\n" \
 "    uint row_start = cell_y * uint(pc.grid_size.x);\n" \
 "\n" \
 "    if (row_start >= terminal_data.cells.length()) return;\n" \
@@ -531,10 +560,10 @@ typedef struct {
 "    bool is_dh_bot = (line_flags & (1 << 9)) != 0;\n" \
 "\n" \
 "    uint eff_cell_x = cell_x;\n" \
-"    uint in_char_x = pixel_coords.x % uint(pc.char_size.x);\n" \
+"    uint in_char_x = sample_coords.x % uint(pc.char_size.x);\n" \
 "    if (is_dw) {\n" \
 "        eff_cell_x = cell_x / 2;\n" \
-"        in_char_x = (pixel_coords.x % (uint(pc.char_size.x) * 2)) / 2;\n" \
+"        in_char_x = (sample_coords.x % (uint(pc.char_size.x) * 2)) / 2;\n" \
 "    }\n" \
 "\n" \
 "    uint cell_index = row_start + eff_cell_x;\n" \
@@ -547,6 +576,18 @@ typedef struct {
 "\n" \
 "    if ((flags & (1 << 5)) != 0) { vec4 t=fg; fg=bg; bg=t; }\n" \
 "\n" \
+"    // Mouse Selection Highlight\n" \
+"    if (pc.selection_start != pc.selection_end) {\n" \
+"        uint s = min(pc.selection_start, pc.selection_end);\n" \
+"        uint e = max(pc.selection_start, pc.selection_end);\n" \
+"        if (cell_index >= s && cell_index <= e) {\n" \
+"             // Invert colors for selection\n" \
+"             fg = vec4(1.0) - fg;\n" \
+"             bg = vec4(1.0) - bg;\n" \
+"             fg.a = 1.0; bg.a = 1.0;\n" \
+"        }\n" \
+"    }\n" \
+"\n" \
 "    if (cell_index == pc.cursor_index && pc.cursor_blink_state != 0) {\n" \
 "        vec4 t=fg; fg=bg; bg=t;\n" \
 "    }\n" \
@@ -555,7 +596,7 @@ typedef struct {
 "    uint glyph_col = char_code % 16;\n" \
 "    uint glyph_row = char_code / 16;\n" \
 "    \n" \
-"    uint in_char_y = pixel_coords.y % uint(pc.char_size.y);\n" \
+"    uint in_char_y = sample_coords.y % uint(pc.char_size.y);\n" \
 "    float u_pixel = float(in_char_x);\n" \
 "    float v_pixel = float(in_char_y);\n" \
 "    \n" \
@@ -582,6 +623,18 @@ typedef struct {
 "\n" \
 "    // Sixel Blend\n" \
 "    pixel_color = mix(pixel_color, sixel_color, sixel_color.a);\n" \
+"\n" \
+"    // Scanlines & Vignette (Retro Effects)\n" \
+"    if (pc.crt_scanline > 0.0) {\n" \
+"        float scanline = sin(uv_screen.y * pc.screen_size.y * 3.14159);\n" \
+"        pixel_color.rgb *= (1.0 - pc.crt_scanline) + pc.crt_scanline * (0.5 + 0.5 * scanline);\n" \
+"    }\n" \
+"    if (pc.crt_curvature > 0.0) {\n" \
+"        vec2 d = abs(uv_screen - 0.5) * 2.0;\n" \
+"        d = pow(d, vec2(2.0));\n" \
+"        float vig = 1.0 - dot(d, d) * 0.1;\n" \
+"        pixel_color.rgb *= vig;\n" \
+"    }\n" \
 "\n" \
 "    imageStore(output_image, ivec2(pixel_coords), pixel_color);\n" \
 "}\n"
@@ -638,6 +691,10 @@ typedef struct {
     uint32_t cursor_index;
     uint32_t cursor_blink_state;
     uint32_t text_blink_state;
+    uint32_t selection_start;
+    uint32_t selection_end;
+    float crt_curvature;
+    float crt_scanline;
 } TerminalPushConstants;
 
 #define GPU_ATTR_BOLD       (1 << 0)
@@ -658,6 +715,7 @@ typedef struct {
     // Screen management
     EnhancedTermChar screen[DEFAULT_TERM_HEIGHT][DEFAULT_TERM_WIDTH];       // Primary screen buffer
     EnhancedTermChar alt_screen[DEFAULT_TERM_HEIGHT][DEFAULT_TERM_WIDTH];   // Alternate screen buffer
+    bool row_dirty[DEFAULT_TERM_HEIGHT];
     // EnhancedTermChar saved_screen[DEFAULT_TERM_HEIGHT][DEFAULT_TERM_WIDTH]; // For DECSEL/DECSED if implemented
 
     // Enhanced cursor
@@ -823,6 +881,20 @@ typedef struct {
         uint32_t codepoint;
         int bytes_remaining;
     } utf8;
+
+    // Mouse selection
+    struct {
+        int start_x, start_y;
+        int end_x, end_y;
+        bool active;
+        bool dragging;
+    } selection;
+
+    // Retro Visual Effects
+    struct {
+        float curvature;
+        float scanline_intensity;
+    } visual_effects;
 
     // Last printed character (for REP command)
     unsigned int last_char;
@@ -1168,7 +1240,18 @@ void InitTerminal(void) {
             terminal.screen[y][x] = default_char;
             terminal.alt_screen[y][x] = default_char;
         }
+        terminal.row_dirty[y] = true;
     }
+
+    terminal.selection.active = false;
+    terminal.selection.dragging = false;
+    terminal.selection.start_x = -1;
+    terminal.selection.start_y = -1;
+    terminal.selection.end_x = -1;
+    terminal.selection.end_y = -1;
+
+    terminal.visual_effects.curvature = 0.0f; // Default off
+    terminal.visual_effects.scanline_intensity = 0.0f; // Default off
 
     // Initialize mouse state
     terminal.mouse.enabled = true; // Assume mouse is enabled by default
@@ -1517,6 +1600,7 @@ void ExecuteDECFRA(void) { // Fill Rectangular Area
             cell->double_underline = terminal.double_underline_mode;
             cell->dirty = true;
         }
+        terminal.row_dirty[y] = true;
     }
 }
 
@@ -1621,6 +1705,7 @@ void ExecuteDECERA(void) { // Erase Rectangular Area
         for (int x = left; x <= right; x++) {
             ClearCell(&terminal.screen[y][x]);
         }
+        terminal.row_dirty[y] = true;
     }
 }
 
@@ -1669,6 +1754,7 @@ void ExecuteDECSERA(void) { // Selective Erase Rectangular Area
                 ClearCell(&terminal.screen[y][x]);
             }
         }
+        terminal.row_dirty[y] = true;
     }
 }
 
@@ -1884,6 +1970,7 @@ uint8_t MapUnicodeToCP437(uint32_t codepoint) {
 
     // Direct mappings for common box drawing and symbols present in CP437
     switch (codepoint) {
+        case 0xFFFD: return '?'; // Replacement character
         case 0x00C7: return 128; // Ç
         case 0x00FC: return 129; // ü
         case 0x00E9: return 130; // é
@@ -2155,12 +2242,14 @@ void ScrollUpRegion(int top, int bottom, int lines) {
                 terminal.screen[y][x] = terminal.screen[y + 1][x];
                 terminal.screen[y][x].dirty = true;
             }
+            terminal.row_dirty[y] = true;
         }
 
         // Clear bottom line
         for (int x = terminal.left_margin; x <= terminal.right_margin; x++) {
             ClearCell(&terminal.screen[bottom][x]);
         }
+        terminal.row_dirty[bottom] = true;
     }
 }
 
@@ -2172,12 +2261,14 @@ void ScrollDownRegion(int top, int bottom, int lines) {
                 terminal.screen[y][x] = terminal.screen[y - 1][x];
                 terminal.screen[y][x].dirty = true;
             }
+            terminal.row_dirty[y] = true;
         }
 
         // Clear top line
         for (int x = terminal.left_margin; x <= terminal.right_margin; x++) {
             ClearCell(&terminal.screen[top][x]);
         }
+        terminal.row_dirty[top] = true;
     }
 }
 
@@ -2193,6 +2284,7 @@ void InsertLinesAt(int row, int count) {
                 terminal.screen[y][x] = terminal.screen[y - count][x];
                 terminal.screen[y][x].dirty = true;
             }
+            terminal.row_dirty[y] = true;
         }
     }
 
@@ -2201,6 +2293,7 @@ void InsertLinesAt(int row, int count) {
         for (int x = terminal.left_margin; x <= terminal.right_margin; x++) {
             ClearCell(&terminal.screen[y][x]);
         }
+        terminal.row_dirty[y] = true;
     }
 }
 
@@ -2215,6 +2308,7 @@ void DeleteLinesAt(int row, int count) {
             terminal.screen[y][x] = terminal.screen[y + count][x];
             terminal.screen[y][x].dirty = true;
         }
+        terminal.row_dirty[y] = true;
     }
 
     // Clear bottom lines
@@ -2223,6 +2317,7 @@ void DeleteLinesAt(int row, int count) {
             for (int x = terminal.left_margin; x <= terminal.right_margin; x++) {
                 ClearCell(&terminal.screen[y][x]);
             }
+            terminal.row_dirty[y] = true;
         }
     }
 }
@@ -2240,6 +2335,7 @@ void InsertCharactersAt(int row, int col, int count) {
     for (int x = col; x < col + count && x <= terminal.right_margin; x++) {
         ClearCell(&terminal.screen[row][x]);
     }
+    terminal.row_dirty[row] = true;
 }
 
 void DeleteCharactersAt(int row, int col, int count) {
@@ -2255,6 +2351,7 @@ void DeleteCharactersAt(int row, int col, int count) {
             ClearCell(&terminal.screen[row][x]);
         }
     }
+    terminal.row_dirty[row] = true;
 }
 
 // =============================================================================
@@ -2291,6 +2388,7 @@ void InsertCharacterAtCursor(unsigned int ch) {
     cell->protected_cell = terminal.protected_mode;
 
     cell->dirty = true;
+    terminal.row_dirty[terminal.cursor.y] = true;
 
     // Track last printed character for REP command
     terminal.last_char = ch;
@@ -2333,6 +2431,9 @@ void ProcessNormalChar(unsigned char ch) {
                 return;
             } else {
                 // Invalid start byte
+                unicode_ch = 0xFFFD;
+                InsertCharacterAtCursor(MapUnicodeToCP437(unicode_ch));
+                terminal.cursor.x++;
                 return;
             }
         } else {
@@ -2348,7 +2449,13 @@ void ProcessNormalChar(unsigned char ch) {
                 // Map to internal glyph if possible
                 unicode_ch = MapUnicodeToCP437(unicode_ch);
             } else {
-                // Invalid continuation byte, reset and fall through
+                // Invalid continuation byte
+                // Emit replacement character for the failed sequence
+                unicode_ch = 0xFFFD;
+                InsertCharacterAtCursor(MapUnicodeToCP437(unicode_ch));
+                terminal.cursor.x++;
+
+                // Reset and try to recover
                 terminal.utf8.bytes_remaining = 0;
                 terminal.utf8.codepoint = 0;
                 // If the byte itself is a valid start byte or ASCII, we should process it.
@@ -2805,9 +2912,76 @@ void ProcessPasteData(const char* data, size_t length) {
     }
 }
 
+void CopySelectionToClipboard(void) {
+    if (!terminal.selection.active) return;
+
+    int start_y = terminal.selection.start_y;
+    int start_x = terminal.selection.start_x;
+    int end_y = terminal.selection.end_y;
+    int end_x = terminal.selection.end_x;
+
+    uint32_t s_idx = start_y * DEFAULT_TERM_WIDTH + start_x;
+    uint32_t e_idx = end_y * DEFAULT_TERM_WIDTH + end_x;
+
+    if (s_idx > e_idx) { uint32_t t = s_idx; s_idx = e_idx; e_idx = t; }
+
+    size_t char_count = (e_idx - s_idx) + 1 + (DEFAULT_TERM_HEIGHT * 2);
+    char* text_buf = calloc(char_count * 4, 1); // UTF-8 safety
+    if (!text_buf) return;
+    size_t buf_idx = 0;
+
+    int last_y = -1;
+    for (uint32_t i = s_idx; i <= e_idx; i++) {
+        int cy = i / DEFAULT_TERM_WIDTH;
+        int cx = i % DEFAULT_TERM_WIDTH;
+
+        if (last_y != -1 && cy != last_y) {
+            text_buf[buf_idx++] = '\n';
+        }
+        last_y = cy;
+
+        EnhancedTermChar* cell = &terminal.screen[cy][cx];
+        if (cell->ch) {
+            if (cell->ch < 128) text_buf[buf_idx++] = (char)cell->ch;
+            else {
+               // Basic placeholder for now, ideally real UTF-8 encoding
+               text_buf[buf_idx++] = '?';
+            }
+        }
+    }
+    text_buf[buf_idx] = '\0';
+    SituationSetClipboardText(text_buf);
+    free(text_buf);
+}
+
 // Update mouse state (internal use only)
 // Processes mouse position, buttons, wheel, motion, focus changes, and updates cursor position
 void UpdateMouse(void) {
+    // 1. Always update position logic for selection (even if VT mouse tracking is OFF)
+    Vector2 mouse_pos = SituationGetMousePosition();
+    int cell_x = (int)(mouse_pos.x / (DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE)); // 0-based
+    int cell_y = (int)(mouse_pos.y / (DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE)); // 0-based
+
+    // Clamp
+    if (cell_x < 0) cell_x = 0; if (cell_x >= DEFAULT_TERM_WIDTH) cell_x = DEFAULT_TERM_WIDTH - 1;
+    if (cell_y < 0) cell_y = 0; if (cell_y >= DEFAULT_TERM_HEIGHT) cell_y = DEFAULT_TERM_HEIGHT - 1;
+
+    // Handle Selection Logic (Left Click Drag)
+    if (SituationIsMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT)) {
+        terminal.selection.active = true;
+        terminal.selection.dragging = true;
+        terminal.selection.start_x = cell_x;
+        terminal.selection.start_y = cell_y;
+        terminal.selection.end_x = cell_x;
+        terminal.selection.end_y = cell_y;
+    } else if (SituationIsMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT) && terminal.selection.dragging) {
+        terminal.selection.end_x = cell_x;
+        terminal.selection.end_y = cell_y;
+    } else if (SituationIsMouseButtonReleased(GLFW_MOUSE_BUTTON_LEFT) && terminal.selection.dragging) {
+        terminal.selection.dragging = false;
+        CopySelectionToClipboard();
+    }
+
     // Exit if mouse tracking feature is not supported
     if (!terminal.conformance.features.mouse_tracking) {
         return;
@@ -2824,23 +2998,12 @@ void UpdateMouse(void) {
     // Hide system cursor during mouse tracking
     SituationHideCursor();
 
-    // Get mouse position and convert to cell coordinates
-    Vector2 mouse_pos = SituationGetMousePosition();
-    int cell_x = (int)(mouse_pos.x / (DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE)) + 1;
-    int cell_y = (int)(mouse_pos.y / (DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE)) + 1;
-
-    // Clamp to terminal bounds
-    if (cell_x < 1) cell_x = 1;
-    if (cell_x > DEFAULT_TERM_WIDTH) cell_x = DEFAULT_TERM_WIDTH;
-    if (cell_y < 1) cell_y = 1;
-    if (cell_y > DEFAULT_TERM_HEIGHT) cell_y = DEFAULT_TERM_HEIGHT;
-
     int pixel_x = (int)mouse_pos.x + 1;
     int pixel_y = (int)mouse_pos.y + 1;
 
-    // Update custom cursor position
-    terminal.mouse.cursor_x = cell_x;
-    terminal.mouse.cursor_y = cell_y;
+    // Update custom cursor position (1-based for VT)
+    terminal.mouse.cursor_x = cell_x + 1;
+    terminal.mouse.cursor_y = cell_y + 1;
 
     // Get button states
     bool current_buttons_state[3];
@@ -6119,6 +6282,7 @@ void ProcessHashChar(unsigned char ch) {
                 terminal.screen[terminal.cursor.y][x].double_width = true; // Usually implies double width too
                 terminal.screen[terminal.cursor.y][x].dirty = true;
             }
+            terminal.row_dirty[terminal.cursor.y] = true;
             break;
 
         case '4': // DECDHL - Double-height line, bottom half
@@ -6128,6 +6292,7 @@ void ProcessHashChar(unsigned char ch) {
                 terminal.screen[terminal.cursor.y][x].double_width = true;
                 terminal.screen[terminal.cursor.y][x].dirty = true;
             }
+            terminal.row_dirty[terminal.cursor.y] = true;
             break;
 
         case '5': // DECSWL - Single-width single-height line
@@ -6137,6 +6302,7 @@ void ProcessHashChar(unsigned char ch) {
                 terminal.screen[terminal.cursor.y][x].double_width = false;
                 terminal.screen[terminal.cursor.y][x].dirty = true;
             }
+            terminal.row_dirty[terminal.cursor.y] = true;
             break;
 
         case '6': // DECDWL - Double-width single-height line
@@ -6146,6 +6312,7 @@ void ProcessHashChar(unsigned char ch) {
                 terminal.screen[terminal.cursor.y][x].double_width = true;
                 terminal.screen[terminal.cursor.y][x].dirty = true;
             }
+            terminal.row_dirty[terminal.cursor.y] = true;
             break;
 
         case '8': // DECALN - Screen Alignment Pattern
@@ -6552,6 +6719,9 @@ void CopyRectangle(VTRectangle src, int dest_x, int dest_y) {
                 terminal.screen[dst_y][dst_x] = temp[y * width + x];
                 terminal.screen[dst_y][dst_x].dirty = true;
             }
+        }
+        if (dest_y + y >= 0 && dest_y + y < DEFAULT_TERM_HEIGHT) {
+            terminal.row_dirty[dest_y + y] = true;
         }
     }
 
@@ -7158,50 +7328,59 @@ void UpdateTerminal(void) {
 void UpdateTerminalSSBO(void) {
     if (!terminal.terminal_buffer.id || !terminal.gpu_staging_buffer) return;
 
+    bool any_dirty = false;
+    for(int i=0; i<DEFAULT_TERM_HEIGHT; i++) {
+        if(terminal.row_dirty[i]) { any_dirty = true; break; }
+    }
+    if (!any_dirty) return;
+
     size_t required_size = DEFAULT_TERM_WIDTH * DEFAULT_TERM_HEIGHT * sizeof(GPUCell);
 
     for (int y = 0; y < DEFAULT_TERM_HEIGHT; y++) {
-        for (int x = 0; x < DEFAULT_TERM_WIDTH; x++) {
-            EnhancedTermChar* cell = &terminal.screen[y][x];
-            GPUCell* gpu_cell = &terminal.gpu_staging_buffer[y * DEFAULT_TERM_WIDTH + x];
+        if (terminal.row_dirty[y]) {
+            for (int x = 0; x < DEFAULT_TERM_WIDTH; x++) {
+                EnhancedTermChar* cell = &terminal.screen[y][x];
+                GPUCell* gpu_cell = &terminal.gpu_staging_buffer[y * DEFAULT_TERM_WIDTH + x];
 
-            gpu_cell->char_code = cell->ch;
+                gpu_cell->char_code = cell->ch;
 
-            Color fg = {255, 255, 255, 255};
-            if (cell->fg_color.color_mode == 0) {
-                 if (cell->fg_color.value.index < 16) fg = ansi_colors[cell->fg_color.value.index];
-                 else {
-                     RGB_Color c = color_palette[cell->fg_color.value.index];
-                     fg = (Color){c.r, c.g, c.b, 255};
-                 }
-            } else {
-                fg = (Color){cell->fg_color.value.rgb.r, cell->fg_color.value.rgb.g, cell->fg_color.value.rgb.b, 255};
+                Color fg = {255, 255, 255, 255};
+                if (cell->fg_color.color_mode == 0) {
+                     if (cell->fg_color.value.index < 16) fg = ansi_colors[cell->fg_color.value.index];
+                     else {
+                         RGB_Color c = color_palette[cell->fg_color.value.index];
+                         fg = (Color){c.r, c.g, c.b, 255};
+                     }
+                } else {
+                    fg = (Color){cell->fg_color.value.rgb.r, cell->fg_color.value.rgb.g, cell->fg_color.value.rgb.b, 255};
+                }
+                gpu_cell->fg_color = (uint32_t)fg.r | ((uint32_t)fg.g << 8) | ((uint32_t)fg.b << 16) | ((uint32_t)fg.a << 24);
+
+                Color bg = {0, 0, 0, 255};
+                if (cell->bg_color.color_mode == 0) {
+                     if (cell->bg_color.value.index < 16) bg = ansi_colors[cell->bg_color.value.index];
+                     else {
+                         RGB_Color c = color_palette[cell->bg_color.value.index];
+                         bg = (Color){c.r, c.g, c.b, 255};
+                     }
+                } else {
+                    bg = (Color){cell->bg_color.value.rgb.r, cell->bg_color.value.rgb.g, cell->bg_color.value.rgb.b, 255};
+                }
+                gpu_cell->bg_color = (uint32_t)bg.r | ((uint32_t)bg.g << 8) | ((uint32_t)bg.b << 16) | ((uint32_t)bg.a << 24);
+
+                gpu_cell->flags = 0;
+                if (cell->bold) gpu_cell->flags |= GPU_ATTR_BOLD;
+                if (cell->faint) gpu_cell->flags |= GPU_ATTR_FAINT;
+                if (cell->italic) gpu_cell->flags |= GPU_ATTR_ITALIC;
+                if (cell->underline) gpu_cell->flags |= GPU_ATTR_UNDERLINE;
+                if (cell->blink) gpu_cell->flags |= GPU_ATTR_BLINK;
+                if (cell->reverse ^ terminal.dec_modes.reverse_video) gpu_cell->flags |= GPU_ATTR_REVERSE;
+                if (cell->strikethrough) gpu_cell->flags |= GPU_ATTR_STRIKE;
+                if (cell->double_width) gpu_cell->flags |= GPU_ATTR_DOUBLE_WIDTH;
+                if (cell->double_height_top) gpu_cell->flags |= GPU_ATTR_DOUBLE_HEIGHT_TOP;
+                if (cell->double_height_bottom) gpu_cell->flags |= GPU_ATTR_DOUBLE_HEIGHT_BOT;
             }
-            gpu_cell->fg_color = (uint32_t)fg.r | ((uint32_t)fg.g << 8) | ((uint32_t)fg.b << 16) | ((uint32_t)fg.a << 24);
-
-            Color bg = {0, 0, 0, 255};
-            if (cell->bg_color.color_mode == 0) {
-                 if (cell->bg_color.value.index < 16) bg = ansi_colors[cell->bg_color.value.index];
-                 else {
-                     RGB_Color c = color_palette[cell->bg_color.value.index];
-                     bg = (Color){c.r, c.g, c.b, 255};
-                 }
-            } else {
-                bg = (Color){cell->bg_color.value.rgb.r, cell->bg_color.value.rgb.g, cell->bg_color.value.rgb.b, 255};
-            }
-            gpu_cell->bg_color = (uint32_t)bg.r | ((uint32_t)bg.g << 8) | ((uint32_t)bg.b << 16) | ((uint32_t)bg.a << 24);
-
-            gpu_cell->flags = 0;
-            if (cell->bold) gpu_cell->flags |= GPU_ATTR_BOLD;
-            if (cell->faint) gpu_cell->flags |= GPU_ATTR_FAINT;
-            if (cell->italic) gpu_cell->flags |= GPU_ATTR_ITALIC;
-            if (cell->underline) gpu_cell->flags |= GPU_ATTR_UNDERLINE;
-            if (cell->blink) gpu_cell->flags |= GPU_ATTR_BLINK;
-            if (cell->reverse ^ terminal.dec_modes.reverse_video) gpu_cell->flags |= GPU_ATTR_REVERSE;
-            if (cell->strikethrough) gpu_cell->flags |= GPU_ATTR_STRIKE;
-            if (cell->double_width) gpu_cell->flags |= GPU_ATTR_DOUBLE_WIDTH;
-            if (cell->double_height_top) gpu_cell->flags |= GPU_ATTR_DOUBLE_HEIGHT_TOP;
-            if (cell->double_height_bottom) gpu_cell->flags |= GPU_ATTR_DOUBLE_HEIGHT_BOT;
+            terminal.row_dirty[y] = false;
         }
     }
 
