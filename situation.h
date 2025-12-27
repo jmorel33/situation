@@ -629,6 +629,7 @@ typedef enum {
 #define SITUATION_MAX_INPUT_DEVICES             16   /* Max tracked input devices (keyboards, mice, gamepads, etc.). */
 #define SITUATION_KEY_QUEUE_MAX                 64   /* Max buffered keyboard events per frame (anti-loss ring). */
 #define SITUATION_CHAR_QUEUE_MAX                64   /* Max buffered char inputs per frame (IME/text entry). */
+#define SITUATION_MAX_SCANCODES                 512  /* Max number of scancodes to track (safe for most OS). */
 #define SITUATION_MAX_JOYSTICKS                 2    /* Max tracked gamepads/joysticks (local co-op). */
 #define SITUATION_MAX_JOYSTICK_BUTTONS          15   /* Standard gamepad buttons (A/B/X/Y, D-pad, bumpers, etc.). */
 #define SITUATION_MAX_JOYSTICK_AXES             6    /* Standard gamepad axes (left/right sticks + triggers). */
@@ -2190,8 +2191,12 @@ SITAPI bool SituationIsKeyDown(int key);                                        
 SITAPI bool SituationIsKeyUp(int key);                                                  // Check if a key is currently up (a state).
 SITAPI bool SituationIsKeyPressed(int key);                                             // Check if a key was pressed down this frame (an event).
 SITAPI bool SituationIsKeyReleased(int key);                                            // Check if a key was released this frame (an event).
+SITAPI bool SituationIsScancodeDown(int scancode);                                      // Check if a physical key (scancode) is currently held down.
+SITAPI int SituationGetKeyScancode(int key);                                            // Get the platform-specific scancode for a logical key.
 SITAPI int SituationGetKeyPressed(void);                                                // Get the next key from the press queue (no repeats).
+SITAPI int SituationGetKeyPressedEx(int* out_scancode);                                 // Get the next key and its scancode from the queue.
 SITAPI int SituationPeekKeyPressed(void);                                               // Peek at the next key in the press queue without consuming it.
+SITAPI int SituationPeekKeyPressedEx(int* out_scancode);                                // Peek at the next key and its scancode.
 SITAPI unsigned int SituationGetCharPressed(void);                                      // Get the next character from the text input queue.
 SITAPI bool SituationIsLockKeyPressed(int lock_key_mod);                                // Check if a lock key (Caps, Num) is currently active.
 SITAPI bool SituationIsScrollLockOn(void);                                              // Check if Scroll Lock is currently toggled on.
@@ -3474,11 +3479,13 @@ typedef struct {
     bool last_state[GLFW_KEY_LAST + 1];         // State of each key in the previous frame
     bool down_this_frame[GLFW_KEY_LAST + 1];    // Flag set if key was pressed down during this frame
     bool up_this_frame[GLFW_KEY_LAST + 1];      // Flag set if key was released during this frame
+    bool scancode_state[SITUATION_MAX_SCANCODES]; // State of each scancode (true = held)
 
     // -------------------------------------------------------------------------
     // Event Queues (Thread-Safe Ring Buffers)
     // -------------------------------------------------------------------------
     int pressed_queue[SITUATION_KEY_QUEUE_MAX];             // Queue of raw key codes pressed
+    int scancode_queue[SITUATION_KEY_QUEUE_MAX];            // Parallel queue of scancodes
     uint32_t pressed_head;                                  // Write index for key queue
     uint32_t pressed_tail;                                  // Read index for key queue
 
@@ -5771,10 +5778,11 @@ static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const 
  * @see SituationPollInputEvents(), SituationSetKeyCallback()
  */
 static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    (void)window; (void)scancode;
+    (void)window;
     if (key >= 0 && key <= GLFW_KEY_LAST) {
         if (action == GLFW_PRESS) {
             sit_input.keyboard.current_state[key] = true;
+            if (scancode >= 0 && scancode < SITUATION_MAX_SCANCODES) sit_input.keyboard.scancode_state[scancode] = true;
             sit_input.keyboard.down_this_frame[key] = true; // This happens before queue lock, generally fine as it's main thread context
 
 			ma_mutex_lock(&sit_input.keyboard.event_queue_mutex); // Lock for queue
@@ -5782,6 +5790,7 @@ static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode,
             uint32_t next_head = (sit_input.keyboard.pressed_head + 1) % SITUATION_KEY_QUEUE_MAX;
             if (next_head != sit_input.keyboard.pressed_tail) {
                 sit_input.keyboard.pressed_queue[sit_input.keyboard.pressed_head] = key;
+                sit_input.keyboard.scancode_queue[sit_input.keyboard.pressed_head] = scancode;
                 sit_input.keyboard.pressed_head = next_head;
             }
             if (key == SIT_KEY_SCROLL_LOCK) {
@@ -5791,6 +5800,7 @@ static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode,
 
         } else if (action == GLFW_RELEASE) {
             sit_input.keyboard.current_state[key] = false;
+            if (scancode >= 0 && scancode < SITUATION_MAX_SCANCODES) sit_input.keyboard.scancode_state[scancode] = false;
             sit_input.keyboard.up_this_frame[key] = true;
         }
     }
@@ -29952,18 +29962,26 @@ SITAPI bool SituationIsKeyReleased(int key) {
  * @return The key code (e.g., `SIT_KEY_A`) or 0 if the queue is empty.
  * @see SituationPeekKeyPressed()
  */
-SITAPI int SituationGetKeyPressed(void) {
+SITAPI int SituationGetKeyPressedEx(int* out_scancode) {
     if (!SituationIsInitialized()) return 0;
 
     int key = 0;
+    int scancode = 0;
     ma_mutex_lock(&sit_input.keyboard.event_queue_mutex);
     // Ring Buffer Pop
     if (sit_input.keyboard.pressed_head != sit_input.keyboard.pressed_tail) {
         key = sit_input.keyboard.pressed_queue[sit_input.keyboard.pressed_tail];
+        scancode = sit_input.keyboard.scancode_queue[sit_input.keyboard.pressed_tail];
         sit_input.keyboard.pressed_tail = (sit_input.keyboard.pressed_tail + 1) % SITUATION_KEY_QUEUE_MAX;
     }
     ma_mutex_unlock(&sit_input.keyboard.event_queue_mutex);
+
+    if (out_scancode) *out_scancode = scancode;
     return key;
+}
+
+SITAPI int SituationGetKeyPressed(void) {
+    return SituationGetKeyPressedEx(NULL);
 }
 
 /**
@@ -29977,17 +29995,25 @@ SITAPI int SituationGetKeyPressed(void) {
  *
  * @see SituationGetKeyPressed()
  */
-SITAPI int SituationPeekKeyPressed(void) {
+SITAPI int SituationPeekKeyPressedEx(int* out_scancode) {
     if (!SituationIsInitialized()) return 0;
 
     int key = 0;
+    int scancode = 0;
     ma_mutex_lock(&sit_input.keyboard.event_queue_mutex);
     // Ring Buffer Peek
     if (sit_input.keyboard.pressed_head != sit_input.keyboard.pressed_tail) {
         key = sit_input.keyboard.pressed_queue[sit_input.keyboard.pressed_tail];
+        scancode = sit_input.keyboard.scancode_queue[sit_input.keyboard.pressed_tail];
     }
     ma_mutex_unlock(&sit_input.keyboard.event_queue_mutex);
+
+    if (out_scancode) *out_scancode = scancode;
     return key;
+}
+
+SITAPI int SituationPeekKeyPressed(void) {
+    return SituationPeekKeyPressedEx(NULL);
 }
 
 /**
@@ -32413,6 +32439,17 @@ static int _SituationRenderThreadEntry(void* arg) {
     return 0;
 }
 #endif
+
+SITAPI bool SituationIsScancodeDown(int scancode) {
+    if (!SituationIsInitialized() || scancode < 0 || scancode >= SITUATION_MAX_SCANCODES) return false;
+    return sit_input.keyboard.scancode_state[scancode];
+}
+
+SITAPI int SituationGetKeyScancode(int key) {
+    if (!SituationIsInitialized()) return -1;
+    // Just wrap GLFW
+    return glfwGetKeyScancode(key);
+}
 
 #endif // SITUATION_IMPLEMENTATION
 #endif // SITUATION_H
