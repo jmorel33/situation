@@ -98,6 +98,11 @@
 #include <stdio.h>
 #include <math.h>
 
+#if defined(_WIN32) && defined(_MSC_VER)
+    #define strtok_r strtok_s
+    #define strdup _strdup
+#endif
+
 
 #define MAX_TOKENS 64
 #define MAX_HISTORY 32
@@ -497,7 +502,7 @@ static bool AttemptTabCompletion(void) {
 }
 
 static void HandleTabKey(void) {
-    if (terminal.raw_mode) { HandlePrintableKey('\t'); return; }
+    if (ACTIVE_SESSION.raw_mode) { HandlePrintableKey('\t'); return; }
     if (AttemptTabCompletion()) return;
     // Your original tab-to-spaces logic
     if (console.edit_length > 0) {
@@ -799,12 +804,14 @@ static void ProcessCommand(const char* command) {
     } else if (strcmp(cmd, "sys_displays") == 0) {
         PipelineWriteString("\n\x1B[1;33m--- Physical Display Information ---\x1B[0m\n");
         int display_count = 0;
-        SituationDisplayInfo* displays = SituationGetDisplays(&display_count);
+        SituationDisplayInfo* displays = NULL;
+        SituationGetDisplays(&displays, &display_count);
         if (displays) {
             SitHelperPrintDisplayInfo(displays, display_count);
             SituationFreeDisplays(displays, display_count);
         } else {
-            char* err_msg = SituationGetLastErrorMsg();
+            char* err_msg = NULL;
+            SituationGetLastErrorMsg(&err_msg);
             PipelineWriteFormat("\x1B[31mError getting display info: %s\x1B[0m\n", err_msg ? err_msg : "Unknown");
             if (err_msg) free(err_msg);
         }
@@ -817,7 +824,8 @@ static void ProcessCommand(const char* command) {
             SitHelperPrintAudioDeviceInfo(audio_devices, audio_device_count);
             free(audio_devices);
         } else {
-            char* err_msg = SituationGetLastErrorMsg();
+            char* err_msg = NULL;
+            SituationGetLastErrorMsg(&err_msg);
             PipelineWriteFormat("\x1B[31mError getting audio devices: %s\x1B[0m\n", err_msg ? err_msg : "No devices or error");
             if (err_msg) free(err_msg);
         }
@@ -828,7 +836,8 @@ static void ProcessCommand(const char* command) {
             PipelineWriteFormat("  User Profile Directory: %s\n", user_dir);
             free(user_dir);
         } else {
-            char* err_msg = SituationGetLastErrorMsg();
+            char* err_msg = NULL;
+            SituationGetLastErrorMsg(&err_msg);
             PipelineWriteFormat("\x1B[31mError getting user directory: %s\x1B[0m\n", err_msg ? err_msg : "Unknown");
             if (err_msg) free(err_msg);
         }
@@ -1023,13 +1032,13 @@ static void HandleKeyEvent(const char* sequence, int length) {
             case 0x0A: // LF - Line Feed
                 // case 0x0B: // VT - Vertical Tab (often treated same as LF)
                 // case 0x0C: // FF - Form Feed (often treated same as LF or clears screen + home)
-                terminal.cursor.y++;
-                if (terminal.cursor.y > terminal.scroll_bottom) { // Key condition
-                    terminal.cursor.y = terminal.scroll_bottom;   // Clamp cursor to last line of region
-                    ScrollUpRegion(terminal.scroll_top, terminal.scroll_bottom, 1); // Scroll content
+                ACTIVE_SESSION.cursor.y++;
+                if (ACTIVE_SESSION.cursor.y > ACTIVE_SESSION.scroll_bottom) { // Key condition
+                    ACTIVE_SESSION.cursor.y = ACTIVE_SESSION.scroll_bottom;   // Clamp cursor to last line of region
+                    ScrollUpRegion(ACTIVE_SESSION.scroll_top, ACTIVE_SESSION.scroll_bottom, 1); // Scroll content
                 }
-                if (terminal.ansi_modes.line_feed_new_line) { // LNM mode
-                    terminal.cursor.x = terminal.left_margin; // Move to left margin of current line
+                if (ACTIVE_SESSION.ansi_modes.line_feed_new_line) { // LNM mode
+                    ACTIVE_SESSION.cursor.x = ACTIVE_SESSION.left_margin; // Move to left margin of current line
                 }
                 break;
             case 0x0B:  // Ctrl+K - Kill to end of line
@@ -1082,7 +1091,7 @@ static void HandleKeyEvent(const char* sequence, int length) {
     // These arrive as full sequences like "\x1B[A"
     if (length > 1 && sequence[0] == '\x1B') { // Common start for escape sequences
         // DSR would have been caught by HandleTerminalResponse already.
-        if (!terminal.raw_mode) { // Assuming terminal.raw_mode is from your terminal library
+        if (!ACTIVE_SESSION.raw_mode) { // Assuming terminal.raw_mode is from your terminal library
             HandleExtendedKeyInput(sequence); // This function should call RedrawEditLine if needed
         } else {
             // In raw mode, the application might want to see the raw sequence.
@@ -1327,7 +1336,8 @@ int main(void) {
     );
 
     if (sit_init_err != SITUATION_SUCCESS) {
-        char* err_msg = SituationGetLastErrorMsg();
+        char* err_msg = NULL;
+        SituationGetLastErrorMsg(&err_msg);
         fprintf(stderr, "FATAL: SituationInit failed: %s\n", err_msg ? err_msg : "Unknown error");
         if (err_msg) free(err_msg);
         // If SituationInit fails (which includes Situation's InitWindow), we probably can't continue
@@ -1360,7 +1370,7 @@ int main(void) {
     PipelineWriteString("\x1B[96m\x1B[0m Full ANSI support \x1B[0m 256 colors \x1B[0m Command history \x1B[0m Tab completion \x1B[0m High performance\x1B[0m\n");
     PipelineWriteString("\x1B[90mType '\x1B[33mhelp\x1B[90m' for commands, '\x1B[33mdemo\x1B[90m' for features, or '\x1B[33mtest\x1B[90m' for colors.\x1B[0m\n\n");
     
-    terminal.input_enabled = false;
+    ACTIVE_SESSION.input_enabled = false;
     console.prompt_pending = true;
     
     // Main loop
