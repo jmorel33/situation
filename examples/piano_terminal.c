@@ -24,15 +24,7 @@
 // --- Configuration ---
 #define SAMPLE_RATE 48000
 #define MAX_VOICES 32
-
-// --- Frequency Helper ---
-// A4 = 440Hz.
-// Key Index 0 = C3.
-static float get_note_freq(int semitone_offset_from_c3) {
-    // C3 is ~130.81 Hz. (A4 is +21 semitones from C3)
-    // freq = C3 * 2^(offset/12)
-    return 130.81278f * powf(2.0f, semitone_offset_from_c3 / 12.0f);
-}
+#define MIDI_NOTE_C3 48
 
 // --- Synthesizer State ---
 typedef struct {
@@ -84,7 +76,7 @@ static void SynthAudioCallback(float* buffer, uint32_t frames, uint32_t channels
         for (int v = 0; v < MAX_VOICES; ++v) {
             if (synth->voices[v].active) {
                 // If freq matches roughly (using integer note ID would be better but freq check works for monophonic per key)
-                if (fabsf(synth->voices[v].freq - get_note_freq(note)) < 0.1f) {
+                if (fabsf(synth->voices[v].freq - SITUATION_MIDI_NOTE_FREQUENCY[note + MIDI_NOTE_C3]) < 0.1f) {
                     voice_idx = v;
                 }
             } else {
@@ -99,7 +91,7 @@ static void SynthAudioCallback(float* buffer, uint32_t frames, uint32_t channels
             } else if (free_idx != -1) {
                 // Start new voice
                 synth->voices[free_idx].active = true;
-                synth->voices[free_idx].freq = get_note_freq(note);
+                synth->voices[free_idx].freq = SITUATION_MIDI_NOTE_FREQUENCY[note + MIDI_NOTE_C3];
                 synth->voices[free_idx].phase = 0.0f;
                 synth->voices[free_idx].envelope_time = 0.0f;
                 synth->voices[free_idx].releasing = false;
@@ -188,19 +180,22 @@ static void SynthAudioCallback(float* buffer, uint32_t frames, uint32_t channels
     }
 }
 
-static int cached_scancodes[4][12];
-static int cached_notes[4][12];
+typedef struct {
+    int scancode;
+    int note;
+} KeyMapping;
+
+static KeyMapping active_keys[48];
+static int active_key_count = 0;
 static bool g_debug_mode = false;
 
 // --- Key Mapping ---
 // Maps physical scancodes to "Piano Roll" indices (0 = C3).
 int get_piano_note_from_scancode(int scancode) {
     // Linear search (small set)
-    for (int r = 0; r < 4; ++r) {
-        for (int i = 0; i < 12; ++i) {
-            if (cached_scancodes[r][i] != 0 && cached_scancodes[r][i] == scancode) {
-                return cached_notes[r][i];
-            }
+    for (int i = 0; i < active_key_count; ++i) {
+        if (active_keys[i].scancode == scancode) {
+            return active_keys[i].note;
         }
     }
     return -1;
@@ -223,31 +218,33 @@ void init_scancode_mapping(void) {
 
     // Unroll setup
     printf("\n--- Scancode Resolution (US Layout Assumption) ---\n");
+    active_key_count = 0;
+
     printf("Row Z (Bottom): ");
     for(int i=0; i<10; ++i) {
         if (keys_row_z[i] == 0) continue;
-        cached_scancodes[0][i] = SituationGetKeyScancode(keys_row_z[i]);
-        cached_notes[0][i] = notes_row_z[i];
-        printf("[%d] ", cached_scancodes[0][i]);
+        int sc = SituationGetKeyScancode(keys_row_z[i]);
+        active_keys[active_key_count++] = (KeyMapping){ .scancode = sc, .note = notes_row_z[i] };
+        printf("[%d] ", sc);
     }
     printf("\nRow A (Middle): ");
     for(int i=0; i<11; ++i) {
         if (keys_row_a[i] == 0) continue;
-        cached_scancodes[1][i] = SituationGetKeyScancode(keys_row_a[i]);
-        cached_notes[1][i] = notes_row_a[i];
-        printf("[%d] ", cached_scancodes[1][i]);
+        int sc = SituationGetKeyScancode(keys_row_a[i]);
+        active_keys[active_key_count++] = (KeyMapping){ .scancode = sc, .note = notes_row_a[i] };
+        printf("[%d] ", sc);
     }
     printf("\nRow Q (Top)   : ");
     for(int i=0; i<12; ++i) {
-        cached_scancodes[2][i] = SituationGetKeyScancode(keys_row_q[i]);
-        cached_notes[2][i] = notes_row_q[i];
-        printf("[%d] ", cached_scancodes[2][i]);
+        int sc = SituationGetKeyScancode(keys_row_q[i]);
+        active_keys[active_key_count++] = (KeyMapping){ .scancode = sc, .note = notes_row_q[i] };
+        printf("[%d] ", sc);
     }
     printf("\nRow 1 (Num)   : ");
     for(int i=0; i<12; ++i) {
-        cached_scancodes[3][i] = SituationGetKeyScancode(keys_row_1[i]);
-        cached_notes[3][i] = notes_row_1[i];
-        printf("[%d] ", cached_scancodes[3][i]);
+        int sc = SituationGetKeyScancode(keys_row_1[i]);
+        active_keys[active_key_count++] = (KeyMapping){ .scancode = sc, .note = notes_row_1[i] };
+        printf("[%d] ", sc);
     }
     printf("\n--------------------------------------------------\n");
 }
@@ -392,15 +389,9 @@ int main(int argc, char** argv) {
             // 2. Update Key States using Scancodes
             // We iterate our cached scancodes to check their state directly.
             // This is the efficient, "Positional Scancode" way: we only check the physical keys we care about.
-            for (int r = 0; r < 4; ++r) {
-                for (int c = 0; c < 12; ++c) {
-                    int sc = cached_scancodes[r][c];
-                    if (sc > 0) { // Valid scancode
-                        bool down = SituationIsScancodeDown(sc);
-                        int note = cached_notes[r][c];
-                        atomic_store(&g_synth.keys_held[note], down);
-                    }
-                }
+            for (int i = 0; i < active_key_count; ++i) {
+                bool down = SituationIsScancodeDown(active_keys[i].scancode);
+                atomic_store(&g_synth.keys_held[active_keys[i].note], down);
             }
 
             // --- Render Terminal ---
