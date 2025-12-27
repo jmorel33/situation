@@ -1562,6 +1562,40 @@ typedef struct {
     int                         processor_count;        // Number of active custom processors
 } SituationSound;
 
+// --- Resonance (Procedural Synthesis) ---
+/**
+ * @brief Handle for an actively playing procedural tone.
+ *        Invalid/expired handle is 0.
+ */
+typedef uint32_t SituationToneHandle;  // 0 = invalid
+
+/**
+ * @brief Plays an extended procedural tone with full control.
+ *
+ * @param type          Waveform type (Sine, Square, Triangle, Saw, Noise)
+ * @param frequency     Frequency in Hz (e.g., 440.0f). For noise: ignored (use 0.0f)
+ * @param volume        Peak volume (0.0 to 1.0)
+ * @param pan           Stereo panning (-1.0 left, 0.0 center, +1.0 right)
+ * @param attack_sec    Attack time in seconds
+ * @param decay_sec     Decay time in seconds
+ * @param sustain_level Sustain volume level (0.0 to 1.0)
+ * @param release_sec   Release time in seconds
+ * @param hold_sec      Hold duration in seconds. Use -1.0f for infinite sustain (key down)
+ *
+ * @return Handle to the playing tone, or 0 if no voice available (polyphony limit)
+ */
+SITAPI SituationToneHandle SituationPlayToneEx(
+    SituationWaveType type,
+    float frequency,
+    float volume,
+    float pan,
+    float attack_sec,
+    float decay_sec,
+    float sustain_level,
+    float release_sec,
+    float hold_sec
+);
+
 // --- Temporal Oscillator System (Global High-Precision Timing & Rhythm Engine) ---
 // This subsystem powers the advanced "Temporal Oscillator" feature set — a deterministic,
 // high-resolution metronome/beat-sync system capable of driving music-reactive events,
@@ -1985,6 +2019,7 @@ SITAPI Vector2 SituationGetWindowScaleDPI(void);                                
 SITAPI int SituationGetMonitorCount(void);                                              // Get the number of connected monitors.
 SITAPI int SituationGetCurrentMonitor(void);                                            // Get the index of the monitor the window is on.
 SITAPI SituationError SituationGetDisplays(SituationDisplayInfo** out_displays, int* out_count); // Get information for all displays (caller must free).
+SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
 SITAPI void SituationRefreshDisplays(void);                                             // Force a refresh of the cached display information.
 SITAPI SituationError SituationSetDisplayMode(int monitor_id, const SituationDisplayMode* mode, bool fullscreen); // Set the display mode for a monitor.
 SITAPI void SituationSetWindowMonitor(int monitor_id);                                  // Set the window to be fullscreen on a specific monitor.
@@ -2044,7 +2079,7 @@ SITAPI void SituationImageFlip(SituationImage *image, SituationImageFlipMode mod
 SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, float sat_factor, float val_factor, float mix);   // Control an image by Hue Saturation and Brightness.
 
 // --- Font Management ---
-SITAPI SituationError SituationLoadFont(const char *fileName, SituationFont* out_font);                           // Load a font from a TTF/OTF file for CPU rendering.
+SITAPI SituationError SituationLoadFont(const char *fileName, SituationFont* out_font);                         // Load a font from a TTF/OTF file for CPU rendering.
 SITAPI SituationError SituationLoadFontFromMemory(const void* data, int dataSize, SituationFont* out_font);		// Loads a font directly from a memory buffer (e.g., embedded resource).
 SITAPI SituationError SituationBakeFontAtlas(SituationFont* font, float fontSizePixels);
 SITAPI void SituationUnloadFont(SituationFont font);                                    // Unload a CPU-side font and free its memory.
@@ -2163,7 +2198,7 @@ SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path
 SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count);
 
 // --- Image & Screenshot Utilities ---
-SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image);                               // Get a copy of the current screen backbuffer as an image.
+SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image);          // Get a copy of the current screen backbuffer as an image.
 SITAPI SituationError SituationTakeScreenshot(const char *fileName);                    // Take a screenshot and save it to a file (PNG or BMP).
 
 // --- Backend-Specific Accessors ---
@@ -2182,8 +2217,8 @@ SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd);        
 SITAPI SituationError SituationCmdBindUniformBuffer(SituationCommandBuffer cmd, uint32_t contract_id, SituationBuffer buffer);          // [DEPRECATED] [Core] Bind a Uniform Buffer Object (UBO) to a shader binding point.
 SITAPI SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);                // [DEPRECATED] [Core] Bind a texture and sampler to a shader binding point.
 SITAPI SituationError SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer);              // [DEPRECATED] Bind a buffer to a compute shader binding point.
-SITAPI SituationError SituationLoadComputeShader(const char* cs_path, SituationShader* out_shader);                                                                 // [DEPRECATED] Load a compute shader from a file. Use SituationCreateComputePipeline instead.
-SITAPI SituationError SituationLoadComputeShaderFromMemory(const char* cs_code, SituationShader* out_shader);                                                       // [DEPRECATED] Create a compute shader from memory. Use SituationCreateComputePipelineFromMemory instead.
+SITAPI SituationError SituationLoadComputeShader(const char* cs_path, SituationShader* out_shader);                                     // [DEPRECATED] Load a compute shader from a file. Use SituationCreateComputePipeline instead.
+SITAPI SituationError SituationLoadComputeShaderFromMemory(const char* cs_code, SituationShader* out_shader);                           // [DEPRECATED] Create a compute shader from memory. Use SituationCreateComputePipelineFromMemory instead.
 SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_bits);                                                  // [DEPRECATED] Insert a coarse-grained memory barrier. Use SituationCmdPipelineBarrier instead.
 
 //==================================================================================
@@ -2283,40 +2318,6 @@ SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound);          
 SITAPI SituationError SituationStopLoadedSound(SituationSound* sound);                  // Stop a specific sound from playing.
 SITAPI SituationError SituationStopAllLoadedSounds(void);                               // Stop all currently playing sounds.
 
-// --- Resonance (Procedural Synthesis) ---
-/**
- * @brief Handle for an actively playing procedural tone.
- *        Invalid/expired handle is 0.
- */
-typedef uint32_t SituationToneHandle;  // 0 = invalid
-
-/**
- * @brief Plays an extended procedural tone with full control.
- *
- * @param type          Waveform type (Sine, Square, Triangle, Saw, Noise)
- * @param frequency     Frequency in Hz (e.g., 440.0f). For noise: ignored (use 0.0f)
- * @param volume        Peak volume (0.0 to 1.0)
- * @param pan           Stereo panning (-1.0 left, 0.0 center, +1.0 right)
- * @param attack_sec    Attack time in seconds
- * @param decay_sec     Decay time in seconds
- * @param sustain_level Sustain volume level (0.0 to 1.0)
- * @param release_sec   Release time in seconds
- * @param hold_sec      Hold duration in seconds. Use -1.0f for infinite sustain (key down)
- *
- * @return Handle to the playing tone, or 0 if no voice available (polyphony limit)
- */
-SITAPI SituationToneHandle SituationPlayToneEx(
-    SituationWaveType type,
-    float frequency,
-    float volume,
-    float pan,
-    float attack_sec,
-    float decay_sec,
-    float sustain_level,
-    float release_sec,
-    float hold_sec
-);
-
 /**
  * @brief Gracefully stops a tone by triggering its release envelope.
  *        If the tone is already released or invalid, does nothing.
@@ -2412,45 +2413,24 @@ SITAPI ColorRGBA SituationHsvToRgb(ColorHSV hsv);                               
 SITAPI ColorYPQA SituationColorToYPQ(ColorRGBA color);                                  // Converts a standard RGBA color to the YPQA (Luma, Phase, Quadrature) color space.
 SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color);                            // Converts a YPQA color back to the standard RGBA color space.
 
-SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
-
 //==================================================================================
 // Threading Module
 //==================================================================================
-
 #ifdef SITUATION_ENABLE_THREADING
-
 SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size, double hot_reload_rate, bool disable_io); // Initializes the thread pool with dual-priority queues and worker threads.
-SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool); // Shuts down the thread pool and releases resources.
-
-SITAPI SituationJobId SituationSubmitJobEx(
-    SituationThreadPool* pool,
-    void (*func)(void*, void*),
-    const void* data,
-    size_t data_size,
-    SituationJobFlags flags
-); // Submits a job with priority flags and optional data payload.
-
-// Legacy wrapper for simple pointer passing (Low priority, no copy).
+SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool); 											// Shuts down the thread pool and releases resources.
+SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*func)(void*, void*), const void* data, size_t data_size, SituationJobFlags flags); // Submits a job with priority flags and optional data payload.
+ // Legacy wrapper for simple pointer passing (Low priority, no copy).
 #define SituationSubmitJob(pool, func, user_ptr) \
     SituationSubmitJobEx(pool, (void(*)(void*, void*))func, user_ptr, 0, SIT_SUBMIT_DEFAULT)
-
-SITAPI void SituationDispatchParallel(
-    SituationThreadPool* pool,
-    int count,
-    int min_batch_size,
-    void (*func)(int index, void* user_data),
-    void* user_data
-); // Executes a loop in parallel across worker threads (Fork-Join).
-
-SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id); // Waits for a specific job to complete (O(1) check).
-SITAPI void SituationWaitForAllJobs(SituationThreadPool* pool); // Blocks until all queued jobs are finished.
-SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound); // Asynchronously loads and decodes a sound file.
-
+SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int min_batch_size, void (*func)(int index, void* user_data), void* user_data); // Executes a loop in parallel across worker threads (Fork-Join).
+SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id); 							// Waits for a specific job to complete (O(1) check).
+SITAPI void SituationWaitForAllJobs(SituationThreadPool* pool); 											// Blocks until all queued jobs are finished.
 SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prerequisite_job, SituationJobId dependent_job); // Adds a dependency between two jobs (prereq -> dependent).
 SITAPI bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job); // Adds multiple dependencies for a single dependent job.
-SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, bool json_mode); // Prints the current task graph state to the stream.
+SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, bool json_mode); 			// Prints the current task graph state to the stream.
 
+SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound); // Asynchronously loads and decodes a sound file.
 #endif // SITUATION_ENABLE_THREADING
 
 //----------------------------------------------------------------------------------
