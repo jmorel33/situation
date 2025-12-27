@@ -802,8 +802,7 @@ static void ProcessCommand(const char* command) {
         SituationDisplayInfo* displays = SituationGetDisplays(&display_count);
         if (displays) {
             SitHelperPrintDisplayInfo(displays, display_count);
-            for (int i = 0; i < display_count; ++i) free(displays[i].available_modes);
-            free(displays);
+            SituationFreeDisplays(displays, display_count);
         } else {
             char* err_msg = SituationGetLastErrorMsg();
             PipelineWriteFormat("\x1B[31mError getting display info: %s\x1B[0m\n", err_msg ? err_msg : "Unknown");
