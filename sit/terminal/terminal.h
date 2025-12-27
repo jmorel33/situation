@@ -519,6 +519,7 @@ typedef struct {
 "    uint selection_end;\n" \
 "    float crt_curvature;\n" \
 "    float crt_scanline;\n" \
+"    uint mouse_cursor_index;\n" \
 "} pc;\n" \
 "\n" \
 "vec4 UnpackColor(uint c) {\n" \
@@ -595,6 +596,14 @@ typedef struct {
 "\n" \
 "    if (cell_index == pc.cursor_index && pc.cursor_blink_state != 0) {\n" \
 "        vec4 t=fg; fg=bg; bg=t;\n" \
+"    }\n" \
+"\n" \
+"    if (cell_index == pc.mouse_cursor_index) {\n" \
+"        if (in_char_x == 0 || in_char_x == uint(pc.char_size.x) - 1 || \n" \
+"            (sample_coords.y % uint(pc.char_size.y)) == 0 || \n" \
+"            (sample_coords.y % uint(pc.char_size.y)) == uint(pc.char_size.y) - 1) {\n" \
+"             vec4 t=fg; fg=bg; bg=t;\n" \
+"        }\n" \
 "    }\n" \
 "\n" \
 "    uint char_code = cell.char_code;\n" \
@@ -700,6 +709,7 @@ typedef struct {
     uint32_t selection_end;
     float crt_curvature;
     float crt_scanline;
+    uint32_t mouse_cursor_index;
 } TerminalPushConstants;
 
 #define GPU_ATTR_BOLD       (1 << 0)
@@ -7435,6 +7445,21 @@ void DrawTerminal(void) {
             pc.cursor_index = cursor_y_screen * DEFAULT_TERM_WIDTH + ACTIVE_SESSION.cursor.x;
         } else {
             pc.cursor_index = 0xFFFFFFFF; // Hide cursor
+        }
+
+        // Mouse Cursor
+        if (ACTIVE_SESSION.mouse.enabled && ACTIVE_SESSION.mouse.cursor_x > 0) {
+             int mx = ACTIVE_SESSION.mouse.cursor_x - 1;
+             int my = ACTIVE_SESSION.mouse.cursor_y - 1;
+
+             // Ensure coordinates are within valid bounds to prevent wrapping/overflow
+             if (mx >= 0 && mx < DEFAULT_TERM_WIDTH && my >= 0 && my < DEFAULT_TERM_HEIGHT) {
+                 pc.mouse_cursor_index = my * DEFAULT_TERM_WIDTH + mx;
+             } else {
+                 pc.mouse_cursor_index = 0xFFFFFFFF;
+             }
+        } else {
+             pc.mouse_cursor_index = 0xFFFFFFFF;
         }
 
         pc.cursor_blink_state = ACTIVE_SESSION.cursor.blink_state ? 1 : 0;
