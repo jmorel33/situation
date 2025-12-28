@@ -1,3 +1,16 @@
+## [v2.3.38 "Native Bitmap Font Support"] - 2025-12-27
+
+### New Features
+
+- Added `SituationLoadBitmapFontFromMemory` to load raw bitmap fonts.
+- Extended `SituationFont` struct to support bitmap fonts alongside TrueType.
+- Updated `SituationImageDrawCodepoint` to implement a nearest-neighbor forward-mapping rasterizer for bitmap fonts, supporting rotation and scaling.
+- Updated `SituationImageDrawTextEx` and `SituationImageDrawText` to seamlessly handle bitmap fonts using the new rasterizer and simplified layout logic.
+- Updated `SituationMeasureText` to correctly calculate dimensions for monospaced bitmap fonts.
+- Refactored `examples/hello_world.c` to use the new native bitmap font API instead of manual pixel pushing.
+
+---
+
 ## [v2.3.37 "Trinity Polish" (Async I/O Hardening)] - 2025-12-25
 
 ### Description
