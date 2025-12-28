@@ -1444,6 +1444,13 @@ typedef struct SituationFont {
     int atlas_width;
     int atlas_height;
     float font_height_pixels; // The size this atlas was baked at
+
+    // [v2.3.38] Bitmap Font Support
+    bool is_bitmap;
+    const unsigned char* bitmap_data;
+    int bitmap_width;   // Width of one character (e.g. 8)
+    int bitmap_height;  // Height of one character (e.g. 8)
+    int bitmap_count;   // Number of characters (e.g. 256)
 } SituationFont;
 
 // --- Audio Control Structures ---
@@ -2081,6 +2088,7 @@ SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, floa
 // --- Font Management ---
 SITAPI SituationError SituationLoadFont(const char *fileName, SituationFont* out_font);                         // Load a font from a TTF/OTF file for CPU rendering.
 SITAPI SituationError SituationLoadFontFromMemory(const void* data, int dataSize, SituationFont* out_font);		// Loads a font directly from a memory buffer (e.g., embedded resource).
+SITAPI SituationError SituationLoadBitmapFontFromMemory(const unsigned char* data, int char_width, int char_height, int num_chars, SituationFont* out_font); // Loads a raw bitmap font (e.g. 8x8 array).
 SITAPI SituationError SituationBakeFontAtlas(SituationFont* font, float fontSizePixels);
 SITAPI void SituationUnloadFont(SituationFont font);                                    // Unload a CPU-side font and free its memory.
 SITAPI Rectangle SituationMeasureText(SituationFont font, const char *text, float fontSize); // Measure the pixel dimensions of a string before drawing.
@@ -7426,6 +7434,20 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
         return SITUATION_ERROR_THREAD_CREATION_FAILED;
     }
 #endif
+
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationLoadBitmapFontFromMemory(const unsigned char* data, int char_width, int char_height, int num_chars, SituationFont* out_font) {
+    if (!data || char_width <= 0 || char_height <= 0 || num_chars <= 0 || !out_font) return SITUATION_ERROR_INVALID_PARAM;
+
+    memset(out_font, 0, sizeof(SituationFont));
+
+    out_font->is_bitmap = true;
+    out_font->bitmap_data = data; // Note: We do NOT copy the data for bitmap fonts, assuming it's static/embedded.
+    out_font->bitmap_width = char_width;
+    out_font->bitmap_height = char_height;
+    out_font->bitmap_count = num_chars;
 
     return SITUATION_SUCCESS;
 }
@@ -26850,7 +26872,82 @@ static unsigned char _SituationBilinearSample(const unsigned char *bitmap, int w
  * @see SituationImageDrawTextEx()
  */
 SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font, int codepoint, Vector2 position, float fontSize, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness) {
-    if (!SituationIsImageValid(*dst) || !font.stbFontInfo) return;
+    if (!SituationIsImageValid(*dst)) return;
+
+    // --- Bitmap Font Path ---
+    if (font.is_bitmap) {
+        if (!font.bitmap_data || codepoint < 0 || codepoint >= font.bitmap_count) return;
+
+        int bw = font.bitmap_width;
+        int bh = font.bitmap_height;
+        float scale = fontSize / (float)bh;
+
+        // Stride is assumed to be 1 byte per 8 pixels (1bpp)
+        int stride = (bw + 7) / 8;
+        const unsigned char* char_ptr = &font.bitmap_data[codepoint * (stride * bh)];
+
+        float angleRad = rotationDegrees * (M_PI / 180.0f);
+        float cos_a = cosf(angleRad);
+        float sin_a = sinf(angleRad);
+
+        // Center of the glyph for rotation
+        float cx = (float)bw / 2.0f - 0.5f;
+        float cy = (float)bh / 2.0f - 0.5f;
+
+        for (int y = 0; y < bh; y++) {
+            for (int x = 0; x < bw; x++) {
+                // Check bit (row-major 1bpp)
+                int byte_idx = y * stride + (x / 8);
+                int bit_idx = 7 - (x % 8);
+                bool is_set = (char_ptr[byte_idx] >> bit_idx) & 1;
+
+                if (is_set) {
+                    // Local coordinate relative to center
+                    float lx = (float)x - cx;
+                    float ly = (float)y - cy;
+
+                    // Apply skew
+                    lx += ly * skewFactor;
+
+                    // Apply rotation
+                    float rx = lx * cos_a - ly * sin_a;
+                    float ry = lx * sin_a + ly * cos_a;
+
+                    // Apply scale and translate to target position
+                    // We assume position is top-left of the glyph box
+                    float screen_cx = position.x + (bw * scale) / 2.0f;
+                    float screen_cy = position.y + (bh * scale) / 2.0f;
+
+                    // Pixel center in screen space
+                    float px = screen_cx + rx * scale;
+                    float py = screen_cy + ry * scale;
+
+                    // Draw the scaled block ("splat")
+                    // We use ceil to ensure at least 1 pixel is drawn
+                    int block_size = (int)ceilf(scale);
+
+                    int start_bx = (int)(px - scale/2.0f);
+                    int start_by = (int)(py - scale/2.0f);
+
+                    for(int bx = 0; bx < block_size; ++bx) {
+                        for(int by = 0; by < block_size; ++by) {
+                            int final_x = start_bx + bx;
+                            int final_y = start_by + by;
+                            if (final_x >= 0 && final_x < dst->width && final_y >= 0 && final_y < dst->height) {
+                                // Direct alpha blend
+                                ColorRGBA *dstPixel = &((ColorRGBA *)dst->data)[final_y * dst->width + final_x];
+                                *dstPixel = _SituationColorAlphaBlend(*dstPixel, fillColor, 1.0f);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // --- TrueType Path (Standard) ---
+    if (!font.stbFontInfo) return;
 
     // --- Common Setup (Refined to reduce duplication) ---
     stbtt_fontinfo *info = (stbtt_fontinfo*)font.stbFontInfo;
@@ -27003,7 +27100,35 @@ SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font,
  * @see SituationImageDrawText(), SituationImageDrawCodepoint(), SituationMeasureText()
  */
 SITAPI void SituationImageDrawTextEx(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness) {
-    if (!SituationIsImageValid(*dst) || !font.stbFontInfo || !text) return;
+    if (!SituationIsImageValid(*dst) || !text) return;
+
+    // --- Bitmap Path ---
+    if (font.is_bitmap) {
+        float scale = fontSize / (float)font.bitmap_height;
+        float bw = font.bitmap_width;
+
+        // Simple linear layout, supports rotation
+        Vector2 cursor = position;
+        float angleRad = rotationDegrees * (M_PI / 180.0f);
+        float cos_a = cosf(angleRad);
+        float sin_a = sinf(angleRad);
+
+        for (int i = 0; text[i]; ++i) {
+            int codepoint = (unsigned char)text[i]; // Cast to prevent sign extension indices
+
+            // Draw character (handles its own local rotation/scale)
+            SituationImageDrawCodepoint(dst, font, codepoint, cursor, fontSize, rotationDegrees, skewFactor, fillColor, outlineColor, outlineThickness);
+
+            // Advance cursor
+            float advance = (bw * scale) + spacing;
+            cursor.x += advance * cos_a;
+            cursor.y += advance * sin_a;
+        }
+        return;
+    }
+
+    // --- TrueType Path ---
+    if (!font.stbFontInfo) return;
 
     stbtt_fontinfo *info = (stbtt_fontinfo*)font.stbFontInfo;
     float scale = stbtt_ScaleForPixelHeight(info, fontSize);
@@ -27201,29 +27326,47 @@ SITAPI void SituationImageDrawTextFormatted(SituationImage *dst, SituationFont f
  * @see SituationImageDrawText(), SituationImageDrawTextEx()
  */
 SITAPI Rectangle SituationMeasureText(SituationFont font, const char *text, float fontSize) {
-    Rectangle bounds = {0};
-    if (!font.stbFontInfo || !text) return bounds;
+    Rectangle rect = {0, 0, 0, 0};
+    if (!text) return rect;
+
+    // --- Bitmap Path ---
+    if (font.is_bitmap) {
+        float scale = fontSize / (float)font.bitmap_height;
+        float width = 0.0f;
+        int len = (int)strlen(text);
+        if (len > 0) {
+            // For monospaced bitmap fonts, calculation is simple
+            width = len * (font.bitmap_width * scale);
+        }
+        rect.width = width;
+        rect.height = fontSize;
+        return rect;
+    }
+
+    // --- TrueType Path ---
+    if (!font.stbFontInfo) return rect;
 
     stbtt_fontinfo *info = (stbtt_fontinfo*)font.stbFontInfo;
     float scale = stbtt_ScaleForPixelHeight(info, fontSize);
 
-    int ascent, descent;
-    stbtt_GetFontVMetrics(info, &ascent, &descent, NULL);
-    bounds.height = (int)((float)(ascent - descent) * scale);
+    int ascent, descent, lineGap;
+    stbtt_GetFontVMetrics(info, &ascent, &descent, &lineGap);
 
-    float x = 0;
+    rect.height = fontSize; // Approximate height
+
+    float width = 0;
     for (int i = 0; text[i]; ++i) {
-        int codepoint = text[i];
-        if (i > 0) {
-            x += stbtt_GetCodepointKernAdvance(info, text[i-1], codepoint) * scale;
-        }
         int advanceWidth, leftSideBearing;
-        stbtt_GetCodepointHMetrics(info, codepoint, &advanceWidth, &leftSideBearing);
-        x += (float)advanceWidth * scale;
-    }
-    bounds.width = (int)x;
+        stbtt_GetCodepointHMetrics(info, text[i], &advanceWidth, &leftSideBearing);
+        width += advanceWidth * scale;
 
-    return bounds;
+        if (text[i+1]) {
+            int kern = stbtt_GetCodepointKernAdvance(info, text[i], text[i+1]);
+            width += kern * scale;
+        }
+    }
+    rect.width = width;
+    return rect;
 }
 
 // --- Internal Reverb Implementation (Schroeder/Freeverb) ---
