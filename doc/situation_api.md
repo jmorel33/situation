@@ -479,6 +479,9 @@ This section provides a complete list of all functions available in the "Situati
 
 #### `SituationInitInfo`
 This struct is passed to `SituationInit()` to configure the application at startup. It allows for detailed control over the initial state of the window, rendering backend, and timing systems.
+
+> **Titanium Tip:** Field names use strictly `snake_case`. Ensure you are not using legacy `camelCase` names (e.g. `windowWidth`) from older versions.
+
 ```c
 typedef struct {
     // ── Window Creation Parameters ──
@@ -516,9 +519,13 @@ typedef struct {
 -   `window_width`, `window_height`: The desired initial dimensions for the main window's client area.
 -   `window_title`: The text to display in the window title bar.
 -   `initial_active_window_flags`: A bitmask of `SituationWindowStateFlags` to set the initial state of the window when focused.
+    -   **VSync Control:** To enable VSync, include the `SITUATION_FLAG_VSYNC_HINT` (or `SITUATION_WINDOW_STATE_VSYNC_HINT`) flag here. There is no separate boolean for VSync.
 -   `initial_inactive_window_flags`: Flags to apply when the window loses focus (e.g., lower framerate).
 -   `enable_vulkan_validation`: Enables Vulkan validation layers for debugging.
 -   `io_queue_capacity`: The size of the low-priority IO queue for the dedicated IO thread.
+
+**Note on Backend Selection:**
+You do **not** select the graphics backend (OpenGL vs Vulkan) inside this struct. Instead, you must define either `SITUATION_USE_VULKAN` or `SITUATION_USE_OPENGL` in your code *before* including `situation.h`.
 
 ---
 #### `SituationTimerSystem`
@@ -2735,15 +2742,16 @@ Specifies how a `SituationBuffer` will be used. This helps the driver place the 
 ---
 #### `SituationComputeLayoutType`
 Defines a set of common, pre-configured layouts for compute pipelines, telling the GPU what kind of resources the shader expects.
+
 | Type | Description |
 |---|---|
-| `SIT_COMPUTE_LAYOUT_ONE_SSBO`| The pipeline expects a single Shader Storage Buffer Object (SSBO) at set 0. |
-| `SIT_COMPUTE_LAYOUT_TWO_SSBOS`| The pipeline expects two SSBOs at sets 0 and 1. |
-| `SIT_COMPUTE_LAYOUT_IMAGE_AND_SSBO`| The pipeline expects one Storage Image at set 0 and one SSBO at set 1. |
-| `SIT_COMPUTE_LAYOUT_PUSH_CONSTANT`| The pipeline uses a 64-byte push constant for small, high-frequency data. |
-| `SIT_COMPUTE_LAYOUT_EMPTY`| The pipeline does not take any external resources. |
-| `SIT_COMPUTE_LAYOUT_BUFFER_IMAGE`| The pipeline expects one SSBO at set 0 and one Storage Image at set 1. |
-| `SIT_COMPUTE_LAYOUT_TERMINAL`| A specialized layout for terminal emulators: SSBO (Set 0), Storage Image (Set 1), and Font Sampler (Set 2). |
+| `SIT_COMPUTE_LAYOUT_ONE_SSBO` | One SSBO at binding 0 (Set 0). |
+| `SIT_COMPUTE_LAYOUT_TWO_SSBOS` | Two SSBOs at bindings 0 and 1 (Set 0). |
+| `SIT_COMPUTE_LAYOUT_IMAGE_AND_SSBO` | One Storage Image at binding 0, one SSBO at binding 1 (Set 0). |
+| `SIT_COMPUTE_LAYOUT_PUSH_CONSTANT` | 64-byte push constant range (no descriptor sets). |
+| `SIT_COMPUTE_LAYOUT_EMPTY` | No external resources. |
+| `SIT_COMPUTE_LAYOUT_BUFFER_IMAGE` | One SSBO at binding 0, one Storage Image at binding 1 (Set 0). |
+| `SIT_COMPUTE_LAYOUT_TERMINAL` | Specialized layout: SSBO (Set 0), Storage Image (Set 1), Font Sampler (Set 2). |
 
 ---
 #### Resource Handles
@@ -3133,7 +3141,8 @@ void SituationUpdateTexture(SituationTexture texture, SituationImage image);
 ```c
 // Create a blank texture
 SituationImage blank = SituationGenImageColor(256, 256, (ColorRGBA){0,0,0,255});
-SituationTexture dynamic_texture = SituationCreateTexture(blank, false);
+SituationTexture dynamic_texture;
+SituationCreateTexture(blank, false, &dynamic_texture);
 SituationUnloadImage(blank);
 
 // Later, in the update loop, generate new image data
@@ -3141,6 +3150,38 @@ SituationImage new_data = generate_procedural_image();
 SituationUpdateTexture(dynamic_texture, new_data);
 SituationUnloadImage(new_data);
 ```
+
+**Pro Tip (Zero-Copy Update):**
+If you already have a raw data buffer (e.g., from a procedural generation function) and want to avoid allocating a new `SituationImage` on the heap, you can wrap your raw pointer in a stack-allocated `SituationImage`.
+```c
+// 'my_raw_pixels' is a pointer to your RGBA data.
+SituationImage wrapper = {
+    .width = 256,
+    .height = 256,
+    .data = my_raw_pixels,
+    // .format defaults to 0 (RGBA), .mipmaps to 0/1
+};
+SituationUpdateTexture(dynamic_texture, wrapper);
+// No need to call SituationUnloadImage(wrapper) since it owns nothing.
+```
+
+---
+#### `SituationGetTextureHandle`
+Retrieves the bindless texture handle for passing to shaders.
+```c
+SITAPI uint64_t SituationGetTextureHandle(SituationTexture texture);
+```
+-   **OpenGL:** Returns the 64-bit `GLuint64` handle from `glGetTextureHandleARB`. In GLSL, this is typically passed as a `uvec2` (unless `GL_ARB_gpu_shader_int64` is used) or accessed via `sampler2D` if using specific extensions.
+-   **Vulkan:** Not yet implemented (returns 0).
+
+---
+#### `SituationCmdCopyTexture`
+Records a command to copy pixel data from a source texture to a destination texture.
+```c
+SITAPI SituationError SituationCmdCopyTexture(SituationCommandBuffer cmd, SituationTexture src, SituationTexture dst);
+```
+-   **Usage:** Useful for feedback loops, copying render targets for post-processing, or backing up texture state.
+-   **Note:** The source and destination textures must generally have compatible formats and dimensions.
 
 ---
 #### `SituationGetTextureFormat`
@@ -3210,6 +3251,13 @@ void SituationDestroyBuffer(SituationBuffer* buffer);
 // At application shutdown or when the buffer is no longer needed:
 SituationDestroyBuffer(&camera_ubo);
 // The camera_ubo handle is now invalid and should not be used.
+```
+
+---
+#### `SituationGetBufferDeviceAddress`
+Retrieves the GPU device address of a buffer. This `uint64_t` address can be passed to shaders (e.g., via a push constant) to access the buffer's memory directly using the `buffer_reference` feature (bindless).
+```c
+SITAPI uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer);
 ```
 
 ---
@@ -5838,8 +5886,26 @@ The primary tool for synchronization is `SituationCmdPipelineBarrier`. It provid
 - **Signature:** `SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags);`
 - **Parameters:**
     - `cmd`: The command buffer to record the barrier into.
-    - `src_flags`: A bitmask of `SituationBarrierSrcFlags` indicating the pipeline stage(s) that **WROTE** the data. For compute, this is typically `SITUATION_BARRIER_COMPUTE_SHADER_WRITE`.
-    - `dst_flags`: A bitmask of `SituationBarrierDstFlags` indicating the pipeline stage(s) that will **READ** the data. If a vertex shader will read the results (e.g., from an SSBO used as a vertex buffer), this would be `SITUATION_BARRIER_VERTEX_SHADER_READ`.
+    - `src_flags`: A bitmask of `SituationBarrierSrcFlags`.
+    - `dst_flags`: A bitmask of `SituationBarrierDstFlags`.
+
+**Source Flags (`SituationBarrierSrcFlags`):**
+| Flag | Description |
+|---|---|
+| `SITUATION_BARRIER_VERTEX_SHADER_WRITE` | Vertex shader wrote to an SSBO or Image. |
+| `SITUATION_BARRIER_FRAGMENT_SHADER_WRITE` | Fragment shader wrote to an SSBO, Image, or Color Attachment. |
+| `SITUATION_BARRIER_COMPUTE_SHADER_WRITE` | Compute shader wrote to a Storage Buffer or Image. |
+| `SITUATION_BARRIER_TRANSFER_WRITE` | A transfer operation (Copy, Blit, Fill) wrote data. |
+
+**Destination Flags (`SituationBarrierDstFlags`):**
+| Flag | Description |
+|---|---|
+| `SITUATION_BARRIER_VERTEX_SHADER_READ` | Vertex shader will read data (SSBO, Image, Vertex Attribute). |
+| `SITUATION_BARRIER_FRAGMENT_SHADER_READ` | Fragment shader will read data. |
+| `SITUATION_BARRIER_COMPUTE_SHADER_READ` | Compute shader will read data. |
+| `SITUATION_BARRIER_TRANSFER_READ` | A transfer operation will read data. |
+| `SITUATION_BARRIER_INDIRECT_COMMAND_READ` | Data will be read as indirect command parameters. |
+
 - **Process:** This function maps the abstract source and destination flags to the precise stage and access masks required by the underlying API (`vkCmdPipelineBarrier` in Vulkan or a combination of flags for `glMemoryBarrier` in OpenGL).
 - **Example: GPU Particle Simulation**
 A common use case is updating particle positions in a compute shader and then immediately rendering them. A barrier is required between the dispatch and the draw call.
