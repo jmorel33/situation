@@ -17,6 +17,7 @@ This document provides an exhaustive technical reference for `terminal.h`, an en
         *   [1.3.4. The Screen Buffer](#134-the-screen-buffer)
         *   [1.3.5. The Rendering Engine](#135-the-rendering-engine)
         *   [1.3.6. The Output Pipeline (Response System)](#136-the-output-pipeline-response-system)
+        *   [1.3.7. Session Management](#137-session-management)
 
 *   [2. Compliance and Emulation Levels](#2-compliance-and-emulation-levels)
     *   [2.1. Setting the Compliance Level](#21-setting-the-compliance-level)
@@ -48,6 +49,8 @@ This document provides an exhaustive technical reference for `terminal.h`, an en
     *   [4.4. Screen and Buffer Management](#44-screen-and-buffer-management)
     *   [4.5. Sixel Graphics](#45-sixel-graphics)
     *   [4.6. Bracketed Paste Mode](#46-bracketed-paste-mode)
+    *   [4.7. Session Management](#47-session-management)
+    *   [4.8. Retro Visual Effects](#48-retro-visual-effects)
 
 *   [5. API Reference](#5-api-reference)
     *   [5.1. Lifecycle Functions](#51-lifecycle-functions)
@@ -57,6 +60,7 @@ This document provides an exhaustive technical reference for `terminal.h`, an en
     *   [5.5. Callbacks](#55-callbacks)
     *   [5.6. Diagnostics and Testing](#56-diagnostics-and-testing)
     *   [5.7. Advanced Control](#57-advanced-control)
+    *   [5.8. Session Management](#58-session-management)
 
 *   [6. Internal Operations and Data Flow](#6-internal-operations-and-data-flow)
     *   [6.1. Stage 1: Ingestion](#61-stage-1-ingestion)
@@ -110,6 +114,12 @@ The library emulates a wide range of historical and modern terminal standards, f
     -   **Sixel Graphics Rendering:** Full support for Sixel graphics (`DCS P q ... ST`), enabling bitmap images directly in the terminal.
     -   **User-Defined Keys (DECUDK):** The terminal supports defining custom sequences for keys (VT320+).
     -   Customizable cursor styles (block, underline, bar, with blink).
+-   **Session Management (v1.3):**
+    -   **Multi-Session Support:** Manage up to 3 independent terminal sessions simultaneously, inspired by the DEC VT520.
+    -   **Split Screen:** Display two sessions at once in a horizontal split configuration.
+    -   **Session Switching:** API-driven focus control to switch active input/output between sessions.
+-   **Visual Effects:**
+    -   **CRT Simulation:** Configurable curvature and scanline effects for a retro aesthetic.
 -   **Comprehensive Terminal Emulation:**
     -   Alternate screen buffer.
     -   Scrolling regions and margins (including vertical and horizontal).
@@ -154,7 +164,7 @@ The visual state of the terminal is stored in one of two screen buffers, both of
 
    **`EnhancedTermChar`:** This crucial struct represents a single character cell on the screen. It goes far beyond a simple `char`, storing:
     -   The Unicode codepoint (`ch`).
-    -   Foreground and background colors (`ExtendedColor`), which can be an indexed palette color or a 24-bit RGB value.
+    -   Foreground and background colors (`ExtendedColor`), which can be an indexed palette color or a 24-bit RGB color.
     -   A comprehensive set of boolean flags for attributes like `bold`, `italic`, `underline`, `blink`, `reverse`, `strikethrough`, `conceal`, and more.
     -   Flags for DEC special modes like double-width or double-height characters (currently unsupported).
 -   **Primary vs. Alternate Buffer:** The terminal maintains `screen` and `alt_screen`. Applications like `vim` or `less` switch to the alternate buffer (`CSI ?1049 h`) to create a temporary full-screen interface. When they exit, they switch back (`CSI ?1049 l`), restoring the original screen content and scrollback.
@@ -181,6 +191,14 @@ The terminal needs to send data back to the host in response to certain queries 
     -   **User Input:** Keystrokes (`UpdateVTKeyboard()`) and mouse events (`UpdateMouse()`) are translated into the appropriate VT sequences and queued.
     -   **Status Reports:** Commands like `DSR` (Device Status Report) or `DA` (Device Attributes) queue their predefined response strings.
 -   **Callback:** The `UpdateTerminal()` function checks if there is data in the response buffer. If so, it invokes the `ResponseCallback` function pointer, passing the buffered data to the host application. It is the host application's responsibility to set this callback and handle the data (e.g., by sending it over a serial or network connection).
+
+#### 1.3.7. Session Management
+
+Version 1.3 introduces a robust session management layer, inspired by the DEC VT520 architecture. This allows the terminal emulator to maintain multiple independent contexts (sessions) simultaneously.
+
+-   **`TerminalSession` vs `Terminal`:** The monolithic `Terminal` struct now contains an array of `TerminalSession` structures. Each `TerminalSession` encapsulates the complete state of a single virtual terminal: screen buffers, cursor position, modes, input pipeline, parser state, and Sixel data. The top-level `Terminal` struct manages global resources like the GPU pipeline, font texture, and session composition logic.
+-   **Active Session:** The `active_session` index determines which session currently receives user input (keyboard/mouse) and processes incoming data from the default pipeline.
+-   **Split Screen:** The renderer supports a horizontal split-screen mode. When active, the screen is divided at a specified row. The top portion displays content from one session (`session_top`), and the bottom portion displays content from another (`session_bottom`). This is handled purely in the `UpdateTerminalSSBO` phase by compositing data from two source session buffers into the single GPU staging buffer.
 
 ---
 
@@ -534,13 +552,29 @@ Sixel is a bitmap graphics format designed for terminals, allowing for the displ
     -   **Repeat Introducers (`!`)**: To efficiently encode runs of identical sixel data.
     -   **Carriage Return (`$`) and New Line (`-`)**: For positioning the sixel "cursor".
     -   **Sixel Data Characters (`?`-`~`)**: Each character encodes a 6-pixel vertical strip.
--   **Rendering:** The parsed Sixel data is written into a pixel buffer (`terminal.sixel.data`). **Note:** Rendering of this buffer within the Compute Shader pipeline is currently **not implemented**. While the terminal correctly parses and stores the Sixel image, it will not yet appear on screen.
+-   **Rendering:** The parsed Sixel data is written into a pixel buffer (`terminal.sixel.data`). This buffer is uploaded to a GPU texture (`sixel_texture`) and composited over the text grid by the compute shader.
 -   **Termination:** The Sixel parser correctly handles the `ST` (`ESC \`) sequence to terminate the Sixel data stream and return to the normal parsing state.
 
 ### 4.6. Bracketed Paste Mode
 
 -   **Sequence:** `CSI ?2004 h`
 -   **Functionality:** When enabled, pasted text is bracketed by `CSI 200~` and `CSI 201~`. This allows the host application to distinguish between typed and pasted text, preventing accidental execution of commands within the pasted content.
+
+### 4.7. Session Management
+
+The terminal supports up to three independent sessions, emulating the multi-session capabilities of the VT520.
+
+-   **Independent State:** Each session maintains its own screen buffer, cursor, modes, input pipeline, and parser state.
+-   **Active Session:** `SetActiveSession(index)` switches the focus. Input from the host (`PipelineWriteChar`) and user (Keyboard/Mouse) is routed to the active session.
+-   **Split Screen:** `SetSplitScreen(true, row, top_idx, bot_idx)` enables a horizontal split. The renderer composites the top session above the split row and the bottom session below it. This is purely visual; input still goes to the `active_session`.
+
+### 4.8. Retro Visual Effects
+
+To mimic the look of classic CRT terminals, the rendering engine includes configurable visual effects:
+
+-   **Curvature:** `terminal.visual_effects.curvature` controls the barrel distortion of the screen.
+-   **Scanlines:** `terminal.visual_effects.scanline_intensity` adds horizontal scanline darkening patterns.
+-   These are applied in the Compute Shader (`TERMINAL_COMPUTE_SHADER_SRC`) during the final composition step.
 
 ---
 
@@ -685,6 +719,20 @@ These functions provide finer-grained control over specific terminal features.
 -   `void SelectSoftFont(bool enable);`
     Enables or disables the use of the loaded soft font.
 
+### 5.8. Session Management
+
+-   `void InitSession(int index);`
+    Initializes or resets a specific session slot (0-2). Automatically called by `InitTerminal`.
+
+-   `void SetActiveSession(int index);`
+    Switches the active session to the specified index. All subsequent input/output operations will target this session.
+
+-   `void SetSplitScreen(bool active, int row, int top_idx, int bot_idx);`
+    Enables or disables split-screen mode. `row` is the 0-indexed terminal row where the split occurs. `top_idx` and `bot_idx` specify which sessions are displayed in the top and bottom viewports respectively.
+
+-   `void PipelineWriteCharToSession(int session_index, unsigned char ch);`
+    Writes a character directly to a specific session's input pipeline, regardless of which session is currently active. Useful for background processing.
+
 ---
 
 ## 6. Internal Operations and Data Flow
@@ -729,12 +777,14 @@ This chapter provides a deeper, narrative look into the internal mechanics of th
 ### 6.4. Stage 4: Rendering
 
 1.  **Drawing Frame:** `DrawTerminal()` is called within the application's rendering phase.
-2.  **SSBO Update:** `UpdateTerminalSSBO()` iterates through the `screen` buffer, converting each `EnhancedTermChar` into a compact `GPUCell` struct (packing character code, colors, and flags). This data is uploaded to the GPU's Shader Storage Buffer Object.
+2.  **SSBO Update:** `UpdateTerminalSSBO()` performs the composition. If split-screen is active, it determines which session's buffer corresponds to which screen row. It converts each `EnhancedTermChar` from the appropriate session into a compact `GPUCell` struct (packing character code, colors, and flags). This data is uploaded to the GPU's Shader Storage Buffer Object.
 3.  **Compute Dispatch:** `DrawTerminal()` records a dispatch command for the compute pipeline (`SIT_COMPUTE_LAYOUT_TERMINAL`).
 4.  **GPU Execution:**
     -   The compute shader executes in parallel for every cell on the grid.
     -   It reads the `GPUCell` data for its coordinate.
     -   It samples the `font_texture` atlas based on the character code.
+    -   It samples the `sixel_texture` if active.
+    -   It applies CRT effects (curvature/scanlines) if enabled via push constants.
     -   It mixes the foreground and background colors based on the sampled glyph and attributes (like reverse video or blink).
     -   It writes the final pixel color to the `output_texture` storage image.
 5.  **Presentation:** The `output_texture` is presented to the screen.
@@ -817,7 +867,7 @@ Defines the active protocol for reporting mouse events to the host application.
 | `MOUSE_TRACKING_VT200_HIGHLIGHT`| Reports press, release, and motion while a button is held down. |
 | `MOUSE_TRACKING_BTN_EVENT` | Same as `VT200_HIGHLIGHT`. |
 | `MOUSE_TRACKING_ANY_EVENT` | Reports all mouse events, including motion even when no buttons are pressed. |
-| `MOUSE_TRACKING_SGR` | Modern, robust protocol that reports coordinates with higher precision and more modifier key information. |
+| `MOUSE_TRACKING_SGR` | Modern, robust protocol that reports coordinates with higher precision and more modifier keys. |
 | `MOUSE_TRACKING_URXVT` | An alternative extended coordinate protocol. |
 | `MOUSE_TRACKING_PIXEL` | Reports mouse coordinates in pixels rather than character cells. |
 
@@ -850,30 +900,19 @@ Represents a character encoding standard that can be mapped to one of the G0-G3 
 
 This is the master struct that encapsulates the entire state of the terminal emulator.
 
--   `EnhancedTermChar screen[H][W]`, `alt_screen[H][W]`: The primary and alternate screen buffers, 2D arrays representing every character cell on the display.
--   `EnhancedCursor cursor`, `saved_cursor`: The current state and position of the cursor, and a saved copy for `DECSC`/`DECRC` operations.
--   `VTConformance conformance`: Contains the active `VTLevel` and the `VTFeatures` struct of boolean flags that governs all supported capabilities.
--   `char device_attributes[128]`, `secondary_attributes[128]`, `tertiary_attributes[128]`: Strings reported back to the host for device attribute queries (`CSI c`, `CSI >c`, `CSI =c`).
--   `DECModes dec_modes`, `ANSIModes ansi_modes`: Structures holding boolean flags for all terminal modes.
--   `ExtendedColor current_fg`, `current_bg`: The active foreground and background colors that will be applied to new characters printed to the screen.
--   `bool bold_mode`, `italic_mode`, `...`: A series of boolean flags for the currently active SGR text attributes.
--   `int scroll_top`, `scroll_bottom`: Defines the 0-indexed top and bottom lines of the active scrolling region (`DECSTBM`).
--   `int left_margin`, `right_margin`: Defines the 0-indexed left and right column boundaries for margin-based operations (`DECSLRM`, VT420+).
--   `CharsetState charset`: Manages the four designated character sets (G0-G3) and which are currently mapped to the active GL/GR slots.
--   `TabStops tab_stops`: An array-based structure tracking the column positions of all horizontal tab stops.
--   `BracketedPaste bracketed_paste`: Holds the state and buffer for bracketed paste mode.
--   `ProgrammableKeys programmable_keys`: Stores sequences for user-defined keys (`DECUDK`).
--   `SixelGraphics sixel`: Holds the state and data buffer for displaying any active Sixel image.
--   `SoftFont soft_font`: Storage for downloaded, user-defined character glyphs (`DECDLD`).
--   `TitleManager title`: Buffers for storing the window and icon titles set by OSC sequences.
--   `struct mouse`: Contains the complete state of mouse tracking, including the current mode, button states, and last reported position.
--   `unsigned char input_pipeline[]`: The circular buffer that ingests all incoming data from the host application.
--   `struct vt_keyboard`: Encapsulates the complete state of the keyboard, including modes (e.g., Application Keypad) and the output buffer for processed key events.
--   `VTParseState parse_state`: The current state of the main escape sequence parser.
--   `char escape_buffer[]`: A buffer for accumulating the parameter and intermediate bytes of a control sequence as it is being parsed.
--   `int escape_params[]`, `param_count`: The array of parsed numeric parameters from a CSI sequence and their count.
--   `char answerback_buffer[]`: The output buffer for queueing all data to be sent back to the host, including keypresses, mouse events, and status reports.
--   `ResponseCallback response_callback`, `TitleCallback title_callback`, `BellCallback bell_callback`: Function pointers for handling events.
+-   `TerminalSession sessions[MAX_SESSIONS]`: An array of independent session states. Each session contains its own screen buffers, cursor, parser state, and modes.
+-   `int active_session`: Index of the currently active session receiving input.
+-   `bool split_screen_active`: Flag indicating if split-screen mode is enabled.
+-   `int split_row`: The row index dividing the top and bottom sessions.
+-   `int session_top`, `session_bottom`: Indices of sessions displayed in the top/bottom split areas.
+-   `SituationComputePipeline compute_pipeline`: The graphics pipeline handle.
+-   `SituationBuffer terminal_buffer`: The SSBO handle for character grid data.
+-   `SituationTexture output_texture`: The storage image handle for the rendered terminal.
+-   `SituationTexture font_texture`: The font atlas texture.
+-   `SituationTexture sixel_texture`: The texture for Sixel graphics overlay.
+-   `struct visual_effects`:
+    -   `float curvature`: Barrel distortion amount (0.0 to 1.0).
+    -   `float scanline_intensity`: Scanline darkness (0.0 to 1.0).
 
 #### 7.2.2. `EnhancedTermChar`
 
