@@ -1005,6 +1005,7 @@ typedef enum {
     SIT_COMPUTE_LAYOUT_EMPTY,                       // A layout for simple shaders that take no external resources.
     SIT_COMPUTE_LAYOUT_BUFFER_IMAGE,                // A layout for shaders that use one SSBO (Set 0) and one Storage Image (Set 1).
     SIT_COMPUTE_LAYOUT_TERMINAL,
+    SIT_COMPUTE_LAYOUT_VECTOR,
 } SituationComputeLayoutType;
 
 /**
@@ -3301,7 +3302,7 @@ typedef struct {
     // Compute Pipeline Layout Cache
     VkPipelineLayout current_pipeline_layout_for_push_constants; // Last bound graphics layout
     VkPipelineLayout current_compute_pipeline_layout;            // Last bound compute layout
-    VkPipelineLayout compute_layouts[6];                         // Pre-created standard layouts
+    VkPipelineLayout compute_layouts[8];                         // Pre-created standard layouts
 
     // -------------------------------------------------------------------------
     // Internal Renderers Resources
@@ -13232,6 +13233,19 @@ static void _SituationCleanupVulkan(void) {
     layout_info.pPushConstantRanges = &push_constant;
 
     if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_TERMINAL]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+
+    // Layout 8: SIT_COMPUTE_LAYOUT_VECTOR
+    // Set 0: SSBO (Lines), Set 1: Storage Image (Output)
+    // Uses Push Constants
+    set_layouts[0] = sit_render.vk.ssbo_layout;
+    set_layouts[1] = sit_render.vk.storage_image_layout;
+    layout_info.setLayoutCount = 2;
+    layout_info.pSetLayouts = set_layouts;
+    layout_info.pushConstantRangeCount = 1;
+    layout_info.pPushConstantRanges = &push_constant;
+
+    if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_VECTOR]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+
     return SITUATION_SUCCESS;
 }
 

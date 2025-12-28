@@ -130,7 +130,8 @@ typedef enum {
     PARSE_PERCENT,      // Select Character Set (ESC %)
     PARSE_VT52,         // In VT52 compatibility mode
     PARSE_SIXEL,        // Parsing Sixel graphics data (ESC P q ... ST)
-    PARSE_SIXEL_ST
+    PARSE_SIXEL_ST,
+    PARSE_TEKTRONIX     // Tektronix 4010/4014 vector graphics mode
 } VTParseState;
 
 // =============================================================================
@@ -505,6 +506,14 @@ typedef struct {
     uint32_t flags;
 } GPUCell;
 
+typedef struct {
+    float x0, y0; // Normalized Device Coordinates (0.0 - 1.0)
+    float x1, y1; // Normalized Device Coordinates
+    uint32_t color; // Packed RGBA
+    float intensity; // 1.0 = fresh beam, < 1.0 = decaying
+    float padding[2]; // Align to 16 bytes for std430
+} GPUVectorLine;
+
 #define TERMINAL_SHADER_FOOTER \
 "\n" \
 "layout(push_constant) uniform PushConstants {\n" \
@@ -695,6 +704,119 @@ TERMINAL_SHADER_FOOTER
 "layout(binding = 2) uniform sampler2D font_texture;\n" \
 "layout(binding = 3) uniform sampler2D sixel_texture;\n" \
 TERMINAL_SHADER_FOOTER
+#endif
+
+#if defined(SITUATION_USE_VULKAN)
+#define VECTOR_COMPUTE_SHADER_SRC \
+"#version 450\n" \
+"layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n" \
+"\n" \
+"struct GPUVectorLine {\n" \
+"    vec2 start;\n" \
+"    vec2 end;\n" \
+"    uint color;\n" \
+"    float intensity;\n" \
+"    vec2 _pad;\n" \
+"};\n" \
+"\n" \
+"layout(std430, set = 0, binding = 0) readonly buffer VectorBuffer {\n" \
+"    GPUVectorLine lines[];\n" \
+"};\n" \
+"\n" \
+"layout(set = 1, binding = 0, rgba8) uniform image2D output_image;\n" \
+"\n" \
+"layout(push_constant) uniform PushConstants {\n" \
+"    vec2 screen_size;\n" \
+"    vec2 char_size;\n" \
+"    vec2 grid_size;\n" \
+"    float time;\n" \
+"    uint vector_count;\n" \
+"} pc;\n" \
+"\n" \
+"vec4 UnpackColor(uint c) {\n" \
+"    return vec4(float(c & 0xFF), float((c >> 8) & 0xFF), float((c >> 16) & 0xFF), float((c >> 24) & 0xFF)) / 255.0;\n" \
+"}\n" \
+"\n" \
+"void main() {\n" \
+"    uint idx = gl_GlobalInvocationID.x;\n" \
+"    if (idx >= pc.vector_count) return;\n" \
+"\n" \
+"    GPUVectorLine line = lines[idx];\n" \
+"    vec2 p0 = line.start * pc.screen_size;\n" \
+"    vec2 p1 = line.end * pc.screen_size;\n" \
+"    vec4 color = UnpackColor(line.color);\n" \
+"    color.a *= line.intensity;\n" \
+"\n" \
+"    int x0 = int(p0.x); int y0 = int(p0.y);\n" \
+"    int x1 = int(p1.x); int y1 = int(p1.y);\n" \
+"    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;\n" \
+"    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;\n" \
+"    int err = dx + dy, e2;\n" \
+"\n" \
+"    for (;;) {\n" \
+"        if (x0 >= 0 && x0 < int(pc.screen_size.x) && y0 >= 0 && y0 < int(pc.screen_size.y)) {\n" \
+"            vec4 bg = imageLoad(output_image, ivec2(x0, y0));\n" \
+"            imageStore(output_image, ivec2(x0, y0), mix(bg, color, color.a));\n" \
+"        }\n" \
+"        if (x0 == x1 && y0 == y1) break;\n" \
+"        e2 = 2 * err;\n" \
+"        if (e2 >= dy) { err += dy; x0 += sx; }\n" \
+"        if (e2 <= dx) { err += dx; y0 += sy; }\n" \
+"    }\n" \
+"}\n"
+#elif defined(SITUATION_USE_OPENGL)
+#define VECTOR_COMPUTE_SHADER_SRC \
+"#version 430\n" \
+"layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n" \
+"\n" \
+"struct GPUVectorLine {\n" \
+"    vec2 start;\n" \
+"    vec2 end;\n" \
+"    uint color;\n" \
+"    float intensity;\n" \
+"    vec2 _pad;\n" \
+"};\n" \
+"\n" \
+"layout(std430, binding = 0) readonly buffer VectorBuffer {\n" \
+"    GPUVectorLine lines[];\n" \
+"};\n" \
+"\n" \
+"layout(binding = 1, rgba8) uniform image2D output_image;\n" \
+"\n" \
+"layout(location = 0) uniform vec2 u_screen_size;\n" \
+"layout(location = 1) uniform uint u_vector_count;\n" \
+"\n" \
+"vec4 UnpackColor(uint c) {\n" \
+"    return vec4(float(c & 0xFF), float((c >> 8) & 0xFF), float((c >> 16) & 0xFF), float((c >> 24) & 0xFF)) / 255.0;\n" \
+"}\n" \
+"\n" \
+"void main() {\n" \
+"    uint idx = gl_GlobalInvocationID.x;\n" \
+"    if (idx >= u_vector_count) return;\n" \
+"\n" \
+"    GPUVectorLine line = lines[idx];\n" \
+"    vec2 p0 = line.start * u_screen_size;\n" \
+"    vec2 p1 = line.end * u_screen_size;\n" \
+"    vec4 color = UnpackColor(line.color);\n" \
+"    color.a *= line.intensity;\n" \
+"\n" \
+"    int x0 = int(p0.x); int y0 = int(p0.y);\n" \
+"    int x1 = int(p1.x); int y1 = int(p1.y);\n" \
+"    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;\n" \
+"    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;\n" \
+"    int err = dx + dy, e2;\n" \
+"\n" \
+"    for (;;) {\n" \
+"        if (x0 >= 0 && x0 < int(u_screen_size.x) && y0 >= 0 && y0 < int(u_screen_size.y)) {\n" \
+"            vec4 bg = imageLoad(output_image, ivec2(x0, y0));\n" \
+"            imageStore(output_image, ivec2(x0, y0), mix(bg, color, color.a));\n" \
+"        }\n" \
+"        if (x0 == x1 && y0 == y1) break;\n" \
+"        e2 = 2 * err;\n" \
+"        if (e2 >= dy) { err += dy; x0 += sx; }\n" \
+"        if (e2 <= dx) { err += dx; y0 += sy; }\n" \
+"    }\n" \
+"}\n"
 #endif
 
 typedef struct {
@@ -922,6 +1044,23 @@ typedef struct {
     SituationTexture dummy_sixel_texture; // Fallback 1x1 transparent texture
     GPUCell* gpu_staging_buffer;
     bool compute_initialized;
+
+    // Vector Engine (Tektronix)
+    SituationBuffer vector_buffer;
+    SituationTexture vector_layer_texture;
+    SituationComputePipeline vector_pipeline;
+    uint32_t vector_count;
+    GPUVectorLine* vector_staging_buffer;
+    size_t vector_capacity;
+
+    // Tektronix Parser State
+    struct {
+        int state; // 0=Alpha, 1=Graph
+        int sub_state; // 0=HiY, 1=LoY, 2=HiX, 3=LoX
+        int x, y; // Current beam position (0-1023)
+        int pen_x, pen_y; // Current holding position
+    } tektronix;
+
     // Retro Visual Effects
     struct {
         float curvature;
@@ -1848,6 +1987,14 @@ void InitTerminalCompute(void) {
     }
 
     terminal.gpu_staging_buffer = (GPUCell*)calloc(DEFAULT_TERM_WIDTH * DEFAULT_TERM_HEIGHT, sizeof(GPUCell));
+
+    // 4. Init Vector Engine
+    terminal.vector_capacity = 4096; // Max lines per frame
+    SituationCreateBuffer(terminal.vector_capacity * sizeof(GPUVectorLine), NULL, SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST, &terminal.vector_buffer);
+    terminal.vector_staging_buffer = (GPUVectorLine*)calloc(terminal.vector_capacity, sizeof(GPUVectorLine));
+
+    // Create Vector Pipeline
+    SituationCreateComputePipelineFromMemory(VECTOR_COMPUTE_SHADER_SRC, SIT_COMPUTE_LAYOUT_VECTOR, &terminal.vector_pipeline);
 
     terminal.compute_initialized = true;
 }
@@ -7469,6 +7616,31 @@ void DrawTerminal(void) {
 
         SituationCmdDispatch(cmd, DEFAULT_TERM_WIDTH, DEFAULT_TERM_HEIGHT, 1);
 
+        // --- Vector Overlay ---
+        if (terminal.vector_count > 0) {
+            // Update Vector Buffer
+            SituationUpdateBuffer(terminal.vector_buffer, 0, terminal.vector_count * sizeof(GPUVectorLine), terminal.vector_staging_buffer);
+
+            // Barrier: Wait for text compute to finish writing to image
+            SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE, SITUATION_BARRIER_COMPUTE_SHADER_READ);
+
+            SituationCmdBindComputePipeline(cmd, terminal.vector_pipeline);
+            SituationCmdBindDescriptorSet(cmd, 0, terminal.vector_buffer);
+            SituationCmdBindComputeTexture(cmd, 1, terminal.output_texture); // Read-Write
+
+            // Push Constants
+            pc.cursor_index = terminal.vector_count; // Reusing slot for vector_count
+            #if defined(SITUATION_USE_OPENGL)
+                SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_screen_size", &pc.screen_size, SIT_UNIFORM_VEC2);
+                SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_vector_count", &pc.cursor_index, SIT_UNIFORM_INT);
+            #else
+                SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
+            #endif
+
+            // Dispatch (64 threads per group)
+            SituationCmdDispatch(cmd, (terminal.vector_count + 63) / 64, 1, 1);
+        }
+
         SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE, SITUATION_BARRIER_TRANSFER_READ);
 
         SituationCmdPresent(cmd, terminal.output_texture);
@@ -7506,6 +7678,14 @@ void CleanupTerminal(void) {
     if (terminal.gpu_staging_buffer) {
         free(terminal.gpu_staging_buffer);
         terminal.gpu_staging_buffer = NULL;
+    }
+
+    // Free Vector Engine resources
+    if (terminal.vector_buffer.id != 0) SituationDestroyBuffer(&terminal.vector_buffer);
+    if (terminal.vector_pipeline.id != 0) SituationDestroyComputePipeline(&terminal.vector_pipeline);
+    if (terminal.vector_staging_buffer) {
+        free(terminal.vector_staging_buffer);
+        terminal.vector_staging_buffer = NULL;
     }
 
     // Free memory for programmable key sequences
