@@ -514,22 +514,8 @@ typedef struct {
     float padding[2]; // Align to 16 bytes for std430
 } GPUVectorLine;
 
-#define TERMINAL_SHADER_FOOTER \
-"\n" \
-"layout(push_constant) uniform PushConstants {\n" \
-"    vec2 screen_size;\n" \
-"    vec2 char_size;\n" \
-"    vec2 grid_size;\n" \
-"    float time;\n" \
-"    uint cursor_index;\n" \
-"    uint cursor_blink_state;\n" \
-"    uint text_blink_state;\n" \
-"    uint selection_start;\n" \
-"    uint selection_end;\n" \
-"    float crt_curvature;\n" \
-"    float crt_scanline;\n" \
-"    uint mouse_cursor_index;\n" \
-"} pc;\n" \
+// 1. TERMINAL LOGIC BODY
+#define TERMINAL_SHADER_BODY \
 "\n" \
 "vec4 UnpackColor(uint c) {\n" \
 "    return vec4(float(c & 0xFF), float((c >> 8) & 0xFF), float((c >> 16) & 0xFF), float((c >> 24) & 0xFF)) / 255.0;\n" \
@@ -541,14 +527,13 @@ typedef struct {
 "\n" \
 "    vec2 uv_screen = vec2(pixel_coords) / pc.screen_size;\n" \
 "\n" \
-"    // CRT Curvature Effect (distortion)\n" \
+"    // CRT Curvature Effect\n" \
 "    if (pc.crt_curvature > 0.0) {\n" \
 "        vec2 d = abs(uv_screen - 0.5);\n" \
 "        d = pow(d, vec2(2.0));\n" \
 "        uv_screen -= 0.5;\n" \
 "        uv_screen *= 1.0 + dot(d, d) * pc.crt_curvature;\n" \
 "        uv_screen += 0.5;\n" \
-"        // Check if outside bounds after distortion\n" \
 "        if (uv_screen.x < 0.0 || uv_screen.x > 1.0 || uv_screen.y < 0.0 || uv_screen.y > 1.0) {\n" \
 "            imageStore(output_image, ivec2(pixel_coords), vec4(0.0));\n" \
 "            return;\n" \
@@ -592,9 +577,9 @@ typedef struct {
 "    if ((flags & (1 << 5)) != 0) { vec4 t=fg; fg=bg; bg=t; }\n" \
 "\n" \
 "    // Mouse Selection Highlight\n" \
-"    if (pc.selection_start != pc.selection_end) {\n" \
-"        uint s = min(pc.selection_start, pc.selection_end);\n" \
-"        uint e = max(pc.selection_start, pc.selection_end);\n" \
+"    if (pc.sel_active != 0) {\n" \
+"        uint s = min(pc.sel_start, pc.sel_end);\n" \
+"        uint e = max(pc.sel_start, pc.sel_end);\n" \
 "        if (cell_index >= s && cell_index <= e) {\n" \
 "             // Invert colors for selection\n" \
 "             fg = vec4(1.0) - fg;\n" \
@@ -648,9 +633,9 @@ typedef struct {
 "    pixel_color = mix(pixel_color, sixel_color, sixel_color.a);\n" \
 "\n" \
 "    // Scanlines & Vignette (Retro Effects)\n" \
-"    if (pc.crt_scanline > 0.0) {\n" \
+"    if (pc.scanline_intensity > 0.0) {\n" \
 "        float scanline = sin(uv_screen.y * pc.screen_size.y * 3.14159);\n" \
-"        pixel_color.rgb *= (1.0 - pc.crt_scanline) + pc.crt_scanline * (0.5 + 0.5 * scanline);\n" \
+"        pixel_color.rgb *= (1.0 - pc.scanline_intensity) + pc.scanline_intensity * (0.5 + 0.5 * scanline);\n" \
 "    }\n" \
 "    if (pc.crt_curvature > 0.0) {\n" \
 "        vec2 d = abs(uv_screen - 0.5) * 2.0;\n" \
@@ -662,76 +647,8 @@ typedef struct {
 "    imageStore(output_image, ivec2(pixel_coords), pixel_color);\n" \
 "}\n"
 
-#if defined(SITUATION_USE_VULKAN)
-#define TERMINAL_COMPUTE_SHADER_SRC \
-"#version 450\n" \
-"layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n" \
-"\n" \
-"struct GPUCell {\n" \
-"    uint char_code;\n" \
-"    uint fg_color;\n" \
-"    uint bg_color;\n" \
-"    uint flags;\n" \
-"};\n" \
-"\n" \
-"layout(std430, set = 0, binding = 0) readonly buffer TerminalBuffer {\n" \
-"    GPUCell cells[];\n" \
-"} terminal_data;\n" \
-"\n" \
-"layout(set = 1, binding = 0, rgba8) writeonly uniform image2D output_image;\n" \
-"\n" \
-"layout(set = 2, binding = 0) uniform sampler2D font_texture;\n" \
-"layout(set = 3, binding = 0) uniform sampler2D sixel_texture;\n" \
-TERMINAL_SHADER_FOOTER
-#elif defined(SITUATION_USE_OPENGL)
-#define TERMINAL_COMPUTE_SHADER_SRC \
-"#version 430\n" \
-"layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n" \
-"\n" \
-"struct GPUCell {\n" \
-"    uint char_code;\n" \
-"    uint fg_color;\n" \
-"    uint bg_color;\n" \
-"    uint flags;\n" \
-"};\n" \
-"\n" \
-"layout(std430, binding = 0) readonly buffer TerminalBuffer {\n" \
-"    GPUCell cells[];\n" \
-"} terminal_data;\n" \
-"\n" \
-"layout(binding = 1, rgba8) writeonly uniform image2D output_image;\n" \
-"\n" \
-"layout(binding = 2) uniform sampler2D font_texture;\n" \
-"layout(binding = 3) uniform sampler2D sixel_texture;\n" \
-TERMINAL_SHADER_FOOTER
-#endif
-
-#if defined(SITUATION_USE_VULKAN)
-#define VECTOR_COMPUTE_SHADER_SRC \
-"#version 450\n" \
-"layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n" \
-"\n" \
-"struct GPUVectorLine {\n" \
-"    vec2 start;\n" \
-"    vec2 end;\n" \
-"    uint color;\n" \
-"    float intensity;\n" \
-"    vec2 _pad;\n" \
-"};\n" \
-"\n" \
-"layout(std430, set = 0, binding = 0) readonly buffer VectorBuffer {\n" \
-"    GPUVectorLine lines[];\n" \
-"};\n" \
-"\n" \
-"layout(set = 1, binding = 0, rgba8) uniform image2D output_image;\n" \
-"\n" \
-"layout(push_constant) uniform PushConstants {\n" \
-"    vec2 screen_size;\n" \
-"    vec2 char_size;\n" \
-"    vec2 grid_size;\n" \
-"    float time;\n" \
-"    uint vector_count;\n" \
-"} pc;\n" \
+// 2. VECTOR LOGIC BODY
+#define VECTOR_SHADER_BODY \
 "\n" \
 "vec4 UnpackColor(uint c) {\n" \
 "    return vec4(float(c & 0xFF), float((c >> 8) & 0xFF), float((c >> 16) & 0xFF), float((c >> 24) & 0xFF)) / 255.0;\n" \
@@ -739,6 +656,7 @@ TERMINAL_SHADER_FOOTER
 "\n" \
 "void main() {\n" \
 "    uint idx = gl_GlobalInvocationID.x;\n" \
+"    // Note: In OpenGL we map PushConstants to Uniforms, handled in header\n" \
 "    if (idx >= pc.vector_count) return;\n" \
 "\n" \
 "    GPUVectorLine line = lines[idx];\n" \
@@ -753,10 +671,13 @@ TERMINAL_SHADER_FOOTER
 "    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;\n" \
 "    int err = dx + dy, e2;\n" \
 "\n" \
+"    // Bresenham Loop\n" \
 "    for (;;) {\n" \
 "        if (x0 >= 0 && x0 < int(pc.screen_size.x) && y0 >= 0 && y0 < int(pc.screen_size.y)) {\n" \
 "            vec4 bg = imageLoad(output_image, ivec2(x0, y0));\n" \
-"            imageStore(output_image, ivec2(x0, y0), mix(bg, color, color.a));\n" \
+"            // Additive 'Glow' Blending\n" \
+"            vec4 result = bg + (color * color.a);\n" \
+"            imageStore(output_image, ivec2(x0, y0), result);\n" \
 "        }\n" \
 "        if (x0 == x1 && y0 == y1) break;\n" \
 "        e2 = 2 * err;\n" \
@@ -764,59 +685,108 @@ TERMINAL_SHADER_FOOTER
 "        if (e2 <= dx) { err += dx; y0 += sy; }\n" \
 "    }\n" \
 "}\n"
+
+#if defined(SITUATION_USE_VULKAN)
+
+    // --- VULKAN DEFINITIONS ---
+    #define TERMINAL_COMPUTE_SHADER_SRC \
+    "#version 450\n" \
+    "layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n" \
+    "struct GPUCell { uint char_code; uint fg_color; uint bg_color; uint flags; };\n" \
+    "layout(std430, set = 0, binding = 0) readonly buffer TerminalBuffer { GPUCell cells[]; } terminal_data;\n" \
+    "layout(set = 1, binding = 0, rgba8) writeonly uniform image2D output_image;\n" \
+    "layout(set = 2, binding = 0) uniform sampler2D font_texture;\n" \
+    "layout(set = 3, binding = 0) uniform sampler2D sixel_texture;\n" \
+    "layout(push_constant) uniform PushConstants {\n" \
+    "    vec2 screen_size;\n" \
+    "    vec2 char_size;\n" \
+    "    vec2 grid_size;\n" \
+    "    float time;\n" \
+    "    uint cursor_index;\n" \
+    "    uint cursor_blink_state;\n" \
+    "    uint text_blink_state;\n" \
+    "    uint sel_start;\n" \
+    "    uint sel_end;\n" \
+    "    uint sel_active;\n" \
+    "    float scanline_intensity;\n" \
+    "    float crt_curvature;\n" \
+    "    uint mouse_cursor_index;\n" \
+    "} pc;\n" \
+    TERMINAL_SHADER_BODY
+
+    #define VECTOR_COMPUTE_SHADER_SRC \
+    "#version 450\n" \
+    "layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n" \
+    "struct GPUVectorLine { vec2 start; vec2 end; uint color; float intensity; vec2 _pad; };\n" \
+    "layout(std430, set = 0, binding = 0) readonly buffer VectorBuffer { GPUVectorLine lines[]; };\n" \
+    "layout(set = 1, binding = 0, rgba8) uniform image2D output_image;\n" \
+    "layout(push_constant) uniform PushConstants {\n" \
+    "    vec2 screen_size; vec2 char_size; vec2 grid_size; float time; uint vector_count;\n" \
+    "} pc;\n" \
+    VECTOR_SHADER_BODY
+
 #elif defined(SITUATION_USE_OPENGL)
-#define VECTOR_COMPUTE_SHADER_SRC \
-"#version 430\n" \
-"layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n" \
-"\n" \
-"struct GPUVectorLine {\n" \
-"    vec2 start;\n" \
-"    vec2 end;\n" \
-"    uint color;\n" \
-"    float intensity;\n" \
-"    vec2 _pad;\n" \
-"};\n" \
-"\n" \
-"layout(std430, binding = 0) readonly buffer VectorBuffer {\n" \
-"    GPUVectorLine lines[];\n" \
-"};\n" \
-"\n" \
-"layout(binding = 1, rgba8) uniform image2D output_image;\n" \
-"\n" \
-"layout(location = 0) uniform vec2 u_screen_size;\n" \
-"layout(location = 1) uniform uint u_vector_count;\n" \
-"\n" \
-"vec4 UnpackColor(uint c) {\n" \
-"    return vec4(float(c & 0xFF), float((c >> 8) & 0xFF), float((c >> 16) & 0xFF), float((c >> 24) & 0xFF)) / 255.0;\n" \
-"}\n" \
-"\n" \
-"void main() {\n" \
-"    uint idx = gl_GlobalInvocationID.x;\n" \
-"    if (idx >= u_vector_count) return;\n" \
-"\n" \
-"    GPUVectorLine line = lines[idx];\n" \
-"    vec2 p0 = line.start * u_screen_size;\n" \
-"    vec2 p1 = line.end * u_screen_size;\n" \
-"    vec4 color = UnpackColor(line.color);\n" \
-"    color.a *= line.intensity;\n" \
-"\n" \
-"    int x0 = int(p0.x); int y0 = int(p0.y);\n" \
-"    int x1 = int(p1.x); int y1 = int(p1.y);\n" \
-"    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;\n" \
-"    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;\n" \
-"    int err = dx + dy, e2;\n" \
-"\n" \
-"    for (;;) {\n" \
-"        if (x0 >= 0 && x0 < int(u_screen_size.x) && y0 >= 0 && y0 < int(u_screen_size.y)) {\n" \
-"            vec4 bg = imageLoad(output_image, ivec2(x0, y0));\n" \
-"            imageStore(output_image, ivec2(x0, y0), mix(bg, color, color.a));\n" \
-"        }\n" \
-"        if (x0 == x1 && y0 == y1) break;\n" \
-"        e2 = 2 * err;\n" \
-"        if (e2 >= dy) { err += dy; x0 += sx; }\n" \
-"        if (e2 <= dx) { err += dx; y0 += sy; }\n" \
-"    }\n" \
-"}\n"
+
+    // --- OPENGL DEFINITIONS ---
+    #define TERMINAL_COMPUTE_SHADER_SRC \
+    "#version 430\n" \
+    "layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n" \
+    "struct GPUCell { uint char_code; uint fg_color; uint bg_color; uint flags; };\n" \
+    "layout(std430, binding = 0) readonly buffer TerminalBuffer { GPUCell cells[]; } terminal_data;\n" \
+    "layout(binding = 1, rgba8) writeonly uniform image2D output_image;\n" \
+    "layout(binding = 2) uniform sampler2D font_texture;\n" \
+    "layout(binding = 3) uniform sampler2D sixel_texture;\n" \
+    "layout(location = 0) uniform vec2 u_screen_size;\n" \
+    "layout(location = 1) uniform vec2 u_char_size;\n" \
+    "layout(location = 2) uniform vec2 u_grid_size;\n" \
+    "layout(location = 3) uniform float u_time;\n" \
+    "layout(location = 4) uniform uint u_cursor_index;\n" \
+    "layout(location = 5) uniform uint u_cursor_blink_state;\n" \
+    "layout(location = 6) uniform uint u_text_blink_state;\n" \
+    "layout(location = 7) uniform uint u_sel_start;\n" \
+    "layout(location = 8) uniform uint u_sel_end;\n" \
+    "layout(location = 9) uniform uint u_sel_active;\n" \
+    "layout(location = 10) uniform float u_scanline_intensity;\n" \
+    "layout(location = 11) uniform float u_crt_curvature;\n" \
+    "layout(location = 12) uniform uint u_mouse_cursor_index;\n" \
+    "struct PushConsts {\n" \
+    "    vec2 screen_size;\n" \
+    "    vec2 char_size;\n" \
+    "    vec2 grid_size;\n" \
+    "    float time;\n" \
+    "    uint cursor_index;\n" \
+    "    uint cursor_blink_state;\n" \
+    "    uint text_blink_state;\n" \
+    "    uint sel_start;\n" \
+    "    uint sel_end;\n" \
+    "    uint sel_active;\n" \
+    "    float scanline_intensity;\n" \
+    "    float crt_curvature;\n" \
+    "    uint mouse_cursor_index;\n" \
+    "};\n" \
+    "PushConsts pc = PushConsts(\n" \
+    "    u_screen_size, u_char_size, u_grid_size, u_time,\n" \
+    "    u_cursor_index, u_cursor_blink_state, u_text_blink_state,\n" \
+    "    u_sel_start, u_sel_end, u_sel_active,\n" \
+    "    u_scanline_intensity, u_crt_curvature, u_mouse_cursor_index\n" \
+    ");\n" \
+    TERMINAL_SHADER_BODY
+
+    // Note: OpenGL doesn't have PushConstants, so we map Uniforms to a struct 'pc'
+    // to match the body code.
+    #define VECTOR_COMPUTE_SHADER_SRC \
+    "#version 430\n" \
+    "layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n" \
+    "struct GPUVectorLine { vec2 start; vec2 end; uint color; float intensity; vec2 _pad; };\n" \
+    "layout(std430, binding = 0) readonly buffer VectorBuffer { GPUVectorLine lines[]; };\n" \
+    "layout(binding = 1, rgba8) uniform image2D output_image;\n" \
+    "layout(location = 0) uniform vec2 u_screen_size;\n" \
+    "layout(location = 1) uniform uint u_vector_count;\n" \
+    "// Mock struct to match Vulkan body\n" \
+    "struct PushConsts { vec2 screen_size; uint vector_count; };\n" \
+    "PushConsts pc = PushConsts(u_screen_size, u_vector_count);\n" \
+    VECTOR_SHADER_BODY
+
 #endif
 
 typedef struct {
@@ -824,13 +794,17 @@ typedef struct {
     Vector2 char_size;
     Vector2 grid_size;
     float time;
-    uint32_t cursor_index;
+    union {
+        uint32_t cursor_index;
+        uint32_t vector_count;
+    };
     uint32_t cursor_blink_state;
     uint32_t text_blink_state;
-    uint32_t selection_start;
-    uint32_t selection_end;
+    uint32_t sel_start;
+    uint32_t sel_end;
+    uint32_t sel_active;
+    float scanline_intensity;
     float crt_curvature;
-    float crt_scanline;
     uint32_t mouse_cursor_index;
 } TerminalPushConstants;
 
@@ -1557,6 +1531,9 @@ void ProcessAPCChar(unsigned char ch) { ProcessGenericStringChar(ch, VT_PARSE_ES
 void ProcessPMChar(unsigned char ch) { ProcessGenericStringChar(ch, VT_PARSE_ESCAPE, ExecutePMCommand); }
 void ProcessSOSChar(unsigned char ch) { ProcessGenericStringChar(ch, VT_PARSE_ESCAPE, ExecuteSOSCommand); }
 
+// Internal helper forward declaration
+static void ProcessTektronixChar(unsigned char ch);
+
 // Continue with enhanced character processing...
 void ProcessChar(unsigned char ch) {
     switch (ACTIVE_SESSION.parse_state) {
@@ -1567,6 +1544,7 @@ void ProcessChar(unsigned char ch) {
         case PARSE_DCS:                 ProcessDCSChar(ch); break;
         case PARSE_SIXEL_ST:            ProcessSixelSTChar(ch); break;
         case PARSE_VT52:                ProcessVT52Char(ch); break;
+        case PARSE_TEKTRONIX:           ProcessTektronixChar(ch); break;
         case PARSE_SIXEL:               ProcessSixelChar(ch); break;
         case PARSE_CHARSET:             ProcessCharsetCommand(ch); break;
         case PARSE_HASH:                ProcessHashChar(ch); break;
@@ -4400,13 +4378,14 @@ static void SetTerminalModeInternal(int mode, bool enable, bool private_mode) {
                 ACTIVE_SESSION.cursor.visible = enable;
                 break;
 
-            case 38: // Tektronix Mode
+            case 38: // DECTEK - Tektronix Mode
                 if (enable) {
                     ACTIVE_SESSION.parse_state = PARSE_TEKTRONIX;
-                    terminal.vector_count = 0; // Clear vector screen
-                    terminal.tektronix.state = 0; // Start in Alpha Mode
-                    terminal.tektronix.sub_state = 0;
+                    terminal.tektronix.state = 0; // Alpha
+                    terminal.tektronix.x = 0;
+                    terminal.tektronix.y = 0;
                     terminal.tektronix.pen_down = false;
+                    terminal.vector_count = 0; // Clear screen on entry
                 } else {
                     ACTIVE_SESSION.parse_state = VT_PARSE_NORMAL;
                 }
@@ -6475,7 +6454,7 @@ void ProcessPercentChar(unsigned char ch) {
     ACTIVE_SESSION.parse_state = VT_PARSE_NORMAL;
 }
 
-void ProcessTektronixChar(unsigned char ch) {
+static void ProcessTektronixChar(unsigned char ch) {
     // 1. Escape Sequence Escape
     if (ch == 0x1B) {
         // Switch to VT_PARSE_ESCAPE. Standard parser will handle the rest.
@@ -7738,7 +7717,34 @@ void DrawTerminal(void) {
         pc.cursor_blink_state = ACTIVE_SESSION.cursor.blink_state ? 1 : 0;
         pc.text_blink_state = ACTIVE_SESSION.text_blink_state ? 1 : 0;
 
-        SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
+        if (ACTIVE_SESSION.selection.active) {
+             uint32_t start_idx = ACTIVE_SESSION.selection.start_y * DEFAULT_TERM_WIDTH + ACTIVE_SESSION.selection.start_x;
+             uint32_t end_idx = ACTIVE_SESSION.selection.end_y * DEFAULT_TERM_WIDTH + ACTIVE_SESSION.selection.end_x;
+             if (start_idx > end_idx) { uint32_t t = start_idx; start_idx = end_idx; end_idx = t; }
+             pc.sel_start = start_idx;
+             pc.sel_end = end_idx;
+             pc.sel_active = 1;
+        }
+        pc.scanline_intensity = terminal.visual_effects.scanline_intensity;
+        pc.crt_curvature = terminal.visual_effects.curvature;
+
+        #if defined(SITUATION_USE_OPENGL)
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_screen_size", &pc.screen_size, SIT_UNIFORM_VEC2);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_char_size", &pc.char_size, SIT_UNIFORM_VEC2);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_grid_size", &pc.grid_size, SIT_UNIFORM_VEC2);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_time", &pc.time, SIT_UNIFORM_FLOAT);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_cursor_index", &pc.cursor_index, SIT_UNIFORM_INT);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_cursor_blink_state", &pc.cursor_blink_state, SIT_UNIFORM_INT);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_text_blink_state", &pc.text_blink_state, SIT_UNIFORM_INT);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_sel_start", &pc.sel_start, SIT_UNIFORM_INT);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_sel_end", &pc.sel_end, SIT_UNIFORM_INT);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_sel_active", &pc.sel_active, SIT_UNIFORM_INT);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_scanline_intensity", &pc.scanline_intensity, SIT_UNIFORM_FLOAT);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_crt_curvature", &pc.crt_curvature, SIT_UNIFORM_FLOAT);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_mouse_cursor_index", &pc.mouse_cursor_index, SIT_UNIFORM_INT);
+        #else
+            SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
+        #endif
 
         SituationCmdDispatch(cmd, DEFAULT_TERM_WIDTH, DEFAULT_TERM_HEIGHT, 1);
 
@@ -7755,10 +7761,10 @@ void DrawTerminal(void) {
             SituationCmdBindComputeTexture(cmd, 1, terminal.output_texture); // Read-Write
 
             // Push Constants
-            pc.cursor_index = terminal.vector_count; // Reusing slot for vector_count
+            pc.vector_count = terminal.vector_count;
             #if defined(SITUATION_USE_OPENGL)
                 SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_screen_size", &pc.screen_size, SIT_UNIFORM_VEC2);
-                SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_vector_count", &pc.cursor_index, SIT_UNIFORM_INT);
+                SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_vector_count", &pc.vector_count, SIT_UNIFORM_INT);
             #else
                 SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
             #endif
