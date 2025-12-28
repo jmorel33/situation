@@ -1057,8 +1057,9 @@ typedef struct {
     struct {
         int state; // 0=Alpha, 1=Graph
         int sub_state; // 0=HiY, 1=LoY, 2=HiX, 3=LoX
-        int x, y; // Current beam position (0-1023)
-        int pen_x, pen_y; // Current holding position
+        int x, y; // Current beam position (0-4095)
+        int holding_x, holding_y; // Holding registers
+        bool pen_down; // True=Draw, False=Move
     } tektronix;
 
     // Retro Visual Effects
@@ -4399,6 +4400,18 @@ static void SetTerminalModeInternal(int mode, bool enable, bool private_mode) {
                 ACTIVE_SESSION.cursor.visible = enable;
                 break;
 
+            case 38: // Tektronix Mode
+                if (enable) {
+                    ACTIVE_SESSION.parse_state = PARSE_TEKTRONIX;
+                    terminal.vector_count = 0; // Clear vector screen
+                    terminal.tektronix.state = 0; // Start in Alpha Mode
+                    terminal.tektronix.sub_state = 0;
+                    terminal.tektronix.pen_down = false;
+                } else {
+                    ACTIVE_SESSION.parse_state = VT_PARSE_NORMAL;
+                }
+                break;
+
             case 40: // Allow 80/132 Column Mode
                 // Placeholder for column mode switching (resize not implemented)
                 break;
@@ -5090,6 +5103,9 @@ void ExecuteDECRQM(void) { // Request Mode
                 break;
             case 25: // DECTCEM (Cursor Visible)
                 mode_state = ACTIVE_SESSION.dec_modes.cursor_visible ? 1 : 2;
+                break;
+            case 38: // Tektronix Mode
+                mode_state = (ACTIVE_SESSION.parse_state == PARSE_TEKTRONIX) ? 1 : 2;
                 break;
             case 47: // Alternate Screen
             case 1047:
@@ -6457,6 +6473,116 @@ void ProcessPercentChar(unsigned char ch) {
     }
 
     ACTIVE_SESSION.parse_state = VT_PARSE_NORMAL;
+}
+
+void ProcessTektronixChar(unsigned char ch) {
+    // 1. Escape Sequence Escape
+    if (ch == 0x1B) {
+        // Switch to VT_PARSE_ESCAPE. Standard parser will handle the rest.
+        // If it's ESC ETX (exit), the next char will be handled in ProcessEscapeChar
+        // which resets state to NORMAL if sequence is unknown/invalid, effectively exiting Tek mode.
+        // Or if it's ESC [ ? 38 l (exit), it will be handled by ProcessCSIChar -> ExecuteRM.
+        ACTIVE_SESSION.parse_state = VT_PARSE_ESCAPE;
+        return;
+    }
+
+    // 2. Control Codes
+    if (ch == 0x1D) { // GS - Graph Mode
+        terminal.tektronix.state = 1; // Graph
+        terminal.tektronix.pen_down = false; // First coord is Dark (Move)
+        return;
+    }
+    if (ch == 0x1F) { // US - Alpha Mode (Text)
+        terminal.tektronix.state = 0; // Alpha
+        return;
+    }
+    if (ch == 0x0C) { // FF - Clear Screen
+        terminal.vector_count = 0;
+        terminal.tektronix.pen_down = false; // Reset pen? Usually yes.
+        return;
+    }
+    if (ch < 0x20) {
+        // Other controls (CR, LF, BEL) might be relevant in Alpha mode.
+        if (terminal.tektronix.state == 0) { // Alpha
+             ProcessControlChar(ch);
+        }
+        return;
+    }
+
+    // 3. Alpha Mode Handling
+    if (terminal.tektronix.state == 0) {
+        // Just standard text processing? Or specialized Tek font?
+        // Let's fallback to ProcessNormalChar for Alpha mode bytes to show something.
+        ProcessNormalChar(ch);
+        return;
+    }
+
+    // 4. Graph Mode Coordinate Parsing
+    // Categories:
+    // HiY: 0x20 - 0x3F (001xxxxx)
+    // LoY: 0x60 - 0x7F (011xxxxx)
+    // HiX: 0x20 - 0x3F (001xxxxx) - Context dependent
+    // LoX: 0x40 - 0x5F (010xxxxx)
+
+    int val = ch & 0x1F; // 5 bits
+
+    if (ch >= 0x20 && ch <= 0x3F) {
+        // HiY or HiX
+        if (terminal.tektronix.sub_state == 1) { // Previous was LoY?
+            // Interpret as HiX
+            terminal.tektronix.holding_x = (terminal.tektronix.holding_x & 0x1F) | (val << 5);
+            terminal.tektronix.sub_state = 2; // Seen HiX (clears LoY flag)
+        } else {
+            // Interpret as HiY
+            terminal.tektronix.holding_y = (terminal.tektronix.holding_y & 0x1F) | (val << 5);
+            terminal.tektronix.sub_state = 0; // Seen HiY
+        }
+    } else if (ch >= 0x60 && ch <= 0x7F) {
+        // LoY
+        terminal.tektronix.holding_y = (terminal.tektronix.holding_y & ~0x1F) | val;
+        terminal.tektronix.sub_state = 1; // Flag: Next 0x20-3F is HiX
+    } else if (ch >= 0x40 && ch <= 0x5F) {
+        // LoX - Trigger
+        terminal.tektronix.holding_x = (terminal.tektronix.holding_x & ~0x1F) | val;
+
+        // DRAW
+        if (terminal.tektronix.pen_down) {
+            if (terminal.vector_count < terminal.vector_capacity) {
+                GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
+
+                // Tektronix 4010/4014 is 4096x4096 addressable (12-bit)
+                // However, 10-bit mode is 1024x1024.
+                // 12-bit addressing needs Extra Byte (not implemented here, assuming 10-bit logic for now).
+                // "10-bit coordinate (0-1023) or 12-bit (0-4095)".
+                // Our parsing logic (Hi/Lo) gives 5+5=10 bits.
+                // Max val = 1023.
+
+                float norm_x1 = (float)terminal.tektronix.x / 1024.0f;
+                float norm_y1 = (float)terminal.tektronix.y / 1024.0f;
+                float norm_x2 = (float)terminal.tektronix.holding_x / 1024.0f;
+                float norm_y2 = (float)terminal.tektronix.holding_y / 1024.0f;
+
+                // Flip Y (Tektronix 0,0 is bottom-left)
+                norm_y1 = 1.0f - norm_y1;
+                norm_y2 = 1.0f - norm_y2;
+
+                line->x0 = norm_x1;
+                line->y0 = norm_y1;
+                line->x1 = norm_x2;
+                line->y1 = norm_y2;
+                line->color = 0xFF00FF00; // Bright Green (ABGR: A=FF, B=00, G=FF, R=00)
+                line->intensity = 1.0f;
+
+                terminal.vector_count++;
+            }
+        }
+
+        // Update Position
+        terminal.tektronix.x = terminal.tektronix.holding_x;
+        terminal.tektronix.y = terminal.tektronix.holding_y;
+        terminal.tektronix.pen_down = true; // Subsequent coords will draw
+        terminal.tektronix.sub_state = 0; // Reset sub-state
+    }
 }
 
 void ProcessVT52Char(unsigned char ch) {
