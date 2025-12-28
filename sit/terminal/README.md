@@ -1,4 +1,4 @@
-# terminal.h - Enhanced Terminal Emulation Library v1.1
+# terminal.h - Enhanced Terminal Emulation Library v1.3
 (c) 2025 Jacques Morel
 
 <details>
@@ -36,7 +36,7 @@ This library provides a comprehensive terminal emulation solution, aiming for co
 
 The library processes a stream of input characters (typically from a host application or PTY) and updates an internal screen buffer. This buffer, representing the terminal display, is then rendered to the screen. It handles a wide range of escape sequences to control cursor movement, text attributes, colors, screen clearing, scrolling, and various terminal modes.
 
-**v1.1 Major Change:** The rendering engine now utilizes a **Compute Shader** pipeline via Shader Storage Buffer Objects (SSBO), providing high-performance, GPU-accelerated text rendering and full integration with the Situation library's resource management.
+**v1.3 Major Change:** Introduced Session Management (Multi-session/Split Screen) and Retro Visual Effects (CRT simulation). The rendering engine continues to utilize a **Compute Shader** pipeline via Shader Storage Buffer Objects (SSBO).
 
 ## Key Features
 
@@ -58,6 +58,8 @@ The library processes a stream of input characters (typically from a host applic
 -   Input pipeline with performance management options.
 -   Callback system for responses to host, title changes, and bell.
 -   Diagnostic and testing utilities.
+-   **Multi-Session Support:** Up to 3 independent terminal sessions with split-screen compositing.
+-   **Retro CRT Effects:** Configurable screen curvature and scanlines.
 
 ## How It Works
 
@@ -188,6 +190,9 @@ These functions add data to an internal buffer, which `UpdateTerminal()` process
 -   **Programmable Keys (DECUDK):** Enabled if VT level is VT320+. `DefineFunctionKey(int fkey_num, const char* seq)` for F1-F24.
 -   **Bracketed Paste:**
     -   `EnableBracketedPaste(bool enable)`. Controlled by `CSI ? 2004 h/l`. `IsBracketedPasteActive()`, `ProcessPasteData(...)`.
+-   **Session Management:**
+    -   `SetActiveSession(index)`: Switch between session 0, 1, or 2.
+    -   `SetSplitScreen(true, row, top, bot)`: Enable split-screen viewing.
 
 ### 4.6. Window and Title Management
 
