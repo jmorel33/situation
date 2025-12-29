@@ -1100,6 +1100,7 @@ typedef struct {
         uint32_t color; // Current RGBA color
         char command; // Current command letter (P, V, C, T, W, etc.)
         int params[16]; // Numeric parameters for current command
+        bool params_relative[16]; // True if parameter was explicitly signed (+/-)
         int param_count; // Number of parameters parsed so far
         bool has_comma; // Was a comma seen? (Parameter separator)
         bool has_bracket; // Was an opening bracket seen? (Option/Vector list)
@@ -1110,6 +1111,7 @@ typedef struct {
         int current_val;
         int current_sign;
         bool parsing_val;
+        bool val_is_relative;
 
         // Text Command
         char text_buffer[256];
@@ -6558,107 +6560,111 @@ void ProcessPercentChar(unsigned char ch) {
 static void ExecuteReGISCommand(void) {
     if (terminal.regis.command == 0) return;
 
-    int p0 = terminal.regis.params[0];
-    int p1 = (terminal.regis.param_count > 0) ? terminal.regis.params[1] : 0;
+    int max_idx = terminal.regis.param_count;
 
-    if (terminal.regis.command == 'P') { // Position
-        terminal.regis.x = p0;
-        terminal.regis.y = p1;
-    } else if (terminal.regis.command == 'V') { // Vector
-        // Standard ReGIS V[x,y] is absolute
-        // Relative is usually handled via different syntax or modifiers not yet fully parsed,
-        // but for now we assume absolute as per basic spec.
-        if (terminal.vector_count < terminal.vector_capacity) {
-            GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
+    if (terminal.regis.command == 'P' || terminal.regis.command == 'V') {
+        // Position / Vector
+        // Pairs of (x,y)
+        for (int i = 0; i <= max_idx; i += 2) {
+            int val_x = terminal.regis.params[i];
+            bool rel_x = terminal.regis.params_relative[i];
 
-            float norm_x1 = (float)terminal.regis.x / 800.0f;
-            float norm_y1 = (float)terminal.regis.y / 480.0f;
-            float norm_x2 = (float)p0 / 800.0f;
-            float norm_y2 = (float)p1 / 480.0f;
+            // ReGIS spec says omitted coord uses previous value.
+            int val_y = (i + 1 <= max_idx) ? terminal.regis.params[i+1] : terminal.regis.y;
+            if (i + 1 > max_idx) val_y = terminal.regis.y; // Force current Y if missing
 
-            line->x0 = norm_x1;
-            line->y0 = 1.0f - norm_y1;
-            line->x1 = norm_x2;
-            line->y1 = 1.0f - norm_y2;
-            line->color = terminal.regis.color;
-            line->intensity = 1.0f;
+            bool rel_y = (i + 1 <= max_idx) ? terminal.regis.params_relative[i+1] : false;
 
-            terminal.vector_count++;
+            int target_x = rel_x ? (terminal.regis.x + val_x) : val_x;
+            int target_y = rel_y ? (terminal.regis.y + val_y) : val_y;
+
+            // Clamp
+            if (target_x < 0) target_x = 0; if (target_x > 799) target_x = 799;
+            if (target_y < 0) target_y = 0; if (target_y > 479) target_y = 479;
+
+            if (terminal.regis.command == 'V') {
+                if (terminal.vector_count < terminal.vector_capacity) {
+                    GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
+                    line->x0 = (float)terminal.regis.x / 800.0f;
+                    line->y0 = 1.0f - ((float)terminal.regis.y / 480.0f);
+                    line->x1 = (float)target_x / 800.0f;
+                    line->y1 = 1.0f - ((float)target_y / 480.0f);
+                    line->color = terminal.regis.color;
+                    line->intensity = 1.0f;
+                    terminal.vector_count++;
+                }
+            }
+
+            terminal.regis.x = target_x;
+            terminal.regis.y = target_y;
         }
-        terminal.regis.x = p0;
-        terminal.regis.y = p1;
+
     } else if (terminal.regis.command == 'C') { // Circle
-        // C[radius] or C[x,y] (circumference point)
-        // If 1 param, radius. If 2 params, point.
-        int radius = 0;
-        if (terminal.regis.param_count == 1) { // 2 params actually means count=1 (0 and 1)
-             // Distance from current to p0,p1
-             float dx = (float)(p0 - terminal.regis.x);
-             float dy = (float)(p1 - terminal.regis.y);
-             radius = (int)sqrtf(dx*dx + dy*dy);
-        } else {
-             radius = p0;
+        for (int i = 0; i <= max_idx; i += 2) {
+             int val1 = terminal.regis.params[i];
+             bool rel1 = terminal.regis.params_relative[i];
+
+             int radius = 0;
+             if (i + 1 > max_idx) {
+                 radius = val1; // Assume absolute length if single arg
+             } else {
+                 int val2 = terminal.regis.params[i+1];
+                 bool rel2 = terminal.regis.params_relative[i+1];
+                 int px = rel1 ? (terminal.regis.x + val1) : val1;
+                 int py = rel2 ? (terminal.regis.y + val2) : val2;
+                 float dx = (float)(px - terminal.regis.x);
+                 float dy = (float)(py - terminal.regis.y);
+                 radius = (int)sqrtf(dx*dx + dy*dy);
+             }
+
+             // Draw Circle
+             int cx = terminal.regis.x;
+             int cy = terminal.regis.y;
+             int segments = 32;
+             float angle_step = 6.283185f / segments;
+             float ncx = (float)cx / 800.0f;
+             float ncy = (float)cy / 480.0f;
+             float nr_x = (float)radius / 800.0f;
+             float nr_y = (float)radius / 480.0f;
+
+             for (int j = 0; j < segments; j++) {
+                if (terminal.vector_count >= terminal.vector_capacity) break;
+                float a1 = j * angle_step;
+                float a2 = (j + 1) * angle_step;
+                float x1 = ncx + cosf(a1) * nr_x;
+                float y1 = ncy + sinf(a1) * nr_y;
+                float x2 = ncx + cosf(a2) * nr_x;
+                float y2 = ncy + sinf(a2) * nr_y;
+
+                GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
+                line->x0 = x1;
+                line->y0 = 1.0f - y1;
+                line->x1 = x2;
+                line->y1 = 1.0f - y2;
+                line->color = terminal.regis.color;
+                line->intensity = 1.0f;
+                terminal.vector_count++;
+             }
         }
 
-        int cx = terminal.regis.x;
-        int cy = terminal.regis.y;
-        int segments = 32;
-        float angle_step = 6.283185f / segments;
-        float ncx = (float)cx / 800.0f;
-        float ncy = (float)cy / 480.0f;
-        float nr_x = (float)radius / 800.0f;
-        float nr_y = (float)radius / 480.0f;
-
-        for (int i = 0; i < segments; i++) {
-            if (terminal.vector_count >= terminal.vector_capacity) break;
-            float a1 = i * angle_step;
-            float a2 = (i + 1) * angle_step;
-            float x1 = ncx + cosf(a1) * nr_x;
-            float y1 = ncy + sinf(a1) * nr_y;
-            float x2 = ncx + cosf(a2) * nr_x;
-            float y2 = ncy + sinf(a2) * nr_y;
-
-            GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
-            line->x0 = x1;
-            line->y0 = 1.0f - y1;
-            line->x1 = x2;
-            line->y1 = 1.0f - y2;
-            line->color = terminal.regis.color;
-            line->intensity = 1.0f;
-            terminal.vector_count++;
+    } else if (terminal.regis.command == 'S') {
+        if (terminal.regis.option_command == 'E') {
+             terminal.vector_count = 0;
         }
-    } else if (terminal.regis.command == 'S') { // Screen
-        // S(E) - Erase
-        // S(C0) - Background color?
-        // Basic impl: just clear
-        terminal.vector_count = 0;
-    } else if (terminal.regis.command == 'W') { // Write Controls
-        // W(I...) Intensity/Color
-        // This is usually parsed as sub-options.
-        // If we have parsed `I` as option_command and params[0] as color index.
+
+    } else if (terminal.regis.command == 'W') {
         if (terminal.regis.option_command == 'I' || terminal.regis.option_command == 'C') {
              int color_idx = terminal.regis.params[0];
-             // Map index to palette (0-15 standard)
              if (color_idx >= 0 && color_idx < 16) {
                  Color c = ansi_colors[color_idx];
                  terminal.regis.color = (uint32_t)c.r | ((uint32_t)c.g << 8) | ((uint32_t)c.b << 16) | 0xFF000000;
              }
         }
-    } else if (terminal.regis.command == 'T') { // Text
-        // Draw the text string at current position
-        // This logic runs at the END of a string or character parse.
-        // We'll rely on ProcessReGISChar to feed characters or the buffer.
-        // But ExecuteReGISCommand is called when ']' or new command.
-        // For T, the content is the string.
-        // Implementation moved to ProcessReGISChar's string handler.
-        // If called here with params, it might be T(S1) size etc.
     }
 }
 
 static void ProcessReGISChar(unsigned char ch) {
-    // 1. Exit ReGIS on ESC \ (ST)
-    if (ch == 0x1B) {
-        // Execute any pending command before exiting
+    if (ch == 0x1B) { // ESC \ (ST)
         if (terminal.regis.state == 1 || terminal.regis.state == 3) {
             ExecuteReGISCommand();
         }
@@ -6666,46 +6672,27 @@ static void ProcessReGISChar(unsigned char ch) {
         return;
     }
 
-    // 2. Text Command Processing (String accumulation)
     if (terminal.regis.state == 3) { // Parsing Text String
         if (ch == terminal.regis.string_terminator) {
-            // End of string
             terminal.regis.text_buffer[terminal.regis.text_pos] = '\0';
-
-            // Draw Text Vectors (Procedural Bitmap Stroking)
-            // Uses standard vga_perfect_8x8_font for full ASCII support without large vector tables.
-            float scale = 2.0f; // Scale factor (8px -> 16 units)
+            float scale = 2.0f;
             int start_x = terminal.regis.x;
-            int start_y = terminal.regis.y; // Top-left of char
-
+            int start_y = terminal.regis.y;
             const unsigned char* font_base = vga_perfect_8x8_font;
 
             for(int i=0; terminal.regis.text_buffer[i] != '\0'; i++) {
                 unsigned char c = (unsigned char)terminal.regis.text_buffer[i];
                 const unsigned char* glyph = &font_base[c * 8];
-
-                // For each row in the 8x8 glyph
                 for(int r=0; r<8; r++) {
                     unsigned char row = glyph[r];
-                    // Scan for runs of pixels to turn into lines
                     for(int c_bit=0; c_bit<8; c_bit++) {
                         if ((row >> (7-c_bit)) & 1) {
-                            // Found a pixel start. Check run length.
                             int len = 1;
-                            while(c_bit+len < 8 && ((row >> (7-(c_bit+len))) & 1)) {
-                                len++;
-                            }
-
-                            // Draw vector for this run
-                            // Note: ReGIS coordinate system: 0,0 is Top-Left.
-                            // Our buffer uses normalized coords with Y inverted (1.0 - y) for OpenGL bottom-up?
-                            // Based on other drawing commands using 1.0 - y/480, we assume Y is inverted in buffer.
-
+                            while(c_bit+len < 8 && ((row >> (7-(c_bit+len))) & 1)) len++;
                             float x0 = start_x + (c_bit * scale);
-                            float y0 = start_y + (r * scale * 1.5f); // 1.5 aspect correction? 8x8 is square pixels, but vector space might differ.
-                            float x1 = start_x + ((c_bit + len) * scale); // Connect to end of pixel
-                            float y1 = y0; // Horizontal stroke
-
+                            float y0 = start_y + (r * scale * 1.5f);
+                            float x1 = start_x + ((c_bit + len) * scale);
+                            float y1 = y0;
                             if (terminal.vector_count < terminal.vector_capacity) {
                                 GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
                                 line->x0 = x0 / 800.0f;
@@ -6716,16 +6703,14 @@ static void ProcessReGISChar(unsigned char ch) {
                                 line->intensity = 1.0f;
                                 terminal.vector_count++;
                              }
-
-                            c_bit += len - 1; // Skip pixels we just drew
+                            c_bit += len - 1;
                         }
                     }
                 }
-                start_x += (int)(9 * scale); // Advance width (8 + spacing)
+                start_x += (int)(9 * scale);
             }
             terminal.regis.x = start_x;
-
-            terminal.regis.state = 1; // Back to options/command
+            terminal.regis.state = 1;
             terminal.regis.text_pos = 0;
         } else {
             if (terminal.regis.text_pos < 255) {
@@ -6735,128 +6720,108 @@ static void ProcessReGISChar(unsigned char ch) {
         return;
     }
 
-    // Ignore whitespace and control chars (mostly)
     if (ch <= 0x20 || ch == 0x7F) return;
 
-    // Simple State Machine
     if (terminal.regis.state == 0) { // Expecting Command
         if (isalpha(ch)) {
             terminal.regis.command = toupper(ch);
-            terminal.regis.state = 1; // Expecting Values/Options
+            terminal.regis.state = 1;
             terminal.regis.param_count = 0;
             terminal.regis.has_bracket = false;
             terminal.regis.has_paren = false;
-            // Clear params
-            for(int i=0; i<16; i++) terminal.regis.params[i] = 0;
-
-            // Text Command Special Case
-            if (terminal.regis.command == 'T') {
-                 // Check if next char is quote?
-                 // We wait for quote in state 1 logic.
+            for(int i=0; i<16; i++) {
+                terminal.regis.params[i] = 0;
+                terminal.regis.params_relative[i] = false;
             }
-        } else if (ch == ';') {
-            // Resync / NOP
         }
     } else if (terminal.regis.state == 1) { // Expecting Values/Options
         if (ch == '\'' || ch == '"') {
-             // Start string (for Text command)
              if (terminal.regis.command == 'T') {
-                 terminal.regis.state = 3; // Text String mode
+                 terminal.regis.state = 3;
                  terminal.regis.string_terminator = ch;
                  terminal.regis.text_pos = 0;
                  return;
              }
         }
-
         if (ch == '[') {
             terminal.regis.has_bracket = true;
-            terminal.regis.has_comma = false; // Reset for new coordinate pair
+            terminal.regis.has_comma = false;
             terminal.regis.parsing_val = false;
         } else if (ch == ']') {
-            // Commit any pending number
             if (terminal.regis.parsing_val) {
                  terminal.regis.params[terminal.regis.param_count] = terminal.regis.current_sign * terminal.regis.current_val;
-                 // Don't auto-increment param_count here?
-                 // Standard behavior: comma increments. End bracket implies end of current set.
+                 terminal.regis.params_relative[terminal.regis.param_count] = terminal.regis.val_is_relative;
             }
             terminal.regis.parsing_val = false;
-
             terminal.regis.has_bracket = false;
-            // End of options block -> Execute
             ExecuteReGISCommand();
-
-            // Reset parameters for next option block (Polyline support)
-            // e.g. V[100,100][200,200]
             terminal.regis.param_count = 0;
-            for(int i=0; i<16; i++) terminal.regis.params[i] = 0;
-
+            for(int i=0; i<16; i++) {
+                terminal.regis.params[i] = 0;
+                terminal.regis.params_relative[i] = false;
+            }
         } else if (ch == '(') {
             terminal.regis.has_paren = true;
             terminal.regis.parsing_val = false;
         } else if (ch == ')') {
-            // End of option
             if (terminal.regis.parsing_val) {
                  terminal.regis.params[terminal.regis.param_count] = terminal.regis.current_sign * terminal.regis.current_val;
+                 terminal.regis.params_relative[terminal.regis.param_count] = terminal.regis.val_is_relative;
             }
             terminal.regis.has_paren = false;
             terminal.regis.parsing_val = false;
-
-            // Execute option side-effect immediately? e.g. W(I3)
-            ExecuteReGISCommand(); // This will check option_command
-
-            terminal.regis.option_command = 0; // Clear option
+            ExecuteReGISCommand();
+            terminal.regis.option_command = 0;
             terminal.regis.param_count = 0;
-            for(int i=0; i<16; i++) terminal.regis.params[i] = 0;
-
+            for(int i=0; i<16; i++) {
+                terminal.regis.params[i] = 0;
+                terminal.regis.params_relative[i] = false;
+            }
         } else if (isdigit(ch) || ch == '-' || ch == '+') {
-            // Start of number?
             if (!terminal.regis.parsing_val) {
                 terminal.regis.parsing_val = true;
                 terminal.regis.current_val = 0;
                 terminal.regis.current_sign = 1;
+                terminal.regis.val_is_relative = false;
             }
-
             if (ch == '-') {
                 terminal.regis.current_sign = -1;
+                terminal.regis.val_is_relative = true;
             } else if (ch == '+') {
                 terminal.regis.current_sign = 1;
+                terminal.regis.val_is_relative = true;
             } else if (isdigit(ch)) {
                terminal.regis.current_val = terminal.regis.current_val * 10 + (ch - '0');
             }
-            // Update live param in case we are peaking?
-            // Better to commit on separator. But existing code peaked `params`.
-            // Let's commit to current param slot tentatively.
             terminal.regis.params[terminal.regis.param_count] = terminal.regis.current_sign * terminal.regis.current_val;
-
+            terminal.regis.params_relative[terminal.regis.param_count] = terminal.regis.val_is_relative;
         } else if (ch == ',') {
-            // Separator: Commit and Move to next param
             if (terminal.regis.parsing_val) {
                 terminal.regis.params[terminal.regis.param_count] = terminal.regis.current_sign * terminal.regis.current_val;
+                terminal.regis.params_relative[terminal.regis.param_count] = terminal.regis.val_is_relative;
                 terminal.regis.parsing_val = false;
             }
-
             if (terminal.regis.param_count < 15) {
                 terminal.regis.param_count++;
-                terminal.regis.params[terminal.regis.param_count] = 0; // Init next
+                terminal.regis.params[terminal.regis.param_count] = 0;
+                terminal.regis.params_relative[terminal.regis.param_count] = false;
             }
             terminal.regis.has_comma = true;
         } else if (isalpha(ch)) {
-            // Could be new command OR Option letter inside parens e.g. W(I...)
             if (terminal.regis.has_paren) {
                  terminal.regis.option_command = toupper(ch);
-                 terminal.regis.param_count = 0; // Reset params for this option
+                 terminal.regis.param_count = 0;
                  terminal.regis.parsing_val = false;
             } else {
-                // New command starts!
-                // First execute the current command with accumulated params
                 ExecuteReGISCommand();
-
-                // Start new command
                 terminal.regis.command = toupper(ch);
                 terminal.regis.state = 1;
                 terminal.regis.param_count = 0;
                 terminal.regis.parsing_val = false;
-                for(int i=0; i<16; i++) terminal.regis.params[i] = 0;
+                for(int i=0; i<16; i++) {
+                    terminal.regis.params[i] = 0;
+                    terminal.regis.params_relative[i] = false;
+                }
             }
         }
     }
