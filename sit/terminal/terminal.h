@@ -522,6 +522,11 @@ typedef struct {
 "}\n" \
 "\n" \
 "void main() {\n" \
+"    // Bindless Accessors\n" \
+"    TerminalBuffer terminal_data = TerminalBuffer(pc.terminal_buffer_addr);\n" \
+"    sampler2D font_texture = sampler2D(pc.font_texture_handle);\n" \
+"    sampler2D sixel_texture = sampler2D(pc.sixel_texture_handle);\n" \
+"\n" \
 "    uvec2 pixel_coords = gl_GlobalInvocationID.xy;\n" \
 "    if (pixel_coords.x >= uint(pc.screen_size.x) || pixel_coords.y >= uint(pc.screen_size.y)) return;\n" \
 "\n" \
@@ -656,10 +661,12 @@ typedef struct {
 "\n" \
 "void main() {\n" \
 "    uint idx = gl_GlobalInvocationID.x;\n" \
-"    // Note: In OpenGL we map PushConstants to Uniforms, handled in header\n" \
 "    if (idx >= pc.vector_count) return;\n" \
 "\n" \
-"    GPUVectorLine line = lines[idx];\n" \
+"    // Bindless Buffer Access\n" \
+"    VectorBuffer lines = VectorBuffer(pc.vector_buffer_addr);\n" \
+"\n" \
+"    GPUVectorLine line = lines.data[idx];\n" \
 "    vec2 p0 = line.start * pc.screen_size;\n" \
 "    vec2 p1 = line.end * pc.screen_size;\n" \
 "    vec4 color = UnpackColor(line.color);\n" \
@@ -689,14 +696,18 @@ typedef struct {
 #if defined(SITUATION_USE_VULKAN)
 
     // --- VULKAN DEFINITIONS ---
+    // Note: GL_ARB_bindless_texture enables casting uint64_t to sampler2D
     #define TERMINAL_COMPUTE_SHADER_SRC \
-    "#version 450\n" \
+    "#version 460\n" \
+    "#define VULKAN_BACKEND\n" \
+    "#extension GL_EXT_buffer_reference : require\n" \
+    "#extension GL_EXT_scalar_block_layout : require\n" \
+    "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n" \
+    "#extension GL_ARB_bindless_texture : require\n" \
     "layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n" \
     "struct GPUCell { uint char_code; uint fg_color; uint bg_color; uint flags; };\n" \
-    "layout(std430, set = 0, binding = 0) readonly buffer TerminalBuffer { GPUCell cells[]; } terminal_data;\n" \
+    "layout(buffer_reference, scalar) buffer TerminalBuffer { GPUCell cells[]; };\n" \
     "layout(set = 1, binding = 0, rgba8) writeonly uniform image2D output_image;\n" \
-    "layout(set = 2, binding = 0) uniform sampler2D font_texture;\n" \
-    "layout(set = 3, binding = 0) uniform sampler2D sixel_texture;\n" \
     "layout(push_constant) uniform PushConstants {\n" \
     "    vec2 screen_size;\n" \
     "    vec2 char_size;\n" \
@@ -711,17 +722,41 @@ typedef struct {
     "    float scanline_intensity;\n" \
     "    float crt_curvature;\n" \
     "    uint mouse_cursor_index;\n" \
+    "    uint64_t terminal_buffer_addr;\n" \
+    "    uint64_t vector_buffer_addr;\n" \
+    "    uint64_t font_texture_handle;\n" \
+    "    uint64_t sixel_texture_handle;\n" \
     "} pc;\n" \
     TERMINAL_SHADER_BODY
 
     #define VECTOR_COMPUTE_SHADER_SRC \
-    "#version 450\n" \
+    "#version 460\n" \
+    "#extension GL_EXT_buffer_reference : require\n" \
+    "#extension GL_EXT_scalar_block_layout : require\n" \
+    "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n" \
     "layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n" \
     "struct GPUVectorLine { vec2 start; vec2 end; uint color; float intensity; vec2 _pad; };\n" \
-    "layout(std430, set = 0, binding = 0) readonly buffer VectorBuffer { GPUVectorLine lines[]; };\n" \
+    "layout(buffer_reference, scalar) buffer VectorBuffer { GPUVectorLine data[]; };\n" \
     "layout(set = 1, binding = 0, rgba8) uniform image2D output_image;\n" \
     "layout(push_constant) uniform PushConstants {\n" \
-    "    vec2 screen_size; vec2 char_size; vec2 grid_size; float time; uint vector_count;\n" \
+    "    vec2 screen_size;\n" \
+    "    vec2 char_size;\n" \
+    "    vec2 grid_size;\n" \
+    "    float time;\n" \
+    "    uint cursor_index;\n" \
+    "    uint cursor_blink_state;\n" \
+    "    uint text_blink_state;\n" \
+    "    uint sel_start;\n" \
+    "    uint sel_end;\n" \
+    "    uint sel_active;\n" \
+    "    float scanline_intensity;\n" \
+    "    float crt_curvature;\n" \
+    "    uint mouse_cursor_index;\n" \
+    "    uint64_t terminal_buffer_addr;\n" \
+    "    uint64_t vector_buffer_addr;\n" \
+    "    uint64_t font_texture_handle;\n" \
+    "    uint64_t sixel_texture_handle;\n" \
+    "    uint vector_count;\n" \
     "} pc;\n" \
     VECTOR_SHADER_BODY
 
@@ -729,13 +764,15 @@ typedef struct {
 
     // --- OPENGL DEFINITIONS ---
     #define TERMINAL_COMPUTE_SHADER_SRC \
-    "#version 430\n" \
+    "#version 460\n" \
+    "#extension GL_EXT_buffer_reference : require\n" \
+    "#extension GL_EXT_scalar_block_layout : require\n" \
+    "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n" \
+    "#extension GL_ARB_bindless_texture : require\n" \
     "layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n" \
     "struct GPUCell { uint char_code; uint fg_color; uint bg_color; uint flags; };\n" \
-    "layout(std430, binding = 0) readonly buffer TerminalBuffer { GPUCell cells[]; } terminal_data;\n" \
+    "layout(buffer_reference, scalar) buffer TerminalBuffer { GPUCell cells[]; };\n" \
     "layout(binding = 1, rgba8) writeonly uniform image2D output_image;\n" \
-    "layout(binding = 2) uniform sampler2D font_texture;\n" \
-    "layout(binding = 3) uniform sampler2D sixel_texture;\n" \
     "layout(location = 0) uniform vec2 u_screen_size;\n" \
     "layout(location = 1) uniform vec2 u_char_size;\n" \
     "layout(location = 2) uniform vec2 u_grid_size;\n" \
@@ -749,6 +786,9 @@ typedef struct {
     "layout(location = 10) uniform float u_scanline_intensity;\n" \
     "layout(location = 11) uniform float u_crt_curvature;\n" \
     "layout(location = 12) uniform uint u_mouse_cursor_index;\n" \
+    "layout(location = 13) uniform uvec2 u_terminal_buffer_addr;\n" \
+    "layout(location = 14) uniform uvec2 u_font_texture_handle;\n" \
+    "layout(location = 15) uniform uvec2 u_sixel_texture_handle;\n" \
     "struct PushConsts {\n" \
     "    vec2 screen_size;\n" \
     "    vec2 char_size;\n" \
@@ -763,28 +803,34 @@ typedef struct {
     "    float scanline_intensity;\n" \
     "    float crt_curvature;\n" \
     "    uint mouse_cursor_index;\n" \
+    "    uint64_t terminal_buffer_addr;\n" \
+    "    uint64_t vector_buffer_addr;\n" \
+    "    uint64_t font_texture_handle;\n" \
+    "    uint64_t sixel_texture_handle;\n" \
     "};\n" \
     "PushConsts pc = PushConsts(\n" \
     "    u_screen_size, u_char_size, u_grid_size, u_time,\n" \
     "    u_cursor_index, u_cursor_blink_state, u_text_blink_state,\n" \
     "    u_sel_start, u_sel_end, u_sel_active,\n" \
-    "    u_scanline_intensity, u_crt_curvature, u_mouse_cursor_index\n" \
+    "    u_scanline_intensity, u_crt_curvature, u_mouse_cursor_index,\n" \
+    "    packUint2x32(u_terminal_buffer_addr), 0, packUint2x32(u_font_texture_handle), packUint2x32(u_sixel_texture_handle)\n" \
     ");\n" \
     TERMINAL_SHADER_BODY
 
-    // Note: OpenGL doesn't have PushConstants, so we map Uniforms to a struct 'pc'
-    // to match the body code.
     #define VECTOR_COMPUTE_SHADER_SRC \
-    "#version 430\n" \
+    "#version 460\n" \
+    "#extension GL_EXT_buffer_reference : require\n" \
+    "#extension GL_EXT_scalar_block_layout : require\n" \
+    "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n" \
     "layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n" \
     "struct GPUVectorLine { vec2 start; vec2 end; uint color; float intensity; vec2 _pad; };\n" \
-    "layout(std430, binding = 0) readonly buffer VectorBuffer { GPUVectorLine lines[]; };\n" \
+    "layout(buffer_reference, scalar) buffer VectorBuffer { GPUVectorLine data[]; };\n" \
     "layout(binding = 1, rgba8) uniform image2D output_image;\n" \
     "layout(location = 0) uniform vec2 u_screen_size;\n" \
     "layout(location = 1) uniform uint u_vector_count;\n" \
-    "// Mock struct to match Vulkan body\n" \
-    "struct PushConsts { vec2 screen_size; uint vector_count; };\n" \
-    "PushConsts pc = PushConsts(u_screen_size, u_vector_count);\n" \
+    "layout(location = 2) uniform uvec2 u_vector_buffer_addr;\n" \
+    "struct PushConsts { vec2 screen_size; uint vector_count; uint64_t vector_buffer_addr; };\n" \
+    "PushConsts pc = PushConsts(u_screen_size, u_vector_count, packUint2x32(u_vector_buffer_addr));\n" \
     VECTOR_SHADER_BODY
 
 #endif
@@ -796,7 +842,11 @@ typedef struct {
     float time;
     union {
         uint32_t cursor_index;
-        uint32_t vector_count;
+        // For Vector Shader, we use a separate layout or the end of the struct
+        // but aligning with the GLSL struct is key.
+        // The GLSL struct 'PushConsts' in Vector shader is minimal.
+        // The Vulkan 'PushConstants' is larger.
+        // We will rely on explicit offsets or names.
     };
     uint32_t cursor_blink_state;
     uint32_t text_blink_state;
@@ -806,6 +856,11 @@ typedef struct {
     float scanline_intensity;
     float crt_curvature;
     uint32_t mouse_cursor_index;
+    uint64_t terminal_buffer_addr;
+    uint64_t vector_buffer_addr;
+    uint64_t font_texture_handle;
+    uint64_t sixel_texture_handle;
+    uint32_t vector_count; // Appended for Vector shader access
 } TerminalPushConstants;
 
 #define GPU_ATTR_BOLD       (1 << 0)
@@ -7649,18 +7704,20 @@ void DrawTerminal(void) {
 
         SituationCmdBindComputePipeline(cmd, terminal.compute_pipeline);
 
-        SituationCmdBindDescriptorSet(cmd, 0, terminal.terminal_buffer);
+        // Bindless: No Descriptor Sets for Buffers (BDA used)
         SituationCmdBindComputeTexture(cmd, 1, terminal.output_texture);
-        SituationCmdBindTextureSet(cmd, 2, terminal.font_texture);
-
-        // Bind Sixel texture if active, otherwise bind dummy transparent texture to prevent shader crash
-        if (ACTIVE_SESSION.sixel.active && terminal.sixel_texture.generation != 0) {
-            SituationCmdBindTextureSet(cmd, 3, terminal.sixel_texture);
-        } else {
-            SituationCmdBindTextureSet(cmd, 3, terminal.dummy_sixel_texture);
-        }
 
         TerminalPushConstants pc = {0};
+        pc.terminal_buffer_addr = SituationGetBufferDeviceAddress(terminal.terminal_buffer);
+
+        // Full Bindless (Both Backends)
+        pc.font_texture_handle = SituationGetTextureHandle(terminal.font_texture);
+        if (ACTIVE_SESSION.sixel.active && terminal.sixel_texture.generation != 0) {
+            pc.sixel_texture_handle = SituationGetTextureHandle(terminal.sixel_texture);
+        } else {
+            pc.sixel_texture_handle = SituationGetTextureHandle(terminal.dummy_sixel_texture);
+        }
+
         pc.screen_size = (Vector2){{(float)DEFAULT_WINDOW_WIDTH, (float)DEFAULT_WINDOW_HEIGHT}};
         pc.char_size = (Vector2){{(float)DEFAULT_CHAR_WIDTH, (float)DEFAULT_CHAR_HEIGHT}};
         pc.grid_size = (Vector2){{(float)DEFAULT_TERM_WIDTH, (float)DEFAULT_TERM_HEIGHT}};
@@ -7742,6 +7799,10 @@ void DrawTerminal(void) {
             SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_scanline_intensity", &pc.scanline_intensity, SIT_UNIFORM_FLOAT);
             SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_crt_curvature", &pc.crt_curvature, SIT_UNIFORM_FLOAT);
             SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_mouse_cursor_index", &pc.mouse_cursor_index, SIT_UNIFORM_INT);
+            // Bindless Handles (Passed as IVEC2 -> uvec2 -> packUint2x32 -> uint64_t)
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_terminal_buffer_addr", &pc.terminal_buffer_addr, SIT_UNIFORM_IVEC2);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_font_texture_handle", &pc.font_texture_handle, SIT_UNIFORM_IVEC2);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_sixel_texture_handle", &pc.sixel_texture_handle, SIT_UNIFORM_IVEC2);
         #else
             SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
         #endif
@@ -7757,14 +7818,17 @@ void DrawTerminal(void) {
             SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE, SITUATION_BARRIER_COMPUTE_SHADER_READ);
 
             SituationCmdBindComputePipeline(cmd, terminal.vector_pipeline);
-            SituationCmdBindDescriptorSet(cmd, 0, terminal.vector_buffer);
+            // No buffer binding needed (BDA)
             SituationCmdBindComputeTexture(cmd, 1, terminal.output_texture); // Read-Write
 
             // Push Constants
             pc.vector_count = terminal.vector_count;
+            pc.vector_buffer_addr = SituationGetBufferDeviceAddress(terminal.vector_buffer);
+
             #if defined(SITUATION_USE_OPENGL)
                 SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_screen_size", &pc.screen_size, SIT_UNIFORM_VEC2);
                 SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_vector_count", &pc.vector_count, SIT_UNIFORM_INT);
+                SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_vector_buffer_addr", &pc.vector_buffer_addr, SIT_UNIFORM_IVEC2);
             #else
                 SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
             #endif
