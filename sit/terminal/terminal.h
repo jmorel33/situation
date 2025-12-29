@@ -131,7 +131,8 @@ typedef enum {
     PARSE_VT52,         // In VT52 compatibility mode
     PARSE_SIXEL,        // Parsing Sixel graphics data (ESC P q ... ST)
     PARSE_SIXEL_ST,
-    PARSE_TEKTRONIX     // Tektronix 4010/4014 vector graphics mode
+    PARSE_TEKTRONIX,    // Tektronix 4010/4014 vector graphics mode
+    PARSE_REGIS         // ReGIS graphics mode (ESC P p ... ST)
 } VTParseState;
 
 // =============================================================================
@@ -1091,6 +1092,20 @@ typedef struct {
         bool pen_down; // True=Draw, False=Move
     } tektronix;
 
+    // ReGIS Parser State
+    struct {
+        int state; // 0=Command, 1=Values, 2=Options
+        int x, y; // Current beam position (0-799, 0-479)
+        int save_x, save_y; // Saved position (stack depth 1)
+        uint32_t color; // Current RGBA color
+        char command; // Current command letter (P, V, C, etc.)
+        int params[16]; // Numeric parameters for current command
+        int param_count; // Number of parameters parsed so far
+        bool has_comma; // Was a comma seen? (Parameter separator)
+        bool has_bracket; // Was an opening bracket seen? (Option/Vector list)
+        char option_command; // Current option command being parsed
+    } regis;
+
     // Retro Visual Effects
     struct {
         float curvature;
@@ -1588,6 +1603,7 @@ void ProcessSOSChar(unsigned char ch) { ProcessGenericStringChar(ch, VT_PARSE_ES
 
 // Internal helper forward declaration
 static void ProcessTektronixChar(unsigned char ch);
+static void ProcessReGISChar(unsigned char ch);
 
 // Continue with enhanced character processing...
 void ProcessChar(unsigned char ch) {
@@ -1600,6 +1616,7 @@ void ProcessChar(unsigned char ch) {
         case PARSE_SIXEL_ST:            ProcessSixelSTChar(ch); break;
         case PARSE_VT52:                ProcessVT52Char(ch); break;
         case PARSE_TEKTRONIX:           ProcessTektronixChar(ch); break;
+        case PARSE_REGIS:               ProcessReGISChar(ch); break;
         case PARSE_SIXEL:               ProcessSixelChar(ch); break;
         case PARSE_CHARSET:             ProcessCharsetCommand(ch); break;
         case PARSE_HASH:                ProcessHashChar(ch); break;
@@ -1915,6 +1932,23 @@ void ProcessDCSChar(unsigned char ch) {
             ACTIVE_SESSION.sixel.y = ACTIVE_SESSION.cursor.y * DEFAULT_CHAR_HEIGHT;
 
             ACTIVE_SESSION.parse_state = PARSE_SIXEL;
+            ACTIVE_SESSION.escape_pos = 0;
+            return;
+        }
+
+        if (ch == 'p') {
+            // ReGIS (Remote Graphics Instruction Set)
+            // Initialize ReGIS state
+            terminal.regis.state = 0; // Expecting command
+            terminal.regis.command = 0;
+            terminal.regis.x = 0;
+            terminal.regis.y = 0;
+            terminal.regis.color = 0xFFFFFFFF; // White
+            terminal.regis.param_count = 0;
+            terminal.regis.has_comma = false;
+            terminal.regis.has_bracket = false;
+
+            ACTIVE_SESSION.parse_state = PARSE_REGIS;
             ACTIVE_SESSION.escape_pos = 0;
             return;
         }
@@ -6507,6 +6541,140 @@ void ProcessPercentChar(unsigned char ch) {
     }
 
     ACTIVE_SESSION.parse_state = VT_PARSE_NORMAL;
+}
+
+static void ExecuteReGISCommand(void) {
+    if (terminal.regis.command == 0) return;
+
+    int x_val = terminal.regis.params[0];
+    int y_val = (terminal.regis.param_count > 0) ? terminal.regis.params[1] : 0;
+
+    if (terminal.regis.command == 'P') { // Position
+        terminal.regis.x = x_val;
+        terminal.regis.y = y_val;
+    } else if (terminal.regis.command == 'V') { // Vector
+        if (terminal.vector_count < terminal.vector_capacity) {
+            GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
+
+            float norm_x1 = (float)terminal.regis.x / 800.0f;
+            float norm_y1 = (float)terminal.regis.y / 480.0f;
+            float norm_x2 = (float)x_val / 800.0f;
+            float norm_y2 = (float)y_val / 480.0f;
+
+            line->x0 = norm_x1;
+            line->y0 = 1.0f - norm_y1;
+            line->x1 = norm_x2;
+            line->y1 = 1.0f - norm_y2;
+            line->color = terminal.regis.color;
+            line->intensity = 1.0f;
+
+            terminal.vector_count++;
+        }
+        terminal.regis.x = x_val;
+        terminal.regis.y = y_val;
+    } else if (terminal.regis.command == 'C') { // Circle
+        int radius = x_val;
+        int cx = terminal.regis.x;
+        int cy = terminal.regis.y;
+        int segments = 32;
+        float angle_step = 6.283185f / segments;
+        float ncx = (float)cx / 800.0f;
+        float ncy = (float)cy / 480.0f;
+        float nr_x = (float)radius / 800.0f;
+        float nr_y = (float)radius / 480.0f;
+
+        for (int i = 0; i < segments; i++) {
+            if (terminal.vector_count >= terminal.vector_capacity) break;
+            float a1 = i * angle_step;
+            float a2 = (i + 1) * angle_step;
+            float x1 = ncx + cosf(a1) * nr_x;
+            float y1 = ncy + sinf(a1) * nr_y;
+            float x2 = ncx + cosf(a2) * nr_x;
+            float y2 = ncy + sinf(a2) * nr_y;
+
+            GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
+            line->x0 = x1;
+            line->y0 = 1.0f - y1;
+            line->x1 = x2;
+            line->y1 = 1.0f - y2;
+            line->color = terminal.regis.color;
+            line->intensity = 1.0f;
+            terminal.vector_count++;
+        }
+    } else if (terminal.regis.command == 'S') { // Screen
+        terminal.vector_count = 0;
+    }
+}
+
+static void ProcessReGISChar(unsigned char ch) {
+    // 1. Exit ReGIS on ESC \ (ST)
+    if (ch == 0x1B) {
+        // Execute any pending command before exiting
+        if (terminal.regis.state == 1) {
+            ExecuteReGISCommand();
+        }
+        ACTIVE_SESSION.parse_state = VT_PARSE_ESCAPE;
+        return;
+    }
+
+    // Ignore whitespace and control chars (mostly)
+    if (ch <= 0x20 || ch == 0x7F) return;
+
+    // Simple State Machine
+    if (terminal.regis.state == 0) { // Expecting Command
+        if (isalpha(ch)) {
+            terminal.regis.command = toupper(ch);
+            terminal.regis.state = 1; // Expecting Values/Options
+            terminal.regis.param_count = 0;
+            terminal.regis.has_bracket = false;
+            // Clear params array
+            for(int i=0; i<16; i++) terminal.regis.params[i] = 0;
+        } else if (ch == ';') {
+            // Resync / NOP
+        }
+    } else if (terminal.regis.state == 1) { // Expecting Values/Options
+        if (ch == '[') {
+            terminal.regis.has_bracket = true;
+            terminal.regis.has_comma = false; // Reset for new coordinate pair
+        } else if (ch == ']') {
+            terminal.regis.has_bracket = false;
+            // End of options block -> Execute
+            ExecuteReGISCommand();
+
+            // Reset parameters for next option block (Polyline support)
+            // e.g. V[100,100][200,200]
+            terminal.regis.param_count = 0;
+            for(int i=0; i<16; i++) terminal.regis.params[i] = 0;
+
+        } else if (isdigit(ch) || ch == '-' || ch == '+') {
+            // Parse number (simplified)
+            int digit = ch - '0';
+            if (ch == '-') { /* TODO: negative handling */ }
+            else if (isdigit(ch)) {
+               terminal.regis.params[terminal.regis.param_count] =
+                   terminal.regis.params[terminal.regis.param_count] * 10 + digit;
+            }
+        } else if (ch == ',') {
+            // Separator: Move to next param
+            if (terminal.regis.param_count < 15) {
+                terminal.regis.param_count++;
+                terminal.regis.params[terminal.regis.param_count] = 0; // Init next
+            }
+            terminal.regis.has_comma = true;
+        } else if (isalpha(ch)) {
+            // New command starts!
+            // First execute the current command with accumulated params
+            ExecuteReGISCommand();
+
+            // Start new command
+            terminal.regis.command = toupper(ch);
+            terminal.regis.state = 1;
+            terminal.regis.param_count = 0;
+            for(int i=0; i<16; i++) terminal.regis.params[i] = 0;
+        } else if (ch == '(' || ch == ')') {
+            // Option delimiters, ignore for now
+        }
+    }
 }
 
 static void ProcessTektronixChar(unsigned char ch) {
