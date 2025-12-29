@@ -1117,6 +1117,11 @@ typedef struct {
         char text_buffer[256];
         int text_pos;
         char string_terminator;
+
+        // Curve & Polygon support
+        struct { int x, y; } point_buffer[64];
+        int point_count;
+        char curve_mode; // 'C'ircle, 'A'rc, 'B'spline (Interpolated), 'O'pen (Unclosed)
     } regis;
 
     // Retro Visual Effects
@@ -6557,21 +6562,45 @@ void ProcessPercentChar(unsigned char ch) {
     ACTIVE_SESSION.parse_state = VT_PARSE_NORMAL;
 }
 
+static void ReGIS_DrawLine(int x0, int y0, int x1, int y1) {
+    if (terminal.vector_count < terminal.vector_capacity) {
+        GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
+        line->x0 = (float)x0 / 800.0f;
+        line->y0 = 1.0f - ((float)y0 / 480.0f);
+        line->x1 = (float)x1 / 800.0f;
+        line->y1 = 1.0f - ((float)y1 / 480.0f);
+        line->color = terminal.regis.color;
+        line->intensity = 1.0f;
+        terminal.vector_count++;
+    }
+}
+
+// Cubic B-Spline interpolation
+static void ReGIS_EvalBSpline(int p0x, int p0y, int p1x, int p1y, int p2x, int p2y, int p3x, int p3y, float t, int* out_x, int* out_y) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    float b0 = (-t3 + 3*t2 - 3*t + 1) / 6.0f;
+    float b1 = (3*t3 - 6*t2 + 4) / 6.0f;
+    float b2 = (-3*t3 + 3*t2 + 3*t + 1) / 6.0f;
+    float b3 = t3 / 6.0f;
+
+    *out_x = (int)(b0*p0x + b1*p1x + b2*p2x + b3*p3x);
+    *out_y = (int)(b0*p0y + b1*p1y + b2*p2y + b3*p3y);
+}
+
 static void ExecuteReGISCommand(void) {
     if (terminal.regis.command == 0) return;
 
     int max_idx = terminal.regis.param_count;
 
-    if (terminal.regis.command == 'P' || terminal.regis.command == 'V') {
-        // Position / Vector
-        // Pairs of (x,y)
+    // --- P: Position ---
+    if (terminal.regis.command == 'P') {
         for (int i = 0; i <= max_idx; i += 2) {
             int val_x = terminal.regis.params[i];
             bool rel_x = terminal.regis.params_relative[i];
-
-            // ReGIS spec says omitted coord uses previous value.
             int val_y = (i + 1 <= max_idx) ? terminal.regis.params[i+1] : terminal.regis.y;
-            if (i + 1 > max_idx) val_y = terminal.regis.y; // Force current Y if missing
+
+            if (i+1 > max_idx) val_y = terminal.regis.y; // Fallback if Y completely missing in pair
 
             bool rel_y = (i + 1 <= max_idx) ? terminal.regis.params_relative[i+1] : false;
 
@@ -6582,77 +6611,194 @@ static void ExecuteReGISCommand(void) {
             if (target_x < 0) target_x = 0; if (target_x > 799) target_x = 799;
             if (target_y < 0) target_y = 0; if (target_y > 479) target_y = 479;
 
-            if (terminal.regis.command == 'V') {
-                if (terminal.vector_count < terminal.vector_capacity) {
-                    GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
-                    line->x0 = (float)terminal.regis.x / 800.0f;
-                    line->y0 = 1.0f - ((float)terminal.regis.y / 480.0f);
-                    line->x1 = (float)target_x / 800.0f;
-                    line->y1 = 1.0f - ((float)target_y / 480.0f);
-                    line->color = terminal.regis.color;
-                    line->intensity = 1.0f;
-                    terminal.vector_count++;
-                }
-            }
+            terminal.regis.x = target_x;
+            terminal.regis.y = target_y;
+
+            terminal.regis.point_count = 0;
+        }
+    }
+    // --- V: Vector (Line) ---
+    else if (terminal.regis.command == 'V') {
+        for (int i = 0; i <= max_idx; i += 2) {
+            int val_x = terminal.regis.params[i];
+            bool rel_x = terminal.regis.params_relative[i];
+            int val_y = (i + 1 <= max_idx) ? terminal.regis.params[i+1] : terminal.regis.y;
+            if (i+1 > max_idx && !rel_x) val_y = terminal.regis.y;
+
+            bool rel_y = (i + 1 <= max_idx) ? terminal.regis.params_relative[i+1] : false;
+
+            int target_x = rel_x ? (terminal.regis.x + val_x) : val_x;
+            int target_y = rel_y ? (terminal.regis.y + val_y) : val_y;
+
+            if (target_x < 0) target_x = 0; if (target_x > 799) target_x = 799;
+            if (target_y < 0) target_y = 0; if (target_y > 479) target_y = 479;
+
+            ReGIS_DrawLine(terminal.regis.x, terminal.regis.y, target_x, target_y);
 
             terminal.regis.x = target_x;
             terminal.regis.y = target_y;
         }
+        terminal.regis.point_count = 0;
+    }
+    // --- C: Circle / Curve ---
+    else if (terminal.regis.command == 'C') {
+        if (terminal.regis.option_command == 'B') {
+            // --- B-Spline ---
+            for (int i = 0; i <= max_idx; i += 2) {
+                int val_x = terminal.regis.params[i];
+                bool rel_x = terminal.regis.params_relative[i];
+                int val_y = (i + 1 <= max_idx) ? terminal.regis.params[i+1] : terminal.regis.y;
+                bool rel_y = (i + 1 <= max_idx) ? terminal.regis.params_relative[i+1] : false;
 
-    } else if (terminal.regis.command == 'C') { // Circle
-        for (int i = 0; i <= max_idx; i += 2) {
-             int val1 = terminal.regis.params[i];
-             bool rel1 = terminal.regis.params_relative[i];
+                int px = rel_x ? (terminal.regis.x + val_x) : val_x;
+                int py = rel_y ? (terminal.regis.y + val_y) : val_y;
 
-             int radius = 0;
-             if (i + 1 > max_idx) {
-                 radius = val1; // Assume absolute length if single arg
-             } else {
-                 int val2 = terminal.regis.params[i+1];
-                 bool rel2 = terminal.regis.params_relative[i+1];
-                 int px = rel1 ? (terminal.regis.x + val1) : val1;
-                 int py = rel2 ? (terminal.regis.y + val2) : val2;
-                 float dx = (float)(px - terminal.regis.x);
-                 float dy = (float)(py - terminal.regis.y);
-                 radius = (int)sqrtf(dx*dx + dy*dy);
-             }
+                if (terminal.regis.point_count < 64) {
+                    if (terminal.regis.point_count == 0) {
+                        terminal.regis.point_buffer[0].x = terminal.regis.x;
+                        terminal.regis.point_buffer[0].y = terminal.regis.y;
+                        terminal.regis.point_count++;
+                    }
+                    terminal.regis.point_buffer[terminal.regis.point_count].x = px;
+                    terminal.regis.point_buffer[terminal.regis.point_count].y = py;
+                    terminal.regis.point_count++;
+                }
+                terminal.regis.x = px;
+                terminal.regis.y = py;
+            }
 
-             // Draw Circle
-             int cx = terminal.regis.x;
-             int cy = terminal.regis.y;
-             int segments = 32;
-             float angle_step = 6.283185f / segments;
-             float ncx = (float)cx / 800.0f;
-             float ncy = (float)cy / 480.0f;
-             float nr_x = (float)radius / 800.0f;
-             float nr_y = (float)radius / 480.0f;
+            if (terminal.regis.point_count >= 4) {
+                for (int i = 0; i <= terminal.regis.point_count - 4; i++) {
+                    int p0x = terminal.regis.point_buffer[i].x;   int p0y = terminal.regis.point_buffer[i].y;
+                    int p1x = terminal.regis.point_buffer[i+1].x; int p1y = terminal.regis.point_buffer[i+1].y;
+                    int p2x = terminal.regis.point_buffer[i+2].x; int p2y = terminal.regis.point_buffer[i+2].y;
+                    int p3x = terminal.regis.point_buffer[i+3].x; int p3y = terminal.regis.point_buffer[i+3].y;
 
-             for (int j = 0; j < segments; j++) {
-                if (terminal.vector_count >= terminal.vector_capacity) break;
-                float a1 = j * angle_step;
-                float a2 = (j + 1) * angle_step;
-                float x1 = ncx + cosf(a1) * nr_x;
-                float y1 = ncy + sinf(a1) * nr_y;
-                float x2 = ncx + cosf(a2) * nr_x;
-                float y2 = ncy + sinf(a2) * nr_y;
+                    int seg_steps = 10;
+                    int last_x = -1, last_y = -1;
 
-                GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
-                line->x0 = x1;
-                line->y0 = 1.0f - y1;
-                line->x1 = x2;
-                line->y1 = 1.0f - y2;
-                line->color = terminal.regis.color;
-                line->intensity = 1.0f;
-                terminal.vector_count++;
-             }
+                    for (int s=0; s<=seg_steps; s++) {
+                        float t = (float)s / (float)seg_steps;
+                        int tx, ty;
+                        ReGIS_EvalBSpline(p0x, p0y, p1x, p1y, p2x, p2y, p3x, p3y, t, &tx, &ty);
+                        if (last_x != -1) {
+                            ReGIS_DrawLine(last_x, last_y, tx, ty);
+                        }
+                        last_x = tx;
+                        last_y = ty;
+                    }
+                }
+                int keep = 3;
+                if (terminal.regis.point_count > keep) {
+                    for(int k=0; k<keep; k++) {
+                        terminal.regis.point_buffer[k] = terminal.regis.point_buffer[terminal.regis.point_count - keep + k];
+                    }
+                    terminal.regis.point_count = keep;
+                }
+            }
         }
+        else if (terminal.regis.option_command == 'A') {
+            // --- Arc ---
+            if (max_idx >= 0) {
+                int cx_val = terminal.regis.params[0];
+                bool cx_rel = terminal.regis.params_relative[0];
+                int cy_val = (1 <= max_idx) ? terminal.regis.params[1] : terminal.regis.y;
+                bool cy_rel = (1 <= max_idx) ? terminal.regis.params_relative[1] : false;
 
-    } else if (terminal.regis.command == 'S') {
+                int cx = cx_rel ? (terminal.regis.x + cx_val) : cx_val;
+                int cy = cy_rel ? (terminal.regis.y + cy_val) : cy_val;
+
+                int sx = terminal.regis.x;
+                int sy = terminal.regis.y;
+
+                float dx = (float)(sx - cx);
+                float dy = (float)(sy - cy);
+                float radius = sqrtf(dx*dx + dy*dy);
+                float start_angle = atan2f(dy, dx);
+
+                float degrees = 0;
+                if (max_idx >= 2) {
+                    degrees = (float)terminal.regis.params[2];
+                }
+
+                int segments = (int)(fabsf(degrees) / 5.0f);
+                if (segments < 4) segments = 4;
+                float rad_step = (degrees * 3.14159f / 180.0f) / segments;
+
+                float current_angle = start_angle;
+                int last_x = sx;
+                int last_y = sy;
+
+                for (int i=0; i<segments; i++) {
+                    current_angle += rad_step;
+                    int nx = cx + (int)(cosf(current_angle) * radius);
+                    int ny = cy + (int)(sinf(current_angle) * radius);
+                    ReGIS_DrawLine(last_x, last_y, nx, ny);
+                    last_x = nx;
+                    last_y = ny;
+                }
+
+                terminal.regis.x = last_x;
+                terminal.regis.y = last_y;
+            }
+        }
+        else {
+            // --- Standard Circle ---
+            for (int i = 0; i <= max_idx; i += 2) {
+                 int val1 = terminal.regis.params[i];
+                 bool rel1 = terminal.regis.params_relative[i];
+
+                 int radius = 0;
+                 if (i + 1 > max_idx) {
+                     radius = val1;
+                 } else {
+                     int val2 = terminal.regis.params[i+1];
+                     bool rel2 = terminal.regis.params_relative[i+1];
+                     int px = rel1 ? (terminal.regis.x + val1) : val1;
+                     int py = rel2 ? (terminal.regis.y + val2) : val2;
+                     float dx = (float)(px - terminal.regis.x);
+                     float dy = (float)(py - terminal.regis.y);
+                     radius = (int)sqrtf(dx*dx + dy*dy);
+                 }
+
+                 int cx = terminal.regis.x;
+                 int cy = terminal.regis.y;
+                 int segments = 32;
+                 float angle_step = 6.283185f / segments;
+                 float ncx = (float)cx / 800.0f;
+                 float ncy = (float)cy / 480.0f;
+                 float nr_x = (float)radius / 800.0f;
+                 float nr_y = (float)radius / 480.0f;
+
+                 for (int j = 0; j < segments; j++) {
+                    if (terminal.vector_count >= terminal.vector_capacity) break;
+                    float a1 = j * angle_step;
+                    float a2 = (j + 1) * angle_step;
+                    float x1 = ncx + cosf(a1) * nr_x;
+                    float y1 = ncy + sinf(a1) * nr_y;
+                    float x2 = ncx + cosf(a2) * nr_x;
+                    float y2 = ncy + sinf(a2) * nr_y;
+
+                    GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
+                    line->x0 = x1;
+                    line->y0 = 1.0f - y1;
+                    line->x1 = x2;
+                    line->y1 = 1.0f - y2;
+                    line->color = terminal.regis.color;
+                    line->intensity = 1.0f;
+                    terminal.vector_count++;
+                 }
+            }
+        }
+    }
+    // --- S: Screen Control ---
+    else if (terminal.regis.command == 'S') {
         if (terminal.regis.option_command == 'E') {
              terminal.vector_count = 0;
         }
-
-    } else if (terminal.regis.command == 'W') {
+    }
+    // --- W: Write Control ---
+    else if (terminal.regis.command == 'W') {
         if (terminal.regis.option_command == 'I' || terminal.regis.option_command == 'C') {
              int color_idx = terminal.regis.params[0];
              if (color_idx >= 0 && color_idx < 16) {
@@ -6729,6 +6875,7 @@ static void ProcessReGISChar(unsigned char ch) {
             terminal.regis.param_count = 0;
             terminal.regis.has_bracket = false;
             terminal.regis.has_paren = false;
+            terminal.regis.point_count = 0; // Reset curve points on new command
             for(int i=0; i<16; i++) {
                 terminal.regis.params[i] = 0;
                 terminal.regis.params_relative[i] = false;
@@ -6771,7 +6918,8 @@ static void ProcessReGISChar(unsigned char ch) {
             terminal.regis.has_paren = false;
             terminal.regis.parsing_val = false;
             ExecuteReGISCommand();
-            terminal.regis.option_command = 0;
+            // Don't reset point count here, as options might modify curve mode
+            // But we reset param count for next block
             terminal.regis.param_count = 0;
             for(int i=0; i<16; i++) {
                 terminal.regis.params[i] = 0;
@@ -6818,6 +6966,7 @@ static void ProcessReGISChar(unsigned char ch) {
                 terminal.regis.state = 1;
                 terminal.regis.param_count = 0;
                 terminal.regis.parsing_val = false;
+                terminal.regis.point_count = 0; // Reset on new command
                 for(int i=0; i<16; i++) {
                     terminal.regis.params[i] = 0;
                     terminal.regis.params_relative[i] = false;
