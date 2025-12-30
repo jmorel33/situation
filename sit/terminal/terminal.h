@@ -516,7 +516,8 @@ typedef struct {
     float x1, y1; // Normalized Device Coordinates
     uint32_t color; // Packed RGBA
     float intensity; // 1.0 = fresh beam, < 1.0 = decaying
-    float padding[2]; // Align to 16 bytes for std430
+    uint32_t mode;   // 0=Additive, 1=Replace, 2=Erase, 3=XOR
+    float padding;   // Align to 16 bytes for std430
 } GPUVectorLine;
 
 // 1. TERMINAL LOGIC BODY
@@ -695,8 +696,20 @@ typedef struct {
 "    for (;;) {\n" \
 "        if (x0 >= 0 && x0 < int(pc.screen_size.x) && y0 >= 0 && y0 < int(pc.screen_size.y)) {\n" \
 "            vec4 bg = imageLoad(output_image, ivec2(x0, y0));\n" \
-"            // Additive 'Glow' Blending\n" \
-"            vec4 result = bg + (color * color.a);\n" \
+"            vec4 result = bg;\n" \
+"            if (line.mode == 0) {\n" \
+"                 // Additive 'Glow' Blending\n" \
+"                 result = bg + (color * color.a);\n" \
+"            } else if (line.mode == 1) {\n" \
+"                 // Replace\n" \
+"                 result = vec4(color.rgb, 1.0);\n" \
+"            } else if (line.mode == 2) {\n" \
+"                 // Erase (Draw Black)\n" \
+"                 result = vec4(0.0, 0.0, 0.0, 0.0);\n" \
+"            } else if (line.mode == 3) {\n" \
+"                 // XOR / Complement (Invert)\n" \
+"                 result = vec4(1.0 - bg.rgb, 1.0);\n" \
+"            }\n" \
 "            imageStore(output_image, ivec2(x0, y0), result);\n" \
 "        }\n" \
 "        if (x0 == x1 && y0 == y1) break;\n" \
@@ -749,7 +762,7 @@ typedef struct {
     "#extension GL_EXT_scalar_block_layout : require\n" \
     "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n" \
     "layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n" \
-    "struct GPUVectorLine { vec2 start; vec2 end; uint color; float intensity; vec2 _pad; };\n" \
+    "struct GPUVectorLine { vec2 start; vec2 end; uint color; float intensity; uint mode; float _pad; };\n" \
     "layout(buffer_reference, scalar) buffer VectorBuffer { GPUVectorLine data[]; };\n" \
     "layout(set = 1, binding = 0, rgba8) uniform image2D output_image;\n" \
     "layout(push_constant) uniform PushConstants {\n" \
@@ -838,7 +851,7 @@ typedef struct {
     "#extension GL_EXT_scalar_block_layout : require\n" \
     "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n" \
     "layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n" \
-    "struct GPUVectorLine { vec2 start; vec2 end; uint color; float intensity; vec2 _pad; };\n" \
+    "struct GPUVectorLine { vec2 start; vec2 end; uint color; float intensity; uint mode; float _pad; };\n" \
     "layout(buffer_reference, scalar) buffer VectorBuffer { GPUVectorLine data[]; };\n" \
     "layout(binding = 1, rgba8) uniform image2D output_image;\n" \
     "layout(location = 0) uniform vec2 u_screen_size;\n" \
@@ -1113,6 +1126,7 @@ typedef struct Terminal_T {
         int x, y; // Current beam position (0-799, 0-479)
         int save_x, save_y; // Saved position (stack depth 1)
         uint32_t color; // Current RGBA color
+        int write_mode; // 0=Overlay(V), 1=Replace(R), 2=Erase(E), 3=Complement(C)
         char command; // Current command letter (P, V, C, T, W, etc.)
         int params[16]; // Numeric parameters for current command
         bool params_relative[16]; // True if parameter was explicitly signed (+/-)
@@ -2001,6 +2015,7 @@ void ProcessDCSChar(unsigned char ch) {
             terminal.regis.x = 0;
             terminal.regis.y = 0;
             terminal.regis.color = 0xFFFFFFFF; // White
+            terminal.regis.write_mode = 0; // Default to Overlay/Additive
             terminal.regis.param_count = 0;
             terminal.regis.has_comma = false;
             terminal.regis.has_bracket = false;
@@ -6616,6 +6631,7 @@ static void ReGIS_DrawLine(int x0, int y0, int x1, int y1) {
         line->y1 = 1.0f - ((float)y1 / 480.0f);
         line->color = terminal.regis.color;
         line->intensity = 1.0f;
+        line->mode = terminal.regis.write_mode;
         terminal.vector_count++;
     }
 }
@@ -6922,6 +6938,7 @@ static void ExecuteReGISCommand(void) {
                     line->y1 = 1.0f - y2;
                     line->color = terminal.regis.color;
                     line->intensity = 1.0f;
+                    line->mode = terminal.regis.write_mode;
                     terminal.vector_count++;
                  }
             }
@@ -6936,11 +6953,35 @@ static void ExecuteReGISCommand(void) {
     }
     // --- W: Write Control ---
     else if (terminal.regis.command == 'W') {
-        if (terminal.regis.option_command == 'I' || terminal.regis.option_command == 'C') {
+        // Handle explicit Color Index selection W(I...)
+        if (terminal.regis.option_command == 'I') {
              int color_idx = terminal.regis.params[0];
              if (color_idx >= 0 && color_idx < 16) {
                  Color c = ansi_colors[color_idx];
                  terminal.regis.color = (uint32_t)c.r | ((uint32_t)c.g << 8) | ((uint32_t)c.b << 16) | 0xFF000000;
+             }
+        }
+        // Handle Writing Modes
+        else if (terminal.regis.option_command == 'R') {
+             terminal.regis.write_mode = 1; // Replace
+        } else if (terminal.regis.option_command == 'E') {
+             terminal.regis.write_mode = 2; // Erase
+        } else if (terminal.regis.option_command == 'V') {
+             terminal.regis.write_mode = 0; // Overlay (Additive)
+        } else if (terminal.regis.option_command == 'C') {
+             // W(C) is ambiguous: could be Complement or Color
+             // If we have parameters (e.g. W(C1)), treat as Color (Legacy behavior).
+             // If no parameters (e.g. W(C)), treat as Complement (XOR).
+
+             if (terminal.regis.param_count > 0) {
+                 // Likely Color Index W(C1)
+                 int color_idx = terminal.regis.params[0];
+                 if (color_idx >= 0 && color_idx < 16) {
+                     Color c = ansi_colors[color_idx];
+                     terminal.regis.color = (uint32_t)c.r | ((uint32_t)c.g << 8) | ((uint32_t)c.b << 16) | 0xFF000000;
+                 }
+             } else {
+                 terminal.regis.write_mode = 3; // Complement (XOR)
              }
         }
     }
@@ -7129,6 +7170,7 @@ static void ProcessReGISChar(unsigned char ch) {
                                     line->y1 = 1.0f - (fy1 / 480.0f);
                                     line->color = terminal.regis.color;
                                     line->intensity = 1.0f;
+                                    line->mode = terminal.regis.write_mode;
                                     terminal.vector_count++;
                                  }
                                 c_bit += len - 1;
