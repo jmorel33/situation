@@ -372,6 +372,7 @@ typedef struct {
     int char_height;                  // Height of characters in this font
     bool loaded[256];                 // Which characters in this set are loaded
     bool active;                      // Is a soft font currently selected?
+    bool dirty;                       // Font data has changed and needs upload
 } SoftFont;
 
 // =============================================================================
@@ -6961,8 +6962,30 @@ static void ExecuteReGISCommand(void) {
         // This block handles parameterized options like S (Size) if provided.
         if (terminal.regis.option_command == 'S') {
              // Character Cell Size (e.g. L(S1) or L(S[8,16]))
-             // Currently simplified to just acknowledge.
-             // Ideally this would configure the soft font dimensions.
+             int w = 8;
+             int h = 16;
+             if (terminal.regis.param_count >= 0) { // param_count is max index
+                 // Check if it's an index or explicit size
+                 if (terminal.regis.params[0] == 1) { w=8; h=16; }
+                 else if (terminal.regis.params[0] == 0) { w=8; h=16; } // Default
+                 else {
+                     // Assume width
+                     w = terminal.regis.params[0];
+                     if (terminal.regis.param_count >= 1) h = terminal.regis.params[1];
+                 }
+             }
+             ACTIVE_SESSION.soft_font.char_width = w;
+             ACTIVE_SESSION.soft_font.char_height = h;
+        } else if (terminal.regis.option_command == 'A') {
+             // Alphabet selection L(A1)
+             if (terminal.regis.param_count >= 0) {
+                 int alpha = terminal.regis.params[0];
+                 // We only really support loading into "soft font" slot (conceptually A1)
+                 // A0 is typically the hardware ROM font.
+                 // If L(A1) is used, we know subsequent string data targets the soft font.
+                 // ProcessReGISChar logic implicitly targets soft font.
+                 // Maybe we should warn if alpha != 1?
+             }
         }
     }
     // --- R: Report ---
@@ -7057,13 +7080,17 @@ static void ProcessReGISChar(unsigned char ch) {
                 for(int i=0; terminal.regis.text_buffer[i] != '\0'; i++) {
                     unsigned char c = (unsigned char)terminal.regis.text_buffer[i];
 
-                    for(int r=0; r<16; r++) { // Iterate up to 16 rows (supports soft font height)
+                    // Use dynamic height if soft font is active
+                    int max_rows = use_soft_font ? ACTIVE_SESSION.soft_font.char_height : 16;
+                    if (max_rows > 32) max_rows = 32;
+
+                    for(int r=0; r<max_rows; r++) { // Iterate up to max_rows
                         unsigned char row = 0;
                         int height_limit = 8; // Default to 8 for VGA font
 
                         if (use_soft_font && ACTIVE_SESSION.soft_font.loaded[c]) {
                             row = ACTIVE_SESSION.soft_font.font_data[c][r];
-                            height_limit = 16;
+                            height_limit = ACTIVE_SESSION.soft_font.char_height;
                         } else {
                             if (r < 8) row = font_base[c * 8 + r];
                             else row = 0;
@@ -7245,9 +7272,8 @@ static void ProcessReGISChar(unsigned char ch) {
                     ACTIVE_SESSION.soft_font.font_data[terminal.regis.load.current_char][terminal.regis.load.pattern_byte_idx++] = byte;
                 }
             }
-            // Trigger texture update (deferred or immediate)
-            // Ideally we'd only do this once per batch, but for now:
-            CreateFontTexture();
+            // Defer texture update to DrawTerminal
+            ACTIVE_SESSION.soft_font.dirty = true;
 
         } else if (isdigit(ch) || ch == '-' || ch == '+') {
             if (!terminal.regis.parsing_val) {
@@ -8465,6 +8491,12 @@ void UpdateTerminalSSBO(void) {
 void DrawTerminal(void) {
     if (!terminal.compute_initialized) return;
 
+    // Handle Soft Font Update
+    if (ACTIVE_SESSION.soft_font.dirty) {
+        CreateFontTexture();
+        ACTIVE_SESSION.soft_font.dirty = false;
+    }
+
     // Handle Sixel Texture Creation/Upload
     if (ACTIVE_SESSION.sixel.active && ACTIVE_SESSION.sixel.data) {
         // Create if missing, resized, or dirty
@@ -8890,6 +8922,11 @@ void InitSession(int index) {
 
     session->ansi_modes.insert_replace = false;
     session->ansi_modes.line_feed_new_line = true;
+
+    session->soft_font.active = false;
+    session->soft_font.dirty = false;
+    session->soft_font.char_width = 8;
+    session->soft_font.char_height = 16;
 
     // Reset attributes manually as ResetAllAttributes depends on ACTIVE_SESSION
     session->current_fg.color_mode = 0; session->current_fg.value.index = COLOR_WHITE;
