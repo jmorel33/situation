@@ -1137,6 +1137,18 @@ typedef struct Terminal_T {
         struct { int x, y; } point_buffer[64];
         int point_count;
         char curve_mode; // 'C'ircle, 'A'rc, 'B'spline (Interpolated), 'O'pen (Unclosed)
+
+        // Extended Text Attributes
+        float text_size;
+        float text_angle; // Radians
+
+        // Macrographs
+        char* macros[26]; // Storage for @A through @Z
+        bool recording_macro;
+        int macro_index;
+        char* macro_buffer;
+        size_t macro_len;
+        size_t macro_cap;
     } regis;
 
     // Retro Visual Effects
@@ -6599,6 +6611,61 @@ static void ReGIS_DrawLine(int x0, int y0, int x1, int y1) {
     }
 }
 
+static int ReGIS_CompareInt(const void* a, const void* b) {
+    return (*(int*)a - *(int*)b);
+}
+
+static void ReGIS_FillPolygon(void) {
+    if (terminal.regis.point_count < 3) {
+        terminal.regis.point_count = 0;
+        return;
+    }
+
+    // Scanline Fill Algorithm
+    int min_y = 480, max_y = 0;
+    for(int i=0; i<terminal.regis.point_count; i++) {
+        if (terminal.regis.point_buffer[i].y < min_y) min_y = terminal.regis.point_buffer[i].y;
+        if (terminal.regis.point_buffer[i].y > max_y) max_y = terminal.regis.point_buffer[i].y;
+    }
+    if (min_y < 0) min_y = 0;
+    if (max_y > 479) max_y = 479;
+
+    int nodes[64];
+    for (int y = min_y; y <= max_y; y++) {
+        int node_count = 0;
+        int j = terminal.regis.point_count - 1;
+        for (int i = 0; i < terminal.regis.point_count; i++) {
+            int y1 = terminal.regis.point_buffer[i].y;
+            int y2 = terminal.regis.point_buffer[j].y;
+            int x1 = terminal.regis.point_buffer[i].x;
+            int x2 = terminal.regis.point_buffer[j].x;
+
+            if ((y1 < y && y2 >= y) || (y2 < y && y1 >= y)) {
+                if (node_count < 64) {
+                    nodes[node_count++] = x1 + (int)((float)(y - y1) / (float)(y2 - y1) * (float)(x2 - x1));
+                }
+            }
+            j = i;
+        }
+
+        qsort(nodes, node_count, sizeof(int), ReGIS_CompareInt);
+
+        for (int i = 0; i < node_count; i += 2) {
+            if (i + 1 < node_count) {
+                int x_start = nodes[i] < 0 ? 0 : nodes[i];
+                int x_end = nodes[i+1] > 799 ? 799 : nodes[i+1];
+                if (x_start > 799) break;
+                if (x_end < 0) continue;
+                if (x_start < x_end) {
+                     // Draw horizontal line span
+                     ReGIS_DrawLine(x_start, y, x_end, y);
+                }
+            }
+        }
+    }
+    terminal.regis.point_count = 0;
+}
+
 // Cubic B-Spline interpolation
 static void ReGIS_EvalBSpline(int p0x, int p0y, int p1x, int p1y, int p2x, int p2y, int p3x, int p3y, float t, int* out_x, int* out_y) {
     float t2 = t * t;
@@ -6614,7 +6681,7 @@ static void ReGIS_EvalBSpline(int p0x, int p0y, int p1x, int p1y, int p2x, int p
 
 static void ExecuteReGISCommand(void) {
     if (terminal.regis.command == 0) return;
-    if (!terminal.regis.data_pending && terminal.regis.command != 'S' && terminal.regis.command != 'W') return;
+    if (!terminal.regis.data_pending && terminal.regis.command != 'S' && terminal.regis.command != 'W' && terminal.regis.command != 'F' && terminal.regis.command != 'R') return;
 
     int max_idx = terminal.regis.param_count;
 
@@ -6664,6 +6731,41 @@ static void ExecuteReGISCommand(void) {
             terminal.regis.y = target_y;
         }
         terminal.regis.point_count = 0;
+    }
+    // --- F: Polygon Fill ---
+    else if (terminal.regis.command == 'F') {
+        // Collect points but don't draw immediately
+        for (int i = 0; i <= max_idx; i += 2) {
+            int val_x = terminal.regis.params[i];
+            bool rel_x = terminal.regis.params_relative[i];
+            int val_y = (i + 1 <= max_idx) ? terminal.regis.params[i+1] : terminal.regis.y;
+            bool rel_y = (i + 1 <= max_idx) ? terminal.regis.params_relative[i+1] : false;
+
+            int px = rel_x ? (terminal.regis.x + val_x) : val_x;
+            int py = rel_y ? (terminal.regis.y + val_y) : val_y;
+
+            if (px < 0) px = 0; if (px > 799) px = 799;
+            if (py < 0) py = 0; if (py > 479) py = 479;
+
+            if (terminal.regis.point_count < 64) {
+                 if (terminal.regis.point_count == 0) {
+                     // First point is usually current cursor if implied?
+                     // Standard F command might imply current position as start.
+                     // We'll add current pos if buffer empty?
+                     // ReGIS usually: F(V(P[x,y]...))
+                     // Our F implementation just collects points passed to it.
+                     // If point_count is 0, we should probably add current cursor?
+                     terminal.regis.point_buffer[0].x = terminal.regis.x;
+                     terminal.regis.point_buffer[0].y = terminal.regis.y;
+                     terminal.regis.point_count++;
+                 }
+                 terminal.regis.point_buffer[terminal.regis.point_count].x = px;
+                 terminal.regis.point_buffer[terminal.regis.point_count].y = py;
+                 terminal.regis.point_count++;
+            }
+            terminal.regis.x = px;
+            terminal.regis.y = py;
+        }
     }
     // --- C: Circle / Curve ---
     else if (terminal.regis.command == 'C') {
@@ -6833,12 +6935,33 @@ static void ExecuteReGISCommand(void) {
              }
         }
     }
+    // --- T: Text Attributes ---
+    else if (terminal.regis.command == 'T') {
+        if (terminal.regis.option_command == 'S') {
+             // Size
+             terminal.regis.text_size = (float)terminal.regis.params[0];
+             if (terminal.regis.text_size <= 0) terminal.regis.text_size = 1;
+        }
+        if (terminal.regis.option_command == 'D') {
+             // Direction (degrees)
+             terminal.regis.text_angle = (float)terminal.regis.params[0] * 3.14159f / 180.0f;
+        }
+    }
+    // --- R: Report ---
+    else if (terminal.regis.command == 'R') {
+         if (terminal.regis.option_command == 'P') {
+             char buf[64];
+             snprintf(buf, sizeof(buf), "\x1BP%d,%d\x1B\\", terminal.regis.x, terminal.regis.y);
+             QueueResponse(buf);
+         }
+    }
 
     terminal.regis.data_pending = false;
 }
 
 static void ProcessReGISChar(unsigned char ch) {
     if (ch == 0x1B) { // ESC \ (ST)
+        if (terminal.regis.command == 'F') ReGIS_FillPolygon(); // Flush pending fill
         if (terminal.regis.state == 1 || terminal.regis.state == 3) {
             ExecuteReGISCommand();
         }
@@ -6846,10 +6969,47 @@ static void ProcessReGISChar(unsigned char ch) {
         return;
     }
 
+    if (terminal.regis.recording_macro) {
+        if (ch == ';' && terminal.regis.macro_len > 0 && terminal.regis.macro_buffer[terminal.regis.macro_len-1] == '@') {
+             // End of macro definition (@;)
+             terminal.regis.macro_buffer[terminal.regis.macro_len-1] = '\0'; // Remove @
+             terminal.regis.recording_macro = false;
+             // Store macro in slot
+             if (terminal.regis.macro_index >= 0 && terminal.regis.macro_index < 26) {
+                 if (terminal.regis.macros[terminal.regis.macro_index]) free(terminal.regis.macros[terminal.regis.macro_index]);
+                 terminal.regis.macros[terminal.regis.macro_index] = strdup(terminal.regis.macro_buffer);
+             }
+             if (terminal.regis.macro_buffer) { free(terminal.regis.macro_buffer); terminal.regis.macro_buffer = NULL; }
+             return;
+        }
+        // Append
+        if (!terminal.regis.macro_buffer) {
+             terminal.regis.macro_cap = 1024;
+             terminal.regis.macro_buffer = malloc(terminal.regis.macro_cap);
+             terminal.regis.macro_len = 0;
+        }
+        if (terminal.regis.macro_len >= terminal.regis.macro_cap - 1) {
+             terminal.regis.macro_cap *= 2;
+             terminal.regis.macro_buffer = realloc(terminal.regis.macro_buffer, terminal.regis.macro_cap);
+        }
+        terminal.regis.macro_buffer[terminal.regis.macro_len++] = ch;
+        terminal.regis.macro_buffer[terminal.regis.macro_len] = '\0';
+        return;
+    }
+
     if (terminal.regis.state == 3) { // Parsing Text String
         if (ch == terminal.regis.string_terminator) {
             terminal.regis.text_buffer[terminal.regis.text_pos] = '\0';
-            float scale = 2.0f;
+
+            // Text Drawing with attributes
+            float scale = (terminal.regis.text_size > 0) ? terminal.regis.text_size : 1.0f;
+            // Base scale 1 = 8x16? ReGIS default size 1 is roughly 9x16 grid?
+            // Existing code used scale 2.0f. Let's base it on that.
+            scale *= 2.0f;
+
+            float cos_a = cosf(terminal.regis.text_angle);
+            float sin_a = sinf(terminal.regis.text_angle);
+
             int start_x = terminal.regis.x;
             int start_y = terminal.regis.y;
             const unsigned char* font_base = vga_perfect_8x8_font;
@@ -6863,16 +7023,35 @@ static void ProcessReGISChar(unsigned char ch) {
                         if ((row >> (7-c_bit)) & 1) {
                             int len = 1;
                             while(c_bit+len < 8 && ((row >> (7-(c_bit+len))) & 1)) len++;
-                            float x0 = start_x + (c_bit * scale);
-                            float y0 = start_y + (r * scale * 1.5f);
-                            float x1 = start_x + ((c_bit + len) * scale);
-                            float y1 = y0;
+
+                            // Local coordinates relative to char origin
+                            float lx0 = (float)(c_bit * scale);
+                            float ly0 = (float)(r * scale * 1.5f);
+                            float lx1 = (float)((c_bit + len) * scale);
+                            float ly1 = ly0;
+
+                            // Rotate and translate
+                            // Char origin is (start_x, start_y)
+                            // We accumulate i * 9 * scale along the rotation vector
+
+                            // To simplify rotation, we rotate the line segments
+                            // Character offset
+                            float char_offset = i * 9 * scale;
+
+                            float rx0 = lx0 + char_offset;
+                            float rx1 = lx1 + char_offset;
+
+                            float fx0 = start_x + (rx0 * cos_a - ly0 * sin_a);
+                            float fy0 = start_y + (rx0 * sin_a + ly0 * cos_a);
+                            float fx1 = start_x + (rx1 * cos_a - ly1 * sin_a);
+                            float fy1 = start_y + (rx1 * sin_a + ly1 * cos_a);
+
                             if (terminal.vector_count < terminal.vector_capacity) {
                                 GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
-                                line->x0 = x0 / 800.0f;
-                                line->y0 = 1.0f - (y0 / 480.0f);
-                                line->x1 = x1 / 800.0f;
-                                line->y1 = 1.0f - (y1 / 480.0f);
+                                line->x0 = fx0 / 800.0f;
+                                line->y0 = 1.0f - (fy0 / 480.0f);
+                                line->x1 = fx1 / 800.0f;
+                                line->y1 = 1.0f - (fy1 / 480.0f);
                                 line->color = terminal.regis.color;
                                 line->intensity = 1.0f;
                                 terminal.vector_count++;
@@ -6881,9 +7060,12 @@ static void ProcessReGISChar(unsigned char ch) {
                         }
                     }
                 }
-                start_x += (int)(9 * scale);
             }
-            terminal.regis.x = start_x;
+            // Update cursor position to end of string
+            float total_width = terminal.regis.text_pos * 9 * scale;
+            terminal.regis.x = start_x + (int)(total_width * cos_a);
+            terminal.regis.y = start_y + (int)(total_width * sin_a);
+
             terminal.regis.state = 1;
             terminal.regis.text_pos = 0;
         } else {
@@ -6897,6 +7079,12 @@ static void ProcessReGISChar(unsigned char ch) {
     if (ch <= 0x20 || ch == 0x7F) return;
 
     if (terminal.regis.state == 0) { // Expecting Command
+        if (ch == '@') {
+            // Macro
+            terminal.regis.command = '@';
+            terminal.regis.state = 1;
+            return;
+        }
         if (isalpha(ch)) {
             terminal.regis.command = toupper(ch);
             terminal.regis.state = 1;
@@ -6910,6 +7098,43 @@ static void ProcessReGISChar(unsigned char ch) {
             }
         }
     } else if (terminal.regis.state == 1) { // Expecting Values/Options
+        if (terminal.regis.command == '@') {
+             if (ch == ':') {
+                 // Definition
+                 terminal.regis.option_command = ':'; // Flag next char as macro name
+                 return;
+             }
+             if (terminal.regis.option_command == ':') {
+                 // Macro Name
+                 if (isalpha(ch)) {
+                     terminal.regis.macro_index = toupper(ch) - 'A';
+                     terminal.regis.recording_macro = true;
+                     terminal.regis.macro_len = 0;
+                     terminal.regis.option_command = 0;
+                 }
+                 return;
+             }
+             // Execute Macro
+             if (isalpha(ch)) {
+                 int idx = toupper(ch) - 'A';
+                 if (idx >= 0 && idx < 26 && terminal.regis.macros[idx]) {
+                     // Push macro content to parser
+                     // Recursive call? Simple stack?
+                     // For now, just iterate the string.
+                     const char* m = terminal.regis.macros[idx];
+                     // Reset state to 0 for macro context?
+                     // Macros usually contain full commands.
+                     int saved_state = terminal.regis.state;
+                     terminal.regis.state = 0;
+                     for (int k=0; m[k]; k++) ProcessReGISChar(m[k]);
+                     terminal.regis.state = saved_state;
+                 }
+                 terminal.regis.command = 0;
+                 terminal.regis.state = 0;
+             }
+             return;
+        }
+
         if (ch == '\'' || ch == '"') {
              if (terminal.regis.command == 'T') {
                  terminal.regis.state = 3;
@@ -6990,6 +7215,7 @@ static void ProcessReGISChar(unsigned char ch) {
                  terminal.regis.param_count = 0;
                  terminal.regis.parsing_val = false;
             } else {
+                if (terminal.regis.command == 'F') ReGIS_FillPolygon(); // Flush fill on new command
                 ExecuteReGISCommand();
                 terminal.regis.command = toupper(ch);
                 terminal.regis.state = 1;
@@ -8430,6 +8656,18 @@ void CleanupTerminal(void) {
     if (ACTIVE_SESSION.bracketed_paste.buffer) {
         free(ACTIVE_SESSION.bracketed_paste.buffer);
         ACTIVE_SESSION.bracketed_paste.buffer = NULL;
+    }
+
+    // Free ReGIS Macros
+    for (int i = 0; i < 26; i++) {
+        if (terminal.regis.macros[i]) {
+            free(terminal.regis.macros[i]);
+            terminal.regis.macros[i] = NULL;
+        }
+    }
+    if (terminal.regis.macro_buffer) {
+        free(terminal.regis.macro_buffer);
+        terminal.regis.macro_buffer = NULL;
     }
 
     ClearPipeline(); // Ensure input pipeline is empty and reset

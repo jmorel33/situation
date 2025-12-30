@@ -25,7 +25,7 @@ This phase introduced the fundamental structures for GPU-accelerated vector draw
 
 ## Phase 2: ReGIS Support (The "CAD" Milestone)
 
-**Status: IN PROGRESS**
+**Status: NEARLY COMPLETE**
 
 ReGIS (Remote Graphics Instruction Set) provides higher-level graphics primitives. The basic infrastructure is in place, but advanced features are pending.
 
@@ -42,18 +42,18 @@ ReGIS (Remote Graphics Instruction Set) provides higher-level graphics primitive
 - [x] **Command: Write (W):** Color selection (`W(I...)`, `W(C...)`).
 
 ### Missing / Todo Actionables
-- [ ] **Text Attributes:** Implement size and rotation controls in the Text command.
+- [x] **Text Attributes:** Implement size and rotation controls in the Text command.
     - *Current:* Hardcoded scale 2.0, no rotation.
     - *Goal:* Support `T(S[n], D[angle])`.
-- [ ] **Polygon Fill (F):** Implement scanline or vector-based filling for closed shapes.
+- [x] **Polygon Fill (F):** Implement scanline or vector-based filling for closed shapes.
     - *Actionable:* Add a "Fill" flag to the vector pipeline or a separate compute pass for rasterizing filled polygons.
 - [ ] **Load Alphabet (L):** Support custom soft-fonts for ReGIS text.
     - *Actionable:* Parse `L` command and update a section of the font atlas.
-- [ ] **Macrographs (@):** Record and playback sequences of commands.
+- [x] **Macrographs (@):** Record and playback sequences of commands.
     - *Actionable:* Implement a buffer to store command strings and a playback mechanism.
-- [ ] **Report (R):** Report cursor position and state back to the host.
+- [x] **Report (R):** Report cursor position and state back to the host.
     - *Actionable:* Implement `R(P)` to queue position response.
-- [ ] **Display Addressing:** Support standard ReGIS 800x480 coordinate space scaling (currently normalized, needs verification of aspect ratio handling).
+- [x] **Display Addressing:** Support standard ReGIS 800x480 coordinate space scaling (currently normalized, needs verification of aspect ratio handling).
 
 ## Phase 3: ISO 2022 & NRCS (The "Linguist" Milestone)
 
