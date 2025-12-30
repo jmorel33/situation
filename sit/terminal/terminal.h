@@ -248,7 +248,19 @@ typedef enum {
     CHARSET_UK,             // UK National character set
     CHARSET_DEC_MULTINATIONAL, // DEC Multinational Character Set (MCS)
     CHARSET_ISO_LATIN_1,    // ISO 8859-1 Latin-1
-    CHARSET_UTF8            // UTF-8 (requires multi-byte processing)
+    CHARSET_UTF8,           // UTF-8 (requires multi-byte processing)
+    // NRCS (National Replacement Character Sets)
+    CHARSET_DUTCH,
+    CHARSET_FINNISH,
+    CHARSET_FRENCH,
+    CHARSET_FRENCH_CANADIAN,
+    CHARSET_GERMAN,
+    CHARSET_ITALIAN,
+    CHARSET_NORWEGIAN_DANISH,
+    CHARSET_SPANISH,
+    CHARSET_SWEDISH,
+    CHARSET_SWISS,
+    CHARSET_COUNT // Must be < 32
 } CharacterSet;
 
 typedef struct {
@@ -1412,6 +1424,142 @@ void InitFontData(void); // In case it's used elsewhere, though font_data is sta
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };*/
 
+static uint32_t charset_lut[32][128]; // Lookup table for 7-bit charset translations
+
+void InitCharacterSetLUT(void) {
+    // 1. Initialize all to ASCII identity first
+    for (int s = 0; s < 32; s++) {
+        for (int c = 0; c < 128; c++) {
+            charset_lut[s][c] = c;
+        }
+    }
+
+    // 2. DEC Special Graphics
+    for (int c = 0; c < 128; c++) {
+        charset_lut[CHARSET_DEC_SPECIAL][c] = TranslateDECSpecial(c);
+    }
+
+    // 3. National Replacement Character Sets (NRCS)
+    // UK
+    charset_lut[CHARSET_UK]['#'] = 0x00A3; // £
+
+    // Dutch
+    charset_lut[CHARSET_DUTCH]['#'] = 0x00A3; // £
+    charset_lut[CHARSET_DUTCH]['@'] = 0x00BE; // ¾
+    charset_lut[CHARSET_DUTCH]['['] = 0x0133; // ij (digraph) - approximated as ĳ
+    charset_lut[CHARSET_DUTCH]['\\'] = 0x00BD; // ½
+    charset_lut[CHARSET_DUTCH][']'] = 0x007C; // |
+    charset_lut[CHARSET_DUTCH]['{'] = 0x00A8; // ¨
+    charset_lut[CHARSET_DUTCH]['|'] = 0x0192; // f (florin)
+    charset_lut[CHARSET_DUTCH]['}'] = 0x00BC; // ¼
+    charset_lut[CHARSET_DUTCH]['~'] = 0x00B4; // ´
+
+    // Finnish
+    charset_lut[CHARSET_FINNISH]['['] = 0x00C4; // Ä
+    charset_lut[CHARSET_FINNISH]['\\'] = 0x00D6; // Ö
+    charset_lut[CHARSET_FINNISH][']'] = 0x00C5; // Å
+    charset_lut[CHARSET_FINNISH]['^'] = 0x00DC; // Ü
+    charset_lut[CHARSET_FINNISH]['`'] = 0x00E9; // é
+    charset_lut[CHARSET_FINNISH]['{'] = 0x00E4; // ä
+    charset_lut[CHARSET_FINNISH]['|'] = 0x00F6; // ö
+    charset_lut[CHARSET_FINNISH]['}'] = 0x00E5; // å
+    charset_lut[CHARSET_FINNISH]['~'] = 0x00FC; // ü
+
+    // French
+    charset_lut[CHARSET_FRENCH]['#'] = 0x00A3; // £
+    charset_lut[CHARSET_FRENCH]['@'] = 0x00E0; // à
+    charset_lut[CHARSET_FRENCH]['['] = 0x00B0; // °
+    charset_lut[CHARSET_FRENCH]['\\'] = 0x00E7; // ç
+    charset_lut[CHARSET_FRENCH][']'] = 0x00A7; // §
+    charset_lut[CHARSET_FRENCH]['{'] = 0x00E9; // é
+    charset_lut[CHARSET_FRENCH]['|'] = 0x00F9; // ù
+    charset_lut[CHARSET_FRENCH]['}'] = 0x00E8; // è
+    charset_lut[CHARSET_FRENCH]['~'] = 0x00A8; // ¨
+
+    // French Canadian (Similar to French but with subtle differences in some standards, using VT standard map)
+    charset_lut[CHARSET_FRENCH_CANADIAN]['@'] = 0x00E0; // à
+    charset_lut[CHARSET_FRENCH_CANADIAN]['['] = 0x00E2; // â
+    charset_lut[CHARSET_FRENCH_CANADIAN]['\\'] = 0x00E7; // ç
+    charset_lut[CHARSET_FRENCH_CANADIAN][']'] = 0x00EA; // ê
+    charset_lut[CHARSET_FRENCH_CANADIAN]['^'] = 0x00EE; // î
+    charset_lut[CHARSET_FRENCH_CANADIAN]['`'] = 0x00F4; // ô
+    charset_lut[CHARSET_FRENCH_CANADIAN]['{'] = 0x00E9; // é
+    charset_lut[CHARSET_FRENCH_CANADIAN]['|'] = 0x00F9; // ù
+    charset_lut[CHARSET_FRENCH_CANADIAN]['}'] = 0x00E8; // è
+    charset_lut[CHARSET_FRENCH_CANADIAN]['~'] = 0x00FB; // û
+
+    // German
+    charset_lut[CHARSET_GERMAN]['@'] = 0x00A7; // §
+    charset_lut[CHARSET_GERMAN]['['] = 0x00C4; // Ä
+    charset_lut[CHARSET_GERMAN]['\\'] = 0x00D6; // Ö
+    charset_lut[CHARSET_GERMAN][']'] = 0x00DC; // Ü
+    charset_lut[CHARSET_GERMAN]['{'] = 0x00E4; // ä
+    charset_lut[CHARSET_GERMAN]['|'] = 0x00F6; // ö
+    charset_lut[CHARSET_GERMAN]['}'] = 0x00FC; // ü
+    charset_lut[CHARSET_GERMAN]['~'] = 0x00DF; // ß
+
+    // Italian
+    charset_lut[CHARSET_ITALIAN]['#'] = 0x00A3; // £
+    charset_lut[CHARSET_ITALIAN]['@'] = 0x00A7; // §
+    charset_lut[CHARSET_ITALIAN]['['] = 0x00B0; // °
+    charset_lut[CHARSET_ITALIAN]['\\'] = 0x00E7; // ç
+    charset_lut[CHARSET_ITALIAN][']'] = 0x00E9; // é
+    charset_lut[CHARSET_ITALIAN]['`'] = 0x00F9; // ù
+    charset_lut[CHARSET_ITALIAN]['{'] = 0x00E0; // à
+    charset_lut[CHARSET_ITALIAN]['|'] = 0x00F2; // ò
+    charset_lut[CHARSET_ITALIAN]['}'] = 0x00E8; // è
+    charset_lut[CHARSET_ITALIAN]['~'] = 0x00EC; // ì
+
+    // Norwegian/Danish
+    // Note: There are two variants (E and 6), usually identical.
+    charset_lut[CHARSET_NORWEGIAN_DANISH]['@'] = 0x00C4; // Ä
+    charset_lut[CHARSET_NORWEGIAN_DANISH]['['] = 0x00C6; // Æ
+    charset_lut[CHARSET_NORWEGIAN_DANISH]['\\'] = 0x00D8; // Ø
+    charset_lut[CHARSET_NORWEGIAN_DANISH][']'] = 0x00C5; // Å
+    charset_lut[CHARSET_NORWEGIAN_DANISH]['^'] = 0x00DC; // Ü
+    charset_lut[CHARSET_NORWEGIAN_DANISH]['`'] = 0x00E4; // ä
+    charset_lut[CHARSET_NORWEGIAN_DANISH]['{'] = 0x00E6; // æ
+    charset_lut[CHARSET_NORWEGIAN_DANISH]['|'] = 0x00F8; // ø
+    charset_lut[CHARSET_NORWEGIAN_DANISH]['}'] = 0x00E5; // å
+    charset_lut[CHARSET_NORWEGIAN_DANISH]['~'] = 0x00FC; // ü
+
+    // Spanish
+    charset_lut[CHARSET_SPANISH]['#'] = 0x00A3; // £
+    charset_lut[CHARSET_SPANISH]['@'] = 0x00A7; // §
+    charset_lut[CHARSET_SPANISH]['['] = 0x00A1; // ¡
+    charset_lut[CHARSET_SPANISH]['\\'] = 0x00D1; // Ñ
+    charset_lut[CHARSET_SPANISH][']'] = 0x00BF; // ¿
+    charset_lut[CHARSET_SPANISH]['{'] = 0x00B0; // °
+    charset_lut[CHARSET_SPANISH]['|'] = 0x00F1; // ñ
+    charset_lut[CHARSET_SPANISH]['}'] = 0x00E7; // ç
+
+    // Swedish
+    charset_lut[CHARSET_SWEDISH]['@'] = 0x00C9; // É
+    charset_lut[CHARSET_SWEDISH]['['] = 0x00C4; // Ä
+    charset_lut[CHARSET_SWEDISH]['\\'] = 0x00D6; // Ö
+    charset_lut[CHARSET_SWEDISH][']'] = 0x00C5; // Å
+    charset_lut[CHARSET_SWEDISH]['^'] = 0x00DC; // Ü
+    charset_lut[CHARSET_SWEDISH]['`'] = 0x00E9; // é
+    charset_lut[CHARSET_SWEDISH]['{'] = 0x00E4; // ä
+    charset_lut[CHARSET_SWEDISH]['|'] = 0x00F6; // ö
+    charset_lut[CHARSET_SWEDISH]['}'] = 0x00E5; // å
+    charset_lut[CHARSET_SWEDISH]['~'] = 0x00FC; // ü
+
+    // Swiss
+    charset_lut[CHARSET_SWISS]['#'] = 0x00F9; // ù
+    charset_lut[CHARSET_SWISS]['@'] = 0x00E0; // à
+    charset_lut[CHARSET_SWISS]['['] = 0x00E9; // é
+    charset_lut[CHARSET_SWISS]['\\'] = 0x00E7; // ç
+    charset_lut[CHARSET_SWISS][']'] = 0x00EA; // ê
+    charset_lut[CHARSET_SWISS]['^'] = 0x00EE; // î
+    charset_lut[CHARSET_SWISS]['_'] = 0x00E8; // è
+    charset_lut[CHARSET_SWISS]['`'] = 0x00F4; // ô
+    charset_lut[CHARSET_SWISS]['{'] = 0x00E4; // ä
+    charset_lut[CHARSET_SWISS]['|'] = 0x00F6; // ö
+    charset_lut[CHARSET_SWISS]['}'] = 0x00FC; // ü
+    charset_lut[CHARSET_SWISS]['~'] = 0x00FB; // û
+}
+
 void InitFontData(void) {
     // This function is currently empty.
     // The font_data array is initialized statically.
@@ -1542,6 +1690,7 @@ void InitTerminal(void) {
     }
     terminal.active_session = 0;
 
+    InitCharacterSetLUT();
     CreateFontTexture();
     InitTerminalCompute();
 }
@@ -1610,6 +1759,17 @@ void ProcessCharsetCommand(unsigned char ch) {
                 selected_cs = (charset_char == '1') ? CHARSET_ASCII : CHARSET_DEC_SPECIAL;
                 break;
             case '<': selected_cs = CHARSET_DEC_MULTINATIONAL; break;
+            // NRCS Designators
+            case '4': selected_cs = CHARSET_DUTCH; break;
+            case 'C': case '5': selected_cs = CHARSET_FINNISH; break;
+            case 'R': case 'f': selected_cs = CHARSET_FRENCH; break;
+            case 'Q': selected_cs = CHARSET_FRENCH_CANADIAN; break;
+            case 'K': selected_cs = CHARSET_GERMAN; break;
+            case 'Y': selected_cs = CHARSET_ITALIAN; break;
+            case 'E': case '6': selected_cs = CHARSET_NORWEGIAN_DANISH; break;
+            case 'Z': selected_cs = CHARSET_SPANISH; break;
+            case 'H': case '7': selected_cs = CHARSET_SWEDISH; break;
+            case '=': selected_cs = CHARSET_SWISS; break;
             default:
                 if (ACTIVE_SESSION.options.debug_sequences) {
                     char debug_msg[64];
@@ -2162,28 +2322,20 @@ unsigned int TranslateCharacter(unsigned char ch, CharsetState* state) {
         state->single_shift_3 = false;
     }
 
-    switch (active_set) {
-        case CHARSET_ASCII:
-            return ch;
-
-        case CHARSET_DEC_SPECIAL:
-            return TranslateDECSpecial(ch);
-
-        case CHARSET_UK:
-            return (ch == 0x23) ? 0x00A3 : ch; // # -> £
-
-        case CHARSET_DEC_MULTINATIONAL:
-            return TranslateDECMultinational(ch);
-
-        case CHARSET_ISO_LATIN_1:
-            return ch; // Direct mapping for Latin-1
-
-        case CHARSET_UTF8:
-            return ch; // UTF-8 handled separately
-
-        default:
-            return ch;
+    if (active_set == CHARSET_UTF8) {
+        return ch; // Handled by ProcessNormalChar
     }
+
+    if (active_set == CHARSET_ISO_LATIN_1 || active_set == CHARSET_DEC_MULTINATIONAL) {
+        if (ch >= 0x80) return ch; // Direct mapping for 8-bit sets logic
+    }
+
+    // Use LUT for O(1) lookup
+    if (ch < 128 && active_set < CHARSET_COUNT) {
+        return charset_lut[active_set][ch];
+    }
+
+    return ch;
 }
 
 // Helper to map Unicode codepoints to CP437 glyph indices (0-255)
@@ -2927,6 +3079,18 @@ void ProcessEscapeChar(unsigned char ch) {
                 ACTIVE_SESSION.cursor.y = ACTIVE_SESSION.scroll_top;
                 ScrollDownRegion(ACTIVE_SESSION.scroll_top, ACTIVE_SESSION.scroll_bottom, 1);
             }
+            ACTIVE_SESSION.parse_state = VT_PARSE_NORMAL;
+            break;
+
+        case 'n': // LS2 - Locking Shift 2
+            // ESC n -> Invoke G2 into GL
+            ACTIVE_SESSION.charset.gl = &ACTIVE_SESSION.charset.g2;
+            ACTIVE_SESSION.parse_state = VT_PARSE_NORMAL;
+            break;
+
+        case 'o': // LS3 - Locking Shift 3
+            // ESC o -> Invoke G3 into GL
+            ACTIVE_SESSION.charset.gl = &ACTIVE_SESSION.charset.g3;
             ACTIVE_SESSION.parse_state = VT_PARSE_NORMAL;
             break;
 
@@ -6625,10 +6789,50 @@ void ProcessPercentChar(unsigned char ch) {
 static void ReGIS_DrawLine(int x0, int y0, int x1, int y1) {
     if (terminal.vector_count < terminal.vector_capacity) {
         GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
+
+        // Aspect Ratio Correction
+        // Map 800x480 ReGIS space to the center of the 1056x800 window while maintaining aspect ratio.
+        // ReGIS AR: 1.666 (5:3)
+        // Window AR: 1.32
+        // We are width-limited if we want to fill width, or height-limited if we want to fill height?
+        // Actually, we want to maintain SQUARE pixels relative to the physical screen.
+        // Assuming the physical pixels of the window are square.
+        // To map 800x480 "logical units" to square pixels, we must scale uniformily.
+        // 800 units wide, 480 units high.
+        // If we map X: 0..800 -> 0..1056 pixels (Scale = 1.32)
+        // Then Y must be scaled by 1.32: 480 * 1.32 = 633.6 pixels.
+        // Window height is 800. So we have room. Centering vertically.
+
+        float scale_factor = (float)(DEFAULT_TERM_WIDTH * DEFAULT_CHAR_WIDTH) / 800.0f; // 1.32
+        float target_height = 480.0f * scale_factor; // 633.6
+        float y_margin = ((float)(DEFAULT_TERM_HEIGHT * DEFAULT_CHAR_HEIGHT) - target_height) / 2.0f;
+
+        // Normalize to UV space (0..1)
+        float u0 = ((float)x0 * scale_factor) / (float)(DEFAULT_TERM_WIDTH * DEFAULT_CHAR_WIDTH); // Simplifies to x0/800.0f if scale_factor is width-based
+        // Actually: u = (x * 1.32) / 1056 = x * (1056/800) / 1056 = x / 800.
+        // So X mapping is strictly 0..1 for 0..800 input.
+
+        float screen_h = (float)(DEFAULT_TERM_HEIGHT * DEFAULT_CHAR_HEIGHT);
+        float v0_px = y_margin + ((float)y0 * scale_factor);
+        float v1_px = y_margin + ((float)y1 * scale_factor);
+
+        // Y is inverted in ReGIS (0=Top) vs OpenGL UV (0=Bottom usually? No, SITUATION/Vulkan UV 0=Top).
+        // Let's assume UV 0,0 is Top-Left.
+        // ReGIS 0,0 is Top-Left? Standard ReGIS P[0,0] is top left.
+        // Our shader uses: vec2 p0 = line.start * pc.screen_size;
+        // imageStore(ivec2(p0))
+        // imageStore coordinates: 0,0 is usually Top-Left in Vulkan/Compute if we map that way?
+        // Wait, OpenGL Compute imageStore 0,0 is Bottom-Left.
+        // So we need to invert Y.
+
+        float v0 = 1.0f - (v0_px / screen_h);
+        float v1 = 1.0f - (v1_px / screen_h);
+
         line->x0 = (float)x0 / 800.0f;
-        line->y0 = 1.0f - ((float)y0 / 480.0f);
+        line->y0 = v0;
         line->x1 = (float)x1 / 800.0f;
-        line->y1 = 1.0f - ((float)y1 / 480.0f);
+        line->y1 = v1;
+
         line->color = terminal.regis.color;
         line->intensity = 1.0f;
         line->mode = terminal.regis.write_mode;
