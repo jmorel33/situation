@@ -77,9 +77,26 @@ typedef void (*ResponseCallback)(const char* response, int length); // For sendi
 typedef void (*TitleCallback)(const char* title, bool is_icon);    // For GUI window title changes
 typedef void (*BellCallback)(void);                                 // For audible bell
 
+// Forward declaration
+typedef struct Terminal_T Terminal;
+
+// =============================================================================
+// ENHANCED COLOR SYSTEM
+// =============================================================================
+typedef enum {
+    COLOR_BLACK = 0, COLOR_RED, COLOR_GREEN, COLOR_YELLOW,
+    COLOR_BLUE, COLOR_MAGENTA, COLOR_CYAN, COLOR_WHITE,
+    COLOR_BRIGHT_BLACK, COLOR_BRIGHT_RED, COLOR_BRIGHT_GREEN, COLOR_BRIGHT_YELLOW,
+    COLOR_BRIGHT_BLUE, COLOR_BRIGHT_MAGENTA, COLOR_BRIGHT_CYAN, COLOR_BRIGHT_WHITE
+} AnsiColor; // Standard 16 ANSI colors
+
+typedef struct RGB_Color_T {
+    unsigned char r, g, b, a;
+} RGB_Color; // True color representation
+
 #ifndef TERMINAL_IMPLEMENTATION
 // External declarations for users of the library (if not header-only)
-extern Terminal terminal;
+extern struct Terminal_T terminal;
 //extern VTKeyboard vt_keyboard;
 // extern Texture2D font_texture; // Moved to struct
 extern RGB_Color color_palette[256]; // Full 256 color palette
@@ -134,20 +151,6 @@ typedef enum {
     PARSE_TEKTRONIX,    // Tektronix 4010/4014 vector graphics mode
     PARSE_REGIS         // ReGIS graphics mode (ESC P p ... ST)
 } VTParseState;
-
-// =============================================================================
-// ENHANCED COLOR SYSTEM
-// =============================================================================
-typedef enum {
-    COLOR_BLACK = 0, COLOR_RED, COLOR_GREEN, COLOR_YELLOW,
-    COLOR_BLUE, COLOR_MAGENTA, COLOR_CYAN, COLOR_WHITE,
-    COLOR_BRIGHT_BLACK, COLOR_BRIGHT_RED, COLOR_BRIGHT_GREEN, COLOR_BRIGHT_YELLOW,
-    COLOR_BRIGHT_BLUE, COLOR_BRIGHT_MAGENTA, COLOR_BRIGHT_CYAN, COLOR_BRIGHT_WHITE
-} AnsiColor; // Standard 16 ANSI colors
-
-typedef struct {
-    unsigned char r, g, b, a;
-} RGB_Color; // True color representation
 
 // Extended color support
 typedef struct {
@@ -638,6 +641,14 @@ typedef struct {
 "    // Sixel Blend\n" \
 "    pixel_color = mix(pixel_color, sixel_color, sixel_color.a);\n" \
 "\n" \
+"    // Vector Graphics Overlay (Storage Tube Glow)\n" \
+"    if (pc.vector_texture_handle != 0) {\n" \
+"        sampler2D vector_tex = sampler2D(pc.vector_texture_handle);\n" \
+"        vec4 vec_col = texture(vector_tex, uv_screen);\n" \
+"        // Additive blending for CRT glow effect\n" \
+"        pixel_color += vec_col;\n" \
+"    }\n" \
+"\n" \
 "    // Scanlines & Vignette (Retro Effects)\n" \
 "    if (pc.scanline_intensity > 0.0) {\n" \
 "        float scanline = sin(uv_screen.y * pc.screen_size.y * 3.14159);\n" \
@@ -727,6 +738,7 @@ typedef struct {
     "    uint64_t vector_buffer_addr;\n" \
     "    uint64_t font_texture_handle;\n" \
     "    uint64_t sixel_texture_handle;\n" \
+    "    uint64_t vector_texture_handle;\n" \
     "} pc;\n" \
     TERMINAL_SHADER_BODY
 
@@ -808,13 +820,14 @@ typedef struct {
     "    uint64_t vector_buffer_addr;\n" \
     "    uint64_t font_texture_handle;\n" \
     "    uint64_t sixel_texture_handle;\n" \
+    "    uint64_t vector_texture_handle;\n" \
     "};\n" \
     "PushConsts pc = PushConsts(\n" \
     "    u_screen_size, u_char_size, u_grid_size, u_time,\n" \
     "    u_cursor_index, u_cursor_blink_state, u_text_blink_state,\n" \
     "    u_sel_start, u_sel_end, u_sel_active,\n" \
     "    u_scanline_intensity, u_crt_curvature, u_mouse_cursor_index,\n" \
-    "    packUint2x32(u_terminal_buffer_addr), 0, packUint2x32(u_font_texture_handle), packUint2x32(u_sixel_texture_handle)\n" \
+    "    packUint2x32(u_terminal_buffer_addr), 0, packUint2x32(u_font_texture_handle), packUint2x32(u_sixel_texture_handle), packUint2x32(u_vector_texture_handle)\n" \
     ");\n" \
     TERMINAL_SHADER_BODY
 
@@ -861,6 +874,7 @@ typedef struct {
     uint64_t vector_buffer_addr;
     uint64_t font_texture_handle;
     uint64_t sixel_texture_handle;
+    uint64_t vector_texture_handle;
     uint32_t vector_count; // Appended for Vector shader access
 } TerminalPushConstants;
 
@@ -1058,7 +1072,7 @@ typedef struct {
 
 } TerminalSession;
 
-typedef struct {
+typedef struct Terminal_T {
     TerminalSession sessions[MAX_SESSIONS];
     int active_session;
     bool split_screen_active;
@@ -1106,6 +1120,7 @@ typedef struct {
         bool has_bracket; // Was an opening bracket seen? (Option/Vector list)
         bool has_paren; // Was an opening parenthesis seen? (Options)
         char option_command; // Current option command being parsed
+        bool data_pending; // Has new data arrived since last execution?
 
         // Robust Number Parsing
         int current_val;
@@ -1129,6 +1144,8 @@ typedef struct {
         float curvature;
         float scanline_intensity;
     } visual_effects;
+
+    bool vector_clear_request; // Request to clear the persistent vector layer
 } Terminal;
 
 // =============================================================================
@@ -2075,10 +2092,17 @@ void InitTerminalCompute(void) {
 
     terminal.gpu_staging_buffer = (GPUCell*)calloc(DEFAULT_TERM_WIDTH * DEFAULT_TERM_HEIGHT, sizeof(GPUCell));
 
-    // 4. Init Vector Engine
-    terminal.vector_capacity = 4096; // Max lines per frame
+    // 4. Init Vector Engine (Storage Tube Architecture)
+    terminal.vector_capacity = 16384; // Max new lines per frame
     SituationCreateBuffer(terminal.vector_capacity * sizeof(GPUVectorLine), NULL, SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST, &terminal.vector_buffer);
     terminal.vector_staging_buffer = (GPUVectorLine*)calloc(terminal.vector_capacity, sizeof(GPUVectorLine));
+
+    // Create Persistent Vector Layer Texture (Storage Tube Surface)
+    SituationImage vec_img = {0};
+    SituationCreateImage(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, 4, &vec_img);
+    memset(vec_img.data, 0, DEFAULT_WINDOW_WIDTH * DEFAULT_WINDOW_HEIGHT * 4); // Clear to transparent black
+    SituationCreateTextureEx(vec_img, false, SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_TRANSFER_DST, &terminal.vector_layer_texture);
+    SituationUnloadImage(vec_img);
 
     // Create Vector Pipeline
     SituationCreateComputePipelineFromMemory(VECTOR_COMPUTE_SHADER_SRC, SIT_COMPUTE_LAYOUT_VECTOR, &terminal.vector_pipeline);
@@ -6590,6 +6614,7 @@ static void ReGIS_EvalBSpline(int p0x, int p0y, int p1x, int p1y, int p2x, int p
 
 static void ExecuteReGISCommand(void) {
     if (terminal.regis.command == 0) return;
+    if (!terminal.regis.data_pending && terminal.regis.command != 'S' && terminal.regis.command != 'W') return;
 
     int max_idx = terminal.regis.param_count;
 
@@ -6795,6 +6820,7 @@ static void ExecuteReGISCommand(void) {
     else if (terminal.regis.command == 'S') {
         if (terminal.regis.option_command == 'E') {
              terminal.vector_count = 0;
+             terminal.vector_clear_request = true;
         }
     }
     // --- W: Write Control ---
@@ -6807,6 +6833,8 @@ static void ExecuteReGISCommand(void) {
              }
         }
     }
+
+    terminal.regis.data_pending = false;
 }
 
 static void ProcessReGISChar(unsigned char ch) {
@@ -6943,6 +6971,7 @@ static void ProcessReGISChar(unsigned char ch) {
             }
             terminal.regis.params[terminal.regis.param_count] = terminal.regis.current_sign * terminal.regis.current_val;
             terminal.regis.params_relative[terminal.regis.param_count] = terminal.regis.val_is_relative;
+            terminal.regis.data_pending = true;
         } else if (ch == ',') {
             if (terminal.regis.parsing_val) {
                 terminal.regis.params[terminal.regis.param_count] = terminal.regis.current_sign * terminal.regis.current_val;
@@ -8169,6 +8198,23 @@ void DrawTerminal(void) {
     if (SituationAcquireFrameCommandBuffer()) {
         SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
+        // --- Vector Layer Management (Storage Tube) ---
+        if (terminal.vector_clear_request) {
+            // Clear the persistent vector layer
+            SituationImage clear_img = {0};
+            if (SituationCreateImage(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, 4, &clear_img) == SITUATION_SUCCESS) {
+                memset(clear_img.data, 0, DEFAULT_WINDOW_WIDTH * DEFAULT_WINDOW_HEIGHT * 4);
+
+                if (terminal.vector_layer_texture.generation != 0) {
+                    SituationDestroyTexture(&terminal.vector_layer_texture);
+                }
+
+                SituationCreateTextureEx(clear_img, false, SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_TRANSFER_DST, &terminal.vector_layer_texture);
+                SituationUnloadImage(clear_img);
+            }
+            terminal.vector_clear_request = false;
+        }
+
         SituationCmdBindComputePipeline(cmd, terminal.compute_pipeline);
 
         // Bindless: No Descriptor Sets for Buffers (BDA used)
@@ -8184,6 +8230,7 @@ void DrawTerminal(void) {
         } else {
             pc.sixel_texture_handle = SituationGetTextureHandle(terminal.dummy_sixel_texture);
         }
+        pc.vector_texture_handle = SituationGetTextureHandle(terminal.vector_layer_texture);
 
         pc.screen_size = (Vector2){{(float)DEFAULT_WINDOW_WIDTH, (float)DEFAULT_WINDOW_HEIGHT}};
         pc.char_size = (Vector2){{(float)DEFAULT_CHAR_WIDTH, (float)DEFAULT_CHAR_HEIGHT}};
@@ -8270,23 +8317,25 @@ void DrawTerminal(void) {
             SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_terminal_buffer_addr", &pc.terminal_buffer_addr, SIT_UNIFORM_IVEC2);
             SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_font_texture_handle", &pc.font_texture_handle, SIT_UNIFORM_IVEC2);
             SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_sixel_texture_handle", &pc.sixel_texture_handle, SIT_UNIFORM_IVEC2);
+            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_vector_texture_handle", &pc.vector_texture_handle, SIT_UNIFORM_IVEC2);
         #else
             SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
         #endif
 
+        // Dispatch Text (and compositing) Pass
         SituationCmdDispatch(cmd, DEFAULT_TERM_WIDTH, DEFAULT_TERM_HEIGHT, 1);
 
-        // --- Vector Overlay ---
+        // --- Vector Drawing Pass (Storage Tube Accumulation) ---
         if (terminal.vector_count > 0) {
-            // Update Vector Buffer
+            // Update Vector Buffer with NEW lines
             SituationUpdateBuffer(terminal.vector_buffer, 0, terminal.vector_count * sizeof(GPUVectorLine), terminal.vector_staging_buffer);
 
-            // Barrier: Wait for text compute to finish writing to image
-            SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE, SITUATION_BARRIER_COMPUTE_SHADER_READ);
+            // Execute vector drawing after text pass. The updated vector texture will be composited in the NEXT frame's text pass.
+            // This introduces a 1-frame latency for new vectors, which is acceptable for terminal emulation.
 
             SituationCmdBindComputePipeline(cmd, terminal.vector_pipeline);
-            // No buffer binding needed (BDA)
-            SituationCmdBindComputeTexture(cmd, 1, terminal.output_texture); // Read-Write
+            // Bind the Storage Texture
+            SituationCmdBindComputeTexture(cmd, 1, terminal.vector_layer_texture); // Read-Write
 
             // Push Constants
             pc.vector_count = terminal.vector_count;
@@ -8302,6 +8351,12 @@ void DrawTerminal(void) {
 
             // Dispatch (64 threads per group)
             SituationCmdDispatch(cmd, (terminal.vector_count + 63) / 64, 1, 1);
+
+            // Barrier for safety
+            SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE, SITUATION_BARRIER_COMPUTE_SHADER_READ);
+
+            // Reset vector count (Storage Tube behavior: only draw new lines once)
+            terminal.vector_count = 0;
         }
 
         SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE, SITUATION_BARRIER_TRANSFER_READ);
