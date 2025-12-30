@@ -47,13 +47,15 @@ ReGIS (Remote Graphics Instruction Set) provides higher-level graphics primitive
     - *Goal:* Support `T(S[n], D[angle])`.
 - [x] **Polygon Fill (F):** Implement scanline or vector-based filling for closed shapes.
     - *Actionable:* Add a "Fill" flag to the vector pipeline or a separate compute pass for rasterizing filled polygons.
-- [ ] **Load Alphabet (L):** Support custom soft-fonts for ReGIS text.
+- [x] **Load Alphabet (L):** Support custom soft-fonts for ReGIS text.
     - *Actionable:* Parse `L` command and update a section of the font atlas.
 - [x] **Macrographs (@):** Record and playback sequences of commands.
     - *Actionable:* Implement a buffer to store command strings and a playback mechanism.
 - [x] **Report (R):** Report cursor position and state back to the host.
     - *Actionable:* Implement `R(P)` to queue position response.
 - [x] **Display Addressing:** Support standard ReGIS 800x480 coordinate space scaling (currently normalized, needs verification of aspect ratio handling).
+- [x] **Write Controls (W):** Implement `W(R)` (Replace), `W(E)` (Erase), `W(V)` (Overlay), `W(C)` (Complement/XOR).
+    - *Actionable:* Update `GPUVectorLine` and Compute Shader to support drawing modes beyond additive glow.
 
 ## Phase 3: ISO 2022 & NRCS (The "Linguist" Milestone)
 
