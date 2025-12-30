@@ -1149,6 +1149,14 @@ typedef struct Terminal_T {
         char* macro_buffer;
         size_t macro_len;
         size_t macro_cap;
+
+        // Load Alphabet (L) Support
+        struct {
+            char name[16]; // Name of the alphabet (e.g., "A")
+            int current_char; // The character currently being defined (0-255)
+            int pattern_byte_idx; // Current byte index in the character's pattern (0-31)
+            int hex_nibble; // Parsing state for hex pairs (-1 = expecting high nibble)
+        } load;
     } regis;
 
     // Retro Visual Effects
@@ -6947,6 +6955,16 @@ static void ExecuteReGISCommand(void) {
              terminal.regis.text_angle = (float)terminal.regis.params[0] * 3.14159f / 180.0f;
         }
     }
+    // --- L: Load Alphabet ---
+    else if (terminal.regis.command == 'L') {
+        // L command logic is primarily handled in ProcessReGISChar during string/hex parsing.
+        // This block handles parameterized options like S (Size) if provided.
+        if (terminal.regis.option_command == 'S') {
+             // Character Cell Size (e.g. L(S1) or L(S[8,16]))
+             // Currently simplified to just acknowledge.
+             // Ideally this would configure the soft font dimensions.
+        }
+    }
     // --- R: Report ---
     else if (terminal.regis.command == 'R') {
          if (terminal.regis.option_command == 'P') {
@@ -7001,70 +7019,101 @@ static void ProcessReGISChar(unsigned char ch) {
         if (ch == terminal.regis.string_terminator) {
             terminal.regis.text_buffer[terminal.regis.text_pos] = '\0';
 
-            // Text Drawing with attributes
-            float scale = (terminal.regis.text_size > 0) ? terminal.regis.text_size : 1.0f;
-            // Base scale 1 = 8x16? ReGIS default size 1 is roughly 9x16 grid?
-            // Existing code used scale 2.0f. Let's base it on that.
-            scale *= 2.0f;
+            if (terminal.regis.command == 'L') {
+                // Load Alphabet Logic
+                if (terminal.regis.option_command == 'A') {
+                    // Set Alphabet Name
+                    strncpy(terminal.regis.load.name, terminal.regis.text_buffer, 15);
+                    terminal.regis.load.name[15] = '\0';
+                    terminal.regis.option_command = 0; // Reset
+                } else {
+                    // Define Character
+                    if (terminal.regis.text_pos > 0) {
+                        terminal.regis.load.current_char = (unsigned char)terminal.regis.text_buffer[0];
+                        terminal.regis.load.pattern_byte_idx = 0;
+                        terminal.regis.load.hex_nibble = -1;
+                        // Clear existing pattern for this char
+                        memset(ACTIVE_SESSION.soft_font.font_data[terminal.regis.load.current_char], 0, 32);
+                        ACTIVE_SESSION.soft_font.loaded[terminal.regis.load.current_char] = true;
+                        ACTIVE_SESSION.soft_font.active = true;
+                    }
+                }
+            } else {
+                // Text Drawing with attributes
+                float scale = (terminal.regis.text_size > 0) ? terminal.regis.text_size : 1.0f;
+                // Base scale 1 = 8x16? ReGIS default size 1 is roughly 9x16 grid?
+                // Existing code used scale 2.0f. Let's base it on that.
+                scale *= 2.0f;
 
-            float cos_a = cosf(terminal.regis.text_angle);
-            float sin_a = sinf(terminal.regis.text_angle);
+                float cos_a = cosf(terminal.regis.text_angle);
+                float sin_a = sinf(terminal.regis.text_angle);
 
-            int start_x = terminal.regis.x;
-            int start_y = terminal.regis.y;
-            const unsigned char* font_base = vga_perfect_8x8_font;
+                int start_x = terminal.regis.x;
+                int start_y = terminal.regis.y;
 
-            for(int i=0; terminal.regis.text_buffer[i] != '\0'; i++) {
-                unsigned char c = (unsigned char)terminal.regis.text_buffer[i];
-                const unsigned char* glyph = &font_base[c * 8];
-                for(int r=0; r<8; r++) {
-                    unsigned char row = glyph[r];
-                    for(int c_bit=0; c_bit<8; c_bit++) {
-                        if ((row >> (7-c_bit)) & 1) {
-                            int len = 1;
-                            while(c_bit+len < 8 && ((row >> (7-(c_bit+len))) & 1)) len++;
+                const unsigned char* font_base = vga_perfect_8x8_font;
+                bool use_soft_font = ACTIVE_SESSION.soft_font.active;
 
-                            // Local coordinates relative to char origin
-                            float lx0 = (float)(c_bit * scale);
-                            float ly0 = (float)(r * scale * 1.5f);
-                            float lx1 = (float)((c_bit + len) * scale);
-                            float ly1 = ly0;
+                for(int i=0; terminal.regis.text_buffer[i] != '\0'; i++) {
+                    unsigned char c = (unsigned char)terminal.regis.text_buffer[i];
 
-                            // Rotate and translate
-                            // Char origin is (start_x, start_y)
-                            // We accumulate i * 9 * scale along the rotation vector
+                    for(int r=0; r<16; r++) { // Iterate up to 16 rows (supports soft font height)
+                        unsigned char row = 0;
+                        int height_limit = 8; // Default to 8 for VGA font
 
-                            // To simplify rotation, we rotate the line segments
-                            // Character offset
-                            float char_offset = i * 9 * scale;
+                        if (use_soft_font && ACTIVE_SESSION.soft_font.loaded[c]) {
+                            row = ACTIVE_SESSION.soft_font.font_data[c][r];
+                            height_limit = 16;
+                        } else {
+                            if (r < 8) row = font_base[c * 8 + r];
+                            else row = 0;
+                        }
 
-                            float rx0 = lx0 + char_offset;
-                            float rx1 = lx1 + char_offset;
+                        if (r >= height_limit) continue;
 
-                            float fx0 = start_x + (rx0 * cos_a - ly0 * sin_a);
-                            float fy0 = start_y + (rx0 * sin_a + ly0 * cos_a);
-                            float fx1 = start_x + (rx1 * cos_a - ly1 * sin_a);
-                            float fy1 = start_y + (rx1 * sin_a + ly1 * cos_a);
+                        for(int c_bit=0; c_bit<8; c_bit++) {
+                            if ((row >> (7-c_bit)) & 1) {
+                                int len = 1;
+                                while(c_bit+len < 8 && ((row >> (7-(c_bit+len))) & 1)) len++;
 
-                            if (terminal.vector_count < terminal.vector_capacity) {
-                                GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
-                                line->x0 = fx0 / 800.0f;
-                                line->y0 = 1.0f - (fy0 / 480.0f);
-                                line->x1 = fx1 / 800.0f;
-                                line->y1 = 1.0f - (fy1 / 480.0f);
-                                line->color = terminal.regis.color;
-                                line->intensity = 1.0f;
-                                terminal.vector_count++;
-                             }
-                            c_bit += len - 1;
+                                // Local coordinates relative to char origin
+                                float lx0 = (float)(c_bit * scale);
+                                float ly0 = (float)(r * scale * (height_limit == 8 ? 1.5f : 0.75f)); // Adjust aspect for 16px
+                                float lx1 = (float)((c_bit + len) * scale);
+                                float ly1 = ly0;
+
+                                // Rotate and translate
+                                // Character offset
+                                float char_offset = i * 9 * scale;
+
+                                float rx0 = lx0 + char_offset;
+                                float rx1 = lx1 + char_offset;
+
+                                float fx0 = start_x + (rx0 * cos_a - ly0 * sin_a);
+                                float fy0 = start_y + (rx0 * sin_a + ly0 * cos_a);
+                                float fx1 = start_x + (rx1 * cos_a - ly1 * sin_a);
+                                float fy1 = start_y + (rx1 * sin_a + ly1 * cos_a);
+
+                                if (terminal.vector_count < terminal.vector_capacity) {
+                                    GPUVectorLine* line = &terminal.vector_staging_buffer[terminal.vector_count];
+                                    line->x0 = fx0 / 800.0f;
+                                    line->y0 = 1.0f - (fy0 / 480.0f);
+                                    line->x1 = fx1 / 800.0f;
+                                    line->y1 = 1.0f - (fy1 / 480.0f);
+                                    line->color = terminal.regis.color;
+                                    line->intensity = 1.0f;
+                                    terminal.vector_count++;
+                                 }
+                                c_bit += len - 1;
+                            }
                         }
                     }
                 }
+                // Update cursor position to end of string
+                float total_width = terminal.regis.text_pos * 9 * scale;
+                terminal.regis.x = start_x + (int)(total_width * cos_a);
+                terminal.regis.y = start_y + (int)(total_width * sin_a);
             }
-            // Update cursor position to end of string
-            float total_width = terminal.regis.text_pos * 9 * scale;
-            terminal.regis.x = start_x + (int)(total_width * cos_a);
-            terminal.regis.y = start_y + (int)(total_width * sin_a);
 
             terminal.regis.state = 1;
             terminal.regis.text_pos = 0;
@@ -7136,7 +7185,7 @@ static void ProcessReGISChar(unsigned char ch) {
         }
 
         if (ch == '\'' || ch == '"') {
-             if (terminal.regis.command == 'T') {
+             if (terminal.regis.command == 'T' || terminal.regis.command == 'L') {
                  terminal.regis.state = 3;
                  terminal.regis.string_terminator = ch;
                  terminal.regis.text_pos = 0;
@@ -7178,6 +7227,28 @@ static void ProcessReGISChar(unsigned char ch) {
                 terminal.regis.params[i] = 0;
                 terminal.regis.params_relative[i] = false;
             }
+        } else if (terminal.regis.command == 'L' && isxdigit(ch)) {
+            // Hex parsing for Load Alphabet
+            // Assuming ReGIS "hex string" format (pairs of hex digits)
+            int val = 0;
+            if (ch >= '0' && ch <= '9') val = ch - '0';
+            else if (ch >= 'A' && ch <= 'F') val = ch - 'A' + 10;
+            else if (ch >= 'a' && ch <= 'f') val = ch - 'a' + 10;
+
+            if (terminal.regis.load.hex_nibble == -1) {
+                terminal.regis.load.hex_nibble = val;
+            } else {
+                int byte = (terminal.regis.load.hex_nibble << 4) | val;
+                terminal.regis.load.hex_nibble = -1;
+
+                if (terminal.regis.load.pattern_byte_idx < 32) {
+                    ACTIVE_SESSION.soft_font.font_data[terminal.regis.load.current_char][terminal.regis.load.pattern_byte_idx++] = byte;
+                }
+            }
+            // Trigger texture update (deferred or immediate)
+            // Ideally we'd only do this once per batch, but for now:
+            CreateFontTexture();
+
         } else if (isdigit(ch) || ch == '-' || ch == '+') {
             if (!terminal.regis.parsing_val) {
                 terminal.regis.parsing_val = true;
