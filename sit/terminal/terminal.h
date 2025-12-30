@@ -624,8 +624,8 @@ typedef struct {
 "    }\n" \
 "\n" \
 "    uint char_code = cell.char_code;\n" \
-"    uint glyph_col = char_code % 16;\n" \
-"    uint glyph_row = char_code / 16;\n" \
+"    uint glyph_col = char_code % pc.atlas_cols;\n" \
+"    uint glyph_row = char_code / pc.atlas_cols;\n" \
 "    \n" \
 "    uint in_char_y = sample_coords.y % uint(pc.char_size.y);\n" \
 "    float u_pixel = float(in_char_x);\n" \
@@ -765,6 +765,7 @@ typedef struct {
     "    uint64_t font_texture_handle;\n" \
     "    uint64_t sixel_texture_handle;\n" \
     "    uint64_t vector_texture_handle;\n" \
+    uint atlas_cols;
     "} pc;\n" \
     TERMINAL_SHADER_BODY
 
@@ -901,6 +902,7 @@ typedef struct {
     uint64_t font_texture_handle;
     uint64_t sixel_texture_handle;
     uint64_t vector_texture_handle;
+    uint32_t atlas_cols;   // Added for Dynamic Atlas
     uint32_t vector_count; // Appended for Vector shader access
 } TerminalPushConstants;
 
@@ -1176,6 +1178,7 @@ typedef struct Terminal_T {
         char* macro_buffer;
         size_t macro_len;
         size_t macro_cap;
+        int recursion_depth;
 
         // Load Alphabet (L) Support
         struct {
@@ -1193,6 +1196,15 @@ typedef struct Terminal_T {
     } visual_effects;
 
     bool vector_clear_request; // Request to clear the persistent vector layer
+
+    // Dynamic Glyph Cache
+    uint16_t glyph_map[65536]; // Map Unicode BMP to Atlas Index
+    uint32_t next_atlas_index;
+    unsigned char* font_atlas_pixels; // persistent CPU copy
+    bool font_atlas_dirty;
+    uint32_t atlas_width;
+    uint32_t atlas_height;
+    uint32_t atlas_cols;
 } Terminal;
 
 // =============================================================================
@@ -1691,6 +1703,12 @@ void InitTerminal(void) {
     terminal.active_session = 0;
 
     InitCharacterSetLUT();
+
+    // Initialize Dynamic Atlas dimensions before creation
+    terminal.atlas_width = 1024;
+    terminal.atlas_height = 1024;
+    terminal.atlas_cols = 128;
+
     CreateFontTexture();
     InitTerminalCompute();
 }
@@ -2214,19 +2232,20 @@ void CreateFontTexture(void) {
         SituationDestroyTexture(&terminal.font_texture);
     }
 
-    const int chars_per_row = 16;
-    const int num_chars = 256;
-    const int atlas_width = chars_per_row * DEFAULT_CHAR_WIDTH;
-    const int atlas_height = (num_chars / chars_per_row) * DEFAULT_CHAR_HEIGHT;
+    const int chars_per_row = terminal.atlas_cols > 0 ? terminal.atlas_cols : 16;
+    const int num_chars_base = 256;
 
-    // Create a CPU-side image (RGBA)
-    SituationImage img = {0};
-    if (SituationCreateImage(atlas_width, atlas_height, 4, &img) != SITUATION_SUCCESS) return;
+    // Allocate persistent CPU buffer if not present
+    if (!terminal.font_atlas_pixels) {
+        terminal.font_atlas_pixels = calloc(terminal.atlas_width * terminal.atlas_height * 4, 1);
+        if (!terminal.font_atlas_pixels) return;
+        terminal.next_atlas_index = 256; // Start dynamic allocation after base set
+    }
 
-    unsigned char* pixels = (unsigned char*)img.data;
+    unsigned char* pixels = terminal.font_atlas_pixels;
 
-    // Unpack the font data
-    for (int i = 0; i < num_chars; i++) {
+    // Unpack the font data (Base 256 chars)
+    for (int i = 0; i < num_chars_base; i++) {
         int glyph_col = i % chars_per_row;
         int glyph_row = i / chars_per_row;
         int dest_x_start = glyph_col * DEFAULT_CHAR_WIDTH;
@@ -2241,7 +2260,7 @@ void CreateFontTexture(void) {
             }
 
             for (int x = 0; x < DEFAULT_CHAR_WIDTH; x++) {
-                int px_idx = ((dest_y_start + y) * atlas_width + (dest_x_start + x)) * 4;
+                int px_idx = ((dest_y_start + y) * terminal.atlas_width + (dest_x_start + x)) * 4;
                 if ((byte >> (7 - x)) & 1) {
                     pixels[px_idx + 0] = 255;
                     pixels[px_idx + 1] = 255;
@@ -2257,8 +2276,16 @@ void CreateFontTexture(void) {
         }
     }
 
+    // Create GPU Texture
+    SituationImage img = {0};
+    img.width = terminal.atlas_width;
+    img.height = terminal.atlas_height;
+    img.channels = 4;
+    img.data = pixels;
+
+    if (terminal.font_texture.generation != 0) SituationDestroyTexture(&terminal.font_texture);
     SituationCreateTexture(img, false, &terminal.font_texture);
-    SituationUnloadImage(img);
+    // Don't unload image data as it points to persistent buffer
 }
 
 void InitTerminalCompute(void) {
@@ -2289,7 +2316,7 @@ void InitTerminalCompute(void) {
     terminal.gpu_staging_buffer = (GPUCell*)calloc(DEFAULT_TERM_WIDTH * DEFAULT_TERM_HEIGHT, sizeof(GPUCell));
 
     // 4. Init Vector Engine (Storage Tube Architecture)
-    terminal.vector_capacity = 16384; // Max new lines per frame
+    terminal.vector_capacity = 65536; // Max new lines per frame
     SituationCreateBuffer(terminal.vector_capacity * sizeof(GPUVectorLine), NULL, SITUATION_BUFFER_USAGE_STORAGE_BUFFER | SITUATION_BUFFER_USAGE_TRANSFER_DST, &terminal.vector_buffer);
     terminal.vector_staging_buffer = (GPUVectorLine*)calloc(terminal.vector_capacity, sizeof(GPUVectorLine));
 
@@ -2311,36 +2338,131 @@ void InitTerminalCompute(void) {
 // =============================================================================
 
 unsigned int TranslateCharacter(unsigned char ch, CharsetState* state) {
-    CharacterSet active_set = *state->gl;
+    CharacterSet active_set;
 
-    // Handle single shift states
+    // 1. Determine Active Set
     if (state->single_shift_2) {
         active_set = state->g2;
         state->single_shift_2 = false;
     } else if (state->single_shift_3) {
         active_set = state->g3;
         state->single_shift_3 = false;
+    } else {
+        // GL (0x00-0x7F) vs GR (0x80-0xFF)
+        if (ch < 0x80) {
+            active_set = *state->gl;
+        } else {
+            active_set = *state->gr;
+        }
     }
 
+    // 2. UTF-8 Bypass
     if (active_set == CHARSET_UTF8) {
-        return ch; // Handled by ProcessNormalChar
+        return ch;
     }
 
-    if (active_set == CHARSET_ISO_LATIN_1 || active_set == CHARSET_DEC_MULTINATIONAL) {
-        if (ch >= 0x80) return ch; // Direct mapping for 8-bit sets logic
-    }
-
-    // Use LUT for O(1) lookup
-    if (ch < 128 && active_set < CHARSET_COUNT) {
-        return charset_lut[active_set][ch];
+    // 3. Translation
+    if (ch >= 0x80) {
+        // High-bit characters
+        if (active_set == CHARSET_ISO_LATIN_1 || active_set == CHARSET_DEC_MULTINATIONAL) {
+            return ch; // Pass-through for 8-bit sets
+        }
+        // For 7-bit sets mapped to GR, strip high bit for lookup
+        // e.g. DEC Special Graphics in GR (rare, but valid in ISO 2022)
+        unsigned char seven_bit = ch & 0x7F;
+        if (active_set < CHARSET_COUNT) {
+            return charset_lut[active_set][seven_bit];
+        }
+        return ch;
+    } else {
+        // Low-bit characters (GL)
+        if (active_set < CHARSET_COUNT) {
+            return charset_lut[active_set][ch];
+        }
     }
 
     return ch;
 }
 
-// Helper to map Unicode codepoints to CP437 glyph indices (0-255)
-// This is used because our font texture is fixed at 256 characters (CP437 layout)
+// Helper to allocate a glyph index in the dynamic atlas for any Unicode codepoint
+uint32_t AllocateGlyph(uint32_t codepoint) {
+    // Limit to BMP (Basic Multilingual Plane) for now as our map is 64K
+    if (codepoint >= 65536) {
+        return '?'; // Return safe fallback to prevent infinite allocation
+    }
+
+    // Check if already mapped
+    if (terminal.glyph_map[codepoint] != 0) {
+        return terminal.glyph_map[codepoint];
+    }
+
+    // Check capacity
+    uint32_t capacity = (terminal.atlas_width / DEFAULT_CHAR_WIDTH) * (terminal.atlas_height / DEFAULT_CHAR_HEIGHT);
+    if (terminal.next_atlas_index >= capacity) {
+        // Atlas full. For now, return replacement char (e.g. '?').
+        // In a real scenario, we might want to evict LRU or reset.
+        return '?';
+    }
+
+    uint32_t idx = terminal.next_atlas_index++;
+    terminal.glyph_map[codepoint] = (uint16_t)idx;
+
+    // Render "Hex Box" fallback into font_atlas_pixels at slot idx
+    // Calculate UV start
+    int col = idx % terminal.atlas_cols; // 128
+    int row = idx / terminal.atlas_cols;
+    int x_start = col * DEFAULT_CHAR_WIDTH;
+    int y_start = row * DEFAULT_CHAR_HEIGHT;
+
+    // Draw box
+    for (int y = 0; y < DEFAULT_CHAR_HEIGHT; y++) {
+        for (int x = 0; x < DEFAULT_CHAR_WIDTH; x++) {
+            bool on = false;
+            // Simple border
+            if (x == 0 || x == DEFAULT_CHAR_WIDTH-1 || y == 0 || y == DEFAULT_CHAR_HEIGHT-1) on = true;
+
+            // Draw hex digits inside? (Too small for 8x16 usually, maybe just 4x4 dots)
+            // Just a box with a dot for now to signify "missing but allocated"
+            if (x == DEFAULT_CHAR_WIDTH/2 && y == DEFAULT_CHAR_HEIGHT/2) on = true;
+
+            int px_idx = ((y_start + y) * terminal.atlas_width + (x_start + x)) * 4;
+            if (terminal.font_atlas_pixels) {
+                unsigned char val = on ? 255 : 0;
+                terminal.font_atlas_pixels[px_idx+0] = val;
+                terminal.font_atlas_pixels[px_idx+1] = val;
+                terminal.font_atlas_pixels[px_idx+2] = val;
+                terminal.font_atlas_pixels[px_idx+3] = val;
+            }
+        }
+    }
+
+    terminal.font_atlas_dirty = true;
+    return idx;
+}
+
+// Helper to map Unicode codepoints to Dynamic Atlas indices
+uint32_t MapUnicodeToAtlas(uint32_t codepoint) {
+    if (codepoint < 256) {
+        // Direct mapping for CP437 range (pre-loaded)
+        // Wait, MapUnicodeToCP437 handles remapping.
+        // We should reuse that logic to map Unicode -> CP437 index for known chars.
+        // But now we use that index directly as Atlas Index.
+        // If it returns '?', we might want to allocate a new one if it's truly unknown?
+        // But CP437 map returns valid 0-255 indices for many unicode chars.
+        // So we keep using it for the base set.
+        return codepoint;
+    }
+
+    // Check if we have a CP437 mapping first (legacy)
+    // Actually, AllocateGlyph handles arbitrary unicode.
+    // We should try to allocate if not found.
+    return AllocateGlyph(codepoint);
+}
+
+// Legacy wrapper (deprecated in favor of dynamic system, but kept for logic compat)
 uint8_t MapUnicodeToCP437(uint32_t codepoint) {
+    // This function returns a CP437 index (0-255).
+    // It logic is hardcoded.
     if (codepoint < 128) return (uint8_t)codepoint;
 
     // Direct mappings for common box drawing and symbols present in CP437
@@ -7440,16 +7562,22 @@ static void ProcessReGISChar(unsigned char ch) {
              if (isalpha(ch)) {
                  int idx = toupper(ch) - 'A';
                  if (idx >= 0 && idx < 26 && terminal.regis.macros[idx]) {
-                     // Push macro content to parser
-                     // Recursive call? Simple stack?
-                     // For now, just iterate the string.
-                     const char* m = terminal.regis.macros[idx];
-                     // Reset state to 0 for macro context?
-                     // Macros usually contain full commands.
-                     int saved_state = terminal.regis.state;
-                     terminal.regis.state = 0;
-                     for (int k=0; m[k]; k++) ProcessReGISChar(m[k]);
-                     terminal.regis.state = saved_state;
+                     if (terminal.regis.recursion_depth < 16) {
+                         terminal.regis.recursion_depth++;
+                         // Push macro content to parser
+                         const char* m = terminal.regis.macros[idx];
+                         // Reset state to 0 for macro context?
+                         // Macros usually contain full commands.
+                         int saved_state = terminal.regis.state;
+                         terminal.regis.state = 0;
+                         for (int k=0; m[k]; k++) ProcessReGISChar(m[k]);
+                         terminal.regis.state = saved_state;
+                         terminal.regis.recursion_depth--;
+                     } else {
+                         if (ACTIVE_SESSION.options.debug_sequences) {
+                             LogUnsupportedSequence("ReGIS Macro recursion depth exceeded");
+                         }
+                     }
                  }
                  terminal.regis.command = 0;
                  terminal.regis.state = 0;
@@ -8678,7 +8806,12 @@ void UpdateTerminalSSBO(void) {
                 EnhancedTermChar* cell = &source_session->screen[source_y][x];
                 GPUCell* gpu_cell = &terminal.gpu_staging_buffer[y * DEFAULT_TERM_WIDTH + x];
 
-                gpu_cell->char_code = cell->ch;
+                // Dynamic Glyph Mapping
+                if (cell->ch < 256) {
+                    gpu_cell->char_code = cell->ch; // Base set
+                } else {
+                    gpu_cell->char_code = AllocateGlyph(cell->ch);
+                }
 
                 Color fg = {255, 255, 255, 255};
                 if (cell->fg_color.color_mode == 0) {
@@ -8738,9 +8871,20 @@ void DrawTerminal(void) {
     if (!terminal.compute_initialized) return;
 
     // Handle Soft Font Update
-    if (ACTIVE_SESSION.soft_font.dirty) {
-        CreateFontTexture();
+    if (ACTIVE_SESSION.soft_font.dirty || terminal.font_atlas_dirty) {
+        if (terminal.font_atlas_pixels) {
+            SituationImage img = {0};
+            img.width = terminal.atlas_width;
+            img.height = terminal.atlas_height;
+            img.channels = 4;
+            img.data = terminal.font_atlas_pixels; // Pointer alias, don't free
+
+            // Re-upload full texture
+            if (terminal.font_texture.generation != 0) SituationDestroyTexture(&terminal.font_texture);
+            SituationCreateTexture(img, false, &terminal.font_texture);
+        }
         ACTIVE_SESSION.soft_font.dirty = false;
+        terminal.font_atlas_dirty = false;
     }
 
     // Handle Sixel Texture Creation/Upload
@@ -8806,6 +8950,7 @@ void DrawTerminal(void) {
             pc.sixel_texture_handle = SituationGetTextureHandle(terminal.dummy_sixel_texture);
         }
         pc.vector_texture_handle = SituationGetTextureHandle(terminal.vector_layer_texture);
+        pc.atlas_cols = terminal.atlas_cols;
 
         pc.screen_size = (Vector2){{(float)DEFAULT_WINDOW_WIDTH, (float)DEFAULT_WINDOW_HEIGHT}};
         pc.char_size = (Vector2){{(float)DEFAULT_CHAR_WIDTH, (float)DEFAULT_CHAR_HEIGHT}};
