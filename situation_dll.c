@@ -6,23 +6,25 @@
  * export from the DLL.
  *
  * To compile on Windows with GCC (MinGW):
- *   gcc -shared -o situation.dll build_dll.c glad.c -DSITUATION_BUILD_SHARED -I<path_to_cglm> -I<path_to_glad> -I<path_to_glfw> -lglfw3 -lgdi32 -lopengl32 -lwinmm -luser32 -lshell32 -lole32 -liphlpapi -lsetupapi -ldxgi -lpropsys -lshlwapi -lxinput -lm
+ *   gcc -shared -o situation.dll build_dll.c -DSITUATION_BUILD_SHARED -I<path_to_cglm> -I<path_to_glad> -I<path_to_glfw> -lglfw3 -lgdi32 -lopengl32 -lwinmm -luser32 -lshell32 -lole32 -liphlpapi -lsetupapi -ldxgi -lpropsys -lshlwapi -lxinput -lm
  *
  * To compile on Linux with GCC:
- *   gcc -shared -fPIC -o libsituation.so build_dll.c glad.c -DSITUATION_BUILD_SHARED -I<includes> -lglfw -lGL -lm -ldl -lpthread
+ *   gcc -shared -fPIC -o libsituation.so build_dll.c -DSITUATION_BUILD_SHARED -I<includes> -lglfw -lGL -lm -ldl -lpthread
  */
 
 // Define this to tell situation.h that we are building it as a shared library.
 // This will activate the `__declspec(dllexport)` definition for SITAPI on Windows.
 #define SITUATION_BUILD_SHARED
 
+// Define backend
+#define SITUATION_USE_OPENGL
+
 // Define this to include the implementation of the library in this compilation unit.
 #define SITUATION_IMPLEMENTATION
 #include "situation.h"
 
-// We also need to compile the GLAD loader implementation alongside our library.
-// Make sure the path is correct relative to this file.
-#include "ext/glad.c"
+// Note: situation.h includes glad.c when SITUATION_USE_OPENGL is defined
+// So we do NOT include it here to avoid duplicate symbols.
 
 /*
 How to Use build_dll.c
@@ -43,8 +45,8 @@ project_root/
 └── (output will go here)
     ├── situation.dll
     └── your_game.exe
-    
-    
+
+
 1. Build the DLL:
 Navigate to your situation_lib directory and run the compilation command.
 On Windows (using MinGW GCC):
