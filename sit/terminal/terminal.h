@@ -826,23 +826,7 @@ typedef struct {
     "struct GPUCell { uint char_code; uint fg_color; uint bg_color; uint flags; };\n" \
     "layout(buffer_reference, scalar) buffer TerminalBuffer { GPUCell cells[]; };\n" \
     "layout(binding = 1, rgba8) writeonly uniform image2D output_image;\n" \
-    "layout(location = 0) uniform vec2 u_screen_size;\n" \
-    "layout(location = 1) uniform vec2 u_char_size;\n" \
-    "layout(location = 2) uniform vec2 u_grid_size;\n" \
-    "layout(location = 3) uniform float u_time;\n" \
-    "layout(location = 4) uniform uint u_cursor_index;\n" \
-    "layout(location = 5) uniform uint u_cursor_blink_state;\n" \
-    "layout(location = 6) uniform uint u_text_blink_state;\n" \
-    "layout(location = 7) uniform uint u_sel_start;\n" \
-    "layout(location = 8) uniform uint u_sel_end;\n" \
-    "layout(location = 9) uniform uint u_sel_active;\n" \
-    "layout(location = 10) uniform float u_scanline_intensity;\n" \
-    "layout(location = 11) uniform float u_crt_curvature;\n" \
-    "layout(location = 12) uniform uint u_mouse_cursor_index;\n" \
-    "layout(location = 13) uniform uvec2 u_terminal_buffer_addr;\n" \
-    "layout(location = 14) uniform uvec2 u_font_texture_handle;\n" \
-    "layout(location = 15) uniform uvec2 u_sixel_texture_handle;\n" \
-    "struct PushConsts {\n" \
+    "layout(scalar, binding = 0) uniform PushConstants {\n" \
     "    vec2 screen_size;\n" \
     "    vec2 char_size;\n" \
     "    vec2 grid_size;\n" \
@@ -861,14 +845,9 @@ typedef struct {
     "    uint64_t font_texture_handle;\n" \
     "    uint64_t sixel_texture_handle;\n" \
     "    uint64_t vector_texture_handle;\n" \
-    "};\n" \
-    "PushConsts pc = PushConsts(\n" \
-    "    u_screen_size, u_char_size, u_grid_size, u_time,\n" \
-    "    u_cursor_index, u_cursor_blink_state, u_text_blink_state,\n" \
-    "    u_sel_start, u_sel_end, u_sel_active,\n" \
-    "    u_scanline_intensity, u_crt_curvature, u_mouse_cursor_index,\n" \
-    "    packUint2x32(u_terminal_buffer_addr), 0, packUint2x32(u_font_texture_handle), packUint2x32(u_sixel_texture_handle), packUint2x32(u_vector_texture_handle)\n" \
-    ");\n" \
+    "    uint atlas_cols;\n" \
+    "    uint vector_count;\n" \
+    "} pc;\n" \
     TERMINAL_SHADER_BODY
 
     #define VECTOR_COMPUTE_SHADER_SRC \
@@ -880,11 +859,28 @@ typedef struct {
     "struct GPUVectorLine { vec2 start; vec2 end; uint color; float intensity; uint mode; float _pad; };\n" \
     "layout(buffer_reference, scalar) buffer VectorBuffer { GPUVectorLine data[]; };\n" \
     "layout(binding = 1, rgba8) uniform image2D output_image;\n" \
-    "layout(location = 0) uniform vec2 u_screen_size;\n" \
-    "layout(location = 1) uniform uint u_vector_count;\n" \
-    "layout(location = 2) uniform uvec2 u_vector_buffer_addr;\n" \
-    "struct PushConsts { vec2 screen_size; uint vector_count; uint64_t vector_buffer_addr; };\n" \
-    "PushConsts pc = PushConsts(u_screen_size, u_vector_count, packUint2x32(u_vector_buffer_addr));\n" \
+    "layout(scalar, binding = 0) uniform PushConstants {\n" \
+    "    vec2 screen_size;\n" \
+    "    vec2 char_size;\n" \
+    "    vec2 grid_size;\n" \
+    "    float time;\n" \
+    "    uint cursor_index;\n" \
+    "    uint cursor_blink_state;\n" \
+    "    uint text_blink_state;\n" \
+    "    uint sel_start;\n" \
+    "    uint sel_end;\n" \
+    "    uint sel_active;\n" \
+    "    float scanline_intensity;\n" \
+    "    float crt_curvature;\n" \
+    "    uint mouse_cursor_index;\n" \
+    "    uint64_t terminal_buffer_addr;\n" \
+    "    uint64_t vector_buffer_addr;\n" \
+    "    uint64_t font_texture_handle;\n" \
+    "    uint64_t sixel_texture_handle;\n" \
+    "    uint64_t vector_texture_handle;\n" \
+    "    uint atlas_cols;\n" \
+    "    uint vector_count;\n" \
+    "} pc;\n" \
     VECTOR_SHADER_BODY
 
 #endif
@@ -9125,28 +9121,7 @@ void DrawTerminal(void) {
         pc.scanline_intensity = terminal.visual_effects.scanline_intensity;
         pc.crt_curvature = terminal.visual_effects.curvature;
 
-        #if defined(SITUATION_USE_OPENGL)
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_screen_size", &pc.screen_size, SIT_UNIFORM_VEC2);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_char_size", &pc.char_size, SIT_UNIFORM_VEC2);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_grid_size", &pc.grid_size, SIT_UNIFORM_VEC2);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_time", &pc.time, SIT_UNIFORM_FLOAT);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_cursor_index", &pc.cursor_index, SIT_UNIFORM_INT);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_cursor_blink_state", &pc.cursor_blink_state, SIT_UNIFORM_INT);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_text_blink_state", &pc.text_blink_state, SIT_UNIFORM_INT);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_sel_start", &pc.sel_start, SIT_UNIFORM_INT);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_sel_end", &pc.sel_end, SIT_UNIFORM_INT);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_sel_active", &pc.sel_active, SIT_UNIFORM_INT);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_scanline_intensity", &pc.scanline_intensity, SIT_UNIFORM_FLOAT);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_crt_curvature", &pc.crt_curvature, SIT_UNIFORM_FLOAT);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_mouse_cursor_index", &pc.mouse_cursor_index, SIT_UNIFORM_INT);
-            // Bindless Handles (Passed as IVEC2 -> uvec2 -> packUint2x32 -> uint64_t)
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_terminal_buffer_addr", &pc.terminal_buffer_addr, SIT_UNIFORM_IVEC2);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_font_texture_handle", &pc.font_texture_handle, SIT_UNIFORM_IVEC2);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_sixel_texture_handle", &pc.sixel_texture_handle, SIT_UNIFORM_IVEC2);
-            SituationSetShaderUniform((SituationShader){.id=terminal.compute_pipeline.id}, "u_vector_texture_handle", &pc.vector_texture_handle, SIT_UNIFORM_IVEC2);
-        #else
-            SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
-        #endif
+        SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
 
         // Dispatch Text (and compositing) Pass
         SituationCmdDispatch(cmd, DEFAULT_TERM_WIDTH, DEFAULT_TERM_HEIGHT, 1);
@@ -9167,13 +9142,7 @@ void DrawTerminal(void) {
             pc.vector_count = terminal.vector_count;
             pc.vector_buffer_addr = SituationGetBufferDeviceAddress(terminal.vector_buffer);
 
-            #if defined(SITUATION_USE_OPENGL)
-                SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_screen_size", &pc.screen_size, SIT_UNIFORM_VEC2);
-                SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_vector_count", &pc.vector_count, SIT_UNIFORM_INT);
-                SituationSetShaderUniform((SituationShader){.id=terminal.vector_pipeline.id}, "u_vector_buffer_addr", &pc.vector_buffer_addr, SIT_UNIFORM_IVEC2);
-            #else
-                SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
-            #endif
+            SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(pc));
 
             // Dispatch (64 threads per group)
             SituationCmdDispatch(cmd, (terminal.vector_count + 63) / 64, 1, 1);
