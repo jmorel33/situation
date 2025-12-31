@@ -1,8 +1,8 @@
-# Codebase Split Analysis: "Unity Build" Refactoring Strategy
+# Version 2.4 Roadmap: Codebase Modularization
 
 ## 1. Executive Summary
 
-This document analyzes the strategy to modularize the `situation` library's codebase while strictly adhering to the "Single Header API" philosophy. The goal is to separate the implementation logic (~30k lines) from the public API definition (~3k lines) to improve maintainability, without complicating the integration process for end-users.
+This document outlines the strategic roadmap for version 2.4, focusing on modularizing the `situation` library's codebase while strictly adhering to the "Single Header API" philosophy. The goal is to separate the implementation logic (~30k lines) from the public API definition (~3k lines) to improve maintainability, without complicating the integration process for end-users.
 
 **Selected Strategy:** **Monolithic Header, Modular Source (Unity Build)**.
 
@@ -27,97 +27,117 @@ root/
     └── sit_utils.c       # String helpers, Hash maps, etc.
 ```
 
-### 2.2 The Roles
+## 3. Execution Roadmap
 
-#### `situation.h` (The Contract)
-*   **Purpose:** The single source of truth for the user.
-*   **Content:** strictly `SITAPI` declarations, `typedef struct`, `enum`.
-*   **Constraint:** Must be C11 compliant and header-only safe (no double definitions).
+### Phase 0: Baseline & Safety Net
+*Goal: Ensure the current state is stable and reproducible before major surgery.*
 
-#### `situation.c` (The Bridge)
-*   **Purpose:** Preserves the simplicity of building the library. The user adds *one file* to their build system.
-*   **Content:**
-    ```c
-    // situation.c - Implementation Unity Build
-    #define SITUATION_IMPLEMENTATION_INTERNAL // Guard to allow internal headers
-    #include "situation.h"
-    #include "src/sit_common.h"
+- [ ] **Verify Test Environment**
+    - [ ] Run `test_limits.c` and ensure it passes.
+    - [ ] Run `test_async_io.c` and ensure it passes.
+    - [ ] Verify `situation_dll.c` compiles successfully.
+- [ ] **Snapshot**
+    - [ ] Create a backup of `situation.h` to `situation.h.bak` for quick comparison.
 
-    #include "src/sit_core.c"
-    #include "src/sit_platform.c"
-    #include "src/sit_audio.c"
-    #include "src/sit_render.c"
-    #include "src/sit_fs.c"
-    ```
+### Phase 1: Infrastructure Setup
+*Goal: Create the physical structure without moving code yet.*
 
-#### `src/*.c` (The Logic)
-*   **Purpose:** Logical separation of concerns.
-*   **Constraint:** These files are **not** standalone translation units. They are "header implementations" designed to be included by `situation.c`. This allows them to share internal static globals (like the global context `sit_gs`) without complex extern linking.
+- [ ] **Create Directories**
+    - [ ] Create `src/` directory in root.
+- [ ] **Create Skeleton Files**
+    - [ ] Create `src/sit_common.h` (Empty, include guards).
+    - [ ] Create `src/sit_core.c` (Empty).
+    - [ ] Create `src/sit_platform.c` (Empty).
+    - [ ] Create `src/sit_audio.c` (Empty).
+    - [ ] Create `src/sit_render.c` (Empty).
+    - [ ] Create `src/sit_fs.c` (Empty).
+- [ ] **Create The Bridge**
+    - [ ] Create `situation.c` with the following content:
+      ```c
+      #define SITUATION_IMPLEMENTATION_INTERNAL
+      #include "situation.h"
+      #include "src/sit_common.h"
+      // Modules will be included here later
+      ```
 
-## 3. Non-Regression & Backward Compatibility
+### Phase 2: The "Great Separation"
+*Goal: Separate the API from the Implementation. This is the most critical phase.*
 
-### 3.1 Legacy "Header-Only" Usage
-Many users integrate the library using the STB-style macro in their `main.c`:
-```c
-#define SITUATION_IMPLEMENTATION
-#include "situation.h"
-```
+- [ ] **Extract Implementation**
+    - [ ] Cut the entire `SITUATION_IMPLEMENTATION` block from `situation.h`.
+    - [ ] Paste it into `situation.c` (temporarily monolithic).
+    - [ ] Verify `situation.h` contains ONLY:
+        -   License / Comments.
+        -   Configuration Macros (`SITUATION_USE_OPENGL`, etc.).
+        -   Typedefs, Enums, Structs.
+        -   Function Prototypes (`SITAPI`).
+- [ ] **Extract Internal Shared State**
+    - [ ] Identify internal structs (`_SituationGlobalState`, `_SituationRenderState`, `_SituationAudioState`).
+    - [ ] Identify internal macros (`SIT_LOG`, `SIT_CHECK`, etc.).
+    - [ ] Move these from `situation.c` (or `situation.h` if they were leaked) to `src/sit_common.h`.
+    - [ ] Ensure `src/sit_common.h` is included by `situation.c`.
 
-To prevent breaking this workflow, `situation.h` will be updated to automatically include the implementation file if the macro is detected:
+### Phase 3: Module Colonization
+*Goal: Move code from the monolithic `situation.c` into specific modules.*
 
-```c
-// Bottom of situation.h
-#ifdef SITUATION_IMPLEMENTATION
-    #include "situation.c"
-#endif
-```
+- [ ] **Move Core Module (`sit_core.c`)**
+    - [ ] Move: `SituationLog`, `SituationError`, `SIT_MALLOC`, `Vector` math helpers.
+    - [ ] Verify compilation.
+- [ ] **Move Platform Module (`sit_platform.c`)**
+    - [ ] Move: `SituationInit`, `SituationShutdown`, `SituationPollInputEvents`, `SituationGetDeviceInfo`.
+    - [ ] Move: GLFW callbacks and window creation logic.
+    - [ ] Verify compilation.
+- [ ] **Move Audio Module (`sit_audio.c`)**
+    - [ ] Move: `SituationInitAudio`, `SituationPlaySound`, `SituationUpdateAudio`.
+    - [ ] Move: Miniaudio backend implementation.
+    - [ ] Verify compilation.
+- [ ] **Move Filesystem Module (`sit_fs.c`)**
+    - [ ] Move: `SituationLoadFile`, `SituationSaveFile`.
+    - [ ] Move: Hot-Reloading logic (`Velocity`).
+    - [ ] Verify compilation.
+- [ ] **Move Render Module (`sit_render.c`)**
+    - [ ] Move: `SituationCreateTexture`, `SituationDraw*`, `SituationSubmitJob`.
+    - [ ] Move: OpenGL/Vulkan specific backend logic.
+    - [ ] **Critical:** Ensure internal render state (`sit_render` macro) is accessible via `sit_common.h`.
+    - [ ] Verify compilation.
 
-*   **Risk:** This requires `situation.c` to be in the include path.
-*   **Mitigation:** Since `situation.c` is in the root (alongside `situation.h`), this works out-of-the-box for standard project structures.
+### Phase 4: The Legacy Bridge & Polish
+*Goal: Restore backward compatibility for users who rely on the single-header behavior.*
 
-### 3.2 Standard C Usage (Recommended)
-Users can now simply add `situation.c` to their build sources (e.g., in CMake or Makefiles) and just `#include "situation.h"` in their headers. This is cleaner and speeds up incremental builds since the 30k lines of implementation are compiled once, not every time `main.c` changes.
+- [ ] **Restore Header-Only Behavior**
+    - [ ] Add the following to the bottom of `situation.h`:
+      ```c
+      #ifdef SITUATION_IMPLEMENTATION
+          #include "situation.c"
+      #endif
+      ```
+    - [ ] **Note:** This assumes `situation.c` is in the include path.
+- [ ] **Verify Includes**
+    - [ ] Ensure `situation.c` includes all `src/*.c` files in the correct dependency order:
+      1. `sit_core.c`
+      2. `sit_fs.c` (Core dep)
+      3. `sit_platform.c` (Core dep)
+      4. `sit_render.c` (Platform, FS dep)
+      5. `sit_audio.c` (Core dep)
 
-## 4. Module Boundaries & Dependencies
+### Phase 5: Validation
+*Goal: Prove that nothing broke.*
 
-Based on analysis of `situation.h` (v2.3.38):
+- [ ] **Test 1: Standard Build (Split)**
+    - [ ] Compile a test file that adds `situation.c` to the compiler sources and includes `situation.h`.
+- [ ] **Test 2: Legacy Build (Header-Only)**
+    - [ ] Compile a test file that defines `SITUATION_IMPLEMENTATION` and includes `situation.h`.
+- [ ] **Test 3: DLL Build**
+    - [ ] Compile `situation_dll.c`.
+- [ ] **Regression Check**
+    - [ ] Run `test_limits.c`.
+    - [ ] Run `test_async_io.c`.
 
-1.  **Core Module** (`sit_core.c`)
-    *   **Dependencies:** None.
-    *   **Content:** `SituationError`, `SituationLog`, `SIT_MALLOC`, `Vector` math types.
+## 4. Risks & Mitigations
 
-2.  **Platform Module** (`sit_platform.c`)
-    *   **Dependencies:** Core, GLFW.
-    *   **Content:** Window creation, Input polling (`SituationPollInputEvents`), Device Info (`SituationGetDeviceInfo`).
-
-3.  **Audio Module** (`sit_audio.c`)
-    *   **Dependencies:** Core, Threading, Miniaudio.
-    *   **Content:** `SituationSound`, `SituationPlayToneEx`, DSP effects.
-    *   **Note:** Contains its own internal state `_SituationAudioState`.
-
-4.  **Filesystem Module** (`sit_fs.c`)
-    *   **Dependencies:** Core, Platform (for paths).
-    *   **Content:** `SituationLoadFile`, Hot-Reloading (`Velocity` module).
-
-5.  **Render Module** (`sit_render.c`)
-    *   **Dependencies:** Core, Platform, Filesystem (for shaders).
-    *   **Content:** `SituationCmd*`, Vulkan/OpenGL backends, Text rendering (`SituationFont`).
-    *   **Complexity:** The "Font Sandwich" dependency (Text uses Render commands) is resolved because `sit_render.c` sees all declarations from `situation.h`.
-
-## 5. Refactoring Plan
-
-1.  **Preparation**: Create `src/` directory and `src/sit_common.h`.
-2.  **Extraction**:
-    *   Move internal macros/structs (like `_SituationGlobalState`) to `src/sit_common.h`.
-    *   Cut the `SITUATION_IMPLEMENTATION` block from `situation.h`.
-    *   Paste it into `situation.c`.
-3.  **Modularization**:
-    *   Iteratively move code sections from `situation.c` to `src/sit_*.c`.
-    *   Use `git grep` to identify internal dependencies and move shared helpers to `sit_common.h` if needed.
-4.  **Verification**:
-    *   Compile `situation_dll.c` (which defines `SITUATION_IMPLEMENTATION`) to verify the unity build works.
-    *   Verify `situation.h` is clean (declarations only).
-
-## 6. Conclusion
-
-This strategy fulfills the requirement of keeping `situation.h` as the clean API reference. It simplifies the user experience (drag-and-drop `situation.h` and `situation.c`) while providing the developer (you) with a modular, maintainable codebase.
+| Risk | Mitigation |
+| :--- | :--- |
+| **Circular Dependencies** | Strictly enforce a hierarchy: `Core` < `FS` < `Platform` < `Render`. Use `sit_common.h` for shared types. |
+| **Static Function Visibility** | Functions in `src/*.c` must be `static` or `SIT_PRIVATE` if they are internal helpers, to avoid symbol clashes in the unity build. |
+| **Include Path Hell** | Users might not set the include path correctly for `src/`. **Solution:** The user only ever includes `situation.h` or compiles `situation.c`. The internal `src/` includes are relative to `situation.c` (`#include "src/..."`), so as long as the user has the folder structure, it works. |
+| **Macro Leakage** | Ensure internal macros in `sit_common.h` are undefined at the end of `situation.c` or strictly namespaced. |
