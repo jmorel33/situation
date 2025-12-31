@@ -39,6 +39,19 @@
 
 #include "situation.h"
 
+#ifdef SITUATION_IMPLEMENTATION
+  #ifdef STB_TRUETYPE_IMPLEMENTATION
+    #undef STB_TRUETYPE_IMPLEMENTATION
+  #endif
+#endif
+
+#ifdef TERMINAL_IMPLEMENTATION
+  #if !defined(SITUATION_IMPLEMENTATION)
+    #define STB_TRUETYPE_IMPLEMENTATION
+  #endif
+#endif
+#include "stb_truetype.h"
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1205,6 +1218,18 @@ typedef struct Terminal_T {
     uint32_t atlas_width;
     uint32_t atlas_height;
     uint32_t atlas_cols;
+
+    // TrueType Font Engine
+    struct {
+        bool loaded;
+        unsigned char* file_buffer;
+        stbtt_fontinfo info;
+        float scale;
+        int ascent;
+        int descent;
+        int line_gap;
+        int baseline;
+    } ttf;
 } Terminal;
 
 // =============================================================================
@@ -1317,6 +1342,11 @@ void ShowBufferDiagnostics(void);      // Display buffer usage info
 
 // Screen buffer management
 void VTSwapScreenBuffer(void); // Handles 1047/1049 logic
+
+void LoadTerminalFont(const char* filepath);
+
+// Helper to allocate a glyph index in the dynamic atlas for any Unicode codepoint
+uint32_t AllocateGlyph(uint32_t codepoint);
 
 // Internal rendering/parsing functions (potentially exposed for advanced use or testing)
 void CreateFontTexture(void);
@@ -2384,6 +2414,92 @@ unsigned int TranslateCharacter(unsigned char ch, CharsetState* state) {
     return ch;
 }
 
+// Render a glyph from TTF or fallback
+static void RenderGlyphToAtlas(uint32_t codepoint, uint32_t idx) {
+    int col = idx % terminal.atlas_cols;
+    int row = idx / terminal.atlas_cols;
+    int x_start = col * DEFAULT_CHAR_WIDTH;
+    int y_start = row * DEFAULT_CHAR_HEIGHT;
+
+    if (terminal.ttf.loaded) {
+        // TTF Rendering
+        int advance, lsb, x0, y0, x1, y1;
+        stbtt_GetCodepointHMetrics(&terminal.ttf.info, codepoint, &advance, &lsb);
+        stbtt_GetCodepointBitmapBox(&terminal.ttf.info, codepoint, terminal.ttf.scale, terminal.ttf.scale, &x0, &y0, &x1, &y1);
+
+        // Center horizontally
+        // x0 is usually small negative/positive bearing. Width of glyph is x1-x0.
+        int gw = x1 - x0;
+        int x_off = (DEFAULT_CHAR_WIDTH - gw) / 2;
+
+        // Better approach:
+        int w, h, xoff, yoff;
+        unsigned char* bitmap = stbtt_GetCodepointBitmap(&terminal.ttf.info, 0, terminal.ttf.scale, codepoint, &w, &h, &xoff, &yoff);
+
+        if (bitmap) {
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int px = x + (DEFAULT_CHAR_WIDTH - w)/2; // Simple center X
+                    int py = y + terminal.ttf.baseline + yoff; // yoff is negative (distance from baseline up)
+
+                    if (px >= 0 && px < DEFAULT_CHAR_WIDTH && py >= 0 && py < DEFAULT_CHAR_HEIGHT) {
+                        int val = bitmap[y * w + x];
+                        int px_idx = ((y_start + py) * terminal.atlas_width + (x_start + px)) * 4;
+                        terminal.font_atlas_pixels[px_idx+0] = 255;
+                        terminal.font_atlas_pixels[px_idx+1] = 255;
+                        terminal.font_atlas_pixels[px_idx+2] = 255;
+                        terminal.font_atlas_pixels[px_idx+3] = val; // Use alpha
+                    }
+                }
+            }
+            stbtt_FreeBitmap(bitmap, NULL);
+        }
+    } else {
+        // Fallback: Hex Box
+        for (int y = 0; y < DEFAULT_CHAR_HEIGHT; y++) {
+            for (int x = 0; x < DEFAULT_CHAR_WIDTH; x++) {
+                bool on = false;
+                if (x == 0 || x == DEFAULT_CHAR_WIDTH-1 || y == 0 || y == DEFAULT_CHAR_HEIGHT-1) on = true;
+                if (x == DEFAULT_CHAR_WIDTH/2 && y == DEFAULT_CHAR_HEIGHT/2) on = true; // Dot
+
+                int px_idx = ((y_start + y) * terminal.atlas_width + (x_start + x)) * 4;
+                unsigned char val = on ? 255 : 0;
+                terminal.font_atlas_pixels[px_idx+0] = val;
+                terminal.font_atlas_pixels[px_idx+1] = val;
+                terminal.font_atlas_pixels[px_idx+2] = val;
+                terminal.font_atlas_pixels[px_idx+3] = val;
+            }
+        }
+    }
+}
+
+void LoadTerminalFont(const char* filepath) {
+    unsigned int size;
+    unsigned char* buffer = NULL;
+    if (SituationLoadFileData(filepath, &size, &buffer) != SITUATION_SUCCESS || !buffer) {
+        if (terminal.response_callback) terminal.response_callback("Font load failed\r\n", 18);
+        return;
+    }
+
+    if (terminal.ttf.file_buffer) SIT_FREE(terminal.ttf.file_buffer);
+    terminal.ttf.file_buffer = buffer;
+
+    if (!stbtt_InitFont(&terminal.ttf.info, buffer, 0)) {
+        if (terminal.response_callback) terminal.response_callback("Font init failed\r\n", 18);
+        return;
+    }
+
+    terminal.ttf.scale = stbtt_ScaleForPixelHeight(&terminal.ttf.info, (float)DEFAULT_CHAR_HEIGHT * 0.8f); // 80% height to leave room
+    stbtt_GetFontVMetrics(&terminal.ttf.info, &terminal.ttf.ascent, &terminal.ttf.descent, &terminal.ttf.line_gap);
+
+    // Calculate baseline
+    int pixel_height = (int)((terminal.ttf.ascent - terminal.ttf.descent) * terminal.ttf.scale);
+    int y_adjust = (DEFAULT_CHAR_HEIGHT - pixel_height) / 2;
+    terminal.ttf.baseline = (int)(terminal.ttf.ascent * terminal.ttf.scale) + y_adjust;
+
+    terminal.ttf.loaded = true;
+}
+
 // Helper to allocate a glyph index in the dynamic atlas for any Unicode codepoint
 uint32_t AllocateGlyph(uint32_t codepoint) {
     // Limit to BMP (Basic Multilingual Plane) for now as our map is 64K
@@ -2400,41 +2516,13 @@ uint32_t AllocateGlyph(uint32_t codepoint) {
     uint32_t capacity = (terminal.atlas_width / DEFAULT_CHAR_WIDTH) * (terminal.atlas_height / DEFAULT_CHAR_HEIGHT);
     if (terminal.next_atlas_index >= capacity) {
         // Atlas full. For now, return replacement char (e.g. '?').
-        // In a real scenario, we might want to evict LRU or reset.
         return '?';
     }
 
     uint32_t idx = terminal.next_atlas_index++;
     terminal.glyph_map[codepoint] = (uint16_t)idx;
 
-    // Render "Hex Box" fallback into font_atlas_pixels at slot idx
-    // Calculate UV start
-    int col = idx % terminal.atlas_cols; // 128
-    int row = idx / terminal.atlas_cols;
-    int x_start = col * DEFAULT_CHAR_WIDTH;
-    int y_start = row * DEFAULT_CHAR_HEIGHT;
-
-    // Draw box
-    for (int y = 0; y < DEFAULT_CHAR_HEIGHT; y++) {
-        for (int x = 0; x < DEFAULT_CHAR_WIDTH; x++) {
-            bool on = false;
-            // Simple border
-            if (x == 0 || x == DEFAULT_CHAR_WIDTH-1 || y == 0 || y == DEFAULT_CHAR_HEIGHT-1) on = true;
-
-            // Draw hex digits inside? (Too small for 8x16 usually, maybe just 4x4 dots)
-            // Just a box with a dot for now to signify "missing but allocated"
-            if (x == DEFAULT_CHAR_WIDTH/2 && y == DEFAULT_CHAR_HEIGHT/2) on = true;
-
-            int px_idx = ((y_start + y) * terminal.atlas_width + (x_start + x)) * 4;
-            if (terminal.font_atlas_pixels) {
-                unsigned char val = on ? 255 : 0;
-                terminal.font_atlas_pixels[px_idx+0] = val;
-                terminal.font_atlas_pixels[px_idx+1] = val;
-                terminal.font_atlas_pixels[px_idx+2] = val;
-                terminal.font_atlas_pixels[px_idx+3] = val;
-            }
-        }
-    }
+    RenderGlyphToAtlas(codepoint, idx);
 
     terminal.font_atlas_dirty = true;
     return idx;
@@ -6550,10 +6638,18 @@ void ProcessUserDefinedKeys(const char* data) {
     char* data_copy = strdup(data);
     if (!data_copy) return;
 
-    // Use standard strtok for portability (single-threaded context)
-    char* token = strtok(data_copy, ";");
+    // Use manual parsing for thread safety
+    char* current_ptr = data_copy;
+    while (current_ptr && *current_ptr) {
+        char* token = current_ptr;
+        char* next_delim = strchr(current_ptr, ';');
+        if (next_delim) {
+            *next_delim = '\0';
+            current_ptr = next_delim + 1;
+        } else {
+            current_ptr = NULL;
+        }
 
-    while (token != NULL) {
         char* slash = strchr(token, '/');
         if (slash) {
             *slash = '\0';
@@ -6564,7 +6660,6 @@ void ProcessUserDefinedKeys(const char* data) {
             if (hex_len % 2 != 0) {
                 // Invalid hex string length
                 LogUnsupportedSequence("Invalid hex string in DECUDK");
-                token = strtok(NULL, ";");
                 continue;
             }
 
@@ -6572,7 +6667,6 @@ void ProcessUserDefinedKeys(const char* data) {
             char* decoded_sequence = malloc(decoded_len);
             if (!decoded_sequence) {
                 // Allocation failed
-                token = strtok(NULL, ";");
                 continue;
             }
 
@@ -6593,7 +6687,6 @@ void ProcessUserDefinedKeys(const char* data) {
                 free(decoded_sequence);
             }
         }
-        token = strtok(NULL, ";");
     }
 
     free(data_copy);
@@ -6624,25 +6717,38 @@ void ProcessSoftFontDownload(const char* data) {
     char* data_copy = strdup(data);
     if (!data_copy) return;
 
-    // Tokenize parameters
-    char* token = strtok(data_copy, ";");
+    // Tokenize parameters using manual pointer arithmetic
+    char* current_ptr = data_copy;
+    char* token = NULL;
     int params[6] = {0};
     int param_idx = 0;
 
     // Parse up to 6 numeric parameters
-    while (token != NULL && param_idx < 6) {
-        // Check if we hit the data start '{'
+    while (current_ptr && *current_ptr && param_idx < 6) {
+        token = current_ptr;
+        char* next_delim = strchr(current_ptr, ';');
+
+        // Check if we hit the data start '{' in this segment
         char* brace = strchr(token, '{');
-        if (brace) {
+        if (brace && (!next_delim || brace < next_delim)) {
+            // Found brace before next semicolon
             *brace = '\0';
             if (strlen(token) > 0) params[param_idx++] = atoi(token);
             // Move token pointer to start of data
             token = brace + 1;
+            // Stop parameter parsing loop, 'token' now points to data
+            current_ptr = NULL; // Signal to exit loop but keep token valid
             break;
-        } else {
-            params[param_idx++] = atoi(token);
-            token = strtok(NULL, ";");
         }
+
+        if (next_delim) {
+            *next_delim = '\0';
+            current_ptr = next_delim + 1;
+        } else {
+            current_ptr = NULL;
+        }
+
+        params[param_idx++] = atoi(token);
     }
 
     // Parse sixel-encoded font data
