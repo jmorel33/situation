@@ -41,6 +41,26 @@ root/
 - [ ] **Snapshot**
     - [ ] Create a backup of `situation.h` to `situation.h.bak` for quick comparison.
 
+### Phase 0.5: Pre-Split Refactoring
+*Goal: Prepare the codebase for separation by enforcing namespace hygiene and physical grouping.*
+
+- [ ] **Symbol Sanitization**
+    - [ ] Rename internal `static` helper functions to avoid collisions in the Unity Build.
+    - [ ] Convention: `_Sit[Module]_[Name]`.
+        -   `_SitGetTextureSlot` -> `_SitRender_GetTextureSlot`
+        -   `_SitAudioInitPool` -> `_SitAudio_InitPool`
+        -   `_SituationDeferredDestroyBuffer` -> `_SitRender_DeferDestroyBuffer`
+- [ ] **Physical Grouping**
+    - [ ] Reorder the implementation block within `situation.h` to group functions by module.
+    -   **Order:**
+        1.  Common/Core (Allocators, Logging, Math)
+        2.  Filesystem (needed by everything)
+        3.  Platform/Windowing (needed by Render)
+        4.  Input (Keyboard/Mouse/Joystick)
+        5.  Render (OpenGL/Vulkan)
+        6.  Audio
+    - [ ] Insert delimiter comments (e.g., `// --- MODULE: AUDIO ---`) to clearly mark cut-points.
+
 ### Phase 1: Infrastructure Setup
 *Goal: Create the physical structure without moving code yet.*
 
@@ -161,3 +181,56 @@ root/
 | **Static Function Visibility** | Functions in `src/*.c` must be `static` or `SIT_PRIVATE` if they are internal helpers, to avoid symbol clashes in the unity build. |
 | **Include Path Hell** | Users might not set the include path correctly for `src/`. **Solution:** The user only ever includes `situation.h` or compiles `situation_impl.c`. The internal `src/` includes are relative to `situation_impl.c` (`#include "src/..."`), so as long as the user has the folder structure, it works. |
 | **Macro Leakage** | Ensure internal macros in `sit_common.h` are undefined at the end of `situation_impl.c` or strictly namespaced. |
+
+## 5. Hardening & Robustness
+
+To ensure the split is production-ready and resilient to future changes, we implement the following hardening measures:
+
+### 5.1 Namespace Hygiene
+In a Unity Build, multiple `.c` files are textually included into one compilation unit (`situation_impl.c`). This effectively merges their file scopes.
+*   **Rule:** All internal functions, even if declared `static`, MUST have a unique prefix to prevent collisions or confusion during debugging/profiling.
+*   **Format:** `_Sit[Module]_[FunctionName]`
+    *   Example: `_SitRender_Init()` instead of `_SituationInitRenderer()`.
+    *   Example: `_SitAudio_MixVoices()` instead of `_MixVoices()`.
+*   **Verification:** Use `grep` or `nm` to flag any function starting with just `_` that doesn't follow the module pattern.
+
+### 5.2 Verification Steps
+Automated checks to run after the split:
+1.  **Symbol Visibility Check:**
+    Compile `situation_impl.c` as a shared object (`.so` / `.dll`). Use `nm -D` (Linux) or `dumpbin /EXPORTS` (Windows) to verify that **only** `SITAPI` symbols are exported. Any `_Sit...` helper visible in the export table is a bug (missing `static` or visibility attribute).
+2.  **Preprocessed Diff:**
+    Run `gcc -E situation.h` (original) and `gcc -E situation_impl.c` (new). Normalize whitespace and comments. The resulting C code stream must be functionally identical (aside from line numbers).
+
+### 5.3 Legacy Bridge Robustness
+The single-header workflow is a core promise of the library. We ensure backward compatibility via a precise bridge in `situation.h`:
+
+```c
+#ifdef SITUATION_IMPLEMENTATION
+    #ifndef SITUATION_IMPL_INCLUDED
+    #define SITUATION_IMPL_INCLUDED
+
+    // Check if the user has the split files available in the expected relative path
+    // Ideally, we just include the unity build file.
+    // If the user hasn't set up the include paths for src/, situation_impl.c handles the relative lookup.
+
+    #include "situation_impl.c"
+
+    #endif
+#endif
+```
+**Constraint:** This requires `situation_impl.c` to be in the include path or the same directory as `situation.h`.
+
+### 5.4 Editor Support (Intellisense)
+Split files often confuse IDEs (VS Code, CLion, Visual Studio) because independent `.c` files in `src/` might be missing context (defines, types) if analyzed in isolation.
+*   **Solution:** Add a "Master Include" guard at the top of every `src/*.c` file:
+    ```c
+    // src/sit_render.c
+    #ifndef SITUATION_IMPLEMENTATION_INTERNAL
+    // This file is a module part of the Situation library.
+    // It is not intended to be compiled directly.
+    // Please include "situation_impl.c" instead.
+    #ifdef __INTELLISENSE__
+    #include "../situation_impl.c" // Trick Intellisense into seeing the full context
+    #endif
+    #endif
+    ```
