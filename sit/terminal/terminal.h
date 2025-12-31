@@ -3023,7 +3023,7 @@ void ProcessNormalChar(unsigned char ch) {
             } else {
                 // Invalid start byte
                 unicode_ch = 0xFFFD;
-                InsertCharacterAtCursor(MapUnicodeToCP437(unicode_ch));
+                InsertCharacterAtCursor(unicode_ch);
                 ACTIVE_SESSION.cursor.x++;
                 return;
             }
@@ -3037,13 +3037,19 @@ void ProcessNormalChar(unsigned char ch) {
                 }
                 // Sequence complete
                 unicode_ch = ACTIVE_SESSION.utf8.codepoint;
-                // Map to internal glyph if possible
-                unicode_ch = MapUnicodeToCP437(unicode_ch);
+
+                // Attempt to map to CP437 for pixel-perfect box drawing, but preserve Unicode if not found
+                uint8_t cp437 = MapUnicodeToCP437(unicode_ch);
+                if (cp437 != '?' || unicode_ch == '?') {
+                    unicode_ch = cp437;
+                }
+                // If cp437 is '?' but input wasn't '?', we keep the original unicode_ch.
+                // This allows dynamic glyph allocation for all other Unicode chars.
             } else {
                 // Invalid continuation byte
                 // Emit replacement character for the failed sequence
                 unicode_ch = 0xFFFD;
-                InsertCharacterAtCursor(MapUnicodeToCP437(unicode_ch));
+                InsertCharacterAtCursor(unicode_ch);
                 ACTIVE_SESSION.cursor.x++;
 
                 // Reset and try to recover
