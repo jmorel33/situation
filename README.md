@@ -8,11 +8,12 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](doc/C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.36 "Velocity"**
+Current Version: **v2.3.38 "Velocity"**
 
-**Version 2.3.36** marks the completion of the "Max Out Core" OpenGL upgrade plan. It finalizes the transition to a high-performance, parallel-friendly architecture by implementing **Multi-Draw Indirect (MDI)** batching, **Persistent Ring Buffers**, and **Bindless Textures** for the OpenGL backend, bringing it to performance parity with the Vulkan implementation.
+**Version 2.3.38** refines the engine's asset and I/O capabilities. It introduces native **Bitmap Font Support** for pixel-perfect retro aesthetics and optimizations for the I/O thread, including configurable **Rate Limiting** and exposed **Queue Depth metrics** for precise load balancing.
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **Asset Pipeline (v2.3.38):** Added `SituationLoadBitmapFontFromMemory` and enhanced I/O thread controls for smoother background loading.
 *   **OpenGL Optimization (v2.3.36):** Completed the "Max Out Core" plan with MDI batching, Zero-Copy Ring Buffers, and Bindless Textures.
 *   **Texture Registry (v2.3.31):** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.
 *   **Universal Handles (v2.4):** Transitioning all resources (Buffers, Shaders, Meshes) to the Registry System for uniform, bindless-ready access.

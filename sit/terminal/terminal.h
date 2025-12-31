@@ -1,4 +1,4 @@
-// terminal.h - Enhanced Terminal Library Implementation v1.3
+// terminal.h - Enhanced Terminal Library Implementation v1.5
 // Comprehensive VT52/VT100/VT220/VT320/VT420/xterm compatibility with modern features
 
 /**********************************************************************************************
@@ -10,6 +10,16 @@
 *       This library provides a comprehensive terminal emulation solution, aiming for compatibility with VT52, VT100, VT220, VT320, VT420, and xterm standards,
 *       while also incorporating modern features like true color support, Sixel graphics, advanced mouse tracking, and bracketed paste mode. It is designed to be
 *       integrated into applications that require a text-based terminal interface, using the Situation library for rendering, input, and window management.
+*
+*       v1.5 Feature Update:
+*         - Internationalization: Full ISO 2022 & NRCS support with robust lookup tables.
+*         - Standards: Implementation of Locking Shifts (LS0-LS3) for G0-G3 charset switching.
+*         - Rendering: Dynamic UTF-8 Glyph Cache replacing fixed CP437 textures.
+*
+*       v1.4 Feature Update:
+*         - Graphics: Complete ReGIS (Remote Graphics Instruction Set) implementation.
+*         - Vectors: Support for Position (P), Vector (V), and Curve (C) commands including B-Splines.
+*         - Advanced: Polygon Fill (F), Macrographs (@), and custom Alphabet Loading (L).
 *
 *       v1.3 Feature Update:
 *         - Session Management: Multi-session support (up to 3 sessions) mimicking VT520.
