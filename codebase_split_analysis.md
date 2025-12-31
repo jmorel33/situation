@@ -135,15 +135,20 @@ root/
 *Goal: Prove that nothing broke and users know how to build.*
 
 - [ ] **Update README.md**
-    - [ ] Document the Two Build Modes:
+    - [ ] Document the Build Modes:
         -   **Header-Only (Legacy)**: `#define SITUATION_IMPLEMENTATION` before `#include "situation.h"`
         -   **Modular (Recommended)**: Add `situation_impl.c` + `src/*.c` to your build.
+        -   **Static Library / Object (Advanced)**: Compile `situation_impl.c` to `situation.o` (or `libsituation.a`) and link it.
 - [ ] **Test 1: Standard Build (Split)**
     - [ ] Compile a test file that adds `situation_impl.c` to the compiler sources and includes `situation.h`.
 - [ ] **Test 2: Legacy Build (Header-Only)**
     - [ ] Compile a test file that defines `SITUATION_IMPLEMENTATION` and includes `situation.h`.
 - [ ] **Test 3: DLL Build**
     - [ ] Compile `situation_dll.c` (Updated to use `situation_impl.c`).
+- [ ] **Test 4: Static Object Workflow**
+    - [ ] Compile `situation_impl.c` into an object file (e.g., `gcc -c situation_impl.c -o situation.o`).
+    - [ ] Compile a test file (e.g., `test_limits.c`) *without* `SITUATION_IMPLEMENTATION`.
+    - [ ] Link them together (`gcc test_limits.o situation.o -o test_bin`) and verify it runs.
 - [ ] **Regression Check**
     - [ ] Run `test_limits.c`.
     - [ ] Run `test_async_io.c`.
