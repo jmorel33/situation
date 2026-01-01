@@ -76,6 +76,15 @@
 #ifndef SITUATION_H
 #define SITUATION_H
 
+// Include the new configuration header first (Phase 1)
+#if defined(__has_include)
+    #if __has_include("sit_config.h")
+        #include "sit_config.h"
+    #endif
+#else
+    #include "sit_config.h"
+#endif
+
 /*
  * Feature Test Macros (Strict C11 Support)
  * ----------------------------------------
