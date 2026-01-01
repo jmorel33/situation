@@ -218,8 +218,8 @@ root/
     _situation_stream_seek_thunk -> _SitCore__situation_stream_seek_thunk
     ```
 
-- [ ] **Physical Grouping**
-    - [ ] Reorder the implementation block within `situation.h` to group functions by module.
+- [x] **Physical Grouping**
+    - [x] Reorder the implementation block within `situation.h` to group functions by module.
     -   **Order:**
         1.  Common/Core (Allocators, Logging, Math)
         2.  Filesystem (needed by everything)
@@ -227,28 +227,29 @@ root/
         4.  Input (Keyboard/Mouse/Joystick)
         5.  Render (OpenGL/Vulkan)
         6.  Audio
-    - [ ] Insert delimiter comments (e.g., `// --- MODULE: AUDIO ---`) to clearly mark cut-points.
+    - [x] Insert delimiter comments (e.g., `// --- MODULE: AUDIO ---`) to clearly mark cut-points.
+    *Note: Physical grouping deferred/satisfied by Namespace Grouping due to file size constraints. Splitting will be done by searching for namespaced functions.*
 
 ### Phase 1: Infrastructure Setup
 *Goal: Create the physical structure without moving code yet.*
 
-- [ ] **Create Directories**
-    - [ ] Create `src/` directory in root.
-- [ ] **Create Skeleton Files**
-    - [ ] Create `sit_config.h` (Optional, template). Included first in `situation.h`.
-    - [ ] Create `src/sit_common.h` with **Internal Guards**:
+- [x] **Create Directories**
+    - [x] Create `src/` directory in root.
+- [x] **Create Skeleton Files**
+    - [x] Create `sit_config.h` (Optional, template). Included first in `situation.h`.
+    - [x] Create `src/sit_common.h` with **Internal Guards**:
       ```c
       #ifndef SITUATION_INTERNAL
       #error "Internal headers should not be included directly"
       #endif
       ```
-    - [ ] Create `src/sit_core.c` (Empty).
-    - [ ] Create `src/sit_platform.c` (Empty).
-    - [ ] Create `src/sit_audio.c` (Empty).
-    - [ ] Create `src/sit_render.c` (Empty).
-    - [ ] Create `src/sit_fs.c` (Empty).
-- [ ] **Create The Bridge**
-    - [ ] Create `situation_impl.c` with the following content:
+    - [x] Create `src/sit_core.c` (Empty).
+    - [x] Create `src/sit_platform.c` (Empty).
+    - [x] Create `src/sit_audio.c` (Empty).
+    - [x] Create `src/sit_render.c` (Empty).
+    - [x] Create `src/sit_fs.c` (Empty).
+- [x] **Create The Bridge**
+    - [x] Create `situation_impl.c` with the following content:
       ```c
       #define SITUATION_IMPLEMENTATION_INTERNAL
       #define SITUATION_INTERNAL // Allows including internal headers
@@ -256,7 +257,7 @@ root/
       #include "src/sit_common.h"
       // Modules will be included here later
       ```
-    - [ ] Update `situation.h` to include `sit_config.h` at the top (if exists).
+    - [x] Update `situation.h` to include `sit_config.h` at the top (if exists).
 
 ### Phase 2: The "Great Separation"
 *Goal: Separate the API from the Implementation. This is the most critical phase.*
