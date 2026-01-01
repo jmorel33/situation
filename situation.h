@@ -445,7 +445,7 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
 
 // Enable runtime main-thread asserts (debug only)
 #ifdef SITUATION_ENABLE_MT_ASSERTS
-    #define SIT_ASSERT_MAIN_THREAD() _SituationAssertMainThread(__FILE__, __LINE__)
+    #define SIT_ASSERT_MAIN_THREAD() _SitFS_AssertMainThread(__FILE__, __LINE__)
 #else
     #define SIT_ASSERT_MAIN_THREAD() do {} while(0)
 #endif
@@ -2454,11 +2454,11 @@ SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
 
 // Forward declaration of Texture Slot struct and getter
 struct _SituationTextureSlot;
-static struct _SituationTextureSlot* _SitGetTextureSlot(SituationTexture handle);
+static struct _SituationTextureSlot* _SitRender_GetTextureSlot(SituationTexture handle);
 
 // Forward declaration of Audio Handle Pool functions
-static void _SitAudioInitPool(void);
-static void _SitAudioCleanupPool(void);
+static void _SitAudio_InitPool(void);
+static void _SitAudio_CleanupPool(void);
 
 #if defined(SITUATION_USE_VULKAN)
 
@@ -2489,13 +2489,13 @@ typedef struct _SituationSpirvBlob {
 #endif
 
 // Forward declarations for deferred destruction helpers (Graveyard)
-static void _SituationReplayToQueue(SituationRenderList list, int frame_idx);
-static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation);
-static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler);
-static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool);
-static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout);
-static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer);
-static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass);
+static void _SitCore_ReplayToQueue(SituationRenderList list, int frame_idx);
+static void _SitRender_DeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation);
+static void _SitRender_DeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler);
+static void _SitRender_DeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool);
+static void _SitRender_DeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout);
+static void _SitRender_DeferDestroyFramebuffer(VkFramebuffer framebuffer);
+static void _SitRender_DeferDestroyRenderPass(VkRenderPass render_pass);
 #endif
 
 /**
@@ -2777,7 +2777,7 @@ static const unsigned char sit_default_8x8_font[256 * 8] = {
 };
 
 // Internal: Assert main thread
-static SituationError _SituationSetErrorFromCode(SituationError err, const char* detail);
+static SituationError _SitCore_SetErrorFromCode(SituationError err, const char* detail);
 
 #ifdef SITUATION_ENABLE_THREADING
 static thrd_t sit_gs_main_thread_id;
@@ -2787,7 +2787,7 @@ static bool sit_gs_thread_id_set = false;
 // [v2.3.24a] Safety Zenith: Atomic Refcounts & Adaptive Policy
 static atomic_int sit_render_policy_state = SIT_RENDER_BACKPRESSURE_SPIN; // Default
 
-static uint64_t _SitGetMonotonicTimeNS(void) {
+static uint64_t _SitCore_GetMonotonicTimeNS(void) {
     #if defined(_WIN32)
     static LARGE_INTEGER freq;
     static bool init = false;
@@ -2802,11 +2802,11 @@ static uint64_t _SitGetMonotonicTimeNS(void) {
     #endif
 }
 
-static void _SituationAssertMainThread(const char* file, int line) {
+static void _SitFS_AssertMainThread(const char* file, int line) {
 #ifndef NDEBUG
 #ifdef SITUATION_ENABLE_THREADING
     if (sit_gs_thread_id_set && !thrd_equal(thrd_current(), sit_gs_main_thread_id)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_VIOLATION, "API call from non-main thread");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_THREAD_VIOLATION, "API call from non-main thread");
         fprintf(stderr, "[Situation DEBUG] Thread violation: %s:%d\n", file, line);
     }
 #else
@@ -3721,7 +3721,7 @@ typedef struct _SituationTextureSlot {
 } _SituationTextureSlot;
 
 // Forward declaration
-static _SituationTextureSlot* _SitGetTextureSlot(SituationTexture handle);
+static _SituationTextureSlot* _SitRender_GetTextureSlot(SituationTexture handle);
 
 // Render State Container
 typedef struct {
@@ -3777,7 +3777,7 @@ typedef struct {
     cnd_t render_queue_cv;
     cnd_t main_wait_cv; // For backpressure
 
-    // Internal Frame Structure (Definition local to _SituationRenderThreadEntry usually,
+    // Internal Frame Structure (Definition local to _SitRender_RenderThreadEntry usually,
     // but queue stores indices or pointers)
     // We store indices into the per-frame buffers (soft_buffers or command_buffers)
     int render_queue[SITUATION_MAX_FRAMES_IN_FLIGHT]; // Ring buffer of frame indices to render
@@ -3914,16 +3914,16 @@ typedef struct {
 
 #ifdef SITUATION_ENABLE_THREADING
 // --- Forward Declarations for Threading Internal Helpers ---
-static int _SituationWorkerEntry(void* arg);                                                    // [THREAD] Internal worker thread loop
-static void _SitParallelWorker(void* data, void* ctx);                                          // [THREAD] Internal helper for parallel dispatch
+static int _SitCore_WorkerEntry(void* arg);                                                    // [THREAD] Internal worker thread loop
+static void _SitCore_ParallelWorker(void* data, void* ctx);                                          // [THREAD] Internal helper for parallel dispatch
 #endif
 
 #if !defined(__STDC_NO_THREADS__)
-static int _SituationRenderThreadEntry(void* arg);                                              // [THREAD] Render thread loop
+static int _SitRender_RenderThreadEntry(void* arg);                                              // [THREAD] Render thread loop
 
 // [v2.3.21] Render Thread Lifecycle Helpers
-static bool _SituationInitRenderThread(const SituationInitInfo* info);
-static void _SituationDestroyRenderThread(void);
+static bool _SitRender_InitRenderThread(const SituationInitInfo* info);
+static void _SitRender_DestroyRenderThread(void);
 #endif
 
 // --- Context Architecture (v2.3.7+) ---
@@ -3953,34 +3953,34 @@ static SituationContext* _sit_current_context = NULL;
 //==================================================================================
 // Core Lifecycle & Error Handling Helpers
 //==================================================================================
-static void _SituationSetError(const char* msg);                                                // [CORE] Sets the global last error message string.
-static SituationError _SituationSetErrorFromCode(SituationError err, const char* detail);                 // [CORE] Sets the global error message from an error code and detail string.
-static SituationError _SituationInitPlatform(void);                                             // [INIT] Initializes platform-specific dependencies (GLFW, COM).
-static SituationError _SituationInitWindow(const SituationInitInfo* init_info);                 // [INIT] Creates the main application window using GLFW.
-static SituationError _SituationInitRenderer(const SituationInitInfo* init_info);               // [INIT] Dispatches to the backend-specific graphics initializer (GL/VK).
-static bool _SituationInitTextRenderer(void);													// [INIT] (GL)
-static void _SituationInitDefaultFont(void);
-static SituationError _SituationInitSubsystems(const SituationInitInfo* init_info);             // [INIT] Initializes all non-rendering subsystems (Audio, Input, Timers).
-static void _SituationCleanupDanglingResources(void);                                           // [CLEANUP] Finds and frees any user-leaked resources at shutdown.
-static void _SituationCleanupPlatform(void);                                                    // [CLEANUP] Shuts down the platform layer (GLFW, COM).
-static void _SituationCleanupRenderer(void);                                                    // [CLEANUP] Dispatches to the backend-specific graphics cleanup.
-static void _SituationCleanupSubsystems(void);                                                  // [CLEANUP] Shuts down all non-rendering subsystems.
-static void _SituationFullCleanupOnError(void);                                                 // [CLEANUP] Performs a full, robust cleanup after an initialization failure.
+static void _SitCore_SetError(const char* msg);                                                // [CORE] Sets the global last error message string.
+static SituationError _SitCore_SetErrorFromCode(SituationError err, const char* detail);                 // [CORE] Sets the global error message from an error code and detail string.
+static SituationError _SitCore_InitPlatform(void);                                             // [INIT] Initializes platform-specific dependencies (GLFW, COM).
+static SituationError _SitPlatform_InitWindow(const SituationInitInfo* init_info);                 // [INIT] Creates the main application window using GLFW.
+static SituationError _SitRender_InitRenderer(const SituationInitInfo* init_info);               // [INIT] Dispatches to the backend-specific graphics initializer (GL/VK).
+static bool _SitRender_InitTextRenderer(void);													// [INIT] (GL)
+static void _SitCore_InitDefaultFont(void);
+static SituationError _SitCore_InitSubsystems(const SituationInitInfo* init_info);             // [INIT] Initializes all non-rendering subsystems (Audio, Input, Timers).
+static void _SitRender_CleanupDanglingResources(void);                                           // [CLEANUP] Finds and frees any user-leaked resources at shutdown.
+static void _SitCore_CleanupPlatform(void);                                                    // [CLEANUP] Shuts down the platform layer (GLFW, COM).
+static void _SitRender_CleanupRenderer(void);                                                    // [CLEANUP] Dispatches to the backend-specific graphics cleanup.
+static void _SitCore_CleanupSubsystems(void);                                                  // [CLEANUP] Shuts down all non-rendering subsystems.
+static void _SitCore_FullCleanupOnError(void);                                                 // [CLEANUP] Performs a full, robust cleanup after an initialization failure.
 
 //==================================================================================
 // GLFW Callback Helpers
 //==================================================================================
-static void _SituationGLFWErrorCallback(int error, const char* description);                    // [CALLBACK] Handles internal errors reported by GLFW.
-static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const char** paths);  // [CALLBACK] Handles files being dropped onto the window.
-static void _SituationGLFWWindowFocusCallback(GLFWwindow* window, int focused);                 // [CALLBACK] Handles the window gaining or losing input focus.
-static void _SituationGLFWWindowIconifyCallback(GLFWwindow* window, int iconified);             // [CALLBACK] Handles the window being minimized or restored.
-static void _SituationGLFWFramebufferSizeCallback(GLFWwindow* window, int width, int height);   // [CALLBACK] Handles changes to the framebuffer's pixel dimensions.
-static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods); // [CALLBACK] Handles all raw keyboard key events.
-static void _SituationGLFWCharCallback(GLFWwindow* window, unsigned int codepoint);             // [CALLBACK] Handles Unicode character input for text entry.
-static void _SituationGLFWMouseButtonCallback(GLFWwindow* window, int button, int action, int mods); // [CALLBACK] Handles mouse button press and release events.
-static void _SituationGLFWCursorPosCallback(GLFWwindow* window, double xpos, double ypos);      // [CALLBACK] Handles mouse cursor movement events.
-static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, double yoffset);   // [CALLBACK] Handles mouse scroll wheel events.
-static void _SituationGLFWJoystickCallback(int jid, int event);                                 // [CALLBACK] Handles joystick connection and disconnection events.
+static void _SitRender_GLFWErrorCallback(int error, const char* description);                    // [CALLBACK] Handles internal errors reported by GLFW.
+static void _SitRender_GLFWFileDropCallback(GLFWwindow* window, int count, const char** paths);  // [CALLBACK] Handles files being dropped onto the window.
+static void _SitRender_GLFWWindowFocusCallback(GLFWwindow* window, int focused);                 // [CALLBACK] Handles the window gaining or losing input focus.
+static void _SitRender_GLFWWindowIconifyCallback(GLFWwindow* window, int iconified);             // [CALLBACK] Handles the window being minimized or restored.
+static void _SitRender_GLFWFramebufferSizeCallback(GLFWwindow* window, int width, int height);   // [CALLBACK] Handles changes to the framebuffer's pixel dimensions.
+static void _SitRender_GLFWKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods); // [CALLBACK] Handles all raw keyboard key events.
+static void _SitRender_GLFWCharCallback(GLFWwindow* window, unsigned int codepoint);             // [CALLBACK] Handles Unicode character input for text entry.
+static void _SitRender_GLFWMouseButtonCallback(GLFWwindow* window, int button, int action, int mods); // [CALLBACK] Handles mouse button press and release events.
+static void _SitRender_GLFWCursorPosCallback(GLFWwindow* window, double xpos, double ypos);      // [CALLBACK] Handles mouse cursor movement events.
+static void _SitRender_GLFWScrollCallback(GLFWwindow* window, double xoffset, double yoffset);   // [CALLBACK] Handles mouse scroll wheel events.
+static void _SitRender_GLFWJoystickCallback(int jid, int event);                                 // [CALLBACK] Handles joystick connection and disconnection events.
 
 //==================================================================================
 // Shader Contract
@@ -4361,7 +4361,7 @@ static const char* SIT_TEXT_FRAGMENT_SHADER =
 //==================================================================================
 #if defined(SITUATION_USE_OPENGL)
 // --- OpenGL Helper Functions ---
-static void _SituationInitGLRingBuffer(void) {
+static void _SitRender_InitGLRingBuffer(void) {
     if (sit_render.gl.ring_buffer_id != 0) return;
 
     sit_render.gl.ring_size = SITUATION_GL_RING_SIZE;
@@ -4375,7 +4375,7 @@ static void _SituationInitGLRingBuffer(void) {
 }
 
 // [Phase 4] Initialize MDI Buffer
-static void _SituationInitGLMDIBuffer(void) {
+static void _SitRender_InitGLMDIBuffer(void) {
     if (sit_render.gl.mdi_buffer_id != 0) return;
 
     // [Phase 4] Allocate MDI buffer large enough for double buffering (1MB per frame)
@@ -4389,7 +4389,7 @@ static void _SituationInitGLMDIBuffer(void) {
     atomic_init(&sit_render.gl.mdi_ring_head, 0);
 }
 
-static void _SituationInitGLRingFences(void) {
+static void _SitRender_InitGLRingFences(void) {
     // [Phase 2] Fence Initialization
     sit_render.gl.ring_fence_count = 3; // Triple buffer
     sit_render.gl.current_fence_index = 0;
@@ -4399,12 +4399,12 @@ static void _SituationInitGLRingFences(void) {
     }
 
     if (!sit_render.gl.ring_data_ptr) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to map persistent ring buffer.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to map persistent ring buffer.");
     }
 }
 
 // [Phase 1.5] Synchronization Helper
-static void _SituationGLRingWait(void) {
+static void _SitRender_GLRingWait(void) {
     // Wait for the fence of the PREVIOUS frame.
     // If Frame N-1 is complete, we assume the GPU has consumed the entire ring buffer
     // up to the start of the current frame, making it safe to wrap around and overwrite
@@ -4418,33 +4418,33 @@ static void _SituationGLRingWait(void) {
     }
 }
 
-static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info);
-static void _SituationCleanupOpenGL(void);
+static SituationError _SitRender_InitOpenGL(const SituationInitInfo* init_info);
+static void _SitRender_CleanupOpenGL(void);
 // Removed static fwd decl
-static bool _SituationInitGLVirtualDisplayRenderer(void);
-static GLuint _SituationCreateGLShaderProgramFromSource(const char* cs_src, SituationError* error_code);
-static GLuint _SituationCompileGLShader(const char* source, GLenum type, SituationError* error_code);
-static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs_src, SituationError* error_code);
-static GLuint _SituationCreateGLComputeProgram(const void* source_data, SituationGLShaderSourceType source_type, SituationError* error_code);
-static void _SituationCheckGLError(const char* location);
-static void _SitGLBackupState(_SitGLStateBackup* s);
-static void _SitGLRestoreState(_SitGLStateBackup* s);
-static void _SitGLInvalidateShadowState(void); // [2.3.14A]
+static bool _SitRender_InitGLVirtualDisplayRenderer(void);
+static GLuint _SitRender_CreateGLShaderProgramFromSource(const char* cs_src, SituationError* error_code);
+static GLuint _SitRender_CompileGLShader(const char* source, GLenum type, SituationError* error_code);
+static GLuint _SitRender_CreateGLShaderProgram(const char* vs_src, const char* fs_src, SituationError* error_code);
+static GLuint _SitRender_CreateGLComputeProgram(const void* source_data, SituationGLShaderSourceType source_type, SituationError* error_code);
+static void _SitRender_CheckGLError(const char* location);
+static void _SitRender_GLBackupState(_SitGLStateBackup* s);
+static void _SitRender_GLRestoreState(_SitGLStateBackup* s);
+static void _SitRender_GLInvalidateShadowState(void); // [2.3.14A]
 
 // [Phase 2.5]
-static GLuint _SitGLGetCachedVAO(SituationMesh mesh);
-static void _SitGLDeferDestroyBuffer(GLuint id);
-static void _SitGLDeferDestroyTexture(GLuint id);
-static void _SitGLDeferCleanMeshVAO(uint64_t mesh_id);
-static void _SitGLFlushGraveyard(void);
+static GLuint _SitRender_GLGetCachedVAO(SituationMesh mesh);
+static void _SitRender_GLDeferDestroyBuffer(GLuint id);
+static void _SitRender_GLDeferDestroyTexture(GLuint id);
+static void _SitRender_GLDeferCleanMeshVAO(uint64_t mesh_id);
+static void _SitRender_GLFlushGraveyard(void);
 
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
 // Forward declare the SPIR-V blob struct as it's used here
 struct _SituationSpirvBlob;
 // Creates a two-stage (graphics) program from two SPIR-V blobs.
-static GLuint _SituationCreateGLShaderProgramFromSpirv(const struct _SituationSpirvBlob* vs_blob, const struct _SituationSpirvBlob* fs_blob, SituationError* error_code);
+static GLuint _SitRender_CreateGLShaderProgramFromSpirv(const struct _SituationSpirvBlob* vs_blob, const struct _SituationSpirvBlob* fs_blob, SituationError* error_code);
 // Creates a single-stage (compute) program from one SPIR-V blob.
-static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationSpirvBlob* cs_blob, SituationError* error_code);
+static GLuint _SitRender_CreateGLComputeProgramFromSpirv(const struct _SituationSpirvBlob* cs_blob, SituationError* error_code);
 #endif
 #endif
 
@@ -4463,48 +4463,48 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
 // (Moved to top of implementation)
 
 // --- Vulkan Initialization & Cleanup Sequence ---
-static SituationError _SituationInitVulkan(const SituationInitInfo* init_info);
-static void _SituationCleanupVulkan(void);
+static SituationError _SitCore_InitVulkan(const SituationInitInfo* init_info);
+static void _SitCore_CleanupVulkan(void);
 static const char** _SituationVulkanGetRequiredExtensions(uint32_t* out_extension_count, bool enable_validation);
-static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* init_info);
-static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInfo* init_info);
-static SituationError _SituationVulkanCreateSurface(void);
-static SituationError _SituationVulkanPickPhysicalDevice(void);
-static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInfo* init_info);
-static SituationError _SituationVulkanCreateAllocator(void);
-static SituationError _SituationVulkanCreateSwapchain(void);
-static SituationError _SituationVulkanCreateImageViews(void);
-static SituationError _SituationVulkanCreateRenderPass(void);
-static SituationError _SituationVulkanCreateDepthResources(void);
-static SituationError _SituationVulkanCreateFramebuffers(void);
-static SituationError _SituationVulkanCreateCommandPool(void);
-static SituationError _SituationVulkanCreateCommandBuffers(void);
-static SituationError _SituationVulkanCreateSyncObjects(void);
-static SituationError _SituationVulkanInitInternalRenderers(void);
-static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const char* fs_path);
+static SituationError _SitCore_VulkanCreateInstance(const SituationInitInfo* init_info);
+static SituationError _SitCore_VulkanSetupDebugMessenger(const SituationInitInfo* init_info);
+static SituationError _SitCore_VulkanCreateSurface(void);
+static SituationError _SitRender_VulkanPickPhysicalDevice(void);
+static SituationError _SitRender_VulkanCreateLogicalDevice(const SituationInitInfo* init_info);
+static SituationError _SitCore_VulkanCreateAllocator(void);
+static SituationError _SitRender_VulkanCreateSwapchain(void);
+static SituationError _SitRender_VulkanCreateImageViews(void);
+static SituationError _SitRender_VulkanCreateRenderPass(void);
+static SituationError _SitCore_VulkanCreateDepthResources(void);
+static SituationError _SitRender_VulkanCreateFramebuffers(void);
+static SituationError _SitRender_VulkanCreateCommandPool(void);
+static SituationError _SitRender_VulkanCreateCommandBuffers(void);
+static SituationError _SitCore_VulkanCreateSyncObjects(void);
+static SituationError _SitRender_VulkanInitInternalRenderers(void);
+static SituationShader _SitRender_CreateVulkanPipeline(const char* vs_path, const char* fs_path);
 
 // --- Vulkan State Management & Utility Helpers ---
-static void _SituationVulkanCleanupSwapchain(void);
-static void _SituationVulkanRecreateSwapchain(void);
-static int _SituationIsDeviceSuitable(VkPhysicalDevice device);
-static VkFormat _SituationVulkanFindSupportedFormat(const VkFormat* candidates, uint32_t candidate_count, VkImageTiling tiling, VkFormatFeatureFlags features);
-static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
-static void _SituationVulkanQuerySwapchainSupport(VkPhysicalDevice device, _SituationVulkanSwapchainSupportDetails* out_details);
-static void _SituationVulkanFreeSwapchainSupportDetails(_SituationVulkanSwapchainSupportDetails* details);
-static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, int32_t width, int32_t height, uint32_t mip_levels);
+static void _SitRender_VulkanCleanupSwapchain(void);
+static void _SitRender_VulkanRecreateSwapchain(void);
+static int _SitRender_IsDeviceSuitable(VkPhysicalDevice device);
+static VkFormat _SitCore_VulkanFindSupportedFormat(const VkFormat* candidates, uint32_t candidate_count, VkImageTiling tiling, VkFormatFeatureFlags features);
+static _SituationQueueFamilyIndices _SitCore_VulkanFindQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
+static void _SitRender_VulkanQuerySwapchainSupport(VkPhysicalDevice device, _SituationVulkanSwapchainSupportDetails* out_details);
+static void _SitRender_VulkanFreeSwapchainSupportDetails(_SituationVulkanSwapchainSupportDetails* details);
+static void _SitCore_VulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, int32_t width, int32_t height, uint32_t mip_levels);
 
 
 // --- Vulkan Resource Management Helpers ---
-static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool* out_pool);
-static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags);
-static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation);
-static void _SituationVulkanDestroyImage(VkImage image, VmaAllocation allocation);
-static SituationError _SituationVulkanCreateAndUploadBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* out_buffer, VmaAllocation* out_allocation);
-static SituationError _SituationVulkanReadBackBuffer(VkBuffer src_buffer, VmaAllocation src_alloc, size_t size, size_t offset, void* out_data);
-static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void);
-static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer);
-static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_t code_size);
-static VkPipeline _SituationVulkanCreateGraphicsPipeline(
+static VkDescriptorSet _SitRender_VulkanAllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool* out_pool);
+static VkImageView _SitRender_VulkanCreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags);
+static SituationError _SitRender_VulkanCreateImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation);
+static void _SitRender_VulkanDestroyImage(VkImage image, VmaAllocation allocation);
+static SituationError _SitRender_VulkanCreateAndUploadBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* out_buffer, VmaAllocation* out_allocation);
+static SituationError _SitRender_VulkanReadBackBuffer(VkBuffer src_buffer, VmaAllocation src_alloc, size_t size, size_t offset, void* out_data);
+static VkCommandBuffer _SitRender_VulkanBeginSingleTimeCommands(void);
+static void _SitRender_VulkanEndSingleTimeCommands(VkCommandBuffer command_buffer);
+static VkShaderModule _SitRender_VulkanCreateShaderModule(const void* code, size_t code_size);
+static VkPipeline _SitRender_VulkanCreateGraphicsPipeline(
     const void* vs_data, size_t vs_size,
     const void* fs_data, size_t fs_size,
     VkPipelineLayout pipelineLayout,
@@ -4513,25 +4513,25 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     const VkVertexInputBindingDescription* pVertexBindingDescriptions,
     uint32_t vertexAttributeCount,
     const VkVertexInputAttributeDescription* pVertexAttributeDescriptions);
-static SituationError _SituationVulkanInitComputeLayouts(void);
-static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint8_t* cs_spirv_data, size_t cs_spirv_size, VkPipelineLayout layout);
+static SituationError _SitRender_VulkanInitComputeLayouts(void);
+static SituationComputePipeline _SitRender_VulkanCreateComputePipeline(const uint8_t* cs_spirv_data, size_t cs_spirv_size, VkPipelineLayout layout);
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
-static shaderc_include_result* _SituationShaderIncluderResolve(void* user_data, const char* requested_source, int type, const char* requesting_source, size_t include_depth);// [INTERNAL] Callback for shaderc to resolve and load #include files from disk.
-static void _SituationShaderIncluderRelease(void* user_data, shaderc_include_result* include_result);// [INTERNAL] Callback for shaderc to free memory allocated during #include resolution.
-static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(const char* glsl_source, const char* source_name, shaderc_shader_kind shader_kind);
-static void _SituationFreeSpirvBlob(_SituationSpirvBlob* blob);
+static shaderc_include_result* _SitRender_ShaderIncluderResolve(void* user_data, const char* requested_source, int type, const char* requesting_source, size_t include_depth);// [INTERNAL] Callback for shaderc to resolve and load #include files from disk.
+static void _SitRender_ShaderIncluderRelease(void* user_data, shaderc_include_result* include_result);// [INTERNAL] Callback for shaderc to free memory allocated during #include resolution.
+static _SituationSpirvBlob _SitRender_VulkanCompileGLSLtoSPIRV(const char* glsl_source, const char* source_name, shaderc_shader_kind shader_kind);
+static void _SitCore_FreeSpirvBlob(_SituationSpirvBlob* blob);
 #endif
-static void _SituationVulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout);
-static void _SituationVulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
-static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkImageLayout srcImageLayout, uint32_t width, uint32_t height);
+static void _SitRender_VulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout);
+static void _SitRender_VulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+static void* _SitRender_VulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkImageLayout srcImageLayout, uint32_t width, uint32_t height);
 
-static SituationError _SituationInitStagingBuffers(void);
-static void _SituationCleanupStagingBuffers(void);
+static SituationError _SitRender_InitStagingBuffers(void);
+static void _SitRender_CleanupStagingBuffers(void);
 
 // --- Vulkan Graveyard Helpers ---
-static void _SituationInitGraveyard(_SituationVKGraveyard* gy);
-static void _SituationCleanupGraveyard(_SituationVKGraveyard* gy);
-static void _SituationFlushGraveyard(uint32_t frame_index);
+static void _SitCore_InitGraveyard(_SituationVKGraveyard* gy);
+static void _SitCore_CleanupGraveyard(_SituationVKGraveyard* gy);
+static void _SitCore_FlushGraveyard(uint32_t frame_index);
 
 // --- Vulkan Callback Functions ---
 static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
@@ -4542,31 +4542,31 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback(VkDebugUtils
 // Miscellaneous Module Helpers
 //==================================================================================
 
-static int _SituationWorkerEntry(void* arg); // Internal Worker Thread
+static int _SitCore_WorkerEntry(void* arg); // Internal Worker Thread
 
-static SituationError _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error);
-static char* _sit_dirname(const char* path); // Forward declaration
-static bool _sit_directory_exists(const char* dir_path); // Forward declaration
+static SituationError _SitFS_SetFilesystemError(const char* base_message, const char* path, SituationError default_error);
+static char* _SitFS_Dirname(const char* path); // Forward declaration
+static bool _SitFS_Directory_exists(const char* dir_path); // Forward declaration
 
 // --- Audio Helpers ---
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount);
-static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, size_t bytesToRead, size_t* pBytesRead);	// thunk to route read calls to the specific SituationSound instance
-static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin);// thunk to route seek calls to the specific SituationSound instance
-static void* _SituationInitReverb(uint32_t sample_rate);
-static void _SituationUninitReverb(void* state_ptr);
-static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels);
+static ma_result _SitFS_situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, size_t bytesToRead, size_t* pBytesRead);	// thunk to route read calls to the specific SituationSound instance
+static ma_result _SitCore_situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin);// thunk to route seek calls to the specific SituationSound instance
+static void* _SitAudio_InitReverb(uint32_t sample_rate);
+static void _SitAudio_UninitReverb(void* state_ptr);
+static void _SitAudio_ProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels);
 
 // --- Display Helpers ---
-static void _SituationCachePhysicalDisplays(void);
-static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b);
+static void _SitPlatform_CachePhysicalDisplays(void);
+static int _SitPlatform_SortVirtualDisplaysCallback(const void* a, const void* b);
 SITAPI int _SituationGetCurrentDisplayIdentifier(void); // Returns situation_monitor_id of current monitor, or -1
 
 // --- Internal Quad Renderer Helpers ---
-static bool _SituationInitQuadRenderer(int width, int height);
-static void _SituationCleanupQuadRenderer(void);
+static bool _SitRender_InitQuadRenderer(int width, int height);
+static void _SitRender_CleanupQuadRenderer(void);
 
 // --- Image Helpers ---
-static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* image);
+static bool _SitRender_SaveImageBMP(const char* fileName, const SituationImage* image);
 static inline ColorRGBA _SituationColorAlphaBlend(ColorRGBA dst, ColorRGBA src, float alpha);
 static unsigned char _SituationBilinearSample(const unsigned char *bitmap, int width, int height, float u, float v);
 
@@ -4577,11 +4577,11 @@ static inline float _SituationFMin3(float a, float b, float c) { return fminf(a,
 static inline float _SituationFMax3(float a, float b, float c) { return fmaxf(a, fmaxf(b, c)); } // Find the maximum of three floats
 
 #if defined(CGLTF_IMPLEMENTATION)
-static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count);
+static bool _SitRender_ExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count);
 #endif
 
 // Internal Helper for Time (needed for WaitForJob timeout)
-static uint64_t _SituationGetHighResTime(void) {
+static uint64_t _SitCore_GetHighResTime(void) {
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
@@ -4590,7 +4590,7 @@ static uint64_t _SituationGetHighResTime(void) {
 /**
  * @brief [INTERNAL] Standard C11 replacement for strdup.
  */
-static char* _sit_strdup(const char* s) {
+static char* _SitUtils_Strdup(const char* s) {
     if (!s) return NULL;
     size_t len = strlen(s) + 1;
     char* copy = (char*)SIT_MALLOC(len);
@@ -4603,9 +4603,9 @@ static char* _sit_strdup(const char* s) {
  * @details Allocates a new string containing the directory portion of the path.
  *          Does not handle trailing slashes robustly like POSIX dirname, but sufficient for simple file paths.
  */
-static char* _sit_dirname(const char* path) {
+static char* _SitFS_Dirname(const char* path) {
     if (!path) return NULL;
-    char* copy = _sit_strdup(path);
+    char* copy = _SitUtils_Strdup(path);
     if (!copy) return NULL;
 
     char* last_slash = strrchr(copy, '/');
@@ -4617,7 +4617,7 @@ static char* _sit_dirname(const char* path) {
     } else {
         // No separator found, return "."
         free(copy);
-        return _sit_strdup(".");
+        return _SitUtils_Strdup(".");
     }
     return copy;
 }
@@ -4625,7 +4625,7 @@ static char* _sit_dirname(const char* path) {
 /**
  * @brief [INTERNAL] Alias for SituationDirectoryExists used in internal helpers.
  */
-static bool _sit_directory_exists(const char* dir_path) {
+static bool _SitFS_Directory_exists(const char* dir_path) {
     return SituationDirectoryExists(dir_path);
 }
 
@@ -4643,7 +4643,7 @@ static unsigned long _sit_hash_string(const char* str) {
  * @brief [INTERNAL] Standard C11 replacement for strcasecmp/_stricmp.
  * @details Compares two strings ignoring case.
  */
-static int _sit_strcasecmp(const char* s1, const char* s2) {
+static int _SitUtils_Strcasecmp(const char* s1, const char* s2) {
     while (*s1 && *s2) {
         // Cast to unsigned char is required by C standard for ctype functions
         int c1 = tolower((unsigned char)*s1);
@@ -4670,12 +4670,12 @@ static int _sit_strcasecmp(const char* s1, const char* s2) {
  * @return A pointer to the newly created `_SituationUniformMap` struct on success.
  * @return NULL if memory allocation fails for the map struct itself or its bucket array.
  *
- * @note The caller is responsible for destroying the returned map using `_sit_uniform_map_destroy` when it is no longer needed to prevent memory leaks.
+ * @note The caller is responsible for destroying the returned map using `_SitRender_Uniform_map_destroy` when it is no longer needed to prevent memory leaks.
  * @warning This function is for internal library use only and is not part of the public API.
  *
- * @see _sit_uniform_map_destroy(), _sit_uniform_map_set(), _sit_uniform_map_get()
+ * @see _SitRender_Uniform_map_destroy(), _SitRender_Uniform_map_set(), _SitRender_Uniform_map_get()
  */
-static _SituationUniformMap* _sit_uniform_map_create() {
+static _SituationUniformMap* _SitRender_Uniform_map_create() {
     // --- 1. Allocate Memory for the Map Struct ---
     _SituationUniformMap* map = (_SituationUniformMap*)SIT_CALLOC(1, sizeof(_SituationUniformMap));
     // Using SIT_CALLOC initializes map->count and map->capacity to 0, and map->buckets to NULL.
@@ -4683,9 +4683,9 @@ static _SituationUniformMap* _sit_uniform_map_create() {
     // Check if allocation for the map struct itself was successful.
     if (!map) {
         // Allocation failed for the main struct.
-        // _SituationSetErrorFromCode might be overkill for internal alloc failures,
+        // _SitCore_SetErrorFromCode might be overkill for internal alloc failures,
         // but could be considered if the library does this for internal helpers.
-        // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_create: Failed to allocate map struct.");
+        // _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_SitRender_Uniform_map_create: Failed to allocate map struct.");
         return NULL;
     }
 
@@ -4704,7 +4704,7 @@ static _SituationUniformMap* _sit_uniform_map_create() {
         // Allocation failed for the bucket array.
         // Free the previously allocated map struct to prevent a memory leak.
         SIT_FREE(map);
-        // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_create: Failed to allocate bucket array.");
+        // _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_SitRender_Uniform_map_create: Failed to allocate bucket array.");
         return NULL;
     }
 
@@ -4713,7 +4713,7 @@ static _SituationUniformMap* _sit_uniform_map_create() {
     return map;
 }
 
-// --- Updated/Added Documentation Block for _sit_uniform_map_destroy ---
+// --- Updated/Added Documentation Block for _SitRender_Uniform_map_destroy ---
 /**
  * @brief [INTERNAL] Destroys a uniform map and frees all associated memory.
  *
@@ -4727,13 +4727,13 @@ static _SituationUniformMap* _sit_uniform_map_create() {
  *
  * @param map A pointer to the `_SituationUniformMap` struct to be destroyed. This pointer can be NULL.
  *
- * @note This function must be called exactly once for each map created by `_sit_uniform_map_create` to prevent memory leaks.
+ * @note This function must be called exactly once for each map created by `_SitRender_Uniform_map_create` to prevent memory leaks.
  * @warning This function is for internal library use only and is not part of the public API.
  * @warning After calling this function, the `map` pointer becomes invalid and must not be used again.
  *
- * @see _sit_uniform_map_create()
+ * @see _SitRender_Uniform_map_create()
  */
-static void _sit_uniform_map_destroy(_SituationUniformMap* map) {
+static void _SitRender_Uniform_map_destroy(_SituationUniformMap* map) {
     // --- 1. Input Validation ---
     // Check if the map pointer is NULL. If so, there's nothing to destroy.
     // This is a safe and common pattern for destroy/free functions.
@@ -4784,7 +4784,7 @@ static void _sit_uniform_map_destroy(_SituationUniformMap* map) {
     // It is the caller's responsibility to not use the pointer after this call.
 }
 
-// --- Updated/Added Documentation Block for _sit_uniform_map_set ---
+// --- Updated/Added Documentation Block for _SitRender_Uniform_map_set ---
 /**
  * @brief [INTERNAL] Adds or updates a key-value pair in the uniform map.
  *
@@ -4807,9 +4807,9 @@ static void _sit_uniform_map_destroy(_SituationUniformMap* map) {
  *       A TODO exists in the original code for this.
  * @warning This function is for internal library use only and is not part of the public API.
  *
- * @see _sit_uniform_map_get(), _sit_hash_string()
+ * @see _SitRender_Uniform_map_get(), _sit_hash_string()
  */
-static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, GLint value) {
+static void _SitRender_Uniform_map_set(_SituationUniformMap* map, const char* key, GLint value) {
     // --- 1. Input Validation ---
     // Check if the map or key pointer is NULL.
     if (!map || !key) {
@@ -4855,20 +4855,20 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, GLi
     if (!new_entry) {
         // Allocation failed for the new entry struct.
         // This is a memory-constrained situation. Silently failing to add the entry is often acceptable for a cache, as glGetUniformLocation can be called again.
-        // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_set: Failed to allocate new entry struct.");
+        // _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_SitRender_Uniform_map_set: Failed to allocate new entry struct.");
         return;
     }
 
     // --- 5. Initialize New Entry ---
     // Duplicate the key string. This allocates memory and copies the string.
     // The caller retains ownership of the original `key` string.
-    new_entry->key = _sit_strdup(key);
+    new_entry->key = _SitUtils_Strdup(key);
     // Check if strdup was successful.
     if (!new_entry->key) {
         // Allocation failed for duplicating the key string.
         // Free the previously allocated entry struct to prevent a leak.
         SIT_FREE(new_entry);
-        // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_set: Failed to duplicate key string.");
+        // _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_SitRender_Uniform_map_set: Failed to duplicate key string.");
         return;
     }
 
@@ -4892,7 +4892,7 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, GLi
     // }
 }
 
-// --- Updated/Added Documentation Block for _sit_uniform_map_get ---
+// --- Updated/Added Documentation Block for _SitRender_Uniform_map_get ---
 /**
  * @brief [INTERNAL] Retrieves a value associated with a key from the uniform map.
  *
@@ -4912,9 +4912,9 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, GLi
  * @warning This function is for internal library use only and is not part of the
  *          public API.
  *
- * @see _sit_uniform_map_set(), _sit_hash_string()
+ * @see _SitRender_Uniform_map_set(), _sit_hash_string()
  */
-static GLint _sit_uniform_map_get(_SituationUniformMap* map, const char* key) {
+static GLint _SitRender_Uniform_map_get(_SituationUniformMap* map, const char* key) {
     // --- 1. Input Validation ---
     // Check if the map or key pointer is NULL.
     if (!map || !key) {
@@ -4974,7 +4974,7 @@ static GLint _sit_uniform_map_get(_SituationUniformMap* map, const char* key) {
  * @return SITUATION_SUCCESS on success.
  * @return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED if VMA cannot allocate the large blocks.
  */
-static SituationError _SituationInitStagingBuffers(void) {
+static SituationError _SitRender_InitStagingBuffers(void) {
     for (uint32_t i = 0; i < sit_render.vk.max_frames_in_flight; i++) {
         _SituationStagingBuffer* sb = &sit_render.vk.staging_buffers[i];
         sb->capacity = SITUATION_VK_STAGING_BUFFER_SIZE;
@@ -5008,7 +5008,7 @@ static SituationError _SituationInitStagingBuffers(void) {
  * @note Because these buffers are persistently mapped, no explicit unmap call is required; VMA
  *       handles the unmapping during destruction.
  */
-static void _SituationCleanupStagingBuffers(void) {
+static void _SitRender_CleanupStagingBuffers(void) {
     for (uint32_t i = 0; i < sit_render.vk.max_frames_in_flight; i++) {
         _SituationStagingBuffer* sb = &sit_render.vk.staging_buffers[i];
         if (sb->buffer != VK_NULL_HANDLE) {
@@ -5032,16 +5032,16 @@ static void _SituationCleanupStagingBuffers(void) {
  * @subsection How It Works
  *   1. **Queuing:** When a resource is "destroyed," it's added to the graveyard associated with the *current* frame being recorded (`sit_render.vk.current_frame_index`).
  *   2. **Waiting:** The main render loop proceeds as normal. At the beginning of a new frame `N`, the engine calls `vkWaitForFences` to ensure that frame `N - max_frames_in_flight` has finished rendering on the GPU.
- *   3. **Flushing:** Only after the fence confirms the GPU is done with that old frame do we call `_SituationFlushGraveyard`. This function iterates through the old frame's graveyard queue and calls the real `vkDestroy*` / `vmaDestroy*` functions.
+ *   3. **Flushing:** Only after the fence confirms the GPU is done with that old frame do we call `_SitCore_FlushGraveyard`. This function iterates through the old frame's graveyard queue and calls the real `vkDestroy*` / `vmaDestroy*` functions.
  *   - **Result:** This guarantees that resources are only deleted after the GPU is confirmed to be finished with them, eliminating all `vkDeviceWaitIdle` stalls from the resource management path.
  *
  * @subsection Asynchronous Transfers
- *   - **Issue:** Previously, functions like `_SituationVulkanCreateAndUploadBuffer` would create a temporary command buffer, submit it, and immediately call `vkQueueWaitIdle` to wait for the upload to finish, causing a CPU-GPU stall for every asset.
- *   - **Solution:** `_SituationVulkanCreateAndUploadBuffer` can now use the main frame's command buffer. It records the copy command and uses `_SituationDeferDestroyBuffer` to place the temporary staging buffer into the graveyard. The staging buffer is now cleaned up automatically and asynchronously, allowing for dozens of assets to be uploaded in a single frame without any stalls.
+ *   - **Issue:** Previously, functions like `_SitRender_VulkanCreateAndUploadBuffer` would create a temporary command buffer, submit it, and immediately call `vkQueueWaitIdle` to wait for the upload to finish, causing a CPU-GPU stall for every asset.
+ *   - **Solution:** `_SitRender_VulkanCreateAndUploadBuffer` can now use the main frame's command buffer. It records the copy command and uses `_SitRender_DeferDestroyBuffer` to place the temporary staging buffer into the graveyard. The staging buffer is now cleaned up automatically and asynchronously, allowing for dozens of assets to be uploaded in a single frame without any stalls.
  *
  * @subsection Descriptor Pool Fragmentation
  *   - **Issue:** Calling `vkFreeDescriptorSets` frequently on pools that were not created with specific flags can be slow and lead to memory fragmentation, eventually causing allocation failures.
- *   - **Solution:** The `_SituationFlushGraveyard` function **intentionally does not call `vkFreeDescriptorSets`**. Instead, descriptor sets are treated as if they were allocated from a linear or "bump" allocator. They are only reclaimed when the entire `VkDescriptorPool` is reset or destroyed at shutdown. This is a standard high-performance strategy that trades a small amount of memory for maximum stability and zero-stutter performance during runtime.
+ *   - **Solution:** The `_SitCore_FlushGraveyard` function **intentionally does not call `vkFreeDescriptorSets`**. Instead, descriptor sets are treated as if they were allocated from a linear or "bump" allocator. They are only reclaimed when the entire `VkDescriptorPool` is reset or destroyed at shutdown. This is a standard high-performance strategy that trades a small amount of memory for maximum stability and zero-stutter performance during runtime.
  */
 
 /**
@@ -5050,7 +5050,7 @@ static void _SituationCleanupStagingBuffers(void) {
  *          Each type of resource (buffers, images, pipelines) has its own dynamic array.
  * @param gy Pointer to the `_SituationVKGraveyard` struct to initialize.
  */
-static void _SituationInitGraveyard(_SituationVKGraveyard* gy) {
+static void _SitCore_InitGraveyard(_SituationVKGraveyard* gy) {
     memset(gy, 0, sizeof(_SituationVKGraveyard));
     // Pre-allocate some capacity to avoid initial reallocs
     gy->buffer_capacity = 16;
@@ -5081,10 +5081,10 @@ static void _SituationInitGraveyard(_SituationVKGraveyard* gy) {
 /**
  * @brief [INTERNAL] Frees the CPU memory used by a graveyard's internal arrays.
  * @details This function only frees the containers (C arrays), not the Vulkan objects themselves.
- *          It assumes that `_SituationFlushGraveyard` has already been called to release the GPU resources.
+ *          It assumes that `_SitCore_FlushGraveyard` has already been called to release the GPU resources.
  * @param gy Pointer to the `_SituationVKGraveyard` struct to clean up.
  */
-static void _SituationCleanupGraveyard(_SituationVKGraveyard* gy) {
+static void _SitCore_CleanupGraveyard(_SituationVKGraveyard* gy) {
     // Ensure everything is flushed first (though device should be idle by now if called from CleanupVulkan)
     // Just free the arrays
     SIT_FREE(gy->buffers);
@@ -5109,7 +5109,7 @@ static void _SituationCleanupGraveyard(_SituationVKGraveyard* gy) {
  *          It must only be called when the GPU is confirmed to be finished with the frame (via fence wait).
  * @param frame_index The index of the frame whose graveyard should be flushed.
  */
-static void _SituationFlushGraveyard(uint32_t frame_index) {
+static void _SitCore_FlushGraveyard(uint32_t frame_index) {
     if (!sit_render.vk.graveyards) return;
     _SituationVKGraveyard* gy = &sit_render.vk.graveyards[frame_index];
 
@@ -5167,7 +5167,7 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
  * @param buffer The buffer handle to destroy.
  * @param allocation The VMA allocation handle associated with the buffer.
  */
-static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation) {
+static void _SitRender_DeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation) {
     if (buffer == VK_NULL_HANDLE) return;
     // The resource is added to the graveyard of the *current* frame.
     // It will be destroyed when this frame's fence is signaled in a future SituationAcquireFrameCommandBuffer call.
@@ -5191,7 +5191,7 @@ static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocati
  * @param view The image view handle (optional).
  * @param sampler The sampler handle (optional).
  */
-static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler) {
+static void _SitRender_DeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler) {
     if (image == VK_NULL_HANDLE && view == VK_NULL_HANDLE && sampler == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_render.vk.current_frame_index;
     _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
@@ -5216,7 +5216,7 @@ static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation,
  * @param set The descriptor set handle.
  * @param pool The descriptor pool it belongs to (or VK_NULL_HANDLE).
  */
-static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool) {
+static void _SitRender_DeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool) {
     if (set == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_render.vk.current_frame_index;
     _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
@@ -5236,7 +5236,7 @@ static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescripto
  * @param pipeline The pipeline handle.
  * @param layout The pipeline layout handle.
  */
-static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout) {
+static void _SitRender_DeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout) {
     if (pipeline == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_render.vk.current_frame_index;
     _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
@@ -5254,7 +5254,7 @@ static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout
  * @brief [INTERNAL] Schedules a Framebuffer for deferred destruction.
  * @param framebuffer The framebuffer handle.
  */
-static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
+static void _SitRender_DeferDestroyFramebuffer(VkFramebuffer framebuffer) {
     if (framebuffer == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_render.vk.current_frame_index;
     _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
@@ -5269,7 +5269,7 @@ static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer) {
  * @brief [INTERNAL] Schedules a Render Pass for deferred destruction.
  * @param render_pass The render pass handle.
  */
-static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass) {
+static void _SitRender_DeferDestroyRenderPass(VkRenderPass render_pass) {
     if (render_pass == VK_NULL_HANDLE) return;
     uint32_t gy_idx = sit_render.vk.current_frame_index;
     _SituationVKGraveyard* gy = &sit_render.vk.graveyards[gy_idx];
@@ -5295,7 +5295,7 @@ static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass) {
  * @param msg The null-terminated error message string to be set. If NULL, a default "Unknown error" message will be used.
  */
 // [Helper] Get Buffer Node by ID
-static _SituationBufferNode* _SitGetBufferNode(uint64_t id) {
+static _SituationBufferNode* _SitRender_GetBufferNode(uint64_t id) {
     if (!sit_render.all_buffers) return NULL;
     _SituationBufferNode* current = sit_render.all_buffers;
     while (current) {
@@ -5307,7 +5307,7 @@ static _SituationBufferNode* _SitGetBufferNode(uint64_t id) {
     return NULL;
 }
 
-static void _SituationSetError(const char* msg) {
+static void _SitCore_SetError(const char* msg) {
     // Safety check: Cannot record error if context doesn't exist
     if (!_sit_current_context) return;
 
@@ -5330,7 +5330,7 @@ static void _SituationSetError(const char* msg) {
 
 /**
  * @brief [INTERNAL] Sets the library's last error message from an error code and an optional detail string.
- * @details This internal helper translates a `SituationError` enum into a human-readable base message, appends a specific detail string if provided, and stores the final, formatted result in the global error message buffer via `_SituationSetError`.
+ * @details This internal helper translates a `SituationError` enum into a human-readable base message, appends a specific detail string if provided, and stores the final, formatted result in the global error message buffer via `_SitCore_SetError`.
  *
  * This function serves as the central switchboard for all error reporting in the library, ensuring consistent and descriptive messages.
  *
@@ -5338,7 +5338,7 @@ static void _SituationSetError(const char* msg) {
  * @param detail An optional, more specific string describing the context of the error (can be `NULL`).
  *
  * @note This function is for internal use only.
- * @see _SituationSetError(), SituationGetLastErrorMsg(), SituationError
+ * @see _SitCore_SetError(), SituationGetLastErrorMsg(), SituationError
  */
 static int _sit_trace_log_level = SIT_LOG_INFO;
 
@@ -5381,7 +5381,7 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...) {
     va_start(args, fmt);
     vsnprintf(_sit_err_buf, sizeof(_sit_err_buf), fmt, args);
     va_end(args);
-    _SituationSetErrorFromCode(code, _sit_err_buf);
+    _SitCore_SetErrorFromCode(code, _sit_err_buf);
     fprintf(stderr, "[Situation WARN] %s\n", _sit_err_buf);
 #else
     (void)code; (void)fmt;
@@ -5391,11 +5391,11 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...) {
 /**
  * @brief [INTERNAL] Sets the library's last error message from an error code and an optional detail string.
  * @details Translates a `SituationError` enum into a human-readable base message, appends details,
- *          and stores the result in the global error message buffer via `_SituationSetError`.
+ *          and stores the result in the global error message buffer via `_SitCore_SetError`.
  * @param err The `SituationError` code to translate.
  * @param detail An optional, more specific string describing the context of the error.
  */
-static SituationError _SituationSetErrorFromCode(SituationError err, const char* detail) {
+static SituationError _SitCore_SetErrorFromCode(SituationError err, const char* detail) {
     char buffer[SITUATION_MAX_ERROR_MSG_LEN];
     const char* base_msg = "Unknown Error";
 
@@ -5566,7 +5566,7 @@ static SituationError _SituationSetErrorFromCode(SituationError err, const char*
         strncpy(buffer, base_msg, sizeof(buffer) - 1);
     }
     buffer[sizeof(buffer) - 1] = '\0';
-    _SituationSetError(buffer);
+    _SitCore_SetError(buffer);
 }
 
 /**
@@ -5582,7 +5582,7 @@ static SituationError _SituationSetErrorFromCode(SituationError err, const char*
  * @return A null-terminated C string containing the last error message.
  * @return NULL if the library is not initialized, if no error has occurred, or if memory allocation for the copy fails.
  *
- * @see SituationFreeString(), _SituationSetError()
+ * @see SituationFreeString(), _SitCore_SetError()
  */
 SITAPI SituationError SituationGetLastErrorMsg(char** out_msg) {
     if (out_msg) *out_msg = NULL;
@@ -5627,7 +5627,7 @@ SITAPI SituationError SituationGetLastErrorMsg(char** out_msg) {
     return SITUATION_SUCCESS;
 }
 
-// --- Updated/Added Documentation Block for _SituationGLFWErrorCallback ---
+// --- Updated/Added Documentation Block for _SitRender_GLFWErrorCallback ---
 /**
  * @brief [INTERNAL] GLFW error callback function.
  *
@@ -5639,11 +5639,11 @@ SITAPI SituationError SituationGetLastErrorMsg(char** out_msg) {
  *
  * @note This function is for internal use by the Situation library and should not be called directly by user code.
  * @note This function modifies the global state `sit_gs.last_error_msg`.
- * @warning This function might be called asynchronously from within other GLFW functions (e.g., during `glfwPollEvents`). Therefore, it should be thread-safe. Using `_SituationSetError` (which likely just writes to `sit_gs.last_error_msg`) and `fprintf` to `stderr` is generally acceptable for this.
+ * @warning This function might be called asynchronously from within other GLFW functions (e.g., during `glfwPollEvents`). Therefore, it should be thread-safe. Using `_SitCore_SetError` (which likely just writes to `sit_gs.last_error_msg`) and `fprintf` to `stderr` is generally acceptable for this.
  *
- * @see SituationInit(), glfwSetErrorCallback(), _SituationSetError()
+ * @see SituationInit(), glfwSetErrorCallback(), _SitCore_SetError()
  */
-static void _SituationGLFWErrorCallback(int error, const char* description) {
+static void _SitRender_GLFWErrorCallback(int error, const char* description) {
     // --- 1. Input Validation ---
     // While GLFW should provide valid inputs, checking is good practice.
     if (!description) {
@@ -5662,7 +5662,7 @@ static void _SituationGLFWErrorCallback(int error, const char* description) {
     int written = snprintf(
         err_buf,
         sizeof(err_buf),
-        "_SituationGLFWErrorCallback: GLFW Error (%d): %s",
+        "_SitRender_GLFWErrorCallback: GLFW Error (%d): %s",
         error,
         description
     );
@@ -5675,7 +5675,7 @@ static void _SituationGLFWErrorCallback(int error, const char* description) {
         snprintf(
             err_buf,
             sizeof(err_buf),
-            "_SituationGLFWErrorCallback: GLFW Error (%d) - Error formatting failed or message too long. Original description started with: %.50s...",
+            "_SitRender_GLFWErrorCallback: GLFW Error (%d) - Error formatting failed or message too long. Original description started with: %.50s...",
             error,
             description // Use first 50 chars of description as a hint
         );
@@ -5684,8 +5684,8 @@ static void _SituationGLFWErrorCallback(int error, const char* description) {
     // --- 4. Store the Error in Global State ---
     // Update the library's global error state with the formatted message.
     // This makes the error retrievable via `SituationGetLastErrorMsg()`.
-    // _SituationSetError simply copies the string into sit_gs.last_error_msg.
-    _SituationSetError(err_buf);
+    // _SitCore_SetError simply copies the string into sit_gs.last_error_msg.
+    _SitCore_SetError(err_buf);
 
     // --- 5. Debug Output ---
     // Print the error message immediately to stderr for visibility during
@@ -5712,7 +5712,7 @@ static void _SituationGLFWErrorCallback(int error, const char* description) {
  *
  * @see SituationSetFileDropCallback(), SituationIsFileDropped(), SituationLoadDroppedFiles()
  */
-static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const char** paths) {
+static void _SitRender_GLFWFileDropCallback(GLFWwindow* window, int count, const char** paths) {
     (void)window;
 
     // --- First, handle the user-defined callback, if it exists ---
@@ -5740,7 +5740,7 @@ static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const 
         }
 
         for (int i = 0; i < count; i++) {
-            sit_gs.dropped_file_paths[i] = _sit_strdup(paths[i]);
+            sit_gs.dropped_file_paths[i] = _SitUtils_Strdup(paths[i]);
             if (sit_gs.dropped_file_paths[i] == NULL) {
                 // Allocation failed for one string, clean up what we have
                 for (int j = 0; j < i; j++) SIT_FREE(sit_gs.dropped_file_paths[j]);
@@ -5782,7 +5782,7 @@ static void _SituationGLFWFileDropCallback(GLFWwindow* window, int count, const 
  *
  * @see SituationPollInputEvents(), SituationSetKeyCallback()
  */
-static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+static void _SitRender_GLFWKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
     (void)window;
     if (key >= 0 && key <= GLFW_KEY_LAST) {
         if (action == GLFW_PRESS) {
@@ -5832,7 +5832,7 @@ static void _SituationGLFWKeyCallback(GLFWwindow* window, int key, int scancode,
  *
  * @see SituationGetCharPressed()
  */
-static void _SituationGLFWCharCallback(GLFWwindow* window, unsigned int codepoint) {
+static void _SitRender_GLFWCharCallback(GLFWwindow* window, unsigned int codepoint) {
     (void)window; // Unused parameter
 
 	ma_mutex_lock(&sit_input.keyboard.event_queue_mutex);
@@ -5858,7 +5858,7 @@ static void _SituationGLFWCharCallback(GLFWwindow* window, unsigned int codepoin
  *
  * @see SituationSetFocusCallback(), SituationApplyCurrentProfileWindowState()
  */
-static void _SituationGLFWWindowFocusCallback(GLFWwindow* window, int focused) {
+static void _SitRender_GLFWWindowFocusCallback(GLFWwindow* window, int focused) {
     (void)window; // Unused
     bool has_focus = (focused == GLFW_TRUE);
     if (has_focus != sit_gs.current_window_focus_state) {
@@ -5883,7 +5883,7 @@ static void _SituationGLFWWindowFocusCallback(GLFWwindow* window, int focused) {
  *
  * @see SituationPauseApp(), SituationResumeApp()
  */
-static void _SituationGLFWWindowIconifyCallback(GLFWwindow* window, int iconified) {
+static void _SitRender_GLFWWindowIconifyCallback(GLFWwindow* window, int iconified) {
     (void)window; // Unused
     bool is_minimized_now = (iconified == GLFW_TRUE);
     if (is_minimized_now && !sit_gs.is_app_internally_paused && !sit_gs.was_minimized_last_frame) {
@@ -5913,9 +5913,9 @@ static void _SituationGLFWWindowIconifyCallback(GLFWwindow* window, int iconifie
  *
  * @note This function is for internal use only.
  *
- * @see SituationSetResizeCallback(), _SituationVulkanRecreateSwapchain()
+ * @see SituationSetResizeCallback(), _SitRender_VulkanRecreateSwapchain()
  */
-static void _SituationGLFWFramebufferSizeCallback(GLFWwindow* window, int width, int height) {
+static void _SitRender_GLFWFramebufferSizeCallback(GLFWwindow* window, int width, int height) {
     (void)window;
     if (width == 0 || height == 0) return; // Window is minimized, do nothing for now
 
@@ -5974,7 +5974,7 @@ static void _SituationGLFWFramebufferSizeCallback(GLFWwindow* window, int width,
  * @param action The button action (GLFW_PRESS or GLFW_RELEASE).
  * @param mods Bit field describing which modifier keys were held down.
  */
-static void _SituationGLFWMouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+static void _SitRender_GLFWMouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
     (void)window; // Unused parameter
 
     // --- State Update (Thread-Safe) ---
@@ -6018,7 +6018,7 @@ static void _SituationGLFWMouseButtonCallback(GLFWwindow* window, int button, in
  * @param xpos The new cursor x-coordinate, relative to the left edge of the content area.
  * @param ypos The new cursor y-coordinate, relative to the top edge of the content area.
  */
-static void _SituationGLFWCursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
+static void _SitRender_GLFWCursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
     (void)window; // Unused parameter
 
     // --- State Update (Thread-Safe) ---
@@ -6047,7 +6047,7 @@ static void _SituationGLFWCursorPosCallback(GLFWwindow* window, double xpos, dou
  * @param xoffset The scroll offset along the x-axis.
  * @param yoffset The scroll offset along the y-axis.
  */
-static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
+static void _SitRender_GLFWScrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
     (void)window; // Unused parameter
 
     // --- State Update (Thread-Safe) ---
@@ -6086,9 +6086,9 @@ static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, dou
  * @note This is not a full context save (which would be prohibitively slow). It only backs up
  *       state that `SituationRenderVirtualDisplays` is known to modify.
  *
- * @see _SitGLRestoreState(), SituationRenderVirtualDisplays()
+ * @see _SitRender_GLRestoreState(), SituationRenderVirtualDisplays()
  */
-static void _SitGLBackupState(_SitGLStateBackup* s) {
+static void _SitRender_GLBackupState(_SitGLStateBackup* s) {
     // [PERF] Copy from Shadow State, avoid driver query (glGet)
     s->program = sit_render.gl.current_program_id;
     s->vao = sit_render.gl.current_vao_id;
@@ -6112,7 +6112,7 @@ static void _SitGLBackupState(_SitGLStateBackup* s) {
 /**
  * @brief [INTERNAL] Restores OpenGL state from a backup structure.
  *
- * @details Re-applies the state values captured by `_SitGLBackupState`. This ensures that after
+ * @details Re-applies the state values captured by `_SitRender_GLBackupState`. This ensures that after
  *          internal rendering operations complete, the OpenGL context is returned to the exact state
  *          the user left it in, preventing side effects (like changed blend modes or unbound shaders)
  *          from leaking into the main application render loop.
@@ -6122,9 +6122,9 @@ static void _SitGLBackupState(_SitGLStateBackup* s) {
  * @warning The order of restoration is important. The Active Texture Unit is restored last
  *          to ensure subsequent user commands affect the expected unit.
  *
- * @see _SitGLBackupState()
+ * @see _SitRender_GLBackupState()
  */
-static void _SitGLRestoreState(_SitGLStateBackup* s) {
+static void _SitRender_GLRestoreState(_SitGLStateBackup* s) {
     glUseProgram(s->program);
     glBindVertexArray(s->vao);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s->fbo);
@@ -6142,7 +6142,7 @@ static void _SitGLRestoreState(_SitGLStateBackup* s) {
  * @brief [INTERNAL] Helper to force a re-upload of state next time it's requested.
  * @details [2.3.14A] Invalidates the internal shadow state tracking to recover from external GL modifications (e.g. ImGui).
  */
-static void _SitGLInvalidateShadowState(void) {
+static void _SitRender_GLInvalidateShadowState(void) {
     sit_render.gl.current_program_id = 0;
     sit_render.gl.current_vao_id = 0;
     sit_render.gl.current_fbo_id = 0;
@@ -6158,7 +6158,7 @@ static void _SitGLInvalidateShadowState(void) {
 }
 
 // [Phase 2.5]
-static GLuint _SitGLGetCachedVAO(SituationMesh mesh) {
+static GLuint _SitRender_GLGetCachedVAO(SituationMesh mesh) {
     if (mesh.id == 0) return 0;
 
     // 1. Check Cache
@@ -6223,7 +6223,7 @@ static GLuint _SitGLGetCachedVAO(SituationMesh mesh) {
     return vao;
 }
 
-static void _SitGLDeferDestroyBuffer(GLuint id) {
+static void _SitRender_GLDeferDestroyBuffer(GLuint id) {
     if (id == 0) return;
     ma_mutex_lock(&sit_render.gl.graveyard.lock);
     if (sit_render.gl.graveyard.buffer_count >= sit_render.gl.graveyard.buffer_capacity) {
@@ -6235,7 +6235,7 @@ static void _SitGLDeferDestroyBuffer(GLuint id) {
     ma_mutex_unlock(&sit_render.gl.graveyard.lock);
 }
 
-static void _SitGLDeferDestroyTexture(GLuint id) {
+static void _SitRender_GLDeferDestroyTexture(GLuint id) {
     if (id == 0) return;
     ma_mutex_lock(&sit_render.gl.graveyard.lock);
     if (sit_render.gl.graveyard.texture_count >= sit_render.gl.graveyard.texture_capacity) {
@@ -6247,7 +6247,7 @@ static void _SitGLDeferDestroyTexture(GLuint id) {
     ma_mutex_unlock(&sit_render.gl.graveyard.lock);
 }
 
-static void _SitGLDeferCleanMeshVAO(uint64_t mesh_id) {
+static void _SitRender_GLDeferCleanMeshVAO(uint64_t mesh_id) {
     if (mesh_id == 0) return;
     ma_mutex_lock(&sit_render.gl.graveyard.lock);
     if (sit_render.gl.graveyard.mesh_count >= sit_render.gl.graveyard.mesh_capacity) {
@@ -6259,7 +6259,7 @@ static void _SitGLDeferCleanMeshVAO(uint64_t mesh_id) {
     ma_mutex_unlock(&sit_render.gl.graveyard.lock);
 }
 
-static void _SitGLFlushGraveyard(void) {
+static void _SitRender_GLFlushGraveyard(void) {
     // 1. Extract queues under lock
     ma_mutex_lock(&sit_render.gl.graveyard.lock);
 
@@ -6293,7 +6293,7 @@ static void _SitGLFlushGraveyard(void) {
         if (new_texs) SIT_FREE(new_texs);
         if (new_meshes) SIT_FREE(new_meshes);
 
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate new graveyard queues during flush.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate new graveyard queues during flush.");
         ma_mutex_unlock(&sit_render.gl.graveyard.lock);
         return;
     }
@@ -6351,7 +6351,7 @@ static void _SitGLFlushGraveyard(void) {
  * @brief [INTERNAL] Checks for and logs any pending OpenGL errors.
  *
  * @details This helper function polls the OpenGL error state using `glGetError()` in a loop, processing each error individually until no more errors are reported (`GL_NO_ERROR` is returned).
- *          For each error found, it formats a message including the provided `location` string and the `GLenum` error code, then stores this message in the library's global error state using `_SituationSetErrorFromCode`.
+ *          For each error found, it formats a message including the provided `location` string and the `GLenum` error code, then stores this message in the library's global error state using `_SitCore_SetErrorFromCode`.
  *          Unlike `_SituationLogGLError`, this function does *not* automatically print errors to `stderr`. It is designed for cases where you want to check for errors and record them silently, without immediate console output.
  *          It's also typically used with a fixed location string rather than dynamic file/line information.
  *
@@ -6364,9 +6364,9 @@ static void _SitGLFlushGraveyard(void) {
  *          If multiple errors are pending, only the details of the last one checked in the loop will remain in `sit_gs.last_error_msg` after the function completes.
  * @warning Unlike `_SituationLogGLError`, this function does *not* print to `stderr`, even in debug builds.
  *
- * @see _SituationLogGLError(), _SituationSetErrorFromCode(), SituationGetLastErrorMsg()
+ * @see _SituationLogGLError(), _SitCore_SetErrorFromCode(), SituationGetLastErrorMsg()
  */
-static void _SituationCheckGLError(const char* location) {
+static void _SitRender_CheckGLError(const char* location) {
     // --- 1. Input Validation ---
     // While internal, checking for NULL location prevents potential crashes or garbage data if called incorrectly.
     if (!location) {
@@ -6386,7 +6386,7 @@ static void _SituationCheckGLError(const char* location) {
         int written = snprintf(
             detail,
             sizeof(detail),
-            "_SituationCheckGLError: OpenGL Error at '%s': 0x%X",
+            "_SitRender_CheckGLError: OpenGL Error at '%s': 0x%X",
             location,
             (unsigned int)err // Cast to unsigned int for consistent formatting
         );
@@ -6398,7 +6398,7 @@ static void _SituationCheckGLError(const char* location) {
             snprintf(
                 detail,
                 sizeof(detail),
-                "_SituationCheckGLError: Error formatting failed for check at '%s', original code was 0x%X",
+                "_SitRender_CheckGLError: Error formatting failed for check at '%s', original code was 0x%X",
                 location,
                 (unsigned int)err
             );
@@ -6407,7 +6407,7 @@ static void _SituationCheckGLError(const char* location) {
         // --- 5. Store Error in Global State ---
         // Update the library's global error state with the detailed message.
         // This makes the error retrievable via SituationGetLastErrorMsg().
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, detail);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, detail);
 
         // Note: Unlike _SituationLogGLError, there is no fprintf to stderr here.
         // The error is only stored in the global state.
@@ -6420,7 +6420,7 @@ static void _SituationCheckGLError(const char* location) {
  * @brief [INTERNAL] Logs OpenGL errors detected by `glGetError`.
  *
  * @details This helper function is the core implementation used by the `SIT_CHECK_GL_ERROR` macro. It polls the OpenGL error state using `glGetError()` in a loop, processing each error individually until no more errors are reported (`GL_NO_ERROR` is returned).
- *          For each error found, it translates the `GLenum` error code into a human-readable string, formats a detailed message including the source file and line number where the check occurred, and stores this message in the library's global error state using `_SituationSetErrorFromCode`.
+ *          For each error found, it translates the `GLenum` error code into a human-readable string, formats a detailed message including the source file and line number where the check occurred, and stores this message in the library's global error state using `_SitCore_SetErrorFromCode`.
  *          This ensures that `SituationGetLastErrorMsg()` will return the most recent OpenGL error details.
  *          In debug builds (when `NDEBUG` is not defined), it also prints the error message to `stderr`. This immediate feedback is invaluable during development and debugging.
  *
@@ -6434,7 +6434,7 @@ static void _SituationCheckGLError(const char* location) {
  * @warning This function overwrites the library's last error message with the *most recently processed* OpenGL error from the sequence of errors.
  *          If multiple errors are pending, only the details of the last one checked in the loop will remain in `sit_gs.last_error_msg` after the function completes. However, all errors will have been logged to `stderr` in debug builds.
  *
- * @see SIT_CHECK_GL_ERROR(), _SituationSetErrorFromCode(), SituationGetLastErrorMsg()
+ * @see SIT_CHECK_GL_ERROR(), _SitCore_SetErrorFromCode(), SituationGetLastErrorMsg()
  */
 SITAPI void _SituationLogGLError(const char* file, int line) {
     // --- 1. Input Validation ---
@@ -6495,7 +6495,7 @@ SITAPI void _SituationLogGLError(const char* file, int line) {
         // --- 6. Store Error in Global State ---
         // Update the library's global error state with the detailed message.
         // This makes the error retrievable via SituationGetLastErrorMsg().
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, detail);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, detail);
 
         // --- 7. Debug Output ---
         // In debug builds, print the error immediately to stderr for visibility.
@@ -6525,9 +6525,9 @@ SITAPI void _SituationLogGLError(const char* file, int line) {
  * @note Each `_SituationCleanup*` function called is designed to check if its corresponding component was initialized before attempting to destroy it, making this "best-effort" cleanup safe.
  * @warning This function modifies the global state `sit_gs`. After it runs, the library is considered uninitialized.
  *
- * @see SituationInit(), _SituationCleanupSubsystems(), _SituationCleanupRenderer(), _SituationCleanupPlatform()
+ * @see SituationInit(), _SitCore_CleanupSubsystems(), _SitRender_CleanupRenderer(), _SitCore_CleanupPlatform()
  */
-static void _SituationFullCleanupOnError(void) {
+static void _SitCore_FullCleanupOnError(void) {
     // --- 1. Synchronize GPU ---
     // Before attempting to destroy any graphics resources, it's prudent to wait for the GPU to finish any operations that might be using them.
     // This helps prevent validation errors or crashes during cleanup, especially if the error occurred partway through renderer initialization.
@@ -6568,20 +6568,20 @@ static void _SituationFullCleanupOnError(void) {
     // --- 2a. Cleanup Subsystems ---
     // This cleans up audio, input, timer systems, etc.
     // It should be safe to call even if subsystem init failed partway through.
-    _SituationCleanupSubsystems();
+    _SitCore_CleanupSubsystems();
 
     // --- 2b. Cleanup Renderer ---
     // This cleans up all graphics API specific resources (Vulkan instance/device/swapchain, OpenGL context/states, internal pipelines, etc.).
     // It must be robust enough to handle partial initialization (e.g., if Vulkan device creation failed but instance was created).
-    _SituationCleanupRenderer();
+    _SitRender_CleanupRenderer();
 
     // --- 2c. Cleanup Platform ---
     // This cleans up the lowest level components: GLFW window, GLFW itself, any platform-specific initializations (like COM on Windows).
     // This should be the final step.
-    _SituationCleanupPlatform();
+    _SitCore_CleanupPlatform();
 
     // --- 3. Post-Cleanup State (Implicit) ---
-    // The individual cleanup functions (_SituationCleanupPlatform in particular) should set `sit_gs.is_initialized = false;` and potentially clear the error state.
+    // The individual cleanup functions (_SitCore_CleanupPlatform in particular) should set `sit_gs.is_initialized = false;` and potentially clear the error state.
     // This function itself doesn't need to modify `sit_gs` further.
     // The library is now in an uninitialized state, ready (hopefully) for a fresh `SituationInit` attempt or safe shutdown.
 }
@@ -6603,7 +6603,7 @@ SITAPI const char* SituationGetVersionString(void) {
 }
 
 #if !defined(__STDC_NO_THREADS__)
-static bool _SituationInitRenderThread(const SituationInitInfo* info) {
+static bool _SitRender_InitRenderThread(const SituationInitInfo* info) {
     #if defined(SITUATION_ENABLE_RENDER_THREAD)
     if (info->render_thread_count == 0) return true;
 
@@ -6627,8 +6627,8 @@ static bool _SituationInitRenderThread(const SituationInitInfo* info) {
     }
     #endif
 
-    if (thrd_create(&sit_render.render_thread, _SituationRenderThreadEntry, NULL) != thrd_success) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Failed to spawn render thread");
+    if (thrd_create(&sit_render.render_thread, _SitRender_RenderThreadEntry, NULL) != thrd_success) {
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Failed to spawn render thread");
         #if defined(SITUATION_USE_OPENGL)
         if (sit_gs.sit_glfw_window) glfwMakeContextCurrent(sit_gs.sit_glfw_window); // Reacquire on fail
         #endif
@@ -6638,7 +6638,7 @@ static bool _SituationInitRenderThread(const SituationInitInfo* info) {
     // Note: Main thread must NOT call GL/VK cmds post-handover. Use render queue for all GPU work.
 
     // For OpenGL, Main thread typically needs a shared context for asset loading.
-    // _SituationInitOpenGL created 'loader_window' for this.
+    // _SitRender_InitOpenGL created 'loader_window' for this.
     // We should make THAT current now if it exists.
     #if defined(SITUATION_USE_OPENGL)
     if (sit_render.gl.loader_window) {
@@ -6652,7 +6652,7 @@ static bool _SituationInitRenderThread(const SituationInitInfo* info) {
     #endif
 }
 
-static void _SituationDestroyRenderThread(void) {
+static void _SitRender_DestroyRenderThread(void) {
     #if defined(SITUATION_ENABLE_RENDER_THREAD)
     if (!sit_render.enabled || !atomic_load(&sit_render.thread_active)) return;
 
@@ -6686,12 +6686,12 @@ static void _SituationDestroyRenderThread(void) {
     }
 
     if (timed_out) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT, "Render thread join timeout—aborted.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT, "Render thread join timeout—aborted.");
         // Proceed to join anyway to avoid leaking a running thread, but the error is logged.
     }
 
     if (thrd_join(sit_render.render_thread, NULL) != thrd_success) {
-         _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Render thread join failed.");
+         _SitCore_SetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Render thread join failed.");
     }
 
     // Fence for cleanup vis
@@ -6726,7 +6726,7 @@ static void _SituationDestroyRenderThread(void) {
  * 3.  **Renderer:** Initializes the selected graphics backend (OpenGL or Vulkan), including contexts/devices, swapchains, internal pipelines, etc.
  * 4.  **Subsystems:** Initializes audio, input handling, timer system, filesystem utilities, and other core functionalities.
  *
- * If any step in this sequence fails, the function triggers a comprehensive cleanup process (`_SituationFullCleanupOnError`) to ensure that no resources
+ * If any step in this sequence fails, the function triggers a comprehensive cleanup process (`_SitCore_FullCleanupOnError`) to ensure that no resources
  * are leaked and the library is left in a clean, uninitialized state.
  *
  * @param argc The number of command-line arguments, including the program name.
@@ -6754,14 +6754,14 @@ static void _SituationDestroyRenderThread(void) {
  */
 
 // [v2.3.24b] Integration Zenith: Initialization Validation
-static bool _SituationValidateRenderCaps(void) {
+static bool _SitRender_ValidateRenderCaps(void) {
 #if defined(SITUATION_USE_VULKAN)
     if (sit_render.vk.device) {
         // Validate Semaphore Creation (Critical for Queue Sync)
         VkSemaphoreCreateInfo sema_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         VkSemaphore sema = VK_NULL_HANDLE;
         if (vkCreateSemaphore(sit_render.vk.device, &sema_info, NULL, &sema) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Validation: Semaphore creation failed.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Validation: Semaphore creation failed.");
             return false;
         }
         vkDestroySemaphore(sit_render.vk.device, sema, NULL);
@@ -6780,9 +6780,9 @@ static bool _SituationValidateRenderCaps(void) {
 
 SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info) {
 #if !defined(SITUATION_USE_VULKAN) && !defined(SITUATION_USE_OPENGL)
-	// We can't use _SituationSetErrorFromCode yet because context might not exist.
+	// We can't use _SitCore_SetErrorFromCode yet because context might not exist.
     // But since this is a compile-time check failure (logic-wise), we can just return.
-	// _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "No graphics backend defined...");
+	// _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "No graphics backend defined...");
     // Ideally we'd log to stderr here.
     fprintf(stderr, "SituationInit Error: No graphics backend defined (SITUATION_USE_VULKAN/OPENGL).\n");
 	return SITUATION_ERROR_INIT_FAILED;
@@ -6799,7 +6799,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     if (_sit_current_context != NULL) {
         // If context exists, check if it claims to be initialized
         if (sit_gs.is_initialized) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_ALREADY_INITIALIZED, "SituationInit: Library is already initialized.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_ALREADY_INITIALIZED, "SituationInit: Library is already initialized.");
              return SITUATION_ERROR_ALREADY_INITIALIZED;
         }
         // If context exists but is_initialized is false, it might be a dirty state or a re-init attempt.
@@ -6810,7 +6810,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     if (!init_info) {
         // Can't set error code if context doesn't exist yet!
         if (_sit_current_context) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationInit: init_info cannot be NULL.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationInit: init_info cannot be NULL.");
         }
         return SITUATION_ERROR_INVALID_PARAM;
     }
@@ -6833,48 +6833,48 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     // They are common to both OpenGL and Vulkan backends.
 
     // 2a. Initialize platform-specific components (GLFW, COM on Windows, etc.).
-    SituationError err = _SituationInitPlatform();
+    SituationError err = _SitCore_InitPlatform();
     if (err != SITUATION_SUCCESS) {
         // Platform initialization failed. No major resources have been allocated yet
-        // by the library itself (GLFW might have allocated some internal stuff, but _SituationInitPlatform should clean that up on failure).
+        // by the library itself (GLFW might have allocated some internal stuff, but _SitCore_InitPlatform should clean that up on failure).
         // Therefore, a full cleanup is not strictly necessary here, but calling it for consistency and to ensure any partial platform setup is undone is good.
         // However, the previous version comment said "No need to call FullCleanup...", which is also a valid viewpoint for this very early failure.
         // Let's stick to the original logic for this specific early failure point, but document it clearly.
-        // _SituationFullCleanupOnError(); // Not needed for platform-only failure
+        // _SitCore_FullCleanupOnError(); // Not needed for platform-only failure
         return err; // Return the specific error from platform init.
     }
 
     // 2b. Create the main application window using GLFW.
-    err = _SituationInitWindow(init_info);
+    err = _SitPlatform_InitWindow(init_info);
     if (err != SITUATION_SUCCESS) {
         // Window creation failed. Platform was initialized, so cleanup is needed.
-        _SituationFullCleanupOnError(); // Clean up platform (GLFW)
+        _SitCore_FullCleanupOnError(); // Clean up platform (GLFW)
         return err; // Return the specific error from window init.
     }
 
     // --- 3. INITIALIZE THE CHOSEN RENDERER ---
     // Dispatch to the backend-specific initialization (OpenGL or Vulkan).
     // This is a major step involving context/device creation, swapchains, etc.
-    err = _SituationInitRenderer(init_info);
+    err = _SitRender_InitRenderer(init_info);
     if (err != SITUATION_SUCCESS) {
         // Renderer initialization failed. Platform and Window were initialized.
-        _SituationFullCleanupOnError(); // Clean up platform, window, and any partial renderer state
+        _SitCore_FullCleanupOnError(); // Clean up platform, window, and any partial renderer state
         return err; // Return the specific error from renderer init.
     }
 
     // [v2.3.24b] Validate Capabilities
-    if (!_SituationValidateRenderCaps()) {
-        _SituationFullCleanupOnError();
+    if (!_SitRender_ValidateRenderCaps()) {
+        _SitCore_FullCleanupOnError();
         return SITUATION_ERROR_INIT_FAILED;
     }
 
     // --- 4. INITIALIZE OTHER LIBRARY SUBSYSTEMS ---
     // Initialize audio, input, timers, filesystem utils, etc.
     // These often depend on the window and renderer being available.
-    err = _SituationInitSubsystems(init_info);
+    err = _SitCore_InitSubsystems(init_info);
     if (err != SITUATION_SUCCESS) {
         // Subsystem initialization failed. Platform, Window, and Renderer were initialized.
-        _SituationFullCleanupOnError(); // Clean up everything initialized so far
+        _SitCore_FullCleanupOnError(); // Clean up everything initialized so far
         return err; // Return the specific error from subsystems init.
     }
 
@@ -6883,7 +6883,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     // This happens only after all preceding steps have succeeded.
 
     // Cache information about physical displays connected to the system.
-    _SituationCachePhysicalDisplays(); // Result checked internally/during queries
+    _SitPlatform_CachePhysicalDisplays(); // Result checked internally/during queries
 
     // Determine the initial focus and minimization state of the created window.
     // This sets up the initial window state profiles.
@@ -6902,8 +6902,8 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     // --- 5.5 Render Thread Initialization ---
     // [v2.3.21] Initialize render thread if requested. This MUST happen after renderer init.
     #if !defined(__STDC_NO_THREADS__)
-    if (!_SituationInitRenderThread(init_info)) {
-        _SituationFullCleanupOnError();
+    if (!_SitRender_InitRenderThread(init_info)) {
+        _SitCore_FullCleanupOnError();
         return SITUATION_ERROR_THREAD_CREATION_FAILED;
     }
     #endif
@@ -6913,7 +6913,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     atomic_store(&sit_gs.is_initialized, true);
 
     // Clear any lingering error message and set a success indicator.
-    _SituationSetError("SituationInit: No error. Initialization successful.");
+    _SitCore_SetError("SituationInit: No error. Initialization successful.");
 
     // --- 7. Return Success ---
     return SITUATION_SUCCESS;
@@ -6929,7 +6929,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
  * On Windows, this includes initializing the Component Object Model (COM) library, which is necessary for certain APIs (like file system operations
  * using `SHGetKnownFolderPath`).
  *
- * The function also sets up the GLFW error callback (`_SituationGLFWErrorCallback`) to capture and report any errors originating
+ * The function also sets up the GLFW error callback (`_SitRender_GLFWErrorCallback`) to capture and report any errors originating
  * from GLFW during the initialization process or later library operations.
  *
  * @return SITUATION_SUCCESS on successful initialization of all required platform components.
@@ -6941,9 +6941,9 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
  * @note If this function fails, it attempts to undo any partial initializations it performed (e.g., calling `CoUninitialize` on Windows if COM was initialized).
  * @warning This function is for internal use by `SituationInit` and should not be called directly by user code.
  *
- * @see SituationInit(), _SituationGLFWErrorCallback(), _SituationCleanupPlatform(), glfwInit(), glfwSetErrorCallback()
+ * @see SituationInit(), _SitRender_GLFWErrorCallback(), _SitCore_CleanupPlatform(), glfwInit(), glfwSetErrorCallback()
  */
-static SituationError _SituationInitPlatform(void) {
+static SituationError _SitCore_InitPlatform(void) {
     // --- 1. Platform-Specific Initializations ---
 
 #if defined(_WIN32)
@@ -6991,9 +6991,9 @@ static SituationError _SituationInitPlatform(void) {
         } else {
             // COM initialization failed with an unexpected error code.
             // This is a critical failure for Windows platform setup.
-            _SituationSetErrorFromCode(
+            _SitCore_SetErrorFromCode(
                 SITUATION_ERROR_COM_FAILED,
-                "_SituationInitPlatform: CoInitializeEx failed unexpectedly."
+                "_SitCore_InitPlatform: CoInitializeEx failed unexpectedly."
             );
             // No cleanup needed for COM itself, as it failed to initialize.
             // Proceed to return the error.
@@ -7005,15 +7005,15 @@ static SituationError _SituationInitPlatform(void) {
     // --- 2. Initialize GLFW ---
     // Set the error callback *before* calling glfwInit.
     // This ensures that any errors occurring during glfwInit (or later GLFW calls) are captured and reported via our custom callback function.
-    glfwSetErrorCallback(_SituationGLFWErrorCallback);
+    glfwSetErrorCallback(_SitRender_GLFWErrorCallback);
 
     // Attempt to initialize the GLFW library.
     if (!glfwInit()) {
         // glfwInit failed. This is a critical failure for window and input management.
-        // A more detailed error message should have been captured by _SituationGLFWErrorCallback and stored in sit_gs.last_error_msg.
-        _SituationSetErrorFromCode(
+        // A more detailed error message should have been captured by _SitRender_GLFWErrorCallback and stored in sit_gs.last_error_msg.
+        _SitCore_SetErrorFromCode(
             SITUATION_ERROR_GLFW_FAILED,
-            "_SituationInitPlatform: glfwInit failed. Check previous GLFW error message or system configuration."
+            "_SitCore_InitPlatform: glfwInit failed. Check previous GLFW error message or system configuration."
         );
 
         // --- 3. Cleanup Partial Initializations ---
@@ -7033,7 +7033,7 @@ static SituationError _SituationInitPlatform(void) {
 
     // --- 5. Success ---
     // If we reach here, both platform-specific initializations (COM on Windows) and GLFW initialization were successful.
-    // The next step in the SituationInit sequence is typically _SituationInitWindow.
+    // The next step in the SituationInit sequence is typically _SitPlatform_InitWindow.
     return SITUATION_SUCCESS;
 }
 
@@ -7050,22 +7050,22 @@ static SituationError _SituationInitPlatform(void) {
  * @return SITUATION_ERROR_GLFW_FAILED if `glfwCreateWindow` fails to create the window. This can happen due to invalid dimensions, inability
  *         to find a suitable framebuffer configuration, or OS-level window creation failures. A specific error message is set.
  *
- * @note This function must be called after `_SituationInitPlatform` (which initializes GLFW) but before renderer-specific initialization.
+ * @note This function must be called after `_SitCore_InitPlatform` (which initializes GLFW) but before renderer-specific initialization.
  * @note The created `GLFWwindow` handle is stored in `sit_gs.sit_glfw_window`.
  * @note Window state flags from `init_info` are stored in `sit_gs.active_profile_window_flags` and
  *       `sit_gs.inactive_profile_window_flags` for later use by the window state management system.
  * @warning This function relies on GLFW being successfully initialized.
  *          It also assumes that the graphics backend has been chosen (via `SITUATION_USE_OPENGL` or `SITUATION_USE_VULKAN`) so that the correct window hints can be set.
  *
- * @see _SituationInitPlatform(), _SituationInitRenderer(), SituationInitInfo, SituationInit()
+ * @see _SitCore_InitPlatform(), _SitRender_InitRenderer(), SituationInitInfo, SituationInit()
  */
-static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
+static SituationError _SitPlatform_InitWindow(const SituationInitInfo* init_info) {
     // --- 1. Input Validation ---
     // Check if the required initialization info struct is provided.
     if (!init_info) {
-        _SituationSetErrorFromCode(
+        _SitCore_SetErrorFromCode(
             SITUATION_ERROR_INVALID_PARAM,
-            "_SituationInitWindow: init_info cannot be NULL."
+            "_SitPlatform_InitWindow: init_info cannot be NULL."
         );
         return SITUATION_ERROR_INVALID_PARAM;
     }
@@ -7152,10 +7152,10 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
         // glfwCreateWindow failed. This is a critical error.
         // Common reasons include invalid dimensions, unsupported pixel formats,
         // or OS-level failures (e.g., too many windows, permission denied).
-        // GLFW's error callback (_SituationGLFWErrorCallback) should have captured a more detailed error message from GLFW itself.
-        _SituationSetErrorFromCode(
+        // GLFW's error callback (_SitRender_GLFWErrorCallback) should have captured a more detailed error message from GLFW itself.
+        _SitCore_SetErrorFromCode(
             SITUATION_ERROR_WINDOW_CREATION_FAILED,
-            "_SituationInitWindow: glfwCreateWindow failed. Check previous GLFW error message or window parameters (size, title)."
+            "_SitPlatform_InitWindow: glfwCreateWindow failed. Check previous GLFW error message or window parameters (size, title)."
         );
         // Ensure the global window handle is explicitly NULL on failure.
         sit_gs.sit_glfw_window = NULL;
@@ -7172,7 +7172,7 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
     // --- 8. Success ---
     // If we reach here, the GLFW window was created successfully.
     // The handle is stored in sit_gs.sit_glfw_window.
-    // The next step in initialization will typically be renderer setup (_SituationInitRenderer) followed by subsystem initialization (_SituationInitSubsystems).
+    // The next step in initialization will typically be renderer setup (_SitRender_InitRenderer) followed by subsystem initialization (_SitCore_InitSubsystems).
     return SITUATION_SUCCESS;
 }
 
@@ -7180,14 +7180,14 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
  * @brief [INTERNAL] Dispatches renderer initialization to the selected backend.
  *
  * @details This helper function acts as a simple dispatcher or gateway. Based on the compile-time definitions (`SITUATION_USE_VULKAN` or `SITUATION_USE_OPENGL`), it calls the corresponding backend-specific initialization function:
- *          `_SituationInitVulkan` or `_SituationInitOpenGL`.
+ *          `_SitCore_InitVulkan` or `_SitRender_InitOpenGL`.
  *
  * This abstraction allows the main `SituationInit` function to remain clean and unaware of the specific steps required for each graphics API.
  *
  * @param init_info A pointer to the `SituationInitInfo` struct provided during `SituationInit`. This contains configuration options that might be relevant to the renderer initialization.
  *                  This pointer must not be NULL (though the backend functions should also validate this).
  *
- * @return The `SituationError` code returned by the chosen backend's initialization function (e.g., `_SituationInitVulkan`, `_SituationInitOpenGL`).
+ * @return The `SituationError` code returned by the chosen backend's initialization function (e.g., `_SitCore_InitVulkan`, `_SitRender_InitOpenGL`).
  *         - SITUATION_SUCCESS indicates successful renderer setup.
  *         - Any other error code indicates a failure within the backend-specific initialization process.
  *
@@ -7195,31 +7195,31 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
  * @note The choice of backend is determined at compile time by defining either `SITUATION_USE_VULKAN` or `SITUATION_USE_OPENGL`.
  * @warning This function is for internal use by `SituationInit` and should not be called directly by user code.
  *
- * @see SituationInit(), _SituationInitVulkan(), _SituationInitOpenGL()
+ * @see SituationInit(), _SitCore_InitVulkan(), _SitRender_InitOpenGL()
  */
-static SituationError _SituationInitRenderer(const SituationInitInfo* init_info) {
+static SituationError _SitRender_InitRenderer(const SituationInitInfo* init_info) {
     // 1. Initialize Momentum Queue (Common)
     atomic_init(&sit_render.momentum_head, 0);
     atomic_init(&sit_render.momentum_tail, 0);
     
     if (mtx_init(&sit_render.momentum_mutex, mtx_recursive) != thrd_success) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to initialize render queue mutex.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to initialize render queue mutex.");
         return SITUATION_ERROR_INIT_FAILED;
     }
     
     // Dispatch to the appropriate backend initialization function based on the compile-time flag.
 #if defined(SITUATION_USE_VULKAN)
         // Vulkan backend is selected. Initialize it.
-        return _SituationInitVulkan(init_info);
+        return _SitCore_InitVulkan(init_info);
 #elif defined(SITUATION_USE_OPENGL)
         // OpenGL backend is selected. Initialize it.
-        return _SituationInitOpenGL(init_info);
+        return _SitRender_InitOpenGL(init_info);
 #else
         // This branch should ideally be unreachable due to the #error directives in the header file that force the user to define a backend.
         // However, as a safeguard, handle the case where no backend is defined.
-        _SituationSetErrorFromCode(
+        _SitCore_SetErrorFromCode(
             SITUATION_ERROR_NOT_IMPLEMENTED,
-            "_SituationInitRenderer: No graphics renderer backend defined (SITUATION_USE_VULKAN or SITUATION_USE_OPENGL). This should be caught at compile time."
+            "_SitRender_InitRenderer: No graphics renderer backend defined (SITUATION_USE_VULKAN or SITUATION_USE_OPENGL). This should be caught at compile time."
         );
         return SITUATION_ERROR_NOT_IMPLEMENTED;
 #endif
@@ -7235,7 +7235,7 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
  *   - **Timer System:** Initializes the Temporal Oscillator system, calculating the default, musically-timed periods for the oscillator bank and setting the initial system time.
  *   - **Input Systems:**
  *     - Initializes mutexes for thread-safe keyboard and joystick event queuing.
- *     - Registers all of the library's internal GLFW callbacks (`_SituationGLFWKeyCallback`, `_SituationGLFWMouseButtonCallback`, etc.) to capture OS events.
+ *     - Registers all of the library's internal GLFW callbacks (`_SitRender_GLFWKeyCallback`, `_SitRender_GLFWMouseButtonCallback`, etc.) to capture OS events.
  *     - Initializes the internal state-tracking structures for the keyboard, mouse, and gamepads.
  *     - Pre-creates the standard system cursor shapes for fast runtime switching.
  *     - Performs an initial poll for already-connected joysticks.
@@ -7246,33 +7246,33 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
  *
  * @note This function is for internal use by `SituationInit` only.
  *
- * @see SituationInit(), _SituationCleanupSubsystems()
+ * @see SituationInit(), _SitCore_CleanupSubsystems()
  */
-static SituationError _SituationInitSubsystems(const SituationInitInfo* init_info) {
+static SituationError _SitCore_InitSubsystems(const SituationInitInfo* init_info) {
     // --- 1. Audio System Initialization ---
     ma_context_config ctx_config = ma_context_config_init();
     if (ma_context_init(NULL, 0, &ctx_config, &sit_audio.miniaudio_context) != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "ma_context_init failed");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "ma_context_init failed");
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
     sit_audio.is_miniaudio_context_initialized = true;
 
     // Initialize the handle pool
-    _SitAudioInitPool();
+    _SitAudio_InitPool();
 
     // Initialize the tone pool [Resonance]
     memset(sit_audio.tone_pool, 0, sizeof(sit_audio.tone_pool));
 
     // Initialize the mutex that protects the sound playback queue.
     /*if (ma_mutex_init(&sit_audio.audio_queue_mutex) != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to initialize audio queue mutex");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to initialize audio queue mutex");
         return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
     }*/
     // [FIX v2.3.27B] Initialize recursive mutex
     // This allows the same thread (Audio Thread) to re-acquire the lock if a 
     // user processor calls a Situation API function.
     if (mtx_init(&sit_audio.audio_queue_mutex, mtx_recursive) != thrd_success) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to initialize recursive audio mutex");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to initialize recursive audio mutex");
         return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
     }
 
@@ -7282,12 +7282,12 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
         sit_audio.audio_capture_queue_capacity = 4096 * 4; // Reasonable default
         sit_audio.audio_capture_queue = (float*)SIT_MALLOC(sit_audio.audio_capture_queue_capacity * sizeof(float));
         if (!sit_audio.audio_capture_queue) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio capture ring buffer");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio capture ring buffer");
              return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
         if (ma_mutex_init(&sit_audio.audio_capture_mutex) != MA_SUCCESS) {
              SIT_FREE(sit_audio.audio_capture_queue);
-             _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Audio capture mutex");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Audio capture mutex");
              return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
         }
     }
@@ -7300,7 +7300,7 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     sit_audio.audio_callback_effects_temp_buffer = (float*)SIT_MALLOC(effects_buf_size);
     sit_audio.audio_callback_converter_temp_buffer = (float*)SIT_MALLOC(converter_buf_size);
     if (!sit_audio.audio_callback_decoder_temp_buffer || !sit_audio.audio_callback_effects_temp_buffer || !sit_audio.audio_callback_converter_temp_buffer) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio callback temp buffers");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio callback temp buffers");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
     sit_audio.audio_callback_temp_buffer_frames_capacity = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES;
@@ -7367,21 +7367,21 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     if (ma_mutex_init(&sit_input.keyboard.event_queue_mutex) != MA_SUCCESS ||
         ma_mutex_init(&sit_input.joysticks.event_queue_mutex) != MA_SUCCESS ||
         ma_mutex_init(&sit_input.mouse.mutex) != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to initialize input mutexes");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to initialize input mutexes");
         return SITUATION_ERROR_INIT_FAILED;
     }
 
     // Register callbacks
-    glfwSetDropCallback(sit_gs.sit_glfw_window, _SituationGLFWFileDropCallback);
-    glfwSetWindowFocusCallback(sit_gs.sit_glfw_window, _SituationGLFWWindowFocusCallback);
-    glfwSetWindowIconifyCallback(sit_gs.sit_glfw_window, _SituationGLFWWindowIconifyCallback);
-    glfwSetFramebufferSizeCallback(sit_gs.sit_glfw_window, _SituationGLFWFramebufferSizeCallback);
-    glfwSetKeyCallback(sit_gs.sit_glfw_window, _SituationGLFWKeyCallback);
-    glfwSetCharCallback(sit_gs.sit_glfw_window, _SituationGLFWCharCallback);
-    glfwSetMouseButtonCallback(sit_gs.sit_glfw_window, _SituationGLFWMouseButtonCallback);
-    glfwSetCursorPosCallback(sit_gs.sit_glfw_window, _SituationGLFWCursorPosCallback);
-    glfwSetScrollCallback(sit_gs.sit_glfw_window, _SituationGLFWScrollCallback);
-    glfwSetJoystickCallback(_SituationGLFWJoystickCallback);
+    glfwSetDropCallback(sit_gs.sit_glfw_window, _SitRender_GLFWFileDropCallback);
+    glfwSetWindowFocusCallback(sit_gs.sit_glfw_window, _SitRender_GLFWWindowFocusCallback);
+    glfwSetWindowIconifyCallback(sit_gs.sit_glfw_window, _SitRender_GLFWWindowIconifyCallback);
+    glfwSetFramebufferSizeCallback(sit_gs.sit_glfw_window, _SitRender_GLFWFramebufferSizeCallback);
+    glfwSetKeyCallback(sit_gs.sit_glfw_window, _SitRender_GLFWKeyCallback);
+    glfwSetCharCallback(sit_gs.sit_glfw_window, _SitRender_GLFWCharCallback);
+    glfwSetMouseButtonCallback(sit_gs.sit_glfw_window, _SitRender_GLFWMouseButtonCallback);
+    glfwSetCursorPosCallback(sit_gs.sit_glfw_window, _SitRender_GLFWCursorPosCallback);
+    glfwSetScrollCallback(sit_gs.sit_glfw_window, _SitRender_GLFWScrollCallback);
+    glfwSetJoystickCallback(_SitRender_GLFWJoystickCallback);
 
     // Initialize remaining state (that isn't 0)
     glm_vec2_one(sit_input.mouse.scale); // Default mouse scale is (1, 1).
@@ -7405,14 +7405,14 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     // Poll for existing joysticks
     for (int jid = 0; jid < SITUATION_MAX_JOYSTICKS; jid++) {
         if (glfwJoystickPresent(jid)) {
-            _SituationGLFWJoystickCallback(jid, GLFW_CONNECTED);
+            _SitRender_GLFWJoystickCallback(jid, GLFW_CONNECTED);
         }
     }
 
     // Framebuffer size callback
     int fb_w, fb_h;
     glfwGetFramebufferSize(sit_gs.sit_glfw_window, &fb_w, &fb_h);
-    _SituationGLFWFramebufferSizeCallback(sit_gs.sit_glfw_window, fb_w, fb_h);
+    _SitRender_GLFWFramebufferSizeCallback(sit_gs.sit_glfw_window, fb_w, fb_h);
 
     // --- Initialize Frame Timing State ---
     sit_gs.previous_time = glfwGetTime();
@@ -7431,7 +7431,7 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
 
 #if defined(SITUATION_ENABLE_THREADING)
     if (!SituationCreateThreadPool(&sit_gs.thread_pool, 0, init_info->io_queue_capacity, init_info->hot_reload_poll_rate, init_info->disable_io_thread)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Failed to create thread pool");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Failed to create thread pool");
         return SITUATION_ERROR_THREAD_CREATION_FAILED;
     }
 #endif
@@ -7465,7 +7465,7 @@ SITAPI SituationError SituationLoadBitmapFontFromMemory(const unsigned char* dat
  *
  * @see SituationCmdSetVertexAttribute()
  */
-static GLenum _SituationMapDataTypeToGL(SituationDataType type) {
+static GLenum _SitRender_MapDataTypeToGL(SituationDataType type) {
     switch (type) {
         case SIT_DATA_BYTE: return GL_BYTE;
         case SIT_DATA_UNSIGNED_BYTE: return GL_UNSIGNED_BYTE;
@@ -7491,10 +7491,10 @@ static GLenum _SituationMapDataTypeToGL(SituationDataType type) {
  * @return `true` on successful creation of VAO and VBO resources.
  * @return `false` if OpenGL resource creation fails.
  *
- * @note This function is called once during `_SituationInitOpenGL`.
+ * @note This function is called once during `_SitRender_InitOpenGL`.
  * @see SituationRenderVirtualDisplays()
  */
-static bool _SituationInitGLVirtualDisplayRenderer(void) {
+static bool _SitRender_InitGLVirtualDisplayRenderer(void) {
     // 1. Create Private VAO/VBO for full-screen quads
     glCreateVertexArrays(1, &sit_render.gl.vd_quad_vao);
     glCreateBuffers(1, &sit_render.gl.vd_quad_vbo);
@@ -7554,10 +7554,10 @@ static bool _SituationInitGLVirtualDisplayRenderer(void) {
  * @return `SITUATION_SUCCESS` on successful initialization of all OpenGL components.
  * @return An appropriate `SituationError` code if any phase fails (e.g., GLAD fails to load, version is too old, an internal renderer fails to initialize).
  *
- * @note This function is for internal use by `_SituationInitRenderer` only.
+ * @note This function is for internal use by `_SitRender_InitRenderer` only.
  * @warning The creation and binding of the `global_vao_id` is a cornerstone of the OpenGL backend's design. All user-facing mesh and drawing functions rely on this VAO being active.
  *
- * @see _SituationInitRenderer(), _SituationInitQuadRenderer(), _SituationCleanupOpenGL()
+ * @see _SitRender_InitRenderer(), _SitRender_InitQuadRenderer(), _SitRender_CleanupOpenGL()
  */
 // --- Soft Command Buffer Implementation ---
 
@@ -7571,7 +7571,7 @@ static bool _SituationInitGLVirtualDisplayRenderer(void) {
  * @return A pointer to the allocated `SitCommandPacket` struct within the buffer.
  *         Returns NULL if memory allocation fails.
  */
-static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, SitOpCode opcode) {
+static SitCommandPacket* _SitRender_GLSoftCmdPush(SituationGLSoftCommandBuffer* buf, SitOpCode opcode) {
     // [FIX v2.3.27B] Fail fast if buffer is already compromised
     if (buf->is_broken) return NULL;
 
@@ -7580,7 +7580,7 @@ static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, Si
         SitCommandPacket* new_ptr = (SitCommandPacket*)SIT_REALLOC(buf->packets, new_cap * sizeof(SitCommandPacket));
         
         if (!new_ptr) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer packets realloc failed. Frame dropped.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer packets realloc failed. Frame dropped.");
             buf->is_broken = true; // Trip the breaker
             return NULL;
         }
@@ -7601,10 +7601,10 @@ static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, Si
  * @param data Pointer to the source data to copy. If NULL, space is reserved but not written.
  * @param size Size in bytes to allocate/copy.
  * @return A pointer to the data's location *within the buffer*.
- *         Warning: This pointer may be invalidated by subsequent calls to _SitGLSoftDataPush if the buffer reallocates.
+ *         Warning: This pointer may be invalidated by subsequent calls to _SitRender_GLSoftDataPush if the buffer reallocates.
  *         Always use offsets for long-term storage.
  */
-static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* data, size_t size) {
+static void* _SitRender_GLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* data, size_t size) {
     // [FIX v2.3.27B] Fail fast
     if (buf->is_broken) return NULL;
 
@@ -7614,7 +7614,7 @@ static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* d
 
         uint8_t* new_ptr = (uint8_t*)SIT_REALLOC(buf->data_buffer, new_cap);
         if (!new_ptr) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer data realloc failed. Frame dropped.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer data realloc failed. Frame dropped.");
             buf->is_broken = true; // Trip the breaker
             return NULL;
         }
@@ -7642,7 +7642,7 @@ static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* d
  *
  * @param buf The soft command buffer to execute.
  */
-static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int frame_index) {
+static void _SitRender_GLExecuteCommands(SituationGLSoftCommandBuffer* buf, int frame_index) {
     if (buf->packet_count == 0) return;
     // [FIX v2.3.27B] Do not execute incomplete/corrupted buffers
     if (buf->is_broken) {
@@ -7744,7 +7744,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
             case SIT_OP_DRAW_MESH:
                 {
                     // [Phase 2.5] Use Lazy Cache for VAOs
-                    GLuint vao = _SitGLGetCachedVAO(p->args.draw_mesh.mesh);
+                    GLuint vao = _SitRender_GLGetCachedVAO(p->args.draw_mesh.mesh);
                     if (vao) {
                         glBindVertexArray(vao);
                         sit_render.gl.current_vao_id = vao;
@@ -8009,7 +8009,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
 
             case SIT_OP_PRESENT:
                 {
-                    _SituationTextureSlot* slot = _SitGetTextureSlot(p->args.present.texture);
+                    _SituationTextureSlot* slot = _SitRender_GetTextureSlot(p->args.present.texture);
                     if (!slot) break;
                     
                     GLuint tex = slot->gl_texture_id;
@@ -8151,13 +8151,13 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                             #endif
                         } else {
                             glProgramUniform1i(sit_render.gl.text_shader_program, 6, 0); // Fallback
-                            _SituationTextureSlot* slot = _SitGetTextureSlot(font.atlas_texture);
+                            _SituationTextureSlot* slot = _SitRender_GetTextureSlot(font.atlas_texture);
                             if (slot) glBindTextureUnit(SIT_SAMPLER_BINDING_ALBEDO, slot->gl_texture_id);
                         }
                     } else {
                         // Standard Bind
                         glProgramUniform1i(sit_render.gl.text_shader_program, 6, 0);
-                        _SituationTextureSlot* slot = _SitGetTextureSlot(font.atlas_texture);
+                        _SituationTextureSlot* slot = _SitRender_GetTextureSlot(font.atlas_texture);
                         if (slot) glBindTextureUnit(SIT_SAMPLER_BINDING_ALBEDO, slot->gl_texture_id);
                     }
 
@@ -8192,7 +8192,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
 
             case SIT_OP_SET_VERTEX_ATTRIBUTE:
                 {
-                    GLenum gl_type = _SituationMapDataTypeToGL((SituationDataType)p->args.set_vertex_attr.type);
+                    GLenum gl_type = _SitRender_MapDataTypeToGL((SituationDataType)p->args.set_vertex_attr.type);
                     if (gl_type != 0) {
                         uint32_t loc = p->args.set_vertex_attr.location;
                         glVertexArrayAttribFormat(sit_render.gl.global_vao_id, loc,
@@ -8246,33 +8246,33 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
     }
 }
 
-static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
+static SituationError _SitRender_InitOpenGL(const SituationInitInfo* init_info) {
     // --- 1. Context and Function Loading ---
     glfwMakeContextCurrent(sit_gs.sit_glfw_window); // Ensure context is current for GLAD
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_LOADER_FAILED, "_SituationInitOpenGL: GLAD failed to load function pointers.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_LOADER_FAILED, "_SitRender_InitOpenGL: GLAD failed to load function pointers.");
         return SITUATION_ERROR_OPENGL_LOADER_FAILED;
     }
 
     // --- 2. OpenGL Version and Extension Checks ---
     if (GLVersion.major < 4 || (GLVersion.major == 4 && GLVersion.minor < 6)) {
         char detail[128];
-        snprintf(detail, sizeof(detail), "_SituationInitOpenGL: OpenGL 4.6 not supported by the driver. Found version %d.%d", GLVersion.major, GLVersion.minor);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION, detail);
+        snprintf(detail, sizeof(detail), "_SitRender_InitOpenGL: OpenGL 4.6 not supported by the driver. Found version %d.%d", GLVersion.major, GLVersion.minor);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION, detail);
         return SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION;
     }
 
     // Validate required core features/extensions for our abstraction.
     if (!GLAD_GL_ARB_direct_state_access) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "_SituationInitOpenGL: Required extension GL_ARB_direct_state_access is not available.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "_SitRender_InitOpenGL: Required extension GL_ARB_direct_state_access is not available.");
         return SITUATION_ERROR_OPENGL_UNSUPPORTED;
     }
 
     // Check optional extension for SPIR-V if compiler is enabled.
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     // Note: Absence of ARB_gl_spirv is NOT a fatal error. It just means we must fallback to GLSL.
-    // The refactored _SituationCreateGLComputeProgram handles this logic.
+    // The refactored _SitRender_CreateGLComputeProgram handles this logic.
     sit_render.gl.arb_spirv_available = GLAD_GL_ARB_gl_spirv;
     // Optional debug log:
     // if (!sit_render.gl.arb_spirv_available) {
@@ -8315,7 +8315,7 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     glVertexArrayAttribBinding(mvao, SIT_ATTR_TEXCOORD_0, 0);
 
     if (sit_render.gl.global_vao_id == 0 || sit_render.gl.mesh_vao_id == 0) {
-         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to create global VAOs.");
+         _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SitRender_InitOpenGL: Failed to create global VAOs.");
          return SITUATION_ERROR_OPENGL_GENERAL;
     }
     glBindVertexArray(sit_render.gl.global_vao_id);
@@ -8325,18 +8325,18 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // Initialize internal renderers (Quad Renderer, Virtual Display Renderer).
     // These functions MUST create, configure, and then unbind their own PRIVATE VAOs/VBOs.
     // They MUST leave sit_render.gl.global_vao_id bound upon successful return.
-    if (!_SituationInitQuadRenderer(sit_gs.main_window_width, sit_gs.main_window_height)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal quad renderer.");
+    if (!_SitRender_InitQuadRenderer(sit_gs.main_window_width, sit_gs.main_window_height)) {
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SitRender_InitOpenGL: Failed to initialize internal quad renderer.");
         // Cleanup global VAO on failure of dependent subsystem
         glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
         sit_render.gl.global_vao_id = 0;
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
 
-    _SituationInitDefaultFont();
+    _SitCore_InitDefaultFont();
 
-    if (!_SituationInitTextRenderer()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal text renderer.");
+    if (!_SitRender_InitTextRenderer()) {
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SitRender_InitOpenGL: Failed to initialize internal text renderer.");
         glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
         sit_render.gl.global_vao_id = 0;
         return SITUATION_ERROR_OPENGL_GENERAL;
@@ -8347,33 +8347,33 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     SituationError shader_err_code = SITUATION_SUCCESS;
 
     // a. Create Shaders for Virtual Display Compositing
-    sit_render.gl.vd_shader_program_id = _SituationCreateGLShaderProgram(SIT_VD_VERTEX_SHADER_SRC, SIT_VD_FRAGMENT_SHADER_SRC, &shader_err_code);
+    sit_render.gl.vd_shader_program_id = _SitRender_CreateGLShaderProgram(SIT_VD_VERTEX_SHADER_SRC, SIT_VD_FRAGMENT_SHADER_SRC, &shader_err_code);
     if (shader_err_code != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(shader_err_code, "_SituationInitOpenGL: Failed to create standard virtual display shader.");
+        _SitCore_SetErrorFromCode(shader_err_code, "_SitRender_InitOpenGL: Failed to create standard virtual display shader.");
         // Cleanup global VAO
         glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
         sit_render.gl.global_vao_id = 0;
-        // Assume _SituationInitQuadRenderer cleaned up after itself on failure
+        // Assume _SitRender_InitQuadRenderer cleaned up after itself on failure
         return shader_err_code;
     }
 
-    sit_render.gl.composite_shader_program_id = _SituationCreateGLShaderProgram(SIT_COMPOSITE_VERTEX_SHADER_SRC, SIT_COMPOSITE_FRAGMENT_SHADER_SRC, &shader_err_code);
+    sit_render.gl.composite_shader_program_id = _SitRender_CreateGLShaderProgram(SIT_COMPOSITE_VERTEX_SHADER_SRC, SIT_COMPOSITE_FRAGMENT_SHADER_SRC, &shader_err_code);
     if (shader_err_code != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(shader_err_code, "_SituationInitOpenGL: Failed to create advanced compositing shader.");
+        _SitCore_SetErrorFromCode(shader_err_code, "_SitRender_InitOpenGL: Failed to create advanced compositing shader.");
         // Cleanup global VAO and first shader
         glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
         sit_render.gl.global_vao_id = 0;
         glDeleteProgram(sit_render.gl.vd_shader_program_id);
         sit_render.gl.vd_shader_program_id = 0;
-        // Assume _SituationInitQuadRenderer cleaned up after itself on failure
+        // Assume _SitRender_InitQuadRenderer cleaned up after itself on failure
         return shader_err_code;
     }
 
     // b. Initialize the Virtual Display Quad Renderer
     // This function is responsible for creating sit_render.gl.vd_quad_vao/vbo, configuring them for a simple textured quad, and unbinding them, ensuring sit_render.gl.global_vao_id is bound again at the end.
-    // You need to implement this function, similar to _SituationInitQuadRenderer.
-    if (!_SituationInitGLVirtualDisplayRenderer()) { // <-- You need this function
-         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal virtual display renderer.");
+    // You need to implement this function, similar to _SitRender_InitQuadRenderer.
+    if (!_SitRender_InitGLVirtualDisplayRenderer()) { // <-- You need this function
+         _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SitRender_InitOpenGL: Failed to initialize internal virtual display renderer.");
          // Cleanup global VAO and shaders
         glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
         sit_render.gl.global_vao_id = 0;
@@ -8381,14 +8381,14 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         sit_render.gl.vd_shader_program_id = 0;
         glDeleteProgram(sit_render.gl.composite_shader_program_id);
         sit_render.gl.composite_shader_program_id = 0;
-        // Assume _SituationInitQuadRenderer cleaned up after itself on failure
+        // Assume _SitRender_InitQuadRenderer cleaned up after itself on failure
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
 
     // c. Create UBO for View/Projection data (used by user shaders, potentially internal ones too)
     glCreateBuffers(1, &sit_render.gl.view_data_ubo_id);
     if (sit_render.gl.view_data_ubo_id == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to create View UBO.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SitRender_InitOpenGL: Failed to create View UBO.");
         // Cleanup global VAO, shaders, and VD renderer resources
         glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
         sit_render.gl.global_vao_id = 0;
@@ -8397,7 +8397,7 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         glDeleteProgram(sit_render.gl.composite_shader_program_id);
         sit_render.gl.composite_shader_program_id = 0;
         // Assume _SituationInitVirtualDisplayRenderer cleaned up after itself on failure
-        // Assume _SituationInitQuadRenderer cleaned up after itself on failure
+        // Assume _SitRender_InitQuadRenderer cleaned up after itself on failure
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
     // Allocate storage. Initial data can be set later or here if needed.
@@ -8407,12 +8407,12 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     SIT_CHECK_GL_ERROR();
 
     // --- [Phase 1] Initialize Persistent Ring Buffer ---
-    _SituationInitGLRingBuffer();
+    _SitRender_InitGLRingBuffer();
     if (!sit_render.gl.ring_data_ptr) return SITUATION_ERROR_OPENGL_GENERAL;
     SIT_CHECK_GL_ERROR();
 
     // --- [Phase 4] Initialize Multi-Draw Indirect Buffer ---
-    _SituationInitGLMDIBuffer();
+    _SitRender_InitGLMDIBuffer();
     if (!sit_render.gl.mdi_data_ptr) return SITUATION_ERROR_OPENGL_GENERAL;
     SIT_CHECK_GL_ERROR();
 
@@ -8504,7 +8504,7 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // Zero cache is handled by SIT_CALLOC of context.
     // Initialize Graveyard
     if (ma_mutex_init(&sit_render.gl.graveyard.lock) != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to init GL graveyard mutex.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to init GL graveyard mutex.");
         return SITUATION_ERROR_INIT_FAILED;
     }
     // Pre-allocate arrays
@@ -8525,7 +8525,7 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     sit_render.gl.loader_window = glfwCreateWindow(640, 480, "Situation Loader", NULL, sit_gs.sit_glfw_window);
 
-    // [v2.3.21] Thread spawning logic moved to _SituationInitRenderThread in SituationInit
+    // [v2.3.21] Thread spawning logic moved to _SitRender_InitRenderThread in SituationInit
     // Note: Context handover logic is also moved there.
     #endif
 
@@ -8546,15 +8546,15 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
  * @param error_code A pointer to a SituationError that will be filled on failure.
  * @return A valid OpenGL program ID on success, or 0 on failure.
  */
-static GLuint _SituationCreateGLShaderProgramFromSpirv(const _SituationSpirvBlob* vs_blob, const _SituationSpirvBlob* fs_blob, SituationError* error_code) {
+static GLuint _SitRender_CreateGLShaderProgramFromSpirv(const _SituationSpirvBlob* vs_blob, const _SituationSpirvBlob* fs_blob, SituationError* error_code) {
     if (!vs_blob || !fs_blob || !vs_blob->data || !fs_blob->data) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SPIR-V blob data cannot be null.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SPIR-V blob data cannot be null.");
         if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
         return 0;
     }
 
     if (!GLAD_GL_ARB_gl_spirv) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "Driver does not support GL_ARB_gl_spirv. Cannot load SPIR-V shaders.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "Driver does not support GL_ARB_gl_spirv. Cannot load SPIR-V shaders.");
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_UNSUPPORTED;
         return 0;
     }
@@ -8575,7 +8575,7 @@ static GLuint _SituationCreateGLShaderProgramFromSpirv(const _SituationSpirvBlob
     glGetShaderiv(vs, GL_COMPILE_STATUS, &success);
     if (!success) {
         glGetShaderInfoLog(vs, sizeof(infoLog), NULL, infoLog);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, infoLog);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, infoLog);
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_COMPILE;
         glDeleteShader(vs);
         return 0;
@@ -8590,7 +8590,7 @@ static GLuint _SituationCreateGLShaderProgramFromSpirv(const _SituationSpirvBlob
     glGetShaderiv(fs, GL_COMPILE_STATUS, &success);
     if (!success) {
         glGetShaderInfoLog(fs, sizeof(infoLog), NULL, infoLog);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, infoLog);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, infoLog);
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_COMPILE;
         glDeleteShader(vs);
         glDeleteShader(fs);
@@ -8612,7 +8612,7 @@ static GLuint _SituationCreateGLShaderProgramFromSpirv(const _SituationSpirvBlob
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
         glGetProgramInfoLog(program, sizeof(infoLog), NULL, infoLog);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_LINK;
         glDeleteProgram(program);
         return 0;
@@ -8640,22 +8640,22 @@ static GLuint _SituationCreateGLShaderProgramFromSpirv(const _SituationSpirvBlob
  * @return The OpenGL program ID (`GLuint`) on successful creation.
  * @return `0` on failure. A detailed error message is set internally.
  *
- * @note This function is for internal use by `_SituationCreateGLComputeProgram` only.
+ * @note This function is for internal use by `_SitRender_CreateGLComputeProgram` only.
  * @warning The caller is responsible for deleting the returned program ID using `glDeleteProgram`.
  *
- * @see _SituationCreateGLComputeProgram(), glShaderBinary(), glSpecializeShader()
+ * @see _SitRender_CreateGLComputeProgram(), glShaderBinary(), glSpecializeShader()
  */
-static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationSpirvBlob* cs_blob, SituationError* error_code) {
+static GLuint _SitRender_CreateGLComputeProgramFromSpirv(const struct _SituationSpirvBlob* cs_blob, SituationError* error_code) {
     if (error_code) *error_code = SITUATION_SUCCESS;
 
     // 1. --- Validation ---
     if (!cs_blob || !cs_blob->data || cs_blob->size == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SPIR-V blob for compute shader cannot be null or empty.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SPIR-V blob for compute shader cannot be null or empty.");
         if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
         return 0;
     }
     if (!GLAD_GL_ARB_gl_spirv) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "Driver does not support GL_ARB_gl_spirv. Cannot load SPIR-V shaders.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "Driver does not support GL_ARB_gl_spirv. Cannot load SPIR-V shaders.");
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_UNSUPPORTED;
         return 0;
     }
@@ -8673,7 +8673,7 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
     glGetShaderiv(cs, GL_COMPILE_STATUS, &success);
     if (!success) {
         glGetShaderInfoLog(cs, sizeof(infoLog), NULL, infoLog);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, infoLog);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, infoLog);
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_COMPILE;
         glDeleteShader(cs);
         return 0;
@@ -8692,7 +8692,7 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
         glGetProgramInfoLog(program, sizeof(infoLog), NULL, infoLog);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_LINK;
         glDeleteProgram(program);
         return 0;
@@ -8714,7 +8714,7 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
  * 1. **Simple Compositor:** For standard blending (Alpha, Additive, Multiply). Uses a lightweight shader and single texture sampling.
  * 2. **Advanced Compositor:** For complex "Photoshop-style" blend modes (Overlay, Soft Light, etc.). Uses a specialized shader that samples both the source Virtual Display and a copy of the destination framebuffer.
  *
- * @note The standard 2D Quad Renderer (`SituationCmdDrawQuad`) is **not** initialized here; it is handled by the shared `_SituationInitQuadRenderer` function before this one is called.
+ * @note The standard 2D Quad Renderer (`SituationCmdDrawQuad`) is **not** initialized here; it is handled by the shared `_SitRender_InitQuadRenderer` function before this one is called.
  *
  * @par Initialization Sequence
  *   1. **Simple Compositor:**
@@ -8731,9 +8731,9 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
  *
  * @warning This function relies on the shader compiler being enabled (`SITUATION_ENABLE_SHADER_COMPILER`). If disabled, it returns success immediately but leaves the pipeline handles as `VK_NULL_HANDLE`, effectively disabling Virtual Displays.
  *
- * @see _SituationInitVulkan(), _SituationInitQuadRenderer(), SituationRenderVirtualDisplays()
+ * @see _SitCore_InitVulkan(), _SitRender_InitQuadRenderer(), SituationRenderVirtualDisplays()
  */
-static SituationError _SituationVulkanInitInternalRenderers(void) {
+static SituationError _SitRender_VulkanInitInternalRenderers(void) {
     // --- Initialize all local handles to NULL for robust cleanup ---
     VkPipelineLayout quad_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       quad_pipeline = VK_NULL_HANDLE;
@@ -8766,8 +8766,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     // --- 1. Initialize the Simple VD Compositing Renderer ---
     // ======================================================================================
     {
-        vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_VD_VERTEX_SHADER_SRC, "internal_vd.vert", shaderc_vertex_shader);
-        fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_VD_FRAGMENT_SHADER_SRC, "internal_vd.frag", shaderc_fragment_shader);
+        vs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(SIT_VD_VERTEX_SHADER_SRC, "internal_vd.vert", shaderc_vertex_shader);
+        fs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(SIT_VD_FRAGMENT_SHADER_SRC, "internal_vd.frag", shaderc_fragment_shader);
         if (!vs_spirv.data || !fs_spirv.data) goto cleanup;
 
         VkPushConstantRange push_constant_range = {
@@ -8791,7 +8791,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             { .binding = 0, .location = SIT_ATTR_TEXCOORD_0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 }
         };
 
-        vd_compositing_pipeline = _SituationVulkanCreateGraphicsPipeline(
+        vd_compositing_pipeline = _SitRender_VulkanCreateGraphicsPipeline(
             vs_spirv.data, vs_spirv.size,
             fs_spirv.data, fs_spirv.size,
             vd_compositing_pipeline_layout,
@@ -8799,8 +8799,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             1, &binding_desc,
             2, attr_descs
         );
-        _SituationFreeSpirvBlob(&vs_spirv);
-        _SituationFreeSpirvBlob(&fs_spirv);
+        _SitCore_FreeSpirvBlob(&vs_spirv);
+        _SitCore_FreeSpirvBlob(&fs_spirv);
         if (vd_compositing_pipeline == VK_NULL_HANDLE) goto cleanup;
     }
 
@@ -8808,8 +8808,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     // --- 2. Initialize the Advanced VD Compositing Renderer ---
     // ======================================================================================
     {
-        vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_COMPOSITE_VERTEX_SHADER_SRC, "internal_composite.vert", shaderc_vertex_shader);
-        fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_COMPOSITE_FRAGMENT_SHADER_SRC, "internal_composite.frag", shaderc_fragment_shader);
+        vs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(SIT_COMPOSITE_VERTEX_SHADER_SRC, "internal_composite.vert", shaderc_vertex_shader);
+        fs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(SIT_COMPOSITE_FRAGMENT_SHADER_SRC, "internal_composite.frag", shaderc_fragment_shader);
         if (!vs_spirv.data || !fs_spirv.data) goto cleanup;
 
         VkDescriptorSetLayout layouts[] = {
@@ -8840,7 +8840,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             { .binding = 0, .location = SIT_ATTR_TEXCOORD_0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 }
         };
 
-        advanced_compositing_pipeline = _SituationVulkanCreateGraphicsPipeline(
+        advanced_compositing_pipeline = _SitRender_VulkanCreateGraphicsPipeline(
             vs_spirv.data, vs_spirv.size,
             fs_spirv.data, fs_spirv.size,
             advanced_compositing_pipeline_layout,
@@ -8849,8 +8849,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             2, attr_descs
         );
 
-        _SituationFreeSpirvBlob(&vs_spirv);
-        _SituationFreeSpirvBlob(&fs_spirv);
+        _SitCore_FreeSpirvBlob(&vs_spirv);
+        _SitCore_FreeSpirvBlob(&fs_spirv);
         if (advanced_compositing_pipeline == VK_NULL_HANDLE) goto cleanup;
     }
 
@@ -8858,8 +8858,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     // --- 3. Initialize the Batched Text Renderer ---
     // ======================================================================================
     {
-        vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_TEXT_VERTEX_SHADER, "internal_text.vert", shaderc_vertex_shader);
-        fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_TEXT_FRAGMENT_SHADER, "internal_text.frag", shaderc_fragment_shader);
+        vs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(SIT_TEXT_VERTEX_SHADER, "internal_text.vert", shaderc_vertex_shader);
+        fs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(SIT_TEXT_FRAGMENT_SHADER, "internal_text.frag", shaderc_fragment_shader);
         if (!vs_spirv.data || !fs_spirv.data) goto cleanup;
 
         VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.image_sampler_layout };
@@ -8885,7 +8885,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             { .binding = 0, .location = SIT_ATTR_TEXCOORD_0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 2 * sizeof(float) }
         };
 
-        text_pipeline = _SituationVulkanCreateGraphicsPipeline(
+        text_pipeline = _SitRender_VulkanCreateGraphicsPipeline(
             vs_spirv.data, vs_spirv.size,
             fs_spirv.data, fs_spirv.size,
             text_pipeline_layout,
@@ -8893,8 +8893,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             1, &binding_desc,
             2, attr_descs
         );
-        _SituationFreeSpirvBlob(&vs_spirv);
-        _SituationFreeSpirvBlob(&fs_spirv);
+        _SitCore_FreeSpirvBlob(&vs_spirv);
+        _SitCore_FreeSpirvBlob(&fs_spirv);
         if (text_pipeline == VK_NULL_HANDLE) goto cleanup;
     }
 
@@ -8913,8 +8913,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     return SITUATION_SUCCESS;
 
 cleanup:
-    _SituationFreeSpirvBlob(&vs_spirv);
-    _SituationFreeSpirvBlob(&fs_spirv);
+    _SitCore_FreeSpirvBlob(&vs_spirv);
+    _SitCore_FreeSpirvBlob(&fs_spirv);
     if (quad_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, quad_pipeline_layout, NULL);
     if (quad_pipeline) vkDestroyPipeline(sit_render.vk.device, quad_pipeline, NULL);
     if (quad_vertex_buffer) vmaDestroyBuffer(sit_render.vk.vma_allocator, quad_vertex_buffer, quad_vertex_buffer_memory);
@@ -8937,13 +8937,13 @@ cleanup:
  *
  * @note This function is called automatically during swapchain creation/recreation to ensure the image dimensions match the window size.
  */
-static void _SituationVulkanCreateScreenCopyResource(void) {
+static void _SitCore_VulkanCreateScreenCopyResource(void) {
     // 1. Create the Image (Device Local, Usage: Transfer Dst + Sampled)
     // It needs TRANSFER_DST because we copy FROM the swapchain TO this.
     // It needs SAMPLED because the shader reads it.
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
-    _SituationVulkanCreateImage(
+    _SitRender_VulkanCreateImage(
         sit_render.vk.swapchain_extent.width,
         sit_render.vk.swapchain_extent.height,
         1,
@@ -8956,7 +8956,7 @@ static void _SituationVulkanCreateScreenCopyResource(void) {
     );
 
     // 2. Create View
-    sit_render.vk.screen_copy_view = _SituationVulkanCreateImageView(
+    sit_render.vk.screen_copy_view = _SitRender_VulkanCreateImageView(
         sit_render.vk.screen_copy_image,
         sit_render.vk.swapchain_image_format,
         VK_IMAGE_ASPECT_COLOR_BIT
@@ -8964,13 +8964,13 @@ static void _SituationVulkanCreateScreenCopyResource(void) {
 
     // 3. Create Persistent Descriptor Set (Using standard image_sampler_layout)
     // [FIX v2.3.27B] Capture the pool so we can free this set on resize/shutdown
-    sit_render.vk.screen_copy_descriptor_set = _SituationVulkanAllocateDescriptorSet(
+    sit_render.vk.screen_copy_descriptor_set = _SitRender_VulkanAllocateDescriptorSet(
         sit_render.vk.image_sampler_layout,
         &sit_render.vk.screen_copy_descriptor_pool 
     );
 
     if (sit_render.vk.screen_copy_descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate descriptor set for Screen Copy.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate descriptor set for Screen Copy.");
     }
 
     // Note: We update this descriptor set every frame in the render loop because
@@ -8980,10 +8980,10 @@ static void _SituationVulkanCreateScreenCopyResource(void) {
 /**
  * @brief [INTERNAL] Frees the screen copy resources.
  *
- * @details Destroys the image, view, and descriptor set created by `_SituationVulkanCreateScreenCopyResource`.
+ * @details Destroys the image, view, and descriptor set created by `_SitCore_VulkanCreateScreenCopyResource`.
  *          Called during swapchain cleanup.
  */
-static void _SituationVulkanDestroyScreenCopyResource(void) {
+static void _SitCore_VulkanDestroyScreenCopyResource(void) {
     if (sit_render.vk.screen_copy_descriptor_set != VK_NULL_HANDLE) {
         // [FIX v2.3.27B] Explicitly free the set to prevent memory leaks during resize
         if (sit_render.vk.screen_copy_descriptor_pool != VK_NULL_HANDLE) {
@@ -9019,35 +9019,35 @@ static void _SituationVulkanDestroyScreenCopyResource(void) {
  *
  * @par Typical Usage Pattern
  * The caller uses this function to get a command buffer, records commands into it using `vkCmd*` functions, and then calls
- * `_SituationVulkanEndSingleTimeCommands` to end recording, submit the commands to the graphics queue, wait for completion, and clean up the buffer.
+ * `_SitRender_VulkanEndSingleTimeCommands` to end recording, submit the commands to the graphics queue, wait for completion, and clean up the buffer.
  *
  * @code{.c}
- * VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
+ * VkCommandBuffer cmd = _SitRender_VulkanBeginSingleTimeCommands();
  * if (cmd == VK_NULL_HANDLE) { // Handle allocation/error } // Check added for robustness
  * // Record commands, e.g., vkCmdPipelineBarrier, vkCmdCopyBuffer...
- * _SituationVulkanEndSingleTimeCommands(cmd); // Handles submission, wait, and cleanup
+ * _SitRender_VulkanEndSingleTimeCommands(cmd); // Handles submission, wait, and cleanup
  * @endcode
  *
  * @return A valid `VkCommandBuffer` handle ready for command recording.
  * @return `VK_NULL_HANDLE` if the library is not initialized, if the Vulkan device or command pool is invalid, or if allocation/beginning fails.
- *         A specific error message is set via `_SituationSetErrorFromCode`.
+ *         A specific error message is set via `_SitCore_SetErrorFromCode`.
  *
  * @note This function is for internal library use and is not part of the public API.
- * @note It is the caller's sole responsibility to pass the returned `VkCommandBuffer` handle to `_SituationVulkanEndSingleTimeCommands` to ensure proper submission, synchronization, and cleanup.
+ * @note It is the caller's sole responsibility to pass the returned `VkCommandBuffer` handle to `_SitRender_VulkanEndSingleTimeCommands` to ensure proper submission, synchronization, and cleanup.
  *       Failing to do so will result in resource leaks.
- * @warning This function allocates a command buffer. Not calling `_SituationVulkanEndSingleTimeCommands` will leak this resource.
- * @warning This function is synchronous; `_SituationVulkanEndSingleTimeCommands` calls `vkQueueWaitIdle`, blocking the CPU until the commands complete.
+ * @warning This function allocates a command buffer. Not calling `_SitRender_VulkanEndSingleTimeCommands` will leak this resource.
+ * @warning This function is synchronous; `_SitRender_VulkanEndSingleTimeCommands` calls `vkQueueWaitIdle`, blocking the CPU until the commands complete.
  *
- * @see _SituationVulkanEndSingleTimeCommands(), vkAllocateCommandBuffers(), vkBeginCommandBuffer()
+ * @see _SitRender_VulkanEndSingleTimeCommands(), vkAllocateCommandBuffers(), vkBeginCommandBuffer()
  */
-static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
+static VkCommandBuffer _SitRender_VulkanBeginSingleTimeCommands(void) {
     // --- 1. Input/State Validation ---
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "_SituationVulkanBeginSingleTimeCommands: Library not initialized.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "_SitRender_VulkanBeginSingleTimeCommands: Library not initialized.");
         return VK_NULL_HANDLE;
     }
     if (sit_render.vk.device == VK_NULL_HANDLE || sit_render.vk.command_pool == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanBeginSingleTimeCommands: Vulkan device or command pool is NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitRender_VulkanBeginSingleTimeCommands: Vulkan device or command pool is NULL.");
         return VK_NULL_HANDLE;
     }
 
@@ -9064,8 +9064,8 @@ static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
     if (result != VK_SUCCESS) {
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
-                 "_SituationVulkanBeginSingleTimeCommands: vkAllocateCommandBuffers failed (VkResult: 0x%x).", result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
+                 "_SitRender_VulkanBeginSingleTimeCommands: vkAllocateCommandBuffers failed (VkResult: 0x%x).", result);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
         return VK_NULL_HANDLE; // Return invalid handle on allocation failure
     }
 
@@ -9084,8 +9084,8 @@ static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
     if (result != VK_SUCCESS) {
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
-                 "_SituationVulkanBeginSingleTimeCommands: vkBeginCommandBuffer failed (VkResult: 0x%x).", result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
+                 "_SitRender_VulkanBeginSingleTimeCommands: vkBeginCommandBuffer failed (VkResult: 0x%x).", result);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
         // --- CRITICAL CLEANUP ---
         // If vkBeginCommandBuffer fails, we must free the allocated command buffer to prevent a resource leak.
         vkFreeCommandBuffers(sit_render.vk.device, sit_render.vk.command_pool, 1, &command_buffer);
@@ -9095,16 +9095,16 @@ static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
 
     // --- 4. Success ---
     // If we reach here, the command buffer is valid and in the recording state.
-    // It is the caller's responsibility to end and submit it using _SituationVulkanEndSingleTimeCommands.
+    // It is the caller's responsibility to end and submit it using _SitRender_VulkanEndSingleTimeCommands.
     return command_buffer;
 }
 
 
-// --- Updated/Added Documentation Block for _SituationVulkanEndSingleTimeCommands ---
+// --- Updated/Added Documentation Block for _SitRender_VulkanEndSingleTimeCommands ---
 /**
  * @brief [INTERNAL] Ends recording, submits, waits for completion, and cleans up a one-time-use command buffer.
  *
- * @details This helper function completes the lifecycle of a temporary command buffer created by `_SituationVulkanBeginSingleTimeCommands`. It performs the following essential steps:
+ * @details This helper function completes the lifecycle of a temporary command buffer created by `_SitRender_VulkanBeginSingleTimeCommands`. It performs the following essential steps:
  * 1.  Ends the recording of the command buffer.
  * 2.  Submits the command buffer to the graphics queue (`sit_render.vk.graphics_queue`) for execution.
  * 3.  Waits for the graphics queue to become idle (`vkQueueWaitIdle`), ensuring that all commands recorded in the buffer have finished executing on the GPU.
@@ -9112,32 +9112,32 @@ static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
  * 4.  Frees the command buffer back to the pool (`sit_render.vk.command_pool`) from which it was allocated.
  *
  * @par Typical Usage Pattern
- * This function is always paired with `_SituationVulkanBeginSingleTimeCommands`.
+ * This function is always paired with `_SitRender_VulkanBeginSingleTimeCommands`.
  *
  * @code{.c}
- * VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
+ * VkCommandBuffer cmd = _SitRender_VulkanBeginSingleTimeCommands();
  * if (cmd == VK_NULL_HANDLE) { // Handle allocation/error }
  * // Record commands, e.g., vkCmdPipelineBarrier, vkCmdCopyBuffer...
- * _SituationVulkanEndSingleTimeCommands(cmd); // Handles submission, wait, and cleanup
+ * _SitRender_VulkanEndSingleTimeCommands(cmd); // Handles submission, wait, and cleanup
  * @endcode
  *
- * @param command_buffer The `VkCommandBuffer` handle returned by `_SituationVulkanBeginSingleTimeCommands`. This handle must be valid.
+ * @param command_buffer The `VkCommandBuffer` handle returned by `_SitRender_VulkanBeginSingleTimeCommands`. This handle must be valid.
  *
  * @note This function is for internal library use and is not part of the public API.
  * @note This function is synchronous due to the `vkQueueWaitIdle` call. It will block the calling thread until the GPU has finished executing the commands.
- * @note It is crucial that the `command_buffer` parameter is the handle returned by `_SituationVulkanBeginSingleTimeCommands` and has not been previously ended or submitted.
- * @warning Failing to call this function after obtaining a command buffer from `_SituationVulkanBeginSingleTimeCommands` will result in a resource leak.
+ * @note It is crucial that the `command_buffer` parameter is the handle returned by `_SitRender_VulkanBeginSingleTimeCommands` and has not been previously ended or submitted.
+ * @warning Failing to call this function after obtaining a command buffer from `_SitRender_VulkanBeginSingleTimeCommands` will result in a resource leak.
  * @warning Calling this function with an invalid or already-ended `command_buffer` handle can lead to undefined behavior or validation errors.
  *
- * @see _SituationVulkanBeginSingleTimeCommands(), vkEndCommandBuffer(), vkQueueSubmit(), vkQueueWaitIdle(), vkFreeCommandBuffers()
+ * @see _SitRender_VulkanBeginSingleTimeCommands(), vkEndCommandBuffer(), vkQueueSubmit(), vkQueueWaitIdle(), vkFreeCommandBuffers()
  */
-static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer) {
+static void _SitRender_VulkanEndSingleTimeCommands(VkCommandBuffer command_buffer) {
     // --- 1. Input Validation ---
     // While internal, checking for VK_NULL_HANDLE prevents potential crashes.
     if (command_buffer == VK_NULL_HANDLE) {
         // Silently return if an invalid handle is passed.
         // This prevents crashing but indicates a logic error upstream.
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanEndSingleTimeCommands: command_buffer is VK_NULL_HANDLE.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitRender_VulkanEndSingleTimeCommands: command_buffer is VK_NULL_HANDLE.");
         return;
     }
     // Note: We don't check sit_render.vk.device/queue/pool here as they should be valid if this function is called correctly after Begin. A check could be added if paranoia dictates.
@@ -9147,8 +9147,8 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
     if (result != VK_SUCCESS) {
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
-                 "_SituationVulkanEndSingleTimeCommands: vkEndCommandBuffer failed (VkResult: 0x%x).", result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
+                 "_SitRender_VulkanEndSingleTimeCommands: vkEndCommandBuffer failed (VkResult: 0x%x).", result);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
         // --- CRITICAL DECISION ---
         // If vkEndCommandBuffer fails, the command buffer is in an undefined state.
         // Attempting to submit it would be incorrect.
@@ -9174,8 +9174,8 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
     if (result != VK_SUCCESS) {
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
-                 "_SituationVulkanEndSingleTimeCommands: vkQueueSubmit failed (VkResult: 0x%x).", result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
+                 "_SitRender_VulkanEndSingleTimeCommands: vkQueueSubmit failed (VkResult: 0x%x).", result);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
         // --- CRITICAL CLEANUP ---
         // Even if submission fails, we must still free the command buffer
         // to prevent a resource leak.
@@ -9191,8 +9191,8 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
     if (result != VK_SUCCESS) {
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
-                 "_SituationVulkanEndSingleTimeCommands: vkQueueWaitIdle failed (VkResult: 0x%x).", result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
+                 "_SitRender_VulkanEndSingleTimeCommands: vkQueueWaitIdle failed (VkResult: 0x%x).", result);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
         // Note: Even if waiting fails (indicating a serious problem like device loss), we still attempt to free the command buffer. The device might be in a bad state, but cleanup is still the right intention.
     }
     // Note: No specific error handling for vkQueueWaitIdle failure beyond logging.
@@ -9205,7 +9205,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
 }
 
 
-// --- Updated/Added Documentation Block for _SituationReadSpirvFile ---
+// --- Updated/Added Documentation Block for _SitFS_ReadSpirvFile ---
 /**
  * @brief [INTERNAL] Reads a raw SPIR-V binary file into memory.
  *
@@ -9226,7 +9226,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
  *         - `out_size` is NULL.
  *         - `SituationLoadFileData` fails to open or read the file (e.g., file not found, permission denied, read error).
  *         - Memory allocation fails.
- *         In case of failure, `*out_size` is set to 0, and a specific error message is set via `_SituationSetErrorFromCode` (inherited from `SituationLoadFileData` or generated by this function).
+ *         In case of failure, `*out_size` is set to 0, and a specific error message is set via `_SitCore_SetErrorFromCode` (inherited from `SituationLoadFileData` or generated by this function).
  *
  * @note This function is for internal library use and is not part of the public API.
  * @note The returned pointer points to memory allocated using the standard `SIT_MALLOC`.
@@ -9237,15 +9237,15 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
  *
  * @see SituationLoadFileData(), SIT_FREE()
  */
-static char* _SituationReadSpirvFile(const char* filename, size_t* out_size) {
+static char* _SitFS_ReadSpirvFile(const char* filename, size_t* out_size) {
     // --- 1. Input Validation ---
     if (!filename) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationReadSpirvFile: filename cannot be NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitFS_ReadSpirvFile: filename cannot be NULL.");
         if (out_size) *out_size = 0;
         return NULL;
     }
     if (!out_size) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationReadSpirvFile: out_size cannot be NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitFS_ReadSpirvFile: out_size cannot be NULL.");
         // Cannot set *out_size to 0 as it's NULL, but error is set.
         return NULL;
     }
@@ -9265,9 +9265,9 @@ static char* _SituationReadSpirvFile(const char* filename, size_t* out_size) {
         // We can optionally prefix this message for context.
         char prefixed_error[SITUATION_MAX_ERROR_MSG_LEN];
         snprintf(prefixed_error, sizeof(prefixed_error),
-                 "_SituationReadSpirvFile: Failed to load file '%s'. Reason: %s",
+                 "_SitFS_ReadSpirvFile: Failed to load file '%s'. Reason: %s",
                  filename, SituationGetLastErrorMsg()); // Get error from SituationLoadFileData
-        _SituationSetError(prefixed_error); // Update global error with context
+        _SitCore_SetError(prefixed_error); // Update global error with context
         // *out_size is already 0.
         return NULL; // Return NULL to indicate failure
     }
@@ -9300,9 +9300,9 @@ static char* _SituationReadSpirvFile(const char* filename, size_t* out_size) {
  * @param include_depth The current nesting depth of includes (for recursion limits).
  *
  * @return A pointer to a `shaderc_include_result` struct containing the loaded source code or error info.
- *         The compiler will later pass this pointer to `_SituationShaderIncluderRelease`.
+ *         The compiler will later pass this pointer to `_SitRender_ShaderIncluderRelease`.
  */
-static shaderc_include_result* _SituationShaderIncluderResolve(
+static shaderc_include_result* _SitRender_ShaderIncluderResolve(
     void* user_data,
     const char* requested_source,
     int type,
@@ -9317,7 +9317,7 @@ static shaderc_include_result* _SituationShaderIncluderResolve(
     // Note: In a more complex engine, we would resolve relative paths based on 'requesting_source'.
     // For now, we assume paths are relative to the CWD or absolute.
     container->content = SituationLoadFileText(requested_source);
-    container->full_path = _sit_strdup(requested_source);
+    container->full_path = _SitUtils_Strdup(requested_source);
 
     if (container->content) {
         container->result.content = container->content;
@@ -9346,9 +9346,9 @@ static shaderc_include_result* _SituationShaderIncluderResolve(
  *          `shaderc_include_result` container structure itself.
  *
  * @param user_data Optional user context (unused).
- * @param include_result The pointer returned by `_SituationShaderIncluderResolve`.
+ * @param include_result The pointer returned by `_SitRender_ShaderIncluderResolve`.
  */
-static void _SituationShaderIncluderRelease(void* user_data, shaderc_include_result* include_result) {
+static void _SitRender_ShaderIncluderRelease(void* user_data, shaderc_include_result* include_result) {
     (void)user_data;
     _SitIncludeResult* container = (_SitIncludeResult*)include_result;
     if (container) {
@@ -9385,14 +9385,14 @@ static void _SituationShaderIncluderRelease(void* user_data, shaderc_include_res
  *         - On **failure**, the struct is zero-initialized (`{0}`), and the library's global error state (`sit_gs.last_error_msg`, `sit_gs.last_error_code`) is updated with a specific error code and a descriptive message (either from shaderc or an internal error).
  *
  * @note This function requires the `SITUATION_ENABLE_SHADER_COMPILER` define to be set, as it directly depends on the `shaderc` library.
- * @warning The returned `_SituationSpirvBlob` contains an `internal_result` object (`shaderc_compilation_result_t*`) that **must** be freed later by calling `_SituationFreeSpirvBlob` to prevent memory leaks within the shaderc library.
+ * @warning The returned `_SituationSpirvBlob` contains an `internal_result` object (`shaderc_compilation_result_t*`) that **must** be freed later by calling `_SitCore_FreeSpirvBlob` to prevent memory leaks within the shaderc library.
  *          Failing to do so will result in leaked resources.
  * @warning The pointers `blob.data` and `blob.size` are only valid as long as the `blob.internal_result` object exists and has not been released.
  *
- * @see _SituationFreeSpirvBlob(), _SituationCreateVulkanShaderModule(),
+ * @see _SitCore_FreeSpirvBlob(), _SitRender_CreateVulkanShaderModule(),
  *      SituationCreateComputePipelineFromMemory()
  */
-static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
+static _SituationSpirvBlob _SitRender_VulkanCompileGLSLtoSPIRV(
     const char* glsl_source,
     const char* source_name,
     shaderc_shader_kind shader_kind)
@@ -9403,7 +9403,7 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
     _SituationSpirvBlob blob = {0}; // Initialize return struct to zero/NULL
 
     if (!glsl_source) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCompileGLSLtoSPIRV: GLSL source code pointer is NULL." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SitRender_VulkanCompileGLSLtoSPIRV: GLSL source code pointer is NULL." );
         return blob; // Return zero-initialized struct
     }
     // Check for empty string (strlen(glsl_source) == 0) could also be done,
@@ -9415,7 +9415,7 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
         // This prevents a potential crash if shaderc internally uses source_name.
         source_name = "<unnamed_shader>";
         // Alternatively, return an error:
-        // _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCompileGLSLtoSPIRV: source_name is NULL.");
+        // _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitRender_VulkanCompileGLSLtoSPIRV: source_name is NULL.");
         // return blob;
     }
 
@@ -9427,14 +9427,14 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
     // Enable #include support
     shaderc_compile_options_set_include_callbacks(
         options,
-        _SituationShaderIncluderResolve,
-        _SituationShaderIncluderRelease,
+        _SitRender_ShaderIncluderResolve,
+        _SitRender_ShaderIncluderRelease,
         NULL // user_data
     );
 
     // Check if initialization was successful.
     if (!compiler) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_SHADER_COMPILATION_FAILED, "_SituationVulkanCompileGLSLtoSPIRV: Failed to initialize shaderc compiler." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_SHADER_COMPILATION_FAILED, "_SitRender_VulkanCompileGLSLtoSPIRV: Failed to initialize shaderc compiler." );
         // Clean up any potentially partially initialized object.
         if (options) {
             shaderc_compile_options_release(options);
@@ -9442,7 +9442,7 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
         return blob; // Return zero-initialized struct
     }
     if (!options) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_SHADER_COMPILATION_FAILED, "_SituationVulkanCompileGLSLtoSPIRV: Failed to initialize shaderc compile options." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_SHADER_COMPILATION_FAILED, "_SitRender_VulkanCompileGLSLtoSPIRV: Failed to initialize shaderc compile options." );
         // Clean up the successfully initialized compiler.
         shaderc_compiler_release(compiler);
         return blob; // Return zero-initialized struct
@@ -9489,7 +9489,7 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
     // A NULL internal_result here would indicate a fundamental failure in the
     // shaderc_compile_into_spv call itself, perhaps due to an internal error in shaderc.
     if (!blob.internal_result) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_SHADER_COMPILATION_FAILED, "_SituationVulkanCompileGLSLtoSPIRV: shaderc_compile_into_spv returned NULL result object." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_SHADER_COMPILATION_FAILED, "_SitRender_VulkanCompileGLSLtoSPIRV: shaderc_compile_into_spv returned NULL result object." );
         // No need to call shaderc_result_release as internal_result is NULL.
         return (_SituationSpirvBlob){0}; // Explicitly return zeroed struct
     }
@@ -9517,13 +9517,13 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
         snprintf(
             full_error_msg,
             sizeof(full_error_msg),
-            "_SituationVulkanCompileGLSLtoSPIRV: Shader compilation failed for '%s' (Status: %d). Details: %s",
+            "_SitRender_VulkanCompileGLSLtoSPIRV: Shader compilation failed for '%s' (Status: %d). Details: %s",
             source_name,
             (int)status,
             (error_message && strlen(error_message) > 0) ? error_message : "<no details from shaderc>"
         );
 
-        _SituationSetErrorFromCode(sit_error_code, full_error_msg);
+        _SitCore_SetErrorFromCode(sit_error_code, full_error_msg);
 
         // Clean up the shaderc result object associated with the failed compilation.
         shaderc_result_release(blob.internal_result);
@@ -9542,7 +9542,7 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
     // While unlikely if status is success, it's a good defensive measure.
     if (!blob.data || blob.size == 0) {
          // This is unexpected for a successful compilation.
-        _SituationSetErrorFromCode( SITUATION_ERROR_SHADER_COMPILATION_FAILED, "_SituationVulkanCompileGLSLtoSPIRV: Successful compilation yielded NULL data or zero size." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_SHADER_COMPILATION_FAILED, "_SitRender_VulkanCompileGLSLtoSPIRV: Successful compilation yielded NULL data or zero size." );
         // Clean up the result object.
         shaderc_result_release(blob.internal_result);
         blob.internal_result = NULL;
@@ -9551,7 +9551,7 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
 
     // --- 8. Return Successful Result ---
     // The blob struct is now fully populated with the successful compilation result.
-    // The caller is responsible for calling _SituationFreeSpirvBlob later.
+    // The caller is responsible for calling _SitCore_FreeSpirvBlob later.
     return blob;
 }
 
@@ -9563,13 +9563,13 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
  *
  * @param blob A pointer to the `_SituationSpirvBlob` struct whose `internal_result` member should be freed.
  *
- * @note It is safe to call this function on a `_SituationSpirvBlob` that has not been successfully initialized by `_SituationVulkanCompileGLSLtoSPIRV` (e.g., if `internal_result` is `NULL`). In such cases, the function will simply do nothing.
+ * @note It is safe to call this function on a `_SituationSpirvBlob` that has not been successfully initialized by `_SitRender_VulkanCompileGLSLtoSPIRV` (e.g., if `internal_result` is `NULL`). In such cases, the function will simply do nothing.
  * @note This function only frees the `internal_result`. It does not modify the `data` or `size` members of the `blob` struct itself. After calling this function, the `blob` struct should be considered invalid or re-initialized before reuse.
  * @warning The `blob` pointer itself is not freed by this function. If the `_SituationSpirvBlob` struct was allocated on the heap, the caller is still responsible for freeing that memory.
  *
- * @see _SituationVulkanCompileGLSLtoSPIRV(), _SituationSpirvBlob
+ * @see _SitRender_VulkanCompileGLSLtoSPIRV(), _SituationSpirvBlob
  */
-static void _SituationFreeSpirvBlob(_SituationSpirvBlob* blob) {
+static void _SitCore_FreeSpirvBlob(_SituationSpirvBlob* blob) {
     // --- 1. Input Validation ---
     // Check if the blob pointer itself is valid.
     if (!blob) {
@@ -9608,30 +9608,30 @@ static void _SituationFreeSpirvBlob(_SituationSpirvBlob* blob) {
  * @return `VK_NULL_HANDLE` if the function fails. This can occur if:
  *         - The input `code` pointer is `NULL`.
  *         - The `code_size` is 0.
- *         - The call to `vkCreateShaderModule` fails (e.g., due to invalid SPIR-V, driver issues, or device loss). A specific error message is set in the library's global error state via `_SituationSetErrorFromCode`.
+ *         - The call to `vkCreateShaderModule` fails (e.g., due to invalid SPIR-V, driver issues, or device loss). A specific error message is set in the library's global error state via `_SitCore_SetErrorFromCode`.
  *
  * @note This function requires that `sit_render.vk.device` is a valid and initialized `VkDevice` handle. This is guaranteed by the library's Vulkan initialization sequence if this function is called correctly.
  * @note The caller is responsible for destroying the returned `VkShaderModule` using `vkDestroyShaderModule` when it is no longer needed, typically after the pipeline using it has been created.
  * @warning The SPIR-V data pointed to by `code` is not validated by this function for correctness beyond basic size and pointer checks. Passing invalid SPIR-V can lead to errors during pipeline creation or runtime.
  *
- * @see _SituationVulkanCreateComputePipeline(), _SituationVulkanCreateGraphicsPipeline(), vkCreateShaderModule(), vkDestroyShaderModule()
+ * @see _SitRender_VulkanCreateComputePipeline(), _SitRender_VulkanCreateGraphicsPipeline(), vkCreateShaderModule(), vkDestroyShaderModule()
  */
-static VkShaderModule _SituationCreateVulkanShaderModule(const char* code, size_t code_size) {
+static VkShaderModule _SitRender_CreateVulkanShaderModule(const char* code, size_t code_size) {
     // --- 1. Input Validation ---
     // Check for invalid inputs before proceeding. This prevents crashes
     // and provides clearer error feedback early.
     if (!code) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationCreateVulkanShaderModule: SPIR-V code pointer is NULL." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SitRender_CreateVulkanShaderModule: SPIR-V code pointer is NULL." );
         return VK_NULL_HANDLE;
     }
     if (code_size == 0) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationCreateVulkanShaderModule: SPIR-V code size is zero." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SitRender_CreateVulkanShaderModule: SPIR-V code size is zero." );
         return VK_NULL_HANDLE;
     }
     // Optional: Check if code_size is a multiple of 4 (size of a SPIR-V word).
     // While vkCreateShaderModule might catch this, checking here is defensive.
     if (code_size % 4 != 0) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationCreateVulkanShaderModule: SPIR-V code size is not a multiple of 4 bytes." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SitRender_CreateVulkanShaderModule: SPIR-V code size is not a multiple of 4 bytes." );
         return VK_NULL_HANDLE;
     }
 
@@ -9665,10 +9665,10 @@ static VkShaderModule _SituationCreateVulkanShaderModule(const char* code, size_
         snprintf(
             error_detail,
             sizeof(error_detail),
-            "_SituationCreateVulkanShaderModule failed: vkCreateShaderModule returned VkResult 0x%x. Check SPIR-V validity or driver state.",
+            "_SitRender_CreateVulkanShaderModule failed: vkCreateShaderModule returned VkResult 0x%x. Check SPIR-V validity or driver state.",
             result
         );
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED, error_detail);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED, error_detail);
         // Ensure the output handle remains VK_NULL_HANDLE on failure.
         shader_module = VK_NULL_HANDLE;
         // Note: No need to call vkDestroyShaderModule as it wasn't successfully created.
@@ -9708,32 +9708,32 @@ static VkShaderModule _SituationCreateVulkanShaderModule(const char* code, size_
  * @note This function is a simplified helper and makes several assumptions about the rendering state. For example, the vertex input state is hardcoded. A production-ready engine would have a more flexible system for defining pipeline state objects based on material or mesh properties.
  * @warning This function is for internal use only.
  *
- * @see SituationLoadShader(), _SituationReadSpirvFile(), _SituationVulkanCreateShaderModule()
+ * @see SituationLoadShader(), _SitFS_ReadSpirvFile(), _SitRender_VulkanCreateShaderModule()
  */
-static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const char* fs_path) {
+static SituationShader _SitRender_CreateVulkanPipeline(const char* vs_path, const char* fs_path) {
     SituationShader shader = {0};
 
     // 1. Load SPIR-V Bytecode
     size_t vs_size, fs_size;
-    char* vs_code = _SituationReadSpirvFile(vs_path, &vs_size);
-    char* fs_code = _SituationReadSpirvFile(fs_path, &fs_size);
+    char* vs_code = _SitFS_ReadSpirvFile(vs_path, &vs_size);
+    char* fs_code = _SitFS_ReadSpirvFile(fs_path, &fs_size);
     if (!vs_code || !fs_code) {
         if(vs_code) SIT_FREE(vs_code);
         if(fs_code) SIT_FREE(fs_code);
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to read SPIR-V shader files");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to read SPIR-V shader files");
         return shader;
     }
 
     // 2. Create Shader Modules
-    VkShaderModule vs_module = _SituationCreateVulkanShaderModule(vs_code, vs_size);
-    VkShaderModule fs_module = _SituationCreateVulkanShaderModule(fs_code, fs_size);
+    VkShaderModule vs_module = _SitRender_CreateVulkanShaderModule(vs_code, vs_size);
+    VkShaderModule fs_module = _SitRender_CreateVulkanShaderModule(fs_code, fs_size);
     SIT_FREE(vs_code);
     SIT_FREE(fs_code);
 
     if (vs_module == VK_NULL_HANDLE || fs_module == VK_NULL_HANDLE) {
         if(vs_module) vkDestroyShaderModule(sit_render.vk.device, vs_module, NULL);
         if(fs_module) vkDestroyShaderModule(sit_render.vk.device, fs_module, NULL);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create shader modules");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create shader modules");
         return shader;
     }
 
@@ -9783,7 +9783,7 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
     if (result != VK_SUCCESS) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "vkCreateGraphicsPipelines failed: VkResult = %d", (int)result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, err_msg);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, err_msg);
 
         // Clean up shader modules (existing)
         if (vs_module != VK_NULL_HANDLE) {
@@ -9818,7 +9818,7 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
  * @param[out] out_pool The pool that the set was allocated from (needed for freeing).
  * @return A valid VkDescriptorSet, or VK_NULL_HANDLE on critical failure.
  */
-static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool* out_pool) {
+static VkDescriptorSet _SitRender_VulkanAllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool* out_pool) {
     VkDescriptorSetAllocateInfo alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorSetCount = 1,
@@ -9883,7 +9883,7 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
 
     VkDescriptorPool new_pool;
     if (vkCreateDescriptorPool(sit_render.vk.device, &pool_info, NULL, &new_pool) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_POOL_EXHAUSTED, "Critical: Failed to create new descriptor pool.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_POOL_EXHAUSTED, "Critical: Failed to create new descriptor pool.");
         return VK_NULL_HANDLE;
     }
 
@@ -9892,7 +9892,7 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
         int new_cap = (sit_render.vk.descriptor_manager.capacity == 0) ? 4 : sit_render.vk.descriptor_manager.capacity * 2;
         void* new_pools = SIT_REALLOC(sit_render.vk.descriptor_manager.pools, new_cap * sizeof(VkDescriptorPool));
         if (!new_pools) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to resize descriptor pool list.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to resize descriptor pool list.");
             vkDestroyDescriptorPool(sit_render.vk.device, new_pool, NULL);
             return VK_NULL_HANDLE;
         }
@@ -9909,7 +9909,7 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
     // Allocate from the fresh pool (Should always succeed)
     alloc_info.descriptorPool = new_pool;
     if (vkAllocateDescriptorSets(sit_render.vk.device, &alloc_info, &out_set) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Allocation failed on fresh pool (Driver Error?)");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Allocation failed on fresh pool (Driver Error?)");
         return VK_NULL_HANDLE;
     }
     
@@ -9938,35 +9938,35 @@ static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayo
  * @return SITUATION_SUCCESS on successful initialization of all Vulkan components.
  * @return An appropriate `SituationError` code if any phase of the initialization fails. The function will halt on the first error and return immediately.
  *
- * @note This is a complex orchestrator function. Each sub-step (e.g., `_SituationVulkanCreateInstance`) is handled by a dedicated helper function for clarity and modularity.
+ * @note This is a complex orchestrator function. Each sub-step (e.g., `_SitCore_VulkanCreateInstance`) is handled by a dedicated helper function for clarity and modularity.
  * @warning This function is for internal use by `SituationInit` only and must not be called directly.
- *          It assumes that `_SituationInitPlatform` and `_SituationInitWindow` have already been called successfully.
+ *          It assumes that `_SitCore_InitPlatform` and `_SitPlatform_InitWindow` have already been called successfully.
  */
-static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
+static SituationError _SitCore_InitVulkan(const SituationInitInfo* init_info) {
     // --- Phase 1: Establish Core Vulkan API Handles ---
-    if (_SituationVulkanCreateInstance(init_info) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_INSTANCE_FAILED; }
-    if (_SituationVulkanSetupDebugMessenger(init_info) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_INSTANCE_FAILED; }
-    if (_SituationVulkanCreateSurface() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_INIT_FAILED; }
-    if (_SituationVulkanPickPhysicalDevice() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DEVICE_FAILED; }
+    if (_SitCore_VulkanCreateInstance(init_info) != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_INSTANCE_FAILED; }
+    if (_SitCore_VulkanSetupDebugMessenger(init_info) != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_INSTANCE_FAILED; }
+    if (_SitCore_VulkanCreateSurface() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_INIT_FAILED; }
+    if (_SitRender_VulkanPickPhysicalDevice() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_DEVICE_FAILED; }
 
     if (init_info && init_info->force_single_queue) {
         sit_render.vk.compute_family_index = sit_render.vk.graphics_family_index;
     }
 
-    if (_SituationVulkanCreateLogicalDevice(init_info) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DEVICE_FAILED; }
-    if (_SituationVulkanCreateAllocator() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
-    if (_SituationVulkanCreateCommandPool() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_COMMAND_FAILED; }
+    if (_SitRender_VulkanCreateLogicalDevice(init_info) != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_DEVICE_FAILED; }
+    if (_SitCore_VulkanCreateAllocator() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
+    if (_SitRender_VulkanCreateCommandPool() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_COMMAND_FAILED; }
 
     // --- Phase 2: Determine Dynamic Frame Count & Allocate Per-Frame State ---
     uint32_t desired_frames = (init_info->max_frames_in_flight > 1) ? init_info->max_frames_in_flight : 2;
     _SituationVulkanSwapchainSupportDetails support_details;
-    _SituationVulkanQuerySwapchainSupport(sit_render.vk.physical_device, &support_details);
+    _SitRender_VulkanQuerySwapchainSupport(sit_render.vk.physical_device, &support_details);
 
     uint32_t image_count = support_details.capabilities.minImageCount + 1;
     if (support_details.capabilities.maxImageCount > 0 && image_count > support_details.capabilities.maxImageCount) {
         image_count = support_details.capabilities.maxImageCount;
     }
-    _SituationVulkanFreeSwapchainSupportDetails(&support_details);
+    _SitRender_VulkanFreeSwapchainSupportDetails(&support_details);
 
     sit_render.vk.max_frames_in_flight = (desired_frames < image_count) ? desired_frames : image_count;
     printf("Situation [Vulkan]: Using %u frames in flight.\n", sit_render.vk.max_frames_in_flight);
@@ -9985,21 +9985,21 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     sit_render.vk.graveyards = SIT_CALLOC(frame_count, sizeof(_SituationVKGraveyard));
 
     if (!sit_render.vk.command_buffers || !sit_render.vk.compute_command_buffers || !sit_render.vk.image_available_semaphores || !sit_render.vk.render_finished_semaphores || !sit_render.vk.compute_finished_semaphores || !sit_render.vk.in_flight_fences || !sit_render.vk.view_proj_ubo_buffer || !sit_render.vk.view_proj_ubo_memory || !sit_render.vk.view_proj_ubo_descriptor_set || !sit_render.vk.graveyards) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Per-frame Vulkan resource arrays");
-        _SituationCleanupVulkan(); // The main cleanup function will free any non-NULL arrays
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Per-frame Vulkan resource arrays");
+        _SitCore_CleanupVulkan(); // The main cleanup function will free any non-NULL arrays
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
 
     for (uint32_t i = 0; i < frame_count; i++) {
-        _SituationInitGraveyard(&sit_render.vk.graveyards[i]);
+        _SitCore_InitGraveyard(&sit_render.vk.graveyards[i]);
     }
 
     // --- Phase 3 & 4: Frame-Independent and Descriptor Infrastructure ---
-    if (_SituationVulkanCreateSwapchain() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED; }
-    if (_SituationVulkanCreateImageViews() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED; }
-    if (_SituationVulkanCreateRenderPass() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_RENDERPASS_FAILED; }
-    if (_SituationVulkanCreateDepthResources() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED; }
-    if (_SituationVulkanCreateFramebuffers() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED; }
+    if (_SitRender_VulkanCreateSwapchain() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED; }
+    if (_SitRender_VulkanCreateImageViews() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED; }
+    if (_SitRender_VulkanCreateRenderPass() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_RENDERPASS_FAILED; }
+    if (_SitCore_VulkanCreateDepthResources() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED; }
+    if (_SitRender_VulkanCreateFramebuffers() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED; }
 
     // --- Descriptor Pool & Manager Setup ---
     VkDescriptorPoolSize pool_sizes[] = {
@@ -10027,16 +10027,16 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
 
     // 1. Create the initial persistent pool
     if (vkCreateDescriptorPool(sit_render.vk.device, &pool_info, NULL, &sit_render.vk.persistent_descriptor_pool) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create unified descriptor pool.");
-        _SituationCleanupVulkan();
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create unified descriptor pool.");
+        _SitCore_CleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
     VkDescriptorSetLayoutBinding dynamic_ubo_binding = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo dynamic_ubo_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &dynamic_ubo_binding };
     if (vkCreateDescriptorSetLayout(sit_render.vk.device, &dynamic_ubo_layout_info, NULL, &sit_render.vk.dynamic_ubo_layout) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create dynamic UBO layout.");
-        _SituationCleanupVulkan();
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create dynamic UBO layout.");
+        _SitCore_CleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
     
@@ -10048,7 +10048,7 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     sit_render.vk.descriptor_manager.capacity = 4;
     sit_render.vk.descriptor_manager.pools = (VkDescriptorPool*)SIT_MALLOC(sizeof(VkDescriptorPool) * 4);
     if (!sit_render.vk.descriptor_manager.pools) {
-        _SituationCleanupVulkan();
+        _SitCore_CleanupVulkan();
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
     sit_render.vk.descriptor_manager.pools[0] = sit_render.vk.persistent_descriptor_pool;
@@ -10059,16 +10059,16 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     VkDescriptorSetLayoutBinding ubo_binding = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo ubo_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &ubo_binding };
     if (vkCreateDescriptorSetLayout(sit_render.vk.device, &ubo_layout_info, NULL, &sit_render.vk.ubo_layout) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create UBO layout.");
-        _SituationCleanupVulkan();
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create UBO layout.");
+        _SitCore_CleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
     VkDescriptorSetLayoutBinding ssbo_binding = { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo ssbo_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &ssbo_binding };
     if (vkCreateDescriptorSetLayout(sit_render.vk.device, &ssbo_layout_info, NULL, &sit_render.vk.ssbo_layout) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create SSBO layout.");
-        _SituationCleanupVulkan();
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create SSBO layout.");
+        _SitCore_CleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
@@ -10076,21 +10076,21 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     VkDescriptorSetLayoutBinding ubo_layout_binding_internal = { SIT_UBO_BINDING_VIEW_DATA, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo ubo_layout_info_internal = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &ubo_layout_binding_internal };
     if (vkCreateDescriptorSetLayout(sit_render.vk.device, &ubo_layout_info_internal, NULL, &sit_render.vk.view_data_ubo_layout) != VK_SUCCESS) {
-        _SituationCleanupVulkan();
+        _SitCore_CleanupVulkan();
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
     VkDescriptorSetLayoutBinding sampler_layout_binding = { SIT_SAMPLER_BINDING_VD_SOURCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo sampler_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &sampler_layout_binding };
     if (vkCreateDescriptorSetLayout(sit_render.vk.device, &sampler_layout_info, NULL, &sit_render.vk.image_sampler_layout) != VK_SUCCESS) {
-         _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+         _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
     // Bindings for storage images usually happen in Compute or Fragment stages
     VkDescriptorSetLayoutBinding storage_img_binding = { 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo storage_img_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &storage_img_binding };
     if (vkCreateDescriptorSetLayout(sit_render.vk.device, &storage_img_info, NULL, &sit_render.vk.storage_image_layout) != VK_SUCCESS) {
-         _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+         _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
     // --- Dynamic Vertex Buffer Initialization ---
@@ -10110,7 +10110,7 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
             &sit_render.vk.dynamic_vbo[i], 
             &sit_render.vk.dynamic_vbo_alloc[i], 
             NULL) != VK_SUCCESS) {
-            _SituationCleanupVulkan();
+            _SitCore_CleanupVulkan();
             return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
         }
         // Get the mapped pointer
@@ -10120,19 +10120,19 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     }
     
     // --- Phase 5 & 6: Per-Frame Objects and Internal Renderers ---
-    if (_SituationVulkanCreateCommandBuffers() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_COMMAND_FAILED; }
-    if (_SituationVulkanCreateSyncObjects() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED; }
+    if (_SitRender_VulkanCreateCommandBuffers() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_COMMAND_FAILED; }
+    if (_SitCore_VulkanCreateSyncObjects() != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED; }
 
     for (uint32_t i = 0; i < frame_count; i++) {
         VkDeviceSize buffer_size = sizeof(ViewDataUBO);
         // Passing NULL cmd forces synchronous upload for init
-        if (_SituationVulkanCreateAndUploadBuffer(VK_NULL_HANDLE, NULL, buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &sit_render.vk.view_proj_ubo_buffer[i], &sit_render.vk.view_proj_ubo_memory[i]) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
+        if (_SitRender_VulkanCreateAndUploadBuffer(VK_NULL_HANDLE, NULL, buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &sit_render.vk.view_proj_ubo_buffer[i], &sit_render.vk.view_proj_ubo_memory[i]) != SITUATION_SUCCESS) { _SitCore_CleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
 
         // [FIX v2.3.27B] Updated to pass NULL for pool tracking (View UBOs persist until shutdown)
-        sit_render.vk.view_proj_ubo_descriptor_set[i] = _SituationVulkanAllocateDescriptorSet(sit_render.vk.view_data_ubo_layout, NULL);
+        sit_render.vk.view_proj_ubo_descriptor_set[i] = _SitRender_VulkanAllocateDescriptorSet(sit_render.vk.view_data_ubo_layout, NULL);
         
         if (sit_render.vk.view_proj_ubo_descriptor_set[i] == VK_NULL_HANDLE) {
-            _SituationCleanupVulkan();
+            _SitCore_CleanupVulkan();
             return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
         }
 
@@ -10141,26 +10141,26 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         vkUpdateDescriptorSets(sit_render.vk.device, 1, &write, 0, NULL);
     }
 
-    if (_SituationVulkanInitComputeLayouts() != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create pre-defined compute pipeline layouts.");
-        _SituationCleanupVulkan();
+    if (_SitRender_VulkanInitComputeLayouts() != SITUATION_SUCCESS) {
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create pre-defined compute pipeline layouts.");
+        _SitCore_CleanupVulkan();
         return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
     }
 
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     // 1. Initialize the Quad Renderer (Shared Function)
     // Note: Width/Height are ignored by Vulkan path, passing 0 is safe.
-    if (!_SituationInitQuadRenderer(0, 0)) {
-        _SituationCleanupVulkan();
+    if (!_SitRender_InitQuadRenderer(0, 0)) {
+        _SitCore_CleanupVulkan();
         return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
     }
 
-    _SituationInitDefaultFont();
+    _SitCore_InitDefaultFont();
 
     // 2. Initialize Virtual Display Renderers
-    // (We keep _SituationVulkanInitInternalRenderers for VDs, but we must strip the quad logic from it)
-    if (!_SituationVulkanInitInternalRenderers()) {
-        _SituationCleanupVulkan();
+    // (We keep _SitRender_VulkanInitInternalRenderers for VDs, but we must strip the quad logic from it)
+    if (!_SitRender_VulkanInitInternalRenderers()) {
+        _SitCore_CleanupVulkan();
         return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
     }
 #else
@@ -10171,8 +10171,8 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     sit_render.vk.advanced_compositing_pipeline = VK_NULL_HANDLE;
 #endif
 
-    if (!_SituationInitStagingBuffers()) {
-        _SituationCleanupVulkan();
+    if (!_SitRender_InitStagingBuffers()) {
+        _SitCore_CleanupVulkan();
         return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
     }
 
@@ -10205,7 +10205,7 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
  *       If the total required extensions exceed this limit, an error message is logged, and the function's behavior is undefined (likely truncation or crash).
  *       This limit is considered sufficient for standard use cases.
  *
- * @see _SituationVulkanCreateInstance()
+ * @see _SitCore_VulkanCreateInstance()
  */
 static const char** _SituationVulkanGetRequiredExtensions(uint32_t* out_extension_count, bool enable_validation) {
     // --- 1. Input Validation ---
@@ -10213,7 +10213,7 @@ static const char** _SituationVulkanGetRequiredExtensions(uint32_t* out_extensio
         // Cannot output the count, so the result would be unusable.
         // This is a logic error in the caller.
         // fprintf(stderr, "ERROR: _SituationVulkanGetRequiredExtensions: out_extension_count is NULL.\n");
-        // Using _SituationSetErrorFromCode might be overkill for an internal helper,
+        // Using _SitCore_SetErrorFromCode might be overkill for an internal helper,
         // but could be considered if the library does this for internal helpers.
         return NULL;
     }
@@ -10312,12 +10312,12 @@ static const char** _SituationVulkanGetRequiredExtensions(uint32_t* out_extensio
  * @note This function relies on `_SituationVulkanGetRequiredExtensions` to determine the list of necessary instance extensions.
  * @note The created `VkInstance` handle is stored in `sit_render.vk.instance`.
  *
- * @see _SituationInitVulkan(), _SituationVulkanGetRequiredExtensions()
+ * @see _SitCore_InitVulkan(), _SituationVulkanGetRequiredExtensions()
  */
-static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* init_info) {
+static SituationError _SitCore_VulkanCreateInstance(const SituationInitInfo* init_info) {
     // --- 1. Input Validation ---
     if (!init_info) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateInstance: init_info is NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitCore_VulkanCreateInstance: init_info is NULL.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
@@ -10330,20 +10330,20 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
         // Query the number of available instance layer properties.
         VkResult enumerate_result = vkEnumerateInstanceLayerProperties(&layer_count, NULL);
         if (enumerate_result != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "Failed to enumerate Vulkan instance layer properties.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "Failed to enumerate Vulkan instance layer properties.");
             return SITUATION_ERROR_VULKAN_UNSUPPORTED;
         }
 
         // If no layers are available at all, validation cannot be enabled.
         if (layer_count == 0) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "No Vulkan validation layers found on the system.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "No Vulkan validation layers found on the system.");
              return SITUATION_ERROR_VULKAN_UNSUPPORTED;
         }
 
         // Allocate memory to hold the list of available layers.
         VkLayerProperties* available_layers = (VkLayerProperties*)SIT_MALLOC(sizeof(VkLayerProperties) * layer_count);
         if (!available_layers) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate memory for Vulkan instance layer properties.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate memory for Vulkan instance layer properties.");
              return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
 
@@ -10351,7 +10351,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
         enumerate_result = vkEnumerateInstanceLayerProperties(&layer_count, available_layers);
         if (enumerate_result != VK_SUCCESS) {
             SIT_FREE(available_layers);
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "Failed to enumerate Vulkan instance layer properties (second query).");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "Failed to enumerate Vulkan instance layer properties (second query).");
             return SITUATION_ERROR_VULKAN_UNSUPPORTED;
         }
 
@@ -10370,7 +10370,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
 
         // If the required validation layer was not found, report an error.
         if (!layer_found) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "Validation layer 'VK_LAYER_KHRONOS_validation' requested but not available!");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "Validation layer 'VK_LAYER_KHRONOS_validation' requested but not available!");
             return SITUATION_ERROR_VULKAN_UNSUPPORTED;
         }
         // If layer_found is true, we can proceed with enabling the layer.
@@ -10403,7 +10403,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
         // If it returns NULL with extension_count=0, it might be okay (no extensions needed),
         // but GLFW needing none is unusual. Treat as an error condition.
         if (extension_count == 0) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "GLFW reported no required Vulkan instance extensions, or failed to query them.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "GLFW reported no required Vulkan instance extensions, or failed to query them.");
         } // Else, error set by _SituationVulkanGetRequiredExtensions
         // If _SituationVulkanGetRequiredExtensions sets its own error, we could just return its code.
         // Assuming it sets SITUATION_ERROR_VULKAN_UNSUPPORTED on its critical failures.
@@ -10446,7 +10446,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
                  "vkCreateInstance failed with VkResult 0x%x. Possible causes: unsupported API version, missing extensions/layers, driver issues.", create_result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_INSTANCE_FAILED, error_detail);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_INSTANCE_FAILED, error_detail);
         return SITUATION_ERROR_VULKAN_INSTANCE_FAILED;
     }
 
@@ -10476,7 +10476,7 @@ static SituationError _SituationVulkanCreateInstance(const SituationInitInfo* in
  * @warning This function is called asynchronously from internal Vulkan threads.
  *          Therefore, it must be thread-safe. Using `fprintf` to `stderr` is generally acceptable for this purpose.
  *
- * @see _SituationVulkanSetupDebugMessenger(), VkDebugUtilsMessengerCallbackDataEXT
+ * @see _SitCore_VulkanSetupDebugMessenger(), VkDebugUtilsMessengerCallbackDataEXT
  */
 static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
     // --- 1. Input Validation (Defensive for callback) ---
@@ -10542,7 +10542,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback( VkDebugUtil
     return VK_FALSE;
 }
 
-// --- Updated/Added Documentation Block for _SituationVulkanSetupDebugMessenger ---
+// --- Updated/Added Documentation Block for _SitCore_VulkanSetupDebugMessenger ---
 /**
  * @brief [INTERNAL] Sets up the Vulkan Debug Utils Messenger for validation layer output.
  *
@@ -10564,15 +10564,15 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback( VkDebugUtil
  * @return SITUATION_ERROR_VULKAN_INSTANCE_FAILED if the required `vkCreateDebugUtilsMessengerEXT` function pointer cannot be loaded, or if the call to create the messenger fails. A specific error message is set.
  *
  * @note This function must be called after the Vulkan instance (`sit_render.vk.instance`) has been successfully created.
- * @note The created messenger (`sit_render.vk.debug_messenger`) is destroyed by `_SituationCleanupVulkan`.
+ * @note The created messenger (`sit_render.vk.debug_messenger`) is destroyed by `_SitCore_CleanupVulkan`.
  * @warning This function should only be called when using the Vulkan backend (`SITUATION_USE_VULKAN` is defined).
  *
- * @see _SituationVulkanDebugCallback(), _SituationInitVulkan(), _SituationVulkanCreateInstance(), _SituationCleanupVulkan(), vkCreateDebugUtilsMessengerEXT()
+ * @see _SituationVulkanDebugCallback(), _SitCore_InitVulkan(), _SitCore_VulkanCreateInstance(), _SitCore_CleanupVulkan(), vkCreateDebugUtilsMessengerEXT()
  */
-static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInfo* init_info) {
+static SituationError _SitCore_VulkanSetupDebugMessenger(const SituationInitInfo* init_info) {
     // --- 1. Input Validation ---
     if (!init_info) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanSetupDebugMessenger: init_info cannot be NULL." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SitCore_VulkanSetupDebugMessenger: init_info cannot be NULL." );
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
@@ -10623,7 +10623,7 @@ static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInf
     if (vkCreateDebugUtilsMessengerEXT_func == NULL) {
         // The function pointer could not be loaded. This usually means the
         // VK_EXT_debug_utils extension is not available or not properly loaded.
-        _SituationSetErrorFromCode( SITUATION_ERROR_VULKAN_INSTANCE_FAILED, "_SituationVulkanSetupDebugMessenger: Failed to load vkCreateDebugUtilsMessengerEXT function pointer. Check if VK_EXT_debug_utils is supported." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_VULKAN_INSTANCE_FAILED, "_SitCore_VulkanSetupDebugMessenger: Failed to load vkCreateDebugUtilsMessengerEXT function pointer. Check if VK_EXT_debug_utils is supported." );
         // Ensure the handle is explicitly invalid.
         sit_render.vk.debug_messenger = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_INSTANCE_FAILED;
@@ -10645,10 +10645,10 @@ static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInf
         snprintf(
             error_detail,
             sizeof(error_detail),
-            "_SituationVulkanSetupDebugMessenger: vkCreateDebugUtilsMessengerEXT failed (VkResult: 0x%x).",
+            "_SitCore_VulkanSetupDebugMessenger: vkCreateDebugUtilsMessengerEXT failed (VkResult: 0x%x).",
             result
         );
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_INSTANCE_FAILED, error_detail);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_INSTANCE_FAILED, error_detail);
         // Ensure the global handle is explicitly invalid on failure.
         sit_render.vk.debug_messenger = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_INSTANCE_FAILED;
@@ -10657,7 +10657,7 @@ static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInf
     // --- 7. Success ---
     // If we reach here, the VkDebugUtilsMessengerEXT was created successfully.
     // The handle is stored in sit_render.vk.debug_messenger.
-    // It will receive messages from the validation layers until it is destroyed by _SituationCleanupVulkan (which should use vkDestroyDebugUtilsMessengerEXT).
+    // It will receive messages from the validation layers until it is destroyed by _SitCore_CleanupVulkan (which should use vkDestroyDebugUtilsMessengerEXT).
     // The next step in Vulkan initialization is typically picking a physical device.
     return SITUATION_SUCCESS;
 }
@@ -10680,7 +10680,7 @@ static SituationError _SituationVulkanSetupDebugMessenger(const SituationInitInf
  *
  * @return `SITUATION_SUCCESS` on success, or `SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED`.
  */
-static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation) {
+static SituationError _SitRender_VulkanCreateImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation) {
     VkImageCreateInfo image_info = {0};
     image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_info.imageType = VK_IMAGE_TYPE_2D;
@@ -10700,7 +10700,7 @@ static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t heigh
     alloc_info.usage = memory_usage;
 
     if (vmaCreateImage(sit_render.vk.vma_allocator, &image_info, &alloc_info, out_image, out_allocation, NULL) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create/allocate image.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create/allocate image.");
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
     return SITUATION_SUCCESS;
@@ -10724,18 +10724,18 @@ static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t heigh
  * @note This function relies on the `VK_KHR_surface` extension being enabled (which is typically done automatically by GLFW when `glfwCreateWindowSurface` is called) and the appropriate platform-specific surface extension (e.g., `VK_KHR_win32_surface`, `VK_KHR_xcb_surface`).
  * @warning This function should only be called when using the Vulkan backend (`SITUATION_USE_VULKAN` is defined).
  *
- * @see _SituationInitVulkan(), _SituationVulkanCreateInstance(), _SituationInitWindow(), glfwCreateWindowSurface(), vkDestroySurfaceKHR()
+ * @see _SitCore_InitVulkan(), _SitCore_VulkanCreateInstance(), _SitPlatform_InitWindow(), glfwCreateWindowSurface(), vkDestroySurfaceKHR()
  */
-static SituationError _SituationVulkanCreateSurface(void) {
+static SituationError _SitCore_VulkanCreateSurface(void) {
     // --- 1. Input Validation (Defensive for internal helper) ---
     // Check if the prerequisite Vulkan instance and GLFW window handles are valid.
     // While the library's init sequence should guarantee this, checking adds robustness.
     if (sit_render.vk.instance == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateSurface: Vulkan instance is NULL. Call _SituationVulkanCreateInstance first." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SitCore_VulkanCreateSurface: Vulkan instance is NULL. Call _SitCore_VulkanCreateInstance first." );
         return SITUATION_ERROR_INVALID_PARAM;
     }
     if (sit_gs.sit_glfw_window == NULL) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateSurface: GLFW window is NULL. Call _SituationInitWindow first." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SitCore_VulkanCreateSurface: GLFW window is NULL. Call _SitPlatform_InitWindow first." );
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
@@ -10762,10 +10762,10 @@ static SituationError _SituationVulkanCreateSurface(void) {
         snprintf(
             error_detail,
             sizeof(error_detail),
-            "_SituationVulkanCreateSurface failed: glfwCreateWindowSurface returned VkResult 0x%x. Check Vulkan/Window compatibility or platform setup.",
+            "_SitCore_VulkanCreateSurface failed: glfwCreateWindowSurface returned VkResult 0x%x. Check Vulkan/Window compatibility or platform setup.",
             result
         );
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_INIT_FAILED, error_detail);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_INIT_FAILED, error_detail);
         // Ensure the global surface handle is explicitly invalid on failure.
         sit_render.vk.surface = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_INIT_FAILED;
@@ -10783,11 +10783,11 @@ static SituationError _SituationVulkanCreateSurface(void) {
 /**
  * @brief [INTERNAL] Enumerates available GPUs and selects the most suitable one for the application.
  * @details This function is a critical step in the Vulkan initialization process. It queries the system for all Vulkan-capable physical devices and evaluates each one against a set of criteria to find the best fit.
- *          The selection is performed using a scoring system implemented in the `_SituationIsDeviceSuitable` helper function.
+ *          The selection is performed using a scoring system implemented in the `_SitRender_IsDeviceSuitable` helper function.
  *
  * @par Selection Logic
  *   1.  Enumerates all `VkPhysicalDevice`s present on the system.
- *   2.  For each device, it calls `_SituationIsDeviceSuitable` which performs pass/fail checks for essential features:
+ *   2.  For each device, it calls `_SitRender_IsDeviceSuitable` which performs pass/fail checks for essential features:
  *       - Support for a graphics queue family.
  *       - Support for a presentation queue family compatible with the window surface.
  *       - Availability of the `VK_KHR_swapchain` device extension.
@@ -10801,15 +10801,15 @@ static SituationError _SituationVulkanCreateSurface(void) {
  * @return SITUATION_ERROR_VULKAN_DEVICE_FAILED if no Vulkan-capable GPUs are found, or if none of the found GPUs meet the minimum suitability requirements.
  *
  * @note This function must be called after the `VkInstance` and `VkSurfaceKHR` have been successfully created.
- * @warning This function is for internal use by `_SituationInitVulkan` only and should not be called directly.
+ * @warning This function is for internal use by `_SitCore_InitVulkan` only and should not be called directly.
  *
- * @see _SituationInitVulkan(), _SituationIsDeviceSuitable(), _SituationVulkanFindQueueFamilies()
+ * @see _SitCore_InitVulkan(), _SitRender_IsDeviceSuitable(), _SitCore_VulkanFindQueueFamilies()
  */
-static SituationError _SituationVulkanPickPhysicalDevice(void) {
+static SituationError _SitRender_VulkanPickPhysicalDevice(void) {
     uint32_t device_count = 0;
     vkEnumeratePhysicalDevices(sit_render.vk.instance, &device_count, NULL);
     if (device_count == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DEVICE_FAILED, "Failed to find GPUs with Vulkan support.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DEVICE_FAILED, "Failed to find GPUs with Vulkan support.");
         return SITUATION_ERROR_VULKAN_DEVICE_FAILED;
     }
 
@@ -10821,7 +10821,7 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
 
     // Iterate over all devices and find the one with the highest score
     for (uint32_t i = 0; i < device_count; i++) {
-        int score = _SituationIsDeviceSuitable(devices[i]);
+        int score = _SitRender_IsDeviceSuitable(devices[i]);
         if (score > max_score) {
             max_score = score;
             best_device = devices[i];
@@ -10831,13 +10831,13 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
     SIT_FREE(devices);
 
     if (best_device == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DEVICE_FAILED, "Failed to find any suitable GPU.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DEVICE_FAILED, "Failed to find any suitable GPU.");
         return SITUATION_ERROR_VULKAN_DEVICE_FAILED;
     }
 
     // Store the best device and its queue family indices
     sit_render.vk.physical_device = best_device;
-    _SituationQueueFamilyIndices indices = _SituationVulkanFindQueueFamilies(best_device, sit_render.vk.surface);
+    _SituationQueueFamilyIndices indices = _SitCore_VulkanFindQueueFamilies(best_device, sit_render.vk.surface);
     sit_render.vk.graphics_family_index = indices.graphics_family;
     sit_render.vk.present_family_index = indices.present_family;
     sit_render.vk.compute_family_index = indices.compute_family_has_value ? indices.compute_family : indices.graphics_family;
@@ -10855,7 +10855,7 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
  * @details This function creates the `VkDevice` (the logical device), which is the primary interface for interacting with the selected physical device. It specifies which features, extensions, and queue families the application will use.
  *
  * @par Creation Process
- *   1.  **Queue Configuration:** It prepares one or two `VkDeviceQueueCreateInfo` structs based on the graphics and present queue family indices found by `_SituationVulkanPickPhysicalDevice`. If the indices are the same, only one queue is requested; otherwise, two are requested.
+ *   1.  **Queue Configuration:** It prepares one or two `VkDeviceQueueCreateInfo` structs based on the graphics and present queue family indices found by `_SitRender_VulkanPickPhysicalDevice`. If the indices are the same, only one queue is requested; otherwise, two are requested.
  *   2.  **Feature Enablement:** It specifies the set of `VkPhysicalDeviceFeatures` to enable. Currently, this is an empty set, but it can be expanded to request features like geometry shaders or anisotropic filtering.
  *   3.  **Extension Enablement:** It builds a list of required device-level extensions. This always includes `VK_KHR_swapchain` for rendering to a window and may include platform-specific extensions like `"VK_KHR_portability_subset"` on macOS.
  *   4.  **Device Creation:** It calls `vkCreateDevice` with the configured queues, features, and extensions to create the logical device handle.
@@ -10866,12 +10866,12 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
  * @return SITUATION_SUCCESS on successful creation of the logical device and retrieval of queue handles.
  * @return SITUATION_ERROR_VULKAN_DEVICE_FAILED if `vkCreateDevice` fails. This can happen if requested features or extensions are not supported by the physical device.
  *
- * @note This function must be called after a `VkPhysicalDevice` has been successfully selected by `_SituationVulkanPickPhysicalDevice`.
- * @warning This function is for internal use by `_SituationInitVulkan` only and should not be called directly.
+ * @note This function must be called after a `VkPhysicalDevice` has been successfully selected by `_SitRender_VulkanPickPhysicalDevice`.
+ * @warning This function is for internal use by `_SitCore_InitVulkan` only and should not be called directly.
  *
- * @see _SituationInitVulkan(), _SituationVulkanPickPhysicalDevice(), vkCreateDevice(), vkGetDeviceQueue()
+ * @see _SitCore_InitVulkan(), _SitRender_VulkanPickPhysicalDevice(), vkCreateDevice(), vkGetDeviceQueue()
  */
-static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInfo* init_info) {
+static SituationError _SitRender_VulkanCreateLogicalDevice(const SituationInitInfo* init_info) {
     // --- Queue Create Info ---
     // [v2.3.23] Updated to support up to 3 distinct queues (Graphics, Present, Compute)
     VkDeviceQueueCreateInfo queue_create_infos[3] = {0};
@@ -11100,7 +11100,7 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
 
     // --- Create the Device ---
     if (vkCreateDevice(sit_render.vk.physical_device, &create_info, NULL, &sit_render.vk.device) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DEVICE_FAILED, "Failed to create logical device");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DEVICE_FAILED, "Failed to create logical device");
         return SITUATION_ERROR_VULKAN_DEVICE_FAILED;
     }
 
@@ -11128,16 +11128,16 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
  * @note The target Vulkan API version is specified as `VK_API_VERSION_1_4`.
  *       Ensure this aligns with the version used in `VkApplicationInfo` and is supported by the chosen physical device and driver.
  *
- * @see _SituationInitVulkan(), _SituationVulkanCreateInstance(), _SituationVulkanPickPhysicalDevice(), _SituationVulkanCreateLogicalDevice() _SituationCleanupVulkan() (for destruction)
+ * @see _SitCore_InitVulkan(), _SitCore_VulkanCreateInstance(), _SitRender_VulkanPickPhysicalDevice(), _SitRender_VulkanCreateLogicalDevice() _SitCore_CleanupVulkan() (for destruction)
  */
-static SituationError _SituationVulkanCreateAllocator(void) {
+static SituationError _SitCore_VulkanCreateAllocator(void) {
     // --- 1. Input Validation (Defensive for internal helper) ---
     // Check if the prerequisite Vulkan handles are valid before passing them to VMA.
     // While the library's init sequence should guarantee this, a check adds robustness.
     if (sit_render.vk.instance == VK_NULL_HANDLE ||
         sit_render.vk.physical_device == VK_NULL_HANDLE ||
         sit_render.vk.device == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateAllocator: Vulkan instance, physical device, or logical device is NULL." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SitCore_VulkanCreateAllocator: Vulkan instance, physical device, or logical device is NULL." );
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
@@ -11166,7 +11166,7 @@ static SituationError _SituationVulkanCreateAllocator(void) {
             "Failed to create Vulkan Memory Allocator (VMA) (VkResult: 0x%x). Check Vulkan handles, API version (1.1), or driver compatibility.",
             result
         );
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, error_detail);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, error_detail);
         // Ensure the handle is explicitly invalid on failure.
         sit_render.vk.vma_allocator = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
@@ -11180,7 +11180,7 @@ static SituationError _SituationVulkanCreateAllocator(void) {
 }
 
 /**
- * @brief [INTERNAL] Frees memory allocated by `_SituationVulkanQuerySwapchainSupport`.
+ * @brief [INTERNAL] Frees memory allocated by `_SitRender_VulkanQuerySwapchainSupport`.
  * @details This is a mandatory cleanup utility function. It frees the dynamically allocated arrays for surface formats and presentation modes that are stored within a `_SituationVulkanSwapchainSupportDetails` struct.
  *          It must be called after the details gathered by the query function are no longer needed to prevent memory leaks.
  *
@@ -11188,9 +11188,9 @@ static SituationError _SituationVulkanCreateAllocator(void) {
  *
  * @note This function is for internal use only and is a critical part of the resource management for Vulkan initialization helpers.
  *
- * @see _SituationVulkanQuerySwapchainSupport()
+ * @see _SitRender_VulkanQuerySwapchainSupport()
  */
-static void _SituationVulkanFreeSwapchainSupportDetails(_SituationVulkanSwapchainSupportDetails* details) {
+static void _SitRender_VulkanFreeSwapchainSupportDetails(_SituationVulkanSwapchainSupportDetails* details) {
     if (details == NULL) return;
     // SIT_FREE() is safe to call on a NULL pointer.
     SIT_FREE(details->formats);
@@ -11206,7 +11206,7 @@ static void _SituationVulkanFreeSwapchainSupportDetails(_SituationVulkanSwapchai
  *          2.  A list of available surface formats (`VkSurfaceFormatKHR`).
  *          3.  A list of available presentation modes (`VkPresentModeKHR`).
  *
- * @warning This function allocates new memory for the `formats` and `present_modes` arrays within the `out_details` struct. The caller is **responsible** for freeing this memory by calling `_SituationVulkanFreeSwapchainSupportDetails()` on the struct once the data is no longer needed.
+ * @warning This function allocates new memory for the `formats` and `present_modes` arrays within the `out_details` struct. The caller is **responsible** for freeing this memory by calling `_SitRender_VulkanFreeSwapchainSupportDetails()` on the struct once the data is no longer needed.
  *          Failure to do so will result in a memory leak.
  *
  * @param device The `VkPhysicalDevice` to query.
@@ -11215,9 +11215,9 @@ static void _SituationVulkanFreeSwapchainSupportDetails(_SituationVulkanSwapchai
  * @note This function must be called after the `VkInstance` and `VkSurfaceKHR` have been created. It is a key prerequisite for both device suitability checks and swapchain creation.
  * @note This function is for internal use only.
  *
- * @see _SituationVulkanFreeSwapchainSupportDetails(), _SituationIsDeviceSuitable(), _SituationVulkanCreateSwapchain()
+ * @see _SitRender_VulkanFreeSwapchainSupportDetails(), _SitRender_IsDeviceSuitable(), _SitRender_VulkanCreateSwapchain()
  */
-static void _SituationVulkanQuerySwapchainSupport(VkPhysicalDevice device, _SituationVulkanSwapchainSupportDetails* out_details) {
+static void _SitRender_VulkanQuerySwapchainSupport(VkPhysicalDevice device, _SituationVulkanSwapchainSupportDetails* out_details) {
     // Get the basic surface capabilities (min/max image count, extent, etc.)
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, sit_render.vk.surface, &out_details->capabilities);
 
@@ -11259,15 +11259,15 @@ static void _SituationVulkanQuerySwapchainSupport(VkPhysicalDevice device, _Situ
  *
  * @return An integer score representing the suitability of the device. A higher score is better. Returns `0` if the device does not meet the minimum requirements.
  *
- * @note This function is for internal use by `_SituationVulkanPickPhysicalDevice` only.
+ * @note This function is for internal use by `_SitRender_VulkanPickPhysicalDevice` only.
  *
- * @see _SituationVulkanPickPhysicalDevice(), _SituationVulkanFindQueueFamilies(), _SituationVulkanQuerySwapchainSupport()
+ * @see _SitRender_VulkanPickPhysicalDevice(), _SitCore_VulkanFindQueueFamilies(), _SitRender_VulkanQuerySwapchainSupport()
  */
-static int _SituationIsDeviceSuitable(VkPhysicalDevice device) {
+static int _SitRender_IsDeviceSuitable(VkPhysicalDevice device) {
     // --- 1. Essential Feature Checks (Pass/Fail) ---
 
     // Check if the device supports required queue families
-    _SituationQueueFamilyIndices indices = _SituationVulkanFindQueueFamilies(device, sit_render.vk.surface);
+    _SituationQueueFamilyIndices indices = _SitCore_VulkanFindQueueFamilies(device, sit_render.vk.surface);
     if (!indices.graphics_family_has_value || !indices.present_family_has_value) {
         return 0; // Not suitable
     }
@@ -11289,11 +11289,11 @@ static int _SituationIsDeviceSuitable(VkPhysicalDevice device) {
     if (!swapchain_supported) return 0; // Not suitable
 
     // Check if the swapchain is adequate (has at least one format and one present mode)
-    // You already have a helper for this from a previous step, let's assume it's called _SituationVulkanQuerySwapchainSupport
+    // You already have a helper for this from a previous step, let's assume it's called _SitRender_VulkanQuerySwapchainSupport
     _SituationVulkanSwapchainSupportDetails swapchain_support;
-    _SituationVulkanQuerySwapchainSupport(device, &swapchain_support);
+    _SitRender_VulkanQuerySwapchainSupport(device, &swapchain_support);
     bool swapchain_adequate = (swapchain_support.format_count > 0 && swapchain_support.present_mode_count > 0);
-    _SituationVulkanFreeSwapchainSupportDetails(&swapchain_support); // Helper to free the format/present mode arrays
+    _SitRender_VulkanFreeSwapchainSupportDetails(&swapchain_support); // Helper to free the format/present mode arrays
     if (!swapchain_adequate) return 0; // Not suitable
 
     // --- 2. Scoring Based on Desirable Properties ---
@@ -11333,9 +11333,9 @@ static int _SituationIsDeviceSuitable(VkPhysicalDevice device) {
  * @return A `_SituationQueueFamilyIndices` struct. The `graphics_family_has_value` and `present_family_has_value` members will be `true` if suitable families were found, and the corresponding `_family` members will hold their indices.
  *
  * @note The graphics and present queue families may or may not be the same index. This function correctly handles both cases.
- * @note This function is for internal use only, primarily called by `_SituationIsDeviceSuitable` and `_SituationVulkanCreateSwapchain`.
+ * @note This function is for internal use only, primarily called by `_SitRender_IsDeviceSuitable` and `_SitRender_VulkanCreateSwapchain`.
  */
-static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface) {
+static _SituationQueueFamilyIndices _SitCore_VulkanFindQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface) {
     _SituationQueueFamilyIndices indices = {0};
 
     uint32_t queue_family_count = 0;
@@ -11380,7 +11380,7 @@ static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysical
  * @details This function creates the `VkSwapchainKHR`, which is a collection of renderable images that are queued for presentation to the screen. It is a central component of the rendering pipeline.
  *
  * @par Creation Logic
- *   1.  **Query Support:** It first calls `_SituationVulkanQuerySwapchainSupport` to get the capabilities, formats, and present modes of the selected physical device.
+ *   1.  **Query Support:** It first calls `_SitRender_VulkanQuerySwapchainSupport` to get the capabilities, formats, and present modes of the selected physical device.
  *   2.  **Select Best Format:** It iterates through the available formats, strongly preferring a `VK_FORMAT_B8G8R8A8_SRGB` format for standard sRGB color correct rendering.
  *   3.  **Select Best Present Mode:** It iterates through available modes, preferring `VK_PRESENT_MODE_MAILBOX_KHR` (for low-latency, tear-free rendering) and falling back to the guaranteed `VK_PRESENT_MODE_FIFO_KHR` (standard V-Sync).
  *   4.  **Determine Extent & Image Count:** It determines the resolution of the swapchain images and the number of images in the chain based on the surface capabilities and current window size.
@@ -11394,17 +11394,17 @@ static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysical
  * @return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED if the `vkCreateSwapchainKHR` call fails for any other reason.
  *
  * @note This function must be called after the logical device and surface have been created.
- * @warning This function is for internal use by `_SituationInitVulkan` and `_SituationVulkanRecreateSwapchain`.
+ * @warning This function is for internal use by `_SitCore_InitVulkan` and `_SitRender_VulkanRecreateSwapchain`.
  *
- * @see _SituationVulkanQuerySwapchainSupport(), _SituationVulkanCreateImageViews(), _SituationVulkanRecreateSwapchain()
+ * @see _SitRender_VulkanQuerySwapchainSupport(), _SitRender_VulkanCreateImageViews(), _SitRender_VulkanRecreateSwapchain()
  */
-static SituationError _SituationVulkanCreateSwapchain(void) {
+static SituationError _SitRender_VulkanCreateSwapchain(void) {
     _SituationVulkanSwapchainSupportDetails swapchain_support = {0};
-    _SituationVulkanQuerySwapchainSupport(sit_render.vk.physical_device, &swapchain_support);
+    _SitRender_VulkanQuerySwapchainSupport(sit_render.vk.physical_device, &swapchain_support);
 
     if (swapchain_support.format_count == 0 || swapchain_support.present_mode_count == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "GPU does not support any suitable swapchain formats or present modes.");
-        _SituationVulkanFreeSwapchainSupportDetails(&swapchain_support);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "GPU does not support any suitable swapchain formats or present modes.");
+        _SitRender_VulkanFreeSwapchainSupportDetails(&swapchain_support);
         return SITUATION_ERROR_VULKAN_UNSUPPORTED;
     }
 
@@ -11450,7 +11450,7 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
     create_info.imageArrayLayers = 1;
     create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
-    _SituationQueueFamilyIndices indices = _SituationVulkanFindQueueFamilies(sit_render.vk.physical_device, sit_render.vk.surface);
+    _SituationQueueFamilyIndices indices = _SitCore_VulkanFindQueueFamilies(sit_render.vk.physical_device, sit_render.vk.surface);
     uint32_t queueFamilyIndices[] = {indices.graphics_family, indices.present_family};
     if (indices.graphics_family != indices.present_family) {
         create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -11467,8 +11467,8 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
 
     if (vkCreateSwapchainKHR(sit_render.vk.device, &create_info, NULL, &sit_render.vk.swapchain) != VK_SUCCESS) {
         sit_render.vk.swapchain_valid = false;
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED, "Failed to create swap chain");
-        _SituationVulkanFreeSwapchainSupportDetails(&swapchain_support);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED, "Failed to create swap chain");
+        _SitRender_VulkanFreeSwapchainSupportDetails(&swapchain_support);
         return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED;
     }
 
@@ -11479,7 +11479,7 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
     sit_render.vk.swapchain_extent = extent;
     sit_render.vk.swapchain_image_count = image_count;
 
-    _SituationVulkanFreeSwapchainSupportDetails(&swapchain_support);
+    _SitRender_VulkanFreeSwapchainSupportDetails(&swapchain_support);
     sit_render.vk.swapchain_valid = true;
     return SITUATION_SUCCESS;
 }
@@ -11492,17 +11492,17 @@ static SituationError _SituationVulkanCreateSwapchain(void) {
  * @return SITUATION_SUCCESS if all image views are created successfully.
  * @return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED if any of the `vkCreateImageView` calls fail.
  *
- * @note This function must be called after `_SituationVulkanCreateSwapchain` has successfully retrieved the swapchain images. The created handles are stored in the `sit_render.vk.swapchain_image_views` array.
- * @warning This function is for internal use by `_SituationInitVulkan` and `_SituationVulkanRecreateSwapchain`.
+ * @note This function must be called after `_SitRender_VulkanCreateSwapchain` has successfully retrieved the swapchain images. The created handles are stored in the `sit_render.vk.swapchain_image_views` array.
+ * @warning This function is for internal use by `_SitCore_InitVulkan` and `_SitRender_VulkanRecreateSwapchain`.
  *
- * @see _SituationVulkanCreateSwapchain(), _SituationVulkanCreateImageView()
+ * @see _SitRender_VulkanCreateSwapchain(), _SitRender_VulkanCreateImageView()
  */
-static SituationError _SituationVulkanCreateImageViews(void) {
+static SituationError _SitRender_VulkanCreateImageViews(void) {
     sit_render.vk.swapchain_image_views = (VkImageView*)SIT_MALLOC(sizeof(VkImageView) * sit_render.vk.swapchain_image_count);
     for (uint32_t i = 0; i < sit_render.vk.swapchain_image_count; i++) {
-        sit_render.vk.swapchain_image_views[i] = _SituationVulkanCreateImageView(sit_render.vk.swapchain_images[i], sit_render.vk.swapchain_image_format, VK_IMAGE_ASPECT_COLOR_BIT);
+        sit_render.vk.swapchain_image_views[i] = _SitRender_VulkanCreateImageView(sit_render.vk.swapchain_images[i], sit_render.vk.swapchain_image_format, VK_IMAGE_ASPECT_COLOR_BIT);
         if(sit_render.vk.swapchain_image_views[i] == VK_NULL_HANDLE) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED, "Failed to create image views");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED, "Failed to create image views");
              return SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED;
         }
     }
@@ -11524,17 +11524,17 @@ static SituationError _SituationVulkanCreateImageViews(void) {
  * @return SITUATION_ERROR_VULKAN_RENDERPASS_FAILED if the `vkCreateRenderPass` call fails.
  *
  * @note This function must be called after the logical device has been created and the swapchain format has been determined.
- * @warning This function is for internal use by `_SituationInitVulkan` only.
+ * @warning This function is for internal use by `_SitCore_InitVulkan` only.
  *
- * @see _SituationVulkanFindSupportedFormat(), _SituationVulkanCreateFramebuffers()
+ * @see _SitCore_VulkanFindSupportedFormat(), _SitRender_VulkanCreateFramebuffers()
  */
-static SituationError _SituationVulkanCreateRenderPass(void) {
-    sit_render.vk.depth_format = _SituationVulkanFindSupportedFormat(
+static SituationError _SitRender_VulkanCreateRenderPass(void) {
+    sit_render.vk.depth_format = _SitCore_VulkanFindSupportedFormat(
         (VkFormat[]){VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT}, 3,
         VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
     );
     if (sit_render.vk.depth_format == VK_FORMAT_UNDEFINED) {
-         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "Failed to find a supported depth format");
+         _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_UNSUPPORTED, "Failed to find a supported depth format");
          return SITUATION_ERROR_VULKAN_UNSUPPORTED;
     }
 
@@ -11586,7 +11586,7 @@ static SituationError _SituationVulkanCreateRenderPass(void) {
     render_pass_info.pDependencies = &dependency;
 
     if (vkCreateRenderPass(sit_render.vk.device, &render_pass_info, NULL, &sit_render.vk.main_window_render_pass) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_RENDERPASS_FAILED, "Failed to create render pass");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_RENDERPASS_FAILED, "Failed to create render pass");
         return SITUATION_ERROR_VULKAN_RENDERPASS_FAILED;
     }
     return SITUATION_SUCCESS;
@@ -11602,20 +11602,20 @@ static SituationError _SituationVulkanCreateRenderPass(void) {
  * @return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED if the `vkCreateImageView` call fails.
  *
  * @note This function must be called after the swapchain extent and a suitable depth format have been determined.
- * @warning This function is for internal use by `_SituationInitVulkan` and `_SituationVulkanRecreateSwapchain`.
+ * @warning This function is for internal use by `_SitCore_InitVulkan` and `_SitRender_VulkanRecreateSwapchain`.
  *
- * @see _SituationVulkanCreateImage(), _SituationVulkanCreateImageView(), _SituationVulkanCreateFramebuffers()
+ * @see _SitRender_VulkanCreateImage(), _SitRender_VulkanCreateImageView(), _SitRender_VulkanCreateFramebuffers()
  */
-static SituationError _SituationVulkanCreateDepthResources(void) {
-    if (_SituationVulkanCreateImage(sit_render.vk.swapchain_extent.width, sit_render.vk.swapchain_extent.height, sit_render.vk.depth_format,
+static SituationError _SitCore_VulkanCreateDepthResources(void) {
+    if (_SitRender_VulkanCreateImage(sit_render.vk.swapchain_extent.width, sit_render.vk.swapchain_extent.height, sit_render.vk.depth_format,
                                   VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VMA_MEMORY_USAGE_GPU_ONLY,
                                   &sit_render.vk.depth_image, &sit_render.vk.depth_image_memory) != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create depth image");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create depth image");
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
-    sit_render.vk.depth_image_view = _SituationVulkanCreateImageView(sit_render.vk.depth_image, sit_render.vk.depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
+    sit_render.vk.depth_image_view = _SitRender_VulkanCreateImageView(sit_render.vk.depth_image, sit_render.vk.depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
     if(sit_render.vk.depth_image_view == VK_NULL_HANDLE){
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create depth image view");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create depth image view");
         return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED;
     }
     return SITUATION_SUCCESS;
@@ -11627,13 +11627,13 @@ static SituationError _SituationVulkanCreateDepthResources(void) {
  *
  * @details This helper function is responsible for creating the `VkFramebuffer` objects that connect the swapchain images (via their image views) and the depth buffer image view to the main window's render pass.
  *          A framebuffer defines the attachments (color, depth, stencil) that will be used in a render pass instance.
- *          This function is typically called during Vulkan initialization (`_SituationInitVulkan`) after the swapchain, image views, depth resources, and main render pass have been successfully created.
+ *          This function is typically called during Vulkan initialization (`_SitCore_InitVulkan`) after the swapchain, image views, depth resources, and main render pass have been successfully created.
  *          It allocates an array to hold the framebuffer handles, then iterates through each swapchain image view, creating a corresponding framebuffer that uses that image view as the color attachment and the shared depth image view as the depth attachment.
  *
  * @return SITUATION_SUCCESS on successful creation of all framebuffers.
  * @return SITUATION_ERROR_MEMORY_ALLOCATION if memory allocation fails for the internal array of `VkFramebuffer` handles.
  * @return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED if `vkCreateFramebuffer`fails for any of the framebuffers. A specific error message is set.
- *         Any successfully created framebuffers *before* the failure point will be left in the `sit_render.vk.main_window_framebuffers` array and must be cleaned up by the caller (e.g., `_SituationVulkanCleanupSwapchain` or `_SituationCleanupVulkan`) to prevent leaks.
+ *         Any successfully created framebuffers *before* the failure point will be left in the `sit_render.vk.main_window_framebuffers` array and must be cleaned up by the caller (e.g., `_SitRender_VulkanCleanupSwapchain` or `_SitCore_CleanupVulkan`) to prevent leaks.
  *
  * @note This function requires that the following Vulkan resources are already created and valid:
  *       - `sit_render.vk.device`
@@ -11645,9 +11645,9 @@ static SituationError _SituationVulkanCreateDepthResources(void) {
  * @note The created array of `VkFramebuffer` handles is stored in `sit_render.vk.main_window_framebuffers`. This array must be freed later by the cleanup process.
  * @warning This function is for internal use by the Vulkan initialization and swapchain recreation processes and should not be called directly by user code.
  *
- * @see _SituationInitVulkan(), _SituationVulkanRecreateSwapchain(), _SituationVulkanCleanupSwapchain(), vkCreateFramebuffer()
+ * @see _SitCore_InitVulkan(), _SitRender_VulkanRecreateSwapchain(), _SitRender_VulkanCleanupSwapchain(), vkCreateFramebuffer()
  */
-static SituationError _SituationVulkanCreateFramebuffers(void) {
+static SituationError _SitRender_VulkanCreateFramebuffers(void) {
     // --- 1. Allocate Array for Framebuffer Handles ---
     // Allocate memory for the array that will hold the VkFramebuffer handles.
     // The number of framebuffers needed equals the number of swapchain images.
@@ -11656,9 +11656,9 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
     // Check if the memory allocation for the framebuffer array was successful.
     if (!sit_render.vk.main_window_framebuffers) {
         // Allocation failed. This is a critical error for this step.
-        _SituationSetErrorFromCode(
+        _SitCore_SetErrorFromCode(
             SITUATION_ERROR_MEMORY_ALLOCATION,
-            "_SituationVulkanCreateFramebuffers: Failed to allocate memory for framebuffer handle array."
+            "_SitRender_VulkanCreateFramebuffers: Failed to allocate memory for framebuffer handle array."
         );
         // No Vulkan objects have been created yet in this function, so no cleanup is needed here.
         return SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -11707,16 +11707,16 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
             snprintf(
                 error_detail,
                 sizeof(error_detail),
-                "_SituationVulkanCreateFramebuffers: vkCreateFramebuffer failed for swapchain image %u (VkResult: 0x%x).",
+                "_SitRender_VulkanCreateFramebuffers: vkCreateFramebuffer failed for swapchain image %u (VkResult: 0x%x).",
                 i,
                 result
             );
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, error_detail);
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, error_detail);
 
             // --- 2e. Critical: Handle Partial Success and Cleanup ---
             // If framebuffer creation fails at index `i`, it means framebuffers from index 0 to `i-1` *might* have been successfully created and stored in `sit_render.vk.main_window_framebuffers[0]` to `[i-1]`.
             //
-            // It is the responsibility of the *caller* of this function (e.g., _SituationInitVulkan, _SituationVulkanRecreateSwapchain) to perform a full cleanup (e.g., by calling _SituationVulkanCleanupSwapchain) when any error is returned.
+            // It is the responsibility of the *caller* of this function (e.g., _SitCore_InitVulkan, _SitRender_VulkanRecreateSwapchain) to perform a full cleanup (e.g., by calling _SitRender_VulkanCleanupSwapchain) when any error is returned.
             // That cleanup process will iterate through the `sit_render.vk.main_window_framebuffers` array and destroy any non-VK_NULL_HANDLE entries, then free the array itself.
             //
             // This function does *not* attempt to destroy the potentially successfully created framebuffers here. It simply reports the error and returns. This simplifies error handling in this function and relies on the robustness of the overall Vulkan cleanup sequence.
@@ -11751,25 +11751,25 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
  * @return SITUATION_ERROR_INVALID_PARAM if the Vulkan device (`sit_render.vk.device`) is `VK_NULL_HANDLE` or if the graphics queue family index (`sit_render.vk.graphics_family_index`) is invalid (e.g., `UINT32_MAX`).
  * @return SITUATION_ERROR_VULKAN_COMMAND_FAILED if `vkCreateCommandPool` fails to create the pool. This can happen due to invalid device handle, invalid queue family index, or driver issues. A specific error message is set.
  *
- * @note This function must be called after the Vulkan logical device (`sit_render.vk.device`) and the graphics queue family index (`sit_render.vk.graphics_family_index`) have been successfully determined (e.g., in `_SituationVulkanCreateLogicalDevice`).
+ * @note This function must be called after the Vulkan logical device (`sit_render.vk.device`) and the graphics queue family index (`sit_render.vk.graphics_family_index`) have been successfully determined (e.g., in `_SitRender_VulkanCreateLogicalDevice`).
  * @note The created `VkCommandPool` handle is stored in `sit_render.vk.command_pool`.
- * @note This command pool is used by `_SituationVulkanCreateCommandBuffers` to allocate the per-frame command buffers.
- * @warning This function is for internal use by the Vulkan initialization process (`_SituationInitVulkan`) and should not be called directly by user code.
+ * @note This command pool is used by `_SitRender_VulkanCreateCommandBuffers` to allocate the per-frame command buffers.
+ * @warning This function is for internal use by the Vulkan initialization process (`_SitCore_InitVulkan`) and should not be called directly by user code.
  *
- * @see _SituationInitVulkan(), _SituationVulkanCreateLogicalDevice(), _SituationVulkanCreateCommandBuffers(), vkCreateCommandPool()
+ * @see _SitCore_InitVulkan(), _SitRender_VulkanCreateLogicalDevice(), _SitRender_VulkanCreateCommandBuffers(), vkCreateCommandPool()
  */
-static SituationError _SituationVulkanCreateCommandPool(void) {
+static SituationError _SitRender_VulkanCreateCommandPool(void) {
     // --- 1. Input Validation (Defensive for internal helper) ---
     // Check if the prerequisite Vulkan device handle is valid.
     if (sit_render.vk.device == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateCommandPool: Vulkan device is NULL. Call _SituationVulkanCreateLogicalDevice first." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SitRender_VulkanCreateCommandPool: Vulkan device is NULL. Call _SitRender_VulkanCreateLogicalDevice first." );
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
     // Check if the graphics queue family index is valid.
     // UINT32_MAX is often used as an "unset" value.
     if (sit_render.vk.graphics_family_index == UINT32_MAX) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateCommandPool: Graphics queue family index is invalid (UINT32_MAX). Ensure _SituationVulkanPickPhysicalDevice/_SituationVulkanCreateLogicalDevice ran successfully." );
+        _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SitRender_VulkanCreateCommandPool: Graphics queue family index is invalid (UINT32_MAX). Ensure _SitRender_VulkanPickPhysicalDevice/_SitRender_VulkanCreateLogicalDevice ran successfully." );
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
@@ -11807,10 +11807,10 @@ static SituationError _SituationVulkanCreateCommandPool(void) {
         snprintf(
             error_detail,
             sizeof(error_detail),
-            "_SituationVulkanCreateCommandPool failed: vkCreateCommandPool returned VkResult 0x%x. Check device/queue family validity or driver state.",
+            "_SitRender_VulkanCreateCommandPool failed: vkCreateCommandPool returned VkResult 0x%x. Check device/queue family validity or driver state.",
             result
         );
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
         // Ensure the global command pool handle is explicitly invalid on failure.
         sit_render.vk.command_pool = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
@@ -11819,7 +11819,7 @@ static SituationError _SituationVulkanCreateCommandPool(void) {
     // [v2.3.23] Create separate pool for Compute
     pool_info.queueFamilyIndex = sit_render.vk.compute_family_index;
     if (vkCreateCommandPool(sit_render.vk.device, &pool_info, NULL, &sit_render.vk.compute_command_pool) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to create compute command pool.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to create compute command pool.");
         sit_render.vk.compute_command_pool = VK_NULL_HANDLE;
         return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
     }
@@ -11827,7 +11827,7 @@ static SituationError _SituationVulkanCreateCommandPool(void) {
     // --- 5. Success ---
     // If we reach here, the VkCommandPool was created successfully.
     // The handle is stored in sit_render.vk.command_pool.
-    // The next step in Vulkan initialization is typically allocating command buffers from this pool using _SituationVulkanCreateCommandBuffers.
+    // The next step in Vulkan initialization is typically allocating command buffers from this pool using _SitRender_VulkanCreateCommandBuffers.
     return SITUATION_SUCCESS;
 }
 
@@ -11842,11 +11842,11 @@ static SituationError _SituationVulkanCreateCommandPool(void) {
  * @return `SITUATION_ERROR_VULKAN_COMMAND_FAILED` if the `vkAllocateCommandBuffers` call fails.
  *
  * @note This function must be called after the logical device and the main command pool have been created. The allocated handles are stored in the `sit_render.vk.command_buffers` array.
- * @warning This function is for internal use by `_SituationInitVulkan` only.
+ * @warning This function is for internal use by `_SitCore_InitVulkan` only.
  *
- * @see _SituationInitVulkan(), _SituationVulkanCreateCommandPool(), SituationGetMainCommandBuffer()
+ * @see _SitCore_InitVulkan(), _SitRender_VulkanCreateCommandPool(), SituationGetMainCommandBuffer()
  */
-static SituationError _SituationVulkanCreateCommandBuffers(void) {
+static SituationError _SitRender_VulkanCreateCommandBuffers(void) {
     VkCommandBufferAllocateInfo alloc_info = {0};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     alloc_info.commandPool = sit_render.vk.command_pool;
@@ -11855,14 +11855,14 @@ static SituationError _SituationVulkanCreateCommandBuffers(void) {
     alloc_info.commandBufferCount = sit_render.vk.max_frames_in_flight;
 
     if (vkAllocateCommandBuffers(sit_render.vk.device, &alloc_info, sit_render.vk.command_buffers) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to allocate command buffers");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to allocate command buffers");
         return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
     }
 
     // Allocate Compute Buffers (from separate pool)
     alloc_info.commandPool = sit_render.vk.compute_command_pool;
     if (vkAllocateCommandBuffers(sit_render.vk.device, &alloc_info, sit_render.vk.compute_command_buffers) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to allocate compute command buffers");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to allocate compute command buffers");
         return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
     }
 
@@ -11885,11 +11885,11 @@ static SituationError _SituationVulkanCreateCommandBuffers(void) {
  * @return `SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED` if any `vkCreateSemaphore` or `vkCreateFence` call fails.
  *
  * @note This function must be called after the logical device has been created and `max_frames_in_flight` has been determined.
- * @warning This function is for internal use by `_SituationInitVulkan` only.
+ * @warning This function is for internal use by `_SitCore_InitVulkan` only.
  *
- * @see _SituationInitVulkan(), SituationAcquireFrameCommandBuffer(), SituationEndFrame()
+ * @see _SitCore_InitVulkan(), SituationAcquireFrameCommandBuffer(), SituationEndFrame()
  */
-static SituationError _SituationVulkanCreateSyncObjects(void) {
+static SituationError _SitCore_VulkanCreateSyncObjects(void) {
     VkSemaphoreCreateInfo semaphore_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkFenceCreateInfo fence_info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT};
 
@@ -11899,7 +11899,7 @@ static SituationError _SituationVulkanCreateSyncObjects(void) {
             vkCreateSemaphore(sit_render.vk.device, &semaphore_info, NULL, &sit_render.vk.render_finished_semaphores[i]) != VK_SUCCESS ||
             vkCreateSemaphore(sit_render.vk.device, &semaphore_info, NULL, &sit_render.vk.compute_finished_semaphores[i]) != VK_SUCCESS ||
             vkCreateFence(sit_render.vk.device, &fence_info, NULL, &sit_render.vk.in_flight_fences[i]) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to create synchronization objects for a frame");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to create synchronization objects for a frame");
             return SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED;
         }
     }
@@ -11925,9 +11925,9 @@ static SituationError _SituationVulkanCreateSyncObjects(void) {
  * @warning The order of formats in the `candidates` array is important.
  *          The function returns the *first* supported format found. Place preferred formats (e.g., higher precision) earlier in the list.
  *
- * @see _SituationVulkanCreateDepthResources()
+ * @see _SitCore_VulkanCreateDepthResources()
  */
-static VkFormat _SituationVulkanFindSupportedFormat(
+static VkFormat _SitCore_VulkanFindSupportedFormat(
     const VkFormat* candidates,
     uint32_t candidate_count,
     VkImageTiling tiling,
@@ -11995,17 +11995,17 @@ static VkFormat _SituationVulkanFindSupportedFormat(
  *          - Descriptor sets, pools, and layouts
  *          - The `VkInstance` and `VkSurfaceKHR`
  *
- * @note This function should only be called when it's safe to destroy these resources, typically just before `_SituationVulkanCreateSwapchain` is called.
+ * @note This function should only be called when it's safe to destroy these resources, typically just before `_SitRender_VulkanCreateSwapchain` is called.
  * @note It is the caller's responsibility to ensure that:
  *       1. The Vulkan device (`sit_render.vk.device`) is valid.
  *       2. Any command buffers recording commands that use these resources have finished.
  *       3. This function is part of a coordinated swapchain recreation sequence.
  *
- * @see _SituationVulkanRecreateSwapchain(), _SituationVulkanCreateSwapchain(),
- *      _SituationVulkanCreateImageViews(), _SituationVulkanCreateDepthResources(),
- *      _SituationVulkanCreateFramebuffers()
+ * @see _SitRender_VulkanRecreateSwapchain(), _SitRender_VulkanCreateSwapchain(),
+ *      _SitRender_VulkanCreateImageViews(), _SitCore_VulkanCreateDepthResources(),
+ *      _SitRender_VulkanCreateFramebuffers()
  */
-static void _SituationVulkanCleanupSwapchain(void) {
+static void _SitRender_VulkanCleanupSwapchain(void) {
     // --- 1. Validate Device Handle (Robustness) ---
     if (sit_render.vk.device == VK_NULL_HANDLE) {
         // Nothing to clean up if the device isn't created.
@@ -12019,7 +12019,7 @@ static void _SituationVulkanCleanupSwapchain(void) {
     VkResult wait_result = vkDeviceWaitIdle(sit_render.vk.device);
     if (wait_result != VK_SUCCESS) {
         // Log a warning, but proceed with cleanup to avoid leaking resources if possible.
-        fprintf(stderr, "WARNING: vkDeviceWaitIdle failed (0x%x) in _SituationVulkanCleanupSwapchain. Proceeding with cleanup.\n", wait_result);
+        fprintf(stderr, "WARNING: vkDeviceWaitIdle failed (0x%x) in _SitRender_VulkanCleanupSwapchain. Proceeding with cleanup.\n", wait_result);
         // Depending on policy, you might choose to return or assert here if the device is in a bad state.
     }
     sit_render.vk.swapchain_valid = false;
@@ -12031,9 +12031,9 @@ static void _SituationVulkanCleanupSwapchain(void) {
         sit_render.vk.depth_image_view = VK_NULL_HANDLE;
     }
     // Use the internal helper if one exists, otherwise call VMA directly.
-    // Assuming _SituationVulkanDestroyImage helper exists and handles VMA destruction:
+    // Assuming _SitRender_VulkanDestroyImage helper exists and handles VMA destruction:
     if (sit_render.vk.depth_image != VK_NULL_HANDLE) {
-        _SituationVulkanDestroyImage(sit_render.vk.depth_image, sit_render.vk.depth_image_memory);
+        _SitRender_VulkanDestroyImage(sit_render.vk.depth_image, sit_render.vk.depth_image_memory);
         // Or directly: vmaDestroyImage(sit_render.vk.vma_allocator, sit_render.vk.depth_image, sit_render.vk.depth_image_memory);
         sit_render.vk.depth_image = VK_NULL_HANDLE;
         sit_render.vk.depth_image_memory = VK_NULL_HANDLE;
@@ -12052,7 +12052,7 @@ static void _SituationVulkanCleanupSwapchain(void) {
         SIT_FREE(sit_render.vk.main_window_framebuffers);
         sit_render.vk.main_window_framebuffers = NULL; // Important: Nullify the pointer after freeing.
     }
-    // Note: sit_render.vk.swapchain_image_count retains its value, as it's needed by _SituationVulkanCreateFramebuffers
+    // Note: sit_render.vk.swapchain_image_count retains its value, as it's needed by _SitRender_VulkanCreateFramebuffers
     // which will be called next in the recreation sequence.
 
     // --- 5. Destroy Swapchain Image Views & Images ---
@@ -12083,7 +12083,7 @@ static void _SituationVulkanCleanupSwapchain(void) {
     }
     // sit_render.vk.swapchain_image_count could be reset here, but it's often left
     // for the recreation process to potentially reuse if the new swapchain has the same count.
-    // It's set correctly by _SituationVulkanCreateSwapchain.
+    // It's set correctly by _SitRender_VulkanCreateSwapchain.
 }
 
 
@@ -12095,19 +12095,19 @@ static void _SituationVulkanCleanupSwapchain(void) {
  *
  * @details The recreation process involves the following steps:
  *          1.  Waits for the window to have a non-zero size (handles minimization).
- *          2.  Calls `_SituationVulkanCleanupSwapchain` to destroy old resources.
- *          3.  Calls `_SituationVulkanCreateSwapchain` to create the new swapchain.
- *          4.  Calls `_SituationVulkanCreateImageViews` to create views for the new swapchain images.
- *          5.  Calls `_SituationVulkanCreateDepthResources` to create the depth buffer for the new extent.
- *          6.  Calls `_SituationVulkanCreateFramebuffers` to create framebuffers linking the new image views and depth buffer to the render pass.
+ *          2.  Calls `_SitRender_VulkanCleanupSwapchain` to destroy old resources.
+ *          3.  Calls `_SitRender_VulkanCreateSwapchain` to create the new swapchain.
+ *          4.  Calls `_SitRender_VulkanCreateImageViews` to create views for the new swapchain images.
+ *          5.  Calls `_SitCore_VulkanCreateDepthResources` to create the depth buffer for the new extent.
+ *          6.  Calls `_SitRender_VulkanCreateFramebuffers` to create framebuffers linking the new image views and depth buffer to the render pass.
  *
  * @note This function is designed to be called when the application detects a need for swapchain recreation (e.g., in `SituationEndFrame` or a resize callback).
  *       It internally handles the waiting and cleanup.
  * @warning If any step in the recreation process fails, the Vulkan backend may be left in an inconsistent state. The application should be prepared to handle such failures, potentially by shutting down or attempting recovery.
  *
- * @see _SituationVulkanCleanupSwapchain(), SituationEndFrame()
+ * @see _SitRender_VulkanCleanupSwapchain(), SituationEndFrame()
  */
-static void _SituationVulkanRecreateSwapchain(void) {
+static void _SitRender_VulkanRecreateSwapchain(void) {
     // --- 1. Handle Window Minimization ---
     // If the window is minimized, width/height can be 0. We must wait for a valid size.
     int width = 0, height = 0;
@@ -12134,21 +12134,21 @@ static void _SituationVulkanRecreateSwapchain(void) {
     // It's crucial that these steps happen in order and that failures are handled.
 
     // 3.1. Cleanup old swapchain resources.
-    _SituationVulkanCleanupSwapchain();
+    _SitRender_VulkanCleanupSwapchain();
 
     // 3.2. Create the new swapchain.
     // If this fails, there's nothing to clean up further as CleanupSwapchain already ran.
-    SituationError create_swapchain_result = _SituationVulkanCreateSwapchain();
+    SituationError create_swapchain_result = _SitRender_VulkanCreateSwapchain();
     if (create_swapchain_result != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(create_swapchain_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateSwapchain.");
+        _SitCore_SetErrorFromCode(create_swapchain_result, "_SitRender_VulkanRecreateSwapchain failed in _SitRender_VulkanCreateSwapchain.");
         // The state is now inconsistent (no swapchain). The application loop should detect this (e.g., via error state or failed subsequent BeginFrame) and handle appropriately.
         return;
     }
 
     // 3.3. Create image views for the new swapchain images.
-    SituationError create_views_result = _SituationVulkanCreateImageViews();
+    SituationError create_views_result = _SitRender_VulkanCreateImageViews();
     if (create_views_result != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(create_views_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateImageViews.");
+        _SitCore_SetErrorFromCode(create_views_result, "_SitRender_VulkanRecreateSwapchain failed in _SitRender_VulkanCreateImageViews.");
         // State: Swapchain exists, but no image views.
         // Clean up the swapchain we just made.
         if (sit_render.vk.swapchain != VK_NULL_HANDLE) {
@@ -12159,23 +12159,23 @@ static void _SituationVulkanRecreateSwapchain(void) {
     }
 
     // 3.4. Create depth resources for the new swapchain extent.
-    SituationError create_depth_result = _SituationVulkanCreateDepthResources();
+    SituationError create_depth_result = _SitCore_VulkanCreateDepthResources();
     if (create_depth_result != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(create_depth_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateDepthResources.");
+        _SitCore_SetErrorFromCode(create_depth_result, "_SitRender_VulkanRecreateSwapchain failed in _SitCore_VulkanCreateDepthResources.");
         // State: Swapchain and image views exist, but no depth.
         // We need to clean up the resources created so far in this cycle.
         // CleanupSwapchain can handle this general case now.
-        _SituationVulkanCleanupSwapchain();
+        _SitRender_VulkanCleanupSwapchain();
         return;
     }
 
     // 3.5. Create framebuffers linking the new image views and depth buffer.
-    SituationError create_framebuffers_result = _SituationVulkanCreateFramebuffers();
+    SituationError create_framebuffers_result = _SitRender_VulkanCreateFramebuffers();
     if (create_framebuffers_result != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(create_framebuffers_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateFramebuffers.");
+        _SitCore_SetErrorFromCode(create_framebuffers_result, "_SitRender_VulkanRecreateSwapchain failed in _SitRender_VulkanCreateFramebuffers.");
         // State: Swapchain, image views, and depth exist, but no framebuffers.
         // Clean up all swapchain-derived resources created in this cycle.
-        _SituationVulkanCleanupSwapchain();
+        _SitRender_VulkanCleanupSwapchain();
         return;
     }
 
@@ -12287,7 +12287,7 @@ SITAPI void SituationPollInputEvents(void) {
     sit_input.mouse.wheel_move_y = 0.0f;
 
     // --- [POLL] GATHER NEW EVENTS FROM THE OPERATING SYSTEM ---
-    // This call triggers all the GLFW callbacks (_SituationGLFWKeyCallback, etc.), which will populate our `current_state` and event queue buffers for this frame.
+    // This call triggers all the GLFW callbacks (_SitRender_GLFWKeyCallback, etc.), which will populate our `current_state` and event queue buffers for this frame.
     glfwPollEvents();
     
     // ========================================================================
@@ -12452,8 +12452,8 @@ SITAPI void SituationUpdate(void) {
  * @par Shutdown Sequence
  *   1.  **User Callback:** Invokes the optional exit callback set by `SituationSetExitCallback`.
  *   2.  **GPU Synchronization:** Ensures all pending GPU commands are completed (`vkDeviceWaitIdle` or `glFinish`) to prevent destroying resources that are still in use.
- *   3.  **Dangling Resource Cleanup:** Calls `_SituationCleanupDanglingResources` to automatically free any resources (meshes, shaders, textures, etc.) that the user forgot to destroy, printing warnings for each leak.
- *   4.  **Renderer Teardown:** Dispatches to the backend-specific cleanup function (`_SituationCleanupOpenGL` or `_SituationCleanupVulkan`) to destroy all graphics contexts, devices, and internal rendering resources.
+ *   3.  **Dangling Resource Cleanup:** Calls `_SitRender_CleanupDanglingResources` to automatically free any resources (meshes, shaders, textures, etc.) that the user forgot to destroy, printing warnings for each leak.
+ *   4.  **Renderer Teardown:** Dispatches to the backend-specific cleanup function (`_SitRender_CleanupOpenGL` or `_SitCore_CleanupVulkan`) to destroy all graphics contexts, devices, and internal rendering resources.
  *   5.  **Subsystem Teardown:** Shuts down all other library modules, including the audio device, input systems, and timers.
  *   6.  **Platform Teardown:** Destroys the main window and terminates the underlying platform libraries (GLFW, COM).
  *
@@ -12462,7 +12462,7 @@ SITAPI void SituationUpdate(void) {
  * @note It is safe to call this function even if `SituationInit` failed, as the internal cleanup helpers are robust to partially initialized states.
  * @warning This function is not thread-safe and must be called from the main thread.
  *
- * @see SituationInit(), _SituationCleanupDanglingResources()
+ * @see SituationInit(), _SitRender_CleanupDanglingResources()
  */
 SITAPI void SituationShutdown(void) {
     if (!_sit_current_context) return;
@@ -12470,7 +12470,7 @@ SITAPI void SituationShutdown(void) {
     if (!atomic_exchange(&sit_gs.is_initialized, false)) {
         return; // Already shut down or shutting down
     }
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_SHUTDOWN_FAILED, "Not initialized"); return; }
+    if (!SituationIsInitialized()) { _SitCore_SetErrorFromCode(SITUATION_ERROR_SHUTDOWN_FAILED, "Not initialized"); return; }
     if (sit_gs.exit_callback != NULL) { sit_gs.exit_callback(sit_gs.exit_callback_user_data); }
 
     // Wait for the GPU to finish any in-flight work before we start tearing things down. This is especially critical for Vulkan.
@@ -12490,22 +12490,22 @@ SITAPI void SituationShutdown(void) {
     }
 
     // --- Call the auto-cleanup function ---
-    _SituationCleanupDanglingResources();
+    _SitRender_CleanupDanglingResources();
 
     // 0. --- SHUTDOWN RENDER THREAD ---
     // [v2.3.21] Must stop render thread before destroying renderer resources
     #if !defined(__STDC_NO_THREADS__)
-    _SituationDestroyRenderThread();
+    _SitRender_DestroyRenderThread();
     #endif
 
     // 1. --- CLEANUP THE RENDERER ---
-    _SituationCleanupRenderer();    // This is the main dispatch for backend-specific cleanup.
+    _SitRender_CleanupRenderer();    // This is the main dispatch for backend-specific cleanup.
 
     // 2. --- CLEANUP LIBRARY SUBSYSTEMS ---
-    _SituationCleanupSubsystems();     // (Audio, Input, Timers, etc.)
+    _SitCore_CleanupSubsystems();     // (Audio, Input, Timers, etc.)
 
     // 3. --- CLEANUP CORE PLATFORM & WINDOW ---
-    _SituationCleanupPlatform();
+    _SitCore_CleanupPlatform();
 
 #if defined(SITUATION_ENABLE_THREADING)
     SituationDestroyThreadPool(&sit_gs.thread_pool);
@@ -12517,7 +12517,7 @@ SITAPI void SituationShutdown(void) {
         if (sit_render.text_batch_scratch) { SIT_FREE(sit_render.text_batch_scratch); }
 
         atomic_store(&sit_gs.is_initialized, false);
-        _SituationSetError("Shutdown complete");
+        _SitCore_SetError("Shutdown complete");
 
         // Free the context
         SIT_FREE(_sit_current_context);
@@ -12539,7 +12539,7 @@ SITAPI void SituationShutdown(void) {
  * @note This function is designed to be robust and can be safely called even if some subsystems failed to initialize fully. It checks the state of each component before attempting to uninitialize it.
  * @warning This function is for internal use by `SituationShutdown` only.
  */
-static void _SituationCleanupSubsystems(void) {
+static void _SitCore_CleanupSubsystems(void) {
     // --- Audio System ---
     // Stop all sounds before uninitializing the device.
     SituationStopAllLoadedSounds();
@@ -12556,7 +12556,7 @@ static void _SituationCleanupSubsystems(void) {
     }
 
     // Cleanup Handle Pool
-    _SitAudioCleanupPool();
+    _SitAudio_CleanupPool();
 
     SIT_FREE(sit_audio.audio_callback_decoder_temp_buffer);
     SIT_FREE(sit_audio.audio_callback_effects_temp_buffer);
@@ -12601,23 +12601,23 @@ static void _SituationCleanupSubsystems(void) {
 
 /**
  * @brief [INTERNAL] Dispatches the cleanup process to the active graphics backend.
- * @details This helper function serves as a central dispatcher for renderer-specific teardown. It first ensures all user-created virtual displays are destroyed, then calls the appropriate cleanup function (`_SituationCleanupOpenGL` or `_SituationCleanupVulkan`) based on the backend selected at compile time.
+ * @details This helper function serves as a central dispatcher for renderer-specific teardown. It first ensures all user-created virtual displays are destroyed, then calls the appropriate cleanup function (`_SitRender_CleanupOpenGL` or `_SitCore_CleanupVulkan`) based on the backend selected at compile time.
  *
- * @note This function is called by `SituationShutdown` before `_SituationCleanupSubsystems` to ensure that graphics resources are released while the underlying context/device is still valid.
+ * @note This function is called by `SituationShutdown` before `_SitCore_CleanupSubsystems` to ensure that graphics resources are released while the underlying context/device is still valid.
  * @warning This function is for internal use by `SituationShutdown` only.
  *
- * @see _SituationCleanupOpenGL(), _SituationCleanupVulkan()
+ * @see _SitRender_CleanupOpenGL(), _SitCore_CleanupVulkan()
  */
-static void _SituationCleanupRenderer(void) {
+static void _SitRender_CleanupRenderer(void) {
     for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
         if (sit_render.virtual_display_slots_used[i]) {
             SituationDestroyVirtualDisplay(i);
         }
     }
 #if defined(SITUATION_USE_VULKAN)
-    _SituationCleanupVulkan();
+    _SitCore_CleanupVulkan();
 #elif defined(SITUATION_USE_OPENGL)
-    _SituationCleanupOpenGL();
+    _SitRender_CleanupOpenGL();
 #endif
     mtx_destroy(&sit_render.momentum_mutex);
 }
@@ -12635,7 +12635,7 @@ static void _SituationCleanupRenderer(void) {
  * @note This function must be called after the renderer and all other subsystems have been shut down, as they depend on the window and its context.
  * @warning This function is for internal use by `SituationShutdown` only.
  */
-static void _SituationCleanupPlatform(void) {
+static void _SitCore_CleanupPlatform(void) {
     // Destroy the main window.
     if (sit_gs.sit_glfw_window) {
         glfwDestroyWindow(sit_gs.sit_glfw_window);
@@ -12681,7 +12681,7 @@ static void _SituationCleanupPlatform(void) {
  *   2.  Creates a `VkPipelineLayout` that defines the interface for the quad renderer.
  *       - **Update:** It now includes `image_sampler_layout` (Set 1) to support textured quads for fonts.
  *       - **Update:** Push constants are expanded to include UV Rect and UseTexture flags.
- *   3.  Calls the generic `_SituationVulkanCreateGraphicsPipeline` helper to build the final `VkPipeline` object with the correct vertex input state and primitive topology (`TRIANGLE_STRIP`).
+ *   3.  Calls the generic `_SitRender_VulkanCreateGraphicsPipeline` helper to build the final `VkPipeline` object with the correct vertex input state and primitive topology (`TRIANGLE_STRIP`).
  *   4.  Creates and uploads the static vertex data to a device-local `VkBuffer` for optimal performance.
  *
  * @param width The initial width of the main window's viewport, used to configure the orthographic projection matrix.
@@ -12690,12 +12690,12 @@ static void _SituationCleanupPlatform(void) {
  * @return `true` on successful initialization of all required resources.
  * @return `false` if any step fails (e.g., shader compilation, object creation). On failure, an appropriate error message is set, and any partially created resources are cleaned up.
  *
- * @note This function is for internal use by `_SituationInitOpenGL` or `_SituationInitVulkan` only.
+ * @note This function is for internal use by `_SitRender_InitOpenGL` or `_SitCore_InitVulkan` only.
  * @warning The success of this function is mandatory for `SituationCmdDrawQuad` and `SituationCmdDrawText` to work.
  *
- * @see _SituationCleanupQuadRenderer(), SituationCmdDrawQuad(), SituationCmdDrawText()
+ * @see _SitRender_CleanupQuadRenderer(), SituationCmdDrawQuad(), SituationCmdDrawText()
  */
-static void _SituationInitDefaultFont(void) {
+static void _SitCore_InitDefaultFont(void) {
     // 8x8 font bitmap from sit_default_8x8_font. 256 chars.
     // Layout: 16 chars per row, 16 rows.
     const int tex_w = 128;
@@ -12704,7 +12704,7 @@ static void _SituationInitDefaultFont(void) {
     uint8_t* pixels = (uint8_t*)SIT_CALLOC(1, data_size);
 
     if (!pixels) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate default font atlas.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate default font atlas.");
         return;
     }
 
@@ -12746,16 +12746,16 @@ static void _SituationInitDefaultFont(void) {
     };
 }
 
-static bool _SituationInitQuadRenderer(int width, int height) {
+static bool _SitRender_InitQuadRenderer(int width, int height) {
 #if defined(SITUATION_USE_OPENGL)
     // --- OpenGL Quad Renderer Initialization ---
     SituationError shader_err_code = SITUATION_SUCCESS;
 
     // 1. Compile and link the internal quad shader program.
-    sit_render.gl.quad_shader_program = _SituationCreateGLShaderProgram(SIT_QUAD_VERTEX_SHADER, SIT_QUAD_FRAGMENT_SHADER, &shader_err_code);
+    sit_render.gl.quad_shader_program = _SitRender_CreateGLShaderProgram(SIT_QUAD_VERTEX_SHADER, SIT_QUAD_FRAGMENT_SHADER, &shader_err_code);
 
     if (shader_err_code != SITUATION_SUCCESS || sit_render.gl.quad_shader_program == 0) {
-        // Error message should already be set by _SituationCreateGLShaderProgram
+        // Error message should already be set by _SitRender_CreateGLShaderProgram
         return false;
     }
 
@@ -12773,7 +12773,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     // 3. Create the PRIVATE VAO and VBO for the quad renderer.
     glCreateVertexArrays(1, &sit_render.gl.quad_vao);
     if (sit_render.gl.quad_vao == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitQuadRenderer: Failed to create private quad VAO.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SitRender_InitQuadRenderer: Failed to create private quad VAO.");
         // Cleanup shader program on VAO creation failure
         glDeleteProgram(sit_render.gl.quad_shader_program);
         sit_render.gl.quad_shader_program = 0;
@@ -12783,7 +12783,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 
     glCreateBuffers(1, &sit_render.gl.quad_vbo);
     if (sit_render.gl.quad_vbo == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitQuadRenderer: Failed to create private quad VBO.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SitRender_InitQuadRenderer: Failed to create private quad VBO.");
         // Cleanup shader program and VAO on VBO creation failure
         glDeleteProgram(sit_render.gl.quad_shader_program);
         sit_render.gl.quad_shader_program = 0;
@@ -12843,12 +12843,12 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 
     // 1. Compile the unified GLSL source into SPIR-V.
     //    The compiler is mandatory for Vulkan internal renderers.
-    _SituationSpirvBlob vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_QUAD_VERTEX_SHADER, "internal_quad.vert", shaderc_vertex_shader);
-    _SituationSpirvBlob fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_QUAD_FRAGMENT_SHADER, "internal_quad.frag", shaderc_fragment_shader);
+    _SituationSpirvBlob vs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(SIT_QUAD_VERTEX_SHADER, "internal_quad.vert", shaderc_vertex_shader);
+    _SituationSpirvBlob fs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(SIT_QUAD_FRAGMENT_SHADER, "internal_quad.frag", shaderc_fragment_shader);
 
     if (!vs_spirv.data || !fs_spirv.data) {
-        _SituationFreeSpirvBlob(&vs_spirv);
-        _SituationFreeSpirvBlob(&fs_spirv);
+        _SitCore_FreeSpirvBlob(&vs_spirv);
+        _SitCore_FreeSpirvBlob(&fs_spirv);
         return false; // Error already set by compiler
     }
 
@@ -12874,9 +12874,9 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     pipeline_layout_info.pPushConstantRanges = &push_constant_range;
 
     if (vkCreatePipelineLayout(sit_render.vk.device, &pipeline_layout_info, NULL, &sit_render.vk.quad_pipeline_layout) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create quad pipeline layout.");
-        _SituationFreeSpirvBlob(&vs_spirv);
-        _SituationFreeSpirvBlob(&fs_spirv);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create quad pipeline layout.");
+        _SitCore_FreeSpirvBlob(&vs_spirv);
+        _SitCore_FreeSpirvBlob(&fs_spirv);
         return false;
     }
 
@@ -12885,7 +12885,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     VkVertexInputAttributeDescription attr_desc = { .binding = 0, .location = SIT_ATTR_POSITION, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 };
 
     // 4. Call the generic pipeline creator with the quad's specific configuration.
-    sit_render.vk.quad_pipeline = _SituationVulkanCreateGraphicsPipeline(
+    sit_render.vk.quad_pipeline = _SitRender_VulkanCreateGraphicsPipeline(
         vs_spirv.data, vs_spirv.size,
         fs_spirv.data, fs_spirv.size,
         sit_render.vk.quad_pipeline_layout,
@@ -12894,8 +12894,8 @@ static bool _SituationInitQuadRenderer(int width, int height) {
         1, &attr_desc
     );
 
-    _SituationFreeSpirvBlob(&vs_spirv);
-    _SituationFreeSpirvBlob(&fs_spirv);
+    _SitCore_FreeSpirvBlob(&vs_spirv);
+    _SitCore_FreeSpirvBlob(&fs_spirv);
 
     if(sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return false;
 
@@ -12907,8 +12907,8 @@ static bool _SituationInitQuadRenderer(int width, int height) {
         0.0f, 1.0f,
         1.0f, 1.0f
     };
-    if (_SituationVulkanCreateAndUploadBuffer(VK_NULL_HANDLE, quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &sit_render.vk.quad_vertex_buffer, &sit_render.vk.quad_vertex_buffer_memory) != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create quad vertex buffer.");
+    if (_SitRender_VulkanCreateAndUploadBuffer(VK_NULL_HANDLE, quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &sit_render.vk.quad_vertex_buffer, &sit_render.vk.quad_vertex_buffer_memory) != SITUATION_SUCCESS) {
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create quad vertex buffer.");
         return false;
     }
 
@@ -12920,10 +12920,10 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 /**
  * @brief [INTERNAL] Initializes backend-specific resources for the Batched Text renderer.
  */
-static bool _SituationInitTextRenderer(void) {
+static bool _SitRender_InitTextRenderer(void) {
 #if defined(SITUATION_USE_OPENGL)
     SituationError shader_err;
-    sit_render.gl.text_shader_program = _SituationCreateGLShaderProgram(SIT_TEXT_VERTEX_SHADER, SIT_TEXT_FRAGMENT_SHADER, &shader_err);
+    sit_render.gl.text_shader_program = _SitRender_CreateGLShaderProgram(SIT_TEXT_VERTEX_SHADER, SIT_TEXT_FRAGMENT_SHADER, &shader_err);
     if (shader_err != SITUATION_SUCCESS) return false;
 
     glCreateVertexArrays(1, &sit_render.gl.text_vao);
@@ -12951,7 +12951,7 @@ static bool _SituationInitTextRenderer(void) {
     return true;
 
 #elif defined(SITUATION_USE_VULKAN)
-    // Vulkan initialization is handled in _SituationVulkanInitInternalRenderers due to complex dependency chains
+    // Vulkan initialization is handled in _SitRender_VulkanInitInternalRenderers due to complex dependency chains
     // (Pipeline Layouts, SPIR-V compilation, etc.)
     return true;
 #endif
@@ -12960,18 +12960,18 @@ static bool _SituationInitTextRenderer(void) {
 
 /**
  * @brief [INTERNAL] Destroys all backend-specific resources used by the internal quad renderer.
- * @details This helper function is called during the main shutdown sequence to clean up the dedicated resources created by `_SituationInitQuadRenderer`. It ensures that the internal shaders, pipelines, and vertex buffers used for drawing simple quads are properly released.
+ * @details This helper function is called during the main shutdown sequence to clean up the dedicated resources created by `_SitRender_InitQuadRenderer`. It ensures that the internal shaders, pipelines, and vertex buffers used for drawing simple quads are properly released.
  *
  * @par Backend-Specific Behavior
  * - **OpenGL:** Deletes the quad renderer's shader program, its private Vertex Array Object (VAO), and its Vertex Buffer Object (VBO).
  * - **Vulkan:** Destroys the `VkPipeline`, `VkPipelineLayout`, and the vertex `VkBuffer` (along with its `VmaAllocation`) associated with the quad renderer. It assumes the device is idle before being called.
  *
  * @note This function is designed to be robust and will safely handle being called on a partially initialized state by checking if resource handles are valid before attempting destruction.
- * @warning This function is for internal use by the main cleanup routines (`_SituationCleanupOpenGL` or `_SituationCleanupVulkan`) only.
+ * @warning This function is for internal use by the main cleanup routines (`_SitRender_CleanupOpenGL` or `_SitCore_CleanupVulkan`) only.
  *
- * @see _SituationInitQuadRenderer()
+ * @see _SitRender_InitQuadRenderer()
  */
-static void _SituationCleanupQuadRenderer(void) {
+static void _SitRender_CleanupQuadRenderer(void) {
 #if defined(SITUATION_USE_OPENGL)
     if (sit_render.gl.quad_shader_program) { glDeleteProgram(sit_render.gl.quad_shader_program); sit_render.gl.quad_shader_program = 0; }
     if (sit_render.gl.quad_vao) { glDeleteVertexArrays(1, &sit_render.gl.quad_vao); sit_render.gl.quad_vao = 0; }
@@ -13008,17 +13008,17 @@ static void _SituationCleanupQuadRenderer(void) {
  *   - Destroys any other global resources like the view data UBO.
  *
  * @note This function is designed to be robust and will not cause errors if called on a partially initialized state (i.e., it checks if object IDs are non-zero before attempting deletion).
- * @warning This function is for internal use by `_SituationCleanupRenderer` only.
+ * @warning This function is for internal use by `_SitRender_CleanupRenderer` only.
  */
 #if defined(SITUATION_USE_OPENGL)
-static void _SituationCleanupOpenGL(void) {
+static void _SitRender_CleanupOpenGL(void) {
     // [Phase 2] Loader Window Cleanup
     #if !defined(__STDC_NO_THREADS__)
     if (sit_render.gl.loader_window) {
         glfwDestroyWindow(sit_render.gl.loader_window);
         sit_render.gl.loader_window = NULL;
     }
-    // [v2.3.21] Render thread shutdown logic moved to _SituationDestroyRenderThread in SituationShutdown
+    // [v2.3.21] Render thread shutdown logic moved to _SitRender_DestroyRenderThread in SituationShutdown
 
     // Ensure we have a context for cleanup (re-acquire if needed)
     if (sit_gs.sit_glfw_window && glfwGetCurrentContext() == NULL) {
@@ -13028,7 +13028,7 @@ static void _SituationCleanupOpenGL(void) {
 
     // The OpenGL context is still active here.
     // Clean up all library-managed GL objects.
-    _SituationCleanupQuadRenderer();
+    _SitRender_CleanupQuadRenderer();
     if (sit_render.gl.vd_shader_program_id != 0) glDeleteProgram(sit_render.gl.vd_shader_program_id);
     if (sit_render.gl.composite_shader_program_id != 0) glDeleteProgram(sit_render.gl.composite_shader_program_id);
     if (sit_render.gl.global_vao_id != 0) { glDeleteVertexArrays(1, &sit_render.gl.global_vao_id); sit_render.gl.global_vao_id = 0; }
@@ -13073,7 +13073,7 @@ static void _SituationCleanupOpenGL(void) {
  * @par Cleanup Process
  *   The function systematically destroys all resources, from high-level objects down to the `VkInstance` itself. This includes:
  *   - Internal renderers (quad renderer).
- *   - The swapchain and all its dependent resources (`_SituationVulkanCleanupSwapchain`).
+ *   - The swapchain and all its dependent resources (`_SitRender_VulkanCleanupSwapchain`).
  *   - All per-frame synchronization objects (semaphores, fences) and UBOs.
  *   - The main command pool, render pass, and VMA allocator.
  *   - All descriptor set layouts and descriptor pools.
@@ -13081,12 +13081,12 @@ static void _SituationCleanupOpenGL(void) {
  *   - The debug messenger, `VkSurfaceKHR`, and finally the `VkInstance`.
  *
  * @note This function is designed to be robust. It checks if each handle is non-NULL before attempting to destroy it, making it safe to call even if the initialization process failed partway through.
- * @warning This function is for internal use by `_SituationCleanupRenderer` only.
+ * @warning This function is for internal use by `_SitRender_CleanupRenderer` only.
  */
 #if defined(SITUATION_USE_VULKAN)
-static void _SituationCleanupVulkan(void) {
-    _SituationCleanupQuadRenderer();
-    _SituationVulkanCleanupSwapchain();
+static void _SitCore_CleanupVulkan(void) {
+    _SitRender_CleanupQuadRenderer();
+    _SitRender_VulkanCleanupSwapchain();
     for (uint32_t i = 0; i < sit_render.vk.max_frames_in_flight; i++) {
         vkDestroySemaphore(sit_render.vk.device, sit_render.vk.render_finished_semaphores[i], NULL);
         vkDestroySemaphore(sit_render.vk.device, sit_render.vk.image_available_semaphores[i], NULL);
@@ -13113,13 +13113,13 @@ static void _SituationCleanupVulkan(void) {
     // Clean up graveyards
     if (sit_render.vk.graveyards) {
         for (uint32_t i = 0; i < sit_render.vk.max_frames_in_flight; i++) {
-            _SituationFlushGraveyard(i); // Important: Flush resources first!
-            _SituationCleanupGraveyard(&sit_render.vk.graveyards[i]);
+            _SitCore_FlushGraveyard(i); // Important: Flush resources first!
+            _SitCore_CleanupGraveyard(&sit_render.vk.graveyards[i]);
         }
         SIT_FREE(sit_render.vk.graveyards);
     }
 
-    _SituationCleanupStagingBuffers();
+    _SitRender_CleanupStagingBuffers();
 
     for (int i = 0; i < sizeof(sit_render.vk.compute_layouts) / sizeof(sit_render.vk.compute_layouts[0]); ++i) {
         if (sit_render.vk.compute_layouts[i] != VK_NULL_HANDLE) {
@@ -13174,7 +13174,7 @@ static void _SituationCleanupVulkan(void) {
  * @details This function is called once during Vulkan initialization. It builds a set of common pipeline layouts that users can select via the SituationComputeLayoutType enum, abstracting away the complexity of Vulkan layout creation.
  * @return SITUATION_SUCCESS on success, or an error code if any layout fails to create.
  */
- static SituationError _SituationVulkanInitComputeLayouts(void) {
+ static SituationError _SitRender_VulkanInitComputeLayouts(void) {
     VkPipelineLayoutCreateInfo layout_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     VkDescriptorSetLayout set_layouts[4]; // Max needed for our most complex layout
     VkPushConstantRange push_constant = { .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = 64 };
@@ -13255,7 +13255,7 @@ static void _SituationCleanupVulkan(void) {
  * @details This function takes pre-compiled SPIR-V bytecode for a compute shader, creates the necessary Vulkan objects (VkShaderModule, VkPipelineLayout, VkPipeline), and returns a `SituationComputePipeline` struct containing them.
  *          The caller is responsible for assigning a public `id` to the returned struct and for adding it to any resource tracking systems.
  *          The caller is also responsible for eventually destroying the pipeline using `_SituationVulkanDestroyComputePipeline` or `SituationDestroyComputePipeline`.
- *          Error handling is performed internally. If this function fails, it returns an invalid `SituationComputePipeline` (zero-initialized) and sets the library's last error state via `_SituationSetErrorFromCode`.
+ *          Error handling is performed internally. If this function fails, it returns an invalid `SituationComputePipeline` (zero-initialized) and sets the library's last error state via `_SitCore_SetErrorFromCode`.
  *
  * @param cs_spirv_data Pointer to the compiled SPIR-V compute shader bytecode.
  *                      This data must be valid and correctly formatted SPIR-V.
@@ -13273,28 +13273,28 @@ static void _SituationCleanupVulkan(void) {
  * @note The `VkShaderModule` created internally is destroyed immediately after the `VkPipeline` is successfully created, as per Vulkan specification.
  *       The `VkShaderModule` handle is **not** stored in the returned struct.
  * @warning The SPIR-V data pointed to by `cs_spirv_data` is not validated by this function for semantic correctness beyond basic Vulkan object creation. Passing invalid SPIR-V can lead to errors during pipeline creation or undefined behavior at runtime.
- * @see _SituationVulkanCreateShaderModule(), SituationCreateComputePipelineFromMemory(), SituationDestroyComputePipeline()
+ * @see _SitRender_VulkanCreateShaderModule(), SituationCreateComputePipelineFromMemory(), SituationDestroyComputePipeline()
  */
-static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint8_t* cs_spirv_data, size_t cs_spirv_size, VkPipelineLayout layout) {
+static SituationComputePipeline _SitRender_VulkanCreateComputePipeline(const uint8_t* cs_spirv_data, size_t cs_spirv_size, VkPipelineLayout layout) {
     SituationComputePipeline pipeline = {0}; // Initialize to invalid state
 
     // --- 1. Pre-condition Checks ---
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "_SituationVulkanCreateComputePipeline: Library not initialized.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "_SitRender_VulkanCreateComputePipeline: Library not initialized.");
         return pipeline; // Return invalid pipeline
     }
 
     if (!cs_spirv_data || cs_spirv_size == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanCreateComputePipeline: Invalid SPIR-V data (NULL pointer) or size (zero).");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitRender_VulkanCreateComputePipeline: Invalid SPIR-V data (NULL pointer) or size (zero).");
         return pipeline; // Return invalid pipeline
     }
 
     // --- 2. Create VkShaderModule ---
     // This helper function handles VkShaderModuleCreateInfo setup and vkCreateShaderModule call.
     // It also performs input validation and sets errors.
-    VkShaderModule cs_module = _SituationVulkanCreateShaderModule((const char*)cs_spirv_data, cs_spirv_size);
+    VkShaderModule cs_module = _SitRender_VulkanCreateShaderModule((const char*)cs_spirv_data, cs_spirv_size);
     if (cs_module == VK_NULL_HANDLE) {
-        // Error message should already be set by _SituationVulkanCreateShaderModule.
+        // Error message should already be set by _SitRender_VulkanCreateShaderModule.
         // Return the invalid pipeline struct.
         return pipeline;
     }
@@ -13317,8 +13317,8 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
     result = vkCreateComputePipelines(sit_render.vk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &vk_pipeline);
     if (result != VK_SUCCESS) {
         char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "_SituationVulkanCreateComputePipeline: vkCreateComputePipelines failed (VkResult = %d).", (int)result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, err_msg);
+        snprintf(err_msg, sizeof(err_msg), "_SitRender_VulkanCreateComputePipeline: vkCreateComputePipelines failed (VkResult = %d).", (int)result);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, err_msg);
 
         // --- Cleanup on Pipeline Creation Failure ---
         // Destroy the pipeline layout created successfully in step 3.
@@ -13370,9 +13370,9 @@ static SituationComputePipeline _SituationVulkanCreateComputePipeline(const uint
  * @note This function is a fundamental building block for managing resource lifetimes and dependencies in the Vulkan backend.
  * @warning This is a low-level helper for internal use only. Incorrectly specifying `old_layout` can lead to validation errors or race conditions.
  *
- * @see _SituationVulkanCopyBufferToImage(), _SituationVulkanGenerateMipmaps(), vkCmdPipelineBarrier()
+ * @see _SitRender_VulkanCopyBufferToImage(), _SitCore_VulkanGenerateMipmaps(), vkCmdPipelineBarrier()
  */
-static void _SituationVulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage image, uint32_t mip_levels, VkImageLayout old_layout, VkImageLayout new_layout) {
+static void _SitRender_VulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage image, uint32_t mip_levels, VkImageLayout old_layout, VkImageLayout new_layout) {
     VkImageMemoryBarrier barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = old_layout;
@@ -13412,7 +13412,7 @@ static void _SituationVulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage i
         destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     } else {
         // This is not an exhaustive list. Add other transitions as needed.
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Unsupported image layout transition specified in helper.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Unsupported image layout transition specified in helper.");
         return;
     }
 
@@ -13433,9 +13433,9 @@ static void _SituationVulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage i
  * @note This function assumes that the destination `image` has been previously transitioned to the `VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL` layout, making it ready to receive data.
  * @warning This is a low-level helper for internal use by functions like `SituationCreateTexture`. It does not perform any synchronization; the caller is responsible for ensuring the source buffer is ready and for transitioning the image layout after the copy is complete.
  *
- * @see SituationCreateTexture(), _SituationVulkanTransitionImageLayout(), vkCmdCopyBufferToImage()
+ * @see SituationCreateTexture(), _SitRender_VulkanTransitionImageLayout(), vkCmdCopyBufferToImage()
  */
-static void _SituationVulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
+static void _SitRender_VulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
     VkBufferImageCopy region = {0};
     region.bufferOffset = 0;
     region.bufferRowLength = 0;
@@ -13471,7 +13471,7 @@ static void _SituationVulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buff
  *
  * @return A pointer to raw pixel data (RGBA8), or NULL on failure. Caller must `free()`.
  */
-static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkImageLayout srcImageLayout, uint32_t width, uint32_t height) {
+static void* _SitRender_VulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkImageLayout srcImageLayout, uint32_t width, uint32_t height) {
     VkBuffer dstBuffer;
     VmaAllocation dstAllocation;
     VkDeviceSize bufferSize = (VkDeviceSize)width * height * 4; // Assuming 4 bytes per pixel (RGBA)
@@ -13482,16 +13482,16 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
     VmaAllocationCreateInfo allocInfo = { .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT, .usage = VMA_MEMORY_USAGE_GPU_TO_CPU };
 
     if (vmaCreateBuffer(sit_render.vk.vma_allocator, &bufferInfo, &allocInfo, &dstBuffer, &dstAllocation, NULL) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create host-visible buffer for screenshot.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create host-visible buffer for screenshot.");
         return NULL;
     }
 
     // --- Step 2: Record and submit commands for the copy ---
-    VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
+    VkCommandBuffer cmd = _SitRender_VulkanBeginSingleTimeCommands();
 
     // a. Transition source image to be ready for copy
     //    We need a new, more generic transition helper for this.
-    _SituationVulkanTransitionImageLayout(cmd, srcImage, 1, srcImageLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    _SitRender_VulkanTransitionImageLayout(cmd, srcImage, 1, srcImageLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
     // b. Record the copy command
     VkBufferImageCopy region = {0};
@@ -13507,15 +13507,15 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
     vkCmdCopyImageToBuffer(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstBuffer, 1, ®ion);
 
     // c. Transition source image back to its original layout so it can be presented
-    _SituationVulkanTransitionImageLayout(cmd, srcImage, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, srcImageLayout);
+    _SitRender_VulkanTransitionImageLayout(cmd, srcImage, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, srcImageLayout);
 
     // Submit and wait for completion
-    _SituationVulkanEndSingleTimeCommands(cmd);
+    _SitRender_VulkanEndSingleTimeCommands(cmd);
 
     // --- Step 3: Map the memory, copy it, and clean up ---
     void* mappedData;
     if (vmaMapMemory(sit_render.vk.vma_allocator, dstAllocation, &mappedData) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to map screenshot buffer.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to map screenshot buffer.");
         vmaDestroyBuffer(sit_render.vk.vma_allocator, dstBuffer, dstAllocation);
         return NULL;
     }
@@ -13525,7 +13525,7 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
     if (finalImageData) {
         memcpy(finalImageData, mappedData, bufferSize);
     } else {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Final screenshot image buffer.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Final screenshot image buffer.");
     }
 
     vmaUnmapMemory(sit_render.vk.vma_allocator, dstAllocation);
@@ -13560,7 +13560,7 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
  *
  * @see SituationCreateTexture(), vkCmdBlitImage(), vkCmdPipelineBarrier()
  */
-static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, int32_t width, int32_t height, uint32_t mip_levels) {
+static void _SitCore_VulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, int32_t width, int32_t height, uint32_t mip_levels) {
     // This barrier will be reused to transition each mip level
     VkImageMemoryBarrier barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -13631,16 +13631,16 @@ static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, 
  * @par Cleanup Strategy
  *   The function executes the main cleanup routines in the **exact reverse order of initialization** to respect dependencies (e.g., the Vulkan surface must be destroyed before the GLFW window).
  *   1.  **GPU Synchronization:** It first attempts to wait for the GPU to go idle (`vkDeviceWaitIdle` or `glFinish`). This is a critical step to ensure that no resources are in use by the GPU when destruction begins, preventing validation errors or crashes.
- *   2.  **Subsystem Teardown:** Calls `_SituationCleanupSubsystems` to release audio, input, and timer resources.
- *   3.  **Renderer Teardown:** Calls `_SituationCleanupRenderer` to dispatch to the backend-specific cleanup (`_SituationCleanupOpenGL` or `_SituationCleanupVulkan`).
- *   4.  **Platform Teardown:** Calls `_SituationCleanupPlatform` to destroy the window and terminate GLFW.
+ *   2.  **Subsystem Teardown:** Calls `_SitCore_CleanupSubsystems` to release audio, input, and timer resources.
+ *   3.  **Renderer Teardown:** Calls `_SitRender_CleanupRenderer` to dispatch to the backend-specific cleanup (`_SitRender_CleanupOpenGL` or `_SitCore_CleanupVulkan`).
+ *   4.  **Platform Teardown:** Calls `_SitCore_CleanupPlatform` to destroy the window and terminate GLFW.
  *
  * The robustness of this function relies on the fact that each individual cleanup helper is idempotent and safely handles being called on a partially initialized state (i.e., by checking if resource handles are `NULL` before attempting to destroy them).
  *
  * @note This function is for internal use by `SituationInit` only and should never be called directly.
  * @warning After this function completes, the library is in a fully uninitialized state.
  *
- * @see SituationInit(), _SituationCleanupSubsystems(), _SituationCleanupRenderer(), _SituationCleanupPlatform()
+ * @see SituationInit(), _SitCore_CleanupSubsystems(), _SitRender_CleanupRenderer(), _SitCore_CleanupPlatform()
  */
 
 /**
@@ -13691,7 +13691,7 @@ SITAPI void SituationSetExitCallback(void (*callback)(void* user_data), void* us
  * @param callback A function pointer to the callback to be executed. The callback receives the new `width` and `height` in pixels, along with the `user_data` pointer. Pass `NULL` to clear a previously set callback.
  * @param user_data A custom, user-defined pointer that will be passed to the callback function.
  *
- * @note The library's internal `_SituationGLFWFramebufferSizeCallback` is always called first to update internal state (like viewport for OpenGL and the resize flag for Vulkan). The user's callback is invoked immediately after.
+ * @note The library's internal `_SitRender_GLFWFramebufferSizeCallback` is always called first to update internal state (like viewport for OpenGL and the resize flag for Vulkan). The user's callback is invoked immediately after.
  * @warning The callback is executed in the same thread that calls `SituationPollInputEvents`. It is not asynchronous and will block the main loop until it returns.
  *
  * @see SituationGetRenderWidth(), SituationGetRenderHeight()
@@ -13761,7 +13761,7 @@ SITAPI const char* SituationGetArgumentValue(const char* arg_name) {
  * - **Vulkan:**
  *   - Waits for the GPU to finish processing the commands associated with the frame identified by `sit_render.vk.current_frame_index`.
  *   - Attempts to acquire the next image from the swapchain. This image will be the target for rendering this frame.
- *   - If the swapchain is out of date (e.g., due to a window resize), this function internally calls `_SituationVulkanRecreateSwapchain` to handle the recreation process. In this specific case, it returns `false` to signal that the frame setup was interrupted and should be retried.
+ *   - If the swapchain is out of date (e.g., due to a window resize), this function internally calls `_SitRender_VulkanRecreateSwapchain` to handle the recreation process. In this specific case, it returns `false` to signal that the frame setup was interrupted and should be retried.
  *   - Resets the fence associated with the current frame index to the unsignaled state.
  *   - Resets the primary command buffer for the current frame.
  *   - Begins recording commands into the primary command buffer.
@@ -13783,7 +13783,7 @@ SITAPI const char* SituationGetArgumentValue(const char* arg_name) {
 SITAPI bool SituationAcquireFrameCommandBuffer(void) {
     // --- 1. Library Initialization Check ---
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot begin frame before library initialization.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot begin frame before library initialization.");
         return false;
     }
 
@@ -13809,7 +13809,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // Make the context current for this thread (Single Threaded Mode)
         glfwMakeContextCurrent(sit_gs.sit_glfw_window);
         // [2.3.14A] Invalidate shadow state to recover from external changes.
-        _SitGLInvalidateShadowState();
+        _SitRender_GLInvalidateShadowState();
         #endif
 
         // [Phase 1] Reset Soft Command Buffer
@@ -13834,7 +13834,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
             UINT64_MAX         // timeout
         );
         if (wait_result != VK_SUCCESS) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to wait for frame fence in SituationAcquireFrameCommandBuffer.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to wait for frame fence in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
 
@@ -13854,7 +13854,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 
         // --- FLUSH GRAVEYARD ---
         // The GPU is done with this frame, so we can safely destroy deferred resources.
-        _SituationFlushGraveyard(sit_render.vk.current_frame_index);
+        _SitCore_FlushGraveyard(sit_render.vk.current_frame_index);
 
         // 2.15 Check for Swapchain Recreation Request from Render Thread
         if (atomic_exchange(&sit_render.vk.recreate_swapchain_request, false)) {
@@ -13874,7 +13874,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
             }
             mtx_unlock(&sit_render.render_queue_mutex);
             #endif
-            _SituationVulkanRecreateSwapchain();
+            _SitRender_VulkanRecreateSwapchain();
             return false;
         }
 
@@ -13893,7 +13893,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
             // The swapchain is incompatible (e.g., window resized) and must be recreated.
             // This function handles the recreation internally.
-            _SituationVulkanRecreateSwapchain();
+            _SitRender_VulkanRecreateSwapchain();
             // Return false to signal that the frame setup was interrupted.
             // The caller should retry SituationAcquireFrameCommandBuffer next frame.
             return false;
@@ -13905,7 +13905,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
              // Proceeding is generally safe, but performance/quality might be affected.
         } else if (acquire_result != VK_SUCCESS) {
             // An unexpected error occurred during image acquisition.
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_IMAGE_ACQUIRE_FAILED, "Failed to acquire swap chain image in SituationAcquireFrameCommandBuffer!");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_IMAGE_ACQUIRE_FAILED, "Failed to acquire swap chain image in SituationAcquireFrameCommandBuffer!");
             return false; // Indicate failure
         }
 
@@ -13924,7 +13924,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
             &sit_render.vk.in_flight_fences[sit_render.vk.current_frame_index]
         );
         if (reset_fence_result != VK_SUCCESS) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to reset frame fence in SituationAcquireFrameCommandBuffer.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to reset frame fence in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
 
@@ -13933,7 +13933,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         VkCommandBuffer compute_cmd = sit_render.vk.compute_command_buffers[sit_render.vk.current_frame_index];
 
         if (cmd == VK_NULL_HANDLE || compute_cmd == VK_NULL_HANDLE) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get command buffers for frame in SituationAcquireFrameCommandBuffer.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get command buffers for frame in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
 
@@ -13942,7 +13942,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         vkResetCommandBuffer(compute_cmd, 0); // Reset compute buffer too
 
         if (reset_cmd_result != VK_SUCCESS) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to reset command buffer in SituationAcquireFrameCommandBuffer.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to reset command buffer in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
         }
 
@@ -13954,7 +13954,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         vkBeginCommandBuffer(compute_cmd, &begin_info); // Begin compute buffer
 
         if (begin_result != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to begin recording command buffer in SituationAcquireFrameCommandBuffer!");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to begin recording command buffer in SituationAcquireFrameCommandBuffer!");
             return false; // Indicate failure
         }
 
@@ -13965,7 +13965,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 
     // Should not be reached if SITUATION_USE_OPENGL or SITUATION_USE_VULKAN is defined,
     // but included for theoretical completeness if neither backend is selected.
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "No graphics backend defined for SituationAcquireFrameCommandBuffer.");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "No graphics backend defined for SituationAcquireFrameCommandBuffer.");
     return false;
 }
 
@@ -14000,7 +14000,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
  * @see SituationAcquireFrameCommandBuffer()
  */
 #if defined(SITUATION_USE_VULKAN)
-static void _SituationSubmitCompute(VkCommandBuffer cmd) {
+static void _SitRender_SubmitCompute(VkCommandBuffer cmd) {
     // Submit compute work and signal semaphore in one go
     VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     submit.commandBufferCount = 1;
@@ -14013,7 +14013,7 @@ static void _SituationSubmitCompute(VkCommandBuffer cmd) {
     vkQueueSubmit(sit_render.vk.compute_queue, 1, &submit, VK_NULL_HANDLE);
 }
 
-static void _SituationSubmitGraphics(VkCommandBuffer cmd) {
+static void _SitRender_SubmitGraphics(VkCommandBuffer cmd) {
     VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     
     // Wait for Image Available (always)
@@ -14050,7 +14050,7 @@ static void _SituationSubmitGraphics(VkCommandBuffer cmd) {
 SITAPI SituationError SituationEndFrame(void) {
     // --- 1. Library Initialization Check ---
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot end frame.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot end frame.");
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     
@@ -14167,7 +14167,7 @@ SITAPI SituationError SituationEndFrame(void) {
 
             // [v2.3.22] Record Submit Timestamp for Latency
             // [v2.3.25] Store explicitly for drift check
-            uint64_t now = _SitGetMonotonicTimeNS();
+            uint64_t now = _SitCore_GetMonotonicTimeNS();
             atomic_store(&sit_render.submit_timestamps[sit_render.current_frame_index], now);
             atomic_fetch_add(&sit_render.render_queue_depth, 1);
 
@@ -14177,13 +14177,13 @@ SITAPI SituationError SituationEndFrame(void) {
         #endif
         // If threading disabled at runtime but compiled in, fallback to immediate execution below
         {
-            _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
+            _SitRender_GLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
             glfwSwapBuffers(sit_gs.sit_glfw_window);
         }
         #else
         // [Phase 1] Execute Deferred Commands Immediately
         // [PLATINUM] Use the correct frame index even in single-threaded mode for consistency.
-        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
+        _SitRender_GLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
 
         // Swap the front and back buffers to display the rendered frame.
         glfwSwapBuffers(sit_gs.sit_glfw_window);
@@ -14204,12 +14204,12 @@ SITAPI SituationError SituationEndFrame(void) {
         // Get the command buffer first and validate it.
         VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
         if (cmd == VK_NULL_HANDLE) { // Check if SituationGetMainCommandBuffer returned NULL
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get main command buffer for ending frame.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to get main command buffer for ending frame.");
              return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
         }
 
         if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to end recording command buffer!");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to end recording command buffer!");
             return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
         }
 
@@ -14239,7 +14239,7 @@ SITAPI SituationError SituationEndFrame(void) {
             sit_render.frames_pending++;
 
             // [v2.3.22] Metrics & Depth Tracking
-            uint64_t now = _SitGetMonotonicTimeNS();
+            uint64_t now = _SitCore_GetMonotonicTimeNS();
             atomic_store(&sit_render.submit_timestamps[sit_render.vk.current_frame_index], now);
             atomic_fetch_add(&sit_render.render_queue_depth, 1);
 
@@ -14254,10 +14254,10 @@ SITAPI SituationError SituationEndFrame(void) {
             if (sit_render.frame_has_async_compute) {
                 VkCommandBuffer compute_cmd = sit_render.vk.compute_command_buffers[sit_render.vk.current_frame_index];
                 vkEndCommandBuffer(compute_cmd);
-                _SituationSubmitCompute(compute_cmd);
+                _SitRender_SubmitCompute(compute_cmd);
             }
 
-            _SituationSubmitGraphics(cmd);
+            _SitRender_SubmitGraphics(cmd);
 
             // 3. Present the rendered image to the screen.
             VkSemaphore signal_semaphores[] = { sit_render.vk.render_finished_semaphores[sit_render.vk.current_frame_index] };
@@ -14284,12 +14284,12 @@ SITAPI SituationError SituationEndFrame(void) {
                 // The swapchain is out of date or not optimal. Recreate it.
                 // Reset the resize flag if it was set.
                 sit_render.vk.framebuffer_resized = false;
-                _SituationVulkanRecreateSwapchain();
+                _SitRender_VulkanRecreateSwapchain();
                 // Note: We don't return an error here. Recreating the swapchain is handled internally.
                 // The application should check for swapchain recreation needs in SituationAcquireFrameCommandBuffer.
             } else if (result != VK_SUCCESS) {
                 // An unexpected error occurred during presentation.
-                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Failed to present swap chain image!");
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Failed to present swap chain image!");
                 return SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED;
             }
 
@@ -14317,7 +14317,7 @@ SITAPI SituationError SituationEndFrame(void) {
         // Submit the command buffer, waiting on the acquire semaphore and signaling the render finish semaphore.
         // The fence associated with this frame is signaled when the submission completes.
         if (vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit_info, sit_render.vk.in_flight_fences[sit_render.vk.current_frame_index]) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "Failed to submit draw command buffer!");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "Failed to submit draw command buffer!");
             return SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED;
         }
 
@@ -14339,12 +14339,12 @@ SITAPI SituationError SituationEndFrame(void) {
             // The swapchain is out of date or not optimal. Recreate it.
             // Reset the resize flag if it was set.
             sit_render.vk.framebuffer_resized = false;
-            _SituationVulkanRecreateSwapchain();
+            _SitRender_VulkanRecreateSwapchain();
             // Note: We don't return an error here. Recreating the swapchain is handled internally.
             // The application should check for swapchain recreation needs in SituationAcquireFrameCommandBuffer.
         } else if (result != VK_SUCCESS) {
             // An unexpected error occurred during presentation.
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Failed to present swap chain image!");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "Failed to present swap chain image!");
             return SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED;
         }
 
@@ -14430,7 +14430,7 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
     if (!SituationIsInitialized()) {
         // Returning NULL is a safe default for an invalid/uninitialized state.
         // Could also set an error, but often just returning NULL is sufficient for a getter.
-        // _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get command buffer before library initialization.");
+        // _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get command buffer before library initialization.");
         return NULL;
     }
 
@@ -14451,7 +14451,7 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
         // Optional: Add a bounds check for robustness, though SituationAcquireFrameCommandBuffer should manage this.
         if (sit_render.vk.current_frame_index >= sit_render.vk.max_frames_in_flight) {
             // This indicates a potential logic error or state issue.
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Current frame index is out of bounds for command buffer access.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Current frame index is out of bounds for command buffer access.");
             return NULL;
         }
 
@@ -14460,7 +14460,7 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
 
         // Optional: Check if vk_cmd is VK_NULL_HANDLE, though SituationAcquireFrameCommandBuffer should provide a valid one.
         if (vk_cmd == VK_NULL_HANDLE) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Current frame's command buffer is unexpectedly NULL.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Current frame's command buffer is unexpectedly NULL.");
              return NULL;
         }
 
@@ -14523,7 +14523,7 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BEGIN_RENDER_PASS);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_BEGIN_RENDER_PASS);
     if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     p->args.begin_pass.display_id = info->display_id;
@@ -14545,7 +14545,7 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
         return SituationCmdBeginRenderToDisplay(cmd, info->display_id, info->color_attachment.clear.color);
     } else {
         // TODO: Implement a Render Pass Cache to support LOAD_OP_LOAD
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Non-clearing render passes (SIT_LOAD_OP_LOAD) are not yet implemented for the Vulkan backend.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Non-clearing render passes (SIT_LOAD_OP_LOAD) are not yet implemented for the Vulkan backend.");
         return SITUATION_ERROR_NOT_IMPLEMENTED;
     }
 #endif
@@ -14573,7 +14573,7 @@ SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    if (!_SitGLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS)) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    if (!_SitRender_GLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS)) return SITUATION_ERROR_MEMORY_ALLOCATION;
 #elif defined(SITUATION_USE_VULKAN)
     if (cmd == 0) return SITUATION_ERROR_INVALID_PARAM; // Basic validation
     vkCmdEndRenderPass((VkCommandBuffer)cmd);
@@ -14592,13 +14592,13 @@ SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
  */
 SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cmd, int display_id, ColorRGBA clear_color) {
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "CmdBeginRenderToDisplay");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "CmdBeginRenderToDisplay");
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BEGIN_RENDER_PASS);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_BEGIN_RENDER_PASS);
     if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     p->args.begin_pass.display_id = display_id;
@@ -14632,7 +14632,7 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
         render_pass_info.renderArea.extent = sit_render.vk.swapchain_extent;
     } else {
         if (display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "CmdBeginRenderToDisplay");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "CmdBeginRenderToDisplay");
             return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
         }
         SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
@@ -14678,14 +14678,14 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
 SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
     // --- 1. Input Validation ---
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "CmdEndRender");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "CmdEndRender");
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
 
 #if defined(SITUATION_USE_OPENGL)
     {
         SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-        _SitGLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS);
+        _SitRender_GLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS);
         return SITUATION_SUCCESS;
     }
 
@@ -14693,7 +14693,7 @@ SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
     {
         // --- 2. Vulkan Input Validation ---
         if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for ending render pass.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for ending render pass.");
             return SITUATION_ERROR_INVALID_PARAM;
         }
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -14755,14 +14755,14 @@ SITAPI SituationError SituationCmdSetViewport(SituationCommandBuffer cmd, float 
         char error_msg[128];
         snprintf(error_msg, sizeof(error_msg),
                  "Invalid viewport dimensions: width=%.2f, height=%.2f. Dimensions must be positive.", width, height);
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, error_msg);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, error_msg);
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
 #if defined(SITUATION_USE_OPENGL)
     {
         SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-        SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_VIEWPORT);
+        SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_SET_VIEWPORT);
         if (p) {
             p->args.viewport.x = x;
             p->args.viewport.y = y;
@@ -14777,7 +14777,7 @@ SITAPI SituationError SituationCmdSetViewport(SituationCommandBuffer cmd, float 
     {
         // --- 2. Vulkan Input Validation ---
         if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for setting viewport.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for setting viewport.");
             return SITUATION_ERROR_INVALID_PARAM;
         }
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -14834,7 +14834,7 @@ SITAPI SituationError SituationCmdSetScissor(SituationCommandBuffer cmd, int x, 
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_SCISSOR);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_SET_SCISSOR);
     if (p) {
         p->args.scissor.x = x;
         p->args.scissor.y = y;
@@ -14879,7 +14879,7 @@ SITAPI void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, uint32_t bi
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_VERTEX_BUFFER);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_BIND_VERTEX_BUFFER);
     if (p) {
         p->args.bind_vbo.binding = binding;
         p->args.bind_vbo.buffer_id = buffer.gl_buffer_id;
@@ -14916,7 +14916,7 @@ SITAPI void SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuf
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_INDEX_BUFFER);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_BIND_INDEX_BUFFER);
     if (p) {
         p->args.bind_ibo.buffer_id = buffer.gl_buffer_id;
     }
@@ -14946,12 +14946,12 @@ SITAPI void SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuf
  */
 SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    _SituationTextureSlot* slot = _SitGetTextureSlot(texture);
+    _SituationTextureSlot* slot = _SitRender_GetTextureSlot(texture);
     if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET);
     if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     p->args.bind_desc.set_index = binding;
@@ -15001,7 +15001,7 @@ SITAPI SituationError SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vert
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_DRAW);
     if (p) {
         p->args.draw.v_count = vertex_count;
         p->args.draw.i_count = instance_count;
@@ -15041,7 +15041,7 @@ SITAPI SituationError SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_INDEXED);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_DRAW_INDEXED);
     if (p) {
         p->args.draw_indexed.idx_count = index_count;
         p->args.draw_indexed.inst_count = instance_count;
@@ -15125,11 +15125,11 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
 #if defined(SITUATION_USE_OPENGL)
     // --- OPENGL PATH (Standard Soft Buffer) ---
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    void* text_ptr = _SitGLSoftDataPush(buf, text, len + 1);
+    void* text_ptr = _SitRender_GLSoftDataPush(buf, text, len + 1);
     if (!text_ptr) return SITUATION_ERROR_MEMORY_ALLOCATION;
     size_t text_offset = (size_t)((uint8_t*)text_ptr - buf->data_buffer);
 
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_TEXT_EX);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_DRAW_TEXT_EX);
     if (p) {
         p->args.draw_text_ex.font = use_font;
         p->args.draw_text_ex.pos = pos;
@@ -15140,7 +15140,7 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
 
         // [v2.3.30] Bindless Logic
         // The SIT_OP_DRAW_TEXT_EX packet doesn't store the bindless handle explicitly.
-        // Instead, the executor (_SituationGLExecuteCommands) will detect if the feature is enabled
+        // Instead, the executor (_SitRender_GLExecuteCommands) will detect if the feature is enabled
         // and resolve the handle from the font's atlas texture ID at draw time.
         // This keeps the packet size small and logic centralized in the executor.
     } else {
@@ -15264,11 +15264,11 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
         
         // This helper creates a staging buffer + device local buffer and copies
-        if (_SituationVulkanCreateAndUploadBuffer(vk_cmd, sit_render.text_batch_scratch, data_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &temp_buffer, &temp_alloc) == SITUATION_SUCCESS) {
+        if (_SitRender_VulkanCreateAndUploadBuffer(vk_cmd, sit_render.text_batch_scratch, data_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &temp_buffer, &temp_alloc) == SITUATION_SUCCESS) {
             target_buffer = temp_buffer;
             target_offset = 0;
             // Mark for deletion at end of frame
-            _SituationDeferDestroyBuffer(temp_buffer, temp_alloc);
+            _SitRender_DeferDestroyBuffer(temp_buffer, temp_alloc);
         }
     }
 
@@ -15290,7 +15290,7 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
     return SITUATION_SUCCESS;
 
 #else
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCmdDrawText requires STB Truetype.");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCmdDrawText requires STB Truetype.");
     return SITUATION_ERROR_NOT_IMPLEMENTED;
 #endif
 }
@@ -15318,7 +15318,7 @@ SITAPI SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationT
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_PRESENT);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_PRESENT);
     if (p) {
         p->args.present.texture = texture;
         p->args.present.target_w = sit_gs.main_window_width;
@@ -15338,11 +15338,11 @@ SITAPI SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationT
     // 2. Transition Swapchain to TRANSFER_DST
     // Note: SituationAcquireFrameCommandBuffer normally leaves it in UNDEFINED or COLOR_ATTACHMENT_OPTIMAL.
     // We assume it's currently available.
-    _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImage, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    _SitRender_VulkanTransitionImageLayout(vk_cmd, swapchainImage, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     // 3. Transition Source Texture to TRANSFER_SRC
     // Note: Compute shaders usually leave textures in GENERAL or SHADER_READ_ONLY.
-    _SituationVulkanTransitionImageLayout(vk_cmd, texture.image, 1, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    _SitRender_VulkanTransitionImageLayout(vk_cmd, texture.image, 1, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
     // 4. Blit
     VkImageBlit blit = {0};
@@ -15363,10 +15363,10 @@ SITAPI SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationT
                    1, &blit, VK_FILTER_LINEAR);
 
     // 5. Transition Swapchain to PRESENT_SRC
-    _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImage, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    _SitRender_VulkanTransitionImageLayout(vk_cmd, swapchainImage, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
     // 6. Transition Source back to GENERAL (ready for next compute frame)
-    _SituationVulkanTransitionImageLayout(vk_cmd, texture.image, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    _SitRender_VulkanTransitionImageLayout(vk_cmd, texture.image, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 #endif
     return SITUATION_SUCCESS;
 }
@@ -15427,7 +15427,7 @@ SITAPI uint64_t SituationGetTextureHandle(SituationTexture texture) {
 
     // Check if bindless is supported
     if (!SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "Bindless textures not supported by driver.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "Bindless textures not supported by driver.");
         return 0;
     }
 
@@ -15436,7 +15436,7 @@ SITAPI uint64_t SituationGetTextureHandle(SituationTexture texture) {
     if (GLAD_GL_ARB_bindless_texture) {
         GLuint64 handle = glGetTextureHandleARB(texture.gl_texture_id);
         if (!handle) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to retrieve texture handle.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to retrieve texture handle.");
             return 0;
         }
 
@@ -15453,7 +15453,7 @@ SITAPI uint64_t SituationGetTextureHandle(SituationTexture texture) {
     // For Vulkan, a "bindless handle" is typically an index into a descriptor array.
     // Since our current architecture uses bindful sets per texture, we don't have a global array index to return yet.
     // Future work: Implement global descriptor array management.
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationGetTextureHandle not yet implemented for Vulkan (requires descriptor indexing).");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationGetTextureHandle not yet implemented for Vulkan (requires descriptor indexing).");
     return 0;
 #else
     return 0;
@@ -15498,12 +15498,12 @@ SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd,
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
 #if defined(SITUATION_USE_OPENGL)
-    if (_SituationMapDataTypeToGL(type) == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdSetVertexAttribute: Invalid data type.");
+    if (_SitRender_MapDataTypeToGL(type) == 0) {
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdSetVertexAttribute: Invalid data type.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_VERTEX_ATTRIBUTE);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_SET_VERTEX_ATTRIBUTE);
     if (p) {
         p->args.set_vertex_attr.location = location;
         p->args.set_vertex_attr.size = size;
@@ -15519,7 +15519,7 @@ SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd,
     // In Vulkan, vertex attributes are baked into the immutable VkPipeline object at creation.
     // To change attributes, you must create a new pipeline with the desired vertex input state.
     (void)cmd; (void)location; (void)size; (void)type; (void)normalized; (void)offset;
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
         "SituationCmdSetVertexAttribute is incompatible with Vulkan's architecture. "
         "Vulkan Pipelines are immutable; vertex attributes must be defined at pipeline creation time "
         "(inside SituationLoadShaderFromMemory logic), not dynamically on the command buffer.");
@@ -15559,7 +15559,7 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (shader.id == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to bind an invalid shader handle.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to bind an invalid shader handle.");
         // Invalidate the cached layout so subsequent PushConstant calls don't crash Vulkan
         #if defined(SITUATION_USE_VULKAN)
         sit_render.vk.current_pipeline_layout_for_push_constants = VK_NULL_HANDLE;
@@ -15570,7 +15570,7 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
 #if defined(SITUATION_USE_OPENGL)
     {
         SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-        SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_PIPELINE);
+        SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_BIND_PIPELINE);
         if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
         p->args.bind_pipeline.shader_id = shader.gl_program_id;
@@ -15581,7 +15581,7 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
     {
         // --- 2. Vulkan Input Validation ---
         if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for binding graphics pipeline.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for binding graphics pipeline.");
             return SITUATION_ERROR_INVALID_PARAM;
         }
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -15643,7 +15643,7 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (mesh.id == 0 || mesh.index_count == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to draw an invalid or empty mesh.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to draw an invalid or empty mesh.");
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
     // Update Stats
@@ -15653,7 +15653,7 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_MESH);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_DRAW_MESH);
     if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
     p->args.draw_mesh.mesh = mesh;
     return SITUATION_SUCCESS;
@@ -15662,7 +15662,7 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
     {
         // --- 2. Vulkan Input Validation ---
         if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for drawing mesh.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for drawing mesh.");
             return SITUATION_ERROR_INVALID_PARAM;
         }
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -15792,7 +15792,7 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
 
     // The texture bind above handled the state setting. We just push the geometry.
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_QUAD);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_DRAW_QUAD);
     if (p) {
         glm_mat4_copy(model, p->args.draw_quad.model);
         p->args.draw_quad.color = color_vec;
@@ -15855,7 +15855,7 @@ SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 mode
     // We update SituationCmdBindTexture to set the `u_use_texture` uniform to 2 (Bindless) instead of 1 (Bindful)
     // if bindless is active.
 
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_QUAD);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_DRAW_QUAD);
     if (p) {
         glm_mat4_copy(model, p->args.draw_quad.model);
         p->args.draw_quad.color = color;
@@ -15923,16 +15923,16 @@ SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 mode
 SITAPI SituationError SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size) {
     // --- 1. Input Validation ---
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot set push constant.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot set push constant.");
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (!data) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Push constant data pointer is NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Push constant data pointer is NULL.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
     if (size == 0) {
         // Setting 0 bytes is likely an error.
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Push constant size is 0.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Push constant size is 0.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
     // Optionally, add a maximum size check based on API limits if known.
@@ -15942,13 +15942,13 @@ SITAPI SituationError SituationCmdSetPushConstant(SituationCommandBuffer cmd, ui
         SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
 
         // Allocate space in the data buffer
-        void* ptr = _SitGLSoftDataPush(buf, data, size);
+        void* ptr = _SitRender_GLSoftDataPush(buf, data, size);
         if (!ptr) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
         // Calculate offset relative to buffer start
         size_t offset = (size_t)((uint8_t*)ptr - buf->data_buffer);
 
-        SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_PUSH_CONSTANT);
+        SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_SET_PUSH_CONSTANT);
         if (p) {
             p->args.push_constant.offset = contract_id;
             p->args.push_constant.size = size;
@@ -15962,7 +15962,7 @@ SITAPI SituationError SituationCmdSetPushConstant(SituationCommandBuffer cmd, ui
     {
         // --- 2. Vulkan Input Validation ---
         if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for push constant update.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for push constant update.");
             return SITUATION_ERROR_INVALID_PARAM;
         }
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -16192,7 +16192,7 @@ SITAPI void SituationResetRenderList(SituationRenderList list) {
         retries++;
         if (retries > 100000) {
              // If we are stuck here, it's a deadlock or logic error. Break to avoid hanging.
-             _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "ResetRenderList timeout: List stuck in flight.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "ResetRenderList timeout: List stuck in flight.");
              break; 
         }
     }
@@ -16300,9 +16300,9 @@ SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRende
 }
 
 // [v2.3.24b] Integration Zenith: Batched Replay Logic
-static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
+static void _SitCore_ReplayToQueue(SituationRenderList list, int frame_idx) {
     if (!list || list->is_recording) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "List unfinished or null.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "List unfinished or null.");
         return;
     }
 
@@ -16379,9 +16379,9 @@ static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
 }
 
 // --- [INTERNAL] Thread-Safe Queue Push ---
-// This replaces the old _SituationReplayToQueue call.
+// This replaces the old _SitCore_ReplayToQueue call.
 // It just puts the pointer in the ring buffer.
-static void _SituationEnqueueRenderList(SituationRenderList list) {
+static void _SitRender_EnqueueRenderList(SituationRenderList list) {
     if (!list) return;
 
     mtx_lock(&sit_render.momentum_mutex);
@@ -16397,7 +16397,7 @@ static void _SituationEnqueueRenderList(SituationRenderList list) {
         sit_render.momentum_queue[head] = list;
         atomic_store(&sit_render.momentum_head, next_head);
     } else {
-        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Momentum render queue full. Frame data dropped.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Momentum render queue full. Frame data dropped.");
     }
 
     mtx_unlock(&sit_render.momentum_mutex);
@@ -16413,7 +16413,7 @@ typedef struct {
 } _SitRenderJobCtx;
 
 // The Worker Function (Runs on Thread Pool)
-static void _SituationRenderJobWorker(void* data, void* unused) {
+static void _SitRender_RenderJobWorker(void* data, void* unused) {
     (void)unused;
     _SitRenderJobCtx* ctx = (_SitRenderJobCtx*)data;
 
@@ -16427,7 +16427,7 @@ static void _SituationRenderJobWorker(void* data, void* unused) {
 
     // 2. Submit Completed List to Main Thread Queue
     // This is now thread-safe!
-    _SituationEnqueueRenderList(ctx->list);
+    _SitRender_EnqueueRenderList(ctx->list);
 }
 
 // Public API: Submits the job to the thread pool
@@ -16441,7 +16441,7 @@ SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, Situa
     _SitRenderJobCtx ctx = { list, func, user_data };
 
     // Submit to High Priority Queue (Physics/Render Logic)
-    return SituationSubmitJobEx(pool, _SituationRenderJobWorker, &ctx, sizeof(_SitRenderJobCtx), SIT_SUBMIT_HIGH_PRIORITY);
+    return SituationSubmitJobEx(pool, _SitRender_RenderJobWorker, &ctx, sizeof(_SitRenderJobCtx), SIT_SUBMIT_HIGH_PRIORITY);
 }
 
 #else
@@ -16460,7 +16460,7 @@ SITAPI void SituationSubmitRenderList(SituationRenderList list, void (*func)(voi
     }
 
     // 2. Enqueue (or just replay immediately if you prefer, but queueing keeps logic unified)
-    _SituationEnqueueRenderList(list);
+    _SitRender_EnqueueRenderList(list);
 }
 
 #endif
@@ -16599,19 +16599,19 @@ SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffe
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (buffer.id == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to bind an invalid buffer handle.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to bind an invalid buffer handle.");
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET);
     if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     p->args.bind_desc.set_index = set_index;
 
     // [Phase 1] Check if this buffer is currently using the Ring Buffer
-    _SituationBufferNode* node = _SitGetBufferNode(buffer.id);
+    _SituationBufferNode* node = _SitRender_GetBufferNode(buffer.id);
     if (node && node->buffer.dynamic_frame_index == sit_render.current_frame_index) {
         // It was updated this frame! Use the global ring buffer + dynamic offset.
         p->args.bind_desc.resource_id = sit_render.gl.ring_buffer_id;
@@ -16636,11 +16636,11 @@ SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffe
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
     if (vk_cmd == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for binding descriptor set.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for binding descriptor set.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
     if (buffer.descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Buffer is missing its pre-cached descriptor set. Was it created with UBO/SSBO usage flags?");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Buffer is missing its pre-cached descriptor set. Was it created with UBO/SSBO usage flags?");
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
 
@@ -16655,7 +16655,7 @@ SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffe
         bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
         layout = sit_render.vk.current_pipeline_layout_for_push_constants;
     } else {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED, "Cannot bind descriptor set; no pipeline is currently bound.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED, "Cannot bind descriptor set; no pipeline is currently bound.");
         return SITUATION_ERROR_RENDER_COMMAND_FAILED;
     }
 
@@ -16695,9 +16695,9 @@ SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffe
  */
 SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    _SituationTextureSlot* slot = _SitGetTextureSlot(texture);
+    _SituationTextureSlot* slot = _SitRender_GetTextureSlot(texture);
     if (!slot) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to bind an invalid texture handle.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to bind an invalid texture handle.");
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
 
@@ -16715,7 +16715,7 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
 
     // Standard Bind (always safe fallback and required for non-bindless shaders)
     // [Phase 2] Use Legacy Texture Opcode to avoid buffer logic in main opcode
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING);
     if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     p->args.bind_desc.set_index = set_index;
@@ -16740,7 +16740,7 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
     if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
     if (texture.descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Texture is missing its pre-cached descriptor set.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Texture is missing its pre-cached descriptor set.");
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
 
@@ -16754,7 +16754,7 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
         bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
         layout = sit_render.vk.current_pipeline_layout_for_push_constants;
     } else {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED, "Cannot bind texture set; no pipeline is currently bound.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED, "Cannot bind texture set; no pipeline is currently bound.");
         return SITUATION_ERROR_RENDER_COMMAND_FAILED;
     }
 
@@ -16832,7 +16832,7 @@ SITAPI SituationError SituationCmdBindUniformBuffer(SituationCommandBuffer cmd, 
  */
 // [INTERNAL] Resolves a public handle to a pointer to the internal slot.
 // Returns NULL if the handle is stale (generation mismatch) or invalid.
-static _SituationTextureSlot* _SitGetTextureSlot(SituationTexture handle) {
+static _SituationTextureSlot* _SitRender_GetTextureSlot(SituationTexture handle) {
     if (handle.slot_index >= SITUATION_MAX_TEXTURES) return NULL;
 
     _SituationTextureSlot* slot = &sit_render.texture_registry[handle.slot_index];
@@ -16868,10 +16868,10 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     if (out_texture) *out_texture = (SituationTexture){0};
 
     if (!SituationIsImageValid(image)) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot create texture from invalid image.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot create texture from invalid image.");
     }
     if (!out_texture) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_texture cannot be NULL.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_texture cannot be NULL.");
     }
 
     // 1. Find Free Slot
@@ -16884,7 +16884,7 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     }
 
     if (slot_idx == -1) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Max texture limit reached (SITUATION_MAX_TEXTURES).");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Max texture limit reached (SITUATION_MAX_TEXTURES).");
     }
 
     _SituationTextureSlot* slot = &sit_render.texture_registry[slot_idx];
@@ -16904,7 +16904,7 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     // If the texture ID is 0 here, it means the context is likely invalid.
     if (slot->gl_texture_id == 0) {
         slot->is_active = false;
-        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateTextures failed, context may be invalid.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateTextures failed, context may be invalid.");
     }
 
     int levels = 1;
@@ -16965,7 +16965,7 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     // Check if we can use async transfer (inside frame)
     VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
 
-    if (_SituationVulkanCreateAndUploadBuffer(cmd, image.data, image_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging_buffer, &staging_allocation) != SITUATION_SUCCESS) {
+    if (_SitRender_VulkanCreateAndUploadBuffer(cmd, image.data, image_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging_buffer, &staging_allocation) != SITUATION_SUCCESS) {
         return texture;
     }
 
@@ -16975,46 +16975,46 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     if (usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_SRC) vk_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE)      vk_usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 
-    if (_SituationVulkanCreateImage(image.width, image.height, mip_levels, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+    if (_SitRender_VulkanCreateImage(image.width, image.height, mip_levels, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
                                   vk_usage, VMA_MEMORY_USAGE_GPU_ONLY,
                                   &texture.image, &texture.allocation) != SITUATION_SUCCESS) {
         if (cmd == VK_NULL_HANDLE) vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
-        else _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
+        else _SitRender_DeferDestroyBuffer(staging_buffer, staging_allocation);
         return texture;
     }
 
     // --- Step 3: Copy and Generate Mipmaps ---
-    VkCommandBuffer command_buffer = (cmd != VK_NULL_HANDLE) ? cmd : _SituationVulkanBeginSingleTimeCommands();
-    // If async, we assume _SituationVulkanCreateAndUploadBuffer already put the staging buffer in a state ready for transfer (it does, it doesn't transition it, but buffer is host visible).
+    VkCommandBuffer command_buffer = (cmd != VK_NULL_HANDLE) ? cmd : _SitRender_VulkanBeginSingleTimeCommands();
+    // If async, we assume _SitRender_VulkanCreateAndUploadBuffer already put the staging buffer in a state ready for transfer (it does, it doesn't transition it, but buffer is host visible).
     // But we need to transition the *image* to TransferDst.
 
     // a. Transition the entire image (all mip levels) to be ready for writing.
     // For async, we need a pipeline barrier to ensure the layout transition happens before the copy.
-    _SituationVulkanTransitionImageLayout(command_buffer, texture.image, mip_levels, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    _SitRender_VulkanTransitionImageLayout(command_buffer, texture.image, mip_levels, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     // b. Copy the staging buffer to the first mip level (level 0).
-    _SituationVulkanCopyBufferToImage(command_buffer, staging_buffer, texture.image, (uint32_t)image.width, (uint32_t)image.height);
+    _SitRender_VulkanCopyBufferToImage(command_buffer, staging_buffer, texture.image, (uint32_t)image.width, (uint32_t)image.height);
 
     // c. Generate the mipmaps by blitting from one level to the next.
     if (generate_mipmaps) {
-        _SituationVulkanGenerateMipmaps(command_buffer, texture.image, image.width, image.height, mip_levels);
+        _SitCore_VulkanGenerateMipmaps(command_buffer, texture.image, image.width, image.height, mip_levels);
     } else {
         // If not generating mipmaps, we still need to transition the single level to be shader-readable.
-        _SituationVulkanTransitionImageLayout(command_buffer, texture.image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        _SitRender_VulkanTransitionImageLayout(command_buffer, texture.image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     if (cmd == VK_NULL_HANDLE) {
-        _SituationVulkanEndSingleTimeCommands(command_buffer);
+        _SitRender_VulkanEndSingleTimeCommands(command_buffer);
         // --- Step 4: Cleanup Staging Buffer (Synchronous) ---
         vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
     } else {
         // --- Step 4: Defer Cleanup Staging Buffer (Asynchronous) ---
-        _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
+        _SitRender_DeferDestroyBuffer(staging_buffer, staging_allocation);
     }
 
     // --- Step 5: Create Image View and Sampler ---
     // The image view must now be aware of all the mip levels.
-    texture.image_view = _SituationVulkanCreateImageView(texture.image, VK_FORMAT_R8G8B8A8_SRGB, mip_levels, VK_IMAGE_ASPECT_COLOR_BIT);
+    texture.image_view = _SitRender_VulkanCreateImageView(texture.image, VK_FORMAT_R8G8B8A8_SRGB, mip_levels, VK_IMAGE_ASPECT_COLOR_BIT);
 
     VkSamplerCreateInfo sampler_info = {0};
     sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -17052,11 +17052,11 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
 
     // [FIX v2.3.27B] Capture the pool
     VkDescriptorPool used_pool = VK_NULL_HANDLE;
-    texture.descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use, &used_pool);
+    texture.descriptor_set = _SitRender_VulkanAllocateDescriptorSet(layout_to_use, &used_pool);
 
     if (texture.descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
-        _SituationDeferDestroyImage(texture.image, texture.allocation, texture.image_view, texture.sampler);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
+        _SitRender_DeferDestroyImage(texture.image, texture.allocation, texture.image_view, texture.sampler);
         return (SituationTexture){0};
     }
 
@@ -17070,10 +17070,10 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     vkAllocateDescriptorSets(sit_render.vk.device, &asset_alloc_info, &texture.descriptor_set);
 
     if (texture.descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
 
         // CRITICAL: Defer cleanup to Graveyard. Immediate destruction is unsafe if async upload commands are pending.
-        _SituationDeferDestroyImage(texture.image, texture.allocation, texture.image_view, texture.sampler);
+        _SitRender_DeferDestroyImage(texture.image, texture.allocation, texture.image_view, texture.sampler);
 
         // Note: Staging buffer (if used) was already deferred to graveyard or destroyed synchronously above.
         return (SituationTexture){0};
@@ -17123,7 +17123,7 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
                 mtx_unlock(&sit_render.resource_registry_mutex);
             } else {
                 SituationDestroyTexture(out_texture);
-                return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for texture");
+                return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for texture");
             }
         } else {
              // An error was logged by SIT_CHECK_GL_ERROR.
@@ -17136,7 +17136,7 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
 #elif defined(SITUATION_USE_VULKAN)
              // Vulkan path has its own error checking and cleanup. This path is for GL.
 #endif
-             return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED, "Failed to finalize texture creation.");
+             return _SitCore_SetErrorFromCode(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED, "Failed to finalize texture creation.");
         }
     }
 
@@ -17170,7 +17170,7 @@ SITAPI SituationError SituationCreateTexture(SituationImage image, bool generate
 SITAPI void SituationDestroyTexture(SituationTexture* texture) {
     if (!texture || texture->generation == 0) return;
 
-    _SituationTextureSlot* slot = _SitGetTextureSlot(*texture);
+    _SituationTextureSlot* slot = _SitRender_GetTextureSlot(*texture);
     if (!slot) {
         // Already destroyed or invalid handle
         texture->generation = 0; // Mark invalid
@@ -17197,13 +17197,13 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
 
     // Backend Cleanup
 #if defined(SITUATION_USE_OPENGL)
-    if (slot->gl_texture_id) _SitGLDeferDestroyTexture(slot->gl_texture_id);
+    if (slot->gl_texture_id) _SitRender_GLDeferDestroyTexture(slot->gl_texture_id);
     slot->gl_texture_id = 0;
 #elif defined(SITUATION_USE_VULKAN)
     if (slot->descriptor_set != VK_NULL_HANDLE) {
-        _SituationDeferDestroyDescriptorSet(slot->descriptor_set, slot->descriptor_pool);
+        _SitRender_DeferDestroyDescriptorSet(slot->descriptor_set, slot->descriptor_pool);
     }
-    _SituationDeferDestroyImage(slot->image, slot->allocation, slot->image_view, slot->sampler);
+    _SitRender_DeferDestroyImage(slot->image, slot->allocation, slot->image_view, slot->sampler);
     slot->image = VK_NULL_HANDLE;
     slot->descriptor_set = VK_NULL_HANDLE;
 #endif
@@ -17223,7 +17223,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
  *
  * @par Asynchronous Upload Path (The "Velocity" Solution)
  *   This function implements a dual-path mechanism to solve the "Synchronous Transfers" bottleneck:
- *   - **If `cmd` is a valid command buffer (not NULL):** This is the **asynchronous path**, used during the main render loop. The function records a `vkCmdCopyBuffer` command into the provided `cmd` and places the staging buffer into the graveyard for deferred deletion using `_SituationDeferDestroyBuffer`. This is a non-blocking operation that allows dozens of assets to be uploaded in a single frame without stalling the CPU.
+ *   - **If `cmd` is a valid command buffer (not NULL):** This is the **asynchronous path**, used during the main render loop. The function records a `vkCmdCopyBuffer` command into the provided `cmd` and places the staging buffer into the graveyard for deferred deletion using `_SitRender_DeferDestroyBuffer`. This is a non-blocking operation that allows dozens of assets to be uploaded in a single frame without stalling the CPU.
  *   - **If `cmd` is NULL:** This is the **synchronous path**, used during initialization or outside the main render loop. The function creates its own temporary command buffer, submits the copy, and stalls the CPU by waiting for the transfer to complete (`vkQueueWaitIdle`). This is necessary when a frame is not in flight but is avoided at all costs during runtime.
  *
  * @param cmd The main command buffer for the current frame, or NULL to force a synchronous upload.
@@ -17242,7 +17242,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
  *
  * @par Asynchronous Upload Path (The "Velocity" Solution)
  *   This function implements a dual-path mechanism to solve the "Synchronous Transfers" bottleneck:
- *   - **If `cmd` is a valid command buffer (not NULL):** This is the **asynchronous path**, used during the main render loop. The function records a `vkCmdCopyBuffer` command into the provided `cmd` and places the staging buffer into the graveyard for deferred deletion using `_SituationDeferDestroyBuffer`. This is a non-blocking operation that allows dozens of assets to be uploaded in a single frame without stalling the CPU.
+ *   - **If `cmd` is a valid command buffer (not NULL):** This is the **asynchronous path**, used during the main render loop. The function records a `vkCmdCopyBuffer` command into the provided `cmd` and places the staging buffer into the graveyard for deferred deletion using `_SitRender_DeferDestroyBuffer`. This is a non-blocking operation that allows dozens of assets to be uploaded in a single frame without stalling the CPU.
  *   - **If `cmd` is NULL:** This is the **synchronous path**, used during initialization or outside the main render loop. The function creates its own temporary command buffer, submits the copy, and stalls the CPU by waiting for the transfer to complete (`vkQueueWaitIdle`). This is necessary when a frame is not in flight but is avoided at all costs during runtime.
  *
  * @param cmd The main command buffer for the current frame, or NULL to force a synchronous upload.
@@ -17254,7 +17254,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
  *
  * @return `SITUATION_SUCCESS` on success.
  */
-static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd, const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* out_buffer, VmaAllocation* out_allocation) {
+static SituationError _SitRender_VulkanCreateAndUploadBuffer(VkCommandBuffer cmd, const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* out_buffer, VmaAllocation* out_allocation) {
     // --- 1. Input Validation ---
     if (!data || size == 0 || !out_buffer || !out_allocation) {
         return SITUATION_ERROR_INVALID_PARAM;
@@ -17275,7 +17275,7 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
     staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
 
     if (vmaCreateBuffer(sit_render.vk.vma_allocator, &staging_buffer_info, &staging_alloc_info, &staging_buffer, &staging_allocation, NULL) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create staging buffer.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create staging buffer.");
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
 
@@ -17298,7 +17298,7 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
     alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
     if (vmaCreateBuffer(sit_render.vk.vma_allocator, &buffer_info, &alloc_info, out_buffer, out_allocation, NULL) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create device-local buffer.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create device-local buffer.");
         vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
@@ -17327,12 +17327,12 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
         vkCmdCopyBuffer(cmd, staging_buffer, *out_buffer, 1, &copy_region);
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1, &barrier, 0, NULL);
 
-        _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
+        _SitRender_DeferDestroyBuffer(staging_buffer, staging_allocation);
         return SITUATION_SUCCESS;
 
     } else {
         // === SYNCHRONOUS PATH (Legacy/Init) ===
-        VkCommandBuffer temp_cmd = _SituationVulkanBeginSingleTimeCommands();
+        VkCommandBuffer temp_cmd = _SitRender_VulkanBeginSingleTimeCommands();
         if (temp_cmd == VK_NULL_HANDLE) {
             vmaDestroyBuffer(sit_render.vk.vma_allocator, *out_buffer, *out_allocation);
             vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
@@ -17343,13 +17343,13 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
         vkCmdCopyBuffer(temp_cmd, staging_buffer, *out_buffer, 1, &copy_region);
 
         // Execute and Wait
-        _SituationVulkanEndSingleTimeCommands(temp_cmd);
+        _SitRender_VulkanEndSingleTimeCommands(temp_cmd);
 
         // SAFE CLEANUP [2.3.14A]:
         // If we are initializing, Graveyards might not be ready or flushed yet.
         // Explicit destroy is fine here because we waited on the queue via EndSingleTimeCommands.
         if (sit_render.vk.graveyards) {
-            _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
+            _SitRender_DeferDestroyBuffer(staging_buffer, staging_allocation);
         } else {
             vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
         }
@@ -17382,7 +17382,7 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
  *
  * @warning This is a **synchronous** operation. It allocates a command buffer, submits it, and stalls the CPU (`vkQueueWaitIdle`) until the GPU transfer is complete.
  */
-static SituationError _SituationVulkanReadBackBuffer(VkBuffer src_buffer, VmaAllocation src_alloc, size_t size, size_t offset, void* out_data) {
+static SituationError _SitRender_VulkanReadBackBuffer(VkBuffer src_buffer, VmaAllocation src_alloc, size_t size, size_t offset, void* out_data) {
     VkDevice device = sit_render.vk.device;
     VmaAllocator allocator = sit_render.vk.vma_allocator;
 
@@ -17409,7 +17409,7 @@ static SituationError _SituationVulkanReadBackBuffer(VkBuffer src_buffer, VmaAll
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
     }
 
-    VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
+    VkCommandBuffer cmd = _SitRender_VulkanBeginSingleTimeCommands();
 
     // Sync barrier: Wait for vertex/transfer stages to finish reading/writing before we copy
     VkBufferMemoryBarrier barrier = { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
@@ -17436,7 +17436,7 @@ static SituationError _SituationVulkanReadBackBuffer(VkBuffer src_buffer, VmaAll
 
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &host_barrier, 0, NULL);
 
-    _SituationVulkanEndSingleTimeCommands(cmd);
+    _SitRender_VulkanEndSingleTimeCommands(cmd);
 
     // 3. Map and Copy
     void* mapped_data;
@@ -17499,10 +17499,10 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
     SituationError local_err = SITUATION_SUCCESS;
 
     // --- 1. Pre-initialization Validation ---
-    if (!SituationIsInitialized()) return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create buffer before library initialization.");
-    if (size == 0) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot create buffer of size 0.");
+    if (!SituationIsInitialized()) return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create buffer before library initialization.");
+    if (size == 0) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot create buffer of size 0.");
     // Ensure at least one usage flag is specified to guide creation and memory allocation.
-    if (usage_flags == 0) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateBuffer: No usage flags specified.");
+    if (usage_flags == 0) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateBuffer: No usage flags specified.");
 
     out_buffer->size_in_bytes = size;
     out_buffer->usage_flags = usage_flags;
@@ -17512,7 +17512,7 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
     {
         // --- OpenGL Implementation ---
         glCreateBuffers(1, &out_buffer->gl_buffer_id);
-        if (out_buffer->gl_buffer_id == 0) return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateBuffers failed.");
+        if (out_buffer->gl_buffer_id == 0) return _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateBuffers failed.");
 
         // Determine appropriate OpenGL storage flags.
         // GL_DYNAMIC_STORAGE_BIT allows the buffer's contents to be updated via glNamedBufferSubData.
@@ -17552,7 +17552,7 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
         if (usage_flags & SITUATION_BUFFER_USAGE_TRANSFER_DST)    vk_usage_flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
         // Ensure at least one flag is set
-        if (vk_usage_flags == 0) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateBuffer: Mapped Vulkan usage flags are invalid (all zero).");
+        if (vk_usage_flags == 0) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateBuffer: Mapped Vulkan usage flags are invalid (all zero).");
 
         // Store the mapped Vulkan flags for internal use (e.g., in UpdateBuffer, GetBufferData, Descriptor Set creation)
         out_buffer->vk_usage_flags = vk_usage_flags;
@@ -17564,7 +17564,7 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
             VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
 
             // Use helper that creates staging buffer and uploads data.
-            local_err = _SituationVulkanCreateAndUploadBuffer(
+            local_err = _SitRender_VulkanCreateAndUploadBuffer(
                 cmd,
                 initial_data,
                 size,
@@ -17573,7 +17573,7 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
                 &out_buffer->vma_allocation
             );
             if (local_err != SITUATION_SUCCESS) {
-                // Error message should be set by _SituationVulkanCreateAndUploadBuffer
+                // Error message should be set by _SitRender_VulkanCreateAndUploadBuffer
                 memset(out_buffer, 0, sizeof(SituationBuffer));
                 return local_err;
             }
@@ -17606,7 +17606,7 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
                 alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
             } else if (vk_usage_flags & (VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) {
                  // If it's for transfer, it might be filled by GPU or CPU. GPU_ONLY is often fine
-                 // if filled via staging buffer (which _SituationVulkanCreateAndUploadBuffer handles).
+                 // if filled via staging buffer (which _SitRender_VulkanCreateAndUploadBuffer handles).
                  // For CPU writes, CPU_TO_GPU might be more direct, but staging is common.
                  // Let's default to GPU_ONLY for transfer buffers assuming staging usage.
                 alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
@@ -17625,7 +17625,7 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
             );
 
             if (result != VK_SUCCESS) {
-                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create empty Vulkan buffer.");
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create empty Vulkan buffer.");
                 local_err = SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
                 memset(out_buffer, 0, sizeof(SituationBuffer));
                 return local_err;
@@ -17658,16 +17658,16 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
         // Allocate the descriptor set - Use dynamic allocator
         // [FIX v2.3.27B] Capture pool
         VkDescriptorPool used_pool = VK_NULL_HANDLE;
-        out_buffer->descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use, &used_pool);
+        out_buffer->descriptor_set = _SitRender_VulkanAllocateDescriptorSet(layout_to_use, &used_pool);
 
         if (out_buffer->descriptor_set == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for buffer.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for buffer.");
             local_err = SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
             // CRITICAL: Defer destruction to Graveyard. Immediate vmaDestroy is unsafe here because
-            // _SituationVulkanCreateAndUploadBuffer might have recorded commands using this buffer
+            // _SitRender_VulkanCreateAndUploadBuffer might have recorded commands using this buffer
             // in the current frame's command buffer (if initial_data != NULL).
             if (out_buffer->vk_buffer != VK_NULL_HANDLE) {
-                _SituationDeferDestroyBuffer(out_buffer->vk_buffer, out_buffer->vma_allocation);
+                _SitRender_DeferDestroyBuffer(out_buffer->vk_buffer, out_buffer->vma_allocation);
             }
             memset(out_buffer, 0, sizeof(SituationBuffer));
             return local_err;
@@ -17707,7 +17707,7 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
             node->descriptor_pool = used_pool;
             #endif
         } else {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for buffer");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for buffer");
             local_err = SITUATION_ERROR_MEMORY_ALLOCATION;
             // Need to destroy the successfully created backend buffer before returning
 #if defined(SITUATION_USE_OPENGL)
@@ -17779,7 +17779,7 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
     // --- 3. Backend-Specific Destruction ---
 #if defined(SITUATION_USE_OPENGL)
     // [Phase 2.5] Defer destruction
-    _SitGLDeferDestroyBuffer(buffer->gl_buffer_id);
+    _SitRender_GLDeferDestroyBuffer(buffer->gl_buffer_id);
 #elif defined(SITUATION_USE_VULKAN)
     // [FIX v2.3.27B] Retrieve the pool from the tracking node
     VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -17790,11 +17790,11 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
     // For Vulkan, defer destruction to the Graveyard to avoid stalling.
     if (buffer->descriptor_set != VK_NULL_HANDLE) {
         // Pass the retrieved pool so the set can be freed properly
-        _SituationDeferDestroyDescriptorSet(buffer->descriptor_set, pool);
+        _SitRender_DeferDestroyDescriptorSet(buffer->descriptor_set, pool);
     }
 
     if (buffer->vk_buffer != VK_NULL_HANDLE) {
-        _SituationDeferDestroyBuffer(buffer->vk_buffer, buffer->vma_allocation);
+        _SitRender_DeferDestroyBuffer(buffer->vk_buffer, buffer->vma_allocation);
     }
 #endif
 
@@ -17836,7 +17836,7 @@ SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_co
     memset(out_mesh, 0, sizeof(SituationMesh));
 
     if (!vertex_data || vertex_count <= 0 || !index_data || index_count <= 0 || vertex_stride == 0) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid data or stride provided for mesh creation.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid data or stride provided for mesh creation.");
     }
 
     SituationMesh mesh = {0};
@@ -17896,20 +17896,20 @@ SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_co
     VkCommandBuffer cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
 
     VkDeviceSize vertex_buffer_size = (VkDeviceSize)vertex_count * final_stride;
-    if (_SituationVulkanCreateAndUploadBuffer(cmd, final_vertex_data, vertex_buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &mesh.vertex_buffer, &mesh.vertex_buffer_memory) != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create vertex buffer for mesh.");
+    if (_SitRender_VulkanCreateAndUploadBuffer(cmd, final_vertex_data, vertex_buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &mesh.vertex_buffer, &mesh.vertex_buffer_memory) != SITUATION_SUCCESS) {
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create vertex buffer for mesh.");
         if (allocated_temp_buffer) SIT_FREE(final_vertex_data);
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
     }
 
     VkDeviceSize index_buffer_size = (VkDeviceSize)index_count * sizeof(uint32_t);
-    if (_SituationVulkanCreateAndUploadBuffer(cmd, index_data, index_buffer_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &mesh.index_buffer, &mesh.index_buffer_memory) != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create index buffer for mesh.");
+    if (_SitRender_VulkanCreateAndUploadBuffer(cmd, index_data, index_buffer_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &mesh.index_buffer, &mesh.index_buffer_memory) != SITUATION_SUCCESS) {
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create index buffer for mesh.");
         // Cleanup vertex buffer immediately if synchronous, or defer if async
         if (cmd == VK_NULL_HANDLE) {
              vmaDestroyBuffer(sit_render.vk.vma_allocator, mesh.vertex_buffer, mesh.vertex_buffer_memory);
         } else {
-             _SituationDeferDestroyBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory);
+             _SitRender_DeferDestroyBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory);
         }
         if (allocated_temp_buffer) SIT_FREE(final_vertex_data);
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
@@ -17933,7 +17933,7 @@ SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_co
             node->next = sit_render.all_meshes;
             sit_render.all_meshes = node;
         } else {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for mesh");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for mesh");
             SituationDestroyMesh(&mesh); // Clean up the GPU resource we just made
             return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
@@ -17990,21 +17990,21 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
     {
         // [Phase 2.5] Defer destruction to avoid race with Render Thread
         // 1. Queue VAO cleanup (using mesh.id)
-        _SitGLDeferCleanMeshVAO(mesh->id);
+        _SitRender_GLDeferCleanMeshVAO(mesh->id);
 
         // 2. Queue Buffer cleanup
-        _SitGLDeferDestroyBuffer(mesh->vbo_id);
-        _SitGLDeferDestroyBuffer(mesh->ebo_id);
+        _SitRender_GLDeferDestroyBuffer(mesh->vbo_id);
+        _SitRender_GLDeferDestroyBuffer(mesh->ebo_id);
     }
 #elif defined(SITUATION_USE_VULKAN)
     {
         // For Vulkan, defer destruction to the Graveyard to avoid stalling the GPU.
         if (sit_render.vk.device) {
             if (mesh->vertex_buffer != VK_NULL_HANDLE) {
-                _SituationDeferDestroyBuffer(mesh->vertex_buffer, mesh->vertex_buffer_memory);
+                _SitRender_DeferDestroyBuffer(mesh->vertex_buffer, mesh->vertex_buffer_memory);
             }
             if (mesh->index_buffer != VK_NULL_HANDLE) {
-                _SituationDeferDestroyBuffer(mesh->index_buffer, mesh->index_buffer_memory);
+                _SitRender_DeferDestroyBuffer(mesh->index_buffer, mesh->index_buffer_memory);
             }
         }
     }
@@ -18052,7 +18052,7 @@ SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
 
     if (vertex_data && v_size > 0) {
         v_ptr = SIT_MALLOC(v_size);
-        if (!v_ptr) { _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Mesh readback vertex buffer"); return; }
+        if (!v_ptr) { _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Mesh readback vertex buffer"); return; }
         *vertex_data = v_ptr;
     }
 
@@ -18060,7 +18060,7 @@ SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
         i_ptr = SIT_MALLOC(i_size);
         if (!i_ptr) {
             if (v_ptr) SIT_FREE(v_ptr);
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Mesh readback index buffer");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Mesh readback index buffer");
             return;
         }
         *index_data = i_ptr;
@@ -18078,13 +18078,13 @@ SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
 #elif defined(SITUATION_USE_VULKAN)
     // Use our new helper
     if (v_ptr) {
-        if (_SituationVulkanReadBackBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory, v_size, 0, v_ptr) != SITUATION_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to read vertex buffer from Vulkan mesh");
+        if (_SitRender_VulkanReadBackBuffer(mesh.vertex_buffer, mesh.vertex_buffer_memory, v_size, 0, v_ptr) != SITUATION_SUCCESS) {
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to read vertex buffer from Vulkan mesh");
         }
     }
     if (i_ptr) {
-        if (_SituationVulkanReadBackBuffer(mesh.index_buffer, mesh.index_buffer_memory, i_size, 0, i_ptr) != SITUATION_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to read index buffer from Vulkan mesh");
+        if (_SitRender_VulkanReadBackBuffer(mesh.index_buffer, mesh.index_buffer_memory, i_size, 0, i_ptr) != SITUATION_SUCCESS) {
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, "Failed to read index buffer from Vulkan mesh");
         }
     }
 #endif
@@ -18113,11 +18113,11 @@ SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
  * @note This function is for internal use by the higher-level shader program creation functions.
  * @warning The returned shader object is an intermediate resource. It should be attached to a program and then deleted with `glDeleteShader` to prevent resource leaks.
  *
- * @see _SituationCreateGLShaderProgram(), _SituationCreateGLShaderProgramFromSource()
+ * @see _SitRender_CreateGLShaderProgram(), _SitRender_CreateGLShaderProgramFromSource()
  */
-static GLuint _SituationCompileGLShader(const char* source, GLenum type, SituationError* error_code) {
+static GLuint _SitRender_CompileGLShader(const char* source, GLenum type, SituationError* error_code) {
     if (!source) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Null shader source");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Null shader source");
         if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
         return 0;
     }
@@ -18158,17 +18158,17 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
                 glGetShaderInfoLog(shader, log_length, NULL, log_part);
 
                 // Set the final, combined error message.
-                _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, final_error_message);
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, final_error_message);
 
                 // Free the single allocated buffer.
                 SIT_FREE(final_error_message);
             } else {
                 // If allocation fails, set a memory error.
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate memory for shader compilation log.");
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate memory for shader compilation log.");
             }
         } else {
             // No log available, provide a generic error.
-            _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, "An unknown shader compilation error occurred with no log.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, "An unknown shader compilation error occurred with no log.");
         }
 
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_COMPILE;
@@ -18185,8 +18185,8 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
  * @details This is the primary internal helper for creating graphics pipelines on the OpenGL backend. It orchestrates the process of compiling individual vertex and fragment shader sources and linking them together into a complete, usable `glProgram`.
  *
  * @par Creation Process
- *   1.  Calls `_SituationCompileGLShader` to compile the vertex shader source (`vs_src`).
- *   2.  If successful, it calls `_SituationCompileGLShader` to compile the fragment shader source (`fs_src`).
+ *   1.  Calls `_SitRender_CompileGLShader` to compile the vertex shader source (`vs_src`).
+ *   2.  If successful, it calls `_SitRender_CompileGLShader` to compile the fragment shader source (`fs_src`).
  *   3.  If both shaders compile successfully, it creates a new program object (`glCreateProgram`), attaches both shaders, and links them (`glLinkProgram`).
  *   4.  After linking, the individual shader objects are detached and deleted, as they are no longer needed.
  *   5.  Finally, it checks the link status and reports any errors.
@@ -18196,28 +18196,28 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
  * @param[out] error_code A pointer to a `SituationError` variable that will be filled with a specific error code on failure. Can be `NULL`.
  *
  * @return The OpenGL program ID (`GLuint`) on successful compilation and linking.
- * @return `0` on failure. On failure, a detailed error message (from either the compiler or linker) is set via `_SituationSetErrorFromCode`, and all intermediate resources are cleaned up.
+ * @return `0` on failure. On failure, a detailed error message (from either the compiler or linker) is set via `_SitCore_SetErrorFromCode`, and all intermediate resources are cleaned up.
  *
  * @note This function is for internal use by high-level `SituationLoadShader*` functions.
  * @warning The caller is responsible for deleting the returned program ID using `glDeleteProgram` when it is no longer needed.
  *
- * @see SituationLoadShaderFromMemory(), _SituationCompileGLShader()
+ * @see SituationLoadShaderFromMemory(), _SitRender_CompileGLShader()
  */
-static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs_src, SituationError* error_code) {
+static GLuint _SitRender_CreateGLShaderProgram(const char* vs_src, const char* fs_src, SituationError* error_code) {
     if (!vs_src || !fs_src) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Null shader source");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Null shader source");
         if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
         return 0;
     }
 
     SituationError local_err = SITUATION_SUCCESS;
-    GLuint vs = _SituationCompileGLShader(vs_src, GL_VERTEX_SHADER, &local_err);
+    GLuint vs = _SitRender_CompileGLShader(vs_src, GL_VERTEX_SHADER, &local_err);
     if (local_err != SITUATION_SUCCESS) {
         if (error_code) *error_code = local_err;
         return 0;
     }
 
-    GLuint fs = _SituationCompileGLShader(fs_src, GL_FRAGMENT_SHADER, &local_err);
+    GLuint fs = _SitRender_CompileGLShader(fs_src, GL_FRAGMENT_SHADER, &local_err);
     if (local_err != SITUATION_SUCCESS) {
         glDeleteShader(vs);
         if (error_code) *error_code = local_err;
@@ -18226,7 +18226,7 @@ static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs
 
     GLuint program = glCreateProgram();
     if (!program) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to create shader program");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to create shader program");
         glDeleteShader(vs);
         glDeleteShader(fs);
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_GENERAL;
@@ -18250,14 +18250,14 @@ static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs
             char* infoLog = (char*)SIT_MALLOC(log_length);
             if (infoLog) {
                 glGetProgramInfoLog(program, log_length, NULL, infoLog);
-                _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
                 SIT_FREE(infoLog);
             } else {
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate memory for shader link log.");
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate memory for shader link log.");
             }
         } else {
             // No log, provide a generic message.
-            _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, "An unknown linking error occurred.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, "An unknown linking error occurred.");
         }
         glDeleteProgram(program); // Add this line
         glDeleteShader(vs);       // Ensure shaders are deleted
@@ -18272,10 +18272,10 @@ static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs
 
 /**
  * @brief [INTERNAL] Creates a single-stage (compute) OpenGL shader program from GLSL source.
- * @details This helper function is the traditional GLSL-based creation path for compute shaders. It is called by the `_SituationCreateGLComputeProgram` dispatcher when the source type is GLSL or when SPIR-V is not supported.
+ * @details This helper function is the traditional GLSL-based creation path for compute shaders. It is called by the `_SitRender_CreateGLComputeProgram` dispatcher when the source type is GLSL or when SPIR-V is not supported.
  *
  * @par Creation Process
- *   1.  Calls `_SituationCompileGLShader` to compile the compute shader source (`cs_src`) with the type `GL_COMPUTE_SHADER`.
+ *   1.  Calls `_SitRender_CompileGLShader` to compile the compute shader source (`cs_src`) with the type `GL_COMPUTE_SHADER`.
  *   2.  If compilation is successful, it creates a new program object, attaches the compute shader, and links the program.
  *   3.  The individual shader object is deleted after linking.
  *   4.  The link status is checked to ensure a valid executable program was created.
@@ -18286,31 +18286,31 @@ static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs
  * @return The OpenGL program ID (`GLuint`) on successful compilation and linking.
  * @return `0` on failure. On failure, a detailed error message is set, and all intermediate resources are cleaned up.
  *
- * @note This function is for internal use by `_SituationCreateGLComputeProgram` only. It specifically handles the single-stage linking process required for compute programs.
+ * @note This function is for internal use by `_SitRender_CreateGLComputeProgram` only. It specifically handles the single-stage linking process required for compute programs.
  *
- * @see _SituationCreateGLComputeProgram(), _SituationCompileGLShader()
+ * @see _SitRender_CreateGLComputeProgram(), _SitRender_CompileGLShader()
  */
-static GLuint _SituationCreateGLShaderProgramFromSource(const char* cs_src, SituationError* error_code) {
+static GLuint _SitRender_CreateGLShaderProgramFromSource(const char* cs_src, SituationError* error_code) {
     if (!cs_src) {
         // This check is now primarily for internal consistency
         if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
-        // _SituationCreateGLComputeProgram already set the error msg, avoid duplication or override it carefully
-        // _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationCreateGLShaderProgramFromSource: Compute shader source cannot be NULL");
+        // _SitRender_CreateGLComputeProgram already set the error msg, avoid duplication or override it carefully
+        // _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitRender_CreateGLShaderProgramFromSource: Compute shader source cannot be NULL");
         return 0;
     }
 
     // 1. Compile the compute shader
     SituationError local_err = SITUATION_SUCCESS;
-    GLuint cs = _SituationCompileGLShader(cs_src, GL_COMPUTE_SHADER, &local_err); // Assume this function exists and handles glGetShaderiv(GL_COMPILE_STATUS, ...)
+    GLuint cs = _SitRender_CompileGLShader(cs_src, GL_COMPUTE_SHADER, &local_err); // Assume this function exists and handles glGetShaderiv(GL_COMPILE_STATUS, ...)
     if (local_err != SITUATION_SUCCESS) {
         if (error_code) *error_code = local_err;
-        return 0; // Error message already set by _SituationCompileGLShader
+        return 0; // Error message already set by _SitRender_CompileGLShader
     }
 
     // 2. Create a program and attach the shader
     GLuint program = glCreateProgram();
     if (!program) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationCreateGLShaderProgramFromSource: Failed to create shader program object");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SitRender_CreateGLShaderProgramFromSource: Failed to create shader program object");
         glDeleteShader(cs); // Clean up the successfully created shader
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_GENERAL;
         return 0;
@@ -18334,13 +18334,13 @@ static GLuint _SituationCreateGLShaderProgramFromSource(const char* cs_src, Situ
             char* infoLog = (char*)SIT_MALLOC((size_t)log_length);
             if (infoLog) {
                 glGetProgramInfoLog(program, log_length, NULL, infoLog);
-                _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
                 SIT_FREE(infoLog);
             } else {
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_SituationCreateGLShaderProgramFromSource: Failed to allocate memory for shader link log.");
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_SitRender_CreateGLShaderProgramFromSource: Failed to allocate memory for shader link log.");
             }
         } else {
-            _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, "_SituationCreateGLShaderProgramFromSource: An unknown linking error occurred (no log available).");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, "_SitRender_CreateGLShaderProgramFromSource: An unknown linking error occurred (no log available).");
         }
         glDeleteProgram(program); // Clean up the unsuccessfully linked program
         program = 0;
@@ -18359,8 +18359,8 @@ static GLuint _SituationCreateGLShaderProgramFromSource(const char* cs_src, Situ
  *          It intelligently selects the best method—either using modern, pre-compiled SPIR-V bytecode or falling back to traditional GLSL source compilation—based on the type of data provided and the capabilities of the current OpenGL driver.
  *
  * @par Dispatch Logic
- *   - If `source_type` is `SITUATION_GL_SHADER_SOURCE_TYPE_SPIRV` and the `GL_ARB_gl_spirv` extension is available, it calls `_SituationCreateGLComputeProgramFromSpirv` for the fastest and most consistent creation path.
- *   - Otherwise, if `source_type` is `SITUATION_GL_SHADER_SOURCE_TYPE_GLSL`, it calls `_SituationCreateGLShaderProgramFromSource` to perform traditional compilation and linking.
+ *   - If `source_type` is `SITUATION_GL_SHADER_SOURCE_TYPE_SPIRV` and the `GL_ARB_gl_spirv` extension is available, it calls `_SitRender_CreateGLComputeProgramFromSpirv` for the fastest and most consistent creation path.
+ *   - Otherwise, if `source_type` is `SITUATION_GL_SHADER_SOURCE_TYPE_GLSL`, it calls `_SitRender_CreateGLShaderProgramFromSource` to perform traditional compilation and linking.
  *   - If SPIR-V data is provided but the driver does not support it, the function will fail and report an error.
  *
  * @param source_data A pointer to the shader data. This must be a `const struct _SituationSpirvBlob*` for SPIR-V or a `const char*` for GLSL.
@@ -18373,13 +18373,13 @@ static GLuint _SituationCreateGLShaderProgramFromSource(const char* cs_src, Situ
  * @note This is the sole entry point for all internal OpenGL compute shader creation and is called by `SituationCreateComputePipelineFromMemory`.
  * @warning The caller is responsible for deleting the returned program ID using `glDeleteProgram`.
  *
- * @see SituationCreateComputePipelineFromMemory(), _SituationCreateGLComputeProgramFromSpirv(), _SituationCreateGLShaderProgramFromSource()
+ * @see SituationCreateComputePipelineFromMemory(), _SitRender_CreateGLComputeProgramFromSpirv(), _SitRender_CreateGLShaderProgramFromSource()
  */
-static GLuint _SituationCreateGLComputeProgram(const void* source_data, SituationGLShaderSourceType source_type, SituationError* error_code) {
+static GLuint _SitRender_CreateGLComputeProgram(const void* source_data, SituationGLShaderSourceType source_type, SituationError* error_code) {
     if (error_code) *error_code = SITUATION_SUCCESS;
 
     if (!source_data) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationCreateGLComputeProgram: Shader source data cannot be NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitRender_CreateGLComputeProgram: Shader source data cannot be NULL.");
         if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
         return 0;
     }
@@ -18387,17 +18387,17 @@ static GLuint _SituationCreateGLComputeProgram(const void* source_data, Situatio
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     // If we have SPIR-V data and the driver supports it, use the modern path.
     if (source_type == SITUATION_GL_SHADER_SOURCE_TYPE_SPIRV && GLAD_GL_ARB_gl_spirv) {
-        return _SituationCreateGLComputeProgramFromSpirv((const struct _SituationSpirvBlob*)source_data, error_code);
+        return _SitRender_CreateGLComputeProgramFromSpirv((const struct _SituationSpirvBlob*)source_data, error_code);
     }
 #endif
 
     // Fallback to the traditional GLSL source path in all other cases.
     if (source_type == SITUATION_GL_SHADER_SOURCE_TYPE_GLSL) {
-        return _SituationCreateGLShaderProgramFromSource((const char*)source_data, error_code);
+        return _SitRender_CreateGLShaderProgramFromSource((const char*)source_data, error_code);
     }
 
     // If we get here, it means we were given SPIR-V but couldn't use it (either compiler is off or driver lacks support).
-    _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "Received SPIR-V data, but cannot process it (GL_ARB_gl_spirv unavailable or shader compiler disabled).");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "Received SPIR-V data, but cannot process it (GL_ARB_gl_spirv unavailable or shader compiler disabled).");
     if (error_code) *error_code = SITUATION_ERROR_OPENGL_UNSUPPORTED;
     return 0;
 }
@@ -18423,7 +18423,7 @@ static GLuint _SituationCreateGLComputeProgram(const void* source_data, Situatio
  *
  * @note The caller is **responsible** for destroying the returned pipeline using `SituationDestroyComputePipeline()` to prevent GPU and CPU memory leaks.
  * @note This function requires the library to be initialized (`SituationInit()` must have been called successfully).
- * @note This function requires the `SITUATION_ENABLE_SHADER_COMPILER` define to be set during compilation for the Vulkan backend to work with GLSL source. For OpenGL, it depends on the internal handling of GLSL vs SPIR-V (as discussed in `_SituationCreateGLComputeProgram`).
+ * @note This function requires the `SITUATION_ENABLE_SHADER_COMPILER` define to be set during compilation for the Vulkan backend to work with GLSL source. For OpenGL, it depends on the internal handling of GLSL vs SPIR-V (as discussed in `_SitRender_CreateGLComputeProgram`).
  * @warning This function is not thread-safe and must be called from the main thread that initialized the library.
  *
  * @par Resource Tracking and Potential Leaks:
@@ -18444,8 +18444,8 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
     memset(out_pipeline, 0, sizeof(SituationComputePipeline));
 
     // --- 1. Pre-condition Checks ---
-    if (!SituationIsInitialized()) return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipelineFromMemory: Library not initialized.");
-    if (!compute_shader_source) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipelineFromMemory: Compute shader source cannot be NULL.");
+    if (!SituationIsInitialized()) return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipelineFromMemory: Library not initialized.");
+    if (!compute_shader_source) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipelineFromMemory: Compute shader source cannot be NULL.");
 
     SituationComputePipeline pipeline = {0};
 
@@ -18467,23 +18467,23 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
     if (GLAD_GL_ARB_gl_spirv) { // Check if the current OpenGL driver supports SPIR-V.
 
         // Compile the GLSL source to a SPIR-V binary blob.
-        _SituationSpirvBlob cs_spirv = _SituationVulkanCompileGLSLtoSPIRV(compute_shader_source, "compute.comp", shaderc_compute_shader);
+        _SituationSpirvBlob cs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(compute_shader_source, "compute.comp", shaderc_compute_shader);
 
         if (cs_spirv.data) {
             // SPIR-V compilation was successful. Create the OpenGL program from the binary.
-            pipeline.gl_program_id = _SituationCreateGLComputeProgram((const void*)&cs_spirv, SITUATION_GL_SHADER_SOURCE_TYPE_SPIRV, &err);
-            _SituationFreeSpirvBlob(&cs_spirv); // Clean up the temporary SPIR-V blob.
+            pipeline.gl_program_id = _SitRender_CreateGLComputeProgram((const void*)&cs_spirv, SITUATION_GL_SHADER_SOURCE_TYPE_SPIRV, &err);
+            _SitCore_FreeSpirvBlob(&cs_spirv); // Clean up the temporary SPIR-V blob.
         } else {
             // Compilation to SPIR-V failed. This is a hard error.
             return SITUATION_ERROR_SHADER_COMPILATION_FAILED;
         }
     } else {
         // The driver does not support SPIR-V. Fall back to the traditional GLSL source path.
-        pipeline.gl_program_id = _SituationCreateGLComputeProgram((const void*)compute_shader_source, SITUATION_GL_SHADER_SOURCE_TYPE_GLSL, &err);
+        pipeline.gl_program_id = _SitRender_CreateGLComputeProgram((const void*)compute_shader_source, SITUATION_GL_SHADER_SOURCE_TYPE_GLSL, &err);
     }
 #else
     // The shader compiler is disabled. The only available path is to compile GLSL source directly.
-    pipeline.gl_program_id = _SituationCreateGLComputeProgram((const void*)compute_shader_source, SITUATION_GL_SHADER_SOURCE_TYPE_GLSL, &err);
+    pipeline.gl_program_id = _SitRender_CreateGLComputeProgram((const void*)compute_shader_source, SITUATION_GL_SHADER_SOURCE_TYPE_GLSL, &err);
 #endif
 
     // --- Handle Creation Result and Resource Tracking ---
@@ -18503,7 +18503,7 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
             sit_render.all_compute_pipelines = node;
             mtx_unlock(&sit_render.resource_registry_mutex);
         } else {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
             // Potential leak cleanup should go here, but omitted for parity with original behavior which warned only.
             fprintf(stderr,
                 "SITUATION WARNING: GPU compute pipeline created successfully but failed to add to resource tracker.\n"
@@ -18516,11 +18516,11 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
 #elif defined(SITUATION_USE_VULKAN)
     // The Vulkan backend requires the shader compiler to be enabled to handle GLSL source.
     #if !defined(SITUATION_ENABLE_SHADER_COMPILER)
-        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Vulkan backend requires SITUATION_ENABLE_SHADER_COMPILER to create pipelines from source code.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Vulkan backend requires SITUATION_ENABLE_SHADER_COMPILER to create pipelines from source code.");
     #else
 
     // 1. --- Compile GLSL source to SPIR-V bytecode ---
-    _SituationSpirvBlob cs_spirv = _SituationVulkanCompileGLSLtoSPIRV(compute_shader_source, "compute.comp", shaderc_compute_shader);
+    _SituationSpirvBlob cs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(compute_shader_source, "compute.comp", shaderc_compute_shader);
 
     // If compilation fails, the helper function sets the error and returns an empty blob.
     if (cs_spirv.data == NULL) {
@@ -18530,16 +18530,16 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
     // 2. --- Select the pre-created Pipeline Layout ---
     // Validate the user-provided layout type to prevent out-of-bounds access.
     if (layout_type < 0 || layout_type >= (sizeof(sit_render.vk.compute_layouts) / sizeof(sit_render.vk.compute_layouts[0]))) {
-        _SituationFreeSpirvBlob(&cs_spirv); // Clean up the compiled SPIR-V
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "An invalid SituationComputeLayoutType was specified.");
+        _SitCore_FreeSpirvBlob(&cs_spirv); // Clean up the compiled SPIR-V
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "An invalid SituationComputeLayoutType was specified.");
     }
     VkPipelineLayout selected_layout = sit_render.vk.compute_layouts[layout_type];
 
     // 3. --- Create the Vulkan Pipeline from SPIR-V and the selected layout ---
-    pipeline = _SituationVulkanCreateComputePipeline(cs_spirv.data, cs_spirv.size, selected_layout);
+    pipeline = _SitRender_VulkanCreateComputePipeline(cs_spirv.data, cs_spirv.size, selected_layout);
 
     // Always free the temporary SPIR-V blob now that it has been consumed by the pipeline creation.
-    _SituationFreeSpirvBlob(&cs_spirv);
+    _SitCore_FreeSpirvBlob(&cs_spirv);
 
     // 4. --- Handle Creation Result and Resource Tracking ---
     if (pipeline.vk_pipeline != VK_NULL_HANDLE) {
@@ -18558,13 +18558,13 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
             mtx_unlock(&sit_render.resource_registry_mutex);
         } else {
             // This is a non-fatal but serious issue: the GPU resource was created but we failed to track it. Warn the user they are now responsible for cleanup.
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate resource tracking node for compute pipeline.");
             fprintf(stderr,
                 "SITUATION WARNING: GPU compute pipeline created successfully but failed to add to resource tracker.\n"
                 "         This is a potential memory leak. You MUST call SituationDestroyComputePipeline() on the returned handle to free GPU resources.\n");
         }
     }
-    // If _SituationVulkanCreateComputePipeline failed, it returned a zeroed 'pipeline' struct and set the error.
+    // If _SitRender_VulkanCreateComputePipeline failed, it returned a zeroed 'pipeline' struct and set the error.
     // There is nothing more to do here; we simply return the invalid handle.
 
     return pipeline;
@@ -18572,7 +18572,7 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
     #endif // SITUATION_ENABLE_SHADER_COMPILER
 #else
     // Unsupported backend
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCreateComputePipelineFromMemory: Unsupported graphics backend.");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCreateComputePipelineFromMemory: Unsupported graphics backend.");
     // Return invalid pipeline (already {0})
 #endif // SITUATION_USE_OPENGL / SITUATION_USE_VULKAN
 
@@ -18617,8 +18617,8 @@ SITAPI SituationError SituationCreateComputePipeline(const char* compute_shader_
     memset(out_pipeline, 0, sizeof(SituationComputePipeline));
 
     // --- 1. Input Validation ---
-    if (!SituationIsInitialized()) return _SituationSetErrorFromCode( SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipeline: Library not initialized." );
-    if (!compute_shader_path) return _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipeline: compute_shader_path cannot be NULL." );
+    if (!SituationIsInitialized()) return _SitCore_SetErrorFromCode( SITUATION_ERROR_NOT_INITIALIZED, "SituationCreateComputePipeline: Library not initialized." );
+    if (!compute_shader_path) return _SitCore_SetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "SituationCreateComputePipeline: compute_shader_path cannot be NULL." );
 
     // --- 2. Load Shader Source from File ---
     char* source = SituationLoadFileText(compute_shader_path);
@@ -18630,7 +18630,7 @@ SITAPI SituationError SituationCreateComputePipeline(const char* compute_shader_
         // The original code used it correctly.
         snprintf( prefixed_error, sizeof(prefixed_error), "SituationCreateComputePipeline: Failed to load shader file '%s'. Reason: %s", compute_shader_path, last_err ? last_err : "Unknown" );
         if (last_err) SituationFreeString(last_err);
-        _SituationSetError(prefixed_error); // Deprecated but used here for prefixing.
+        _SitCore_SetError(prefixed_error); // Deprecated but used here for prefixing.
         return SITUATION_ERROR_FILE_ACCESS;
     }
 
@@ -18643,7 +18643,7 @@ SITAPI SituationError SituationCreateComputePipeline(const char* compute_shader_
         while (node) {
             if (node->pipeline.id == out_pipeline->id) {
                 // Found our node! Update its tracking info.
-                node->source_path = _sit_strdup(compute_shader_path);
+                node->source_path = _SitUtils_Strdup(compute_shader_path);
                 node->layout_type = layout_type;
                 node->mod_time = SituationGetFileModTime(compute_shader_path);
                 break;
@@ -18721,7 +18721,7 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
     {
         // --- Vulkan Destruction ---
         // Defer destruction to Graveyard
-        _SituationDeferDestroyPipeline(pipeline->vk_pipeline, pipeline->vk_pipeline_layout);
+        _SitRender_DeferDestroyPipeline(pipeline->vk_pipeline, pipeline->vk_pipeline_layout);
 
         pipeline->vk_pipeline = VK_NULL_HANDLE;
         pipeline->vk_pipeline_layout = VK_NULL_HANDLE;
@@ -18758,7 +18758,7 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
  * @warning This is a safety mechanism, not a feature. Relying on it is bad practice; users should always
  *          explicitly destroy resources they create.
  */
-static void _SituationCleanupDanglingResources(void) {
+static void _SitRender_CleanupDanglingResources(void) {
     // This function is called during shutdown to clean up any resources the user forgot to destroy.
     // It iterates through the tracking lists and frees everything, logging warnings.
 
@@ -18811,11 +18811,11 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
     if (buffer.id == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to update an invalid buffer.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to update an invalid buffer.");
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
     if (!data) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Data pointer for buffer update is NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Data pointer for buffer update is NULL.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
     if (size == 0) {
@@ -18824,7 +18824,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         return SITUATION_SUCCESS;
     }
     if ((offset + size) > buffer.size_in_bytes) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "Update range exceeds buffer size.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "Update range exceeds buffer size.");
         return SITUATION_ERROR_BUFFER_INVALID_SIZE;
     }
 
@@ -18834,7 +18834,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         fprintf(stderr, "SITUATION CRITICAL WARNING: Buffer updated AFTER draw commands in the same frame!\n"
                         "    This causes divergent behavior between OpenGL (Immediate) and Vulkan (Deferred).\n"
                         "    Fix: Move SituationUpdateBuffer() calls before any SituationCmdDraw*() calls.\n");
-        _SituationSetErrorFromCode(SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION, "Buffer update after draw.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION, "Buffer update after draw.");
         // We don't return error to avoid crashing app, but the warning is loud.
     }
 #endif
@@ -18870,7 +18870,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         // This implies SituationUpdateBuffer records a BIND command? No, that breaks separation.
         //
         // Let's stick to the Soft Command Buffer for now but use the Ring Buffer as the *storage* for the update data.
-        // Instead of _SitGLSoftDataPush (malloc/realloc), we use the persistent mapped pointer.
+        // Instead of _SitRender_GLSoftDataPush (malloc/realloc), we use the persistent mapped pointer.
 
         SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
         if (!cmd) return SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER;
@@ -18886,7 +18886,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         if (ring_offset + aligned_size > sit_render.gl.ring_size) {
             // Wrap to beginning
             // [Phase 1.5] Synchronization: Wait for previous frame's fence to ensure safety.
-            _SituationGLRingWait();
+            _SitRender_GLRingWait();
 
             atomic_store(&sit_render.gl.ring_head, aligned_size);
             ring_offset = 0;
@@ -18899,7 +18899,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         // We do NOT record a SIT_OP_UPDATE_BUFFER command.
         // Instead, we update the internal node so that subsequent Bind calls
         // (via SituationCmdBindDescriptorSet) redirect to the Ring Buffer.
-        _SituationBufferNode* node = _SitGetBufferNode(buffer.id);
+        _SituationBufferNode* node = _SitRender_GetBufferNode(buffer.id);
         if (node) {
             node->buffer.dynamic_offset = ring_offset;
             node->buffer.dynamic_frame_index = sit_render.current_frame_index;
@@ -18916,7 +18916,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
         
         // SAFETY CHECK: Ensure we are inside a frame
         if (cmd == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER, 
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER,
                 "SituationUpdateBuffer: Called outside active frame (SituationAcquireFrameCommandBuffer).");
             return SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER;
         }
@@ -18969,7 +18969,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
             // SAFETY CHECK: Allocation
             if (vmaCreateBuffer(allocator, &staging_info, &alloc_info, 
                 &temp_buffer, &temp_alloc, &alloc_result) != VK_SUCCESS) {
-                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, 
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED,
                     "SituationUpdateBuffer: Staging buffer fallback allocation failed.");
                 return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
             }
@@ -18977,7 +18977,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
             // SAFETY CHECK: Mapping (Implicit via VMA flag, but check pointer)
             if (alloc_result.pMappedData == NULL) {
                  vmaDestroyBuffer(allocator, temp_buffer, temp_alloc);
-                 _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED, 
+                 _SitCore_SetErrorFromCode(SITUATION_ERROR_BUFFER_MAP_FAILED,
                     "SituationUpdateBuffer: Staging buffer map failed.");
                  return SITUATION_ERROR_BUFFER_MAP_FAILED;
             }
@@ -18990,7 +18990,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
             // CRITICAL: Defer destruction. 
             // Unlike original code which waited for idle then destroyed, we are async now.
             // We must add this to the graveyard so it lives until the GPU is done with this frame.
-            _SituationDeferDestroyBuffer(temp_buffer, temp_alloc);
+            _SitRender_DeferDestroyBuffer(temp_buffer, temp_alloc);
         }
 
         // 4. Record Synchronization Barrier
@@ -19092,7 +19092,7 @@ SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offs
 #elif defined(SITUATION_USE_VULKAN)
     // --- 2. Vulkan Implementation ---
     // Logic moved to internal helper to allow reuse by SituationGetMeshData
-    return _SituationVulkanReadBackBuffer(buffer.vk_buffer, buffer.vma_allocation, size, offset, out_data);
+    return _SitRender_VulkanReadBackBuffer(buffer.vk_buffer, buffer.vma_allocation, size, offset, out_data);
 
 #endif
 
@@ -19122,11 +19122,11 @@ SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offs
 SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline) {
     // --- Input Validation ---
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot bind compute pipeline.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot bind compute pipeline.");
         return;
     }
     if (pipeline.id == 0) { // Validate the pipeline handle itself
-         _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Invalid compute pipeline handle provided.");
+         _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Invalid compute pipeline handle provided.");
 		// Invalidate cached layout
         #if defined(SITUATION_USE_VULKAN)
         sit_render.vk.current_compute_pipeline_layout = VK_NULL_HANDLE;
@@ -19137,7 +19137,7 @@ SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, Situatio
 #if defined(SITUATION_USE_VULKAN)
     // --- Vulkan Implementation ---
     if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for binding compute pipeline.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for binding compute pipeline.");
         return;
     }
 
@@ -19170,7 +19170,7 @@ SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, Situatio
 
 #elif defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_PIPELINE);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_BIND_PIPELINE);
     if (p) {
         p->args.bind_pipeline.shader_id = pipeline.gl_program_id;
     }
@@ -19232,7 +19232,7 @@ SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_PIPELINE_BARRIER);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_PIPELINE_BARRIER);
     if (p) {
         p->args.barrier.src = src_flags;
         p->args.barrier.dst = dst_flags;
@@ -19349,13 +19349,13 @@ SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src
 SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
     // --- 1. Core Library Initialization Check ---
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot dispatch compute work.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot dispatch compute work.");
         return;
     }
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DISPATCH);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_DISPATCH);
     if (p) {
         p->args.dispatch.x = group_count_x;
         p->args.dispatch.y = group_count_y;
@@ -19367,7 +19367,7 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
         // --- 2. Vulkan Input Validation ---
         // 2.1. Validate Command Buffer Handle
         if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for compute dispatch.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for compute dispatch.");
             return;
         }
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
@@ -19379,7 +19379,7 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
         // Uncomment the lines below if such state tracking is implemented.
         /*
         if (sit_render.vk.current_compute_pipeline_layout == VK_NULL_HANDLE) {
-             _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED, "Cannot dispatch compute work; no compute pipeline is currently bound. Call SituationCmdBindComputePipeline first.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED, "Cannot dispatch compute work; no compute pipeline is currently bound. Call SituationCmdBindComputePipeline first.");
              return;
         }
         */
@@ -19477,7 +19477,7 @@ SITAPI SituationError SituationGetClipboardText(const char** out_text) {
     else return SITUATION_ERROR_INVALID_PARAM;
 
     if (!SituationIsInitialized()) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get clipboard text");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get clipboard text");
     }
     // GLFW handles all the complexity and memory management.
     // Note: The string returned by glfwGetClipboardString is valid until the next call to it or when the window is closed.
@@ -19499,7 +19499,7 @@ SITAPI SituationError SituationGetClipboardText(const char** out_text) {
  */
 SITAPI SituationError SituationSetClipboardText(const char* text) {
     if (!SituationIsInitialized()) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot set clipboard text");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot set clipboard text");
     }
     if (!text) {
         // Setting an empty string is the correct way to "clear" the clipboard.
@@ -19579,7 +19579,7 @@ SITAPI char** SituationLoadDroppedFiles(int* count) {
     }
 
     for (int i = 0; i < sit_gs.dropped_file_count; i++) {
-        user_list[i] = _sit_strdup(sit_gs.dropped_file_paths[i]);
+        user_list[i] = _SitUtils_Strdup(sit_gs.dropped_file_paths[i]);
         if (user_list[i] == NULL) {
             // Allocation failed, clean up this partial list
             for (int j = 0; j < i; j++) SIT_FREE(user_list[j]);
@@ -19686,7 +19686,7 @@ SITAPI uint32_t SituationGetCPUThreadCount(void) {
 SITUATION_DEVICE_INFO_DEPRECATED("Use the new, more specific functions like SituationGetCPUInfo(), SituationGetGPUInfo(), etc. This function will be removed in a future version.")
 SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
     SituationDeviceInfo info = {0};
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get device info"); return info; }
+    if (!SituationIsInitialized()) { _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get device info"); return info; }
 
     #if defined(_WIN32)
     // CPU Info
@@ -20091,7 +20091,7 @@ SITAPI const char* SituationGetGPUName(void) {
 SITAPI char* SituationGetUserDirectory(void) {
     #if defined(_WIN32)
     if (!SituationIsInitialized() || !sit_gs.is_com_initialized) { // Check COM for SHGetKnownFolderPath
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "COM or library not initialized for GetUserDirectory");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "COM or library not initialized for GetUserDirectory");
         return NULL;
     }
     PWSTR wPath = NULL;
@@ -20102,12 +20102,12 @@ SITAPI char* SituationGetUserDirectory(void) {
         CoTaskMemFree(wPath);
         if (chars_converted > 0) {
             char* result = (char*)SIT_MALLOC(strlen(path_utf8) + 1);
-            if (!result) { _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "User directory string"); return NULL; }
+            if (!result) { _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "User directory string"); return NULL; }
             strcpy(result, path_utf8);
             return result;
         }
     }
-    _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "SHGetKnownFolderPath failed");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "SHGetKnownFolderPath failed");
     return NULL;
     #else
     // On Linux/macOS, get $HOME or use getpwuid(getuid())->pw_dir
@@ -20118,11 +20118,11 @@ SITAPI char* SituationGetUserDirectory(void) {
     }
     if (home_dir) {
         char* result = (char*)SIT_MALLOC(strlen(home_dir) + 1);
-        if (!result) { _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "User directory string"); return NULL; }
+        if (!result) { _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "User directory string"); return NULL; }
         strcpy(result, home_dir);
         return result;
     }
-    _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "Could not get user directory");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "Could not get user directory");
     return NULL;
     #endif
 }
@@ -20149,12 +20149,12 @@ SITAPI char* SituationGetUserDirectory(void) {
  */
 SITAPI char SituationGetCurrentDriveLetter(void) {
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetCurrentDriveLetter");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetCurrentDriveLetter");
         return 0;
     }
     char exe_path[MAX_PATH];
     if (GetModuleFileNameA(NULL, exe_path, MAX_PATH) == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "GetModuleFileNameA failed for current drive letter");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "GetModuleFileNameA failed for current drive letter");
         return 0;
     }
 
@@ -20162,7 +20162,7 @@ SITAPI char SituationGetCurrentDriveLetter(void) {
     if (drive_number != -1) { // -1 means no drive letter (e.g. UNC path) or error
         return (char)('A' + drive_number);
     }
-    _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "PathGetDriveNumberA failed or path has no drive letter");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "PathGetDriveNumberA failed or path has no drive letter");
     return 0;
 }
 
@@ -20189,15 +20189,15 @@ SITAPI char SituationGetCurrentDriveLetter(void) {
  */
 SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacity_bytes, uint64_t* out_free_space_bytes, char* out_volume_name, int volume_name_len) {
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDriveInfo");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDriveInfo");
         return false;
     }
     if (!((drive_letter >= 'A' && drive_letter <= 'Z') || (drive_letter >= 'a' && drive_letter <= 'z'))) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid drive letter for GetDriveInfo");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid drive letter for GetDriveInfo");
         return false;
     }
     if (!out_total_capacity_bytes && !out_free_space_bytes && !out_volume_name) {
-         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "No output parameters provided for GetDriveInfo");
+         _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "No output parameters provided for GetDriveInfo");
         return false; // Nothing to retrieve
     }
 
@@ -20213,7 +20213,7 @@ SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacit
         } else {
             char err_detail[128];
             snprintf(err_detail, sizeof(err_detail), "GetDiskFreeSpaceExA failed for drive %c (Error: %lu)", toupper(drive_letter), GetLastError());
-            _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, err_detail);
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, err_detail);
             // Don't return false yet, try to get volume name if requested
         }
     }
@@ -20239,7 +20239,7 @@ SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacit
         } else {
             char err_detail[128];
             snprintf(err_detail, sizeof(err_detail), "GetVolumeInformationA failed for drive %c (Error: %lu)", toupper(drive_letter), GetLastError());
-            _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, err_detail);
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, err_detail);
             out_volume_name[0] = '\0'; // Clear output volume name on error
             // If both GetDiskFreeSpaceExA and GetVolumeInformationA failed, then return false
             if (!out_total_capacity_bytes && !out_free_space_bytes) return false; // if only volume name was requested and failed
@@ -20276,7 +20276,7 @@ SITAPI bool SituationGetDriveInfo(char drive_letter, uint64_t* out_total_capacit
  */
 SITAPI void SituationOpenFile(const char* filePath) {
     if (!filePath || filePath[0] == '\0') {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "File path cannot be null or empty.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "File path cannot be null or empty.");
         return;
     }
 
@@ -20284,22 +20284,22 @@ SITAPI void SituationOpenFile(const char* filePath) {
     #include <shellapi.h>
     int result = (int)(uintptr_t)ShellExecuteA(NULL, "open", filePath, NULL, NULL, SW_SHOWNORMAL);
     if (result <= 32) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "ShellExecuteA failed to open file or path.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "ShellExecuteA failed to open file or path.");
     }
 #elif defined(__APPLE__)
     char command[2048];
     snprintf(command, sizeof(command), "open \"%s\"", filePath);
     if (system(command) != 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "macOS 'open' command failed.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "macOS 'open' command failed.");
     }
 #elif defined(__linux__)
     char command[2048];
     snprintf(command, sizeof(command), "xdg-open \"%s\"", filePath);
     if (system(command) != 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Linux 'xdg-open' command failed.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Linux 'xdg-open' command failed.");
     }
 #else
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationOpenFile is not supported on this platform.");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationOpenFile is not supported on this platform.");
 #endif
 }
 
@@ -20322,7 +20322,7 @@ SITAPI void SituationOpenFile(const char* filePath) {
  */
 SITAPI int SituationExecuteCommand(const char *cmd, char **output) {
     if (!cmd || !output) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cmd or Output pointer is NULL");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cmd or Output pointer is NULL");
         return -1;
     }
 
@@ -20333,13 +20333,13 @@ SITAPI int SituationExecuteCommand(const char *cmd, char **output) {
     HANDLE hRead = NULL, hWrite = NULL;
 
     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "CreatePipe failed");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "CreatePipe failed");
         return -1;
     }
     // Ensure the read handle to the pipe for STDOUT is not inherited.
     if (!SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0)) {
         CloseHandle(hRead); CloseHandle(hWrite);
-        _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "SetHandleInformation failed");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "SetHandleInformation failed");
         return -1;
     }
 
@@ -20359,7 +20359,7 @@ SITAPI int SituationExecuteCommand(const char *cmd, char **output) {
     char *cmdline = (char*)SIT_MALLOC(full_len);
     if (!cmdline) {
         CloseHandle(hRead); CloseHandle(hWrite);
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate cmdline buffer");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate cmdline buffer");
         return -1;
     }
     snprintf(cmdline, full_len, "cmd.exe /C \"%s\"", cmd);
@@ -20382,7 +20382,7 @@ SITAPI int SituationExecuteCommand(const char *cmd, char **output) {
 
     if (!success) {
         CloseHandle(hRead);
-        _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "CreateProcessA failed");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "CreateProcessA failed");
         return -1;
     }
 
@@ -20403,7 +20403,7 @@ SITAPI int SituationExecuteCommand(const char *cmd, char **output) {
             CloseHandle(hRead);
             WaitForSingleObject(pi.hProcess, INFINITE);
             CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc output buffer");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc output buffer");
             return -1;
         }
         *output = tmp;
@@ -20426,14 +20426,14 @@ SITAPI int SituationExecuteCommand(const char *cmd, char **output) {
 #else  // Linux & macOS
     int pipefd[2];
     if (pipe(pipefd) == -1) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "pipe() failed");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "pipe() failed");
         return -1;
     }
 
     pid_t pid = fork();
     if (pid == -1) {
         close(pipefd[0]); close(pipefd[1]);
-        _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "fork() failed");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_COMMAND_EXECUTION_FAILED, "fork() failed");
         return -1;
     }
 
@@ -20478,7 +20478,7 @@ SITAPI int SituationExecuteCommand(const char *cmd, char **output) {
             close(pipefd[0]);
             int status;
             waitpid(pid, &status, 0);
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc output buffer");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to realloc output buffer");
             return -1;
         }
         *output = tmp;
@@ -20532,7 +20532,7 @@ typedef struct {
  * @note This function is platform-specific to Windows and is only compiled on `_WIN32`.
  * @warning This is a low-level callback and is not part of the public API. It should never be called directly.
  *
- * @see _SituationCachePhysicalDisplays(), EnumDisplayMonitors()
+ * @see _SitPlatform_CachePhysicalDisplays(), EnumDisplayMonitors()
  */
 static BOOL CALLBACK _SituationMonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
     (void)hdcMonitor; (void)lprcMonitor;
@@ -20605,7 +20605,7 @@ static BOOL CALLBACK _SituationMonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor
                 memcpy(display->available_modes, temp_modes_buffer, unique_modes_count * sizeof(SituationDisplayMode));
                 display->available_mode_count = unique_modes_count;
             } else {
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Available display modes array");
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Available display modes array");
                 display->available_mode_count = 0;
             }
         } else {
@@ -20623,7 +20623,7 @@ static BOOL CALLBACK _SituationMonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor
 
 // Converts a UTF-8 string to a UTF-16 (wide) string.
 // Caller must free the returned WCHAR* with SIT_FREE().
-static WCHAR* _sit_utf8_to_wide(const char* utf8_str) {
+static WCHAR* _SitUtils_Utf8_to_wide(const char* utf8_str) {
     if (!utf8_str) return NULL;
     int wide_len = MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, NULL, 0);
     if (wide_len == 0) return NULL;
@@ -20635,7 +20635,7 @@ static WCHAR* _sit_utf8_to_wide(const char* utf8_str) {
 
 // Converts a UTF-16 (wide) string to a UTF-8 string.
 // Caller must free the returned char* with SIT_FREE().
-static char* _sit_wide_to_utf8(const WCHAR* wide_str) {
+static char* _SitUtils_Wide_to_utf8(const WCHAR* wide_str) {
     if (!wide_str) return NULL;
     int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide_str, -1, NULL, 0, NULL, NULL);
     if (utf8_len == 0) return NULL;
@@ -20665,7 +20665,7 @@ static char* _sit_wide_to_utf8(const WCHAR* wide_str) {
  */
 SITAPI char* SituationGetAppSavePath(const char* app_name) {
     if (!app_name || app_name[0] == '\0') {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "App name cannot be NULL or empty.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "App name cannot be NULL or empty.");
         return NULL;
     }
 
@@ -20676,15 +20676,15 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     HRESULT hr = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &wide_path_appdata);
 
     if (FAILED(hr)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "SHGetKnownFolderPath failed to retrieve AppData.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "SHGetKnownFolderPath failed to retrieve AppData.");
         return NULL;
     }
 
-    char* path_appdata = _sit_wide_to_utf8(wide_path_appdata);
+    char* path_appdata = _SitUtils_Wide_to_utf8(wide_path_appdata);
     CoTaskMemFree(wide_path_appdata); // Free the memory allocated by the shell API
 
     if (!path_appdata) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to convert AppData path to UTF-8.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to convert AppData path to UTF-8.");
         return NULL;
     }
 
@@ -20702,7 +20702,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     SIT_FREE(path_appdata);
 
     // Create the directory if it doesn't exist
-    WCHAR* wide_final_path = _sit_utf8_to_wide(final_path);
+    WCHAR* wide_final_path = _SitUtils_Utf8_to_wide(final_path);
     if (wide_final_path) {
         CreateDirectoryW(wide_final_path, NULL); // Fails harmlessly if it already exists
         SIT_FREE(wide_final_path);
@@ -20717,7 +20717,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     const char* xdg_data_home = getenv("XDG_DATA_HOME");
     char* base_path = NULL;
     if (xdg_data_home && xdg_data_home[0] != '\0') {
-        base_path = _sit_strdup(xdg_data_home);
+        base_path = _SitUtils_Strdup(xdg_data_home);
     } else {
         const char* fallback_suffix = "/.local/share";
         size_t len = strlen(home_dir) + strlen(fallback_suffix) + 1;
@@ -20756,7 +20756,7 @@ SITAPI char* SituationGetBasePath(void) {
     WCHAR wide_path[MAX_PATH];
     DWORD len = GetModuleFileNameW(NULL, wide_path, MAX_PATH);
     if (len == 0 || len == MAX_PATH) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "GetModuleFileNameW failed or path too long.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "GetModuleFileNameW failed or path too long.");
         return NULL;
     }
 
@@ -20766,7 +20766,7 @@ SITAPI char* SituationGetBasePath(void) {
         *last_slash = L'\0'; // Null-terminate at the slash to chop off the filename
     }
 
-    return _sit_wide_to_utf8(wide_path);
+    return _SitUtils_Wide_to_utf8(wide_path);
 #else // POSIX fallback
     char path_buf[1024] = {0};
     // readlink is the standard way on Linux
@@ -20778,11 +20778,11 @@ SITAPI char* SituationGetBasePath(void) {
         if (last_slash) {
             *last_slash = '\0';
         }
-        return _sit_strdup(path_buf);
+        return _SitUtils_Strdup(path_buf);
     }
 
     // Fallback for other systems or if /proc isn't available
-    return _sit_strdup("."); // Current working directory
+    return _SitUtils_Strdup("."); // Current working directory
 #endif
 }
 
@@ -20801,7 +20801,7 @@ SITAPI char* SituationJoinPath(const char* base_path, const char* file_or_dir_na
 #endif
 
     size_t base_len = strlen(base_path);
-    if (base_len == 0) return _sit_strdup(file_or_dir_name);
+    if (base_len == 0) return _SitUtils_Strdup(file_or_dir_name);
 
     // Check if the base path already ends with a separator
     bool needs_separator = (base_path[base_len - 1] != '\\' && base_path[base_len - 1] != '/');
@@ -20874,9 +20874,9 @@ SITAPI bool SituationFileExists(const char* file_path) {
     if (!file_path) return false;
 #if defined(_WIN32)
     WIN32_FIND_DATAW find_data;
-    WCHAR* wide_path = _sit_utf8_to_wide(file_path);
+    WCHAR* wide_path = _SitUtils_Utf8_to_wide(file_path);
     if (wide_path == NULL) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_utf8_to_wide failed for file path.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_SitUtils_Utf8_to_wide failed for file path.");
         return false; // Treat as not found if conversion fails
     }
 
@@ -20906,7 +20906,7 @@ SITAPI bool SituationFileExists(const char* file_path) {
 SITAPI bool SituationDirectoryExists(const char* dir_path) {
     if (!dir_path) return false;
 #if defined(_WIN32)
-    WCHAR* wide_path = _sit_utf8_to_wide(dir_path);
+    WCHAR* wide_path = _SitUtils_Utf8_to_wide(dir_path);
     if (!wide_path) return false;
 
     DWORD attrib = GetFileAttributesW(wide_path);
@@ -20929,7 +20929,7 @@ SITAPI bool SituationDirectoryExists(const char* dir_path) {
 SITAPI long SituationGetFileModTime(const char* file_path) {
     if (!file_path) return 0;
 #if defined(_WIN32)
-    WCHAR* wide_path = _sit_utf8_to_wide(file_path);
+    WCHAR* wide_path = _SitUtils_Utf8_to_wide(file_path);
     if (!wide_path) return 0;
 
     HANDLE hFile = CreateFileW(wide_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
@@ -20967,13 +20967,13 @@ SITAPI long SituationGetFileModTime(const char* file_path) {
  */
 SITAPI bool SituationDeleteFile(const char* file_path) {
     if (!file_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
         return false;
     }
 #if defined(_WIN32)
-    WCHAR* wide_path = _sit_utf8_to_wide(file_path);
+    WCHAR* wide_path = _SitUtils_Utf8_to_wide(file_path);
     if (!wide_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
         return false;
     }
 
@@ -20981,13 +20981,13 @@ SITAPI bool SituationDeleteFile(const char* file_path) {
     SIT_FREE(wide_path);
 
     if (result == 0) {
-        _SituationSetFilesystemError("Failed to delete file", file_path, SITUATION_ERROR_FILE_ACCESS);
+        _SitFS_SetFilesystemError("Failed to delete file", file_path, SITUATION_ERROR_FILE_ACCESS);
         return false;
     }
     return true;
 #else // POSIX/Standard C
     if (remove(file_path) != 0) {
-        _SituationSetFilesystemError("Failed to delete file", file_path, SITUATION_ERROR_FILE_ACCESS);
+        _SitFS_SetFilesystemError("Failed to delete file", file_path, SITUATION_ERROR_FILE_ACCESS);
         return false;
     }
     return true;
@@ -21014,9 +21014,9 @@ SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
     if (!old_path || !new_path) return false;
 
 #if defined(_WIN32)
-    WCHAR* wide_old = _sit_utf8_to_wide(old_path);
+    WCHAR* wide_old = _SitUtils_Utf8_to_wide(old_path);
     if (!wide_old) return false;
-    WCHAR* wide_new = _sit_utf8_to_wide(new_path);
+    WCHAR* wide_new = _SitUtils_Utf8_to_wide(new_path);
     if (!wide_new) { SIT_FREE(wide_old); return false; }
 
     BOOL result = MoveFileExW(wide_old, wide_new, MOVEFILE_REPLACE_EXISTING);
@@ -21024,7 +21024,7 @@ SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
     SIT_FREE(wide_new);
 
     if (result == 0) {
-        _SituationSetFilesystemError("Failed to move/rename file", old_path, SITUATION_ERROR_FILE_ACCESS);
+        _SitFS_SetFilesystemError("Failed to move/rename file", old_path, SITUATION_ERROR_FILE_ACCESS);
         return false;
     }
     return true;
@@ -21036,10 +21036,10 @@ SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
         if (SituationCopyFile(old_path, new_path)) {
             return SituationDeleteFile(old_path);
         }
-        _SituationSetFilesystemError("Failed to copy file during cross-device move", old_path, SITUATION_ERROR_FILE_ACCESS);
+        _SitFS_SetFilesystemError("Failed to copy file during cross-device move", old_path, SITUATION_ERROR_FILE_ACCESS);
         return false;
     }
-    _SituationSetFilesystemError("Failed to move/rename file", old_path, SITUATION_ERROR_FILE_ACCESS);
+    _SitFS_SetFilesystemError("Failed to move/rename file", old_path, SITUATION_ERROR_FILE_ACCESS);
     return false;
 #endif
 }
@@ -21055,10 +21055,10 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
     if (!source_path || !dest_path) return false;
 
 #if defined(_WIN32)
-    WCHAR* wide_source = _sit_utf8_to_wide(source_path);
+    WCHAR* wide_source = _SitUtils_Utf8_to_wide(source_path);
     if (!wide_source) return false;
 
-    WCHAR* wide_dest = _sit_utf8_to_wide(dest_path);
+    WCHAR* wide_dest = _SitUtils_Utf8_to_wide(dest_path);
     if (!wide_dest) {
         SIT_FREE(wide_source);
         return false;
@@ -21070,7 +21070,7 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
     SIT_FREE(wide_source);
     SIT_FREE(wide_dest);
     if (result == 0) {
-        _SituationSetFilesystemError("Failed to copy file", source_path, SITUATION_ERROR_FILE_ACCESS);
+        _SitFS_SetFilesystemError("Failed to copy file", source_path, SITUATION_ERROR_FILE_ACCESS);
         return false;
     }
     return true;
@@ -21082,20 +21082,20 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
 
     FILE* source = fopen(source_path, "rb");
     if (!source) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Failed to open source file for copying.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Failed to open source file for copying.");
         return false;
     }
 
     FILE* dest = fopen(dest_path, "wb");
     if (!dest) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Failed to open destination file for copying.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Failed to open destination file for copying.");
         fclose(source);
         return false;
     }
 
     while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, source)) > 0) {
         if (fwrite(buffer, 1, bytes_read, dest) != bytes_read) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error writing to destination file.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error writing to destination file.");
             fclose(source);
             fclose(dest);
             return false;
@@ -21104,7 +21104,7 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
 
     // Check for read error from source file
     if (ferror(source)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error reading from source file.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error reading from source file.");
         fclose(source);
         fclose(dest);
         return false;
@@ -21125,7 +21125,7 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
  */
 SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) {
     if (!dir_path || dir_path[0] == '\0') {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "dir_path cannot be NULL or empty.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "dir_path cannot be NULL or empty.");
         return false;
     }
 
@@ -21135,30 +21135,30 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
 
     if (!create_parents) {
 #if defined(_WIN32)
-        WCHAR* wide_path = _sit_utf8_to_wide(dir_path);
+        WCHAR* wide_path = _SitUtils_Utf8_to_wide(dir_path);
         if (!wide_path) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
             return false;
         }
         BOOL result = CreateDirectoryW(wide_path, NULL);
         SIT_FREE(wide_path);
         if (result == 0) {
-            _SituationSetFilesystemError("Failed to create directory", dir_path, SITUATION_ERROR_DIRECTORY_CREATION_FAILED);
+            _SitFS_SetFilesystemError("Failed to create directory", dir_path, SITUATION_ERROR_DIRECTORY_CREATION_FAILED);
             return false;
         }
         return true;
 #else
         if (mkdir(dir_path, 0755) != 0) {
-            _SituationSetFilesystemError("Failed to create directory", dir_path, SITUATION_ERROR_DIRECTORY_CREATION_FAILED);
+            _SitFS_SetFilesystemError("Failed to create directory", dir_path, SITUATION_ERROR_DIRECTORY_CREATION_FAILED);
             return false;
         }
         return true;
 #endif
     }
 
-    char* path_copy = _sit_strdup(dir_path);
+    char* path_copy = _SitUtils_Strdup(dir_path);
     if (!path_copy) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Could not duplicate path string for recursive create.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Could not duplicate path string for recursive create.");
         return false;
     }
 
@@ -21199,7 +21199,7 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
  */
 SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
     if (!dir_path || !SituationDirectoryExists(dir_path)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_PATH_NOT_FOUND, "Directory path is invalid or does not exist.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_PATH_NOT_FOUND, "Directory path is invalid or does not exist.");
         return false;
     }
 
@@ -21232,7 +21232,7 @@ SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
             SituationFreeDirectoryFileList(entries, count);
 
             if (!all_deleted) {
-                _SituationSetErrorFromCode(SITUATION_ERROR_DIR_NOT_EMPTY, "Failed to delete one or more items within the directory.");
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_DIR_NOT_EMPTY, "Failed to delete one or more items within the directory.");
                 return false; // Failed to empty the directory, so we can't delete it
             }
         }
@@ -21240,7 +21240,7 @@ SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
 
     // At this point, the directory should be empty. Proceed with deletion.
 #if defined(_WIN32)
-    WCHAR* wide_path = _sit_utf8_to_wide(dir_path);
+    WCHAR* wide_path = _SitUtils_Utf8_to_wide(dir_path);
     if (!wide_path) return false;
     BOOL result = RemoveDirectoryW(wide_path);
     SIT_FREE(wide_path);
@@ -21268,7 +21268,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
     int capacity = 32;
     char** files = (char**)SIT_MALLOC(capacity * sizeof(char*));
     if (!files) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Initial allocation for file list failed.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Initial allocation for file list failed.");
         return NULL;
     }
 
@@ -21285,7 +21285,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
     char search_path[MAX_PATH];
     snprintf(search_path, MAX_PATH, "%s\\*", dir_path);
 
-    wide_search_path = _sit_utf8_to_wide(search_path);
+    wide_search_path = _SitUtils_Utf8_to_wide(search_path);
     if (!wide_search_path) goto error_cleanup;
 
     WIN32_FIND_DATAW find_data;
@@ -21299,7 +21299,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
         if (wcscmp(find_data.cFileName, L".") == 0 || wcscmp(find_data.cFileName, L"..") == 0) {
             continue;
         }
-        new_entry_name = _sit_wide_to_utf8(find_data.cFileName);
+        new_entry_name = _SitUtils_Wide_to_utf8(find_data.cFileName);
 #else // POSIX
     dir = opendir(dir_path);
     if (!dir) goto success_cleanup; // Not an error, just empty/no dir
@@ -21309,11 +21309,11 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
-        new_entry_name = _sit_strdup(entry->d_name);
+        new_entry_name = _SitUtils_Strdup(entry->d_name);
 #endif
         // --- COMMON LOGIC BLOCK ---
         if (!new_entry_name) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "strdup/_sit_wide_to_utf8 failed.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "strdup/_SitUtils_Wide_to_utf8 failed.");
             goto error_cleanup;
         }
 
@@ -21324,7 +21324,7 @@ SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count) 
                 // SIT_REALLOC failed. 'files' is still valid. 'new_entry_name' must be freed.
                 SIT_FREE(new_entry_name);
                 new_entry_name = NULL;
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SIT_REALLOC failed.");
+                _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SIT_REALLOC failed.");
                 goto error_cleanup;
             }
             files = temp_files;
@@ -21382,7 +21382,7 @@ SITAPI void SituationFreeDirectoryFileList(char** file_list, int count) {
  * @param base_message A string describing the operation that failed (e.g., "Failed to create directory").
  * @param path The file or directory path that was involved in the failed operation.
  */
-static SituationError _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error) {
+static SituationError _SitFS_SetFilesystemError(const char* base_message, const char* path, SituationError default_error) {
     char platform_error_str[256] = {0};
     SituationError specific_error_code = default_error;
 
@@ -21469,7 +21469,7 @@ static SituationError _SituationSetFilesystemError(const char* base_message, con
     snprintf(final_message, sizeof(final_message), "%s: '%s' - %s", base_message, path, platform_error_str);
 
     // Use the specific error code we determined, with the full message as detail.
-    return _SituationSetErrorFromCode(specific_error_code, final_message);
+    return _SitCore_SetErrorFromCode(specific_error_code, final_message);
 }
 
 /**
@@ -21487,7 +21487,7 @@ static SituationError _SituationSetFilesystemError(const char* base_message, con
  */
 static char* SituationGetBasePathFromFile(const char* file_path) {
     if (!file_path) return NULL;
-    char* path_copy = _sit_strdup(file_path);
+    char* path_copy = _SitUtils_Strdup(file_path);
     char* last_sep = strrchr(path_copy, '/');
     if (!last_sep) last_sep = strrchr(path_copy, '\\');
 
@@ -21496,7 +21496,7 @@ static char* SituationGetBasePathFromFile(const char* file_path) {
     } else {
         // No separator found, assume current directory
         SIT_FREE(path_copy);
-        return _sit_strdup(".");
+        return _SitUtils_Strdup(".");
     }
     return path_copy;
 }
@@ -21512,14 +21512,14 @@ SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int*
     if (out_data) *out_data = NULL;
     if (out_bytes_read) *out_bytes_read = 0;
 
-    if (!file_path) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
-    if (!out_bytes_read) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_bytes_read cannot be NULL.");
-    if (!out_data) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_data cannot be NULL.");
+    if (!file_path) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
+    if (!out_bytes_read) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_bytes_read cannot be NULL.");
+    if (!out_data) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_data cannot be NULL.");
 
 #if defined(_WIN32)
-    WCHAR* wide_path = _sit_utf8_to_wide(file_path);
+    WCHAR* wide_path = _SitUtils_Utf8_to_wide(file_path);
     if (!wide_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string (check for invalid UTF-8 characters).");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string (check for invalid UTF-8 characters).");
         return NULL;
     }
 
@@ -21527,19 +21527,19 @@ SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int*
     SIT_FREE(wide_path);
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        _SituationSetFilesystemError("Failed to open file for reading", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
+        _SitFS_SetFilesystemError("Failed to open file for reading", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
         return NULL;
     }
 
     LARGE_INTEGER file_size;
     if (!GetFileSizeEx(hFile, &file_size)) {
         CloseHandle(hFile);
-        return _SituationSetFilesystemError("Failed to get file size", file_path, SITUATION_ERROR_FILE_READ_FAILED);
+        return _SitFS_SetFilesystemError("Failed to get file size", file_path, SITUATION_ERROR_FILE_READ_FAILED);
     }
 
     if (file_size.QuadPart > 0xFFFFFFFF) {
         CloseHandle(hFile);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_TOO_LARGE, "File is too large (>4GB).");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_TOO_LARGE, "File is too large (>4GB).");
     }
 
     unsigned int size_to_read = (unsigned int)file_size.QuadPart;
@@ -21553,14 +21553,14 @@ SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int*
     unsigned char* buffer = (unsigned char*)SIT_MALLOC(size_to_read);
     if (!buffer) {
         CloseHandle(hFile);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
     }
 
     DWORD bytes_read_win = 0;
     if (!ReadFile(hFile, buffer, size_to_read, &bytes_read_win, NULL) || bytes_read_win != size_to_read) {
         SIT_FREE(buffer);
         CloseHandle(hFile);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error during file read.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error during file read.");
     }
 
     CloseHandle(hFile);
@@ -21571,7 +21571,7 @@ SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int*
 #else // Standard C library implementation (POSIX)
     FILE* file = fopen(file_path, "rb");
     if (!file) {
-        return _SituationSetFilesystemError("Failed to open file for reading", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
+        return _SitFS_SetFilesystemError("Failed to open file for reading", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
     }
 
     fseek(file, 0, SEEK_END);
@@ -21580,7 +21580,7 @@ SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int*
 
     if (file_size < 0) {
         fclose(file);
-        return _SituationSetFilesystemError("Failed to get file size", file_path, SITUATION_ERROR_FILE_READ_FAILED);
+        return _SitFS_SetFilesystemError("Failed to get file size", file_path, SITUATION_ERROR_FILE_READ_FAILED);
     }
 
     unsigned int size_to_read = (unsigned int)file_size;
@@ -21594,14 +21594,14 @@ SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int*
     unsigned char* buffer = (unsigned char*)SIT_MALLOC(size_to_read);
     if (!buffer) {
         fclose(file);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file data.");
     }
 
     size_t read_count = fread(buffer, 1, size_to_read, file);
     if (read_count != size_to_read) {
         SIT_FREE(buffer);
         fclose(file);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error during file read.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error during file read.");
     }
 
     fclose(file);
@@ -21619,13 +21619,13 @@ SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int*
  * @return True on success, false on failure.
  */
 SITAPI SituationError SituationSaveFileData(const char* file_path, const void* data, unsigned int bytes_to_write) {
-    if (!file_path) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
-    if (!data && bytes_to_write > 0) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "data cannot be NULL when bytes_to_write is > 0.");
+    if (!file_path) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
+    if (!data && bytes_to_write > 0) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "data cannot be NULL when bytes_to_write is > 0.");
 
 #if defined(_WIN32)
-    WCHAR* wide_path = _sit_utf8_to_wide(file_path);
+    WCHAR* wide_path = _SitUtils_Utf8_to_wide(file_path);
     if (!wide_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
         return false;
     }
 
@@ -21633,14 +21633,14 @@ SITAPI SituationError SituationSaveFileData(const char* file_path, const void* d
     SIT_FREE(wide_path);
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        _SituationSetFilesystemError("Failed to create file for writing", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
+        _SitFS_SetFilesystemError("Failed to create file for writing", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
         return false;
     }
 
     if (bytes_to_write > 0) {
         DWORD bytes_written = 0;
         if (!WriteFile(hFile, data, bytes_to_write, &bytes_written, NULL) || bytes_written != bytes_to_write) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error during file write.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error during file write.");
             CloseHandle(hFile);
             return false;
         }
@@ -21652,13 +21652,13 @@ SITAPI SituationError SituationSaveFileData(const char* file_path, const void* d
 #else // Standard C library implementation
     FILE* file = fopen(file_path, "wb");
     if (!file) {
-        return _SituationSetFilesystemError("Failed to create file for writing", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
+        return _SitFS_SetFilesystemError("Failed to create file for writing", file_path, SITUATION_ERROR_FILE_OPEN_FAILED);
     }
 
     if (bytes_to_write > 0) {
         if (fwrite(data, 1, bytes_to_write, file) != bytes_to_write) {
             fclose(file);
-            return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error during file write.");
+            return _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error during file write.");
         }
     }
 
@@ -21685,7 +21685,7 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
     // Allocate a new buffer that is one byte larger for the null terminator.
     char* text_buffer = (char*)SIT_MALLOC(bytes_read + 1);
     if (!text_buffer) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file text.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate buffer for file text.");
         SIT_FREE(file_data);
         return NULL;
     }
@@ -21707,7 +21707,7 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
  */
 SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
     if (!file_path || !text) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path or text cannot be NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path or text cannot be NULL.");
         return false;
     }
 
@@ -21731,7 +21731,7 @@ SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
  * @warning This function performs dynamic memory allocation for the display array and the mode lists within it.
  *          Existing cache memory is freed before new allocation occurs.
  */
-static void _SituationCachePhysicalDisplays(void) {
+static void _SitPlatform_CachePhysicalDisplays(void) {
     if (!SituationIsInitialized()) return;
     if (sit_gs.cached_physical_displays_array) {
         for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
@@ -21744,11 +21744,11 @@ static void _SituationCachePhysicalDisplays(void) {
     #if defined(_WIN32)
     int win32_monitor_count = GetSystemMetrics(SM_CMONITORS);
     if (win32_monitor_count <= 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "No physical monitors reported by GetSystemMetrics(SM_CMONITORS)."); return;
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "No physical monitors reported by GetSystemMetrics(SM_CMONITORS)."); return;
     }
     sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)SIT_CALLOC(win32_monitor_count, sizeof(SituationDisplayInfo));
     if (!sit_gs.cached_physical_displays_array) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache"); return;
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache"); return;
     }
     int glfw_monitor_count;
     GLFWmonitor** glfw_monitors = glfwGetMonitors(&glfw_monitor_count);
@@ -21760,7 +21760,7 @@ static void _SituationCachePhysicalDisplays(void) {
         .glfw_monitor_count = glfw_monitor_count
     };
     if (!EnumDisplayMonitors(NULL, NULL, _SituationMonitorEnumProc, (LPARAM)&enum_data)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "EnumDisplayMonitors failed.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "EnumDisplayMonitors failed.");
         for (int i = 0; i < enum_data.current_display_idx; ++i) SIT_FREE(sit_gs.cached_physical_displays_array[i].available_modes);
         SIT_FREE(sit_gs.cached_physical_displays_array); sit_gs.cached_physical_displays_array = NULL;
         return;
@@ -21772,7 +21772,7 @@ static void _SituationCachePhysicalDisplays(void) {
     if (glfw_count > 0) {
         sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)SIT_CALLOC(glfw_count, sizeof(SituationDisplayInfo));
         if (!sit_gs.cached_physical_displays_array) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache (non-Win32)"); return;
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache (non-Win32)"); return;
         }
         sit_gs.cached_physical_display_count = glfw_count;
         for (int i = 0; i < glfw_count; ++i) {
@@ -21804,12 +21804,12 @@ static void _SituationCachePhysicalDisplays(void) {
                     }
                 } else {
                     disp->available_mode_count = 0;
-                    _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Available modes for GLFW monitor");
+                    _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Available modes for GLFW monitor");
                 }
             } else { disp->available_mode_count = 0; }
         }
     } else {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "No monitors reported by GLFW.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "No monitors reported by GLFW.");
     }
     #endif
 }
@@ -21839,13 +21839,13 @@ SITAPI SituationError SituationGetDisplays(SituationDisplayInfo** out_displays, 
     if (out_displays) *out_displays = NULL;
     else return SITUATION_ERROR_INVALID_PARAM;
 
-    if (!SituationIsInitialized()) return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDisplays");
-    if (!sit_gs.cached_physical_displays_array) _SituationCachePhysicalDisplays();
+    if (!SituationIsInitialized()) return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetDisplays");
+    if (!sit_gs.cached_physical_displays_array) _SitPlatform_CachePhysicalDisplays();
     if (!sit_gs.cached_physical_displays_array || sit_gs.cached_physical_display_count == 0) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No cached displays or count is zero");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No cached displays or count is zero");
     }
     SituationDisplayInfo* displays_copy = (SituationDisplayInfo*)SIT_MALLOC(sit_gs.cached_physical_display_count * sizeof(SituationDisplayInfo));
-    if (!displays_copy) return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Copy of display infos");
+    if (!displays_copy) return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Copy of display infos");
 
     for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
         memcpy(&displays_copy[i], &sit_gs.cached_physical_displays_array[i], sizeof(SituationDisplayInfo));
@@ -21878,11 +21878,11 @@ SITAPI SituationError SituationGetDisplays(SituationDisplayInfo** out_displays, 
  * @note This function will invalidate any pointers previously returned by `SituationGetDisplays()`.
  *       If you are holding a pointer to the display list, you must call `SituationGetDisplays()` again after calling this.
  *
- * @see _SituationCachePhysicalDisplays()
+ * @see _SitPlatform_CachePhysicalDisplays()
  */
 SITAPI void SituationRefreshDisplays(void) {
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "RefreshDisplays"); return; }
-    _SituationCachePhysicalDisplays();
+    if (!SituationIsInitialized()) { _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "RefreshDisplays"); return; }
+    _SitPlatform_CachePhysicalDisplays();
 }
 
 /**
@@ -21899,7 +21899,7 @@ SITAPI void SituationRefreshDisplays(void) {
  * @note This function is used internally by `SituationApplyCurrentProfileWindowState` to determine where to place the window when toggling fullscreen.
  */
 SITAPI int _SituationGetCurrentDisplayIdentifier(void) {
-    if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetCurrentDisplayIdentifier"); return -1; }
+    if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) { _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetCurrentDisplayIdentifier"); return -1; }
     GLFWmonitor* current_glfw_monitor = glfwGetWindowMonitor(sit_gs.sit_glfw_window);
     if (!current_glfw_monitor) {
         int win_x, win_y, win_w, win_h;
@@ -21911,7 +21911,7 @@ SITAPI int _SituationGetCurrentDisplayIdentifier(void) {
         Rectangle window_rect = {(float)win_x, (float)win_y, (float)win_w, (float)win_h};
         current_glfw_monitor = glfwGetPrimaryMonitor();
         int max_overlap = 0;
-        if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
+        if (sit_gs.cached_physical_display_count == 0) _SitPlatform_CachePhysicalDisplays();
         for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
             if (sit_gs.cached_physical_displays_array[i].glfw_monitor_handle) {
                 GLFWmonitor* mon_handle = sit_gs.cached_physical_displays_array[i].glfw_monitor_handle;
@@ -21968,13 +21968,13 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
     if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!mode) return SITUATION_ERROR_INVALID_PARAM;
     if (situation_monitor_id < 0 || situation_monitor_id >= sit_gs.cached_physical_display_count || !sit_gs.cached_physical_displays_array) {
-         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid situation_monitor_id or display cache empty");
+         _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid situation_monitor_id or display cache empty");
         return SITUATION_ERROR_INVALID_PARAM;
     }
     SituationDisplayInfo* target_display_info = &sit_gs.cached_physical_displays_array[situation_monitor_id];
     GLFWmonitor* glfw_mon = target_display_info->glfw_monitor_handle;
     if (!glfw_mon) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No GLFW monitor handle for specified Situation ID. Cannot set mode via GLFW.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No GLFW monitor handle for specified Situation ID. Cannot set mode via GLFW.");
         #if !defined(_WIN32)
         return SITUATION_ERROR_DISPLAY_QUERY;
         #endif
@@ -22000,13 +22000,13 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
         if (cds_result != DISP_CHANGE_SUCCESSFUL) {
             char err_detail[128];
             snprintf(err_detail, sizeof(err_detail), "Win32 ChangeDisplaySettingsExA for '%s' failed with code %ld.", target_display_info->name, cds_result);
-            _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_SET, err_detail);
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_DISPLAY_SET, err_detail);
             if (!glfw_mon) return SITUATION_ERROR_DISPLAY_SET;
         } else {
              SituationRefreshDisplays();
         }
     } else if (!glfw_mon) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No Win32 device name and no GLFW monitor for SetDisplayMode.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "No Win32 device name and no GLFW monitor for SetDisplayMode.");
         return SITUATION_ERROR_DISPLAY_QUERY;
     }
 #endif
@@ -22040,7 +22040,7 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
     }
     int fb_w, fb_h;
     glfwGetFramebufferSize(sit_gs.sit_glfw_window, &fb_w, &fb_h);
-    _SituationGLFWFramebufferSizeCallback(sit_gs.sit_glfw_window, fb_w, fb_h);
+    _SitRender_GLFWFramebufferSizeCallback(sit_gs.sit_glfw_window, fb_w, fb_h);
     SituationRefreshDisplays();
     return SITUATION_SUCCESS;
 }
@@ -22060,7 +22060,7 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
  * @param out_allocation A pointer to a VmaAllocation handle that will be filled with the memory allocation information for the image.
  * @return SITUATION_SUCCESS on success, or SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED on failure.
  */
-static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation) {
+static SituationError _SitRender_VulkanCreateImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaMemoryUsage memory_usage, VkImage* out_image, VmaAllocation* out_allocation) {
     VkImageCreateInfo image_info = {0};
     image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_info.imageType = VK_IMAGE_TYPE_2D;
@@ -22094,7 +22094,7 @@ static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t heigh
  * @param image The `VkImage` handle to destroy.
  * @param allocation The associated `VmaAllocation` handle to free.
  */
-static void _SituationVulkanDestroyImage(VkImage image, VmaAllocation allocation) {
+static void _SitRender_VulkanDestroyImage(VkImage image, VmaAllocation allocation) {
     if (image != VK_NULL_HANDLE && sit_render.vk.vma_allocator != VK_NULL_HANDLE) {
         vmaDestroyImage(sit_render.vk.vma_allocator, image, allocation);
     }
@@ -22109,7 +22109,7 @@ static void _SituationVulkanDestroyImage(VkImage image, VmaAllocation allocation
  * @param aspect_flags A bitmask of VkImageAspectFlagBits specifying which aspect of the image the view will access (e.g., VK_IMAGE_ASPECT_COLOR_BIT for color textures, VK_IMAGE_ASPECT_DEPTH_BIT for depth buffers).
  * @return A valid VkImageView handle on success, or VK_NULL_HANDLE on failure.
  */
-static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags) {
+static VkImageView _SitRender_VulkanCreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags) {
     VkImageViewCreateInfo view_info = {0};
     view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_info.image = image;
@@ -22134,9 +22134,9 @@ static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat forma
  * @param code_size Size of the SPIR-V bytecode in bytes.
  * @return A valid VkShaderModule on success, or VK_NULL_HANDLE on failure.
  */
-static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_t code_size) {
+static VkShaderModule _SitRender_VulkanCreateShaderModule(const void* code, size_t code_size) {
     if (!code || code_size == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader code is NULL or size is zero in _SituationVulkanCreateShaderModule.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader code is NULL or size is zero in _SitRender_VulkanCreateShaderModule.");
         return VK_NULL_HANDLE;
     }
 
@@ -22151,7 +22151,7 @@ static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_
     if (result != VK_SUCCESS) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "vkCreateShaderModule failed: VkResult = %d", (int)result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED, err_msg);
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED, err_msg);
         return VK_NULL_HANDLE;
     }
 
@@ -22174,7 +22174,7 @@ static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_
  * @param pVertexAttributeDescriptions A pointer to an array of vertex attribute descriptions.
  * @return A valid VkPipeline handle on success, or VK_NULL_HANDLE on failure.
  */
-static VkPipeline _SituationVulkanCreateGraphicsPipeline(
+static VkPipeline _SitRender_VulkanCreateGraphicsPipeline(
     const void* vs_data, size_t vs_size,
     const void* fs_data, size_t fs_size,
     VkPipelineLayout pipelineLayout,
@@ -22185,11 +22185,11 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     const VkVertexInputAttributeDescription* pVertexAttributeDescriptions)
 {
     // 1. Create Shader Modules from the raw SPIR-V data.
-    VkShaderModule vs_module = _SituationVulkanCreateShaderModule(vs_data, vs_size);
-    VkShaderModule fs_module = _SituationVulkanCreateShaderModule(fs_data, fs_size);
+    VkShaderModule vs_module = _SitRender_VulkanCreateShaderModule(vs_data, vs_size);
+    VkShaderModule fs_module = _SitRender_VulkanCreateShaderModule(fs_data, fs_size);
 
     if (vs_module == VK_NULL_HANDLE || fs_module == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create shader modules from SPIR-V.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create shader modules from SPIR-V.");
         if(vs_module) vkDestroyShaderModule(sit_render.vk.device, vs_module, NULL);
         if(fs_module) vkDestroyShaderModule(sit_render.vk.device, fs_module, NULL);
         return VK_NULL_HANDLE;
@@ -22248,7 +22248,7 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     // 4. Create the final graphics pipeline object.
     VkPipeline pipeline;
     if (vkCreateGraphicsPipelines(sit_render.vk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pipeline) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "vkCreateGraphicsPipelines failed.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "vkCreateGraphicsPipelines failed.");
         pipeline = VK_NULL_HANDLE; // Ensure we return NULL on failure
     }
 
@@ -22292,10 +22292,10 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
 
     // --- 1. Validation ---
     if (!SituationIsInitialized()) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create virtual display");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create virtual display");
     }
     if (sit_render.active_virtual_display_count >= SITUATION_MAX_VIRTUAL_DISPLAYS) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT, "Maximum virtual displays reached");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT, "Maximum virtual displays reached");
     }
 
     // --- 2. Find Free Slot ---
@@ -22336,37 +22336,37 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
 
     // --- Step 1: Create Color Image ---
     if (success) {
-        if (_SituationVulkanCreateImage((uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y, color_format,
+        if (_SitRender_VulkanCreateImage((uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y, color_format,
                                         VK_IMAGE_TILING_OPTIMAL,
                                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                                         VMA_MEMORY_USAGE_GPU_ONLY,
                                         &vd->image, &vd->image_memory) != SITUATION_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create VD color image");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create VD color image");
             success = false;
         }
     }
 
     // --- Step 2: Create Color View ---
     if (success) {
-        vd->image_view = _SituationVulkanCreateImageView(vd->image, color_format, VK_IMAGE_ASPECT_COLOR_BIT);
+        vd->image_view = _SitRender_VulkanCreateImageView(vd->image, color_format, VK_IMAGE_ASPECT_COLOR_BIT);
         if (vd->image_view == VK_NULL_HANDLE) success = false;
     }
 
     // --- Step 3: Create Depth Image ---
     if (success) {
-        if (_SituationVulkanCreateImage((uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y, depth_format,
+        if (_SitRender_VulkanCreateImage((uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y, depth_format,
                                         VK_IMAGE_TILING_OPTIMAL,
                                         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                                         VMA_MEMORY_USAGE_GPU_ONLY,
                                         &vd->depth_image, &vd->depth_image_memory) != SITUATION_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create VD depth image");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create VD depth image");
             success = false;
         }
     }
 
     // --- Step 4: Create Depth View ---
     if (success) {
-        vd->depth_image_view = _SituationVulkanCreateImageView(vd->depth_image, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
+        vd->depth_image_view = _SitRender_VulkanCreateImageView(vd->depth_image, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
         if (vd->depth_image_view == VK_NULL_HANDLE) success = false;
     }
 
@@ -22444,13 +22444,13 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
     // --- Step 8: Allocate Descriptor Set ---
     if (success) {
         // [FIX v2.3.27B] Allocate and capture the pool handle
-        vd->descriptor_set = _SituationVulkanAllocateDescriptorSet(
+        vd->descriptor_set = _SitRender_VulkanAllocateDescriptorSet(
             sit_render.vk.image_sampler_layout, 
             &vd->descriptor_pool // Store pool in the VD struct
         );
 
         if (vd->descriptor_set == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for VD.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for VD.");
             success = false;
         }
     }
@@ -22516,7 +22516,7 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
         glNamedFramebufferRenderbuffer(vd->gl.fbo_id, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, vd->gl.depth_rbo_id);
 
         if (glCheckNamedFramebufferStatus(vd->gl.fbo_id, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_FBO_INCOMPLETE, "Incomplete framebuffer");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_FBO_INCOMPLETE, "Incomplete framebuffer");
             success = false;
         }
     }
@@ -22566,15 +22566,15 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
     
     // [FIX v2.3.27B] Pass the specific pool that owns this descriptor set
     if (vd->descriptor_set != VK_NULL_HANDLE) {
-        _SituationDeferDestroyDescriptorSet(vd->descriptor_set, vd->descriptor_pool);
+        _SitRender_DeferDestroyDescriptorSet(vd->descriptor_set, vd->descriptor_pool);
     }
     
-    if (vd->framebuffer != VK_NULL_HANDLE) _SituationDeferDestroyFramebuffer(vd->framebuffer);
-    if (vd->render_pass != VK_NULL_HANDLE) _SituationDeferDestroyRenderPass(vd->render_pass);
+    if (vd->framebuffer != VK_NULL_HANDLE) _SitRender_DeferDestroyFramebuffer(vd->framebuffer);
+    if (vd->render_pass != VK_NULL_HANDLE) _SitRender_DeferDestroyRenderPass(vd->render_pass);
 
     // Defer images (includes view and sampler for color, just view for depth)
-    _SituationDeferDestroyImage(vd->image, vd->image_memory, vd->image_view, vd->sampler);
-    _SituationDeferDestroyImage(vd->depth_image, vd->depth_image_memory, vd->depth_image_view, VK_NULL_HANDLE);
+    _SitRender_DeferDestroyImage(vd->image, vd->image_memory, vd->image_view, vd->sampler);
+    _SitRender_DeferDestroyImage(vd->depth_image, vd->depth_image_memory, vd->depth_image_view, VK_NULL_HANDLE);
 
 #elif defined(SITUATION_USE_OPENGL)
     if (vd->gl.texture_id != 0) glDeleteTextures(1, &vd->gl.texture_id);
@@ -22645,7 +22645,7 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     // For Vulkan, we must destroy the old sampler and create a new one.
 
     // 1. Defer destruction of the old sampler to avoid stalling.
-    _SituationDeferDestroyImage(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, vd->sampler);
+    _SitRender_DeferDestroyImage(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, vd->sampler);
 
     // 2. Create a new sampler with the correct filter mode.
     VkSamplerCreateInfo sampler_info = {0};
@@ -22661,7 +22661,7 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 
     if (vkCreateSampler(sit_render.vk.device, &sampler_info, NULL, &vd->sampler) != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to re-create sampler for scaling mode change");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to re-create sampler for scaling mode change");
         // The VD is now in a bad state with a destroyed sampler.
         return SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED;
     }
@@ -22698,7 +22698,7 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
  * @param b Pointer to the second `SituationVirtualDisplay*` pointer.
  * @return An integer less than, equal to, or greater than zero if the Z-order of `a` is respectively less than, equal to, or greater than `b`.
  */
-static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
+static int _SitPlatform_SortVirtualDisplaysCallback(const void* a, const void* b) {
     const SituationVirtualDisplay* vdA = *(const SituationVirtualDisplay**)a; // Array of pointers
     const SituationVirtualDisplay* vdB = *(const SituationVirtualDisplay**)b;
     // Invisible displays should effectively be at the "back" or not considered for sorting if filtered earlier
@@ -22758,7 +22758,7 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
         return SITUATION_SUCCESS;
     }
 
-    qsort(visible_vds_to_render, visible_count, sizeof(SituationVirtualDisplay*), _SituationSortVirtualDisplaysCallback);
+    qsort(visible_vds_to_render, visible_count, sizeof(SituationVirtualDisplay*), _SitPlatform_SortVirtualDisplaysCallback);
 
     // --- Backend-Specific Rendering ---
 #if defined(SITUATION_USE_OPENGL)
@@ -22766,7 +22766,7 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
 
     // --- Robust State Backup ---
     _SitGLStateBackup gl_backup;
-    _SitGLBackupState(&gl_backup);
+    _SitRender_GLBackupState(&gl_backup);
 
     // --- OpenGL State Setup for Virtual Display Compositing ---
     glDisable(GL_DEPTH_TEST);
@@ -22868,7 +22868,7 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
     }
 
     // --- Robust State Restoration ---
-    _SitGLRestoreState(&gl_backup);
+    _SitRender_GLRestoreState(&gl_backup);
 
     SIT_CHECK_GL_ERROR();
 #elif defined(SITUATION_USE_VULKAN)
@@ -22959,16 +22959,16 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
             VkImage swapchainImg = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
 
             // 2. Barriers: Prepare Swapchain for Read, CopyTarget for Write
-            _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            _SituationVulkanTransitionImageLayout(vk_cmd, sit_render.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            _SitRender_VulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            _SitRender_VulkanTransitionImageLayout(vk_cmd, sit_render.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
             // 3. Perform Copy
             VkImageCopy region = { .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .extent = {sit_render.vk.swapchain_extent.width, sit_render.vk.swapchain_extent.height, 1} };
             vkCmdCopyImage(vk_cmd, swapchainImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sit_render.vk.screen_copy_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
             // 4. Barriers: Restore Swapchain for Drawing, CopyTarget for Reading
-            _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-            _SituationVulkanTransitionImageLayout(vk_cmd, sit_render.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            _SitRender_VulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            _SitRender_VulkanTransitionImageLayout(vk_cmd, sit_render.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
             // 5. Update Descriptor for Screen Copy (Bind the texture we just filled)
             VkDescriptorImageInfo copy_info = { .sampler = vd->sampler, .imageView = sit_render.vk.screen_copy_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
@@ -23091,7 +23091,7 @@ SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, 
  */
 SITAPI SituationVirtualDisplay* SituationGetVirtualDisplay(int display_id) {
     if (!SituationIsInitialized() || display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "GetVirtualDisplay");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "GetVirtualDisplay");
         return NULL;
     }
     return &sit_render.virtual_display_slots[display_id];
@@ -23187,7 +23187,7 @@ SITAPI void SituationGetVirtualDisplaySize(int display_id, int* width, int* heig
  * @return `false` if the primitive is not a triangle list or if allocation failed.
  */
 #if defined(CGLTF_IMPLEMENTATION)
-static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count) {
+static bool _SitRender_ExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count) {
     if (prim->type != cgltf_primitive_type_triangles) return false;
 
     // 1. Find Accessors
@@ -23299,7 +23299,7 @@ SITAPI SituationError SituationLoadTexture(const char* file_path, bool generate_
         while (node) {
             if (node->texture.slot_index == out_texture->slot_index && node->texture.generation == out_texture->generation) {
                 // Found our node! Update path.
-                node->source_path = _sit_strdup(file_path);
+                node->source_path = _SitUtils_Strdup(file_path);
                 node->mod_time = SituationGetFileModTime(file_path);
                 break;
             }
@@ -23323,12 +23323,12 @@ SITAPI SituationError SituationLoadTexture(const char* file_path, bool generate_
  * @return A valid `SituationModel` handle containing all loaded resources.
  * @return A zeroed handle `{0}` if the file could not be found, parsed, or if `CGLTF_IMPLEMENTATION` is missing.
  *
- * @note This function relies on the helper `_SituationExtractGLTFPrimitive` to handle geometry processing.
+ * @note This function relies on the helper `_SitRender_ExtractGLTFPrimitive` to handle geometry processing.
  * @warning The caller is responsible for destroying the returned model using `SituationUnloadModel` to prevent GPU memory leaks.
  */
 SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* out_model) {
     if (out_model) *out_model = (SituationModel){0};
-    else return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_model cannot be NULL");
+    else return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "out_model cannot be NULL");
 
 #if defined(CGLTF_IMPLEMENTATION)
     SituationModel model = {0};
@@ -23338,12 +23338,12 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
     // 1. Parse the GLTF file using cgltf
     cgltf_result result = cgltf_parse_file(&options, file_path, &data);
     if (result != cgltf_result_success) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Failed to parse GLTF file.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Failed to parse GLTF file.");
     }
     result = cgltf_load_buffers(&options, data, file_path);
     if (result != cgltf_result_success) {
         cgltf_free(data);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Failed to load GLTF buffers.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Failed to load GLTF buffers.");
     }
 
     // 2. Load all textures referenced by the model
@@ -23354,7 +23354,7 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
 
         if (!model.all_model_textures) {
             cgltf_free(data);
-            return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadModel: Failed to allocate textures array.");
+            return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadModel: Failed to allocate textures array.");
         }
         char* base_path = SituationGetBasePathFromFile(file_path);
         for (int i = 0; i < (int)data->textures_count; ++i) {
@@ -23381,7 +23381,7 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
     if (model.mesh_count > 0) {
         model.meshes = SIT_CALLOC(model.mesh_count, sizeof(SituationModelMesh));
         if (!model.meshes) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadModel: Failed to allocate meshes array.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadModel: Failed to allocate meshes array.");
             cgltf_free(data);
             /* Clean up textures allocated in step 2 */
             if (model.all_model_textures) {
@@ -23411,8 +23411,8 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
                 int index_count = 0;
 
                 // --- Extract Data using Helper ---
-				// function _SituationExtractGLTFPrimitive bound by CGLTF_IMPLEMENTATION
-                if (_SituationExtractGLTFPrimitive(prim, &vertex_data, &vertex_count, &index_data, &index_count)) {
+				// function _SitRender_ExtractGLTFPrimitive bound by CGLTF_IMPLEMENTATION
+                if (_SitRender_ExtractGLTFPrimitive(prim, &vertex_data, &vertex_count, &index_data, &index_count)) {
 
                     // Create GPU Mesh (Stride is 12 floats: 3 Pos + 3 Norm + 4 Tan + 2 UV)
                     sit_mesh->gpu_mesh = SituationCreateMesh(
@@ -23477,7 +23477,7 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
         _SituationModelNode* node = (_SituationModelNode*)SIT_MALLOC(sizeof(_SituationModelNode));
         if (node) {
             node->model = model; // Copy struct by value (contains pointers to meshes)
-            node->source_path = _sit_strdup(file_path);
+            node->source_path = _SitUtils_Strdup(file_path);
             node->mod_time = SituationGetFileModTime(file_path);
             mtx_lock(&sit_render.resource_registry_mutex);
             node->next = sit_render.all_models;
@@ -23490,7 +23490,7 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
     return SITUATION_SUCCESS;
 #else
     (void)file_path;
-    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Model loading not available. Please implement cgltf.h.");
+    return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Model loading not available. Please implement cgltf.h.");
 #endif
 }
 
@@ -23647,7 +23647,7 @@ SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model,
  */
 SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path) {
 #if !defined(CGLTF_WRITE_H)
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationSaveModelAsGltf requires CGLTF_WRITE_H to be included.");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationSaveModelAsGltf requires CGLTF_WRITE_H to be included.");
     return false;
 #elif defined(CGLTF_IMPLEMENTATION)
     if (model.id == 0) return false;
@@ -23695,7 +23695,7 @@ SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path
     return result == cgltf_result_success;
 #else
     (void)model; (void)file_path;
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Model saving not available. Please implement cgltf.h and cgltf_write.h.");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Model saving not available. Please implement cgltf.h and cgltf_write.h.");
     return false;
 #endif
 }
@@ -23727,8 +23727,8 @@ SITAPI SituationError SituationLoadShader(const char* vs_path, const char* fs_pa
     memset(out_shader, 0, sizeof(SituationShader));
 
     // --- 1. Pre-condition Checks ---
-    if (!SituationIsInitialized()) return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader.");
-    if (!vs_path || !fs_path) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader paths cannot be NULL.");
+    if (!SituationIsInitialized()) return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader.");
+    if (!vs_path || !fs_path) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader paths cannot be NULL.");
 
     // --- 2. Load Vertex Shader Source from File ---
     char* vs_code = SituationLoadFileText(vs_path);
@@ -23764,8 +23764,8 @@ SITAPI SituationError SituationLoadShader(const char* vs_path, const char* fs_pa
         while (node) {
             if (node->shader.id == out_shader->id) {
                 // Found our node! Update paths.
-                node->vs_path = _sit_strdup(vs_path);
-                node->fs_path = _sit_strdup(fs_path);
+                node->vs_path = _SitUtils_Strdup(vs_path);
+                node->fs_path = _SitUtils_Strdup(fs_path);
                 node->vs_mod_time = SituationGetFileModTime(vs_path);
                 node->fs_mod_time = SituationGetFileModTime(fs_path);
                 break;
@@ -23803,8 +23803,8 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
     if (!out_shader) return SITUATION_ERROR_INVALID_PARAM;
     memset(out_shader, 0, sizeof(SituationShader));
 
-    if (!SituationIsInitialized()) return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader.");
-    if (!vs_code || !fs_code) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader source code cannot be NULL");
+    if (!SituationIsInitialized()) return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot load shader.");
+    if (!vs_code || !fs_code) return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader source code cannot be NULL");
 
     SituationShader shader = {0};
 
@@ -23812,8 +23812,8 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     // --- PATH A: Unified SPIR-V Pipeline (Vulkan or modern OpenGL) ---
     // Use descriptive but generic names for memory-based compilation errors.
-    _SituationSpirvBlob vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(vs_code, "memory.vert", shaderc_vertex_shader);
-    _SituationSpirvBlob fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(fs_code, "memory.frag", shaderc_fragment_shader);
+    _SituationSpirvBlob vs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(vs_code, "memory.vert", shaderc_vertex_shader);
+    _SituationSpirvBlob fs_spirv = _SitRender_VulkanCompileGLSLtoSPIRV(fs_code, "memory.frag", shaderc_fragment_shader);
 
     if (vs_spirv.data && fs_spirv.data) {
     #if defined(SITUATION_USE_VULKAN)
@@ -23830,7 +23830,7 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
                 { .binding = 0, .location = SIT_ATTR_TANGENT,    .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 6 * sizeof(float) },
                 { .binding = 0, .location = SIT_ATTR_TEXCOORD_0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = 10 * sizeof(float) }
             };
-            shader.vk_pipeline = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, shader.vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr);
+            shader.vk_pipeline = _SitRender_VulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, shader.vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr);
 
             // 2. Legacy Pipeline (32-byte stride: Pos, Norm, UV)
             VkVertexInputBindingDescription binding_desc_legacy = { .binding = 0, .stride = (3 + 3 + 2) * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
@@ -23839,7 +23839,7 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
                 { .binding = 0, .location = SIT_ATTR_NORMAL,     .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 3 * sizeof(float) },
                 { .binding = 0, .location = SIT_ATTR_TEXCOORD_0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = 6 * sizeof(float) }
             };
-            shader.vk_pipeline_legacy = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, shader.vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy);
+            shader.vk_pipeline_legacy = _SitRender_VulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, shader.vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy);
 
             if (shader.vk_pipeline != VK_NULL_HANDLE && shader.vk_pipeline_legacy != VK_NULL_HANDLE) {
                 shader.id = (uint32_t)(uintptr_t)shader.vk_pipeline;
@@ -23851,30 +23851,30 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
                 shader.vk_pipeline_layout = VK_NULL_HANDLE;
             }
         } else {
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create pipeline layout for user shader.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create pipeline layout for user shader.");
         }
     #elif defined(SITUATION_USE_OPENGL)
         SituationError err;
-        shader.gl_program_id = _SituationCreateGLShaderProgramFromSpirv(&vs_spirv, &fs_spirv, &err);
+        shader.gl_program_id = _SitRender_CreateGLShaderProgramFromSpirv(&vs_spirv, &fs_spirv, &err);
         if(err == SITUATION_SUCCESS) {
             shader.id = shader.gl_program_id;
         }
     #endif
     }
-    _SituationFreeSpirvBlob(&vs_spirv);
-    _SituationFreeSpirvBlob(&fs_spirv);
+    _SitCore_FreeSpirvBlob(&vs_spirv);
+    _SitCore_FreeSpirvBlob(&fs_spirv);
 #else
     // --- PATH B: Legacy OpenGL GLSL Source Pipeline ---
     #if defined(SITUATION_USE_OPENGL)
         SituationError err;
-        shader.gl_program_id = _SituationCreateGLShaderProgram(vs_code, fs_code, &err);
+        shader.gl_program_id = _SitRender_CreateGLShaderProgram(vs_code, fs_code, &err);
         if (err == SITUATION_SUCCESS) {
             shader.id = shader.gl_program_id;
             // --- Create the uniform map for this shader ---
-            shader.uniform_map = _sit_uniform_map_create();
+            shader.uniform_map = _SitRender_Uniform_map_create();
         }
     #elif defined(SITUATION_USE_VULKAN)
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Loading GLSL from memory requires the shader compiler to be enabled for the Vulkan backend.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Loading GLSL from memory requires the shader compiler to be enabled for the Vulkan backend.");
     #endif
 #endif
 
@@ -23888,7 +23888,7 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
             sit_render.all_shaders = node;
             mtx_unlock(&sit_render.resource_registry_mutex);
         } else {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for shader");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Resource tracking node for shader");
             SituationUnloadShader(&shader); // Clean up the GPU resource we just made
             return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
@@ -23910,7 +23910,7 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
  *          4. Invalidates the user's handle by zeroing it out to prevent accidental use of stale data.
  *
  * @par Backend-Specific Behavior
- * - **OpenGL:** Destroys the internal uniform location cache (`_sit_uniform_map_destroy`), then deletes the shader program object (`glDeleteProgram`).
+ * - **OpenGL:** Destroys the internal uniform location cache (`_SitRender_Uniform_map_destroy`), then deletes the shader program object (`glDeleteProgram`).
  * - **Vulkan:** Waits for the GPU to become idle to ensure the pipeline is not in use, then destroys both the `VkPipeline` and its associated `VkPipelineLayout`.
  *
  * @param[in,out] shader A pointer to the `SituationShader` handle to be destroyed. The contents of the struct will be zeroed out, invalidating the handle for future use.
@@ -23953,7 +23953,7 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
 #if defined(SITUATION_USE_OPENGL)
     // For OpenGL, we must free the CPU-side uniform map and the GPU program object.
     if (shader->uniform_map) {
-        _sit_uniform_map_destroy(shader->uniform_map);
+        _SitRender_Uniform_map_destroy(shader->uniform_map);
     }
     if (glIsProgram(shader->id)) {
         glDeleteProgram(shader->id);
@@ -23962,9 +23962,9 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
 
 #elif defined(SITUATION_USE_VULKAN)
     // Defer destruction to Graveyard
-    _SituationDeferDestroyPipeline(shader->vk_pipeline, shader->vk_pipeline_layout);
+    _SitRender_DeferDestroyPipeline(shader->vk_pipeline, shader->vk_pipeline_layout);
     if (shader->vk_pipeline_legacy != VK_NULL_HANDLE) {
-        _SituationDeferDestroyPipeline(shader->vk_pipeline_legacy, VK_NULL_HANDLE); // Layout is shared, already deferred
+        _SitRender_DeferDestroyPipeline(shader->vk_pipeline_legacy, VK_NULL_HANDLE); // Layout is shared, already deferred
     }
 #endif
 
@@ -24004,18 +24004,18 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
 SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const char* uniform_name, const void* data, SituationUniformType type) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (shader.id == 0 || !uniform_name || !data) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid shader, name, or data for SetShaderUniform.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid shader, name, or data for SetShaderUniform.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
 #if defined(SITUATION_USE_OPENGL)
     if (!shader.uniform_map) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Shader uniform map not initialized.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Shader uniform map not initialized.");
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
 
     // 1. Check the cache (hash map) first
-    GLint location = _sit_uniform_map_get(shader.uniform_map, uniform_name);
+    GLint location = _SitRender_Uniform_map_get(shader.uniform_map, uniform_name);
 
     // 2. If not in cache, query OpenGL and add it to the cache
     if (location == -1) {
@@ -24025,7 +24025,7 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
         location = glGetUniformLocation(shader.id, uniform_name);
 
         if (location != -1) {
-            _sit_uniform_map_set(shader.uniform_map, uniform_name, location);
+            _SitRender_Uniform_map_set(shader.uniform_map, uniform_name, location);
         } else {
             // This is not a fatal library error. The shader simply doesn't have this uniform.
             // Silently ignoring it is often the desired behavior.
@@ -24054,11 +24054,11 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
         default: return SITUATION_ERROR_INVALID_PARAM;
     }
 
-    void* ptr = _SitGLSoftDataPush(buf, data, data_size);
+    void* ptr = _SitRender_GLSoftDataPush(buf, data, data_size);
     if (!ptr) return SITUATION_ERROR_MEMORY_ALLOCATION;
     size_t offset = (size_t)((uint8_t*)ptr - buf->data_buffer);
 
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_UNIFORM);
+    SitCommandPacket* p = _SitRender_GLSoftCmdPush(buf, SIT_OP_SET_UNIFORM);
     if (p) {
         p->args.set_uniform.shader_id = shader.id;
         p->args.set_uniform.location = location;
@@ -24069,7 +24069,7 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
 #elif defined(SITUATION_USE_VULKAN)
     // Named uniforms are not the primary way of passing data in Vulkan. Push constants and UBOs are preferred.
     // This function is considered an OpenGL-specific convenience.
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Use SituationCmdSetPushConstant or UBOs for Vulkan.");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Use SituationCmdSetPushConstant or UBOs for Vulkan.");
     return SITUATION_ERROR_NOT_IMPLEMENTED;
 #endif
 
@@ -24172,8 +24172,8 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
     while (old_node) {
         if (old_node->shader.id == shader->id) {
             if (old_node->vs_path && old_node->fs_path) {
-                vs_path = _sit_strdup(old_node->vs_path);
-                fs_path = _sit_strdup(old_node->fs_path);
+                vs_path = _SitUtils_Strdup(old_node->vs_path);
+                fs_path = _SitUtils_Strdup(old_node->fs_path);
             }
             break;
         }
@@ -24181,7 +24181,7 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
     }
 
     if (!vs_path || !fs_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Original file paths not found (shader loaded from memory?)");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Original file paths not found (shader loaded from memory?)");
         if(vs_path) SIT_FREE(vs_path); if(fs_path) SIT_FREE(fs_path);
         return false;
     }
@@ -24196,7 +24196,7 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
 
     if (err != SITUATION_SUCCESS || new_shader.id == 0) {
         // Load failed. The old shader remains active and untouched.
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, "Hot-reload compilation failed. Keeping old shader.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, "Hot-reload compilation failed. Keeping old shader.");
         return false;
     }
 
@@ -24230,10 +24230,10 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
 
     // 3b. Destroy OLD resources manually (bypassing SituationUnloadShader to keep the node)
     #if defined(SITUATION_USE_OPENGL)
-        if (shader->uniform_map) _sit_uniform_map_destroy(shader->uniform_map);
+        if (shader->uniform_map) _SitRender_Uniform_map_destroy(shader->uniform_map);
         if (glIsProgram(shader->id)) glDeleteProgram(shader->id);
     #elif defined(SITUATION_USE_VULKAN)
-        _SituationDeferDestroyPipeline(shader->vk_pipeline, shader->vk_pipeline_layout);
+        _SitRender_DeferDestroyPipeline(shader->vk_pipeline, shader->vk_pipeline_layout);
     #endif
 
     // 3c. Update handles
@@ -24269,7 +24269,7 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     if (!texture) return false;
 
     // 1. Get current slot
-    _SituationTextureSlot* slot = _SitGetTextureSlot(*texture);
+    _SituationTextureSlot* slot = _SitRender_GetTextureSlot(*texture);
     if (!slot) return false;
 
     // 2. Find path (from tracking list)
@@ -24291,17 +24291,17 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     // 4. DESTROY OLD GPU RESOURCES (Defer to Graveyard)
     // We do NOT mark the slot as inactive. We keep ownership of the slot.
 #if defined(SITUATION_USE_VULKAN)
-    _SituationDeferDestroyImage(slot->image, slot->allocation, slot->image_view, slot->sampler);
+    _SitRender_DeferDestroyImage(slot->image, slot->allocation, slot->image_view, slot->sampler);
     // Note: We KEEP the descriptor set and pool! We just update the descriptor.
     // This is even better than destroying it.
 #elif defined(SITUATION_USE_OPENGL)
-    _SitGLDeferDestroyTexture(slot->gl_texture_id);
+    _SitRender_GLDeferDestroyTexture(slot->gl_texture_id);
 #endif
 
     // 5. CREATE NEW GPU RESOURCES (Into the SAME slot)
 #if defined(SITUATION_USE_VULKAN)
     // Re-create image (Using UNORM to match previous behavior, 1 mip level for reload simplicity)
-    SituationError img_err = _SituationVulkanCreateImage(new_img.width, new_img.height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+    SituationError img_err = _SitRender_VulkanCreateImage(new_img.width, new_img.height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &slot->image, &slot->allocation);
     if (img_err != SITUATION_SUCCESS) {
@@ -24310,7 +24310,7 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     }
 
     // Re-create Image View
-    slot->image_view = _SituationVulkanCreateImageView(slot->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+    slot->image_view = _SitRender_VulkanCreateImageView(slot->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
     if (slot->image_view == VK_NULL_HANDLE) {
         SituationUnloadImage(new_img);
         return false;
@@ -24342,11 +24342,11 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     }
 
     // Execute Transfer (Synchronous)
-    VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
-    _SituationVulkanTransitionImageLayout(cmd, slot->image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    _SituationVulkanCopyBufferToImage(cmd, staging.vk_buffer, slot->image, new_img.width, new_img.height);
-    _SituationVulkanTransitionImageLayout(cmd, slot->image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    _SituationVulkanEndSingleTimeCommands(cmd);
+    VkCommandBuffer cmd = _SitRender_VulkanBeginSingleTimeCommands();
+    _SitRender_VulkanTransitionImageLayout(cmd, slot->image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    _SitRender_VulkanCopyBufferToImage(cmd, staging.vk_buffer, slot->image, new_img.width, new_img.height);
+    _SitRender_VulkanTransitionImageLayout(cmd, slot->image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    _SitRender_VulkanEndSingleTimeCommands(cmd);
 
     // Cleanup Staging
     SituationDestroyBuffer(&staging);
@@ -24419,14 +24419,14 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     _SituationModelNode* old_node = sit_render.all_models;
     while (old_node) {
         if (old_node->model.id == model->id) {
-            if (old_node->source_path) path = _sit_strdup(old_node->source_path);
+            if (old_node->source_path) path = _SitUtils_Strdup(old_node->source_path);
             break;
         }
         old_node = old_node->next;
     }
 
     if (!path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Model path not found.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Model path not found.");
         return false;
     }
 
@@ -24436,7 +24436,7 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     SIT_FREE(path);
 
     if (err != SITUATION_SUCCESS || new_model.id == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Hot-reload model failed (file not found or parse error). Keeping old model.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Hot-reload model failed (file not found or parse error). Keeping old model.");
         return false;
     }
 
@@ -24513,7 +24513,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     while (old_node) {
         if (old_node->pipeline.id == pipeline->id) {
             if (old_node->source_path) {
-                original_path = _sit_strdup(old_node->source_path);
+                original_path = _SitUtils_Strdup(old_node->source_path);
                 original_layout = old_node->layout_type;
             }
             break;
@@ -24522,7 +24522,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     }
 
     if (!original_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Pipeline was not loaded from a file (or path wasn't tracked).");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Reload failed: Pipeline was not loaded from a file (or path wasn't tracked).");
         return false;
     }
 
@@ -24532,7 +24532,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     SIT_FREE(original_path);
 
     if (err != SITUATION_SUCCESS || new_pipeline.id == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_COMPUTE_PIPELINE_CREATION_FAILED, "Hot-reload compilation failed. Keeping old pipeline.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_COMPUTE_PIPELINE_CREATION_FAILED, "Hot-reload compilation failed. Keeping old pipeline.");
         return false;
     }
 
@@ -24564,7 +24564,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     #if defined(SITUATION_USE_OPENGL)
         if (glIsProgram(pipeline->gl_program_id)) glDeleteProgram(pipeline->gl_program_id);
     #elif defined(SITUATION_USE_VULKAN)
-        _SituationDeferDestroyPipeline(pipeline->vk_pipeline, pipeline->vk_pipeline_layout);
+        _SitRender_DeferDestroyPipeline(pipeline->vk_pipeline, pipeline->vk_pipeline_layout);
     #endif
 
     // 4c. Update handles
@@ -24587,7 +24587,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
  *       zero overhead in shipped applications, unless SITUATION_FORCE_HOTRELOAD is defined.
  */
 // [v2.3.34] Hot-Reload Logic (Running on I/O Thread)
-static void _SituationPerformHotReloadPass(void) {
+static void _SitRender_PerformHotReloadPass(void) {
 #if defined(NDEBUG) && !defined(SITUATION_FORCE_HOTRELOAD)
     // Production Optimization: Compile out completely in Release builds.
     return;
@@ -25111,7 +25111,7 @@ SITAPI int SituationGetMonitorCount(void) {
     if (!SituationIsInitialized()) return 0;
     // Ensure cache is populated if it hasn't been already
     if (sit_gs.cached_physical_display_count == 0) {
-        _SituationCachePhysicalDisplays();
+        _SitPlatform_CachePhysicalDisplays();
     }
     return sit_gs.cached_physical_display_count;
 }
@@ -25134,7 +25134,7 @@ SITAPI Vector2 SituationGetMonitorPosition(int monitor_id) {
     Vector2 pos = {0.0f, 0.0f};
     if (!SituationIsInitialized()) return pos;
 
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
+    if (sit_gs.cached_physical_display_count == 0) _SitPlatform_CachePhysicalDisplays();
     if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return pos;
 
     SituationDisplayInfo* disp = &sit_gs.cached_physical_displays_array[monitor_id];
@@ -25154,7 +25154,7 @@ SITAPI Vector2 SituationGetMonitorPosition(int monitor_id) {
  */
 SITAPI int SituationGetMonitorWidth(int monitor_id) {
     if (!SituationIsInitialized()) return 0;
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
+    if (sit_gs.cached_physical_display_count == 0) _SitPlatform_CachePhysicalDisplays();
     if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return 0;
     // This data is already in our excellent cache.
     return sit_gs.cached_physical_displays_array[monitor_id].current_mode.width;
@@ -25167,7 +25167,7 @@ SITAPI int SituationGetMonitorWidth(int monitor_id) {
  */
 SITAPI int SituationGetMonitorHeight(int monitor_id) {
     if (!SituationIsInitialized()) return 0;
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
+    if (sit_gs.cached_physical_display_count == 0) _SitPlatform_CachePhysicalDisplays();
     if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return 0;
     return sit_gs.cached_physical_displays_array[monitor_id].current_mode.height;
 }
@@ -25179,7 +25179,7 @@ SITAPI int SituationGetMonitorHeight(int monitor_id) {
  */
 SITAPI int SituationGetMonitorPhysicalWidth(int monitor_id) {
     if (!SituationIsInitialized()) return 0;
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
+    if (sit_gs.cached_physical_display_count == 0) _SitPlatform_CachePhysicalDisplays();
     if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return 0;
 
     SituationDisplayInfo* disp = &sit_gs.cached_physical_displays_array[monitor_id];
@@ -25198,7 +25198,7 @@ SITAPI int SituationGetMonitorPhysicalWidth(int monitor_id) {
  */
 SITAPI int SituationGetMonitorPhysicalHeight(int monitor_id) {
     if (!SituationIsInitialized()) return 0;
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
+    if (sit_gs.cached_physical_display_count == 0) _SitPlatform_CachePhysicalDisplays();
     if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return 0;
 
     SituationDisplayInfo* disp = &sit_gs.cached_physical_displays_array[monitor_id];
@@ -25217,7 +25217,7 @@ SITAPI int SituationGetMonitorPhysicalHeight(int monitor_id) {
  */
 SITAPI int SituationGetMonitorRefreshRate(int monitor_id) {
     if (!SituationIsInitialized()) return 0;
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
+    if (sit_gs.cached_physical_display_count == 0) _SitPlatform_CachePhysicalDisplays();
     if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return 0;
     return sit_gs.cached_physical_displays_array[monitor_id].current_mode.refresh_rate;
 }
@@ -25229,7 +25229,7 @@ SITAPI int SituationGetMonitorRefreshRate(int monitor_id) {
  */
 SITAPI const char* SituationGetMonitorName(int monitor_id) {
     if (!SituationIsInitialized()) return "N/A";
-    if (sit_gs.cached_physical_display_count == 0) _SituationCachePhysicalDisplays();
+    if (sit_gs.cached_physical_display_count == 0) _SitPlatform_CachePhysicalDisplays();
     if (monitor_id < 0 || monitor_id >= sit_gs.cached_physical_display_count) return "Invalid ID";
     return sit_gs.cached_physical_displays_array[monitor_id].name;
 }
@@ -25337,7 +25337,7 @@ SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
                 if (primary && mode) {
                     glfwSetWindowMonitor(sit_gs.sit_glfw_window, primary, 0, 0, mode->width, mode->height, mode->refreshRate);
                 } else {
-                     _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "Cannot enter fullscreen, primary monitor info unavailable.");
+                     _SitCore_SetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "Cannot enter fullscreen, primary monitor info unavailable.");
                      // Potentially skip fullscreen attempt or return error
                 }
             }
@@ -25408,7 +25408,7 @@ SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
     // Call framebuffer size callback manually to update viewport and projection immediately after potential size/monitor changes
     int fb_w, fb_h;
     glfwGetFramebufferSize(sit_gs.sit_glfw_window, &fb_w, &fb_h);
-    _SituationGLFWFramebufferSizeCallback(sit_gs.sit_glfw_window, fb_w, fb_h);
+    _SitRender_GLFWFramebufferSizeCallback(sit_gs.sit_glfw_window, fb_w, fb_h);
 
     return SITUATION_SUCCESS;
 }
@@ -25489,7 +25489,7 @@ SITAPI uint32_t SituationGetCurrentActualWindowStateFlags(void) {
 /**
  * @brief Pauses the library's internal, time-dependent subsystems.
  * @details This function sets an internal flag that signals the application is in a paused state. Its primary effect is to pause the audio device, stopping all sound playback.
- *          This function is called automatically when the window is minimized (via the `_SituationGLFWWindowIconifyCallback`) and can also be called manually by the user to implement an in-game pause menu or similar functionality.
+ *          This function is called automatically when the window is minimized (via the `_SitRender_GLFWWindowIconifyCallback`) and can also be called manually by the user to implement an in-game pause menu or similar functionality.
  *
  * @note This function only affects library subsystems. It does not stop the main application loop from running. It is the developer's responsibility to check `SituationIsAppPaused()` in their main loop and halt their own game logic and updates accordingly.
  *
@@ -25565,11 +25565,11 @@ SITAPI SituationError SituationLoadImage(const char *fileName, SituationImage* o
     // We force 4 channels (RGBA) for consistency across the library.
     out_image->data = stbi_load(fileName, &out_image->width, &out_image->height, &channels, 4);
     if (out_image->data == NULL) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to load image file or format not supported.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to load image file or format not supported.");
     }
     out_image->channels = 4;
 #else
-    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image loading not available. Please implement stb_image.h.");
+    return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image loading not available. Please implement stb_image.h.");
 #endif
     return SITUATION_SUCCESS;
 }
@@ -25599,11 +25599,11 @@ SITAPI SituationError SituationLoadImageFromMemory(const char *fileType, const u
     int channels;
     out_image->data = stbi_load_from_memory(fileData, dataSize, &out_image->width, &out_image->height, &channels, 4);
     if (out_image->data == NULL) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Failed to load image from memory or format not supported.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Failed to load image from memory or format not supported.");
     }
     out_image->channels = 4;
 #else
-    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image loading not available. Please implement stb_image.h.");
+    return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image loading not available. Please implement stb_image.h.");
 #endif
     return SITUATION_SUCCESS;
 }
@@ -25659,17 +25659,17 @@ SITAPI SituationError SituationExportImage(SituationImage image, const char *fil
     bool success = false;
 
     // Use helper here
-    if (ext != NULL && _sit_strcasecmp(ext, ".png") == 0) {
+    if (ext != NULL && _SitUtils_Strcasecmp(ext, ".png") == 0) {
 #if defined(STB_IMAGE_WRITE_IMPLEMENTATION)
         success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, image.width * 4) != 0);
 #else
-        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG export not available. Please implement stb_image_write.h.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG export not available. Please implement stb_image_write.h.");
 #endif
     // Use helper here
-    } else if (ext != NULL && _sit_strcasecmp(ext, ".bmp") == 0) {
-        success = _SituationSaveImageBMP(fileName, &image);
+    } else if (ext != NULL && _SitUtils_Strcasecmp(ext, ".bmp") == 0) {
+        success = _SitRender_SaveImageBMP(fileName, &image);
     } else {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported image export format. Use .png or .bmp.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported image export format. Use .png or .bmp.");
     }
     return success ? SITUATION_SUCCESS : SITUATION_ERROR_FILE_WRITE_FAILED;
 }
@@ -25693,7 +25693,7 @@ SITAPI SituationError SituationCreateImage(int width, int height, int channels, 
     out_image->data = SIT_MALLOC(size);
 
     if (!out_image->data) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationCreateImage failed");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationCreateImage failed");
     }
     return SITUATION_SUCCESS;
 }
@@ -25787,7 +25787,7 @@ SITAPI SituationError SituationImageCopy(SituationImage image, SituationImage* o
         out_image->width = image.width;
         out_image->height = image.height;
     } else {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Image copy failed");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Image copy failed");
     }
     return SITUATION_SUCCESS;
 }
@@ -26044,7 +26044,7 @@ SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHei
     // 2. --- Allocate Memory for the New Image ---
     unsigned char *newData = (unsigned char*)SIT_MALLOC((size_t)newWidth * (size_t)newHeight * 4);
     if (!newData) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Image resize buffer");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Image resize buffer");
         return;
     }
 
@@ -26071,11 +26071,11 @@ SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHei
         image->height = newHeight;
     } else {
         // The resize failed. Clean up and leave the original image untouched.
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "stb_image_resize failed.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "stb_image_resize failed.");
         SIT_FREE(newData);
     }
 #else
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image resizing not available. Please implement stb_image_resize.h.");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image resizing not available. Please implement stb_image_resize.h.");
 #endif
 }
 
@@ -26431,7 +26431,7 @@ SITAPI SituationError SituationLoadFont(const char *fileName, SituationFont* out
     FILE *fontFile = fopen(fileName, "rb");
 
     if (!fontFile) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "SituationLoadFont: Failed to open font file.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "SituationLoadFont: Failed to open font file.");
     }
 
     fseek(fontFile, 0, SEEK_END);
@@ -26461,7 +26461,7 @@ SITAPI SituationError SituationLoadFont(const char *fileName, SituationFont* out
         // The font file is invalid or not a TrueType font.
         SIT_FREE(info);
         SIT_FREE(fontBuffer);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFont: Failed to parse TrueType/OpenType data.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFont: Failed to parse TrueType/OpenType data.");
     }
 
     out_font->fontData = fontBuffer;
@@ -26491,7 +26491,7 @@ SITAPI SituationError SituationLoadFontFromMemory(const void* data, int dataSize
     // This ensures SituationUnloadFont() can safely SIT_FREE(font.fontData) regardless of where the original data came from.
     out_font->fontData = SIT_MALLOC(dataSize);
     if (!out_font->fontData) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate buffer copy.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate buffer copy.");
     }
     memcpy(out_font->fontData, data, dataSize);
 
@@ -26499,7 +26499,7 @@ SITAPI SituationError SituationLoadFontFromMemory(const void* data, int dataSize
     out_font->stbFontInfo = SIT_MALLOC(sizeof(stbtt_fontinfo));
     if (!out_font->stbFontInfo) {
         SIT_FREE(out_font->fontData);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate font info.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationLoadFontFromMemory: Failed to allocate font info.");
     }
 
     // 3. Initialize stb_truetype.
@@ -26507,7 +26507,7 @@ SITAPI SituationError SituationLoadFontFromMemory(const void* data, int dataSize
     if (!stbtt_InitFont((stbtt_fontinfo*)out_font->stbFontInfo, (unsigned char*)out_font->fontData, 0)) {
         SIT_FREE(out_font->stbFontInfo);
         SIT_FREE(out_font->fontData);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
     }
 
     return SITUATION_SUCCESS;
@@ -26561,7 +26561,7 @@ SITAPI SituationError SituationBakeFontAtlas(SituationFont* font, float fontSize
     if (res <= 0) {
         SIT_FREE(bitmap);
         SIT_FREE(font->glyph_info);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED, "Font atlas bake failed (texture too small?)");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED, "Font atlas bake failed (texture too small?)");
     }
 
     // 4. Convert 1-channel bitmap to 4-channel RGBA for SituationCreateTexture
@@ -26591,7 +26591,7 @@ SITAPI SituationError SituationBakeFontAtlas(SituationFont* font, float fontSize
 
     return (font->atlas_texture.generation != 0);
 #else
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationBakeFontAtlas requires STB Truetype.");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationBakeFontAtlas requires STB Truetype.");
     return false;
 #endif
 }
@@ -26627,7 +26627,7 @@ SITAPI void SituationUnloadFont(SituationFont font) {
  *
  * @see SituationExportImage(), SituationTakeScreenshot(), SituationSaveFileData()
  */
-static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* image) {
+static bool _SitRender_SaveImageBMP(const char* fileName, const SituationImage* image) {
     if (!fileName || !image || !image->data) return false;
 
     int imageSize = image->width * image->height * 4;
@@ -26674,7 +26674,7 @@ static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* i
     // Create a single buffer for the entire file
     unsigned char *fileBuffer = (unsigned char *)SIT_MALLOC(fileSize);
     if (!fileBuffer) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "BMP file buffer");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "BMP file buffer");
         return false;
     }
 
@@ -26699,7 +26699,7 @@ static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* i
     SIT_FREE(fileBuffer);
 
     if (!success) {
-        _SituationSetFilesystemError("Failed to save BMP file data to disk", fileName, SITUATION_ERROR_FILE_WRITE_FAILED);
+        _SitFS_SetFilesystemError("Failed to save BMP file data to disk", fileName, SITUATION_ERROR_FILE_WRITE_FAILED);
     }
     return success;
 }
@@ -27426,7 +27426,7 @@ typedef struct {
  * @param input The input audio sample (normalized float).
  * @return The processed output sample.
  */
-static float _sit_reverb_comb_process(SituationReverbComb* comb, float input) {
+static float _SitAudio_Reverb_comb_process(SituationReverbComb* comb, float input) {
     float output = comb->buffer[comb->cursor];
     comb->filter_store = (output * (1.0f - comb->damp)) + (comb->filter_store * comb->damp);
     comb->buffer[comb->cursor] = input + (comb->filter_store * comb->feedback);
@@ -27444,7 +27444,7 @@ static float _sit_reverb_comb_process(SituationReverbComb* comb, float input) {
  * @param input The input audio sample (normalized float).
  * @return The processed output sample.
  */
-static float _sit_reverb_allpass_process(SituationReverbAllPass* ap, float input) {
+static float _SitAudio_Reverb_allpass_process(SituationReverbAllPass* ap, float input) {
     float buffered = ap->buffer[ap->cursor];
     float output = -input + buffered;
     ap->buffer[ap->cursor] = input + (buffered * ap->feedback);
@@ -27459,7 +27459,7 @@ static float _sit_reverb_allpass_process(SituationReverbAllPass* ap, float input
  *
  * @param state_ptr A void pointer to the `SituationReverbState` struct to destroy.
  */
-static void _SituationUninitReverb(void* state_ptr) {
+static void _SitAudio_UninitReverb(void* state_ptr) {
     if (!state_ptr) return;
     SituationReverbState* rev = (SituationReverbState*)state_ptr;
     for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) SIT_FREE(rev->combs[i].buffer);
@@ -27476,7 +27476,7 @@ static void _SituationUninitReverb(void* state_ptr) {
  * @param sample_rate The sample rate of the audio context (e.g., 48000).
  * @return A void pointer to the opaque `SituationReverbState` struct, or NULL on allocation failure.
  */
-static void* _SituationInitReverb(uint32_t sample_rate) {
+static void* _SitAudio_InitReverb(uint32_t sample_rate) {
     SituationReverbState* rev = (SituationReverbState*)SIT_CALLOC(1, sizeof(SituationReverbState));
     if (!rev) return NULL;
 
@@ -27521,7 +27521,7 @@ static void* _SituationInitReverb(uint32_t sample_rate) {
  * @param frameCount The number of frames to process.
  * @param channels The number of channels (must be uniform for input/output).
  */
-static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels) {
+static void _SitAudio_ProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels) {
     if (!state_ptr) return;
     SituationReverbState* rev = (SituationReverbState*)state_ptr;
 
@@ -27540,11 +27540,11 @@ static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float
 
         float out = 0.0f;
         for(int j=0; j<SIT_REVERB_COMB_COUNT; ++j) {
-            out += _sit_reverb_comb_process(&rev->combs[j], in_sample);
+            out += _SitAudio_Reverb_comb_process(&rev->combs[j], in_sample);
         }
 
         for(int j=0; j<SIT_REVERB_ALLPASS_COUNT; ++j) {
-            out = _sit_reverb_allpass_process(&rev->allpasses[j], out);
+            out = _SitAudio_Reverb_allpass_process(&rev->allpasses[j], out);
         }
 
         // Apply Wet/Dry mix
@@ -27891,7 +27891,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
             float* pIn = decoder_buffer; float* pOut = effects_buffer;
             if (sound->effects.filter_enabled) { ma_biquad_process_pcm_frames(&sound->effects.biquad, pOut, pIn, frames_read); float* t = pIn; pIn = pOut; pOut = t; }
             if (sound->effects.echo_enabled) { ma_delay_process_pcm_frames(&sound->effects.delay, pOut, pIn, frames_read); float* t = pIn; pIn = pOut; pOut = t; }
-            if (sound->effects.reverb_enabled && sound->effects.reverb_state) { _SituationProcessReverb(sound->effects.reverb_state, pOut, pIn, (uint32_t)frames_read, sound->decoder.outputChannels); float* t = pIn; pIn = pOut; pOut = t; }
+            if (sound->effects.reverb_enabled && sound->effects.reverb_state) { _SitAudio_ProcessReverb(sound->effects.reverb_state, pOut, pIn, (uint32_t)frames_read, sound->decoder.outputChannels); float* t = pIn; pIn = pOut; pOut = t; }
             for (int p = 0; p < sound->processor_count; ++p) if (sound->processors[p]) sound->processors[p](pIn, (uint32_t)frames_read, sound->decoder.outputChannels, sound->decoder.outputSampleRate, sound->processor_user_data[p]);
 
             // Convert & Mix
@@ -28085,7 +28085,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
  * @param frame_count The number of frames (samples) in the buffer.
  * @param user_data The custom pointer provided to `SituationStartAudioCapture`.
  */
-static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
+static void _SitAudio_Miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
     (void)pOutput;
     _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
     if (!pGs || !pInput) return;
@@ -28158,17 +28158,17 @@ SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback c
     config.capture.format = ma_format_f32; // Standardize on Float32
     config.capture.channels = 1;           // Mono microphone is standard
     config.sampleRate = 44100;             // Standard rate
-    config.dataCallback = _sit_miniaudio_capture_callback;
+    config.dataCallback = _SitAudio_Miniaudio_capture_callback;
     config.pUserData = &sit_audio;
 
     if (ma_device_init(&sit_audio.miniaudio_context, &config, &sit_audio.capture_device) != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "Failed to initialize capture device.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "Failed to initialize capture device.");
         return SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED;
     }
 
     if (ma_device_start(&sit_audio.capture_device) != MA_SUCCESS) {
         ma_device_uninit(&sit_audio.capture_device);
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start capture device.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start capture device.");
         return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
     }
 
@@ -28210,12 +28210,12 @@ SITAPI void SituationStopAudioCapture(void) {
  */
 SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetAudioDevices: Library not initialized");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetAudioDevices: Library not initialized");
         if (count) *count = 0;
         return NULL;
     }
     if (!sit_audio.is_miniaudio_context_initialized) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "GetAudioDevices: MiniAudio context not initialized");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "GetAudioDevices: MiniAudio context not initialized");
         if (count) *count = 0;
         return NULL;
     }
@@ -28227,20 +28227,20 @@ SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
 
     ma_result res = ma_context_get_devices(&sit_audio.miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL); // Passing NULL for capture devices
     if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "ma_context_get_devices failed");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "ma_context_get_devices failed");
         if (count) *count = 0;
         return NULL;
     }
 
     if (ma_playback_count == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "No playback audio devices found by MiniAudio.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "No playback audio devices found by MiniAudio.");
         if (count) *count = 0;
         return NULL;
     }
 
     SituationAudioDeviceInfo* sit_devices = (SituationAudioDeviceInfo*)SIT_CALLOC(ma_playback_count, sizeof(SituationAudioDeviceInfo));
     if (!sit_devices) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio device info array");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio device info array");
         if (count) *count = 0;
         return NULL;
     }
@@ -28288,7 +28288,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
     ma_result res = ma_context_get_devices(&sit_audio.miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL);
 
     if (res != MA_SUCCESS || situation_internal_id < 0 || (uint32_t)situation_internal_id >= ma_playback_count) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Invalid internal_id or failed to enumerate for SetAudioDevice");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Invalid internal_id or failed to enumerate for SetAudioDevice");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
@@ -28313,7 +28313,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
         else if (format->bit_depth == 24) device_config.playback.format = ma_format_s24; // Requires device support
         else if (format->bit_depth == 8) device_config.playback.format = ma_format_u8;   // Requires device support
         else {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported bit depth in SetAudioDevice format");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported bit depth in SetAudioDevice format");
             return SITUATION_ERROR_INVALID_PARAM;
         }
     } else { // Use device default format preferences, or sensible common defaults
@@ -28330,7 +28330,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
 
     res = ma_device_init(&sit_audio.miniaudio_context, &device_config, &sit_audio.miniaudio_device);
     if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, ma_result_description(res));
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, ma_result_description(res));
         return SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED;
     }
 
@@ -28338,7 +28338,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
         res = ma_device_start(&sit_audio.miniaudio_device);
         if (res != MA_SUCCESS) {
             ma_device_uninit(&sit_audio.miniaudio_device);
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start new audio device");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start new audio device");
             return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
         }
     }
@@ -28358,7 +28358,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
 SITAPI int SituationGetAudioPlaybackSampleRate(void) {
     if (!SituationIsInitialized()) return 0;
     if (!sit_audio.is_miniaudio_device_active) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for GetAudioPlaybackSampleRate");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for GetAudioPlaybackSampleRate");
         return 0;
     }
     return sit_audio.miniaudio_device.sampleRate;
@@ -28382,7 +28382,7 @@ SITAPI int SituationGetAudioPlaybackSampleRate(void) {
 SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sit_audio.is_miniaudio_device_active || sit_audio.current_miniaudio_device_audioinfo_id < 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "No audio device set, cannot change sample rate.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "No audio device set, cannot change sample rate.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
     SituationAudioFormat current_fmt;
@@ -28395,7 +28395,7 @@ SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
     else if (current_ma_fmt == ma_format_s24) current_fmt.bit_depth = 24;
     else if (current_ma_fmt == ma_format_u8) current_fmt.bit_depth = 8;
     else {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_INVALID_OPERATION, "Cannot determine current bit depth to change sample rate (unsupported format).");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_INVALID_OPERATION, "Cannot determine current bit depth to change sample rate (unsupported format).");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
@@ -28414,13 +28414,13 @@ SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
 SITAPI float SituationGetAudioMasterVolume(void) {
     if (!SituationIsInitialized()) return 0.0f;
     if (!sit_audio.is_miniaudio_device_active) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for GetAudioMasterVolume");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for GetAudioMasterVolume");
         return 0.0f;
     }
     float volume = 0.0f; // Default to 0 if get fails
     ma_result res = ma_device_get_master_volume(&sit_audio.miniaudio_device, &volume);
     if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to get master volume");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to get master volume");
         // volume remains 0.0f or its last valid value if ma_device_get_master_volume modified it partially
     }
     return volume;
@@ -28445,7 +28445,7 @@ SITAPI SituationError SituationSetAudioMasterVolume(float volume) {
 
     ma_result res = ma_device_set_master_volume(&sit_audio.miniaudio_device, clamped_volume);
     if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to set master volume");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to set master volume");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
     return SITUATION_SUCCESS;
@@ -28489,7 +28489,7 @@ SITAPI SituationError SituationPauseAudioDevice(void) {
     if (ma_device_is_started(&sit_audio.miniaudio_device)) {
         ma_result res = ma_device_stop(&sit_audio.miniaudio_device);
         if (res != MA_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to stop (pause) audio device");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to stop (pause) audio device");
             return SITUATION_ERROR_AUDIO_DEVICE;
         }
     }
@@ -28516,7 +28516,7 @@ SITAPI SituationError SituationResumeAudioDevice(void) {
     if (sit_audio.is_miniaudio_device_active && !ma_device_is_started(&sit_audio.miniaudio_device)) {
         ma_result res = ma_device_start(&sit_audio.miniaudio_device);
         if (res != MA_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start (resume) audio device");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start (resume) audio device");
             return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
         }
     }
@@ -28540,7 +28540,7 @@ SITAPI SituationError SituationResumeAudioDevice(void) {
  *
  * @see SituationLoadSoundFromFile(), SituationLoadSoundFromStream()
  */
-static SituationError _SituationInitSoundEffects(SituationSound* sound) {
+static SituationError _SitAudio_InitSoundEffects(SituationSound* sound) {
     if (!sound || !sound->is_initialized) return SITUATION_ERROR_INVALID_PARAM;
     ma_uint32 channels = sound->decoder.outputChannels;
     ma_uint32 sampleRate = sound->decoder.outputSampleRate;
@@ -28560,7 +28560,7 @@ static SituationError _SituationInitSoundEffects(SituationSound* sound) {
     sound->effects.echo_enabled = false;
 
     // Reverb
-    sound->effects.reverb_state = _SituationInitReverb(sampleRate);
+    sound->effects.reverb_state = _SitAudio_InitReverb(sampleRate);
     if (!sound->effects.reverb_state) {
         ma_delay_uninit(&sound->effects.delay, NULL);
         return SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -28595,7 +28595,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!out_sound || !file_path) return SITUATION_ERROR_INVALID_PARAM;
     if (!sit_audio.is_miniaudio_device_active) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for sound loading.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for sound loading.");
         return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
@@ -28677,7 +28677,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
 
     if (res != MA_SUCCESS) {
         if (out_sound->preloaded_data) SIT_FREE(out_sound->preloaded_data);
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED, "Failed to initialize decoder.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED, "Failed to initialize decoder.");
         return SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED;
     }
 
@@ -28701,9 +28701,9 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
     out_sound->is_initialized = true;
     out_sound->is_looping = looping;
 
-    if (_SituationInitSoundEffects(out_sound) != SITUATION_SUCCESS) {
+    if (_SitAudio_InitSoundEffects(out_sound) != SITUATION_SUCCESS) {
         SituationUnloadSound(out_sound);
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "Failed to initialize sound effects.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "Failed to initialize sound effects.");
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
     return SITUATION_SUCCESS;
@@ -28726,7 +28726,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
  * @param pBytesRead Output pointer for bytes read.
  * @return MA_SUCCESS or error.
  */
-static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, size_t bytesToRead, size_t* pBytesRead) {
+static ma_result _SitFS_situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, size_t bytesToRead, size_t* pBytesRead) {
     // Calculate pointer to the parent struct
     SituationSound* sound = (SituationSound*)((char*)pDecoder - offsetof(SituationSound, decoder));
 
@@ -28751,7 +28751,7 @@ static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBuffe
 /**
  * @brief [INTERNAL] Static thunk for routing audio seek requests.
  *
- * @details Similar to `_situation_stream_read_thunk`, this recovers the parent `SituationSound` instance
+ * @details Similar to `_SitFS_situation_stream_read_thunk`, this recovers the parent `SituationSound` instance
  *          and dispatches the seek request to the user's specific `stream_seek_cb`.
  *
  * @param pDecoder The pointer to the decoder member inside a SituationSound struct.
@@ -28759,7 +28759,7 @@ static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBuffe
  * @param origin The seek origin (start or current).
  * @return MA_SUCCESS on success, or an error code.
  */
-static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin) {
+static ma_result _SitCore_situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin) {
     // Calculate pointer to the parent struct
     SituationSound* sound = (SituationSound*)((char*)pDecoder - offsetof(SituationSound, decoder));
 
@@ -28793,7 +28793,7 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!out_sound || !on_read || !format) return SITUATION_ERROR_INVALID_PARAM;
     if (!sit_audio.is_miniaudio_device_active) {
-         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for stream loading.");
+         _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for stream loading.");
          return SITUATION_ERROR_AUDIO_DEVICE;
     }
 
@@ -28818,9 +28818,9 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     // 2. Initialize custom decoder
     ma_decoder_config decoder_config = ma_decoder_config_init(ma_format_f32, format->channels, format->sample_rate);
 
-	ma_result res = ma_decoder_init(_situation_stream_read_thunk, _situation_stream_seek_thunk, NULL, &decoder_config, &out_sound->decoder);
+	ma_result res = ma_decoder_init(_SitFS_situation_stream_read_thunk, _SitCore_situation_stream_seek_thunk, NULL, &decoder_config, &out_sound->decoder);
     if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED, "Failed to init custom stream decoder.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED, "Failed to init custom stream decoder.");
         return SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED;
     }
 
@@ -28846,9 +28846,9 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     out_sound->is_looping = looping;
 
     // --- Effects Chain Initialization ---
-    if (_SituationInitSoundEffects(out_sound) != SITUATION_SUCCESS) {
+    if (_SitAudio_InitSoundEffects(out_sound) != SITUATION_SUCCESS) {
         SituationUnloadSound(out_sound);
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "Failed to initialize stream sound effects.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "Failed to initialize stream sound effects.");
         return SITUATION_ERROR_AUDIO_CONTEXT;
     }
 
@@ -28900,7 +28900,7 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
                 SIT_FREE(sound->preloaded_data);
                 sound->preloaded_data = NULL;
             }
-            if (sound->effects.reverb_state) _SituationUninitReverb(sound->effects.reverb_state);
+            if (sound->effects.reverb_state) _SitAudio_UninitReverb(sound->effects.reverb_state);
             ma_delay_uninit(&sound->effects.delay, NULL);
         }
         memset(sound, 0, sizeof(SituationSound));
@@ -29090,7 +29090,7 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
         return SITUATION_ERROR_AUDIO_CONVERTER;
     }
 
-    _SituationInitSoundEffects(out_destination);
+    _SitAudio_InitSoundEffects(out_destination);
     return SITUATION_SUCCESS;
 }
 
@@ -29362,7 +29362,7 @@ SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFi
             sound->effects.filter_q = q_factor;
         } else {
              sound->effects.filter_enabled = false;
-             _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "Failed to initialize biquad filter.");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "Failed to initialize biquad filter.");
         }
     }
     mtx_unlock(&sit_audio.audio_queue_mutex);
@@ -29464,7 +29464,7 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
 SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !processor) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Sound or processor callback cannot be NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Sound or processor callback cannot be NULL.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
@@ -29473,7 +29473,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
     void* new_processors = SIT_REALLOC(sound->processors, (sound->processor_count + 1) * sizeof(SituationAudioProcessorCallback));
     if (!new_processors) {
         mtx_unlock(&sit_audio.audio_queue_mutex);
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to SIT_REALLOC processor list.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to SIT_REALLOC processor list.");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
     sound->processors = (SituationAudioProcessorCallback*)new_processors;
@@ -29483,7 +29483,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
         // This is tricky. The first SIT_REALLOC succeeded. We should try to shrink it back.
         sound->processors = SIT_REALLOC(sound->processors, sound->processor_count * sizeof(SituationAudioProcessorCallback));
         mtx_unlock(&sit_audio.audio_queue_mutex);
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to SIT_REALLOC processor user data list.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to SIT_REALLOC processor user data list.");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
     sound->processor_user_data = (void**)new_user_datas;
@@ -29506,7 +29506,7 @@ SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, Situa
 SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sound || !processor) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Sound or processor callback cannot be NULL.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Sound or processor callback cannot be NULL.");
         return SITUATION_ERROR_INVALID_PARAM;
     }
 
@@ -29546,7 +29546,7 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
 // ==================================================================================
 
 // Helper: Initialize the audio pool
-static void _SitAudioInitPool(void) {
+static void _SitAudio_InitPool(void) {
     // Initialize pool mutex
     if (mtx_init(&sit_audio.pool_mutex, mtx_plain) != thrd_success) {
         SITUATION_LOG_WARNING(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to init audio pool mutex");
@@ -29560,7 +29560,7 @@ static void _SitAudioInitPool(void) {
 }
 
 // Helper: Cleanup the audio pool
-static void _SitAudioCleanupPool(void) {
+static void _SitAudio_CleanupPool(void) {
     for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
         if (sit_audio.sound_pool[i].sound) {
             // Unload internal resources
@@ -29577,7 +29577,7 @@ static void _SitAudioCleanupPool(void) {
 }
 
 // Helper: Allocate a slot
-static SituationSoundHandle _SitAudioAllocSlot(void) {
+static SituationSoundHandle _SitAudio_AllocSlot(void) {
     mtx_lock(&sit_audio.pool_mutex);
     for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
         if (!sit_audio.sound_pool[i].is_active) {
@@ -29607,7 +29607,7 @@ static SituationSoundHandle _SitAudioAllocSlot(void) {
 }
 
 // Helper: Get sound from handle (Validation)
-static SituationSound* _SitAudioGetSoundFromHandle(SituationSoundHandle handle) {
+static SituationSound* _SitAudio_GetSoundFromHandle(SituationSoundHandle handle) {
     if (handle == SITUATION_NULL_HANDLE) return NULL;
 
     uint32_t index = (uint32_t)(handle & 0xFFFFFFFF);
@@ -29628,7 +29628,7 @@ static SituationSound* _SitAudioGetSoundFromHandle(SituationSoundHandle handle) 
 }
 
 // Helper: Free a slot
-static void _SitAudioFreeSlot(SituationSoundHandle handle) {
+static void _SitAudio_FreeSlot(SituationSoundHandle handle) {
     if (handle == SITUATION_NULL_HANDLE) return;
 
     uint32_t index = (uint32_t)(handle & 0xFFFFFFFF);
@@ -29660,16 +29660,16 @@ static void _SitAudioFreeSlot(SituationSoundHandle handle) {
 SITAPI SituationSoundHandle SituationLoadAudio(const char* file_path, SituationAudioLoadMode mode, bool looping) {
     if (!file_path) return SITUATION_NULL_HANDLE;
 
-    SituationSoundHandle handle = _SitAudioAllocSlot();
+    SituationSoundHandle handle = _SitAudio_AllocSlot();
     if (handle == SITUATION_NULL_HANDLE) return SITUATION_NULL_HANDLE;
 
-    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    SituationSound* snd = _SitAudio_GetSoundFromHandle(handle);
     if (!snd) return SITUATION_NULL_HANDLE;
 
     // Use existing loader logic
     SituationError err = SituationLoadSoundFromFile(file_path, mode, looping, snd);
     if (err != SITUATION_SUCCESS) {
-        _SitAudioFreeSlot(handle);
+        _SitAudio_FreeSlot(handle);
         return SITUATION_NULL_HANDLE;
     }
 
@@ -29677,35 +29677,35 @@ SITAPI SituationSoundHandle SituationLoadAudio(const char* file_path, SituationA
 }
 
 SITAPI SituationError SituationPlayAudio(SituationSoundHandle handle) {
-    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    SituationSound* snd = _SitAudio_GetSoundFromHandle(handle);
     if (!snd) return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
     return SituationPlayLoadedSound(snd);
 }
 
 SITAPI void SituationUnloadAudio(SituationSoundHandle handle) {
-    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    SituationSound* snd = _SitAudio_GetSoundFromHandle(handle);
     if (snd) {
         // Stop it first
         SituationStopLoadedSound(snd);
         // Free slot
-        _SitAudioFreeSlot(handle);
+        _SitAudio_FreeSlot(handle);
     }
 }
 
 SITAPI SituationError SituationSetAudioVolume(SituationSoundHandle handle, float volume) {
-    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    SituationSound* snd = _SitAudio_GetSoundFromHandle(handle);
     if (!snd) return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
     return SituationSetSoundVolume(snd, volume);
 }
 
 SITAPI SituationError SituationSetAudioPan(SituationSoundHandle handle, float pan) {
-    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    SituationSound* snd = _SitAudio_GetSoundFromHandle(handle);
     if (!snd) return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
     return SituationSetSoundPan(snd, pan);
 }
 
 SITAPI SituationError SituationSetAudioPitch(SituationSoundHandle handle, float pitch) {
-    SituationSound* snd = _SitAudioGetSoundFromHandle(handle);
+    SituationSound* snd = _SitAudio_GetSoundFromHandle(handle);
     if (!snd) return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
     return SituationSetSoundPitch(snd, pitch);
 }
@@ -30540,7 +30540,7 @@ SITAPI void SituationDisableCursor(void) {
  * @param jid The joystick ID.
  * @param event The event type (GLFW_CONNECTED or GLFW_DISCONNECTED).
  */
-static void _SituationGLFWJoystickCallback(int jid, int event) {
+static void _SitRender_GLFWJoystickCallback(int jid, int event) {
     // Ignore joysticks beyond the maximum we are tracking.
     if (jid < 0 || jid >= SITUATION_MAX_JOYSTICKS) return;
 
@@ -30748,7 +30748,7 @@ SITAPI int SituationGetGamepadAxisCount(int jid) {
  */
 SITAPI int SituationSetGamepadMappings(const char *mappings) {
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SetGamepadMappings");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SetGamepadMappings");
         return 0;
     }
     // This is a direct wrapper around the GLFW function.
@@ -30788,7 +30788,7 @@ SITAPI bool SituationSetGamepadVibration(int jid, float left_motor, float right_
     return (XInputSetState((DWORD)jid, &vibration) == ERROR_SUCCESS);
 #else
     // Correctly fail on non-supported platforms
-    _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Gamepad vibration is currently only supported on Windows (XInput).");
+    _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Gamepad vibration is currently only supported on Windows (XInput).");
     return false;
 #endif
 }
@@ -30803,7 +30803,7 @@ SITAPI bool SituationSetGamepadVibration(int jid, float left_motor, float right_
  * @warning Use with caution. Directly manipulating the GLFW window or its context can interfere with the library's internal state management and may lead to unexpected behavior.
  */
 SITAPI GLFWwindow* SituationGetGLFWwindow(void) {
-    if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GLFW window not initialized"); return NULL; }
+    if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) { _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GLFW window not initialized"); return NULL; }
     return sit_gs.sit_glfw_window;
 }
 
@@ -30832,7 +30832,7 @@ SITAPI void SituationGetWindowSize(int* width, int* height) {
 // Use in the main loop to control application exit.
 SITAPI bool SituationWindowShouldClose(void) {
     if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot check window close state");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot check window close state");
         return true; // If not init'd, effectively should "close" or not run.
     }
     return glfwWindowShouldClose(sit_gs.sit_glfw_window) == GLFW_TRUE;
@@ -30850,7 +30850,7 @@ SITAPI void SituationSetTargetFPS(int fps) {
     if (!SituationIsInitialized()) {
         // As per library convention, silently return or set a general error if called incorrectly.
         // The provided text shows similar functions returning early.
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetTargetFPS: Library not initialized.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetTargetFPS: Library not initialized.");
         return;
     }
 
@@ -30923,7 +30923,7 @@ SITAPI void SituationConvertColorToVector4(ColorRGBA c, Vector4* out_normalized_
  *
  * @par Backend-Specific Behavior
  * - **OpenGL:** Uses `glReadPixels` to read from the default framebuffer. The resulting image is vertically flipped, so the function automatically calls `SituationImageFlip` to correct the orientation.
- * - **Vulkan:** Performs a synchronized copy from the device-local swapchain image to a temporary, host-visible staging buffer. This is a complex operation involving command buffer submission and waiting for the GPU to complete the transfer, managed by the internal `_SituationVulkanBlitImageToHostVisibleBuffer` helper. The resulting image is correctly oriented.
+ * - **Vulkan:** Performs a synchronized copy from the device-local swapchain image to a temporary, host-visible staging buffer. This is a complex operation involving command buffer submission and waiting for the GPU to complete the transfer, managed by the internal `_SitRender_VulkanBlitImageToHostVisibleBuffer` helper. The resulting image is correctly oriented.
  *
  * @warning This function allocates new memory for the `image.data`. The caller is **responsible** for freeing this memory by calling `SituationUnloadImage()` on the returned `SituationImage`. Failure to do so will result in a memory leak.
  * @warning This can be a slow operation, as it requires synchronization with the GPU and a potentially large data transfer from VRAM to system RAM. Avoid calling it in performance-critical loops.
@@ -30942,7 +30942,7 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
     int width = SituationGetRenderWidth();
     int height = SituationGetRenderHeight();
 	if (width == 0 || height == 0) {
-		return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot capture screen: render surface invalid (width/height=0)");
+		return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot capture screen: render surface invalid (width/height=0)");
 	}
 
 	out_image->width = width;
@@ -30954,7 +30954,7 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
 	if (!out_image->data) {
         char err_msg[128];
         snprintf(err_msg, sizeof(err_msg), "Screenshot pixel buffer allocation failed (%dx%d RGBA)", width, height);
-		return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, err_msg);
+		return _SitCore_SetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, err_msg);
 	}
 
     // Bind the default framebuffer (the one being displayed) to read from it.
@@ -30968,7 +30968,7 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
         char err_msg[128];
         snprintf(err_msg, sizeof(err_msg), "glReadPixels failed (GL error: %d)", err);
 		SIT_FREE(out_image->data); out_image->data = NULL;
-        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, err_msg);
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, err_msg);
 	}
     // Use our new, generic utility function to correct the orientation.
     SituationImageFlip(out_image, SIT_FLIP_VERTICAL);
@@ -30979,7 +30979,7 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
     if (srcImage == VK_NULL_HANDLE) {
         char err_msg[128];
         snprintf(err_msg, sizeof(err_msg), "Cannot get screenshot: source swapchain image index %u is invalid", sit_render.vk.current_image_index);
-		return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID, err_msg);
+		return _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID, err_msg);
 	}
 
     // 2. Define the Current Layout.
@@ -31013,7 +31013,7 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
     //   a. Transition image from COLOR_ATTACHMENT -> TRANSFER_SRC
     //   b. Copy pixels to CPU buffer
     //   c. Transition image back from TRANSFER_SRC -> COLOR_ATTACHMENT
-    out_image->data = _SituationVulkanBlitImageToHostVisibleBuffer(
+    out_image->data = _SitRender_VulkanBlitImageToHostVisibleBuffer(
         srcImage,
         currentLayout,
         (uint32_t)width,
@@ -31047,26 +31047,26 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
  */
 SITAPI SituationError SituationTakeScreenshot(const char *fileName) {
     if (!SituationIsInitialized() || !fileName) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot take screenshot: Invalid parameters.");
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot take screenshot: Invalid parameters.");
     }
-	char* dir = _sit_dirname(fileName);  // Internal helper to get parent dir
-	if (dir && !_sit_directory_exists(dir)) {
+	char* dir = _SitFS_Dirname(fileName);  // Internal helper to get parent dir
+	if (dir && !_SitFS_Directory_exists(dir)) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "Screenshot directory does not exist: %s", dir);
 		SituationFreeString(dir);
-		return _SituationSetErrorFromCode(SITUATION_ERROR_DIRECTORY_CREATION_FAILED, err_msg);
+		return _SitCore_SetErrorFromCode(SITUATION_ERROR_DIRECTORY_CREATION_FAILED, err_msg);
 	}
 	SituationFreeString(dir);
 
 	// 1. Validate Extension
     const char *ext = SituationGetFileExtension(fileName);
-    if (!ext || _sit_strcasecmp(ext, ".png") != 0) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationTakeScreenshot supports only '.png' format.");
+    if (!ext || _SitUtils_Strcasecmp(ext, ".png") != 0) {
+        return _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationTakeScreenshot supports only '.png' format.");
     }
 
     // 2. Check for STB Writer
 #if !defined(STB_IMAGE_WRITE_IMPLEMENTATION)
-    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG support not available. Please implement stb_image_write.h.");
+    return _SitCore_SetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG support not available. Please implement stb_image_write.h.");
 #else
     // 3. Capture and Save
     SituationImage image = {0};
@@ -31081,7 +31081,7 @@ SITAPI SituationError SituationTakeScreenshot(const char *fileName) {
 	if (!success) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "Failed to write PNG file: %s", fileName);
-		return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, err_msg);
+		return _SitCore_SetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, err_msg);
 	}
     return SITUATION_SUCCESS;
 #endif
@@ -31148,7 +31148,7 @@ static inline SituationJobId _SitMakeId(uint32_t q_idx, uint32_t gen, uint32_t s
  * @param id The job handle to resolve.
  * @return Pointer to the SituationJob, or NULL if invalid/stale.
  */
-static SituationJob* _SitGetJobFromId(SituationThreadPool* pool, SituationJobId id) {
+static SituationJob* _SitCore_GetJobFromId(SituationThreadPool* pool, SituationJobId id) {
     if (id == 0 || !pool) return NULL;
 
     uint32_t q_idx = (id >> SIT_ID_QUEUE_SHIFT) & 1;
@@ -31171,17 +31171,17 @@ static SituationJob* _SitGetJobFromId(SituationThreadPool* pool, SituationJobId 
  * @details Starts from the *dependent* job and follows its continuation chain.
  *          If we encounter the *prerequisite* job, a cycle (A->B->A) exists.
  */
-static bool _SituationDetectCycle(SituationThreadPool* pool, SituationJobId prereq_id, SituationJobId dep_id, uint8_t* out_new_depth) {
+static bool _SitCore_DetectCycle(SituationThreadPool* pool, SituationJobId prereq_id, SituationJobId dep_id, uint8_t* out_new_depth) {
     uint8_t depth = 0;
     SituationJobId current_cursor = dep_id;
 
     // Base depth of the prerequisite (if it exists)
-    SituationJob* prereq_ptr = _SitGetJobFromId(pool, prereq_id);
+    SituationJob* prereq_ptr = _SitCore_GetJobFromId(pool, prereq_id);
     uint8_t base_depth = prereq_ptr ? prereq_ptr->dep_depth : 0;
 
     // Traverse downstream from the dependent job
     while (current_cursor != 0 && depth < 32) {
-        SituationJob* job = _SitGetJobFromId(pool, current_cursor);
+        SituationJob* job = _SitCore_GetJobFromId(pool, current_cursor);
         if (!job) break; // Chain broken (job finished or invalid)
 
         if (current_cursor == prereq_id) {
@@ -31241,21 +31241,21 @@ SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId 
     if (!pool) return false;
 
     // 1. Validate Handles
-    SituationJob* prereq = _SitGetJobFromId(pool, prereq_id);
-    SituationJob* dep = _SitGetJobFromId(pool, dep_id);
+    SituationJob* prereq = _SitCore_GetJobFromId(pool, prereq_id);
+    SituationJob* dep = _SitCore_GetJobFromId(pool, dep_id);
 
     if (!prereq || !dep) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid job IDs in AddJobDependency (jobs may have finished).");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid job IDs in AddJobDependency (jobs may have finished).");
         return false;
     }
 
     // 2. Cycle Detection (Read-only traversal, safe-ish without lock if topology is stable-ish)
     uint8_t new_depth = 0;
-    if (_SituationDetectCycle(pool, prereq_id, dep_id, &new_depth)) {
+    if (_SitCore_DetectCycle(pool, prereq_id, dep_id, &new_depth)) {
         #ifndef NDEBUG
         fprintf(stderr, "[Situation] ERROR: Dependency Cycle Detected! Job 0x%x -> 0x%x causes loop.\n", prereq_id, dep_id);
         #endif
-        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CYCLE, "Cycle detected or depth limit (32) exceeded.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_THREAD_CYCLE, "Cycle detected or depth limit (32) exceeded.");
         return false;
     }
 
@@ -31269,7 +31269,7 @@ SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId 
         return true;
     } else {
         // Prerequisite already has a continuation
-        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Prerequisite job already has a continuation (1:1 limit). Use SituationAddJobDependencies for fan-in.");
+        _SitCore_SetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Prerequisite job already has a continuation (1:1 limit). Use SituationAddJobDependencies for fan-in.");
         return false;
     }
 }
@@ -31387,7 +31387,7 @@ SITAPI size_t SituationGetIOQueueDepth(void) {
  * @param arg Pointer to the SituationThreadPool.
  * @return 0 upon thread exit.
  */
-static int _SituationWorkerEntry(void* arg) {
+static int _SitCore_WorkerEntry(void* arg) {
     SituationThreadPool* pool = (SituationThreadPool*)arg;
 
     while (!atomic_load(&pool->shutdown)) {
@@ -31459,7 +31459,7 @@ static int _SituationWorkerEntry(void* arg) {
             // 2. Handle Continuation
             uint32_t cont_id = atomic_load(&job_ptr->continuation_id);
             if (cont_id != 0) {
-                SituationJob* next_job = _SitGetJobFromId(pool, cont_id);
+                SituationJob* next_job = _SitCore_GetJobFromId(pool, cont_id);
                 if (next_job) {
                     // Decrement dependency count
                     int remaining = atomic_fetch_sub(&next_job->dependency_count, 1);
@@ -31518,7 +31518,7 @@ static int _SituationWorkerEntry(void* arg) {
  * @warning This function must be called from the main thread.
  */
 // [v2.3.34] Dedicated I/O Thread Entry
-static int _SituationIOThreadEntry(void* arg) {
+static int _SitFS_IOThreadEntry(void* arg) {
     SituationThreadPool* pool = (SituationThreadPool*)arg;
     atomic_store(&pool->io_active, true);
 
@@ -31551,7 +31551,7 @@ static int _SituationIOThreadEntry(void* arg) {
                 // Continuation
                 uint32_t cont_id = atomic_load(&job->continuation_id);
                 if (cont_id != 0) {
-                    SituationJob* next_job = _SitGetJobFromId(pool, cont_id);
+                    SituationJob* next_job = _SitCore_GetJobFromId(pool, cont_id);
                     if (next_job) {
                         if (atomic_fetch_sub(&next_job->dependency_count, 1) == 1) cnd_signal(&pool->wake_condition);
                     }
@@ -31577,7 +31577,7 @@ static int _SituationIOThreadEntry(void* arg) {
             double diff = (now.tv_sec - last_hr_time.tv_sec) + (now.tv_nsec - last_hr_time.tv_nsec) / 1e9;
 
             if (diff >= pool->hot_reload_rate) {
-                _SituationPerformHotReloadPass();
+                _SitRender_PerformHotReloadPass();
                 last_hr_time = now;
             }
         }
@@ -31650,7 +31650,7 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
     atomic_init(&pool->shutdown, false);
 
     for (size_t i = 0; i < num_threads; ++i) {
-        if (thrd_create(&pool->threads[i], _SituationWorkerEntry, pool) != thrd_success) {
+        if (thrd_create(&pool->threads[i], _SitCore_WorkerEntry, pool) != thrd_success) {
             // Rollback logic omitted for brevity, assuming stable OS env
             return false;
         }
@@ -31658,7 +31658,7 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
 
     // [v2.3.34] Spawn Dedicated I/O Thread (Conditional)
     if (!disable_io) {
-        if (thrd_create(&pool->io_thread, _SituationIOThreadEntry, pool) != thrd_success) {
+        if (thrd_create(&pool->io_thread, _SitFS_IOThreadEntry, pool) != thrd_success) {
             return false;
         }
     } else {
@@ -31747,7 +31747,7 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
             }
 
             // Default Path: Fail
-            _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Job queue full and no blocking/run-inline flag set.");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Job queue full and no blocking/run-inline flag set.");
             return 0;
         }
         // If we have space, break the retry loop and proceed to slot reservation
@@ -31870,7 +31870,7 @@ typedef struct {
  * @brief [INTERNAL] Helper wrapper for parallel dispatch jobs.
  * @details This function unpacks the `_SitParallelCtx`, executes the user's loop body for the assigned range, and then decrements the shared atomic counter.
  */
-static void _SitParallelWorker(void* data, void* ctx) {
+static void _SitCore_ParallelWorker(void* data, void* ctx) {
     (void)ctx;
     _SitParallelCtx* pctx = (_SitParallelCtx*)data;
     // Execute loop range
@@ -31936,7 +31936,7 @@ SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int 
         // If queue is full, we run it here immediately. This prevents deadlocks
         // and ensures progress even under heavy load.
         // Using High Priority ensures workers pick these up ASAP.
-        SituationSubmitJobEx(pool, _SitParallelWorker, &ctx, sizeof(_SitParallelCtx), SIT_SUBMIT_HIGH_PRIORITY | SIT_SUBMIT_RUN_IF_FULL);
+        SituationSubmitJobEx(pool, _SitCore_ParallelWorker, &ctx, sizeof(_SitParallelCtx), SIT_SUBMIT_HIGH_PRIORITY | SIT_SUBMIT_RUN_IF_FULL);
     }
 
     // 4. Helping Loop (Work Stealing)
@@ -32061,7 +32061,7 @@ typedef struct {
  * @param data Pointer to the _SitAsyncAudioCtx (embedded in job storage).
  * @param unused Unused user context.
  */
-static void _SituationAsyncAudioWorker(void* data, void* unused) {
+static void _SitAudio_AsyncAudioWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncAudioCtx* ctx = (_SitAsyncAudioCtx*)data;
 
@@ -32100,7 +32100,7 @@ SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
 
     // 1. Prepare Context
     _SitAsyncAudioCtx ctx;
-    ctx.path = _sit_strdup(file_path); // Duplicate string (ownership transfers to worker)
+    ctx.path = _SitUtils_Strdup(file_path); // Duplicate string (ownership transfers to worker)
     if (!ctx.path) return 0;
 
     ctx.looping = looping;
@@ -32114,7 +32114,7 @@ SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
     // it fits easily into the 64-byte storage (SOO). No malloc for the context!
     return SituationSubmitJobEx(
         pool,
-        _SituationAsyncAudioWorker,
+        _SitAudio_AsyncAudioWorker,
         &ctx,
         sizeof(_SitAsyncAudioCtx),
         SIT_SUBMIT_DEFAULT // Low Priority is correct for loading
@@ -32135,7 +32135,7 @@ typedef struct {
 /**
  * @brief [INTERNAL] Worker for async file loading.
  */
-static void _SituationAsyncFileLoadWorker(void* data, void* unused) {
+static void _SitFS_AsyncFileLoadWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncFileLoadCtx* ctx = (_SitAsyncFileLoadCtx*)data;
 
@@ -32169,12 +32169,12 @@ SITAPI SituationJobId SituationLoadFileAsync(SituationThreadPool* pool, const ch
     if (!pool || !file_path) return 0;
 
     _SitAsyncFileLoadCtx ctx;
-    ctx.path = _sit_strdup(file_path);
+    ctx.path = _SitUtils_Strdup(file_path);
     if (!ctx.path) return 0;
     ctx.callback = callback;
     ctx.user_data = user_data;
 
-    SituationJobId jid = SituationSubmitJobEx(pool, _SituationAsyncFileLoadWorker, &ctx, sizeof(_SitAsyncFileLoadCtx), SIT_SUBMIT_DEFAULT);
+    SituationJobId jid = SituationSubmitJobEx(pool, _SitFS_AsyncFileLoadWorker, &ctx, sizeof(_SitAsyncFileLoadCtx), SIT_SUBMIT_DEFAULT);
     if (jid == 0) {
         SIT_FREE(ctx.path);
     }
@@ -32193,7 +32193,7 @@ typedef struct {
 /**
  * @brief [INTERNAL] Worker for async text file loading.
  */
-static void _SituationAsyncFileTextLoadWorker(void* data, void* unused) {
+static void _SitFS_AsyncFileTextLoadWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncFileTextLoadCtx* ctx = (_SitAsyncFileTextLoadCtx*)data;
 
@@ -32223,12 +32223,12 @@ SITAPI SituationJobId SituationLoadFileTextAsync(SituationThreadPool* pool, cons
     if (!pool || !file_path) return 0;
 
     _SitAsyncFileTextLoadCtx ctx;
-    ctx.path = _sit_strdup(file_path);
+    ctx.path = _SitUtils_Strdup(file_path);
     if (!ctx.path) return 0;
     ctx.callback = callback;
     ctx.user_data = user_data;
 
-    SituationJobId jid = SituationSubmitJobEx(pool, _SituationAsyncFileTextLoadWorker, &ctx, sizeof(_SitAsyncFileTextLoadCtx), SIT_SUBMIT_DEFAULT);
+    SituationJobId jid = SituationSubmitJobEx(pool, _SitFS_AsyncFileTextLoadWorker, &ctx, sizeof(_SitAsyncFileTextLoadCtx), SIT_SUBMIT_DEFAULT);
     if (jid == 0) {
         SIT_FREE(ctx.path);
     }
@@ -32248,7 +32248,7 @@ typedef struct {
 /**
  * @brief [INTERNAL] Worker for async text file saving.
  */
-static void _SituationAsyncFileTextSaveWorker(void* data, void* unused) {
+static void _SitFS_AsyncFileTextSaveWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncFileTextSaveCtx* ctx = (_SitAsyncFileTextSaveCtx*)data;
 
@@ -32277,10 +32277,10 @@ SITAPI SituationJobId SituationSaveFileTextAsync(SituationThreadPool* pool, cons
     if (!pool || !file_path || !text) return 0;
 
     _SitAsyncFileTextSaveCtx ctx;
-    ctx.path = _sit_strdup(file_path);
+    ctx.path = _SitUtils_Strdup(file_path);
     if (!ctx.path) return 0;
 
-    ctx.text_copy = _sit_strdup(text);
+    ctx.text_copy = _SitUtils_Strdup(text);
     if (!ctx.text_copy) {
         SIT_FREE(ctx.path);
         return 0;
@@ -32289,7 +32289,7 @@ SITAPI SituationJobId SituationSaveFileTextAsync(SituationThreadPool* pool, cons
     ctx.callback = callback;
     ctx.user_data = user_data;
 
-    SituationJobId jid = SituationSubmitJobEx(pool, _SituationAsyncFileTextSaveWorker, &ctx, sizeof(_SitAsyncFileTextSaveCtx), SIT_SUBMIT_DEFAULT);
+    SituationJobId jid = SituationSubmitJobEx(pool, _SitFS_AsyncFileTextSaveWorker, &ctx, sizeof(_SitAsyncFileTextSaveCtx), SIT_SUBMIT_DEFAULT);
     if (jid == 0) {
         SIT_FREE(ctx.path);
         SIT_FREE(ctx.text_copy);
@@ -32311,7 +32311,7 @@ typedef struct {
 /**
  * @brief [INTERNAL] Worker for async file saving.
  */
-static void _SituationAsyncFileSaveWorker(void* data, void* unused) {
+static void _SitFS_AsyncFileSaveWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncFileSaveCtx* ctx = (_SitAsyncFileSaveCtx*)data;
 
@@ -32342,7 +32342,7 @@ SITAPI SituationJobId SituationSaveFileAsync(SituationThreadPool* pool, const ch
     if (!pool || !file_path || !data || size == 0) return 0;
 
     _SitAsyncFileSaveCtx ctx;
-    ctx.path = _sit_strdup(file_path);
+    ctx.path = _SitUtils_Strdup(file_path);
     if (!ctx.path) return 0;
 
     ctx.data_copy = SIT_MALLOC(size);
@@ -32356,7 +32356,7 @@ SITAPI SituationJobId SituationSaveFileAsync(SituationThreadPool* pool, const ch
     ctx.callback = callback;
     ctx.user_data = user_data;
 
-    SituationJobId jid = SituationSubmitJobEx(pool, _SituationAsyncFileSaveWorker, &ctx, sizeof(_SitAsyncFileSaveCtx), SIT_SUBMIT_DEFAULT);
+    SituationJobId jid = SituationSubmitJobEx(pool, _SitFS_AsyncFileSaveWorker, &ctx, sizeof(_SitAsyncFileSaveCtx), SIT_SUBMIT_DEFAULT);
     if (jid == 0) {
         SIT_FREE(ctx.path);
         SIT_FREE(ctx.data_copy);
@@ -32373,13 +32373,13 @@ SITAPI SituationJobId SituationSaveFileAsync(SituationThreadPool* pool, const ch
 #if !defined(__STDC_NO_THREADS__)
 
 // [v2.3.24a] Safety Zenith: Helper to flush resources for a specific frame index (or global for GL)
-static void _SitFlushFrameResources(int frame_index) {
+static void _SitCore_FlushFrameResources(int frame_index) {
     #if defined(SITUATION_USE_OPENGL)
         // OpenGL uses a global graveyard (deferred command buffer system handles synchronization)
-        _SitGLFlushGraveyard();
+        _SitRender_GLFlushGraveyard();
     #elif defined(SITUATION_USE_VULKAN)
         // Vulkan uses per-frame graveyards
-        _SituationFlushGraveyard((uint32_t)frame_index);
+        _SitCore_FlushGraveyard((uint32_t)frame_index);
     #endif
 }
 
@@ -32389,7 +32389,7 @@ static void _SitFlushFrameResources(int frame_index) {
  *          This isolates the graphics API (OpenGL/Vulkan) from the main application loop,
  *          smoothing out frame times and preventing vsync blocks from stalling game logic.
  */
-static int _SituationRenderThreadEntry(void* arg) {
+static int _SitRender_RenderThreadEntry(void* arg) {
     (void)arg;
 
     // [OpenGL] We must acquire the context here.
@@ -32441,13 +32441,13 @@ static int _SituationRenderThreadEntry(void* arg) {
 
         #if defined(SITUATION_USE_OPENGL)
         // 1. Execute Soft Command Buffer
-        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[frame_index], frame_index);
+        _SitRender_GLExecuteCommands(&sit_render.gl.soft_buffers[frame_index], frame_index);
 
         // 2. Present
         glfwSwapBuffers(sit_gs.sit_glfw_window);
 
         // 3. [Phase 2.5] Flush Graveyard
-        _SitGLFlushGraveyard();
+        _SitRender_GLFlushGraveyard();
 
         #elif defined(SITUATION_USE_VULKAN)
         VkCommandBuffer cmd = sit_render.vk.command_buffers[frame_index];
@@ -32488,7 +32488,7 @@ static int _SituationRenderThreadEntry(void* arg) {
         // Use the fence associated with this frame index
         if (vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit_info, sit_render.vk.in_flight_fences[frame_index]) != VK_SUCCESS) {
             // Logging from thread is tricky but we can set the global error.
-             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "RenderThread: Failed to submit draw command buffer!");
+             _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "RenderThread: Failed to submit draw command buffer!");
         }
 
         // 2. Present
@@ -32508,7 +32508,7 @@ static int _SituationRenderThreadEntry(void* arg) {
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             atomic_store(&sit_render.vk.recreate_swapchain_request, true);
         } else if (result != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "RenderThread: Failed to present swap chain image!");
+            _SitCore_SetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED, "RenderThread: Failed to present swap chain image!");
         }
         #endif
 
@@ -32516,7 +32516,7 @@ static int _SituationRenderThreadEntry(void* arg) {
         #if defined(SITUATION_ENABLE_RENDER_THREAD)
         uint64_t submit_ts = atomic_load(&sit_render.submit_timestamps[frame_index]);
         if (submit_ts > 0) {
-            uint64_t now = _SitGetMonotonicTimeNS();
+            uint64_t now = _SitCore_GetMonotonicTimeNS();
             
             // [v2.3.25] Drift Check with Once-Warn
             uint64_t latency = 0;
@@ -32548,7 +32548,7 @@ static int _SituationRenderThreadEntry(void* arg) {
         // Refcount (Unify)
         if (atomic_fetch_sub(&sit_render.frame_refcounts[frame_index], 1) == 1) {
             // Refcount reached 0 (fetch_sub returned 1). Safe to recycle.
-            _SitFlushFrameResources(frame_index);
+            _SitCore_FlushFrameResources(frame_index);
         }
 
         // --- FRAME COMPLETE ---
