@@ -277,51 +277,77 @@ root/
     - [x] Move these from `situation_impl.c` (or `situation.h` if they were leaked) to `src/sit_common.h`.
     - [x] Ensure `src/sit_common.h` is included by `situation_impl.c`.
 
-### Phase 3: Module Colonization
-*Goal: Move code from the monolithic `situation_impl.c` into specific modules.*
+### Phase 3: Surgical Module Colonization (High Risk)
+*Goal: Systematically migrate logic from the monolithic `situation_impl.c` to isolated modules in `src/`. This phase is executed in strict atomic steps to prevent destabilization.*
 
-- [ ] **Move Core Module (`sit_core.c`)**
-    - [ ] Move: `SituationLog`, `SituationLogWarning`, `SituationSetTraceLogLevel`.
-    - [ ] Move: `SituationGetLastErrorMsg`, `_SitCore_SetError`, `_SitCore_SetErrorFromCode`.
-    - [ ] Move: `SituationFreeString` (and memory macros if not in common).
-    - [ ] Move: Threading API (`SituationCreateThreadPool`, `SituationSubmitJobEx`, `SituationWaitForJob`, `SituationWaitForAllJobs`, `SituationDestroyThreadPool`, `SituationAddJobDependency`).
-    - [ ] Move: Timer/Oscillator API (`SituationTimerGetTime`, `SituationSetTargetFPS`, `SituationGetFrameTime`, `SituationGetFPS`, `SituationTimer*`).
-    - [ ] Move: Internal helpers (`_SitCore_GetMonotonicTimeNS`, `_SitCore_WorkerEntry`, `_SitCore_ParallelWorker`).
-    - [ ] Verify compilation.
-- [ ] **Move Utils Module (`sit_utils.c`)**
-    - [ ] Move: String helpers (`_SitUtils_Strdup`, `_SitUtils_Strcasecmp`).
-    - [ ] Move: Hash/Encoding helpers (`_sit_hash_string`, `_SitUtils_Utf8_to_wide`, `_SitUtils_Wide_to_utf8`).
-    - [ ] Verify compilation.
-- [ ] **Move Filesystem Module (`sit_fs.c`)**
-    - [ ] Move: `SituationLoadFile`, `SituationLoadFileText`, `SituationSaveFile`, `SituationSaveFileText`.
-    - [ ] Move: `SituationLoadFileData`, `SituationSaveFileData` and Async variants.
-    - [ ] Move: Directory/Path API (`SituationFileExists`, `SituationDirectoryExists`, `SituationListDirectoryFiles`, `SituationGetBasePath`, `SituationJoinPath`, `_SitFS_Dirname`).
-    - [ ] Move: Hot-Reloading logic (`SituationCheckHotReloads`, `SituationReload*` logic if generic).
-    - [ ] Move: Internal helpers (`_SitFS_...`).
-    - [ ] Verify compilation.
-- [ ] **Move Platform Module (`sit_platform.c`)**
-    - [ ] Move: `SituationInit`, `SituationShutdown`, `SituationIsInitialized`.
-    - [ ] Move: Window API (`SituationWindowShouldClose`, `SituationGetGLFWwindow`, `SituationGetWindowSize`, `SituationSetWindow*`).
-    - [ ] Move: System Info API (`SituationGetDeviceInfo`, `SituationGetCPUThreadCount`).
-    - [ ] Move: Input API (`SituationPollInputEvents`, `SituationIsKeyDown/Up`, `SituationGetMouse*`, `SituationSetMouse*`, `SituationIsJoystick*`, `SituationGetGamepad*`, `SituationSetCursor`).
-    - [ ] Move: Display API (`SituationGetDisplays`, `SituationSetDisplayMode`, `SituationFreeDisplays`).
-    - [ ] Move: GLFW Callbacks (`_SitRender_GLFW...` renamed/moved).
-    - [ ] Move: Internal helpers (`_SitPlatform_...`, `_SitCore_InitPlatform`).
-    - [ ] Verify compilation.
-- [ ] **Move Audio Module (`sit_audio.c`)**
-    - [ ] Move: Audio Lifecycle (`SituationInitAudio` if exists, `SituationUpdateAudio` calls).
-    - [ ] Move: Sound API (`SituationPlaySound`, `SituationLoadSound...`, `SituationUnloadSound`, `SituationStop...`, `SituationSetSound...`).
-    - [ ] Move: Miniaudio backend implementation (`MINIAUDIO_IMPLEMENTATION`, `_sit_miniaudio_data_callback`).
-    - [ ] Move: Internal helpers (`_SitAudio_...`, `_SitFS_situation_stream_read_thunk`).
-    - [ ] Verify compilation.
-- [ ] **Move Render Module (`sit_render.c`)**
-    - [ ] Move: Texture/Buffer/Mesh API (`SituationCreateTexture`, `SituationCreateBuffer`, `SituationCreateMesh`, `SituationDestroy*`).
-    - [ ] Move: Draw API (`SituationDrawModel`, `SituationCmdDraw*`, `SituationSubmitGraphics`, `SituationSubmitCompute`).
-    - [ ] Move: Image API (`SituationLoadImage*`, `SituationTakeScreenshot`, `SituationSaveImageBMP`).
-    - [ ] Move: Backend Implementations (OpenGL `_SitRender_InitOpenGL...`, Vulkan `_SitCore_InitVulkan...`).
-    - [ ] Move: `stb_image` and `stb_truetype` implementations.
-    - [ ] **Critical:** Ensure internal render state (`sit_render` macro) is accessible via `sit_common.h`.
-    - [ ] Verify compilation.
+**Protocol:** For each module, we follow the "Copy-Verify-Prune" checklist.
+
+#### Module 3.1: The Core (`sit_core.c`)
+**Dependencies:** None. This module must be migrated first.
+- [ ] **Step 1: Copy & Guard**
+    - [ ] Copy Logging/Error functions to `src/sit_core.c` (`SituationLog`, `SituationLogWarning`, `SituationSetTraceLogLevel`, `SituationGetLastErrorMsg`, `_SitCore_SetError`, `_SitCore_SetErrorFromCode`).
+    - [ ] Copy Threading functions to `src/sit_core.c` (`SituationCreateThreadPool`, `SituationSubmitJobEx`, `SituationWaitForJob`, `SituationWaitForAllJobs`, `SituationDestroyThreadPool`, `SituationAddJobDependency`, `SituationAddJobDependencies`, `SituationDumpTaskGraph`, `SituationDispatchParallel`, `SituationGetIOQueueDepth`, `SituationGetRenderQueueDepth`, `_SitCore_WorkerEntry`, `_SitCore_ParallelWorker`, `_SitCore_GetJobFromId`, `_SitCore_DetectCycle`, `_SitMakeId`).
+    - [ ] Copy Timing functions to `src/sit_core.c` (`SituationTimerGetTime`, `SituationSetTargetFPS`, `SituationGetFPS`, `SituationGetFrameTime`, `SituationUpdateTimers`, `SituationTimerGetOscillatorState`, `SituationTimerGetPreviousOscillatorState`, `SituationTimerHasOscillatorUpdated`, `SituationTimerPingOscillator`, `SituationTimerGetOscillatorTriggerCount`, `SituationTimerGetOscillatorPeriod`, `SituationTimerGetPingProgress`, `SituationSetTimerOscillatorPeriod`, `_SitCore_GetMonotonicTimeNS`, `_SitCore_GetHighResTime`).
+    - [ ] Copy Lifecycle functions to `src/sit_core.c` (`_SitCore_InitPlatform`, `_SitCore_InitSubsystems`, `_SitCore_CleanupPlatform`, `_SitCore_CleanupSubsystems`, `_SitCore_FullCleanupOnError`).
+- [ ] **Step 2: Verify**
+    - [ ] Comment out originals in `situation_impl.c`.
+    - [ ] Compile and run `test_limits.c`.
+- [ ] **Step 3: Prune**
+    - [ ] Delete commented code from `situation_impl.c`.
+
+#### Module 3.2: Filesystem & Utilities (`sit_fs.c`, `sit_utils.c`)
+**Dependencies:** Core (for Errors/Memory).
+- [ ] **Step 1: Copy & Guard**
+    - [ ] Copy Utilities to `src/sit_utils.c` (`_SitUtils_Strdup`, `_SitUtils_Strcasecmp`, `_sit_hash_string`, `_SitUtils_Utf8_to_wide`, `_SitUtils_Wide_to_utf8`, `SituationFreeString`, `SituationFreeDirectoryFileList`).
+    - [ ] Copy Path functions to `src/sit_fs.c` (`SituationGetBasePath`, `SituationGetAppSavePath`, `SituationGetUserDirectory`, `SituationGetCurrentDriveLetter`, `SituationJoinPath`, `SituationGetFileName`, `SituationGetFileExtension`, `_SitFS_Dirname`).
+    - [ ] Copy Sync I/O functions to `src/sit_fs.c` (`SituationLoadFile`, `SituationSaveFile`, `SituationLoadFileText`, `SituationSaveFileText`, `SituationLoadFileData`, `SituationSaveFileData`, `SituationFileExists`, `SituationDirectoryExists`, `SituationGetDriveInfo`, `SituationGetFileModTime`, `SituationDeleteFile`, `SituationCopyFile`, `SituationMoveFile`, `SituationRenameFile`, `SituationCreateDirectory`, `SituationDeleteDirectory`, `SituationListDirectoryFiles`, `SituationOpenFile`).
+    - [ ] Copy Async I/O functions to `src/sit_fs.c` (`SituationLoadFileAsync`, `SituationLoadFileTextAsync`, `SituationSaveFileAsync`, `SituationSaveFileTextAsync`, `_SitFS_AsyncFileLoadWorker`, `_SitFS_AsyncFileSaveWorker`, `_SitFS_AsyncFileTextLoadWorker`, `_SitFS_AsyncFileTextSaveWorker`, `_SitFS_IOThreadEntry`).
+    - [ ] Copy Hot-Reload functions to `src/sit_fs.c` (`SituationCheckHotReloads`, `SituationReloadShader`, `SituationReloadTexture`, `SituationReloadModel`, `SituationReloadComputePipeline`, `_SitRender_PerformHotReloadPass`).
+- [ ] **Step 2: Verify**
+    - [ ] Comment out originals in `situation_impl.c`.
+    - [ ] Compile and run `test_limits.c`.
+- [ ] **Step 3: Prune**
+    - [ ] Delete commented code from `situation_impl.c`.
+
+#### Module 3.3: Platform & Input (`sit_platform.c`)
+**Dependencies:** Core, FS.
+- [ ] **Step 1: Copy & Guard**
+    - [ ] Copy Lifecycle functions to `src/sit_platform.c` (`SituationInit`, `SituationShutdown`, `SituationIsInitialized`, `SituationUpdate`, `SituationGetVersionString`, `SituationGetDeviceInfo`, `SituationGetCPUThreadCount`, `SituationSetExitCallback`, `SituationSetFocusCallback`).
+    - [ ] Copy Windowing functions to `src/sit_platform.c` (`SituationWindowShouldClose`, `SituationGetWindowSize`, `SituationGetWindowPosition`, `SituationGetWindowScaleDPI`, `SituationSetWindowSize`, `SituationSetWindowPosition`, `SituationSetWindowTitle`, `SituationSetWindowIcon`, `SituationSetWindowIcons`, `SituationMinimizeWindow`, `SituationMaximizeWindow`, `SituationRestoreWindow`, `SituationSetWindowFocused`, `SituationSetWindowMonitor`, `SituationSetWindowMinSize`, `SituationSetWindowMaxSize`, `SituationSetWindowOpacity`, `SituationToggleFullscreen`, `SituationToggleBorderlessWindowed`, `SituationApplyCurrentProfileWindowState`, `SituationIsWindowFullscreen`, `SituationIsWindowHidden`, `SituationIsWindowMaximized`, `SituationIsWindowMinimized`, `SituationIsWindowResized`, `SituationHasWindowFocus`, `SituationSetWindowStateProfiles`, `SituationSetWindowState`, `SituationToggleWindowStateFlags`, `SituationIsWindowState`, `SituationClearWindowState`, `SituationGetCurrentActualWindowStateFlags`, `_SitPlatform_InitWindow`).
+    - [ ] Copy Input functions to `src/sit_platform.c` (`SituationPollInputEvents`, `SituationIsKeyDown`, `SituationIsKeyUp`, `SituationIsKeyPressed`, `SituationIsKeyReleased`, `SituationGetKeyPressed`, `SituationGetKeyPressedEx`, `SituationPeekKeyPressed`, `SituationPeekKeyPressedEx`, `SituationGetCharPressed`, `SituationIsLockKeyPressed`, `SituationIsScrollLockOn`, `SituationIsModifierPressed`, `SituationGetMousePosition`, `SituationGetMouseDelta`, `SituationGetMouseWheelMove`, `SituationGetMouseWheelMoveV`, `SituationSetMousePosition`, `SituationSetMouseOffset`, `SituationSetMouseScale`, `SituationIsMouseButtonDown`, `SituationIsMouseButtonPressed`, `SituationIsMouseButtonReleased`, `SituationGetMouseButtonPressed`, `SituationSetCursor`, `SituationShowCursor`, `SituationHideCursor`, `SituationDisableCursor`, `SituationIsJoystickPresent`, `SituationIsGamepad`, `SituationGetJoystickName`, `SituationGetGamepadAxisValue`, `SituationGetGamepadAxisCount`, `SituationIsGamepadButtonDown`, `SituationIsGamepadButtonPressed`, `SituationIsGamepadButtonReleased`, `SituationGetGamepadButtonPressed`, `SituationSetGamepadVibration`, `SituationSetGamepadMappings`, `SituationGetClipboardText`, `SituationSetClipboardText`, `SituationLoadDroppedFiles`, `SituationUnloadDroppedFiles`, `SituationIsFileDropped`, `SituationSetKeyCallback`, `SituationSetMouseButtonCallback`, `SituationSetCursorPosCallback`, `SituationSetScrollCallback`, `SituationSetJoystickCallback`, `SituationSetFileDropCallback`, `SituationSetResizeCallback`, `_SitRender_GLFWKeyCallback`, `_SitRender_GLFWCharCallback`, `_SitRender_GLFWCursorPosCallback`, `_SitRender_GLFWMouseButtonCallback`, `_SitRender_GLFWScrollCallback`, `_SitRender_GLFWJoystickCallback`, `_SitRender_GLFWErrorCallback`, `_SitRender_GLFWWindowFocusCallback`, `_SitRender_GLFWWindowIconifyCallback`, `_SitRender_GLFWFileDropCallback`, `_SitRender_GLFWFramebufferSizeCallback`).
+    - [ ] Copy Display functions to `src/sit_platform.c` (`SituationGetDisplays`, `SituationFreeDisplays`, `SituationSetDisplayMode`, `SituationRefreshDisplays`, `SituationGetMonitorCount`, `SituationGetMonitorName`, `SituationGetCurrentMonitor`, `SituationGetMonitorWidth`, `SituationGetMonitorHeight`, `SituationGetMonitorPhysicalWidth`, `SituationGetMonitorPhysicalHeight`, `SituationGetMonitorRefreshRate`, `SituationGetMonitorPosition`, `_SitPlatform_SortVirtualDisplaysCallback`, `_SitPlatform_CachePhysicalDisplays`, `_SituationMonitorEnumProc`, `_SituationGetCurrentDisplayIdentifier`).
+- [ ] **Step 2: Verify**
+    - [ ] Comment out originals in `situation_impl.c`.
+    - [ ] Compile and run `test_limits.c`.
+- [ ] **Step 3: Prune**
+    - [ ] Delete commented code from `situation_impl.c`.
+
+#### Module 3.4: Audio Engine (`sit_audio.c`)
+**Dependencies:** Core, FS (for streaming).
+- [ ] **Step 1: Copy & Guard**
+    - [ ] Copy Audio Logic to `src/sit_audio.c` (`SituationPlayAudio`, `SituationPlayLoadedSound`, `SituationStopLoadedSound`, `SituationStopAllLoadedSounds`, `SituationLoadAudio`, `SituationLoadSoundFromFile`, `SituationLoadSoundFromStream`, `SituationLoadSoundFromFileAsync`, `SituationUnloadAudio`, `SituationUnloadSound`, `SituationSetAudioVolume`, `SituationSetSoundVolume`, `SituationGetSoundVolume`, `SituationSetAudioMasterVolume`, `SituationGetAudioMasterVolume`, `SituationSetAudioPan`, `SituationSetSoundPan`, `SituationGetSoundPan`, `SituationSetAudioPitch`, `SituationSetSoundPitch`, `SituationGetSoundPitch`, `SituationSoundCopy`, `SituationSoundCrop`, `SituationSoundExportAsWav`, `SituationAttachAudioProcessor`, `SituationDetachAudioProcessor`, `SituationSetSoundFilter`, `SituationSetSoundReverb`, `SituationSetSoundEcho`, `SituationPlayTone`, `SituationPlayToneEx`, `SituationStopTone`, `SituationStopAllTones`, `SituationPlayMidiNote`, `SituationGetAudioDevices`, `SituationSetAudioDevice`, `SituationIsAudioDevicePlaying`, `SituationPauseAudioDevice`, `SituationResumeAudioDevice`, `SituationSetAudioPlaybackSampleRate`, `SituationGetAudioPlaybackSampleRate`, `SituationStartAudioCapture`, `SituationStopAudioCapture`).
+    - [ ] Copy Internal Audio Helpers to `src/sit_audio.c` (`_SitAudio_InitSoundEffects`, `_SitAudio_GetSoundFromHandle`, `_SitAudio_AllocSlot`, `_SitAudio_FreeSlot`, `_SitAudio_InitPool`, `_SitAudio_CleanupPool`, `_SitAudio_InitReverb`, `_SitAudio_UninitReverb`, `_SitAudio_ProcessReverb`, `_SitAudio_Reverb_comb_process`, `_SitAudio_Reverb_allpass_process`, `sit_miniaudio_data_callback`, `_sit_miniaudio_capture_callback`, `_SitFS_situation_stream_read_thunk`, `_SitCore_situation_stream_seek_thunk`).
+- [ ] **Step 2: Verify**
+    - [ ] Comment out originals in `situation_impl.c`.
+    - [ ] Compile and run `test_limits.c`.
+- [ ] **Step 3: Prune**
+    - [ ] Delete commented code from `situation_impl.c`.
+
+#### Module 3.5: The Graphics Behemoth (`sit_render.c`)
+**Dependencies:** All.
+- [ ] **Step 1: Copy & Guard**
+    - [ ] Copy Common API functions to `src/sit_render.c` (`SituationGetRendererType`, `SituationGetGPUName`, `SituationGetVRAMUsage`, `SituationGetDrawCallCount`, `SituationGetRenderWidth`, `SituationGetRenderHeight`, `SituationGetScreenWidth`, `SituationGetScreenHeight`, `SituationCreateImage`, `SituationLoadImage`, `SituationLoadImageFromMemory`, `SituationLoadImageFromScreen`, `SituationUnloadImage`, `SituationIsImageValid`, `SituationImageCopy`, `SituationImageResize`, `SituationImageCrop`, `SituationImageFlip`, `SituationImageAdjustHSV`, `SituationGenImageColor`, `SituationGenImageGradient`, `SituationSetPixelColor`, `SituationBlitRawDataToImage`, `SituationExportImage`, `SituationCreateTexture`, `SituationCreateTextureEx`, `SituationLoadTexture`, `SituationDestroyTexture`, `SituationGetTextureHandle`, `SituationCreateMesh`, `SituationDestroyMesh`, `SituationLoadModel`, `SituationUnloadModel`, `SituationSaveModelAsGltf`, `SituationGetMeshData`, `SituationCreateBuffer`, `SituationDestroyBuffer`, `SituationUpdateBuffer`, `SituationGetBufferData`, `SituationGetBufferDeviceAddress`, `SituationLoadShader`, `SituationLoadShaderFromMemory`, `SituationUnloadShader`, `SituationSetShaderUniform`, `SituationCreateComputePipeline`, `SituationCreateComputePipelineFromMemory`, `SituationDestroyComputePipeline`, `SituationCreateVirtualDisplay`, `SituationDestroyVirtualDisplay`, `SituationGetVirtualDisplay`, `SituationGetVirtualDisplaySize`, `SituationSetVirtualDisplayScalingMode`, `SituationIsVirtualDisplayDirty`, `SituationSetVirtualDisplayDirty`, `SituationGetLastVDCompositeTimeMS`, `SituationTakeScreenshot`, `SituationExportRenderHistogram`).
+    - [ ] Copy Drawing functions to `src/sit_render.c` (`SituationGetMainCommandBuffer`, `SituationGetComputeCommandBuffer`, `SituationAcquireFrameCommandBuffer`, `SituationEndFrame`, `SituationCmdBeginRenderPass`, `SituationCmdEndRenderPass`, `SituationCmdBeginRenderToDisplay`, `SituationCmdEndRender`, `SituationCmdPresent`, `SituationCmdBindPipeline`, `SituationCmdBindDescriptorSet`, `SituationCmdBindDescriptorSetDynamic`, `SituationCmdBindVertexBuffer`, `SituationCmdBindIndexBuffer`, `SituationCmdBindSampledTexture`, `SituationCmdBindTexture`, `SituationCmdBindTextureSet`, `SituationCmdBindComputeTexture`, `SituationCmdBindUniformBuffer`, `SituationCmdBindComputeBuffer`, `SituationCmdSetViewport`, `SituationCmdSetScissor`, `SituationCmdSetPushConstant`, `SituationCmdSetVertexAttribute`, `SituationCmdDraw`, `SituationCmdDrawIndexed`, `SituationCmdDrawMesh`, `SituationCmdDrawQuad`, `SituationCmdDrawModel`, `SituationCmdDispatch`, `SituationCmdPipelineBarrier`, `SituationMemoryBarrier`, `SituationCmdDrawText`, `SituationCmdDrawTextEx`, `SituationCmdDrawTexture`, `SituationDrawModel`, `SituationDrawMetricsOverlay`, `SituationRenderVirtualDisplays`, `SituationCreateRenderList`, `SituationDestroyRenderList`, `SituationSubmitRenderList`, `SituationReplayRenderList`, `SituationResetRenderList`).
+    - [ ] Copy Image Draw (CPU) functions to `src/sit_render.c` (`SituationImageDraw`, `SituationImageDrawAlpha`, `SituationImageDrawText`, `SituationImageDrawTextEx`, `SituationImageDrawTextFormatted`, `SituationImageDrawCodepoint`).
+    - [ ] Copy Text/Font functions to `src/sit_render.c` (`SituationLoadFont`, `SituationLoadFontFromMemory`, `SituationLoadBitmapFontFromMemory`, `SituationUnloadFont`, `SituationBakeFontAtlas`, `SituationMeasureText`, `_SitRender_InitTextRenderer`, `_SitCore_InitDefaultFont`).
+    - [ ] Copy Internal OpenGL functions to `src/sit_render.c` (`_SitRender_InitOpenGL`, `_SitRender_CleanupOpenGL`, `_SitRender_InitQuadRenderer`, `_SitRender_CleanupQuadRenderer`, `_SitRender_InitGLVirtualDisplayRenderer`, `_SitRender_InitGLRingBuffer`, `_SitRender_InitGLMDIBuffer`, `_SitRender_InitGLRingFences`, `_SitRender_GLRingWait`, `_SitRender_GLExecuteCommands`, `_SitRender_GLSoftCmdPush`, `_SitRender_GLSoftDataPush`, `_SitRender_CompileGLShader`, `_SitRender_CreateGLShaderProgram`, `_SitRender_CreateGLShaderProgramFromSource`, `_SitRender_CreateGLShaderProgramFromSpirv`, `_SitRender_CreateGLComputeProgram`, `_SitRender_CreateGLComputeProgramFromSpirv`, `_SitRender_MapDataTypeToGL`, `_SitRender_CheckGLError`, `_SituationLogGLError`, `_SitRender_GLBackupState`, `_SitRender_GLRestoreState`, `_SitRender_GLInvalidateShadowState`, `_SitRender_GLGetCachedVAO`, `_SitRender_GLDeferDestroyBuffer`, `_SitRender_GLDeferDestroyTexture`, `_SitRender_GLDeferCleanMeshVAO`, `_SitRender_GLFlushGraveyard`, `_SitRender_Uniform_map_create`, `_SitRender_Uniform_map_destroy`, `_SitRender_Uniform_map_set`, `_SitRender_Uniform_map_get`).
+    - [ ] Copy Internal Vulkan functions to `src/sit_render.c` (`_SitCore_InitVulkan`, `_SitCore_CleanupVulkan`, `_SitRender_InitRenderer`, `_SitRender_CleanupRenderer`, `_SitCore_VulkanCreateInstance`, `_SitCore_VulkanSetupDebugMessenger`, `_SitCore_VulkanCreateSurface`, `_SitRender_VulkanPickPhysicalDevice`, `_SitRender_VulkanCreateLogicalDevice`, `_SitCore_VulkanCreateAllocator`, `_SitRender_VulkanCreateSwapchain`, `_SitRender_VulkanCreateImageViews`, `_SitRender_VulkanCreateRenderPass`, `_SitCore_VulkanCreateDepthResources`, `_SitRender_VulkanCreateFramebuffers`, `_SitRender_VulkanCreateCommandPool`, `_SitRender_VulkanCreateCommandBuffers`, `_SitCore_VulkanCreateSyncObjects`, `_SitRender_VulkanInitInternalRenderers`, `_SitRender_VulkanInitComputeLayouts`, `_SitRender_VulkanCleanupSwapchain`, `_SitRender_VulkanRecreateSwapchain`, `_SitRender_VulkanQuerySwapchainSupport`, `_SitRender_VulkanFreeSwapchainSupportDetails`, `_SitRender_VulkanCreateImage`, `_SitRender_VulkanDestroyImage`, `_SitRender_VulkanCreateImageView`, `_SitRender_VulkanTransitionImageLayout`, `_SitCore_VulkanGenerateMipmaps`, `_SitRender_VulkanCopyBufferToImage`, `_SitRender_VulkanBlitImageToHostVisibleBuffer`, `_SitRender_VulkanReadBackBuffer`, `_SitRender_VulkanCreateAndUploadBuffer`, `_SitRender_InitStagingBuffers`, `_SitRender_CleanupStagingBuffers`, `_SitRender_VulkanAllocateDescriptorSet`, `_SitRender_VulkanBeginSingleTimeCommands`, `_SitRender_VulkanEndSingleTimeCommands`, `_SitRender_VulkanCreateShaderModule`, `_SitRender_VulkanCreateGraphicsPipeline`, `_SitRender_CreateVulkanPipeline`, `_SitRender_VulkanCreateComputePipeline`, `_SitRender_VulkanCompileGLSLtoSPIRV`, `_SitRender_ShaderIncluderResolve`, `_SitRender_ShaderIncluderRelease`, `_SitCore_FreeSpirvBlob`, `_SitCore_InitGraveyard`, `_SitCore_CleanupGraveyard`, `_SitCore_FlushGraveyard`, `_SitCore_FlushFrameResources`, `_SitRender_DeferDestroyBuffer`, `_SitRender_DeferDestroyImage`, `_SitRender_DeferDestroyDescriptorSet`, `_SitRender_DeferDestroyPipeline`, `_SitRender_DeferDestroyFramebuffer`, `_SitRender_DeferDestroyRenderPass`, `_SitRender_IsDeviceSuitable`, `_SitCore_VulkanFindSupportedFormat`, `_SitCore_VulkanFindQueueFamilies`, `_SituationVulkanGetRequiredExtensions`, `_SituationVulkanDebugCallback`, `_SitCore_VulkanCreateScreenCopyResource`, `_SitCore_VulkanDestroyScreenCopyResource`).
+    - [ ] Copy Other Internal Render functions to `src/sit_render.c` (`_SitRender_InitRenderThread`, `_SitRender_DestroyRenderThread`, `_SitRender_RenderThreadEntry`, `_SitRender_RenderJobWorker`, `_SitRender_ExtractGLTFPrimitive`, `_SitRender_SaveImageBMP`, `_SitCore_ReplayToQueue`, `_SitRender_EnqueueRenderList`, `_SitRender_GetBufferNode`, `_SitRender_GetTextureSlot`, `_SituationBilinearSample`, `_SituationColorAlphaBlend`, `_SituationClampf`, `_SituationLerpf`, `_SituationFMin3`, `_SituationFMax3`).
+- [ ] **Step 2: Verify**
+    - [ ] Comment out originals in `situation_impl.c`.
+    - [ ] Compile and run `test_limits.c`.
+- [ ] **Step 3: Prune**
+    - [ ] Delete commented code from `situation_impl.c`.
 
 ### Phase 4: The Legacy Bridge & Polish
 *Goal: Restore backward compatibility for users who rely on the single-header behavior.*
