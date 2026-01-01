@@ -1,0 +1,9 @@
+build/
+*.o
+*.a
+test_limits
+test_async_io
+extract_funcs.py
+generate_rename_map.py
+*.txt
+situation.h.bak

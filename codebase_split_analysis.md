@@ -34,22 +34,190 @@ root/
 ### Phase 0: Baseline & Safety Net
 *Goal: Ensure the current state is stable and reproducible before major surgery.*
 
-- [ ] **Verify Test Environment**
-    - [ ] Run `test_limits.c` and ensure it passes.
-    - [ ] Run `test_async_io.c` and ensure it passes.
-    - [ ] Verify `situation_dll.c` compiles successfully.
-- [ ] **Snapshot**
-    - [ ] Create a backup of `situation.h` to `situation.h.bak` for quick comparison.
+- [x] **Verify Test Environment**
+    - [x] Run `test_limits.c` and ensure it passes.
+    - [x] Run `test_async_io.c` and ensure it passes.
+    - [x] Verify `situation_dll.c` compiles successfully.
+- [x] **Snapshot**
+    - [x] Create a backup of `situation.h` to `situation.h.bak` for quick comparison.
 
 ### Phase 0.5: Pre-Split Refactoring
 *Goal: Prepare the codebase for separation by enforcing namespace hygiene and physical grouping.*
 
-- [ ] **Symbol Sanitization**
-    - [ ] Rename internal `static` helper functions to avoid collisions in the Unity Build.
-    - [ ] Convention: `_Sit[Module]_[Name]`.
+- [x] **Symbol Sanitization**
+    - [x] Rename internal `static` helper functions to avoid collisions in the Unity Build.
+    - [x] Convention: `_Sit[Module]_[Name]`.
         -   `_SitGetTextureSlot` -> `_SitRender_GetTextureSlot`
         -   `_SitAudioInitPool` -> `_SitAudio_InitPool`
         -   `_SituationDeferredDestroyBuffer` -> `_SitRender_DeferDestroyBuffer`
+
+    **Applied Mappings:**
+    ```text
+    _SitAudioAllocSlot -> _SitAudio_AllocSlot
+    _SitAudioCleanupPool -> _SitAudio_CleanupPool
+    _SitAudioFreeSlot -> _SitAudio_FreeSlot
+    _SitAudioGetSoundFromHandle -> _SitAudio_GetSoundFromHandle
+    _SitAudioInitPool -> _SitAudio_InitPool
+    _SitFlushFrameResources -> _SitCore_FlushFrameResources
+    _SitGLBackupState -> _SitRender_GLBackupState
+    _SitGLDeferCleanMeshVAO -> _SitRender_GLDeferCleanMeshVAO
+    _SitGLDeferDestroyBuffer -> _SitRender_GLDeferDestroyBuffer
+    _SitGLDeferDestroyTexture -> _SitRender_GLDeferDestroyTexture
+    _SitGLFlushGraveyard -> _SitRender_GLFlushGraveyard
+    _SitGLGetCachedVAO -> _SitRender_GLGetCachedVAO
+    _SitGLInvalidateShadowState -> _SitRender_GLInvalidateShadowState
+    _SitGLRestoreState -> _SitRender_GLRestoreState
+    _SitGLSoftCmdPush -> _SitRender_GLSoftCmdPush
+    _SitGLSoftDataPush -> _SitRender_GLSoftDataPush
+    _SitGetBufferNode -> _SitRender_GetBufferNode
+    _SitGetJobFromId -> _SitCore_GetJobFromId
+    _SitGetMonotonicTimeNS -> _SitCore_GetMonotonicTimeNS
+    _SitGetTextureSlot -> _SitRender_GetTextureSlot
+    _SitParallelWorker -> _SitCore_ParallelWorker
+    _SituationAssertMainThread -> _SitFS_AssertMainThread
+    _SituationAsyncAudioWorker -> _SitAudio_AsyncAudioWorker
+    _SituationAsyncFileLoadWorker -> _SitFS_AsyncFileLoadWorker
+    _SituationAsyncFileSaveWorker -> _SitFS_AsyncFileSaveWorker
+    _SituationAsyncFileTextLoadWorker -> _SitFS_AsyncFileTextLoadWorker
+    _SituationAsyncFileTextSaveWorker -> _SitFS_AsyncFileTextSaveWorker
+    _SituationCheckGLError -> _SitRender_CheckGLError
+    _SituationCleanupDanglingResources -> _SitRender_CleanupDanglingResources
+    _SituationCleanupGraveyard -> _SitCore_CleanupGraveyard
+    _SituationCleanupOpenGL -> _SitRender_CleanupOpenGL
+    _SituationCleanupPlatform -> _SitCore_CleanupPlatform
+    _SituationCleanupQuadRenderer -> _SitRender_CleanupQuadRenderer
+    _SituationCleanupRenderer -> _SitRender_CleanupRenderer
+    _SituationCleanupStagingBuffers -> _SitRender_CleanupStagingBuffers
+    _SituationCleanupSubsystems -> _SitCore_CleanupSubsystems
+    _SituationCleanupVulkan -> _SitCore_CleanupVulkan
+    _SituationCompileGLShader -> _SitRender_CompileGLShader
+    _SituationCreateGLComputeProgram -> _SitRender_CreateGLComputeProgram
+    _SituationCreateGLComputeProgramFromSpirv -> _SitRender_CreateGLComputeProgramFromSpirv
+    _SituationCreateGLShaderProgram -> _SitRender_CreateGLShaderProgram
+    _SituationCreateGLShaderProgramFromSource -> _SitRender_CreateGLShaderProgramFromSource
+    _SituationCreateGLShaderProgramFromSpirv -> _SitRender_CreateGLShaderProgramFromSpirv
+    _SituationCreateVulkanPipeline -> _SitRender_CreateVulkanPipeline
+    _SituationCreateVulkanShaderModule -> _SitRender_CreateVulkanShaderModule
+    _SituationDeferDestroyBuffer -> _SitRender_DeferDestroyBuffer
+    _SituationDeferDestroyDescriptorSet -> _SitRender_DeferDestroyDescriptorSet
+    _SituationDeferDestroyFramebuffer -> _SitRender_DeferDestroyFramebuffer
+    _SituationDeferDestroyImage -> _SitRender_DeferDestroyImage
+    _SituationDeferDestroyPipeline -> _SitRender_DeferDestroyPipeline
+    _SituationDeferDestroyRenderPass -> _SitRender_DeferDestroyRenderPass
+    _SituationDestroyRenderThread -> _SitRender_DestroyRenderThread
+    _SituationDetectCycle -> _SitCore_DetectCycle
+    _SituationEnqueueRenderList -> _SitRender_EnqueueRenderList
+    _SituationExtractGLTFPrimitive -> _SitRender_ExtractGLTFPrimitive
+    _SituationFlushGraveyard -> _SitCore_FlushGraveyard
+    _SituationFreeSpirvBlob -> _SitCore_FreeSpirvBlob
+    _SituationFullCleanupOnError -> _SitCore_FullCleanupOnError
+    _SituationGLExecuteCommands -> _SitRender_GLExecuteCommands
+    _SituationGLFWCharCallback -> _SitRender_GLFWCharCallback
+    _SituationGLFWCursorPosCallback -> _SitRender_GLFWCursorPosCallback
+    _SituationGLFWErrorCallback -> _SitRender_GLFWErrorCallback
+    _SituationGLFWFileDropCallback -> _SitRender_GLFWFileDropCallback
+    _SituationGLFWFramebufferSizeCallback -> _SitRender_GLFWFramebufferSizeCallback
+    _SituationGLFWJoystickCallback -> _SitRender_GLFWJoystickCallback
+    _SituationGLFWKeyCallback -> _SitRender_GLFWKeyCallback
+    _SituationGLFWMouseButtonCallback -> _SitRender_GLFWMouseButtonCallback
+    _SituationGLFWScrollCallback -> _SitRender_GLFWScrollCallback
+    _SituationGLFWWindowFocusCallback -> _SitRender_GLFWWindowFocusCallback
+    _SituationGLFWWindowIconifyCallback -> _SitRender_GLFWWindowIconifyCallback
+    _SituationGLRingWait -> _SitRender_GLRingWait
+    _SituationGetHighResTime -> _SitCore_GetHighResTime
+    _SituationInitDefaultFont -> _SitCore_InitDefaultFont
+    _SituationInitGLMDIBuffer -> _SitRender_InitGLMDIBuffer
+    _SituationInitGLRingBuffer -> _SitRender_InitGLRingBuffer
+    _SituationInitGLRingFences -> _SitRender_InitGLRingFences
+    _SituationInitGLVirtualDisplayRenderer -> _SitRender_InitGLVirtualDisplayRenderer
+    _SituationInitGraveyard -> _SitCore_InitGraveyard
+    _SituationInitOpenGL -> _SitRender_InitOpenGL
+    _SituationInitPlatform -> _SitCore_InitPlatform
+    _SituationInitQuadRenderer -> _SitRender_InitQuadRenderer
+    _SituationInitRenderThread -> _SitRender_InitRenderThread
+    _SituationInitRenderer -> _SitRender_InitRenderer
+    _SituationInitReverb -> _SitAudio_InitReverb
+    _SituationInitSoundEffects -> _SitAudio_InitSoundEffects
+    _SituationInitStagingBuffers -> _SitRender_InitStagingBuffers
+    _SituationInitSubsystems -> _SitCore_InitSubsystems
+    _SituationInitTextRenderer -> _SitRender_InitTextRenderer
+    _SituationInitVulkan -> _SitCore_InitVulkan
+    _SituationIsDeviceSuitable -> _SitRender_IsDeviceSuitable
+    _SituationMapDataTypeToGL -> _SitRender_MapDataTypeToGL
+    _SituationPerformHotReloadPass -> _SitRender_PerformHotReloadPass
+    _SituationProcessReverb -> _SitAudio_ProcessReverb
+    _SituationReadSpirvFile -> _SitFS_ReadSpirvFile
+    _SituationRenderJobWorker -> _SitRender_RenderJobWorker
+    _SituationRenderThreadEntry -> _SitRender_RenderThreadEntry
+    _SituationReplayToQueue -> _SitCore_ReplayToQueue
+    _SituationSaveImageBMP -> _SitRender_SaveImageBMP
+    _SituationSetError -> _SitCore_SetError
+    _SituationSetErrorFromCode -> _SitCore_SetErrorFromCode
+    _SituationSetFilesystemError -> _SitFS_SetFilesystemError
+    _SituationShaderIncluderRelease -> _SitRender_ShaderIncluderRelease
+    _SituationShaderIncluderResolve -> _SitRender_ShaderIncluderResolve
+    _SituationSubmitCompute -> _SitRender_SubmitCompute
+    _SituationSubmitGraphics -> _SitRender_SubmitGraphics
+    _SituationUninitReverb -> _SitAudio_UninitReverb
+    _SituationValidateRenderCaps -> _SitRender_ValidateRenderCaps
+    _SituationVulkanAllocateDescriptorSet -> _SitRender_VulkanAllocateDescriptorSet
+    _SituationVulkanBeginSingleTimeCommands -> _SitRender_VulkanBeginSingleTimeCommands
+    _SituationVulkanBlitImageToHostVisibleBuffer -> _SitRender_VulkanBlitImageToHostVisibleBuffer
+    _SituationVulkanCleanupSwapchain -> _SitRender_VulkanCleanupSwapchain
+    _SituationVulkanCompileGLSLtoSPIRV -> _SitRender_VulkanCompileGLSLtoSPIRV
+    _SituationVulkanCopyBufferToImage -> _SitRender_VulkanCopyBufferToImage
+    _SituationVulkanCreateAllocator -> _SitCore_VulkanCreateAllocator
+    _SituationVulkanCreateAndUploadBuffer -> _SitRender_VulkanCreateAndUploadBuffer
+    _SituationVulkanCreateCommandBuffers -> _SitRender_VulkanCreateCommandBuffers
+    _SituationVulkanCreateCommandPool -> _SitRender_VulkanCreateCommandPool
+    _SituationVulkanCreateComputePipeline -> _SitRender_VulkanCreateComputePipeline
+    _SituationVulkanCreateDepthResources -> _SitCore_VulkanCreateDepthResources
+    _SituationVulkanCreateFramebuffers -> _SitRender_VulkanCreateFramebuffers
+    _SituationVulkanCreateGraphicsPipeline -> _SitRender_VulkanCreateGraphicsPipeline
+    _SituationVulkanCreateImage -> _SitRender_VulkanCreateImage
+    _SituationVulkanCreateImageView -> _SitRender_VulkanCreateImageView
+    _SituationVulkanCreateImageViews -> _SitRender_VulkanCreateImageViews
+    _SituationVulkanCreateInstance -> _SitCore_VulkanCreateInstance
+    _SituationVulkanCreateLogicalDevice -> _SitRender_VulkanCreateLogicalDevice
+    _SituationVulkanCreateRenderPass -> _SitRender_VulkanCreateRenderPass
+    _SituationVulkanCreateScreenCopyResource -> _SitCore_VulkanCreateScreenCopyResource
+    _SituationVulkanCreateShaderModule -> _SitRender_VulkanCreateShaderModule
+    _SituationVulkanCreateSurface -> _SitCore_VulkanCreateSurface
+    _SituationVulkanCreateSwapchain -> _SitRender_VulkanCreateSwapchain
+    _SituationVulkanCreateSyncObjects -> _SitCore_VulkanCreateSyncObjects
+    _SituationVulkanDestroyImage -> _SitRender_VulkanDestroyImage
+    _SituationVulkanDestroyScreenCopyResource -> _SitCore_VulkanDestroyScreenCopyResource
+    _SituationVulkanEndSingleTimeCommands -> _SitRender_VulkanEndSingleTimeCommands
+    _SituationVulkanFindQueueFamilies -> _SitCore_VulkanFindQueueFamilies
+    _SituationVulkanFindSupportedFormat -> _SitCore_VulkanFindSupportedFormat
+    _SituationVulkanFreeSwapchainSupportDetails -> _SitRender_VulkanFreeSwapchainSupportDetails
+    _SituationVulkanGenerateMipmaps -> _SitCore_VulkanGenerateMipmaps
+    _SituationVulkanInitComputeLayouts -> _SitRender_VulkanInitComputeLayouts
+    _SituationVulkanInitInternalRenderers -> _SitRender_VulkanInitInternalRenderers
+    _SituationVulkanPickPhysicalDevice -> _SitRender_VulkanPickPhysicalDevice
+    _SituationVulkanQuerySwapchainSupport -> _SitRender_VulkanQuerySwapchainSupport
+    _SituationVulkanReadBackBuffer -> _SitRender_VulkanReadBackBuffer
+    _SituationVulkanRecreateSwapchain -> _SitRender_VulkanRecreateSwapchain
+    _SituationVulkanSetupDebugMessenger -> _SitCore_VulkanSetupDebugMessenger
+    _SituationVulkanTransitionImageLayout -> _SitRender_VulkanTransitionImageLayout
+    _SituationWorkerEntry -> _SitCore_WorkerEntry
+    _sit_directory_exists -> _SitFS_Directory_exists
+    _sit_dirname -> _SitFS_Dirname
+    _sit_miniaudio_capture_callback -> _SitAudio_Miniaudio_capture_callback
+    _sit_reverb_allpass_process -> _SitAudio_Reverb_allpass_process
+    _sit_reverb_comb_process -> _SitAudio_Reverb_comb_process
+    _sit_strcasecmp -> _SitUtils_Strcasecmp
+    _sit_strdup -> _SitUtils_Strdup
+    _sit_uniform_map_create -> _SitRender_Uniform_map_create
+    _sit_uniform_map_destroy -> _SitRender_Uniform_map_destroy
+    _sit_uniform_map_get -> _SitRender_Uniform_map_get
+    _sit_uniform_map_set -> _SitRender_Uniform_map_set
+    _sit_utf8_to_wide -> _SitUtils_Utf8_to_wide
+    _sit_wide_to_utf8 -> _SitUtils_Wide_to_utf8
+    _situation_stream_read_thunk -> _SitFS__situation_stream_read_thunk
+    _situation_stream_seek_thunk -> _SitCore__situation_stream_seek_thunk
+    ```
+
 - [ ] **Physical Grouping**
     - [ ] Reorder the implementation block within `situation.h` to group functions by module.
     -   **Order:**
