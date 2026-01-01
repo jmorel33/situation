@@ -281,23 +281,45 @@ root/
 *Goal: Move code from the monolithic `situation_impl.c` into specific modules.*
 
 - [ ] **Move Core Module (`sit_core.c`)**
-    - [ ] Move: `SituationLog`, `SituationError`, `SIT_MALLOC`, `Vector` math helpers.
+    - [ ] Move: `SituationLog`, `SituationLogWarning`, `SituationSetTraceLogLevel`.
+    - [ ] Move: `SituationGetLastErrorMsg`, `_SitCore_SetError`, `_SitCore_SetErrorFromCode`.
+    - [ ] Move: `SituationFreeString` (and memory macros if not in common).
+    - [ ] Move: Threading API (`SituationCreateThreadPool`, `SituationSubmitJobEx`, `SituationWaitForJob`, `SituationWaitForAllJobs`, `SituationDestroyThreadPool`, `SituationAddJobDependency`).
+    - [ ] Move: Timer/Oscillator API (`SituationTimerGetTime`, `SituationSetTargetFPS`, `SituationGetFrameTime`, `SituationGetFPS`, `SituationTimer*`).
+    - [ ] Move: Internal helpers (`_SitCore_GetMonotonicTimeNS`, `_SitCore_WorkerEntry`, `_SitCore_ParallelWorker`).
     - [ ] Verify compilation.
-- [ ] **Move Platform Module (`sit_platform.c`)**
-    - [ ] Move: `SituationInit`, `SituationShutdown`, `SituationPollInputEvents`, `SituationGetDeviceInfo`.
-    - [ ] Move: GLFW callbacks and window creation logic.
-    - [ ] Verify compilation.
-- [ ] **Move Audio Module (`sit_audio.c`)**
-    - [ ] Move: `SituationInitAudio`, `SituationPlaySound`, `SituationUpdateAudio`.
-    - [ ] Move: Miniaudio backend implementation.
+- [ ] **Move Utils Module (`sit_utils.c`)**
+    - [ ] Move: String helpers (`_SitUtils_Strdup`, `_SitUtils_Strcasecmp`).
+    - [ ] Move: Hash/Encoding helpers (`_sit_hash_string`, `_SitUtils_Utf8_to_wide`, `_SitUtils_Wide_to_utf8`).
     - [ ] Verify compilation.
 - [ ] **Move Filesystem Module (`sit_fs.c`)**
-    - [ ] Move: `SituationLoadFile`, `SituationSaveFile`.
-    - [ ] Move: Hot-Reloading logic (`Velocity`).
+    - [ ] Move: `SituationLoadFile`, `SituationLoadFileText`, `SituationSaveFile`, `SituationSaveFileText`.
+    - [ ] Move: `SituationLoadFileData`, `SituationSaveFileData` and Async variants.
+    - [ ] Move: Directory/Path API (`SituationFileExists`, `SituationDirectoryExists`, `SituationListDirectoryFiles`, `SituationGetBasePath`, `SituationJoinPath`, `_SitFS_Dirname`).
+    - [ ] Move: Hot-Reloading logic (`SituationCheckHotReloads`, `SituationReload*` logic if generic).
+    - [ ] Move: Internal helpers (`_SitFS_...`).
+    - [ ] Verify compilation.
+- [ ] **Move Platform Module (`sit_platform.c`)**
+    - [ ] Move: `SituationInit`, `SituationShutdown`, `SituationIsInitialized`.
+    - [ ] Move: Window API (`SituationWindowShouldClose`, `SituationGetGLFWwindow`, `SituationGetWindowSize`, `SituationSetWindow*`).
+    - [ ] Move: System Info API (`SituationGetDeviceInfo`, `SituationGetCPUThreadCount`).
+    - [ ] Move: Input API (`SituationPollInputEvents`, `SituationIsKeyDown/Up`, `SituationGetMouse*`, `SituationSetMouse*`, `SituationIsJoystick*`, `SituationGetGamepad*`, `SituationSetCursor`).
+    - [ ] Move: Display API (`SituationGetDisplays`, `SituationSetDisplayMode`, `SituationFreeDisplays`).
+    - [ ] Move: GLFW Callbacks (`_SitRender_GLFW...` renamed/moved).
+    - [ ] Move: Internal helpers (`_SitPlatform_...`, `_SitCore_InitPlatform`).
+    - [ ] Verify compilation.
+- [ ] **Move Audio Module (`sit_audio.c`)**
+    - [ ] Move: Audio Lifecycle (`SituationInitAudio` if exists, `SituationUpdateAudio` calls).
+    - [ ] Move: Sound API (`SituationPlaySound`, `SituationLoadSound...`, `SituationUnloadSound`, `SituationStop...`, `SituationSetSound...`).
+    - [ ] Move: Miniaudio backend implementation (`MINIAUDIO_IMPLEMENTATION`, `_sit_miniaudio_data_callback`).
+    - [ ] Move: Internal helpers (`_SitAudio_...`, `_SitFS_situation_stream_read_thunk`).
     - [ ] Verify compilation.
 - [ ] **Move Render Module (`sit_render.c`)**
-    - [ ] Move: `SituationCreateTexture`, `SituationDraw*`, `SituationSubmitJob`.
-    - [ ] Move: OpenGL/Vulkan specific backend logic.
+    - [ ] Move: Texture/Buffer/Mesh API (`SituationCreateTexture`, `SituationCreateBuffer`, `SituationCreateMesh`, `SituationDestroy*`).
+    - [ ] Move: Draw API (`SituationDrawModel`, `SituationCmdDraw*`, `SituationSubmitGraphics`, `SituationSubmitCompute`).
+    - [ ] Move: Image API (`SituationLoadImage*`, `SituationTakeScreenshot`, `SituationSaveImageBMP`).
+    - [ ] Move: Backend Implementations (OpenGL `_SitRender_InitOpenGL...`, Vulkan `_SitCore_InitVulkan...`).
+    - [ ] Move: `stb_image` and `stb_truetype` implementations.
     - [ ] **Critical:** Ensure internal render state (`sit_render` macro) is accessible via `sit_common.h`.
     - [ ] Verify compilation.
 
