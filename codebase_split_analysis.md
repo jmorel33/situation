@@ -262,20 +262,20 @@ root/
 ### Phase 2: The "Great Separation"
 *Goal: Separate the API from the Implementation. This is the most critical phase.*
 
-- [ ] **Extract Implementation**
-    - [ ] Cut the entire `SITUATION_IMPLEMENTATION` block from `situation.h`.
-    - [ ] Paste it into `situation_impl.c` (temporarily monolithic).
-    - [ ] Verify `situation.h` contains ONLY:
+- [x] **Extract Implementation**
+    - [x] Cut the entire `SITUATION_IMPLEMENTATION` block from `situation.h`.
+    - [x] Paste it into `situation_impl.c` (temporarily monolithic).
+    - [x] Verify `situation.h` contains ONLY:
         -   License / Comments.
         -   Includes `sit_config.h`.
         -   Configuration Macros (`SITUATION_USE_OPENGL`, etc.).
         -   Typedefs, Enums, Structs.
         -   Function Prototypes (`SITAPI`).
-- [ ] **Extract Internal Shared State**
-    - [ ] Identify internal structs (`_SituationGlobalState`, `_SituationRenderState`, `_SituationAudioState`).
-    - [ ] Identify internal macros (`SIT_LOG`, `SIT_CHECK`, etc.).
-    - [ ] Move these from `situation_impl.c` (or `situation.h` if they were leaked) to `src/sit_common.h`.
-    - [ ] Ensure `src/sit_common.h` is included by `situation_impl.c`.
+- [x] **Extract Internal Shared State**
+    - [x] Identify internal structs (`_SituationGlobalState`, `_SituationRenderState`, `_SituationAudioState`).
+    - [x] Identify internal macros (`SIT_LOG`, `SIT_CHECK`, etc.).
+    - [x] Move these from `situation_impl.c` (or `situation.h` if they were leaked) to `src/sit_common.h`.
+    - [x] Ensure `src/sit_common.h` is included by `situation_impl.c`.
 
 ### Phase 3: Module Colonization
 *Goal: Move code from the monolithic `situation_impl.c` into specific modules.*
