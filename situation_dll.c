@@ -1,76 +1,46 @@
-/**
- * build_dll.c - Compilation unit for building situation.h as a shared library (DLL).
- *
- * This file's sole purpose is to define the macros required to instantiate
- * the implementation of the situation.h library and mark its functions for
- * export from the DLL.
- *
- * To compile on Windows with GCC (MinGW):
- *   gcc -shared -o situation.dll build_dll.c -DSITUATION_BUILD_SHARED -I<path_to_cglm> -I<path_to_glad> -I<path_to_glfw> -lglfw3 -lgdi32 -lopengl32 -lwinmm -luser32 -lshell32 -lole32 -liphlpapi -lsetupapi -ldxgi -lpropsys -lshlwapi -lxinput -lm
- *
- * To compile on Linux with GCC:
- *   gcc -shared -fPIC -o libsituation.so build_dll.c -DSITUATION_BUILD_SHARED -I<includes> -lglfw -lGL -lm -ldl -lpthread
+/*
+ * situation_dll.c
+ * 
+ * DLL Entry Point for Situation Library
+ * 
+ * This file includes the full situation implementation with SITUATION_IMPLEMENTATION
+ * defined, allowing the entire library to be compiled into a shared library (DLL).
+ * 
+ * When building the DLL, compile with:
+ *   -DSITUATION_BUILD_SHARED
+ *   -DSITUATION_IMPLEMENTATION
+ *   -DSITUATION_USE_VULKAN (or SITUATION_USE_OPENGL)
  */
 
-// Define this to tell situation.h that we are building it as a shared library.
-// This will activate the `__declspec(dllexport)` definition for SITAPI on Windows.
-#define SITUATION_BUILD_SHARED
-
-// Define backend
-#define SITUATION_USE_OPENGL
-
-// Define this to include the implementation of the library in this compilation unit.
 #define SITUATION_IMPLEMENTATION
 #include "situation.h"
 
-// Note: situation.h includes glad.c when SITUATION_USE_OPENGL is defined
-// So we do NOT include it here to avoid duplicate symbols.
+#if defined(_WIN32)
+#include <windows.h>
 
 /*
-How to Use build_dll.c
-Let's assume the following project structure:
-
-project_root/
-├── your_game/
-│   └── main.c
-├── situation_lib/
-│   ├── situation.h
-│   ├── build_dll.c
-│   └── ext/
-│       ├── glad.c
-│       ├── glad/
-│       │   └── glad.h
-│       ├── ... (miniaudio.h, cglm/, GLFW/)
-│
-└── (output will go here)
-    ├── situation.dll
-    └── your_game.exe
-
-
-1. Build the DLL:
-Navigate to your situation_lib directory and run the compilation command.
-On Windows (using MinGW GCC):
-gcc -shared -o ../situation.dll build_dll.c -DSITUATION_BUILD_SHARED -I./ext -lgdi32 -lopengl32 -lwinmm -luser32 -lshell32 -lole32 -liphlpapi -lsetupapi -ldxgi -lpropsys -lshlwapi -lxinput -lm -lglfw3
-Use code with caution.
-Bash
--shared: Tells GCC to create a shared library.
--o ../situation.dll: Specifies the output file name and location.
-build_dll.c: Your main compilation source.
--DSITUATION_BUILD_SHARED: This is the crucial macro that activates the dllexport mode.
--I./ext: Tells the compiler where to find cglm, glad.h, glfw3.h, etc.
--l...: Links all the necessary system and GLFW libraries. I've included the full list.
-2. Compile Your Game to Use the DLL:
-Navigate to your your_game directory.
-In your main.c, you will now define SITUATION_USE_SHARED before including the header.
-// your_game/main.c
-
-#define SITUATION_USE_SHARED // Tell the header to import functions from a DLL
-#include "../situation_lib/situation.h"
-
-// You no longer need #define SITUATION_IMPLEMENTATION here.
-
-int main(void) {
-    // ... your game code ...
-    return 0;
+ * DLL Entry Point
+ * Called when the DLL is loaded or unloaded
+ */
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
+    (void)hinstDLL;
+    (void)lpvReserved;
+    
+    switch (fdwReason) {
+        case DLL_PROCESS_ATTACH:
+            // DLL is being loaded into a process
+            break;
+        case DLL_PROCESS_DETACH:
+            // DLL is being unloaded from a process
+            break;
+        case DLL_THREAD_ATTACH:
+            // A thread is being created in a process that has already loaded this DLL
+            break;
+        case DLL_THREAD_DETACH:
+            // A thread is exiting in a process that has already loaded this DLL
+            break;
+    }
+    return TRUE;
 }
-*/
+
+#endif // _WIN32
