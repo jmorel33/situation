@@ -159,7 +159,9 @@ SITAPI void _SituationLogGLError(const char* file, int line);
  */
 #include <cglm/cglm.h>
 #define GLFW_INCLUDE_NONE   // This prevents GLFW from trying to include the system GL/gl.h header, which is missing in some environments (including this one) and is unnecessary when using glad.
-#define GLFW_INCLUDE_VULKAN
+#if defined(SITUATION_USE_VULKAN)
+    #define GLFW_INCLUDE_VULKAN
+#endif
 #include <GLFW/glfw3.h>
 #include <miniaudio.h>
 
