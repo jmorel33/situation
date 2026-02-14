@@ -30448,12 +30448,16 @@ static int _SituationIOThreadEntry(void* arg) {
 }
 
 SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size, double hot_reload_rate, bool disable_io) {
+#ifdef SITUATION_DEBUG_THREADING
     printf("[THREADING] SituationCreateThreadPool called\n");
     fflush(stdout);
+#endif
     SIT_ASSERT_MAIN_THREAD();
     if (!pool) {
+#ifdef SITUATION_DEBUG_THREADING
         printf("[THREADING] ERROR: pool is NULL\n");
         fflush(stdout);
+#endif
         return false;
     }
     memset(pool, 0, sizeof(SituationThreadPool));
@@ -30462,8 +30466,10 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
     if (num_threads == 0) {
         num_threads = (size_t)SituationGetCPUThreadCount();
         num_threads = (num_threads > 1) ? num_threads - 1 : 1; // Leave one for main
+#ifdef SITUATION_DEBUG_THREADING
         printf("[THREADING] Auto-detected %zu worker threads\n", num_threads);
         fflush(stdout);
+#endif
     }
     if (num_threads > SITUATION_MAX_THREADS) num_threads = SITUATION_MAX_THREADS;
     pool->thread_count = num_threads;
@@ -30501,37 +30507,51 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
     atomic_init(&pool->active_jobs, 0);
     atomic_init(&pool->shutdown, false);
 
+#ifdef SITUATION_DEBUG_THREADING
     printf("[THREADING] About to create %zu worker threads...\n", num_threads);
     fflush(stdout);
     fprintf(stderr, "[THREADING] Creating %zu worker threads...\n", num_threads);
+#endif
     for (size_t i = 0; i < num_threads; ++i) {
+#ifdef SITUATION_DEBUG_THREADING
         printf("[THREADING] Creating worker thread %zu...\n", i);
         fflush(stdout);
+#endif
         if (thrd_create(&pool->threads[i], _SituationWorkerEntry, pool) != thrd_success) {
+#ifdef SITUATION_DEBUG_THREADING
             printf("[THREADING] ERROR: Failed to create worker thread %zu\n", i);
             fflush(stdout);
             fprintf(stderr, "[THREADING] ERROR: Failed to create worker thread %zu\n", i);
+#endif
             // Rollback logic omitted for brevity, assuming stable OS env
             return false;        } else {
+#ifdef SITUATION_DEBUG_THREADING
             printf("[THREADING] Worker thread %zu created successfully\n", i);
             fflush(stdout);
+#endif
         }
     }
 
     // [v2.3.34] Spawn Dedicated I/O Thread (Conditional)
     if (!disable_io) {
+#ifdef SITUATION_DEBUG_THREADING
         fprintf(stderr, "[THREADING] Creating I/O thread...\n");
+#endif
         if (thrd_create(&pool->io_thread, _SituationIOThreadEntry, pool) != thrd_success) {
+#ifdef SITUATION_DEBUG_THREADING
             fprintf(stderr, "[THREADING] ERROR: Failed to create I/O thread\n");
+#endif
             return false;
         }
     } else {
         pool->io_thread = 0; // Explicitly null
     }
 
+#ifdef SITUATION_DEBUG_THREADING
     fprintf(stderr, "[THREADING] Thread pool created successfully!\n");
     fprintf(stderr, "[THREADING] Worker threads: %zu\n", num_threads);
     fprintf(stderr, "[THREADING] I/O thread: %s\n", disable_io ? "DISABLED" : "ENABLED");
+#endif
     pool->is_active = true;
     return true;
 }
