@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.38 "Velocity"_
+_Core API library v2.3.41 "Flexible Formats"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,11 +8,12 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](doc/C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.38 "Velocity"**
+Current Version: **v2.3.41 "Flexible Formats"**
 
-**Version 2.3.38** refines the engine's asset and I/O capabilities. It introduces native **Bitmap Font Support** for pixel-perfect retro aesthetics and optimizations for the I/O thread, including configurable **Rate Limiting** and exposed **Queue Depth metrics** for precise load balancing.
+**Version 2.3.41** introduces flexible texture format selection with the new `SituationColorEncoding` enum. Textures now automatically select the correct GPU format (LINEAR vs SRGB) based on usage, fixing storage image compatibility issues while maintaining proper gamma correction for sampled textures. This works identically across both OpenGL and Vulkan backends.
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **Flexible Texture Formats (v2.3.41):** 🎉 **COMPLETE!** Added `SituationColorEncoding` enum for automatic format selection. Storage images now use LINEAR format (UNORM) while sampled textures use SRGB for proper gamma correction. Works identically on OpenGL and Vulkan.
 *   **Asset Pipeline (v2.3.38):** Added `SituationLoadBitmapFontFromMemory` and enhanced I/O thread controls for smoother background loading.
 *   **OpenGL Optimization (v2.3.36):** Completed the "Max Out Core" plan with MDI batching, Zero-Copy Ring Buffers, and Bindless Textures.
 *   **Texture Registry (v2.3.31):** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.
