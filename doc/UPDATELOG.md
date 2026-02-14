@@ -1,3 +1,219 @@
+## [v2.3.41 "Flexible Formats" (Color Encoding & Format Selection)] - 2026-02-07
+
+### Description
+
+This release introduces flexible texture format selection through the new `SituationColorEncoding` enum. Images can now specify whether their data is in linear or SRGB color space, enabling automatic GPU format selection that works identically across both OpenGL and Vulkan backends. This fixes storage image compatibility issues while maintaining proper gamma correction for sampled textures.
+
+### Critical Fix: Storage Image Format Compatibility
+
+**Problem:** All textures were hardcoded to use SRGB format (`VK_FORMAT_R8G8B8A8_SRGB` in Vulkan, `GL_SRGB8_ALPHA8` in OpenGL). This format is incompatible with storage images (textures writable by compute shaders) on most GPUs, causing validation errors and black screens in applications like K-Term that use compute shaders for rendering.
+
+**Solution:** Implemented color encoding abstraction with automatic format selection:
+- Added `SituationColorEncoding` enum with `LINEAR` and `SRGB` values
+- Added `color_encoding` field to `SituationImage` struct
+- Texture creation now selects format based on color encoding:
+  - `SITUATION_COLOR_LINEAR` → `VK_FORMAT_R8G8B8A8_UNORM` (Vulkan) or `GL_RGBA8` (OpenGL)
+  - `SITUATION_COLOR_SRGB` → `VK_FORMAT_R8G8B8A8_SRGB` (Vulkan) or `GL_SRGB8_ALPHA8` (OpenGL)
+- Storage images automatically use LINEAR format regardless of specified encoding
+
+### New Features
+
+- **`SituationColorEncoding` enum** - Describes color space of image data
+  - `SITUATION_COLOR_LINEAR` (0) - Linear color space, required for storage images
+  - `SITUATION_COLOR_SRGB` (1) - SRGB color space with gamma correction
+- **`color_encoding` field** - Added to `SituationImage` struct
+- **Automatic format selection** - Texture creation uses encoding to select GPU format
+- **Backend-neutral API** - Same enum works for both OpenGL and Vulkan
+- **Storage image override** - Textures with `SITUATION_TEXTURE_USAGE_STORAGE` flag automatically use LINEAR
+
+### Technical Details
+
+**Format Mappings:**
+
+| Color Encoding | Vulkan Format | OpenGL Format | Use Case |
+|----------------|---------------|---------------|----------|
+| `SITUATION_COLOR_LINEAR` | `VK_FORMAT_R8G8B8A8_UNORM` | `GL_RGBA8` | Storage images, compute writes |
+| `SITUATION_COLOR_SRGB` | `VK_FORMAT_R8G8B8A8_SRGB` | `GL_SRGB8_ALPHA8` | Sampled textures, photos, UI |
+
+**Key Rules:**
+- Storage images MUST use LINEAR encoding (SRGB doesn't support storage operations)
+- Sampled-only textures SHOULD use SRGB encoding for proper gamma correction
+- Format selection happens automatically during texture creation
+- Both backends enforce the same rules for consistency
+
+### Usage Examples
+
+**Creating a storage image for compute shader:**
+```c
+SituationImage img;
+SituationCreateImage(1024, 768, 4, &img);
+img.color_encoding = SITUATION_COLOR_LINEAR;  // Required for storage!
+
+SituationTexture tex;
+SituationCreateTextureEx(img, false, 
+    SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE, &tex);
+```
+
+**Loading a texture for display:**
+```c
+SituationImage img;
+SituationLoadImage("photo.png", &img);
+img.color_encoding = SITUATION_COLOR_SRGB;  // Gamma correction for display
+
+SituationTexture tex;
+SituationCreateTexture(img, false, &tex);
+```
+
+### Documentation Updates
+
+- Updated `doc/SITUATION_QUICK_REFERENCE.md` with color encoding examples
+- Added format mapping table for both backends
+- Updated common patterns to show correct usage
+- Added storage image compatibility warnings
+
+### Architecture Impact
+
+This change provides a clean abstraction layer for color space management:
+- Single API works across both OpenGL and Vulkan
+- Fixes K-Term black screen issue (storage image format incompatibility)
+- Maintains proper gamma correction for sampled textures
+- Sets foundation for future color space extensions (HDR, wide gamut)
+- No breaking changes (existing code continues to work)
+
+### Platform Support
+
+- ✅ Windows (MSVC, MinGW, GCC 15.1.0)
+- ✅ Vulkan 1.4.313.2
+- ✅ OpenGL 4.6
+- ✅ Backend-neutral API design
+
+### Migration Notes
+
+**For existing code:**
+- No changes required - existing textures continue to work
+- To use storage images, set `img.color_encoding = SITUATION_COLOR_LINEAR` before creating texture
+- Loaded images default to SRGB (when image loading functions are updated)
+
+**For new code:**
+- Always set `color_encoding` explicitly for clarity
+- Use LINEAR for storage images and compute shader outputs
+- Use SRGB for photos, UI elements, and sampled-only textures
+
+---
+
+## [v2.3.40 "State Machine" (Multi-Threaded Initialization Safety)] - 2026-02-07
+
+### Description
+
+This release introduces atomic state management to prevent initialization race conditions and deadlocks in multi-threaded environments. The addition of `SituationInitState` provides thread-safe queries for initialization status, enabling safe integration with external libraries like K-Term that create GPU resources during startup.
+
+### Critical Fix: Mutex Deadlock Prevention
+
+**Problem:** Applications creating GPU resources (pipelines, textures) immediately after `SituationInit()` would deadlock. The render thread was still initializing and held the `resource_registry_mutex`, causing the main thread to block indefinitely when attempting resource creation.
+
+**Solution:** Implemented atomic state tracking with explicit initialization phases:
+- `SITUATION_STATE_UNINITIALIZED` - Library not initialized
+- `SITUATION_STATE_INITIALIZING` - Init in progress, render thread starting (unsafe for resource creation)
+- `SITUATION_STATE_READY` - Fully initialized, safe to create resources
+- `SITUATION_STATE_SHUTTING_DOWN` - Cleanup in progress
+
+### New Features
+
+- **`SituationInitState` enum** - Atomic state tracking for initialization phases
+- **`SituationGetInitState()`** - Thread-safe API to query current initialization state
+- **`atomic_int init_state`** - Added to `_SituationRenderState` struct for lock-free state queries
+- **State transitions** - Automatic state updates in `SituationInit()` and `SituationShutdown()`
+
+### Technical Details
+
+- State is set to `INITIALIZING` at the start of `SituationInit()`
+- State transitions to `READY` after render thread successfully spawns
+- State transitions to `SHUTTING_DOWN` when `SituationShutdown()` is called
+- All state queries use `atomic_load()` for thread-safe, lock-free access
+- Debug logging added: `[Situation] Initialization complete - state: READY`
+
+### Integration Pattern
+
+Applications can now safely defer resource creation until Situation is ready:
+
+```c
+SituationInit(...);
+
+// Wait for Situation to be fully ready (optional - can defer to first frame)
+while (SituationGetInitState() != SITUATION_STATE_READY) {
+    // Spin or yield
+}
+
+// Now safe to create pipelines, textures, etc.
+ExternalLibrary_Init();
+```
+
+### Architecture Impact
+
+This change is critical for the "house of cards" multi-threaded architecture:
+- Prevents race conditions during initialization
+- Enables safe integration with external GPU libraries (K-Term, Quest renderer)
+- Provides clear synchronization points for complex startup sequences
+- Maintains backward compatibility (existing code continues to work)
+
+### Platform Support
+
+- ✅ Windows (MSVC, MinGW, GCC 15.1.0)
+- ✅ Vulkan 1.4.313.2
+- ✅ C11 with atomic operations
+- ✅ Thread-safe state queries
+
+---
+
+## [v2.3.39 "Triumph" (Vulkan Text Rendering Complete)] - 2026-02-07
+
+### Description
+
+This release represents a major milestone in the Situation library's Vulkan backend development. After extensive debugging across multiple sessions, all text rendering issues have been resolved. The library now features fully functional, production-ready text rendering with proper transparency, alpha blending, and runtime VSync control.
+
+### Major Achievement: Vulkan Text Rendering Fixed
+
+Fixed 15 critical bugs in the Vulkan text rendering pipeline:
+1. Internal renderer return value check (treating SUCCESS as failure)
+2. Texture generation initialization (generation=0 → generation=1)
+3. Descriptor set binding (UBO now bound in text pipeline)
+4. Projection matrix updates (now set in `SituationCmdBeginRenderToDisplay`)
+5. UBO memory type (GPU_ONLY → CPU_TO_GPU for dynamic updates)
+6. Vertex attribute offset (texcoord at correct 8-byte offset)
+7. Backface culling (disabled for text quads)
+8. Viewport/scissor state (now properly set)
+9. Fragment shader descriptor set (added `set = 1` qualifier)
+10. Font atlas descriptor layout (uses `text_sampler_layout` binding 0)
+11. UV calculation (fixed row division and v0/v1 swap for Vulkan Y-down)
+12. Font atlas transparency (background pixels now (0,0,0,0) instead of (255,255,255,0))
+13. Fragment shader alpha masking (proper colored text with transparency)
+14. Depth write disabled for text (transparent pixels don't block background)
+15. VSync present mode selection (respects flag, prefers IMMEDIATE for unlimited FPS)
+
+### New Features
+
+- **`SituationSetVSync(bool enable)`** - Convenience function for runtime VSync control
+  - Automatically recreates Vulkan swapchain with new present mode
+  - VSync ON: `VK_PRESENT_MODE_FIFO_KHR` (~60 FPS)
+  - VSync OFF: `VK_PRESENT_MODE_IMMEDIATE_KHR` (unlimited FPS, 2000+)
+  - OpenGL: Uses `glfwSwapInterval()` for immediate effect
+
+### Technical Improvements
+
+- Text rendering now uses alpha masking for proper colored text
+- Depth writing disabled for text to allow transparent spacing
+- Present mode selection based on VSync flag
+- Fixed `glfwSwapInterval()` to only be called for OpenGL (prevents GLFW errors)
+- Swapchain recreation on VSync toggle for immediate effect
+
+### Platform Support
+
+- ✅ Windows (MSVC, MinGW, GCC 15.1.0)
+- ✅ Vulkan 1.4.313.2
+- ✅ C11 with C++ linking for VMA
+
+---
+
 ## [v2.3.38 "Native Bitmap Font Support"] - 2025-12-27
 
 ### New Features
