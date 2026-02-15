@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.41 "Flexible Formats"_
+_Core API library v2.3.42_
 
 _(c) 2025-2026 Jacques Morel_
 
