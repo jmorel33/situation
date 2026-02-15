@@ -52,7 +52,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 41
+#define SITUATION_VERSION_PATCH 42
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -2052,6 +2052,7 @@ typedef enum {
  * @section Zero-Friction Features (They Just Work™)
  *
  *  SituationLoadSoundFromFile("music.mp3", SITUATION_AUDIO_LOAD_AUTO, true, &snd);
+ *  SituationStartAudioCapture(cb, NULL);           // native mic input → callback (auto-format)
  *  SituationLoadTexture("tex.png", true, &tex);           // mips + hot-reload ready
  *  SituationTakeScreenshot("shot.png");            // always PNG, always works
  *  SituationLoadFont("font.ttf") → SituationBakeFontAtlas() → SituationCmdDrawText()
@@ -2450,6 +2451,7 @@ SITAPI SituationError SituationResumeAudioDevice(void);                         
 
 // --- Audio Capture ---
 SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data);
+SITAPI SituationError SituationStartAudioCaptureEx(SituationAudioCaptureCallback callback, void* user_data, uint32_t sample_rate, uint32_t channels);
 SITAPI void SituationStopAudioCapture(void);
 
 // --- Audio Output Monitoring (for visualization) ---

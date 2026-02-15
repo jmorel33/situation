@@ -10323,37 +10323,41 @@ SITAPI void SituationPollInputEvents(void) {
         size_t capacity = sit_audio.audio_capture_queue_capacity;
 
         // Calculate frames available to read
-        size_t frames_available = 0;
+        size_t samples_available = 0;
         if (write_head >= read_head) {
-            frames_available = write_head - read_head;
+            samples_available = write_head - read_head;
         } else {
             // Wrapped around
-            frames_available = (capacity - read_head) + write_head;
+            samples_available = (capacity - read_head) + write_head;
         }
 
         // Only process if we have data
+        uint32_t channels = sit_audio.capture_device.capture.channels ? sit_audio.capture_device.capture.channels : 1;
+        size_t frames_available = samples_available / channels;
+        size_t samples_to_read = frames_available * channels;
+
         if (frames_available > 0) {
             // 1. Allocate a linear temporary buffer
             // We use SIT_MALLOC here to avoid stack overflow on large chunks,
             // though a static scratch buffer would be an optimization for v2.4.
-            float* temp_buffer = (float*)SIT_MALLOC(frames_available * sizeof(float));
+            float* temp_buffer = (float*)SIT_MALLOC(samples_to_read * sizeof(float));
 
             if (temp_buffer) {
                 // 2. Copy and Linearize Data
                 if (write_head >= read_head) {
                     // Contiguous block
-                    memcpy(temp_buffer, &sit_audio.audio_capture_queue[read_head], frames_available * sizeof(float));
+                    memcpy(temp_buffer, &sit_audio.audio_capture_queue[read_head], samples_to_read * sizeof(float));
                 } else {
                     // Split block (Wrapped)
                     size_t end_chunk_size = capacity - read_head;
                     // Part 1: Read to end of buffer
                     memcpy(temp_buffer, &sit_audio.audio_capture_queue[read_head], end_chunk_size * sizeof(float));
                     // Part 2: Start from beginning to write head
-                    memcpy(temp_buffer + end_chunk_size, &sit_audio.audio_capture_queue[0], write_head * sizeof(float));
+                    memcpy(temp_buffer + end_chunk_size, &sit_audio.audio_capture_queue[0], (samples_to_read - end_chunk_size) * sizeof(float));
                 }
 
                 // 3. Advance Read Head
-                sit_audio.audio_capture_read_head = write_head;
+                sit_audio.audio_capture_read_head = (read_head + samples_to_read) % capacity;
 
                 // 4. Unlock BEFORE callback to prevent deadlocks if user callback takes time
                 ma_mutex_unlock(&sit_audio.audio_capture_mutex);
@@ -26957,6 +26961,10 @@ static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, c
     // 2. Main Thread Mode: Push to Ring Buffer
     ma_mutex_lock(&pGs->audio_capture_mutex);
 
+
+    uint32_t channels = pDevice->capture.channels;
+    size_t sampleCount = frameCount * channels;
+
     size_t capacity = pGs->audio_capture_queue_capacity;
     size_t write_head = pGs->audio_capture_write_head;
     size_t read_head = pGs->audio_capture_read_head; // Snapshot read head
@@ -26965,19 +26973,19 @@ static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, c
     size_t used = (write_head >= read_head) ? (write_head - read_head) : (capacity - read_head + write_head);
     size_t free_space = capacity - used - 1; // Keep 1 slot open to distinguish full/empty
 
-    if (free_space >= frameCount) {
+    if (free_space >= sampleCount) {
         const float* input_f32 = (const float*)pInput;
         size_t frames_to_end = capacity - write_head;
 
-        if (frameCount <= frames_to_end) {
+        if (sampleCount <= frames_to_end) {
             // Contiguous write
-            memcpy(&pGs->audio_capture_queue[write_head], input_f32, frameCount * sizeof(float));
+            memcpy(&pGs->audio_capture_queue[write_head], input_f32, sampleCount * sizeof(float));
         } else {
             // Split write (wrap around)
             memcpy(&pGs->audio_capture_queue[write_head], input_f32, frames_to_end * sizeof(float));
-            memcpy(&pGs->audio_capture_queue[0], input_f32 + frames_to_end, (frameCount - frames_to_end) * sizeof(float));
+            memcpy(&pGs->audio_capture_queue[0], input_f32 + frames_to_end, (sampleCount - frames_to_end) * sizeof(float));
         }
-        pGs->audio_capture_write_head = (write_head + frameCount) % capacity;
+        pGs->audio_capture_write_head = (write_head + sampleCount) % capacity;
     } else {
         // Buffer overrun: Drop packets or log warning in debug mode
     }
@@ -26989,7 +26997,7 @@ static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, c
  * @brief Initializes and starts audio capture (recording) from the default input device.
  *
  * @details Opens the default microphone/input device and begins streaming raw audio data to the provided callback function.
- *          The audio format is fixed to Mono (1 channel), 44.1kHz sample rate, and 32-bit floating point samples. This is the most versatile format for real-time processing (FFT, visualization, etc.).
+ *          The audio format defaults to the device's native configuration (Sample Rate & Channels) to minimize latency and resampling overhead. If you require a specific format (e.g. 44.1kHz Mono for FFT), use `SituationStartAudioCaptureEx`.
  *
  * @par Thread Safety
  * The provided `callback` function will be executed on a high-priority, internal audio thread.
@@ -27005,6 +27013,10 @@ static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, c
  * @see SituationStopAudioCapture(), SituationAudioCaptureCallback
  */
 SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data) {
+    return SituationStartAudioCaptureEx(callback, user_data, 0, 0);
+}
+
+SITAPI SituationError SituationStartAudioCaptureEx(SituationAudioCaptureCallback callback, void* user_data, uint32_t sample_rate, uint32_t channels) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sit_audio.is_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
     if (sit_audio.is_capture_device_active) SituationStopAudioCapture();
@@ -27014,8 +27026,8 @@ SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback c
 
     ma_device_config config = ma_device_config_init(ma_device_type_capture);
     config.capture.format = ma_format_f32; // Standardize on Float32
-    config.capture.channels = 1;           // Mono microphone is standard
-    config.sampleRate = 44100;             // Standard rate
+    config.capture.channels = channels;
+    config.sampleRate = sample_rate;
     config.dataCallback = _sit_miniaudio_capture_callback;
     config.pUserData = &sit_audio;
 
