@@ -2,7 +2,7 @@
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
 *   Core API library (see version in Version Macros)
-*   (c) 2025 Jacques Morel
+*   (c) 2025-2026 Jacques Morel
 *   MIT Licensed
 *
 *   A single-file, cross-platform C/C++ library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities,
@@ -28,7 +28,7 @@
 *
 *   License (MIT)
 *   -------------
-*   Copyright (c) 2025 Jacques Morel
+*   Copyright (c) 2025-2026 Jacques Morel
 *
 *   Permission is hereby granted, free of charge, to any person obtaining a copy
 *   of this software and associated documentation files (the "Software"), to deal

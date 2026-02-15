@@ -2,7 +2,7 @@
 
 _Core API library v2.3.41 "Flexible Formats"_
 
-_(c) 2025 Jacques Morel_
+_(c) 2025-2026 Jacques Morel_
 
 _MIT Licenced_
 
@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
     SituationSound music;
     // Decodes to RAM on background thread (Low Priority), zero main-thread stalls
     SituationLoadSoundFromFileAsync(&pool, "bgm.mp3", true, &music);
-    
+
     SituationFont font;
     if (SituationLoadFont("font.ttf", &font) == SITUATION_SUCCESS) {
         SituationBakeFontAtlas(&font, 24.0f); // Create GPU texture for the font
@@ -121,23 +121,23 @@ int main(int argc, char** argv) {
 
         if (SituationAcquireFrameCommandBuffer()) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
-            
+
             // Clear screen to dark slate blue
-            SituationRenderPassInfo pass = { 
+            SituationRenderPassInfo pass = {
                 .display_id = -1, // Main Window
-                .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = {20, 30, 40, 255} } } 
+                .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = {20, 30, 40, 255} } }
             };
-            
-            SituationCmdBeginRenderPass(cmd, &pass); 
-            
+
+            SituationCmdBeginRenderPass(cmd, &pass);
+
             // Draw text directly using the internal batch renderer
             SituationCmdDrawText(cmd, font, "Situation Engine Running...", (Vector2){50, 50}, (ColorRGBA){255, 255, 255, 255});
-            
+
             SituationCmdEndRenderPass(cmd);
             SituationEndFrame();
         }
     }
-    
+
     // 5. Cleanup (Automatic leak detection runs here)
     SituationDestroyThreadPool(&pool);
     SituationUnloadSound(&music);
@@ -312,7 +312,7 @@ The documentation for "Situation" is split into two key documents:
 
 ---
 
-Copyright (c) 2025 Jacques Morel
+Copyright (c) 2025-2026 Jacques Morel
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
