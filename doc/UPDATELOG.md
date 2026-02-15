@@ -1,3 +1,22 @@
+## [v2.3.42 "Flexible Formats" (Audio Capture & Native Formats)] - 2026-02-08
+
+### Description
+
+This release significantly enhances the Audio subsystem by introducing support for multi-channel audio capture (e.g., Stereo Microphones) and custom sample rates. Crucially, the default `SituationStartAudioCapture` API now utilizes the device's **Native Format** (0, 0) instead of hardcoding 44.1kHz/Mono. This eliminates unnecessary resampling overhead and ensures optimal latency and quality on professional audio interfaces running at 48kHz or higher.
+
+### New Features
+
+- **`SituationStartAudioCaptureEx`** - New API to start audio capture with specific `sample_rate` and `channels`.
+- **Native Format Default** - `SituationStartAudioCapture` now defaults to the device's native configuration (via Miniaudio's auto-negotiation) instead of forcing Mono/44.1kHz.
+- **Multi-Channel Support** - The internal ring buffer logic (`_sit_miniaudio_capture_callback` and `SituationPollInputEvents`) now correctly handles and linearizes interleaved multi-channel audio data.
+
+### Critical Fixes
+
+- **Buffer Safety:** Updated the ring buffer read/write logic to calculate sizes based on *samples* rather than *frames*. This prevents potential buffer overflows or misalignment when capturing stereo or multi-channel audio.
+- **Resampling Overhead:** By defaulting to the native format, the engine avoids the CPU cost and latency of Miniaudio's internal resampler when the requested format doesn't match the hardware.
+
+---
+
 ## [v2.3.41 "Flexible Formats" (Color Encoding & Format Selection)] - 2026-02-07
 
 ### Description

@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.41 "Flexible Formats"_
+_Core API library v2.3.42 "Flexible Formats"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,13 +8,16 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Current Version: v2.3.41 "Flexible Formats"**
+**Current Version: v2.3.42 "Flexible Formats"**
+
+**Version 2.3.42** introduces support for Multi-Channel Audio Capture (e.g. Stereo Mics) and custom sample rates, while defaulting to native device settings to minimize latency.
 
 **Version 2.3.41** introduces flexible texture format selection through the new `SituationColorEncoding` enum. Images can now specify whether their data is in linear or SRGB color space, enabling automatic GPU format selection that works identically across both OpenGL and Vulkan backends. This fixes storage image compatibility issues while maintaining proper gamma correction for sampled textures.
 
 > **See the complete changelog:** [UPDATELOG.md](UPDATELOG.md)
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **Audio Capture Enhancements (v2.3.42):** 🎉 **COMPLETE!** Added `SituationStartAudioCaptureEx` for custom formats and updated the default capture to use native device settings (0, 0) for optimal performance.
 *   **Flexible Texture Formats (v2.3.41):** 🎉 **COMPLETE!** Introduced `SituationColorEncoding` enum for automatic format selection. Storage images now work correctly with compute shaders, and sampled textures maintain proper gamma correction.
 *   **Vulkan Text Rendering (v2.3.39):** Fixed all 11 critical bugs in the Vulkan text rendering pipeline. Text now renders correctly with proper descriptor set layouts, UV calculations, and coordinate system handling.
 *   **Asset Pipeline (v2.3.38):** Added `SituationLoadBitmapFontFromMemory` and enhanced I/O thread controls for smoother background loading.
@@ -11128,6 +11131,25 @@ void MyAudioCaptureCallback(const float* frames, int frame_count, void* user_dat
 // In your initialization code:
 if (SituationStartAudioCapture(MyAudioCaptureCallback, NULL) != SIT_SUCCESS) {
     fprintf(stderr, "Failed to start audio capture: %s\n", SituationGetLastErrorMsg());
+}
+```
+
+---
+#### `SituationStartAudioCaptureEx`
+Initializes and starts capturing audio with a specific sample rate and channel count. This is the extended version of `SituationStartAudioCapture`, which uses the device's native settings (0, 0) by default. Use this if your application requires a specific format (e.g. 44100Hz Mono for FFT analysis) regardless of the hardware default.
+```c
+SITAPI SituationError SituationStartAudioCaptureEx(SituationAudioCaptureCallback callback, void* user_data, uint32_t sample_rate, uint32_t channels);
+```
+-   `callback`: The function to call when data is available.
+-   `user_data`: Custom pointer passed to the callback.
+-   `sample_rate`: The desired sample rate in Hz (e.g., 44100, 48000). Pass 0 to use the device's native rate.
+-   `channels`: The desired number of channels (e.g., 1 for Mono, 2 for Stereo). Pass 0 to use the device's native channel count.
+
+**Usage Example:**
+```c
+// Request 48kHz Stereo capture explicitly
+if (SituationStartAudioCaptureEx(MyAudioCaptureCallback, NULL, 48000, 2) != SIT_SUCCESS) {
+    // Handle error (e.g. device doesn't support format)
 }
 ```
 
