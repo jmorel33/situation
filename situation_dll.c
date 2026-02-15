@@ -2,6 +2,8 @@
  * situation_dll.c
  * 
  * DLL Entry Point for Situation Library
+ * (c) 2025-2026 Jacques Morel
+ * MIT Licensed
  * 
  * This file includes the full situation implementation with SITUATION_IMPLEMENTATION
  * defined, allowing the entire library to be compiled into a shared library (DLL).

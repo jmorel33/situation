@@ -2,7 +2,7 @@
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
 *   Core API library (see version in Version Macros)
-*   (c) 2025 Jacques Morel
+*   (c) 2025-2026 Jacques Morel
 *   MIT Licensed
 *
 *   SPLIT HEADER ARCHITECTURE (v2.3.41+)

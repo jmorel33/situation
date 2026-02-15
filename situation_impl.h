@@ -1,6 +1,67 @@
 #ifndef SITUATION_IMPL_H
 #define SITUATION_IMPL_H
 
+/***************************************************************************************************
+*
+*   situation_impl.h - Implementation of the Situation Library
+*   (c) 2025-2026 Jacques Morel
+*   MIT Licensed
+*
+*   ================================================================================================
+*   DESCRIPTION
+*   ================================================================================================
+*   This file contains the complete implementation of the "Situation" library.
+*   It is designed to be included ONLY when the SITUATION_IMPLEMENTATION macro is defined,
+*   typically through the main `situation.h` header file in exactly one translation unit.
+*
+*   The implementation provides a unified, cross-platform abstraction layer for:
+*   - Windowing & Input (GLFW backend)
+*   - Graphics Rendering (Vulkan and OpenGL 4.6 Core backends)
+*   - Audio Processing (MiniAudio backend)
+*   - Filesystem Operations & Hot-Reloading
+*   - Multithreading & Job System
+*   - High-Precision Timing & Oscillators
+*
+*   ================================================================================================
+*   STRUCTURE & ORGANIZATION
+*   ================================================================================================
+*   The file is structured into several major sections:
+*
+*   1.  INTERNAL DEPENDENCIES
+*       - Includes and implements third-party single-header libraries:
+*         stb_image, stb_image_write, stb_truetype, miniaudio, glad (OpenGL), and vk_mem_alloc (Vulkan).
+*
+*   2.  INTERNAL STATE CONTAINERS
+*       - Defines private structs for managing subsystem state:
+*         _SituationGlobalStateContainer (Core)
+*         _SituationRenderState (Graphics - Shared)
+*         _SituationVulkanState / _SituationGLState (Backend-specific)
+*         _SituationAudioState (Audio)
+*         _SituationInputState (Keyboard, Mouse, Joystick)
+*
+*   3.  HELPER FUNCTIONS & UTILITIES
+*       - Static internal functions for math, string manipulation, and platform abstraction.
+*
+*   4.  SUBSYSTEM IMPLEMENTATIONS
+*       - Core Lifecycle (Init/Shutdown)
+*       - Windowing & Display
+*       - Input Processing
+*       - Audio Engine
+*       - Graphics Command Buffer & Rendering
+*       - Thread Pool & Async I/O
+*
+*   ================================================================================================
+*   DEPENDENCIES
+*   ================================================================================================
+*   This implementation relies on the following external libraries (typically bundled or linked):
+*   - GLFW (Windowing & Input)
+*   - Vulkan SDK (if SITUATION_USE_VULKAN is defined)
+*   - OpenGL / GLAD (if SITUATION_USE_OPENGL is defined)
+*   - Standard C Runtime (CRT)
+*   - OS-specific APIs (Win32 API, POSIX/Linux APIs, Cocoa/Carbon on macOS)
+*
+***************************************************************************************************/
+
 #ifdef SITUATION_IMPLEMENTATION
 
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__)

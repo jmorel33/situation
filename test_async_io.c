@@ -1,3 +1,8 @@
+/***************************************************************************************************
+*   (c) 2025-2026 Jacques Morel
+*   MIT Licensed
+***************************************************************************************************/
+
 #define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL // minimal
 #define SITUATION_ENABLE_THREADING
