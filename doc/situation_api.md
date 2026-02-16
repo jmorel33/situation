@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.42 "Flexible Formats"_
+_Core API library v2.3.43 "System Unification"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,7 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Current Version: v2.3.42 "Flexible Formats"**
+**Current Version: v2.3.43 "System Unification"**
+
+**Version 2.3.43** ("System Unification") implements the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading.
 
 **Version 2.3.42** introduces support for Multi-Channel Audio Capture (e.g. Stereo Mics) and custom sample rates, while defaulting to native device settings to minimize latency.
 
@@ -17,13 +19,14 @@ Welcome to "Situation", a public API engineered for high-performance, cross-plat
 > **See the complete changelog:** [UPDATELOG.md](UPDATELOG.md)
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **System Unification (v2.3.43):** 🎉 **COMPLETE!** Implemented the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading. See `REGRESSION_ANALYSIS.md` for details.
 *   **Audio Capture Enhancements (v2.3.42):** 🎉 **COMPLETE!** Added `SituationStartAudioCaptureEx` for custom formats and updated the default capture to use native device settings (0, 0) for optimal performance.
 *   **Flexible Texture Formats (v2.3.41):** 🎉 **COMPLETE!** Introduced `SituationColorEncoding` enum for automatic format selection. Storage images now work correctly with compute shaders, and sampled textures maintain proper gamma correction.
 *   **Vulkan Text Rendering (v2.3.39):** Fixed all 11 critical bugs in the Vulkan text rendering pipeline. Text now renders correctly with proper descriptor set layouts, UV calculations, and coordinate system handling.
 *   **Asset Pipeline (v2.3.38):** Added `SituationLoadBitmapFontFromMemory` and enhanced I/O thread controls for smoother background loading.
 *   **OpenGL Optimization (v2.3.36):** Completed the "Max Out Core" plan with MDI batching, Zero-Copy Ring Buffers, and Bindless Textures.
 *   **Texture Registry (v2.3.31):** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.
-*   **Universal Handles (v2.4):** Transitioning all resources (Buffers, Shaders, Meshes) to the Registry System for uniform, bindless-ready access.
+*   **Universal Handles (v2.4):** 🎉 **COMPLETE!** All resources (Buffers, Shaders, Meshes) are now managed via the Registry System for uniform, bindless-ready access.
 *   **Async Compute:** Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
 *   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
@@ -45,6 +48,21 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 # Situation v2.3.41 API Programming Guide
 
 "Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
+
+---
+
+## What's New in v2.3.43
+
+### 🎉 System Unification - Universal Handle Architecture
+
+Version 2.3.43 introduces the **Universal Handle Architecture** (v2.4 Milestone). This is a foundational upgrade that unifies how all resources (Textures, Sounds, Shaders, Meshes, Buffers) are managed internally.
+
+**Key Features:**
+- **O(1) Generational Handles:** All resources are now tracked using high-performance 64-bit handles backed by static registries. This replaces the legacy linked-list system, eliminating O(N) traversals and improving performance as scene complexity grows.
+- **Unified Hot-Reloading:** The new architecture enables a centralized hot-reloading system. Shaders, Textures, and Models can be reloaded at runtime with guaranteed safety.
+- **Bindless Ready:** The new handle structure is designed to support direct GPU access ("Bindless") in future updates.
+
+**Migration Note:** This is a non-breaking change for the public API surface, as `SituationTexture`, `SituationSound`, etc., were already opaque structs. However, internal performance and robustness have been significantly improved.
 
 ---
 

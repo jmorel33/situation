@@ -1,3 +1,29 @@
+## [v2.3.43 "System Unification" (Universal Handles)] - 2026-02-09
+
+### Description
+
+This release represents a monumental architectural shift for the Situation engine, codenamed "System Unification". It implements the **Universal Handle Architecture** (v2.4 Milestone), unifying all resource management (Textures, Sounds, Shaders, Meshes, Buffers, Models, Compute Pipelines) under a single, high-performance **Generational Handle** system.
+
+This upgrade eliminates ~1400 lines of legacy code, replacing O(N) linked-list traversals with O(1) array-based registries. It provides mathematically provable resource safety (preventing Use-After-Free via generation counters) and enables a unified, robust Hot-Reloading system for all asset types.
+
+### Architectural Changes
+
+- **Universal Handles:** All resources are now opaque 64-bit handles (`{ index, generation }`) backed by fixed-size static registries.
+- **Legacy Removal:** Deleted all `_Situation*Node` linked-list structures and associated traversal logic.
+- **O(1) Access:** Resource validation and retrieval is now constant-time, eliminating performance degradation as scene complexity grows.
+- **Unified Hot-Reload:** Centralized the hot-reload logic into a single generic pass that iterates registries, replacing scattered per-resource logic.
+
+### Critical Fixes
+
+- **Compilation Fix:** Removed the dead code function `_SitGetBufferNode`, which was causing compilation errors by referencing deleted structs.
+- **Registry Safety:** Implemented atomic generation counters for all resource slots to prevent ABA problems during rapid load/unload cycles.
+
+### Documentation
+
+- **Regression Analysis:** Added `REGRESSION_ANALYSIS.md` detailing the migration, code reduction stats, and impact analysis.
+
+---
+
 ## [v2.3.42 "Flexible Formats" (Audio Capture & Native Formats)] - 2026-02-08
 
 ### Description

@@ -24,10 +24,10 @@ The GPU has access to every texture at once via a single massive descriptor arra
 - [x] **Feature Flags:** `SIT_FEATURE_BINDLESS_TEXTURES` and `SIT_FEATURE_BINDLESS_BUFFERS` defined.
 - [x] **API (Buffer):** `SituationGetBufferDeviceAddress` implemented (Vulkan/GL).
 - [x] **API (Texture - GL):** `SituationGetTextureHandle` implemented for OpenGL.
-- [ ] **Implementation (Shaders):** Refactor `SituationShader` to use the Registry System.
-- [ ] **Implementation (Buffers):** Refactor `SituationBuffer` to use the Registry System.
-- [ ] **Implementation (Meshes):** Refactor `SituationMesh` to use the Registry System.
-- [ ] **Cleanup:** Remove old Linked-List tracking system.
+- [x] **Implementation (Shaders):** Refactor `SituationShader` to use the Registry System.
+- [x] **Implementation (Buffers):** Refactor `SituationBuffer` to use the Registry System.
+- [x] **Implementation (Meshes):** Refactor `SituationMesh` to use the Registry System.
+- [x] **Cleanup:** Remove old Linked-List tracking system.
 
 ---
 
