@@ -5,7 +5,7 @@
 *   (c) 2025-2026 Jacques Morel
 *   MIT Licensed
 *
-*   SPLIT HEADER ARCHITECTURE (v2.3.41+)
+*   SPLIT HEADER ARCHITECTURE (v2.3.43+)
 *   ====================================
 *   This file now acts as a bridge that includes:
 *   - situation_api.h   : Public API declarations, types, enums, function prototypes
