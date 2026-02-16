@@ -527,12 +527,12 @@ This is a unique feature of "Situation". Instead of tracking dozens of float tim
 **Visual Vault: Temporal Sync**
 ```mermaid
 sequenceDiagram
-    participant Music as Audio Track
+    participant Clock as System Clock
     participant Osc as Oscillator
     participant Game as Logic
     participant GPU as Renderer
 
-    Music->>Osc: Time = 10.0s
+    Clock->>Osc: Time = 10.0s
     Osc->>Osc: Check Period (0.5s)
     Osc->>Game: Trigger "Beat" Event
     Game->>GPU: Flash Lights (Frame N)
@@ -1376,9 +1376,8 @@ The engine employs a hybrid strategy to handle backpressure (when the CPU produc
 ```mermaid
 graph TD
     Acquire[Acquire Buffer] --> Update[Update Data<br>Push Constants, Buffers]
-    Update --> Record[Record Cmds<br>Bind, Draw, Dispatch]
-    Record --> Barriers[Barriers<br>If needed]
-    Barriers --> End[EndFrame<br>Submit + Present]
+    Update --> Record[Record Cmds<br>Bind, Draw, Dispatch, Barriers]
+    Record --> End[EndFrame<br>Submit + Present]
 
     style Acquire fill:#fff,stroke:#333
     style End fill:#bfb,stroke:#333
