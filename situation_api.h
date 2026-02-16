@@ -48,11 +48,15 @@
 *   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 *   SOFTWARE.
 *
+ *   NOTE: This file is part of a split-header library.
+ *   - Use `situation.h` as the primary entry point.
+ *   - If you include this file directly, define SITUATION_IMPLEMENTATION to compile the implementation.
+ *
 ***************************************************************************************************/
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 42
+#define SITUATION_VERSION_PATCH 43
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -471,7 +475,7 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
     #include <thread>
     #include <mutex>
     #include <condition_variable>
-    
+
     // Map C11 atomic types to C++ std::atomic
     #define _Atomic(T) std::atomic<T>
     #define atomic_load(ptr) ((ptr)->load())
@@ -483,7 +487,7 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
     #define atomic_init(ptr, val) ((ptr)->store(val))
     #define memory_order_seq_cst std::memory_order_seq_cst
     #define memory_order_relaxed std::memory_order_relaxed
-    
+
     // C++ atomic type aliases
     using atomic_int = std::atomic<int>;
     using atomic_bool = std::atomic<bool>;
@@ -495,13 +499,13 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
     using atomic_uint_least32_t = std::atomic<uint_least32_t>;
     using atomic_uint_least64_t = std::atomic<uint_least64_t>;
     using atomic_float = std::atomic<float>;
-    
+
     // Note: C11 threads (mtx_*, cnd_*, thrd_*) are NOT available in C++ mode
     // The library will need to use tinycthread which provides these on Windows
     // For now, we'll use tinycthread even in C++ mode
     #define TINYCTHREAD_IMPLEMENTATION
     #include "ext/glfw/deps/tinycthread.h"
-    
+
     #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
         #include <stdalign.h>
     #endif
@@ -524,7 +528,7 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
             #endif
         #endif
     #endif
-    
+
     // Define atomic_float (not in C11 standard but needed for audio)
     typedef _Atomic(float) atomic_float;
 #endif
@@ -704,9 +708,15 @@ typedef enum {
 /* === Graphics & Rendering Limits === */
 #define SITUATION_MAX_VIRTUAL_DISPLAYS          16   /* Max offscreen render targets (e.g., for UI/post-fx). */
 #define SITUATION_MAX_TEXTURES                  4096
+#define SITUATION_MAX_SHADERS                   1024
+#define SITUATION_MAX_COMPUTE_PIPELINES         512
+#define SITUATION_MAX_BUFFERS                   4096
+#define SITUATION_MAX_MESHES                    4096
+#define SITUATION_MAX_MODELS                    1024
 
 /* === Audio Subsystem Limits === */
 #define SITUATION_MAX_AUDIO_SOUNDS_QUEUED       32   /* Max concurrent sounds in mixing queue (e.g., SFX layers). */
+#define SITUATION_MAX_LOADED_SOUNDS             1024 /* Max loaded sound assets */
 #define SITUATION_MAX_TONES                     64   /* 64-voice polyphony for procedural synthesis. */
 #define SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES 2048 /* Scratch frames for decode/effects/conversion (48kHz ~40ms). */
 
@@ -1055,10 +1065,10 @@ struct SituationScopedString {
 
 /**
  * @brief Specifies the color encoding of image data.
- * 
+ *
  * This enum describes whether pixel data is stored in linear or SRGB color space.
  * The encoding affects how the data should be interpreted when creating GPU textures.
- * 
+ *
  * **SITUATION_COLOR_LINEAR:**
  * - Data is in linear color space with no gamma encoding
  * - Required for storage images (textures writable by compute shaders)
@@ -1066,7 +1076,7 @@ struct SituationScopedString {
  * - Maps to UNORM formats:
  *   - Vulkan: VK_FORMAT_R8G8B8A8_UNORM
  *   - OpenGL: GL_RGBA8
- * 
+ *
  * **SITUATION_COLOR_SRGB:**
  * - Data is in SRGB color space with gamma 2.2 encoding
  * - Preferred for sampled-only textures (photos, UI elements, etc.)
@@ -1075,12 +1085,12 @@ struct SituationScopedString {
  * - Maps to SRGB formats:
  *   - Vulkan: VK_FORMAT_R8G8B8A8_SRGB
  *   - OpenGL: GL_SRGB8_ALPHA8
- * 
+ *
  * @note When creating textures with SITUATION_TEXTURE_USAGE_STORAGE flag, LINEAR encoding
  *       must be used. SRGB formats typically don't support storage image operations.
  * @note For sampled-only textures, SRGB encoding is preferred for proper gamma correction
  *       and color accuracy on standard displays.
- * 
+ *
  * @since v2.3.40
  */
 typedef enum SituationColorEncoding {
@@ -1340,21 +1350,12 @@ typedef struct VmaAllocation_T* VmaAllocation;
  * @brief Opaque handle for a compute pipeline.
  * @details In OpenGL, this represents a linked shader program containing only a compute shader.
  */
+/**
+ * @brief Opaque handle for a compute pipeline.
+ */
 typedef struct {
-    uint64_t id;
-
-#if defined(SITUATION_IMPLEMENTATION)
-#if defined(SITUATION_USE_VULKAN)
-    VkPipeline vk_pipeline;
-    VkPipelineLayout vk_pipeline_layout;
-#elif defined(SITUATION_USE_OPENGL)
-    GLuint gl_program_id;
-    uint64_t _pad[1]; 
-#endif
-#else
-    // OPAQUE PADDING: Space for 2 handles
-    uint64_t _internal_padding[2];
-#endif
+    uint32_t slot_index;
+    uint32_t generation;
 } SituationComputePipeline;
 
 
@@ -1362,28 +1363,14 @@ typedef struct {
 /**
  * @brief Opaque handle for a generic GPU data buffer (e.g., an SSBO).
  */
+/**
+ * @brief Opaque handle for a generic GPU data buffer (e.g., an SSBO).
+ */
 typedef struct {
-    uint64_t id;
-    size_t size_in_bytes;
-    SituationBufferUsageFlags usage_flags;
-
-#if defined(SITUATION_IMPLEMENTATION)
-#if defined(SITUATION_USE_VULKAN)
-    VkBuffer vk_buffer;
-    VmaAllocation vma_allocation;
-    VkBufferUsageFlags vk_usage_flags;
-    VkDescriptorSet descriptor_set;
-#elif defined(SITUATION_USE_OPENGL)
-    GLuint gl_buffer_id;
-    // [Phase 1] Ring Buffer Tracking
-    uint64_t dynamic_offset;      // Offset in ring buffer for current frame
-    uint32_t dynamic_frame_index; // Frame index when this offset was assigned
-    uint32_t _pad[3];             // Adjusted padding (Total 24 bytes: 8+4+12)
-#endif
-#else
-    // OPAQUE PADDING: Space for VkBuffer, VmaAllocation, Flags, DescriptorSet
-    uint64_t _internal_padding[4]; 
-#endif
+    uint32_t slot_index;
+    uint32_t generation;
+    size_t size_in_bytes; // Cached metadata
+    SituationBufferUsageFlags usage_flags; // Cached metadata
 } SituationBuffer;
 
 
@@ -1395,27 +1382,16 @@ typedef struct {
  * @details This is an opaque handle to the underlying graphics resources (VBO/EBO/VAO for OpenGL, VkBuffers for Vulkan).
         The library manages the creation and destruction of these resources.
  */
+/**
+ * @brief Represents a mesh of vertices and indices stored on the GPU.
+ * @details This is an opaque handle to the underlying graphics resources.
+ */
 typedef struct {
-    uint64_t id; 
-    int index_count;
-    int vertex_count;       
-    size_t vertex_stride;   
-
-#if defined(SITUATION_IMPLEMENTATION)
-#if defined(SITUATION_USE_VULKAN)
-    VkBuffer vertex_buffer;
-    VmaAllocation vertex_buffer_memory;
-    VkBuffer index_buffer;
-    VmaAllocation index_buffer_memory;
-#elif defined(SITUATION_USE_OPENGL)
-    GLuint vbo_id; 
-    GLuint ebo_id; 
-    uint64_t _pad[2];
-#endif
-#else
-    // OPAQUE PADDING: Space for 4 Vulkan handles
-    uint64_t _internal_padding[4];
-#endif
+    uint32_t slot_index;
+    uint32_t generation;
+    int index_count;        // Cached metadata
+    int vertex_count;       // Cached metadata
+    size_t vertex_stride;   // Cached metadata
 } SituationMesh;
 
 // Forward-declaration for the internal uniform map implementation struct.
@@ -1436,23 +1412,10 @@ typedef enum {
 } SituationUniformType;
 
 // --- Shader Handle ---
+// --- Shader Handle ---
 typedef struct {
-    uint64_t id; 
-
-#if defined(SITUATION_IMPLEMENTATION)
-#if defined(SITUATION_USE_OPENGL)
-    GLuint gl_program_id; 
-    struct _SituationUniformMap* uniform_map;
-    uint64_t _pad[1]; // Pad to match Vulkan size
-#elif defined(SITUATION_USE_VULKAN)
-    VkPipeline vk_pipeline;
-    VkPipeline vk_pipeline_legacy;
-    VkPipelineLayout vk_pipeline_layout;
-#endif
-#else
-    // OPAQUE PADDING: Space for 3 handles
-    uint64_t _internal_padding[3];
-#endif
+    uint32_t slot_index;
+    uint32_t generation;
 } SituationShader;
 
 /**
@@ -1495,17 +1458,16 @@ typedef struct SituationModelMesh {
  * @details This is a container for all the meshes and materials that make up a model.
  *          It is the result of a call to SituationLoadModel.
  */
+/**
+ * @brief Represents a complete 3D model, loaded from a file.
+ * @details This is a container for all the meshes and materials that make up a model.
+ *          It is the result of a call to SituationLoadModel.
+ */
 typedef struct SituationModel {
-    uint64_t id;                              // A unique ID for the model object
-    int mesh_count;                           // The number of sub-meshes in this model
-    SituationModelMesh* meshes;               // A pointer to an array of this model's meshes
-
-    // --- Resource Management (Internal) ---
-#if defined(SITUATION_IMPLEMENTATION)
-    // We need to track all textures loaded with this model so we can unload them properly.
-    int texture_count;
-    SituationTexture* all_model_textures;
-#endif
+    uint32_t slot_index;
+    uint32_t generation;
+    int mesh_count;             // Cached metadata
+    SituationModelMesh* meshes; // Pointer to meshes (valid until unloaded)
 } SituationModel;
 
 // --- Virtual Display Structures ---
@@ -1589,8 +1551,15 @@ typedef struct SituationFont {
 // --- Audio Control Structures ---
 
 // --- Audio Handle System ---
-typedef uint64_t SituationSoundHandle;
-#define SITUATION_NULL_HANDLE 0
+// --- Audio Handle System ---
+// SituationSoundHandle is deprecated/aliased to the new handle struct
+typedef struct {
+    uint32_t slot_index;
+    uint32_t generation;
+} SituationSound;
+
+typedef SituationSound SituationSoundHandle;
+#define SITUATION_NULL_HANDLE ((SituationSound){0, 0})
 #define SITUATION_MAX_LOADED_SOUNDS 1024
 
 typedef struct {
@@ -1640,67 +1609,7 @@ typedef enum {
     SITUATION_FILTER_HIGHPASS
 } SituationFilterType;
 
-// --- Sound Instance Structure (Hardened Audio Engine - v2.3.3C+) ---
-typedef struct {
-    ma_decoder                  decoder;                // Internal MiniAudio decoder (handles WAV, MP3, FLAC, OGG, etc.)
-    // ── Preloaded RAM Buffer (Critical for stutter-free SFX playback) ──
-    void*                       preloaded_data;         // Fully decoded PCM data in RAM when using SITUATION_AUDIO_LOAD_FULL/AUTO
-    bool                        is_preloaded;           // True if sound is fully decoded to RAM (zero audio-thread disk I/O)
-
-    // ── Data Conversion & Format Normalization ──
-    ma_data_converter           converter;              // Converts source format → engine format (always f32, 48kHz stereo)
-    bool                        is_initialized;         // True if decoder was successfully initialized
-    bool                        converter_initialized; // True if data converter was successfully set up
-
-    // ── Playback Behaviour ──
-    bool                        is_looping;             // If true, sound restarts automatically when reaching end
-    bool                        is_streamed;            // True if sound is disk-streamed (music) rather than fully preloaded (SFX)
-    uint64_t                    cursor_frames;          // Current playback position in frames (updated by audio thread)
-    uint64_t                    total_frames;           // Total length in frames (0 if streamed/unknown length)
-
-    // ── Mixer Controls (per-instance) ──
-    atomic_float               volume;                 // Linear volume multiplier (0.0f = silent, 1.0f = normal, >1.0f allowed)
-    atomic_float               pan;                    // Stereo panning (-1.0f = full left, 0.0f = center, +1.0f = full right)
-    atomic_float               pitch;                  // Playback speed/pitch shift (1.0f normal, 0.5f half-speed, 2.0f double-speed)
-    float                       _internal_pitch_tracker; // Internal tracker to detect pitch changes on the audio thread
-
-    // ── Custom Streaming Support (Instance-Specific Callbacks - Thread-Safe Design) ──
-    // These are stored directly in the instance so each streamed sound can have its own callbacks/userdata.
-    // The audio thread uses static thunks + pointer arithmetic to safely invoke them without global state.
-    SituationStreamReadCallback stream_read_cb;         // User-provided read callback for custom streaming sources
-    SituationStreamSeekCallback stream_seek_cb;         // User-provided seek callback (optional but recommended)
-    void*                       stream_user_data;       // User pointer passed to the stream callbacks
-
-    // ── Built-in Effects Chain (Applied in processing order: Filter → Filter → Echo → Reverb → Volume/Pan) ──
-    struct {
-        // Biquad Filter (Low-pass, High-pass, Band-pass, etc.)
-        bool                    filter_enabled;         // Master enable for filter stage
-        ma_biquad               biquad;                 // MiniAudio biquad instance
-        SituationFilterType     filter_type;            // Current filter mode (LPF12, HPF12, etc.)
-        float                   filter_cutoff_hz;       // Cutoff frequency in Hz
-        float                   filter_q;               // Resonance/Q factor
-
-        // Echo / Delay Effect
-        bool                    echo_enabled;           // Master enable for echo stage
-        ma_delay                delay;                  // MiniAudio delay line
-        float                   echo_delay_sec;         // Delay time in seconds (typical range 0.1–1.0)
-        float                   echo_feedback;          // Feedback amount (0.0–1.0, >0.9 gets intense)
-        float                   echo_wet_mix;           // Wet/dry mix for delayed signal (0.0 = dry only, 1.0 = wet only)
-
-        // Simple Plate Reverb
-        bool                    reverb_enabled;         // Master enable for reverb stage
-        void*                   reverb_state;           // Internal custom reverb state (opaque)
-        float                   reverb_room_size;       // Simulated room size (0.0 small → 1.0 large hall)
-        float                   reverb_damping;         // High-frequency damping (0.0.0 bright → 1.0 very damped)
-        float                   reverb_wet_mix;         // Wet amount (0.0 = dry only)
-        float                   reverb_dry_mix;         // Dry amount (usually kept at 1.0f)
-    } effects;
-
-    // ── Custom DSP Processor Chain (User-defined audio processing callbacks) ──
-    SituationAudioProcessorCallback* processors;        // Dynamic array of user callbacks (applied in order)
-    void**                      processor_user_data;    // Parallel array of user data pointers for each processor
-    int                         processor_count;        // Number of active custom processors
-} SituationSound;
+// SituationSound struct definition has moved to internal implementation (Generational Handle used in API)
 
 // --- Resonance (Procedural Synthesis) ---
 /**
@@ -2492,7 +2401,7 @@ SITAPI void SituationStopAllTones(void);
  * @brief Enable or disable reverb effect for tone generation.
  * @details Applies a global reverb effect to all tones generated by SituationPlayTone/SituationPlayMidiNote.
  *          The reverb creates a spacious, ambient sound by simulating room acoustics.
- * 
+ *
  * @param enabled true to enable reverb, false to disable
  */
 SITAPI void SituationSetToneReverbEnabled(bool enabled);
@@ -2500,7 +2409,7 @@ SITAPI void SituationSetToneReverbEnabled(bool enabled);
 /**
  * @brief Configure the tone reverb parameters.
  * @details Adjusts the characteristics of the reverb effect applied to tones.
- * 
+ *
  * @param room_size Room size (0.0 to 1.0). Larger values create longer reverb tails.
  * @param damping High frequency damping (0.0 to 1.0). Higher values make the reverb darker.
  * @param wet_level Reverb mix level (0.0 to 1.0). Amount of reverb signal in the output.
