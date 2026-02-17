@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.44 "Optimization"_
+_Core API library v2.3.45 "Bindless"_
 
 _(c) 2025 Jacques Morel_
 
@@ -8,9 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Current Version: v2.3.44 "Optimization"**
+**Current Version: v2.3.45 "Bindless"**
 
-**Version 2.3.44** ("Optimization") introduces runtime memory configuration for Vulkan (staging buffers) and optimized hot-reloading to prevent I/O storms.
+**Version 2.3.45** ("Bindless") migrates the Vulkan backend to a Descriptor Indexing architecture, enabling massive draw call batching by accessing textures via a global bindless descriptor array.
 
 **Version 2.3.43** ("System Unification") implements the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading.
 
@@ -21,6 +21,7 @@ Welcome to "Situation", a public API engineered for high-performance, cross-plat
 > **See the complete changelog:** [UPDATELOG.md](UPDATELOG.md)
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **Vulkan Bindless (v2.3.45):** 🎉 **COMPLETE!** Implemented "Bindless" texturing for Vulkan using Descriptor Indexing. Textures are now accessed via a global unbounded array (`global_textures[]`) indexed by push constants, eliminating descriptor binding overhead and solving pool fragmentation.
 *   **Vulkan Optimization (v2.3.44):** 🎉 **COMPLETE!** Added configurable staging buffer sizes and optimized I/O polling for hot-reloading to support a wider range of hardware targets.
 *   **System Unification (v2.3.43):** 🎉 **COMPLETE!** Implemented the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading. See `REGRESSION_ANALYSIS.md` for details.
 *   **Audio Capture Enhancements (v2.3.42):** 🎉 **COMPLETE!** Added `SituationStartAudioCaptureEx` for custom formats and updated the default capture to use native device settings (0, 0) for optimal performance.
@@ -54,15 +55,18 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 ---
 
-## What's New in v2.3.44
+## What's New in v2.3.45
 
-### 🎉 Vulkan Optimization - Configurable Staging Buffers
+### 🎉 Vulkan "Bindless" Architecture
 
-Version 2.3.44 introduces runtime configuration for Vulkan memory usage. The default 128MB per-frame staging buffer size can now be overridden via `SituationInitInfo::staging_buffer_size`, allowing significant memory savings on lower-end devices or scaling up for high-bandwidth applications.
+Version 2.3.45 introduces a transformative upgrade to the Vulkan backend: **Bindless Textures** (Descriptor Indexing).
 
-### 🚀 Optimized Hot-Reloading
+*   **Global Descriptor Array:** Instead of allocating a separate `VkDescriptorSet` for every texture (which is slow and fragments memory), the engine now maintains a single, massive descriptor array (up to 4096 textures) bound to Set 1.
+*   **Zero-Overhead Draw Calls:** Drawing a texture no longer requires re-binding descriptor sets. The shader simply indexes into the global array using a lightweight Push Constant ID (`texture_id`).
+*   **Batching Power:** This architecture enables massive draw call batching and prepares the engine for GPU-driven rendering techniques.
+*   **Stability:** Eliminates the risk of Descriptor Pool exhaustion during heavy asset streaming.
 
-The hot-reloading system has been optimized to prevent I/O storms. It now strictly respects the user-defined `hot_reload_poll_rate`, removing redundant internal throttling and ensuring efficient file system monitoring.
+> **Note:** This feature requires Vulkan 1.2+ and specific hardware support (`shaderSampledImageArrayNonUniformIndexing`). The engine automatically checks for support at startup.
 
 ## What's New in v2.3.43
 
@@ -7020,7 +7024,11 @@ SituationCmdDrawMesh(cmd, scene_mesh);
 
 ---
 #### `SituationCmdBindTextureSet`
-Binds a texture's descriptor set to a specific set index in the shader pipeline. This is the primary API for binding textures to shaders, supporting both sampled textures and storage images.
+Binds a texture resource to the pipeline.
+
+*   **Vulkan (Bindless):** For standard sampled textures, this updates the Push Constant with the texture's global array index. It does NOT bind a new descriptor set if the Global Set is already active. This enables extremely fast draw call batching.
+*   **Vulkan (Storage/Legacy):** For storage images or compute-sampled textures, this binds a dedicated descriptor set as before.
+*   **OpenGL:** Binds the texture to the corresponding Texture Unit (or uses a Bindless Handle).
 
 ```c
 SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);

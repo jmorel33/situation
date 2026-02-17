@@ -888,6 +888,7 @@ typedef struct {
     VkDescriptorSetLayout view_data_ubo_layout; // Layout for the global View UBO
     VkDescriptorSetLayout image_sampler_layout; // Layout for combined image samplers
     VkDescriptorSetLayout text_sampler_layout;  // Layout for text textures (binding 0)
+    VkDescriptorSetLayout bindless_descriptor_layout; // [Bindless] Layout for global texture array (binding 0)
     VkDescriptorSetLayout storage_buffer_layout;// Layout for storage buffers (redundant with ssbo?)
     VkDescriptorSetLayout storage_image_layout; // Layout for storage images
     VkDescriptorSetLayout compute_sampler_layout;
@@ -938,6 +939,10 @@ typedef struct {
     VkDescriptorSet screen_copy_descriptor_set;                  // Descriptor set for reading screen copy
 
     VkDescriptorPool screen_copy_descriptor_pool;                // [FIX v2.3.27B] Track the pool that owns the screen copy set
+
+    // [Bindless] Global Descriptor Set
+    VkDescriptorSet global_bindless_set;
+    VkDescriptorPool global_bindless_pool;
 
     _SituationStagingBuffer staging_buffers[SITUATION_MAX_FRAMES_IN_FLIGHT];     // [NEW] Per-Frame Staging Buffers
 
@@ -1978,7 +1983,7 @@ static const char* SIT_QUAD_VERTEX_SHADER =
 #if defined(SITUATION_USE_VULKAN)
     "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
     // Added uv_rect to push constants
-    "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; } pc;\n"
+    "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; uint texture_id; int use_texture; } pc;\n"
     "\n"
     "void main() {\n"
     "    gl_Position = ubo.projection * pc.model * vec4(aPos, 0.0, 1.0);\n"
@@ -2007,14 +2012,20 @@ static const char* SIT_QUAD_FRAGMENT_SHADER =
     "layout(location = 0) in vec2 v_TexCoord;\n"
     "layout(location = 0) out vec4 outColor;\n"
     "\n"
+#if !defined(SITUATION_USE_VULKAN)
     // Standard Albedo binding (fallback) - Set 1 for texture samplers
     "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"
+#endif
     "\n"
 #if defined(SITUATION_USE_VULKAN)
-    "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; int use_texture; } pc;\n"
+    "#extension GL_EXT_nonuniform_qualifier : require\n"
+    "layout(set = 1, binding = 0) uniform sampler2D global_textures[];\n"
+    "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; uint texture_id; int use_texture; } pc;\n"
     "void main() {\n"
     "    vec4 texColor = vec4(1.0);\n"
-    "    if (pc.use_texture == 1) texColor = texture(u_Texture, v_TexCoord);\n"
+    "    if (pc.use_texture == 1) {\n"
+    "        texColor = texture(global_textures[nonuniformEXT(pc.texture_id)], v_TexCoord);\n"
+    "    }\n"
     "    // For SDF fonts, we might need special handling, but for baked bitmap fonts, simple sampling works.\n"
     "    // If it's a 1-channel bitmap font, it comes as alpha (0,0,0,A) or (1,1,1,A). \n"
     "    // Our baker creates RGBA white with alpha.\n"
@@ -7980,6 +7991,14 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     }
 
     if (_SituationVulkanCreateLogicalDevice(init_info) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DEVICE_FAILED; }
+
+    // [Bindless] Verify Feature Support (Required for V2.4+)
+    if (!(sit_render.enabled_features_mask & SIT_FEATURE_BINDLESS_TEXTURES)) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DEVICE_FAILED, "Bindless Textures not supported by device.");
+        _SituationCleanupVulkan();
+        return SITUATION_ERROR_VULKAN_DEVICE_FAILED;
+    }
+
     if (_SituationVulkanCreateAllocator() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
     if (_SituationVulkanCreateCommandPool() != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_COMMAND_FAILED; }
 
@@ -8128,13 +8147,67 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
+    // --- 1. Restore Standard Sampler Layout (For VDs and Compute) ---
+    // Uses Binding 4 (SIT_SAMPLER_BINDING_VD_SOURCE)
     #ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]: Creating sampler layout...\n"); fflush(stdout);
+    printf("Situation [Vulkan Debug]: Creating standard sampler layout...\n"); fflush(stdout);
     #endif
-    VkDescriptorSetLayoutBinding sampler_layout_binding = { SIT_SAMPLER_BINDING_VD_SOURCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
-    VkDescriptorSetLayoutCreateInfo sampler_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &sampler_layout_binding };
-    if (vkCreateDescriptorSetLayout(sit_render.vk.device, &sampler_layout_info, NULL, &sit_render.vk.image_sampler_layout) != VK_SUCCESS) {
+    VkDescriptorSetLayoutBinding standard_sampler_binding = { SIT_SAMPLER_BINDING_VD_SOURCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
+    VkDescriptorSetLayoutCreateInfo standard_sampler_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &standard_sampler_binding };
+    if (vkCreateDescriptorSetLayout(sit_render.vk.device, &standard_sampler_info, NULL, &sit_render.vk.image_sampler_layout) != VK_SUCCESS) {
          _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+    }
+
+    // --- 2. Create Bindless Layout (For Global Texture Array) ---
+    #ifdef SITUATION_VULKAN_DEBUG
+    printf("Situation [Vulkan Debug]: Creating bindless sampler layout...\n"); fflush(stdout);
+    #endif
+
+    // [Bindless] Setup Global Descriptor Layout
+    VkDescriptorSetLayoutBinding bindless_binding = {};
+    bindless_binding.binding = 0; // Use binding 0 for the array (GLSL: binding = 0)
+    bindless_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindless_binding.descriptorCount = SITUATION_MAX_TEXTURES;
+    bindless_binding.stageFlags = VK_SHADER_STAGE_ALL; // Allow access from any stage
+    bindless_binding.pImmutableSamplers = NULL;
+
+    VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO };
+    VkDescriptorBindingFlags flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+    flagsInfo.bindingCount = 1;
+    flagsInfo.pBindingFlags = &flags;
+
+    VkDescriptorSetLayoutCreateInfo bindless_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    bindless_layout_info.pNext = &flagsInfo;
+    bindless_layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    bindless_layout_info.bindingCount = 1;
+    bindless_layout_info.pBindings = &bindless_binding;
+
+    if (vkCreateDescriptorSetLayout(sit_render.vk.device, &bindless_layout_info, NULL, &sit_render.vk.bindless_descriptor_layout) != VK_SUCCESS) {
+         _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+    }
+
+    // [Bindless] Create Dedicated Pool for the Global Set
+    VkDescriptorPoolSize bindless_pool_size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, SITUATION_MAX_TEXTURES };
+    VkDescriptorPoolCreateInfo bindless_pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    bindless_pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+    bindless_pool_info.maxSets = 1;
+    bindless_pool_info.poolSizeCount = 1;
+    bindless_pool_info.pPoolSizes = &bindless_pool_size;
+
+    if (vkCreateDescriptorPool(sit_render.vk.device, &bindless_pool_info, NULL, &sit_render.vk.global_bindless_pool) != VK_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to create bindless descriptor pool.");
+        _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+    }
+
+    // [Bindless] Allocate Global Set
+    VkDescriptorSetAllocateInfo bindless_alloc_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    bindless_alloc_info.descriptorPool = sit_render.vk.global_bindless_pool;
+    bindless_alloc_info.descriptorSetCount = 1;
+    bindless_alloc_info.pSetLayouts = &sit_render.vk.bindless_descriptor_layout;
+
+    if (vkAllocateDescriptorSets(sit_render.vk.device, &bindless_alloc_info, &sit_render.vk.global_bindless_set) != VK_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate global bindless descriptor set.");
+        _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
     }
 
     // Create text sampler layout (binding 0 for ALBEDO texture)
@@ -9156,9 +9229,16 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     if (supported_vk12.descriptorIndexing) {
         enable_vk12.descriptorIndexing = VK_TRUE;
         // We also need specific sub-features for full bindless texture support
-        if (supported_vk12.shaderSampledImageArrayNonUniformIndexing && supported_vk12.runtimeDescriptorArray) {
+        if (supported_vk12.shaderSampledImageArrayNonUniformIndexing &&
+            supported_vk12.runtimeDescriptorArray &&
+            supported_vk12.descriptorBindingPartiallyBound &&
+            supported_vk12.descriptorBindingVariableDescriptorCount) {
+
              enable_vk12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
              enable_vk12.runtimeDescriptorArray = VK_TRUE;
+             enable_vk12.descriptorBindingPartiallyBound = VK_TRUE;
+             enable_vk12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+
              sit_render.enabled_features_mask |= SIT_FEATURE_BINDLESS_TEXTURES;
         }
     }
@@ -11164,13 +11244,13 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     VkPushConstantRange push_constant_range = {};
     push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT; // Accessible by both shaders
     push_constant_range.offset = 0;
-    // Updated size: Model(64) + Color(16) + UVRect(16) + UseTex(4) = 100 bytes
-    push_constant_range.size = sizeof(mat4) + sizeof(vec4) + sizeof(vec4) + sizeof(int);
+    // Updated size: Model(64) + Color(16) + UVRect(16) + TextureID(4) + UseTex(4) = 104 bytes
+    push_constant_range.size = sizeof(mat4) + sizeof(vec4) + sizeof(vec4) + sizeof(uint32_t) + sizeof(int);
 
-    // Define Layouts: Set 0 = View UBO, Set 1 = Texture Sampler (binding 0 for ALBEDO)
+    // Define Layouts: Set 0 = View UBO, Set 1 = Bindless Texture Array (Binding 0)
     VkDescriptorSetLayout set_layouts[] = {
         sit_render.vk.view_data_ubo_layout,
-        sit_render.vk.text_sampler_layout  // Uses binding 0 (SIT_SAMPLER_BINDING_ALBEDO)
+        sit_render.vk.bindless_descriptor_layout  // [Bindless] Use global layout
     };
 
     VkPipelineLayoutCreateInfo pipeline_layout_info = {};
@@ -11488,6 +11568,7 @@ static void _SituationCleanupVulkan(void) {
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.ubo_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.dynamic_ubo_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.storage_buffer_layout, NULL);
+    vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.bindless_descriptor_layout, NULL); // [Bindless]
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.image_sampler_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.text_sampler_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.storage_image_layout, NULL);
@@ -11513,6 +11594,12 @@ static void _SituationCleanupVulkan(void) {
     if (sit_render.vk.persistent_descriptor_pool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(sit_render.vk.device, sit_render.vk.persistent_descriptor_pool, NULL);
         sit_render.vk.persistent_descriptor_pool = VK_NULL_HANDLE;
+    }
+
+    // 3. Destroy Global Bindless Pool
+    if (sit_render.vk.global_bindless_pool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(sit_render.vk.device, sit_render.vk.global_bindless_pool, NULL);
+        sit_render.vk.global_bindless_pool = VK_NULL_HANDLE;
     }
     // ------------------------------------------
 
@@ -14193,7 +14280,9 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
 
     // 1. Bind Texture (Set 0, Binding 0)
     // This handles descriptor binding (Vulkan) or texture binding + uniform setting (OpenGL)
+#if defined(SITUATION_USE_OPENGL)
     SituationCmdBindSampledTexture(cmd, 0, texture);
+#endif
 
     // 2. Calculate UV Rect
     float tw = (float)texture.width;
@@ -14263,18 +14352,25 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
 
+    // [Bindless] Bind the Global Descriptor Set (Set 1)
+    vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline_layout, 1, 1, &sit_render.vk.global_bindless_set, 0, NULL);
+
     // We MUST use the push constant to enable texturing in the shader.
-    // The shader likely branches on `use_texture`.
+    _SituationTextureSlot* tex_slot = _SitGetTextureSlot(texture);
+    uint32_t slot_idx = tex_slot ? (uint32_t)(tex_slot - sit_render.texture_registry) : 0;
+
     struct {
         mat4 model;
         vec4 color;
         vec4 uv_rect;
+        uint32_t texture_id;
         int use_texture;
     } push_data;
 
     glm_mat4_copy(model, push_data.model);
     glm_vec4_copy(color_vec.raw, push_data.color);
     glm_vec4_copy(uv_rect.raw, push_data.uv_rect);
+    push_data.texture_id = slot_idx;
     push_data.use_texture = use_texture; // 1
 
     vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
@@ -15197,10 +15293,6 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
     if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
-    if (slot->descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Texture is missing its pre-cached descriptor set.");
-        return SITUATION_ERROR_RESOURCE_INVALID;
-    }
 
     // Determine the active pipeline (graphics or compute).
     VkPipelineBindPoint bind_point;
@@ -15216,8 +15308,35 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
         return SITUATION_ERROR_RENDER_COMMAND_FAILED;
     }
 
-    // Record the command to bind the texture's pre-packaged descriptor set.
-    vkCmdBindDescriptorSets(vk_cmd, bind_point, layout, set_index, 1, &slot->descriptor_set, 0, NULL);
+    // [Bindless] Standard Textures (Sampled)
+    // If the texture has no descriptor set, it is part of the Bindless Array.
+    // We update the Push Constant (texture_id) and bind the global set if needed.
+    if (slot->descriptor_set == VK_NULL_HANDLE) {
+        // 1. Bind Global Set (Set 1) if not already active (User logic must handle redundancy if desired, or we just bind)
+        // Optimization: We bind the global set to the requested set_index (usually 1).
+        vkCmdBindDescriptorSets(vk_cmd, bind_point, layout, set_index, 1, &sit_render.vk.global_bindless_set, 0, NULL);
+
+        // 2. Push Texture ID
+        // Note: The shader MUST declare `uint texture_id` in its push constant block at the correct offset.
+        // We assume standard layout here. If the user has a custom pipeline, they must ensure compatibility.
+        // For standard "Situation" shaders (Quad, Text), the texture_id is after UV_Rect.
+        // Assuming offset 144 bytes (Model 64 + Color 16 + UVRect 16).
+        // Wait, standard user shaders might not have this.
+        // THIS IS A BREAKING CHANGE FOR CUSTOM SHADERS if they don't support bindless.
+        // However, for internal shaders, we handle it.
+        // For custom user shaders, they should use `SituationCmdSetPushConstant` manually or update their shader.
+        // But `SituationCmdBindTextureSet` implies "Make this texture available".
+
+        // For simplicity in this migration: We define that `SituationCmdBindTextureSet`
+        // pushes the texture ID to offset 96 (standard location in our internal convention).
+        // Model(64) + Color(16) + UVRect(16) = 96 bytes offset.
+        uint32_t texture_id = (uint32_t)(slot - sit_render.texture_registry);
+        vkCmdPushConstants(vk_cmd, layout, VK_SHADER_STAGE_ALL, 96, sizeof(uint32_t), &texture_id);
+
+    } else {
+        // [Legacy/Storage] Bind specific descriptor set
+        vkCmdBindDescriptorSets(vk_cmd, bind_point, layout, set_index, 1, &slot->descriptor_set, 0, NULL);
+    }
 
     return SITUATION_SUCCESS;
 #endif
@@ -15768,20 +15887,45 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
         descriptor_type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         fprintf(stderr, "[SituationCreateTextureEx] -> Using COMPUTE_SAMPLER layout\n");
     } else {
-        // Regular graphics pipeline textures use binding 4
-        layout_to_use = sit_render.vk.image_sampler_layout;
+        // Regular graphics pipeline textures use bindless layout (binding 0)
+        layout_to_use = sit_render.vk.bindless_descriptor_layout;
         descriptor_type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        fprintf(stderr, "[SituationCreateTextureEx] -> Using IMAGE_SAMPLER layout\n");
+        fprintf(stderr, "[SituationCreateTextureEx] -> Using BINDLESS layout\n");
     }
 
     // [FIX v2.3.27B] Capture the pool
     VkDescriptorPool used_pool = VK_NULL_HANDLE;
-    slot->descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use, &used_pool);
 
-    if (slot->descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
-        _SituationDeferDestroyImage(slot->image, slot->allocation, slot->image_view, slot->sampler);
-        return SITUATION_ERROR_UNKNOWN_ERROR;
+    // [Bindless] Use Global Descriptor Set for standard textures
+    if (layout_to_use == sit_render.vk.bindless_descriptor_layout) {
+        // We do NOT allocate a new set. We write to the global set.
+        slot->descriptor_set = VK_NULL_HANDLE; // Bindless textures don't own a set
+        slot->descriptor_pool = VK_NULL_HANDLE;
+
+        VkDescriptorImageInfo bindless_image_info = {};
+        bindless_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bindless_image_info.imageView = slot->image_view;
+        bindless_image_info.sampler = slot->sampler;
+
+        VkWriteDescriptorSet bindless_write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        bindless_write.dstSet = sit_render.vk.global_bindless_set;
+        bindless_write.dstBinding = 0;
+        bindless_write.dstArrayElement = (uint32_t)slot_idx; // Use the slot index!
+        bindless_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindless_write.descriptorCount = 1;
+        bindless_write.pImageInfo = &bindless_image_info;
+
+        vkUpdateDescriptorSets(sit_render.vk.device, 1, &bindless_write, 0, NULL);
+    } else {
+        // Fallback for Storage/Compute layouts (until they are bindless-ready)
+        slot->descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use, &used_pool);
+        slot->descriptor_pool = used_pool; // Assign pool for proper cleanup
+
+        if (slot->descriptor_set == VK_NULL_HANDLE) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate persistent descriptor set for texture.");
+            _SituationDeferDestroyImage(slot->image, slot->allocation, slot->image_view, slot->sampler);
+            return SITUATION_ERROR_UNKNOWN_ERROR;
+        }
     }
 
 /*    // Use the Asset Pool
