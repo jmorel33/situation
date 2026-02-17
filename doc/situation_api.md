@@ -8,7 +8,13 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Current Version: v2.3.46 "Bindless"**
+**Current Version: v2.3.52 "Virtual Bindless"**
+
+**Version 2.3.52** ("Virtual Bindless") introduces a powerful compatibility layer for the OpenGL backend. It allows modern, bindless-style shader code to run on hardware lacking native `GL_ARB_bindless_texture` support by emulating the feature via a virtual texture unit pool.
+
+**Version 2.3.51** ("MDI-Boosted") implements Multi-Draw Indirect (MDI) auto-batching for the OpenGL backend, drastically reducing CPU overhead for repetitive geometry.
+
+**Version 2.3.50** ("Fence-Guarded") introduces robust deferred destruction for OpenGL using fence synchronization, eliminating CPU stalls during resource cleanup.
 
 **Version 2.3.46** ("Bindless Hotfix") resolves a critical issue in the Vulkan text renderer where legacy bindful logic caused crashes in the new bindless environment.
 
@@ -23,6 +29,10 @@ Welcome to "Situation", a public API engineered for high-performance, cross-plat
 > **See the complete changelog:** [UPDATELOG.md](UPDATELOG.md)
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **Virtual Bindless (v2.3.52):** 🎉 **COMPLETE!** Implemented a "Virtual Bindless" fallback system for OpenGL hardware lacking `GL_ARB_bindless_texture`. This system emulates bindless texture access by managing a virtual pool of texture units, allowing users to write unified bindless shader code that works across a wider range of hardware (including older Intel iGPUs).
+*   **MDI Auto-Batching (v2.3.51):** 🎉 **COMPLETE!** Implemented Multi-Draw Indirect (MDI) auto-batching for the OpenGL backend. This optimization intelligently batches consecutive `SIT_OP_DRAW_MESH` commands sharing the same VAO into a single `glMultiDrawElementsIndirect` call, drastically reducing CPU overhead for repetitive geometry.
+*   **Fence-Guarded Destruction (v2.3.50):** 🎉 **COMPLETE!** Implemented robust deferred destruction for OpenGL using GL_ARB_sync fences. This eliminates CPU stalls and ensures resources are only destroyed when the GPU is finished with them, matching Vulkan's safety and performance.
+*   **Async Shader Linking (v2.3.49):** 🎉 **COMPLETE!** Implemented non-blocking shader linking for OpenGL hot-reloading using `KHR_parallel_shader_compile`.
 *   **Vulkan Bindless (v2.3.46):** 🎉 **COMPLETE!** Implemented "Bindless" texturing for Vulkan using Descriptor Indexing. Textures are now accessed via a global unbounded array (`global_textures[]`) indexed by push constants, eliminating descriptor binding overhead and solving pool fragmentation.
 *   **Vulkan Optimization (v2.3.44):** 🎉 **COMPLETE!** Added configurable staging buffer sizes and optimized I/O polling for hot-reloading to support a wider range of hardware targets.
 *   **System Unification (v2.3.43):** 🎉 **COMPLETE!** Implemented the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading. See `REGRESSION_ANALYSIS.md` for details.

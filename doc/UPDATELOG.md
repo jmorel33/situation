@@ -1,3 +1,16 @@
+## [v2.3.52 "Virtual Bindless" (OpenGL Fallback)] - 2026-03-02
+
+### Description
+
+This release introduces the "Virtual Bindless" texture system, a powerful compatibility layer for the OpenGL backend. It allows users to write modern, bindless-style shader code (accessing global texture arrays via indices) that runs transparently on hardware lacking native `GL_ARB_bindless_texture` support (e.g., older Intel iGPUs).
+
+### New Features
+
+- **Virtual Bindless Fallback:** Implemented a CPU-side texture slot manager (`_SituationVirtualBindlessBind`) that emulates bindless access using a limited pool of 32 texture units and an LRU eviction strategy.
+- **Shader Injection:** The shader compiler (`_SituationCompileGLShader`) now automatically detects if the fallback is active and injects compatibility macros and uniforms (`_sit_virtual_textures`, `_sit_texture_slot_id`). This allows standard bindless shaders (`global_textures[nonuniformEXT(id)]`) to compile and run without modification on legacy hardware.
+- **Unified Command Execution:** `SituationCmdBindTextureSet` and `_SituationGLExecuteCommands` now intelligently switch between native bindless, virtual bindless, and standard binding paths based on runtime feature detection.
+- **Debug Stats:** Added real-time tracking of Virtual Bindless cache hits and misses to the `SituationDrawMetricsOverlay`.
+
 ## [v2.3.51 "MDI-Boosted" (OpenGL Multi-Draw Indirect)] - 2026-03-02
 
 ### Description

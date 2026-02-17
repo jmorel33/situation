@@ -1004,6 +1004,32 @@ typedef struct {
  *          This includes internal shaders (Quad, Virtual Display), global buffers (UBOs),
  *          and caching variables for optimizing state changes.
  */
+#if defined(SITUATION_USE_OPENGL)
+
+#define SITUATION_MAX_VIRTUAL_TEXTURE_UNITS 32
+
+typedef struct _SituationVirtualTextureSlot {
+    uint32_t texture_slot_index;     // The actual GL texture unit (0-31)
+    GLuint gl_texture_id;            // The GL ID of the texture currently bound here
+    uint64_t last_used_counter;      // For LRU eviction
+    bool is_active;                  // Is this slot currently holding a valid texture?
+} _SituationVirtualTextureSlot;
+
+typedef struct _SituationVirtualBindlessStats {
+    uint64_t hits;
+    uint64_t misses;
+    uint64_t evictions;
+} _SituationVirtualBindlessStats;
+
+// Initializes the virtual bindless system
+static void _SituationVirtualBindlessInit(void);
+
+// Binds a texture using the virtual bindless system.
+// Returns the virtual slot index (0-31) to use in the shader.
+static int _SituationVirtualBindlessBind(GLuint gl_texture_id);
+
+#endif // SITUATION_USE_OPENGL
+
  typedef struct {
     // -------------------------------------------------------------------------
     // Internal Renderers (Virtual Display & Quad)
@@ -1074,6 +1100,12 @@ typedef struct {
     void* mdi_data_ptr;
     size_t mdi_ring_size;
     atomic_size_t mdi_ring_head;
+
+    // [Phase 5] Virtual Bindless Fallback
+    _SituationVirtualTextureSlot virtual_texture_slots[SITUATION_MAX_VIRTUAL_TEXTURE_UNITS];
+    _SituationVirtualBindlessStats virtual_stats;
+    uint64_t virtual_lru_counter;
+    GLint current_virtual_loc; // [Phase 5] Cache for virtual bindless uniform location
 } _SituationGLState;
 #endif // SITUATION_USE_OPENGL
 
@@ -5576,6 +5608,11 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
             case SIT_OP_BIND_PIPELINE:
                 glUseProgram((GLuint)p->args.bind_pipeline.shader_id);
                 sit_render.gl.current_program_id = (GLuint)p->args.bind_pipeline.shader_id;
+
+                // [Phase 5] Update Virtual Bindless Cache
+                if (!SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
+                    sit_render.gl.current_virtual_loc = glGetUniformLocation(sit_render.gl.current_program_id, "_sit_texture_slot_id");
+                }
                 break;
 
             case SIT_OP_DRAW_MESH:
@@ -5767,9 +5804,25 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                     int type = p->args.bind_desc.resource_type;
 
                     if (type == 1) { // 1 = Sampled Texture
-                        glBindTextureUnit(idx, (GLuint)id);
-                        // [v2.3.31] Track texture state for subsequent internal draw calls (Quad/Text)
-                        sit_render.gl.current_bound_texture_id = (GLuint)id;
+                        if (!SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
+                            // [Phase 5] Virtual Bindless Fallback
+                            // Only use virtual system if the shader supports it (has the injected uniform)
+                            if (sit_render.gl.current_virtual_loc >= 0) {
+                                int v_slot = _SituationVirtualBindlessBind((GLuint)id);
+                                glUniform1i(sit_render.gl.current_virtual_loc, v_slot);
+                                // Note: We do NOT bind to 'idx' here because the shader uses the virtual array.
+                            } else {
+                                // Standard Bind (Fallback for non-bindless shaders)
+                                glBindTextureUnit(idx, (GLuint)id);
+                            }
+                            // Always track for legacy/internal purposes
+                            sit_render.gl.current_bound_texture_id = (GLuint)id;
+                        } else {
+                            // Native GL 4.6 Bindless or standard bind
+                            glBindTextureUnit(idx, (GLuint)id);
+                            // [v2.3.31] Track texture state for subsequent internal draw calls (Quad/Text)
+                            sit_render.gl.current_bound_texture_id = (GLuint)id;
+                        }
                     }
                     else if (type == 3) { // 3 = Storage Image
                          glBindImageTexture(idx, (GLuint)id, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
@@ -6163,6 +6216,8 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     }
 
     // --- 2. OpenGL Version and Extension Checks ---
+    _SituationVirtualBindlessInit();
+
     if (GLVersion.major < 4 || (GLVersion.major == 4 && GLVersion.minor < 6)) {
         char detail[128];
         snprintf(detail, sizeof(detail), "_SituationInitOpenGL: OpenGL 4.6 not supported by the driver. Found version %d.%d", GLVersion.major, GLVersion.minor);
@@ -14883,7 +14938,18 @@ SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 posi
     if (vram > 0) {
         snprintf(buffer, sizeof(buffer), "VRAM: %.2f MB", vram / (1024.0 * 1024.0));
         SituationCmdDrawTextEx(cmd, font, buffer, (Vector2){position.x, y}, font_size, spacing, color);
+        y += line_height;
     }
+
+    // [Phase 5] Virtual Bindless Stats
+    #if defined(SITUATION_USE_OPENGL)
+    if (!SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
+        snprintf(buffer, sizeof(buffer), "Virt Bindless: Hits %llu / Miss %llu",
+            (unsigned long long)sit_render.gl.virtual_stats.hits,
+            (unsigned long long)sit_render.gl.virtual_stats.misses);
+        SituationCmdDrawTextEx(cmd, font, buffer, (Vector2){position.x, y}, font_size, spacing, color);
+    }
+    #endif
 }
 
 // [v2.3.22] Momentum Implementation
@@ -16896,7 +16962,61 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
     }
 
     GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, NULL);
+
+    if (!SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
+        // [Phase 5] Virtual Bindless Injection
+        // We inject the definition and uniforms after the #version line
+        const char* version_pos = strstr(source, "#version");
+        if (version_pos) {
+            // Find end of version line
+            const char* next_line = strchr(version_pos, '\n');
+            if (next_line) {
+                next_line++; // Skip newline
+
+                // Construct the injection block
+                const char* injection =
+                    "#define SITUATION_VIRTUAL_BINDLESS 1\n"
+                    "#extension GL_EXT_nonuniform_qualifier : enable\n"
+                    "uniform sampler2D _sit_virtual_textures[32];\n"
+                    "uniform int _sit_texture_slot_id;\n"
+                    "#define global_textures _sit_virtual_textures\n"
+                    "#define nonuniformEXT(x) _sit_texture_slot_id\n";
+
+                const char* sources[3] = {
+                    NULL, // Part 1 (Version)
+                    injection,
+                    NULL  // Part 2 (Rest)
+                };
+                GLint lengths[3] = {0, 0, 0};
+
+                // Calculate lengths
+                lengths[0] = (GLint)(next_line - source);
+                sources[0] = source;
+
+                lengths[1] = (GLint)strlen(injection);
+
+                sources[2] = next_line;
+                // sources[2] is null terminated, so we can pass length or let GL determine it
+                // Since I'm passing lengths array, I should pass length.
+                // But wait, strlen on source is O(N).
+                // If I pass NULL for lengths, it assumes ALL are null terminated.
+                // But sources[0] is NOT null terminated.
+                // So I MUST pass lengths array.
+                lengths[2] = (GLint)strlen(sources[2]);
+
+                glShaderSource(shader, 3, sources, lengths);
+            } else {
+                 // Fallback if no newline after version (weird)
+                 glShaderSource(shader, 1, &source, NULL);
+            }
+        } else {
+             // Fallback if no version found
+             glShaderSource(shader, 1, &source, NULL);
+        }
+    } else {
+        glShaderSource(shader, 1, &source, NULL);
+    }
+
     glCompileShader(shader);
 
     GLint success = 0;
@@ -17057,6 +17177,20 @@ static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs
 
     GLint success;
     glGetProgramiv(program, GL_LINK_STATUS, &success);
+
+    // [Phase 5] Virtual Bindless Sampler Setup
+    if (success && !SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
+        glUseProgram(program);
+        GLint loc = glGetUniformLocation(program, "_sit_virtual_textures");
+        if (loc >= 0) {
+            // Set bindings 0-31
+            GLint bindings[32];
+            for (int i = 0; i < 32; i++) bindings[i] = i;
+            glUniform1iv(loc, 32, bindings);
+        }
+        glUseProgram(0);
+    }
+
     if (!success) {
         GLint log_length = 0;
         glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_length);
@@ -17141,6 +17275,20 @@ static GLuint _SituationCreateGLShaderProgramFromSource(const char* cs_src, Situ
     // 4. Check for linking errors
     GLint success = 0;
     glGetProgramiv(program, GL_LINK_STATUS, &success);
+
+    // [Phase 5] Virtual Bindless Sampler Setup
+    if (success && !SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
+        glUseProgram(program);
+        GLint loc = glGetUniformLocation(program, "_sit_virtual_textures");
+        if (loc >= 0) {
+            // Set bindings 0-31
+            GLint bindings[32];
+            for (int i = 0; i < 32; i++) bindings[i] = i;
+            glUniform1iv(loc, 32, bindings);
+        }
+        glUseProgram(0);
+    }
+
     if (!success) {
         GLint log_length = 0;
         glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_length);
@@ -30530,6 +30678,85 @@ SITAPI int SituationGetKeyScancode(int key) {
     // Just wrap GLFW
     return glfwGetKeyScancode(key);
 }
+
+#if defined(SITUATION_USE_OPENGL)
+
+// Initialize the virtual bindless system
+static void _SituationVirtualBindlessInit(void) {
+    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+        _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[i];
+        slot->texture_slot_index = i;
+        slot->gl_texture_id = 0;
+        slot->last_used_counter = 0;
+        slot->is_active = false;
+    }
+    sit_render.gl.virtual_stats.hits = 0;
+    sit_render.gl.virtual_stats.misses = 0;
+    sit_render.gl.virtual_stats.evictions = 0;
+    sit_render.gl.virtual_lru_counter = 0;
+}
+
+// Binds a texture using the virtual bindless system.
+// Returns the virtual slot index (0-31) to use in the shader.
+static int _SituationVirtualBindlessBind(GLuint gl_texture_id) {
+    sit_render.gl.virtual_lru_counter++;
+    uint64_t current_counter = sit_render.gl.virtual_lru_counter;
+
+    // 1. Check if the texture is already bound (Hit?)
+    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+        _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[i];
+        if (slot->is_active && slot->gl_texture_id == gl_texture_id) {
+
+            // Hit! Update LRU
+            slot->last_used_counter = current_counter;
+            sit_render.gl.virtual_stats.hits++;
+            return i;
+        }
+    }
+
+    // 2. Miss! Find a slot to evict
+    sit_render.gl.virtual_stats.misses++;
+
+    int best_slot = -1;
+    uint64_t oldest_counter = UINT64_MAX;
+
+    // First pass: look for empty slot
+    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+        if (!sit_render.gl.virtual_texture_slots[i].is_active) {
+            best_slot = i;
+            break;
+        }
+    }
+
+    // Second pass: if full, find LRU
+    if (best_slot == -1) {
+        sit_render.gl.virtual_stats.evictions++;
+        for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+            if (sit_render.gl.virtual_texture_slots[i].last_used_counter < oldest_counter) {
+                oldest_counter = sit_render.gl.virtual_texture_slots[i].last_used_counter;
+                best_slot = i;
+            }
+        }
+    }
+
+    // Safety fallback
+    if (best_slot == -1) best_slot = 0;
+
+    // 3. Bind the texture to the chosen slot
+    _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[best_slot];
+
+    // Bind the actual texture to the texture unit using DSA
+    glBindTextureUnit(best_slot, gl_texture_id);
+
+    // Update slot metadata
+    slot->is_active = true;
+    slot->gl_texture_id = gl_texture_id;
+    slot->last_used_counter = current_counter;
+
+    return best_slot;
+}
+
+#endif // SITUATION_USE_OPENGL
 
 #endif // SITUATION_IMPLEMENTATION
 
