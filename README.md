@@ -60,8 +60,8 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 ---
 
-<details>
-<summary><h2>1. Introduction & Overview</h2></summary>
+
+## 1. Introduction & Overview
 
 `situation.h` is a single-header C/C++ library that acts as a high-performance kernel for interactive software. It abstracts the fragmented landscape of OS APIs (Windows/Linux/macOS) and Graphics Backends (OpenGL/Vulkan) into a unified, deterministic "Situation" that you control.
 
@@ -78,12 +78,12 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 *   **First-Class Compute:** Compute Shaders are not an afterthought. The API treats Compute Pipelines and Storage Buffers (SSBOs) as primary citizens, enabling complex simulations and post-processing.
 *   **Deep System Awareness:** Query precise hardware details (GPU Name, dedicated VRAM usage, Monitor topology) to auto-configure your application's quality settings.
 
-</details>
 
 
 
-<details>
-<summary><h2>2. Getting Started</h2></summary>
+
+
+## 2. Getting Started
 
 A minimal application requires **zero configuration** beyond selecting a backend.
 
@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
     return 0;
 }
 ```
-</details>
+
 
 ---
 
@@ -161,8 +161,8 @@ int main(int argc, char** argv) {
 
 
 
-<details>
-<summary><h2>3. Core Concepts & Architecture</h2></summary>
+
+## 3. Core Concepts & Architecture
 
 The library is built on several core principles to ensure a simple, predictable, and high-performance development experience.
 
@@ -366,12 +366,12 @@ graph TD
     E1 --> E2 --> E3 --> E4
 ```
 
-</details>
+
 
 ---
 
-<details>
-<summary><h2>4. Building & Configuration</h2></summary>
+
+## 4. Building & Configuration
 
 "Situation" uses a **Header-Only + Implementation** pattern. Configuration is handled entirely via preprocessor macros, which must be defined **before** including `situation.h`.
 
@@ -401,23 +401,23 @@ Depending on your configuration, you must link against specific system libraries
 
 > **Note:** If using `SITUATION_ENABLE_SHADER_COMPILER`, ensure the `shaderc` includes and libraries are in your compiler's search path.
 
-</details>
+
 
 ---
 
-<details>
-<summary><h2>5. Examples & Tutorials</h2></summary>
+
+## 5. Examples & Tutorials
 
 The repository includes a variety of examples demonstrating the library's features, from basic triangle rendering to more advanced topics like compute shaders and 3D model loading.
 
 The full source code for all examples can be found in the `/examples` directory.
 
-</details>
+
 
 ---
 
-<details>
-<summary><h2>6. Frequently Asked Questions (FAQ) & Troubleshooting</h2></summary>
+
+## 6. Frequently Asked Questions (FAQ) & Troubleshooting
 
 ### **Configuration Settings (Preprocessor Macros)**
 
@@ -479,19 +479,19 @@ This library does not use garbage collection.
 
 **Q: My 3D Model renders black?**
 *   **Cause:** The model loader likely failed to find the texture files relative to the model. Check the console output; the library logs warnings if specific texture paths in a GLTF file could not be resolved.
-</details>
+
 
 ---
 
-<details>
-<summary><h2>7. API Reference</h2></summary>
+
+## 7. API Reference
 
 The documentation for "Situation" is split into two key documents:
 
 1.  [**Core API Library Reference Manual (situation_sdk.md)**](doc/situation_sdk.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
 2.  [**Situation API Programming Guide (situation_api.md)**](doc/situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
 
-</details>
+
 
 ---
 
@@ -511,9 +511,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ---
 
-<details>
-<summary><h2>8. Version History</h2></summary>
+
+## 8. Version History
 
 For a detailed history of changes, improvements, and fixes, please refer to the [**Update Log**](doc/UPDATELOG.md).
 
-</details>
