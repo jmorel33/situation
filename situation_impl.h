@@ -5653,7 +5653,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         size_t offset = atomic_fetch_add(&sit_render.gl.mdi_ring_head, total_size);
 
                         // Safety check: Ensure we stay within the CURRENT FRAME's slice (1MB per frame)
-                        if (offset + total_size <= mdi_frame_offset + (1024 * 1024)) {
+                        if (offset >= mdi_frame_offset && (offset + total_size <= mdi_frame_offset + (1024 * 1024))) {
                             SitDrawElementsIndirectCommand* cmds = (SitDrawElementsIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
 
                             for (size_t k = 0; k < batch_size; ++k) {
@@ -5673,6 +5673,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
 
                             glBindBuffer(GL_DRAW_INDIRECT_BUFFER, sit_render.gl.mdi_buffer_id);
                             glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, (const void*)((uintptr_t)offset), (GLsizei)batch_size, 0);
+                            SIT_CHECK_GL_ERROR();
 
                             // Skip the batched commands
                             i += (batch_size - 1);
@@ -5886,6 +5887,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                             // 3. Bind & Draw
                             glBindBuffer(GL_DRAW_INDIRECT_BUFFER, sit_render.gl.mdi_buffer_id);
                             glMultiDrawArraysIndirect(GL_TRIANGLES, (const void*)((uintptr_t)offset), (GLsizei)batch_count, 0);
+                            SIT_CHECK_GL_ERROR();
 
                             // 4. Advance
                             i += (batch_count - 1); // Loop increments i one more time
@@ -5934,6 +5936,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
 
                             glBindBuffer(GL_DRAW_INDIRECT_BUFFER, sit_render.gl.mdi_buffer_id);
                             glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, (const void*)((uintptr_t)offset), (GLsizei)batch_count, 0);
+                            SIT_CHECK_GL_ERROR();
 
                             i += (batch_count - 1);
                         } else {
