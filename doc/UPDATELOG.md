@@ -1,3 +1,24 @@
+## [v2.3.45 "Bindless" (Vulkan Descriptor Indexing)] - 2026-02-17
+
+### Description
+
+This release migrates the Vulkan backend to a "Bindless" architecture using Descriptor Indexing. This eliminates the CPU overhead of binding individual descriptor sets for every texture and enables massive draw call batching.
+
+### New Features
+
+- **Bindless Textures (Vulkan):**
+  - Textures are now accessed via a global descriptor array (`global_textures[]`) indexed by a push constant (`texture_id`).
+  - Removed per-texture `VkDescriptorSet` allocation, solving pool fragmentation issues.
+  - Enabled Vulkan 1.2+ features: `shaderSampledImageArrayNonUniformIndexing`, `runtimeDescriptorArray`, `descriptorBindingPartiallyBound`.
+
+### Technical Details
+
+- **Global Descriptor Set:** A single `VkDescriptorSet` (Set 1) now contains all active textures (up to 4096).
+- **Zero-Bind Draw Loop:** `SituationCmdDrawTexture` no longer calls `vkCmdBindDescriptorSets` for textures, reducing driver overhead.
+- **Shader Update:** Updated internal Quad shaders to use `GL_EXT_nonuniform_qualifier` for accessing the global texture array.
+
+---
+
 ## [v2.3.44 "Optimization" (Vulkan Memory & Hot-Reload)] - 2026-02-10
 
 ### Description
