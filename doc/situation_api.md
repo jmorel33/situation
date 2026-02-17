@@ -8,7 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-**Current Version: v2.3.52 "Virtual Bindless"**
+**Current Version: v2.3.53 "Critical Stability"**
+
+**Version 2.3.53** ("Critical Stability") addresses key stability issues in the OpenGL backend, fixing MDI batching pipeline consistency and ensuring safe resource destruction.
 
 **Version 2.3.52** ("Virtual Bindless") introduces a powerful compatibility layer for the OpenGL backend. It allows modern, bindless-style shader code to run on hardware lacking native `GL_ARB_bindless_texture` support by emulating the feature via a virtual texture unit pool.
 
@@ -29,6 +31,7 @@ Welcome to "Situation", a public API engineered for high-performance, cross-plat
 > **See the complete changelog:** [UPDATELOG.md](UPDATELOG.md)
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **Critical Stability (v2.3.53):** 🎉 **COMPLETE!** Addressed critical MDI batching and resource cleanup issues in the OpenGL backend.
 *   **Virtual Bindless (v2.3.52):** 🎉 **COMPLETE!** Implemented a "Virtual Bindless" fallback system for OpenGL hardware lacking `GL_ARB_bindless_texture`. This system emulates bindless texture access by managing a virtual pool of texture units, allowing users to write unified bindless shader code that works across a wider range of hardware (including older Intel iGPUs).
 *   **MDI Auto-Batching (v2.3.51):** 🎉 **COMPLETE!** Implemented Multi-Draw Indirect (MDI) auto-batching for the OpenGL backend. This optimization intelligently batches consecutive `SIT_OP_DRAW_MESH` commands sharing the same VAO into a single `glMultiDrawElementsIndirect` call, drastically reducing CPU overhead for repetitive geometry.
 *   **Fence-Guarded Destruction (v2.3.50):** 🎉 **COMPLETE!** Implemented robust deferred destruction for OpenGL using GL_ARB_sync fences. This eliminates CPU stalls and ensures resources are only destroyed when the GPU is finished with them, matching Vulkan's safety and performance.
@@ -66,6 +69,16 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 "Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
 
 ---
+
+## What's New in v2.3.53
+
+### 🎉 Critical Stability Fixes
+
+Version 2.3.53 is a stability-focused release that addresses critical issues in the OpenGL backend.
+
+*   **MDI Pipeline Consistency:** Fixed a bug where the MDI auto-batcher could batch draw calls with different shaders, leading to visual corruption. The batcher now strictly enforces pipeline consistency.
+*   **Fence Cleanup:** Implemented proper fence cleanup on shutdown to prevent driver crashes.
+*   **Safety Checks:** Added multiple safety checks for VAO restoration and ring buffer management.
 
 ## What's New in v2.3.46
 
