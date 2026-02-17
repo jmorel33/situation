@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.49 "Async Shader Linking"_
+_Core API library v2.3.50 "Fence-Guarded"_
 
 _(c) 2025-2026 Jacques Morel_
 
@@ -9,6 +9,8 @@ _MIT Licenced_
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](doc/C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **Fence-Guarded Destruction (v2.3.50):** 🎉 **COMPLETE!** Implemented robust deferred destruction for OpenGL using GL_ARB_sync fences. This eliminates CPU stalls and ensures resources are only destroyed when the GPU is finished with them, matching Vulkan's safety and performance.
+*   **Async Shader Linking (v2.3.49):** 🎉 **COMPLETE!** Implemented non-blocking shader linking for OpenGL hot-reloading using `KHR_parallel_shader_compile`.
 *   **Vulkan Bindless (v2.3.45):** 🎉 **COMPLETE!** Implemented "Bindless" texturing for Vulkan using Descriptor Indexing. Textures are now accessed via a global unbounded array (`global_textures[]`) indexed by push constants, eliminating descriptor binding overhead and solving pool fragmentation.
 *   **Vulkan Optimization (v2.3.44):** 🎉 **COMPLETE!** Added configurable staging buffer sizes and optimized I/O polling for hot-reloading to support a wider range of hardware targets.
 *   **System Unification (v2.3.43):** 🎉 **COMPLETE!** Implemented the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading. See `REGRESSION_ANALYSIS.md` for details.

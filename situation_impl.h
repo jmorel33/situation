@@ -1066,7 +1066,8 @@ typedef struct {
 
     // [Phase 2.5] Lazy VAO Cache & Graveyard
     _SitGLVaoCacheEntry* vao_cache[256]; // Simple hash table
-    _SituationGLGraveyard graveyard;
+    _SituationGLGraveyard graveyards[SITUATION_MAX_FRAMES_IN_FLIGHT];
+    GLsync frame_fences[SITUATION_MAX_FRAMES_IN_FLIGHT];
 
     // [Phase 4] Multi-Draw Indirect
     GLuint mdi_buffer_id;
@@ -2211,7 +2212,7 @@ static GLuint _SitGLGetCachedVAO(SituationMesh mesh);
 static void _SitGLDeferDestroyBuffer(GLuint id);
 static void _SitGLDeferDestroyTexture(GLuint id);
 static void _SitGLDeferCleanMeshVAO(uint64_t mesh_id);
-static void _SitGLFlushGraveyard(void);
+static void _SitGLFlushGraveyard(int frame_index);
 
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
 // Forward declare the SPIR-V blob struct as it's used here
@@ -3996,60 +3997,86 @@ static GLuint _SitGLGetCachedVAO(SituationMesh mesh) {
 
 static void _SitGLDeferDestroyBuffer(GLuint id) {
     if (id == 0) return;
-    ma_mutex_lock(&sit_render.gl.graveyard.lock);
-    if (sit_render.gl.graveyard.buffer_count >= sit_render.gl.graveyard.buffer_capacity) {
-        size_t new_cap = sit_render.gl.graveyard.buffer_capacity * 2;
-        sit_render.gl.graveyard.buffers_to_delete = (GLuint*)SIT_REALLOC(sit_render.gl.graveyard.buffers_to_delete, new_cap * sizeof(GLuint));
-        sit_render.gl.graveyard.buffer_capacity = new_cap;
+    _SituationGLGraveyard* gy = &sit_render.gl.graveyards[sit_render.current_frame_index];
+    ma_mutex_lock(&gy->lock);
+    if (gy->buffer_count >= gy->buffer_capacity) {
+        size_t new_cap = gy->buffer_capacity * 2;
+        gy->buffers_to_delete = (GLuint*)SIT_REALLOC(gy->buffers_to_delete, new_cap * sizeof(GLuint));
+        gy->buffer_capacity = new_cap;
     }
-    sit_render.gl.graveyard.buffers_to_delete[sit_render.gl.graveyard.buffer_count++] = id;
-    ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+    gy->buffers_to_delete[gy->buffer_count++] = id;
+    ma_mutex_unlock(&gy->lock);
 }
 
 static void _SitGLDeferDestroyTexture(GLuint id) {
     if (id == 0) return;
-    ma_mutex_lock(&sit_render.gl.graveyard.lock);
-    if (sit_render.gl.graveyard.texture_count >= sit_render.gl.graveyard.texture_capacity) {
-        size_t new_cap = sit_render.gl.graveyard.texture_capacity * 2;
-        sit_render.gl.graveyard.textures_to_delete = (GLuint*)SIT_REALLOC(sit_render.gl.graveyard.textures_to_delete, new_cap * sizeof(GLuint));
-        sit_render.gl.graveyard.texture_capacity = new_cap;
+    _SituationGLGraveyard* gy = &sit_render.gl.graveyards[sit_render.current_frame_index];
+    ma_mutex_lock(&gy->lock);
+    if (gy->texture_count >= gy->texture_capacity) {
+        size_t new_cap = gy->texture_capacity * 2;
+        gy->textures_to_delete = (GLuint*)SIT_REALLOC(gy->textures_to_delete, new_cap * sizeof(GLuint));
+        gy->texture_capacity = new_cap;
     }
-    sit_render.gl.graveyard.textures_to_delete[sit_render.gl.graveyard.texture_count++] = id;
-    ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+    gy->textures_to_delete[gy->texture_count++] = id;
+    ma_mutex_unlock(&gy->lock);
 }
 
 static void _SitGLDeferCleanMeshVAO(uint64_t mesh_id) {
     if (mesh_id == 0) return;
-    ma_mutex_lock(&sit_render.gl.graveyard.lock);
-    if (sit_render.gl.graveyard.mesh_count >= sit_render.gl.graveyard.mesh_capacity) {
-        size_t new_cap = sit_render.gl.graveyard.mesh_capacity * 2;
-        sit_render.gl.graveyard.mesh_ids_to_clean = (uint64_t*)SIT_REALLOC(sit_render.gl.graveyard.mesh_ids_to_clean, new_cap * sizeof(uint64_t));
-        sit_render.gl.graveyard.mesh_capacity = new_cap;
+    _SituationGLGraveyard* gy = &sit_render.gl.graveyards[sit_render.current_frame_index];
+    ma_mutex_lock(&gy->lock);
+    if (gy->mesh_count >= gy->mesh_capacity) {
+        size_t new_cap = gy->mesh_capacity * 2;
+        gy->mesh_ids_to_clean = (uint64_t*)SIT_REALLOC(gy->mesh_ids_to_clean, new_cap * sizeof(uint64_t));
+        gy->mesh_capacity = new_cap;
     }
-    sit_render.gl.graveyard.mesh_ids_to_clean[sit_render.gl.graveyard.mesh_count++] = mesh_id;
-    ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+    gy->mesh_ids_to_clean[gy->mesh_count++] = mesh_id;
+    ma_mutex_unlock(&gy->lock);
 }
 
-static void _SitGLFlushGraveyard(void) {
-    // 1. Extract queues under lock
-    ma_mutex_lock(&sit_render.gl.graveyard.lock);
+static void _SitGLFlushGraveyard(int frame_index) {
+    if (frame_index < 0 || frame_index >= SITUATION_MAX_FRAMES_IN_FLIGHT) return;
 
-    // [OPTIMIZATION] Early exit if empty to avoid allocation churn
-    if (sit_render.gl.graveyard.buffer_count == 0 &&
-        sit_render.gl.graveyard.texture_count == 0 &&
-        sit_render.gl.graveyard.mesh_count == 0) {
-        ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+    _SituationGLGraveyard* gy = &sit_render.gl.graveyards[frame_index];
+    GLsync fence = sit_render.gl.frame_fences[frame_index];
+
+    // [FENCE] If no fence exists, it means the frame hasn't completed execution yet (or was already flushed).
+    // Do not flush resources for a frame that is potentially still being recorded or rendered.
+    if (!fence) return;
+
+    // [FENCE] Check if the GPU has finished using the resources from this frame.
+    // Timeout = 0 means we just check the status and return immediately.
+    GLenum result = glClientWaitSync(fence, 0, 0);
+    if (result == GL_TIMEOUT_EXPIRED || result == GL_WAIT_FAILED) {
+        // GPU is still busy with this frame. Keep resources for next time.
         return;
     }
 
-    size_t buf_count = sit_render.gl.graveyard.buffer_count;
+    // GPU is done. Safe to delete.
+
+    // 1. Extract queues under lock
+    ma_mutex_lock(&gy->lock);
+
+    // [OPTIMIZATION] Early exit if empty to avoid allocation churn
+    if (gy->buffer_count == 0 &&
+        gy->texture_count == 0 &&
+        gy->mesh_count == 0) {
+        ma_mutex_unlock(&gy->lock);
+
+        // Even if empty, we can clean up the fence since it signaled.
+        glDeleteSync(fence);
+        sit_render.gl.frame_fences[frame_index] = 0;
+        return;
+    }
+
+    size_t buf_count = gy->buffer_count;
 
     // Swap the arrays to minimize lock time
-    GLuint* temp_bufs = sit_render.gl.graveyard.buffers_to_delete;
-    GLuint* temp_texs = sit_render.gl.graveyard.textures_to_delete;
-    size_t temp_tex_count = sit_render.gl.graveyard.texture_count;
-    uint64_t* temp_meshes = sit_render.gl.graveyard.mesh_ids_to_clean;
-    size_t temp_mesh_count = sit_render.gl.graveyard.mesh_count;
+    GLuint* temp_bufs = gy->buffers_to_delete;
+    GLuint* temp_texs = gy->textures_to_delete;
+    size_t temp_tex_count = gy->texture_count;
+    uint64_t* temp_meshes = gy->mesh_ids_to_clean;
+    size_t temp_mesh_count = gy->mesh_count;
 
     // Reset struct with new small arrays
     // [SAFETY] Check for allocation failure
@@ -4065,23 +4092,23 @@ static void _SitGLFlushGraveyard(void) {
         if (new_meshes) SIT_FREE(new_meshes);
 
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate new graveyard queues during flush.");
-        ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+        ma_mutex_unlock(&gy->lock);
         return;
     }
 
-    sit_render.gl.graveyard.buffer_capacity = 32;
-    sit_render.gl.graveyard.buffers_to_delete = new_bufs;
-    sit_render.gl.graveyard.buffer_count = 0;
+    gy->buffer_capacity = 32;
+    gy->buffers_to_delete = new_bufs;
+    gy->buffer_count = 0;
 
-    sit_render.gl.graveyard.texture_capacity = 32;
-    sit_render.gl.graveyard.textures_to_delete = new_texs;
-    sit_render.gl.graveyard.texture_count = 0;
+    gy->texture_capacity = 32;
+    gy->textures_to_delete = new_texs;
+    gy->texture_count = 0;
 
-    sit_render.gl.graveyard.mesh_capacity = 32;
-    sit_render.gl.graveyard.mesh_ids_to_clean = new_meshes;
-    sit_render.gl.graveyard.mesh_count = 0;
+    gy->mesh_capacity = 32;
+    gy->mesh_ids_to_clean = new_meshes;
+    gy->mesh_count = 0;
 
-    ma_mutex_unlock(&sit_render.gl.graveyard.lock);
+    ma_mutex_unlock(&gy->lock);
 
     // 2. Process Deletions
     if (buf_count > 0 && temp_bufs) {
@@ -4115,6 +4142,10 @@ static void _SitGLFlushGraveyard(void) {
     if (temp_bufs) SIT_FREE(temp_bufs);
     if (temp_texs) SIT_FREE(temp_texs);
     if (temp_meshes) SIT_FREE(temp_meshes);
+
+    // 4. Cleanup Fence
+    glDeleteSync(fence);
+    sit_render.gl.frame_fences[frame_index] = NULL;
 }
 
 
@@ -6322,20 +6353,23 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
 
     // [Phase 2.5] Initialize VAO Cache & Graveyard
     // Zero cache is handled by SIT_CALLOC of context.
-    // Initialize Graveyard
-    if (ma_mutex_init(&sit_render.gl.graveyard.lock) != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to init GL graveyard mutex.");
-        return SITUATION_ERROR_INIT_FAILED;
-    }
-    // Pre-allocate arrays
-    sit_render.gl.graveyard.mesh_capacity = 32;
-    sit_render.gl.graveyard.mesh_ids_to_clean = (uint64_t*)SIT_MALLOC(32 * sizeof(uint64_t));
-    sit_render.gl.graveyard.buffer_capacity = 32;
-    sit_render.gl.graveyard.buffers_to_delete = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
-    sit_render.gl.graveyard.texture_capacity = 32;
-    sit_render.gl.graveyard.textures_to_delete = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
-    if (!sit_render.gl.graveyard.mesh_ids_to_clean || !sit_render.gl.graveyard.buffers_to_delete || !sit_render.gl.graveyard.textures_to_delete) {
-        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    // Initialize Graveyards
+    for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (ma_mutex_init(&sit_render.gl.graveyards[i].lock) != MA_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to init GL graveyard mutex.");
+            return SITUATION_ERROR_INIT_FAILED;
+        }
+        // Pre-allocate arrays
+        sit_render.gl.graveyards[i].mesh_capacity = 32;
+        sit_render.gl.graveyards[i].mesh_ids_to_clean = (uint64_t*)SIT_MALLOC(32 * sizeof(uint64_t));
+        sit_render.gl.graveyards[i].buffer_capacity = 32;
+        sit_render.gl.graveyards[i].buffers_to_delete = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
+        sit_render.gl.graveyards[i].texture_capacity = 32;
+        sit_render.gl.graveyards[i].textures_to_delete = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
+        if (!sit_render.gl.graveyards[i].mesh_ids_to_clean || !sit_render.gl.graveyards[i].buffers_to_delete || !sit_render.gl.graveyards[i].textures_to_delete) {
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+        sit_render.gl.frame_fences[i] = 0;
     }
 
     // [Phase 2] Initialize Threading Support (Loader Window Only)
@@ -11485,12 +11519,23 @@ static void _SituationCleanupOpenGL(void) {
         sit_render.gl.vao_cache[i] = NULL;
     }
 
-    // Cleanup Graveyard
-    if (sit_render.gl.graveyard.mesh_ids_to_clean) SIT_FREE(sit_render.gl.graveyard.mesh_ids_to_clean);
-    if (sit_render.gl.graveyard.buffers_to_delete) SIT_FREE(sit_render.gl.graveyard.buffers_to_delete);
-    if (sit_render.gl.graveyard.textures_to_delete) SIT_FREE(sit_render.gl.graveyard.textures_to_delete);
-    ma_mutex_uninit(&sit_render.gl.graveyard.lock);
-    memset(&sit_render.gl.graveyard, 0, sizeof(sit_render.gl.graveyard));
+    // Cleanup Graveyards & Fences
+    for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; i++) {
+        // Force flush remaining resources (Context is active)
+        _SitGLFlushGraveyard(i);
+        // Note: _SitGLFlushGraveyard might skip if fence is busy, but we are shutting down.
+        // We should force cleanup of arrays regardless of fence state here.
+        if (sit_render.gl.graveyards[i].mesh_ids_to_clean) SIT_FREE(sit_render.gl.graveyards[i].mesh_ids_to_clean);
+        if (sit_render.gl.graveyards[i].buffers_to_delete) SIT_FREE(sit_render.gl.graveyards[i].buffers_to_delete);
+        if (sit_render.gl.graveyards[i].textures_to_delete) SIT_FREE(sit_render.gl.graveyards[i].textures_to_delete);
+        ma_mutex_uninit(&sit_render.gl.graveyards[i].lock);
+
+        if (sit_render.gl.frame_fences[i]) {
+            glDeleteSync(sit_render.gl.frame_fences[i]);
+            sit_render.gl.frame_fences[i] = 0;
+        }
+    }
+    memset(sit_render.gl.graveyards, 0, sizeof(sit_render.gl.graveyards));
 
     // Cleanup Soft Command Buffers
     for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; i++) {
@@ -12675,7 +12720,18 @@ SITAPI SituationError SituationEndFrame(void) {
         // If threading disabled at runtime but compiled in, fallback to immediate execution below
         {
             _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
+
             glfwSwapBuffers(sit_gs.sit_glfw_window);
+
+            // [FENCE] Guard destruction
+            if (sit_render.gl.frame_fences[sit_render.current_frame_index]) {
+                glDeleteSync(sit_render.gl.frame_fences[sit_render.current_frame_index]);
+            }
+            sit_render.gl.frame_fences[sit_render.current_frame_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            glFlush();
+
+            // Try to flush all
+            for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; ++i) _SitGLFlushGraveyard(i);
         }
         #else
         // [Phase 1] Execute Deferred Commands Immediately
@@ -12684,6 +12740,16 @@ SITAPI SituationError SituationEndFrame(void) {
 
         // Swap the front and back buffers to display the rendered frame.
         glfwSwapBuffers(sit_gs.sit_glfw_window);
+
+        // [FENCE] Guard destruction
+        if (sit_render.gl.frame_fences[sit_render.current_frame_index]) {
+            glDeleteSync(sit_render.gl.frame_fences[sit_render.current_frame_index]);
+        }
+        sit_render.gl.frame_fences[sit_render.current_frame_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glFlush();
+
+        // Try to flush all
+        for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; ++i) _SitGLFlushGraveyard(i);
         #endif
 
         // [PLATINUM] Unify frame index advancement across both paths.
@@ -30157,7 +30223,7 @@ SITAPI SituationJobId SituationSaveFileAsync(SituationThreadPool* pool, const ch
 static void _SitFlushFrameResources(int frame_index) {
     #if defined(SITUATION_USE_OPENGL)
         // OpenGL uses a global graveyard (deferred command buffer system handles synchronization)
-        _SitGLFlushGraveyard();
+        _SitGLFlushGraveyard(frame_index);
     #elif defined(SITUATION_USE_VULKAN)
         // Vulkan uses per-frame graveyards
         _SituationFlushGraveyard((uint32_t)frame_index);
@@ -30237,11 +30303,20 @@ static int _SituationRenderThreadEntry(void* arg) {
         // 1. Execute Soft Command Buffer
         _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[frame_index], frame_index);
 
-        // 2. Present
+        // 2. Present (CPU waits here usually if vsync on, but work is submitted)
         glfwSwapBuffers(sit_gs.sit_glfw_window);
 
-        // 3. [Phase 2.5] Flush Graveyard
-        _SitGLFlushGraveyard();
+        // 3. Insert Fence to track this frame's completion
+        if (sit_render.gl.frame_fences[frame_index]) {
+            glDeleteSync(sit_render.gl.frame_fences[frame_index]);
+        }
+        sit_render.gl.frame_fences[frame_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glFlush();
+
+        // 4. [Phase 2.5] Flush Graveyards (Check fences of all frames)
+        for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; ++i) {
+            _SitGLFlushGraveyard(i);
+        }
 
         #elif defined(SITUATION_USE_VULKAN)
         VkCommandBuffer cmd = sit_render.vk.command_buffers[frame_index];
