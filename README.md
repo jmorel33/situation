@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.48 "Hardening"_
+_Core API library v2.3.49 "Async Shader Linking"_
 
 _(c) 2025-2026 Jacques Morel_
 

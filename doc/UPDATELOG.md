@@ -1,3 +1,15 @@
+## [v2.3.49 "Async Shader Linking" (Eliminate Hot-Reload Stalls)] - 2026-02-26
+
+### Description
+
+This release introduces Asynchronous Shader Linking for the OpenGL backend, utilizing `KHR_parallel_shader_compile`. This eliminates the CPU stall previously caused by `glLinkProgram` during hot-reloading, making OpenGL hot-reloading instantaneous and stutter-free, matching the performance of the Vulkan backend.
+
+### Critical Fixes
+
+- **Async Linking:** Implemented `_SituationCreateGLShaderProgramAsync` to initiate linking without blocking.
+- **Non-Blocking Hot-Reload:** Refactored `_SituationPerformHotReloadPass` to use the async creation path.
+- **Background Polling:** Modified `SituationAcquireFrameCommandBuffer` to poll for `GL_COMPLETION_STATUS_KHR` and finalize the shader swap only when linking is complete.
+
 ## [v2.3.48 "Hardening" (Thread Safety & Verification)] - 2026-02-25
 
 ### Description

@@ -674,6 +674,10 @@ struct SituationRenderList_t {
 #if defined(SITUATION_USE_OPENGL)
 // --- OpenGL State Hardening Helpers ---
 
+#ifndef GL_COMPLETION_STATUS_KHR
+#define GL_COMPLETION_STATUS_KHR 0x91B1
+#endif
+
 // [Phase 1] Soft Command Buffer Definitions
 typedef enum {
     SIT_OP_BEGIN_RENDER_PASS,
@@ -1237,6 +1241,8 @@ typedef struct _SituationShaderSlot {
 #if defined(SITUATION_USE_OPENGL)
     GLuint gl_program_id;
     struct _SituationUniformMap* uniform_map;
+    GLuint gl_pending_program_id;
+    bool gl_is_linking;
 #elif defined(SITUATION_USE_VULKAN)
     VkPipeline vk_pipeline;
     VkPipeline vk_pipeline_legacy;
@@ -12170,6 +12176,61 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 
 #if defined(SITUATION_USE_OPENGL)
     {
+        // [Hot-Reload] Poll Async Shader Linking
+        for (int i = 0; i < SITUATION_MAX_SHADERS; i++) {
+            _SituationShaderSlot* slot = &sit_render.shader_registry[i];
+            if (slot->is_active && slot->gl_is_linking) {
+                GLint status = 0;
+                // Check if linking has finished (non-blocking if supported)
+                glGetProgramiv(slot->gl_pending_program_id, GL_COMPLETION_STATUS_KHR, &status);
+
+                if (status == GL_TRUE) {
+                    // Linking complete. Check success.
+                    GLint success = 0;
+                    glGetProgramiv(slot->gl_pending_program_id, GL_LINK_STATUS, &success);
+
+                    if (success) {
+                        // Success: Swap
+                        if (slot->gl_program_id) glDeleteProgram(slot->gl_program_id);
+                        slot->gl_program_id = slot->gl_pending_program_id;
+                        slot->gl_pending_program_id = 0;
+
+                        // Recreate Uniform Map for the new program
+                        if (slot->uniform_map) _sit_uniform_map_destroy(slot->uniform_map);
+                        slot->uniform_map = _sit_uniform_map_create();
+
+                        if (slot->uniform_map) {
+                             GLint count;
+                             glGetProgramiv(slot->gl_program_id, GL_ACTIVE_UNIFORMS, &count);
+                             for (GLint j = 0; j < count; j++) {
+                                 char name[256];
+                                 GLsizei length;
+                                 GLint size;
+                                 GLenum type;
+                                 glGetActiveUniform(slot->gl_program_id, (GLuint)j, sizeof(name), &length, &size, &type, name);
+                                 GLint location = glGetUniformLocation(slot->gl_program_id, name);
+                                 if (location != -1) {
+                                     _sit_uniform_map_set(slot->uniform_map, name, location);
+                                 }
+                             }
+                        }
+
+                        #ifndef NDEBUG
+                        printf("[Situation] Shader %d Hot-Reloaded Successfully (Async)\n", i);
+                        #endif
+                    } else {
+                         // Failed: Log and discard
+                         char infoLog[1024];
+                         glGetProgramInfoLog(slot->gl_pending_program_id, 1024, NULL, infoLog);
+                         fprintf(stderr, "[Situation] Hot-Reload Link Failed for Shader %d: %s\n", i, infoLog);
+                         glDeleteProgram(slot->gl_pending_program_id);
+                         slot->gl_pending_program_id = 0;
+                    }
+                    slot->gl_is_linking = false;
+                }
+            }
+        }
+
         // --- 2. OpenGL Frame Setup ---
 
         // [Phase 2] Reset Ring Buffer Allocator for this Frame (Paged Strategy)
@@ -16787,6 +16848,48 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
  *
  * @see SituationLoadShaderFromMemory(), _SituationCompileGLShader()
  */
+static GLuint _SituationCreateGLShaderProgramAsync(const char* vs_src, const char* fs_src, SituationError* error_code) {
+    if (!vs_src || !fs_src) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Null shader source");
+        if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
+        return 0;
+    }
+
+    SituationError local_err = SITUATION_SUCCESS;
+    GLuint vs = _SituationCompileGLShader(vs_src, GL_VERTEX_SHADER, &local_err);
+    if (local_err != SITUATION_SUCCESS) {
+        if (error_code) *error_code = local_err;
+        return 0;
+    }
+
+    GLuint fs = _SituationCompileGLShader(fs_src, GL_FRAGMENT_SHADER, &local_err);
+    if (local_err != SITUATION_SUCCESS) {
+        glDeleteShader(vs);
+        if (error_code) *error_code = local_err;
+        return 0;
+    }
+
+    GLuint program = glCreateProgram();
+    if (!program) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to create shader program");
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        if (error_code) *error_code = SITUATION_ERROR_OPENGL_GENERAL;
+        return 0;
+    }
+
+    glAttachShader(program, vs);
+    glAttachShader(program, fs);
+    glLinkProgram(program);
+
+    // [Async] Defer status check.
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+
+    if (error_code) *error_code = SITUATION_SUCCESS;
+    return program;
+}
+
 static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs_src, SituationError* error_code) {
     if (!vs_src || !fs_src) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Null shader source");
@@ -22588,38 +22691,39 @@ static void _SituationPerformHotReloadPass(void) {
                 char* vs_src = SituationLoadFileText(slot->vs_path);
                 char* fs_src = SituationLoadFileText(slot->fs_path);
                 if (vs_src && fs_src) {
-                    SituationShader new_shader;
-                    SituationError err = SituationLoadShaderFromMemory(vs_src, fs_src, &new_shader);
-                    // If success, new_shader occupies a NEW slot. We want to UPDATE the OLD slot.
-                    // But our LoadShaderFromMemory allocates.
-                    // We should have a way to update in-place or swap.
-                    // For now, let's just update timestamp to avoid loop if reload fails.
+                    // Update timestamps immediately to avoid re-triggering
                     slot->vs_mod_time = vs;
                     slot->fs_mod_time = fs;
 
+                    #if defined(SITUATION_USE_OPENGL)
+                    if (!slot->gl_is_linking) {
+                        SituationError err = SITUATION_SUCCESS;
+                        GLuint pending = _SituationCreateGLShaderProgramAsync(vs_src, fs_src, &err);
+                        if (pending) {
+                            slot->gl_pending_program_id = pending;
+                            slot->gl_is_linking = true;
+                        } else {
+                            printf("[Situation] Hot-Reload Compile Failed for shader %d (GL)\n", i);
+                        }
+                    }
+                    #else
+                    // Vulkan / Fallback Blocking Path
+                    SituationShader new_shader;
+                    SituationError err = SituationLoadShaderFromMemory(vs_src, fs_src, &new_shader);
+
                     if (err == SITUATION_SUCCESS) {
-                        // Swap internals?
-                        // This is tricky with generations.
-                        // Simple approach: Update the slot's backend handles with new ones, keep generation.
                         _SituationShaderSlot* new_slot = _SitGetShaderSlot(new_shader);
                         if (new_slot) {
-                            // Free old resources
-                            #if defined(SITUATION_USE_OPENGL)
-                            glDeleteProgram(slot->gl_program_id);
-                            slot->gl_program_id = new_slot->gl_program_id;
-                            #elif defined(SITUATION_USE_VULKAN)
-                            // Defer destroy old
+                            #if defined(SITUATION_USE_VULKAN)
                             _SituationDeferDestroyPipeline(slot->vk_pipeline, slot->vk_pipeline_layout);
                             slot->vk_pipeline = new_slot->vk_pipeline;
                             slot->vk_pipeline_layout = new_slot->vk_pipeline_layout;
                             slot->vk_pipeline_legacy = new_slot->vk_pipeline_legacy;
                             #endif
-
-                            // Free the NEW slot structure (but keep resources we stole)
-                            // We manually deactivate new slot
                             new_slot->is_active = false;
                         }
                     }
+                    #endif
                     SIT_FREE(vs_src); SIT_FREE(fs_src);
                 }
             }
