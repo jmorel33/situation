@@ -12,13 +12,6 @@ Current Version: **v2.3.46 "Bindless"**
 
 **Version 2.3.46** ("Bindless Hotfix") resolves a critical issue in the Vulkan text renderer where legacy bindful logic caused crashes in the new bindless environment.
 
-**Version 2.3.45** ("Bindless") migrates the Vulkan backend to a Descriptor Indexing architecture, enabling massive draw call batching by accessing textures via a global bindless descriptor array.
-
-**Version 2.3.43** ("System Unification") implements the Universal Handle Architecture (v2.4 Milestone). All resources now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading.
-
-**Version 2.3.42** introduces support for Multi-Channel Audio Capture (e.g. Stereo Mics) and custom sample rates, while defaulting to native device settings to minimize latency.
-
-**Version 2.3.41** introduces flexible texture format selection with the new `SituationColorEncoding` enum. Textures now automatically select the correct GPU format (LINEAR vs SRGB) based on usage, fixing storage image compatibility issues while maintaining proper gamma correction for sampled textures. This works identically across both OpenGL and Vulkan backends.
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Vulkan Bindless (v2.3.45):** 🎉 **COMPLETE!** Implemented "Bindless" texturing for Vulkan using Descriptor Indexing. Textures are now accessed via a global unbounded array (`global_textures[]`) indexed by push constants, eliminating descriptor binding overhead and solving pool fragmentation.
