@@ -1,3 +1,16 @@
+## [v2.3.50 "Fence-Guarded" (OpenGL Deferred Destruction)] - 2026-03-01
+
+### Description
+
+This release introduces a robust, fence-guarded deferred destruction system for the OpenGL backend. It eliminates CPU stalls caused by blocking `glFinish` or unsafe immediate resource deletion. By utilizing `GL_ARB_sync` fences and per-frame graveyards, the engine now ensures resources are only destroyed once the GPU has fully completed the frame in which they were queued, matching the reliability of the Vulkan backend.
+
+### Critical Fixes
+
+- **Non-Blocking Destruction:** Replaced the global OpenGL graveyard with per-frame queues.
+- **Fence Synchronization:** Implemented `glFenceSync` tracking for every frame.
+- **Safe Flushing:** `_SitGLFlushGraveyard` now polls fences using `glClientWaitSync` with a timeout of 0, ensuring deletions only occur when safe without stalling the main thread.
+- **Polish:** Fence creation is now correctly sequenced after `glfwSwapBuffers` with an explicit `glFlush` for maximum driver compatibility.
+
 ## [v2.3.49 "Async Shader Linking" (Eliminate Hot-Reload Stalls)] - 2026-02-26
 
 ### Description
