@@ -56,7 +56,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 43
+#define SITUATION_VERSION_PATCH 44
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -1719,6 +1719,7 @@ typedef struct {
     // [v2.3.37] I/O Configuration
     bool disable_io_thread;         // If true, runs I/O tasks on main thread (fallback)
     double hot_reload_poll_rate;    // Seconds between checks (default 0.5). 0 = disable.
+    uint64_t staging_buffer_size;   // Override default 128MB staging buffer size (Vulkan only). 0 = Default.
 } SituationInitInfo;
 
 // [v2.3.22] Render Queue Backpressure Policies

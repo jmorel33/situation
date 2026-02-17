@@ -949,6 +949,8 @@ typedef struct {
     bool swapchain_valid; // [FIX v2.3.27B]
     uint32_t acquired_image_indices[SITUATION_MAX_FRAMES_IN_FLIGHT]; // Image index for each frame slot
 
+    uint64_t staging_buffer_size; // Configured staging buffer size
+
 } _SituationVulkanState;
 
 #elif defined(SITUATION_USE_OPENGL)
@@ -2741,7 +2743,7 @@ static int32_t _sit_uniform_map_get(_SituationUniformMap* map, const char* key) 
 static SituationError _SituationInitStagingBuffers(void) {
     for (uint32_t i = 0; i < sit_render.vk.max_frames_in_flight; i++) {
         _SituationStagingBuffer* sb = &sit_render.vk.staging_buffers[i];
-        sb->capacity = SITUATION_VK_STAGING_BUFFER_SIZE;
+        sb->capacity = sit_render.vk.staging_buffer_size;
         sb->cursor = 0;
 
         VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -8297,6 +8299,14 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     #ifdef SITUATION_VULKAN_DEBUG
     printf("Situation [Vulkan Debug]: Initializing staging buffers...\n"); fflush(stdout);
     #endif
+
+    // [v2.4] Configure Staging Buffer Size
+    if (init_info && init_info->staging_buffer_size > 0) {
+        sit_render.vk.staging_buffer_size = init_info->staging_buffer_size;
+    } else {
+        sit_render.vk.staging_buffer_size = SITUATION_VK_STAGING_BUFFER_SIZE;
+    }
+
     SituationError staging_result = _SituationInitStagingBuffers();
     if (staging_result != SITUATION_SUCCESS) {
         #ifdef SITUATION_VULKAN_DEBUG
@@ -22389,12 +22399,8 @@ static void _SituationPerformHotReloadPass(void) {
 #else
     if (!SituationIsInitialized()) return;
 
-    static double last_check_time = 0.0;
-    double now = glfwGetTime();
-    const double POLL_INTERVAL = 0.5;
-
-    if (now - last_check_time < POLL_INTERVAL) return;
-    last_check_time = now;
+    // [Optimized] The polling frequency is now controlled by the caller (IO Thread)
+    // using pool->hot_reload_rate.
 
     // 1. Shaders
     for (int i = 0; i < SITUATION_MAX_SHADERS; i++) {
