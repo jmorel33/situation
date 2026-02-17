@@ -1,3 +1,18 @@
+## [v2.3.47 "Renderer Stability" (Vulkan Push Constant Fix)] - 2026-02-24
+
+### Description
+
+This release addresses a critical alignment issue in the Vulkan backend's push constant logic. It resolves a state corruption bug where `SituationCmdDrawQuad` would overwrite the texture ID bound by `SituationCmdBindTextureSet`, ensuring consistent "bind-then-draw" behavior across both OpenGL and Vulkan backends.
+
+### Critical Fixes
+
+- **Vulkan State Preservation:** Fixed `SituationCmdDrawQuad` to use split `vkCmdPushConstants` calls. This preserves the `texture_id` (located at offset 96) when updating the `use_texture` flag (offset 100), preventing the shader from reverting to untextured rendering unexpectedly.
+- **Struct Alignment:** Corrected the internal push constant structure in `SituationCmdDrawQuad` to include padding for the `texture_id` field, ensuring the `use_texture` flag aligns correctly with the shader's memory layout.
+
+### Documentation
+
+- **Custom Shader Warning:** Added a warning to `SituationCmdBindTextureSet` clarifying that custom shaders using this command must adhere to the standard push constant layout (Model 64b + Color 16b + UVRect 16b = 96b offset for `texture_id`).
+
 ## [v2.3.46 "Bindless" (Hotfix: Text Crash)] - 2026-02-23
 
 ### Description
