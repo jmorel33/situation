@@ -1,3 +1,19 @@
+## [v2.3.44 "Optimization" (Vulkan Memory & Hot-Reload)] - 2026-02-10
+
+### Description
+
+This release addresses key performance and scalability feedback from architectural reviews. It introduces runtime configuration for Vulkan memory usage and optimizes the Hot-Reloading system to prevent I/O storms. These changes allow the engine to scale down to lower-end devices and scale up to large projects with thousands of assets.
+
+### New Features
+
+- **Configurable Staging Buffers:** Added `staging_buffer_size` to `SituationInitInfo`.
+  - **Default:** 128MB (same as before).
+  - **Customizable:** Users can now reduce this value (e.g., to 16MB) to significantly lower the VRAM/RAM footprint on constrained devices, or increase it for massive bandwidth requirements.
+- **Optimized Hot-Reloading:** The hot-reload logic now respects the user-defined `hot_reload_poll_rate` strictly.
+  - **Reduced Overhead:** Removed hardcoded internal throttling. The I/O thread now sleeps efficiently based on the configured rate, eliminating redundant file system checks.
+
+---
+
 ## [v2.3.43 "System Unification" (Universal Handles)] - 2026-02-09
 
 ### Description

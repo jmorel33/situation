@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.43_
+_Core API library v2.3.44_
 
 _(c) 2025-2026 Jacques Morel_
 
@@ -8,7 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](doc/C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.43 "System Unification"**
+Current Version: **v2.3.44 "Optimization"**
+
+**Version 2.3.44** ("Optimization") introduces runtime memory configuration for Vulkan (staging buffers) and optimized hot-reloading to prevent I/O storms.
 
 **Version 2.3.43** ("System Unification") implements the Universal Handle Architecture (v2.4 Milestone). All resources now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading.
 
@@ -17,6 +19,7 @@ Current Version: **v2.3.43 "System Unification"**
 **Version 2.3.41** introduces flexible texture format selection with the new `SituationColorEncoding` enum. Textures now automatically select the correct GPU format (LINEAR vs SRGB) based on usage, fixing storage image compatibility issues while maintaining proper gamma correction for sampled textures. This works identically across both OpenGL and Vulkan backends.
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **Vulkan Optimization (v2.3.44):** 🎉 **COMPLETE!** Added configurable staging buffer sizes and optimized I/O polling for hot-reloading to support a wider range of hardware targets.
 *   **System Unification (v2.3.43):** 🎉 **COMPLETE!** Implemented the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading. See `REGRESSION_ANALYSIS.md` for details.
 *   **Audio Capture Enhancements (v2.3.42):** 🎉 **COMPLETE!** Added `SituationStartAudioCaptureEx` for custom formats and updated the default capture to use native device settings (0, 0) for optimal performance.
 *   **Flexible Texture Formats (v2.3.41):** 🎉 **COMPLETE!** Added `SituationColorEncoding` enum for automatic format selection. Storage images now use LINEAR format (UNORM) while sampled textures use SRGB for proper gamma correction. Works identically on OpenGL and Vulkan.
