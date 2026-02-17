@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.45 "Bindless"_
+_Core API library v2.3.46 "Bindless"_
 
 _(c) 2025-2026 Jacques Morel_
 
@@ -8,7 +8,9 @@ _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](doc/C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Current Version: **v2.3.45 "Bindless"**
+Current Version: **v2.3.46 "Bindless"**
+
+**Version 2.3.46** ("Bindless Hotfix") resolves a critical issue in the Vulkan text renderer where legacy bindful logic caused crashes in the new bindless environment.
 
 **Version 2.3.45** ("Bindless") migrates the Vulkan backend to a Descriptor Indexing architecture, enabling massive draw call batching by accessing textures via a global bindless descriptor array.
 

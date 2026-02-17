@@ -1,3 +1,15 @@
+## [v2.3.46 "Bindless" (Hotfix: Text Crash)] - 2026-02-23
+
+### Description
+
+This is a critical hotfix for the v2.3.45 "Bindless" release. It resolves a crash in the Vulkan Text Renderer where legacy "Bindful" logic (expecting specific descriptor sets) was incompatible with the new Bindless architecture (global descriptor array).
+
+### Critical Fixes
+
+- **Vulkan Text Renderer:** Updated `SIT_TEXT_FRAGMENT_SHADER` and pipeline logic to correctly use the global bindless descriptor set.
+- **Shader Correction:** Moved GLSL extension directives to the top of the shader source to comply with strict driver validation.
+- **Draw Logic:** `SituationCmdDrawTextEx` now pushes texture IDs via Push Constants instead of attempting to bind non-existent descriptor sets.
+
 ## [v2.3.45 "Bindless" (Vulkan Descriptor Indexing)] - 2026-02-17
 
 ### Description

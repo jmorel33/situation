@@ -2068,6 +2068,7 @@ static const char* SIT_TEXT_VERTEX_SHADER =
     "\n"
 #if defined(SITUATION_USE_VULKAN)
     "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
+    "layout(push_constant) uniform TextPushConstants { vec4 color; uint texture_id; } pc;\n"
     "void main() {\n"
     "    gl_Position = ubo.projection * vec4(aPos, 0.0, 1.0);\n"
     "    v_TexCoord = aTexCoord;\n"
@@ -2086,25 +2087,24 @@ static const char* SIT_TEXT_FRAGMENT_SHADER =
 #if defined(SITUATION_USE_OPENGL)
     "#extension GL_ARB_bindless_texture : enable\n"
     "#extension GL_ARB_gpu_shader_int64 : enable\n"
+#elif defined(SITUATION_USE_VULKAN)
+    "#extension GL_EXT_nonuniform_qualifier : require\n"
 #endif
     "layout(location = 0) in vec2 v_TexCoord;\n"
     "layout(location = 0) out vec4 outColor;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
-    "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"
-#else
-    "layout(binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"
-#endif
-    "\n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(push_constant) uniform TextPushConstants { vec4 color; } pc;\n"
+    "layout(set = 1, binding = 0) uniform sampler2D global_textures[];\n"
+    // Note: Added texture_id to Push Constants
+    "layout(push_constant) uniform TextPushConstants { vec4 color; uint texture_id; } pc;\n"
     "void main() {\n"
-    "    vec4 texColor = texture(u_Texture, v_TexCoord);\n"
-    "    // Use texture alpha as a mask, apply tint color\n"
-    "    // This allows colored text with proper transparency\n"
+    "    // Sample from global array using texture_id\n"
+    "    vec4 texColor = texture(global_textures[nonuniformEXT(pc.texture_id)], v_TexCoord);\n"
     "    outColor = vec4(pc.color.rgb, pc.color.a * texColor.a);\n"
     "}\n"
 #elif defined(SITUATION_USE_OPENGL)
+    "layout(binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"
+    "\n"
     "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_OBJECT_COLOR) ") uniform vec4 u_color;\n"
     // Bindless Handle support
     "layout(location = 6) uniform int u_use_bindless;\n"
@@ -6770,11 +6770,11 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             goto cleanup;
         }
 
-        VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.text_sampler_layout };
+        VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.bindless_descriptor_layout };
         VkPushConstantRange push_constant_range = {
             .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
             .offset = 0,
-            .size = sizeof(vec4) // Color
+            .size = sizeof(vec4) + sizeof(uint32_t) // Color + TextureID
         };
 
         VkPipelineLayoutCreateInfo layout_info = {
@@ -13707,8 +13707,11 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
 #elif defined(SITUATION_USE_VULKAN)
     // --- VULKAN OPTIMIZED PATH ---
 
-    // 1. Bind Atlas to set 1 (textures are in set 1, UBO is in set 0)
-    SituationCmdBindTexture(cmd, 1, use_font.atlas_texture);
+    // 1. Bind the Global Bindless Set (instead of specific texture set)
+    vkCmdBindDescriptorSets((VkCommandBuffer)cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        sit_render.vk.text_pipeline_layout,
+                        1, 1, &sit_render.vk.global_bindless_set,
+                        0, NULL);
 
     // 2. Calculate Size (6 verts/char * 4 floats/vert)
     size_t data_size = len * 6 * 4 * sizeof(float);
@@ -13866,9 +13869,7 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
 
         vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.text_pipeline);
 
-        // Bind descriptor sets (View UBO at set 0, Font atlas at set 1)
-        // Note: Font atlas was already bound via SituationCmdBindTexture above
-        // But we need to bind the view UBO here
+        // Bind descriptor sets (View UBO at set 0, Global Bindless at set 1)
         uint32_t frame_idx = sit_render.vk.current_frame_index;
         vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 sit_render.vk.text_pipeline_layout,
@@ -13879,8 +13880,17 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
         VkDeviceSize offsets[] = { target_offset };
         vkCmdBindVertexBuffers(vk_cmd, 0, 1, &target_buffer, offsets);
 
-        // Push Color
-        vkCmdPushConstants(vk_cmd, sit_render.vk.text_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(Vector4), color_vec.raw);
+        // Push Constants (Color + Texture ID)
+        struct {
+            Vector4 color;
+            uint32_t texture_id;
+        } text_pc;
+        text_pc.color = color_vec;
+
+        _SituationTextureSlot* font_slot = _SitGetTextureSlot(use_font.atlas_texture);
+        text_pc.texture_id = font_slot ? (uint32_t)font_slot->slot_index : 0;
+
+        vkCmdPushConstants(vk_cmd, sit_render.vk.text_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(text_pc), &text_pc);
 
         #ifdef SITUATION_VULKAN_DEBUG
         printf("Situation [Vulkan Debug]:   About to call vkCmdDraw: vertex_count=%d\n", (int)(len * 6));
