@@ -1,3 +1,16 @@
+## [v2.3.53 "Critical Stability" (MDI & Fence Fixes)] - 2026-03-03
+
+### Description
+
+This release addresses critical stability issues identified in the OpenGL backend, specifically targeting Multi-Draw Indirect (MDI) batching, resource destruction safety, and ring buffer management. These fixes prevent driver crashes, visual corruption, and potential memory leaks during high-load scenarios and application shutdown.
+
+### Critical Fixes
+
+- **MDI Pipeline Consistency:** Fixed a severe bug in the MDI auto-batcher (`_SituationGLExecuteCommands`) where batches were formed based solely on VAO continuity, ignoring shader program changes. This could cause meshes to be drawn with the wrong shader, leading to corruption or crashes. The batcher now strictly enforces pipeline consistency (`current_recording_shader_id`) during lookahead.
+- **Fence Cleanup on Shutdown:** `_SituationCleanupOpenGL` now performs a timed wait (`glClientWaitSync` with 100ms timeout) on any remaining fences before deletion. This prevents driver stalls or crashes caused by deleting active sync objects during context teardown.
+- **VAO Restore Safety:** Added a safety check to ensure `global_vao_id` is valid before attempting to restore it after an MDI batch. This prevents undefined behavior if the global VAO was never created or has been destroyed.
+- **MDI Ring Buffer Overflow:** Implemented a lower-bound check in the MDI ring buffer allocation logic. This prevents the atomic offset from wrapping around (negative values) or overlapping with the frame start offset, protecting against silent buffer corruption during long sessions.
+
 ## [v2.3.52 "Virtual Bindless" (OpenGL Fallback)] - 2026-03-02
 
 ### Description

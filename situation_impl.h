@@ -712,7 +712,7 @@ typedef struct {
         struct { float x, y, w, h; } viewport;
         struct { int x, y, w, h; } scissor;
         struct { uint64_t shader_id; } bind_pipeline;
-        struct { SituationMesh mesh; } draw_mesh;
+        struct { SituationMesh mesh; uint64_t shader_id; } draw_mesh;
         struct { mat4 model; Vector4 color; Vector4 uv_rect; } draw_quad;
         struct { uint32_t offset; size_t size; size_t data_offset; } push_constant;
         struct { uint32_t set_index; uint64_t resource_id; int resource_type; size_t offset; size_t size; uint32_t usage_flags; } bind_desc; // [Phase 2] Added size and usage_flags for Ring Buffer
@@ -738,6 +738,8 @@ typedef struct {
     uint8_t* data_buffer;
     size_t data_cursor;
     size_t data_capacity;
+
+    uint64_t current_recording_shader_id; // [Critical Fix] Track current shader for MDI consistency
 
     // [FIX v2.3.27B] Circuit breaker for OOM handling
     bool is_broken;
@@ -5635,6 +5637,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         if (next->opcode != SIT_OP_DRAW_MESH) break;
 
                         if (_SitGLGetCachedVAO(next->args.draw_mesh.mesh) != first_vao) break;
+                        if (next->args.draw_mesh.shader_id != sit_render.gl.current_program_id) break;
 
                         lookahead++;
                     }
@@ -5685,8 +5688,10 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                     }
 
                     // [CRITICAL] Restore global VAO state for subsequent generic draw calls
-                    glBindVertexArray(sit_render.gl.global_vao_id);
-                    sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                    if (sit_render.gl.global_vao_id != 0) {
+                        glBindVertexArray(sit_render.gl.global_vao_id);
+                        sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                    }
                 }
                 break;
 
@@ -5866,7 +5871,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         size_t offset = atomic_fetch_add(&sit_render.gl.mdi_ring_head, total_size);
 
                         // Safety check: Ensure we stay within the CURRENT FRAME's slice
-                        if (offset + total_size <= mdi_frame_offset + (1024 * 1024)) {
+                        if (offset >= mdi_frame_offset && offset + total_size <= mdi_frame_offset + (1024 * 1024)) {
                             SitDrawArraysIndirectCommand* cmds = (SitDrawArraysIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
 
                             // 2. Fill commands
@@ -5915,7 +5920,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         size_t offset = atomic_fetch_add(&sit_render.gl.mdi_ring_head, total_size);
 
                         // Safety check: Ensure we stay within the CURRENT FRAME's slice
-                        if (offset + total_size <= mdi_frame_offset + (1024 * 1024)) {
+                        if (offset >= mdi_frame_offset && offset + total_size <= mdi_frame_offset + (1024 * 1024)) {
                             SitDrawElementsIndirectCommand* cmds = (SitDrawElementsIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
 
                             for (size_t k = 0; k < batch_count; ++k) {
@@ -11648,6 +11653,7 @@ static void _SituationCleanupOpenGL(void) {
         ma_mutex_uninit(&sit_render.gl.graveyards[i].lock);
 
         if (sit_render.gl.frame_fences[i]) {
+            glClientWaitSync(sit_render.gl.frame_fences[i], GL_SYNC_FLUSH_COMMANDS_BIT, 100000000); // 100ms
             glDeleteSync(sit_render.gl.frame_fences[i]);
             sit_render.gl.frame_fences[i] = 0;
         }
@@ -14436,6 +14442,7 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
         if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
         p->args.bind_pipeline.shader_id = (uint64_t)slot->gl_program_id;
+        buf->current_recording_shader_id = (uint64_t)slot->gl_program_id;
         return SITUATION_SUCCESS;
     }
 #elif defined(SITUATION_USE_VULKAN)
@@ -14490,6 +14497,7 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
     SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_MESH);
     if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
     p->args.draw_mesh.mesh = mesh; // Store handle
+    p->args.draw_mesh.shader_id = buf->current_recording_shader_id;
     return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
