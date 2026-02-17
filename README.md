@@ -181,6 +181,191 @@ The library is built on several core principles to ensure a simple, predictable,
     2.  **Update:** `SituationUpdateTimers()` & User Logic (Physics, AI, Audio triggers).
     3.  **Render:** `SituationAcquireFrameCommandBuffer` -> Record Commands -> `SituationEndFrame`.
 
+### Internal Architecture & Pipelines
+
+#### Global System Architecture
+This diagram illustrates the high-level flow of the Situation Engine, showing how the main thread coordinates with the parallel task system, audio engine, and I/O subsystems.
+
+```mermaid
+graph TD
+    %% Main Lifecycle
+    subgraph Init ["Initialization (Main Thread)"]
+        I1["SituationInit"]
+        I2["Init Platform & Window"]
+        I3["Init Renderer (GL/VK)"]
+        I4["Init Audio Engine<br/>(miniaudio)"]
+        I5["Init Input System<br/>(Ring Buffers)"]
+        I6["SituationCreateThreadPool"]
+    end
+
+    subgraph Loop ["Main Loop (Update Phase)"]
+        L1["SituationBeginFrame"]
+
+        subgraph Input ["Input Processing"]
+            IN1["Poll Events (GLFW)"]
+            IN2["Update O(1) Ring Buffers"]
+        end
+
+        subgraph TaskSystem ["Generational Task System (Parallel)"]
+            TS1["High Priority Queue<br/>(Physics / AI)"]
+            TS2["Low Priority Queue<br/>(Asset Loading / IO)"]
+            TS_W["Worker Threads"]
+            TS_IO["Dedicated I/O Thread"]
+
+            TS1 -.-> TS_W
+            TS2 -.-> TS_IO
+        end
+
+        subgraph Audio ["Audio Engine (Async)"]
+            AU1["Audio Thread"]
+            AU2["Snapshot Mixer"]
+            AU3["DSP Chain (Reverb/Delay)"]
+            AU4["Decode Streams"]
+
+            AU1 --> AU2 --> AU3
+            TS_IO -. "Async Load to RAM" .-> AU4
+        end
+
+        L2["Update Timers & Logic"]
+        L3["User Game Code"]
+        L4["Record Render Commands"]
+        L5["SituationEndFrame"]
+    end
+
+    subgraph Exit ["Termination"]
+        E1["SituationShutdown"]
+        E2["Destroy ThreadPool"]
+        E3["Shutdown Audio"]
+        E4["Cleanup Renderer"]
+        E5["Destroy Window"]
+    end
+
+    %% Flow Connections
+    I1 --> I2 --> I3 --> I4 --> I5 --> I6 --> L1
+    L1 --> IN1 --> IN2 --> L2
+    L2 --> L3
+    L3 -- "Dispatch Jobs" --> TS1
+    L3 -- "Load Asset" --> TS2
+    L3 --> L4 --> L5
+    L5 -- "Next Frame" --> L1
+    L5 -- "Quit" --> E1
+    E1 --> E2 --> E3 --> E4 --> E5
+
+    %% Data Dependencies
+    IN2 -. "Read Input" .-> L3
+    TS_W -. "Results" .-> L3
+```
+
+#### OpenGL 4.6 Lifecycle (State Machine)
+The OpenGL backend is designed to be "stateless" from the user's perspective while managing complex state caching internally. It features a "Soft Command Buffer" that records commands for execution either immediately or on a dedicated render thread. Key features include **MDI Auto-Batching** for geometry and **Virtual Bindless** (LRU Slot Management) for texture compatibility.
+
+```mermaid
+graph TD
+    %% Nodes
+    subgraph Init ["Initialization"]
+        I1["SituationInit"]
+        I2["Init OpenGL Context"]
+        I3["Init Subsystems<br/>(Quad, Text, RingBuffer)"]
+        I4["Init Virtual Bindless"]
+    end
+
+    subgraph Loop ["Frame Cycle"]
+        L1["SituationBeginFrame"]
+        L2["Poll Input & Timers"]
+        L3["User Update Logic"]
+        L4["SituationAcquireFrameCommandBuffer<br/>(Get SoftBuffer)"]
+        L5["Record Commands<br/>(SoftBuffer)"]
+        L6["SituationEndFrame"]
+
+        subgraph Render ["Render Execution (Main or Thread)"]
+            R1["Execute SoftBuffer"]
+            R2{"Command Type?"}
+            R2 -- "Draw Mesh" --> R3["MDI Auto-Batching"]
+            R2 -- "Bind Texture" --> R4["Virtual Bindless LRU"]
+            R2 -- "Other" --> R5["Direct GL Calls"]
+            R3 --> R6["glMultiDrawElementsIndirect"]
+            R4 --> R7["glBindTextureUnit"]
+            R5 --> R8["Draw/Dispatch"]
+            R8 --> S1["glfwSwapBuffers"]
+            S1 --> S2["glFenceSync"]
+            S2 --> S3["Flush Graveyard<br/>(Deferred Cleanup)"]
+        end
+    end
+
+    subgraph Exit ["Shutdown"]
+        E1["SituationShutdown"]
+        E2["Cleanup Subsystems"]
+        E3["Destroy Context"]
+    end
+
+    %% Flow
+    I1 --> I2 --> I3 --> I4 --> L1
+    L1 --> L2 --> L3 --> L4 --> L5 --> L6
+    L6 --> R1
+    S3 --> L1
+    L6 -- "Quit" --> E1
+    E1 --> E2 --> E3
+```
+
+#### Vulkan 1.4 Lifecycle (Deferred Execution)
+The Vulkan backend is built for high-performance deferred rendering. It uses **Dynamic Descriptor Management** and a **Bindless Architecture** where all textures reside in a global unbound array (`global_textures[]`), indexed via Push Constants. Frame synchronization is handled via fences and semaphores, with a per-frame **Graveyard** for safe resource destruction.
+
+```mermaid
+graph TD
+    subgraph Init ["Initialization"]
+        I1["SituationInit"]
+        I2["Create Instance & Device"]
+        I3["Init VMA Allocator"]
+        I4["Create Swapchain"]
+        I5["Init Pipelines & Descriptors"]
+    end
+
+    subgraph Loop ["Frame Cycle"]
+        L1["SituationBeginFrame"]
+        L2["Poll Input & Timers"]
+        L3["User Update Logic"]
+        L4["SituationAcquireFrameCommandBuffer"]
+        L4a["Wait for Fence"]
+        L4b["Acquire Next Image"]
+        L4c["vkBeginCommandBuffer"]
+        L5["Record Commands"]
+
+        subgraph Bindless ["Bindless Tech"]
+            B1["Push Constants"]
+            B2["Texture ID -> global_textures"]
+            B3["nonuniformEXT Indexing"]
+        end
+
+        L6["vkCmdDraw* / Dispatch"]
+        L7["vkEndCommandBuffer"]
+        L8["SituationEndFrame"]
+    end
+
+    subgraph Submit ["Submission & Refresh"]
+        S1["vkQueueSubmit"]
+        S2["vkQueuePresentKHR"]
+        S3["Flush Graveyard<br/>(Cleanup Deferred Resources)"]
+    end
+
+    subgraph Exit ["Shutdown"]
+        E1["SituationShutdown"]
+        E2["Wait Idle"]
+        E3["Destroy Swapchain & Resources"]
+        E4["Destroy Device & Instance"]
+    end
+
+    %% Flow
+    I1 --> I2 --> I3 --> I4 --> I5 --> L1
+    L1 --> L2 --> L3 --> L4
+    L4 --> L4a --> L4b --> L4c --> L5
+    L5 --> B1 --> B2 --> B3 --> L6
+    L6 --> L7 --> L8
+    L8 --> S1 --> S2 --> S3
+    S3 --> L1
+    L8 -- "Quit" --> E1
+    E1 --> E2 --> E3 --> E4
+```
+
 </details>
 
 ---
