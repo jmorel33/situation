@@ -10783,6 +10783,11 @@ SITAPI void SituationShutdown(void) {
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_SHUTDOWN_FAILED, "Not initialized"); return; }
     if (sit_gs.exit_callback != NULL) { sit_gs.exit_callback(sit_gs.exit_callback_user_data); }
 
+    // 1. Kill Thread Pool (stops I/O thread hot-reload polling)
+#if defined(SITUATION_ENABLE_THREADING)
+    SituationDestroyThreadPool(&sit_gs.thread_pool);
+#endif
+
     // Wait for the GPU to finish any in-flight work before we start tearing things down. This is especially critical for Vulkan.
 #if defined(SITUATION_USE_VULKAN)
     if (sit_render.vk.device != VK_NULL_HANDLE) vkDeviceWaitIdle(sit_render.vk.device);
@@ -10816,10 +10821,6 @@ SITAPI void SituationShutdown(void) {
 
     // 3. --- CLEANUP CORE PLATFORM & WINDOW ---
     _SituationCleanupPlatform();
-
-#if defined(SITUATION_ENABLE_THREADING)
-    SituationDestroyThreadPool(&sit_gs.thread_pool);
-#endif
 
     // 4. --- FINAL STATE RESET ---
     if (_sit_current_context) {
@@ -15670,6 +15671,7 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     }
 
     // 1. Find Free Slot
+    mtx_lock(&sit_render.resource_registry_mutex); // [LOCK]
     int slot_idx = -1;
     for (int i = 0; i < SITUATION_MAX_TEXTURES; ++i) {
         if (!sit_render.texture_registry[i].is_active) {
@@ -15679,6 +15681,7 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     }
 
     if (slot_idx == -1) {
+        mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
         return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Max texture limit reached (SITUATION_MAX_TEXTURES).");
     }
 
@@ -15696,6 +15699,7 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     fflush(stdout);
     #endif
     slot->is_active = true;
+    mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
     slot->width = image.width;
     slot->height = image.height;
     slot->bindless_handle = 0;
@@ -15930,7 +15934,9 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
         bindless_write.descriptorCount = 1;
         bindless_write.pImageInfo = &bindless_image_info;
 
+        mtx_lock(&sit_render.resource_registry_mutex); // [LOCK]
         vkUpdateDescriptorSets(sit_render.vk.device, 1, &bindless_write, 0, NULL);
+        mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
     } else {
         // Fallback for Storage/Compute layouts (until they are bindless-ready)
         slot->descriptor_set = _SituationVulkanAllocateDescriptorSet(layout_to_use, &used_pool);
@@ -15982,7 +15988,11 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     write.descriptorCount = 1;
     write.pImageInfo = &image_info;
 
-    vkUpdateDescriptorSets(sit_render.vk.device, 1, &write, 0, NULL);
+    if (slot->descriptor_set != VK_NULL_HANDLE) {
+        mtx_lock(&sit_render.resource_registry_mutex); // [LOCK]
+        vkUpdateDescriptorSets(sit_render.vk.device, 1, &write, 0, NULL);
+        mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
+    }
 
     // --- Final: Set Output Texture Handle ---
     out_texture->slot_index = slot_idx;
@@ -16492,7 +16502,9 @@ SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_co
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
     SituationMesh handle;
+    mtx_lock(&sit_render.resource_registry_mutex); // [LOCK]
     _SituationMeshSlot* slot = _SitAllocMeshSlot(&handle);
+    mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
     if (!slot) return SITUATION_ERROR_MEMORY_ALLOCATION;
 
     slot->vertex_count = vertex_count;
@@ -22001,7 +22013,9 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
     SituationShader handle;
+    mtx_lock(&sit_render.resource_registry_mutex); // [LOCK]
     _SituationShaderSlot* slot = _SitAllocShaderSlot(&handle);
+    mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
     if (!slot) return SITUATION_ERROR_MEMORY_ALLOCATION; // Limit reached
 
 #if defined(SITUATION_ENABLE_SHADER_COMPILER) && defined(SITUATION_USE_VULKAN)

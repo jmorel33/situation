@@ -1,3 +1,19 @@
+## [v2.3.48 "Hardening" (Thread Safety & Verification)] - 2026-02-25
+
+### Description
+
+This release hardens the library against critical race conditions between the main thread and the I/O thread (Hot-Reloading), and ensures safer shutdown sequences. It specifically targets potential crashes during resource creation and cleanup in multi-threaded environments.
+
+### Critical Fixes
+
+- **Resource Registry Locking:** Protected resource slot allocation in `SituationCreateTextureEx`, `SituationCreateMesh`, and `SituationLoadShaderFromMemory` with `resource_registry_mutex`. This prevents the I/O thread from corrupting the registry while the main thread creates resources.
+- **Bindless Descriptor Safety:** Protected `vkUpdateDescriptorSets` calls in `SituationCreateTextureEx` (both bindless and standard paths) with `resource_registry_mutex`. This prevents race conditions where the hot-reload system might be updating descriptors concurrently with new resource creation.
+- **Shutdown Safety:** Reordered `SituationShutdown` to destroy the thread pool *before* waiting for the GPU and cleaning up resources. This eliminates a class of shutdown crashes where background threads attempted to access resources that were already being destroyed.
+
+### Documentation
+
+- **Verification Suite:** Added `situation_verify.cpp`, a standalone test suite to validate registry stress, hot-reload logic, and bindless descriptor integrity.
+
 ## [v2.3.47 "Renderer Stability" (Vulkan Push Constant Fix)] - 2026-02-24
 
 ### Description
