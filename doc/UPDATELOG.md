@@ -1,3 +1,15 @@
+## [v2.3.51 "MDI-Boosted" (OpenGL Multi-Draw Indirect)] - 2026-03-02
+
+### Description
+
+This release implements the "Max Out Core" optimization strategy for the OpenGL backend with Multi-Draw Indirect (MDI) auto-batching. It drastically reduces CPU-to-driver overhead for repetitive mesh rendering by intelligently collapsing consecutive draw commands into a single dispatch. This brings OpenGL performance significantly closer to Vulkan for high-instance-count scenarios while maintaining the simple "Immediate Mode" API surface.
+
+### New Features
+
+- **MDI Auto-Batching:** The Soft Command Buffer executor (`_SituationGLExecuteCommands`) now detects sequences of `SIT_OP_DRAW_MESH` commands that share the same Vertex Array Object (VAO). Instead of issuing individual `glDrawElements` calls, it batches them into a persistent, mapped `GL_DRAW_INDIRECT_BUFFER` ring and executes them with a single `glMultiDrawElementsIndirect` call.
+- **Robust Detection:** Implemented strict lookahead logic to ensure batching only occurs when it is safe (same VAO, same pipeline implied by opcode continuity).
+- **Persistent Ring Buffer:** Added `_SituationInitGLMDIBuffer` to manage a per-frame segmented ring buffer (1MB per frame) for zero-copy command generation.
+
 ## [v2.3.50 "Fence-Guarded" (OpenGL Deferred Destruction)] - 2026-03-01
 
 ### Description

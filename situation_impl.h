@@ -5580,12 +5580,71 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
 
             case SIT_OP_DRAW_MESH:
                 {
-                    // [Phase 2.5] Use Lazy Cache for VAOs
                     GLuint vao = _SitGLGetCachedVAO(p->args.draw_mesh.mesh);
-                    if (vao) {
-                        glBindVertexArray(vao);
-                        sit_render.gl.current_vao_id = vao;
-                        glDrawElements(GL_TRIANGLES, p->args.draw_mesh.mesh.index_count, GL_UNSIGNED_INT, (void*)0);
+                    if (vao == 0) break;
+
+                    glBindVertexArray(vao);
+                    sit_render.gl.current_vao_id = vao;
+
+                    // --- Batch detection (VAO must match) ---
+                    // Note: Pipeline changes are implicitly handled because they are distinct opcodes (SIT_OP_BIND_PIPELINE),
+                    // which will cause the lookahead loop to break immediately.
+                    size_t batch_start = i;
+                    GLuint first_vao = vao;
+
+                    size_t lookahead = i + 1;
+                    while (lookahead < buf->packet_count) {
+                        SitCommandPacket* next = &buf->packets[lookahead];
+                        if (next->opcode != SIT_OP_DRAW_MESH) break;
+
+                        if (_SitGLGetCachedVAO(next->args.draw_mesh.mesh) != first_vao) break;
+
+                        lookahead++;
+                    }
+
+                    size_t batch_size = lookahead - i;
+
+                    // Tune threshold: Batching has overhead. Start with >= 8.
+                    if (batch_size >= 8 && sit_render.gl.mdi_data_ptr) {
+                        size_t cmd_size = sizeof(SitDrawElementsIndirectCommand);
+                        size_t total_size = batch_size * cmd_size;
+
+                        // Atomic reservation in ring buffer
+                        size_t offset = atomic_fetch_add(&sit_render.gl.mdi_ring_head, total_size);
+
+                        // Safety check: Ensure we stay within the CURRENT FRAME's slice (1MB per frame)
+                        if (offset + total_size <= mdi_frame_offset + (1024 * 1024)) {
+                            SitDrawElementsIndirectCommand* cmds = (SitDrawElementsIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
+
+                            for (size_t k = 0; k < batch_size; ++k) {
+                                SitCommandPacket* bp = &buf->packets[i + k];
+                                struct _SituationMeshSlot* slot = _SitGetMeshSlot(bp->args.draw_mesh.mesh);
+                                if (slot) {
+                                    cmds[k].count         = (GLuint)slot->index_count;
+                                    cmds[k].instanceCount = 1;          // change if real instancing is added
+                                    cmds[k].firstIndex    = 0;
+                                    cmds[k].baseVertex    = 0;
+                                    cmds[k].baseInstance  = 0;
+                                } else {
+                                    cmds[k].count = 0;
+                                    cmds[k].instanceCount = 0;
+                                }
+                            }
+
+                            glBindBuffer(GL_DRAW_INDIRECT_BUFFER, sit_render.gl.mdi_buffer_id);
+                            glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, (const void*)((uintptr_t)offset), (GLsizei)batch_size, 0);
+
+                            // Skip the batched commands
+                            i += (batch_size - 1);
+                        } else {
+                            // Fallback single draw (buffer full)
+                            struct _SituationMeshSlot* slot = _SitGetMeshSlot(p->args.draw_mesh.mesh);
+                            if (slot) glDrawElements(GL_TRIANGLES, slot->index_count, GL_UNSIGNED_INT, NULL);
+                        }
+                    } else {
+                        // Single draw fallback
+                        struct _SituationMeshSlot* slot = _SitGetMeshSlot(p->args.draw_mesh.mesh);
+                        if (slot) glDrawElements(GL_TRIANGLES, slot->index_count, GL_UNSIGNED_INT, NULL);
                     }
 
                     // [CRITICAL] Restore global VAO state for subsequent generic draw calls
@@ -6079,6 +6138,9 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
     // Reset buffer after execution
     buf->packet_count = 0;
     buf->data_cursor = 0;
+
+    // [Phase 4] Clean up MDI state
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
 
     // [Phase 1.5] Insert Fence for Ring Buffer Synchronization
     // We infer the frame index from the buffer pointer

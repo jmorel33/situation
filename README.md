@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.50 "Fence-Guarded"_
+_Core API library v2.3.51 "MDI-Boosted"_
 
 _(c) 2025-2026 Jacques Morel_
 
@@ -9,6 +9,7 @@ _MIT Licenced_
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](doc/C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
 Our immediate development roadmap is focused on expanding the library's capability:
+*   **MDI Auto-Batching (v2.3.51):** 🎉 **COMPLETE!** Implemented Multi-Draw Indirect (MDI) auto-batching for the OpenGL backend. This optimization intelligently batches consecutive `SIT_OP_DRAW_MESH` commands sharing the same VAO into a single `glMultiDrawElementsIndirect` call, drastically reducing CPU overhead for repetitive geometry.
 *   **Fence-Guarded Destruction (v2.3.50):** 🎉 **COMPLETE!** Implemented robust deferred destruction for OpenGL using GL_ARB_sync fences. This eliminates CPU stalls and ensures resources are only destroyed when the GPU is finished with them, matching Vulkan's safety and performance.
 *   **Async Shader Linking (v2.3.49):** 🎉 **COMPLETE!** Implemented non-blocking shader linking for OpenGL hot-reloading using `KHR_parallel_shader_compile`.
 *   **Vulkan Bindless (v2.3.45):** 🎉 **COMPLETE!** Implemented "Bindless" texturing for Vulkan using Descriptor Indexing. Textures are now accessed via a global unbounded array (`global_textures[]`) indexed by push constants, eliminating descriptor binding overhead and solving pool fragmentation.
