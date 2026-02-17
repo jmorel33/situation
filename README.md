@@ -339,12 +339,12 @@ graph TD
         L6["vkCmdDraw* / Dispatch"]
         L7["vkEndCommandBuffer"]
         L8["SituationEndFrame"]
-    end
 
-    subgraph Submit ["Submission & Refresh"]
-        S1["vkQueueSubmit"]
-        S2["vkQueuePresentKHR"]
-        S3["Flush Graveyard<br/>(Cleanup Deferred Resources)"]
+        subgraph Render ["Render Execution (Main or Thread)"]
+            S1["vkQueueSubmit"]
+            S2["vkQueuePresentKHR"]
+            S3["Flush Graveyard<br/>(Cleanup Deferred Resources)"]
+        end
     end
 
     subgraph Exit ["Shutdown"]
