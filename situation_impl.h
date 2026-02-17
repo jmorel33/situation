@@ -14432,21 +14432,25 @@ SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 mode
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
 
-    // Updated Push Constant Struct
+    // [Fix] Split Push Constants to preserve texture_id at offset 96
+
+    // Part 1: Model, Color, UV (Offsets 0 - 96)
     struct {
         mat4 model;
         vec4 color;
         vec4 uv_rect;
-        int use_texture;
-    } push_data;
+    } push_part1;
 
-    glm_mat4_copy(model, push_data.model);
-    glm_vec4_copy(color.raw, push_data.color);
-    glm_vec4_copy(uv_rect.raw, push_data.uv_rect);
-    push_data.use_texture = use_texture;
+    glm_mat4_copy(model, push_part1.model);
+    glm_vec4_copy(color.raw, push_part1.color);
+    glm_vec4_copy(uv_rect.raw, push_part1.uv_rect);
 
-    // Note: vkCmdPushConstants size must update to match the larger struct
-    vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
+    vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_part1), &push_part1);
+
+    // Part 2: Use Texture (Offset 100 - 104)
+    // We skip offset 96 (texture_id) to avoid clobbering any previously bound texture state.
+    int use_texture_val = use_texture;
+    vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 100, sizeof(int), &use_texture_val);
     vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 #endif
     return SITUATION_SUCCESS;
@@ -15340,6 +15344,7 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
         // For simplicity in this migration: We define that `SituationCmdBindTextureSet`
         // pushes the texture ID to offset 96 (standard location in our internal convention).
         // Model(64) + Color(16) + UVRect(16) = 96 bytes offset.
+        // WARNING: Custom shaders using SituationCmdBindTextureSet MUST follow this layout or manually push texture_id!
         uint32_t texture_id = (uint32_t)(slot - sit_render.texture_registry);
         vkCmdPushConstants(vk_cmd, layout, VK_SHADER_STAGE_ALL, 96, sizeof(uint32_t), &texture_id);
 
