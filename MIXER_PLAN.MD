@@ -385,3 +385,86 @@ struct MixerBusData {
 *   [ ] Implement `SituationSaveMixerSession` / `SituationLoadMixerSession` with new V2 format.
 *   [ ] Optimize thread locking (minimize stalling the audio thread).
 *   [ ] Final integration test with the `Situation` hot-reload system.
+
+
+---
+
+## 8. Device Enumeration & Routing Policy
+
+One of the core responsibilities of the Situation Audio Reactor is to provide **reliable, validated device management**. We must know exactly what devices are available, what they are capable of, and enforce safe routing rules before any audio flows.
+
+This prevents common pitfalls such as:
+- Trying to route a stereo track to a mono device
+- Using a capture-only device for output
+- Channel count mismatches
+- Silent failures when devices are disconnected
+
+### 8.1. Device Types
+```c
+typedef enum {
+    SIT_AUDIO_DEVICE_TYPE_UNKNOWN     = 0,
+    SIT_AUDIO_DEVICE_TYPE_PLAYBACK    = 1,   // Output only (speakers, headphones)
+    SIT_AUDIO_DEVICE_TYPE_CAPTURE     = 2,   // Input only (microphones, line-in)
+    SIT_AUDIO_DEVICE_TYPE_DUPLEX      = 3,   // Both input and output (most sound cards)
+    SIT_AUDIO_DEVICE_TYPE_LOOPBACK    = 4    // System loopback (for desktop audio capture)
+} SituationAudioDeviceType;
+```
+
+### 8.2. Device Information Structure
+```c
+typedef struct {
+    char name[256];                    // Human-readable name (e.g. "Focusrite Scarlett 2i2")
+    char id[128];                      // Backend-specific unique identifier (miniaudio ID)
+
+    SituationAudioDeviceType type;
+
+    uint32_t min_channels_in;          // Minimum supported input channels
+    uint32_t max_channels_in;          // Maximum supported input channels
+    uint32_t min_channels_out;         // Minimum supported output channels
+    uint32_t max_channels_out;         // Maximum supported output channels
+
+    uint32_t preferred_sample_rate;    // Preferred / native sample rate
+    uint32_t native_format;            // Preferred miniaudio format (f32, s16, etc.)
+
+    bool is_default_playback;          // Is this the system's default output?
+    bool is_default_capture;           // Is this the system's default input?
+
+    // Future extension points
+    uint32_t latency_us;               // Estimated latency in microseconds
+} SituationAudioDeviceInfo;
+```
+
+### 8.3. Public Enumeration API
+```c
+// Returns a dynamically allocated array of available devices. Caller must free with SituationFreeDeviceList().
+SituationAudioDeviceInfo* SituationEnumerateAudioDevices(int* out_count);
+
+// Free the list returned by SituationEnumerateAudioDevices()
+void SituationFreeDeviceList(SituationAudioDeviceInfo* devices, int count);
+
+// Returns the best matching device for a given requirement (e.g. minimum 2 output channels)
+SituationAudioDeviceInfo* SituationFindBestDevice(SituationAudioDeviceType preferred_type,
+                                                  uint32_t min_channels_out,
+                                                  uint32_t min_channels_in);
+```
+
+### 8.4. Mixer Device Binding
+```c
+// Binds the mixer to a specific output device (validation happens here)
+SituationError SituationBindMixerToDevice(SituationAudioMixer* mixer,
+                                          const char* device_id,
+                                          uint32_t requested_channels_out);
+
+// For capture (mic/line input) — can be bound independently
+SituationError SituationBindCaptureDevice(SituationAudioMixer* mixer,
+                                          const char* device_id,
+                                          uint32_t requested_channels_in);
+```
+
+### 8.5. Validation & Routing Rules (Enforced Internally)
+When binding a device, we validate:
+1. The device exists
+2. It supports the requested channel count (within min/max)
+3. Type compatibility (cannot use capture-only device for output)
+4. Channel routing is validated at connection time (e.g. stereo track cannot route to mono output without explicit downmix policy)
+5. Default fallback: If no device is specified, we automatically select the system default with best channel match.
