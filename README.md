@@ -1,4 +1,4 @@
-![Situation Engine Demo](doc/hero_placeholder.png)
+![Situation](doc/hero_placeholder.png)
 
 
 # The "Situation" Advanced Platform Awareness, Control, and Timing
