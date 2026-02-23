@@ -1221,6 +1221,10 @@ typedef struct _SituationSound {
     SituationAudioProcessorCallback* processors;
     void** processor_user_data;
     int processor_count;
+
+    // [Phase 1] Graph Support
+    bool is_graph_managed;
+    ma_data_source_node graph_node;
 } _SituationSound;
 
 
@@ -1338,7 +1342,95 @@ typedef struct {
     // Tone Reverb (global reverb for all tones)
     void* tone_reverb_state;
     bool tone_reverb_enabled;
+
+    // [Phase 1] Active Mixer
+    SituationAudioMixer* active_mixer;
 } _SituationAudioState;
+
+//==================================================================================
+// --- Internal Resource Slots ---
+//==================================================================================
+typedef struct _SituationShaderSlot {
+    bool is_active;
+    uint32_t generation;
+#if defined(SITUATION_USE_OPENGL)
+    GLuint gl_program_id;
+    struct _SituationUniformMap* uniform_map;
+    GLuint gl_pending_program_id;
+    bool gl_is_linking;
+#elif defined(SITUATION_USE_VULKAN)
+    VkPipeline vk_pipeline;
+    VkPipeline vk_pipeline_legacy;
+    VkPipelineLayout vk_pipeline_layout;
+#endif
+    // Hot-Reload Metadata
+    char* vs_path;
+    char* fs_path;
+    long vs_mod_time;
+    long fs_mod_time;
+} _SituationShaderSlot;
+
+typedef struct _SituationMeshSlot {
+    bool is_active;
+    uint32_t generation;
+    int index_count;
+    int vertex_count;
+    size_t vertex_stride;
+#if defined(SITUATION_USE_OPENGL)
+    GLuint vbo_id;
+    GLuint ebo_id;
+#elif defined(SITUATION_USE_VULKAN)
+    VkBuffer vertex_buffer;
+    VmaAllocation vertex_buffer_memory;
+    VkBuffer index_buffer;
+    VmaAllocation index_buffer_memory;
+#endif
+} _SituationMeshSlot;
+
+typedef struct _SituationBufferSlot {
+    bool is_active;
+    uint32_t generation;
+    size_t size_in_bytes;
+    SituationBufferUsageFlags usage_flags;
+#if defined(SITUATION_USE_OPENGL)
+    GLuint gl_buffer_id;
+    uint64_t dynamic_offset;
+    uint32_t dynamic_frame_index;
+#elif defined(SITUATION_USE_VULKAN)
+    VkBuffer vk_buffer;
+    VmaAllocation vma_allocation;
+    VkBufferUsageFlags vk_usage_flags;
+    VkDescriptorSet descriptor_set;
+    VkDescriptorPool descriptor_pool;
+#endif
+} _SituationBufferSlot;
+
+typedef struct _SituationComputePipelineSlot {
+    bool is_active;
+    uint32_t generation;
+#if defined(SITUATION_USE_OPENGL)
+    GLuint gl_program_id;
+#elif defined(SITUATION_USE_VULKAN)
+    VkPipeline vk_pipeline;
+    VkPipelineLayout vk_pipeline_layout;
+    VkShaderModule shader_module;
+#endif
+    // Hot-Reload Metadata
+    char* source_path;
+    SituationComputeLayoutType layout_type;
+    long mod_time;
+} _SituationComputePipelineSlot;
+
+typedef struct _SituationModelSlot {
+    bool is_active;
+    uint32_t generation;
+    int mesh_count;
+    SituationModelMesh* meshes;
+    int texture_count;
+    SituationTexture* all_model_textures;
+    char* source_path;
+    long mod_time;
+} _SituationModelSlot;
 
 // --- Internal Texture Slot Definition ---
 typedef struct _SituationTextureSlot {
@@ -1640,90 +1732,6 @@ static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, dou
 static void _SituationGLFWJoystickCallback(int jid, int event);                                 // [CALLBACK] Handles joystick connection and disconnection events.
 
 
-//==================================================================================
-// --- Internal Resource Slots ---
-//==================================================================================
-typedef struct _SituationShaderSlot {
-    bool is_active;
-    uint32_t generation;
-#if defined(SITUATION_USE_OPENGL)
-    GLuint gl_program_id;
-    struct _SituationUniformMap* uniform_map;
-    GLuint gl_pending_program_id;
-    bool gl_is_linking;
-#elif defined(SITUATION_USE_VULKAN)
-    VkPipeline vk_pipeline;
-    VkPipeline vk_pipeline_legacy;
-    VkPipelineLayout vk_pipeline_layout;
-#endif
-    // Hot-Reload Metadata
-    char* vs_path;
-    char* fs_path;
-    long vs_mod_time;
-    long fs_mod_time;
-} _SituationShaderSlot;
-
-typedef struct _SituationMeshSlot {
-    bool is_active;
-    uint32_t generation;
-    int index_count;
-    int vertex_count;
-    size_t vertex_stride;
-#if defined(SITUATION_USE_OPENGL)
-    GLuint vbo_id;
-    GLuint ebo_id;
-#elif defined(SITUATION_USE_VULKAN)
-    VkBuffer vertex_buffer;
-    VmaAllocation vertex_buffer_memory;
-    VkBuffer index_buffer;
-    VmaAllocation index_buffer_memory;
-#endif
-} _SituationMeshSlot;
-
-typedef struct _SituationBufferSlot {
-    bool is_active;
-    uint32_t generation;
-    size_t size_in_bytes;
-    SituationBufferUsageFlags usage_flags;
-#if defined(SITUATION_USE_OPENGL)
-    GLuint gl_buffer_id;
-    uint64_t dynamic_offset;
-    uint32_t dynamic_frame_index;
-#elif defined(SITUATION_USE_VULKAN)
-    VkBuffer vk_buffer;
-    VmaAllocation vma_allocation;
-    VkBufferUsageFlags vk_usage_flags;
-    VkDescriptorSet descriptor_set;
-    VkDescriptorPool descriptor_pool;
-#endif
-} _SituationBufferSlot;
-
-typedef struct _SituationComputePipelineSlot {
-    bool is_active;
-    uint32_t generation;
-#if defined(SITUATION_USE_OPENGL)
-    GLuint gl_program_id;
-#elif defined(SITUATION_USE_VULKAN)
-    VkPipeline vk_pipeline;
-    VkPipelineLayout vk_pipeline_layout;
-    VkShaderModule shader_module;
-#endif
-    // Hot-Reload Metadata
-    char* source_path;
-    SituationComputeLayoutType layout_type;
-    long mod_time;
-} _SituationComputePipelineSlot;
-
-typedef struct _SituationModelSlot {
-    bool is_active;
-    uint32_t generation;
-    int mesh_count;
-    SituationModelMesh* meshes;
-    int texture_count;
-    SituationTexture* all_model_textures;
-    char* source_path;
-    long mod_time;
-} _SituationModelSlot;
 
 // Forward declaration
 // --- Resource Allocation Helpers (Advance Declaration) ---
