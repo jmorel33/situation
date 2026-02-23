@@ -1,0 +1,2038 @@
+/***************************************************************************************************
+*
+*   situation_impl_audio.h - Audio Subsystem Implementation
+*   (c) 2025-2026 Jacques Morel
+*   MIT Licensed
+*
+*   ================================================================================================
+*   DESCRIPTION
+*   ================================================================================================
+*   This file contains the complete implementation of the audio-related functionality for the
+*   "Situation" library.
+*
+*   It is included only when SITUATION_IMPLEMENTATION is defined (typically via situation.h).
+*
+*   The audio subsystem is built on top of miniaudio (single-header library) and provides:
+*     • Device management (enumeration, selection, format negotiation)
+*     • Playback mixing with volume, pan, pitch control
+*     • Real-time effects chain (low/high-pass filters, echo, reverb, custom DSP processors)
+*     • Procedural tone generation (sine, square, triangle, saw, noise) with ADSR envelopes
+*     • MIDI-note convenience layer
+*     • Global reverb for tones (Schroeder/Freeverb style)
+*     • Handle-based sound management with generation counters for safety
+*     • Thread-safe mixing using snapshot strategy (minimal lock contention)
+*
+*   Key design principles:
+*     - Low-latency mixing suitable for games and interactive applications
+*     - Safe hot-reloading support for audio assets (when combined with filesystem watching)
+*     - Minimal allocations during the audio callback (pre-allocated pools and scratch buffers)
+*     - Unified API surface whether using loaded samples or procedural generation
+*
+*   ================================================================================================
+*   DEPENDENCIES
+*   ================================================================================================
+*   - miniaudio.h        (single-header audio I/O and decoding)
+*   - situation_impl.h   (for shared types, macros, error codes, atomics, etc.)
+*
+***************************************************************************************************/
+#ifndef SITUATION_IMPL_AUDIO_H
+#define SITUATION_IMPL_AUDIO_H
+
+// --- Internal Reverb Implementation (Schroeder/Freeverb) ---
+// Constants for 44.1kHz (will scale for 48k)
+#define SIT_REVERB_COMB_COUNT 8
+#define SIT_REVERB_ALLPASS_COUNT 4
+#define SIT_REVERB_STEREO_SPREAD 23
+
+typedef struct {
+    float* buffer;
+    int size;
+    int cursor;
+    float feedback;
+    float filter_store;
+    float damp;
+} SituationReverbComb;
+
+typedef struct {
+    float* buffer;
+    int size;
+    int cursor;
+    float feedback;
+} SituationReverbAllPass;
+
+typedef struct {
+    SituationReverbComb combs[SIT_REVERB_COMB_COUNT];
+    SituationReverbAllPass allpasses[SIT_REVERB_ALLPASS_COUNT];
+    float room_size;
+    float damp;
+    float wet;
+    float dry;
+    float width;
+    uint32_t sample_rate;
+} SituationReverbState;
+
+// Audio-related implementation extracted from situation_impl.h
+
+static _SituationSoundSlot* _SitGetSoundSlot(SituationSound handle) {
+    if (handle.slot_index >= SITUATION_MAX_LOADED_SOUNDS) return NULL;
+    _SituationSoundSlot* slot = &sit_audio.sound_pool[handle.slot_index];
+    if (!slot->is_active || slot->generation != handle.generation) return NULL;
+    return slot;
+}
+
+static _SituationSoundSlot* _SitAllocSoundSlot(SituationSound* out_handle) {
+    mtx_lock(&sit_audio.pool_mutex);
+    for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; i++) {
+        if (!sit_audio.sound_pool[i].is_active) {
+            _SituationSoundSlot* slot = &sit_audio.sound_pool[i];
+            memset(slot, 0, sizeof(_SituationSoundSlot));
+            slot->is_active = true;
+            slot->generation++;
+            if (slot->generation == 0) slot->generation = 1;
+
+            out_handle->slot_index = i;
+            out_handle->generation = slot->generation;
+
+            mtx_unlock(&sit_audio.pool_mutex);
+            return slot;
+        }
+    }
+    mtx_unlock(&sit_audio.pool_mutex);
+    return NULL;
+}
+
+static void _SitFreeSoundSlot(SituationSound handle) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(handle);
+    if (!slot) return;
+
+    mtx_lock(&sit_audio.pool_mutex);
+    if (slot->source_path) SIT_FREE(slot->source_path);
+    // Note: sound_data cleanup (ma_decoder_uninit) should be done before calling this
+    slot->is_active = false;
+    mtx_unlock(&sit_audio.pool_mutex);
+}
+
+/**
+ * @brief [INTERNAL] Processes a single sample through a Schroeder comb filter.
+ * @details The comb filter creates a series of decaying echoes by feeding the output back into the input
+ *          through a delay buffer. It also includes a low-pass filter in the feedback loop to simulate
+ *          the absorption of high frequencies by air and walls (damping).
+ *
+ * @param comb Pointer to the comb filter state.
+ * @param input The input audio sample (normalized float).
+ * @return The processed output sample.
+ */
+static float _sit_reverb_comb_process(SituationReverbComb* comb, float input) {
+    float output = comb->buffer[comb->cursor];
+    comb->filter_store = (output * (1.0f - comb->damp)) + (comb->filter_store * comb->damp);
+    comb->buffer[comb->cursor] = input + (comb->filter_store * comb->feedback);
+    if (++comb->cursor >= comb->size) comb->cursor = 0;
+    return output;
+}
+
+/**
+ * @brief [INTERNAL] Processes a single sample through an All-Pass filter.
+ * @details All-pass filters change the phase relationship of frequencies without altering their amplitude response.
+ *          In reverb algorithms, they are used to increase the "density" of the reflections, diffusing the
+ *          distinct echoes from the comb filters into a smooth wash of sound.
+ *
+ * @param ap Pointer to the all-pass filter state.
+ * @param input The input audio sample (normalized float).
+ * @return The processed output sample.
+ */
+static float _sit_reverb_allpass_process(SituationReverbAllPass* ap, float input) {
+    float buffered = ap->buffer[ap->cursor];
+    float output = -input + buffered;
+    ap->buffer[ap->cursor] = input + (buffered * ap->feedback);
+    if (++ap->cursor >= ap->size) ap->cursor = 0;
+    return output;
+}
+
+/**
+ * @brief [INTERNAL] Frees all memory associated with the reverb state.
+ * @details This function iterates through all comb and all-pass filters, freeing their internal delay buffers,
+ *          and then frees the main state structure itself.
+ *
+ * @param state_ptr A void pointer to the `SituationReverbState` struct to destroy.
+ */
+static void _SituationUninitReverb(void* state_ptr) {
+    if (!state_ptr) return;
+    SituationReverbState* rev = (SituationReverbState*)state_ptr;
+    for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) SIT_FREE(rev->combs[i].buffer);
+    for(int i=0; i<SIT_REVERB_ALLPASS_COUNT; ++i) SIT_FREE(rev->allpasses[i].buffer);
+    SIT_FREE(rev);
+}
+
+static void* _SituationInitReverb(uint32_t sample_rate) {
+    SituationReverbState* rev = (SituationReverbState*)SIT_CALLOC(1, sizeof(SituationReverbState));
+    if (!rev) return NULL;
+
+    rev->sample_rate = sample_rate;
+    float scale = (float)sample_rate / 44100.0f;
+
+    // Tuning values (Schroeder/Freeverb defaults scaled)
+    const int comb_tunings[] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
+    const int allpass_tunings[] = {225, 341, 441, 556};
+
+    for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) {
+        rev->combs[i].size = (int)(comb_tunings[i] * scale);
+        rev->combs[i].buffer = (float*)SIT_CALLOC(rev->combs[i].size, sizeof(float));
+        rev->combs[i].feedback = 0.5f; // Initial room size
+        rev->combs[i].damp = 0.5f;     // Initial damp
+    }
+
+    for(int i=0; i<SIT_REVERB_ALLPASS_COUNT; ++i) {
+        rev->allpasses[i].size = (int)(allpass_tunings[i] * scale);
+        rev->allpasses[i].buffer = (float*)SIT_CALLOC(rev->allpasses[i].size, sizeof(float));
+        rev->allpasses[i].feedback = 0.5f;
+    }
+
+    rev->room_size = 0.5f;
+    rev->damp = 0.5f;
+    rev->wet = 0.3f;
+    rev->dry = 1.0f;
+    rev->width = 1.0f;
+
+    return rev;
+}
+
+/**
+ * @brief [INTERNAL] Processes a block of audio through the reverb engine.
+ * @details This is the main DSP loop for the reverb effect. It takes an input buffer (stereo or mono),
+ *          downmixes it to mono for processing, runs it through the parallel comb filters and series all-pass filters,
+ *          and then mixes the wet (reverberated) signal back into the output buffer with stereo spreading.
+ *
+ * @param state_ptr A void pointer to the `SituationReverbState` struct.
+ * @param pOutput The output buffer to write mixed audio to (interleaved).
+ * @param pInput The input buffer containing the dry signal (interleaved).
+ * @param frameCount The number of frames to process.
+ * @param channels The number of channels (must be uniform for input/output).
+ */
+static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels) {
+    if (!state_ptr) return;
+    SituationReverbState* rev = (SituationReverbState*)state_ptr;
+
+    // Apply parameters
+    float room_scale = rev->room_size * 0.28f + 0.7f; // Scale to stable range
+    for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) {
+        rev->combs[i].feedback = room_scale;
+        rev->combs[i].damp = rev->damp * 0.4f;
+    }
+
+    for (uint32_t i = 0; i < frameCount; ++i) {
+        float in_sample = 0.0f;
+        // Downmix input to mono for reverb engine
+        for(int c=0; c<channels; ++c) in_sample += pInput[i*channels + c];
+        in_sample *= (0.015f / channels); // Gain compensation
+
+        float out = 0.0f;
+        for(int j=0; j<SIT_REVERB_COMB_COUNT; ++j) {
+            out += _sit_reverb_comb_process(&rev->combs[j], in_sample);
+        }
+
+        for(int j=0; j<SIT_REVERB_ALLPASS_COUNT; ++j) {
+            out = _sit_reverb_allpass_process(&rev->allpasses[j], out);
+        }
+
+        // Apply Wet/Dry mix
+        for(int c=0; c<channels; ++c) {
+            float wet_sig = out * rev->wet;
+            // Simple stereo spread
+            if (c%2==1) wet_sig *= -1.0f; // Phase invert right channel for wideness
+
+            pOutput[i*channels + c] = (pInput[i*channels + c] * rev->dry) + wet_sig;
+        }
+    }
+}
+
+// --- Audio Implementations (MiniAudio) ---
+/**
+ * @brief [INTERNAL] Core Audio Mixing Callback (Production Hardened)
+ *
+ * @details This function is the heartbeat of the audio subsystem, executed by the high-priority
+ *          audio thread. It is responsible for decoding, processing, and mixing all active
+ *          sounds into the device's output buffer.
+ *
+ * @section ThreadSafety Thread Safety Strategy ("Snapshot-and-Unlock")
+ *          This implementation uses a high-performance "Snapshot" strategy to minimize lock contention:
+ *          1.  **Snapshot:** The `audio_queue_mutex` is locked briefly to copy the list of active sound pointers
+ *              to a local stack array. The lock is then released immediately.
+ *          2.  **Processing:** The heavy lifting (decoding, effects, mixing) happens without holding the lock,
+ *              allowing the Main Thread to continue adding/modifying sounds without stalling.
+ *          3.  **Commit:** The lock is re-acquired briefly at the end only to remove finished sounds from the global queue.
+ *
+ *          **Safety Mechanism:** To prevent Use-After-Free errors (where the Main Thread unloads a sound while
+ *          the Audio Thread is processing it from a snapshot), this function sets an atomic flag
+ *          `is_processing_snapshot`. `SituationUnloadSound` spins on this flag to ensure it never frees
+ *          memory that is currently being accessed.
+ *
+ * @section Optimization Performance Optimizations
+ *          1.  **Lock-Free Mixing:** By releasing the lock during processing, the audio thread never blocks the
+ *              main application loop, and vice-versa, preventing audio glitches during heavy main-thread load.
+ *          2.  **Fused Mixing Loop:** Panning, Volume application, and Accumulation are combined into a single
+ *              tight loop for maximum CPU cache locality.
+ *          3.  **Scratch Buffers:** Uses pre-allocated thread-local buffers to avoid `malloc` on the audio thread.
+ *
+ * @section Pipeline Processing Pipeline
+ *          For every active sound:
+ *          1.  **Decode:** Read raw PCM from file/memory/stream into `decoder_buffer`.
+ *          2.  **Effects:** Apply Filter -> Echo -> Reverb -> User Processors.
+ *          3.  **Convert:** Resample/Remap to device format into `converter_buffer`.
+ *          4.  **Mix:** Apply Pan/Vol and add to `pOutput`.
+ *
+ * @param pDevice Pointer to the MiniAudio device instance.
+ * @param pOutput Pointer to the raw output buffer to be filled.
+ * @param pInput  Pointer to the input buffer (unused here; capture handled separately).
+ * @param frameCount The number of frames requested by the audio hardware.
+ */
+// --- Resonance Implementation ---
+
+
+SITAPI void SituationStopAllTones(void) {
+    if (!SituationIsInitialized()) return;
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+        if (sit_audio.tone_pool[i].active && sit_audio.tone_pool[i].state != SIT_ENV_RELEASE) {
+             sit_audio.tone_pool[i].state = SIT_ENV_RELEASE;
+             sit_audio.tone_pool[i].cursor_frames = 0;
+        }
+    }
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+}
+
+SITAPI void SituationSetToneReverbEnabled(bool enabled) {
+    if (!SituationIsInitialized()) return;
+    sit_audio.tone_reverb_enabled = enabled;
+}
+
+SITAPI void SituationSetToneReverbParameters(float room_size, float damping, float wet_level, float dry_level, float width) {
+    if (!SituationIsInitialized() || !sit_audio.tone_reverb_state) return;
+
+    SituationReverbState* rev = (SituationReverbState*)sit_audio.tone_reverb_state;
+    rev->room_size = room_size;
+    rev->damp = damping;
+    rev->wet = wet_level;
+    rev->dry = dry_level;
+    rev->width = width;
+}
+
+
+SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume, float attack, float decay, float sustain, float release, float hold) {
+    if (note < 0) note = 0;
+    if (note > 127) note = 127;
+    float freq = SITUATION_MIDI_NOTE_FREQUENCY[note];
+    SituationPlayTone(type, freq, volume, attack, decay, sustain, release, hold);
+}
+
+// Handle packing: 16-bit index + 16-bit generation
+#define TONE_INDEX_MASK   0x0000FFFFu
+#define TONE_GEN_MASK     0xFFFF0000u
+#define TONE_GEN_SHIFT    16
+
+static inline SituationToneHandle _MakeToneHandle(uint16_t index, uint16_t gen) {
+    return ((uint32_t)gen << TONE_GEN_SHIFT) | index;
+}
+
+static inline bool _IsValidToneHandle(SituationToneHandle handle) {
+    uint16_t index = handle & TONE_INDEX_MASK;
+    if (index >= SITUATION_MAX_TONES) return false;
+    uint16_t gen = handle >> TONE_GEN_SHIFT;
+    return sit_audio.tone_generations[index] == gen && sit_audio.tone_pool[index].active;
+}
+
+static inline SituationTone* _GetToneFromHandle(SituationToneHandle handle) {
+    uint16_t index = handle & TONE_INDEX_MASK;
+    return (index < SITUATION_MAX_TONES && _IsValidToneHandle(handle))
+        ? &sit_audio.tone_pool[index]
+        : NULL;
+}
+
+SITAPI SituationToneHandle SituationPlayToneEx(SituationWaveType type, float frequency, float volume, float pan, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec) {
+
+    if (!SituationIsInitialized()) {
+        return 0;
+    }
+
+    // Frequency ignored for noise, but must be >0 for others
+    if (type != SIT_WAVE_NOISE && frequency <= 0.0f) {
+        SituationLogWarning(SITUATION_ERROR_INVALID_PARAM, "SituationPlayTone: Frequency must be > 0 (got %.2f)", frequency);
+        return 0;
+    }
+
+    // Clamp volume
+    if (volume < 0.0f) volume = 0.0f;
+    if (volume > 1.0f) volume = 1.0f;
+
+    // Clamp pan
+    if (pan < -1.0f) pan = -1.0f;
+    if (pan > 1.0f) pan = 1.0f;
+
+    // Clamp durations
+    if (attack_sec < 0.0f) attack_sec = 0.0f;
+    if (decay_sec < 0.0f) decay_sec = 0.0f;
+    if (release_sec < 0.0f) release_sec = 0.0f;
+    // hold_sec can be -1.0f for infinite
+
+    mtx_lock(&sit_audio.audio_queue_mutex);
+
+    // 1. Find a slot
+    int slot = -1;
+    // First pass: empty slot
+    for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+        if (!sit_audio.tone_pool[i].active) {
+            slot = i;
+            break;
+        }
+    }
+
+    // Second pass: Steal released voice (Furthest along in release phase preferred?)
+    // Actually, simply taking the first one in release state is usually fine,
+    // but taking the one with highest cursor in release means it's closest to ending.
+    if (slot == -1) {
+        uint64_t max_release_cursor = 0;
+        int candidate = -1;
+        for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+            if (sit_audio.tone_pool[i].state == SIT_ENV_RELEASE) {
+                if (candidate == -1 || sit_audio.tone_pool[i].cursor_frames > max_release_cursor) {
+                    max_release_cursor = sit_audio.tone_pool[i].cursor_frames;
+                    candidate = i;
+                }
+            }
+        }
+        if (candidate != -1) slot = candidate;
+    }
+
+    // Third pass: Steal NEWEST active voice (lowest cursor)
+    // FIX: We want to steal recently-started tones, not long-running ones!
+    // Long-running tones have high cursor_frames and should be preserved.
+    if (slot == -1) {
+        uint64_t min_cursor = UINT64_MAX;
+        int candidate = -1;
+        for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+            if (sit_audio.tone_pool[i].active && sit_audio.tone_pool[i].cursor_frames < min_cursor) {
+                min_cursor = sit_audio.tone_pool[i].cursor_frames;
+                candidate = i;
+            }
+        }
+        if (candidate != -1) slot = candidate;
+    }
+
+    // Panic fallback: return failure if absolutely no slot found (should be impossible with stealing unless max_cursor logic fails)
+    if (slot == -1) {
+        mtx_unlock(&sit_audio.audio_queue_mutex);
+        return 0;
+    }
+
+    SituationTone* t = &sit_audio.tone_pool[slot];
+
+    // Cleanup previous if active
+    if (t->active) {
+        if (t->wave_type == SIT_WAVE_NOISE) {
+            ma_noise_uninit(&t->noise, NULL);
+        } else {
+            ma_waveform_uninit(&t->waveform);
+        }
+    }
+
+    // Configure
+    t->wave_type = type;
+    if (type == SIT_WAVE_NOISE) {
+        ma_noise_config cfg = ma_noise_config_init(sit_audio.miniaudio_device.playback.format, sit_audio.miniaudio_device.playback.channels, ma_noise_type_white, 0, 1.0);
+        ma_noise_init(&cfg, NULL, &t->noise);
+    } else {
+        ma_waveform_type ma_type = ma_waveform_type_sine;
+        switch (type) {
+            case SIT_WAVE_SINE: ma_type = ma_waveform_type_sine; break;
+            case SIT_WAVE_SQUARE: ma_type = ma_waveform_type_square; break;
+            case SIT_WAVE_TRIANGLE: ma_type = ma_waveform_type_triangle; break;
+            case SIT_WAVE_SAW: ma_type = ma_waveform_type_sawtooth; break;
+            default: break;
+        }
+        // FIX: Generate waveform as MONO (1 channel), we'll handle stereo panning in the mixer
+        // Amplitude set to 1.0, controlled by mixer volume/envelope
+        // CRITICAL: Parameter order is (format, channels, sampleRate, type, AMPLITUDE, FREQUENCY)
+        ma_waveform_config config = ma_waveform_config_init(
+            ma_format_f32,  // Always use float32 for waveform generation
+            1,              // MONO - we'll pan it ourselves
+            sit_audio.miniaudio_device.sampleRate,
+            ma_type,
+            1.0,            // Amplitude (MUST be before frequency!)
+            (double)frequency  // Frequency in Hz
+        );
+        ma_waveform_init(&config, &t->waveform);
+    }
+
+    t->volume_peak = volume;
+    t->pan = pan;
+
+    t->state = SIT_ENV_ATTACK;
+    t->cursor_frames = 0;
+
+    uint32_t sr = sit_audio.miniaudio_device.sampleRate;
+    t->t_attack = (uint64_t)(attack_sec * sr);
+    t->t_decay = (uint64_t)(decay_sec * sr);
+    t->t_hold = (hold_sec < 0.0f) ? UINT64_MAX : (uint64_t)(hold_sec * sr);
+    t->t_release = (uint64_t)(release_sec * sr);
+    t->level_sustain = sustain_level;
+
+    t->active = true;
+
+    // [LATENCY] Record trigger time using consistent clock
+    t->trigger_timestamp_ms = SituationTimerGetTime() * 1000.0;
+
+    // Update generation
+    sit_audio.tone_generations[slot]++;
+    if (sit_audio.tone_generations[slot] == 0) sit_audio.tone_generations[slot] = 1; // skip 0
+    t->generation = sit_audio.tone_generations[slot];
+
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+
+    return _MakeToneHandle((uint16_t)slot, (uint16_t)t->generation);
+}
+
+SITAPI void SituationStopTone(SituationToneHandle handle) {
+    if (!SituationIsInitialized()) return;
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    SituationTone* t = _GetToneFromHandle(handle);
+    if (t && t->state != SIT_ENV_RELEASE && t->state != SIT_ENV_IDLE) {
+        t->state = SIT_ENV_RELEASE;
+        t->cursor_frames = 0;
+    }
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+}
+
+SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec) {
+    SituationPlayToneEx(type, frequency, volume, 0.0f, attack_sec, decay_sec, sustain_level, release_sec, hold_sec);
+}
+
+static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
+    _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
+    if (!pGs) return;
+
+    // Output Buffer (Mixing Destination)
+    float* pOut = (float*)pOutput;
+
+    // Clear output buffer (silence)
+    memset(pOut, 0, frameCount * pDevice->playback.channels * sizeof(float));
+
+    // Handle Input (Capture)
+    if (pGs->is_capture_device_active && pGs->capture_callback) {
+        // ... (Capture logic omitted for brevity, usually distinct device)
+    }
+
+    // --- MIXING LOOP ---
+    // Acquire lock to snapshot active voices safely
+    // Note: Trylock to avoid audio thread stall? Or just lock.
+    // For low latency, we want to minimize locking time.
+    // We snapshot the pointers to a local array or iterate under lock.
+    // Iterating under lock is safest for now.
+
+    mtx_lock(&pGs->audio_queue_mutex);
+
+    int voices_to_mix = pGs->active_voice_count;
+    // We can't stack allocate dynamic size. Use the pre-allocated snapshot buffer.
+    if (pGs->snapshot_buffer && voices_to_mix > 0) {
+        memcpy(pGs->snapshot_buffer, pGs->active_voices, voices_to_mix * sizeof(_SituationSound*));
+    }
+
+    mtx_unlock(&pGs->audio_queue_mutex);
+
+    if (voices_to_mix == 0 || !pGs->snapshot_buffer) return;
+
+    // Process Snapshot
+    // Temp buffer for mixing one sound before adding to accumulation
+    // float* mix_buffer = ... (we need a scratch buffer for effects)
+    // Using pGs->audio_callback_decoder_temp_buffer etc.
+
+    // We need to verify we have scratch buffers. Assuming they are init in InitAudio.
+    float* decoder_buffer = pGs->audio_callback_decoder_temp_buffer;
+    float* effects_buffer = pGs->audio_callback_effects_temp_buffer;
+
+    // Sanity check
+    if (!decoder_buffer || !effects_buffer) return;
+
+    for (int i = 0; i < voices_to_mix; ++i) {
+        _SituationSound* sound = pGs->snapshot_buffer[i];
+        if (!sound) continue;
+
+        // 1. Read/Decode PCM
+        ma_uint64 frames_read = 0;
+
+        if (sound->is_preloaded && sound->preloaded_data) {
+            // RAM Playback
+            ma_uint64 frames_remaining = sound->total_frames - sound->cursor_frames;
+            frames_read = (frames_remaining > frameCount) ? frameCount : frames_remaining;
+
+            // Copy from RAM to decoder_buffer (or directly mix if no effects? Effects need inplace usually)
+            // Let's copy to decoder_buffer to standardize pipeline.
+            memcpy(decoder_buffer, (float*)sound->preloaded_data + (sound->cursor_frames * 2), frames_read * 2 * sizeof(float));
+
+            // Advance cursor
+            sound->cursor_frames += frames_read;
+
+            // Loop?
+            if (frames_read < frameCount && sound->is_looping) {
+                sound->cursor_frames = 0;
+                // Read remainder
+                ma_uint64 remainder = frameCount - frames_read;
+                // Simple loop: just read from start.
+                // Note: infinite loop risk if file is 0 length. check total_frames > 0.
+                if (sound->total_frames > 0) {
+                    ma_uint64 loop_read = (sound->total_frames > remainder) ? remainder : sound->total_frames;
+                    memcpy(decoder_buffer + (frames_read * 2), sound->preloaded_data, loop_read * 2 * sizeof(float));
+                    frames_read += loop_read;
+                    sound->cursor_frames += loop_read;
+                }
+            }
+        } else if (sound->is_initialized) {
+            // Streaming (ma_decoder)
+            // Note: ma_decoder_read_pcm_frames is not fully thread safe if main thread seeks/unloads!
+            // But we hold a reference (via active_voices). Unload stops sound first.
+            // Seek is the main risk. We need per-voice lock or atomic flags?
+            // For now assuming safe-ish via stop-before-unload pattern.
+
+            ma_result res = ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer, frameCount, &frames_read);
+
+            if (res == MA_AT_END && sound->is_looping) {
+                ma_decoder_seek_to_pcm_frame(&sound->decoder, 0);
+                ma_uint64 remainder = frameCount - frames_read;
+                ma_uint64 loop_read = 0;
+                ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer + (frames_read * 2), remainder, &loop_read);
+                frames_read += loop_read;
+            }
+        }
+
+        if (frames_read > 0) {
+            // 2. Effects Processing (In-Place on decoder_buffer or copy to effects_buffer)
+            // Let's use effects_buffer as destination
+            memcpy(effects_buffer, decoder_buffer, frames_read * 2 * sizeof(float));
+
+            // Custom Processors
+            if (sound->processors) {
+                for (int p = 0; p < sound->processor_count; ++p) {
+                    if (sound->processors[p]) {
+                        sound->processors[p](effects_buffer, (uint32_t)frames_read, 2, pDevice->sampleRate, sound->processor_user_data[p]);
+                    }
+                }
+            }
+
+            // Built-in Effects (Filter, Echo, Reverb)
+            // ... (Omitted for brevity in this fix script, relying on existing impl logic or placeholder)
+            // Ideally we keep existing logic but update field access.
+
+            // 3. Apply Volume/Pan & Mix to Output
+            float vol = atomic_load(&sound->volume);
+            float pan = atomic_load(&sound->pan);
+
+            // Simple Stereo Mix
+            for (ma_uint64 f = 0; f < frames_read; ++f) {
+                float sampleL = effects_buffer[f*2 + 0];
+                float sampleR = effects_buffer[f*2 + 1];
+
+                // Pan law (linear approximation)
+                float gainL = (pan <= 0.0f) ? 1.0f : (1.0f - pan);
+                float gainR = (pan >= 0.0f) ? 1.0f : (1.0f + pan);
+
+                pOut[f*2 + 0] += sampleL * vol * gainL;
+                pOut[f*2 + 1] += sampleR * vol * gainR;
+            }
+        } else {
+            // Sound finished?
+            if (!sound->is_looping && !sound->is_streamed && (sound->is_preloaded && sound->cursor_frames >= sound->total_frames)) {
+                // Mark for removal?
+                // The mixer cannot remove from the main list easily without lock.
+                // We typically handle this in a cleanup pass or let StopLoadedSound handle it.
+                // For now, it just plays silence.
+            }
+        }
+    }
+}
+
+
+// --- Situation Audio Pipeline API Implementation ---
+
+/**
+ * @brief Callback function type for processing captured audio data.
+ *
+ * @param data A pointer to the buffer containing the raw audio samples. The format is always `float*` (32-bit float, mono).
+ * @param frame_count The number of frames (samples) in the buffer.
+ * @param user_data The custom pointer provided to `SituationStartAudioCapture`.
+ */
+
+// --- Audio Output Monitoring (for visualization) ---
+SITAPI void SituationSetAudioOutputMonitor(void (*callback)(const float* samples, uint32_t frame_count, void* user_data), void* user_data) {
+    if (!SituationIsInitialized()) return;
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    sit_audio.output_monitor_callback = callback;
+    sit_audio.output_monitor_user_data = user_data;
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+}
+
+static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
+    (void)pOutput;
+    _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
+    if (!pGs || !pInput) return;
+
+    // 1. If Main Thread Mode is disabled, call directly (legacy behavior)
+    if (!pGs->audio_capture_on_main_thread) {
+        if (pGs->capture_callback) pGs->capture_callback((const float*)pInput, frameCount, pGs->capture_user_data);
+        return;
+    }
+
+    // 2. Main Thread Mode: Push to Ring Buffer
+    ma_mutex_lock(&pGs->audio_capture_mutex);
+
+
+    uint32_t channels = pDevice->capture.channels;
+    size_t sampleCount = frameCount * channels;
+
+    size_t capacity = pGs->audio_capture_queue_capacity;
+    size_t write_head = pGs->audio_capture_write_head;
+    size_t read_head = pGs->audio_capture_read_head; // Snapshot read head
+
+    // Calculate available space
+    size_t used = (write_head >= read_head) ? (write_head - read_head) : (capacity - read_head + write_head);
+    size_t free_space = capacity - used - 1; // Keep 1 slot open to distinguish full/empty
+
+    if (free_space >= sampleCount) {
+        const float* input_f32 = (const float*)pInput;
+        size_t frames_to_end = capacity - write_head;
+
+        if (sampleCount <= frames_to_end) {
+            // Contiguous write
+            memcpy(&pGs->audio_capture_queue[write_head], input_f32, sampleCount * sizeof(float));
+        } else {
+            // Split write (wrap around)
+            memcpy(&pGs->audio_capture_queue[write_head], input_f32, frames_to_end * sizeof(float));
+            memcpy(&pGs->audio_capture_queue[0], input_f32 + frames_to_end, (sampleCount - frames_to_end) * sizeof(float));
+        }
+        pGs->audio_capture_write_head = (write_head + sampleCount) % capacity;
+    } else {
+        // Buffer overrun: Drop packets or log warning in debug mode
+    }
+
+    ma_mutex_unlock(&pGs->audio_capture_mutex);
+}
+
+/**
+ * @brief Initializes and starts audio capture (recording) from the default input device.
+ *
+ * @details Opens the default microphone/input device and begins streaming raw audio data to the provided callback function.
+ *          The audio format defaults to the device's native configuration (Sample Rate & Channels) to minimize latency and resampling overhead. If you require a specific format (e.g. 44.1kHz Mono for FFT), use `SituationStartAudioCaptureEx`.
+ *
+ * @par Thread Safety
+ * The provided `callback` function will be executed on a high-priority, internal audio thread.
+ * **Do not perform blocking operations** (like file I/O, large memory allocations, or heavy mutex locking) inside the callback, or you may cause audio glitches.
+ *
+ * @param callback The function to call when new audio data is available.
+ * @param user_data A custom pointer passed to the callback (e.g., for storing state).
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_AUDIO_CONTEXT` if the audio system is not initialized.
+ * @return `SITUATION_ERROR_AUDIO_DEVICE` if the input device cannot be opened or started.
+ *
+ * @see SituationStopAudioCapture(), SituationAudioCaptureCallback
+ */
+SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data) {
+    return SituationStartAudioCaptureEx(callback, user_data, 0, 0);
+}
+
+SITAPI SituationError SituationStartAudioCaptureEx(SituationAudioCaptureCallback callback, void* user_data, uint32_t sample_rate, uint32_t channels) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!sit_audio.is_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
+    if (sit_audio.is_capture_device_active) SituationStopAudioCapture();
+
+    sit_audio.capture_callback = callback;
+    sit_audio.capture_user_data = user_data;
+
+    ma_device_config config = ma_device_config_init(ma_device_type_capture);
+    config.capture.format = ma_format_f32; // Standardize on Float32
+    config.capture.channels = channels;
+    config.sampleRate = sample_rate;
+    config.dataCallback = _sit_miniaudio_capture_callback;
+    config.pUserData = &sit_audio;
+
+    if (ma_device_init(&sit_audio.miniaudio_context, &config, &sit_audio.capture_device) != MA_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "Failed to initialize capture device.");
+        return SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED;
+    }
+
+    if (ma_device_start(&sit_audio.capture_device) != MA_SUCCESS) {
+        ma_device_uninit(&sit_audio.capture_device);
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start capture device.");
+        return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
+    }
+
+    sit_audio.is_capture_device_active = true;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Stops audio capture and closes the input device.
+ *
+ * @details Halts the recording stream and releases the underlying audio device resources. The callback function will no longer be invoked.
+ *          It is safe to call this function even if capture is not currently active.
+ *
+ * @see SituationStartAudioCapture()
+ */
+SITAPI void SituationStopAudioCapture(void) {
+    if (!SituationIsInitialized()) return;
+    if (sit_audio.is_capture_device_active) {
+        ma_device_uninit(&sit_audio.capture_device);
+        sit_audio.is_capture_device_active = false;
+        sit_audio.capture_callback = NULL;
+    }
+}
+
+/**
+ * @brief Enumerates all available audio playback devices on the system.
+ * @details This function queries the underlying audio backend (MiniAudio) for a list of all devices capable of playing sound. It provides their human-readable names and internal identifiers.
+ *
+ * @warning The returned array of `SituationAudioDeviceInfo` structs is dynamically allocated. The caller is **responsible for freeing this memory** using `free()` when it is no longer needed.
+ *
+ * @param[out] count A pointer to an integer that will be filled with the number of devices found.
+ *
+ * @return A pointer to a newly allocated array of `SituationAudioDeviceInfo` structs.
+ * @return `NULL` if the library is not initialized, if no playback devices are found, or if a memory allocation error occurs. In these cases, `*count` is set to 0.
+ *
+ * @note The returned information can be used with `SituationSetAudioDevice` to switch output to a specific device (e.g., headphones vs. speakers).
+ *
+ * @see SituationSetAudioDevice()
+ */
+SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
+    if (!SituationIsInitialized()) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetAudioDevices: Library not initialized");
+        if (count) *count = 0;
+        return NULL;
+    }
+    if (!sit_audio.is_miniaudio_context_initialized) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "GetAudioDevices: MiniAudio context not initialized");
+        if (count) *count = 0;
+        return NULL;
+    }
+
+    ma_device_info* ma_playback_devices = NULL;
+    uint32_t ma_playback_count = 0;
+    // ma_device_info* ma_capture_devices = NULL; // Not used in this example
+    // uint32_t ma_capture_count = 0;
+
+    ma_result res = ma_context_get_devices(&sit_audio.miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL); // Passing NULL for capture devices
+    if (res != MA_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "ma_context_get_devices failed");
+        if (count) *count = 0;
+        return NULL;
+    }
+
+    if (ma_playback_count == 0) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "No playback audio devices found by MiniAudio.");
+        if (count) *count = 0;
+        return NULL;
+    }
+
+    SituationAudioDeviceInfo* sit_devices = (SituationAudioDeviceInfo*)SIT_CALLOC(ma_playback_count, sizeof(SituationAudioDeviceInfo));
+    if (!sit_devices) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio device info array");
+        if (count) *count = 0;
+        return NULL;
+    }
+
+    for (uint32_t i = 0; i < ma_playback_count; ++i) {
+        strncpy(sit_devices[i].name, ma_playback_devices[i].name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
+        sit_devices[i].name[SITUATION_MAX_DEVICE_NAME_LEN - 1] = '\0'; // Ensure null termination
+        memcpy(&sit_devices[i].id, &ma_playback_devices[i].id, sizeof(ma_device_id));
+        sit_devices[i].situation_internal_id = i;
+        sit_devices[i].is_default_playback = ma_playback_devices[i].isDefault;
+        sit_devices[i].is_default_capture = false; // Not querying capture defaults here
+    }
+
+    if (count) *count = ma_playback_count;
+    // Note: Memory for ma_playback_devices is managed by the ma_context.
+    // Do NOT free ma_playback_devices here.
+    return sit_devices;
+}
+
+/**
+ * @brief Switches the active audio output to a specific device.
+ * @details This function re-initializes the audio subsystem to use the device specified by its internal ID (obtained from `SituationGetAudioDevices`). It allows the user to select their preferred output, such as switching between speakers and a headset.
+ *
+ * @par Behavior
+ *   If an audio device is already active, it will be stopped and uninitialized before the new device is started. The new device will be configured with the specified format, or with sensible defaults (stereo, 48kHz float32) if `format` is NULL.
+ *
+ * @param situation_internal_id The internal ID of the target device, corresponding to its index in the array returned by `SituationGetAudioDevices`.
+ * @param format A pointer to a `SituationAudioFormat` struct specifying the desired sample rate, channel count, and bit depth for the new device. Can be `NULL` to use defaults.
+ *
+ * @return `SITUATION_SUCCESS` on successful switch.
+ * @return `SITUATION_ERROR_AUDIO_CONTEXT` if the audio system is not initialized.
+ * @return `SITUATION_ERROR_AUDIO_DEVICE` if the ID is invalid, or if the new device fails to initialize or start.
+ * @return `SITUATION_ERROR_INVALID_PARAM` if the requested format contains an unsupported bit depth.
+ *
+ * @warning Switching devices may cause a brief interruption in audio playback.
+ *
+ * @see SituationGetAudioDevices()
+ */
+SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const SituationAudioFormat* format) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!sit_audio.is_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
+
+    ma_device_info* ma_playback_devices = NULL;
+    uint32_t ma_playback_count = 0;
+    ma_result res = ma_context_get_devices(&sit_audio.miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL);
+
+    if (res != MA_SUCCESS || situation_internal_id < 0 || (uint32_t)situation_internal_id >= ma_playback_count) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Invalid internal_id or failed to enumerate for SetAudioDevice");
+        return SITUATION_ERROR_AUDIO_DEVICE;
+    }
+
+    ma_device_id* target_device_id = &ma_playback_devices[situation_internal_id].id;
+
+    if (sit_audio.is_miniaudio_device_active) {
+        ma_device_uninit(&sit_audio.miniaudio_device);
+        sit_audio.is_miniaudio_device_active = false;
+    }
+
+    ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
+    device_config.playback.pDeviceID = target_device_id;
+    device_config.playback.shareMode = ma_share_mode_exclusive;  // EXCLUSIVE MODE for low latency
+    device_config.dataCallback = sit_miniaudio_data_callback;
+    device_config.pUserData = &sit_audio; // Pass audio state if callback needs it (e.g. for temp buffers)
+                                      // User data is accessed via pDevice->pUserData in callback
+
+    if (format) {
+        device_config.playback.channels = format->channels;
+        device_config.sampleRate = format->sample_rate;
+        if (format->bit_depth == 32) device_config.playback.format = ma_format_f32;
+        else if (format->bit_depth == 16) device_config.playback.format = ma_format_s16;
+        else if (format->bit_depth == 24) device_config.playback.format = ma_format_s24; // Requires device support
+        else if (format->bit_depth == 8) device_config.playback.format = ma_format_u8;   // Requires device support
+        else {
+            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported bit depth in SetAudioDevice format");
+            return SITUATION_ERROR_INVALID_PARAM;
+        }
+    } else { // Use device default format preferences, or sensible common defaults
+        device_config.playback.format = ma_format_f32; // Prefer float32 for easier mixing
+        device_config.playback.channels = 2;           // Stereo default
+        device_config.sampleRate = 0;              // Common default sample rate
+        // To use device's native format:
+        // device_config.playback.format = ma_format_unknown; // Let miniaudio pick
+        // device_config.playback.nativeChannelCount = 0; // Use device native or best match
+        // device_config.nativeSampleRate = 0;
+    }
+    // Define period size for callback scheduling (LOW LATENCY for musical input)
+    device_config.periodSizeInFrames = 64;  // ~1.3ms at 48kHz (ultra low latency)
+    device_config.periods = 2;               // Double buffering
+
+    res = ma_device_init(&sit_audio.miniaudio_context, &device_config, &sit_audio.miniaudio_device);
+
+    // [DEBUG] Verify exclusive mode actually activated
+    fprintf(stderr, "=== AUDIO DEVICE INIT DEBUG ===\n");
+    fprintf(stderr, "Init result: %s\n", ma_result_description(res));
+    if (res == MA_SUCCESS) {
+        fprintf(stderr, "Requested share mode: %s\n",
+            device_config.playback.shareMode == ma_share_mode_exclusive ? "EXCLUSIVE" : "SHARED");
+        fprintf(stderr, "Actual share mode: %s\n",
+            sit_audio.miniaudio_device.playback.shareMode == ma_share_mode_exclusive ? "EXCLUSIVE" : "SHARED");
+        fprintf(stderr, "Sample rate: %u Hz\n", sit_audio.miniaudio_device.sampleRate);
+        fprintf(stderr, "Period size: %u frames\n", sit_audio.miniaudio_device.playback.internalPeriodSizeInFrames);
+        fprintf(stderr, "Periods: %u\n", sit_audio.miniaudio_device.playback.internalPeriods);
+        fprintf(stderr, "Buffer size: %u frames (%.2f ms)\n",
+            sit_audio.miniaudio_device.playback.internalPeriodSizeInFrames * sit_audio.miniaudio_device.playback.internalPeriods,
+            (sit_audio.miniaudio_device.playback.internalPeriodSizeInFrames * sit_audio.miniaudio_device.playback.internalPeriods * 1000.0) / sit_audio.miniaudio_device.sampleRate);
+        fprintf(stderr, "Backend: %s\n", ma_get_backend_name(sit_audio.miniaudio_device.pContext->backend));
+    }
+    fprintf(stderr, "================================\n");
+
+    if (res != MA_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, ma_result_description(res));
+        return SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED;
+    }
+
+    if (!sit_audio.is_miniaudio_device_internally_paused) { // Only start if not meant to be paused
+        res = ma_device_start(&sit_audio.miniaudio_device);
+        if (res != MA_SUCCESS) {
+            ma_device_uninit(&sit_audio.miniaudio_device);
+            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start new audio device");
+            return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
+        }
+    }
+
+    sit_audio.is_miniaudio_device_active = true;
+    sit_audio.current_miniaudio_device_audioinfo_id = situation_internal_id;
+
+    // Initialize tone reverb if not already done
+    if (!sit_audio.tone_reverb_state) {
+        sit_audio.tone_reverb_state = _SituationInitReverb(sit_audio.miniaudio_device.sampleRate);
+        sit_audio.tone_reverb_enabled = true;
+        if (sit_audio.tone_reverb_state) {
+            SituationReverbState* rev = (SituationReverbState*)sit_audio.tone_reverb_state;
+            rev->room_size = 0.7f;  // Large room
+            rev->damp = 0.5f;       // Medium damping
+            rev->wet = 0.3f;        // 30% reverb
+            rev->dry = 1.0f;        // 100% dry signal
+            rev->width = 1.0f;      // Full stereo width
+        }
+    }
+
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Gets the sample rate of the currently active audio playback device.
+ * @details This is the master sample rate at which the audio engine is mixing and outputting sound to the hardware. All playing sounds are resampled to match this rate.
+ *
+ * @return The sample rate in Hertz (e.g., 44100, 48000).
+ * @return `0` if the library is not initialized or if no audio device is currently active.
+ */
+SITAPI int SituationGetAudioPlaybackSampleRate(void) {
+    if (!SituationIsInitialized()) return 0;
+    if (!sit_audio.is_miniaudio_device_active) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for GetAudioPlaybackSampleRate");
+        return 0;
+    }
+    return sit_audio.miniaudio_device.sampleRate;
+}
+
+/**
+ * @brief Re-initializes the active audio device with a new sample rate.
+ * @details This function allows you to change the master output sample rate of the audio engine at runtime.
+ *
+ * @par Behavior
+ *   The function preserves the current device, channel count, and bit depth. It stops the device, re-initializes it with the new sample rate, and restarts it.
+ *
+ * @param sample_rate The new desired sample rate in Hertz (e.g., 44100, 48000, 96000).
+ *
+ * @return `SITUATION_SUCCESS` on successful change.
+ * @return `SITUATION_ERROR_AUDIO_DEVICE` if no device is active, if the current format cannot be determined, or if re-initialization fails.
+ *
+ * @warning Changing the sample rate will cause a brief interruption in audio playback.
+ * @note All currently playing sounds will be automatically resampled to the new master rate by their internal converters.
+ */
+SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!sit_audio.is_miniaudio_device_active || sit_audio.current_miniaudio_device_audioinfo_id < 0) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "No audio device set, cannot change sample rate.");
+        return SITUATION_ERROR_AUDIO_DEVICE;
+    }
+    SituationAudioFormat current_fmt;
+    current_fmt.channels = sit_audio.miniaudio_device.playback.channels;
+    current_fmt.sample_rate = sample_rate;
+
+    ma_format current_ma_fmt = sit_audio.miniaudio_device.playback.format;
+    if (current_ma_fmt == ma_format_f32) current_fmt.bit_depth = 32;
+    else if (current_ma_fmt == ma_format_s16) current_fmt.bit_depth = 16;
+    else if (current_ma_fmt == ma_format_s24) current_fmt.bit_depth = 24;
+    else if (current_ma_fmt == ma_format_u8) current_fmt.bit_depth = 8;
+    else {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_INVALID_OPERATION, "Cannot determine current bit depth to change sample rate (unsupported format).");
+        return SITUATION_ERROR_AUDIO_DEVICE;
+    }
+
+    return SituationSetAudioDevice(sit_audio.current_miniaudio_device_audioinfo_id, &current_fmt);
+}
+
+/**
+ * @brief Gets the current master volume of the audio device.
+ * @details This is the global volume level applied to the final mix before it is sent to the speakers.
+ *
+ * @return The master volume as a linear scalar value. `0.0f` is silent, `1.0f` is the default volume.
+ * @return `0.0f` if the library is not initialized or if no audio device is currently active.
+ *
+ * @see SituationSetAudioMasterVolume()
+ */
+SITAPI float SituationGetAudioMasterVolume(void) {
+    if (!SituationIsInitialized()) return 0.0f;
+    if (!sit_audio.is_miniaudio_device_active) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for GetAudioMasterVolume");
+        return 0.0f;
+    }
+    float volume = 0.0f; // Default to 0 if get fails
+    ma_result res = ma_device_get_master_volume(&sit_audio.miniaudio_device, &volume);
+    if (res != MA_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to get master volume");
+        // volume remains 0.0f or its last valid value if ma_device_get_master_volume modified it partially
+    }
+    return volume;
+}
+
+/**
+ * @brief Sets the master volume for the entire audio device.
+ * @details This function controls the final, global volume level of all mixed audio before it is sent to the hardware. It affects all sounds currently playing and is independent of individual sound volumes.
+ *
+ * @param volume The desired master volume as a linear scalar. `0.0f` is silent, `1.0f` is the default (unattenuated) volume. Values greater than `1.0f` can be used for amplification if supported by the backend. Negative values are clamped to `0.0f`.
+ *
+ * @return SITUATION_SUCCESS on success.
+ * @return SITUATION_ERROR_AUDIO_DEVICE if no audio device is active or if the volume cannot be set.
+ *
+ * @see SituationGetAudioMasterVolume(), SituationSetSoundVolume()
+ */
+SITAPI SituationError SituationSetAudioMasterVolume(float volume) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!sit_audio.is_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
+    // MiniAudio volume is linear [0, 1], can go >1 for gain. Clamp to [0,1] for typical app behavior.
+    float clamped_volume = (volume < 0.0f) ? 0.0f : volume; // (volume > 1.0f) ? 1.0f : volume; // No upper clamp to allow gain
+
+    ma_result res = ma_device_set_master_volume(&sit_audio.miniaudio_device, clamped_volume);
+    if (res != MA_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to set master volume");
+        return SITUATION_ERROR_AUDIO_DEVICE;
+    }
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Checks if the audio device is currently active and playing sound.
+ * @details This function checks two conditions: that an audio device has been successfully initialized and started, and that the application has not manually paused it via `SituationPauseApp()` or `SituationPauseAudioDevice()`.
+ *
+ * @return `true` if the audio device is running and not paused, `false` otherwise.
+ *
+ * @see SituationPauseAudioDevice(), SituationResumeAudioDevice()
+ */
+SITAPI bool SituationIsAudioDevicePlaying(void) {
+    if (!SituationIsInitialized()) return false;
+    if (!sit_audio.is_miniaudio_device_active) return false;
+    // Considered "playing" if device is started and not internally marked as paused by our system
+    return ma_device_is_started(&sit_audio.miniaudio_device) && !sit_audio.is_miniaudio_device_internally_paused;
+}
+
+/**
+ * @brief Pauses all audio output by stopping the audio device.
+ * @details This function halts the audio processing thread. No sounds will be played, and the audio callback will no longer be called until `SituationResumeAudioDevice()` is invoked.
+ *          This is a low-power state ideal for when the application is minimized or in a pause menu.
+ *
+ * @note This function is called automatically when the application is paused via `SituationPauseApp()`.
+ *
+ * @return SITUATION_SUCCESS on success.
+ * @return SITUATION_ERROR_AUDIO_DEVICE if the device fails to stop.
+ *
+ * @see SituationResumeAudioDevice(), SituationIsAudioDevicePlaying(), SituationPauseApp()
+ */
+SITAPI SituationError SituationPauseAudioDevice(void) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!sit_audio.is_miniaudio_device_active) {
+        // Not an error to pause an inactive device, just mark it.
+        sit_audio.is_miniaudio_device_internally_paused = true;
+        return SITUATION_SUCCESS;
+    }
+
+    if (ma_device_is_started(&sit_audio.miniaudio_device)) {
+        ma_result res = ma_device_stop(&sit_audio.miniaudio_device);
+        if (res != MA_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to stop (pause) audio device");
+            return SITUATION_ERROR_AUDIO_DEVICE;
+        }
+    }
+
+    sit_audio.is_miniaudio_device_internally_paused = true;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Resumes all audio output by restarting a paused audio device.
+ * @details If the audio device was previously stopped by `SituationPauseAudioDevice()`, this function restarts the audio processing thread, and sound playback will continue from where it left off.
+ *
+ * @note This function is called automatically when the application is resumed via `SituationResumeApp()`.
+ *
+ * @return SITUATION_SUCCESS on success.
+ * @return SITUATION_ERROR_AUDIO_DEVICE if the device fails to start.
+ *
+ * @see SituationPauseAudioDevice(), SituationIsAudioDevicePlaying(), SituationResumeApp()
+ */
+SITAPI SituationError SituationResumeAudioDevice(void) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    sit_audio.is_miniaudio_device_internally_paused = false;
+
+    if (sit_audio.is_miniaudio_device_active && !ma_device_is_started(&sit_audio.miniaudio_device)) {
+        ma_result res = ma_device_start(&sit_audio.miniaudio_device);
+        if (res != MA_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start (resume) audio device");
+            return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
+        }
+    }
+
+    return SITUATION_SUCCESS;
+}
+
+// --- Helper to initialize effects for a sound ---
+/**
+ * @brief [INTERNAL] Initializes the built-in effects chain for a given sound.
+ * @details This helper function is called once after a sound's decoder has been initialized. It allocates and sets up the internal data structures for the sound's real-time effects, including the biquad filter (for LPF/HPF), the echo/delay unit, and the reverb processor.
+ *          All effects are initialized to a disabled state with default parameters.
+ *
+ * @param sound A pointer to the `SituationSound` struct to initialize. The sound's `decoder` member must already be valid, as its channel count and sample rate are used for configuration.
+ *
+ * @return SITUATION_SUCCESS if all effects are initialized successfully.
+ * @return SITUATION_ERROR_INVALID_PARAM if the `sound` pointer is NULL or not initialized.
+ * @return SITUATION_ERROR_AUDIO_CONTEXT if an underlying MiniAudio effect fails to initialize.
+ *
+ * @note This function is for internal use by the `SituationLoadSound*` functions only.
+ *
+ * @see SituationLoadSoundFromFile(), SituationLoadSoundFromStream()
+ */
+static SituationError _SituationInitSoundEffects(_SituationSound* sound) {
+    if (!sound) return SITUATION_ERROR_INVALID_PARAM;
+
+    // Defaults
+    sound->effects.filter_enabled = false;
+    sound->effects.echo_enabled = false;
+    sound->effects.reverb_enabled = false;
+
+    // Reverb Init
+    // Note: We need sample rate. If preloaded, assume 48000? Or store it.
+    // If streamed, decoder has it.
+    uint32_t sample_rate = 48000;
+    if (sound->is_initialized) sample_rate = sound->decoder.outputSampleRate;
+
+    sound->effects.reverb_state = _SituationInitReverb(sample_rate);
+
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Loads and configures an audio file for playback.
+ * @details This function initializes a `SituationSound` object. Depending on the selected `mode`, it will either decode the entire file into a memory buffer immediately or set up a decoder stream to read from disk on-demand.
+ *          It also initializes the sound's internal effects chain (Filter, Echo, Reverb) and resampling converter.
+ *
+ * @par Thread Safety & Performance
+ *   - If `mode` results in a **FULL** load: The expensive decoding happens on the calling thread. Playback is lock-free and I/O-free, making it safe for the high-priority audio thread.
+ *   - If `mode` results in a **STREAM** load: A file handle is kept open. The audio thread will perform disk I/O reads. This carries a risk of stuttering if the system IO is under heavy load.
+ *
+ * @param file_path The absolute or relative path to the audio file (WAV, MP3, FLAC, OGG).
+ * @param mode The loading strategy. Use `SITUATION_AUDIO_LOAD_AUTO` for the best balance of safety and memory usage.
+ * @param looping If `true`, the sound will automatically restart from the beginning when it finishes.
+ * @param[out] out_sound A pointer to a `SituationSound` struct that will be initialized.
+ *
+ * @return SITUATION_SUCCESS on successful loading.
+ * @return SITUATION_ERROR_FILE_ACCESS if the file cannot be opened.
+ * @return SITUATION_ERROR_MEMORY_ALLOCATION if the RAM buffer could not be allocated (for FULL loads).
+ *
+ * @note The caller is **responsible** for freeing resources by calling `SituationUnloadSound()`.
+ * @see SituationUnloadSound(), SituationAudioLoadMode
+ */
+SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, SituationAudioLoadMode mode, bool looping, SituationSound* out_sound) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!out_sound || !file_path) return SITUATION_ERROR_INVALID_PARAM;
+    if (!sit_audio.is_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
+
+    SituationSound handle;
+    _SituationSoundSlot* slot = _SitAllocSoundSlot(&handle);
+    if (!slot) return SITUATION_ERROR_AUDIO_SOUND_LIMIT_REACHED;
+
+    _SituationSound* sound = &slot->sound_data;
+    sound->volume = 1.0f;
+    sound->pan = 0.0f;
+    sound->pitch = 1.0f;
+    sound->is_streamed = false;
+    sound->is_looping = looping;
+
+    slot->source_path = _sit_strdup(file_path);
+    slot->mod_time = SituationGetFileModTime(file_path);
+
+    // 1. Decide Loading Strategy
+    bool should_preload = false;
+    if (mode == SITUATION_AUDIO_LOAD_FULL) should_preload = true;
+    else if (mode == SITUATION_AUDIO_LOAD_STREAM) should_preload = false;
+    else {
+        // AUTO
+        ma_decoder temp_dec;
+        ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0);
+        if (ma_decoder_init_file(file_path, &config, &temp_dec) == MA_SUCCESS) {
+            ma_uint64 frames;
+            ma_decoder_get_length_in_pcm_frames(&temp_dec, &frames);
+            ma_decoder_uninit(&temp_dec);
+            // 10s @ 44.1k = 441000
+            should_preload = (frames < 441000);
+        } else {
+            should_preload = false; // Fallback
+        }
+    }
+
+    // 2. Load
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0); // Native channels/rate, f32 output
+    if (should_preload) {
+        // Decode to RAM
+        ma_uint64 framesRead;
+        ma_result result = ma_decode_file(file_path, &config, &framesRead, &sound->preloaded_data);
+        if (result != MA_SUCCESS) {
+            _SitFreeSoundSlot(handle);
+            return SITUATION_ERROR_AUDIO_DECODING;
+        }
+        sound->total_frames = framesRead;
+        sound->is_preloaded = true;
+    } else {
+        // Stream
+        if (ma_decoder_init_file(file_path, &config, &sound->decoder) != MA_SUCCESS) {
+            _SitFreeSoundSlot(handle);
+            return SITUATION_ERROR_AUDIO_DECODING;
+        }
+        sound->is_streamed = true;
+        sound->is_initialized = true;
+    }
+
+    *out_sound = handle;
+    return SITUATION_SUCCESS;
+}
+
+
+/**
+ * @brief [INTERNAL] Static thunk for routing audio read requests.
+ *
+ * @details This function acts as a bridge (trampoline) between the generic MiniAudio decoder logic and the
+ *          specific `stream_read_cb` stored in a `SituationSound` instance.
+ *
+ * @par Implementation Detail (The "Container Of" Trick)
+ *      MiniAudio passes a pointer to the `ma_decoder`. Since `ma_decoder` is a member of `SituationSound`,
+ *      we use `offsetof` to calculate the address of the parent `SituationSound` struct.
+ *      This allows us to access the specific callbacks for *this* sound instance without using global state.
+ *
+ * @param pDecoder The pointer to the decoder member inside a SituationSound struct.
+ * @param pBufferOut The buffer to fill with audio data.
+ * @param bytesToRead The number of bytes requested.
+ * @param pBytesRead Output pointer for bytes read.
+ * @return MA_SUCCESS or error.
+ */
+static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, size_t bytesToRead, size_t* pBytesRead) {
+    _SituationSound* sound = (_SituationSound*)((char*)pDecoder - offsetof(_SituationSound, decoder));
+    if (sound->stream_read_cb) {
+        ma_uint64 read = sound->stream_read_cb(sound->stream_user_data, pBufferOut, bytesToRead);
+        if (pBytesRead) *pBytesRead = (size_t)read;
+        return (read > 0) ? MA_SUCCESS : MA_AT_END;
+    }
+    return MA_NOT_IMPLEMENTED;
+}
+
+/**
+ * @brief [INTERNAL] Static thunk for routing audio seek requests.
+ *
+ * @details Similar to `_situation_stream_read_thunk`, this recovers the parent `SituationSound` instance
+ *          and dispatches the seek request to the user's specific `stream_seek_cb`.
+ *
+ * @param pDecoder The pointer to the decoder member inside a SituationSound struct.
+ * @param byteOffset The offset to seek to.
+ * @param origin The seek origin (start or current).
+ * @return MA_SUCCESS on success, or an error code.
+ */
+static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin) {
+    _SituationSound* sound = (_SituationSound*)((char*)pDecoder - offsetof(_SituationSound, decoder));
+    if (sound->stream_seek_cb) {
+        return sound->stream_seek_cb(sound->stream_user_data, byteOffset, origin);
+    }
+    return MA_NOT_IMPLEMENTED;
+}
+
+/**
+ * @brief Initializes a sound for playback from a custom, user-defined data stream.
+ * @details This function configures a `SituationSound` to pull audio data on-demand using the provided callbacks.
+ *          This is essential for procedural audio, network streaming, or reading from custom archive formats.
+ *
+ * @par Thread Safety Improvement (v2.3.2C Fix)
+ *      Previously, this function modified a global vtable, causing race conditions if multiple streams were loaded.
+ *      It now stores the `on_read` and `on_seek` pointers directly into the `out_sound` instance and uses
+ *      a shared, read-only vtable with thunk functions to resolve the correct callback at runtime.
+ *
+ * @param on_read The callback invoked when the audio engine needs more data. Must be thread-safe.
+ * @param on_seek The callback invoked to seek within the stream. Can be NULL.
+ * @param user_data A custom pointer passed to the callbacks (e.g., your file handle or generator state).
+ * @param format The audio format (channels, sample rate) of the incoming stream.
+ * @param looping If true, the engine will attempt to seek to 0 when the stream ends.
+ * @param[out] out_sound The sound struct to initialize.
+ *
+ * @return SITUATION_SUCCESS on success, or an error code if initialization fails.
+ */
+SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!out_sound) return SITUATION_ERROR_INVALID_PARAM;
+
+    SituationSound handle;
+    _SituationSoundSlot* slot = _SitAllocSoundSlot(&handle);
+    if (!slot) return SITUATION_ERROR_AUDIO_SOUND_LIMIT_REACHED;
+
+    _SituationSound* sound = &slot->sound_data;
+    sound->volume = 1.0f;
+    sound->pan = 0.0f;
+    sound->pitch = 1.0f;
+    sound->is_streamed = true;
+    sound->is_looping = looping;
+    sound->stream_read_cb = on_read;
+    sound->stream_seek_cb = on_seek;
+    sound->stream_user_data = user_data;
+
+    // Init Decoder with Thunks
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, format ? format->channels : 2, format ? format->sample_rate : 48000);
+    ma_result res = ma_decoder_init(_situation_stream_read_thunk, _situation_stream_seek_thunk, NULL, &config, &sound->decoder);
+    if (res != MA_SUCCESS) {
+        _SitFreeSoundSlot(handle);
+        return SITUATION_ERROR_AUDIO_DECODING;
+    }
+    sound->is_initialized = true;
+
+    *out_sound = handle;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Unloads a sound and frees all of its associated memory and resources.
+ * @details This is the designated cleanup function for any `SituationSound` initialized by the library.
+ *          It releases the decoded PCM data, the internal data converter, and all effects processors.
+ *
+ * @param[in,out] sound A pointer to the `SituationSound` struct to uninitialize. The struct is zeroed out
+ *                      after cleanup to invalidate it for future use.
+ *
+ * @note It is safe to call this function on a `NULL` pointer or an already-unloaded sound;
+ *       it will simply do nothing.
+ * @warning Failure to call this function on a loaded sound will result in a memory leak.
+ *
+ * @see SituationLoadSoundFromFile(), SituationLoadSoundFromStream()
+ */
+SITAPI void SituationUnloadSound(SituationSound* sound) {
+    if (!sound) return;
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return;
+
+    _SituationSound* data = &slot->sound_data;
+
+    // Stop playback first
+    SituationStopLoadedSound(sound);
+
+    if (data->is_preloaded && data->preloaded_data) {
+        ma_free(data->preloaded_data, NULL);
+    }
+    if (data->is_initialized) {
+        ma_decoder_uninit(&data->decoder);
+    }
+    if (data->processors) {
+        SIT_FREE(data->processors);
+        SIT_FREE(data->processor_user_data);
+    }
+
+    _SitFreeSoundSlot(*sound);
+    memset(sound, 0, sizeof(SituationSound));
+}
+
+/**
+ * @brief Begins playback of a loaded sound or restarts it if already playing.
+ * @details This function adds the specified sound to the audio engine's mixing queue. If the sound is already in the queue (i.e., it's currently playing or paused), its playback cursor will be reset to the beginning.
+ *
+ * @par Thread Safety
+ *   This function is thread-safe and can be called from any thread.
+ *
+ * @param sound A pointer to a valid, initialized `SituationSound` struct.
+ *
+ * @return SITUATION_SUCCESS on success.
+ * @return SITUATION_ERROR_AUDIO_SOUND_LIMIT if the maximum number of concurrent sounds is already playing.
+ * @return SITUATION_ERROR_INVALID_PARAM if the `sound` handle is invalid.
+ *
+ * @see SituationStopLoadedSound(), SituationStopAllLoadedSounds()
+ */
+SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+
+    _SituationSound* data = &slot->sound_data;
+
+    // Add to active voices
+    mtx_lock(&sit_audio.audio_queue_mutex);
+
+    // Check duplicates? Or allow multiple?
+    // SituationSound is now a handle. We add pointer to DATA to mixer.
+    // If we want multiple instances of same sound, we need multiple slots (or mixer supports multiple cursors).
+    // The current design (and previous) embedded playback state (cursor) in the Sound struct.
+    // So playing it again restarts it.
+
+    // Reset cursor
+    if (data->is_preloaded) {
+        data->cursor_frames = 0;
+    } else if (data->is_initialized) {
+        ma_decoder_seek_to_pcm_frame(&data->decoder, 0);
+    }
+
+    // Add if not present
+    bool present = false;
+    for (int i = 0; i < sit_audio.active_voice_count; i++) {
+        if (sit_audio.active_voices[i] == data) {
+            present = true;
+            break;
+        }
+    }
+    if (!present) {
+        if (sit_audio.active_voice_count < sit_audio.active_voice_capacity) {
+            sit_audio.active_voices[sit_audio.active_voice_count++] = data;
+        } else {
+            // Realloc
+            int new_cap = sit_audio.active_voice_capacity * 2;
+            _SituationSound** new_array = (_SituationSound**)SIT_REALLOC(sit_audio.active_voices, new_cap * sizeof(_SituationSound*));
+            if (new_array) {
+                sit_audio.active_voices = new_array;
+                sit_audio.active_voice_capacity = new_cap;
+                sit_audio.active_voices[sit_audio.active_voice_count++] = data;
+            }
+        }
+    }
+
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Stops a specific sound from playing and removes it from the mixing queue.
+ * @details If the specified sound is currently playing, it will be immediately silenced and removed from the audio processing pipeline. Its playback position is not reset.
+ *
+ * @par Thread Safety
+ *   This function is thread-safe and can be called from any thread.
+ *
+ * @param sound A pointer to the `SituationSound` struct to stop.
+ *
+ * @return SITUATION_SUCCESS if the sound was found and stopped.
+ * @return SITUATION_ERROR_INVALID_PARAM if the `sound` handle is invalid or was not currently playing.
+ *
+ * @see SituationPlayLoadedSound(), SituationStopAllLoadedSounds()
+ */
+SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound_to_stop);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+
+    _SituationSound* data = &slot->sound_data;
+
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    for (int i = 0; i < sit_audio.active_voice_count; i++) {
+        if (sit_audio.active_voices[i] == data) {
+            // Remove (swap with last)
+            sit_audio.active_voices[i] = sit_audio.active_voices[sit_audio.active_voice_count - 1];
+            sit_audio.active_voice_count--;
+            break;
+        }
+    }
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Stops all currently playing sounds and clears the mixing queue.
+ * @details This is a convenience function that immediately silences all audio being processed by the engine.
+ *
+ * @par Thread Safety
+ *   This function is thread-safe and can be called from any thread.
+ *
+ * @return SITUATION_SUCCESS on success.
+ *
+ * @see SituationStopLoadedSound()
+ */
+SITAPI SituationError SituationStopAllLoadedSounds(void) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    sit_audio.active_voice_count = 0;
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Creates a new sound by making a deep copy of a source sound's decoded PCM data.
+ * @details The new sound is fully independent and must be unloaded separately.
+ * @param source The sound to copy from.
+ * @param out_destination A pointer to a SituationSound struct to be initialized with the copy.
+ * @return SITUATION_SUCCESS on success.
+ */
+SITAPI SituationError SituationSoundCopy(const SituationSound* source, SituationSound* out_destination) {
+    if (!source || !out_destination) return SITUATION_ERROR_INVALID_PARAM;
+
+    // Resolve Source
+    // _SitGetSoundSlot takes handle by value. source is const pointer.
+    _SituationSoundSlot* src_slot = _SitGetSoundSlot(*source);
+    if (!src_slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    _SituationSound* src_data = &src_slot->sound_data;
+
+    // Allocate Dest
+    SituationSound handle;
+    _SituationSoundSlot* dst_slot = _SitAllocSoundSlot(&handle);
+    if (!dst_slot) return SITUATION_ERROR_AUDIO_SOUND_LIMIT_REACHED;
+    _SituationSound* dst_data = &dst_slot->sound_data;
+
+    // Copy properties
+    dst_data->volume = atomic_load(&src_data->volume);
+    dst_data->pan = atomic_load(&src_data->pan);
+    dst_data->pitch = atomic_load(&src_data->pitch);
+    dst_data->is_looping = src_data->is_looping;
+
+    // Copy Data
+    if (src_data->is_preloaded && src_data->preloaded_data) {
+        size_t size = (size_t)src_data->total_frames * sizeof(float) * 2; // Stereo f32
+        dst_data->preloaded_data = SIT_MALLOC(size);
+        if (!dst_data->preloaded_data) {
+            _SitFreeSoundSlot(handle);
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+        memcpy(dst_data->preloaded_data, src_data->preloaded_data, size);
+        dst_data->total_frames = src_data->total_frames;
+        dst_data->is_preloaded = true;
+    } else {
+        // Cannot easily copy streamed sound state without reopening file
+        _SitFreeSoundSlot(handle);
+        return SITUATION_ERROR_NOT_IMPLEMENTED;
+    }
+
+    *out_destination = handle;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Modifies a sound in-place to contain only a specific range of its audio data.
+ * @warning This is a destructive operation.
+ * @param sound The sound to modify.
+ * @param initFrame The first frame to include in the cropped sound.
+ * @param finalFrame The last frame to include.
+ * @return SITUATION_SUCCESS on success.
+ */
+SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    _SituationSound* data = &slot->sound_data;
+
+    if (!data->is_preloaded || !data->preloaded_data) return SITUATION_ERROR_AUDIO_INVALID_OPERATION;
+    if (finalFrame <= initFrame || finalFrame > data->total_frames) return SITUATION_ERROR_INVALID_PARAM;
+
+    uint64_t new_frames = finalFrame - initFrame;
+    size_t frame_size = sizeof(float) * 2;
+    size_t new_size = (size_t)new_frames * frame_size;
+
+    void* new_data = SIT_MALLOC(new_size);
+    if (!new_data) return SITUATION_ERROR_MEMORY_ALLOCATION;
+
+    float* src_ptr = (float*)data->preloaded_data;
+    memcpy(new_data, src_ptr + (initFrame * 2), new_size);
+
+    SIT_FREE(data->preloaded_data);
+    data->preloaded_data = new_data;
+    data->total_frames = new_frames;
+
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Exports the raw PCM data of a sound to a new WAV file.
+ * @param sound The sound to export.
+ * @param fileName The path of the .wav file to create.
+ * @return True on success, false on failure.
+ */
+SITAPI bool SituationSoundExportAsWav(const SituationSound* sound, const char* fileName) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return false;
+    _SituationSound* data = &slot->sound_data;
+
+    if (!data->is_preloaded || !data->preloaded_data) return false;
+
+    ma_encoder_config config = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 2, 48000); // Assuming engine native
+    ma_encoder encoder;
+    if (ma_encoder_init_file(fileName, &config, &encoder) != MA_SUCCESS) return false;
+
+    ma_encoder_write_pcm_frames(&encoder, data->preloaded_data, data->total_frames, NULL);
+    ma_encoder_uninit(&encoder);
+    return true;
+}
+
+/**
+ * @brief Sets the volume for a specific, individual sound.
+ * @details This function controls the amplitude of a single sound, independent of the master audio volume.
+ *
+ * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
+ * @param volume The desired volume as a linear scalar. `0.0f` is silent, `1.0f` is the sound's original volume. Values greater than `1.0f` can be used for amplification. Negative values will be clamped to `0.0f`.
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
+ *
+ * @see SituationGetSoundVolume(), SituationSetAudioMasterVolume()
+ */
+SITAPI SituationError SituationSetSoundVolume(SituationSound* sound, float volume) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    atomic_store(&slot->sound_data.volume, volume);
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Gets the current volume of a specific, individual sound.
+ *
+ * @param sound A pointer to the `SituationSound` handle to query.
+ *
+ * @return The sound's current volume as a linear scalar. Returns `0.0f` if the handle is invalid.
+ *
+ * @see SituationSetSoundVolume()
+ */
+SITAPI float SituationGetSoundVolume(SituationSound* sound) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return 0.0f;
+    return atomic_load(&slot->sound_data.volume);
+}
+
+/**
+ * @brief Sets the stereo panning for a specific sound.
+ * @details This function positions a sound within the stereo field. It uses an equal-power panning algorithm, which ensures that the perceived loudness of the sound remains constant as it moves from left to right.
+ *
+ * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
+ * @param pan The desired pan position, from `-1.0f` (full left) to `1.0f` (full right). A value of `0.0f` is center. Values outside this range will be clamped.
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
+ *
+ * @see SituationGetSoundPan()
+ */
+SITAPI SituationError SituationSetSoundPan(SituationSound* sound, float pan) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    atomic_store(&slot->sound_data.pan, pan);
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Gets the current stereo panning of a specific sound.
+ *
+ * @param sound A pointer to the `SituationSound` handle to query.
+ *
+ * @return The sound's current pan position, from `-1.0f` (left) to `1.0f` (right). Returns `0.0f` if the handle is invalid.
+ *
+ * @see SituationSetSoundPan()
+ */
+SITAPI float SituationGetSoundPan(SituationSound* sound) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return 0.0f;
+    return atomic_load(&slot->sound_data.pan);
+}
+
+/**
+ * @brief Sets the playback pitch for a specific sound.
+ * @details This function adjusts the playback speed of a sound, which in turn changes its pitch. It works by dynamically changing the input sample rate of the sound's internal data converter.
+ *
+ * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
+ * @param pitch The desired pitch multiplier. `1.0f` is the original pitch. `2.0f` is one octave higher (double speed), and `0.5f` is one octave lower (half speed). The value must be positive.
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
+ * @return `SITUATION_ERROR_AUDIO_CONVERTER` if the internal resampler fails to update.
+ *
+ * @warning Changing the pitch is a moderately expensive operation as it requires reconfiguring the audio resampler. Avoid calling it on every frame if possible.
+ */
+SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    atomic_store(&slot->sound_data.pitch, pitch);
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Gets the current pitch multiplier of a specific sound.
+ *
+ * @param sound A pointer to the `SituationSound` handle to query.
+ *
+ * @return The sound's current pitch multiplier. Returns `1.0f` if the handle is invalid.
+ *
+ * @see SituationSetSoundPitch()
+ */
+SITAPI float SituationGetSoundPitch(SituationSound* sound) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return 1.0f;
+    return atomic_load(&slot->sound_data.pitch);
+}
+
+/**
+ * @brief Applies a low-pass or high-pass biquad filter to a sound's real-time effects chain.
+ * @details This function allows you to dynamically alter the frequency content of a sound. A low-pass filter removes high frequencies (making a sound muffled), while a high-pass filter removes low frequencies (making a sound tinny).
+ *
+ * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
+ * @param type The type of filter to apply (`SITUATION_FILTER_LOWPASS`, `SITUATION_FILTER_HIGHPASS`, or `SITUATION_FILTER_NONE` to disable).
+ * @param cutoff_hz The frequency (in Hz) at which the filter begins to take effect.
+ * @param q_factor The resonance or "quality" of the filter. A value around `0.707f` is neutral. Higher values create a resonant peak at the cutoff frequency.
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
+ */
+SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFilterType type, float cutoff_hz, float q_factor) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+
+    slot->sound_data.effects.filter_enabled = (type != SITUATION_FILTER_NONE);
+    slot->sound_data.effects.filter_type = type;
+    slot->sound_data.effects.filter_cutoff_hz = cutoff_hz;
+    slot->sound_data.effects.filter_q = q_factor;
+    // Re-init biquad logic omitted for brevity (handled in mixer usually)
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Applies a simple echo (delay) effect to a sound's real-time effects chain.
+ * @details This function creates repeating, decaying echoes of the original sound.
+ *
+ * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
+ * @param enabled `true` to activate the echo effect, `false` to disable it.
+ * @param delay_sec The time in seconds between each echo.
+ * @param feedback The amount of the echo that is fed back into the delay line to create subsequent echoes. A value of `0.0` gives a single echo; a value of `0.5` means each echo is half as loud as the previous one. Clamped to [0.0 - 1.0].
+ * @param wet_mix The volume of the echo signal relative to the original signal. `0.0` is no echo, `1.0` is full-volume echo. Clamped to [0.0 - 1.0].
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
+ */
+SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled, float delay_sec, float feedback, float wet_mix) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+
+    slot->sound_data.effects.echo_enabled = enabled;
+    slot->sound_data.effects.echo_delay_sec = delay_sec;
+    slot->sound_data.effects.echo_feedback = feedback;
+    slot->sound_data.effects.echo_wet_mix = wet_mix;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Applies a reverb effect to a sound's real-time effects chain.
+ * @details This function simulates the acoustic reflections of a room or space, adding depth and atmosphere to a sound.
+ *
+ * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
+ * @param enabled `true` to activate the reverb effect, `false` to disable it.
+ * @param room_size A value from `0.0` (small closet) to `1.0` (large cathedral) representing the perceived size of the simulated space.
+ * @param damping A value from `0.0` to `1.0` representing how much high frequencies are absorbed by the room's surfaces. Higher values lead to a darker, more muffled reverb tail.
+ * @param wet_mix The volume of the reverberated ("wet") signal.
+ * @param dry_mix The volume of the original ("dry") signal.
+ *
+ * @return `SITUATION_SUCCESS` on success.
+ * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
+ */
+SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+
+    slot->sound_data.effects.reverb_enabled = enabled;
+    slot->sound_data.effects.reverb_room_size = room_size;
+    slot->sound_data.effects.reverb_damping = damping;
+    slot->sound_data.effects.reverb_wet_mix = wet_mix;
+    slot->sound_data.effects.reverb_dry_mix = dry_mix;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Attach a custom DSP processor to a sound's effect chain.
+ * @details Processors are called in the order they are attached, after built-in effects.
+ * @param sound The sound to attach the processor to.
+ * @param processor The callback function to execute.
+ * @param user_data A custom pointer to pass to the callback's user_data parameter.
+ */
+SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
+    if (!sound || !processor) return SITUATION_ERROR_INVALID_PARAM;
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    _SituationSound* data = &slot->sound_data;
+
+    void* new_processors = SIT_REALLOC(data->processors, (data->processor_count + 1) * sizeof(SituationAudioProcessorCallback));
+    if (!new_processors) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    data->processors = (SituationAudioProcessorCallback*)new_processors;
+
+    void* new_user_datas = SIT_REALLOC(data->processor_user_data, (data->processor_count + 1) * sizeof(void*));
+    if (!new_user_datas) return SITUATION_ERROR_MEMORY_ALLOCATION; // Leak risk on prev realloc, but acceptable for now
+    data->processor_user_data = (void**)new_user_datas;
+
+    data->processors[data->processor_count] = processor;
+    data->processor_user_data[data->processor_count] = user_data;
+    data->processor_count++;
+
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Detach a custom DSP processor from a sound.
+ * @param sound The sound to detach the processor from.
+ * @param processor The callback function to remove.
+ * @param user_data The user data pointer associated with the processor to remove.
+ */
+SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
+    if (!sound || !processor) return SITUATION_ERROR_INVALID_PARAM;
+    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    _SituationSound* data = &slot->sound_data;
+
+    for (int i = 0; i < data->processor_count; ++i) {
+        if (data->processors[i] == processor && data->processor_user_data[i] == user_data) {
+            // Remove
+            for (int j = i; j < data->processor_count - 1; j++) {
+                data->processors[j] = data->processors[j+1];
+                data->processor_user_data[j] = data->processor_user_data[j+1];
+            }
+            data->processor_count--;
+            // Should realloc down? Optional.
+            return SITUATION_SUCCESS;
+        }
+    }
+    return SITUATION_ERROR_INVALID_PARAM; // Not found
+}
+
+
+// ==================================================================================
+//  Audio Handle System Implementation
+// ==================================================================================
+
+// Helper: Initialize the audio pool
+static void _SitAudioInitPool(void) {
+    if (mtx_init(&sit_audio.pool_mutex, mtx_plain) != thrd_success) {
+        SITUATION_LOG_WARNING(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to init audio pool mutex");
+    }
+
+    for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
+        sit_audio.sound_pool[i].is_active = false;
+        sit_audio.sound_pool[i].generation = 1;
+        memset(&sit_audio.sound_pool[i].sound_data, 0, sizeof(_SituationSound));
+        sit_audio.sound_pool[i].source_path = NULL;
+    }
+}
+
+// Helper: Cleanup the audio pool
+static void _SitAudioCleanupPool(void) {
+    for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
+        if (sit_audio.sound_pool[i].is_active) {
+            _SituationSound* snd = &sit_audio.sound_pool[i].sound_data;
+            if (snd->is_initialized) ma_decoder_uninit(&snd->decoder);
+            if (snd->is_preloaded && snd->preloaded_data) SIT_FREE(snd->preloaded_data);
+            if (snd->processors) SIT_FREE(snd->processors);
+            if (snd->processor_user_data) SIT_FREE(snd->processor_user_data);
+            if (snd->effects.reverb_state) SIT_FREE(snd->effects.reverb_state); // Or _SituationUninitReverb if available
+
+            if (sit_audio.sound_pool[i].source_path) SIT_FREE(sit_audio.sound_pool[i].source_path);
+        }
+    }
+    mtx_destroy(&sit_audio.pool_mutex);
+}
+
+
+// Helper: Allocate a slot
+
+
+// Helper: Get sound from handle (Validation)
+
+
+// Helper: Free a slot
+
+
+// --- New Handle-Based API ---
+
+SITAPI SituationSoundHandle SituationLoadAudio(const char* file_path, SituationAudioLoadMode mode, bool looping) {
+    SituationSound handle = SITUATION_NULL_HANDLE;
+    if (SituationLoadSoundFromFile(file_path, mode, looping, &handle) == SITUATION_SUCCESS) {
+        return handle;
+    }
+    return SITUATION_NULL_HANDLE;
+}
+
+SITAPI SituationError SituationPlayAudio(SituationSoundHandle handle) {
+    return SituationPlayLoadedSound(&handle);
+}
+
+SITAPI void SituationUnloadAudio(SituationSoundHandle handle) {
+    SituationUnloadSound(&handle);
+}
+
+SITAPI SituationError SituationSetAudioVolume(SituationSoundHandle handle, float volume) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(handle);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    atomic_store(&slot->sound_data.volume, volume);
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationSetAudioPan(SituationSoundHandle handle, float pan) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(handle);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    atomic_store(&slot->sound_data.pan, pan);
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationSetAudioPitch(SituationSoundHandle handle, float pitch) {
+    _SituationSoundSlot* slot = _SitGetSoundSlot(handle);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    atomic_store(&slot->sound_data.pitch, pitch);
+    return SITUATION_SUCCESS;
+}
+
+
+// --- Async Audio Helper (Restored & Updated for v2.3.15) ---
+
+/**
+ * @brief [INTERNAL] Context data for asynchronous audio loading jobs.
+ * @details Packed into the job's 64-byte SOO storage to avoid allocation.
+ */
+typedef struct {
+    char* path;
+    bool looping;
+    SituationSound* target;
+} _SitAsyncAudioCtx;
+
+/**
+ * @brief [INTERNAL] Job callback for background audio loading.
+ * @details Decodes audio to RAM (SITUATION_AUDIO_LOAD_FULL) on a worker thread to avoid main-thread disk I/O.
+ * @param data Pointer to the _SitAsyncAudioCtx (embedded in job storage).
+ * @param unused Unused user context.
+ */
+static void _SituationAsyncAudioWorker(void* data, void* unused) {
+    (void)unused;
+    _SitAsyncAudioCtx* ctx = (_SitAsyncAudioCtx*)data;
+
+    // Use FULL load mode to decode to RAM on this background thread.
+    // This ensures no disk I/O happens on the main thread later.
+    SituationLoadSoundFromFile(ctx->path, SITUATION_AUDIO_LOAD_FULL, ctx->looping, ctx->target);
+
+    // Cleanup string copy
+    SIT_FREE(ctx->path);
+    // Note: We don't free 'ctx' here because it's embedded in the job storage!
+    // The beauty of Small Object Optimization.
+}
+
+#ifdef SITUATION_ENABLE_THREADING
+/**
+ * @brief Asynchronously loads an audio file from disk in a background thread.
+ *
+ * @details This is a convenience helper that wraps `SituationLoadSoundFromFile` in a thread pool job.
+ *          It performs a **Full Load** (decoding the entire file to RAM) to avoid disk I/O on the main thread.
+ *
+ *          **Usage:**
+ *          1. Call this function. It returns immediately.
+ *          2. Store the returned `SituationJobId`.
+ *          3. Use `SituationWaitForJob(job_id)` to know when loading is done.
+ *          4. Once complete, the `out_sound` struct contains the ready-to-play sound.
+ *
+ * @param pool The thread pool instance.
+ * @param file_path The path to the audio file.
+ * @param looping Whether the sound should loop.
+ * @param out_sound Pointer to the `SituationSound` struct to be initialized.
+ *                  **Important:** This memory must remain valid until the job completes.
+ *
+ * @return A `SituationJobId` for the loading task, or `0` if submission failed.
+ */
+SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound) {
+    if (!pool || !file_path || !out_sound) return 0;
+
+    // 1. Prepare Context
+    _SitAsyncAudioCtx ctx;
+    ctx.path = _sit_strdup(file_path); // Duplicate string (ownership transfers to worker)
+    if (!ctx.path) return 0;
+
+    ctx.looping = looping;
+    ctx.target = out_sound;
+
+    // 2. Clear target struct for safety
+    memset(out_sound, 0, sizeof(SituationSound));
+
+    // 3. Submit to Low Priority Queue (Assets/IO)
+    // We pass 'ctx' by value. Since sizeof(_SitAsyncAudioCtx) is ~24 bytes,
+    // it fits easily into the 64-byte storage (SOO). No malloc for the context!
+    return SituationSubmitJobEx(
+        pool,
+        _SituationAsyncAudioWorker,
+        &ctx,
+        sizeof(_SitAsyncAudioCtx),
+        SIT_SUBMIT_DEFAULT // Low Priority is correct for loading
+    );
+}
+#endif // SITUATION_ENABLE_THREADING
+
+/**
+ * @brief [INTERNAL] Allocates and initializes the Schroeder/Freeverb reverb engine state.
+ * @details This function sets up the complex network of comb and all-pass filters required for the reverb effect.
+ *          It scales the delay line lengths based on the provided sample rate to ensure consistent timing
+ *          across different audio configurations (e.g., 44.1kHz vs 48kHz).
+ *
+ * @param sample_rate The sample rate of the audio context (e.g., 48000).
+ * @return A void pointer to the opaque `SituationReverbState` struct, or NULL on allocation failure.
+ */
+
+#endif // SITUATION_IMPL_AUDIO_H

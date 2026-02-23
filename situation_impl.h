@@ -69,66 +69,6 @@
 #endif
 #include <time.h>
 
-// Forward declaration of Texture Slot struct and getter
-struct _SituationTextureSlot;
-static struct _SituationTextureSlot* _SitGetTextureSlot(SituationTexture handle);
-
-struct _SituationShaderSlot;
-static struct _SituationShaderSlot* _SitGetShaderSlot(SituationShader handle);
-struct _SituationMeshSlot;
-static struct _SituationMeshSlot* _SitGetMeshSlot(SituationMesh handle);
-struct _SituationBufferSlot;
-static struct _SituationBufferSlot* _SitGetBufferSlot(SituationBuffer handle);
-struct _SituationComputePipelineSlot;
-static struct _SituationComputePipelineSlot* _SitGetComputePipelineSlot(SituationComputePipeline handle);
-struct _SituationModelSlot;
-static struct _SituationModelSlot* _SitGetModelSlot(SituationModel handle);
-struct _SituationSoundSlot;
-static struct _SituationSoundSlot* _SitGetSoundSlot(SituationSound handle);
-
-
-// Forward declaration of Audio Handle Pool functions
-static void _SitAudioInitPool(void);
-static void _SitAudioCleanupPool(void);
-
-#if defined(SITUATION_USE_VULKAN)
-
-// --- Internal Vulkan Helper Data Structures ---
-typedef struct {
-    uint32_t graphics_family;
-    uint32_t present_family;
-    uint32_t compute_family;
-    bool graphics_family_has_value;
-    bool present_family_has_value;
-    bool compute_family_has_value;
-} _SituationQueueFamilyIndices;
-
-typedef struct {
-    VkSurfaceCapabilitiesKHR capabilities;
-    VkSurfaceFormatKHR* formats;
-    uint32_t format_count;
-    VkPresentModeKHR* present_modes;
-    uint32_t present_mode_count;
-} _SituationVulkanSwapchainSupportDetails;
-
-#if defined(SITUATION_ENABLE_SHADER_COMPILER)
-typedef struct _SituationSpirvBlob {
-    const uint8_t* data;
-    size_t size;
-    shaderc_compilation_result_t internal_result;
-} _SituationSpirvBlob;
-#endif
-
-// Forward declarations for deferred destruction helpers (Graveyard)
-static void _SituationReplayToQueue(SituationRenderList list, int frame_idx);
-static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation);
-static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler);
-static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool);
-static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout);
-static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer);
-static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass);
-#endif
-
 /**
  * @brief "VGA-Perfect" 8x8 pixel font (Code Page 437).
  *
@@ -606,20 +546,6 @@ typedef struct _SitIncludeResult {
 } _SitIncludeResult;
 #endif
 
-// --- Internal Resource Tracking Node Definitions ---
-
-
-
-
-
-
-
-
-
-
-// [HOT-RELOAD] New tracker for models
-
-
 // --- Internal Joystick State Structure ---
 typedef struct {
     bool is_present;
@@ -671,6 +597,15 @@ struct SituationRenderList_t {
     atomic_int in_flight_count;     // [FIX v2.3.27B] Track active usage to prevent reset-while-reading race
 };
 
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
+typedef struct _SituationSpirvBlob {
+    const uint8_t* data;
+    size_t size;
+    shaderc_compilation_result_t internal_result;
+	uint64_t source_hash;  // For hot-reload compare
+} _SituationSpirvBlob;
+#endif // SITUATION_ENABLE_SHADER_COMPILER
+
 #if defined(SITUATION_USE_OPENGL)
 // --- OpenGL State Hardening Helpers ---
 
@@ -678,7 +613,7 @@ struct SituationRenderList_t {
 #define GL_COMPLETION_STATUS_KHR 0x91B1
 #endif
 
-// [Phase 1] Soft Command Buffer Definitions
+// Soft Command Buffer Definitions
 typedef enum {
     SIT_OP_BEGIN_RENDER_PASS,
     SIT_OP_END_RENDER_PASS,
@@ -767,6 +702,24 @@ typedef struct _SitGLVaoCacheEntry {
 
 #if defined(SITUATION_USE_VULKAN)
 // --- VULKAN IMPLEMENTATION SECTION ---
+
+// --- Internal Vulkan Helper Data Structures ---
+typedef struct {
+    uint32_t graphics_family;
+    uint32_t present_family;
+    uint32_t compute_family;
+    bool graphics_family_has_value;
+    bool present_family_has_value;
+    bool compute_family_has_value;
+} _SituationQueueFamilyIndices;
+
+typedef struct {
+    VkSurfaceCapabilitiesKHR capabilities;
+    VkSurfaceFormatKHR* formats;
+    uint32_t format_count;
+    VkPresentModeKHR* present_modes;
+    uint32_t present_mode_count;
+} _SituationVulkanSwapchainSupportDetails;
 
 // --- Vulkan Graveyard Definition ---
 typedef struct _SituationVKGraveyard {
@@ -1023,13 +976,6 @@ typedef struct _SituationVirtualBindlessStats {
     uint64_t evictions;
 } _SituationVirtualBindlessStats;
 
-// Initializes the virtual bindless system
-static void _SituationVirtualBindlessInit(void);
-
-// Binds a texture using the virtual bindless system.
-// Returns the virtual slot index (0-31) to use in the shader.
-static int _SituationVirtualBindlessBind(GLuint gl_texture_id);
-
 #endif // SITUATION_USE_OPENGL
 
  typedef struct {
@@ -1226,6 +1172,15 @@ static int _SituationVirtualBindlessBind(GLuint gl_texture_id);
     void* callback_user_data;                               // User context for connection callback
 } _SituationJoystickManager;
 
+// [NEW] Dedicated Input State Container
+typedef struct {
+    _SituationKeyboardState keyboard;
+    _SituationMouseState mouse;
+    _SituationJoystickManager joysticks;
+    GLFWcursor* cursors[16];
+    int cursor_count;
+} _SituationInputState;
+
 // --- Internal Sound Data (Moved from API) ---
 typedef struct _SituationSound {
     ma_decoder decoder;
@@ -1268,89 +1223,6 @@ typedef struct _SituationSound {
     int processor_count;
 } _SituationSound;
 
-// --- Internal Resource Slots ---
-
-typedef struct _SituationShaderSlot {
-    bool is_active;
-    uint32_t generation;
-#if defined(SITUATION_USE_OPENGL)
-    GLuint gl_program_id;
-    struct _SituationUniformMap* uniform_map;
-    GLuint gl_pending_program_id;
-    bool gl_is_linking;
-#elif defined(SITUATION_USE_VULKAN)
-    VkPipeline vk_pipeline;
-    VkPipeline vk_pipeline_legacy;
-    VkPipelineLayout vk_pipeline_layout;
-#endif
-    // Hot-Reload Metadata
-    char* vs_path;
-    char* fs_path;
-    long vs_mod_time;
-    long fs_mod_time;
-} _SituationShaderSlot;
-
-typedef struct _SituationMeshSlot {
-    bool is_active;
-    uint32_t generation;
-    int index_count;
-    int vertex_count;
-    size_t vertex_stride;
-#if defined(SITUATION_USE_OPENGL)
-    GLuint vbo_id;
-    GLuint ebo_id;
-#elif defined(SITUATION_USE_VULKAN)
-    VkBuffer vertex_buffer;
-    VmaAllocation vertex_buffer_memory;
-    VkBuffer index_buffer;
-    VmaAllocation index_buffer_memory;
-#endif
-} _SituationMeshSlot;
-
-typedef struct _SituationBufferSlot {
-    bool is_active;
-    uint32_t generation;
-    size_t size_in_bytes;
-    SituationBufferUsageFlags usage_flags;
-#if defined(SITUATION_USE_OPENGL)
-    GLuint gl_buffer_id;
-    uint64_t dynamic_offset;
-    uint32_t dynamic_frame_index;
-#elif defined(SITUATION_USE_VULKAN)
-    VkBuffer vk_buffer;
-    VmaAllocation vma_allocation;
-    VkBufferUsageFlags vk_usage_flags;
-    VkDescriptorSet descriptor_set;
-    VkDescriptorPool descriptor_pool;
-#endif
-} _SituationBufferSlot;
-
-typedef struct _SituationComputePipelineSlot {
-    bool is_active;
-    uint32_t generation;
-#if defined(SITUATION_USE_OPENGL)
-    GLuint gl_program_id;
-#elif defined(SITUATION_USE_VULKAN)
-    VkPipeline vk_pipeline;
-    VkPipelineLayout vk_pipeline_layout;
-    VkShaderModule shader_module;
-#endif
-    // Hot-Reload Metadata
-    char* source_path;
-    SituationComputeLayoutType layout_type;
-    long mod_time;
-} _SituationComputePipelineSlot;
-
-typedef struct _SituationModelSlot {
-    bool is_active;
-    uint32_t generation;
-    int mesh_count;
-    SituationModelMesh* meshes;
-    int texture_count;
-    SituationTexture* all_model_textures;
-    char* source_path;
-    long mod_time;
-} _SituationModelSlot;
 
 // Redefine Sound Slot
 typedef struct _SituationSoundSlot {
@@ -1361,7 +1233,6 @@ typedef struct _SituationSoundSlot {
     long mod_time;
 } _SituationSoundSlot;
 
-
 typedef enum {
     SIT_ENV_IDLE = 0,
     SIT_ENV_ATTACK,     // Volume rising 0.0 -> 1.0
@@ -1369,6 +1240,7 @@ typedef enum {
     SIT_ENV_SUSTAIN,    // Volume holding at Sustain Level
     SIT_ENV_RELEASE     // Volume falling Sustain Level -> 0.0
 } SituationEnvelopeState;
+
 
 typedef struct {
     bool active;
@@ -1398,6 +1270,7 @@ typedef struct {
     SituationWaveType wave_type;        // Needed to know if we're using noise or waveform
     double trigger_timestamp_ms;        // [LATENCY] When this tone was triggered
 } SituationTone;
+
 
  typedef struct {
     // -------------------------------------------------------------------------
@@ -1467,15 +1340,6 @@ typedef struct {
     bool tone_reverb_enabled;
 } _SituationAudioState;
 
-// [NEW] Dedicated Input State Container
-typedef struct {
-    _SituationKeyboardState keyboard;
-    _SituationMouseState mouse;
-    _SituationJoystickManager joysticks;
-    GLFWcursor* cursors[16];
-    int cursor_count;
-} _SituationInputState;
-
 // --- Internal Texture Slot Definition ---
 typedef struct _SituationTextureSlot {
     bool is_active;
@@ -1503,11 +1367,6 @@ typedef struct _SituationTextureSlot {
 #endif
 } _SituationTextureSlot;
 
-
-
-
-// Forward declaration
-static _SituationTextureSlot* _SitGetTextureSlot(SituationTexture handle);
 
 // Render State Container
 typedef struct {
@@ -1746,7 +1605,6 @@ static SituationContext* _sit_current_context = NULL;
 
 //----------------------------------------------------------------------------------
 // --- Forward Declarations for Static Helper Functions ---
-
 //----------------------------------------------------------------------------------
 
 //==================================================================================
@@ -1780,6 +1638,113 @@ static void _SituationGLFWMouseButtonCallback(GLFWwindow* window, int button, in
 static void _SituationGLFWCursorPosCallback(GLFWwindow* window, double xpos, double ypos);      // [CALLBACK] Handles mouse cursor movement events.
 static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, double yoffset);   // [CALLBACK] Handles mouse scroll wheel events.
 static void _SituationGLFWJoystickCallback(int jid, int event);                                 // [CALLBACK] Handles joystick connection and disconnection events.
+
+
+//==================================================================================
+// --- Internal Resource Slots ---
+//==================================================================================
+typedef struct _SituationShaderSlot {
+    bool is_active;
+    uint32_t generation;
+#if defined(SITUATION_USE_OPENGL)
+    GLuint gl_program_id;
+    struct _SituationUniformMap* uniform_map;
+    GLuint gl_pending_program_id;
+    bool gl_is_linking;
+#elif defined(SITUATION_USE_VULKAN)
+    VkPipeline vk_pipeline;
+    VkPipeline vk_pipeline_legacy;
+    VkPipelineLayout vk_pipeline_layout;
+#endif
+    // Hot-Reload Metadata
+    char* vs_path;
+    char* fs_path;
+    long vs_mod_time;
+    long fs_mod_time;
+} _SituationShaderSlot;
+
+typedef struct _SituationMeshSlot {
+    bool is_active;
+    uint32_t generation;
+    int index_count;
+    int vertex_count;
+    size_t vertex_stride;
+#if defined(SITUATION_USE_OPENGL)
+    GLuint vbo_id;
+    GLuint ebo_id;
+#elif defined(SITUATION_USE_VULKAN)
+    VkBuffer vertex_buffer;
+    VmaAllocation vertex_buffer_memory;
+    VkBuffer index_buffer;
+    VmaAllocation index_buffer_memory;
+#endif
+} _SituationMeshSlot;
+
+typedef struct _SituationBufferSlot {
+    bool is_active;
+    uint32_t generation;
+    size_t size_in_bytes;
+    SituationBufferUsageFlags usage_flags;
+#if defined(SITUATION_USE_OPENGL)
+    GLuint gl_buffer_id;
+    uint64_t dynamic_offset;
+    uint32_t dynamic_frame_index;
+#elif defined(SITUATION_USE_VULKAN)
+    VkBuffer vk_buffer;
+    VmaAllocation vma_allocation;
+    VkBufferUsageFlags vk_usage_flags;
+    VkDescriptorSet descriptor_set;
+    VkDescriptorPool descriptor_pool;
+#endif
+} _SituationBufferSlot;
+
+typedef struct _SituationComputePipelineSlot {
+    bool is_active;
+    uint32_t generation;
+#if defined(SITUATION_USE_OPENGL)
+    GLuint gl_program_id;
+#elif defined(SITUATION_USE_VULKAN)
+    VkPipeline vk_pipeline;
+    VkPipelineLayout vk_pipeline_layout;
+    VkShaderModule shader_module;
+#endif
+    // Hot-Reload Metadata
+    char* source_path;
+    SituationComputeLayoutType layout_type;
+    long mod_time;
+} _SituationComputePipelineSlot;
+
+typedef struct _SituationModelSlot {
+    bool is_active;
+    uint32_t generation;
+    int mesh_count;
+    SituationModelMesh* meshes;
+    int texture_count;
+    SituationTexture* all_model_textures;
+    char* source_path;
+    long mod_time;
+} _SituationModelSlot;
+
+// Forward declaration
+// --- Resource Allocation Helpers (Advance Declaration) ---
+static _SituationShaderSlot* _SitAllocShaderSlot(SituationShader* out_handle);
+static void _SitFreeShaderSlot(SituationShader handle);
+static _SituationComputePipelineSlot* _SitAllocComputePipelineSlot(SituationComputePipeline* out_handle);
+static void _SitFreeComputePipelineSlot(SituationComputePipeline handle);
+static _SituationMeshSlot* _SitAllocMeshSlot(SituationMesh* out_handle);
+static void _SitFreeMeshSlot(SituationMesh handle);
+static _SituationBufferSlot* _SitAllocBufferSlot(SituationBuffer* out_handle);
+static void _SitFreeBufferSlot(SituationBuffer handle);
+static _SituationModelSlot* _SitAllocModelSlot(SituationModel* out_handle);
+static void _SitFreeModelSlot(SituationModel handle);
+static _SituationTextureSlot* _SitGetTextureSlot(SituationTexture handle);
+
+static struct _SituationShaderSlot* _SitGetShaderSlot(SituationShader handle);
+static struct _SituationMeshSlot* _SitGetMeshSlot(SituationMesh handle);
+static struct _SituationBufferSlot* _SitGetBufferSlot(SituationBuffer handle);
+static struct _SituationComputePipelineSlot* _SitGetComputePipelineSlot(SituationComputePipeline handle);
+static struct _SituationModelSlot* _SitGetModelSlot(SituationModel handle);
+static struct _SituationSoundSlot* _SitGetSoundSlot(SituationSound handle);
 
 //==================================================================================
 // Shader Contract
@@ -2249,14 +2214,12 @@ static void _SitGLDeferCleanMeshVAO(uint64_t mesh_id);
 static void _SitGLFlushGraveyard(int frame_index);
 
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
-// Forward declare the SPIR-V blob struct as it's used here
-struct _SituationSpirvBlob;
 // Creates a two-stage (graphics) program from two SPIR-V blobs.
-static GLuint _SituationCreateGLShaderProgramFromSpirv(const struct _SituationSpirvBlob* vs_blob, const struct _SituationSpirvBlob* fs_blob, SituationError* error_code);
+static GLuint _SituationCreateGLShaderProgramFromSpirv(const _SituationSpirvBlob* vs_blob, const _SituationSpirvBlob* fs_blob, SituationError* error_code);
 // Creates a single-stage (compute) program from one SPIR-V blob.
-static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationSpirvBlob* cs_blob, SituationError* error_code);
-#endif
-#endif
+static GLuint _SituationCreateGLComputeProgramFromSpirv(const _SituationSpirvBlob* cs_blob, SituationError* error_code);
+#endif // SITUATION_ENABLE_SHADER_COMPILER
+#endif // SITUATION_USE_OPENGL
 
 //==================================================================================
 // Vulkan Backend Helpers
@@ -2270,7 +2233,14 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
 #define SITUATION_VULKAN_DEFAULT_USER_STORAGE_IMAGES  128
 
 // --- Internal Vulkan Helper Data Structures ---
-// (Moved to top of implementation)
+// Forward declarations for deferred destruction helpers (Graveyard)
+static void _SituationReplayToQueue(SituationRenderList list, int frame_idx);
+static void _SituationDeferDestroyBuffer(VkBuffer buffer, VmaAllocation allocation);
+static void _SituationDeferDestroyImage(VkImage image, VmaAllocation allocation, VkImageView view, VkSampler sampler);
+static void _SituationDeferDestroyDescriptorSet(VkDescriptorSet set, VkDescriptorPool pool);
+static void _SituationDeferDestroyPipeline(VkPipeline pipeline, VkPipelineLayout layout);
+static void _SituationDeferDestroyFramebuffer(VkFramebuffer framebuffer);
+static void _SituationDeferDestroyRenderPass(VkRenderPass render_pass);
 
 // --- Vulkan Initialization & Cleanup Sequence ---
 static SituationError _SituationInitVulkan(const SituationInitInfo* init_info);
@@ -2352,19 +2322,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL _SituationVulkanDebugCallback(VkDebugUtils
 // Miscellaneous Module Helpers
 //==================================================================================
 
-static int _SituationWorkerEntry(void* arg); // Internal Worker Thread
-
-static SituationError _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error);
-static char* _sit_dirname(const char* path); // Forward declaration
-static bool _sit_directory_exists(const char* dir_path); // Forward declaration
-
-// --- Audio Helpers ---
-static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount);
-static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, size_t bytesToRead, size_t* pBytesRead);	// thunk to route read calls to the specific SituationSound instance
-static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin);// thunk to route seek calls to the specific SituationSound instance
-static void* _SituationInitReverb(uint32_t sample_rate);
-static void _SituationUninitReverb(void* state_ptr);
-static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels);
+static void _SituationVirtualBindlessInit(void); // Initializes the virtual bindless system
+static int _SituationVirtualBindlessBind(GLuint gl_texture_id);// Binds a texture using the virtual bindless system. Returns the virtual slot index (0-31) to use in the shader.
 
 // --- Display Helpers ---
 static void _SituationCachePhysicalDisplays(void);
@@ -2381,15 +2340,31 @@ static inline ColorRGBA _SituationColorAlphaBlend(ColorRGBA dst, ColorRGBA src, 
 static unsigned char _SituationBilinearSample(const unsigned char *bitmap, int width, int height, float u, float v);
 
 // --- Math Helpers ---
-//     return shader;
 static inline float _SituationClampf(float value, float min, float max) { const float t = value < min ? min : value; return t > max ? max : t; }
 static inline float _SituationLerpf(float a, float b, float t) { return a + t * (b - a); }
 static inline float _SituationFMin3(float a, float b, float c) { return fminf(a, fminf(b, c)); } // Find the minimum of three floats
 static inline float _SituationFMax3(float a, float b, float c) { return fmaxf(a, fmaxf(b, c)); } // Find the maximum of three floats
 
-#if defined(CGLTF_IMPLEMENTATION)
-static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count);
-#endif
+// --- Image Helpers ---
+static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* image);
+static inline ColorRGBA _SituationColorAlphaBlend(ColorRGBA dst, ColorRGBA src, float alpha);
+static unsigned char _SituationBilinearSample(const unsigned char *bitmap, int width, int height, float u, float v);
+
+static int _SituationWorkerEntry(void* arg); // Internal Worker Thread
+
+static SituationError _SituationSetFilesystemError(const char* base_message, const char* path, SituationError default_error);
+static char* _sit_dirname(const char* path); // Forward declaration
+static bool _sit_directory_exists(const char* dir_path); // Forward declaration
+
+// --- Audio Helpers ---
+static void _SitAudioInitPool(void);
+static void _SitAudioCleanupPool(void);
+static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount);
+static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, size_t bytesToRead, size_t* pBytesRead);	// thunk to route read calls to the specific SituationSound instance
+static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin);// thunk to route seek calls to the specific SituationSound instance
+static void* _SituationInitReverb(uint32_t sample_rate);
+static void _SituationUninitReverb(void* state_ptr);
+static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels);
 
 // Internal Helper for Time (needed for WaitForJob timeout)
 static uint64_t _SituationGetHighResTime(void) {
@@ -4422,7 +4397,39 @@ static void _SituationFullCleanupOnError(void) {
     // The library is now in an uninitialized state, ready (hopefully) for a fresh `SituationInit` attempt or safe shutdown.
 }
 
-
+/**
+ * @brief Returns a human-readable version string for the Situation library.
+ *
+ * @details Provides a null-terminated string containing the full version information
+ *          in the format:
+ *            "Major.Minor.Patch [optional suffix/revision]"
+ *
+ *          Examples of possible returns:
+ *            "2.3.54"
+ *            "2.3.54-dev"
+ *            "2.3.54 [Velocity Hot-Reload]"
+ *
+ *          The string is statically allocated and constant — safe to use indefinitely
+ *          without freeing or copying. The pointer remains valid for the entire program
+ *          lifetime.
+ *
+ *          Intended for:
+ *            - Logging at startup ("Situation v2.3.54 initialized")
+ *            - Debug overlays / about dialogs
+ *            - Version checks in tools/plugins
+ *            - Fun Easter eggs ("Powered by Situation 2.3.54 😎")
+ *
+ * @return A constant, null-terminated string representing the current library version.
+ *         Never returns NULL.
+ *
+ * @note Thread-safe, allocation-free, zero-cost call — can be used anywhere, anytime,
+ *       even before full initialization (though most useful after `SituationInit`).
+ *       The exact format may include build date, git hash, or feature flags in future
+ *       releases — do not parse programmatically (use version macros instead).
+ *
+ * @see SITUATION_VERSION_MAJOR, SITUATION_VERSION_MINOR,
+ *      SITUATION_VERSION_PATCH, SITUATION_VERSION_REVISION
+ */
 SITAPI const char* SituationGetVersionString(void) {
     static char version_str[32] = {0};
 
@@ -4439,6 +4446,66 @@ SITAPI const char* SituationGetVersionString(void) {
 }
 
 #if !defined(__STDC_NO_THREADS__)
+/**
+ * @brief [INTERNAL] Starts the dedicated render thread and performs context handoff.
+ *
+ * @details This function is called during library initialization (from `_SituationInitSubsystems`)
+ *          when `SITUATION_ENABLE_RENDER_THREAD` is defined and enabled in `init_info`.
+ *          It is responsible for creating and launching the render thread, which takes over
+ *          all GPU command execution, submission, presentation, and resource cleanup.
+ *
+ *          Critical sequence (do not reorder):
+ *            1. Validates that the main thread currently owns the GL context (if OpenGL)
+ *            2. Releases the context from the main thread
+ *               (`glfwMakeContextCurrent(NULL)`) to allow handoff
+ *            3. Creates the render thread via `thrd_create(_SituationRenderThreadEntry, NULL)`
+ *            4. Waits briefly (spin/yield) until the render thread acquires the context
+ *               (via atomic flag `sit_render.gl_context_released` or similar sync)
+ *            5. Sets up per-frame resources (graveyards, fences, command buffers)
+ *            6. Initializes render metrics (if enabled)
+ *            7. Marks render thread as active (`sit_render.thread_active = true`)
+ *            8. Returns success or failure based on thread creation and handoff
+ *
+ *          On success:
+ *            - Main thread no longer has GL context
+ *            - Render thread owns context and is running its loop
+ *            - All subsequent GL/VK calls must go through command buffers
+ *
+ *          On failure:
+ *            - Logs error (e.g. thread creation fail)
+ *            - Returns false → init aborts or falls back to main-thread rendering
+ *
+ * @param info Pointer to `SituationInitInfo` containing render thread preferences
+ *             (e.g. enable/disable flag, thread priority hints if supported).
+ *             May influence whether the thread starts or falls back to synchronous mode.
+ *
+ * @return true if render thread was successfully created, context handed off,
+ *         and thread is running,
+ *         false on failure (thread creation error, context handoff timeout,
+ *         allocation failure, etc.).
+ *         Failures are logged internally and may set global `SituationError`.
+ *
+ * @note **Critical thread safety point**:
+ *       - Must be called **only from the main thread** with GL context current
+ *       - Context release must succeed before thread start
+ *       - Render thread acquires context immediately after creation
+ *       - No GL calls allowed on main thread after this function succeeds
+ *
+ *       If render thread is disabled (`init_info->enable_render_thread = false`
+ *       or compile-time define absent), this function returns true immediately
+ *       (no-op) — main thread retains context and does synchronous rendering.
+ *
+ *       Dependencies:
+ *         - GLFW window must exist (`sit_gs.sit_glfw_window != NULL`)
+ *         - GL context must be current on calling thread
+ *         - Vulkan path may skip context handoff (uses queues instead)
+ *
+ * @see _SituationInitSubsystems (caller), _SituationRenderThreadEntry,
+ *      SituationInitInfo.enable_render_thread,
+ *      SITUATION_ENABLE_RENDER_THREAD (compile-time toggle),
+ *      SITUATION_ERROR_THREAD_CREATION_FAILED,
+ *      SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT (related)
+ */
 static bool _SituationInitRenderThread(const SituationInitInfo* info) {
     // [v2.3.40] CRITICAL: Initialize resource_registry_mutex ALWAYS, even in single-threaded mode
     // This mutex protects resource tracking lists used by SituationCreate* functions
@@ -4619,6 +4686,87 @@ static bool _SituationValidateRenderCaps(void) {
     return true;
 }
 
+/**
+ * @brief Primary entry point to initialize the entire Situation library.
+ *
+ * @details This is the **single most important public function** in the library.
+ *          It must be called exactly once at the very beginning of the application,
+ *          before any other Situation API function is used.
+ *
+ *          `SituationInit` orchestrates the complete bootstrap sequence:
+ *            1. Parses command-line arguments (if provided) for overrides/debug flags
+ *            2. Validates and merges `init_info` with defaults/command-line
+ *            3. Initializes platform/OS abstractions (CoInitialize on Win32, etc.)
+ *            4. Sets up global error/logging state
+ *            5. Calls `_SituationInitSubsystems(init_info)` — the real workhorse:
+ *               - GLFW init + window creation (or reuse external window)
+ *               - Backend-specific context setup:
+ *                 - OpenGL: GLAD load, version check, state defaults
+ *                 - Vulkan: instance/device/queues/swapchain creation
+ *               - Render thread startup (if enabled)
+ *               - Internal resources: default texture, dummy VAO, quad pipeline
+ *               - Text renderer, bindless support, audio device
+ *               - Thread pool (if threading enabled)
+ *               - Filesystem watchers / hot-reload (if Velocity enabled)
+ *            6. Performs final validation (GL/VK errors, extension checks)
+ *            7. Sets `sit_gs.initialized = true` and other global state flags
+ *
+ *          If initialization fails at any critical point, the function returns early
+ *          with an appropriate error code. Non-critical failures (e.g. missing optional
+ *          extension) log warnings and continue in degraded mode where possible.
+ *
+ * @param argc Number of command-line arguments (from main())
+ * @param argv Command-line argument array (from main())
+ *             Recognized flags (implementation-defined, e.g. --debug, --no-render-thread,
+ *             --vulkan, --opengl, --hot-reload-rate=0.5, etc.)
+ * @param init_info Pointer to `SituationInitInfo` struct containing user preferences:
+ *                  - window title, size, resizable, borderless, etc.
+ *                  - preferred backend (Vulkan/OpenGL override)
+ *                  - feature toggles (render thread, threading, audio, hot-reload)
+ *                  - custom window hints (GLFW or Vulkan)
+ *                  - May be NULL for strict defaults
+ *
+ * @return SITUATION_SUCCESS if the library is fully initialized and ready for use,
+ *         SITUATION_ERROR_ALREADY_INITIALIZED if called more than once,
+ *         SITUATION_ERROR_INIT_FAILED on critical early failure (GLFW init fail, etc.),
+ *         SITUATION_ERROR_GLAD_LOAD_FAILED / SITUATION_ERROR_VULKAN_INSTANCE_FAILED
+ *           for backend-specific context creation failures,
+ *         SITUATION_ERROR_THREAD_CREATION_FAILED if render thread failed to start,
+ *         SITUATION_ERROR_MEMORY_ALLOCATION for internal resource failures,
+ *         or any other propagated subsystem error code.
+ *
+ * @note **Must be called from the main thread** before any rendering, input, or
+ *       multi-threaded use of the library.
+ *       Thread safety: Not thread-safe — only safe from the main thread during startup.
+ *       If the function returns failure, the library is in an undefined state.
+ *       Caller should **not** attempt to use any Situation API and should call
+ *       `SituationShutdown` (if partial init occurred) before exiting.
+ *
+ *       Typical usage in main():
+ *       ```c
+ *       int main(int argc, char** argv) {
+ *           SituationInitInfo info = {0};
+ *           info.window_width  = 1280;
+ *           info.window_height = 720;
+ *           info.title         = "My App";
+ *           info.enable_render_thread = true;
+ *
+ *           if (SituationInit(argc, argv, &info) != SITUATION_SUCCESS) {
+ *               fprintf(stderr, "Init failed: %s\n", SituationGetLastErrorMsg());
+ *               return 1;
+ *           }
+ *
+ *           // Main loop...
+ *
+ *           SituationShutdown();
+ *           return 0;
+ *       }
+ *       ```
+ *
+ * @see SituationShutdown, SituationInitInfo,
+ *      _SituationInitSubsystems (core worker), SITUATION_ERROR_INIT_FAILED,
+ *      SITUATION_ERROR_ALREADY_INITIALIZED
+ */
 SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info) {
 #if !defined(SITUATION_USE_VULKAN) && !defined(SITUATION_USE_OPENGL)
 	// We can't use _SituationSetErrorFromCode yet because context might not exist.
@@ -5092,26 +5240,66 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
 
 
 /**
- * @brief [INTERNAL] Initializes all non-rendering library subsystems.
- * @details This function is called once during `SituationInit` after the platform and graphics backend have been successfully set up. It is responsible for bringing all other core library modules to life.
+ * @brief [INTERNAL] Orchestrates the sequential initialization of all major subsystems.
  *
- * @par Initialization Process
- *   - **Audio System:** Initializes the `miniaudio` context, creates the mutex for the sound queue, and pre-allocates the temporary memory buffers used by the real-time audio callback. This pre-allocation is a critical optimization to prevent `SIT_MALLOC` calls on the audio thread.
- *   - **Timer System:** Initializes the Temporal Oscillator system, calculating the default, musically-timed periods for the oscillator bank and setting the initial system time.
- *   - **Input Systems:**
- *     - Initializes mutexes for thread-safe keyboard and joystick event queuing.
- *     - Registers all of the library's internal GLFW callbacks (`_SituationGLFWKeyCallback`, `_SituationGLFWMouseButtonCallback`, etc.) to capture OS events.
- *     - Initializes the internal state-tracking structures for the keyboard, mouse, and gamepads.
- *     - Pre-creates the standard system cursor shapes for fast runtime switching.
- *     - Performs an initial poll for already-connected joysticks.
- *   - **Frame Timing:** Initializes all variables used for per-frame delta time and FPS calculation.
+ * @details This is the **master initialization function** called exactly once during library startup
+ *          (typically from `SituationInit`). It coordinates the creation and setup of every major
+ *          subsystem in a carefully ordered sequence to ensure proper dependency satisfaction.
  *
- * @return `SITUATION_SUCCESS` on successful initialization of all subsystems.
- * @return An appropriate `SituationError` code if a critical step fails (e.g., a mutex or memory allocation fails).
+ *          Initialization order (critical — changes can cause subtle failures):
+ *            1. Platform / OS-specific early setup (CoInitialize on Win32, thread locals, etc.)
+ *            2. GLFW initialization and error callback registration
+ *            3. Window creation (if not provided externally) with requested hints
+ *            4. **Backend-specific context init**:
+ *               - OpenGL: `_SituationInitOpenGL` (GLAD load, version check, state defaults)
+ *               - Vulkan: `_SituationInitVulkan` (instance, device, queues, swapchain, etc.)
+ *            5. Render thread startup (if `SITUATION_ENABLE_RENDER_THREAD`)
+ *               - Context handoff (GL) or queue family setup (Vulkan)
+ *               - Thread creation + launch `_SituationRenderThreadEntry`
+ *            6. Internal resource creation:
+ *               - Default white 1×1 texture
+ *               - Dummy VAO (GL core profile)
+ *               - Built-in quad shader/pipeline
+ *               - Text renderer (`_SituationInitTextRenderer`)
+ *               - Bindless texture support (`_SituationVirtualBindlessInit`)
+ *            7. Audio subsystem init (miniaudio device, mixer setup)
+ *            8. Filesystem / hot-reload watchers (if enabled)
+ *            9. Thread pool creation (if `SITUATION_ENABLE_THREADING`)
+ *           10. Final validation (check for GL/VK errors, log capabilities)
  *
- * @note This function is for internal use by `SituationInit` only.
+ *          Each step is guarded:
+ *            - If a subsystem fails critically, init aborts early and returns the error
+ *            - Non-critical failures (e.g. missing extension) log warnings and continue in degraded mode
+ *            - All errors are propagated via return value and internal `_SituationSetErrorFromCode`
  *
- * @see SituationInit(), _SituationCleanupSubsystems()
+ * @param init_info Pointer to `SituationInitInfo` containing user preferences:
+ *                  - window hints (size, title, resizable, etc.)
+ *                  - backend selection override (if any)
+ *                  - feature toggles (render thread, threading, hot-reload rate, etc.)
+ *                  - May be NULL for defaults
+ *
+ * @return SITUATION_SUCCESS if **all** subsystems initialized successfully,
+ *         SITUATION_ERROR_INIT_FAILED on early critical failure (e.g. GLFW init fail, context creation fail),
+ *         SITUATION_ERROR_GLAD_LOAD_FAILED / SITUATION_ERROR_VULKAN_INSTANCE_FAILED / etc. for backend-specific issues,
+ *         SITUATION_ERROR_THREAD_CREATION_FAILED if render thread failed to start,
+ *         SITUATION_ERROR_MEMORY_ALLOCATION for internal resource failures,
+ *         or other propagated subsystem errors.
+ *
+ * @note This function is **called only once** and is **not reentrant**.
+ *       Thread safety: Must be called from the main thread before any rendering or multi-threaded use.
+ *       Assumes GLFW has not been initialized elsewhere (library owns GLFW lifecycle).
+ *       On failure, partial subsystems may remain initialized — caller should call `SituationShutdown`
+ *       to clean up safely.
+ *
+ *       Critical invariants:
+ *         - OpenGL/Vulkan context must be created **before** render thread starts
+ *         - Render thread must be running **before** any command recording or submission
+ *         - All GL/VK calls in this function assume context is current
+ *
+ * @see SituationInit (public entry point), SituationShutdown,
+ *      _SituationInitOpenGL, _SituationInitVulkan,
+ *      _SituationRenderThreadEntry, _SituationInitTextRenderer,
+ *      _SituationVirtualBindlessInit, SITUATION_ERROR_INIT_FAILED
  */
 static SituationError _SituationInitSubsystems(const SituationInitInfo* init_info) {
     // --- 1. Audio System Initialization ---
@@ -5310,6 +5498,70 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     return SITUATION_SUCCESS;
 }
 
+/**
+ * @brief Loads a bitmap font directly from an in-memory data buffer.
+ *
+ * @details Creates a `SituationFont` handle from a raw, pre-rasterized bitmap font stored
+ *          in memory (e.g. embedded font data, loaded asset, or procedurally generated atlas).
+ *          This is the low-level entry point for using custom or non-TTF bitmap fonts with
+ *          the built-in text renderer.
+ *
+ *          Expected format of the input data:
+ *            - Monochrome or grayscale bitmap (1 byte per pixel recommended)
+ *            - Fixed-size grid layout: characters arranged in rows/columns
+ *            - Left-to-right, top-to-bottom order (ASCII or custom range)
+ *            - No padding between characters (tightly packed)
+ *            - Data is row-major: stride = char_width per row
+ *
+ *          The function:
+ *            - Validates input parameters (dimensions, char count, non-null data)
+ *            - Allocates internal glyph atlas texture (usually GL_R8 or GL_RGBA8)
+ *            - Uploads the bitmap data to GPU
+ *            - Computes per-character UV coordinates and metrics
+ *              (x/y offset, width/height, advance)
+ *            - Stores the glyph table (num_chars entries)
+ *            - Sets up default font properties (line height, baseline, etc.)
+ *            - Returns a usable `SituationFont` handle
+ *
+ *          After success, the font can be used immediately with `SituationCmdDrawText`,
+ *          `SituationCmdDrawTextEx`, or any text rendering path.
+ *
+ * @param data Pointer to the raw bitmap data buffer.
+ *             Must remain valid for the duration of the call (ownership not transferred).
+ *             Size must be exactly `char_width * char_height * num_chars` bytes.
+ * @param char_width Width of each glyph in pixels (fixed for all characters).
+ *                   Typical values: 8, 16, 32.
+ * @param char_height Height of each glyph in pixels (fixed).
+ *                    Typical values: 8, 16, 32.
+ * @param num_chars Total number of glyphs in the font (e.g. 128 for ASCII, 256 for extended).
+ *                  Must be > 0 and reasonable (avoid thousands without reason).
+ * @param out_font Pointer to a `SituationFont` variable that receives the new font handle
+ *                 on success. On failure, set to `SITUATION_NULL_FONT`.
+ *
+ * @return SITUATION_SUCCESS on successful load and GPU upload,
+ *         SITUATION_ERROR_INVALID_PARAM if data is NULL, dimensions invalid,
+ *         num_chars ≤ 0, or out_font is NULL,
+ *         SITUATION_ERROR_MEMORY_ALLOCATION if internal texture or glyph table allocation failed,
+ *         SITUATION_ERROR_GL_UPLOAD_FAILED if texture upload failed (OpenGL),
+ *         SITUATION_ERROR_VULKAN_UPLOAD_FAILED if texture creation/upload failed (Vulkan),
+ *         or other backend-specific errors.
+ *
+ * @note The input data is **not** copied — the function assumes it remains valid.
+ *       For dynamic fonts or TTF loading, use `SituationLoadFontFromFile` or `SituationLoadFontFromMemory` instead.
+ *       Texture is created with default sampler state (nearest filtering, clamp-to-edge).
+ *       Caller is responsible for destroying the font with `SituationDestroyFont` when done.
+ *       Thread safety: Must be called with active GL/VK context (typically render thread or init).
+ *
+ *       Recommended usage for embedded 8×8 VGA font:
+ *       ```c
+ *       SituationFont font;
+ *       SituationLoadBitmapFontFromMemory(sit_default_8x8_font, 8, 8, 256, &font);
+ *       ```
+ *
+ * @see SituationDestroyFont, SituationCmdDrawText, SituationCmdDrawTextEx,
+ *      sit_default_8x8_font (embedded VGA font), SITUATION_NULL_FONT,
+ *      SITUATION_ERROR_MEMORY_ALLOCATION, SITUATION_ERROR_GL_UPLOAD_FAILED
+ */
 SITAPI SituationError SituationLoadBitmapFontFromMemory(const unsigned char* data, int char_width, int char_height, int num_chars, SituationFont* out_font) {
     if (!data || char_width <= 0 || char_height <= 0 || num_chars <= 0 || !out_font) return SITUATION_ERROR_INVALID_PARAM;
 
@@ -6214,6 +6466,70 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
     }
 }
 
+/**
+ * @brief [INTERNAL] Performs one-time OpenGL backend initialization and context setup.
+ *
+ * @details This function is called exactly once during library startup (typically from
+ *          `SituationInit` or the main initialization sequence) when the `SITUATION_USE_OPENGL`
+ *          macro is defined. It is responsible for establishing a fully functional OpenGL
+ *          rendering environment that the rest of the library can rely on.
+ *
+ *          Execution order (critical sequence — do not reorder without care):
+ *            1. Makes the GLFW window context current on the calling thread
+ *               (`glfwMakeContextCurrent(sit_gs.sit_glfw_window)`)
+ *            2. Loads OpenGL function pointers via GLAD
+ *               (`gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)`)
+ *            3. Checks minimum required OpenGL version (4.3+ core profile recommended)
+ *               and logs error if not met
+ *            4. Queries and caches key capabilities/extensions:
+ *               - GL version string & GLSL version
+ *               - `GL_ARB_bindless_texture` / `GL_EXT_bindless_texture` support
+ *               - `GL_ARB_gl_spirv` for SPIR-V binary shaders
+ *               - `GL_ARB_multi_bind` / `GL_ARB_direct_state_access` (if used)
+ *               - Max texture units, max texture size, max compute workgroup sizes, etc.
+ *            5. Sets global GL state defaults used by the library:
+ *               - `glEnable(GL_BLEND)`, `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`
+ *               - `glEnable(GL_DEPTH_TEST)` (optional, depending on init flags)
+ *               - `glEnable(GL_CULL_FACE)`, `glCullFace(GL_BACK)`
+ *               - `glPixelStorei(GL_UNPACK_ALIGNMENT, 1)` / `GL_PACK_ALIGNMENT`
+ *            6. Initializes internal OpenGL resources:
+ *               - Default white 1x1 texture for missing bindings
+ *               - Dummy VAO for core-profile compatibility
+ *               - Text renderer (calls `_SituationInitTextRenderer`)
+ *               - Bindless texture support (calls `_SituationVirtualBindlessInit`)
+ *               - Any other backend-specific singletons (shader cache, quad pipeline, etc.)
+ *            7. Verifies no GL errors occurred during init (`SIT_CHECK_GL_ERROR()` macro)
+ *            8. Sets `sit_render.gl_initialized = true` and other state flags
+ *
+ *          On failure (GLAD load fail, version too low, critical extension missing),
+ *          logs detailed error messages and sets appropriate `SituationError` code.
+ *          The library may continue in degraded mode (e.g. no bindless, no SPIR-V) or abort init.
+ *
+ * @param init_info Pointer to `SituationInitInfo` structure containing backend preferences,
+ *                  window hints, feature toggles, etc. (may be NULL for defaults).
+ *
+ * @return SITUATION_SUCCESS if OpenGL context and required state initialized successfully,
+ *         SITUATION_ERROR_GLAD_LOAD_FAILED if GLAD failed to load functions,
+ *         SITUATION_ERROR_GL_VERSION_TOO_LOW if OpenGL version < required (e.g. 4.3),
+ *         SITUATION_ERROR_GL_EXTENSION_MISSING for critical missing extensions,
+ *         SITUATION_ERROR_MEMORY_ALLOCATION if internal resource creation failed,
+ *         or other backend-specific errors propagated from sub-init calls.
+ *
+ * @note Must be called **with a valid GLFW window context current** on the calling thread.
+ *       Thread safety: Only safe from the main thread or thread that owns the context
+ *       during library initialization — not reentrant or thread-safe afterward.
+ *       If render thread is enabled, context is released after this function so render
+ *       thread can acquire it.
+ *
+ *       Critical dependency chain:
+ *         - GLFW window must exist (`sit_gs.sit_glfw_window != NULL`)
+ *         - `glfwMakeContextCurrent` must succeed before GLAD load
+ *         - All subsequent GL calls assume context is current
+ *
+ * @see SituationInit (primary caller), _SituationInitTextRenderer,
+ *      _SituationVirtualBindlessInit, SIT_CHECK_GL_ERROR macro,
+ *      SITUATION_ERROR_GLAD_LOAD_FAILED, SITUATION_ERROR_GL_VERSION_TOO_LOW
+ */
 static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // --- 1. Context and Function Loading ---
     glfwMakeContextCurrent(sit_gs.sit_glfw_window); // Ensure context is current for GLAD
@@ -6303,13 +6619,15 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
 
-#ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]: Initializing default font...\n"); fflush(stdout);
-    #endif
+#ifndef NDEBUG
+    printf("Situation [OpenGL]: Initializing default font...\n"); fflush(stdout);
+#endif
+
     _SituationInitDefaultFont();
-#ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]: Default font initialized\n"); fflush(stdout);
-    #endif
+
+#ifndef NDEBUG
+    printf("Situation [OpenGL]: Default font initialized\n"); fflush(stdout);
+#endif
 
     if (!_SituationInitTextRenderer()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal text renderer.");
@@ -6680,6 +6998,144 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
     return program;
 }
 #endif // Shader Compiler
+
+/**
+ * @brief [INTERNAL] One-time initialization for OpenGL bindless texture support in virtual display paths.
+ *
+ * @details Called once during library startup (usually from `SituationInit` or first virtual display creation)
+ *          to check for and prepare bindless texture functionality when using OpenGL backend.
+ *
+ *          What it does:
+ *            - Checks for `GL_ARB_bindless_texture` extension availability
+ *              (via `glfwExtensionSupported` or `glGetStringi`)
+ *            - Logs warning if missing (virtual displays may fall back to legacy binding)
+ *            - Caches extension function pointers if using GLAD or manual loading
+ *              (`glGetTextureHandleARB`, `glMakeTextureHandleResidentARB`, etc.)
+ *            - Pre-allocates or resets any bindless handle cache / resident table
+ *            - Sets internal flag `sit_render.gl_supports_bindless` for later queries
+ *
+ *          After success, bindless operations become available for virtual display textures,
+ *          improving performance by reducing texture unit pressure in multi-pass rendering.
+ *
+ * @return true if bindless support is available and initialized successfully,
+ *         false if extension missing or initialization failed (logs internally)
+ *
+ * @note This function is idempotent — safe to call multiple times.
+ *       Thread safety: Must be called with GL context current (typically main/render thread during init).
+ *       No runtime cost after init — only queried via flag.
+ *
+ *       If bindless is unavailable, virtual display rendering falls back to traditional
+ *       `glActiveTexture` + `glBindTexture` per draw call (slower in complex scenes).
+ *
+ * @see _SituationVirtualBindlessBind, SituationCreateVirtualDisplay,
+ *      SITUATION_ERROR_GL_EXTENSION_MISSING, glGetTextureHandleARB
+ */
+static void _SituationVirtualBindlessInit(void) {
+    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+        _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[i];
+        slot->texture_slot_index = i;
+        slot->gl_texture_id = 0;
+        slot->last_used_counter = 0;
+        slot->is_active = false;
+    }
+    sit_render.gl.virtual_stats.hits = 0;
+    sit_render.gl.virtual_stats.misses = 0;
+    sit_render.gl.virtual_stats.evictions = 0;
+    sit_render.gl.virtual_lru_counter = 0;
+}
+
+/**
+ * @brief [INTERNAL] Binds a GL texture to a bindless texture unit for virtual display / offscreen use.
+ *
+ * @details This low-level helper records the necessary OpenGL state changes to make a texture
+ *          accessible via bindless texture handles in shaders used by virtual displays.
+ *
+ *          It is called internally when:
+ *            - A virtual display needs to sample a texture in its render pass
+ *            - A texture is attached as a color attachment or input to a virtual framebuffer
+ *            - Dynamic texture updates occur (e.g. after blitting or CPU upload)
+ *
+ *          Typical sequence:
+ *            - Generates or retrieves a bindless texture handle via `glGetTextureHandleARB`
+ *            - Makes the handle resident if not already (`glMakeTextureHandleResidentARB`)
+ *            - Binds the handle to a uniform location or shader storage block
+ *              (via `glProgramUniformHandleui64ARB` or equivalent)
+ *
+ *          This function exists to abstract away ARB_bindless_texture / EXT_bindless_texture
+ *          boilerplate while ensuring compatibility with virtual display rendering paths.
+ *
+ * @param gl_texture_id OpenGL texture name (GLuint) that should be made bindless.
+ *                      Must be a valid, complete texture object (has storage allocated).
+ *
+ * @return The 64-bit bindless handle (`GLuint64`) that was made resident and can be
+ *         passed to shaders, or 0 on failure (invalid texture, extension missing, etc.).
+ *
+ * @note Requires `GL_ARB_bindless_texture` (or EXT equivalent) to be supported and loaded.
+ *       If the extension is missing, logs a warning and returns 0.
+ *       Handles are made resident once and stay resident until texture destruction
+ *       or explicit `glMakeTextureHandleNonResidentARB`.
+ *       Thread safety: Must be called with an active OpenGL context (typically render thread).
+ *
+ * @see _SituationVirtualBindlessInit, glGetTextureHandleARB, glMakeTextureHandleResidentARB,
+ *      glProgramUniformHandleui64ARB, SITUATION_ERROR_GL_EXTENSION_MISSING
+ */
+static int _SituationVirtualBindlessBind(GLuint gl_texture_id) {
+    sit_render.gl.virtual_lru_counter++;
+    uint64_t current_counter = sit_render.gl.virtual_lru_counter;
+
+    // 1. Check if the texture is already bound (Hit?)
+    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+        _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[i];
+        if (slot->is_active && slot->gl_texture_id == gl_texture_id) {
+
+            // Hit! Update LRU
+            slot->last_used_counter = current_counter;
+            sit_render.gl.virtual_stats.hits++;
+            return i;
+        }
+    }
+
+    // 2. Miss! Find a slot to evict
+    sit_render.gl.virtual_stats.misses++;
+
+    int best_slot = -1;
+    uint64_t oldest_counter = UINT64_MAX;
+
+    // First pass: look for empty slot
+    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+        if (!sit_render.gl.virtual_texture_slots[i].is_active) {
+            best_slot = i;
+            break;
+        }
+    }
+
+    // Second pass: if full, find LRU
+    if (best_slot == -1) {
+        sit_render.gl.virtual_stats.evictions++;
+        for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+            if (sit_render.gl.virtual_texture_slots[i].last_used_counter < oldest_counter) {
+                oldest_counter = sit_render.gl.virtual_texture_slots[i].last_used_counter;
+                best_slot = i;
+            }
+        }
+    }
+
+    // Safety fallback
+    if (best_slot == -1) best_slot = 0;
+
+    // 3. Bind the texture to the chosen slot
+    _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[best_slot];
+
+    // Bind the actual texture to the texture unit using DSA
+    glBindTextureUnit(best_slot, gl_texture_id);
+
+    // Update slot metadata
+    slot->is_active = true;
+    slot->gl_texture_id = gl_texture_id;
+    slot->last_used_counter = current_counter;
+
+    return best_slot;
+}
 
 #endif // SITUATION_USE_OPENGL
 
@@ -11172,10 +11628,6 @@ static void _SituationCleanupPlatform(void) {
  * @see _SituationCleanupQuadRenderer(), SituationCmdDrawQuad(), SituationCmdDrawText()
  */
 static void _SituationInitDefaultFont(void) {
-    #ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]: _SituationInitDefaultFont called\n");
-    fflush(stdout);
-    #endif
     // 8x8 font bitmap from sit_default_8x8_font. 256 chars.
     // Layout: 16 chars per row, 16 rows.
     const int tex_w = 128;
@@ -11217,12 +11669,6 @@ static void _SituationInitDefaultFont(void) {
     img.channels = 4;
     img.data = pixels;
     SituationError tex_result = SituationCreateTexture(img, false, &sit_render.default_font_atlas);
-    #ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]:   SituationCreateTexture result=%d\n", tex_result);
-    printf("Situation [Vulkan Debug]:   Font atlas: slot=%u, gen=%u\n",
-           sit_render.default_font_atlas.slot_index, sit_render.default_font_atlas.generation);
-    fflush(stdout);
-    #endif
 
     // CRITICAL FIX: Font atlas needs text_sampler_layout (binding 0), not image_sampler_layout (binding 4)
     // Recreate the descriptor set with the correct layout
@@ -11252,14 +11698,8 @@ static void _SituationInitDefaultFont(void) {
             };
 
             vkUpdateDescriptorSets(sit_render.vk.device, 1, &write, 0, NULL);
-
             // Replace the old descriptor set
             font_slot->descriptor_set = new_desc_set;
-
-            #ifdef SITUATION_VULKAN_DEBUG
-            printf("Situation [Vulkan Debug]:   Font atlas descriptor set recreated with text_sampler_layout (binding 0)\n");
-            fflush(stdout);
-            #endif
         }
     }
     #endif
@@ -11281,6 +11721,64 @@ static void _SituationInitDefaultFont(void) {
     sit_render.default_font.bitmap_count = 0;
 }
 
+/**
+ * @brief [INTERNAL] One-time setup of the built-in quad renderer subsystem.
+ *
+ * @details This function initializes the fast-path quad drawing primitive used throughout
+ *          the library for full-screen effects, solid-color rectangles, debug overlays,
+ *          virtual display compositing, and any simple 2D drawing that doesn't require
+ *          a full mesh or model.
+ *
+ *          It is called exactly once during initialization (typically from `_SituationInitSubsystems`
+ *          or after backend context is ready) and prepares:
+ *
+ *          OpenGL path:
+ *            - Vertex/fragment shader pair (simple transform + flat color or texture)
+ *            - Links them into a program object
+ *            - Creates VAO + VBO for a static full-screen quad (-1..1 NDC coords)
+ *            - Sets up uniform locations (model matrix, color, optional texture)
+ *            - Caches the program ID for fast binding
+ *
+ *          Vulkan path:
+ *            - Creates VkShaderModule(s) from embedded SPIR-V (or compiles GLSL if enabled)
+ *            - Builds VkPipelineLayout (with push constants or small descriptor set)
+ *            - Creates VkPipeline for graphics (compute if used for blits)
+ *            - Prepares static vertex buffer or push-constant vertex data
+ *            - Caches pipeline and layout handles
+ *
+ *          Common setup:
+ *            - Defines quad vertices (two triangles: positions + optional UVs)
+ *            - Sets default blend state (alpha blending enabled)
+ *            - Validates no GL/VK errors during creation (`SIT_CHECK_GL_ERROR()`)
+ *
+ *          On success, `SituationCmdDrawQuad` and related calls become fully functional.
+ *          On failure, logs error and disables quad rendering (draw calls become no-ops).
+ *
+ * @param width  Expected render target width (used for aspect ratio or viewport defaults).
+ *               Usually matches primary window/backbuffer width.
+ * @param height Expected render target height.
+ *               Usually matches primary window/backbuffer height.
+ *
+ * @return true if quad renderer initialized successfully (shaders/pipeline/VAO ready),
+ *         false on failure (shader compile/link fail, allocation error, invalid dimensions).
+ *         Failures are logged internally and may set global `SituationError`.
+ *
+ * @note Must be called **after** backend context is current (GL context or Vulkan device ready).
+ *       Thread safety: Only safe from the thread owning the context (usually main thread during init
+ *       or render thread if deferred).
+ *       Dimensions are used for initial viewport/scissor setup — can be updated later via resize events.
+ *       The quad is static (NDC coords) — transformations are applied via model matrix in draw calls.
+ *
+ *       Critical dependencies:
+ *         - OpenGL context current (GL path) or Vulkan device/queue ready
+ *         - `_SituationInitOpenGL` / `_SituationInitVulkan` already completed
+ *         - No prior quad init (idempotent but wasteful if called twice)
+ *
+ * @see SituationCmdDrawQuad, _SituationInitSubsystems (caller),
+ *      _SituationInitOpenGL, _SituationInitVulkan,
+ *      SITUATION_ERROR_SHADER_COMPILATION_FAILED,
+ *      SITUATION_ERROR_VULKAN_PIPELINE_CREATE_FAILED
+ */
 static bool _SituationInitQuadRenderer(int width, int height) {
 #if defined(SITUATION_USE_OPENGL)
     // --- OpenGL Quad Renderer Initialization ---
@@ -11502,7 +12000,48 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 }
 
 /**
- * @brief [INTERNAL] Initializes backend-specific resources for the Batched Text renderer.
+ * @brief [INTERNAL] Initializes the built-in text renderer subsystem (glyph atlas, shaders, uniforms).
+ *
+ * @details This function is called once during library startup (typically from `SituationInit`)
+ *          to set up the low-level text rendering infrastructure. It prepares everything needed
+ *          for high-quality, efficient 2D text drawing via `SituationCmdDrawText` and related APIs.
+ *
+ *          What it initializes (in rough order):
+ *            - Loads the default font bitmap (e.g. embedded 8x8 VGA font or stb_truetype atlas)
+ *            - Creates GPU texture for the glyph atlas (RGBA8 or similar)
+ *            - Uploads glyph metrics and UV coordinates (either pre-baked or computed)
+ *            - Creates vertex/index buffers for a dynamic quad pool (for glyph instances)
+ *            - Compiles/linkes the text-specific vertex + fragment shaders
+ *              (simple transform + texture sampling + color tint + optional outline/drop shadow)
+ *            - Sets up uniform buffer or push constants for per-draw text state
+ *              (color, transform matrix, scale, font size, etc.)
+ *            - Prepares descriptor sets / texture bindings (Vulkan) or texture units (OpenGL)
+ *            - Allocates scratch buffers for string processing and glyph batching
+ *            - Caches common ASCII/Unicode ranges if using runtime glyph rasterization
+ *
+ *          On success, the text renderer is ready for immediate use — no further init required.
+ *          On failure (e.g. texture allocation fail, shader compile error), logs warnings/errors
+ *          and disables text rendering gracefully (future draw calls become no-ops).
+ *
+ * @return true if initialization completed successfully,
+ *         false on any critical failure (shader compile fail, out of memory, invalid font data)
+ *
+ * @note This function is **called only once** during library lifetime.
+ *       Thread safety: Must be called from the thread that owns the GL/VK context
+ *       (typically main thread during init, or render thread if deferred).
+ *       No locking — assumes exclusive access during startup.
+ *
+ *       If `SITUATION_ENABLE_TEXT_RENDERER` is not defined (or disabled at runtime),
+ *       this function returns true immediately (no-op).
+ *
+ *       Dependencies:
+ *         - stb_truetype (for font loading/rasterization if dynamic)
+ *         - Embedded font data (e.g. sit_default_8x8_font array)
+ *         - Vulkan/OpenGL context already current
+ *
+ * @see SituationInit (caller), SituationCmdDrawText, SituationCmdDrawTextEx,
+ *      SITUATION_ENABLE_TEXT_RENDERER (compile-time toggle),
+ *      SITUATION_ERROR_SHADER_COMPILATION_FAILED, SITUATION_ERROR_MEMORY_ALLOCATION
  */
 static bool _SituationInitTextRenderer(void) {
 #if defined(SITUATION_USE_OPENGL)
@@ -11903,7 +12442,7 @@ static void _SituationCleanupVulkan(void) {
  * @warning The SPIR-V data pointed to by `cs_spirv_data` is not validated by this function for semantic correctness beyond basic Vulkan object creation. Passing invalid SPIR-V can lead to errors during pipeline creation or undefined behavior at runtime.
  * @see _SituationVulkanCreateShaderModule(), SituationCreateComputePipelineFromMemory(), SituationDestroyComputePipeline();
  */
-
+// _SituationVulkanCreateComputePipelineFromSpirv ***** Function got nuked for SituationCreateComputePipeline()
 
 /**
  * @brief [INTERNAL] Records a command to transition the layout of a VkImage, inserting a memory barrier.
@@ -12666,6 +13205,54 @@ static void _SituationSubmitCompute(VkCommandBuffer cmd) {
     vkQueueSubmit(sit_render.vk.compute_queue, 1, &submit, VK_NULL_HANDLE);
 }
 
+/**
+ * @brief [INTERNAL] Records all pending graphics commands into the given Vulkan command buffer.
+ *
+ * @details This is a core low-level function in the Vulkan backend that populates a
+ *          `VkCommandBuffer` with the full set of recorded draw/dispatch commands,
+ *          state changes, and transitions for the current frame or render list.
+ *
+ *          Typical call sites:
+ *            - Inside `_SituationRenderThreadEntry` when processing a frame slot
+ *            - During render list replay (`_SituationReplayToQueue`)
+ *            - In synchronous fallback paths (if render thread disabled)
+ *
+ *          What it does (in rough order):
+ *            - Begins command buffer recording (if not already begun)
+ *            - Sets viewport/scissor (from current render pass or display)
+ *            - Binds global descriptor sets (samplers, uniforms, bindless)
+ *            - Iterates over the active render list or queued draw calls:
+ *              - Binds pipelines (graphics/compute)
+ *              - Binds vertex/index buffers
+ *              - Binds descriptor sets per draw
+ *              - Records `vkCmdDraw*` / `vkCmdDrawIndexed*` / `vkCmdDispatch*`
+ *              - Handles push constants
+ *              - Inserts barriers/transitions (image layouts, memory barriers)
+ *            - Ends any active render pass
+ *            - Ends command buffer recording
+ *
+ *          The function does **not** submit the command buffer to the queue —
+ *          that is handled separately (e.g. `vkQueueSubmit` in the render thread).
+ *
+ * @param cmd A Vulkan command buffer handle in the recording state (or reset/ready).
+ *            Must belong to a pool allocated for the current frame/swapchain image.
+ *
+ * @note This function assumes the command buffer is already begun (via `vkBeginCommandBuffer`).
+ *       Errors (validation failures, out-of-memory, invalid state) are logged internally
+ *       and may set the global `SituationError` (e.g. SITUATION_ERROR_VULKAN_COMMAND_BUFFER_FAILED).
+ *       No return value — failures are non-fatal but logged.
+ *
+ * Thread safety invariants:
+ *   - Must be called from the **render thread** (owns the Vulkan context/queues)
+ *   - Command buffer must not be in use by another thread
+ *   - No internal locking — caller ensures exclusive access
+ *   - Safe during hot-reload if old resources are destroyed first
+ *
+ * @see _SituationRenderThreadEntry (main caller),
+ *      _SituationReplayToQueue, SituationSubmitRenderList,
+ *      vkBeginCommandBuffer, vkCmdDrawIndexed, vkEndCommandBuffer,
+ *      SITUATION_ERROR_VULKAN_COMMAND_BUFFER_FAILED
+ */
 static void _SituationSubmitGraphics(VkCommandBuffer cmd) {
     VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
 
@@ -12712,6 +13299,53 @@ static void _SituationSubmitGraphics(VkCommandBuffer cmd) {
 }
 #endif
 
+/**
+ * @brief Ends the current frame and submits it for rendering on the render thread.
+ *
+ * @details This function marks the end of the current frame's command recording and
+ *          submits it to the dedicated render thread for execution. It is the primary
+ *          synchronization point in the main loop, ensuring that the frame's command
+ *          buffer is enqueued for GPU submission, presentation, and resource cleanup.
+ *
+ *          Key steps performed:
+ *            - Locks the render queue mutex
+ *            - Waits (with timeout) if all in-flight frame slots are occupied
+ *              (backpressure handling to prevent unbounded queue growth)
+ *            - Enqueues the current frame index into the circular queue
+ *            - Increments pending frame count and refcount for the slot
+ *            - Records submission timestamp for latency metrics (if enabled)
+ *            - Signals the render thread condition variable to wake it
+ *            - Unlocks the mutex
+ *            - Advances the current_frame index (modulo MAX_FRAMES_IN_FLIGHT)
+ *
+ *          This function is **non-blocking** in normal operation but may briefly wait
+ *          under high load (e.g. slow GPU, many pending frames). Timeout is fixed
+ *          (e.g. 1 second) and returns an error on expiry.
+ *
+ *          Call this at the end of your main loop after all `SituationCmd*` recordings
+ *          for the frame. It does **not** perform polling or input handling — pair with
+ *          `SituationPollEvents` at loop start.
+ *
+ * @return SITUATION_SUCCESS on successful submission,
+ *         SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT if wait for free slot timed out
+ *         (too many pending frames — reduce load or increase MAX_FRAMES_IN_FLIGHT),
+ *         SITUATION_ERROR_THREAD_VIOLATION if called from render thread (deadlock risk),
+ *         or other appropriate error codes (e.g. mutex failure).
+ *
+ * @note Must be called from the **main thread** (or thread that owns the command buffer).
+ *       Pairs with `SituationBeginFrame` (if you have it) or manual command recording.
+ *       If render thread is disabled, this falls back to synchronous execution.
+ *       Metrics (latency, queue depth) are updated internally if enabled.
+ *
+ *       Thread safety:
+ *         - Safe only from main thread — render thread calls would deadlock
+ *         - Internal mutex + condvar protect queue access
+ *         - Atomic ops for refcounts and metrics
+ *
+ * @see SituationPollEvents, SituationBeginCommandBuffer, SituationCmd* functions,
+ *      _SituationRenderThreadEntry (execution side), SITUATION_MAX_FRAMES_IN_FLIGHT,
+ *      SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT, SITUATION_ERROR_THREAD_VIOLATION
+ */
 SITAPI SituationError SituationEndFrame(void) {
     // Mark that we're no longer recording a frame
     sit_render.in_frame = false;
@@ -13893,11 +14527,6 @@ SITAPI SituationError SituationCmdDrawText(SituationCommandBuffer cmd, Situation
  * @param color The text color tint.
  */
 SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color) {
-    #ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]: SituationCmdDrawTextEx called, text='%s'\n", text ? text : "NULL");
-    fflush(stdout);
-    #endif
-
     if (!SituationIsInitialized() || !text) return SITUATION_ERROR_INVALID_PARAM;
 
     // Default Debug Font Fallback
@@ -13908,16 +14537,7 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
     }
 
     bool is_grid_font = (use_font.glyph_info == NULL && use_font.atlas_texture.slot_index == sit_render.default_font.atlas_texture.slot_index && use_font.atlas_texture.generation == sit_render.default_font.atlas_texture.generation);
-    #ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]:   is_grid_font=%d, glyph_info=%p\n", is_grid_font, use_font.glyph_info);
-    printf("Situation [Vulkan Debug]:   atlas generation=%u\n", use_font.atlas_texture.generation);
-    fflush(stdout);
-    #endif
     if (!is_grid_font && !use_font.glyph_info) {
-        #ifdef SITUATION_VULKAN_DEBUG
-        printf("Situation [Vulkan Debug]:   RESOURCE_INVALID - no glyph info!\n");
-        fflush(stdout);
-        #endif
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
 
@@ -14026,15 +14646,6 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
                 float qy0 = y;
                 float qx1 = x + size_px;
                 float qy1 = y + size_px;
-
-                #ifdef SITUATION_VULKAN_DEBUG
-                if (i == 0) {  // Debug first character only
-                    printf("Situation [Vulkan Debug]:   Grid font first char '%c': pos=(%.1f,%.1f)-(%.1f,%.1f), uv=(%.3f,%.3f)-(%.3f,%.3f)\n",
-                           c, qx0, qy0, qx1, qy1, u0, v0, u1, v1);
-                    fflush(stdout);
-                }
-                #endif
-
                 x += size_px + spacing;
 
                 write_ptr[v_idx++] = qx0; write_ptr[v_idx++] = qy0; write_ptr[v_idx++] = u0; write_ptr[v_idx++] = v0;
@@ -14050,14 +14661,6 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
             float x_before = x;
             stbtt_aligned_quad q;
             stbtt_GetBakedQuad(cdata, use_font.atlas_width, use_font.atlas_height, text[i] - 32, &x, &y, &q, 1);
-
-            #ifdef SITUATION_VULKAN_DEBUG
-            if (i == 0) {  // Only print first character
-                printf("Situation [Vulkan Debug]:   First char '%c': UV=(%.3f,%.3f)-(%.3f,%.3f)\n",
-                       text[i], q.s0, q.t0, q.s1, q.t1);
-                fflush(stdout);
-            }
-            #endif
 
             if (scale_factor != 1.0f || spacing != 0.0f) {
                 float w = q.x1 - q.x0;
@@ -14076,13 +14679,6 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
                 x = x_before + (advance * scale_factor) + spacing;
             }
 
-            #ifdef SITUATION_VULKAN_DEBUG
-            if (i == 0) {  // Debug first character only
-                printf("Situation [Vulkan Debug]:   First char vertex: pos=(%.1f,%.1f)-(%.1f,%.1f), uv=(%.3f,%.3f)-(%.3f,%.3f)\n",
-                       q.x0, q.y0, q.x1, q.y1, q.s0, q.t0, q.s1, q.t1);
-                fflush(stdout);
-            }
-            #endif
             write_ptr[v_idx++] = q.x0; write_ptr[v_idx++] = q.y0; write_ptr[v_idx++] = q.s0; write_ptr[v_idx++] = q.t0;
             write_ptr[v_idx++] = q.x0; write_ptr[v_idx++] = q.y1; write_ptr[v_idx++] = q.s0; write_ptr[v_idx++] = q.t1;
             write_ptr[v_idx++] = q.x1; write_ptr[v_idx++] = q.y0; write_ptr[v_idx++] = q.s1; write_ptr[v_idx++] = q.t0;
@@ -14111,11 +14707,6 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
 
     // 6. DRAW
     if (target_buffer != VK_NULL_HANDLE) {
-        #ifdef SITUATION_VULKAN_DEBUG
-        printf("Situation [Vulkan Debug]:   Drawing text, pipeline=%p, buffer=%p\n",
-               (void*)sit_render.vk.text_pipeline, (void*)target_buffer);
-        fflush(stdout);
-        #endif
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
         // CRITICAL: Update global state so descriptor set binding works
@@ -14143,18 +14734,8 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
 
         _SituationTextureSlot* font_slot = _SitGetTextureSlot(use_font.atlas_texture);
         text_pc.texture_id = font_slot ? (uint32_t)font_slot->slot_index : 0;
-
         vkCmdPushConstants(vk_cmd, sit_render.vk.text_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(text_pc), &text_pc);
-
-        #ifdef SITUATION_VULKAN_DEBUG
-        printf("Situation [Vulkan Debug]:   About to call vkCmdDraw: vertex_count=%d\n", (int)(len * 6));
-        fflush(stdout);
-        #endif
         vkCmdDraw(vk_cmd, (uint32_t)(len * 6), 1, 0, 0);
-        #ifdef SITUATION_VULKAN_DEBUG
-        printf("Situation [Vulkan Debug]:   vkCmdDraw completed\n");
-        fflush(stdout);
-        #endif
     }
 #endif
     return SITUATION_SUCCESS;
@@ -14645,6 +15226,56 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
     return SITUATION_SUCCESS;
 }
 
+/**
+ * @brief Records a command to draw a full-screen or transformed quad (rectangle) with solid color.
+ *
+ * @details This is a high-performance convenience function for drawing a simple colored quad,
+ *          typically used for:
+ *            - Full-screen effects (post-processing, UI backgrounds, overlays)
+ *            - Debug visualizations (bounding boxes, highlights, color pickers)
+ *            - Simple sprites or rectangles without needing a full mesh
+ *            - Blitting a single color or texture (if extended with texture binding)
+ *
+ *          The function records the following into the command buffer:
+ *            - Binds an internal built-in quad vertex shader + fragment shader
+ *            - Sets up a simple vertex buffer or immediate vertex data (2 triangles / 6 vertices)
+ *            - Applies the provided `model` matrix (usually for position, scale, rotation)
+ *            - Sets the uniform color (passed as `Vector4`)
+ *            - Issues a draw call (6 indices or 6 vertices)
+ *
+ *          Coordinates:
+ *            - In NDC space: model matrix transforms from [-1,1] quad to desired screen region
+ *            - Common usage: identity matrix for full-screen, translate/scale for positioned rects
+ *
+ *          Backend implementation:
+ *            - Vulkan: records into command buffer (uses pre-created pipeline or dynamic state)
+ *            - OpenGL: uses glDrawArrays or glDrawElements with VAO or immediate mode fallback
+ *
+ * @param cmd Valid recording command buffer handle (must be in recording state)
+ * @param model 4x4 transformation matrix applied to the quad vertices
+ *              (position, rotation, scale; usually orthographic projection already applied externally)
+ * @param color RGBA color to fill the quad (components in [0,1] range)
+ *              Use SIT_VEC4(r,g,b,a) macro for convenience
+ *
+ * @return SITUATION_SUCCESS on successful command recording,
+ *         SITUATION_ERROR_INVALID_PARAM if cmd is invalid/not recording,
+ *         SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT if internal command buffer full,
+ *         SITUATION_ERROR_RESOURCE_INVALID if internal quad pipeline/shader not ready,
+ *         or other backend-specific errors
+ *
+ * @note This is a **very lightweight** draw call — ideal for high-frequency use (e.g. UI, debug lines).
+ *       No texture binding or complex state changes are performed.
+ *       Assumes current pipeline layout supports the internal quad shader (set via `SituationCmdBindPipeline` if needed).
+ *       For textured quads, use `SituationCmdBindTexture` + `SituationCmdDrawQuadTextured` variant (if exists).
+ *
+ *       Thread safety:
+ *         - Must be called from a thread that owns the command buffer
+ *         - Safe during command recording phase only
+ *         - Actual execution happens later on render thread submission
+ *
+ * @see SituationCmdDrawQuadTextured (if implemented), SituationCmdBindPipeline,
+ *      SituationCreateCommandBuffer, mat4 (cglm), Vector4, SIT_VEC4 macro
+ */
 SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     sit_render.debug_draw_command_issued_this_frame = true;
@@ -14870,6 +15501,54 @@ SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns) {
 }
 #endif
 
+/**
+ * @brief Exports current render performance metrics as a compact JSON string into a user-provided buffer.
+ *
+ * @details Fills the caller-supplied buffer with a JSON object containing key render statistics
+ *          collected by the render thread (when `SITUATION_ENABLE_RENDER_THREAD` is defined).
+ *          Currently includes:
+ *            - Library version (hardcoded to match current build)
+ *            - Average frame latency (`avg_ns`)
+ *            - Maximum observed frame latency (`max_ns`)
+ *            - Placeholder `bins` array (empty for now; reserved for future histogram buckets)
+ *
+ *          Safety features:
+ *            - If buffer is NULL or size is 0 → silent no-op
+ *            - If buffer is too small (< 256 bytes) → writes a minimal error JSON and truncates safely
+ *            - If metrics are disabled (no render thread) → `avg_ns` and `max_ns` are 0
+ *
+ *          Intended for:
+ *            - Debug overlays / in-game performance HUD
+ *            - Logging at shutdown or on hotkey
+ *            - Quick telemetry export during development
+ *
+ * @param buf Caller-allocated writable buffer to receive the null-terminated JSON string.
+ *            Must remain valid for the duration of the call.
+ * @param buf_size Size of the buffer in bytes (including null terminator).
+ *                 Recommended minimum: 256 bytes (for error case).
+ *                 Larger buffers allow future expansion (more fields, actual bins).
+ *
+ * @note The function is **fast, non-allocating, and thread-safe** — safe to call from any thread
+ *       at any time after initialization.
+ *       Output is always null-terminated (even on truncation).
+ *       No error code is returned — failures are handled gracefully via JSON error message.
+ *       Metrics collection is compile-time gated (`SITUATION_ENABLE_RENDER_THREAD`).
+ *       Future versions may populate `bins` with p50/p90/p99 buckets or queue-depth history.
+ *
+ *       Example output (metrics enabled):
+ *       ```json
+ *       {"version":"2.3.24b","avg_ns":8333333,"max_ns":16666666,"bins":[]}
+ *       ```
+ *
+ *       Example error output (buffer too small):
+ *       ```json
+ *       {"bins":[],"error":"buffer too small"}
+ *       ```
+ *
+ * @see SITUATION_ENABLE_RENDER_THREAD (compile-time toggle),
+ *      SituationGetRenderLatencyStats (internal metrics getter),
+ *      _SituationRenderThreadEntry (where latency is recorded)
+ */
 SITAPI void SituationExportRenderHistogram(char* buf, size_t buf_size) {
     if (!buf || buf_size == 0) return;
 
@@ -15140,6 +15819,54 @@ SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRende
 }
 
 // [v2.3.24b] Integration Zenith: Batched Replay Logic
+/**
+ * @brief [INTERNAL] Replays (re-executes) the commands of a render list directly into the render thread queue at a specific frame index.
+ *
+ * @details This low-level helper is used when a render list needs to be re-queued or replayed
+ *          for a particular frame slot without going through the normal submission path.
+ *          It is typically called in scenarios such as:
+ *            - Hot-reload recovery (re-submit changed shaders/meshes to the same frame)
+ *            - Frame retry after backpressure or transient errors
+ *            - Internal synchronization when a list must be re-executed in a specific in-flight slot
+ *            - Debug/force-replay mechanisms
+ *
+ *          Behavior:
+ *            - Validates the list handle and frame_idx (0 to SITUATION_MAX_FRAMES_IN_FLIGHT-1)
+ *            - Acquires the render queue mutex
+ *            - Directly places the list reference into the queue at the requested frame_idx
+ *              (overwriting if already occupied — caller must ensure slot is free or safe)
+ *            - Increments the frame refcount for that slot
+ *            - Signals the render thread condition variable to wake it if idle
+ *            - Releases the mutex
+ *
+ *          Unlike normal enqueue, this bypasses tail/head circular queue logic and forces
+ *          placement at a known frame index (useful when synchronizing with in-flight frames).
+ *
+ * Thread safety invariants:
+ *   - Must be called from a thread that does **not** own the render context
+ *     (typically main thread or thread-pool workers)
+ *   - Queue access protected by `sit_render.render_queue_mutex`
+ *   - Caller must guarantee the target frame_idx slot is either free or safe to overwrite
+ *     (refcount == 0 or previous work completed)
+ *   - **Not** safe to call from the render thread (deadlock on mutex)
+ *
+ * @param list Valid `SituationRenderList` handle that has been previously recorded.
+ *             Must remain valid until the replayed execution completes.
+ * @param frame_idx Specific frame slot index (0 to SITUATION_MAX_FRAMES_IN_FLIGHT-1)
+ *                  where the list should be placed for execution.
+ *                  Invalid indices are ignored (logged as warning).
+ *
+ * @note This is a **forceful** operation — no queue-full check is performed.
+ *       If the slot is still in use (refcount > 0), behavior is undefined
+ *       (possible overwrite, resource leak, or render corruption).
+ *       Errors (invalid list/frame_idx) are logged internally only — function returns void.
+ *       Use with extreme care — prefer normal `SituationSubmitRenderList` paths unless
+ *       you are implementing retry/hot-reload synchronization logic.
+ *
+ * @see _SituationEnqueueRenderList (normal enqueue), _SituationRenderThreadEntry,
+ *      SituationSubmitRenderList, sit_render.render_queue,
+ *      sit_render.frame_refcounts, SITUATION_MAX_FRAMES_IN_FLIGHT
+ */
 static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
     if (!list || list->is_recording) {
         _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "List unfinished or null.");
@@ -15219,8 +15946,49 @@ static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
 }
 
 // --- [INTERNAL] Thread-Safe Queue Push ---
-// This replaces the old _SituationReplayToQueue call.
-// It just puts the pointer in the ring buffer.
+/**
+ * @brief [INTERNAL] Enqueues a render list into the render thread's pending queue.
+ *
+ * @details This low-level function safely adds the given `SituationRenderList` to the
+ *          render queue (`sit_render.render_queue`) for later processing by the dedicated
+ *          render thread. It handles:
+ *            - Acquiring the queue mutex
+ *            - Checking for queue overflow (if full, logs warning and may drop or block)
+ *            - Appending the list index/frame slot to the circular queue
+ *            - Incrementing pending frame count / refcount
+ *            - Signaling the render thread condition variable (`render_queue_cv`)
+ *            - Releasing the mutex
+ *
+ *          Called internally by:
+ *            - `SituationSubmitRenderList` (immediate variant)
+ *            - `_SituationRenderJobWorker` (thread-pool/async variant)
+ *            - Any other deferred render path
+ *
+ *          The render thread will eventually dequeue, execute the list's commands,
+ *          present (if needed), and flush resources when refcount reaches zero.
+ *
+ * Thread safety invariants:
+ *   - Must be called from a thread that does **not** own the render context
+ *     (typically main thread or thread-pool workers)
+ *   - Queue access is protected by `sit_render.render_queue_mutex`
+ *   - Condition variable signal wakes the render thread if it was waiting
+ *   - Safe for concurrent calls (mutex serializes enqueue operations)
+ *   - **Not** safe to call from the render thread itself (deadlock risk)
+ *
+ * @param list Valid `SituationRenderList` handle that has been recorded and ended.
+ *             Must not be already enqueued or destroyed.
+ *
+ * @note This function is non-blocking in normal operation.
+ *       If the queue is full (rare, high backpressure), logs a warning
+ *       (e.g. SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT or similar)
+ *       and may drop the list or block briefly (implementation-defined).
+ *       No return value — errors are logged internally only.
+ *
+ * @see _SituationRenderThreadEntry (dequeue/execution side),
+ *      SituationSubmitRenderList, SituationSubmitRenderList (pool variant),
+ *      sit_render.render_queue, sit_render.render_queue_mutex,
+ *      sit_render.render_queue_cv, SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT
+ */
 static void _SituationEnqueueRenderList(SituationRenderList list) {
     if (!list) return;
 
@@ -15252,7 +16020,43 @@ typedef struct {
     void* user_data;
 } _SitRenderJobCtx;
 
-// The Worker Function (Runs on Thread Pool)
+/**
+ * @brief [INTERNAL] Worker function that processes queued render lists on a thread pool worker.
+ *
+ * @details This function is executed on a thread pool worker when a render list job
+ *          is submitted via `SituationSubmitRenderList(pool, ...)`.
+ *
+ *          It performs the following steps:
+ *            - Retrieves the render list handle and optional callback from the job payload
+ *            - Forwards the render list to the render thread queue (via internal enqueue)
+ *            - Waits (blocks the worker) until the render thread has fully processed the list
+ *              (using fences or refcount zeroing to detect completion)
+ *            - Upon completion, invokes the optional user callback `func(user_data, list)`
+ *              **on this worker thread** (not render thread — safe for user code)
+ *            - Releases any temporary job resources and signals job completion
+ *
+ *          This design allows render list submission from any worker thread without
+ *          blocking the main thread, while still ensuring ordered GPU execution via
+ *          the dedicated render thread.
+ *
+ * Key invariants:
+ *   - The worker blocks until GPU work is complete (synchronous from job perspective)
+ *   - Callback is called on the worker thread (caller must ensure thread-safety)
+ *   - Render thread owns actual command execution / present
+ *   - Job ID can be waited on externally for full completion
+ *
+ * @param data Pointer to the job-specific context (embedded `_SitRenderListJobCtx` or similar).
+ *             Contains: render list handle, callback function, user_data.
+ * @param unused Unused second argument (conforms to `SituationSubmitJobEx` signature)
+ *
+ * @note This worker intentionally blocks to provide backpressure and ordering guarantees.
+ *       For fire-and-forget submission (non-blocking), use a different queue or callback pattern.
+ *       Errors during enqueue or render (e.g. queue full, invalid list) are logged internally.
+ *
+ * @see SituationSubmitRenderList (pool variant), SituationWaitForJob,
+ *      _SituationRenderThreadEntry, SITUATION_ERROR_RENDER_LIST_INCOMPLETE,
+ *      SITUATION_ERROR_THREAD_QUEUE_FULL
+ */
 static void _SituationRenderJobWorker(void* data, void* unused) {
     (void)unused;
     _SitRenderJobCtx* ctx = (_SitRenderJobCtx*)data;
@@ -15270,7 +16074,51 @@ static void _SituationRenderJobWorker(void* data, void* unused) {
     _SituationEnqueueRenderList(ctx->list);
 }
 
-// Public API: Submits the job to the thread pool
+/**
+ * @brief Submits a render list for asynchronous execution on the thread pool.
+ *
+ * @details Queues the given `SituationRenderList` as a job in the specified thread pool,
+ *          where it will be picked up by a worker thread and forwarded to the render thread
+ *          for GPU execution at the next available frame slot.
+ *
+ *          This is the **asynchronous / multi-thread-friendly** variant of render list submission,
+ *          allowing the caller to offload submission from the main thread (e.g. from worker threads,
+ *          background loaders, or parallel simulation loops).
+ *
+ *          After successful submission:
+ *            - Returns a `SituationJobId` that can be waited on via `SituationWaitForJob`
+ *              or `SituationWaitForAllJobs` to know when the list has completed GPU execution
+ *            - When the render thread finishes processing the list, the optional callback
+ *              `func(user_data, list)` is invoked **on the render thread**
+ *            - Resources associated with the list are released when ref-count reaches zero
+ *
+ *          If the job queue is full, submission may block briefly or fail (depending on pool config).
+ *
+ * @param pool Valid `SituationThreadPool` pointer (created via `SituationCreateThreadPool`).
+ *             Must remain valid until the job completes.
+ * @param list Valid `SituationRenderList` handle previously recorded with commands.
+ *             Must not be submitted multiple times without re-recording.
+ * @param func Optional completion callback. Signature: `void func(void* user_data, void* list)`.
+ *             Called on the render thread upon completion. May be NULL.
+ * @param user_data Opaque pointer passed to `func`. Caller manages lifetime/ownership.
+ *
+ * @return A non-zero `SituationJobId` on successful submission (can be used to wait/track),
+ *         0 on failure (queue full, invalid pool/list, allocation error, etc.).
+ *         Failures are logged internally via SITUATION_LOG_WARNING and may set the global
+ *         error state (e.g. SITUATION_ERROR_THREAD_QUEUE_FULL).
+ *
+ * @note This is non-blocking from the caller's perspective (unless queue is full and blocking).
+ *       Actual GPU execution happens asynchronously on the render thread.
+ *       The callback is **not** called if submission fails.
+ *       Thread safety:
+ *         - Safe to call from **any thread** (main, worker, etc.) as long as pool is valid
+ *         - Internal queue mutex + condition variable protect submission
+ *         - Not safe to call from the render thread itself (potential deadlock)
+ *
+ * @see SituationCreateThreadPool, SituationWaitForJob, SituationWaitForAllJobs,
+ *      SituationCreateRenderList, SituationBeginRenderList, SituationEndRenderList,
+ *      SITUATION_ERROR_THREAD_QUEUE_FULL, SITUATION_ERROR_RENDER_LIST_INCOMPLETE
+ */
 SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data) {
     if (!list) return 0;
 
@@ -15287,7 +16135,47 @@ SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, Situa
 #else
 
 // Fallback for Single-Threaded Builds
-// We just run the function immediately and then enqueue the list.
+/**
+ * @brief Submits a pre-recorded render list for execution on the render thread.
+ *
+ * @details Queues the given `SituationRenderList` (a pre-built sequence of draw/dispatch commands)
+ *          to be executed by the dedicated render thread at the next available frame slot.
+ *          This is the primary high-level way to submit rendering work in Situation when using
+ *          the deferred command-buffer model.
+ *
+ *          After submission:
+ *            - The render thread picks up the list when a frame slot becomes free
+ *            - Executes all commands in the list (binds, draws, dispatches, etc.)
+ *            - Calls the optional user-provided callback `func(user_data, list)` upon completion
+ *              (invoked on the **render thread** — caller must ensure callback is thread-safe)
+ *            - Releases any internal resources associated with the list (if ref-count reaches zero)
+ *
+ *          This function is **non-blocking** from the caller's perspective — it returns immediately
+ *          after queuing. Actual GPU work happens asynchronously on the render thread.
+ *
+ * @param list Valid `SituationRenderList` handle previously created and filled with commands
+ *             (via `SituationBeginRenderList`, `SituationCmd*` functions, `SituationEndRenderList`).
+ *             Must not be submitted multiple times without re-recording.
+ * @param func Optional callback invoked on the render thread when the list has finished executing.
+ *             Signature: `void func(void* user_data, void* list)`.
+ *             May be NULL if no completion notification is needed.
+ * @param user_data Opaque pointer passed to `func` when called. Ownership/lifetime is caller-managed.
+ *
+ * @note Errors during submission (invalid list, queue full, etc.) are logged internally
+ *       via SITUATION_LOG_WARNING and may set the global error state, but the function itself
+ *       returns void — no return code is provided.
+ *       The list remains valid after submission until explicitly destroyed or ref-count drops.
+ *       For synchronous wait, use `SituationWaitForRenderList` or `SituationWaitForAllRenderLists`.
+ *
+ *       Thread safety:
+ *         - Safe to call from **main thread** or any non-render-thread context
+ *         - Not safe to call from the render thread itself (deadlock risk on queue mutex)
+ *         - Internal queue is protected by mutex + condition variable
+ *
+ * @see SituationCreateRenderList, SituationBeginRenderList, SituationEndRenderList,
+ *      SituationWaitForRenderList, SituationWaitForAllRenderLists,
+ *      SITUATION_ERROR_RENDER_LIST_INCOMPLETE, SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT
+ */
 SITAPI void SituationSubmitRenderList(SituationRenderList list, void (*func)(void*, void*), void* user_data) {
     if (!list) return;
 
@@ -15428,15 +16316,6 @@ SITAPI uint64_t SituationGetVRAMUsage(void) {
  *
  * @see SituationCreateBuffer(), SituationCmdBindTextureSet()
  */
-// Forward declaration
-SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset);
-
-SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer) {
-    return SituationCmdBindDescriptorSetDynamic(cmd, set_index, buffer, 0);
-}
-
-
-
 SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
@@ -15499,6 +16378,9 @@ SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffe
     return SITUATION_ERROR_NOT_IMPLEMENTED;
 }
 
+SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer) {
+    return SituationCmdBindDescriptorSetDynamic(cmd, set_index, buffer, 0);
+}
 
 
 /**
@@ -15703,6 +16585,22 @@ static _SituationTextureSlot* _SitGetTextureSlot(SituationTexture handle) {
     return slot;
 }
 
+/**
+ * @brief [INTERNAL] Retrieves the internal shader slot for a given handle, with validation.
+ *
+ * @details Performs bounds checking and generation validation on the `SituationShader` handle.
+ *          Returns the corresponding slot pointer if the handle is valid and active,
+ *          otherwise returns NULL (invalid, stale, or freed handle).
+ *
+ *          This is the canonical safe way to access shader data from a public handle
+ *          throughout the library (e.g. in bind, destroy, hot-reload paths).
+ *
+ * @param handle The SituationShader handle to resolve
+ * @return Valid _SituationShaderSlot* if handle is active and matches generation,
+ *         NULL otherwise (invalid handle, out of range, or already freed)
+ *
+ * @see _SitAllocShaderSlot, _SitFreeShaderSlot, SituationShader
+ */
 static _SituationShaderSlot* _SitGetShaderSlot(SituationShader handle) {
     if (handle.slot_index >= SITUATION_MAX_SHADERS) return NULL;
     _SituationShaderSlot* slot = &sit_render.shader_registry[handle.slot_index];
@@ -15710,6 +16608,19 @@ static _SituationShaderSlot* _SitGetShaderSlot(SituationShader handle) {
     return slot;
 }
 
+/**
+ * @brief [INTERNAL] Retrieves the internal mesh slot for a given handle, with validation.
+ *
+ * @details Checks slot index bounds and generation match.
+ *          Returns the slot pointer if the handle is currently active,
+ *          otherwise NULL (invalid, stale generation, or freed).
+ *
+ * @param handle The SituationMesh handle to resolve
+ * @return Valid _SituationMeshSlot* if handle is active,
+ *         NULL otherwise
+ *
+ * @see _SitAllocMeshSlot, _SitFreeMeshSlot, SituationMesh
+ */
 static _SituationMeshSlot* _SitGetMeshSlot(SituationMesh handle) {
     if (handle.slot_index >= SITUATION_MAX_MESHES) return NULL;
     _SituationMeshSlot* slot = &sit_render.mesh_registry[handle.slot_index];
@@ -15717,6 +16628,18 @@ static _SituationMeshSlot* _SitGetMeshSlot(SituationMesh handle) {
     return slot;
 }
 
+/**
+ * @brief [INTERNAL] Retrieves the internal buffer slot for a given handle, with validation.
+ *
+ * @details Validates slot index and generation counter.
+ *          Returns the slot pointer only if the buffer is still active.
+ *
+ * @param handle The SituationBuffer handle to resolve
+ * @return Valid _SituationBufferSlot* if handle is active,
+ *         NULL otherwise
+ *
+ * @see _SitAllocBufferSlot, _SitFreeBufferSlot, SituationBuffer
+ */
 static _SituationBufferSlot* _SitGetBufferSlot(SituationBuffer handle) {
     if (handle.slot_index >= SITUATION_MAX_BUFFERS) return NULL;
     _SituationBufferSlot* slot = &sit_render.buffer_registry[handle.slot_index];
@@ -15724,6 +16647,19 @@ static _SituationBufferSlot* _SitGetBufferSlot(SituationBuffer handle) {
     return slot;
 }
 
+/**
+ * @brief [INTERNAL] Retrieves the internal compute pipeline slot for a given handle, with validation.
+ *
+ * @details Checks bounds and generation match.
+ *          Returns the slot pointer if the pipeline is active,
+ *          otherwise NULL.
+ *
+ * @param handle The SituationComputePipeline handle to resolve
+ * @return Valid _SituationComputePipelineSlot* if handle is active,
+ *         NULL otherwise
+ *
+ * @see _SitAllocComputePipelineSlot, _SitFreeComputePipelineSlot, SituationComputePipeline
+ */
 static _SituationComputePipelineSlot* _SitGetComputePipelineSlot(SituationComputePipeline handle) {
     if (handle.slot_index >= SITUATION_MAX_COMPUTE_PIPELINES) return NULL;
     _SituationComputePipelineSlot* slot = &sit_render.compute_registry[handle.slot_index];
@@ -15731,6 +16667,18 @@ static _SituationComputePipelineSlot* _SitGetComputePipelineSlot(SituationComput
     return slot;
 }
 
+/**
+ * @brief [INTERNAL] Retrieves the internal model slot for a given handle, with validation.
+ *
+ * @details Validates slot index and generation.
+ *          Returns the slot pointer only if the model is still active.
+ *
+ * @param handle The SituationModel handle to resolve
+ * @return Valid _SituationModelSlot* if handle is active,
+ *         NULL otherwise
+ *
+ * @see _SitAllocModelSlot, _SitFreeModelSlot, SituationModel
+ */
 static _SituationModelSlot* _SitGetModelSlot(SituationModel handle) {
     if (handle.slot_index >= SITUATION_MAX_MODELS) return NULL;
     _SituationModelSlot* slot = &sit_render.model_registry[handle.slot_index];
@@ -15738,48 +16686,17 @@ static _SituationModelSlot* _SitGetModelSlot(SituationModel handle) {
     return slot;
 }
 
-static _SituationSoundSlot* _SitGetSoundSlot(SituationSound handle) {
-    if (handle.slot_index >= SITUATION_MAX_LOADED_SOUNDS) return NULL;
-    _SituationSoundSlot* slot = &sit_audio.sound_pool[handle.slot_index];
-    if (!slot->is_active || slot->generation != handle.generation) return NULL;
-    return slot;
-}
-
-static _SituationSoundSlot* _SitAllocSoundSlot(SituationSound* out_handle) {
-    mtx_lock(&sit_audio.pool_mutex);
-    for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; i++) {
-        if (!sit_audio.sound_pool[i].is_active) {
-            _SituationSoundSlot* slot = &sit_audio.sound_pool[i];
-            memset(slot, 0, sizeof(_SituationSoundSlot));
-            slot->is_active = true;
-            slot->generation++;
-            if (slot->generation == 0) slot->generation = 1;
-
-            out_handle->slot_index = i;
-            out_handle->generation = slot->generation;
-
-            mtx_unlock(&sit_audio.pool_mutex);
-            return slot;
-        }
-    }
-    mtx_unlock(&sit_audio.pool_mutex);
-    return NULL;
-}
-
-static void _SitFreeSoundSlot(SituationSound handle) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(handle);
-    if (!slot) return;
-
-    mtx_lock(&sit_audio.pool_mutex);
-    if (slot->source_path) SIT_FREE(slot->source_path);
-    // Note: sound_data cleanup (ma_decoder_uninit) should be done before calling this
-    slot->is_active = false;
-    mtx_unlock(&sit_audio.pool_mutex);
-}
-
 
 // --- Resource Allocation Helpers ---
 
+/**
+ * @brief [INTERNAL] Allocates a free shader slot and returns a new handle.
+ *
+ * @param out_handle Receives the new SituationShader handle on success
+ * @return Pointer to the allocated _SituationShaderSlot, or NULL on failure
+ *
+ * @see _SitFreeShaderSlot, SituationCreateShader, SituationCreateShaderFromSpirv
+ */
 static _SituationShaderSlot* _SitAllocShaderSlot(SituationShader* out_handle) {
     for (int i = 0; i < SITUATION_MAX_SHADERS; i++) {
         if (!sit_render.shader_registry[i].is_active) {
@@ -15797,6 +16714,13 @@ static _SituationShaderSlot* _SitAllocShaderSlot(SituationShader* out_handle) {
     return NULL;
 }
 
+/**
+ * @brief [INTERNAL] Frees a shader slot and releases associated shader modules/programs.
+ *
+ * @param handle The SituationShader handle to free (invalid handles are ignored)
+ *
+ * @see _SitAllocShaderSlot, SituationDestroyShader
+ */
 static void _SitFreeShaderSlot(SituationShader handle) {
     _SituationShaderSlot* slot = _SitGetShaderSlot(handle);
     if (!slot) return;
@@ -15807,6 +16731,14 @@ static void _SitFreeShaderSlot(SituationShader handle) {
     slot->is_active = false;
 }
 
+/**
+ * @brief [INTERNAL] Allocates a free compute pipeline slot and returns a new handle.
+ *
+ * @param out_handle Receives the new SituationComputePipeline handle on success
+ * @return Pointer to the allocated _SituationComputePipelineSlot, or NULL on failure
+ *
+ * @see _SitFreeComputePipelineSlot, SituationCreateComputePipeline
+ */
 static _SituationComputePipelineSlot* _SitAllocComputePipelineSlot(SituationComputePipeline* out_handle) {
     for (int i = 0; i < SITUATION_MAX_COMPUTE_PIPELINES; i++) {
         if (!sit_render.compute_registry[i].is_active) {
@@ -15824,6 +16756,13 @@ static _SituationComputePipelineSlot* _SitAllocComputePipelineSlot(SituationComp
     return NULL;
 }
 
+/**
+ * @brief [INTERNAL] Frees a compute pipeline slot and releases GPU resources.
+ *
+ * @param handle The SituationComputePipeline handle to free (invalid handles are ignored)
+ *
+ * @see _SitAllocComputePipelineSlot, SituationDestroyComputePipeline
+ */
 static void _SitFreeComputePipelineSlot(SituationComputePipeline handle) {
     _SituationComputePipelineSlot* slot = _SitGetComputePipelineSlot(handle);
     if (!slot) return;
@@ -15833,6 +16772,14 @@ static void _SitFreeComputePipelineSlot(SituationComputePipeline handle) {
     slot->is_active = false;
 }
 
+/**
+ * @brief [INTERNAL] Allocates a free mesh slot and returns a new handle.
+ *
+ * @param out_handle Receives the new SituationMesh handle on success
+ * @return Pointer to the allocated _SituationMeshSlot, or NULL on failure
+ *
+ * @see _SitFreeMeshSlot, SituationCreateMesh
+ */
 static _SituationMeshSlot* _SitAllocMeshSlot(SituationMesh* out_handle) {
     for (int i = 0; i < SITUATION_MAX_MESHES; i++) {
         if (!sit_render.mesh_registry[i].is_active) {
@@ -15850,11 +16797,26 @@ static _SituationMeshSlot* _SitAllocMeshSlot(SituationMesh* out_handle) {
     return NULL;
 }
 
+/**
+ * @brief [INTERNAL] Frees a mesh slot and releases associated resources.
+ *
+ * @param handle The SituationMesh handle to free (invalid handles are ignored)
+ *
+ * @see _SitAllocMeshSlot, SituationDestroyMesh
+ */
 static void _SitFreeMeshSlot(SituationMesh handle) {
     _SituationMeshSlot* slot = _SitGetMeshSlot(handle);
     if (slot) slot->is_active = false;
 }
 
+/**
+ * @brief [INTERNAL] Allocates a free buffer slot and returns a new handle.
+ *
+ * @param out_handle Receives the new SituationBuffer handle on success
+ * @return Pointer to the allocated _SituationBufferSlot, or NULL on failure
+ *
+ * @see _SitFreeBufferSlot, SituationCreateBuffer
+ */
 static _SituationBufferSlot* _SitAllocBufferSlot(SituationBuffer* out_handle) {
     for (int i = 0; i < SITUATION_MAX_BUFFERS; i++) {
         if (!sit_render.buffer_registry[i].is_active) {
@@ -15872,11 +16834,27 @@ static _SituationBufferSlot* _SitAllocBufferSlot(SituationBuffer* out_handle) {
     return NULL;
 }
 
+/**
+ * @brief [INTERNAL] Frees a buffer slot and releases GPU/CPU resources.
+ *
+ * @param handle The SituationBuffer handle to free (invalid handles are ignored)
+ *
+ * @see _SitAllocBufferSlot, SituationDestroyBuffer
+ */
 static void _SitFreeBufferSlot(SituationBuffer handle) {
     _SituationBufferSlot* slot = _SitGetBufferSlot(handle);
     if (slot) slot->is_active = false;
 }
 
+/**
+ * @brief [INTERNAL] Allocates a free model slot and returns a new handle.
+ *
+ * @param out_handle Receives the new SituationModel handle on success
+ * @return Pointer to the allocated _SituationModelSlot, or NULL on failure
+ *         (pool full or allocation error)
+ *
+ * @see _SitFreeModelSlot, SituationCreateModel
+ */
 static _SituationModelSlot* _SitAllocModelSlot(SituationModel* out_handle) {
     for (int i = 0; i < SITUATION_MAX_MODELS; i++) {
         if (!sit_render.model_registry[i].is_active) {
@@ -15894,6 +16872,13 @@ static _SituationModelSlot* _SitAllocModelSlot(SituationModel* out_handle) {
     return NULL;
 }
 
+/**
+ * @brief [INTERNAL] Frees a model slot and releases associated resources.
+ *
+ * @param handle The SituationModel handle to free (invalid handles are ignored)
+ *
+ * @see _SitAllocModelSlot, SituationDestroyModel (public API)
+ */
 static void _SitFreeModelSlot(SituationModel handle) {
     _SituationModelSlot* slot = _SitGetModelSlot(handle);
     if (!slot) return;
@@ -15902,28 +16887,100 @@ static void _SitFreeModelSlot(SituationModel handle) {
     slot->is_active = false;
 }
 
-
-
-
+/**
+ * @brief Binds a texture to a specific descriptor set slot in a command buffer.
+ *
+ * @details Records a command that binds the given `SituationTexture` to the specified
+ *          descriptor set index (`set_index`) in the active pipeline layout.
+ *          The texture becomes available for sampling/storage in subsequent draw/dispatch
+ *          commands within the same command buffer.
+ *
+ *          Equivalent to:
+ *            - Vulkan: `vkCmdBindDescriptorSets` (with sampler + image view)
+ *            - OpenGL: `glBindTextureUnit` or legacy `glActiveTexture` + `glBindTexture`
+ *
+ * @param cmd Valid recording command buffer handle
+ * @param set_index Descriptor set index (0-based) in the current pipeline layout
+ * @param texture Valid `SituationTexture` handle to bind
+ *
+ * @return SITUATION_SUCCESS on success,
+ *         SITUATION_ERROR_INVALID_PARAM if cmd not recording or texture invalid,
+ *         SITUATION_ERROR_RESOURCE_INVALID if texture not created/compatible,
+ *         or other backend-specific errors
+ *
+ * @note Must be called after binding the pipeline that uses the layout containing set_index.
+ *       Thread-safe if cmd is thread-owned; otherwise use render thread submission.
+ *
+ * @see SituationCmdBindPipeline, SituationCreateTexture, SituationTexture
+ */
 SITAPI SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture) {
     // This function was already correctly named, so it's a simple wrapper.
     return SituationCmdBindTextureSet(cmd, set_index, texture);
 }
 
 /**
- * @brief Creates a GPU texture from image data.
+ * @brief Creates a GPU texture from a CPU-side image with full control over usage flags.
  *
- * @par Backend-Specific Behavior
- * - **OpenGL:** Allocates immutable texture storage (`glTextureStorage2D`) and uploads pixels via `glTextureSubImage2D`.
- * - **Vulkan:**
- *   1. Creates a `VkImage` and `VkImageView`.
- *   2. Performs a staged transfer via a temporary buffer to upload pixel data to device-local memory.
- *   3. Generates mipmaps via blitting (if requested).
- *   4. **Dynamic Descriptor Allocation:** Allocates a persistent `VkDescriptorSet` from an auto-growing descriptor manager. This eliminates the crash risk associated with running out of descriptor pool slots when loading large numbers of assets.
+ * @details The extended version of `SituationCreateTexture`, allowing the caller to explicitly
+ *          specify the `SituationTextureUsageFlags` bitmask that defines how the texture will
+ *          be used during its lifetime. This is essential for performance and correctness when
+ *          the texture will be used in compute shaders, render targets, transfer operations,
+ *          or other non-default scenarios.
  *
- * @param image The CPU-side image data.
- * @param generate_mipmaps If true, generates a full mipmap chain.
- * @return A valid `SituationTexture` handle, or `{0}` on failure.
+ *          Core behavior:
+ *            - Uploads the base-level pixel data from the `SituationImage` to GPU memory
+ *            - Optionally generates a full mipmap chain if `generate_mipmaps` is true
+ *            - Creates the texture with exactly the requested usage flags (Vulkan: usage bits;
+ *              OpenGL: inferred from usage to set appropriate storage/texture parameters)
+ *            - Returns a `SituationTexture` handle ready for binding/sampling
+ *
+ *          Required usage flags (caller responsibility):
+ *            - `SITUATION_TEXTURE_USAGE_TRANSFER_DST` — almost always needed for initial upload
+ *            - `SITUATION_TEXTURE_USAGE_SAMPLED` — if the texture will be sampled in shaders
+ *            - `SITUATION_TEXTURE_USAGE_STORAGE` — if used as storage image in compute
+ *            - `SITUATION_TEXTURE_USAGE_TRANSFER_SRC` — required when `generate_mipmaps` is true
+ *              (for internal blit operations during mipmap generation)
+ *            - `SITUATION_TEXTURE_USAGE_COLOR_ATTACHMENT` — if used as render target
+ *            - `SITUATION_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT` — for depth/stencil textures
+ *
+ *          Invalid or insufficient flags result in error (e.g. mipmaps requested without TRANSFER_SRC).
+ *
+ * @param image Valid `SituationImage` handle with source pixel data.
+ *              Dimensions, format, and channels must be compatible with texture creation.
+ * @param generate_mipmaps If true, generates a complete mipmap pyramid after base-level upload.
+ *                         Requires `SITUATION_TEXTURE_USAGE_TRANSFER_SRC` in `usage_flags`.
+ * @param usage_flags Bitmask of `SituationTextureUsageFlags` values (OR-ed) specifying all
+ *                    intended usages of the texture. Must include at least TRANSFER_DST for upload.
+ * @param out_texture Pointer to a `SituationTexture` variable that receives the new handle on success.
+ *                    On failure, set to `SITUATION_NULL_TEXTURE`.
+ *
+ * @return SITUATION_SUCCESS on successful creation and upload,
+ *         SITUATION_ERROR_INVALID_PARAM if image invalid, flags inconsistent, or out_texture NULL,
+ *         SITUATION_ERROR_RESOURCE_INVALID if image format unsupported or mipmaps requested
+ *         without TRANSFER_SRC,
+ *         SITUATION_ERROR_MEMORY_ALLOCATION if GPU memory allocation failed,
+ *         SITUATION_ERROR_BACKEND_SPECIFIC if Vulkan/GL texture creation/upload/blit failed,
+ *         or other appropriate error codes.
+ *
+ * @note This is the low-level, flexible entry point — use `SituationCreateTexture` for the
+ *       common case with automatic/default flags.
+ *
+ *       Performance considerations:
+ *         - Mipmap generation uses hardware blit (fast on modern GPUs) but still adds cost
+ *         - Including unnecessary flags may increase memory usage or prevent optimal tiling
+ *         - Upload is synchronous from caller perspective; actual GPU work may be queued
+ *
+ *       Thread safety:
+ *         - Safe from main thread or non-context-owning threads
+ *         - Internal synchronization ensures safe concurrent creation
+ *         - Avoid calling from render thread during active command recording that uses the texture
+ *
+ *       Caller must destroy the texture with `SituationDestroyTexture` when done.
+ *
+ * @see SituationCreateTexture (convenience wrapper), SituationCreateImage,
+ *      SituationDestroyTexture, SituationSetTextureSamplerParams,
+ *      SituationTextureUsageFlags, SITUATION_TEXTURE_USAGE_xxx constants,
+ *      SITUATION_NULL_TEXTURE, SITUATION_ERROR_RESOURCE_INVALID
  */
 SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool generate_mipmaps, SituationTextureUsageFlags usage_flags, SituationTexture* out_texture) {
     fprintf(stderr, "[SituationCreateTextureEx] ENTRY: usage_flags=0x%x\n", usage_flags);
@@ -16291,6 +17348,60 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     return SITUATION_SUCCESS;
 }
 
+/**
+ * @brief Creates a GPU texture from an existing CPU-side image, with optional mipmap generation.
+ *
+ * @details Convenience wrapper around `SituationCreateTextureEx` that automatically computes
+ *          appropriate `SituationTextureUsageFlags` based on the requested mipmap generation.
+ *
+ *          Default usage flags always include:
+ *            - `SITUATION_TEXTURE_USAGE_SAMPLED` (for texture sampling in shaders)
+ *            - `SITUATION_TEXTURE_USAGE_STORAGE` (for potential compute/storage access)
+ *            - `SITUATION_TEXTURE_USAGE_TRANSFER_DST` (required for upload from CPU/image)
+ *
+ *          If `generate_mipmaps` is true, also adds:
+ *            - `SITUATION_TEXTURE_USAGE_TRANSFER_SRC` (needed for internal blit operations
+ *              during mipmap chain generation)
+ *
+ *          The function performs the full GPU upload of the base image level and, if requested,
+ *          generates the complete mipmap pyramid using hardware-accelerated blit commands
+ *          (glGenerateMipmap on OpenGL, vkCmdBlitImage on Vulkan).
+ *
+ *          After success, the resulting texture is immediately usable for sampling or binding.
+ *          The source `SituationImage` can be destroyed afterward if no longer needed on CPU.
+ *
+ * @param image Valid `SituationImage` handle containing the source pixel data.
+ *              Must have valid dimensions, channels, and format compatible with texture creation.
+ * @param generate_mipmaps If true, generates a full mipmap chain (recommended for most textures
+ *                         that will be minified). If false, only the base level is uploaded.
+ * @param out_texture Pointer to a `SituationTexture` variable that receives the new texture handle
+ *                    on success. On failure, set to `SITUATION_NULL_TEXTURE`.
+ *
+ * @return SITUATION_SUCCESS on successful upload and texture creation,
+ *         SITUATION_ERROR_INVALID_PARAM if image is invalid or out_texture is NULL,
+ *         SITUATION_ERROR_RESOURCE_INVALID if image format/channels are unsupported,
+ *         SITUATION_ERROR_MEMORY_ALLOCATION if GPU memory allocation failed,
+ *         SITUATION_ERROR_BACKEND_SPECIFIC if Vulkan/GL texture creation/upload failed,
+ *         or other appropriate error codes propagated from `SituationCreateTextureEx`.
+ *
+ * @note This is the most commonly used texture creation entry point — it provides sensible
+ *       defaults while still allowing full control via the `Ex` variant when needed.
+ *       Mipmap generation adds a small GPU cost (especially for large textures) but greatly
+ *       improves quality when minification occurs.
+ *
+ *       Thread safety:
+ *       - Safe to call from the main thread or any thread that does not own the render context
+ *       - Internal synchronization ensures safe concurrent creation
+ *       - Actual GPU upload may be deferred to render thread or staging queue
+ *
+ *       Caller is responsible for destroying the texture with `SituationDestroyTexture`.
+ *
+ * @see SituationCreateTextureEx, SituationCreateImage, SituationCreateImageFromMemory,
+ *      SituationDestroyTexture, SituationSetTextureSamplerParams,
+ *      SITUATION_TEXTURE_USAGE_SAMPLED, SITUATION_TEXTURE_USAGE_STORAGE,
+ *      SITUATION_TEXTURE_USAGE_TRANSFER_DST, SITUATION_TEXTURE_USAGE_TRANSFER_SRC,
+ *      SITUATION_NULL_TEXTURE
+ */
 SITAPI SituationError SituationCreateTexture(SituationImage image, bool generate_mipmaps, SituationTexture* out_texture) {
     SituationTextureUsageFlags flags = (SituationTextureUsageFlags)(SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_TRANSFER_DST);
     if (generate_mipmaps) flags = (SituationTextureUsageFlags)(flags | SITUATION_TEXTURE_USAGE_TRANSFER_SRC);
@@ -16721,7 +17832,7 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
  * @note It is safe to call this function on a NULL pointer or an already-destroyed (zeroed) buffer handle; it will simply do nothing.
  * @note **Performance:** On Vulkan, this function uses deferred destruction and does NOT stall the GPU.
  */
-SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {;
+SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
     if (!buffer) return;
     _SituationBufferSlot* slot = _SitGetBufferSlot(*buffer);
     if (!slot) return;
@@ -16839,7 +17950,7 @@ SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_co
  *
  * @see SituationCreateMesh()
  */
-SITAPI void SituationDestroyMesh(SituationMesh* mesh) {;
+SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
     if (!mesh) return;
     _SituationMeshSlot* slot = _SitGetMeshSlot(*mesh);
     if (!slot) return;
@@ -17149,6 +18260,55 @@ static GLuint _SituationCreateGLShaderProgramAsync(const char* vs_src, const cha
     return program;
 }
 
+/**
+ * @brief [INTERNAL] Creates and links a complete OpenGL shader program from vertex and fragment GLSL source strings.
+ *
+ * @details This is a low-level helper function that performs the full OpenGL shader creation pipeline:
+ *            1. Creates vertex and fragment shader objects
+ *            2. Attaches the provided source strings (`vs_src` and `fs_src`)
+ *            3. Compiles both shaders individually
+ *            4. Checks compilation status and logs errors/info logs on failure
+ *            5. Creates and links the program object
+ *            6. Checks link status and logs errors/info logs on failure
+ *            7. Cleans up intermediate shader objects on success or failure
+ *
+ *          Intended for use during shader creation, hot-reload, internal quad/compute pipelines,
+ *          or when SPIR-V binary path is unavailable (e.g. no GL_ARB_gl_spirv extension).
+ *
+ *          On success, returns a valid `GLuint` program name that must be deleted later
+ *          with `glDeleteProgram` (typically via graveyard/deferred cleanup in render thread).
+ *
+ * @param vs_src Null-terminated string containing the vertex shader GLSL source code.
+ *               Must remain valid for the duration of the call.
+ * @param fs_src Null-terminated string containing the fragment shader GLSL source code.
+ *               Must remain valid for the duration of the call.
+ * @param error_code Pointer to a `SituationError` variable that receives the detailed error code
+ *                   on failure. On success, set to `SITUATION_SUCCESS`.
+ *                   May be NULL if the caller does not need the error detail.
+ *
+ * @return A valid OpenGL program object name (`GLuint`) on success,
+ *         0 on failure (compilation or linking error).
+ *         On failure, `*error_code` is set to an appropriate value:
+ *           - SITUATION_ERROR_SHADER_COMPILATION_FAILED (vertex or fragment compile error)
+ *           - SITUATION_ERROR_SHADER_LINK_FAILED (program link error)
+ *           - SITUATION_ERROR_INVALID_PARAM (null source strings)
+ *           - SITUATION_ERROR_GL_ERROR (underlying GL call failed)
+ *
+ * Thread safety invariants:
+ *   - Must be called from a thread that has an active OpenGL context (typically render thread
+ *     or main thread during init/hot-reload)
+ *   - No internal locking — caller must ensure no concurrent GL calls on the same context
+ *   - Safe during hot-reload if old programs are deleted first
+ *
+ * @note In debug builds, full GLSL compile/link info logs are printed to stderr on failure.
+ *       In release builds, only high-level errors are logged.
+ *       The function does **not** validate GLSL syntax beyond what the driver reports.
+ *       Shader objects are always detached and deleted — caller only needs to manage the returned program.
+ *
+ * @see _SituationCreateGLShaderProgramFromSpirv, _SituationCreateGLComputeProgramFromSpirv,
+ *      glCreateShader, glShaderSource, glCompileShader, glCreateProgram, glLinkProgram,
+ *      SITUATION_ERROR_SHADER_COMPILATION_FAILED, SITUATION_ERROR_SHADER_LINK_FAILED
+ */
 static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs_src, SituationError* error_code) {
     if (!vs_src || !fs_src) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Null shader source");
@@ -17460,28 +18620,10 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
     VkPipelineLayout layout = sit_render.vk.compute_layouts[layout_type];
     if (layout == VK_NULL_HANDLE) layout = sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_ONE_SSBO]; // Fallback
 
-    SituationComputePipeline temp_pipe = _SituationVulkanCreateComputePipeline(cs_spirv.data, cs_spirv.size, layout);
-    _SituationFreeSpirvBlob(&cs_spirv);
-
-    if (temp_pipe.id == 0) { // Check opaque ID logic from helper (wait, helper returns old struct, we need to adapt)
-         _SitFreeComputePipelineSlot(handle);
-         return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
-    }
-
-    // Extract from temp struct (legacy helper return)
-    // Note: _SituationVulkanCreateComputePipeline returned a struct with vk_pipeline inside.
-    // I need to check its implementation. Assuming it returns { id, vk_pipeline, layout }.
-
-    // Accessing internal members of returned struct is tricky if I replaced definition in API but not helper return type.
-    // The helper  returns .
-    // Since I changed the typedef of  to be {index, gen}, the helper implementation is now broken/incompatible!
-    // I MUST UPDATE THE HELPER implementation too.
-
-    // For now, let's assume I fix the helper to return backend handles or I inline logic here.
-    // Let's inline logic here to be safe and remove reliance on the broken helper.
-
-    // INLINED LOGIC FROM _SituationVulkanCreateComputePipeline:
+    // INLINED LOGIC:
     VkShaderModule shaderModule = _SituationVulkanCreateShaderModule(cs_spirv.data, cs_spirv.size);
+    _SituationFreeSpirvBlob(&cs_spirv); // Free the blob immediately after creating the module
+
     if (shaderModule == VK_NULL_HANDLE) {
          _SitFreeComputePipelineSlot(handle);
          return SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED;
@@ -17508,24 +18650,13 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
 #else
     _SitFreeComputePipelineSlot(handle);
     return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Vulkan compute requires shader compiler.");
-#endif
+#endif // SITUATION_ENABLE_SHADER_COMPILER
 
-#endif
+#endif // SITUATION_USE_VULKAN
 
     *out_pipeline = handle;
     return SITUATION_SUCCESS;
 }
-
-
-
-/**
- * @brief Creates a compute pipeline by loading GLSL source code from a file.
- *
-
-
-/**
- * @brief Creates a compute pipeline by loading GLSL source code from a file.
- *
 
 
 /**
@@ -17587,7 +18718,7 @@ SITAPI SituationError SituationCreateComputePipeline(const char* compute_shader_
  *
  * @see SituationCreateComputePipeline(), SituationCreateComputePipelineFromMemory()
  */
-SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) {;
+SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) {
     if (!pipeline) return;
     _SituationComputePipelineSlot* slot = _SitGetComputePipelineSlot(*pipeline);
     if (!slot) return;
@@ -17688,6 +18819,59 @@ static void _SituationCleanupDanglingResources(void) {
 
 
 /**
+ * @brief Updates a portion (or all) of an existing buffer's contents with new data.
+ *
+ * @details Copies `size` bytes from the provided `data` pointer into the specified buffer,
+ *          starting at byte offset `offset`. This is the primary way to update dynamic
+ *          vertex buffers, index buffers, uniform buffers, storage buffers, staging buffers,
+ *          or any other GPU-accessible buffer managed by the Situation library.
+ *
+ *          Supports partial updates (sub-region only) and full-buffer overwrites
+ *          (when `offset == 0` and `size == buffer_size`).
+ *
+ *          Behavior depends on buffer usage flags and backend:
+ *            - **Staging / CPU-writable buffers**: direct memcpy to mapped memory (fast)
+ *            - **Device-local / GPU-only buffers**: may trigger staging copy via internal
+ *              transfer queue or immediate command recording (slower, may block)
+ *            - **Persistent mapped buffers**: direct write to persistent mapping
+ *
+ *          The update is **synchronous** from the caller's perspective — the data is guaranteed
+ *          to be visible to subsequent GPU commands after this function returns (subject to
+ *          proper pipeline barriers/sync inserted by the library).
+ *
+ * @param buffer Valid `SituationBuffer` handle created via `SituationCreateBuffer` or similar.
+ *               Must support writing (not read-only).
+ * @param offset Byte offset into the buffer where the update begins (0 = start of buffer).
+ *               Must be < buffer size.
+ * @param size Number of bytes to copy from `data`. Must satisfy `offset + size <= buffer size`.
+ * @param data Pointer to the source data to copy into the buffer.
+ *             Must remain valid for the duration of the call.
+ *             Ownership is **not** transferred — caller retains the source buffer.
+ *
+ * @return SITUATION_SUCCESS on successful update,
+ *         SITUATION_ERROR_INVALID_PARAM if buffer is invalid, offset+size out of bounds,
+ *         or data is NULL when size > 0,
+ *         SITUATION_ERROR_RESOURCE_INVALID if buffer is not writable (read-only usage),
+ *         SITUATION_ERROR_MEMORY_ACCESS if mapping failed or staging allocation failed,
+ *         SITUATION_ERROR_BACKEND_SPECIFIC if Vulkan/GL operation failed (e.g. out of device memory),
+ *         or other appropriate error codes.
+ *
+ * @note Performance:
+ *       - Fastest for persistently mapped or staging buffers
+ *       - Slower for device-local buffers (implicit staging/transfer)
+ *       - Avoid frequent small updates on device-local buffers — batch changes or use persistent mapping
+ *
+ *       Thread safety:
+ *       - Safe to call from **main thread** or any thread that does not hold the render context
+ *       - Internal synchronization ensures safe concurrent updates (if buffer allows)
+ *       - Not safe to call from the render thread while recording commands that use the buffer
+ *
+ *       After update, the new data is visible to shaders/pipelines in subsequent command buffers.
+ *       No explicit barrier is required unless you are reading back or using cross-queue access.
+ *
+ * @see SituationCreateBuffer, SituationMapBuffer, SituationUnmapBuffer,
+ *      SituationCreateBufferFromData (for initial upload),
+ *      SITUATION_ERROR_INVALID_PARAM, SITUATION_ERROR_RESOURCE_INVALID
  */
 SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offset, size_t size, const void* data) {
     if (!data) return SITUATION_ERROR_INVALID_PARAM;
@@ -18169,7 +19353,53 @@ SITAPI SituationInitState SituationGetInitState(void) {
 
 
 /**
- * @brief Checks if a specific graphics feature is supported and enabled on the current hardware.
+ * @brief Queries whether a specific rendering feature is supported on the current platform/backend.
+ *
+ * @details Returns true if the given render feature (or combination of features when using a bitmask)
+ *          is fully supported by the active graphics backend (OpenGL or Vulkan) and current hardware/driver.
+ *
+ *          This function supports **bitmask queries** — you can pass a combination of features using bitwise OR
+ *          (e.g. `SITUATION_FEATURE_COMPUTE | SITUATION_FEATURE_MESH_SHADING`). In mask mode, the function
+ *          returns true **only if all requested features are supported** (logical AND semantics).
+ *
+ *          Typical use cases:
+ *            - Runtime feature detection for enabling/disabling advanced effects
+ *            - Graceful degradation (fall back to simpler shaders/pipelines)
+ *            - Conditional UI options in tools/editors
+ *            - Logging supported feature set at startup
+ *
+ *          Supported features are defined in the `SituationRenderFeature` enum and include (but are not limited to):
+ *            - Compute shaders
+ *            - Mesh/task shaders
+ *            - Ray tracing acceleration structures
+ *            - Variable rate shading
+ *            - Bindless resources
+ *            - Multi-draw indirect
+ *            - Etc.
+ *
+ * @param feature A single `SituationRenderFeature` value **or** a bitmask of multiple features combined with `|`.
+ *                Passing 0 always returns true (no features requested).
+ *
+ * @return true if **all** requested features (or the single feature) are supported by the current backend/hardware,
+ *         false otherwise.
+ *         Returns true for unknown/undefined feature bits (safe default).
+ *
+ * @note This is a fast, cached query — results are determined during initialization (`SituationInit`)
+ *       by checking extension strings, device properties, feature structs (Vulkan), or GL version/extensions.
+ *       Thread-safe and non-blocking — safe to call from any thread at any time after init.
+ *       Result does **not** change during the application lifetime unless the backend is reinitialized.
+ *
+ *       **Mask behavior example:**
+ *       ```c
+ *       if (SituationIsFeatureSupported(SITUATION_FEATURE_COMPUTE | SITUATION_FEATURE_MESH_SHADING)) {
+ *           // Use advanced compute + mesh pipeline
+ *       } else if (SituationIsFeatureSupported(SITUATION_FEATURE_COMPUTE)) {
+ *           // Fallback to compute only
+ *       }
+ *       ```
+ *
+ * @see SituationRenderFeature (enum), SituationInit,
+ *      SituationGetRendererBackend (if exists), SITUATION_FEATURE_xxx constants
  */
 SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature) {
     if (!SituationIsInitialized()) return false;
@@ -19240,125 +20470,6 @@ SITAPI int SituationExecuteCommand(const char *cmd, char **output) {
 #endif
 }
 
-// --- Monitor Enum Proc for Physical Displays (Windows-specific) ---
-#if defined(_WIN32)
-typedef struct {
-    SituationDisplayInfo* displays_array;
-    int current_display_idx;
-    int max_displays;
-    GLFWmonitor** glfw_monitors;
-    int glfw_monitor_count;
-} _SituationMonitorEnumData;
-
-/**
- * @brief [INTERNAL] Win32 callback function for enumerating and collecting physical display information.
- * @details This function is the core of the display enumeration logic on the Windows platform. It is designed to be passed as a callback to the Win32 API function `EnumDisplayMonitors`.
- *          For each monitor detected by the operating system, Windows invokes this function, providing a handle to the monitor.
- *
- * @par Function Workflow
- *   For each monitor passed to it, this function performs the following steps:
- *   1.  **Get Detailed Info:** Uses `GetMonitorInfoExA` to retrieve the monitor's unique device name (e.g., `\\.\DISPLAY1`) and determine if it is the primary display.
- *   2.  **Match with GLFW:** It attempts to correlate the Win32 monitor handle with a `GLFWmonitor` handle by comparing their screen coordinates. This is crucial for bridging the gap between the low-level OS information and the GLFW context used for windowing.
- *   3.  **Query Current Mode:** It uses `EnumDisplaySettingsA` to get the monitor's current resolution, refresh rate, and color depth.
- *   4.  **Enumerate All Modes:** It repeatedly calls `EnumDisplaySettingsA` in a loop to build a comprehensive, de-duplicated list of all video modes supported by the display.
- *   5.  **Store Data:** All of this collected information is stored in the next available `SituationDisplayInfo` struct within the array provided via the `dwData` parameter.
- *
- * @param hMonitor A handle to the display monitor, provided by the Win32 API.
- * @param hdcMonitor A handle to a device context for the monitor (unused).
- * @param lprcMonitor A pointer to a rectangle specifying the monitor's display area (unused).
- * @param dwData A user-defined value passed from the `EnumDisplayMonitors` call. In this library, it is a pointer to a `_SituationMonitorEnumData` struct, which contains the destination array and state for the enumeration process.
- *
- * @return `TRUE` to continue the enumeration to the next monitor. `FALSE` would halt the process.
- *
- * @note This function is platform-specific to Windows and is only compiled on `_WIN32`.
- * @warning This is a low-level callback and is not part of the public API. It should never be called directly.
- *
- * @see _SituationCachePhysicalDisplays(), EnumDisplayMonitors()
- */
-static BOOL CALLBACK _SituationMonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
-    (void)hdcMonitor; (void)lprcMonitor;
-    _SituationMonitorEnumData* enum_data = (_SituationMonitorEnumData*)dwData;
-    if (enum_data->current_display_idx >= enum_data->max_displays) return TRUE;
-
-    MONITORINFOEXA monitor_info_ex = {};
-    monitor_info_ex.cbSize = sizeof(MONITORINFOEXA);
-    if (GetMonitorInfoA(hMonitor, (LPMONITORINFO)&monitor_info_ex)) {
-        SituationDisplayInfo* display = &enum_data->displays_array[enum_data->current_display_idx];
-        strncpy(display->name, monitor_info_ex.szDevice, SITUATION_MAX_MONITOR_NAME_LEN-1);
-        display->name[SITUATION_MAX_MONITOR_NAME_LEN-1] = '\0';
-        display->is_primary = (monitor_info_ex.dwFlags & MONITORINFOF_PRIMARY) != 0;
-        display->situation_monitor_id = enum_data->current_display_idx;
-        display->glfw_monitor_handle = NULL;
-
-        for (int i = 0; i < enum_data->glfw_monitor_count; ++i) {
-            int gx, gy;
-            glfwGetMonitorPos(enum_data->glfw_monitors[i], &gx, &gy);
-            if (monitor_info_ex.rcMonitor.left == gx && monitor_info_ex.rcMonitor.top == gy) {
-                display->glfw_monitor_handle = enum_data->glfw_monitors[i];
-                break;
-            }
-        }
-        if (!display->glfw_monitor_handle && display->is_primary) {
-             display->glfw_monitor_handle = glfwGetPrimaryMonitor();
-        }
-
-        DEVMODEA current_dev_mode = { .dmSize = sizeof(DEVMODEA), .dmDriverExtra = 0 };
-        if (EnumDisplaySettingsA(monitor_info_ex.szDevice, ENUM_CURRENT_SETTINGS, &current_dev_mode)) {
-            display->current_mode.width = current_dev_mode.dmPelsWidth;
-            display->current_mode.height = current_dev_mode.dmPelsHeight;
-            display->current_mode.refresh_rate = current_dev_mode.dmDisplayFrequency;
-            display->current_mode.color_depth = current_dev_mode.dmBitsPerPel;
-        } else {memset(&display->current_mode, 0, sizeof(SituationDisplayMode));}
-
-        #define TEMP_MAX_MODES_ENUM 256
-        SituationDisplayMode temp_modes_buffer[TEMP_MAX_MODES_ENUM];
-        int unique_modes_count = 0;
-        DEVMODEA available_dev_mode = { .dmSize = sizeof(DEVMODEA), .dmDriverExtra = 0 };
-        int mode_idx_counter = 0;
-
-        while (EnumDisplaySettingsA(monitor_info_ex.szDevice, mode_idx_counter++, &available_dev_mode)) {
-            if (available_dev_mode.dmBitsPerPel < 16) continue;
-            bool is_duplicate = false;
-            for (int k = 0; k < unique_modes_count; ++k) {
-                if (temp_modes_buffer[k].width == (int)available_dev_mode.dmPelsWidth &&
-                    temp_modes_buffer[k].height == (int)available_dev_mode.dmPelsHeight &&
-                    temp_modes_buffer[k].refresh_rate == (int)available_dev_mode.dmDisplayFrequency &&
-                    temp_modes_buffer[k].color_depth == (int)available_dev_mode.dmBitsPerPel) {
-                    is_duplicate = true;
-                    break;
-                }
-            }
-            if (!is_duplicate) {
-                if (unique_modes_count < TEMP_MAX_MODES_ENUM) {
-                    temp_modes_buffer[unique_modes_count].width = available_dev_mode.dmPelsWidth;
-                    temp_modes_buffer[unique_modes_count].height = available_dev_mode.dmPelsHeight;
-                    temp_modes_buffer[unique_modes_count].refresh_rate = available_dev_mode.dmDisplayFrequency;
-                    temp_modes_buffer[unique_modes_count].color_depth = available_dev_mode.dmBitsPerPel;
-                    unique_modes_count++;
-                } else { break; }
-            }
-            memset(&available_dev_mode, 0, sizeof(DEVMODEA));
-            available_dev_mode.dmSize = sizeof(DEVMODEA);
-        }
-
-        if (unique_modes_count > 0) {
-            display->available_modes = (SituationDisplayMode*)SIT_MALLOC(unique_modes_count * sizeof(SituationDisplayMode));
-            if (display->available_modes) {
-                memcpy(display->available_modes, temp_modes_buffer, unique_modes_count * sizeof(SituationDisplayMode));
-                display->available_mode_count = unique_modes_count;
-            } else {
-                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Available display modes array");
-                display->available_mode_count = 0;
-            }
-        } else {
-            display->available_modes = NULL;
-            display->available_mode_count = 0;
-        }
-        enum_data->current_display_idx++;
-    }
-    return TRUE;
-}
-#endif
 
 #if defined(_WIN32)
     #include <direct.h> // For _mkdir _rmdir
@@ -19400,10 +20511,44 @@ static char* _sit_wide_to_utf8(const WCHAR* wide_str) {
 // --- Path Management & Special Directories ---
 
 /**
- * @brief Get a safe, persistent path for saving application data (e.g., %APPDATA%/AppName).
- * @warning The returned string is dynamically allocated. The caller is **responsible for freeing this memory** using `free()`.
- * @param app_name The name of your application, used to create the final subdirectory.
- * @return A new string containing the full path, or NULL on failure.
+ * @brief Returns a platform-appropriate, writable path for storing application-specific save data.
+ *
+ * @details Constructs and returns a null-terminated string containing a standard, user-writable
+ *          directory path suitable for saving persistent application data (savegames, settings,
+ *          preferences, cache, etc.). The returned path is guaranteed to exist (created if needed)
+ *          and to be unique per application name.
+ *
+ *          Platform-specific behavior:
+ *            - **Windows**: Typically `C:\Users\<Username>\AppData\Roaming\<AppName>` or
+ *              `C:\Users\<Username>\Documents\<AppName>`
+ *            - **macOS**: `~/Library/Application Support/<AppName>`
+ *            - **Linux**: `~/.local/share/<AppName>` (XDG_DATA_HOME compliant)
+ *
+ *          The function uses platform-native APIs (SHGetKnownFolderPath on Windows, etc.) to
+ *          locate the correct standard location, appends the sanitized `app_name`, and ensures
+ *          the directory exists by creating it if necessary.
+ *
+ * @param app_name Null-terminated string identifying your application (e.g. "MyGame", "SuperEditor").
+ *                 Should be short, alphanumeric, no spaces or special characters (they are sanitized).
+ *                 Passing NULL or empty string returns a generic/default path (may be less reliable).
+ *
+ * @return A newly allocated, null-terminated string containing the full path to the app's save directory
+ *         (caller must free with `SIT_FREE` when no longer needed).
+ *         Returns NULL on failure (invalid app_name, directory creation failed, out of memory, etc.).
+ *         In case of failure, an appropriate error is logged internally and may set the global
+ *         `SituationError` state (e.g. SITUATION_ERROR_PATH_INVALID, SITUATION_ERROR_PERMISSION_DENIED).
+ *
+ * @note The returned path always ends with a platform-appropriate separator (`\` or `/`).
+ *       The function creates the directory (and any missing parents) automatically — no need
+ *       to call `SituationCreateDirectory` beforehand.
+ *       Safe to call multiple times with the same `app_name` — always returns the same path.
+ *       Thread-safe (no shared mutable state).
+ *
+ *       **Ownership rule**: Caller **must** free the returned pointer with `SIT_FREE` after use,
+ *       even if you only use it temporarily.
+ *
+ * @see SituationGetBasePath, SituationCreateDirectory, SituationJoinPath,
+ *      SIT_FREE, SITUATION_ERROR_PATH_NOT_FOUND, SITUATION_ERROR_PERMISSION_DENIED
  */
 SITAPI char* SituationGetAppSavePath(const char* app_name) {
     if (!app_name || app_name[0] == '\0') {
@@ -20248,11 +21393,49 @@ static char* SituationGetBasePathFromFile(const char* file_path) {
 }
 
 /**
- * @brief Load an entire file into a memory buffer.
- * @warning The returned buffer is dynamically allocated. The caller is **responsible for freeing this memory** using `free()`.
- * @param file_path The path to the file to load.
- * @param out_bytes_read A pointer that will be filled with the number of bytes read.
- * @return A new buffer containing the file data, or NULL on failure.
+ * @brief Loads the entire contents of a file into a newly allocated memory buffer.
+ *
+ * @details Reads the complete file at the given path into a contiguous block of memory
+ *          allocated with `SIT_MALLOC`. The caller receives ownership of the buffer and
+ *          is responsible for freeing it with `SIT_FREE` when no longer needed.
+ *
+ *          This is the preferred low-level function for reading binary files (images,
+ *          models, shaders, audio samples, serialized data, etc.) when you want full
+ *          control over the data and do not need text-specific handling (e.g. null-termination).
+ *
+ *          Advantages over higher-level functions:
+ *            - No size limit other than available memory
+ *            - Exact byte-for-byte copy of file contents (no encoding assumptions)
+ *            - Efficient for large files (single read call when possible)
+ *
+ * @param file_path Null-terminated path to the file (relative or absolute).
+ *                  Path separator must match the platform (`/` or `\`).
+ * @param out_bytes_read Pointer to an unsigned int that receives the actual number of bytes read.
+ *                       On success, equals the file size. On failure, set to 0.
+ *                       May be NULL if the caller does not need the size.
+ * @param out_data Pointer to an `unsigned char*` that receives the allocated buffer address.
+ *                 On success, points to a newly allocated block of size `*out_bytes_read`.
+ *                 On failure, set to NULL.
+ *                 Caller must free this pointer with `SIT_FREE` when done.
+ *
+ * @return SITUATION_SUCCESS on successful read and allocation,
+ *         SITUATION_ERROR_PATH_NOT_FOUND if the file does not exist,
+ *         SITUATION_ERROR_PERMISSION_DENIED if access is denied,
+ *         SITUATION_ERROR_DISK_FULL if allocation failed (out of memory),
+ *         SITUATION_ERROR_FILE_ACCESS for other I/O errors (e.g. read failure, device error),
+ *         SITUATION_ERROR_INVALID_PARAM if `file_path` is NULL or empty,
+ *         or other appropriate error codes.
+ *
+ * @note The returned buffer is **not** null-terminated (suitable for binary data).
+ *       For text files, prefer `SituationLoadFileText` which adds null-termination.
+ *       Large files may take significant time and memory — consider async alternatives
+ *       (`SituationLoadFileAsync`) for non-blocking loading in interactive applications.
+ *       On success, always free `*out_data` even if you only read part of it.
+ *
+ * @see SituationLoadFileText, SituationLoadFileAsync,
+ *      SituationSaveFileData, SIT_FREE,
+ *      SITUATION_ERROR_PATH_NOT_FOUND, SITUATION_ERROR_FILE_ACCESS,
+ *      SITUATION_ERROR_MEMORY_ALLOCATION
  */
 SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read, unsigned char** out_data) {
     if (out_data) *out_data = NULL;
@@ -20464,18 +21647,176 @@ SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
     return (SituationSaveFileData(file_path, text, len) == SITUATION_SUCCESS);
 }
 
+// --- Monitor Enum Proc for Physical Displays (Windows-specific) ---
+#if defined(_WIN32)
+typedef struct {
+    SituationDisplayInfo* displays_array;
+    int current_display_idx;
+    int max_displays;
+    GLFWmonitor** glfw_monitors;
+    int glfw_monitor_count;
+} _SituationMonitorEnumData;
+
 /**
- * @brief [INTERNAL] Enumerates and caches system display information.
+ * @brief [INTERNAL] Win32 callback function for enumerating and collecting physical display information.
+ * @details This function is the core of the display enumeration logic on the Windows platform. It is designed to be passed as a callback to the Win32 API function `EnumDisplayMonitors`.
+ *          For each monitor detected by the operating system, Windows invokes this function, providing a handle to the monitor.
  *
- * @details This is the backend implementation for display discovery. It populates the global `sit_gs.cached_physical_displays_array`.
+ * @par Function Workflow
+ *   For each monitor passed to it, this function performs the following steps:
+ *   1.  **Get Detailed Info:** Uses `GetMonitorInfoExA` to retrieve the monitor's unique device name (e.g., `\\.\DISPLAY1`) and determine if it is the primary display.
+ *   2.  **Match with GLFW:** It attempts to correlate the Win32 monitor handle with a `GLFWmonitor` handle by comparing their screen coordinates. This is crucial for bridging the gap between the low-level OS information and the GLFW context used for windowing.
+ *   3.  **Query Current Mode:** It uses `EnumDisplaySettingsA` to get the monitor's current resolution, refresh rate, and color depth.
+ *   4.  **Enumerate All Modes:** It repeatedly calls `EnumDisplaySettingsA` in a loop to build a comprehensive, de-duplicated list of all video modes supported by the display.
+ *   5.  **Store Data:** All of this collected information is stored in the next available `SituationDisplayInfo` struct within the array provided via the `dwData` parameter.
  *
- * @par Platform Specifics
- * - **Windows:** Uses `EnumDisplayMonitors` and `EnumDisplaySettingsA` to gather detailed hardware info (Device Name, Refresh Rates).
- *   It attempts to correlate the low-level Win32 `HMONITOR` handles with GLFW's monitor list to ensure API interoperability.
- * - **Other Platforms:** Delegates directly to `glfwGetMonitors` and `glfwGetVideoModes`.
+ * @param hMonitor A handle to the display monitor, provided by the Win32 API.
+ * @param hdcMonitor A handle to a device context for the monitor (unused).
+ * @param lprcMonitor A pointer to a rectangle specifying the monitor's display area (unused).
+ * @param dwData A user-defined value passed from the `EnumDisplayMonitors` call. In this library, it is a pointer to a `_SituationMonitorEnumData` struct, which contains the destination array and state for the enumeration process.
  *
- * @warning This function performs dynamic memory allocation for the display array and the mode lists within it.
- *          Existing cache memory is freed before new allocation occurs.
+ * @return `TRUE` to continue the enumeration to the next monitor. `FALSE` would halt the process.
+ *
+ * @note This function is platform-specific to Windows and is only compiled on `_WIN32`.
+ * @warning This is a low-level callback and is not part of the public API. It should never be called directly.
+ *
+ * @see _SituationCachePhysicalDisplays(), EnumDisplayMonitors()
+ */
+static BOOL CALLBACK _SituationMonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
+    (void)hdcMonitor; (void)lprcMonitor;
+    _SituationMonitorEnumData* enum_data = (_SituationMonitorEnumData*)dwData;
+    if (enum_data->current_display_idx >= enum_data->max_displays) return TRUE;
+
+    MONITORINFOEXA monitor_info_ex = {};
+    monitor_info_ex.cbSize = sizeof(MONITORINFOEXA);
+    if (GetMonitorInfoA(hMonitor, (LPMONITORINFO)&monitor_info_ex)) {
+        SituationDisplayInfo* display = &enum_data->displays_array[enum_data->current_display_idx];
+        strncpy(display->name, monitor_info_ex.szDevice, SITUATION_MAX_MONITOR_NAME_LEN-1);
+        display->name[SITUATION_MAX_MONITOR_NAME_LEN-1] = '\0';
+        display->is_primary = (monitor_info_ex.dwFlags & MONITORINFOF_PRIMARY) != 0;
+        display->situation_monitor_id = enum_data->current_display_idx;
+        display->glfw_monitor_handle = NULL;
+
+        for (int i = 0; i < enum_data->glfw_monitor_count; ++i) {
+            int gx, gy;
+            glfwGetMonitorPos(enum_data->glfw_monitors[i], &gx, &gy);
+            if (monitor_info_ex.rcMonitor.left == gx && monitor_info_ex.rcMonitor.top == gy) {
+                display->glfw_monitor_handle = enum_data->glfw_monitors[i];
+                break;
+            }
+        }
+        if (!display->glfw_monitor_handle && display->is_primary) {
+             display->glfw_monitor_handle = glfwGetPrimaryMonitor();
+        }
+
+        DEVMODEA current_dev_mode = { .dmSize = sizeof(DEVMODEA), .dmDriverExtra = 0 };
+        if (EnumDisplaySettingsA(monitor_info_ex.szDevice, ENUM_CURRENT_SETTINGS, &current_dev_mode)) {
+            display->current_mode.width = current_dev_mode.dmPelsWidth;
+            display->current_mode.height = current_dev_mode.dmPelsHeight;
+            display->current_mode.refresh_rate = current_dev_mode.dmDisplayFrequency;
+            display->current_mode.color_depth = current_dev_mode.dmBitsPerPel;
+        } else {memset(&display->current_mode, 0, sizeof(SituationDisplayMode));}
+
+        #define TEMP_MAX_MODES_ENUM 256
+        SituationDisplayMode temp_modes_buffer[TEMP_MAX_MODES_ENUM];
+        int unique_modes_count = 0;
+        DEVMODEA available_dev_mode = { .dmSize = sizeof(DEVMODEA), .dmDriverExtra = 0 };
+        int mode_idx_counter = 0;
+
+        while (EnumDisplaySettingsA(monitor_info_ex.szDevice, mode_idx_counter++, &available_dev_mode)) {
+            if (available_dev_mode.dmBitsPerPel < 16) continue;
+            bool is_duplicate = false;
+            for (int k = 0; k < unique_modes_count; ++k) {
+                if (temp_modes_buffer[k].width == (int)available_dev_mode.dmPelsWidth &&
+                    temp_modes_buffer[k].height == (int)available_dev_mode.dmPelsHeight &&
+                    temp_modes_buffer[k].refresh_rate == (int)available_dev_mode.dmDisplayFrequency &&
+                    temp_modes_buffer[k].color_depth == (int)available_dev_mode.dmBitsPerPel) {
+                    is_duplicate = true;
+                    break;
+                }
+            }
+            if (!is_duplicate) {
+                if (unique_modes_count < TEMP_MAX_MODES_ENUM) {
+                    temp_modes_buffer[unique_modes_count].width = available_dev_mode.dmPelsWidth;
+                    temp_modes_buffer[unique_modes_count].height = available_dev_mode.dmPelsHeight;
+                    temp_modes_buffer[unique_modes_count].refresh_rate = available_dev_mode.dmDisplayFrequency;
+                    temp_modes_buffer[unique_modes_count].color_depth = available_dev_mode.dmBitsPerPel;
+                    unique_modes_count++;
+                } else { break; }
+            }
+            memset(&available_dev_mode, 0, sizeof(DEVMODEA));
+            available_dev_mode.dmSize = sizeof(DEVMODEA);
+        }
+
+        if (unique_modes_count > 0) {
+            display->available_modes = (SituationDisplayMode*)SIT_MALLOC(unique_modes_count * sizeof(SituationDisplayMode));
+            if (display->available_modes) {
+                memcpy(display->available_modes, temp_modes_buffer, unique_modes_count * sizeof(SituationDisplayMode));
+                display->available_mode_count = unique_modes_count;
+            } else {
+                _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Available display modes array");
+                display->available_mode_count = 0;
+            }
+        } else {
+            display->available_modes = NULL;
+            display->available_mode_count = 0;
+        }
+        enum_data->current_display_idx++;
+    }
+    return TRUE;
+}
+#endif
+
+/**
+ * @brief [INTERNAL] Queries and caches all available physical monitors and their properties.
+ *
+ * @details This function is the central point for discovering and storing information about
+ *          connected physical displays/monitors at runtime. It is called during library
+ *          initialization (SituationInit) and whenever a monitor configuration change is
+ *          detected (e.g. via GLFW callbacks or hot-plug events).
+ *
+ *          What it does:
+ *            - Calls `glfwGetMonitors` to retrieve the current list of monitors
+ *            - For each monitor:
+ *              - Retrieves primary/secondary status
+ *              - Queries physical bounds (x,y,width,height in virtual screen space)
+ *              - Gets current video mode (resolution, refresh rate, bit depth)
+ *              - Queries all supported video modes (via `glfwGetVideoModes`)
+ *              - Retrieves monitor name (human-readable string)
+ *              - Caches DPI scaling / content scale if available
+ *            - Stores the aggregated data in a global/internal cache (e.g. `sit_display.monitors` array)
+ *            - Updates primary monitor index and total count
+ *            - Invalidates any stale virtual display associations if monitors changed
+ *
+ *          The cache is used by all public display query functions:
+ *            - `SituationGetMonitorCount`
+ *            - `SituationGetMonitorName`
+ *            - `SituationGetMonitorBounds`
+ *            - `SituationGetMonitorCurrentMode`
+ *            - `SituationGetMonitorModes`
+ *            - `SituationGetPrimaryMonitor`
+ *
+ *          This avoids repeated expensive GLFW calls during frame loops or user queries.
+ *
+ * Thread safety invariants:
+ *   - Should be called only from the **main thread** during init or on monitor change events
+ *   - GLFW monitor functions are not thread-safe — must not be called concurrently
+ *   - Cache write is protected by internal mutex if multi-thread access is possible
+ *     (though in typical usage, queries are read-only after init)
+ *   - Safe to call multiple times — refreshes the cache atomically
+ *
+ * @note Called automatically on:
+ *       - `SituationInit`
+ *       - GLFW monitor callback (connection/disconnection events)
+ *       - Manual refresh requests (if you expose one)
+ *
+ *       On failure (e.g. GLFW returns no monitors), logs a warning and sets
+ *       an internal error state (e.g. SITUATION_ERROR_DISPLAY_QUERY_FAILED).
+ *       Cache is left in a safe but empty state.
+ *
+ * @see SituationInit, SituationGetMonitorCount, SituationGetMonitorName,
+ *      SituationGetMonitorBounds, SituationGetPrimaryMonitor,
+ *      SITUATION_ERROR_DISPLAY_QUERY, SITUATION_ERROR_DISPLAY_QUERY_FAILED
  */
 static void _SituationCachePhysicalDisplays(void) {
     if (!SituationIsInitialized()) return;
@@ -20691,24 +22032,54 @@ SITAPI int _SituationGetCurrentDisplayIdentifier(void) {
 }
 
 /**
- * @brief Sets the video mode for a specific monitor or moves the window to it.
+ * @brief Sets the display mode (resolution, refresh rate, etc.) and fullscreen state for a specific monitor.
  *
- * @details This function serves two purposes depending on the `fullscreen` parameter:
- *          1. **Fullscreen Mode:** Attempts to set the physical monitor to the resolution and refresh rate specified in `mode` and sets the application window to exclusive fullscreen on that monitor.
- *             On Windows, this uses `ChangeDisplaySettingsExA` for low-level control. On other platforms, it relies on GLFW's video mode switching.
- *          2. **Windowed Mode:** Exits fullscreen, restores the monitor's default settings (if changed), and centers the window on the specified monitor. The `mode` parameter determines the size of the window content area.
+ * @details Changes the video mode of the specified physical monitor and optionally toggles
+ *          the application window between windowed and fullscreen (or borderless fullscreen)
+ *          on that monitor.
  *
- * @param situation_monitor_id The internal ID of the target monitor (index in the cached display list).
- * @param mode A pointer to a `SituationDisplayMode` struct specifying the desired width, height, refresh rate, and color depth.
- * @param fullscreen `true` to enter exclusive fullscreen mode; `false` for windowed mode.
+ *          This is the primary function for:
+ *            - Switching resolutions and refresh rates at runtime
+ *            - Entering or exiting fullscreen mode on a chosen monitor
+ *            - Supporting multi-monitor exclusive fullscreen applications
+ *            - Implementing user-configurable display settings
  *
- * @return `SITUATION_SUCCESS` on success.
- * @return `SITUATION_ERROR_NOT_INITIALIZED` if the library is not running.
- * @return `SITUATION_ERROR_INVALID_PARAM` if the monitor ID is out of range or `mode` is NULL.
- * @return `SITUATION_ERROR_DISPLAY_SET` if the OS failed to apply the requested video settings.
+ *          Behavior:
+ *            - If `fullscreen` is true:
+ *              - Attempts exclusive fullscreen mode on the target monitor using the requested mode
+ *              - Falls back to borderless fullscreen if exclusive mode is unavailable or denied
+ *            - If `fullscreen` is false:
+ *              - Restores the window to windowed mode (usually centered on the target monitor)
+ *              - The `mode` parameter is ignored in windowed mode
+ *            - The window is automatically moved to/resized for the target monitor if not already there
  *
- * @note On Windows, this function attempts to match the Win32 monitor handle with the GLFW monitor handle to ensure correct placement.
- * @warning Changing display modes can cause the screen to flicker or go black momentarily.
+ *          The requested mode must be one of the supported modes for the monitor
+ *          (query via `SituationGetMonitorModes` or `SituationGetMonitorCurrentMode`).
+ *          Passing NULL for `mode` when entering fullscreen uses the monitor's preferred/current mode.
+ *
+ * @param situation_monitor_id Zero-based monitor index (as returned by `SituationGetMonitorCount` and related queries).
+ *                             Use 0 for primary monitor. Invalid IDs return an error.
+ * @param mode Pointer to a `SituationDisplayMode` structure specifying the desired resolution,
+ *             refresh rate, bit depth, etc. (see `SituationDisplayMode` definition).
+ *             May be NULL when `fullscreen` is false or when using the monitor's preferred mode.
+ * @param fullscreen true to enter fullscreen (exclusive or borderless), false to return to windowed mode.
+ *
+ * @return SITUATION_SUCCESS on successful mode change,
+ *         SITUATION_ERROR_DISPLAY_MODE_UNSUPPORTED if the requested mode is not available on the monitor,
+ *         SITUATION_ERROR_DISPLAY_MODE_SET_FAILED if GLFW/video driver rejected the change,
+ *         SITUATION_ERROR_DISPLAY_QUERY_FAILED if monitor state could not be queried,
+ *         SITUATION_ERROR_INVALID_PARAM if monitor_id is out of range or mode is malformed,
+ *         or other appropriate error codes.
+ *
+ * @note This function may cause a brief screen flash, resolution change, or window reposition.
+ *       - Exclusive fullscreen may fail on some platforms/drivers (e.g. macOS prefers borderless).
+ *       - DPI scaling and window position are preserved or adjusted automatically where possible.
+ *       - Safe to call before window creation (sets initial fullscreen preference), but most effective after.
+ *       - Calling with the current mode/fullscreen state is a no-op (no error).
+ *
+ * @see SituationGetMonitorModes, SituationGetMonitorCurrentMode, SituationGetMonitorCount,
+ *      SituationSetWindowMonitor, SituationGetPrimaryMonitor,
+ *      SituationDisplayMode, SITUATION_ERROR_DISPLAY_MODE_xxx codes
  */
 SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const SituationDisplayMode* mode, bool fullscreen) {
     if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) return SITUATION_ERROR_NOT_INITIALIZED;
@@ -20842,10 +22213,52 @@ static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat forma
 }
 
 /**
- * @brief [Internal] Creates a Vulkan shader module from SPIR-V bytecode.
- * @param code Pointer to the SPIR-V bytecode.
- * @param code_size Size of the SPIR-V bytecode in bytes.
- * @return A valid VkShaderModule on success, or VK_NULL_HANDLE on failure.
+ * @brief [INTERNAL] Creates a Vulkan shader module from raw SPIR-V bytecode.
+ *
+ * @details This is a low-level helper function that wraps `vkCreateShaderModule` with
+ *          proper error handling, validation, and logging tailored to the Situation library.
+ *          It is called internally whenever a new SPIR-V blob needs to be turned into a
+ *          usable `VkShaderModule` (e.g. during shader creation, hot-reload, or pipeline
+ *          rebuilds).
+ *
+ *          The function:
+ *            - Validates input (non-null code, size multiple of 4, reasonable size)
+ *            - Fills out `VkShaderModuleCreateInfo` with the provided SPIR-V data
+ *            - Calls `vkCreateShaderModule` on the logical device
+ *            - Logs detailed errors (including Vulkan result codes) on failure
+ *            - Sets the global Situation error state when appropriate
+ *
+ *          On success, returns a valid `VkShaderModule` handle that must be destroyed
+ *          later with `vkDestroyShaderModule` (typically via graveyard/deferred cleanup
+ *          in your render thread or hot-reload path).
+ *
+ * @param code Pointer to the SPIR-V bytecode buffer (must be 4-byte aligned, little-endian).
+ *             Ownership is **not** transferred — caller must keep the memory alive until
+ *             the returned module is destroyed.
+ * @param code_size Size of the SPIR-V buffer in bytes.
+ *                  Must be > 0 and a multiple of 4 (SPIR-V word size).
+ *
+ * @return A valid `VkShaderModule` handle on success,
+ *         VK_NULL_HANDLE on failure (allocation error, invalid SPIR-V, device lost, etc.).
+ *         On failure, an appropriate `SituationError` code is set internally
+ *         (e.g. SITUATION_ERROR_MEMORY_ALLOCATION, SITUATION_ERROR_SHADER_MODULE_CREATE_FAILED).
+ *
+ * Thread safety invariants:
+ *   - Must be called from a thread that has access to the Vulkan device/queue
+ *     (typically the render thread or during init/hot-reload on main thread)
+ *   - No internal locking — caller must ensure no concurrent module creation/destruction
+ *   - Safe to call during hot-reload if old modules are destroyed first
+ *
+ * @note This function does **not** validate the SPIR-V itself (use shaderc validation
+ *       or spirv-val during compilation/hot-reload for that).
+ *       The returned module is not cached — caller is responsible for lifetime management
+ *       and reuse (your shader cache or hot-reload system should handle deduplication).
+ *       In debug builds with Vulkan validation layers enabled, invalid SPIR-V will trigger
+ *       layer messages before the function returns VK_ERROR_INVALID_SHADER_NV or similar.
+ *
+ * @see _SituationCompileGLSLtoSPIRV, _SituationFreeSpirvBlob,
+ *      SituationCreateShader (public API), vkCreateShaderModule,
+ *      SITUATION_ERROR_SHADER_MODULE_CREATE_FAILED
  */
 static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_t code_size) {
     if (!code || code_size == 0) {
@@ -21000,25 +22413,57 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
 // ============================================================================
 
 /**
- * @brief Creates a new virtual display (an off-screen framebuffer).
+ * @brief Creates a new virtual/offscreen display (render target) for multi-pass or composited rendering.
  *
- * @details Allocates all necessary graphics resources for a new virtual display, which serves as an independent, off-screen rendering target. The created display can be rendered to and then composited onto another target (like the main window) using `SituationRenderVirtualDisplays`.
+ * @details Allocates and initializes a new virtual display that can be rendered to independently
+ *          of the main window/swapchain. Virtual displays are useful for:
+ *            - Multi-view rendering (e.g. editor viewports, minimaps, VR eyes, security cameras)
+ *            - Post-processing pipelines (render scene → apply effects → composite)
+ *            - Render-to-texture techniques
+ *            - Layered UI or debug overlays with independent resolution/scaling
  *
- * @par Backend-Specific Behavior
- * - **OpenGL:** Creates a Framebuffer Object (FBO), a color texture attachment (`GL_TEXTURE_2D`), and a depth renderbuffer attachment (`GL_RENDERBUFFER`). The texture's filtering mode is set based on the `scaling_mode`.
- * - **Vulkan:** Creates a comprehensive set of resources: a `VkImage` with `VmaAllocation` for color, another for depth, a `VkImageView` for each, a dedicated `VkRenderPass`, a `VkFramebuffer` to connect them, and a `VkSampler` configured for the specified `scaling_mode`.
- *   **Critically, it also pre-allocates and caches a persistent `VkDescriptorSet`** within the returned handle. This makes compositing this display in Vulkan an extremely high-performance operation, as no descriptor sets need to be allocated or updated in the main render loop.
+ *          Once created, the virtual display can be rendered into using `SituationRenderVirtualDisplays`
+ *          (or manually via its internal framebuffer/command list) and its output can be sampled as
+ *          a texture in shaders or blitted/composited into the main framebuffer.
  *
- * @param resolution The internal resolution of the virtual display (e.g., {320.0f, 240.0f}).
- * @param frame_time_mult A multiplier for this display's internal clock, used for slow-motion or fast-forward effects.
- * @param z_order The rendering order during compositing. Lower numbers are drawn first (further back).
- * @param scaling_mode The desired scaling and filtering method for compositing.
- * @param blend_mode The desired blend mode for compositing.
+ *          Parameters control rendering behavior, timing, and composition:
+ *            - resolution: Internal render resolution (can differ from window size)
+ *            - frame_time_mult: Time scaling factor applied to this display’s update loop
+ *            - z_order: Compositing order when using `SituationRenderVirtualDisplays` (lower = drawn first)
+ *            - scaling_mode: How the virtual display output is scaled when composited (fit, fill, stretch, etc.)
+ *            - blend_mode: Blending operation used when compositing this display onto others or the main target
  *
- * @return The integer ID (>= 0) of the newly created virtual display.
- * @return -1 if creation fails (e.g., limit reached, resource allocation failed). Check `SituationGetLastErrorMsg()` for details.
+ * @param resolution Desired internal resolution of the virtual display (width, height in pixels).
+ *                   Both components must be > 0. Fractional values are truncated.
+ * @param frame_time_mult Multiplier applied to delta-time for this display’s update callbacks.
+ *                        1.0 = real-time, 0.5 = half-speed, 2.0 = double-speed, etc.
+ *                        Useful for slow-motion effects or independent simulation rates.
+ * @param z_order Z-order / layer index for automatic compositing (higher values drawn later/on top).
+ *                Use 0 for background, positive for foreground. Negative values are allowed.
+ * @param scaling_mode Scaling policy when the display’s aspect ratio differs from the target
+ *                     (e.g. `SITUATION_SCALING_FIT`, `SITUATION_SCALING_FILL`, `SITUATION_SCALING_STRETCH`).
+ * @param blend_mode Blending mode used when this display is composited onto another target
+ *                   (e.g. `SITUATION_BLEND_ALPHA`, `SITUATION_BLEND_ADDITIVE`, `SITUATION_BLEND_NONE`).
+ * @param out_id Pointer to an integer that receives the unique ID of the new virtual display on success.
+ *               On failure, the value is set to -1.
  *
- * @note The caller is **responsible** for destroying the virtual display using `SituationDestroyVirtualDisplay()` to prevent GPU memory leaks.
+ * @return SITUATION_SUCCESS on successful creation,
+ *         SITUATION_ERROR_INVALID_PARAM if resolution ≤ 0 or invalid enum values,
+ *         SITUATION_ERROR_MEMORY_ALLOCATION if framebuffer/texture allocation failed,
+ *         SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT if maximum number of virtual displays reached
+ *         (implementation-defined, typically 32–64),
+ *         or other appropriate error codes.
+ *
+ * @note The returned ID is valid until the display is destroyed with `SituationDestroyVirtualDisplay`.
+ *       Virtual displays are automatically rendered when calling `SituationRenderVirtualDisplays`
+ *       (unless paused or hidden via separate flags).
+ *       Resource cleanup (framebuffer, color/depth textures) is handled on destroy or shutdown.
+ *       High-resolution virtual displays consume significant GPU memory — monitor allocation failures.
+ *
+ * @see SituationRenderVirtualDisplays, SituationDestroyVirtualDisplay,
+ *      SituationPauseVirtualDisplay, SituationSetVirtualDisplayZOrder,
+ *      SituationScalingMode, SituationBlendMode,
+ *      SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT, SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID
  */
 SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode, int* out_id) {
     if (out_id) *out_id = -1;
@@ -21441,19 +22886,56 @@ static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
 }
 
 /**
- * @brief Composites all visible virtual displays onto the current render target.
+ * @brief Renders all active virtual displays into the provided command buffer.
  *
- * @par Backend-Specific Behavior
- * - **OpenGL (State Hardening):**
- *   This function performs a robust **Save-and-Restore** of the OpenGL state. It backs up the active Shader Program, VAO, Texture Units (0, 4, 5), Blend Mode, and Depth/Cull settings before rendering.
- *   It then binds its own private internal resources to perform the compositing. Finally, it restores the user's exact state.
- *   This ensures that calling this function does not corrupt the rendering state of the main application logic.
+ * @details This is the central high-level function for rendering content from one or more
+ *          virtual/offscreen displays (created via `SituationCreateVirtualDisplay` or similar).
+ *          It records draw commands for each active virtual display into the supplied
+ *          `SituationCommandBuffer`, allowing the caller to compose virtual display output
+ *          into the main framebuffer, a texture, or another render pass.
  *
- * - **Vulkan:**
- *   Uses the high-performance persistent descriptor set model. It binds the compositing pipeline once, then iterates through visible displays, binding their pre-cached descriptor sets and pushing transformation matrices via Push Constants.
- *   It automatically manages Render Pass state to perform legal screen grabs for advanced blending modes.
+ *          Typical usage patterns:
+ *            - Render all virtual displays to an intermediate texture (e.g. for post-processing)
+ *            - Composite virtual displays directly into the final swapchain image
+ *            - Render UI overlays or debug views on top of virtual display content
  *
- * @param cmd The command buffer (Vulkan) or ignored (OpenGL).
+ *          Behavior:
+ *            - Iterates over all currently active virtual displays (in creation order or z-order)
+ *            - For each display:
+ *              - Binds the display’s framebuffer / render target
+ *              - Records the display’s internal command list (scene, shaders, meshes, etc.)
+ *              - Applies display-specific viewport, scissor, and clear settings
+ *              - Handles layer/compositing order if z-sorting is enabled
+ *            - Restores the original render state (viewport, framebuffer, etc.) after all displays
+ *            - Records only — no actual GPU submission occurs in this function
+ *
+ *          Thread safety invariants:
+ *            - Safe to call from the **main thread** or any thread that owns the command buffer
+ *            - The command buffer must not be in a recording state already used by another pass
+ *            - Virtual display internal state (textures, framebuffers) is protected against concurrent
+ *              modification during recording (via internal locks or deferred updates)
+ *            - Actual GPU execution happens later on the render thread (via command buffer submission)
+ *
+ * @param cmd Valid command buffer handle (must be in recording state, e.g. from `SituationBeginCommandBuffer`).
+ *            All draw commands for virtual displays are appended to this buffer.
+ *
+ * @return SITUATION_SUCCESS if all virtual displays were successfully recorded,
+ *         SITUATION_ERROR_INVALID_PARAM if cmd is invalid or not recording,
+ *         SITUATION_ERROR_RENDER_LIST_INCOMPLETE if any display’s internal command list failed to record,
+ *         SITUATION_ERROR_RESOURCE_INVALID if a virtual display is in an inconsistent state,
+ *         SITUATION_ERROR_VIRTUAL_DISPLAY_NOT_FOUND for orphaned display IDs (rare),
+ *         or other appropriate error codes.
+ *         Partial failures may still record some displays — caller should check return value.
+ *
+ * @note This function does **not** present or submit — it only records commands.
+ *       After calling, the caller must end the command buffer, submit it (render thread),
+ *       and wait for completion if synchronization is needed.
+ *       Virtual displays that are paused, hidden, or have zero size are skipped automatically.
+ *       Performance scales with number of active displays and complexity of each display’s scene.
+ *
+ * @see SituationCreateVirtualDisplay, SituationBeginCommandBuffer,
+ *      SituationSubmitCommandBuffer (or equivalent), SituationRenderFrame,
+ *      SITUATION_ERROR_RENDER_LIST_INCOMPLETE, SITUATION_ERROR_VIRTUAL_DISPLAY_xxx
  */
 SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd) {
     // --- Initial Checks ---
@@ -22161,8 +23643,6 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
 }
 
 
-
-
 /**
  * @brief Unloads a model and frees all of its associated GPU and CPU resources.
  * @details This is the only correct way to clean up a model loaded with `SituationLoadModel`.
@@ -22179,7 +23659,7 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
  * @note It is safe to call this function on a NULL pointer or an already-unloaded model (where `model->id` is 0);
  *       it will simply do nothing.
  */
-SITAPI void SituationUnloadModel(SituationModel* model) {;
+SITAPI void SituationUnloadModel(SituationModel* model) {
     if (!model) return;
     _SituationModelSlot* slot = _SitGetModelSlot(*model);
     if (!slot) return;
@@ -22200,7 +23680,6 @@ SITAPI void SituationUnloadModel(SituationModel* model) {;
     _SitFreeModelSlot(*model);
     memset(model, 0, sizeof(SituationModel));
 }
-
 
 
 /**
@@ -22947,13 +24426,43 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
 
 
 /**
- * @brief Checks all tracked resources for file changes and reloads them if necessary.
- * @details [Optimized] This function uses a time-based debounce (polling frequency ~2Hz)
- *          to prevent "IO Storms" caused by checking file stats every frame.
- *          It iterates through tracked resources and compares modification times.
+ * @brief [INTERNAL] Executes one complete pass of the hot-reloading system (Velocity Module).
  *
- * @note In Release builds (NDEBUG defined), this function returns immediately to ensure
- *       zero overhead in shipped applications, unless SITUATION_FORCE_HOTRELOAD is defined.
+ * @details This function is the core heartbeat of the hot-reload mechanism.
+ *          It is called periodically (based on the configured hot-reload rate) or on-demand
+ *          to detect file changes in watched directories/assets and trigger reloads where needed.
+ *
+ *          During a pass, the function:
+ *            - Scans all registered watch paths for modification time changes
+ *            - Compares current file mod-times against cached values
+ *            - Identifies changed files (shaders, textures, models, audio, etc.)
+ *            - Invokes the appropriate reload handler for each changed asset type
+ *            - Re-compiles shaders to new SPIR-V blobs (if applicable)
+ *            - Recreates GPU resources (shader modules, textures, pipelines, etc.)
+ *            - Updates internal caches and invalidates stale references
+ *            - Logs reload events and errors (in debug builds)
+ *
+ *          The pass is designed to be fast and non-blocking in most cases:
+ *            - Only changed assets are processed
+ *            - Resource recreation is deferred to the render thread when possible
+ *            - Failures during reload (e.g. shader compilation error) are graceful —
+ *              the old resource remains active and an error is logged/set
+ *
+ * Thread safety invariants:
+ *   - Typically called from the main thread or a dedicated hot-reload timer thread
+ *   - Filesystem access is protected where necessary (e.g. stat() calls)
+ *   - GPU resource updates are queued to the render thread to avoid context conflicts
+ *   - No long-blocking operations — filesystem checks are lightweight
+ *
+ * @note This function is usually invoked automatically by the thread pool's hot-reload timer
+ *       (if enabled via `SituationCreateThreadPool` hot_reload_rate parameter).
+ *       Manual calls are safe but redundant unless forcing an immediate reload.
+ *       Reload rate should be tuned to balance responsiveness vs CPU usage
+ *       (typical values: 0.1–1.0 seconds).
+ *
+ * @see SituationCreateThreadPool (hot_reload_rate parameter),
+ *      _SituationCompileGLSLtoSPIRV, _SituationFreeSpirvBlob,
+ *      Velocity Module documentation, SITUATION_ERROR_FILE_MODIFIED
  */
 // [v2.3.34] Hot-Reload Logic (Running on I/O Thread)
 static void _SituationPerformHotReloadPass(void) {
@@ -23388,6 +24897,43 @@ SITAPI void SituationSetWindowSize(int width, int height) {
     glfwSetWindowSize(sit_gs.sit_glfw_window, width, height);
 }
 
+/**
+ * @brief Moves or sets the window to run on a specific physical monitor.
+ *
+ * @details Changes the monitor that the application window is assigned to. This function
+ *          is typically used to support multi-monitor setups, allowing the user or application
+ *          to move the window to a secondary display, full-screen it on a specific monitor,
+ *          or restore windowed mode on a chosen display.
+ *
+ *          If the window is currently in fullscreen or borderless fullscreen mode, this call
+ *          may trigger a mode switch or repositioning on the target monitor. In windowed mode,
+ *          the window is moved to the target monitor (centered or at its current relative position,
+ *          depending on internal policy).
+ *
+ *          The monitor ID is a zero-based index returned by `SituationGetMonitorCount()` and
+ *          queried via functions such as `SituationGetMonitorName()`, `SituationGetMonitorBounds()`,
+ *          etc.
+ *
+ *          Passing an invalid monitor ID (negative or ≥ monitor count) is a no-op — the window
+ *          remains on its current monitor.
+ *
+ * @param monitor_id Zero-based index of the target monitor (0 = primary, 1 = first secondary, etc.).
+ *                   Use -1 to explicitly keep the current monitor (no change).
+ *
+ * @note This function is synchronous and may cause a brief window reposition or mode change.
+ *       - In fullscreen mode, the display mode (resolution/refresh rate) is reapplied on the new monitor
+ *         if the current mode is supported; otherwise, it falls back to the monitor's preferred mode.
+ *       - No automatic DPI scaling or scaling policy change is applied — use `SituationSetWindowScale`
+ *         or related functions if needed after moving monitors.
+ *       - Safe to call before window creation (sets initial monitor preference), but most useful after
+ *         `SituationCreateWindow`.
+ *
+ * @return None (void). Errors (invalid monitor, GLFW failure, etc.) are logged internally via
+ *         SITUATION_LOG_WARNING and may set the global error state, but do not abort execution.
+ *
+ * @see SituationGetMonitorCount, SituationGetMonitorName, SituationGetMonitorBounds,
+ *      SituationGetPrimaryMonitor, SituationSetWindowFullscreen, SituationCreateWindow
+ */
 SITAPI void SituationSetWindowMonitor(int monitor_id) {
     if (!SituationIsInitialized()) return;
 
@@ -24110,8 +25656,42 @@ SITAPI SituationError SituationExportImage(SituationImage image, const char *fil
 }
 
 /**
- * @brief Allocates an uninitialized image container.
- * @warning Pixel data is uninitialized (garbage). Use SituationGenImageColor for zeroed memory.
+ * @brief Creates a new empty image with the specified dimensions and channel count.
+ *
+ * @details Allocates and initializes a new `SituationImage` handle representing a 2D pixel buffer
+ *          in system memory (CPU-accessible). The image is filled with fully transparent black
+ *          (0,0,0,0) by default.
+ *
+ *          This function is the primary way to create blank or procedural images that can later
+ *          be filled via `SituationSetPixelColor`, `SituationBlitRawDataToImage`, or drawing
+ *          commands. The resulting image can be used as a texture, render target, or data source.
+ *
+ *          Supported channel counts:
+ *            - 1: Grayscale (luminance only)
+ *            - 3: RGB
+ *            - 4: RGBA (most common for textures and blending)
+ *
+ *          The image data is allocated contiguously in row-major order (stride = width × channels).
+ *          Pixel type is always unsigned 8-bit normalized (0–255 per channel).
+ *
+ * @param width Width of the image in pixels. Must be > 0.
+ * @param height Height of the image in pixels. Must be > 0.
+ * @param channels Number of channels per pixel (1, 3, or 4). Other values return an error.
+ * @param out_image Pointer to a `SituationImage` variable that will receive the new handle on success.
+ *                  On failure, the value is set to `SITUATION_NULL_HANDLE`.
+ *
+ * @return SITUATION_SUCCESS on successful allocation and initialization,
+ *         SITUATION_ERROR_INVALID_PARAM if width/height ≤ 0 or channels invalid,
+ *         SITUATION_ERROR_MEMORY_ALLOCATION if system memory allocation failed,
+ *         or other appropriate error codes (e.g. resource limit reached).
+ *
+ * @note The created image is CPU-resident and does not automatically upload to the GPU.
+ *       To use it as a texture, call `SituationUploadImageToTexture` (or equivalent) after filling.
+ *       Caller is responsible for destroying the image with `SituationDestroyImage` when no longer needed.
+ *       Maximum dimensions are implementation-defined (typically limited by available memory).
+ *
+ * @see SituationDestroyImage, SituationBlitRawDataToImage, SituationSetPixelColor,
+ *      SituationCreateImageFromMemory, SituationUploadImageToTexture (if defined)
  */
 SITAPI SituationError SituationCreateImage(int width, int height, int channels, SituationImage* out_image) {
     if (!out_image) return SITUATION_ERROR_INVALID_PARAM;
@@ -24133,6 +25713,48 @@ SITAPI SituationError SituationCreateImage(int width, int height, int channels, 
     return SITUATION_SUCCESS;
 }
 
+/**
+ * @brief Copies raw pixel data into a rectangular region of a destination image.
+ *
+ * @details Performs a direct blit (memory copy) of uncompressed pixel data from a user-provided
+ *          buffer into the specified rectangular area of the target `SituationImage`.
+ *          This is a low-level, CPU-side operation ideal for procedural texture generation,
+ *          CPU-based image editing, uploading uncompressed data, or updating small regions
+ *          of an existing image/texture without full re-upload.
+ *
+ *          The source data is assumed to be tightly packed or row-strided with the given
+ *          number of channels. No format conversion, scaling, or filtering is performed —
+ *          the source channel count must match the destination image's internal format
+ *          (typically 4 channels for RGBA).
+ *
+ *          Bounds checking is performed: coordinates and dimensions are clamped to the
+ *          destination image size. Out-of-bounds regions are ignored.
+ *
+ * @param dst Pointer to the destination `SituationImage` handle (must be valid and writable).
+ *            The image must support direct pixel access (e.g., CPU-resident or staging texture).
+ * @param data Pointer to the source pixel buffer (must remain valid for the duration of the call).
+ *             Data is read row-by-row, left-to-right, top-to-bottom.
+ * @param x Destination x-coordinate (left edge of blit region, 0-based).
+ * @param y Destination y-coordinate (top edge of blit region, 0-based).
+ * @param width Width of the region to copy (pixels). Must be > 0.
+ * @param height Height of the region to copy (pixels). Must be > 0.
+ * @param src_channels Number of channels per pixel in the source data (usually 3 for RGB or 4 for RGBA).
+ *                     Must match the channel count of the destination image format.
+ *
+ * @note This function is synchronous and performs a CPU memory copy.
+ *       - For large regions or frequent updates, consider staging data and using GPU upload paths.
+ *       - No stride/pitch parameter is provided — source data is assumed to be tightly packed
+ *         (stride = width × src_channels × sizeof(channel_type), typically uint8_t).
+ *       - If the destination image is GPU-resident only, this function may fail or trigger
+ *         an internal staging/upload (implementation-defined).
+ *
+ * @return None (void). Errors are logged internally via SITUATION_LOG_WARNING and may set
+ *         the global error state, but do not abort execution. Invalid parameters result
+ *         in a no-op.
+ *
+ * @see SituationSetPixelColor, SituationCreateImageFromMemory,
+ *      SIT_RGBA, SITUATION_PIXEL_FORMAT_RGBA8 (if defined)
+ */
 SITAPI void SituationBlitRawDataToImage(SituationImage *dst, const void* data, int x, int y, int width, int height, int src_channels) {
     if (!dst || !dst->data || !data) return;
 
@@ -24180,6 +25802,40 @@ SITAPI void SituationBlitRawDataToImage(SituationImage *dst, const void* data, i
     }
 }
 
+/**
+ * @brief Sets the color of a single pixel in an image or texture.
+ *
+ * @details Writes an RGBA color value directly to the specified pixel coordinates
+ *          in the target image's pixel buffer. The function performs bounds checking
+ *          and clamps coordinates to the image dimensions.
+ *
+ *          This is a low-level, immediate-mode pixel write — suitable for procedural
+ *          generation, debug drawing, or one-off modifications. For bulk operations
+ *          prefer `SituationBlitRawDataToImage` or command-buffer drawing.
+ *
+ *          The image must have been created with a format that supports direct pixel
+ *          access (typically RGBA8 or similar). Compressed or GPU-only formats may
+ *          return an error.
+ *
+ * @param image The handle of the image/texture to modify (created via SituationCreateImage
+ *              or similar). Must be valid and writable.
+ * @param x Horizontal pixel coordinate (0 = left edge).
+ * @param y Vertical pixel coordinate (0 = top edge, assuming top-left origin).
+ * @param color The RGBA color to set (0–255 per channel). Use SIT_RGBA(r,g,b,a) macro
+ *              or equivalent for convenience.
+ *
+ * @return SITUATION_SUCCESS on success,
+ *         SITUATION_ERROR_INVALID_PARAM if image is invalid or coordinates out of bounds,
+ *         SITUATION_ERROR_RESOURCE_INVALID if image format does not support direct writes,
+ *         or other appropriate error codes.
+ *
+ * @note This function is synchronous and CPU-bound — avoid calling it in tight loops
+ *       on large images. For performance-critical pixel work, consider staging data
+ *       in a CPU buffer and blitting once, or using compute shaders.
+ *
+ * @see SituationBlitRawDataToImage, SituationGetPixelColor (if implemented),
+ *      SIT_RGBA, SITUATION_ERROR_xxx codes
+ */
 SITAPI void SituationSetPixelColor(SituationImage *img, int x, int y, ColorRGBA col) {
     if (!img || !img->data || x < 0 || y < 0 || x >= img->width || y >= img->height) return;
 
@@ -25818,1910 +27474,6 @@ SITAPI SitRectangle SituationMeasureText(SituationFont font, const char *text, f
     return rect;
 }
 
-// --- Internal Reverb Implementation (Schroeder/Freeverb) ---
-// Constants for 44.1kHz (will scale for 48k)
-#define SIT_REVERB_COMB_COUNT 8
-#define SIT_REVERB_ALLPASS_COUNT 4
-#define SIT_REVERB_STEREO_SPREAD 23
-
-typedef struct {
-    float* buffer;
-    int size;
-    int cursor;
-    float feedback;
-    float filter_store;
-    float damp;
-} SituationReverbComb;
-
-typedef struct {
-    float* buffer;
-    int size;
-    int cursor;
-    float feedback;
-} SituationReverbAllPass;
-
-typedef struct {
-    SituationReverbComb combs[SIT_REVERB_COMB_COUNT];
-    SituationReverbAllPass allpasses[SIT_REVERB_ALLPASS_COUNT];
-    float room_size;
-    float damp;
-    float wet;
-    float dry;
-    float width;
-    uint32_t sample_rate;
-} SituationReverbState;
-
-/**
- * @brief [INTERNAL] Processes a single sample through a Schroeder comb filter.
- * @details The comb filter creates a series of decaying echoes by feeding the output back into the input
- *          through a delay buffer. It also includes a low-pass filter in the feedback loop to simulate
- *          the absorption of high frequencies by air and walls (damping).
- *
- * @param comb Pointer to the comb filter state.
- * @param input The input audio sample (normalized float).
- * @return The processed output sample.
- */
-static float _sit_reverb_comb_process(SituationReverbComb* comb, float input) {
-    float output = comb->buffer[comb->cursor];
-    comb->filter_store = (output * (1.0f - comb->damp)) + (comb->filter_store * comb->damp);
-    comb->buffer[comb->cursor] = input + (comb->filter_store * comb->feedback);
-    if (++comb->cursor >= comb->size) comb->cursor = 0;
-    return output;
-}
-
-/**
- * @brief [INTERNAL] Processes a single sample through an All-Pass filter.
- * @details All-pass filters change the phase relationship of frequencies without altering their amplitude response.
- *          In reverb algorithms, they are used to increase the "density" of the reflections, diffusing the
- *          distinct echoes from the comb filters into a smooth wash of sound.
- *
- * @param ap Pointer to the all-pass filter state.
- * @param input The input audio sample (normalized float).
- * @return The processed output sample.
- */
-static float _sit_reverb_allpass_process(SituationReverbAllPass* ap, float input) {
-    float buffered = ap->buffer[ap->cursor];
-    float output = -input + buffered;
-    ap->buffer[ap->cursor] = input + (buffered * ap->feedback);
-    if (++ap->cursor >= ap->size) ap->cursor = 0;
-    return output;
-}
-
-/**
- * @brief [INTERNAL] Frees all memory associated with the reverb state.
- * @details This function iterates through all comb and all-pass filters, freeing their internal delay buffers,
- *          and then frees the main state structure itself.
- *
- * @param state_ptr A void pointer to the `SituationReverbState` struct to destroy.
- */
-static void _SituationUninitReverb(void* state_ptr) {
-    if (!state_ptr) return;
-    SituationReverbState* rev = (SituationReverbState*)state_ptr;
-    for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) SIT_FREE(rev->combs[i].buffer);
-    for(int i=0; i<SIT_REVERB_ALLPASS_COUNT; ++i) SIT_FREE(rev->allpasses[i].buffer);
-    SIT_FREE(rev);
-}
-
-/**
- * @brief [INTERNAL] Allocates and initializes the Schroeder/Freeverb reverb engine state.
- * @details This function sets up the complex network of comb and all-pass filters required for the reverb effect.
- *          It scales the delay line lengths based on the provided sample rate to ensure consistent timing
- *          across different audio configurations (e.g., 44.1kHz vs 48kHz).
- *
- * @param sample_rate The sample rate of the audio context (e.g., 48000).
- * @return A void pointer to the opaque `SituationReverbState` struct, or NULL on allocation failure.
- */
-
-static ma_result _situation_stream_read_thunk(ma_decoder* pDecoder, void* pBufferOut, size_t bytesToRead, size_t* pBytesRead) {
-    _SituationSound* sound = (_SituationSound*)((char*)pDecoder - offsetof(_SituationSound, decoder));
-    if (sound->stream_read_cb) {
-        ma_uint64 read = sound->stream_read_cb(sound->stream_user_data, pBufferOut, bytesToRead);
-        if (pBytesRead) *pBytesRead = (size_t)read;
-        return (read > 0) ? MA_SUCCESS : MA_AT_END;
-    }
-    return MA_NOT_IMPLEMENTED;
-}
-
-static ma_result _situation_stream_seek_thunk(ma_decoder* pDecoder, ma_int64 byteOffset, ma_seek_origin origin) {
-    _SituationSound* sound = (_SituationSound*)((char*)pDecoder - offsetof(_SituationSound, decoder));
-    if (sound->stream_seek_cb) {
-        return sound->stream_seek_cb(sound->stream_user_data, byteOffset, origin);
-    }
-    return MA_NOT_IMPLEMENTED;
-}
-
-static void* _SituationInitReverb(uint32_t sample_rate) {
-    SituationReverbState* rev = (SituationReverbState*)SIT_CALLOC(1, sizeof(SituationReverbState));
-    if (!rev) return NULL;
-
-    rev->sample_rate = sample_rate;
-    float scale = (float)sample_rate / 44100.0f;
-
-    // Tuning values (Schroeder/Freeverb defaults scaled)
-    const int comb_tunings[] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
-    const int allpass_tunings[] = {225, 341, 441, 556};
-
-    for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) {
-        rev->combs[i].size = (int)(comb_tunings[i] * scale);
-        rev->combs[i].buffer = (float*)SIT_CALLOC(rev->combs[i].size, sizeof(float));
-        rev->combs[i].feedback = 0.5f; // Initial room size
-        rev->combs[i].damp = 0.5f;     // Initial damp
-    }
-
-    for(int i=0; i<SIT_REVERB_ALLPASS_COUNT; ++i) {
-        rev->allpasses[i].size = (int)(allpass_tunings[i] * scale);
-        rev->allpasses[i].buffer = (float*)SIT_CALLOC(rev->allpasses[i].size, sizeof(float));
-        rev->allpasses[i].feedback = 0.5f;
-    }
-
-    rev->room_size = 0.5f;
-    rev->damp = 0.5f;
-    rev->wet = 0.3f;
-    rev->dry = 1.0f;
-    rev->width = 1.0f;
-
-    return rev;
-}
-
-/**
- * @brief [INTERNAL] Processes a block of audio through the reverb engine.
- * @details This is the main DSP loop for the reverb effect. It takes an input buffer (stereo or mono),
- *          downmixes it to mono for processing, runs it through the parallel comb filters and series all-pass filters,
- *          and then mixes the wet (reverberated) signal back into the output buffer with stereo spreading.
- *
- * @param state_ptr A void pointer to the `SituationReverbState` struct.
- * @param pOutput The output buffer to write mixed audio to (interleaved).
- * @param pInput The input buffer containing the dry signal (interleaved).
- * @param frameCount The number of frames to process.
- * @param channels The number of channels (must be uniform for input/output).
- */
-static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels) {
-    if (!state_ptr) return;
-    SituationReverbState* rev = (SituationReverbState*)state_ptr;
-
-    // Apply parameters
-    float room_scale = rev->room_size * 0.28f + 0.7f; // Scale to stable range
-    for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) {
-        rev->combs[i].feedback = room_scale;
-        rev->combs[i].damp = rev->damp * 0.4f;
-    }
-
-    for (uint32_t i = 0; i < frameCount; ++i) {
-        float in_sample = 0.0f;
-        // Downmix input to mono for reverb engine
-        for(int c=0; c<channels; ++c) in_sample += pInput[i*channels + c];
-        in_sample *= (0.015f / channels); // Gain compensation
-
-        float out = 0.0f;
-        for(int j=0; j<SIT_REVERB_COMB_COUNT; ++j) {
-            out += _sit_reverb_comb_process(&rev->combs[j], in_sample);
-        }
-
-        for(int j=0; j<SIT_REVERB_ALLPASS_COUNT; ++j) {
-            out = _sit_reverb_allpass_process(&rev->allpasses[j], out);
-        }
-
-        // Apply Wet/Dry mix
-        for(int c=0; c<channels; ++c) {
-            float wet_sig = out * rev->wet;
-            // Simple stereo spread
-            if (c%2==1) wet_sig *= -1.0f; // Phase invert right channel for wideness
-
-            pOutput[i*channels + c] = (pInput[i*channels + c] * rev->dry) + wet_sig;
-        }
-    }
-}
-
-// --- Audio Implementations (MiniAudio) ---
-/**
- * @brief [INTERNAL] Core Audio Mixing Callback (Production Hardened)
- *
- * @details This function is the heartbeat of the audio subsystem, executed by the high-priority
- *          audio thread. It is responsible for decoding, processing, and mixing all active
- *          sounds into the device's output buffer.
- *
- * @section ThreadSafety Thread Safety Strategy ("Snapshot-and-Unlock")
- *          This implementation uses a high-performance "Snapshot" strategy to minimize lock contention:
- *          1.  **Snapshot:** The `audio_queue_mutex` is locked briefly to copy the list of active sound pointers
- *              to a local stack array. The lock is then released immediately.
- *          2.  **Processing:** The heavy lifting (decoding, effects, mixing) happens without holding the lock,
- *              allowing the Main Thread to continue adding/modifying sounds without stalling.
- *          3.  **Commit:** The lock is re-acquired briefly at the end only to remove finished sounds from the global queue.
- *
- *          **Safety Mechanism:** To prevent Use-After-Free errors (where the Main Thread unloads a sound while
- *          the Audio Thread is processing it from a snapshot), this function sets an atomic flag
- *          `is_processing_snapshot`. `SituationUnloadSound` spins on this flag to ensure it never frees
- *          memory that is currently being accessed.
- *
- * @section Optimization Performance Optimizations
- *          1.  **Lock-Free Mixing:** By releasing the lock during processing, the audio thread never blocks the
- *              main application loop, and vice-versa, preventing audio glitches during heavy main-thread load.
- *          2.  **Fused Mixing Loop:** Panning, Volume application, and Accumulation are combined into a single
- *              tight loop for maximum CPU cache locality.
- *          3.  **Scratch Buffers:** Uses pre-allocated thread-local buffers to avoid `malloc` on the audio thread.
- *
- * @section Pipeline Processing Pipeline
- *          For every active sound:
- *          1.  **Decode:** Read raw PCM from file/memory/stream into `decoder_buffer`.
- *          2.  **Effects:** Apply Filter -> Echo -> Reverb -> User Processors.
- *          3.  **Convert:** Resample/Remap to device format into `converter_buffer`.
- *          4.  **Mix:** Apply Pan/Vol and add to `pOutput`.
- *
- * @param pDevice Pointer to the MiniAudio device instance.
- * @param pOutput Pointer to the raw output buffer to be filled.
- * @param pInput  Pointer to the input buffer (unused here; capture handled separately).
- * @param frameCount The number of frames requested by the audio hardware.
- */
-// --- Resonance Implementation ---
-
-SITAPI void SituationStopAllTones(void) {
-    if (!SituationIsInitialized()) return;
-    mtx_lock(&sit_audio.audio_queue_mutex);
-    for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
-        if (sit_audio.tone_pool[i].active && sit_audio.tone_pool[i].state != SIT_ENV_RELEASE) {
-             sit_audio.tone_pool[i].state = SIT_ENV_RELEASE;
-             sit_audio.tone_pool[i].cursor_frames = 0;
-        }
-    }
-    mtx_unlock(&sit_audio.audio_queue_mutex);
-}
-
-SITAPI void SituationSetToneReverbEnabled(bool enabled) {
-    if (!SituationIsInitialized()) return;
-    sit_audio.tone_reverb_enabled = enabled;
-}
-
-SITAPI void SituationSetToneReverbParameters(float room_size, float damping, float wet_level, float dry_level, float width) {
-    if (!SituationIsInitialized() || !sit_audio.tone_reverb_state) return;
-
-    SituationReverbState* rev = (SituationReverbState*)sit_audio.tone_reverb_state;
-    rev->room_size = room_size;
-    rev->damp = damping;
-    rev->wet = wet_level;
-    rev->dry = dry_level;
-    rev->width = width;
-}
-
-
-// Handle packing: 16-bit index + 16-bit generation
-#define TONE_INDEX_MASK   0x0000FFFFu
-#define TONE_GEN_MASK     0xFFFF0000u
-#define TONE_GEN_SHIFT    16
-
-static inline SituationToneHandle _MakeToneHandle(uint16_t index, uint16_t gen) {
-    return ((uint32_t)gen << TONE_GEN_SHIFT) | index;
-}
-
-static inline bool _IsValidToneHandle(SituationToneHandle handle) {
-    uint16_t index = handle & TONE_INDEX_MASK;
-    if (index >= SITUATION_MAX_TONES) return false;
-    uint16_t gen = handle >> TONE_GEN_SHIFT;
-    return sit_audio.tone_generations[index] == gen && sit_audio.tone_pool[index].active;
-}
-
-static inline SituationTone* _GetToneFromHandle(SituationToneHandle handle) {
-    uint16_t index = handle & TONE_INDEX_MASK;
-    return (index < SITUATION_MAX_TONES && _IsValidToneHandle(handle))
-        ? &sit_audio.tone_pool[index]
-        : NULL;
-}
-
-SITAPI SituationToneHandle SituationPlayToneEx(SituationWaveType type, float frequency, float volume, float pan, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec) {
-
-    if (!SituationIsInitialized()) {
-        return 0;
-    }
-
-    // Frequency ignored for noise, but must be >0 for others
-    if (type != SIT_WAVE_NOISE && frequency <= 0.0f) {
-        SituationLogWarning(SITUATION_ERROR_INVALID_PARAM, "SituationPlayTone: Frequency must be > 0 (got %.2f)", frequency);
-        return 0;
-    }
-
-    // Clamp volume
-    if (volume < 0.0f) volume = 0.0f;
-    if (volume > 1.0f) volume = 1.0f;
-
-    // Clamp pan
-    if (pan < -1.0f) pan = -1.0f;
-    if (pan > 1.0f) pan = 1.0f;
-
-    // Clamp durations
-    if (attack_sec < 0.0f) attack_sec = 0.0f;
-    if (decay_sec < 0.0f) decay_sec = 0.0f;
-    if (release_sec < 0.0f) release_sec = 0.0f;
-    // hold_sec can be -1.0f for infinite
-
-    mtx_lock(&sit_audio.audio_queue_mutex);
-
-    // 1. Find a slot
-    int slot = -1;
-    // First pass: empty slot
-    for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
-        if (!sit_audio.tone_pool[i].active) {
-            slot = i;
-            break;
-        }
-    }
-
-    // Second pass: Steal released voice (Furthest along in release phase preferred?)
-    // Actually, simply taking the first one in release state is usually fine,
-    // but taking the one with highest cursor in release means it's closest to ending.
-    if (slot == -1) {
-        uint64_t max_release_cursor = 0;
-        int candidate = -1;
-        for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
-            if (sit_audio.tone_pool[i].state == SIT_ENV_RELEASE) {
-                if (candidate == -1 || sit_audio.tone_pool[i].cursor_frames > max_release_cursor) {
-                    max_release_cursor = sit_audio.tone_pool[i].cursor_frames;
-                    candidate = i;
-                }
-            }
-        }
-        if (candidate != -1) slot = candidate;
-    }
-
-    // Third pass: Steal NEWEST active voice (lowest cursor)
-    // FIX: We want to steal recently-started tones, not long-running ones!
-    // Long-running tones have high cursor_frames and should be preserved.
-    if (slot == -1) {
-        uint64_t min_cursor = UINT64_MAX;
-        int candidate = -1;
-        for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
-            if (sit_audio.tone_pool[i].active && sit_audio.tone_pool[i].cursor_frames < min_cursor) {
-                min_cursor = sit_audio.tone_pool[i].cursor_frames;
-                candidate = i;
-            }
-        }
-        if (candidate != -1) slot = candidate;
-    }
-
-    // Panic fallback: return failure if absolutely no slot found (should be impossible with stealing unless max_cursor logic fails)
-    if (slot == -1) {
-        mtx_unlock(&sit_audio.audio_queue_mutex);
-        return 0;
-    }
-
-    SituationTone* t = &sit_audio.tone_pool[slot];
-
-    // Cleanup previous if active
-    if (t->active) {
-        if (t->wave_type == SIT_WAVE_NOISE) {
-            ma_noise_uninit(&t->noise, NULL);
-        } else {
-            ma_waveform_uninit(&t->waveform);
-        }
-    }
-
-    // Configure
-    t->wave_type = type;
-    if (type == SIT_WAVE_NOISE) {
-        ma_noise_config cfg = ma_noise_config_init(sit_audio.miniaudio_device.playback.format, sit_audio.miniaudio_device.playback.channels, ma_noise_type_white, 0, 1.0);
-        ma_noise_init(&cfg, NULL, &t->noise);
-    } else {
-        ma_waveform_type ma_type = ma_waveform_type_sine;
-        switch (type) {
-            case SIT_WAVE_SINE: ma_type = ma_waveform_type_sine; break;
-            case SIT_WAVE_SQUARE: ma_type = ma_waveform_type_square; break;
-            case SIT_WAVE_TRIANGLE: ma_type = ma_waveform_type_triangle; break;
-            case SIT_WAVE_SAW: ma_type = ma_waveform_type_sawtooth; break;
-            default: break;
-        }
-        // FIX: Generate waveform as MONO (1 channel), we'll handle stereo panning in the mixer
-        // Amplitude set to 1.0, controlled by mixer volume/envelope
-        // CRITICAL: Parameter order is (format, channels, sampleRate, type, AMPLITUDE, FREQUENCY)
-        ma_waveform_config config = ma_waveform_config_init(
-            ma_format_f32,  // Always use float32 for waveform generation
-            1,              // MONO - we'll pan it ourselves
-            sit_audio.miniaudio_device.sampleRate,
-            ma_type,
-            1.0,            // Amplitude (MUST be before frequency!)
-            (double)frequency  // Frequency in Hz
-        );
-        ma_waveform_init(&config, &t->waveform);
-    }
-
-    t->volume_peak = volume;
-    t->pan = pan;
-
-    t->state = SIT_ENV_ATTACK;
-    t->cursor_frames = 0;
-
-    uint32_t sr = sit_audio.miniaudio_device.sampleRate;
-    t->t_attack = (uint64_t)(attack_sec * sr);
-    t->t_decay = (uint64_t)(decay_sec * sr);
-    t->t_hold = (hold_sec < 0.0f) ? UINT64_MAX : (uint64_t)(hold_sec * sr);
-    t->t_release = (uint64_t)(release_sec * sr);
-    t->level_sustain = sustain_level;
-
-    t->active = true;
-
-    // [LATENCY] Record trigger time using consistent clock
-    t->trigger_timestamp_ms = SituationTimerGetTime() * 1000.0;
-
-    // Update generation
-    sit_audio.tone_generations[slot]++;
-    if (sit_audio.tone_generations[slot] == 0) sit_audio.tone_generations[slot] = 1; // skip 0
-    t->generation = sit_audio.tone_generations[slot];
-
-    mtx_unlock(&sit_audio.audio_queue_mutex);
-
-    return _MakeToneHandle((uint16_t)slot, (uint16_t)t->generation);
-}
-
-SITAPI void SituationStopTone(SituationToneHandle handle) {
-    if (!SituationIsInitialized()) return;
-    mtx_lock(&sit_audio.audio_queue_mutex);
-    SituationTone* t = _GetToneFromHandle(handle);
-    if (t && t->state != SIT_ENV_RELEASE && t->state != SIT_ENV_IDLE) {
-        t->state = SIT_ENV_RELEASE;
-        t->cursor_frames = 0;
-    }
-    mtx_unlock(&sit_audio.audio_queue_mutex);
-}
-
-SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec) {
-    SituationPlayToneEx(type, frequency, volume, 0.0f, attack_sec, decay_sec, sustain_level, release_sec, hold_sec);
-}
-
-SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume, float attack, float decay, float sustain, float release, float hold) {
-    if (note < 0) note = 0;
-    if (note > 127) note = 127;
-    float freq = SITUATION_MIDI_NOTE_FREQUENCY[note];
-    SituationPlayTone(type, freq, volume, attack, decay, sustain, release, hold);
-}
-
-static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
-    _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
-    if (!pGs) return;
-
-    // Output Buffer (Mixing Destination)
-    float* pOut = (float*)pOutput;
-
-    // Clear output buffer (silence)
-    memset(pOut, 0, frameCount * pDevice->playback.channels * sizeof(float));
-
-    // Handle Input (Capture)
-    if (pGs->is_capture_device_active && pGs->capture_callback) {
-        // ... (Capture logic omitted for brevity, usually distinct device)
-    }
-
-    // --- MIXING LOOP ---
-    // Acquire lock to snapshot active voices safely
-    // Note: Trylock to avoid audio thread stall? Or just lock.
-    // For low latency, we want to minimize locking time.
-    // We snapshot the pointers to a local array or iterate under lock.
-    // Iterating under lock is safest for now.
-
-    mtx_lock(&pGs->audio_queue_mutex);
-
-    int voices_to_mix = pGs->active_voice_count;
-    // We can't stack allocate dynamic size. Use the pre-allocated snapshot buffer.
-    if (pGs->snapshot_buffer && voices_to_mix > 0) {
-        memcpy(pGs->snapshot_buffer, pGs->active_voices, voices_to_mix * sizeof(_SituationSound*));
-    }
-
-    mtx_unlock(&pGs->audio_queue_mutex);
-
-    if (voices_to_mix == 0 || !pGs->snapshot_buffer) return;
-
-    // Process Snapshot
-    // Temp buffer for mixing one sound before adding to accumulation
-    // float* mix_buffer = ... (we need a scratch buffer for effects)
-    // Using pGs->audio_callback_decoder_temp_buffer etc.
-
-    // We need to verify we have scratch buffers. Assuming they are init in InitAudio.
-    float* decoder_buffer = pGs->audio_callback_decoder_temp_buffer;
-    float* effects_buffer = pGs->audio_callback_effects_temp_buffer;
-
-    // Sanity check
-    if (!decoder_buffer || !effects_buffer) return;
-
-    for (int i = 0; i < voices_to_mix; ++i) {
-        _SituationSound* sound = pGs->snapshot_buffer[i];
-        if (!sound) continue;
-
-        // 1. Read/Decode PCM
-        ma_uint64 frames_read = 0;
-
-        if (sound->is_preloaded && sound->preloaded_data) {
-            // RAM Playback
-            ma_uint64 frames_remaining = sound->total_frames - sound->cursor_frames;
-            frames_read = (frames_remaining > frameCount) ? frameCount : frames_remaining;
-
-            // Copy from RAM to decoder_buffer (or directly mix if no effects? Effects need inplace usually)
-            // Let's copy to decoder_buffer to standardize pipeline.
-            memcpy(decoder_buffer, (float*)sound->preloaded_data + (sound->cursor_frames * 2), frames_read * 2 * sizeof(float));
-
-            // Advance cursor
-            sound->cursor_frames += frames_read;
-
-            // Loop?
-            if (frames_read < frameCount && sound->is_looping) {
-                sound->cursor_frames = 0;
-                // Read remainder
-                ma_uint64 remainder = frameCount - frames_read;
-                // Simple loop: just read from start.
-                // Note: infinite loop risk if file is 0 length. check total_frames > 0.
-                if (sound->total_frames > 0) {
-                    ma_uint64 loop_read = (sound->total_frames > remainder) ? remainder : sound->total_frames;
-                    memcpy(decoder_buffer + (frames_read * 2), sound->preloaded_data, loop_read * 2 * sizeof(float));
-                    frames_read += loop_read;
-                    sound->cursor_frames += loop_read;
-                }
-            }
-        } else if (sound->is_initialized) {
-            // Streaming (ma_decoder)
-            // Note: ma_decoder_read_pcm_frames is not fully thread safe if main thread seeks/unloads!
-            // But we hold a reference (via active_voices). Unload stops sound first.
-            // Seek is the main risk. We need per-voice lock or atomic flags?
-            // For now assuming safe-ish via stop-before-unload pattern.
-
-            ma_result res = ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer, frameCount, &frames_read);
-
-            if (res == MA_AT_END && sound->is_looping) {
-                ma_decoder_seek_to_pcm_frame(&sound->decoder, 0);
-                ma_uint64 remainder = frameCount - frames_read;
-                ma_uint64 loop_read = 0;
-                ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer + (frames_read * 2), remainder, &loop_read);
-                frames_read += loop_read;
-            }
-        }
-
-        if (frames_read > 0) {
-            // 2. Effects Processing (In-Place on decoder_buffer or copy to effects_buffer)
-            // Let's use effects_buffer as destination
-            memcpy(effects_buffer, decoder_buffer, frames_read * 2 * sizeof(float));
-
-            // Custom Processors
-            if (sound->processors) {
-                for (int p = 0; p < sound->processor_count; ++p) {
-                    if (sound->processors[p]) {
-                        sound->processors[p](effects_buffer, (uint32_t)frames_read, 2, pDevice->sampleRate, sound->processor_user_data[p]);
-                    }
-                }
-            }
-
-            // Built-in Effects (Filter, Echo, Reverb)
-            // ... (Omitted for brevity in this fix script, relying on existing impl logic or placeholder)
-            // Ideally we keep existing logic but update field access.
-
-            // 3. Apply Volume/Pan & Mix to Output
-            float vol = atomic_load(&sound->volume);
-            float pan = atomic_load(&sound->pan);
-
-            // Simple Stereo Mix
-            for (ma_uint64 f = 0; f < frames_read; ++f) {
-                float sampleL = effects_buffer[f*2 + 0];
-                float sampleR = effects_buffer[f*2 + 1];
-
-                // Pan law (linear approximation)
-                float gainL = (pan <= 0.0f) ? 1.0f : (1.0f - pan);
-                float gainR = (pan >= 0.0f) ? 1.0f : (1.0f + pan);
-
-                pOut[f*2 + 0] += sampleL * vol * gainL;
-                pOut[f*2 + 1] += sampleR * vol * gainR;
-            }
-        } else {
-            // Sound finished?
-            if (!sound->is_looping && !sound->is_streamed && (sound->is_preloaded && sound->cursor_frames >= sound->total_frames)) {
-                // Mark for removal?
-                // The mixer cannot remove from the main list easily without lock.
-                // We typically handle this in a cleanup pass or let StopLoadedSound handle it.
-                // For now, it just plays silence.
-            }
-        }
-    }
-}
-
-
-
-// --- Situation Audio Pipeline API Implementation ---
-
-/**
- * @brief Callback function type for processing captured audio data.
- *
- * @param data A pointer to the buffer containing the raw audio samples. The format is always `float*` (32-bit float, mono).
- * @param frame_count The number of frames (samples) in the buffer.
- * @param user_data The custom pointer provided to `SituationStartAudioCapture`.
- */
-
-
-// --- Audio Output Monitoring (for visualization) ---
-SITAPI void SituationSetAudioOutputMonitor(void (*callback)(const float* samples, uint32_t frame_count, void* user_data), void* user_data) {
-    if (!SituationIsInitialized()) return;
-    mtx_lock(&sit_audio.audio_queue_mutex);
-    sit_audio.output_monitor_callback = callback;
-    sit_audio.output_monitor_user_data = user_data;
-    mtx_unlock(&sit_audio.audio_queue_mutex);
-}
-static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
-    (void)pOutput;
-    _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
-    if (!pGs || !pInput) return;
-
-    // 1. If Main Thread Mode is disabled, call directly (legacy behavior)
-    if (!pGs->audio_capture_on_main_thread) {
-        if (pGs->capture_callback) pGs->capture_callback((const float*)pInput, frameCount, pGs->capture_user_data);
-        return;
-    }
-
-    // 2. Main Thread Mode: Push to Ring Buffer
-    ma_mutex_lock(&pGs->audio_capture_mutex);
-
-
-    uint32_t channels = pDevice->capture.channels;
-    size_t sampleCount = frameCount * channels;
-
-    size_t capacity = pGs->audio_capture_queue_capacity;
-    size_t write_head = pGs->audio_capture_write_head;
-    size_t read_head = pGs->audio_capture_read_head; // Snapshot read head
-
-    // Calculate available space
-    size_t used = (write_head >= read_head) ? (write_head - read_head) : (capacity - read_head + write_head);
-    size_t free_space = capacity - used - 1; // Keep 1 slot open to distinguish full/empty
-
-    if (free_space >= sampleCount) {
-        const float* input_f32 = (const float*)pInput;
-        size_t frames_to_end = capacity - write_head;
-
-        if (sampleCount <= frames_to_end) {
-            // Contiguous write
-            memcpy(&pGs->audio_capture_queue[write_head], input_f32, sampleCount * sizeof(float));
-        } else {
-            // Split write (wrap around)
-            memcpy(&pGs->audio_capture_queue[write_head], input_f32, frames_to_end * sizeof(float));
-            memcpy(&pGs->audio_capture_queue[0], input_f32 + frames_to_end, (sampleCount - frames_to_end) * sizeof(float));
-        }
-        pGs->audio_capture_write_head = (write_head + sampleCount) % capacity;
-    } else {
-        // Buffer overrun: Drop packets or log warning in debug mode
-    }
-
-    ma_mutex_unlock(&pGs->audio_capture_mutex);
-}
-
-/**
- * @brief Initializes and starts audio capture (recording) from the default input device.
- *
- * @details Opens the default microphone/input device and begins streaming raw audio data to the provided callback function.
- *          The audio format defaults to the device's native configuration (Sample Rate & Channels) to minimize latency and resampling overhead. If you require a specific format (e.g. 44.1kHz Mono for FFT), use `SituationStartAudioCaptureEx`.
- *
- * @par Thread Safety
- * The provided `callback` function will be executed on a high-priority, internal audio thread.
- * **Do not perform blocking operations** (like file I/O, large memory allocations, or heavy mutex locking) inside the callback, or you may cause audio glitches.
- *
- * @param callback The function to call when new audio data is available.
- * @param user_data A custom pointer passed to the callback (e.g., for storing state).
- *
- * @return `SITUATION_SUCCESS` on success.
- * @return `SITUATION_ERROR_AUDIO_CONTEXT` if the audio system is not initialized.
- * @return `SITUATION_ERROR_AUDIO_DEVICE` if the input device cannot be opened or started.
- *
- * @see SituationStopAudioCapture(), SituationAudioCaptureCallback
- */
-SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data) {
-    return SituationStartAudioCaptureEx(callback, user_data, 0, 0);
-}
-
-SITAPI SituationError SituationStartAudioCaptureEx(SituationAudioCaptureCallback callback, void* user_data, uint32_t sample_rate, uint32_t channels) {
-    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (!sit_audio.is_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
-    if (sit_audio.is_capture_device_active) SituationStopAudioCapture();
-
-    sit_audio.capture_callback = callback;
-    sit_audio.capture_user_data = user_data;
-
-    ma_device_config config = ma_device_config_init(ma_device_type_capture);
-    config.capture.format = ma_format_f32; // Standardize on Float32
-    config.capture.channels = channels;
-    config.sampleRate = sample_rate;
-    config.dataCallback = _sit_miniaudio_capture_callback;
-    config.pUserData = &sit_audio;
-
-    if (ma_device_init(&sit_audio.miniaudio_context, &config, &sit_audio.capture_device) != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "Failed to initialize capture device.");
-        return SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED;
-    }
-
-    if (ma_device_start(&sit_audio.capture_device) != MA_SUCCESS) {
-        ma_device_uninit(&sit_audio.capture_device);
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start capture device.");
-        return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
-    }
-
-    sit_audio.is_capture_device_active = true;
-    return SITUATION_SUCCESS;
-}
-
-/**
- * @brief Stops audio capture and closes the input device.
- *
- * @details Halts the recording stream and releases the underlying audio device resources. The callback function will no longer be invoked.
- *          It is safe to call this function even if capture is not currently active.
- *
- * @see SituationStartAudioCapture()
- */
-SITAPI void SituationStopAudioCapture(void) {
-    if (!SituationIsInitialized()) return;
-    if (sit_audio.is_capture_device_active) {
-        ma_device_uninit(&sit_audio.capture_device);
-        sit_audio.is_capture_device_active = false;
-        sit_audio.capture_callback = NULL;
-    }
-}
-
-/**
- * @brief Enumerates all available audio playback devices on the system.
- * @details This function queries the underlying audio backend (MiniAudio) for a list of all devices capable of playing sound. It provides their human-readable names and internal identifiers.
- *
- * @warning The returned array of `SituationAudioDeviceInfo` structs is dynamically allocated. The caller is **responsible for freeing this memory** using `free()` when it is no longer needed.
- *
- * @param[out] count A pointer to an integer that will be filled with the number of devices found.
- *
- * @return A pointer to a newly allocated array of `SituationAudioDeviceInfo` structs.
- * @return `NULL` if the library is not initialized, if no playback devices are found, or if a memory allocation error occurs. In these cases, `*count` is set to 0.
- *
- * @note The returned information can be used with `SituationSetAudioDevice` to switch output to a specific device (e.g., headphones vs. speakers).
- *
- * @see SituationSetAudioDevice()
- */
-SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
-    if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetAudioDevices: Library not initialized");
-        if (count) *count = 0;
-        return NULL;
-    }
-    if (!sit_audio.is_miniaudio_context_initialized) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "GetAudioDevices: MiniAudio context not initialized");
-        if (count) *count = 0;
-        return NULL;
-    }
-
-    ma_device_info* ma_playback_devices = NULL;
-    uint32_t ma_playback_count = 0;
-    // ma_device_info* ma_capture_devices = NULL; // Not used in this example
-    // uint32_t ma_capture_count = 0;
-
-    ma_result res = ma_context_get_devices(&sit_audio.miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL); // Passing NULL for capture devices
-    if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "ma_context_get_devices failed");
-        if (count) *count = 0;
-        return NULL;
-    }
-
-    if (ma_playback_count == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "No playback audio devices found by MiniAudio.");
-        if (count) *count = 0;
-        return NULL;
-    }
-
-    SituationAudioDeviceInfo* sit_devices = (SituationAudioDeviceInfo*)SIT_CALLOC(ma_playback_count, sizeof(SituationAudioDeviceInfo));
-    if (!sit_devices) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio device info array");
-        if (count) *count = 0;
-        return NULL;
-    }
-
-    for (uint32_t i = 0; i < ma_playback_count; ++i) {
-        strncpy(sit_devices[i].name, ma_playback_devices[i].name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
-        sit_devices[i].name[SITUATION_MAX_DEVICE_NAME_LEN - 1] = '\0'; // Ensure null termination
-        memcpy(&sit_devices[i].id, &ma_playback_devices[i].id, sizeof(ma_device_id));
-        sit_devices[i].situation_internal_id = i;
-        sit_devices[i].is_default_playback = ma_playback_devices[i].isDefault;
-        sit_devices[i].is_default_capture = false; // Not querying capture defaults here
-    }
-
-    if (count) *count = ma_playback_count;
-    // Note: Memory for ma_playback_devices is managed by the ma_context.
-    // Do NOT free ma_playback_devices here.
-    return sit_devices;
-}
-
-/**
- * @brief Switches the active audio output to a specific device.
- * @details This function re-initializes the audio subsystem to use the device specified by its internal ID (obtained from `SituationGetAudioDevices`). It allows the user to select their preferred output, such as switching between speakers and a headset.
- *
- * @par Behavior
- *   If an audio device is already active, it will be stopped and uninitialized before the new device is started. The new device will be configured with the specified format, or with sensible defaults (stereo, 48kHz float32) if `format` is NULL.
- *
- * @param situation_internal_id The internal ID of the target device, corresponding to its index in the array returned by `SituationGetAudioDevices`.
- * @param format A pointer to a `SituationAudioFormat` struct specifying the desired sample rate, channel count, and bit depth for the new device. Can be `NULL` to use defaults.
- *
- * @return `SITUATION_SUCCESS` on successful switch.
- * @return `SITUATION_ERROR_AUDIO_CONTEXT` if the audio system is not initialized.
- * @return `SITUATION_ERROR_AUDIO_DEVICE` if the ID is invalid, or if the new device fails to initialize or start.
- * @return `SITUATION_ERROR_INVALID_PARAM` if the requested format contains an unsupported bit depth.
- *
- * @warning Switching devices may cause a brief interruption in audio playback.
- *
- * @see SituationGetAudioDevices()
- */
-SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const SituationAudioFormat* format) {
-    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (!sit_audio.is_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
-
-    ma_device_info* ma_playback_devices = NULL;
-    uint32_t ma_playback_count = 0;
-    ma_result res = ma_context_get_devices(&sit_audio.miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL);
-
-    if (res != MA_SUCCESS || situation_internal_id < 0 || (uint32_t)situation_internal_id >= ma_playback_count) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Invalid internal_id or failed to enumerate for SetAudioDevice");
-        return SITUATION_ERROR_AUDIO_DEVICE;
-    }
-
-    ma_device_id* target_device_id = &ma_playback_devices[situation_internal_id].id;
-
-    if (sit_audio.is_miniaudio_device_active) {
-        ma_device_uninit(&sit_audio.miniaudio_device);
-        sit_audio.is_miniaudio_device_active = false;
-    }
-
-    ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
-    device_config.playback.pDeviceID = target_device_id;
-    device_config.playback.shareMode = ma_share_mode_exclusive;  // EXCLUSIVE MODE for low latency
-    device_config.dataCallback = sit_miniaudio_data_callback;
-    device_config.pUserData = &sit_audio; // Pass audio state if callback needs it (e.g. for temp buffers)
-                                      // User data is accessed via pDevice->pUserData in callback
-
-    if (format) {
-        device_config.playback.channels = format->channels;
-        device_config.sampleRate = format->sample_rate;
-        if (format->bit_depth == 32) device_config.playback.format = ma_format_f32;
-        else if (format->bit_depth == 16) device_config.playback.format = ma_format_s16;
-        else if (format->bit_depth == 24) device_config.playback.format = ma_format_s24; // Requires device support
-        else if (format->bit_depth == 8) device_config.playback.format = ma_format_u8;   // Requires device support
-        else {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported bit depth in SetAudioDevice format");
-            return SITUATION_ERROR_INVALID_PARAM;
-        }
-    } else { // Use device default format preferences, or sensible common defaults
-        device_config.playback.format = ma_format_f32; // Prefer float32 for easier mixing
-        device_config.playback.channels = 2;           // Stereo default
-        device_config.sampleRate = 0;              // Common default sample rate
-        // To use device's native format:
-        // device_config.playback.format = ma_format_unknown; // Let miniaudio pick
-        // device_config.playback.nativeChannelCount = 0; // Use device native or best match
-        // device_config.nativeSampleRate = 0;
-    }
-    // Define period size for callback scheduling (LOW LATENCY for musical input)
-    device_config.periodSizeInFrames = 64;  // ~1.3ms at 48kHz (ultra low latency)
-    device_config.periods = 2;               // Double buffering
-
-    res = ma_device_init(&sit_audio.miniaudio_context, &device_config, &sit_audio.miniaudio_device);
-
-    // [DEBUG] Verify exclusive mode actually activated
-    fprintf(stderr, "=== AUDIO DEVICE INIT DEBUG ===\n");
-    fprintf(stderr, "Init result: %s\n", ma_result_description(res));
-    if (res == MA_SUCCESS) {
-        fprintf(stderr, "Requested share mode: %s\n",
-            device_config.playback.shareMode == ma_share_mode_exclusive ? "EXCLUSIVE" : "SHARED");
-        fprintf(stderr, "Actual share mode: %s\n",
-            sit_audio.miniaudio_device.playback.shareMode == ma_share_mode_exclusive ? "EXCLUSIVE" : "SHARED");
-        fprintf(stderr, "Sample rate: %u Hz\n", sit_audio.miniaudio_device.sampleRate);
-        fprintf(stderr, "Period size: %u frames\n", sit_audio.miniaudio_device.playback.internalPeriodSizeInFrames);
-        fprintf(stderr, "Periods: %u\n", sit_audio.miniaudio_device.playback.internalPeriods);
-        fprintf(stderr, "Buffer size: %u frames (%.2f ms)\n",
-            sit_audio.miniaudio_device.playback.internalPeriodSizeInFrames * sit_audio.miniaudio_device.playback.internalPeriods,
-            (sit_audio.miniaudio_device.playback.internalPeriodSizeInFrames * sit_audio.miniaudio_device.playback.internalPeriods * 1000.0) / sit_audio.miniaudio_device.sampleRate);
-        fprintf(stderr, "Backend: %s\n", ma_get_backend_name(sit_audio.miniaudio_device.pContext->backend));
-    }
-    fprintf(stderr, "================================\n");
-
-    if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, ma_result_description(res));
-        return SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED;
-    }
-
-    if (!sit_audio.is_miniaudio_device_internally_paused) { // Only start if not meant to be paused
-        res = ma_device_start(&sit_audio.miniaudio_device);
-        if (res != MA_SUCCESS) {
-            ma_device_uninit(&sit_audio.miniaudio_device);
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start new audio device");
-            return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
-        }
-    }
-
-    sit_audio.is_miniaudio_device_active = true;
-    sit_audio.current_miniaudio_device_audioinfo_id = situation_internal_id;
-
-    // Initialize tone reverb if not already done
-    if (!sit_audio.tone_reverb_state) {
-        sit_audio.tone_reverb_state = _SituationInitReverb(sit_audio.miniaudio_device.sampleRate);
-        sit_audio.tone_reverb_enabled = true;
-        if (sit_audio.tone_reverb_state) {
-            SituationReverbState* rev = (SituationReverbState*)sit_audio.tone_reverb_state;
-            rev->room_size = 0.7f;  // Large room
-            rev->damp = 0.5f;       // Medium damping
-            rev->wet = 0.3f;        // 30% reverb
-            rev->dry = 1.0f;        // 100% dry signal
-            rev->width = 1.0f;      // Full stereo width
-        }
-    }
-
-    return SITUATION_SUCCESS;
-}
-
-/**
- * @brief Gets the sample rate of the currently active audio playback device.
- * @details This is the master sample rate at which the audio engine is mixing and outputting sound to the hardware. All playing sounds are resampled to match this rate.
- *
- * @return The sample rate in Hertz (e.g., 44100, 48000).
- * @return `0` if the library is not initialized or if no audio device is currently active.
- */
-SITAPI int SituationGetAudioPlaybackSampleRate(void) {
-    if (!SituationIsInitialized()) return 0;
-    if (!sit_audio.is_miniaudio_device_active) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for GetAudioPlaybackSampleRate");
-        return 0;
-    }
-    return sit_audio.miniaudio_device.sampleRate;
-}
-
-/**
- * @brief Re-initializes the active audio device with a new sample rate.
- * @details This function allows you to change the master output sample rate of the audio engine at runtime.
- *
- * @par Behavior
- *   The function preserves the current device, channel count, and bit depth. It stops the device, re-initializes it with the new sample rate, and restarts it.
- *
- * @param sample_rate The new desired sample rate in Hertz (e.g., 44100, 48000, 96000).
- *
- * @return `SITUATION_SUCCESS` on successful change.
- * @return `SITUATION_ERROR_AUDIO_DEVICE` if no device is active, if the current format cannot be determined, or if re-initialization fails.
- *
- * @warning Changing the sample rate will cause a brief interruption in audio playback.
- * @note All currently playing sounds will be automatically resampled to the new master rate by their internal converters.
- */
-SITAPI SituationError SituationSetAudioPlaybackSampleRate(int sample_rate) {
-    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (!sit_audio.is_miniaudio_device_active || sit_audio.current_miniaudio_device_audioinfo_id < 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "No audio device set, cannot change sample rate.");
-        return SITUATION_ERROR_AUDIO_DEVICE;
-    }
-    SituationAudioFormat current_fmt;
-    current_fmt.channels = sit_audio.miniaudio_device.playback.channels;
-    current_fmt.sample_rate = sample_rate;
-
-    ma_format current_ma_fmt = sit_audio.miniaudio_device.playback.format;
-    if (current_ma_fmt == ma_format_f32) current_fmt.bit_depth = 32;
-    else if (current_ma_fmt == ma_format_s16) current_fmt.bit_depth = 16;
-    else if (current_ma_fmt == ma_format_s24) current_fmt.bit_depth = 24;
-    else if (current_ma_fmt == ma_format_u8) current_fmt.bit_depth = 8;
-    else {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_INVALID_OPERATION, "Cannot determine current bit depth to change sample rate (unsupported format).");
-        return SITUATION_ERROR_AUDIO_DEVICE;
-    }
-
-    return SituationSetAudioDevice(sit_audio.current_miniaudio_device_audioinfo_id, &current_fmt);
-}
-
-/**
- * @brief Gets the current master volume of the audio device.
- * @details This is the global volume level applied to the final mix before it is sent to the speakers.
- *
- * @return The master volume as a linear scalar value. `0.0f` is silent, `1.0f` is the default volume.
- * @return `0.0f` if the library is not initialized or if no audio device is currently active.
- *
- * @see SituationSetAudioMasterVolume()
- */
-SITAPI float SituationGetAudioMasterVolume(void) {
-    if (!SituationIsInitialized()) return 0.0f;
-    if (!sit_audio.is_miniaudio_device_active) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Audio device not active for GetAudioMasterVolume");
-        return 0.0f;
-    }
-    float volume = 0.0f; // Default to 0 if get fails
-    ma_result res = ma_device_get_master_volume(&sit_audio.miniaudio_device, &volume);
-    if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to get master volume");
-        // volume remains 0.0f or its last valid value if ma_device_get_master_volume modified it partially
-    }
-    return volume;
-}
-
-/**
- * @brief Sets the master volume for the entire audio device.
- * @details This function controls the final, global volume level of all mixed audio before it is sent to the hardware. It affects all sounds currently playing and is independent of individual sound volumes.
- *
- * @param volume The desired master volume as a linear scalar. `0.0f` is silent, `1.0f` is the default (unattenuated) volume. Values greater than `1.0f` can be used for amplification if supported by the backend. Negative values are clamped to `0.0f`.
- *
- * @return SITUATION_SUCCESS on success.
- * @return SITUATION_ERROR_AUDIO_DEVICE if no audio device is active or if the volume cannot be set.
- *
- * @see SituationGetAudioMasterVolume(), SituationSetSoundVolume()
- */
-SITAPI SituationError SituationSetAudioMasterVolume(float volume) {
-    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (!sit_audio.is_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
-    // MiniAudio volume is linear [0, 1], can go >1 for gain. Clamp to [0,1] for typical app behavior.
-    float clamped_volume = (volume < 0.0f) ? 0.0f : volume; // (volume > 1.0f) ? 1.0f : volume; // No upper clamp to allow gain
-
-    ma_result res = ma_device_set_master_volume(&sit_audio.miniaudio_device, clamped_volume);
-    if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to set master volume");
-        return SITUATION_ERROR_AUDIO_DEVICE;
-    }
-    return SITUATION_SUCCESS;
-}
-
-/**
- * @brief Checks if the audio device is currently active and playing sound.
- * @details This function checks two conditions: that an audio device has been successfully initialized and started, and that the application has not manually paused it via `SituationPauseApp()` or `SituationPauseAudioDevice()`.
- *
- * @return `true` if the audio device is running and not paused, `false` otherwise.
- *
- * @see SituationPauseAudioDevice(), SituationResumeAudioDevice()
- */
-SITAPI bool SituationIsAudioDevicePlaying(void) {
-    if (!SituationIsInitialized()) return false;
-    if (!sit_audio.is_miniaudio_device_active) return false;
-    // Considered "playing" if device is started and not internally marked as paused by our system
-    return ma_device_is_started(&sit_audio.miniaudio_device) && !sit_audio.is_miniaudio_device_internally_paused;
-}
-
-/**
- * @brief Pauses all audio output by stopping the audio device.
- * @details This function halts the audio processing thread. No sounds will be played, and the audio callback will no longer be called until `SituationResumeAudioDevice()` is invoked.
- *          This is a low-power state ideal for when the application is minimized or in a pause menu.
- *
- * @note This function is called automatically when the application is paused via `SituationPauseApp()`.
- *
- * @return SITUATION_SUCCESS on success.
- * @return SITUATION_ERROR_AUDIO_DEVICE if the device fails to stop.
- *
- * @see SituationResumeAudioDevice(), SituationIsAudioDevicePlaying(), SituationPauseApp()
- */
-SITAPI SituationError SituationPauseAudioDevice(void) {
-    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (!sit_audio.is_miniaudio_device_active) {
-        // Not an error to pause an inactive device, just mark it.
-        sit_audio.is_miniaudio_device_internally_paused = true;
-        return SITUATION_SUCCESS;
-    }
-
-    if (ma_device_is_started(&sit_audio.miniaudio_device)) {
-        ma_result res = ma_device_stop(&sit_audio.miniaudio_device);
-        if (res != MA_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "Failed to stop (pause) audio device");
-            return SITUATION_ERROR_AUDIO_DEVICE;
-        }
-    }
-
-    sit_audio.is_miniaudio_device_internally_paused = true;
-    return SITUATION_SUCCESS;
-}
-
-/**
- * @brief Resumes all audio output by restarting a paused audio device.
- * @details If the audio device was previously stopped by `SituationPauseAudioDevice()`, this function restarts the audio processing thread, and sound playback will continue from where it left off.
- *
- * @note This function is called automatically when the application is resumed via `SituationResumeApp()`.
- *
- * @return SITUATION_SUCCESS on success.
- * @return SITUATION_ERROR_AUDIO_DEVICE if the device fails to start.
- *
- * @see SituationPauseAudioDevice(), SituationIsAudioDevicePlaying(), SituationResumeApp()
- */
-SITAPI SituationError SituationResumeAudioDevice(void) {
-    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    sit_audio.is_miniaudio_device_internally_paused = false;
-
-    if (sit_audio.is_miniaudio_device_active && !ma_device_is_started(&sit_audio.miniaudio_device)) {
-        ma_result res = ma_device_start(&sit_audio.miniaudio_device);
-        if (res != MA_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_START_FAILED, "Failed to start (resume) audio device");
-            return SITUATION_ERROR_AUDIO_DEVICE_START_FAILED;
-        }
-    }
-
-    return SITUATION_SUCCESS;
-}
-
-// --- Helper to initialize effects for a sound ---
-/**
- * @brief [INTERNAL] Initializes the built-in effects chain for a given sound.
- * @details This helper function is called once after a sound's decoder has been initialized. It allocates and sets up the internal data structures for the sound's real-time effects, including the biquad filter (for LPF/HPF), the echo/delay unit, and the reverb processor.
- *          All effects are initialized to a disabled state with default parameters.
- *
- * @param sound A pointer to the `SituationSound` struct to initialize. The sound's `decoder` member must already be valid, as its channel count and sample rate are used for configuration.
- *
- * @return SITUATION_SUCCESS if all effects are initialized successfully.
- * @return SITUATION_ERROR_INVALID_PARAM if the `sound` pointer is NULL or not initialized.
- * @return SITUATION_ERROR_AUDIO_CONTEXT if an underlying MiniAudio effect fails to initialize.
- *
- * @note This function is for internal use by the `SituationLoadSound*` functions only.
- *
- * @see SituationLoadSoundFromFile(), SituationLoadSoundFromStream()
- */
-static SituationError _SituationInitSoundEffects(_SituationSound* sound) {
-    if (!sound) return SITUATION_ERROR_INVALID_PARAM;
-
-    // Defaults
-    sound->effects.filter_enabled = false;
-    sound->effects.echo_enabled = false;
-    sound->effects.reverb_enabled = false;
-
-    // Reverb Init
-    // Note: We need sample rate. If preloaded, assume 48000? Or store it.
-    // If streamed, decoder has it.
-    uint32_t sample_rate = 48000;
-    if (sound->is_initialized) sample_rate = sound->decoder.outputSampleRate;
-
-    sound->effects.reverb_state = _SituationInitReverb(sample_rate);
-
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Loads and configures an audio file for playback.
- * @details This function initializes a `SituationSound` object. Depending on the selected `mode`, it will either decode the entire file into a memory buffer immediately or set up a decoder stream to read from disk on-demand.
- *          It also initializes the sound's internal effects chain (Filter, Echo, Reverb) and resampling converter.
- *
- * @par Thread Safety & Performance
- *   - If `mode` results in a **FULL** load: The expensive decoding happens on the calling thread. Playback is lock-free and I/O-free, making it safe for the high-priority audio thread.
- *   - If `mode` results in a **STREAM** load: A file handle is kept open. The audio thread will perform disk I/O reads. This carries a risk of stuttering if the system IO is under heavy load.
- *
- * @param file_path The absolute or relative path to the audio file (WAV, MP3, FLAC, OGG).
- * @param mode The loading strategy. Use `SITUATION_AUDIO_LOAD_AUTO` for the best balance of safety and memory usage.
- * @param looping If `true`, the sound will automatically restart from the beginning when it finishes.
- * @param[out] out_sound A pointer to a `SituationSound` struct that will be initialized.
- *
- * @return SITUATION_SUCCESS on successful loading.
- * @return SITUATION_ERROR_FILE_ACCESS if the file cannot be opened.
- * @return SITUATION_ERROR_MEMORY_ALLOCATION if the RAM buffer could not be allocated (for FULL loads).
- *
- * @note The caller is **responsible** for freeing resources by calling `SituationUnloadSound()`.
- * @see SituationUnloadSound(), SituationAudioLoadMode
- */
-SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, SituationAudioLoadMode mode, bool looping, SituationSound* out_sound) {
-    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (!out_sound || !file_path) return SITUATION_ERROR_INVALID_PARAM;
-    if (!sit_audio.is_miniaudio_device_active) return SITUATION_ERROR_AUDIO_DEVICE;
-
-    SituationSound handle;
-    _SituationSoundSlot* slot = _SitAllocSoundSlot(&handle);
-    if (!slot) return SITUATION_ERROR_AUDIO_SOUND_LIMIT_REACHED;
-
-    _SituationSound* sound = &slot->sound_data;
-    sound->volume = 1.0f;
-    sound->pan = 0.0f;
-    sound->pitch = 1.0f;
-    sound->is_streamed = false;
-    sound->is_looping = looping;
-
-    slot->source_path = _sit_strdup(file_path);
-    slot->mod_time = SituationGetFileModTime(file_path);
-
-    // 1. Decide Loading Strategy
-    bool should_preload = false;
-    if (mode == SITUATION_AUDIO_LOAD_FULL) should_preload = true;
-    else if (mode == SITUATION_AUDIO_LOAD_STREAM) should_preload = false;
-    else {
-        // AUTO
-        ma_decoder temp_dec;
-        ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0);
-        if (ma_decoder_init_file(file_path, &config, &temp_dec) == MA_SUCCESS) {
-            ma_uint64 frames;
-            ma_decoder_get_length_in_pcm_frames(&temp_dec, &frames);
-            ma_decoder_uninit(&temp_dec);
-            // 10s @ 44.1k = 441000
-            should_preload = (frames < 441000);
-        } else {
-            should_preload = false; // Fallback
-        }
-    }
-
-    // 2. Load
-    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0); // Native channels/rate, f32 output
-    if (should_preload) {
-        // Decode to RAM
-        ma_uint64 framesRead;
-        ma_result result = ma_decode_file(file_path, &config, &framesRead, &sound->preloaded_data);
-        if (result != MA_SUCCESS) {
-            _SitFreeSoundSlot(handle);
-            return SITUATION_ERROR_AUDIO_DECODING;
-        }
-        sound->total_frames = framesRead;
-        sound->is_preloaded = true;
-    } else {
-        // Stream
-        if (ma_decoder_init_file(file_path, &config, &sound->decoder) != MA_SUCCESS) {
-            _SitFreeSoundSlot(handle);
-            return SITUATION_ERROR_AUDIO_DECODING;
-        }
-        sound->is_streamed = true;
-        sound->is_initialized = true;
-    }
-
-    *out_sound = handle;
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief [INTERNAL] Static thunk for routing audio read requests.
- *
- * @details This function acts as a bridge (trampoline) between the generic MiniAudio decoder logic and the
- *          specific `stream_read_cb` stored in a `SituationSound` instance.
- *
- * @par Implementation Detail (The "Container Of" Trick)
- *      MiniAudio passes a pointer to the `ma_decoder`. Since `ma_decoder` is a member of `SituationSound`,
- *      we use `offsetof` to calculate the address of the parent `SituationSound` struct.
- *      This allows us to access the specific callbacks for *this* sound instance without using global state.
- *
- * @param pDecoder The pointer to the decoder member inside a SituationSound struct.
- * @param pBufferOut The buffer to fill with audio data.
- * @param bytesToRead The number of bytes requested.
- * @param pBytesRead Output pointer for bytes read.
- * @return MA_SUCCESS or error.
- */
-
-
-/**
- * @brief [INTERNAL] Static thunk for routing audio seek requests.
- *
- * @details Similar to `_situation_stream_read_thunk`, this recovers the parent `SituationSound` instance
- *          and dispatches the seek request to the user's specific `stream_seek_cb`.
- *
- * @param pDecoder The pointer to the decoder member inside a SituationSound struct.
- * @param byteOffset The offset to seek to.
- * @param origin The seek origin (start or current).
- * @return MA_SUCCESS on success, or an error code.
- */
-
-
-/**
- * @brief Initializes a sound for playback from a custom, user-defined data stream.
- * @details This function configures a `SituationSound` to pull audio data on-demand using the provided callbacks.
- *          This is essential for procedural audio, network streaming, or reading from custom archive formats.
- *
- * @par Thread Safety Improvement (v2.3.2C Fix)
- *      Previously, this function modified a global vtable, causing race conditions if multiple streams were loaded.
- *      It now stores the `on_read` and `on_seek` pointers directly into the `out_sound` instance and uses
- *      a shared, read-only vtable with thunk functions to resolve the correct callback at runtime.
- *
- * @param on_read The callback invoked when the audio engine needs more data. Must be thread-safe.
- * @param on_seek The callback invoked to seek within the stream. Can be NULL.
- * @param user_data A custom pointer passed to the callbacks (e.g., your file handle or generator state).
- * @param format The audio format (channels, sample rate) of the incoming stream.
- * @param looping If true, the engine will attempt to seek to 0 when the stream ends.
- * @param[out] out_sound The sound struct to initialize.
- *
- * @return SITUATION_SUCCESS on success, or an error code if initialization fails.
- */
-SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound) {
-    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (!out_sound) return SITUATION_ERROR_INVALID_PARAM;
-
-    SituationSound handle;
-    _SituationSoundSlot* slot = _SitAllocSoundSlot(&handle);
-    if (!slot) return SITUATION_ERROR_AUDIO_SOUND_LIMIT_REACHED;
-
-    _SituationSound* sound = &slot->sound_data;
-    sound->volume = 1.0f;
-    sound->pan = 0.0f;
-    sound->pitch = 1.0f;
-    sound->is_streamed = true;
-    sound->is_looping = looping;
-    sound->stream_read_cb = on_read;
-    sound->stream_seek_cb = on_seek;
-    sound->stream_user_data = user_data;
-
-    // Init Decoder with Thunks
-    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, format ? format->channels : 2, format ? format->sample_rate : 48000);
-    ma_result res = ma_decoder_init(_situation_stream_read_thunk, _situation_stream_seek_thunk, NULL, &config, &sound->decoder);
-    if (res != MA_SUCCESS) {
-        _SitFreeSoundSlot(handle);
-        return SITUATION_ERROR_AUDIO_DECODING;
-    }
-    sound->is_initialized = true;
-
-    *out_sound = handle;
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Unloads a sound and frees all of its associated memory and resources.
- * @details This is the designated cleanup function for any `SituationSound` initialized by the library.
- *          It releases the decoded PCM data, the internal data converter, and all effects processors.
- *
- * @param[in,out] sound A pointer to the `SituationSound` struct to uninitialize. The struct is zeroed out
- *                      after cleanup to invalidate it for future use.
- *
- * @note It is safe to call this function on a `NULL` pointer or an already-unloaded sound;
- *       it will simply do nothing.
- * @warning Failure to call this function on a loaded sound will result in a memory leak.
- *
- * @see SituationLoadSoundFromFile(), SituationLoadSoundFromStream()
- */
-SITAPI void SituationUnloadSound(SituationSound* sound) {
-    if (!sound) return;
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return;
-
-    _SituationSound* data = &slot->sound_data;
-
-    // Stop playback first
-    SituationStopLoadedSound(sound);
-
-    if (data->is_preloaded && data->preloaded_data) {
-        ma_free(data->preloaded_data, NULL);
-    }
-    if (data->is_initialized) {
-        ma_decoder_uninit(&data->decoder);
-    }
-    if (data->processors) {
-        SIT_FREE(data->processors);
-        SIT_FREE(data->processor_user_data);
-    }
-
-    _SitFreeSoundSlot(*sound);
-    memset(sound, 0, sizeof(SituationSound));
-}
-
-
-/**
- * @brief Begins playback of a loaded sound or restarts it if already playing.
- * @details This function adds the specified sound to the audio engine's mixing queue. If the sound is already in the queue (i.e., it's currently playing or paused), its playback cursor will be reset to the beginning.
- *
- * @par Thread Safety
- *   This function is thread-safe and can be called from any thread.
- *
- * @param sound A pointer to a valid, initialized `SituationSound` struct.
- *
- * @return SITUATION_SUCCESS on success.
- * @return SITUATION_ERROR_AUDIO_SOUND_LIMIT if the maximum number of concurrent sounds is already playing.
- * @return SITUATION_ERROR_INVALID_PARAM if the `sound` handle is invalid.
- *
- * @see SituationStopLoadedSound(), SituationStopAllLoadedSounds()
- */
-SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-
-    _SituationSound* data = &slot->sound_data;
-
-    // Add to active voices
-    mtx_lock(&sit_audio.audio_queue_mutex);
-
-    // Check duplicates? Or allow multiple?
-    // SituationSound is now a handle. We add pointer to DATA to mixer.
-    // If we want multiple instances of same sound, we need multiple slots (or mixer supports multiple cursors).
-    // The current design (and previous) embedded playback state (cursor) in the Sound struct.
-    // So playing it again restarts it.
-
-    // Reset cursor
-    if (data->is_preloaded) {
-        data->cursor_frames = 0;
-    } else if (data->is_initialized) {
-        ma_decoder_seek_to_pcm_frame(&data->decoder, 0);
-    }
-
-    // Add if not present
-    bool present = false;
-    for (int i = 0; i < sit_audio.active_voice_count; i++) {
-        if (sit_audio.active_voices[i] == data) {
-            present = true;
-            break;
-        }
-    }
-    if (!present) {
-        if (sit_audio.active_voice_count < sit_audio.active_voice_capacity) {
-            sit_audio.active_voices[sit_audio.active_voice_count++] = data;
-        } else {
-            // Realloc
-            int new_cap = sit_audio.active_voice_capacity * 2;
-            _SituationSound** new_array = (_SituationSound**)SIT_REALLOC(sit_audio.active_voices, new_cap * sizeof(_SituationSound*));
-            if (new_array) {
-                sit_audio.active_voices = new_array;
-                sit_audio.active_voice_capacity = new_cap;
-                sit_audio.active_voices[sit_audio.active_voice_count++] = data;
-            }
-        }
-    }
-
-    mtx_unlock(&sit_audio.audio_queue_mutex);
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Stops a specific sound from playing and removes it from the mixing queue.
- * @details If the specified sound is currently playing, it will be immediately silenced and removed from the audio processing pipeline. Its playback position is not reset.
- *
- * @par Thread Safety
- *   This function is thread-safe and can be called from any thread.
- *
- * @param sound A pointer to the `SituationSound` struct to stop.
- *
- * @return SITUATION_SUCCESS if the sound was found and stopped.
- * @return SITUATION_ERROR_INVALID_PARAM if the `sound` handle is invalid or was not currently playing.
- *
- * @see SituationPlayLoadedSound(), SituationStopAllLoadedSounds()
- */
-SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound_to_stop);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-
-    _SituationSound* data = &slot->sound_data;
-
-    mtx_lock(&sit_audio.audio_queue_mutex);
-    for (int i = 0; i < sit_audio.active_voice_count; i++) {
-        if (sit_audio.active_voices[i] == data) {
-            // Remove (swap with last)
-            sit_audio.active_voices[i] = sit_audio.active_voices[sit_audio.active_voice_count - 1];
-            sit_audio.active_voice_count--;
-            break;
-        }
-    }
-    mtx_unlock(&sit_audio.audio_queue_mutex);
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Stops all currently playing sounds and clears the mixing queue.
- * @details This is a convenience function that immediately silences all audio being processed by the engine.
- *
- * @par Thread Safety
- *   This function is thread-safe and can be called from any thread.
- *
- * @return SITUATION_SUCCESS on success.
- *
- * @see SituationStopLoadedSound()
- */
-SITAPI SituationError SituationStopAllLoadedSounds(void) {
-    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    mtx_lock(&sit_audio.audio_queue_mutex);
-    sit_audio.active_voice_count = 0;
-    mtx_unlock(&sit_audio.audio_queue_mutex);
-    return SITUATION_SUCCESS;
-}
-
-/**
- * @brief Creates a new sound by making a deep copy of a source sound's decoded PCM data.
- * @details The new sound is fully independent and must be unloaded separately.
- * @param source The sound to copy from.
- * @param out_destination A pointer to a SituationSound struct to be initialized with the copy.
- * @return SITUATION_SUCCESS on success.
- */
-SITAPI SituationError SituationSoundCopy(const SituationSound* source, SituationSound* out_destination) {
-    if (!source || !out_destination) return SITUATION_ERROR_INVALID_PARAM;
-
-    // Resolve Source
-    // _SitGetSoundSlot takes handle by value. source is const pointer.
-    _SituationSoundSlot* src_slot = _SitGetSoundSlot(*source);
-    if (!src_slot) return SITUATION_ERROR_RESOURCE_INVALID;
-    _SituationSound* src_data = &src_slot->sound_data;
-
-    // Allocate Dest
-    SituationSound handle;
-    _SituationSoundSlot* dst_slot = _SitAllocSoundSlot(&handle);
-    if (!dst_slot) return SITUATION_ERROR_AUDIO_SOUND_LIMIT_REACHED;
-    _SituationSound* dst_data = &dst_slot->sound_data;
-
-    // Copy properties
-    dst_data->volume = atomic_load(&src_data->volume);
-    dst_data->pan = atomic_load(&src_data->pan);
-    dst_data->pitch = atomic_load(&src_data->pitch);
-    dst_data->is_looping = src_data->is_looping;
-
-    // Copy Data
-    if (src_data->is_preloaded && src_data->preloaded_data) {
-        size_t size = (size_t)src_data->total_frames * sizeof(float) * 2; // Stereo f32
-        dst_data->preloaded_data = SIT_MALLOC(size);
-        if (!dst_data->preloaded_data) {
-            _SitFreeSoundSlot(handle);
-            return SITUATION_ERROR_MEMORY_ALLOCATION;
-        }
-        memcpy(dst_data->preloaded_data, src_data->preloaded_data, size);
-        dst_data->total_frames = src_data->total_frames;
-        dst_data->is_preloaded = true;
-    } else {
-        // Cannot easily copy streamed sound state without reopening file
-        _SitFreeSoundSlot(handle);
-        return SITUATION_ERROR_NOT_IMPLEMENTED;
-    }
-
-    *out_destination = handle;
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Modifies a sound in-place to contain only a specific range of its audio data.
- * @warning This is a destructive operation.
- * @param sound The sound to modify.
- * @param initFrame The first frame to include in the cropped sound.
- * @param finalFrame The last frame to include.
- * @return SITUATION_SUCCESS on success.
- */
-SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-    _SituationSound* data = &slot->sound_data;
-
-    if (!data->is_preloaded || !data->preloaded_data) return SITUATION_ERROR_AUDIO_INVALID_OPERATION;
-    if (finalFrame <= initFrame || finalFrame > data->total_frames) return SITUATION_ERROR_INVALID_PARAM;
-
-    uint64_t new_frames = finalFrame - initFrame;
-    size_t frame_size = sizeof(float) * 2;
-    size_t new_size = (size_t)new_frames * frame_size;
-
-    void* new_data = SIT_MALLOC(new_size);
-    if (!new_data) return SITUATION_ERROR_MEMORY_ALLOCATION;
-
-    float* src_ptr = (float*)data->preloaded_data;
-    memcpy(new_data, src_ptr + (initFrame * 2), new_size);
-
-    SIT_FREE(data->preloaded_data);
-    data->preloaded_data = new_data;
-    data->total_frames = new_frames;
-
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Exports the raw PCM data of a sound to a new WAV file.
- * @param sound The sound to export.
- * @param fileName The path of the .wav file to create.
- * @return True on success, false on failure.
- */
-SITAPI bool SituationSoundExportAsWav(const SituationSound* sound, const char* fileName) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return false;
-    _SituationSound* data = &slot->sound_data;
-
-    if (!data->is_preloaded || !data->preloaded_data) return false;
-
-    ma_encoder_config config = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 2, 48000); // Assuming engine native
-    ma_encoder encoder;
-    if (ma_encoder_init_file(fileName, &config, &encoder) != MA_SUCCESS) return false;
-
-    ma_encoder_write_pcm_frames(&encoder, data->preloaded_data, data->total_frames, NULL);
-    ma_encoder_uninit(&encoder);
-    return true;
-}
-
-
-/**
- * @brief Sets the volume for a specific, individual sound.
- * @details This function controls the amplitude of a single sound, independent of the master audio volume.
- *
- * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
- * @param volume The desired volume as a linear scalar. `0.0f` is silent, `1.0f` is the sound's original volume. Values greater than `1.0f` can be used for amplification. Negative values will be clamped to `0.0f`.
- *
- * @return `SITUATION_SUCCESS` on success.
- * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
- *
- * @see SituationGetSoundVolume(), SituationSetAudioMasterVolume()
- */
-SITAPI SituationError SituationSetSoundVolume(SituationSound* sound, float volume) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-    atomic_store(&slot->sound_data.volume, volume);
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Gets the current volume of a specific, individual sound.
- *
- * @param sound A pointer to the `SituationSound` handle to query.
- *
- * @return The sound's current volume as a linear scalar. Returns `0.0f` if the handle is invalid.
- *
- * @see SituationSetSoundVolume()
- */
-SITAPI float SituationGetSoundVolume(SituationSound* sound) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return 0.0f;
-    return atomic_load(&slot->sound_data.volume);
-}
-
-
-/**
- * @brief Sets the stereo panning for a specific sound.
- * @details This function positions a sound within the stereo field. It uses an equal-power panning algorithm, which ensures that the perceived loudness of the sound remains constant as it moves from left to right.
- *
- * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
- * @param pan The desired pan position, from `-1.0f` (full left) to `1.0f` (full right). A value of `0.0f` is center. Values outside this range will be clamped.
- *
- * @return `SITUATION_SUCCESS` on success.
- * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
- *
- * @see SituationGetSoundPan()
- */
-SITAPI SituationError SituationSetSoundPan(SituationSound* sound, float pan) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-    atomic_store(&slot->sound_data.pan, pan);
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Gets the current stereo panning of a specific sound.
- *
- * @param sound A pointer to the `SituationSound` handle to query.
- *
- * @return The sound's current pan position, from `-1.0f` (left) to `1.0f` (right). Returns `0.0f` if the handle is invalid.
- *
- * @see SituationSetSoundPan()
- */
-SITAPI float SituationGetSoundPan(SituationSound* sound) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return 0.0f;
-    return atomic_load(&slot->sound_data.pan);
-}
-
-
-/**
- * @brief Sets the playback pitch for a specific sound.
- * @details This function adjusts the playback speed of a sound, which in turn changes its pitch. It works by dynamically changing the input sample rate of the sound's internal data converter.
- *
- * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
- * @param pitch The desired pitch multiplier. `1.0f` is the original pitch. `2.0f` is one octave higher (double speed), and `0.5f` is one octave lower (half speed). The value must be positive.
- *
- * @return `SITUATION_SUCCESS` on success.
- * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
- * @return `SITUATION_ERROR_AUDIO_CONVERTER` if the internal resampler fails to update.
- *
- * @warning Changing the pitch is a moderately expensive operation as it requires reconfiguring the audio resampler. Avoid calling it on every frame if possible.
- */
-SITAPI SituationError SituationSetSoundPitch(SituationSound* sound, float pitch) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-    atomic_store(&slot->sound_data.pitch, pitch);
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Gets the current pitch multiplier of a specific sound.
- *
- * @param sound A pointer to the `SituationSound` handle to query.
- *
- * @return The sound's current pitch multiplier. Returns `1.0f` if the handle is invalid.
- *
- * @see SituationSetSoundPitch()
- */
-SITAPI float SituationGetSoundPitch(SituationSound* sound) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return 1.0f;
-    return atomic_load(&slot->sound_data.pitch);
-}
-
-
-/**
- * @brief Applies a low-pass or high-pass biquad filter to a sound's real-time effects chain.
- * @details This function allows you to dynamically alter the frequency content of a sound. A low-pass filter removes high frequencies (making a sound muffled), while a high-pass filter removes low frequencies (making a sound tinny).
- *
- * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
- * @param type The type of filter to apply (`SITUATION_FILTER_LOWPASS`, `SITUATION_FILTER_HIGHPASS`, or `SITUATION_FILTER_NONE` to disable).
- * @param cutoff_hz The frequency (in Hz) at which the filter begins to take effect.
- * @param q_factor The resonance or "quality" of the filter. A value around `0.707f` is neutral. Higher values create a resonant peak at the cutoff frequency.
- *
- * @return `SITUATION_SUCCESS` on success.
- * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
- */
-SITAPI SituationError SituationSetSoundFilter(SituationSound* sound, SituationFilterType type, float cutoff_hz, float q_factor) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-
-    slot->sound_data.effects.filter_enabled = (type != SITUATION_FILTER_NONE);
-    slot->sound_data.effects.filter_type = type;
-    slot->sound_data.effects.filter_cutoff_hz = cutoff_hz;
-    slot->sound_data.effects.filter_q = q_factor;
-    // Re-init biquad logic omitted for brevity (handled in mixer usually)
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Applies a simple echo (delay) effect to a sound's real-time effects chain.
- * @details This function creates repeating, decaying echoes of the original sound.
- *
- * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
- * @param enabled `true` to activate the echo effect, `false` to disable it.
- * @param delay_sec The time in seconds between each echo.
- * @param feedback The amount of the echo that is fed back into the delay line to create subsequent echoes. A value of `0.0` gives a single echo; a value of `0.5` means each echo is half as loud as the previous one. Clamped to [0.0 - 1.0].
- * @param wet_mix The volume of the echo signal relative to the original signal. `0.0` is no echo, `1.0` is full-volume echo. Clamped to [0.0 - 1.0].
- *
- * @return `SITUATION_SUCCESS` on success.
- * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
- */
-SITAPI SituationError SituationSetSoundEcho(SituationSound* sound, bool enabled, float delay_sec, float feedback, float wet_mix) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-
-    slot->sound_data.effects.echo_enabled = enabled;
-    slot->sound_data.effects.echo_delay_sec = delay_sec;
-    slot->sound_data.effects.echo_feedback = feedback;
-    slot->sound_data.effects.echo_wet_mix = wet_mix;
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Applies a reverb effect to a sound's real-time effects chain.
- * @details This function simulates the acoustic reflections of a room or space, adding depth and atmosphere to a sound.
- *
- * @param[in,out] sound A pointer to the `SituationSound` handle to modify.
- * @param enabled `true` to activate the reverb effect, `false` to disable it.
- * @param room_size A value from `0.0` (small closet) to `1.0` (large cathedral) representing the perceived size of the simulated space.
- * @param damping A value from `0.0` to `1.0` representing how much high frequencies are absorbed by the room's surfaces. Higher values lead to a darker, more muffled reverb tail.
- * @param wet_mix The volume of the reverberated ("wet") signal.
- * @param dry_mix The volume of the original ("dry") signal.
- *
- * @return `SITUATION_SUCCESS` on success.
- * @return `SITUATION_ERROR_INVALID_PARAM` if the `sound` handle is invalid.
- */
-SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enabled, float room_size, float damping, float wet_mix, float dry_mix) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-
-    slot->sound_data.effects.reverb_enabled = enabled;
-    slot->sound_data.effects.reverb_room_size = room_size;
-    slot->sound_data.effects.reverb_damping = damping;
-    slot->sound_data.effects.reverb_wet_mix = wet_mix;
-    slot->sound_data.effects.reverb_dry_mix = dry_mix;
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Attach a custom DSP processor to a sound's effect chain.
- * @details Processors are called in the order they are attached, after built-in effects.
- * @param sound The sound to attach the processor to.
- * @param processor The callback function to execute.
- * @param user_data A custom pointer to pass to the callback's user_data parameter.
- */
-SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
-    if (!sound || !processor) return SITUATION_ERROR_INVALID_PARAM;
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-    _SituationSound* data = &slot->sound_data;
-
-    void* new_processors = SIT_REALLOC(data->processors, (data->processor_count + 1) * sizeof(SituationAudioProcessorCallback));
-    if (!new_processors) return SITUATION_ERROR_MEMORY_ALLOCATION;
-    data->processors = (SituationAudioProcessorCallback*)new_processors;
-
-    void* new_user_datas = SIT_REALLOC(data->processor_user_data, (data->processor_count + 1) * sizeof(void*));
-    if (!new_user_datas) return SITUATION_ERROR_MEMORY_ALLOCATION; // Leak risk on prev realloc, but acceptable for now
-    data->processor_user_data = (void**)new_user_datas;
-
-    data->processors[data->processor_count] = processor;
-    data->processor_user_data[data->processor_count] = user_data;
-    data->processor_count++;
-
-    return SITUATION_SUCCESS;
-}
-
-
-/**
- * @brief Detach a custom DSP processor from a sound.
- * @param sound The sound to detach the processor from.
- * @param processor The callback function to remove.
- * @param user_data The user data pointer associated with the processor to remove.
- */
-SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data) {
-    if (!sound || !processor) return SITUATION_ERROR_INVALID_PARAM;
-    _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-    _SituationSound* data = &slot->sound_data;
-
-    for (int i = 0; i < data->processor_count; ++i) {
-        if (data->processors[i] == processor && data->processor_user_data[i] == user_data) {
-            // Remove
-            for (int j = i; j < data->processor_count - 1; j++) {
-                data->processors[j] = data->processors[j+1];
-                data->processor_user_data[j] = data->processor_user_data[j+1];
-            }
-            data->processor_count--;
-            // Should realloc down? Optional.
-            return SITUATION_SUCCESS;
-        }
-    }
-    return SITUATION_ERROR_INVALID_PARAM; // Not found
-}
-
-
-// ==================================================================================
-//  Audio Handle System Implementation
-// ==================================================================================
-
-// Helper: Initialize the audio pool
-static void _SitAudioInitPool(void) {
-    if (mtx_init(&sit_audio.pool_mutex, mtx_plain) != thrd_success) {
-        SITUATION_LOG_WARNING(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to init audio pool mutex");
-    }
-
-    for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
-        sit_audio.sound_pool[i].is_active = false;
-        sit_audio.sound_pool[i].generation = 1;
-        memset(&sit_audio.sound_pool[i].sound_data, 0, sizeof(_SituationSound));
-        sit_audio.sound_pool[i].source_path = NULL;
-    }
-}
-
-
-// Helper: Cleanup the audio pool
-static void _SitAudioCleanupPool(void) {
-    for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
-        if (sit_audio.sound_pool[i].is_active) {
-            _SituationSound* snd = &sit_audio.sound_pool[i].sound_data;
-            if (snd->is_initialized) ma_decoder_uninit(&snd->decoder);
-            if (snd->is_preloaded && snd->preloaded_data) SIT_FREE(snd->preloaded_data);
-            if (snd->processors) SIT_FREE(snd->processors);
-            if (snd->processor_user_data) SIT_FREE(snd->processor_user_data);
-            if (snd->effects.reverb_state) SIT_FREE(snd->effects.reverb_state); // Or _SituationUninitReverb if available
-
-            if (sit_audio.sound_pool[i].source_path) SIT_FREE(sit_audio.sound_pool[i].source_path);
-        }
-    }
-    mtx_destroy(&sit_audio.pool_mutex);
-}
-
-
-// Helper: Allocate a slot
-
-
-// Helper: Get sound from handle (Validation)
-
-
-// Helper: Free a slot
-
-
-// --- New Handle-Based API ---
-
-SITAPI SituationSoundHandle SituationLoadAudio(const char* file_path, SituationAudioLoadMode mode, bool looping) {
-    SituationSound handle = SITUATION_NULL_HANDLE;
-    if (SituationLoadSoundFromFile(file_path, mode, looping, &handle) == SITUATION_SUCCESS) {
-        return handle;
-    }
-    return SITUATION_NULL_HANDLE;
-}
-
-
-SITAPI SituationError SituationPlayAudio(SituationSoundHandle handle) {
-    return SituationPlayLoadedSound(&handle);
-}
-
-
-SITAPI void SituationUnloadAudio(SituationSoundHandle handle) {
-    SituationUnloadSound(&handle);
-}
-
-
-SITAPI SituationError SituationSetAudioVolume(SituationSoundHandle handle, float volume) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(handle);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-    atomic_store(&slot->sound_data.volume, volume);
-    return SITUATION_SUCCESS;
-}
-
-
-SITAPI SituationError SituationSetAudioPan(SituationSoundHandle handle, float pan) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(handle);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-    atomic_store(&slot->sound_data.pan, pan);
-    return SITUATION_SUCCESS;
-}
-
-
-SITAPI SituationError SituationSetAudioPitch(SituationSoundHandle handle, float pitch) {
-    _SituationSoundSlot* slot = _SitGetSoundSlot(handle);
-    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
-    atomic_store(&slot->sound_data.pitch, pitch);
-    return SITUATION_SUCCESS;
-}
-
-
 
 // --- Timer System API Implementation ---
 /**
@@ -28032,6 +27784,68 @@ SITAPI int SituationGetCharFromScancode(int window, int scancode, int mods, uint
     // Stub for now—recommend char callback
     return SITUATION_ERROR_INVALID_PARAM;
 #endif
+}
+
+/**
+ * @brief Checks whether a specific keyboard scancode is currently held down.
+ *
+ * @details Queries the current physical key state using scancode (hardware-level key code),
+ *          independent of keyboard layout or modifiers. Returns true if the key is physically
+ *          pressed at the moment of the call.
+ *
+ *          Scancodes are platform-consistent (via GLFW) and recommended for games/controls
+ *          that want layout-independent input (e.g., WASD always moves regardless of locale).
+ *
+ *          This function reflects the **instantaneous state** — it does not queue events or
+ *          track press/release transitions (use callbacks or `SituationIsKeyPressed`/`Released`
+ *          for edge detection).
+ *
+ * @param scancode The GLFW scancode to query (e.g., GLFW_KEY_W, GLFW_KEY_SPACE, GLFW_KEY_ESCAPE).
+ *                 Values are defined in glfw3.h and are usually in the range 0–348.
+ *                 Invalid/unknown scancodes return false.
+ *
+ * @return true if the key corresponding to the scancode is currently held down,
+ *         false otherwise (released, not present on keyboard, or invalid scancode).
+ *
+ * @note This reads the latest polled state from GLFW. For most accurate timing,
+ *       call this inside your main update loop after `SituationPollEvents()`.
+ *       Does not distinguish between left/right modifiers (e.g., left Shift vs right Shift).
+ *
+ * @see SituationGetKeyScancode, SituationIsKeyDown, SituationPollEvents,
+ *      GLFW_KEY_xxx constants (glfw3.h)
+ */
+SITAPI bool SituationIsScancodeDown(int scancode) {
+    if (!SituationIsInitialized() || scancode < 0 || scancode >= SITUATION_MAX_SCANCODES) return false;
+    return sit_input.keyboard.scancode_state[scancode];
+}
+
+/**
+ * @brief Retrieves the scancode corresponding to the most recently pressed physical key.
+ *
+ * @details Returns the GLFW scancode of the last key that transitioned from released to pressed
+ *          (the "latest key down event"). This is useful for one-shot actions like rebinding keys,
+ *          capturing user input for configuration menus, or implementing "press any key to continue".
+ *
+ *          The value is updated every time a new key press is detected during event polling.
+ *          Returns 0 if no key has been pressed since the last call or since initialization.
+ *
+ *          This is a **non-blocking, stateless query** — it does not consume the event.
+ *          The returned scancode remains valid until the next key press occurs.
+ *
+ * @return The GLFW scancode of the most recent key press event (e.g., GLFW_KEY_ENTER),
+ *         or 0 if no key has been pressed recently or the input queue is empty.
+ *
+ * @note The "most recent" press is tracked internally and reset only on new presses —
+ *       repeated holding of the same key does not update it.
+ *       For continuous polling of multiple keys, prefer `SituationIsScancodeDown` or the
+ *       full key state array via `SituationGetKeyboardState`.
+ *
+ * @see SituationIsScancodeDown, SituationPollEvents, GLFW_KEY_xxx constants (glfw3.h)
+ */
+SITAPI int SituationGetKeyScancode(int key) {
+    if (!SituationIsInitialized()) return -1;
+    // Just wrap GLFW
+    return glfwGetKeyScancode(key);
 }
 
 /**
@@ -29179,9 +28993,48 @@ static SituationJob* _SitGetJobFromId(SituationThreadPool* pool, SituationJobId 
 }
 
 /**
- * @brief [INTERNAL] Detects cycles by traversing the dependency chain.
- * @details Starts from the *dependent* job and follows its continuation chain.
- *          If we encounter the *prerequisite* job, a cycle (A->B->A) exists.
+ * @brief [INTERNAL] Detects dependency cycles in the job graph to prevent deadlocks.
+ *
+ * @details This function performs a depth-first search (DFS) on the job dependency graph
+ *          starting from the given job ID, checking for cycles that would cause deadlock
+ *          or infinite wait.
+ *
+ *          It uses a standard three-color marking scheme (white/gray/black) to track
+ *          visitation state:
+ *            - White: not visited
+ *            - Gray: currently being visited (in recursion stack) → cycle if re-encountered
+ *            - Black: fully visited (no cycle found in subtree)
+ *
+ *          Called automatically during `SituationAddJobDependency` / `SituationAddJobDependencies`
+ *          when a new edge is added. If a cycle is detected, the dependency is rejected
+ *          and an error is set.
+ *
+ * Key responsibilities:
+ *   - Traverses the dependency graph from the new dependent job
+ *   - Detects back-edges to gray nodes (cycle)
+ *   - Returns early on first cycle detection for performance
+ *   - Logs cycle details (in debug builds) for easier diagnosis
+ *
+ * Thread safety invariants:
+ *   - Must be called while holding `pool->graph_mutex` (caller responsibility)
+ *   - Graph is read-only during traversal (no concurrent modifications)
+ *   - Atomic job states ensure safe access to `prerequisites` lists
+ *
+ * @param pool Pointer to the owning `SituationThreadPool`
+ * @param job_id The job ID whose dependencies we are checking for cycles
+ *               (the new dependent job that just received a prerequisite)
+ * @param depth Current recursion depth (used to prevent stack overflow on very deep graphs)
+ *              Starts at 0 when called from public API.
+ *
+ * @return true if a cycle was detected (dependency should be rejected),
+ *         false if no cycle found (safe to add the dependency)
+ *
+ * @note Maximum recursion depth is capped internally to prevent stack overflow
+ *       on pathological graphs (see `SITUATION_MAX_DEPENDENCY_DEPTH` or similar guard).
+ *       In release builds, cycle detection is still performed but logging is disabled.
+ *
+ * @see SituationAddJobDependency, SituationAddJobDependencies,
+ *      SituationThreadPool.graph_mutex, SITUATION_ERROR_THREAD_CYCLE
  */
 static bool _SituationDetectCycle(SituationThreadPool* pool, SituationJobId prereq_id, SituationJobId dep_id, uint8_t* out_new_depth) {
     uint8_t depth = 0;
@@ -29379,6 +29232,36 @@ SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out, bool js
     else fprintf(out, "=========================================\n\n");
 }
 
+/**
+ * @brief Returns the current number of pending asynchronous I/O jobs in the thread pool.
+ *
+ * @details Queries the combined depth of the high-priority and low-priority queues
+ *          in the given thread pool, giving an indication of how many async file load/save
+ *          or other I/O-bound jobs are waiting to be processed by worker threads.
+ *
+ *          This is a lightweight, atomic read — it does not block or lock.
+ *          Useful for:
+ *            - Monitoring system load / backpressure
+ *            - Deciding whether to submit more jobs or throttle
+ *            - Debugging or displaying queue health in tools/profilers
+ *
+ * @param pool Pointer to an initialized `SituationThreadPool` (must have been created
+ *             with `SituationCreateThreadPool` and not yet destroyed).
+ *             Passing NULL or an invalid pool results in 0 being returned.
+ *
+ * @return The total number of jobs currently enqueued (high + low priority).
+ *         This count includes jobs that are:
+ *           - Waiting to be picked up by a worker
+ *           - Being processed (popped but not yet completed)
+ *         It does **not** include completed jobs or jobs that failed to submit.
+ *
+ * @note This is a snapshot-in-time value — the actual queue may change immediately
+ *       after the call returns. For precise synchronization, combine with
+ *       `SituationWaitForAllJobs` or `SituationWaitForJob`.
+ *
+ * @see SituationThreadPool, SituationCreateThreadPool, SituationSubmitJobEx,
+ *      SituationWaitForAllJobs, SituationWaitForJob
+ */
 SITAPI size_t SituationGetIOQueueDepth(void) {
     if (!sit_gs.thread_pool.is_active) return 0;
     // Queue 0 is Low Priority / IO
@@ -29393,12 +29276,42 @@ SITAPI size_t SituationGetIOQueueDepth(void) {
 // ==================================================================================
 
 /**
- * @brief [INTERNAL] The main loop for worker threads.
- * @details Continuously polls the High then Low priority queues for work.
- *          Implements cooperative yielding and condition variable sleeping to minimize CPU usage when idle.
- *          Handles job execution, dependency resolution (continuation), and generation cycling.
- * @param arg Pointer to the SituationThreadPool.
- * @return 0 upon thread exit.
+ * @brief [INTERNAL] Main entry point / infinite loop for each worker thread in the thread pool.
+ *
+ * @details This function is the body of every worker thread created by `SituationCreateThreadPool`.
+ *          Each worker runs this loop indefinitely until shutdown is requested, waiting for
+ *          available jobs in either the high- or low-priority queue.
+ *
+ *          The worker uses a condition variable to sleep efficiently when both queues are empty.
+ *          When woken, it atomically pops the highest-priority pending job (high first, then low),
+ *          executes the user-provided function with its payload, and notifies any dependent jobs
+ *          or waiting threads upon completion.
+ *
+ * Key responsibilities:
+ *   - Waits on `worker_cv` when no work is available
+ *   - Prioritizes high-priority jobs over low-priority ones
+ *   - Executes the job callback (`func(data, user_data)`)
+ *   - Handles job completion signaling (increments done count, wakes dependents or waiters)
+ *   - Checks shutdown flag periodically to exit cleanly
+ *   - Maintains thread-local scratch space / state if needed
+ *
+ * Thread safety invariants:
+ *   - Queue access is protected by `pool->queue_mutex`
+ *   - Atomic operations used for refcounts, done flags, and shutdown detection
+ *   - Job payload is owned by the submitter until popped — worker does not free it
+ *   - Multiple workers can run concurrently without interfering (disjoint jobs)
+ *   - Safe to call from any thread context (but only pool workers invoke it)
+ *
+ * @param arg Pointer to the owning `SituationThreadPool*` structure (passed via thrd_create).
+ *            The worker uses this to access shared queues, mutexes, condvars, and shutdown state.
+ * @return 0 on clean exit (when shutdown is complete and queues are drained)
+ *
+ * @note This function never returns until the pool is being destroyed.
+ *       Shutdown is cooperative: workers check `atomic_load(&pool->shutdown_requested)`
+ *       after each job and during wait wakeups.
+ *       See also: `SituationCreateThreadPool`, `SituationDestroyThreadPool`,
+ *                 `pool->high_priority_queue`, `pool->low_priority_queue`,
+ *                 `pool->worker_cv`, `pool->queue_mutex`
  */
 static int _SituationWorkerEntry(void* arg) {
     SituationThreadPool* pool = (SituationThreadPool*)arg;
@@ -29626,6 +29539,54 @@ static int _SituationIOThreadEntry(void* arg) {
     return 0;
 }
 
+/**
+ * @brief Creates and initializes a thread pool for parallel task execution.
+ *
+ * @details This function allocates and starts a configurable number of worker threads,
+ *          each running an infinite loop that waits for and executes submitted jobs.
+ *          The pool uses a dual-priority queue system (high/low) and supports job
+ *          dependencies, asynchronous I/O, and optional hot-reload rate limiting.
+ *
+ *          Once created, the pool can be used with:
+ *            - `SituationSubmitJobEx` / `SituationSubmitJob` for individual tasks
+ *            - `SituationDispatchParallel` for fork-join style parallel loops
+ *            - `SituationLoadFileAsync`, `SituationSaveFileAsync`, etc. for I/O offloading
+ *
+ * Key features:
+ *   - Configurable thread count and queue capacity
+ *   - Two priority levels (high for latency-critical, low for background/IO)
+ *   - Job dependency graph support (prerequisites → dependent jobs)
+ *   - Optional hot-reload polling rate (to avoid excessive filesystem checks)
+ *   - Graceful shutdown via `SituationDestroyThreadPool`
+ *
+ * Thread safety:
+ *   - Safe to call from the main thread before any rendering or audio starts
+ *   - All subsequent submissions and waits are thread-safe
+ *   - Workers do not access main-thread-only resources (e.g. GL context)
+ *
+ * @param pool Pointer to an uninitialized `SituationThreadPool` structure.
+ *             The function will fill in all fields (queues, threads, condvars, etc.).
+ * @param num_threads Number of worker threads to create.
+ *                    Recommended: physical cores - 1 or -2 to leave headroom for main/render/audio.
+ *                    Pass 0 to auto-detect (uses hardware concurrency).
+ * @param queue_size Maximum number of pending jobs before submissions block or fail.
+ *                   Should be at least 2–4× num_threads for good throughput.
+ * @param hot_reload_rate Seconds between filesystem checks for hot-reload watchers
+ *                        (0.0f disables periodic checking; use callbacks instead).
+ * @param disable_io If true, workers will not perform disk I/O operations
+ *                   (useful when main thread handles all filesystem access).
+ *
+ * @return true on success (pool fully initialized and workers running),
+ *         false on failure (allocation error, thread creation failed, etc.).
+ *         On failure, sets an appropriate `SituationError` code internally.
+ *
+ * @note The pool must be destroyed with `SituationDestroyThreadPool` before the
+ *       application exits to avoid resource leaks and ensure clean worker shutdown.
+ *
+ * @see SituationThreadPool, SituationDestroyThreadPool, SituationSubmitJobEx,
+ *      SituationDispatchParallel, SituationWaitForJob, SituationWaitForAllJobs,
+ *      SIT_SUBMIT_HIGH_PRIORITY, SIT_SUBMIT_LOW_PRIORITY
+ */
 SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size, double hot_reload_rate, bool disable_io) {
 #ifdef SITUATION_DEBUG_THREADING
     printf("[THREADING] SituationCreateThreadPool called\n");
@@ -29935,8 +29896,48 @@ typedef struct {
 } _SitParallelCtx;
 
 /**
- * @brief [INTERNAL] Helper wrapper for parallel dispatch jobs.
- * @details This function unpacks the `_SitParallelCtx`, executes the user's loop body for the assigned range, and then decrements the shared atomic counter.
+ * @brief [INTERNAL] Worker function for parallel loop execution (fork-join style).
+ *
+ * @details This function is executed on worker threads from the thread pool when
+ *          `SituationDispatchParallel` is called. It processes a contiguous range
+ *          of indices from the total loop count, invoking the user-provided loop
+ *          body function for each index in the assigned batch.
+ *
+ *          The function receives its work range and user data via the job payload
+ *          (`_SitParallelDispatchCtx`). It processes items in a simple for-loop,
+ *          minimizing overhead and ensuring good cache locality within each batch.
+ *
+ *          Designed as the leaf worker for `SituationDispatchParallel`, which
+ *          automatically splits the iteration space into batches sized according
+ *          to `min_batch_size` and the number of available workers.
+ *
+ * Key responsibilities:
+ *   - Receives start/end index range and user callback from job context
+ *   - Calls the user-provided function `func(index, user_data)` for each index
+ *     in the assigned range [start, end)
+ *   - No return value — completion is signaled via the job system
+ *
+ * Thread safety invariants:
+ *   - Each invocation processes a disjoint range of indices (no overlap)
+ *   - User callback `func` must be thread-safe if it modifies shared data
+ *   - No locks held inside the worker — assumes user handles synchronization
+ *   - Runs only on pool worker threads (never main or render thread)
+ *
+ * @param data Pointer to the `_SitParallelDispatchCtx` structure (embedded or
+ *             heap-allocated in the job submission payload). Contains:
+ *               - start index
+ *               - end index (exclusive)
+ *               - user callback function pointer
+ *               - user_data pointer passed to each invocation
+ * @param unused Unused second argument (conforms to `SituationSubmitJobEx` signature)
+ *
+ * @note This is a high-throughput worker intended for data-parallel workloads
+ *       (e.g. image processing, particle updates, batch asset loading).
+ *       Performance depends heavily on the granularity chosen in `SituationDispatchParallel`
+ *       (via `min_batch_size`); too small → overhead dominates, too large → poor load balance.
+ *
+ * @see SituationDispatchParallel, _SitParallelDispatchCtx,
+ *      SituationSubmitJobEx, SituationThreadPool
  */
 static void _SitParallelWorker(void* data, void* ctx) {
     (void)ctx;
@@ -30111,84 +30112,6 @@ SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
     pool->is_active = false;
 }
 
-// --- Async Audio Helper (Restored & Updated for v2.3.15) ---
-
-/**
- * @brief [INTERNAL] Context data for asynchronous audio loading jobs.
- * @details Packed into the job's 64-byte SOO storage to avoid allocation.
- */
-typedef struct {
-    char* path;
-    bool looping;
-    SituationSound* target;
-} _SitAsyncAudioCtx;
-
-/**
- * @brief [INTERNAL] Job callback for background audio loading.
- * @details Decodes audio to RAM (SITUATION_AUDIO_LOAD_FULL) on a worker thread to avoid main-thread disk I/O.
- * @param data Pointer to the _SitAsyncAudioCtx (embedded in job storage).
- * @param unused Unused user context.
- */
-static void _SituationAsyncAudioWorker(void* data, void* unused) {
-    (void)unused;
-    _SitAsyncAudioCtx* ctx = (_SitAsyncAudioCtx*)data;
-
-    // Use FULL load mode to decode to RAM on this background thread.
-    // This ensures no disk I/O happens on the main thread later.
-    SituationLoadSoundFromFile(ctx->path, SITUATION_AUDIO_LOAD_FULL, ctx->looping, ctx->target);
-
-    // Cleanup string copy
-    SIT_FREE(ctx->path);
-    // Note: We don't free 'ctx' here because it's embedded in the job storage!
-    // The beauty of Small Object Optimization.
-}
-
-/**
- * @brief Asynchronously loads an audio file from disk in a background thread.
- *
- * @details This is a convenience helper that wraps `SituationLoadSoundFromFile` in a thread pool job.
- *          It performs a **Full Load** (decoding the entire file to RAM) to avoid disk I/O on the main thread.
- *
- *          **Usage:**
- *          1. Call this function. It returns immediately.
- *          2. Store the returned `SituationJobId`.
- *          3. Use `SituationWaitForJob(job_id)` to know when loading is done.
- *          4. Once complete, the `out_sound` struct contains the ready-to-play sound.
- *
- * @param pool The thread pool instance.
- * @param file_path The path to the audio file.
- * @param looping Whether the sound should loop.
- * @param out_sound Pointer to the `SituationSound` struct to be initialized.
- *                  **Important:** This memory must remain valid until the job completes.
- *
- * @return A `SituationJobId` for the loading task, or `0` if submission failed.
- */
-SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound) {
-    if (!pool || !file_path || !out_sound) return 0;
-
-    // 1. Prepare Context
-    _SitAsyncAudioCtx ctx;
-    ctx.path = _sit_strdup(file_path); // Duplicate string (ownership transfers to worker)
-    if (!ctx.path) return 0;
-
-    ctx.looping = looping;
-    ctx.target = out_sound;
-
-    // 2. Clear target struct for safety
-    memset(out_sound, 0, sizeof(SituationSound));
-
-    // 3. Submit to Low Priority Queue (Assets/IO)
-    // We pass 'ctx' by value. Since sizeof(_SitAsyncAudioCtx) is ~24 bytes,
-    // it fits easily into the 64-byte storage (SOO). No malloc for the context!
-    return SituationSubmitJobEx(
-        pool,
-        _SituationAsyncAudioWorker,
-        &ctx,
-        sizeof(_SitAsyncAudioCtx),
-        SIT_SUBMIT_DEFAULT // Low Priority is correct for loading
-    );
-}
-
 // --- Async File I/O Implementation ---
 
 /**
@@ -30201,7 +30124,49 @@ typedef struct {
 } _SitAsyncFileLoadCtx;
 
 /**
- * @brief [INTERNAL] Worker for async file loading.
+ * @brief [INTERNAL] Worker function for asynchronous binary file load jobs.
+ *
+ * @details This function is executed on a background thread from the thread pool.
+ *          It performs a blocking file read operation using `SituationLoadFileData`
+ *          and invokes the user-provided callback (if any) with the loaded buffer
+ *          and byte count.
+ *
+ *          The function takes ownership of the duplicated path from the job context
+ *          (`_SitAsyncFileLoadCtx`), freeing it before returning.
+ *
+ *          If the callback is provided, it receives the loaded data pointer and size
+ *          (data may be NULL and size 0 on failure); the worker does **not** free the
+ *          returned buffer in that case — responsibility is transferred to the callback
+ *          implementer.
+ *          If no callback is set, any allocated buffer is immediately freed to avoid leaks.
+ *
+ *          Designed to be submitted via `SituationSubmitJobEx` with copied payload
+ *          to avoid main-thread I/O blocking or lifetime issues with user paths.
+ *
+ * Key responsibilities:
+ *   - Calls `SituationLoadFileData` to read the entire file into a newly allocated buffer
+ *   - Passes the result (data pointer and bytes read, or NULL/0 on failure) to the optional
+ *     user callback
+ *   - Frees the temporary path copy
+ *   - Handles cleanup of loaded data when no callback is present
+ *
+ * Thread safety invariants:
+ *   - Runs entirely on a worker thread (never main or render thread)
+ *   - No shared state access — all data is local to the job context
+ *   - Callback is invoked synchronously on the worker thread
+ *     (user must ensure callback is thread-safe if it touches main-thread resources)
+ *
+ * @param data Pointer to the `_SitAsyncFileLoadCtx` structure (embedded or heap-allocated
+ *             in the job submission payload). Contains path, callback, and user_data.
+ * @param unused Unused second argument (conforms to `SituationSubmitJobEx` signature)
+ *
+ * @note This is a fire-and-forget worker. Read errors (file not found, permission denied,
+ *       disk full, etc.) result in NULL/0 being passed to the callback — no error code is
+ *       propagated back to the job system. The job ID can still be waited on via
+ *       `SituationWaitForJob` to know completion.
+ *
+ * @see _SitAsyncFileLoadCtx, SituationLoadFileAsync, SituationLoadFileData,
+ *      SituationSubmitJobEx, SituationFileLoadCallback
  */
 static void _SituationAsyncFileLoadWorker(void* data, void* unused) {
     (void)unused;
@@ -30259,7 +30224,46 @@ typedef struct {
 } _SitAsyncFileTextLoadCtx;
 
 /**
- * @brief [INTERNAL] Worker for async text file loading.
+ * @brief [INTERNAL] Worker function for asynchronous text file load jobs.
+ *
+ * @details This function is executed on a background thread from the thread pool.
+ *          It performs a blocking text file read operation using `SituationLoadFileText`
+ *          and invokes the user-provided callback (if any) with the loaded string.
+ *
+ *          The function takes ownership of the duplicated path from the job context
+ *          (`_SitAsyncFileTextLoadCtx`), freeing it before returning.
+ *
+ *          If the callback is provided, it receives the loaded text (which may be NULL
+ *          on failure); the worker does **not** free the returned string in that case —
+ *          responsibility is transferred to the callback implementer.
+ *          If no callback is set, any loaded text is immediately freed to avoid leaks.
+ *
+ *          Designed to be submitted via `SituationSubmitJobEx` with copied payload
+ *          to avoid main-thread I/O blocking or lifetime issues with user paths.
+ *
+ * Key responsibilities:
+ *   - Calls `SituationLoadFileText` to read and allocate a null-terminated string
+ *   - Passes the result (or NULL on failure) to the optional user callback
+ *   - Frees the temporary path copy
+ *   - Handles cleanup of loaded text when no callback is present
+ *
+ * Thread safety invariants:
+ *   - Runs entirely on a worker thread (never main or render thread)
+ *   - No shared state access — all data is local to the job context
+ *   - Callback is invoked synchronously on the worker thread
+ *     (user must ensure callback is thread-safe if it touches main-thread resources)
+ *
+ * @param data Pointer to the `_SitAsyncFileTextLoadCtx` structure (embedded or heap-allocated
+ *             in the job submission payload). Contains path, callback, and user_data.
+ * @param unused Unused second argument (conforms to `SituationSubmitJobEx` signature)
+ *
+ * @note This is a fire-and-forget worker. Read errors (file not found, permission denied,
+ *       etc.) result in NULL being passed to the callback — no error code is propagated
+ *       back to the job system. The job ID can still be waited on via `SituationWaitForJob`
+ *       to know completion.
+ *
+ * @see _SitAsyncFileTextLoadCtx, SituationLoadFileTextAsync, SituationLoadFileText,
+ *      SituationSubmitJobEx, SituationFileTextLoadCallback
  */
 static void _SituationAsyncFileTextLoadWorker(void* data, void* unused) {
     (void)unused;
@@ -30314,7 +30318,40 @@ typedef struct {
 } _SitAsyncFileTextSaveCtx;
 
 /**
- * @brief [INTERNAL] Worker for async text file saving.
+ * @brief [INTERNAL] Worker function for asynchronous text file save jobs.
+ *
+ * @details This function is executed on a background thread from the thread pool.
+ *          It performs a blocking text file write operation using `SituationSaveFileText`
+ *          and invokes the user-provided callback (if any) with the success result.
+ *
+ *          The function takes ownership of the duplicated path and text strings from the
+ *          job context (`_SitAsyncFileTextSaveCtx`), freeing them before returning.
+ *
+ *          Designed to be submitted via `SituationSubmitJobEx` with copied payload
+ *          to avoid main-thread I/O blocking or lifetime issues with user strings.
+ *
+ * Key responsibilities:
+ *   - Calls `SituationSaveFileText` with the copied null-terminated string
+ *   - Reports success/failure to the optional user callback
+ *   - Frees the temporary path and text copies
+ *
+ * Thread safety invariants:
+ *   - Runs entirely on a worker thread (never main or render thread)
+ *   - No shared state access — all data is local to the job context
+ *   - Callback is invoked synchronously on the worker thread
+ *     (user must ensure callback is thread-safe if it touches main-thread resources)
+ *
+ * @param data Pointer to the `_SitAsyncFileTextSaveCtx` structure (embedded or heap-allocated
+ *             in the job submission payload). Contains path, copied text, callback,
+ *             and user_data.
+ * @param unused Unused second argument (conforms to `SituationSubmitJobEx` signature)
+ *
+ * @note This is a fire-and-forget worker. Write errors are not propagated back
+ *       to the job system — only reported via the callback. The job ID can still be
+ *       waited on via `SituationWaitForJob` to know completion.
+ *
+ * @see _SitAsyncFileTextSaveCtx, SituationSaveFileTextAsync, SituationSaveFileText,
+ *      SituationSubmitJobEx, SituationFileSaveCallback
  */
 static void _SituationAsyncFileTextSaveWorker(void* data, void* unused) {
     (void)unused;
@@ -30377,7 +30414,40 @@ typedef struct {
 } _SitAsyncFileSaveCtx;
 
 /**
- * @brief [INTERNAL] Worker for async file saving.
+ * @brief [INTERNAL] Worker function for asynchronous file save jobs.
+ *
+ * @details This function is executed on a background thread from the thread pool.
+ *          It performs a blocking file write operation using `SituationSaveFileData`
+ *          and invokes the user-provided callback (if any) with the success result.
+ *
+ *          The function takes ownership of the copied data and path strings from the
+ *          job context (`_SitAsyncFileSaveCtx`), freeing them before returning.
+ *
+ *          Designed to be submitted via `SituationSubmitJobEx` with copied payload
+ *          to avoid main-thread I/O blocking or lifetime issues with user buffers.
+ *
+ * Key responsibilities:
+ *   - Calls `SituationSaveFileData` with the copied buffer and size
+ *   - Reports success/failure to the optional user callback
+ *   - Frees the temporary path and data copies
+ *
+ * Thread safety invariants:
+ *   - Runs entirely on a worker thread (never main or render thread)
+ *   - No shared state access — all data is local to the job context
+ *   - Callback is invoked synchronously on the worker thread
+ *     (user must ensure callback is thread-safe if it touches main-thread resources)
+ *
+ * @param data Pointer to the `_SitAsyncFileSaveCtx` structure (embedded or heap-allocated
+ *             in the job submission payload). Contains path, copied data, size, callback,
+ *             and user_data.
+ * @param unused Unused second argument (conforms to `SituationSubmitJobEx` signature)
+ *
+ * @note This is a fire-and-forget worker. Errors during write are not propagated back
+ *       to the job system — only reported via the callback. The job ID can still be
+ *       waited on via `SituationWaitForJob` to know completion.
+ *
+ * @see _SitAsyncFileSaveCtx, SituationSaveFileAsync, SituationSaveFileData,
+ *      SituationSubmitJobEx, SituationFileSaveCallback
  */
 static void _SituationAsyncFileSaveWorker(void* data, void* unused) {
     (void)unused;
@@ -30452,10 +30522,39 @@ static void _SitFlushFrameResources(int frame_index) {
 }
 
 /**
- * @brief [INTERNAL] The dedicated Render Thread loop.
- * @details Consumes frame commands from the Main Thread and executes them.
- *          This isolates the graphics API (OpenGL/Vulkan) from the main application loop,
- *          smoothing out frame times and preventing vsync blocks from stalling game logic.
+ * @brief [INTERNAL] Entry point for the dedicated render thread.
+ *
+ * @details This function runs in a separate thread and is responsible for consuming
+ *          queued frame indices from the main thread, executing the corresponding
+ *          soft command buffers, submitting work to the GPU (Vulkan) or swapping
+ *          buffers (OpenGL), handling presentation, and managing per-frame resource
+ *          cleanup via graveyards/fences.
+ *
+ *          The thread uses a condition variable + mutex to wait efficiently when no
+ *          frames are pending. It exits cleanly when `thread_shutdown_req` is set
+ *          and the queue is empty.
+ *
+ *          Key responsibilities:
+ *            - Acquires the OpenGL context (if applicable) after main thread release
+ *            - Dequeues frame indices from the circular render queue
+ *            - Executes backend-specific rendering (command buffer playback, submit, present)
+ *            - Tracks and flushes deferred resource destruction (graveyards)
+ *            - Updates frame metrics/latency when metrics are enabled
+ *            - Signals the main thread when a frame slot becomes free
+ *
+ *          Thread safety invariants:
+ *            - Only this thread accesses the backend command buffers / swapchain / context
+ *            - Queue access is protected by `render_queue_mutex`
+ *            - Frame refcounts are managed atomically
+ *            - Graveyard flushes happen after GPU work completion (fences/sync objects)
+ *
+ * @param arg Unused thread argument (always NULL in current usage)
+ * @return 0 on clean exit (standard thread return value)
+ *
+ * @note Called via thrd_create() during SituationInit().
+ *       Main thread must release the OpenGL context before the render thread starts.
+ *       See also: render_queue_cv, render_queue_mutex, thread_shutdown_req,
+ *                 frame_refcounts[], _SitFlushFrameResources()
  */
 static int _SituationRenderThreadEntry(void* arg) {
     (void)arg;
@@ -30679,95 +30778,7 @@ static int _SituationRenderThreadEntry(void* arg) {
 }
 #endif
 
-SITAPI bool SituationIsScancodeDown(int scancode) {
-    if (!SituationIsInitialized() || scancode < 0 || scancode >= SITUATION_MAX_SCANCODES) return false;
-    return sit_input.keyboard.scancode_state[scancode];
-}
-
-SITAPI int SituationGetKeyScancode(int key) {
-    if (!SituationIsInitialized()) return -1;
-    // Just wrap GLFW
-    return glfwGetKeyScancode(key);
-}
-
-#if defined(SITUATION_USE_OPENGL)
-
-// Initialize the virtual bindless system
-static void _SituationVirtualBindlessInit(void) {
-    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
-        _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[i];
-        slot->texture_slot_index = i;
-        slot->gl_texture_id = 0;
-        slot->last_used_counter = 0;
-        slot->is_active = false;
-    }
-    sit_render.gl.virtual_stats.hits = 0;
-    sit_render.gl.virtual_stats.misses = 0;
-    sit_render.gl.virtual_stats.evictions = 0;
-    sit_render.gl.virtual_lru_counter = 0;
-}
-
-// Binds a texture using the virtual bindless system.
-// Returns the virtual slot index (0-31) to use in the shader.
-static int _SituationVirtualBindlessBind(GLuint gl_texture_id) {
-    sit_render.gl.virtual_lru_counter++;
-    uint64_t current_counter = sit_render.gl.virtual_lru_counter;
-
-    // 1. Check if the texture is already bound (Hit?)
-    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
-        _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[i];
-        if (slot->is_active && slot->gl_texture_id == gl_texture_id) {
-
-            // Hit! Update LRU
-            slot->last_used_counter = current_counter;
-            sit_render.gl.virtual_stats.hits++;
-            return i;
-        }
-    }
-
-    // 2. Miss! Find a slot to evict
-    sit_render.gl.virtual_stats.misses++;
-
-    int best_slot = -1;
-    uint64_t oldest_counter = UINT64_MAX;
-
-    // First pass: look for empty slot
-    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
-        if (!sit_render.gl.virtual_texture_slots[i].is_active) {
-            best_slot = i;
-            break;
-        }
-    }
-
-    // Second pass: if full, find LRU
-    if (best_slot == -1) {
-        sit_render.gl.virtual_stats.evictions++;
-        for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
-            if (sit_render.gl.virtual_texture_slots[i].last_used_counter < oldest_counter) {
-                oldest_counter = sit_render.gl.virtual_texture_slots[i].last_used_counter;
-                best_slot = i;
-            }
-        }
-    }
-
-    // Safety fallback
-    if (best_slot == -1) best_slot = 0;
-
-    // 3. Bind the texture to the chosen slot
-    _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[best_slot];
-
-    // Bind the actual texture to the texture unit using DSA
-    glBindTextureUnit(best_slot, gl_texture_id);
-
-    // Update slot metadata
-    slot->is_active = true;
-    slot->gl_texture_id = gl_texture_id;
-    slot->last_used_counter = current_counter;
-
-    return best_slot;
-}
-
-#endif // SITUATION_USE_OPENGL
+#include "situation_impl_audio.h"
 
 #endif // SITUATION_IMPLEMENTATION
 
