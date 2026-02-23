@@ -1,3 +1,21 @@
+## [v2.3.57 "Mixer Routing" (Phase 3)] - 2026-03-06
+
+### Description
+
+This release delivers the routing infrastructure for the Situation Mixer (Phase 3). It introduces 8 Auxiliary Buses, comprehensive Send controls (Pre/Post-Fader), and flexible output routing. Additionally, standard mixer controls like Pan, Mute, and Solo (Solo-In-Place) are now fully implemented, turning the engine into a capable mixing console.
+
+### New Features
+
+- **Auxiliary Buses:** The mixer now initializes 8 stereo Aux buses (`SituationAudioBus`). These can be used for effects sends (Reverb/Delay) or sub-grouping.
+- **Flexible Sends:** Tracks can now send audio to any Aux bus via `SituationSetTrackSend`.
+  - **Pre-Fader:** Sends signal before the fader (useful for monitoring/foldback).
+  - **Post-Fader:** Sends signal after the fader (useful for FX sends).
+- **Output Routing:** Tracks can be routed to the Master Bus (default) or any Aux Bus (for subgroups like "Drums") using `SituationSetTrackOutput`.
+- **Mixer Controls:**
+  - **Pan:** Added `SituationPannerNode` for stereo positioning (`SituationSetTrackPan`).
+  - **Mute:** `SituationSetTrackMute` silences the track (and its Pre-Fader sends).
+  - **Solo:** `SituationSetTrackSolo` implements exclusive listening logic, automatically muting all non-soloed tracks.
+
 ## [v2.3.56 "Channel Strip" (Phase 2)] - 2026-03-05
 
 ### Description

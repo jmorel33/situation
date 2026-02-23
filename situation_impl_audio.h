@@ -194,9 +194,86 @@ static void SituationDynamicsNodeUninit(SituationDynamicsNode* pNode, const ma_a
     ma_node_uninit(&pNode->base, pAllocationCallbacks);
 }
 
+// --- Internal Panner Node (Phase 3) ---
+typedef struct {
+    ma_node_base base;
+    _Atomic float pan; // -1.0 (Left) to +1.0 (Right)
+} SituationPannerNode;
+
+static void _situation_panner_process(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut) {
+    (void)pFrameCountIn;
+    SituationPannerNode* panner = (SituationPannerNode*)pNode;
+    const float* pIn = ppFramesIn[0];
+    float* pOut = ppFramesOut[0];
+    ma_uint32 frames = *pFrameCountOut;
+    ma_uint32 channels = ma_node_get_output_channels(pNode, 0);
+
+    if (!pIn) {
+        memset(pOut, 0, frames * channels * sizeof(float));
+        return;
+    }
+
+    ma_uint32 inChannels = ma_node_get_input_channels(pNode, 0);
+    float pan = atomic_load(&panner->pan);
+    if (pan < -1.0f) pan = -1.0f;
+    if (pan > 1.0f) pan = 1.0f;
+
+    // Linear Pan Law
+    float gainL = (pan <= 0.0f) ? 1.0f : (1.0f - pan);
+    float gainR = (pan >= 0.0f) ? 1.0f : (1.0f + pan);
+
+    for (ma_uint32 i = 0; i < frames; ++i) {
+        float inL, inR;
+        if (inChannels == 1) {
+            inL = pIn[i];
+            inR = pIn[i];
+        } else {
+            inL = pIn[i*inChannels];
+            inR = pIn[i*inChannels + 1];
+        }
+
+        pOut[i*channels] = inL * gainL;
+        if (channels > 1) {
+            pOut[i*channels + 1] = inR * gainR;
+        }
+    }
+}
+
+static ma_node_vtable g_situation_panner_vtable = {
+    _situation_panner_process, NULL, 1, 1, 0
+};
+
+static ma_result SituationPannerNodeInit(ma_node_graph* pNodeGraph, const ma_allocation_callbacks* pAllocationCallbacks, SituationPannerNode* pNode) {
+    ma_node_config config = ma_node_config_init();
+    config.vtable = &g_situation_panner_vtable;
+    static ma_uint32 inCh[1] = {2};
+    static ma_uint32 outCh[1] = {2};
+    config.pInputChannels = inCh;
+    config.pOutputChannels = outCh;
+
+    ma_result result = ma_node_init(pNodeGraph, &config, pAllocationCallbacks, &pNode->base);
+    if (result != MA_SUCCESS) return result;
+    atomic_init(&pNode->pan, 0.0f);
+    return MA_SUCCESS;
+}
+
+static void SituationPannerNodeUninit(SituationPannerNode* pNode, const ma_allocation_callbacks* pAllocationCallbacks) {
+    ma_node_uninit(&pNode->base, pAllocationCallbacks);
+}
+
 // --- Mixer Definitions (Phase 2) ---
 #define SIT_MAX_TRACKS          16
 #define SIT_MAX_AUX_BUSES        8
+
+typedef struct SituationAudioBus {
+    char name[64];
+    int id;
+    // Graph: Input Sum -> Output Splitter -> Master
+    ma_splitter_node input_node;
+    ma_splitter_node output_node;
+    _Atomic float volume;
+    _Atomic float pan;
+} SituationAudioBus;
 
 struct SituationAudioTrack {
     struct SituationAudioMixer* owner; // Back-pointer for locking
@@ -209,7 +286,11 @@ struct SituationAudioTrack {
     bool mute;
     bool solo;
 
-    // Node Graph: Input Sum -> [EQ] -> [Dynamics] -> Output Splitter -> Master
+    // Sends
+    float send_level[SIT_MAX_AUX_BUSES];
+    bool send_pre[SIT_MAX_AUX_BUSES];
+
+    // Node Graph: Input Sum -> [EQ] -> [Dynamics] -> [PreSplit] -> [Pan] -> [PostSplit] -> Master
     ma_splitter_node input_node; // Input summing point
 
     // EQ Chain
@@ -221,11 +302,19 @@ struct SituationAudioTrack {
     // Dynamics
     SituationDynamicsNode dynamics_node;
 
-    // Output/Sends Splitter
-    // Bus 0: Main -> Master
-    // Bus 1: Sidechain Send (for other tracks)
-    // Bus 2..N: Aux Sends
-    ma_splitter_node output_node;
+    // Pre-Fader Splitter
+    // Bus 0: To Panner (Main Path)
+    // Bus 1: Sidechain Send
+    // Bus 2..9: Aux Sends (Pre)
+    ma_splitter_node pre_fader_splitter;
+
+    // Panner
+    SituationPannerNode panner_node;
+
+    // Post-Fader Splitter
+    // Bus 0: To Master (Main Path)
+    // Bus 1..8: Aux Sends (Post)
+    ma_splitter_node post_fader_splitter;
 
     // Sidechain State
     struct SituationAudioTrack* sidechain_source;
@@ -237,6 +326,8 @@ struct SituationAudioMixer {
 
     struct SituationAudioTrack tracks[SIT_MAX_TRACKS];
     int track_count;
+
+    SituationAudioBus aux_buses[SIT_MAX_AUX_BUSES];
 
     // Master Bus
     ma_splitter_node master_node; // Connects to Endpoint
@@ -2329,6 +2420,28 @@ SITAPI SituationAudioMixer* SituationCreateMixer(void) {
 
     ma_node_attach_output_bus(&mixer->master_node, 0, ma_node_graph_get_endpoint(&mixer->graph), 0);
 
+    // Initialize Aux Buses
+    for (int i = 0; i < SIT_MAX_AUX_BUSES; ++i) {
+        SituationAudioBus* bus = &mixer->aux_buses[i];
+        bus->id = i;
+        snprintf(bus->name, sizeof(bus->name), "Aux %d", i + 1);
+
+        // Input Node (Splitter acting as summer)
+        if (ma_splitter_node_init(&mixer->graph, &splitCfg, NULL, &bus->input_node) != MA_SUCCESS) continue;
+
+        // Output Node
+        if (ma_splitter_node_init(&mixer->graph, &splitCfg, NULL, &bus->output_node) != MA_SUCCESS) {
+            ma_splitter_node_uninit(&bus->input_node, NULL);
+            continue;
+        }
+
+        // Wire: Input -> Output -> Master
+        ma_node_attach_output_bus(&bus->input_node, 0, &bus->output_node, 0);
+        ma_node_attach_output_bus(&bus->output_node, 0, &mixer->master_node, 0);
+
+        bus->volume = 1.0f;
+    }
+
     mixer->is_initialized = true;
     return mixer;
 }
@@ -2343,7 +2456,9 @@ static void _SituationRemoveTrack_NoLock(SituationAudioTrack* track) {
     ma_peak_node_uninit(&track->eq_peak, NULL);
     ma_hishelf_node_uninit(&track->eq_hishelf, NULL);
     SituationDynamicsNodeUninit(&track->dynamics_node, NULL);
-    ma_splitter_node_uninit(&track->output_node, NULL);
+    ma_splitter_node_uninit(&track->pre_fader_splitter, NULL);
+    SituationPannerNodeUninit(&track->panner_node, NULL);
+    ma_splitter_node_uninit(&track->post_fader_splitter, NULL);
 
     track->is_active = false;
     track->owner = NULL;
@@ -2374,6 +2489,12 @@ SITAPI void SituationDestroyMixer(SituationAudioMixer* mixer) {
             _SituationRemoveTrack_NoLock(&mixer->tracks[i]);
         }
     }
+    // Cleanup Aux Buses
+    for (int i = 0; i < SIT_MAX_AUX_BUSES; ++i) {
+        ma_splitter_node_uninit(&mixer->aux_buses[i].input_node, NULL);
+        ma_splitter_node_uninit(&mixer->aux_buses[i].output_node, NULL);
+    }
+
     ma_splitter_node_uninit(&mixer->master_node, NULL);
     ma_node_graph_uninit(&mixer->graph, NULL);
     mtx_unlock(&mixer->topology_mutex);
@@ -2417,6 +2538,9 @@ SITAPI SituationError SituationBindCaptureDevice(SituationAudioMixer* mixer, con
     return SITUATION_ERROR_NOT_IMPLEMENTED;
 }
 
+// Forward declaration
+static void _SituationUpdateSoloState(SituationAudioMixer* mixer);
+
 SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const char* name) {
     if (!mixer) return NULL;
 
@@ -2430,6 +2554,9 @@ SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const 
             t->id = i;
             t->is_active = true;
             t->volume = 1.0f;
+
+            memset(t->send_level, 0, sizeof(t->send_level));
+            memset(t->send_pre, 0, sizeof(t->send_pre));
 
             // 1. Input Node (Splitter / Summer)
             ma_splitter_node_config splitCfg = ma_splitter_node_config_init(2); // Stereo
@@ -2457,22 +2584,50 @@ SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const 
             SituationDynamicsNodeConfig dynCfg = SituationDynamicsNodeConfigInit(2, sr, inCh, outCh);
             SituationDynamicsNodeInit(&mixer->graph, &dynCfg, NULL, &t->dynamics_node);
 
-            // 4. Output Node (Splitter)
-            // Use 2 output buses: 0=Master, 1=Sidechain
-            ma_splitter_node_config splitCfgOut = ma_splitter_node_config_init(2);
-            splitCfgOut.nodeConfig.outputBusCount = 2;
-            if (ma_splitter_node_init(&mixer->graph, &splitCfgOut, NULL, &t->output_node) != MA_SUCCESS) {
+            // 4. Pre-Fader Splitter (Main + Sidechain + 8 Pre-Aux)
+            // Bus 0: Main -> Panner
+            // Bus 1: Sidechain Send
+            // Bus 2..9: Aux Sends (Pre)
+            ma_splitter_node_config splitCfgPre = ma_splitter_node_config_init(2);
+            splitCfgPre.nodeConfig.outputBusCount = 2 + SIT_MAX_AUX_BUSES;
+            if (ma_splitter_node_init(&mixer->graph, &splitCfgPre, NULL, &t->pre_fader_splitter) != MA_SUCCESS) {
                  t->is_active = false; continue;
             }
 
-            // 5. Wiring: Input -> HPF -> LoShelf -> Peak -> HiShelf -> Dynamics -> Output -> Master
+            // 5. Panner Node
+            if (SituationPannerNodeInit(&mixer->graph, NULL, &t->panner_node) != MA_SUCCESS) {
+                t->is_active = false; continue;
+            }
+
+            // 6. Post-Fader Splitter (Main + 8 Post-Aux)
+            // Bus 0: Main -> Master
+            // Bus 1..8: Aux Sends (Post)
+            ma_splitter_node_config splitCfgPost = ma_splitter_node_config_init(2);
+            splitCfgPost.nodeConfig.outputBusCount = 1 + SIT_MAX_AUX_BUSES;
+            if (ma_splitter_node_init(&mixer->graph, &splitCfgPost, NULL, &t->post_fader_splitter) != MA_SUCCESS) {
+                t->is_active = false; continue;
+            }
+
+            // 7. Wiring: Input -> [EQ] -> Dynamics -> PreSplit -> Panner -> PostSplit -> Master
             ma_node_attach_output_bus(&t->input_node, 0, &t->eq_hpf, 0);
             ma_node_attach_output_bus(&t->eq_hpf, 0, &t->eq_loshelf, 0);
             ma_node_attach_output_bus(&t->eq_loshelf, 0, &t->eq_peak, 0);
             ma_node_attach_output_bus(&t->eq_peak, 0, &t->eq_hishelf, 0);
             ma_node_attach_output_bus(&t->eq_hishelf, 0, &t->dynamics_node, 0);
-            ma_node_attach_output_bus(&t->dynamics_node, 0, &t->output_node, 0);
-            ma_node_attach_output_bus(&t->output_node, 0, &mixer->master_node, 0);
+
+            // Dynamics -> PreSplit
+            ma_node_attach_output_bus(&t->dynamics_node, 0, &t->pre_fader_splitter, 0);
+
+            // PreSplit [0] -> Panner
+            ma_node_attach_output_bus(&t->pre_fader_splitter, 0, &t->panner_node.base, 0);
+
+            // Panner -> PostSplit
+            ma_node_attach_output_bus(&t->panner_node.base, 0, &t->post_fader_splitter, 0);
+
+            // PostSplit [0] -> Master
+            ma_node_attach_output_bus(&t->post_fader_splitter, 0, &mixer->master_node, 0);
+
+            _SituationUpdateSoloState(mixer);
 
             mtx_unlock(&mixer->topology_mutex);
             return t;
@@ -2489,23 +2644,122 @@ SITAPI void SituationSetTrackName(SituationAudioTrack* track, const char* name) 
 SITAPI void SituationSetTrackVolume(SituationAudioTrack* track, float volume) {
     if (track) {
         track->volume = volume;
-        ma_node_set_output_bus_volume((ma_node*)&track->output_node, 0, volume);
+        // Volume is applied at the Pre-Fader Splitter (Bus 0), which feeds the Panner -> Post-Splitter -> Master
+        // This ensures Post-Fader sends are affected, but Pre-Fader sends (other buses) are not.
+        ma_node_set_output_bus_volume((ma_node*)&track->pre_fader_splitter, 0, volume);
     }
 }
 
 SITAPI void SituationSetTrackPan(SituationAudioTrack* track, float pan) {
-    if (track) track->pan = pan;
+    if (track) {
+        atomic_store(&track->pan, pan);
+        atomic_store(&track->panner_node.pan, pan);
+    }
 }
+
+// Forward declaration
+static void _SituationUpdateSoloState(SituationAudioMixer* mixer);
 
 SITAPI void SituationSetTrackMute(SituationAudioTrack* track, bool mute) {
     if (track) {
         track->mute = mute;
-        SituationSetTrackVolume(track, mute ? 0.0f : track->volume);
+        if (track->owner) _SituationUpdateSoloState(track->owner);
     }
 }
 
 SITAPI void SituationSetTrackSolo(SituationAudioTrack* track, bool solo) {
-    if (track) track->solo = solo;
+    if (track) {
+        track->solo = solo;
+        if (track->owner) _SituationUpdateSoloState(track->owner);
+    }
+}
+
+SITAPI SituationAudioBus* SituationGetAuxBus(SituationAudioMixer* mixer, int bus_index) {
+    if (!mixer || bus_index < 0 || bus_index >= SIT_MAX_AUX_BUSES) return NULL;
+    return &mixer->aux_buses[bus_index];
+}
+
+static void _SituationUpdateSoloState(SituationAudioMixer* mixer) {
+    bool any_solo = false;
+    for (int i=0; i<SIT_MAX_TRACKS; ++i) {
+        if (mixer->tracks[i].is_active && mixer->tracks[i].solo) {
+            any_solo = true;
+            break;
+        }
+    }
+
+    for (int i=0; i<SIT_MAX_TRACKS; ++i) {
+        SituationAudioTrack* t = &mixer->tracks[i];
+        if (!t->is_active) continue;
+
+        bool should_mute = t->mute;
+        if (any_solo) {
+            if (t->solo) should_mute = false;
+            else should_mute = true;
+        }
+
+        // Apply mute at Dynamics Output (kills entire strip including pre-fader sends)
+        ma_node_set_output_bus_volume((ma_node*)&t->dynamics_node, 0, should_mute ? 0.0f : 1.0f);
+    }
+}
+
+SITAPI SituationError SituationSetTrackSend(SituationAudioTrack* track, int aux_bus_index, float level, bool pre_fader) {
+    if (!track || aux_bus_index < 0 || aux_bus_index >= SIT_MAX_AUX_BUSES) return SITUATION_ERROR_INVALID_PARAM;
+    if (!track->owner) return SITUATION_ERROR_NOT_INITIALIZED;
+
+    mtx_lock(&track->owner->topology_mutex);
+
+    ma_node* aux_input = (ma_node*)&track->owner->aux_buses[aux_bus_index].input_node;
+    int pre_bus_idx = 2 + aux_bus_index;
+    int post_bus_idx = 1 + aux_bus_index;
+
+    bool was_pre = track->send_pre[aux_bus_index];
+    bool type_changed = (was_pre != pre_fader);
+
+    if (type_changed || level > 0.0f) {
+         if (pre_fader) {
+             if (type_changed) {
+                 ma_node_detach_output_bus(&track->post_fader_splitter, post_bus_idx);
+                 ma_node_attach_output_bus(&track->pre_fader_splitter, pre_bus_idx, aux_input, 0);
+             } else {
+                 ma_node_attach_output_bus(&track->pre_fader_splitter, pre_bus_idx, aux_input, 0);
+             }
+             ma_node_set_output_bus_volume(&track->pre_fader_splitter, pre_bus_idx, level);
+         } else {
+             if (type_changed) {
+                 ma_node_detach_output_bus(&track->pre_fader_splitter, pre_bus_idx);
+                 ma_node_attach_output_bus(&track->post_fader_splitter, post_bus_idx, aux_input, 0);
+             } else {
+                 ma_node_attach_output_bus(&track->post_fader_splitter, post_bus_idx, aux_input, 0);
+             }
+             ma_node_set_output_bus_volume(&track->post_fader_splitter, post_bus_idx, level);
+         }
+    } else if (level <= 0.0001f) {
+        ma_node_detach_output_bus(&track->pre_fader_splitter, pre_bus_idx);
+        ma_node_detach_output_bus(&track->post_fader_splitter, post_bus_idx);
+    }
+
+    track->send_level[aux_bus_index] = level;
+    track->send_pre[aux_bus_index] = pre_fader;
+
+    mtx_unlock(&track->owner->topology_mutex);
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationSetTrackOutput(SituationAudioTrack* track, SituationAudioBus* destination) {
+    if (!track || !track->owner) return SITUATION_ERROR_INVALID_PARAM;
+    mtx_lock(&track->owner->topology_mutex);
+
+    ma_node_detach_output_bus(&track->post_fader_splitter, 0);
+
+    if (destination) {
+        ma_node_attach_output_bus(&track->post_fader_splitter, 0, &destination->input_node, 0);
+    } else {
+        ma_node_attach_output_bus(&track->post_fader_splitter, 0, &track->owner->master_node, 0);
+    }
+
+    mtx_unlock(&track->owner->topology_mutex);
+    return SITUATION_SUCCESS;
 }
 
 SITAPI SituationError SituationRouteSoundToTrack(SituationSoundHandle sound, SituationAudioTrack* track) {
@@ -2628,11 +2882,11 @@ SITAPI void SituationSetTrackSideChain(SituationAudioTrack* target_track, Situat
 
     // Re-wire Main
     ma_node_attach_output_bus(&target_track->eq_hishelf, 0, &target_track->dynamics_node, 0);
-    ma_node_attach_output_bus(&target_track->dynamics_node, 0, &target_track->output_node, 0);
+    ma_node_attach_output_bus(&target_track->dynamics_node, 0, &target_track->pre_fader_splitter, 0);
 
     // Wire Sidechain
     if (source_track) {
-        ma_node_attach_output_bus(&source_track->output_node, 1, &target_track->dynamics_node, 1);
+        ma_node_attach_output_bus(&source_track->pre_fader_splitter, 1, &target_track->dynamics_node, 1);
         target_track->dynamics_node.sidechainEnabled = 1;
         target_track->sidechain_source = source_track;
     } else {
