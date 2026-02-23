@@ -1,3 +1,16 @@
+## [v2.3.56 "Channel Strip" (Phase 2)] - 2026-03-05
+
+### Description
+
+This release completes Phase 2 of the Audio Mixer roadmap, transforming each track into a professional-grade mixing console channel. Every `SituationAudioTrack` now includes a hard-wired Channel Strip featuring a 4-band Parametric EQ and a full Dynamics Processor (Compressor/Limiter/Gate) with side-chain support.
+
+### New Features
+
+- **4-Band Parametric EQ:** Each track now has a built-in EQ chain: High-Pass Filter, Low-Shelf, Peaking, and High-Shelf. Configurable via `SituationSetTrackEQ`.
+- **Dynamics Processor:** Implemented `SituationDynamicsNode` providing Compressor, Limiter, and Noise Gate functionality per track. Configurable via `SituationSetTrackDynamics`.
+- **Side-Chain Ducking:** Added `SituationSetTrackSideChain` to route audio from one track (Key) to control the compression of another (Target), enabling classic radio ducking and EDM pumping effects.
+- **Zero-Allocation Routing:** The new EQ and Dynamics nodes are pre-allocated within the `SituationAudioTrack` struct, ensuring no memory allocation occurs when enabling or tweaking effects during playback.
+
 ## [v2.3.55 "Audio Mixer Foundation" (Phase 0 & 1)] - 2026-03-04
 
 ### Description

@@ -360,16 +360,16 @@ struct MixerBusData {
 ## 7. Implementation Phases
 
 ### **Phase 1: Core Infrastructure**
-*   [ ] Implement `SituationAudioMixer` struct and initialization.
-*   [ ] Set up `ma_node_graph` attached to the main `Situation` audio device.
-*   [ ] Implement `SituationAudioTrack` with Volume and Pan nodes.
-*   [ ] Implement routing: Track -> Master.
-*   [ ] Verify basic audio playback through the mixer.
+*   [x] Implement `SituationAudioMixer` struct and initialization.
+*   [x] Set up `ma_node_graph` attached to the main `Situation` audio device.
+*   [x] Implement `SituationAudioTrack` with Volume and Pan nodes.
+*   [x] Implement routing: Track -> Master.
+*   [x] Verify basic audio playback through the mixer.
 
 ### **Phase 2: Channel Strip (EQ & Dynamics)**
-*   [ ] Implement 4-band EQ chain using miniaudio filters.
-*   [ ] Implement Dynamics node (Comp/Lim/Gate) wrapper.
-*   [ ] Implement Side-chain routing logic (wiring Input 1 of Dynamics node).
+*   [x] Implement 4-band EQ chain using miniaudio filters.
+*   [x] Implement Dynamics node (Comp/Lim/Gate) wrapper.
+*   [x] Implement Side-chain routing logic (wiring Input 1 of Dynamics node).
 
 ### **Phase 3: Routing & Aux**
 *   [ ] Implement `Aux` buses.
