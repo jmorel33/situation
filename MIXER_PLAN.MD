@@ -372,9 +372,9 @@ struct MixerBusData {
 *   [x] Implement Side-chain routing logic (wiring Input 1 of Dynamics node).
 
 ### **Phase 3: Routing & Aux**
-*   [ ] Implement `Aux` buses.
-*   [ ] Implement `Sends` (Pre/Post fader logic using splitters).
-*   [ ] Implement `Mute` and `Solo` logic (Solo requires muting all non-soloed tracks).
+*   [x] Implement `Aux` buses.
+*   [x] Implement `Sends` (Pre/Post fader logic using splitters).
+*   [x] Implement `Mute` and `Solo` logic (Solo requires muting all non-soloed tracks).
 
 ### **Phase 4: FX & Metering**
 *   [ ] Implement FX Insert logic (graph surgery).
