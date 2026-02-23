@@ -1,7 +1,7 @@
 ![Situation](doc/situation_blackMetal_logo.jpg)
 
 
-# The "Situation" Advanced Platform Awareness, Control, and Timing
+# Advanced Platform Awareness, Control, and Timing
 
 _Core API library v2.3.53 "Critical Stability"_
 
