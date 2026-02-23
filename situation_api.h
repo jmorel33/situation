@@ -56,7 +56,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 54
+#define SITUATION_VERSION_PATCH 55
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -1568,13 +1568,40 @@ typedef struct {
     int bit_depth;
 } SituationAudioFormat;
 
+// --- Mixer & Device Types (Phase 0/1) ---
+typedef enum {
+    SIT_AUDIO_DEVICE_TYPE_UNKNOWN     = 0,
+    SIT_AUDIO_DEVICE_TYPE_PLAYBACK    = 1,   // Output only (speakers, headphones)
+    SIT_AUDIO_DEVICE_TYPE_CAPTURE     = 2,   // Input only (microphones, line-in)
+    SIT_AUDIO_DEVICE_TYPE_DUPLEX      = 3,   // Both input and output (most sound cards)
+    SIT_AUDIO_DEVICE_TYPE_LOOPBACK    = 4    // System loopback (for desktop audio capture)
+} SituationAudioDeviceType;
+
 typedef struct {
-    char name[SITUATION_MAX_DEVICE_NAME_LEN];
-    ma_device_id id;
-    int situation_internal_id;
-    bool is_default_playback;
-    bool is_default_capture;
+    char name[256];                    // Human-readable name
+    char id[128];                      // Backend-specific unique identifier (stringified)
+    ma_device_id native_id;            // [INTERNAL] Raw miniaudio ID
+
+    SituationAudioDeviceType type;
+
+    uint32_t min_channels_in;          // Minimum supported input channels
+    uint32_t max_channels_in;          // Maximum supported input channels
+    uint32_t min_channels_out;         // Minimum supported output channels
+    uint32_t max_channels_out;         // Maximum supported output channels
+
+    uint32_t preferred_sample_rate;    // Preferred / native sample rate
+    uint32_t native_format;            // Preferred miniaudio format (f32, s16, etc.)
+
+    bool is_default_playback;          // Is this the system's default output?
+    bool is_default_capture;           // Is this the system's default input?
+
+    uint32_t latency_us;               // Estimated latency in microseconds
 } SituationAudioDeviceInfo;
+
+// --- Mixer Data Structures ---
+typedef struct SituationAudioMixer SituationAudioMixer;
+typedef struct SituationAudioTrack SituationAudioTrack;
+typedef struct SituationAudioBus SituationAudioBus;
 
 /**
  * @brief Strategy for loading audio data from disk.
@@ -2439,6 +2466,27 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
 // --- Custom Audio Processing ---
 SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Attach a custom DSP processor to a sound's effect chain.
 SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Detach a custom DSP processor from a sound.
+
+// --- Mixer API (Phase 1) ---
+SITAPI SituationAudioMixer* SituationCreateMixer(void);
+SITAPI void SituationDestroyMixer(SituationAudioMixer* mixer);
+
+SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const char* name);
+SITAPI void SituationRemoveTrack(SituationAudioTrack* track);
+SITAPI void SituationSetTrackName(SituationAudioTrack* track, const char* name);
+SITAPI SituationError SituationRouteSoundToTrack(SituationSoundHandle sound, SituationAudioTrack* track);
+
+SITAPI void SituationSetTrackVolume(SituationAudioTrack* track, float volume);
+SITAPI void SituationSetTrackPan(SituationAudioTrack* track, float pan);
+SITAPI void SituationSetTrackMute(SituationAudioTrack* track, bool mute);
+SITAPI void SituationSetTrackSolo(SituationAudioTrack* track, bool solo);
+
+// --- Device Enumeration (Phase 0) ---
+SITAPI SituationAudioDeviceInfo* SituationEnumerateAudioDevices(int* out_count);
+SITAPI void SituationFreeDeviceList(SituationAudioDeviceInfo* devices, int count);
+SITAPI SituationAudioDeviceInfo* SituationFindBestDevice(SituationAudioDeviceType preferred_type, uint32_t min_channels_out, uint32_t min_channels_in);
+SITAPI SituationError SituationBindMixerToDevice(SituationAudioMixer* mixer, const char* device_id, uint32_t requested_channels_out);
+SITAPI SituationError SituationBindCaptureDevice(SituationAudioMixer* mixer, const char* device_id, uint32_t requested_channels_in);
 
 
 //==================================================================================

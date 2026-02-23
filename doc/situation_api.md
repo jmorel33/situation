@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.45 "Bindless"_
+_Core API library v2.3.55 "Audio Mixer Foundation"_
 
 _(c) 2025 Jacques Morel_
 

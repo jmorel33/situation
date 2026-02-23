@@ -1,4 +1,4 @@
-# Situation API Quick Reference v2.3.41
+# Situation API Quick Reference v2.3.55
 
 **Single-header library for cross-platform graphics (Vulkan/OpenGL 4.6), windowing, input, and system utilities.**
 

@@ -71,6 +71,41 @@ typedef struct {
     uint32_t sample_rate;
 } SituationReverbState;
 
+// --- Mixer Definitions (Phase 1) ---
+#define SIT_MAX_TRACKS          16
+#define SIT_MAX_AUX_BUSES        8
+
+struct SituationAudioTrack {
+    char name[64];
+    int id;
+    bool is_active;
+
+    _Atomic float volume;
+    _Atomic float pan;
+    bool mute;
+    bool solo;
+
+    // Node Graph: Input -> [Processing] -> Output
+    // For Phase 1, we use a splitter node as the track's input point.
+    // It sums all connected sources.
+    // Output bus 0 connects to Master.
+    ma_splitter_node input_node;
+};
+
+struct SituationAudioMixer {
+    ma_node_graph graph;
+    ma_device* device;
+
+    struct SituationAudioTrack tracks[SIT_MAX_TRACKS];
+    int track_count;
+
+    // Master Bus
+    ma_splitter_node master_node; // Connects to Endpoint
+
+    mtx_t topology_mutex;
+    bool is_initialized;
+};
+
 // Audio-related implementation extracted from situation_impl.h
 
 static _SituationSoundSlot* _SitGetSoundSlot(SituationSound handle) {
@@ -520,14 +555,25 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         // ... (Capture logic omitted for brevity, usually distinct device)
     }
 
-    // --- MIXING LOOP ---
-    // Acquire lock to snapshot active voices safely
-    // Note: Trylock to avoid audio thread stall? Or just lock.
-    // For low latency, we want to minimize locking time.
-    // We snapshot the pointers to a local array or iterate under lock.
-    // Iterating under lock is safest for now.
-
+    // --- [Phase 1] Mixer Integration ---
+    // Acquire lock to safely check/use active_mixer
     mtx_lock(&pGs->audio_queue_mutex);
+    SituationAudioMixer* mixer = pGs->active_mixer;
+    if (mixer && mixer->is_initialized) {
+        // We must also lock the mixer topology because ma_node_graph_read_pcm_frames is not thread-safe vs modification
+        mtx_lock(&mixer->topology_mutex);
+
+        ma_uint64 framesRead = 0;
+        ma_node_graph_read_pcm_frames(&mixer->graph, pOutput, frameCount, &framesRead);
+
+        mtx_unlock(&mixer->topology_mutex);
+        mtx_unlock(&pGs->audio_queue_mutex);
+        return;
+    }
+
+    // --- MIXING LOOP (Legacy/Fallback) ---
+    // Note: audio_queue_mutex is ALREADY LOCKED here.
+    // We snapshot the active voices to a local buffer to minimize lock duration.
 
     int voices_to_mix = pGs->active_voice_count;
     // We can't stack allocate dynamic size. Use the pre-allocated snapshot buffer.
@@ -799,56 +845,90 @@ SITAPI void SituationStopAudioCapture(void) {
  *
  * @see SituationSetAudioDevice()
  */
-SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
+SITAPI SituationAudioDeviceInfo* SituationEnumerateAudioDevices(int* out_count) {
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "GetAudioDevices: Library not initialized");
-        if (count) *count = 0;
+        if (out_count) *out_count = 0;
         return NULL;
     }
     if (!sit_audio.is_miniaudio_context_initialized) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CONTEXT, "GetAudioDevices: MiniAudio context not initialized");
-        if (count) *count = 0;
+        if (out_count) *out_count = 0;
         return NULL;
     }
 
-    ma_device_info* ma_playback_devices = NULL;
-    uint32_t ma_playback_count = 0;
-    // ma_device_info* ma_capture_devices = NULL; // Not used in this example
-    // uint32_t ma_capture_count = 0;
+    ma_device_info* playback_infos;
+    uint32_t playback_count;
+    ma_device_info* capture_infos;
+    uint32_t capture_count;
 
-    ma_result res = ma_context_get_devices(&sit_audio.miniaudio_context, &ma_playback_devices, &ma_playback_count, NULL, NULL); // Passing NULL for capture devices
-    if (res != MA_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE, "ma_context_get_devices failed");
-        if (count) *count = 0;
+    if (ma_context_get_devices(&sit_audio.miniaudio_context, &playback_infos, &playback_count, &capture_infos, &capture_count) != MA_SUCCESS) {
+        if (out_count) *out_count = 0;
         return NULL;
     }
 
-    if (ma_playback_count == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "No playback audio devices found by MiniAudio.");
-        if (count) *count = 0;
-        return NULL;
+    int total_count = playback_count + capture_count;
+    SituationAudioDeviceInfo* list = (SituationAudioDeviceInfo*)SIT_CALLOC(total_count, sizeof(SituationAudioDeviceInfo));
+    if (!list) return NULL;
+
+    int idx = 0;
+    for (uint32_t i = 0; i < playback_count; i++) {
+        SituationAudioDeviceInfo* info = &list[idx++];
+        strncpy(info->name, playback_infos[i].name, 255);
+
+        info->native_id = playback_infos[i].id; // Copy native struct
+        info->type = SIT_AUDIO_DEVICE_TYPE_PLAYBACK;
+
+        uint32_t min_ch = 0;
+        uint32_t max_ch = 0;
+        for (uint32_t k = 0; k < playback_infos[i].nativeDataFormatCount; k++) {
+            uint32_t ch = playback_infos[i].nativeDataFormats[k].channels;
+            if (min_ch == 0 || ch < min_ch) min_ch = ch;
+            if (ch > max_ch) max_ch = ch;
+        }
+        info->min_channels_out = min_ch;
+        info->max_channels_out = max_ch;
+
+        if(playback_infos[i].nativeDataFormatCount > 0)
+            info->preferred_sample_rate = playback_infos[i].nativeDataFormats[0].sampleRate;
+        else
+            info->preferred_sample_rate = 48000;
+
+        info->is_default_playback = playback_infos[i].isDefault;
+
+        // ID Generation
+        snprintf(info->id, 127, "PLAYBACK_%s_%u", info->name, i);
     }
 
-    SituationAudioDeviceInfo* sit_devices = (SituationAudioDeviceInfo*)SIT_CALLOC(ma_playback_count, sizeof(SituationAudioDeviceInfo));
-    if (!sit_devices) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio device info array");
-        if (count) *count = 0;
-        return NULL;
+    for (uint32_t i = 0; i < capture_count; i++) {
+        SituationAudioDeviceInfo* info = &list[idx++];
+        strncpy(info->name, capture_infos[i].name, 255);
+        info->native_id = capture_infos[i].id;
+        info->type = SIT_AUDIO_DEVICE_TYPE_CAPTURE;
+
+        uint32_t min_ch = 0;
+        uint32_t max_ch = 0;
+        for (uint32_t k = 0; k < capture_infos[i].nativeDataFormatCount; k++) {
+            uint32_t ch = capture_infos[i].nativeDataFormats[k].channels;
+            if (min_ch == 0 || ch < min_ch) min_ch = ch;
+            if (ch > max_ch) max_ch = ch;
+        }
+        info->min_channels_in = min_ch;
+        info->max_channels_in = max_ch;
+
+        info->is_default_capture = capture_infos[i].isDefault;
+        snprintf(info->id, 127, "CAPTURE_%s_%u", info->name, i);
     }
 
-    for (uint32_t i = 0; i < ma_playback_count; ++i) {
-        strncpy(sit_devices[i].name, ma_playback_devices[i].name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
-        sit_devices[i].name[SITUATION_MAX_DEVICE_NAME_LEN - 1] = '\0'; // Ensure null termination
-        memcpy(&sit_devices[i].id, &ma_playback_devices[i].id, sizeof(ma_device_id));
-        sit_devices[i].situation_internal_id = i;
-        sit_devices[i].is_default_playback = ma_playback_devices[i].isDefault;
-        sit_devices[i].is_default_capture = false; // Not querying capture defaults here
-    }
+    if (out_count) *out_count = total_count;
+    return list;
+}
 
-    if (count) *count = ma_playback_count;
-    // Note: Memory for ma_playback_devices is managed by the ma_context.
-    // Do NOT free ma_playback_devices here.
-    return sit_devices;
+SITAPI void SituationFreeDeviceList(SituationAudioDeviceInfo* devices, int count) {
+    (void)count;
+    SIT_FREE(devices);
+}
+
+SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
+    return SituationEnumerateAudioDevices(count);
 }
 
 /**
@@ -1391,6 +1471,19 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
 
     // Stop playback first
     SituationStopLoadedSound(sound);
+
+    // If managed by mixer graph, detach and uninit node
+    if (data->is_graph_managed) {
+        mtx_lock(&sit_audio.audio_queue_mutex);
+        if (sit_audio.active_mixer) {
+            mtx_lock(&sit_audio.active_mixer->topology_mutex);
+            // This uninitializes the node and detaches it from the graph
+            ma_data_source_node_uninit(&data->graph_node, NULL);
+            mtx_unlock(&sit_audio.active_mixer->topology_mutex);
+        }
+        mtx_unlock(&sit_audio.audio_queue_mutex);
+        data->is_graph_managed = false;
+    }
 
     if (data->is_preloaded && data->preloaded_data) {
         ma_free(data->preloaded_data, NULL);
@@ -2036,3 +2129,218 @@ SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
  */
 
 #endif // SITUATION_IMPL_AUDIO_H
+
+// --- Mixer Implementation (Phase 1) ---
+
+SITAPI SituationAudioDeviceInfo* SituationFindBestDevice(SituationAudioDeviceType preferred_type, uint32_t min_channels_out, uint32_t min_channels_in) {
+    int count = 0;
+    SituationAudioDeviceInfo* list = SituationEnumerateAudioDevices(&count);
+    if (!list || count == 0) return NULL;
+
+    int best_score = -1;
+    int best_idx = -1;
+
+    for (int i=0; i<count; ++i) {
+        int score = 0;
+        if (list[i].type == preferred_type) score += 100;
+        else if (preferred_type == SIT_AUDIO_DEVICE_TYPE_DUPLEX && (list[i].type == SIT_AUDIO_DEVICE_TYPE_PLAYBACK || list[i].type == SIT_AUDIO_DEVICE_TYPE_CAPTURE)) score += 50;
+
+        if (list[i].max_channels_out >= min_channels_out) score += 20;
+        if (list[i].max_channels_in >= min_channels_in) score += 20;
+
+        if (list[i].is_default_playback) score += 10;
+
+        if (score > best_score) {
+            best_score = score;
+            best_idx = i;
+        }
+    }
+
+    if (best_idx != -1) {
+        SituationAudioDeviceInfo* result = (SituationAudioDeviceInfo*)SIT_MALLOC(sizeof(SituationAudioDeviceInfo));
+        if (result) *result = list[best_idx];
+        SituationFreeDeviceList(list, count);
+        return result;
+    }
+
+    SituationFreeDeviceList(list, count);
+    return NULL;
+}
+
+SITAPI SituationAudioMixer* SituationCreateMixer(void) {
+    if (!SituationIsInitialized()) return NULL;
+
+    SituationAudioMixer* mixer = (SituationAudioMixer*)SIT_CALLOC(1, sizeof(SituationAudioMixer));
+    if (!mixer) return NULL;
+
+    mtx_init(&mixer->topology_mutex, mtx_plain);
+
+    ma_node_graph_config config = ma_node_graph_config_init(2); // Stereo default
+    if (ma_node_graph_init(&config, NULL, &mixer->graph) != MA_SUCCESS) {
+        SIT_FREE(mixer);
+        return NULL;
+    }
+
+    ma_splitter_node_config splitCfg = ma_splitter_node_config_init(2);
+    if (ma_splitter_node_init(&mixer->graph, &splitCfg, NULL, &mixer->master_node) != MA_SUCCESS) {
+        ma_node_graph_uninit(&mixer->graph, NULL);
+        SIT_FREE(mixer);
+        return NULL;
+    }
+
+    ma_node_attach_output_bus(&mixer->master_node, 0, ma_node_graph_get_endpoint(&mixer->graph), 0);
+
+    mixer->is_initialized = true;
+    return mixer;
+}
+
+SITAPI void SituationDestroyMixer(SituationAudioMixer* mixer) {
+    if (!mixer) return;
+
+    if (SituationIsInitialized()) {
+        mtx_lock(&sit_audio.audio_queue_mutex);
+        if (sit_audio.active_mixer == mixer) {
+            sit_audio.active_mixer = NULL;
+        }
+        mtx_unlock(&sit_audio.audio_queue_mutex);
+    }
+
+    mtx_lock(&mixer->topology_mutex);
+    for (int i=0; i<SIT_MAX_TRACKS; ++i) {
+        if (mixer->tracks[i].is_active) {
+            ma_splitter_node_uninit(&mixer->tracks[i].input_node, NULL);
+        }
+    }
+    ma_splitter_node_uninit(&mixer->master_node, NULL);
+    ma_node_graph_uninit(&mixer->graph, NULL);
+    mtx_unlock(&mixer->topology_mutex);
+
+    mtx_destroy(&mixer->topology_mutex);
+    SIT_FREE(mixer);
+}
+
+SITAPI SituationError SituationBindMixerToDevice(SituationAudioMixer* mixer, const char* device_id, uint32_t requested_channels_out) {
+    if (!mixer) return SITUATION_ERROR_INVALID_PARAM;
+
+    if (device_id) {
+        int count = 0;
+        SituationAudioDeviceInfo* devs = SituationEnumerateAudioDevices(&count);
+        int target_idx = -1;
+        if (devs) {
+            for (int i=0; i<count; ++i) {
+                if (strcmp(devs[i].id, device_id) == 0) {
+                    target_idx = i;
+                    break;
+                }
+            }
+            SituationFreeDeviceList(devs, count);
+        }
+
+        if (target_idx >= 0) {
+            SituationAudioFormat fmt = {0};
+            fmt.channels = requested_channels_out;
+            SituationSetAudioDevice(target_idx, &fmt);
+        }
+    }
+
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    sit_audio.active_mixer = mixer;
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationBindCaptureDevice(SituationAudioMixer* mixer, const char* device_id, uint32_t requested_channels_in) {
+    (void)mixer; (void)device_id; (void)requested_channels_in;
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+}
+
+SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const char* name) {
+    if (!mixer) return NULL;
+
+    mtx_lock(&mixer->topology_mutex);
+    for (int i=0; i<SIT_MAX_TRACKS; ++i) {
+        if (!mixer->tracks[i].is_active) {
+            SituationAudioTrack* t = &mixer->tracks[i];
+            memset(t, 0, sizeof(SituationAudioTrack));
+            strncpy(t->name, name ? name : "Track", 63);
+            t->id = i;
+            t->is_active = true;
+            t->volume = 1.0f;
+
+            ma_splitter_node_config cfg = ma_splitter_node_config_init(2);
+            if (ma_splitter_node_init(&mixer->graph, &cfg, NULL, &t->input_node) == MA_SUCCESS) {
+                ma_node_attach_output_bus(&t->input_node, 0, &mixer->master_node, 0);
+                mtx_unlock(&mixer->topology_mutex);
+                return t;
+            } else {
+                t->is_active = false;
+            }
+        }
+    }
+    mtx_unlock(&mixer->topology_mutex);
+    return NULL;
+}
+
+SITAPI void SituationRemoveTrack(SituationAudioTrack* track) {
+    if (!track) return;
+    track->is_active = false;
+}
+
+SITAPI void SituationSetTrackName(SituationAudioTrack* track, const char* name) {
+    if (track && name) strncpy(track->name, name, 63);
+}
+
+SITAPI void SituationSetTrackVolume(SituationAudioTrack* track, float volume) {
+    if (track) {
+        track->volume = volume;
+        ma_node_set_output_bus_volume((ma_node*)&track->input_node, 0, volume);
+    }
+}
+
+SITAPI void SituationSetTrackPan(SituationAudioTrack* track, float pan) {
+    if (track) track->pan = pan;
+}
+
+SITAPI void SituationSetTrackMute(SituationAudioTrack* track, bool mute) {
+    if (track) {
+        track->mute = mute;
+        SituationSetTrackVolume(track, mute ? 0.0f : track->volume);
+    }
+}
+
+SITAPI void SituationSetTrackSolo(SituationAudioTrack* track, bool solo) {
+    if (track) track->solo = solo;
+}
+
+SITAPI SituationError SituationRouteSoundToTrack(SituationSoundHandle sound, SituationAudioTrack* track) {
+    if (!track) return SITUATION_ERROR_INVALID_PARAM;
+    _SituationSoundSlot* slot = _SitGetSoundSlot(sound);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+
+    _SituationSound* data = &slot->sound_data;
+
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    if (!sit_audio.active_mixer) {
+        mtx_unlock(&sit_audio.audio_queue_mutex);
+        return SITUATION_ERROR_NOT_INITIALIZED;
+    }
+    SituationAudioMixer* mixer = sit_audio.active_mixer;
+
+    mtx_lock(&mixer->topology_mutex);
+
+    if (!data->is_graph_managed) {
+        ma_data_source_node_config cfg = ma_data_source_node_config_init(&data->decoder);
+        if (ma_data_source_node_init(&mixer->graph, &cfg, NULL, &data->graph_node) != MA_SUCCESS) {
+            mtx_unlock(&mixer->topology_mutex);
+            mtx_unlock(&sit_audio.audio_queue_mutex);
+            return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
+        }
+        data->is_graph_managed = true;
+    }
+
+    ma_node_attach_output_bus(&data->graph_node, 0, &track->input_node, 0);
+
+    mtx_unlock(&mixer->topology_mutex);
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+    return SITUATION_SUCCESS;
+}

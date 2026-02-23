@@ -1,3 +1,17 @@
+## [v2.3.55 "Audio Mixer Foundation" (Phase 0 & 1)] - 2026-03-04
+
+### Description
+
+This release lays the groundwork for the new professional-grade Audio Mixer architecture. It introduces the core infrastructure for track management, device enumeration, and graph-based routing, moving beyond simple sound playback towards a full mixing console model.
+
+### New Features
+
+- **Device Enumeration (Phase 0):** Added `SituationEnumerateAudioDevices` and `SituationFindBestDevice`. Applications can now query detailed capabilities (channels, sample rates) of all available playback and capture devices and intelligently select the best match.
+- **Mixer Core (Phase 1):** Introduced `SituationAudioMixer`, `SituationAudioTrack`, and `SituationAudioBus` structures. Implemented the lifecycle functions `SituationCreateMixer` and `SituationDestroyMixer`.
+- **Track Management:** Added `SituationAddTrack` to create tracks dynamically. Implemented basic volume controls (`SituationSetTrackVolume`).
+- **Graph Routing:** Implemented `SituationRouteSoundToTrack`. Sounds can now be routed into specific mixer tracks instead of playing directly to the endpoint, enabling per-track processing.
+- **Thread-Safe Integration:** Updated the main audio callback to support the new mixer graph. If a mixer is active, the callback safely locks the topology mutex and delegates processing to the mixer's node graph (`ma_node_graph_read_pcm_frames`).
+
 ## [v2.3.53 "Critical Stability" (MDI & Fence Fixes)] - 2026-03-03
 
 ### Description

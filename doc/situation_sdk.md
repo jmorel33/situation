@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.46 "Bindless" |
+| **Version** | 2.3.55 "Audio Mixer Foundation" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core (MDI) / Vulkan 1.4+ |
 | **License** | MIT License |
