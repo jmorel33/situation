@@ -1,4 +1,4 @@
-![Situation](doc/hero_placeholder.png)
+![Situation](doc/situation_blackMetal_logo.jpg)
 
 
 # The "Situation" Advanced Platform Awareness, Control, and Timing
