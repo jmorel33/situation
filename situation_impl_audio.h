@@ -71,11 +71,135 @@ typedef struct {
     uint32_t sample_rate;
 } SituationReverbState;
 
-// --- Mixer Definitions (Phase 1) ---
+// --- Internal Dynamics Node (Phase 2) ---
+// Implements Compressor / Limiter / Gate
+typedef struct {
+    ma_node_config nodeConfig;
+    uint32_t sampleRate;
+    float thresholdDB;
+    float ratio;
+    float attackTime;
+    float releaseTime;
+    float makeupGainDB;
+    bool isGate;
+    int sidechainEnabled;
+} SituationDynamicsNodeConfig;
+
+typedef struct {
+    ma_node_base base;
+    float thresholdDB;
+    float ratio;
+    float attackCoef;
+    float releaseCoef;
+    float makeupGain;
+    bool isGate;
+    int sidechainEnabled;
+    float envelope;
+} SituationDynamicsNode;
+
+static void _situation_dynamics_process(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut) {
+    (void)pFrameCountIn;
+    SituationDynamicsNode* dyn = (SituationDynamicsNode*)pNode;
+    const float* pMain = ppFramesIn[0];
+    const float* pSide = ppFramesIn[1];
+    float* pOut = ppFramesOut[0];
+    ma_uint32 frames = *pFrameCountOut;
+    ma_uint32 channels = ma_node_get_output_channels(pNode, 0);
+
+    // Passthrough if no input or ratio=1
+    if (!pMain) {
+        memset(pOut, 0, frames * channels * sizeof(float));
+        return;
+    }
+
+    // Optimization: If ratio is 1.0 (no comp) and not gating, just copy/scale
+    if (!dyn->isGate && dyn->ratio == 1.0f && dyn->makeupGain == 1.0f) {
+        memcpy(pOut, pMain, frames * channels * sizeof(float));
+        return;
+    }
+
+    for (ma_uint32 i = 0; i < frames; ++i) {
+        // 1. Key Signal
+        float key = 0.0f;
+        if (dyn->sidechainEnabled && pSide) {
+             float L = pSide[i*channels];
+             float R = (channels > 1) ? pSide[i*channels+1] : L;
+             key = fmaxf(fabsf(L), fabsf(R));
+        } else {
+             float L = pMain[i*channels];
+             float R = (channels > 1) ? pMain[i*channels+1] : L;
+             key = fmaxf(fabsf(L), fabsf(R));
+        }
+
+        // 2. Envelope Follower
+        if (key > dyn->envelope) dyn->envelope += dyn->attackCoef * (key - dyn->envelope);
+        else dyn->envelope += dyn->releaseCoef * (key - dyn->envelope);
+
+        // 3. Gain Calculation
+        float gainDB = 0.0f;
+        float envDB = (dyn->envelope > 1e-6f) ? 20.0f * log10f(dyn->envelope) : -100.0f;
+
+        if (dyn->isGate) {
+            if (envDB < dyn->thresholdDB) gainDB = -100.0f; // Hard Gate
+        } else {
+            if (envDB > dyn->thresholdDB) {
+                gainDB = (dyn->thresholdDB - envDB) * (1.0f - 1.0f / dyn->ratio);
+            }
+        }
+
+        // 4. Apply
+        float gain = powf(10.0f, gainDB / 20.0f) * dyn->makeupGain;
+        for (ma_uint32 c = 0; c < channels; ++c) {
+            pOut[i*channels + c] = pMain[i*channels + c] * gain;
+        }
+    }
+}
+
+static ma_node_vtable g_situation_dynamics_vtable = {
+    _situation_dynamics_process, NULL, 2, 1, 0
+};
+
+static SituationDynamicsNodeConfig SituationDynamicsNodeConfigInit(int channels, int sampleRate, const ma_uint32* pInputChannels, const ma_uint32* pOutputChannels) {
+    SituationDynamicsNodeConfig config;
+    memset(&config, 0, sizeof(config));
+    config.nodeConfig = ma_node_config_init();
+    config.nodeConfig.vtable = &g_situation_dynamics_vtable;
+    config.nodeConfig.pInputChannels = pInputChannels;
+    config.nodeConfig.pOutputChannels = pOutputChannels;
+    config.sampleRate = sampleRate;
+    config.ratio = 1.0f;
+    config.makeupGainDB = 0.0f;
+    config.attackTime = 0.01f;
+    config.releaseTime = 0.1f;
+    return config;
+}
+
+static ma_result SituationDynamicsNodeInit(ma_node_graph* pNodeGraph, const SituationDynamicsNodeConfig* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, SituationDynamicsNode* pNode) {
+    ma_result result = ma_node_init(pNodeGraph, &pConfig->nodeConfig, pAllocationCallbacks, &pNode->base);
+    if (result != MA_SUCCESS) return result;
+    pNode->thresholdDB = pConfig->thresholdDB;
+    pNode->ratio = pConfig->ratio;
+    pNode->makeupGain = powf(10.0f, pConfig->makeupGainDB / 20.0f);
+    pNode->isGate = pConfig->isGate;
+    pNode->sidechainEnabled = pConfig->sidechainEnabled;
+    pNode->envelope = 0.0f;
+    float sr = (float)pConfig->sampleRate;
+    if (sr <= 0.0f) sr = 48000.0f;
+    pNode->attackCoef = 1.0f - expf(-1.0f / (pConfig->attackTime * sr));
+    pNode->releaseCoef = 1.0f - expf(-1.0f / (pConfig->releaseTime * sr));
+    return MA_SUCCESS;
+}
+
+static void SituationDynamicsNodeUninit(SituationDynamicsNode* pNode, const ma_allocation_callbacks* pAllocationCallbacks) {
+    ma_node_uninit(&pNode->base, pAllocationCallbacks);
+}
+
+// --- Mixer Definitions (Phase 2) ---
 #define SIT_MAX_TRACKS          16
 #define SIT_MAX_AUX_BUSES        8
 
 struct SituationAudioTrack {
+    struct SituationAudioMixer* owner; // Back-pointer for locking
     char name[64];
     int id;
     bool is_active;
@@ -85,11 +209,26 @@ struct SituationAudioTrack {
     bool mute;
     bool solo;
 
-    // Node Graph: Input -> [Processing] -> Output
-    // For Phase 1, we use a splitter node as the track's input point.
-    // It sums all connected sources.
-    // Output bus 0 connects to Master.
-    ma_splitter_node input_node;
+    // Node Graph: Input Sum -> [EQ] -> [Dynamics] -> Output Splitter -> Master
+    ma_splitter_node input_node; // Input summing point
+
+    // EQ Chain
+    ma_hpf_node eq_hpf;
+    ma_loshelf_node eq_loshelf;
+    ma_peak_node eq_peak;
+    ma_hishelf_node eq_hishelf;
+
+    // Dynamics
+    SituationDynamicsNode dynamics_node;
+
+    // Output/Sends Splitter
+    // Bus 0: Main -> Master
+    // Bus 1: Sidechain Send (for other tracks)
+    // Bus 2..N: Aux Sends
+    ma_splitter_node output_node;
+
+    // Sidechain State
+    struct SituationAudioTrack* sidechain_source;
 };
 
 struct SituationAudioMixer {
@@ -2194,6 +2333,30 @@ SITAPI SituationAudioMixer* SituationCreateMixer(void) {
     return mixer;
 }
 
+static void _SituationRemoveTrack_NoLock(SituationAudioTrack* track) {
+    if (!track || !track->is_active) return;
+
+    // Uninit all nodes (which detaches them)
+    ma_splitter_node_uninit(&track->input_node, NULL);
+    ma_hpf_node_uninit(&track->eq_hpf, NULL);
+    ma_loshelf_node_uninit(&track->eq_loshelf, NULL);
+    ma_peak_node_uninit(&track->eq_peak, NULL);
+    ma_hishelf_node_uninit(&track->eq_hishelf, NULL);
+    SituationDynamicsNodeUninit(&track->dynamics_node, NULL);
+    ma_splitter_node_uninit(&track->output_node, NULL);
+
+    track->is_active = false;
+    track->owner = NULL;
+}
+
+SITAPI void SituationRemoveTrack(SituationAudioTrack* track) {
+    if (!track || !track->is_active || !track->owner) return;
+
+    mtx_lock(&track->owner->topology_mutex);
+    _SituationRemoveTrack_NoLock(track);
+    mtx_unlock(&track->owner->topology_mutex);
+}
+
 SITAPI void SituationDestroyMixer(SituationAudioMixer* mixer) {
     if (!mixer) return;
 
@@ -2208,7 +2371,7 @@ SITAPI void SituationDestroyMixer(SituationAudioMixer* mixer) {
     mtx_lock(&mixer->topology_mutex);
     for (int i=0; i<SIT_MAX_TRACKS; ++i) {
         if (mixer->tracks[i].is_active) {
-            ma_splitter_node_uninit(&mixer->tracks[i].input_node, NULL);
+            _SituationRemoveTrack_NoLock(&mixer->tracks[i]);
         }
     }
     ma_splitter_node_uninit(&mixer->master_node, NULL);
@@ -2262,28 +2425,61 @@ SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const 
         if (!mixer->tracks[i].is_active) {
             SituationAudioTrack* t = &mixer->tracks[i];
             memset(t, 0, sizeof(SituationAudioTrack));
+            t->owner = mixer;
             strncpy(t->name, name ? name : "Track", 63);
             t->id = i;
             t->is_active = true;
             t->volume = 1.0f;
 
-            ma_splitter_node_config cfg = ma_splitter_node_config_init(2);
-            if (ma_splitter_node_init(&mixer->graph, &cfg, NULL, &t->input_node) == MA_SUCCESS) {
-                ma_node_attach_output_bus(&t->input_node, 0, &mixer->master_node, 0);
-                mtx_unlock(&mixer->topology_mutex);
-                return t;
-            } else {
-                t->is_active = false;
+            // 1. Input Node (Splitter / Summer)
+            ma_splitter_node_config splitCfg = ma_splitter_node_config_init(2); // Stereo
+            if (ma_splitter_node_init(&mixer->graph, &splitCfg, NULL, &t->input_node) != MA_SUCCESS) {
+                t->is_active = false; continue; // Fail
             }
+
+            // 2. EQ Nodes (Default: Flat/Bypass)
+            uint32_t sr = mixer->device->sampleRate;
+            ma_hpf_node_config hpfCfg = ma_hpf_node_config_init(2, sr, 10.0, 0); // 10Hz HPF
+            ma_hpf_node_init(&mixer->graph, &hpfCfg, NULL, &t->eq_hpf);
+
+            ma_loshelf_node_config lsCfg = ma_loshelf_node_config_init(2, sr, 0, 0, 100);
+            ma_loshelf_node_init(&mixer->graph, &lsCfg, NULL, &t->eq_loshelf);
+
+            ma_peak_node_config pkCfg = ma_peak_node_config_init(2, sr, 0, 0, 1000);
+            ma_peak_node_init(&mixer->graph, &pkCfg, NULL, &t->eq_peak);
+
+            ma_hishelf_node_config hsCfg = ma_hishelf_node_config_init(2, sr, 0, 0, 5000);
+            ma_hishelf_node_init(&mixer->graph, &hsCfg, NULL, &t->eq_hishelf);
+
+            // 3. Dynamics Node
+            ma_uint32 inCh[2]; inCh[0] = 2; inCh[1] = 2;
+            ma_uint32 outCh[1]; outCh[0] = 2;
+            SituationDynamicsNodeConfig dynCfg = SituationDynamicsNodeConfigInit(2, sr, inCh, outCh);
+            SituationDynamicsNodeInit(&mixer->graph, &dynCfg, NULL, &t->dynamics_node);
+
+            // 4. Output Node (Splitter)
+            // Use 2 output buses: 0=Master, 1=Sidechain
+            ma_splitter_node_config splitCfgOut = ma_splitter_node_config_init(2);
+            splitCfgOut.nodeConfig.outputBusCount = 2;
+            if (ma_splitter_node_init(&mixer->graph, &splitCfgOut, NULL, &t->output_node) != MA_SUCCESS) {
+                 t->is_active = false; continue;
+            }
+
+            // 5. Wiring: Input -> HPF -> LoShelf -> Peak -> HiShelf -> Dynamics -> Output -> Master
+            ma_node_attach_output_bus(&t->input_node, 0, &t->eq_hpf, 0);
+            ma_node_attach_output_bus(&t->eq_hpf, 0, &t->eq_loshelf, 0);
+            ma_node_attach_output_bus(&t->eq_loshelf, 0, &t->eq_peak, 0);
+            ma_node_attach_output_bus(&t->eq_peak, 0, &t->eq_hishelf, 0);
+            ma_node_attach_output_bus(&t->eq_hishelf, 0, &t->dynamics_node, 0);
+            ma_node_attach_output_bus(&t->dynamics_node, 0, &t->output_node, 0);
+            ma_node_attach_output_bus(&t->output_node, 0, &mixer->master_node, 0);
+
+            mtx_unlock(&mixer->topology_mutex);
+            return t;
         }
     }
     mtx_unlock(&mixer->topology_mutex);
     return NULL;
-}
-
-SITAPI void SituationRemoveTrack(SituationAudioTrack* track) {
-    if (!track) return;
-    track->is_active = false;
 }
 
 SITAPI void SituationSetTrackName(SituationAudioTrack* track, const char* name) {
@@ -2293,7 +2489,7 @@ SITAPI void SituationSetTrackName(SituationAudioTrack* track, const char* name) 
 SITAPI void SituationSetTrackVolume(SituationAudioTrack* track, float volume) {
     if (track) {
         track->volume = volume;
-        ma_node_set_output_bus_volume((ma_node*)&track->input_node, 0, volume);
+        ma_node_set_output_bus_volume((ma_node*)&track->output_node, 0, volume);
     }
 }
 
@@ -2343,4 +2539,106 @@ SITAPI SituationError SituationRouteSoundToTrack(SituationSoundHandle sound, Sit
     mtx_unlock(&mixer->topology_mutex);
     mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
+}
+
+SITAPI void SituationSetTrackEQ(SituationAudioTrack* track, bool enabled, float* freqs, float* gains, float* Qs) {
+    if (!track || !track->is_active) return;
+    uint32_t sr = sit_audio.is_miniaudio_device_active ? sit_audio.miniaudio_device.sampleRate : 48000;
+
+    if (enabled && freqs && gains && Qs) {
+        ma_hpf_config hpf = ma_hpf_config_init(ma_format_f32, 2, sr, (double)freqs[0], 0);
+        ma_hpf_node_reinit(&hpf, &track->eq_hpf);
+
+        ma_loshelf_config ls = ma_loshelf2_config_init(ma_format_f32, 2, sr, (double)gains[1], (double)Qs[1], (double)freqs[1]);
+        ma_loshelf_node_reinit(&ls, &track->eq_loshelf);
+
+        ma_peak_config pk = ma_peak2_config_init(ma_format_f32, 2, sr, (double)gains[2], (double)Qs[2], (double)freqs[2]);
+        ma_peak_node_reinit(&pk, &track->eq_peak);
+
+        ma_hishelf_config hs = ma_hishelf2_config_init(ma_format_f32, 2, sr, (double)gains[3], (double)Qs[3], (double)freqs[3]);
+        ma_hishelf_node_reinit(&hs, &track->eq_hishelf);
+    } else {
+        ma_hpf_config hpf = ma_hpf_config_init(ma_format_f32, 2, sr, 0, 0);
+        ma_hpf_node_reinit(&hpf, &track->eq_hpf);
+
+        ma_loshelf_config ls = ma_loshelf2_config_init(ma_format_f32, 2, sr, 0, 0, 100);
+        ma_loshelf_node_reinit(&ls, &track->eq_loshelf);
+
+        ma_peak_config pk = ma_peak2_config_init(ma_format_f32, 2, sr, 0, 0, 1000);
+        ma_peak_node_reinit(&pk, &track->eq_peak);
+
+        ma_hishelf_config hs = ma_hishelf2_config_init(ma_format_f32, 2, sr, 0, 0, 5000);
+        ma_hishelf_node_reinit(&hs, &track->eq_hishelf);
+    }
+}
+
+SITAPI void SituationSetTrackDynamics(SituationAudioTrack* track, bool enabled, int mode, float threshold_db, float ratio, float attack_ms, float release_ms, float makeup_gain) {
+    if (!track || !track->is_active) return;
+
+    if (!enabled) {
+        track->dynamics_node.ratio = 1.0f;
+        track->dynamics_node.makeupGain = 1.0f;
+        track->dynamics_node.isGate = false;
+        return;
+    }
+
+    track->dynamics_node.thresholdDB = threshold_db;
+    track->dynamics_node.ratio = (mode == 1) ? 100.0f : ratio;
+    track->dynamics_node.isGate = (mode == 2);
+    track->dynamics_node.makeupGain = powf(10.0f, makeup_gain / 20.0f);
+
+    uint32_t sr = sit_audio.is_miniaudio_device_active ? sit_audio.miniaudio_device.sampleRate : 48000;
+    float fs = (float)sr;
+    if (attack_ms < 0.001f) attack_ms = 0.001f;
+    if (release_ms < 0.001f) release_ms = 0.001f;
+    track->dynamics_node.attackCoef = 1.0f - expf(-1.0f / ((attack_ms/1000.0f) * fs));
+    track->dynamics_node.releaseCoef = 1.0f - expf(-1.0f / ((release_ms/1000.0f) * fs));
+}
+
+SITAPI void SituationSetTrackSideChain(SituationAudioTrack* target_track, SituationAudioTrack* source_track) {
+    if (!target_track || !target_track->is_active) return;
+    if (!sit_audio.active_mixer) return;
+
+    mtx_lock(&sit_audio.active_mixer->topology_mutex);
+
+    // Save State
+    float thresh = target_track->dynamics_node.thresholdDB;
+    float ratio = target_track->dynamics_node.ratio;
+    float att = target_track->dynamics_node.attackCoef;
+    float rel = target_track->dynamics_node.releaseCoef;
+    float mk = target_track->dynamics_node.makeupGain;
+    bool gate = target_track->dynamics_node.isGate;
+
+    // Re-create node to clear connections
+    SituationDynamicsNodeUninit(&target_track->dynamics_node, NULL);
+
+    uint32_t sr = sit_audio.miniaudio_device.sampleRate;
+    ma_uint32 inCh[2]; inCh[0] = 2; inCh[1] = 2;
+    ma_uint32 outCh[1]; outCh[0] = 2;
+    SituationDynamicsNodeConfig dynCfg = SituationDynamicsNodeConfigInit(2, sr, inCh, outCh);
+    SituationDynamicsNodeInit(&sit_audio.active_mixer->graph, &dynCfg, NULL, &target_track->dynamics_node);
+
+    // Restore
+    target_track->dynamics_node.thresholdDB = thresh;
+    target_track->dynamics_node.ratio = ratio;
+    target_track->dynamics_node.attackCoef = att;
+    target_track->dynamics_node.releaseCoef = rel;
+    target_track->dynamics_node.makeupGain = mk;
+    target_track->dynamics_node.isGate = gate;
+
+    // Re-wire Main
+    ma_node_attach_output_bus(&target_track->eq_hishelf, 0, &target_track->dynamics_node, 0);
+    ma_node_attach_output_bus(&target_track->dynamics_node, 0, &target_track->output_node, 0);
+
+    // Wire Sidechain
+    if (source_track) {
+        ma_node_attach_output_bus(&source_track->output_node, 1, &target_track->dynamics_node, 1);
+        target_track->dynamics_node.sidechainEnabled = 1;
+        target_track->sidechain_source = source_track;
+    } else {
+        target_track->dynamics_node.sidechainEnabled = 0;
+        target_track->sidechain_source = NULL;
+    }
+
+    mtx_unlock(&sit_audio.active_mixer->topology_mutex);
 }

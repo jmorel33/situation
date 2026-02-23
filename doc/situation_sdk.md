@@ -146,6 +146,9 @@ The library is engineered around three architectural pillars:
     - [4.5.1 Microphone Initialization](#451-microphone-initialization)
     - [4.5.2 Buffer Access](#452-buffer-access)
     - [4.5.3 Stopping Capture](#453-stopping-capture)
+  - [4.6 Mixer & Channel Strip](#46-mixer--channel-strip)
+    - [4.6.1 Mixer Structure](#461-mixer-structure)
+    - [4.6.2 The Channel Strip](#462-the-channel-strip)
 - [5.0 Input & Haptics](#50-input--haptics)
   - [5.1 Architecture: Ring Buffers & Polling](#51-architecture-ring-buffers--polling)
   - [5.2 Keyboard](#52-keyboard)
@@ -2881,6 +2884,40 @@ SituationError SituationStopAudioCapture(void);
 > **Forward Look:** Full 3D Audio (HRTF) is not currently built-in. For 3D effects, calculate volume and pan manually based on distance and angle to the listener.
 >
 > **Ship Tease:** A lock-free Job System for massive audio concurrency is planned for v2.4.
+
+<a id="46-mixer--channel-strip"></a>
+
+## 4.6 Mixer & Channel Strip
+
+The Mixer architecture (introduced in v2.3.55) provides a professional-grade signal routing system.
+
+### 4.6.1 Mixer Structure
+
+*   **Mixer:** The top-level container (`SituationAudioMixer`). Represents the entire console.
+*   **Track:** A processing channel (`SituationAudioTrack`). Contains a Channel Strip and supports Aux Sends.
+*   **Bus:** A summing point (e.g., Master Bus, Drum Bus).
+
+### 4.6.2 The Channel Strip
+
+Every Track features a built-in, hard-wired Channel Strip for zero-latency processing.
+
+#### 4-Band Parametric EQ
+Configurable via `SituationSetTrackEQ`.
+1.  **High-Pass Filter:** Cuts low frequencies (rumble).
+2.  **Low-Shelf:** Boosts/Cuts bass.
+3.  **Peaking:** Bell curve for targeting specific frequencies.
+4.  **High-Shelf:** Boosts/Cuts treble (air).
+
+#### Dynamics Processor
+Configurable via `SituationSetTrackDynamics`.
+*   **Compressor:** Reduces dynamic range (evens out levels).
+*   **Limiter:** Hard ceiling to prevent clipping.
+*   **Noise Gate:** Silences the track when the signal is below a threshold.
+
+#### Side-Chain Ducking
+Route audio from one track to control the compression of another.
+*   `SituationSetTrackSideChain(target_track, key_track)`
+*   **Usage:** Duck the bass when the kick drum hits, or duck music when the announcer speaks.
 
 <a id="50-input--haptics"></a>
 
