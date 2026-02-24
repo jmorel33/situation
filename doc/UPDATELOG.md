@@ -1,3 +1,19 @@
+## [v2.3.61 "Code Hygiene"] - 2026-03-10
+
+### Description
+
+This release focuses on improving the internal organization of the library by modularizing the audio subsystem. The built-in Reverb and Echo implementations have been extracted from the monolithic implementation file into dedicated internal headers. This change improves code navigability and maintainability without altering the public API.
+
+### Refactoring
+
+- **Audio Modularization:**
+  - Extracted the Schroeder/Freeverb implementation into `sit/aux/reverb.h`.
+  - Extracted the Echo/Delay logic into `sit/aux/echo.h`.
+  - Implemented `_SituationConfigEcho` to handle safe initialization and runtime parameter updates for `ma_delay`.
+  - Restored the missing echo processing hook in `sit_miniaudio_data_callback`.
+  - Added `delay_initialized` state tracking to `_SituationSound` to prevent use of uninitialized resources.
+  - Both headers are automatically included by `situation_impl_audio.h`.
+
 ## [v2.3.60 "Uniform Optimization"] - 2026-03-09
 
 ### Description

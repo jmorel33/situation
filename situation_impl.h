@@ -1207,6 +1207,7 @@ typedef struct _SituationSound {
         float filter_cutoff_hz;
         float filter_q;
         bool echo_enabled;
+        bool delay_initialized;
         ma_delay delay;
         float echo_delay_sec;
         float echo_feedback;
