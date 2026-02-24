@@ -2590,6 +2590,52 @@ static void _sit_uniform_map_destroy(_SituationUniformMap* map) {
     // It is the caller's responsibility to not use the pointer after this call.
 }
 
+/**
+ * @brief [INTERNAL] Resizes the uniform map when the load factor exceeds a threshold.
+ * @details Doubles the capacity of the hash map and rehashes all existing entries.
+ *          This function is called by _sit_uniform_map_set when the load factor > 0.75.
+ * @param map The map to resize.
+ */
+static void _sit_uniform_map_resize(_SituationUniformMap* map) {
+    if (!map) return;
+
+    int new_capacity = map->capacity * 2;
+    if (new_capacity <= map->capacity) return; // Overflow check
+
+    // Allocate new buckets
+    _SituationUniformMapEntry** new_buckets = (_SituationUniformMapEntry**)SIT_CALLOC(new_capacity, sizeof(_SituationUniformMapEntry*));
+    if (!new_buckets) {
+        // Allocation failed. Keep old map as is.
+        // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_resize: Failed to allocate new buckets.");
+        return;
+    }
+
+    // Rehash all entries
+    for (int i = 0; i < map->capacity; ++i) {
+        _SituationUniformMapEntry* entry = map->buckets[i];
+        while (entry != NULL) {
+            _SituationUniformMapEntry* next = entry->next;
+
+            // Recalculate hash for new capacity
+            unsigned long hash = _sit_hash_string(entry->key);
+            int index = hash % new_capacity;
+
+            // Insert into new bucket list (prepend)
+            entry->next = new_buckets[index];
+            new_buckets[index] = entry;
+
+            entry = next;
+        }
+    }
+
+    // Free old buckets array
+    SIT_FREE(map->buckets);
+
+    // Update map properties
+    map->buckets = new_buckets;
+    map->capacity = new_capacity;
+}
+
 // --- Updated/Added Documentation Block for _sit_uniform_map_set ---
 /**
  * @brief [INTERNAL] Adds or updates a key-value pair in the uniform map.
@@ -2691,11 +2737,11 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, int
     // Increment the total count of entries in the map.
     map->count++;
 
-    // --- 7. (Future Work) Consider Resizing ---
-    // TODO: Add logic to check if the load factor (count/capacity) is too high.
-    // if (map->count > map->capacity * 0.75) {
-    //     _sit_uniform_map_resize(map); // Hypothetical resize function
-    // }
+    // --- 7. Consider Resizing ---
+    // Check if the load factor (count/capacity) is too high.
+    if (map->count > map->capacity * 0.75) {
+        _sit_uniform_map_resize(map);
+    }
 }
 
 // --- Updated/Added Documentation Block for _sit_uniform_map_get ---
