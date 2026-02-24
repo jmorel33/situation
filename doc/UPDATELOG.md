@@ -1,3 +1,16 @@
+## [v2.3.60 "Uniform Optimization"] - 2026-03-09
+
+### Description
+
+This release focuses on optimizing the internal rendering infrastructure, specifically the OpenGL backend's uniform management system. To prevent performance degradation in complex scenes with heavy shader usage, the uniform cache (`_SituationUniformMap`) now features dynamic resizing. This ensures that uniform lookups remain fast (O(1)) even as the number of unique uniforms grows beyond the initial capacity.
+
+### Optimizations
+
+- **Dynamic Uniform Map Resizing:**
+  - Implemented `_sit_uniform_map_resize` to automatically double the capacity of the internal hash map when the load factor exceeds 0.75.
+  - Eliminated potential hash collision chains in scenarios with hundreds of shader uniforms, ensuring consistent frame times.
+  - This addresses a long-standing TODO item in the rendering core.
+
 ## [v2.3.59 "Mixer Persistence" (Phase 5)] - 2026-03-08
 
 ### Description

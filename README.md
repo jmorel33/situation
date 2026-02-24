@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.59 "Mixer Persistence"_
+_Core API library v2.3.60 "Uniform Optimization"_
 
 _(c) 2025-2026 Jacques Morel_
 
@@ -10,6 +10,7 @@ Welcome to "Situation", a public API engineered for high-performance, cross-plat
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Mixer Persistence (v2.3.59):** 🎉 **COMPLETE!** Implemented Phase 5 of the Audio Mixer architecture. Added full session persistence (Save/Load) with cached EQ/Dynamics state, capture device binding, and thread-safe parameter caching.
+*   **Uniform Optimization (v2.3.60):** 🛠️ **COMPLETE!** Implemented dynamic resizing for the internal OpenGL uniform hash map. The map now doubles its capacity and rehashes entries when the load factor exceeds 0.75, ensuring stable performance for complex shaders.
 *   **FX & Metering (v2.3.58):** 🎉 **COMPLETE!** Implemented Phase 4 of the Audio Mixer architecture. Added FX Insert slots for Aux buses and atomic peak metering for all tracks and buses.
 *   **Mixer Routing (v2.3.57):** 🎉 **COMPLETE!** Implemented Phase 3 of the Audio Mixer architecture. Added flexible routing with 8 Aux/Send buses, Pre/Post-fader sends, and standard mixer controls (Pan, Mute, Solo-In-Place).
 *   **Channel Strip (v2.3.56):** 🎉 **COMPLETE!** Implemented Phase 2 of the Audio Mixer architecture. Every track now features a professional Channel Strip with 4-Band EQ and Dynamics (Compressor/Limiter/Gate/Sidechain).
