@@ -56,7 +56,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 58
+#define SITUATION_VERSION_PATCH 59
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -2484,6 +2484,16 @@ SITAPI void SituationSetTrackSolo(SituationAudioTrack* track, bool solo);
 SITAPI SituationAudioBus* SituationGetAuxBus(SituationAudioMixer* mixer, int bus_index);
 SITAPI SituationError SituationSetTrackSend(SituationAudioTrack* track, int aux_bus_index, float level, bool pre_fader);
 SITAPI SituationError SituationSetTrackOutput(SituationAudioTrack* track, SituationAudioBus* destination);
+
+SITAPI void SituationSetTrackEQ(SituationAudioTrack* track, bool enabled, float* freqs, float* gains, float* Qs);
+SITAPI void SituationSetTrackDynamics(SituationAudioTrack* track, bool enabled, int mode, float threshold_db, float ratio, float attack_ms, float release_ms, float makeup_gain);
+SITAPI void SituationSetTrackSideChain(SituationAudioTrack* target_track, SituationAudioTrack* source_track);
+
+SITAPI SituationError SituationSetMasterVolume(SituationAudioMixer* mixer, float volume);
+SITAPI float SituationGetMasterVolume(SituationAudioMixer* mixer);
+
+SITAPI bool SituationSaveMixerSession(SituationAudioMixer* mixer, const char* filepath);
+SITAPI bool SituationLoadMixerSession(SituationAudioMixer* mixer, const char* filepath);
 
 // --- Mixer API (Phase 4) ---
 SITAPI SituationError SituationInsertEffect(SituationAudioBus* bus, int slot, ma_node* effect_node);

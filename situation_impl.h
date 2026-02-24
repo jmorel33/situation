@@ -1322,6 +1322,11 @@ typedef struct {
     void* capture_user_data;                                  // User context pointer for the capture callback
 
     bool audio_capture_on_main_thread;                        // Configuration flag for main-thread dispatch
+
+    // [Phase 5] Capture Device Binding
+    ma_device_id active_capture_device_id;
+    bool active_capture_device_id_set;
+
     float* audio_capture_queue;                               // Ring buffer for transferring audio to main thread
     size_t audio_capture_write_head;                          // Write index for the capture ring buffer
     size_t audio_capture_read_head;                           // Read index for the capture ring buffer

@@ -1,3 +1,22 @@
+## [v2.3.59 "Mixer Persistence" (Phase 5)] - 2026-03-08
+
+### Description
+
+This release completes Phase 5 of the Situation Mixer roadmap, introducing full session persistence and the final set of missing API controls. The mixer is now a fully stateful console, capable of saving and restoring complex routing, FX chains, and mix parameters with a single call. This "Polish" release also hardens the internal threading model to ensure lock-free safety during rapid session loading.
+
+### New Features
+
+- **Session Persistence:**
+  - `SituationSaveMixerSession`: Serializes the entire mixer state (Tracks, Buses, EQ, Dynamics, Routing, Levels) to a highly optimized binary file (`.smx2`).
+  - `SituationLoadMixerSession`: Reconstructs a full mixing console from disk, automatically creating tracks and restoring all parameters with bit-perfect accuracy.
+  - **Lossless Parameter Caching:** Refactored `SituationAudioTrack` to strictly cache all EQ and Dynamics settings, ensuring that what you save is exactly what you get back, even if the graph nodes are re-instantiated.
+- **Global Controls:**
+  - `SituationSetMasterVolume` / `SituationGetMasterVolume`: Added the final missing link—a master fader for the entire mix.
+  - `SituationBindCaptureDevice`: Allows explicit binding of hardware capture devices (microphones) to specific mixer tracks, persisting across sessions.
+- **Safety & Polish:**
+  - **Deadlock-Free Loading:** Refactored track addition and sidechain routing to use lock-free internal helpers, preventing mutex contention during heavy session loads.
+  - **Validation:** Added magic number checks (`SMX2`) and versioning to the save format to prevent loading corrupted or incompatible session files.
+
 ## [v2.3.58 "FX & Metering" (Phase 4)] - 2026-03-07
 
 ### Description

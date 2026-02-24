@@ -2919,6 +2919,25 @@ Route audio from one track to control the compression of another.
 *   `SituationSetTrackSideChain(target_track, key_track)`
 *   **Usage:** Duck the bass when the kick drum hits, or duck music when the announcer speaks.
 
+### 4.6.3 Session Persistence (Phase 5)
+
+The mixer supports full state serialization. This allows you to save the entire console state (Volume, Pan, EQ, Dynamics, Sends) to a binary file and restore it later. This is essential for save games or preserving user mix settings.
+
+*   `SituationSaveMixerSession(mixer, path)`: Saves the current state to a `.smx2` file.
+*   `SituationLoadMixerSession(mixer, path)`: Restores state. Safe to call on a live mixer (uses lock-free transitions where possible).
+
+**Example: Saving the Mix**
+```c
+if (SituationSaveMixerSession(mixer, "user_mix.smx2")) {
+    printf("Mix saved successfully.\n");
+}
+```
+
+### 4.6.4 Global & Hardware Control
+
+*   `SituationSetMasterVolume(mixer, volume)`: Controls the final output gain of the mixer before it hits the endpoint.
+*   `SituationBindCaptureDevice(mixer, device_id, channels)`: Explicitly binds a hardware capture device (microphone) to the mixer for input routing.
+
 <a id="50-input--haptics"></a>
 
 ---
