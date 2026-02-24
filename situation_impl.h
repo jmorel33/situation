@@ -20689,7 +20689,7 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     snprintf(final_path, final_len, "%s/%s", base_path, app_name);
     SIT_FREE(base_path);
 
-    // Create the final directory.
+    // Create the final directory (recursive).
     SituationCreateDirectory(final_path, true);
 
     return final_path;
