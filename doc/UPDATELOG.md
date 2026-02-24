@@ -1,3 +1,20 @@
+## [v2.3.58 "FX & Metering" (Phase 4)] - 2026-03-07
+
+### Description
+
+This release implements Phase 4 of the Audio Mixer roadmap, introducing a powerful "Plug-in" architecture for Aux Buses and real-time metering for tracks. Developers can now insert any standard `miniaudio` node (filters, reverbs, delays) directly into the signal chain of an Aux bus, creating a modular FX system. Additionally, thread-safe metering APIs provide real-time visualization of signal levels and compressor gain reduction.
+
+### New Features
+
+- **FX Slots:** Aux Buses now support an insert chain of up to 8 generic `ma_node` effects.
+  - `SituationInsertEffect`: Dynamically inserts an effect node into a specific slot, automatically rewiring the audio graph.
+  - `SituationRemoveEffect`: Safely removes an effect node and bridges the connection gap.
+  - `SituationGetMixerGraph`: Exposes the mixer's internal graph, allowing users to initialize their own custom `ma_node` instances.
+- **Metering System:**
+  - **Track Peak Metering:** Added `SituationGetTrackMeter` to retrieve real-time Left/Right peak levels safely from the audio thread.
+  - **Gain Reduction:** `SituationGetTrackMeter` also reports the instantaneous gain reduction (dB) from the track's dynamics processor, essential for visualizing compression.
+  - **Zero-Lock Monitoring:** All metering data is exposed via atomic variables, ensuring that UI visualization never blocks or stalls the audio processing thread.
+
 ## [v2.3.57 "Mixer Routing" (Phase 3)] - 2026-03-06
 
 ### Description
@@ -43,13 +60,30 @@ This release lays the groundwork for the new professional-grade Audio Mixer arch
 - **Graph Routing:** Implemented `SituationRouteSoundToTrack`. Sounds can now be routed into specific mixer tracks instead of playing directly to the endpoint, enabling per-track processing.
 - **Thread-Safe Integration:** Updated the main audio callback to support the new mixer graph. If a mixer is active, the callback safely locks the topology mutex and delegates processing to the mixer's node graph (`ma_node_graph_read_pcm_frames`).
 
-## [v2.3.53 "Critical Stability" (MDI & Fence Fixes)] - 2026-03-03
+## [2.3.54] - 2026-02-xx
+**"Documentation Fortress" Release**
 
-### Description
+### Documentation Overhaul (Massive)
+- Added **over 2,000 lines** of comprehensive, consistent inline documentation across the entire codebase.
+- Covered nearly every major subsystem with detailed headers:
+  - Full init chain (`SituationInit` → `_SituationInitSubsystems` → backend-specific `_SituationInitOpenGL`/`_SituationInitVulkan`)
+  - Render thread startup, handoff, and queue management (`_SituationInitRenderThread`, `_SituationRenderThreadEntry`, `_SituationEnqueueRenderList`, `_SituationReplayToQueue`)
+  - Resource slot patterns (alloc/get/free/validate for shaders, meshes, buffers, compute pipelines, models)
+  - Virtual display & compositing paths (`SituationCreateVirtualDisplay`, `SituationRenderVirtualDisplays`)
+  - Texture/buffer creation wrappers (`SituationCreateTexture`, `SituationCreateTextureEx`, `SituationUpdateBuffer`)
+  - Quad renderer init (`_SituationInitQuadRenderer`) and draw command (`SituationCmdDrawQuad`)
+  - Text renderer bootstrap (`_SituationInitTextRenderer`, bitmap font loading)
+  - Bindless GL glue for virtual displays (`_SituationVirtualBindlessInit`, `_SituationVirtualBindlessBind`)
+  - Async submission paths (`SituationSubmitRenderList` variants with thread pool)
+  - Performance/debug helpers (`SituationExportRenderHistogram` — JSON latency export)
+  - Filesystem & hot-reload helpers (load/save async workers, path utils)
+  - And many more internal helpers, getters, and Vulkan/OpenGL specifics
+- Standardized style: `[INTERNAL]` for private helpers, full SITAPI docs with error codes, thread safety notes, cross-references, and usage examples where helpful.
+- Result: The codebase is now **self-documenting** — much easier to navigate, maintain, extend, or hand off.
 
-This release addresses critical stability issues identified in the OpenGL backend, specifically targeting Multi-Draw Indirect (MDI) batching, resource destruction safety, and ring buffer management. These fixes prevent driver crashes, visual corruption, and potential memory leaks during high-load scenarios and application shutdown.
+### Critical Stability Fixes (from v2.3.53)
 
-### Critical Fixes
+This release also addresses critical stability issues identified in the OpenGL backend, specifically targeting Multi-Draw Indirect (MDI) batching, resource destruction safety, and ring buffer management. These fixes prevent driver crashes, visual corruption, and potential memory leaks during high-load scenarios and application shutdown.
 
 - **MDI Pipeline Consistency:** Fixed a severe bug in the MDI auto-batcher (`_SituationGLExecuteCommands`) where batches were formed based solely on VAO continuity, ignoring shader program changes. This could cause meshes to be drawn with the wrong shader, leading to corruption or crashes. The batcher now strictly enforces pipeline consistency (`current_recording_shader_id`) during lookahead.
 - **Fence Cleanup on Shutdown:** `_SituationCleanupOpenGL` now performs a timed wait (`glClientWaitSync` with 100ms timeout) on any remaining fences before deletion. This prevents driver stalls or crashes caused by deleting active sync objects during context teardown.

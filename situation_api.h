@@ -56,7 +56,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 57
+#define SITUATION_VERSION_PATCH 58
 #define SITUATION_VERSION_REVISION ""
 
 /*
@@ -2484,6 +2484,12 @@ SITAPI void SituationSetTrackSolo(SituationAudioTrack* track, bool solo);
 SITAPI SituationAudioBus* SituationGetAuxBus(SituationAudioMixer* mixer, int bus_index);
 SITAPI SituationError SituationSetTrackSend(SituationAudioTrack* track, int aux_bus_index, float level, bool pre_fader);
 SITAPI SituationError SituationSetTrackOutput(SituationAudioTrack* track, SituationAudioBus* destination);
+
+// --- Mixer API (Phase 4) ---
+SITAPI SituationError SituationInsertEffect(SituationAudioBus* bus, int slot, ma_node* effect_node);
+SITAPI void* SituationRemoveEffect(SituationAudioBus* bus, int slot);
+SITAPI void SituationGetTrackMeter(SituationAudioTrack* track, float* left_peak, float* right_peak, float* gain_reduction);
+SITAPI ma_node_graph* SituationGetMixerGraph(SituationAudioMixer* mixer);
 
 // --- Device Enumeration (Phase 0) ---
 SITAPI SituationAudioDeviceInfo* SituationEnumerateAudioDevices(int* out_count);
