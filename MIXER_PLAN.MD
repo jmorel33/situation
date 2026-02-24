@@ -468,3 +468,18 @@ When binding a device, we validate:
 3. Type compatibility (cannot use capture-only device for output)
 4. Channel routing is validated at connection time (e.g. stereo track cannot route to mono output without explicit downmix policy)
 5. Default fallback: If no device is specified, we automatically select the system default with best channel match.
+
+---
+
+## 9. Future Roadmap: Registry & Patching System (Phase 6)
+
+**Objective:** Transition the mixer from a fixed-function console to a fully modular "Audio Apparatus" where all components (Effects, Sources, Mixers) are treated as registerable nodes in a directed graph.
+
+**Key Features:**
+*   **Registry-Driven Architecture:** All audio objects must be registered with metadata (inputs, outputs, controls) to be instantiated.
+*   **Programmatic Patching:** Connect any output to any input using a handle-based API, with cycle detection and type safety.
+*   **7 Default Devices:** Sound Source, Reverb, Delay, Filter, Mic Capture, Tone Generator, and LFO.
+*   **Implicit Routing:** Inputs automatically sum multiple signals; Outputs automatically split to multiple destinations.
+*   **Performance:** Graph evaluation uses a cached topological sort to minimize overhead in the real-time audio thread.
+
+*For full implementation details, see [doc/plan_audio_registry.md](doc/plan_audio_registry.md).*
