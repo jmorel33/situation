@@ -96,6 +96,9 @@ typedef struct {
     int sidechainEnabled;
     float envelope;
     _Atomic float gainReductionDB;
+    // Cached for Persistence
+    float attackTime;
+    float releaseTime;
 } SituationDynamicsNode;
 
 static void _situation_dynamics_process(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut) {
@@ -363,6 +366,21 @@ struct SituationAudioTrack {
     _Atomic float pan;
     bool mute;
     bool solo;
+
+    // EQ State (Cached for Persistence)
+    struct {
+        bool enabled;
+        float hpf_freq;
+        float ls_freq;
+        float ls_gain;
+        float ls_q;
+        float peak_freq;
+        float peak_gain;
+        float peak_q;
+        float hs_freq;
+        float hs_gain;
+        float hs_q;
+    } eq_state;
 
     // Sends
     float send_level[SIT_MAX_AUX_BUSES];
@@ -1103,6 +1121,9 @@ SITAPI SituationError SituationStartAudioCaptureEx(SituationAudioCaptureCallback
     sit_audio.capture_user_data = user_data;
 
     ma_device_config config = ma_device_config_init(ma_device_type_capture);
+    if (sit_audio.active_capture_device_id_set) {
+        config.capture.pDeviceID = &sit_audio.active_capture_device_id;
+    }
     config.capture.format = ma_format_f32; // Standardize on Float32
     config.capture.channels = channels;
     config.sampleRate = sample_rate;
@@ -1206,7 +1227,7 @@ SITAPI SituationAudioDeviceInfo* SituationEnumerateAudioDevices(int* out_count) 
         info->is_default_playback = playback_infos[i].isDefault;
 
         // ID Generation
-        snprintf(info->id, 127, "PLAYBACK_%s_%u", info->name, i);
+        snprintf(info->id, 127, "PLAYBACK_%.100s_%u", info->name, i);
     }
 
     for (uint32_t i = 0; i < capture_count; i++) {
@@ -1226,7 +1247,7 @@ SITAPI SituationAudioDeviceInfo* SituationEnumerateAudioDevices(int* out_count) 
         info->max_channels_in = max_ch;
 
         info->is_default_capture = capture_infos[i].isDefault;
-        snprintf(info->id, 127, "CAPTURE_%s_%u", info->name, i);
+        snprintf(info->id, 127, "CAPTURE_%.100s_%u", info->name, i);
     }
 
     if (out_count) *out_count = total_count;
@@ -2625,12 +2646,142 @@ SITAPI SituationError SituationBindMixerToDevice(SituationAudioMixer* mixer, con
 }
 
 SITAPI SituationError SituationBindCaptureDevice(SituationAudioMixer* mixer, const char* device_id, uint32_t requested_channels_in) {
-    (void)mixer; (void)device_id; (void)requested_channels_in;
-    return SITUATION_ERROR_NOT_IMPLEMENTED;
+    (void)mixer; (void)requested_channels_in;
+
+    if (!device_id) {
+        sit_audio.active_capture_device_id_set = false;
+        return SITUATION_SUCCESS;
+    }
+
+    int count = 0;
+    SituationAudioDeviceInfo* devs = SituationEnumerateAudioDevices(&count);
+    if (!devs) return SITUATION_ERROR_AUDIO_DEVICE;
+
+    bool found = false;
+    for (int i = 0; i < count; ++i) {
+        if (strcmp(devs[i].id, device_id) == 0 && devs[i].type == SIT_AUDIO_DEVICE_TYPE_CAPTURE) {
+            sit_audio.active_capture_device_id = devs[i].native_id;
+            sit_audio.active_capture_device_id_set = true;
+            found = true;
+            break;
+        }
+    }
+    SituationFreeDeviceList(devs, count);
+
+    return found ? SITUATION_SUCCESS : SITUATION_ERROR_INVALID_PARAM;
 }
 
 // Forward declaration
 static void _SituationUpdateSoloState(SituationAudioMixer* mixer);
+
+static bool _SituationInitTrack_NoLock(SituationAudioMixer* mixer, int index, const char* name) {
+    SituationAudioTrack* t = &mixer->tracks[index];
+    memset(t, 0, sizeof(SituationAudioTrack));
+    t->owner = mixer;
+    strncpy(t->name, name ? name : "Track", 63);
+    t->id = index;
+    t->is_active = true;
+    t->volume = 1.0f;
+
+    memset(t->send_level, 0, sizeof(t->send_level));
+    memset(t->send_pre, 0, sizeof(t->send_pre));
+
+    // 1. Input Node (Splitter / Summer)
+    ma_splitter_node_config splitCfg = ma_splitter_node_config_init(2); // Stereo
+    if (ma_splitter_node_init(&mixer->graph, &splitCfg, NULL, &t->input_node) != MA_SUCCESS) {
+        t->is_active = false; return false;
+    }
+
+    // 2. EQ Nodes (Default: Flat/Bypass)
+    uint32_t sr = mixer->device->sampleRate;
+    ma_hpf_node_config hpfCfg = ma_hpf_node_config_init(2, sr, 10.0, 0); // 10Hz HPF
+    ma_hpf_node_init(&mixer->graph, &hpfCfg, NULL, &t->eq_hpf);
+
+    ma_loshelf_node_config lsCfg = ma_loshelf_node_config_init(2, sr, 0, 0, 100);
+    ma_loshelf_node_init(&mixer->graph, &lsCfg, NULL, &t->eq_loshelf);
+
+    ma_peak_node_config pkCfg = ma_peak_node_config_init(2, sr, 0, 0, 1000);
+    ma_peak_node_init(&mixer->graph, &pkCfg, NULL, &t->eq_peak);
+
+    ma_hishelf_node_config hsCfg = ma_hishelf_node_config_init(2, sr, 0, 0, 5000);
+    ma_hishelf_node_init(&mixer->graph, &hsCfg, NULL, &t->eq_hishelf);
+
+    // Initialize Cached State
+    t->eq_state.enabled = false;
+    t->eq_state.hpf_freq = 10.0f;
+    t->eq_state.ls_freq = 100.0f;
+    t->eq_state.ls_gain = 0.0f;
+    t->eq_state.ls_q = 0.0f;
+    t->eq_state.peak_freq = 1000.0f;
+    t->eq_state.peak_gain = 0.0f;
+    t->eq_state.peak_q = 0.0f;
+    t->eq_state.hs_freq = 5000.0f;
+    t->eq_state.hs_gain = 0.0f;
+    t->eq_state.hs_q = 0.0f;
+
+    // 3. Dynamics Node
+    ma_uint32 inCh[2]; inCh[0] = 2; inCh[1] = 2;
+    ma_uint32 outCh[1]; outCh[0] = 2;
+    SituationDynamicsNodeConfig dynCfg = SituationDynamicsNodeConfigInit(2, sr, inCh, outCh);
+    SituationDynamicsNodeInit(&mixer->graph, &dynCfg, NULL, &t->dynamics_node);
+
+    // Default cached dynamics
+    t->dynamics_node.attackTime = 10.0f;
+    t->dynamics_node.releaseTime = 100.0f;
+
+    // 4. Pre-Fader Splitter (Main + Sidechain + 8 Pre-Aux)
+    // Bus 0: Main -> Panner
+    // Bus 1: Sidechain Send
+    // Bus 2..9: Aux Sends (Pre)
+    ma_splitter_node_config splitCfgPre = ma_splitter_node_config_init(2);
+    splitCfgPre.nodeConfig.outputBusCount = 2 + SIT_MAX_AUX_BUSES;
+    if (ma_splitter_node_init(&mixer->graph, &splitCfgPre, NULL, &t->pre_fader_splitter) != MA_SUCCESS) {
+            t->is_active = false; return false;
+    }
+
+    // 5. Panner Node
+    if (SituationPannerNodeInit(&mixer->graph, NULL, &t->panner_node) != MA_SUCCESS) {
+        t->is_active = false; return false;
+    }
+
+    // 6. Post-Fader Splitter (Main + 8 Post-Aux)
+    // Bus 0: Main -> Master
+    // Bus 1..8: Aux Sends (Post)
+    ma_splitter_node_config splitCfgPost = ma_splitter_node_config_init(2);
+    splitCfgPost.nodeConfig.outputBusCount = 1 + SIT_MAX_AUX_BUSES;
+    if (ma_splitter_node_init(&mixer->graph, &splitCfgPost, NULL, &t->post_fader_splitter) != MA_SUCCESS) {
+        t->is_active = false; return false;
+    }
+
+    // 7. Meter Node
+    if (SituationMeterNodeInit(&mixer->graph, NULL, &t->meter_node) != MA_SUCCESS) {
+        t->is_active = false; return false;
+    }
+
+    // 8. Wiring: Input -> [EQ] -> Dynamics -> PreSplit -> Panner -> Meter -> PostSplit -> Master
+    ma_node_attach_output_bus(&t->input_node, 0, &t->eq_hpf, 0);
+    ma_node_attach_output_bus(&t->eq_hpf, 0, &t->eq_loshelf, 0);
+    ma_node_attach_output_bus(&t->eq_loshelf, 0, &t->eq_peak, 0);
+    ma_node_attach_output_bus(&t->eq_peak, 0, &t->eq_hishelf, 0);
+    ma_node_attach_output_bus(&t->eq_hishelf, 0, &t->dynamics_node, 0);
+
+    // Dynamics -> PreSplit
+    ma_node_attach_output_bus(&t->dynamics_node, 0, &t->pre_fader_splitter, 0);
+
+    // PreSplit [0] -> Panner
+    ma_node_attach_output_bus(&t->pre_fader_splitter, 0, &t->panner_node.base, 0);
+
+    // Panner -> Meter
+    ma_node_attach_output_bus(&t->panner_node.base, 0, &t->meter_node.base, 0);
+
+    // Meter -> PostSplit
+    ma_node_attach_output_bus(&t->meter_node.base, 0, &t->post_fader_splitter, 0);
+
+    // PostSplit [0] -> Master
+    ma_node_attach_output_bus(&t->post_fader_splitter, 0, &mixer->master_node, 0);
+
+    return true;
+}
 
 SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const char* name) {
     if (!mixer) return NULL;
@@ -2638,98 +2789,13 @@ SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const 
     mtx_lock(&mixer->topology_mutex);
     for (int i=0; i<SIT_MAX_TRACKS; ++i) {
         if (!mixer->tracks[i].is_active) {
-            SituationAudioTrack* t = &mixer->tracks[i];
-            memset(t, 0, sizeof(SituationAudioTrack));
-            t->owner = mixer;
-            strncpy(t->name, name ? name : "Track", 63);
-            t->id = i;
-            t->is_active = true;
-            t->volume = 1.0f;
-
-            memset(t->send_level, 0, sizeof(t->send_level));
-            memset(t->send_pre, 0, sizeof(t->send_pre));
-
-            // 1. Input Node (Splitter / Summer)
-            ma_splitter_node_config splitCfg = ma_splitter_node_config_init(2); // Stereo
-            if (ma_splitter_node_init(&mixer->graph, &splitCfg, NULL, &t->input_node) != MA_SUCCESS) {
-                t->is_active = false; continue; // Fail
+            if (_SituationInitTrack_NoLock(mixer, i, name)) {
+                _SituationUpdateSoloState(mixer);
+                mtx_unlock(&mixer->topology_mutex);
+                return &mixer->tracks[i];
+            } else {
+                continue; // Retry next? No, if init failed, it likely fails for all (e.g. OOM)
             }
-
-            // 2. EQ Nodes (Default: Flat/Bypass)
-            uint32_t sr = mixer->device->sampleRate;
-            ma_hpf_node_config hpfCfg = ma_hpf_node_config_init(2, sr, 10.0, 0); // 10Hz HPF
-            ma_hpf_node_init(&mixer->graph, &hpfCfg, NULL, &t->eq_hpf);
-
-            ma_loshelf_node_config lsCfg = ma_loshelf_node_config_init(2, sr, 0, 0, 100);
-            ma_loshelf_node_init(&mixer->graph, &lsCfg, NULL, &t->eq_loshelf);
-
-            ma_peak_node_config pkCfg = ma_peak_node_config_init(2, sr, 0, 0, 1000);
-            ma_peak_node_init(&mixer->graph, &pkCfg, NULL, &t->eq_peak);
-
-            ma_hishelf_node_config hsCfg = ma_hishelf_node_config_init(2, sr, 0, 0, 5000);
-            ma_hishelf_node_init(&mixer->graph, &hsCfg, NULL, &t->eq_hishelf);
-
-            // 3. Dynamics Node
-            ma_uint32 inCh[2]; inCh[0] = 2; inCh[1] = 2;
-            ma_uint32 outCh[1]; outCh[0] = 2;
-            SituationDynamicsNodeConfig dynCfg = SituationDynamicsNodeConfigInit(2, sr, inCh, outCh);
-            SituationDynamicsNodeInit(&mixer->graph, &dynCfg, NULL, &t->dynamics_node);
-
-            // 4. Pre-Fader Splitter (Main + Sidechain + 8 Pre-Aux)
-            // Bus 0: Main -> Panner
-            // Bus 1: Sidechain Send
-            // Bus 2..9: Aux Sends (Pre)
-            ma_splitter_node_config splitCfgPre = ma_splitter_node_config_init(2);
-            splitCfgPre.nodeConfig.outputBusCount = 2 + SIT_MAX_AUX_BUSES;
-            if (ma_splitter_node_init(&mixer->graph, &splitCfgPre, NULL, &t->pre_fader_splitter) != MA_SUCCESS) {
-                 t->is_active = false; continue;
-            }
-
-            // 5. Panner Node
-            if (SituationPannerNodeInit(&mixer->graph, NULL, &t->panner_node) != MA_SUCCESS) {
-                t->is_active = false; continue;
-            }
-
-            // 6. Post-Fader Splitter (Main + 8 Post-Aux)
-            // Bus 0: Main -> Master
-            // Bus 1..8: Aux Sends (Post)
-            ma_splitter_node_config splitCfgPost = ma_splitter_node_config_init(2);
-            splitCfgPost.nodeConfig.outputBusCount = 1 + SIT_MAX_AUX_BUSES;
-            if (ma_splitter_node_init(&mixer->graph, &splitCfgPost, NULL, &t->post_fader_splitter) != MA_SUCCESS) {
-                t->is_active = false; continue;
-            }
-
-            // 7. Meter Node
-            if (SituationMeterNodeInit(&mixer->graph, NULL, &t->meter_node) != MA_SUCCESS) {
-                t->is_active = false; continue;
-            }
-
-            // 8. Wiring: Input -> [EQ] -> Dynamics -> PreSplit -> Panner -> Meter -> PostSplit -> Master
-            ma_node_attach_output_bus(&t->input_node, 0, &t->eq_hpf, 0);
-            ma_node_attach_output_bus(&t->eq_hpf, 0, &t->eq_loshelf, 0);
-            ma_node_attach_output_bus(&t->eq_loshelf, 0, &t->eq_peak, 0);
-            ma_node_attach_output_bus(&t->eq_peak, 0, &t->eq_hishelf, 0);
-            ma_node_attach_output_bus(&t->eq_hishelf, 0, &t->dynamics_node, 0);
-
-            // Dynamics -> PreSplit
-            ma_node_attach_output_bus(&t->dynamics_node, 0, &t->pre_fader_splitter, 0);
-
-            // PreSplit [0] -> Panner
-            ma_node_attach_output_bus(&t->pre_fader_splitter, 0, &t->panner_node.base, 0);
-
-            // Panner -> Meter
-            ma_node_attach_output_bus(&t->panner_node.base, 0, &t->meter_node.base, 0);
-
-            // Meter -> PostSplit
-            ma_node_attach_output_bus(&t->meter_node.base, 0, &t->post_fader_splitter, 0);
-
-            // PostSplit [0] -> Master
-            ma_node_attach_output_bus(&t->post_fader_splitter, 0, &mixer->master_node, 0);
-
-            _SituationUpdateSoloState(mixer);
-
-            mtx_unlock(&mixer->topology_mutex);
-            return t;
         }
     }
     mtx_unlock(&mixer->topology_mutex);
@@ -2898,17 +2964,34 @@ SITAPI void SituationSetTrackEQ(SituationAudioTrack* track, bool enabled, float*
     if (!track || !track->is_active) return;
     uint32_t sr = sit_audio.is_miniaudio_device_active ? sit_audio.miniaudio_device.sampleRate : 48000;
 
-    if (enabled && freqs && gains && Qs) {
-        ma_hpf_config hpf = ma_hpf_config_init(ma_format_f32, 2, sr, (double)freqs[0], 0);
+    if (track->owner) mtx_lock(&track->owner->topology_mutex);
+
+    track->eq_state.enabled = enabled;
+
+    if (freqs && gains && Qs) {
+        track->eq_state.hpf_freq = freqs[0];
+        track->eq_state.ls_freq = freqs[1];
+        track->eq_state.ls_gain = gains[1];
+        track->eq_state.ls_q = Qs[1];
+        track->eq_state.peak_freq = freqs[2];
+        track->eq_state.peak_gain = gains[2];
+        track->eq_state.peak_q = Qs[2];
+        track->eq_state.hs_freq = freqs[3];
+        track->eq_state.hs_gain = gains[3];
+        track->eq_state.hs_q = Qs[3];
+    }
+
+    if (enabled) {
+        ma_hpf_config hpf = ma_hpf_config_init(ma_format_f32, 2, sr, (double)track->eq_state.hpf_freq, 0);
         ma_hpf_node_reinit(&hpf, &track->eq_hpf);
 
-        ma_loshelf_config ls = ma_loshelf2_config_init(ma_format_f32, 2, sr, (double)gains[1], (double)Qs[1], (double)freqs[1]);
+        ma_loshelf_config ls = ma_loshelf2_config_init(ma_format_f32, 2, sr, (double)track->eq_state.ls_gain, (double)track->eq_state.ls_q, (double)track->eq_state.ls_freq);
         ma_loshelf_node_reinit(&ls, &track->eq_loshelf);
 
-        ma_peak_config pk = ma_peak2_config_init(ma_format_f32, 2, sr, (double)gains[2], (double)Qs[2], (double)freqs[2]);
+        ma_peak_config pk = ma_peak2_config_init(ma_format_f32, 2, sr, (double)track->eq_state.peak_gain, (double)track->eq_state.peak_q, (double)track->eq_state.peak_freq);
         ma_peak_node_reinit(&pk, &track->eq_peak);
 
-        ma_hishelf_config hs = ma_hishelf2_config_init(ma_format_f32, 2, sr, (double)gains[3], (double)Qs[3], (double)freqs[3]);
+        ma_hishelf_config hs = ma_hishelf2_config_init(ma_format_f32, 2, sr, (double)track->eq_state.hs_gain, (double)track->eq_state.hs_q, (double)track->eq_state.hs_freq);
         ma_hishelf_node_reinit(&hs, &track->eq_hishelf);
     } else {
         ma_hpf_config hpf = ma_hpf_config_init(ma_format_f32, 2, sr, 0, 0);
@@ -2923,6 +3006,8 @@ SITAPI void SituationSetTrackEQ(SituationAudioTrack* track, bool enabled, float*
         ma_hishelf_config hs = ma_hishelf2_config_init(ma_format_f32, 2, sr, 0, 0, 5000);
         ma_hishelf_node_reinit(&hs, &track->eq_hishelf);
     }
+
+    if (track->owner) mtx_unlock(&track->owner->topology_mutex);
 }
 
 SITAPI void SituationSetTrackDynamics(SituationAudioTrack* track, bool enabled, int mode, float threshold_db, float ratio, float attack_ms, float release_ms, float makeup_gain) {
@@ -2944,16 +3029,15 @@ SITAPI void SituationSetTrackDynamics(SituationAudioTrack* track, bool enabled, 
     float fs = (float)sr;
     if (attack_ms < 0.001f) attack_ms = 0.001f;
     if (release_ms < 0.001f) release_ms = 0.001f;
+
+    track->dynamics_node.attackTime = attack_ms;
+    track->dynamics_node.releaseTime = release_ms;
+
     track->dynamics_node.attackCoef = 1.0f - expf(-1.0f / ((attack_ms/1000.0f) * fs));
     track->dynamics_node.releaseCoef = 1.0f - expf(-1.0f / ((release_ms/1000.0f) * fs));
 }
 
-SITAPI void SituationSetTrackSideChain(SituationAudioTrack* target_track, SituationAudioTrack* source_track) {
-    if (!target_track || !target_track->is_active) return;
-    if (!sit_audio.active_mixer) return;
-
-    mtx_lock(&sit_audio.active_mixer->topology_mutex);
-
+static void _SituationSetTrackSideChain_NoLock(SituationAudioTrack* target_track, SituationAudioTrack* source_track) {
     // Save State
     float thresh = target_track->dynamics_node.thresholdDB;
     float ratio = target_track->dynamics_node.ratio;
@@ -2961,6 +3045,8 @@ SITAPI void SituationSetTrackSideChain(SituationAudioTrack* target_track, Situat
     float rel = target_track->dynamics_node.releaseCoef;
     float mk = target_track->dynamics_node.makeupGain;
     bool gate = target_track->dynamics_node.isGate;
+    float att_ms = target_track->dynamics_node.attackTime;
+    float rel_ms = target_track->dynamics_node.releaseTime;
 
     // Re-create node to clear connections
     SituationDynamicsNodeUninit(&target_track->dynamics_node, NULL);
@@ -2978,6 +3064,8 @@ SITAPI void SituationSetTrackSideChain(SituationAudioTrack* target_track, Situat
     target_track->dynamics_node.releaseCoef = rel;
     target_track->dynamics_node.makeupGain = mk;
     target_track->dynamics_node.isGate = gate;
+    target_track->dynamics_node.attackTime = att_ms;
+    target_track->dynamics_node.releaseTime = rel_ms;
 
     // Re-wire Main
     ma_node_attach_output_bus(&target_track->eq_hishelf, 0, &target_track->dynamics_node, 0);
@@ -2992,8 +3080,26 @@ SITAPI void SituationSetTrackSideChain(SituationAudioTrack* target_track, Situat
         target_track->dynamics_node.sidechainEnabled = 0;
         target_track->sidechain_source = NULL;
     }
+}
 
+SITAPI void SituationSetTrackSideChain(SituationAudioTrack* target_track, SituationAudioTrack* source_track) {
+    if (!target_track || !target_track->is_active) return;
+    if (!sit_audio.active_mixer) return;
+
+    mtx_lock(&sit_audio.active_mixer->topology_mutex);
+    _SituationSetTrackSideChain_NoLock(target_track, source_track);
     mtx_unlock(&sit_audio.active_mixer->topology_mutex);
+}
+
+SITAPI SituationError SituationSetMasterVolume(SituationAudioMixer* mixer, float volume) {
+    if (!mixer) return SITUATION_ERROR_INVALID_PARAM;
+    ma_node_set_output_bus_volume((ma_node*)&mixer->master_node, 0, volume);
+    return SITUATION_SUCCESS;
+}
+
+SITAPI float SituationGetMasterVolume(SituationAudioMixer* mixer) {
+    if (!mixer) return 0.0f;
+    return ma_node_get_output_bus_volume((ma_node*)&mixer->master_node, 0);
 }
 
 SITAPI void SituationGetTrackMeter(SituationAudioTrack* track, float* left_peak, float* right_peak, float* gain_reduction) {
@@ -3135,4 +3241,243 @@ SITAPI void* SituationRemoveEffect(SituationAudioBus* bus, int slot) {
 SITAPI ma_node_graph* SituationGetMixerGraph(SituationAudioMixer* mixer) {
     if (!mixer) return NULL;
     return &mixer->graph;
+}
+
+// --- Persistence Structures (Phase 5) ---
+typedef struct {
+    char magic[4];          // "SMX2"
+    uint32_t version;       // 2
+    uint64_t timestamp;
+    uint32_t track_count;
+    uint32_t bus_count;
+} MixerFileHeader;
+
+typedef struct {
+    int id;
+    char name[64];
+    float volume;
+    float pan;
+    uint8_t flags;          // Bit 0: Mute, Bit 1: Solo, Bit 2: Active
+
+    // -- EQ --
+    uint8_t eq_enabled;
+    float eq_params[16];    // Serialized EQ bands (Freq/Gain/Q)
+
+    // -- Dynamics --
+    uint8_t dyn_enabled;
+    uint8_t dyn_mode;
+    float dyn_params[8];    // Thresh, Ratio, Attack, Release, Makeup, etc.
+    int side_chain_source;  // ID of sidechain source track
+
+    float sends[8];         // Levels for all 8 aux slots
+    uint8_t send_pre[8];    // Pre/Post flags
+} MixerTrackData;
+
+typedef struct {
+    int id;
+    char name[64];
+    float volume;
+    int fx_count;
+    // Note: FX chains are NOT persisted in v1.0, only topology placeholders.
+} MixerBusData;
+
+SITAPI bool SituationSaveMixerSession(SituationAudioMixer* mixer, const char* filepath) {
+    if (!mixer || !filepath) return false;
+
+    // Use a temp buffer to avoid holding lock during I/O
+    MixerTrackData* track_data = (MixerTrackData*)SIT_MALLOC(sizeof(MixerTrackData) * SIT_MAX_TRACKS);
+    MixerBusData* bus_data = (MixerBusData*)SIT_MALLOC(sizeof(MixerBusData) * SIT_MAX_AUX_BUSES);
+    if (!track_data || !bus_data) {
+        if(track_data) SIT_FREE(track_data);
+        if(bus_data) SIT_FREE(bus_data);
+        return false;
+    }
+
+    mtx_lock(&mixer->topology_mutex); // Lock for consistent read
+
+    for(int i=0; i<SIT_MAX_TRACKS; ++i) {
+        SituationAudioTrack* t = &mixer->tracks[i];
+        MixerTrackData* d = &track_data[i];
+        memset(d, 0, sizeof(MixerTrackData));
+
+        d->id = t->id;
+        strncpy(d->name, t->name, 63);
+        d->volume = atomic_load(&t->volume);
+        d->pan = atomic_load(&t->pan);
+
+        d->flags = 0;
+        if (t->mute) d->flags |= 1;
+        if (t->solo) d->flags |= 2;
+        if (t->is_active) d->flags |= 4;
+
+        // EQ
+        d->eq_enabled = t->eq_state.enabled ? 1 : 0;
+        d->eq_params[0] = t->eq_state.hpf_freq;
+        d->eq_params[1] = t->eq_state.ls_freq;
+        d->eq_params[2] = t->eq_state.ls_gain;
+        d->eq_params[3] = t->eq_state.ls_q;
+        d->eq_params[4] = t->eq_state.peak_freq;
+        d->eq_params[5] = t->eq_state.peak_gain;
+        d->eq_params[6] = t->eq_state.peak_q;
+        d->eq_params[7] = t->eq_state.hs_freq;
+        d->eq_params[8] = t->eq_state.hs_gain;
+        d->eq_params[9] = t->eq_state.hs_q;
+
+        // Dynamics (Partial persistence)
+        d->dyn_enabled = (t->dynamics_node.ratio != 1.0f || t->dynamics_node.isGate) ? 1 : 0;
+        d->dyn_mode = t->dynamics_node.isGate ? 2 : 0;
+        if (t->dynamics_node.ratio > 20.0f) d->dyn_mode = 1;
+
+        d->dyn_params[0] = t->dynamics_node.thresholdDB;
+        d->dyn_params[1] = t->dynamics_node.ratio;
+        d->dyn_params[2] = t->dynamics_node.attackTime;
+        d->dyn_params[3] = t->dynamics_node.releaseTime;
+        d->dyn_params[4] = 20.0f * log10f(t->dynamics_node.makeupGain);
+
+        d->side_chain_source = t->sidechain_source ? t->sidechain_source->id : -1;
+
+        for(int s=0; s<SIT_MAX_AUX_BUSES; ++s) {
+            d->sends[s] = t->send_level[s];
+            d->send_pre[s] = t->send_pre[s] ? 1 : 0;
+        }
+    }
+
+    for(int i=0; i<SIT_MAX_AUX_BUSES; ++i) {
+        SituationAudioBus* b = &mixer->aux_buses[i];
+        MixerBusData* d = &bus_data[i];
+        memset(d, 0, sizeof(MixerBusData));
+        d->id = b->id;
+        strncpy(d->name, b->name, 63);
+        d->volume = atomic_load(&b->volume);
+        d->fx_count = b->fx_count;
+    }
+
+    mtx_unlock(&mixer->topology_mutex);
+
+    // Write to file
+    FILE* f = fopen(filepath, "wb");
+    if (!f) {
+        SIT_FREE(track_data);
+        SIT_FREE(bus_data);
+        return false;
+    }
+
+    MixerFileHeader header;
+    memset(&header, 0, sizeof(header));
+    memcpy(header.magic, "SMX2", 4);
+    header.version = 2;
+    header.timestamp = (uint64_t)time(NULL);
+    header.track_count = SIT_MAX_TRACKS;
+    header.bus_count = SIT_MAX_AUX_BUSES;
+
+    fwrite(&header, sizeof(header), 1, f);
+    fwrite(track_data, sizeof(MixerTrackData), SIT_MAX_TRACKS, f);
+    fwrite(bus_data, sizeof(MixerBusData), SIT_MAX_AUX_BUSES, f);
+
+    fclose(f);
+    SIT_FREE(track_data);
+    SIT_FREE(bus_data);
+    return true;
+}
+
+SITAPI bool SituationLoadMixerSession(SituationAudioMixer* mixer, const char* filepath) {
+    if (!mixer || !filepath) return false;
+
+    FILE* f = fopen(filepath, "rb");
+    if (!f) return false;
+
+    MixerFileHeader header;
+    if (fread(&header, sizeof(header), 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+
+    if (memcmp(header.magic, "SMX2", 4) != 0 || header.version != 2) {
+        fclose(f);
+        return false;
+    }
+
+    MixerTrackData* track_data = (MixerTrackData*)SIT_MALLOC(sizeof(MixerTrackData) * header.track_count);
+    MixerBusData* bus_data = (MixerBusData*)SIT_MALLOC(sizeof(MixerBusData) * header.bus_count);
+    if (!track_data || !bus_data) {
+        if(track_data) SIT_FREE(track_data);
+        if(bus_data) SIT_FREE(bus_data);
+        fclose(f);
+        return false;
+    }
+
+    if (fread(track_data, sizeof(MixerTrackData), header.track_count, f) != header.track_count ||
+        fread(bus_data, sizeof(MixerBusData), header.bus_count, f) != header.bus_count) {
+        SIT_FREE(track_data);
+        SIT_FREE(bus_data);
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+
+    mtx_lock(&mixer->topology_mutex);
+
+    int max_tracks = (header.track_count < SIT_MAX_TRACKS) ? header.track_count : SIT_MAX_TRACKS;
+    for(int i=0; i<max_tracks; ++i) {
+        MixerTrackData* d = &track_data[i];
+        SituationAudioTrack* t = &mixer->tracks[i];
+
+        bool active_in_file = (d->flags & 4) != 0;
+        if (active_in_file) {
+            if (!t->is_active) {
+                if (!_SituationInitTrack_NoLock(mixer, i, NULL)) continue;
+            }
+
+            strncpy(t->name, d->name, 63);
+
+            bool mute = (d->flags & 1) != 0;
+            bool solo = (d->flags & 2) != 0;
+            SituationSetTrackMute(t, mute);
+            SituationSetTrackSolo(t, solo);
+
+            SituationSetTrackVolume(t, d->volume);
+            SituationSetTrackPan(t, d->pan);
+
+            float freqs[4] = {d->eq_params[0], d->eq_params[1], d->eq_params[4], d->eq_params[7]};
+            float gains[4] = {0, d->eq_params[2], d->eq_params[5], d->eq_params[8]};
+            float Qs[4] = {0, d->eq_params[3], d->eq_params[6], d->eq_params[9]};
+            SituationSetTrackEQ(t, d->eq_enabled, freqs, gains, Qs);
+
+            // Use saved attack/release if available (> 0), otherwise defaults 10ms/100ms
+            float att = d->dyn_params[2] > 0.0f ? d->dyn_params[2] : 10.0f;
+            float rel = d->dyn_params[3] > 0.0f ? d->dyn_params[3] : 100.0f;
+            SituationSetTrackDynamics(t, d->dyn_enabled, d->dyn_mode, d->dyn_params[0], d->dyn_params[1], att, rel, d->dyn_params[4]);
+
+            for(int s=0; s<SIT_MAX_AUX_BUSES; ++s) {
+                SituationSetTrackSend(t, s, d->sends[s], d->send_pre[s]);
+            }
+        } else {
+            if (t->is_active) {
+                _SituationRemoveTrack_NoLock(t);
+            }
+        }
+    }
+
+    for(int i=0; i<max_tracks; ++i) {
+        if (!mixer->tracks[i].is_active) continue;
+        int src_id = track_data[i].side_chain_source;
+        if (src_id >= 0 && src_id < SIT_MAX_TRACKS && mixer->tracks[src_id].is_active) {
+            _SituationSetTrackSideChain_NoLock(&mixer->tracks[i], &mixer->tracks[src_id]);
+        }
+    }
+
+    for(int i=0; i<SIT_MAX_AUX_BUSES; ++i) {
+        SituationAudioBus* b = &mixer->aux_buses[i];
+        if (i < (int)header.bus_count) {
+            strncpy(b->name, bus_data[i].name, 63);
+            atomic_store(&b->volume, bus_data[i].volume);
+        }
+    }
+
+    _SituationUpdateSoloState(mixer);
+
+    mtx_unlock(&mixer->topology_mutex);
+    SIT_FREE(track_data);
+    SIT_FREE(bus_data);
+    return true;
 }
