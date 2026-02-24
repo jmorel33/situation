@@ -20677,8 +20677,8 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
 
     if (!base_path) return NULL;
 
-    // TODO: Create the base directory if it doesn't exist.
-    // mkdir(base_path, 0755);
+    // Create the base directory if it doesn't exist.
+    SituationCreateDirectory(base_path, true);
 
     size_t final_len = strlen(base_path) + 1 + strlen(app_name) + 1;
     char* final_path = (char*)SIT_MALLOC(final_len);
@@ -20689,8 +20689,8 @@ SITAPI char* SituationGetAppSavePath(const char* app_name) {
     snprintf(final_path, final_len, "%s/%s", base_path, app_name);
     SIT_FREE(base_path);
 
-    // TODO: Create the final directory.
-    // mkdir(final_path, 0755);
+    // Create the final directory.
+    SituationCreateDirectory(final_path, true);
 
     return final_path;
 #endif
