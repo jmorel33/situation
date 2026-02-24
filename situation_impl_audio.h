@@ -95,6 +95,7 @@ typedef struct {
     bool isGate;
     int sidechainEnabled;
     float envelope;
+    _Atomic float gainReductionDB;
 } SituationDynamicsNode;
 
 static void _situation_dynamics_process(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut) {
@@ -115,8 +116,11 @@ static void _situation_dynamics_process(ma_node* pNode, const float** ppFramesIn
     // Optimization: If ratio is 1.0 (no comp) and not gating, just copy/scale
     if (!dyn->isGate && dyn->ratio == 1.0f && dyn->makeupGain == 1.0f) {
         memcpy(pOut, pMain, frames * channels * sizeof(float));
+        atomic_store(&dyn->gainReductionDB, 0.0f);
         return;
     }
+
+    float minGainDB = 0.0f;
 
     for (ma_uint32 i = 0; i < frames; ++i) {
         // 1. Key Signal
@@ -147,12 +151,16 @@ static void _situation_dynamics_process(ma_node* pNode, const float** ppFramesIn
             }
         }
 
+        if (gainDB < minGainDB) minGainDB = gainDB;
+
         // 4. Apply
         float gain = powf(10.0f, gainDB / 20.0f) * dyn->makeupGain;
         for (ma_uint32 c = 0; c < channels; ++c) {
             pOut[i*channels + c] = pMain[i*channels + c] * gain;
         }
     }
+
+    atomic_store(&dyn->gainReductionDB, -minGainDB);
 }
 
 static ma_node_vtable g_situation_dynamics_vtable = {
@@ -183,6 +191,7 @@ static ma_result SituationDynamicsNodeInit(ma_node_graph* pNodeGraph, const Situ
     pNode->isGate = pConfig->isGate;
     pNode->sidechainEnabled = pConfig->sidechainEnabled;
     pNode->envelope = 0.0f;
+    atomic_init(&pNode->gainReductionDB, 0.0f);
     float sr = (float)pConfig->sampleRate;
     if (sr <= 0.0f) sr = 48000.0f;
     pNode->attackCoef = 1.0f - expf(-1.0f / (pConfig->attackTime * sr));
@@ -261,9 +270,72 @@ static void SituationPannerNodeUninit(SituationPannerNode* pNode, const ma_alloc
     ma_node_uninit(&pNode->base, pAllocationCallbacks);
 }
 
+// --- Internal Meter Node (Phase 4) ---
+typedef struct {
+    ma_node_base base;
+    _Atomic float peak_L;
+    _Atomic float peak_R;
+} SituationMeterNode;
+
+static void _situation_meter_process(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut) {
+    (void)pFrameCountIn;
+    SituationMeterNode* meter = (SituationMeterNode*)pNode;
+    const float* pIn = ppFramesIn[0];
+    float* pOut = ppFramesOut[0];
+    ma_uint32 frames = *pFrameCountOut;
+    ma_uint32 channels = ma_node_get_output_channels(pNode, 0);
+
+    if (!pIn) {
+        memset(pOut, 0, frames * channels * sizeof(float));
+        atomic_store(&meter->peak_L, 0.0f);
+        atomic_store(&meter->peak_R, 0.0f);
+        return;
+    }
+
+    // Pass-through copy
+    memcpy(pOut, pIn, frames * channels * sizeof(float));
+
+    float max_L = 0.0f;
+    float max_R = 0.0f;
+
+    for (ma_uint32 i = 0; i < frames; ++i) {
+        float L = fabsf(pIn[i*channels]);
+        float R = (channels > 1) ? fabsf(pIn[i*channels+1]) : L;
+        if (L > max_L) max_L = L;
+        if (R > max_R) max_R = R;
+    }
+
+    atomic_store(&meter->peak_L, max_L);
+    atomic_store(&meter->peak_R, max_R);
+}
+
+static ma_node_vtable g_situation_meter_vtable = {
+    _situation_meter_process, NULL, 1, 1, 0
+};
+
+static ma_result SituationMeterNodeInit(ma_node_graph* pNodeGraph, const ma_allocation_callbacks* pAllocationCallbacks, SituationMeterNode* pNode) {
+    ma_node_config config = ma_node_config_init();
+    config.vtable = &g_situation_meter_vtable;
+    static ma_uint32 inCh[1] = {2};
+    static ma_uint32 outCh[1] = {2};
+    config.pInputChannels = inCh;
+    config.pOutputChannels = outCh;
+
+    ma_result result = ma_node_init(pNodeGraph, &config, pAllocationCallbacks, &pNode->base);
+    if (result != MA_SUCCESS) return result;
+    atomic_init(&pNode->peak_L, 0.0f);
+    atomic_init(&pNode->peak_R, 0.0f);
+    return MA_SUCCESS;
+}
+
+static void SituationMeterNodeUninit(SituationMeterNode* pNode, const ma_allocation_callbacks* pAllocationCallbacks) {
+    ma_node_uninit(&pNode->base, pAllocationCallbacks);
+}
+
 // --- Mixer Definitions (Phase 2) ---
 #define SIT_MAX_TRACKS          16
 #define SIT_MAX_AUX_BUSES        8
+#define SIT_MAX_FX_SLOTS         8
 
 typedef struct SituationAudioBus {
     char name[64];
@@ -271,6 +343,12 @@ typedef struct SituationAudioBus {
     // Graph: Input Sum -> Output Splitter -> Master
     ma_splitter_node input_node;
     ma_splitter_node output_node;
+
+    // Phase 4: FX & Metering
+    ma_node* fx[SIT_MAX_FX_SLOTS];
+    int fx_count;
+    SituationMeterNode meter_node;
+
     _Atomic float volume;
     _Atomic float pan;
 } SituationAudioBus;
@@ -310,6 +388,9 @@ struct SituationAudioTrack {
 
     // Panner
     SituationPannerNode panner_node;
+
+    // Phase 4: Metering
+    SituationMeterNode meter_node;
 
     // Post-Fader Splitter
     // Bus 0: To Master (Main Path)
@@ -2435,8 +2516,16 @@ SITAPI SituationAudioMixer* SituationCreateMixer(void) {
             continue;
         }
 
-        // Wire: Input -> Output -> Master
-        ma_node_attach_output_bus(&bus->input_node, 0, &bus->output_node, 0);
+        // Meter Node
+        if (SituationMeterNodeInit(&mixer->graph, NULL, &bus->meter_node) != MA_SUCCESS) {
+            ma_splitter_node_uninit(&bus->input_node, NULL);
+            ma_splitter_node_uninit(&bus->output_node, NULL);
+            continue;
+        }
+
+        // Wire: Input -> Meter -> Output -> Master
+        ma_node_attach_output_bus(&bus->input_node, 0, &bus->meter_node.base, 0);
+        ma_node_attach_output_bus(&bus->meter_node.base, 0, &bus->output_node, 0);
         ma_node_attach_output_bus(&bus->output_node, 0, &mixer->master_node, 0);
 
         bus->volume = 1.0f;
@@ -2458,6 +2547,7 @@ static void _SituationRemoveTrack_NoLock(SituationAudioTrack* track) {
     SituationDynamicsNodeUninit(&track->dynamics_node, NULL);
     ma_splitter_node_uninit(&track->pre_fader_splitter, NULL);
     SituationPannerNodeUninit(&track->panner_node, NULL);
+    SituationMeterNodeUninit(&track->meter_node, NULL);
     ma_splitter_node_uninit(&track->post_fader_splitter, NULL);
 
     track->is_active = false;
@@ -2493,6 +2583,7 @@ SITAPI void SituationDestroyMixer(SituationAudioMixer* mixer) {
     for (int i = 0; i < SIT_MAX_AUX_BUSES; ++i) {
         ma_splitter_node_uninit(&mixer->aux_buses[i].input_node, NULL);
         ma_splitter_node_uninit(&mixer->aux_buses[i].output_node, NULL);
+        SituationMeterNodeUninit(&mixer->aux_buses[i].meter_node, NULL);
     }
 
     ma_splitter_node_uninit(&mixer->master_node, NULL);
@@ -2608,7 +2699,12 @@ SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const 
                 t->is_active = false; continue;
             }
 
-            // 7. Wiring: Input -> [EQ] -> Dynamics -> PreSplit -> Panner -> PostSplit -> Master
+            // 7. Meter Node
+            if (SituationMeterNodeInit(&mixer->graph, NULL, &t->meter_node) != MA_SUCCESS) {
+                t->is_active = false; continue;
+            }
+
+            // 8. Wiring: Input -> [EQ] -> Dynamics -> PreSplit -> Panner -> Meter -> PostSplit -> Master
             ma_node_attach_output_bus(&t->input_node, 0, &t->eq_hpf, 0);
             ma_node_attach_output_bus(&t->eq_hpf, 0, &t->eq_loshelf, 0);
             ma_node_attach_output_bus(&t->eq_loshelf, 0, &t->eq_peak, 0);
@@ -2621,8 +2717,11 @@ SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const 
             // PreSplit [0] -> Panner
             ma_node_attach_output_bus(&t->pre_fader_splitter, 0, &t->panner_node.base, 0);
 
-            // Panner -> PostSplit
-            ma_node_attach_output_bus(&t->panner_node.base, 0, &t->post_fader_splitter, 0);
+            // Panner -> Meter
+            ma_node_attach_output_bus(&t->panner_node.base, 0, &t->meter_node.base, 0);
+
+            // Meter -> PostSplit
+            ma_node_attach_output_bus(&t->meter_node.base, 0, &t->post_fader_splitter, 0);
 
             // PostSplit [0] -> Master
             ma_node_attach_output_bus(&t->post_fader_splitter, 0, &mixer->master_node, 0);
@@ -2895,4 +2994,145 @@ SITAPI void SituationSetTrackSideChain(SituationAudioTrack* target_track, Situat
     }
 
     mtx_unlock(&sit_audio.active_mixer->topology_mutex);
+}
+
+SITAPI void SituationGetTrackMeter(SituationAudioTrack* track, float* left_peak, float* right_peak, float* gain_reduction) {
+    if (!track || !track->is_active) {
+        if (left_peak) *left_peak = 0.0f;
+        if (right_peak) *right_peak = 0.0f;
+        if (gain_reduction) *gain_reduction = 0.0f;
+        return;
+    }
+
+    if (left_peak) *left_peak = atomic_load(&track->meter_node.peak_L);
+    if (right_peak) *right_peak = atomic_load(&track->meter_node.peak_R);
+    if (gain_reduction) *gain_reduction = atomic_load(&track->dynamics_node.gainReductionDB);
+}
+
+SITAPI SituationError SituationInsertEffect(SituationAudioBus* bus, int slot, ma_node* effect_node) {
+    if (!bus || !effect_node || slot < 0 || slot >= SIT_MAX_FX_SLOTS) return SITUATION_ERROR_INVALID_PARAM;
+    // Assuming bus is part of an active mixer, but we don't have a direct pointer to mixer from bus struct in Phase 2 def.
+    // Wait, SituationAudioBus struct definition (Phase 2) doesn't have 'owner' pointer like Track does.
+    // But we need to lock topology!
+    // We can assume the caller ensures thread safety? No, API says "All API calls modifying topology... must acquire topology_mutex".
+    // I need to add 'owner' to SituationAudioBus or find the mixer.
+    // SituationAudioBus is stored in mixer->aux_buses array.
+    // I can iterate global mixer list? No global list.
+    // sit_audio.active_mixer is the likely owner if we are operating on the active mixer.
+    // But what if we have multiple mixers (not supported well yet)?
+    // Let's assume sit_audio.active_mixer is the one.
+    // But 'bus' pointer could be from anywhere.
+    // HACK: For now, I'll rely on sit_audio.active_mixer. If it's NULL, we can't lock.
+
+    if (!sit_audio.active_mixer) return SITUATION_ERROR_NOT_INITIALIZED;
+    SituationAudioMixer* mixer = sit_audio.active_mixer;
+
+    // Verify bus belongs to mixer?
+    bool found = false;
+    for(int i=0; i<SIT_MAX_AUX_BUSES; ++i) {
+        if (&mixer->aux_buses[i] == bus) { found = true; break; }
+    }
+    // Also check Master? Master is a bus-like struct but type SituationAudioBus?
+    // In struct SituationAudioMixer, 'master' is SituationAudioBus type? No.
+    // struct SituationAudioMixer { ... SituationAudioBus aux_buses[...]; ma_splitter_node master_node; ... }
+    // Master is just a node in the struct, not a SituationAudioBus struct.
+    // So this API only works for Aux buses for now as typed.
+
+    if (!found) return SITUATION_ERROR_INVALID_PARAM; // Bus not in active mixer
+
+    mtx_lock(&mixer->topology_mutex);
+
+    if (bus->fx[slot] != NULL) {
+        mtx_unlock(&mixer->topology_mutex);
+        return SITUATION_ERROR_AUDIO_INVALID_OPERATION; // Slot occupied
+    }
+
+    // 1. Find Prev Node
+    ma_node* prev = (ma_node*)&bus->input_node;
+    for (int i = slot - 1; i >= 0; i--) {
+        if (bus->fx[i]) {
+            prev = bus->fx[i];
+            break;
+        }
+    }
+
+    // 2. Find Next Node
+    ma_node* next = (ma_node*)&bus->meter_node.base;
+    for (int i = slot + 1; i < SIT_MAX_FX_SLOTS; i++) {
+        if (bus->fx[i]) {
+            next = bus->fx[i];
+            break;
+        }
+    }
+
+    // 3. Rewire
+    // Detach Prev -> Next
+    // Note: ma_node_detach_output_bus removes all connections from that bus index.
+    // Since we are building a linear chain, output bus 0 is the only one used.
+    ma_node_detach_output_bus(prev, 0);
+
+    // Attach Prev -> New
+    ma_node_attach_output_bus(prev, 0, effect_node, 0);
+
+    // Attach New -> Next
+    ma_node_attach_output_bus(effect_node, 0, next, 0);
+
+    bus->fx[slot] = effect_node;
+    bus->fx_count++;
+
+    mtx_unlock(&mixer->topology_mutex);
+    return SITUATION_SUCCESS;
+}
+
+SITAPI void* SituationRemoveEffect(SituationAudioBus* bus, int slot) {
+    if (!bus || slot < 0 || slot >= SIT_MAX_FX_SLOTS) return NULL;
+    if (!sit_audio.active_mixer) return NULL;
+    SituationAudioMixer* mixer = sit_audio.active_mixer;
+
+    mtx_lock(&mixer->topology_mutex);
+
+    ma_node* old_node = bus->fx[slot];
+    if (!old_node) {
+        mtx_unlock(&mixer->topology_mutex);
+        return NULL;
+    }
+
+    // 1. Find Prev Node
+    ma_node* prev = (ma_node*)&bus->input_node;
+    for (int i = slot - 1; i >= 0; i--) {
+        if (bus->fx[i]) {
+            prev = bus->fx[i];
+            break;
+        }
+    }
+
+    // 2. Find Next Node
+    ma_node* next = (ma_node*)&bus->meter_node.base;
+    for (int i = slot + 1; i < SIT_MAX_FX_SLOTS; i++) {
+        if (bus->fx[i]) {
+            next = bus->fx[i];
+            break;
+        }
+    }
+
+    // 3. Rewire
+    // Detach Prev -> Old
+    ma_node_detach_output_bus(prev, 0);
+
+    // Detach Old -> Next
+    ma_node_detach_output_bus(old_node, 0);
+
+    // Attach Prev -> Next
+    ma_node_attach_output_bus(prev, 0, next, 0);
+
+    bus->fx[slot] = NULL;
+    bus->fx_count--;
+
+    mtx_unlock(&mixer->topology_mutex);
+    return old_node;
+}
+
+SITAPI ma_node_graph* SituationGetMixerGraph(SituationAudioMixer* mixer) {
+    if (!mixer) return NULL;
+    return &mixer->graph;
 }
