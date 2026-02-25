@@ -41,7 +41,8 @@
 #include "sit/aux/reverb.h"
 #include "sit/aux/echo.h"
 #include "sit/aux/exciter.h"
-#include "sit/aux/silver_bullet_mk2.h"
+#include "sit/aux/mastering_amp.h"
+#include "sit/aux/studio_reverb.h"
 
 // --- Internal Dynamics Node (Phase 2) ---
 // Implements Compressor / Limiter / Gate
