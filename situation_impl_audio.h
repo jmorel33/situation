@@ -2315,18 +2315,6 @@ SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool,
 }
 #endif // SITUATION_ENABLE_THREADING
 
-/**
- * @brief [INTERNAL] Allocates and initializes the Schroeder/Freeverb reverb engine state.
- * @details This function sets up the complex network of comb and all-pass filters required for the reverb effect.
- *          It scales the delay line lengths based on the provided sample rate to ensure consistent timing
- *          across different audio configurations (e.g., 44.1kHz vs 48kHz).
- *
- * @param sample_rate The sample rate of the audio context (e.g., 48000).
- * @return A void pointer to the opaque `SituationReverbState` struct, or NULL on allocation failure.
- */
-
-#endif // SITUATION_IMPL_AUDIO_H
-
 // --- Mixer Implementation (Phase 1) ---
 
 SITAPI SituationAudioDeviceInfo* SituationFindBestDevice(SituationAudioDeviceType preferred_type, uint32_t min_channels_out, uint32_t min_channels_in) {
@@ -3346,3 +3334,5 @@ SITAPI bool SituationLoadMixerSession(SituationAudioMixer* mixer, const char* fi
     SIT_FREE(bus_data);
     return true;
 }
+
+#endif // SITUATION_IMPL_AUDIO_H
