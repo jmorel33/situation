@@ -99,6 +99,15 @@ static void _SituationUninitReverb(void* state_ptr) {
     SIT_FREE(rev);
 }
 
+/**
+ * @brief [INTERNAL] Allocates and initializes the Schroeder/Freeverb reverb engine state.
+ * @details This function sets up the complex network of comb and all-pass filters required for the reverb effect.
+ *          It scales the delay line lengths based on the provided sample rate to ensure consistent timing
+ *          across different audio configurations (e.g., 44.1kHz vs 48kHz).
+ *
+ * @param sample_rate The sample rate of the audio context (e.g., 48000).
+ * @return A void pointer to the opaque `SituationReverbState` struct, or NULL on allocation failure.
+ */
 static void* _SituationInitReverb(uint32_t sample_rate) {
     SituationReverbState* rev = (SituationReverbState*)SIT_CALLOC(1, sizeof(SituationReverbState));
     if (!rev) return NULL;
