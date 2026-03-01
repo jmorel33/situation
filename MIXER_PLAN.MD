@@ -377,12 +377,12 @@ struct MixerBusData {
 *   [x] Implement `Mute` and `Solo` logic (Solo requires muting all non-soloed tracks).
 
 ### **Phase 4: FX & Metering**
-*   [ ] Implement FX Insert logic (graph surgery).
-*   [ ] Add atomic peak metering to the audio callback / node process.
+*   [x] Implement FX Insert logic (graph surgery).
+*   [x] Add atomic peak metering to the audio callback / node process.
 *   [ ] Create a test with a Reverb node on an Aux bus.
 
 ### **Phase 5: Persistence & Polish**
-*   [ ] Implement `SituationSaveMixerSession` / `SituationLoadMixerSession` with new V2 format.
+*   [x] Implement `SituationSaveMixerSession` / `SituationLoadMixerSession` with new V2 format.
 *   [ ] Optimize thread locking (minimize stalling the audio thread).
 *   [ ] Final integration test with the `Situation` hot-reload system.
 

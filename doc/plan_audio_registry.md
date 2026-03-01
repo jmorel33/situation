@@ -46,34 +46,62 @@ The system builds on miniaudio callbacks, snapshot-and-unlock concurrency, and g
 **Milestone**: Registry populated with Reverb; basic queries work. Estimated Time: 1-2 days.
 
 ## Phase 2: Register All Default Devices (Built-In Population)
-**Goal**: Add the 7 defaults, using existing effects/code as templates. Ensure Mic and Tone Gen integrate seamlessly.
+**Goal**: Add the 7 defaults, using existing effects/code as templates. Ensure Mic and Tone Gen integrate seamlessly. Detailed API integration required.
 
 **Actionables**:
+
 - [ ] **Register Existing Effects (Delay, Filter)**:
-   - Delay: name="Delay", category=EFFECT, ins=2, outs=2, controls: time (float 0.01-2.0, def 0.5), feedback (0-1, def 0.3), wet_mix (0-1, def 0.5).
-   - Filter: name="Filter", category=EFFECT, ins=2, outs=2, controls: cutoff (float 20-20000, def 1000), resonance (0-10, def 1.0), type (int 0-2 for low/high/band, def 0).
+   - **Delay**:
+     - **Metadata**: name="Delay", category=EFFECT, ins=2, outs=2.
+     - **Controls**: `time` (0.01-2.0, def 0.5), `feedback` (0-1.0, def 0.3), `wet_mix` (0-1.0, def 0.5).
+     - **Implementation Details**: Uses `ma_delay` internally. Must allocate `ma_delay` and wrap in `SituationNode`. State updates (`feedback`, `wet_mix`) mapped to `ma_delay_set_decay`, `ma_delay_set_wet`. Re-initialization required if `time` changes dynamically.
+   - **Filter**:
+     - **Metadata**: name="Filter", category=EFFECT, ins=2, outs=2.
+     - **Controls**: `cutoff` (20-20000, def 1000), `resonance` (0.1-10.0, def 1.0), `type` (0-2: lowpass, highpass, bandpass, def 0).
+     - **Implementation Details**: Uses miniaudio's biquad nodes (`ma_biquad_node`). Map `type` directly to miniaudio biquad configuration formulas.
 
 - [ ] **Register Sound Source**:
-   - name="SoundSource", category=SOURCE, ins=0 (no audio in), outs=2, controls: volume (float 0-1, def 1.0), pitch (0.5-2.0, def 1.0). Ties to existing `SituationLoadSound...` – node data holds sound handle.
+   - **Metadata**: name="SoundSource", category=SOURCE, ins=0, outs=2.
+   - **Controls**: `volume` (0-2.0, def 1.0), `pitch` (0.5-2.0, def 1.0), `play_state` (0-1: stop/play).
+   - **Implementation Details**: Wrap existing `SituationSound` / `ma_sound` handles. Node processing pulls samples via `ma_sound_read_pcm_frames`.
 
 - [ ] **Register Mic Capture**:
-   - name="MicCapture", category=CAPTURE, ins=0, outs=2 (or device channels), controls: gain (float 0-2, def 1.0), format (int for sample rate/channels). Uses existing `SituationStartAudioCaptureEx()` – node init starts capture, data ptr to ring buffer.
+   - **Metadata**: name="MicCapture", category=CAPTURE, ins=0, outs=2.
+   - **Controls**: `gain` (0-2.0, def 1.0).
+   - **Implementation Details**: Tied to `SituationStartAudioCaptureEx`. The node pulls frames from the capture device's lock-free ring buffer (e.g., `rb_capture`). If capture is inactive, output silence.
 
 - [ ] **Implement and Register Tone Generator** (New Synth):
-   - name="ToneGenerator", category=SOURCE, ins=0 (or 1 for freq mod), outs=2.
-   - Controls: frequency (float 20-20000, def 440), waveform (int 0-3: sine/square/tri/saw, def 0), amplitude (0-1, def 0.5), trigger (bool/pulse).
-   - **Implementation**: Maintain phase accumulator per channel. Basic anti-aliasing not required for V1 (or simple oversampling/PolyBLEP if time permits). Support phase reset on trigger.
+   - **Metadata**: name="ToneGenerator", category=SOURCE, ins=1 (Freq Mod), outs=2.
+   - **Controls**: `frequency` (20-20000, def 440), `waveform` (0-3: sine, square, tri, saw, def 0), `amplitude` (0-1.0, def 0.5), `trigger` (bool 0/1).
+   - **State Struct**:
+     ```c
+     typedef struct {
+         float phase;
+         float phase_increment;
+         uint32_t sample_rate;
+     } SituationToneGenState;
+     ```
+   - **Implementation Details**: Provide per-sample DSP loop calculating oscillators. Input port 0 modulates frequency. Handle phase reset if `trigger` control transitions from 0 to 1.
 
 - [ ] **Implement and Register LFO** (Modulator):
-   - name="LFO", category=MODULATOR, ins=0, outs=1 (Control Signal).
-   - Controls: frequency (0.1-20Hz), waveform (sine/square/tri), depth (0-1).
-   - Output: Generates control signal for parameter modulation.
+   - **Metadata**: name="LFO", category=MODULATOR, ins=0, outs=1 (Control Signal).
+   - **Controls**: `frequency` (0.1-20.0, def 1.0), `waveform` (0-3: sine, square, tri, saw, def 0), `depth` (0-1.0, def 1.0).
+   - **State Struct**:
+     ```c
+     typedef struct {
+         float phase;
+         float phase_increment;
+     } SituationLFOState;
+     ```
+   - **Implementation Details**: Outputs a single-channel control signal (floating point buffer) in its `ProcessFunc` instead of audio. Range [-1.0, 1.0] scaled by `depth`.
 
-- [ ] **Init Hook**: In `SituationInitAudio()`, register all 7 defaults. Add debug log: Iterate registry, print each device's name/ins/outs.
+- [ ] **Init Hook**:
+   - In `SituationInitAudio()`, explicitly register all 7 defaults (Reverb, Delay, Filter, SoundSource, MicCapture, ToneGenerator, LFO) via `SituationRegisterDeviceType`.
+   - Add debug iteration macro to print registry manifest on startup.
 
-**Risks / Dependencies**: Tone Gen DSP needs to be efficient. Mic Capture depends on stable device init in `miniaudio`.
+**Risks / Dependencies**: Tone Gen DSP needs efficiency. `ma_delay` runtime length changes may require buffering strategies.
 
-**Milestone**: All 7 devices registered at startup; metadata queryable. Existing effects unchanged but now metadata-wrapped. Estimated Time: 3 days.
+**Milestone**: All 7 devices registered at startup; metadata fully queryable. Structural definitions clear for phase 3 patching. Estimated Time: 3 days.
 
 ## Phase 3: Node Creation and Patching API (Graph Building)
 **Goal**: Allow instantiating/patching nodes from registry only. Demonstrate full chain with examples (e.g., Source → Reverb → Delay).
