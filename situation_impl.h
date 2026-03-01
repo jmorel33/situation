@@ -12651,7 +12651,7 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
     uint32_t target_h = sit_gs.main_window_height;
     if (info->display_id == -1) {
         // Target is main window swapchain
-        uint32_t current_image_index = sit_render.vk.acquired_image_indices[sit_gs.current_frame];
+        uint32_t current_image_index = sit_render.vk.acquired_image_indices[sit_render.vk.current_frame_index];
         target_framebuffer = sit_render.vk.main_window_framebuffers[current_image_index];
     } else if (info->display_id >= 0 && info->display_id < SITUATION_MAX_VIRTUAL_DISPLAYS) {
         // Target is a Virtual Display
