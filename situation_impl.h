@@ -789,10 +789,10 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
     key.bits.target_type = is_main_window ? 0 : 1;
     key.bits.color_load_op = info->color_attachment.loadOp;
     key.bits.depth_load_op = info->depth_attachment.loadOp;
-    key.bits.stencil_load_op = SIT_LOAD_OP_DONT_CARE; // TODO: handle stencil appropriately
+    key.bits.stencil_load_op = info->stencil_attachment.loadOp;
     key.bits.color_store_op = info->color_attachment.storeOp;
     key.bits.depth_store_op = info->depth_attachment.storeOp;
-    key.bits.stencil_store_op = SIT_STORE_OP_DONT_CARE; // TODO: handle stencil appropriately
+    key.bits.stencil_store_op = info->stencil_attachment.storeOp;
     return key.key;
 }
 
@@ -10638,6 +10638,150 @@ if (_SituationVulkanCreateImage(sit_render.vk.swapchain_extent.width, sit_render
  *
  * @see _SituationInitVulkan(), _SituationVulkanRecreateSwapchain(), _SituationVulkanCleanupSwapchain(), vkCreateFramebuffer()
  */
+
+static VkRenderPass _SituationVulkanGetOrCreateRenderPass(_SituationVulkanState* vk_state, const SituationRenderPassInfo* info) {
+    bool is_main_window = (info->display_id == -1);
+    uint32_t key = _SituationHashRenderPassKey(info, is_main_window);
+
+    // 1. Check cache
+    for (uint32_t i = 0; i < vk_state->render_pass_cache_count; ++i) {
+        if (vk_state->render_pass_cache[i].key == key) {
+            return vk_state->render_pass_cache[i].handle;
+        }
+    }
+
+    // 2. Cache miss, create new RenderPass
+    VkAttachmentDescription attachments[3] = {0};
+    uint32_t attachment_count = 0;
+
+    // --- Color Attachment ---
+    attachments[0].format = is_main_window ? vk_state->swapchain_image_format : VK_FORMAT_R8G8B8A8_UNORM;
+    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT; // MSAA not explicitly handled in this snippet yet
+
+    // Color Load Op
+    if (info->color_attachment.loadOp == SIT_LOAD_OP_CLEAR || info->color_attachment.loadOp == SIT_LOAD_OP_DONT_CARE) {
+        attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    } else { // SIT_LOAD_OP_LOAD
+        attachments[0].initialLayout = is_main_window ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+
+    // Mapping our simple load ops to Vulkan
+    attachments[0].loadOp = (info->color_attachment.loadOp == SIT_LOAD_OP_CLEAR) ? VK_ATTACHMENT_LOAD_OP_CLEAR :
+                            (info->color_attachment.loadOp == SIT_LOAD_OP_LOAD)  ? VK_ATTACHMENT_LOAD_OP_LOAD :
+                                                                                   VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+
+    attachments[0].storeOp = (info->color_attachment.storeOp == SIT_STORE_OP_STORE) ? VK_ATTACHMENT_STORE_OP_STORE :
+                                                                                      VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+    // Final layout
+    attachments[0].finalLayout = is_main_window ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkAttachmentReference color_attachment_ref = {0};
+    color_attachment_ref.attachment = 0;
+    color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachment_count++;
+
+    // --- Depth/Stencil Attachment ---
+    VkAttachmentReference depth_attachment_ref = {0};
+    bool has_depth = true; // Typically we assume depth exists, or we could check if display_id has depth. For now, we assume all render passes have a depth attachment.
+
+    if (has_depth) {
+        attachments[1].format = vk_state->depth_format;
+        attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+
+        // Depth Load Op
+        if (info->depth_attachment.loadOp == SIT_LOAD_OP_CLEAR || info->depth_attachment.loadOp == SIT_LOAD_OP_DONT_CARE) {
+            attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        } else { // SIT_LOAD_OP_LOAD
+            attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        }
+
+        attachments[1].loadOp = (info->depth_attachment.loadOp == SIT_LOAD_OP_CLEAR) ? VK_ATTACHMENT_LOAD_OP_CLEAR :
+                                (info->depth_attachment.loadOp == SIT_LOAD_OP_LOAD)  ? VK_ATTACHMENT_LOAD_OP_LOAD :
+                                                                                       VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+
+        attachments[1].storeOp = (info->depth_attachment.storeOp == SIT_STORE_OP_STORE) ? VK_ATTACHMENT_STORE_OP_STORE :
+                                                                                          VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+        // Stencil Load Op
+        attachments[1].stencilLoadOp = (info->stencil_attachment.loadOp == SIT_LOAD_OP_CLEAR) ? VK_ATTACHMENT_LOAD_OP_CLEAR :
+                                       (info->stencil_attachment.loadOp == SIT_LOAD_OP_LOAD)  ? VK_ATTACHMENT_LOAD_OP_LOAD :
+                                                                                                VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+
+        attachments[1].stencilStoreOp = (info->stencil_attachment.storeOp == SIT_STORE_OP_STORE) ? VK_ATTACHMENT_STORE_OP_STORE :
+                                                                                                   VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+        attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        depth_attachment_ref.attachment = 1;
+        depth_attachment_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attachment_count++;
+    }
+
+    // --- Subpass ---
+    VkSubpassDescription subpass = {0};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color_attachment_ref;
+    if (has_depth) {
+        subpass.pDepthStencilAttachment = &depth_attachment_ref;
+    }
+
+    // --- Subpass Dependencies ---
+    VkSubpassDependency dependencies[2] = {0};
+    uint32_t dependency_count = 0;
+
+    // External to Subpass 0 (Color)
+    dependencies[dependency_count].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[dependency_count].dstSubpass = 0;
+    dependencies[dependency_count].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[dependency_count].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[dependency_count].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[dependency_count].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency_count++;
+
+    // External to Subpass 0 (Depth/Stencil)
+    if (has_depth) {
+        dependencies[dependency_count].srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[dependency_count].dstSubpass = 0;
+        dependencies[dependency_count].srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dependencies[dependency_count].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dependencies[dependency_count].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dependencies[dependency_count].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dependency_count++;
+    }
+
+    VkRenderPassCreateInfo render_pass_info = {0};
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_info.attachmentCount = attachment_count;
+    render_pass_info.pAttachments = attachments;
+    render_pass_info.subpassCount = 1;
+    render_pass_info.pSubpasses = &subpass;
+    render_pass_info.dependencyCount = dependency_count;
+    render_pass_info.pDependencies = dependencies;
+
+    VkRenderPass new_render_pass = VK_NULL_HANDLE;
+    VkResult res = vkCreateRenderPass(vk_state->device, &render_pass_info, NULL, &new_render_pass);
+    if (res != VK_SUCCESS) {
+        fprintf(stderr, "ERROR: vkCreateRenderPass failed for dynamic cache! (Result: %d)\n", res);
+        return VK_NULL_HANDLE;
+    }
+
+    // 3. Store in cache
+    if (vk_state->render_pass_cache_count < 32) {
+        vk_state->render_pass_cache[vk_state->render_pass_cache_count].key = key;
+        vk_state->render_pass_cache[vk_state->render_pass_cache_count].handle = new_render_pass;
+        vk_state->render_pass_cache_count++;
+    } else {
+        fprintf(stderr, "WARNING: Render Pass Cache full! (32 max). Returning un-cached pass, likely leaking.\n");
+    }
+
+    return new_render_pass;
+}
+
 static SituationError _SituationVulkanCreateFramebuffers(void) {
 
     #ifdef SITUATION_VULKAN_DEBUG
@@ -11046,6 +11190,14 @@ static void _SituationVulkanCleanupSwapchain(void) {
         // Depending on policy, you might choose to return or assert here if the device is in a bad state.
     }
     sit_render.vk.swapchain_valid = false;
+
+    // --- Render Pass Cache Cleanup ---
+    for (uint32_t i = 0; i < sit_render.vk.render_pass_cache_count; ++i) {
+        if (sit_render.vk.render_pass_cache[i].handle != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(sit_render.vk.device, sit_render.vk.render_pass_cache[i].handle, NULL);
+        }
+    }
+    sit_render.vk.render_pass_cache_count = 0;
 
     // --- 3. Destroy Depth Resources ---
     // These are specific to the swapchain's extent/format.
