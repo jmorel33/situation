@@ -2300,7 +2300,7 @@ SITAPI VkRenderPass SituationGetMainWindowRenderPass(void);                     
 #endif
 
 // --- [DEPRECATED] Use SituationCmdBindDescriptorSet() or SituationCmdBindTextureSet() instead. ---
-SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cmd, int display_id, ColorRGBA clear_color);              // [DEPRECATED] Begins a render pass on a target (-1 for main window), clearing it.
+SITAPI __attribute__((deprecated("Use SituationCmdBeginRenderPass instead"))) SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cmd, int display_id, ColorRGBA clear_color);              // [DEPRECATED] Begins a render pass on a target (-1 for main window), clearing it.
 SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd);                                                                // [DEPRECATED] End the current render pass.
 SITAPI SituationError SituationCmdBindUniformBuffer(SituationCommandBuffer cmd, uint32_t contract_id, SituationBuffer buffer);          // [DEPRECATED] [Core] Bind a Uniform Buffer Object (UBO) to a shader binding point.
 SITAPI SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);                // [DEPRECATED] [Core] Bind a texture and sampler to a shader binding point.
