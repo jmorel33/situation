@@ -55,7 +55,7 @@ Vulkan requires knowing the `initialLayout` of an image. This enforces a logical
 **Actionables:**
 - [ ] Implement layout transition logic during `VkAttachmentDescription` setup.
 - [ ] **Rule 1:** If `loadOp == SIT_LOAD_OP_CLEAR` or `SIT_LOAD_OP_DONT_CARE`, set `initialLayout = VK_IMAGE_LAYOUT_UNDEFINED`.
-- [ ] **Rule 2:** If `loadOp == SIT_LOAD_OP_LOAD`, set `initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL` (or `VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL` for depth). Also handle cases where previous passes ended in `PRESENT_SRC_KHR`.
+- [ ] **Rule 2:** If `loadOp == SIT_LOAD_OP_LOAD`, `initialLayout` must be `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR` for the main window, and `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` for Virtual Displays. (Depth remains `VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL`).
 - [ ] **Rule 3:** Always set `finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL` (or `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR` if it is the absolute final pass before presentation for the main window).
 
 ### 2.3 Lifecycle Hooks (Init, Resize, Shutdown)
@@ -64,6 +64,7 @@ Render Passes are Vulkan objects that must be explicitly destroyed. Leaking them
 **Actionables:**
 - [ ] **Shutdown:** Update `_SituationCleanupVulkan` to iterate through `render_pass_cache` and call `vkDestroyRenderPass` on all cached objects.
 - [ ] **Resize:** Update `_SituationVulkanRecreateSwapchain`. If the window resizes, the swapchain format *might* change. The safest and most robust route is to iterate, destroy all cached Render Passes, and reset `render_pass_cache_count = 0`. They will lazily recreate on the next frame.
+- [ ] **Pipeline Compatibility:** Ensure `VkPipeline` creation continues to use the persistent template render passes (`sit_render.vk.main_window_render_pass` and `vd->vk.render_pass`), NOT the dynamically cached ones, so pipelines survive cache flushes.
 
 ***
 
