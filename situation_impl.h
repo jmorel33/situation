@@ -763,6 +763,41 @@ typedef struct {
 } _SituationStagingBuffer;
 
 /**
+ * @brief Deterministic key for the Vulkan Render Pass cache.
+ */
+typedef union {
+    uint32_t key;
+    struct {
+        uint32_t target_type      : 1;
+        uint32_t color_load_op    : 2;
+        uint32_t depth_load_op    : 2;
+        uint32_t stencil_load_op  : 2;
+        uint32_t color_store_op   : 2;
+        uint32_t depth_store_op   : 2;
+        uint32_t stencil_store_op : 2;
+        uint32_t _padding         : 19;
+    } bits;
+} _SituationRenderPassKey;
+
+typedef struct {
+    uint32_t key;
+    VkRenderPass handle;
+} _SituationCachedRenderPass;
+
+static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo* info, bool is_main_window) {
+    _SituationRenderPassKey key = {0};
+    key.bits.target_type = is_main_window ? 0 : 1;
+    key.bits.color_load_op = info->color_attachment.loadOp;
+    key.bits.depth_load_op = info->depth_attachment.loadOp;
+    key.bits.stencil_load_op = SIT_LOAD_OP_DONT_CARE; // TODO: handle stencil appropriately
+    key.bits.color_store_op = info->color_attachment.storeOp;
+    key.bits.depth_store_op = info->depth_attachment.storeOp;
+    key.bits.stencil_store_op = SIT_STORE_OP_DONT_CARE; // TODO: handle stencil appropriately
+    return key.key;
+}
+
+
+/**
  * @brief [INTERNAL] Vulkan backend state container.
  * @details Holds the core Vulkan handles (Instance, Device, Queue) and the memory allocator (VMA).
  *          It also manages the swapchain, per-frame synchronization objects (Semaphores, Fences),
@@ -914,6 +949,10 @@ typedef struct {
     uint32_t acquired_image_indices[SITUATION_MAX_FRAMES_IN_FLIGHT]; // Image index for each frame slot
 
     uint64_t staging_buffer_size; // Configured staging buffer size
+
+    // Render Pass Cache
+    _SituationCachedRenderPass render_pass_cache[32];
+    uint32_t render_pass_cache_count;
 
 } _SituationVulkanState;
 
