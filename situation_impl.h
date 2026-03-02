@@ -14250,42 +14250,11 @@ SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cm
     return SituationCmdBeginRenderPass(cmd, &info);
 }
 /**
+ * @brief Ends the current render pass.
+ * @note Deprecated in favor of SituationCmdEndRenderPass.
+ */
 SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
-    // --- 1. Input Validation ---
-    if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "CmdEndRender");
-        return SITUATION_ERROR_NOT_INITIALIZED;
-    }
-
-#if defined(SITUATION_USE_OPENGL)
-    {
-        SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-        _SitGLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS);
-        return SITUATION_SUCCESS;
-    }
-
-#elif defined(SITUATION_USE_VULKAN)
-    {
-        // --- 2. Vulkan Input Validation ---
-        if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for ending render pass.");
-            return SITUATION_ERROR_INVALID_PARAM;
-        }
-        VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-
-        // --- 3. Vulkan End Render Pass ---
-        // Formally end the VkRenderPass begun by SituationCmdBeginRenderToDisplay.
-        vkCmdEndRenderPass(vk_cmd);
-
-        // Note: vkCmdEndRenderPass itself doesn't return VkResult.
-        // Errors would be validation layer reports or occur during command buffer submission.
-
-        return SITUATION_SUCCESS;
-    }
-#endif
-
-    // Should not be reached, but included for completeness.
-    return SITUATION_ERROR_NOT_IMPLEMENTED;
+    return SituationCmdEndRenderPass(cmd);
 }
 
 /**
