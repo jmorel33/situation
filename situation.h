@@ -15,7 +15,11 @@
 *   Users should include this file (situation.h) as before - the split is transparent.
 *
 ***************************************************************************************************/
-
+// --- Version Macros ---
+#define SITUATION_VERSION_MAJOR 2
+#define SITUATION_VERSION_MINOR 3
+#define SITUATION_VERSION_PATCH 62
+#define SITUATION_VERSION_REVISION ""
 #ifndef SITUATION_H
 #define SITUATION_H
 
@@ -28,3 +32,4 @@
 #endif
 
 #endif // SITUATION_H
+
