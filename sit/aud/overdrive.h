@@ -1,6 +1,6 @@
 /***************************************************************************************************
 *
-*   sit/aux/overdrive.h - Ultra-flexible Overdrive Module
+*   sit/aud/overdrive.h - Ultra-flexible Overdrive Module
 *   (c) 2025-2026 Jacques Morel
 *   MIT Licensed
 *

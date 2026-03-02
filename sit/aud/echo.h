@@ -1,6 +1,6 @@
 /***************************************************************************************************
 *
-*   sit/aux/echo.h - Echo/Delay Module
+*   sit/aud/echo.h - Echo/Delay Module
 *   (c) 2025-2026 Jacques Morel
 *   MIT Licensed
 *
