@@ -336,7 +336,7 @@ graph TD
         L4a["Wait for Fence"]
         L4b["Acquire Next Image"]
         L4c["vkBeginCommandBuffer"]
-        L5["Record Commands"]
+        L5["SituationCmdBeginRenderPass\n(O(1) Render Pass Cache)"]
 
         subgraph Bindless ["Bindless Tech"]
             B1["Push Constants"]

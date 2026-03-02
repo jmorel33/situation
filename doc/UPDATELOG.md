@@ -1,3 +1,31 @@
+## [v2.3.62 "Render Pass Cache"] - 2026-03-11
+
+### Description
+
+This release introduces a unified Render Pass caching mechanism for the Vulkan backend, aiming to optimize draw call submissions and improve API parity between Vulkan and OpenGL. The core structures and systems as described in the `RENDER_PASS_CACHE_PLAN.md` have been fully integrated, alongside legacy API deprecations.
+
+### New Features & Optimizations
+
+- **Vulkan Render Pass Cache (Phase 1 & 2):**
+  - Implemented `_SituationVulkanGetOrCreateRenderPass` to dynamically cache and reuse `VkRenderPass` handles based on attachment layout, formats, and load/store operations.
+  - Added a deterministic 32-bit bitfield (`_SituationRenderPassKey`) to ensure O(1) cache lookups.
+  - Resolved the `initialLayout` Vulkan requirements (handling `VK_IMAGE_LAYOUT_UNDEFINED`, `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`, and `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` states) based on the specified `SituationLoadOp`.
+  - Added proper lifecycle hooks to destroy the cache during swapchain resizes and full shutdown to prevent memory leaks.
+
+- **Unified Command Routing (Phase 3 & 4):**
+  - Updated `SituationCmdBeginRenderPass` to construct render passes via the new caching system, fully supporting custom load/store configurations in Vulkan.
+  - Modified OpenGL `SIT_OP_BEGIN_RENDER_PASS` packets to directly respect `SIT_LOAD_OP_LOAD`, ensuring `glClear` is skipped correctly on all respective buffers.
+  - Re-implemented `SituationCmdBeginRenderToDisplay` as a backward-compatible wrapper that translates hardcoded parameters into a fully compliant `SituationCmdBeginRenderPass` request with `SIT_LOAD_OP_CLEAR`.
+  - Deprecated `SituationCmdBeginRenderToDisplay` and `SituationCmdEndRender` via compiler macros in favor of the new verbose APIs.
+
+- **Edge Cases & Subpass Dependencies (Phase 5):**
+  - Integrated `VkSubpassDependency` injections for proper GPU memory barriers to prevent read/write hazards across sequential passes.
+  - Enhanced cache keys and cache generation logic to properly support explicit operations on the Stencil buffer.
+
+### Known Issues & Ongoing Work
+
+- **Virtual Display Compositing Regression:** Although Phase 4 specifies migrating Virtual Display compositing logic (`SituationRenderVirtualDisplays`) to use `SituationCmdBeginRenderPass` with `SIT_LOAD_OP_LOAD` for advanced blending, the current implementation still relies heavily on explicit backend-specific commands (raw `vkCmdBeginRenderPass`, `vkCmdCopyImage`, and `glDrawArrays` calls). The final blit operations violate the unified standard and bypass the new cache mechanisms. This requires an immediate refactoring pass in a subsequent update to achieve true API unification.
+
 ## [v2.3.61 "Code Hygiene"] - 2026-03-10
 
 ### Description

@@ -160,7 +160,7 @@ All 11 critical bugs in the Vulkan text rendering pipeline have been fixed:
 1. **Internal Renderer Return Value Check** - Fixed treating SUCCESS (0) as failure
 2. **Texture Generation** - Textures now properly initialized with generation=1
 3. **Descriptor Set Binding** - UBO descriptor set now bound in text pipeline
-4. **Projection Matrix** - Matrix now updated in `SituationCmdBeginRenderToDisplay`
+4. **Projection Matrix** - Matrix now updated in `SituationCmdBeginRenderPass`
 5. **UBO Memory Type** - Changed from GPU_ONLY to CPU_TO_GPU for dynamic updates
 6. **Vertex Attribute Offset** - Fixed texcoord offset from 0 to 8 bytes
 7. **Backface Culling** - Disabled culling for text quads
@@ -1102,9 +1102,9 @@ if (required_groups_x > max_x) {
 }
 
 // Safe dispatch
-SituationCmdDispatch(cmd, 
-    min(required_groups_x, max_x), 
-    1, 
+SituationCmdDispatch(cmd,
+    min(required_groups_x, max_x),
+    1,
     1);
 ```
 
@@ -1326,7 +1326,7 @@ void SituationUpdate(void);  // DEPRECATED
 ```c
 while (!SituationShouldClose()) {
     SituationUpdate();  // DEPRECATED
-    
+
     // Game logic
     UpdateGame();
     RenderGame();
@@ -1338,7 +1338,7 @@ while (!SituationShouldClose()) {
 while (!SituationShouldClose()) {
     SituationPollInputEvents();  // Process input events
     SituationUpdateTimers();     // Update oscillators and timers
-    
+
     // Game logic
     UpdateGame();
     RenderGame();
@@ -1509,12 +1509,12 @@ if (SituationGetDriveInfo('C', &total_bytes, &free_bytes, volume_name, sizeof(vo
     float total_gb = total_bytes / (1024.0f * 1024.0f * 1024.0f);
     float free_gb = free_bytes / (1024.0f * 1024.0f * 1024.0f);
     float used_percent = ((total_bytes - free_bytes) / (float)total_bytes) * 100.0f;
-    
+
     printf("Drive C: [%s]\n", volume_name);
     printf("Total: %.2f GB\n", total_gb);
     printf("Free: %.2f GB\n", free_gb);
     printf("Used: %.1f%%\n", used_percent);
-    
+
     // Warn if low on space
     if (free_gb < 10.0f) {
         printf("WARNING: Low disk space!\n");
@@ -2337,11 +2337,11 @@ bool SituationIsFileDropped(void);
 if (SituationIsFileDropped()) {
     int count;
     char** files = SituationLoadDroppedFiles(&count);
-    
+
     printf("Dropped %d file(s):\n", count);
     for (int i = 0; i < count; i++) {
         printf("  - %s\n", files[i]);
-        
+
         // Load based on extension
         if (strstr(files[i], ".png") || strstr(files[i], ".jpg")) {
             LoadTexture(files[i]);
@@ -2351,7 +2351,7 @@ if (SituationIsFileDropped()) {
             LoadModel(files[i]);
         }
     }
-    
+
     SituationUnloadDroppedFiles(files, count);
 }
 
@@ -2886,10 +2886,10 @@ bool SituationIsWindowResized(void);
 if (SituationIsWindowResized()) {
     int width = SituationGetRenderWidth();
     int height = SituationGetRenderHeight();
-    
+
     // Recreate render targets
     RecreateFramebuffers(width, height);
-    
+
     // Update camera aspect ratio
     camera.aspect = (float)width / (float)height;
     UpdateProjectionMatrix(&camera);
@@ -2969,7 +2969,7 @@ for (int i = 0; i < monitor_count; i++) {
     int width = SituationGetMonitorWidth(i);
     int height = SituationGetMonitorHeight(i);
     int refresh = SituationGetMonitorRefreshRate(i);
-    
+
     printf("Monitor %d: %dx%d @ %.0f,%.0f (%dHz)\n",
         i, width, height, pos[0], pos[1], refresh);
 }
@@ -3088,13 +3088,13 @@ if (monitor_count > 1) {
     vec2 secondary_pos = SituationGetMonitorPosition(1);
     int secondary_width = SituationGetMonitorWidth(1);
     int secondary_height = SituationGetMonitorHeight(1);
-    
+
     // Center window on secondary monitor
     int window_width = 1280;
     int window_height = 720;
     int x = (int)secondary_pos[0] + (secondary_width - window_width) / 2;
     int y = (int)secondary_pos[1] + (secondary_height - window_height) / 2;
-    
+
     SituationSetWindowPosition(x, y);
 }
 ```
@@ -3133,7 +3133,7 @@ float height_inches = physical_height_mm / 25.4f;
 float dpi_x = pixel_width / width_inches;
 float dpi_y = pixel_height / height_inches;
 
-printf("Monitor: %.1f\" diagonal\n", 
+printf("Monitor: %.1f\" diagonal\n",
     sqrtf(width_inches * width_inches + height_inches * height_inches));
 printf("DPI: %.0f x %.0f\n", dpi_x, dpi_y);
 
@@ -3257,11 +3257,11 @@ SituationError SituationApplyCurrentProfileWindowState(void);
 **Usage Example:**
 ```c
 // Set up different profiles for focused/unfocused states
-SituationWindowStateFlags focused_flags = 
-    SITUATION_FLAG_VSYNC_HINT | 
+SituationWindowStateFlags focused_flags =
+    SITUATION_FLAG_VSYNC_HINT |
     SITUATION_FLAG_WINDOW_TOPMOST;
 
-SituationWindowStateFlags unfocused_flags = 
+SituationWindowStateFlags unfocused_flags =
     SITUATION_FLAG_VSYNC_HINT;  // Remove topmost when unfocused
 
 SituationSetWindowStateProfiles(focused_flags, unfocused_flags);
@@ -3309,7 +3309,7 @@ if (SituationIsKeyPressed(SIT_KEY_F2)) {
 // Toggle multiple flags at once
 if (SituationIsKeyPressed(SIT_KEY_F3)) {
     SituationToggleWindowStateFlags(
-        SITUATION_FLAG_WINDOW_RESIZABLE | 
+        SITUATION_FLAG_WINDOW_RESIZABLE |
         SITUATION_FLAG_WINDOW_UNDECORATED
     );
 }
@@ -3382,19 +3382,19 @@ SituationError SituationSetWindowStateProfiles(
 **Usage Example:**
 ```c
 // Keep window on top only when focused
-SituationWindowStateFlags focused = 
-    SITUATION_FLAG_VSYNC_HINT | 
+SituationWindowStateFlags focused =
+    SITUATION_FLAG_VSYNC_HINT |
     SITUATION_FLAG_WINDOW_TOPMOST |
     SITUATION_FLAG_WINDOW_RESIZABLE;
 
-SituationWindowStateFlags unfocused = 
+SituationWindowStateFlags unfocused =
     SITUATION_FLAG_VSYNC_HINT |
     SITUATION_FLAG_WINDOW_RESIZABLE;  // Remove topmost
 
 SituationSetWindowStateProfiles(focused, unfocused);
 
 // Disable VSync when unfocused to save power
-SituationWindowStateFlags focused_vsync = 
+SituationWindowStateFlags focused_vsync =
     SITUATION_FLAG_VSYNC_HINT;
 
 SituationWindowStateFlags unfocused_no_vsync = 0;
@@ -3402,11 +3402,11 @@ SituationWindowStateFlags unfocused_no_vsync = 0;
 SituationSetWindowStateProfiles(focused_vsync, unfocused_no_vsync);
 
 // Borderless fullscreen when focused, windowed when unfocused
-SituationWindowStateFlags focused_borderless = 
+SituationWindowStateFlags focused_borderless =
     SITUATION_FLAG_FULLSCREEN_MODE |
     SITUATION_FLAG_WINDOW_UNDECORATED;
 
-SituationWindowStateFlags unfocused_windowed = 
+SituationWindowStateFlags unfocused_windowed =
     SITUATION_FLAG_WINDOW_RESIZABLE;
 
 SituationSetWindowStateProfiles(focused_borderless, unfocused_windowed);
@@ -3502,10 +3502,10 @@ SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 // Replay every frame without re-recording
 while (!SituationShouldClose()) {
     SituationBeginFrame();
-    
+
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SituationReplayRenderList(cmd, ui_list);
-    
+
     SituationEndFrame();
 }
 
@@ -3608,16 +3608,16 @@ SituationRenderList* background = SituationCreateRenderList(200);
 // Main loop
 while (!SituationShouldClose()) {
     SituationBeginFrame();
-    
+
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
-    
+
     // Replay cached background (no CPU overhead)
     SituationReplayRenderList(cmd, background);
-    
+
     // Draw dynamic content normally
     DrawPlayer();
     DrawEnemies();
-    
+
     SituationEndFrame();
 }
 
@@ -3683,7 +3683,7 @@ void SituationExportRenderHistogram(const char* filename);
         RenderScene();
         SituationEndFrame();
     }
-    
+
     // Export profiling data
     SituationExportRenderHistogram("render_profile.csv");
     printf("Profiling data exported\n");
@@ -3862,14 +3862,14 @@ SituationImage cpu_image = SituationLoadImageFromTexture(render_target);
 if (SituationIsImageValid(&cpu_image)) {
     // Process on CPU
     ApplyCustomFilter(&cpu_image);
-    
+
     // Save to disk
     SituationExportImage(cpu_image, "processed.png");
-    
+
     // Upload back to GPU
     SituationTexture new_texture;
     SituationCreateTexture(cpu_image, false, &new_texture);
-    
+
     SituationUnloadImage(cpu_image);
 }
 
@@ -3959,11 +3959,11 @@ if (SituationImageCopy(original, &backup) == SITUATION_SUCCESS) {
     // Modify the original without affecting the backup
     SituationImageFlipVertical(&original);
     SituationImageAdjustHSV(&original, 0.1f, 1.2f, 1.0f);
-    
+
     // Save both versions
     SituationSaveImage(original, "photo_modified.png");
     SituationSaveImage(backup, "photo_original.png");
-    
+
     SituationUnloadImage(backup);
 }
 SituationUnloadImage(original);
@@ -4005,11 +4005,11 @@ if (SituationCreateImage(256, 256, 4, &image) == SITUATION_SUCCESS) {
             image.data[index + 3] = 255;      // A
         }
     }
-    
+
     // Upload to GPU
     SituationTexture texture;
     SituationCreateTexture(image, false, &texture);
-    
+
     SituationUnloadImage(image);
 }
 
@@ -4087,7 +4087,7 @@ SituationImageClearBackground(&canvas, (ColorRGBA){30, 60, 120, 255});
 
 // Now draw on top of the blue background
 SituationImage logo = SituationLoadImage("logo.png");
-SituationImageDraw(&canvas, logo, 
+SituationImageDraw(&canvas, logo,
     (Rectangle){0, 0, logo.width, logo.height},
     (Rectangle){100, 100, 200, 200},
     (ColorRGBA){255, 255, 255, 255});
@@ -4255,10 +4255,10 @@ Loads a raw bitmap font from memory for pixel-perfect retro aesthetics. Unlike T
 
 ```c
 SituationError SituationLoadBitmapFontFromMemory(
-    const unsigned char* data, 
-    int char_width, 
-    int char_height, 
-    int num_chars, 
+    const unsigned char* data,
+    int char_width,
+    int char_height,
+    int num_chars,
     SituationFont* out_font
 );
 ```
@@ -4312,7 +4312,7 @@ SituationFont font;
 if (SituationLoadFont("fonts/arial.ttf", &font) == SITUATION_SUCCESS) {
     // Bake atlas at 24px
     SituationBakeFontAtlas(&font, 24.0f);
-    
+
     // Now use the font
     SituationCmdDrawText(cmd, font, "Hello", 100, 100, 24.0f, WHITE);
 }
@@ -4434,7 +4434,7 @@ if (SituationIsImageValid(texture_image)) {
     // Image loaded successfully, create GPU texture
     SituationTexture wall_texture = SituationCreateTextureFromImage(texture_image);
     SituationUnloadImage(texture_image);
-    
+
     // Use the texture...
 } else {
     // Image failed to load, use fallback
@@ -4656,7 +4656,7 @@ SituationFont font;
 if (SituationLoadFont("fonts/arial.ttf", &font) == SITUATION_SUCCESS) {
     // Use the font
     SituationCmdDrawText(cmd, font, "Hello", 100, 100, 24.0f, WHITE);
-    
+
     // Cleanup when done
     SituationUnloadFont(font);
 }
@@ -4745,7 +4745,7 @@ SituationImageClearBackground(&canvas, (ColorRGBA){255, 255, 255, 255});
 SituationFont font = SituationLoadFont("fonts/arial.ttf", 64);
 
 // Draw a red 'A' with black outline
-SituationImageDrawCodepoint(&canvas, font, 'A', 
+SituationImageDrawCodepoint(&canvas, font, 'A',
     (Vector2){50, 50}, 64.0f, 0.0f, 0.0f,
     (ColorRGBA){255, 0, 0, 255},
     (ColorRGBA){0, 0, 0, 255}, 2.0f);
@@ -4815,7 +4815,7 @@ SituationImageDrawTextEx(&thumbnail, bold_font, "The Beginning",
 
 // Draw watermark with semi-transparent text
 SituationImageDrawTextEx(&thumbnail, bold_font, "© 2026 Studio",
-    (Vector2){thumbnail.width - 200, thumbnail.height - 40}, 
+    (Vector2){thumbnail.width - 200, thumbnail.height - 40},
     20.0f, 0.5f, 0.0f, 0.0f,
     (ColorRGBA){255, 255, 255, 128},
     (ColorRGBA){0, 0, 0, 0}, 0.0f);
@@ -5613,9 +5613,13 @@ SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture 
 **Usage Example:**
 ```c
 // Render to texture, then present
-SituationCmdBeginRenderToDisplay(cmd, offscreen_texture);
+SituationRenderPassInfo pass_info = {0};
+pass_info.display_id = offscreen_texture;
+pass_info.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+pass_info.color_attachment.storeOp = SIT_STORE_OP_STORE;
+SituationCmdBeginRenderPass(cmd, &pass_info);
 // ... render scene ...
-SituationCmdEndRender(cmd);
+SituationCmdEndRenderPass(cmd);
 
 // Present the offscreen texture to the window
 SituationCmdPresent(cmd, offscreen_texture);
@@ -6216,7 +6220,7 @@ void SituationDestroyComputePipeline(SituationComputePipeline* pipeline);
 ```c
 // Create pipeline
 SituationComputePipeline blur_pipeline;
-SituationCreateComputePipeline("shaders/blur.comp", 
+SituationCreateComputePipeline("shaders/blur.comp",
     SITUATION_COMPUTE_LAYOUT_STANDARD, &blur_pipeline);
 
 // Use pipeline...
@@ -6317,7 +6321,7 @@ void main() {
 SituationBuffer position_buffer = SituationCreateBuffer(
     particle_count * sizeof(vec4),
     SITUATION_BUFFER_USAGE_STORAGE);
-    
+
 SituationBuffer velocity_buffer = SituationCreateBuffer(
     particle_count * sizeof(vec4),
     SITUATION_BUFFER_USAGE_STORAGE);
@@ -6360,16 +6364,16 @@ layout(binding = 1, rgba8) uniform image2D output_image;
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     vec4 color = imageLoad(input_image, pixel);
-    
+
     // Apply blur or other effect
     vec4 processed = ApplyEffect(color);
-    
+
     imageStore(output_image, pixel, processed);
 }
 */
 
 // Create textures with storage usage
-SituationTexture input_tex = SituationCreateTexture(1920, 1080, 
+SituationTexture input_tex = SituationCreateTexture(1920, 1080,
     SITUATION_PIXEL_FORMAT_RGBA8);
 SituationTexture output_tex = SituationCreateTexture(1920, 1080,
     SITUATION_PIXEL_FORMAT_RGBA8);
@@ -6601,7 +6605,7 @@ SituationError SituationDestroyVirtualDisplay(int* display_id);
 ```c
 // Create temporary virtual display for screenshot
 int screenshot_display;
-SituationCreateVirtualDisplay((Vector2){1920, 1080}, 1.0, 0, 
+SituationCreateVirtualDisplay((Vector2){1920, 1080}, 1.0, 0,
     SITUATION_SCALING_FIT, SITUATION_BLEND_ALPHA, &screenshot_display);
 
 // Render scene to it
@@ -6643,11 +6647,11 @@ void SituationSetVirtualDisplayVisible(int display_id, bool visible);
 ```c
 // Create displays for different game states
 int gameplay_display, menu_display, pause_display;
-SituationCreateVirtualDisplay((Vector2){1920, 1080}, 1.0, 0, 
+SituationCreateVirtualDisplay((Vector2){1920, 1080}, 1.0, 0,
     SITUATION_SCALING_FIT, SITUATION_BLEND_ALPHA, &gameplay_display);
-SituationCreateVirtualDisplay((Vector2){1920, 1080}, 1.0, 5, 
+SituationCreateVirtualDisplay((Vector2){1920, 1080}, 1.0, 5,
     SITUATION_SCALING_FIT, SITUATION_BLEND_ALPHA, &menu_display);
-SituationCreateVirtualDisplay((Vector2){1920, 1080}, 1.0, 10, 
+SituationCreateVirtualDisplay((Vector2){1920, 1080}, 1.0, 10,
     SITUATION_SCALING_FIT, SITUATION_BLEND_ALPHA, &pause_display);
 
 // Game state management
@@ -6862,15 +6866,24 @@ SituationCmdEndRender(cmd);
 **New Code:**
 ```c
 // RECOMMENDED
-SituationRenderPassInfo pass_info = {
-    .target_display_id = -1,  // Main window
-    .clear_color = {0.078f, 0.117f, 0.156f, 1.0f},  // Normalized
-    .color_load_action = SIT_LOAD_ACTION_CLEAR,
-    .color_store_action = SIT_STORE_ACTION_STORE
-};
+SituationRenderPassInfo pass_info = {0};
+pass_info.display_id = -1;  // Main window
+pass_info.color_attachment.clear.color = (ColorRGBA){20, 30, 40, 255};
+pass_info.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+pass_info.color_attachment.storeOp = SIT_STORE_OP_STORE;
+pass_info.depth_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+pass_info.depth_attachment.storeOp = SIT_STORE_OP_DONT_CARE;
+pass_info.depth_attachment.clear.depth = 1.0f;
+
 SituationCmdBeginRenderPass(cmd, &pass_info);
 // ... draw commands ...
 SituationCmdEndRenderPass(cmd);
+
+// **Note on Vulkan O(1) Render Pass Cache**:
+// The Vulkan backend automatically hashes the `loadOp` and `storeOp` configurations into a 32-bit key.
+// It uses this key to perform an O(1) lookup in an internal cache (`render_pass_cache`) to retrieve or
+// generate the correct `VkRenderPass` object dynamically. This completely eliminates the need to manually
+// manage render pass objects for different clear/load configurations.
 ```
 
 **Why Deprecated:**
@@ -6892,7 +6905,7 @@ SituationError SituationCmdEndRender(SituationCommandBuffer cmd);
 **Old Code:**
 ```c
 // DEPRECATED
-SituationCmdBeginRenderToDisplay(cmd, -1, clear_color);
+SituationCmdBeginRenderToDisplay(cmd, -1, clear_color); // DEPRECATED, use SituationCmdBeginRenderPass
 // ... draw commands ...
 SituationCmdEndRender(cmd);
 ```
