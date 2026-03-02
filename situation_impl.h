@@ -14137,19 +14137,62 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
     return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
-    // In the current architecture, SituationCmdBeginRenderToDisplay handles the
-    // standard "Clear and Render" pass setup using the default RenderPass objects.
-    // Supporting LOAD_OP_LOAD would require creating/caching separate VkRenderPass
-    // objects configured with VK_ATTACHMENT_LOAD_OP_LOAD.
-
-    if (info->color_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
-        // Delegate to the existing helper for the standard case
-        return SituationCmdBeginRenderToDisplay(cmd, info->display_id, info->color_attachment.clear.color);
-    } else {
-        // TODO: Implement a Render Pass Cache to support LOAD_OP_LOAD
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Non-clearing render passes (SIT_LOAD_OP_LOAD) are not yet implemented for the Vulkan backend.");
-        return SITUATION_ERROR_NOT_IMPLEMENTED;
+    VkRenderPass rp = _SituationVulkanGetOrCreateRenderPass(&sit_render.vk, info);
+    if (rp == VK_NULL_HANDLE) {
+        return SITUATION_ERROR_VULKAN_RENDERPASS_FAILED;
     }
+
+    VkRenderPassBeginInfo render_pass_info = {0};
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_info.renderPass = rp;
+
+    VkClearValue clear_values[2];
+    clear_values[0].color = (VkClearColorValue){{info->color_attachment.clear.color.r / 255.0f, info->color_attachment.clear.color.g / 255.0f, info->color_attachment.clear.color.b / 255.0f, info->color_attachment.clear.color.a / 255.0f}};
+    clear_values[1].depthStencil = (VkClearDepthStencilValue){info->depth_attachment.clear.depth, info->stencil_attachment.clear.stencil};
+    render_pass_info.clearValueCount = 2;
+    render_pass_info.pClearValues = clear_values;
+
+    if (info->display_id < 0) {
+        render_pass_info.framebuffer = sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
+        render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
+        render_pass_info.renderArea.extent = sit_render.vk.swapchain_extent;
+
+        float target_width = (float)sit_render.vk.swapchain_extent.width;
+        float target_height = (float)sit_render.vk.swapchain_extent.height;
+        ViewDataUBO ubo_data;
+        glm_mat4_identity(ubo_data.view);
+        glm_ortho(0.0f, target_width, target_height, 0.0f, -1.0f, 1.0f, ubo_data.projection);
+        void* mapped_data;
+        vmaMapMemory(sit_render.vk.vma_allocator, sit_render.vk.view_proj_ubo_memory[sit_render.vk.current_frame_index], &mapped_data);
+        memcpy(mapped_data, &ubo_data, sizeof(ViewDataUBO));
+        vmaUnmapMemory(sit_render.vk.vma_allocator, sit_render.vk.view_proj_ubo_memory[sit_render.vk.current_frame_index]);
+    } else {
+        if (info->display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[info->display_id]) {
+            return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
+        }
+        SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[info->display_id];
+        render_pass_info.framebuffer = vd->vk.framebuffer;
+        render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
+        render_pass_info.renderArea.extent = (VkExtent2D){(uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y};
+    }
+
+    vkCmdBeginRenderPass((VkCommandBuffer)cmd, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport = {0};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)render_pass_info.renderArea.extent.width;
+    viewport.height = (float)render_pass_info.renderArea.extent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport((VkCommandBuffer)cmd, 0, 1, &viewport);
+
+    VkRect2D scissor = {0};
+    scissor.offset = (VkOffset2D){0, 0};
+    scissor.extent = render_pass_info.renderArea.extent;
+    vkCmdSetScissor((VkCommandBuffer)cmd, 0, 1, &scissor);
+
+    return SITUATION_SUCCESS;
 #endif
 }
 
@@ -14193,164 +14236,20 @@ SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
  * @param clear_color The color to clear the target with.
  */
 SITAPI SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cmd, int display_id, ColorRGBA clear_color) {
-    if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "CmdBeginRenderToDisplay");
-        return SITUATION_ERROR_NOT_INITIALIZED;
-    }
-
-#if defined(SITUATION_USE_OPENGL)
-    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BEGIN_RENDER_PASS);
-    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
-
-    p->args.begin_pass.display_id = display_id;
-    // Capture resolution for thread safety
-    p->args.begin_pass.target_w = sit_gs.main_window_width;
-    p->args.begin_pass.target_h = sit_gs.main_window_height;
-
-    // Construct info
-    memset(&p->args.begin_pass.info, 0, sizeof(SituationRenderPassInfo));
-    p->args.begin_pass.info.display_id = display_id;
-    p->args.begin_pass.info.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
-    p->args.begin_pass.info.color_attachment.clear.color = clear_color;
-    p->args.begin_pass.info.depth_attachment.loadOp = SIT_LOAD_OP_CLEAR;
-    p->args.begin_pass.info.depth_attachment.clear.depth = 1.0f;
-
-#elif defined(SITUATION_USE_VULKAN)
-    #ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]: CmdBeginRenderToDisplay called\n");
-    printf("Situation [Vulkan Debug]:   display_id=%d, clear_color=(%d,%d,%d,%d)\n",
-           display_id, clear_color.r, clear_color.g, clear_color.b, clear_color.a);
-    fflush(stdout);
-    #endif
-
-    VkRenderPassBeginInfo render_pass_info = {};
-    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-
-    VkClearValue clear_values[2];
-    clear_values[0].color = (VkClearColorValue){{clear_color.r / 255.0f, clear_color.g / 255.0f, clear_color.b / 255.0f, clear_color.a / 255.0f}};
-    clear_values[1].depthStencil = (VkClearDepthStencilValue){1.0f, 0};
-
-    #ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]:   Normalized clear color=(%.3f,%.3f,%.3f,%.3f)\n",
-           clear_values[0].color.float32[0], clear_values[0].color.float32[1],
-           clear_values[0].color.float32[2], clear_values[0].color.float32[3]);
-    fflush(stdout);
-    #endif
-
-    render_pass_info.clearValueCount = 2;
-    render_pass_info.pClearValues = clear_values;
-
-    if (display_id < 0) {
-        render_pass_info.renderPass = sit_render.vk.main_window_render_pass;
-        render_pass_info.framebuffer = sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
-        render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
-        render_pass_info.renderArea.extent = sit_render.vk.swapchain_extent;
-
-        #ifdef SITUATION_VULKAN_DEBUG
-        printf("Situation [Vulkan Debug]:   Main window render pass\n");
-        printf("Situation [Vulkan Debug]:   Render pass handle: %p\n", (void*)render_pass_info.renderPass);
-        printf("Situation [Vulkan Debug]:   Framebuffer handle: %p\n", (void*)render_pass_info.framebuffer);
-        printf("Situation [Vulkan Debug]:   Extent: %ux%u\n",
-               render_pass_info.renderArea.extent.width, render_pass_info.renderArea.extent.height);
-        fflush(stdout);
-        #endif
-
-        // CRITICAL: Update view/projection UBO for main window rendering
-        // This is required for text rendering and any other 2D rendering to work
-        float target_width = (float)sit_render.vk.swapchain_extent.width;
-        float target_height = (float)sit_render.vk.swapchain_extent.height;
-        ViewDataUBO ubo_data;
-        glm_mat4_identity(ubo_data.view);
-        glm_ortho(0.0f, target_width, target_height, 0.0f, -1.0f, 1.0f, ubo_data.projection);
-        void* mapped_data;
-        vmaMapMemory(sit_render.vk.vma_allocator, sit_render.vk.view_proj_ubo_memory[sit_render.vk.current_frame_index], &mapped_data);
-        memcpy(mapped_data, &ubo_data, sizeof(ViewDataUBO));
-        vmaUnmapMemory(sit_render.vk.vma_allocator, sit_render.vk.view_proj_ubo_memory[sit_render.vk.current_frame_index]);
-
-        #ifdef SITUATION_VULKAN_DEBUG
-        printf("Situation [Vulkan Debug]:   Updated UBO with projection matrix for %gx%g\n", target_width, target_height);
-        fflush(stdout);
-        #endif
-    } else {
-        if (display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "CmdBeginRenderToDisplay");
-            return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
-        }
-        SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
-        render_pass_info.renderPass = vd->vk.render_pass;
-        render_pass_info.framebuffer = vd->vk.framebuffer;
-        render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
-        render_pass_info.renderArea.extent = (VkExtent2D){(uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y};
-    }
-
-    #ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]:   Calling vkCmdBeginRenderPass...\n");
-    printf("Situation [Vulkan Debug]:     cmd=%p, renderPass=%p, framebuffer=%p\n",
-           (void*)cmd, (void*)render_pass_info.renderPass, (void*)render_pass_info.framebuffer);
-    fflush(stdout);
-    #endif
-
-    vkCmdBeginRenderPass((VkCommandBuffer)cmd, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
-
-    #ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]:   vkCmdBeginRenderPass completed\n");
-    fflush(stdout);
-    #endif
-
-    // CRITICAL: Set viewport and scissor after beginning render pass
-    // Without this, nothing will render!
-    VkViewport viewport = {};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = (float)render_pass_info.renderArea.extent.width;
-    viewport.height = (float)render_pass_info.renderArea.extent.height;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport((VkCommandBuffer)cmd, 0, 1, &viewport);
-
-    VkRect2D scissor = {};
-    scissor.offset = (VkOffset2D){0, 0};
-    scissor.extent = render_pass_info.renderArea.extent;
-    vkCmdSetScissor((VkCommandBuffer)cmd, 0, 1, &scissor);
-
-    #ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]:   Viewport and scissor set to %ux%u\n",
-           render_pass_info.renderArea.extent.width, render_pass_info.renderArea.extent.height);
-    fflush(stdout);
-    #endif
-#endif
-    return SITUATION_SUCCESS;
+    SituationRenderPassInfo info = {0};
+    info.display_id = display_id;
+    info.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+    info.color_attachment.storeOp = SIT_STORE_OP_STORE;
+    info.color_attachment.clear.color = clear_color;
+    info.depth_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+    info.depth_attachment.storeOp = SIT_STORE_OP_STORE;
+    info.depth_attachment.clear.depth = 1.0f;
+    info.stencil_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+    info.stencil_attachment.storeOp = SIT_STORE_OP_STORE;
+    info.stencil_attachment.clear.stencil = 0;
+    return SituationCmdBeginRenderPass(cmd, &info);
 }
-
 /**
- * @brief Ends the current render pass.
- *
- * @details This function signals the end of a rendering phase that was started with `SituationCmdBeginRenderToDisplay`. It performs backend-specific cleanup to finalize the rendering commands recorded for the current target.
- *
- * @par Backend-Specific Behavior
- * - **OpenGL:** Unbinds the currently bound Framebuffer Object (FBO), returning rendering control to the main window's default framebuffer (backbuffer).
- *   It also resets some common OpenGL state to default values:
- *   - Unbinds the current shader program (`glUseProgram(0)`).
- *   - Unbinds the current Vertex Array Object (`glBindVertexArray(0)`).
- *   - Re-enables `GL_BLEND` and sets the blend function to `SRC_ALPHA/ONE_MINUS_SRC_ALPHA`.
- *   - Re-enables `GL_DEPTH_TEST` and sets the depth function to `GL_LESS`.
- *   These state resets aim to provide a predictable state for subsequent rendering commands directed at the main window, but may interfere with custom state management. The command buffer parameter `cmd` is ignored.
- * - **Vulkan:** Formally ends the `VkRenderPass` that was begun by `SituationCmdBeginRenderToDisplay` by recording a `vkCmdEndRenderPass` command into the provided command buffer. This requires the command buffer to be in the recording state and inside a render pass.
- *
- * @param cmd The command buffer the pass was recorded on (Vulkan) or ignored (OpenGL).
- *
- * @return SITUATION_SUCCESS on successful ending of the render pass.
- * @return SITUATION_ERROR_NOT_INITIALIZED if the library is not initialized.
- * @return SITUATION_ERROR_INVALID_PARAM (Vulkan) if the provided command buffer handle is invalid.
- * @return SITUATION_ERROR_OPENGL_GENERAL (OpenGL) if an OpenGL error occurs
- *         during state changes (e.g., context issues).
- *
- * @note It is the caller's responsibility to ensure that:
- *       1. A render pass was successfully begun before calling this function.
- *       2. (Vulkan) The command buffer `cmd` is valid and in the recording state within the corresponding render pass.
- * @warning The OpenGL implementation includes state resets that might override application-managed state. Review the documentation for specific resets.
- */
 SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
     // --- 1. Input Validation ---
     if (!SituationIsInitialized()) {
