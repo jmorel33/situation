@@ -1469,6 +1469,9 @@ SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const Sit
 **Behavior:** Starts the pass. Binds the Framebuffer (FBO) and executes the specified Clear operations.
 **Restrictions:** You cannot nest render passes. You must end the current pass before starting a new one.
 
+**Vulkan O(1) Cache Mechanism:**
+Under the hood, the Vulkan backend uses an **O(1) Render Pass Cache**. It dynamically hashes the combinations of Load Operations, Store Operations, and Target Formats defined in `SituationRenderPassInfo` into a 32-bit key. It looks up this key in its cache to instantly reuse an existing `VkRenderPass` or lazily instantiates a new one if it's the first time that specific combination is used. You don't need to manually configure Vulkan render pass handles!
+
 #### SituationCmdEndRenderPass
 
 ```c:disable-run
