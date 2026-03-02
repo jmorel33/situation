@@ -1295,6 +1295,7 @@ typedef struct {
     int                     display_id;     // The render target (-1 for main window, >= 0 for a Virtual Display).
     SituationAttachmentInfo color_attachment;
     SituationAttachmentInfo depth_attachment;
+    SituationAttachmentInfo stencil_attachment;
 } SituationRenderPassInfo;
 
 /**
