@@ -1,32 +1,12 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.55 "Audio Mixer Foundation"_
+_Core API library v2.3.62 "Audio Mixer Foundation"_
 
 _(c) 2025 Jacques Morel_
 
 _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
-
-**Current Version: v2.3.53 "Critical Stability"**
-
-**Version 2.3.53** ("Critical Stability") addresses key stability issues in the OpenGL backend, fixing MDI batching pipeline consistency and ensuring safe resource destruction.
-
-**Version 2.3.52** ("Virtual Bindless") introduces a powerful compatibility layer for the OpenGL backend. It allows modern, bindless-style shader code to run on hardware lacking native `GL_ARB_bindless_texture` support by emulating the feature via a virtual texture unit pool.
-
-**Version 2.3.51** ("MDI-Boosted") implements Multi-Draw Indirect (MDI) auto-batching for the OpenGL backend, drastically reducing CPU overhead for repetitive geometry.
-
-**Version 2.3.50** ("Fence-Guarded") introduces robust deferred destruction for OpenGL using fence synchronization, eliminating CPU stalls during resource cleanup.
-
-**Version 2.3.46** ("Bindless Hotfix") resolves a critical issue in the Vulkan text renderer where legacy bindful logic caused crashes in the new bindless environment.
-
-**Version 2.3.45** ("Bindless") migrates the Vulkan backend to a Descriptor Indexing architecture, enabling massive draw call batching by accessing textures via a global bindless descriptor array.
-
-**Version 2.3.43** ("System Unification") implements the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading.
-
-**Version 2.3.42** introduces support for Multi-Channel Audio Capture (e.g. Stereo Mics) and custom sample rates, while defaulting to native device settings to minimize latency.
-
-**Version 2.3.41** introduces flexible texture format selection through the new `SituationColorEncoding` enum. Images can now specify whether their data is in linear or SRGB color space, enabling automatic GPU format selection that works identically across both OpenGL and Vulkan backends. This fixes storage image compatibility issues while maintaining proper gamma correction for sampled textures.
 
 > **See the complete changelog:** [UPDATELOG.md](UPDATELOG.md)
 
