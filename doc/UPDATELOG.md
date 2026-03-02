@@ -35,8 +35,8 @@ This release focuses on improving the internal organization of the library by mo
 ### Refactoring
 
 - **Audio Modularization:**
-  - Extracted the Schroeder/Freeverb implementation into `sit/aux/reverb.h`.
-  - Extracted the Echo/Delay logic into `sit/aux/echo.h`.
+  - Extracted the Schroeder/Freeverb implementation into `sit/aud/reverb.h`.
+  - Extracted the Echo/Delay logic into `sit/aud/echo.h`.
   - Implemented `_SituationConfigEcho` to handle safe initialization and runtime parameter updates for `ma_delay`.
   - Restored the missing echo processing hook in `sit_miniaudio_data_callback`.
   - Added `delay_initialized` state tracking to `_SituationSound` to prevent use of uninitialized resources.

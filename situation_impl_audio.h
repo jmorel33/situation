@@ -38,11 +38,11 @@
 #ifndef SITUATION_IMPL_AUDIO_H
 #define SITUATION_IMPL_AUDIO_H
 
-#include "sit/aux/reverb.h"
-#include "sit/aux/echo.h"
-#include "sit/aux/exciter.h"
-#include "sit/aux/mastering_amp.h"
-#include "sit/aux/studio_reverb.h"
+#include "sit/aud/reverb.h"
+#include "sit/aud/echo.h"
+#include "sit/aud/exciter.h"
+#include "sit/aud/mastering_amp.h"
+#include "sit/aud/studio_reverb.h"
 
 // --- Internal Dynamics Node (Phase 2) ---
 // Implements Compressor / Limiter / Gate
