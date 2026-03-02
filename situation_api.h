@@ -53,11 +53,6 @@
  *   - If you include this file directly, define SITUATION_IMPLEMENTATION to compile the implementation.
  *
 ***************************************************************************************************/
-// --- Version Macros ---
-#define SITUATION_VERSION_MAJOR 2
-#define SITUATION_VERSION_MINOR 3
-#define SITUATION_VERSION_PATCH 62
-#define SITUATION_VERSION_REVISION ""
 
 /*
  *  ---------------------------------------------------------------------------------------------------
