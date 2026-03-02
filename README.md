@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.61 "Code Hygiene"_
+_Core API library v2.3.62 "Code Hygiene"_
 
 _(c) 2025-2026 Jacques Morel_
 
