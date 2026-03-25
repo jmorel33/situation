@@ -1,8 +1,8 @@
-## [v2.4.1 "OpenGL Deferred Rendering Architecture"] - 2026-03-12
+## [v2.4.2 "OpenGL Deferred Rendering Architecture"] - 2026-03-12
 
 ### Description
 
-This release addresses two critical architectural flaws in the OpenGL backend that previously broke the multithreaded Deferred Soft Command Buffer architecture. The OpenGL backend now achieves true architectural parity with Vulkan by enforcing all GL execution exclusively on the Render Thread.
+This release addresses two critical architectural flaws in the OpenGL backend that previously broke the multithreaded Deferred Soft Command Buffer architecture. The OpenGL backend now achieves true architectural parity with Vulkan by enforcing all GL execution exclusively on the Render Thread. No regressions were found during compilation and basic tests.
 
 ### Critical Fixes
 
