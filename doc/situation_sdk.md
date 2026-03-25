@@ -3,17 +3,54 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | 2.3.55 "Audio Mixer Foundation" |
+| **Version** | 2.4.0 "Folder Reorganization & Audio Subsystem" |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core (MDI) / Vulkan 1.4+ |
 | **License** | MIT License |
 | **Author** | Jacques Morel |
+| **Copyright** | (c) 2025-2026 |
 
 ### Executive Summary
 
 "Situation" is a high-performance, single-file application kernel designed for cross-platform C and C++ development. It provides a unified, deterministic abstraction layer over the host operating system and graphics hardware.
 
 Unlike simple windowing wrappers, Situation is an opinionated System Abstraction Layer (SAL). It isolates the developer from the fragmentation of OS APIs (Windows/Linux/macOS) and Graphics Drivers (OpenGL/Vulkan), providing a stable, "Titanium-grade" foundation for building sophisticated interactive software—from real-time simulations and game engines to scientific visualization tools and multimedia installations.
+
+### What's New in v2.4.0
+
+**🎉 Folder Reorganization & Audio Subsystem Organization**
+
+Version 2.4.0 establishes a professional, scalable folder structure:
+
+**Core Changes:**
+- All implementation files moved to `sit/` folder
+- Audio effects organized in `sit/aud/fx/` (16 effects)
+- Polysonix synthesizer relocated to `sit/aud/polysonix/`
+- K-Term terminal library in `sit/k-term/`
+- Root contains only `situation.h` (public entry point)
+
+**New Structure:**
+```
+situation/
+├── situation.h              # ← Public API (include this)
+└── sit/                    # ← Implementation
+    ├── situation_api.h
+    ├── situation_impl.h
+    ├── situation_impl_audio.h
+    ├── aud/                # Audio subsystem
+    │   ├── fx/             # Effects
+    │   ├── polysonix/      # Synthesizer
+    │   └── ...
+    └── k-term/             # Terminal
+```
+
+**Benefits:**
+- Clear architectural boundaries
+- Logical component grouping
+- Scalable for future subsystems
+- Zero breaking changes for users
+
+**See:** `doc/V2_4_0_FOLDER_REORGANIZATION_COMPLETE.md` for complete details.
 
 The library is engineered around three architectural pillars:
 

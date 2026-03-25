@@ -1,6 +1,74 @@
-# Situation API Quick Reference v2.3.55
+# Situation API Quick Reference v2.4.0
 
-**Single-header library for cross-platform graphics (Vulkan/OpenGL 4.6), windowing, input, and system utilities.**
+**Single-header library for cross-platform graphics (Vulkan/OpenGL 4.6), windowing, input, audio, and system utilities.**
+
+## Project Structure (v2.4.0)
+
+```
+situation/                         # Project root
+├── situation.h                    # ← Public API entry point (include this)
+│
+├── sit/                          # ← Core implementation (internal)
+│   ├── situation_api.h           # Public API declarations
+│   ├── situation_impl.h          # Core implementation
+│   ├── situation_impl_audio.h    # Audio subsystem
+│   │
+│   ├── aud/                      # Audio Subsystem
+│   │   ├── fx/                   # Effects (15 files)
+│   │   ├── polysonix/            # Polyphonic synthesizer
+│   │   ├── node_graph*.h         # Node graph system
+│   │   ├── device_*.h            # Device system
+│   │   └── ...                   # Audio components
+│   │
+│   └── k-term/                   # Terminal Subsystem
+│       └── ...                   # Terminal components
+│
+├── examples/                     # Example programs
+├── ext/                         # External dependencies
+├── doc/                         # Documentation
+└── shaders/                     # Shader files
+```
+
+## Compilation
+
+### Basic Compilation (Windows with GCC)
+
+```bash
+# Compile with OpenGL backend
+gcc -o myapp.exe myapp.c \
+    -I. -Iext -Iext/glfw/include \
+    -DSITUATION_USE_OPENGL \
+    -DSITUATION_IMPLEMENTATION \
+    -lglfw3 -lopengl32 -lgdi32 -lwinmm -lws2_32
+
+# Compile with Vulkan backend
+gcc -o myapp.exe myapp.c \
+    -I. -Iext -Iext/glfw/include \
+    -DSITUATION_USE_VULKAN \
+    -DSITUATION_IMPLEMENTATION \
+    -L%VULKAN_SDK%/Lib -lvulkan-1 \
+    -lglfw3 -lgdi32 -lwinmm -lws2_32
+```
+
+### Required Dependencies
+
+- **GLFW3** - Windowing and input
+- **OpenGL** or **Vulkan SDK** - Graphics backend
+- **cglm** - Math library (vectors, matrices)
+- **miniaudio** - Audio engine (embedded)
+- **stb_image** - Image loading (embedded)
+
+### Include Pattern
+
+```c
+// In your main.c or one implementation file:
+#define SITUATION_IMPLEMENTATION
+#define SITUATION_USE_OPENGL  // or SITUATION_USE_VULKAN
+#include "situation.h"
+
+// In other files, just include normally:
+#include "situation.h"
+```
 
 ## Core Initialization
 
@@ -318,3 +386,64 @@ SituationEndFrame();
 ---
 
 **Pro Tip:** Situation uses a "single header" design. Just `#define SITUATION_IMPLEMENTATION` before including `situation.h` in ONE .c file.
+
+## Audio Subsystem (v2.4.0)
+
+### Organization
+
+The audio subsystem is organized in `sit/aud/`:
+
+- **Effects** (`sit/aud/fx/`) - 16 audio processors
+  - Time-based: reverb, echo, studio_reverb, spring_reverb, sst282
+  - Modulation: chorus, phaser, lfo
+  - Distortion: overdrive, exciter
+  - Dynamics: dynamics, filter, eq_4band
+  - Mastering: maximizer, mastering_amp, deafmax
+
+- **Synthesizers**
+  - `sit/aud/tone_synth.h` - Simple tone generator
+  - `sit/aud/polysonix/` - Full polyphonic synth engine
+
+- **Node Graph** - Modular audio routing system
+  - `sit/aud/node_graph.h` - Base types
+  - `sit/aud/node_graph_impl.h` - Graph topology
+  - `sit/aud/node_graph_process.h` - Audio processing
+  - `sit/aud/node_graph_serialization.h` - Save/load graphs
+
+- **Device System**
+  - `sit/aud/device_registry.h` - Device registration
+  - `sit/aud/device_wrappers.h` - Device wrappers
+  - `sit/aud/registry_init.h` - Initialization
+
+### Audio Examples
+
+```c
+// Simple sound playback
+SituationSound sound;
+SituationLoadSoundFromFile("sound.wav", &sound);
+SituationPlayLoadedSound(&sound);
+
+// Node graph with effects
+SituationAudioGraph* graph = SituationCreateGraph(48000);
+SituationAudioNode* tone = SituationCreateNode(graph, "Tone Synth");
+SituationAudioNode* reverb = SituationCreateNode(graph, "Reverb");
+SituationCreatePatch(graph, tone, 0, reverb, 0);
+SituationProcessGraph(graph, output_buffer, frames);
+```
+
+## Terminal Subsystem (K-Term)
+
+Located in `sit/k-term/` - Full VT100/VT220/VT320 terminal emulation with:
+- 256-color and true color support
+- Sixel graphics
+- Voice synthesis and VoIP
+- Network utilities (telnet, SSH)
+
+```c
+#define KTERM_IMPLEMENTATION
+#include "sit/k-term/kterm.h"
+
+KTermConfig config = { .width = 80, .height = 50 };
+KTerm* term = KTerm_Create(config);
+KTerm_WriteString(term, "\x1B[1;33mHello World!\x1B[0m\n");
+```

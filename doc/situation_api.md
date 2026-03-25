@@ -1,14 +1,63 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.62 "Audio Mixer Foundation"_
+_Core API library v2.4.0 "Folder Reorganization & Audio Subsystem"_
 
-_(c) 2025 Jacques Morel_
+_(c) 2025-2026 Jacques Morel_
 
 _MIT Licenced_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
 > **See the complete changelog:** [UPDATELOG.md](UPDATELOG.md)
+
+---
+
+## What's New in v2.4.0
+
+### 🎉 Folder Reorganization & Audio Subsystem Organization
+
+Version 2.4.0 is a major architectural reorganization that establishes a professional, scalable folder structure while maintaining 100% backward compatibility for users.
+
+**Key Changes:**
+
+*   **Core Headers Relocated:** All implementation files moved from root to `sit/` folder
+    - `situation_api.h` → `sit/situation_api.h`
+    - `situation_impl.h` → `sit/situation_impl.h`
+    - `situation_impl_audio.h` → `sit/situation_impl_audio.h`
+    - Root now contains only `situation.h` (public entry point)
+
+*   **Audio Effects Organized:** Created `sit/aud/fx/` subfolder for all 16 audio effects
+    - Time-based: reverb, echo, studio_reverb, spring_reverb, sst282
+    - Modulation: chorus, phaser, lfo
+    - Distortion: overdrive, exciter
+    - Dynamics: dynamics, filter, eq_4band
+    - Mastering: maximizer, mastering_amp, deafmax
+
+*   **Polysonix Relocated:** Moved synthesizer engine to audio subsystem
+    - `sit/polysonix/` → `sit/aud/polysonix/`
+    - Logical placement alongside other audio components
+
+*   **K-Term Integration:** Terminal emulation library properly organized
+    - Located in `sit/k-term/`
+    - Self-contained with examples and tests
+
+**Benefits:**
+- Clear separation: public API vs internal implementation
+- Logical grouping of related components
+- Scalable architecture for future subsystems
+- Professional single-header library pattern
+- Zero breaking changes for users
+
+**See Also:**
+- `doc/V2_4_0_FOLDER_REORGANIZATION_COMPLETE.md` - Complete reorganization details
+- `doc/COMPILATION_GUIDE.md` - Updated compilation instructions
+- `doc/CORE_HEADERS_REORGANIZATION.md` - Core headers relocation
+- `doc/FX_FOLDER_ORGANIZATION.md` - Effects organization
+- `doc/POLYSONIX_INTEGRATION_STATUS.md` - Polysonix relocation
+
+---
+
+## Previous Releases
 
 Our immediate development roadmap is focused on expanding the library's capability:
 *   **Critical Stability (v2.3.53):** 🎉 **COMPLETE!** Addressed critical MDI batching and resource cleanup issues in the OpenGL backend.
@@ -44,7 +93,7 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 ---
 
-# Situation v2.3.41 API Programming Guide
+# Situation v2.4.0 API Programming Guide
 
 "Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
 
@@ -333,23 +382,60 @@ This is a high-level timing utility for creating rhythmic, periodic events. You 
 - Link your application against the generated library.
 
 ### 2.2 Project Structure Recommendations
+
+**Situation Library v2.4.0 Structure:**
+```
+situation/                         # Situation library root
+├── situation.h                    # ← Public API entry point (include this)
+│
+├── sit/                          # ← Core implementation (internal)
+│   ├── situation_api.h           # Public API declarations
+│   ├── situation_impl.h          # Core implementation
+│   ├── situation_impl_audio.h    # Audio subsystem
+│   │
+│   ├── aud/                      # Audio Subsystem
+│   │   ├── fx/                   # Effects (16 files)
+│   │   │   ├── reverb.h, echo.h, chorus_4stage.h
+│   │   │   ├── filter.h, eq_4band.h, dynamics.h
+│   │   │   └── ... (other effects)
+│   │   │
+│   │   ├── polysonix/            # Polyphonic synthesizer
+│   │   │   ├── polysonix.h
+│   │   │   ├── px_vm.h
+│   │   │   └── ... (synth components)
+│   │   │
+│   │   ├── node_graph*.h         # Node graph system (5 files)
+│   │   ├── device_*.h            # Device system (3 files)
+│   │   ├── sound_source.h        # Audio file playback
+│   │   ├── mic_capture.h         # Microphone capture
+│   │   └── tone_synth.h          # Simple tone generator
+│   │
+│   └── k-term/                   # Terminal Subsystem
+│       ├── kterm.h               # Main wrapper
+│       ├── kterm_api.h           # Public API
+│       └── ... (terminal components)
+│
+├── examples/                     # Example programs
+├── ext/                         # External dependencies
+│   ├── glfw/                    # GLFW windowing library
+│   ├── cglm/                    # Math library
+│   ├── glad/                    # OpenGL loader (if using OpenGL)
+│   └── stb/                     # STB libraries (image, truetype)
+│
+├── doc/                         # Documentation
+└── shaders/                     # Shader files
+```
+
+**Your Application Structure:**
 ```
 your_project/
 ├── src/
 │   ├── main.c              // Your application entry point
 │   └── (other .c files)    // Your application logic
-├── lib/
-│   └── situation.h         // This library header
-├── ext/                    // External dependencies (if not system-installed)
-│   ├── glad/               // For OpenGL (if SITUATION_USE_OPENGL)
-│   │   ├── glad.c
-│   │   └── glad.h
-│   ├── cglm/               // For math (if used)
-│   │   └── ...             // cglm headers
-│   ├── stb/                // For image loading (stb_image.h, etc.)
-│   │   └── ...             // stb headers (define STB_IMAGE_IMPLEMENTATION in one .c file)
-│   └── miniaudio/          // Audio library (miniaudio.h)
-│       └── miniaudio.h     // (define MINIAUDIO_IMPLEMENTATION in one .c file)
+├── situation/              // Situation library (as shown above)
+│   ├── situation.h         // Include this file
+│   ├── sit/                // Internal implementation
+│   └── ext/                // Dependencies
 ├── assets/                 // Your application's assets
 │   ├── models/
 │   │   └── cube.obj
@@ -364,6 +450,17 @@ your_project/
 └── build/                  // Build output directory
 ```
 
+**Include Pattern:**
+```c
+// In your main.c or one implementation file:
+#define SITUATION_IMPLEMENTATION
+#define SITUATION_USE_OPENGL  // or SITUATION_USE_VULKAN
+#include "situation/situation.h"
+
+// In other files, just include normally:
+#include "situation/situation.h"
+```
+
 ### 2.3 Compilation Requirements & Dependencies
 - A C99 or C++ compiler.
 - **Required Dependencies (provided or system-installed):**
@@ -375,6 +472,26 @@ your_project/
     - **stb_image.h, stb_image_write.h, stb_image_resize.h:** For image loading/saving/resizing. Define `STB_IMAGE_IMPLEMENTATION` etc. in one .c file.
     - **stb_truetype.h:** For styled text rendering (SDF generation). Define `STB_TRUETYPE_IMPLEMENTATION`.
     - **miniaudio.h:** For audio. Define `MINIAUDIO_IMPLEMENTATION` in one .c file.
+
+**Compilation Example (Windows/GCC):**
+```bash
+# OpenGL Backend
+gcc -o myapp.exe src/main.c \
+    -Isituation -Isituation/ext -Isituation/ext/glfw/include \
+    -DSITUATION_USE_OPENGL \
+    -Lsituation/ext/glfw/lib-mingw-w64 \
+    -lglfw3 -lopengl32 -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32
+
+# Vulkan Backend
+gcc -o myapp.exe src/main.c \
+    -Isituation -Isituation/ext -Isituation/ext/glfw/include \
+    -DSITUATION_USE_VULKAN \
+    -DSITUATION_ENABLE_SHADER_COMPILER \
+    -Lsituation/ext/glfw/lib-mingw-w64 -L%VULKAN_SDK%/Lib \
+    -lglfw3 -lvulkan-1 -lshaderc_shared -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32
+```
+
+**See Also:** `doc/COMPILATION_GUIDE.md` for comprehensive platform-specific instructions.
 
 ### 2.4 Build & Feature Defines
 This section details the preprocessor defines that control the library's features and build configuration.
