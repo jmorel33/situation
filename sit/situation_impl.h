@@ -14081,6 +14081,17 @@ SITAPI SituationError SituationEndFrame(void) {
                    sit_render.gl.soft_buffers[sit_render.current_frame_index].packet_count);
             fflush(stdout);
             #endif
+
+            // 1. Wait for old frame to finish and flush its graveyard
+            if (sit_render.gl.frame_fences[sit_render.current_frame_index]) {
+                glClientWaitSync(sit_render.gl.frame_fences[sit_render.current_frame_index], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000);
+
+                _SitGLFlushGraveyard(sit_render.current_frame_index);
+
+                glDeleteSync(sit_render.gl.frame_fences[sit_render.current_frame_index]);
+                sit_render.gl.frame_fences[sit_render.current_frame_index] = 0;
+            }
+
             SIT_DEBUG_LOG("[EndFrame] Executing GL commands\n");
             _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
 
@@ -14092,15 +14103,9 @@ SITAPI SituationError SituationEndFrame(void) {
             glfwSwapBuffers(sit_gs.sit_glfw_window);
             SIT_DEBUG_LOG("[EndFrame] glfwSwapBuffers completed\n");
 
-            // [FENCE] Guard destruction
-            if (sit_render.gl.frame_fences[sit_render.current_frame_index]) {
-                glDeleteSync(sit_render.gl.frame_fences[sit_render.current_frame_index]);
-            }
+            // 2. Create new fence for the commands we just submitted
             sit_render.gl.frame_fences[sit_render.current_frame_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
             glFlush();
-
-            // Try to flush all
-            for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; ++i) _SitGLFlushGraveyard(i);
         }
         #else
         // [Phase 1] Execute Deferred Commands Immediately (Single-Threaded)
