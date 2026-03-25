@@ -4230,93 +4230,36 @@ static void _SitGLDeferCleanMeshVAO(uint64_t mesh_id) {
 
 static void _SitGLFlushGraveyard(int frame_index) {
     if (frame_index < 0 || frame_index >= SITUATION_MAX_FRAMES_IN_FLIGHT) return;
-
     _SituationGLGraveyard* gy = &sit_render.gl.graveyards[frame_index];
-    GLsync fence = sit_render.gl.frame_fences[frame_index];
 
-    // [FENCE] If no fence exists, it means the frame hasn't completed execution yet (or was already flushed).
-    // Do not flush resources for a frame that is potentially still being recorded or rendered.
-    if (!fence) return;
-
-    // [FENCE] Check if the GPU has finished using the resources from this frame.
-    // Timeout = 0 means we just check the status and return immediately.
-    GLenum result = glClientWaitSync(fence, 0, 0);
-    if (result == GL_TIMEOUT_EXPIRED || result == GL_WAIT_FAILED) {
-        // GPU is still busy with this frame. Keep resources for next time.
-        return;
-    }
-
-    // GPU is done. Safe to delete.
-
-    // 1. Extract queues under lock
     ma_mutex_lock(&gy->lock);
 
-    // [OPTIMIZATION] Early exit if empty to avoid allocation churn
-    if (gy->buffer_count == 0 &&
-        gy->texture_count == 0 &&
-        gy->mesh_count == 0) {
-        ma_mutex_unlock(&gy->lock);
-
-        // Even if empty, we can clean up the fence since it signaled.
-        glDeleteSync(fence);
-        sit_render.gl.frame_fences[frame_index] = 0;
-        return;
-    }
-
-    size_t buf_count = gy->buffer_count;
-
-    // Swap the arrays to minimize lock time
-    GLuint* temp_bufs = gy->buffers_to_delete;
-    GLuint* temp_texs = gy->textures_to_delete;
-    size_t temp_tex_count = gy->texture_count;
-    uint64_t* temp_meshes = gy->mesh_ids_to_clean;
-    size_t temp_mesh_count = gy->mesh_count;
-
-    // Reset struct with new small arrays
-    // [SAFETY] Check for allocation failure
-    GLuint* new_bufs = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
-    GLuint* new_texs = (GLuint*)SIT_MALLOC(32 * sizeof(GLuint));
-    uint64_t* new_meshes = (uint64_t*)SIT_MALLOC(32 * sizeof(uint64_t));
-
-    if (!new_bufs || !new_texs || !new_meshes) {
-        // Allocation failed. We cannot swap.
-        // Best effort: Leave existing arrays and try again next frame.
-        if (new_bufs) SIT_FREE(new_bufs);
-        if (new_texs) SIT_FREE(new_texs);
-        if (new_meshes) SIT_FREE(new_meshes);
-
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate new graveyard queues during flush.");
+    // [OPTIMIZATION] Early exit if nothing to clean
+    if (gy->buffer_count == 0 && gy->texture_count == 0 && gy->mesh_count == 0) {
         ma_mutex_unlock(&gy->lock);
         return;
     }
 
-    gy->buffer_capacity = 32;
-    gy->buffers_to_delete = new_bufs;
-    gy->buffer_count = 0;
+    // GPU is guaranteed done because the caller (Render Thread or EndFrame)
+    // waited on the GLsync fence before calling this. Safe to delete immediately.
 
-    gy->texture_capacity = 32;
-    gy->textures_to_delete = new_texs;
-    gy->texture_count = 0;
-
-    gy->mesh_capacity = 32;
-    gy->mesh_ids_to_clean = new_meshes;
-    gy->mesh_count = 0;
-
-    ma_mutex_unlock(&gy->lock);
-
-    // 2. Process Deletions
-    if (buf_count > 0 && temp_bufs) {
-        glDeleteBuffers((GLsizei)buf_count, temp_bufs);
+    if (gy->buffer_count > 0) {
+        glDeleteBuffers((GLsizei)gy->buffer_count, gy->buffers_to_delete);
+        gy->buffer_count = 0; // Keep capacity, reset count (Zero-allocation at runtime)
     }
-    if (temp_tex_count > 0 && temp_texs) {
-        glDeleteTextures((GLsizei)temp_tex_count, temp_texs);
+
+    if (gy->texture_count > 0) {
+        glDeleteTextures((GLsizei)gy->texture_count, gy->textures_to_delete);
+        gy->texture_count = 0;
     }
-    if (temp_mesh_count > 0 && temp_meshes) {
-        for (size_t i = 0; i < temp_mesh_count; ++i) {
-            uint64_t id = temp_meshes[i];
+
+    if (gy->mesh_count > 0) {
+        for (size_t i = 0; i < gy->mesh_count; ++i) {
+            uint64_t id = gy->mesh_ids_to_clean[i];
             int bucket = (int)(id % 256);
             _SitGLVaoCacheEntry* entry = sit_render.gl.vao_cache[bucket];
             _SitGLVaoCacheEntry* prev = NULL;
+
             while (entry) {
                 if (entry->mesh_id == id) {
                     if (prev) prev->next = entry->next;
@@ -4330,16 +4273,10 @@ static void _SitGLFlushGraveyard(int frame_index) {
                 entry = entry->next;
             }
         }
+        gy->mesh_count = 0;
     }
 
-    // 3. Free temp arrays
-    if (temp_bufs) SIT_FREE(temp_bufs);
-    if (temp_texs) SIT_FREE(temp_texs);
-    if (temp_meshes) SIT_FREE(temp_meshes);
-
-    // 4. Cleanup Fence
-    glDeleteSync(fence);
-    sit_render.gl.frame_fences[frame_index] = NULL;
+    ma_mutex_unlock(&gy->lock);
 }
 
 
@@ -12803,20 +12740,20 @@ static void _SituationCleanupOpenGL(void) {
 
     // Cleanup Graveyards & Fences
     for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; i++) {
-        // Force flush remaining resources (Context is active)
-        _SitGLFlushGraveyard(i);
-        // Note: _SitGLFlushGraveyard might skip if fence is busy, but we are shutting down.
-        // We should force cleanup of arrays regardless of fence state here.
-        if (sit_render.gl.graveyards[i].mesh_ids_to_clean) SIT_FREE(sit_render.gl.graveyards[i].mesh_ids_to_clean);
-        if (sit_render.gl.graveyards[i].buffers_to_delete) SIT_FREE(sit_render.gl.graveyards[i].buffers_to_delete);
-        if (sit_render.gl.graveyards[i].textures_to_delete) SIT_FREE(sit_render.gl.graveyards[i].textures_to_delete);
-        ma_mutex_uninit(&sit_render.gl.graveyards[i].lock);
-
+        // Wait for any pending GPU work for this frame before destroying
         if (sit_render.gl.frame_fences[i]) {
             glClientWaitSync(sit_render.gl.frame_fences[i], GL_SYNC_FLUSH_COMMANDS_BIT, 100000000); // 100ms
             glDeleteSync(sit_render.gl.frame_fences[i]);
             sit_render.gl.frame_fences[i] = 0;
         }
+
+        // Force flush now that we know the GPU is idle (or shutting down)
+        _SitGLFlushGraveyard(i);
+
+        if (sit_render.gl.graveyards[i].mesh_ids_to_clean) SIT_FREE(sit_render.gl.graveyards[i].mesh_ids_to_clean);
+        if (sit_render.gl.graveyards[i].buffers_to_delete) SIT_FREE(sit_render.gl.graveyards[i].buffers_to_delete);
+        if (sit_render.gl.graveyards[i].textures_to_delete) SIT_FREE(sit_render.gl.graveyards[i].textures_to_delete);
+        ma_mutex_uninit(&sit_render.gl.graveyards[i].lock);
     }
     memset(sit_render.gl.graveyards, 0, sizeof(sit_render.gl.graveyards));
 
@@ -14166,12 +14103,21 @@ SITAPI SituationError SituationEndFrame(void) {
             for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; ++i) _SitGLFlushGraveyard(i);
         }
         #else
-        // [Phase 1] Execute Deferred Commands Immediately
-        // [PLATINUM] Use the correct frame index even in single-threaded mode for consistency.
+        // [Phase 1] Execute Deferred Commands Immediately (Single-Threaded)
+
+        // 1. Wait for old frame to finish and flush its graveyard
+        if (sit_render.gl.frame_fences[sit_render.current_frame_index]) {
+            glClientWaitSync(sit_render.gl.frame_fences[sit_render.current_frame_index], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000);
+
+            _SitGLFlushGraveyard(sit_render.current_frame_index);
+
+            glDeleteSync(sit_render.gl.frame_fences[sit_render.current_frame_index]);
+            sit_render.gl.frame_fences[sit_render.current_frame_index] = 0;
+        }
+
         SIT_DEBUG_LOG("[EndFrame] Executing GL commands (non-threaded path)\n");
         _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
 
-        // Swap the front and back buffers to display the rendered frame.
         SIT_DEBUG_LOG("[EndFrame] About to call glfwSwapBuffers (non-threaded)\n");
         GLenum err = glGetError();
         if (err != GL_NO_ERROR) {
@@ -14180,15 +14126,10 @@ SITAPI SituationError SituationEndFrame(void) {
         glfwSwapBuffers(sit_gs.sit_glfw_window);
         SIT_DEBUG_LOG("[EndFrame] glfwSwapBuffers completed (non-threaded)\n");
 
-        // [FENCE] Guard destruction
-        if (sit_render.gl.frame_fences[sit_render.current_frame_index]) {
-            glDeleteSync(sit_render.gl.frame_fences[sit_render.current_frame_index]);
-        }
+        // 2. Create new fence for the commands we just submitted
         sit_render.gl.frame_fences[sit_render.current_frame_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         glFlush();
 
-        // Try to flush all
-        for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; ++i) _SitGLFlushGraveyard(i);
         #endif
 
         // [PLATINUM] Unify frame index advancement across both paths.
@@ -31247,23 +31188,27 @@ static int _SituationRenderThreadEntry(void* arg) {
         #endif
 
         #if defined(SITUATION_USE_OPENGL)
-        // 1. Execute Soft Command Buffer
+
+        // 1. Wait for OLD frame to finish and flush its graveyard (Vulkan Parity)
+        // This ensures the GPU isn't still reading buffers we are about to overwrite/delete.
+        if (sit_render.gl.frame_fences[frame_index]) {
+            glClientWaitSync(sit_render.gl.frame_fences[frame_index], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000); // 1 sec timeout
+
+            _SitGLFlushGraveyard(frame_index); // Safe to flush now
+
+            glDeleteSync(sit_render.gl.frame_fences[frame_index]);
+            sit_render.gl.frame_fences[frame_index] = 0;
+        }
+
+        // 2. Execute Soft Command Buffer
         _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[frame_index], frame_index);
 
-        // 2. Present (CPU waits here usually if vsync on, but work is submitted)
+        // 3. Present
         glfwSwapBuffers(sit_gs.sit_glfw_window);
 
-        // 3. Insert Fence to track this frame's completion
-        if (sit_render.gl.frame_fences[frame_index]) {
-            glDeleteSync(sit_render.gl.frame_fences[frame_index]);
-        }
+        // 4. Create NEW fence to track the commands we just submitted
         sit_render.gl.frame_fences[frame_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        glFlush();
-
-        // 4. [Phase 2.5] Flush Graveyards (Check fences of all frames)
-        for (int i = 0; i < SITUATION_MAX_FRAMES_IN_FLIGHT; ++i) {
-            _SitGLFlushGraveyard(i);
-        }
+        glFlush(); // Ensure the fence is pushed to the GPU queue
 
         #elif defined(SITUATION_USE_VULKAN)
         VkCommandBuffer cmd = sit_render.vk.command_buffers[frame_index];
