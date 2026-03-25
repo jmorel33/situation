@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.62 "Code Hygiene"_
+_Core API library v2.3.64 "Registry Phase 1"_
 
 _(c) 2025-2026 Jacques Morel_
 
@@ -236,13 +236,7 @@ graph TD
 
         L2["Update Timers & Logic"]
         L3["User Game Code"]
-        subgraph RenderStack ["Render Pass Stack (Layers)"]
-            L4a["SituationCmdBeginRenderPass"]
-            L4b["Draw Commands"]
-            L4c["SituationCmdEndRenderPass"]
-            L4a --> L4b --> L4c
-            L4c -. "Next Layer" .-> L4a
-        end
+        L4["Record Render Commands"]
         L5["SituationEndFrame"]
     end
 
@@ -260,8 +254,7 @@ graph TD
     L2 --> L3
     L3 -- "Dispatch Jobs" --> TS1
     L3 -- "Load Asset" --> TS2
-    L3 --> L4a
-    L4c --> L5
+    L3 --> L4 --> L5
     L5 -- "Next Frame" --> L1
     L5 -- "Quit" --> E1
     E1 --> E2 --> E3 --> E4 --> E5
@@ -289,13 +282,7 @@ graph TD
         L2["Poll Input & Timers"]
         L3["User Update Logic"]
         L4["SituationAcquireFrameCommandBuffer<br/>(Get SoftBuffer)"]
-        subgraph RenderStack ["Render Pass Stack (Layers)"]
-            L5a["SituationCmdBeginRenderPass"]
-            L5b["Record Commands<br/>(SoftBuffer)"]
-            L5c["SituationCmdEndRenderPass"]
-            L5a --> L5b --> L5c
-            L5c -. "Next Layer" .-> L5a
-        end
+        L5["Record Commands<br/>(SoftBuffer)"]
         L6["SituationEndFrame"]
 
         subgraph Render ["Render Execution (Main or Thread)"]
@@ -321,8 +308,7 @@ graph TD
 
     %% Flow
     I1 --> I2 --> I3 --> I4 --> L1
-    L1 --> L2 --> L3 --> L4 --> L5a
-    L5c --> L6
+    L1 --> L2 --> L3 --> L4 --> L5 --> L6
     L6 --> R1
     S3 --> L1
     L6 -- "Quit" --> E1
@@ -350,26 +336,15 @@ graph TD
         L4a["Wait for Fence"]
         L4b["Acquire Next Image"]
         L4c["vkBeginCommandBuffer"]
+        L5["SituationCmdBeginRenderPass\n(O(1) Render Pass Cache)"]
 
-        subgraph RenderStack ["Render Pass Stack (Layers)"]
-            L5["SituationCmdBeginRenderPass\n(O(1) Render Pass Cache)"]
-
-            subgraph Bindless ["Bindless Tech"]
-                B1["Push Constants"]
-                B2["Texture ID -> global_textures"]
-                B3["nonuniformEXT Indexing"]
-            end
-
-            L5 --> B1 --> B2 --> B3 --> L6
-
-            L6["vkCmdDraw* / Dispatch"]
-            L6b["Delayed Memory Barriers<br/>(Subpass Dependencies)"]
-            L6c["SituationCmdEndRenderPass"]
-
-            L6 --> L6b --> L6c
-            L6c -. "Next Layer" .-> L5
+        subgraph Bindless ["Bindless Tech"]
+            B1["Push Constants"]
+            B2["Texture ID -> global_textures"]
+            B3["nonuniformEXT Indexing"]
         end
 
+        L6["vkCmdDraw* / Dispatch"]
         L7["vkEndCommandBuffer"]
         L8["SituationEndFrame"]
 
@@ -391,8 +366,8 @@ graph TD
     I1 --> I2 --> I3 --> I4 --> I5 --> L1
     L1 --> L2 --> L3 --> L4
     L4 --> L4a --> L4b --> L4c --> L5
-    L6c --> L7
-    L7 --> L8
+    L5 --> B1 --> B2 --> B3 --> L6
+    L6 --> L7 --> L8
     L8 --> S1 --> S2 --> S3
     S3 --> L1
     L8 -- "Quit" --> E1
