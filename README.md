@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.3.64 "Registry Phase 1"_
+_Core API library v2.4.1_
 
 _(c) 2025-2026 Jacques Morel_
 
