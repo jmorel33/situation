@@ -1,3 +1,15 @@
+## [v2.4.3 "Virtual Display Compositing & Performance Parity"] - 2026-03-27
+
+### Description
+
+This release fixes critical Virtual Display Compositing flaws in both Vulkan and OpenGL backends. It achieves peak performance by eliminating CPU stalling on the Main Thread during UBO updates and resolves potential black screen issues caused by Vulkan validation layer errors regarding dynamic state.
+
+### Critical Fixes
+
+- **Persistent Global UBO Mapping (Vulkan):** Prevented CPU stalling during Vulkan command recording by allocating the `view_proj_ubo_memory` with `VMA_ALLOCATION_CREATE_MAPPED_BIT`. `SituationRenderVirtualDisplays` now writes directly to `view_proj_ubo_mapped` using zero-stall `memcpy`.
+- **Dynamic State Injection (Vulkan):** Injected missing `vkCmdSetViewport` and `vkCmdSetScissor` calls directly after `vkCmdBeginRenderPass` in `SituationRenderVirtualDisplays`. This satisfies Vulkan's requirement that dynamic states must be explicitly pushed into the command buffer after every pass begin call.
+- **OpenGL Deferral Parity Enforcement:** Enforced target output to the main window during deferred OpenGL compositing (`SIT_OP_RENDER_VIRTUAL_DISPLAYS`) by explicitly binding `GL_FRAMEBUFFER 0` and forcefully scaling the viewport to span the main window dimensions within `_SituationGLExecuteCommands`.
+
 ## [v2.4.2 "OpenGL Deferred Rendering Architecture"] - 2026-03-12
 
 ### Description
