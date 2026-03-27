@@ -934,6 +934,7 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
     // Global UBOs (Per-Frame)
     VkBuffer* view_proj_ubo_buffer;                              // Array of View UBOs
     VmaAllocation* view_proj_ubo_memory;                         // Array of View UBO memory
+    void** view_proj_ubo_mapped;                                 // Array of mapped View UBO memory
     VkDescriptorSet* view_proj_ubo_descriptor_set;               // Array of View UBO descriptor sets
 
     // Screen Copy Resources (for advanced blending)
@@ -6578,14 +6579,22 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                     _SitGLStateBackup gl_backup;
                     _SitGLBackupState(&gl_backup);
 
+                    // API Contract: VD Compositing always targets the main screen.
+                    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                    sit_render.gl.current_fbo_id = 0;
+
+                    // Ensure viewport covers the screen
+                    glViewport(0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
+
                     glDisable(GL_DEPTH_TEST);
                     glDisable(GL_CULL_FACE);
+
                     glBindVertexArray(sit_render.gl.vd_quad_vao);
 
                     float target_width = (float)sit_gs.main_window_width;
                     float target_height = (float)sit_gs.main_window_height;
 
-                    // Sort the active VDs by Z-Order
+                    // Sort active VDs
                     SituationVirtualDisplay* vds[SITUATION_MAX_VIRTUAL_DISPLAYS];
                     int v_count = 0;
                     for (int v = 0; v < SITUATION_MAX_VIRTUAL_DISPLAYS; ++v) {
@@ -6596,7 +6605,9 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                             vds[v_count++] = &sit_render.virtual_display_slots[v];
                         }
                     }
-                    qsort(vds, v_count, sizeof(SituationVirtualDisplay*), _SituationSortVirtualDisplaysCallback);
+                    if (v_count > 0) {
+                        qsort(vds, v_count, sizeof(SituationVirtualDisplay*), _SituationSortVirtualDisplaysCallback);
+                    }
 
                     for (int v = 0; v < v_count; ++v) {
                         const SituationVirtualDisplay* vd = vds[v];
@@ -9114,10 +9125,11 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     sit_render.vk.in_flight_fences = (VkFence*)SIT_CALLOC(frame_count, sizeof(VkFence));
     sit_render.vk.view_proj_ubo_buffer = (VkBuffer*)SIT_CALLOC(frame_count, sizeof(VkBuffer));
     sit_render.vk.view_proj_ubo_memory = (VmaAllocation*)SIT_CALLOC(frame_count, sizeof(VmaAllocation));
+    sit_render.vk.view_proj_ubo_mapped = (void**)SIT_CALLOC(frame_count, sizeof(void*));
     sit_render.vk.view_proj_ubo_descriptor_set = (VkDescriptorSet*)SIT_CALLOC(frame_count, sizeof(VkDescriptorSet));
     sit_render.vk.graveyards = (_SituationVKGraveyard*)SIT_CALLOC(frame_count, sizeof(_SituationVKGraveyard));
 
-    if (!sit_render.vk.command_buffers || !sit_render.vk.compute_command_buffers || !sit_render.vk.image_available_semaphores || !sit_render.vk.render_finished_semaphores || !sit_render.vk.compute_finished_semaphores || !sit_render.vk.in_flight_fences || !sit_render.vk.view_proj_ubo_buffer || !sit_render.vk.view_proj_ubo_memory || !sit_render.vk.view_proj_ubo_descriptor_set || !sit_render.vk.graveyards) {
+    if (!sit_render.vk.command_buffers || !sit_render.vk.compute_command_buffers || !sit_render.vk.image_available_semaphores || !sit_render.vk.render_finished_semaphores || !sit_render.vk.compute_finished_semaphores || !sit_render.vk.in_flight_fences || !sit_render.vk.view_proj_ubo_buffer || !sit_render.vk.view_proj_ubo_memory || !sit_render.vk.view_proj_ubo_mapped || !sit_render.vk.view_proj_ubo_descriptor_set || !sit_render.vk.graveyards) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Per-frame Vulkan resource arrays");
         _SituationCleanupVulkan(); // The main cleanup function will free any non-NULL arrays
         return SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -9388,11 +9400,26 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         printf("Situation [Vulkan Debug]:   UBO %u/%u...\n", i+1, frame_count); fflush(stdout);
         #endif
         VkDeviceSize buffer_size = sizeof(ViewDataUBO);
-        // Passing NULL cmd forces synchronous upload for init
-        #ifdef SITUATION_VULKAN_DEBUG
-        printf("Situation [Vulkan Debug]:     Calling _SituationVulkanCreateAndUploadBuffer...\n"); fflush(stdout);
-        #endif
-        if (_SituationVulkanCreateAndUploadBuffer(NULL, NULL, buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &sit_render.vk.view_proj_ubo_buffer[i], &sit_render.vk.view_proj_ubo_memory[i]) != SITUATION_SUCCESS) { _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED; }
+
+        // Create UBO with Persistent Mapping (CPU to GPU)
+        VkBufferCreateInfo buf_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        buf_info.size = sizeof(ViewDataUBO);
+        buf_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+
+        VmaAllocationCreateInfo alloc_info = {0};
+        alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+        alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT; // Keeps it mapped forever
+
+        VmaAllocationInfo alloc_result;
+        if (vmaCreateBuffer(sit_render.vk.vma_allocator, &buf_info, &alloc_info,
+            &sit_render.vk.view_proj_ubo_buffer[i],
+            &sit_render.vk.view_proj_ubo_memory[i],
+            &alloc_result) != VK_SUCCESS) {
+            _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
+        }
+
+        // Save the mapped pointer
+        sit_render.vk.view_proj_ubo_mapped[i] = alloc_result.pMappedData;
 
         // [FIX v2.3.27B] Updated to pass NULL for pool tracking (View UBOs persist until shutdown)
         #ifdef SITUATION_VULKAN_DEBUG
@@ -12902,6 +12929,7 @@ static void _SituationCleanupVulkan(void) {
     SIT_FREE(sit_render.vk.in_flight_fences);
     SIT_FREE(sit_render.vk.view_proj_ubo_buffer);
     SIT_FREE(sit_render.vk.view_proj_ubo_memory);
+    SIT_FREE(sit_render.vk.view_proj_ubo_mapped);
     SIT_FREE(sit_render.vk.view_proj_ubo_descriptor_set);
 
     // Clean up graveyards
@@ -23642,16 +23670,15 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
     if (sit_render.vk.vd_compositing_pipeline == VK_NULL_HANDLE) return SITUATION_ERROR_NOT_INITIALIZED;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
-    // --- 1. UBO Update (Same as before) ---
+    // --- 1. UBO Update (Zero-Stall Persistent Write) ---
     float target_width = (float)sit_render.vk.swapchain_extent.width;
     float target_height = (float)sit_render.vk.swapchain_extent.height;
     ViewDataUBO ubo_data;
     glm_mat4_identity(ubo_data.view);
     glm_ortho(0.0f, target_width, target_height, 0.0f, -1.0f, 1.0f, ubo_data.projection);
-    void* mapped_data;
-    vmaMapMemory(sit_render.vk.vma_allocator, sit_render.vk.view_proj_ubo_memory[sit_render.vk.current_frame_index], &mapped_data);
-    memcpy(mapped_data, &ubo_data, sizeof(ViewDataUBO));
-    vmaUnmapMemory(sit_render.vk.vma_allocator, sit_render.vk.view_proj_ubo_memory[sit_render.vk.current_frame_index]);
+
+    // Write directly to the mapped pointer (NO vmaMapMemory stall!)
+    memcpy(sit_render.vk.view_proj_ubo_mapped[sit_render.vk.current_frame_index], &ubo_data, sizeof(ViewDataUBO));
 
     // --- 2. Global Setup ---
     VkBuffer vertex_buffers[] = { sit_render.vk.quad_vertex_buffer };
@@ -23665,8 +23692,10 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
     rp_info.renderPass = sit_render.vk.main_window_render_pass;
     rp_info.framebuffer = sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
     rp_info.renderArea.extent = sit_render.vk.swapchain_extent;
-    // Note: If main_window_render_pass was created with LOAD_OP_CLEAR, this will clear the background.
-    // To overlay without clearing, use a separate render pass with LOAD_OP_LOAD.
+
+    // Set up standard Viewport and Scissor for the screen
+    VkViewport viewport = {0.0f, 0.0f, target_width, target_height, 0.0f, 1.0f};
+    VkRect2D scissor = {{0, 0}, sit_render.vk.swapchain_extent};
 
     // --- Loop and Draw Each Virtual Display ---
     for (int i = 0; i < visible_count; ++i) {
@@ -23748,8 +23777,10 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
             write.pImageInfo = &copy_info;
             vkUpdateDescriptorSets(sit_render.vk.device, 1, &write, 0, NULL);
 
-            // 6. Restart Render Pass
+            // 6. Restart Render Pass (Path A)
             vkCmdBeginRenderPass(vk_cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdSetViewport(vk_cmd, 0, 1, &viewport);
+            vkCmdSetScissor(vk_cmd, 0, 1, &scissor);
             is_render_pass_active = true;
 
             // 7. Draw
@@ -23778,6 +23809,12 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
             // 1. Ensure Render Pass is active
             if (!is_render_pass_active) {
                 vkCmdBeginRenderPass(vk_cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+
+                // [CRITICAL VULKAN FIX] Must push dynamic viewport/scissor state
+                // every time a new render pass begins!
+                vkCmdSetViewport(vk_cmd, 0, 1, &viewport);
+                vkCmdSetScissor(vk_cmd, 0, 1, &scissor);
+
                 is_render_pass_active = true;
             }
 
