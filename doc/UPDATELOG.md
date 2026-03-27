@@ -19,6 +19,8 @@ This major release implements a complete professional-grade MIDI subsystem with 
 
 ### Major Features
 
+- **OpenGL Graveyard Flush Safety:** Fixed a major race condition and VRAM leak in the OpenGL backend caused by internal polling in `_SitGLFlushGraveyard`. The Render Thread and single-threaded fallback loop now properly wait for the GL sync fence from the old frame to complete before issuing commands or executing resource cleanup.
+
 #### Complete MIDI Hybrid Architecture (Phases 1-4)
 
 - **Virtual MIDI Infrastructure (Phase 1):**
