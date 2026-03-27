@@ -8,6 +8,8 @@ This major release implements a complete professional-grade MIDI subsystem with 
 
 ### Major Features
 
+- **OpenGL Graveyard Flush Safety:** Fixed a major race condition and VRAM leak in the OpenGL backend caused by internal polling in `_SitGLFlushGraveyard`. The Render Thread and single-threaded fallback loop now properly wait for the GL sync fence from the old frame to complete before issuing commands or executing resource cleanup.
+
 #### Complete MIDI Hybrid Architecture (Phases 1-4)
 
 - **Virtual MIDI Infrastructure (Phase 1):**
@@ -109,15 +111,15 @@ This major release implements a complete professional-grade MIDI subsystem with 
 
 ### Production Readiness
 
-✅ Real-time safe (lock-free, no blocking, no allocations in audio thread)  
-✅ Thread safe (C11 atomics with memory ordering)  
-✅ High performance (42M+ events/sec throughput)  
-✅ Sample-accurate timing (0.021ms precision @ 48kHz)  
-✅ Cross-platform virtual MIDI (Windows/Linux/macOS)  
-✅ Comprehensive testing (7 test programs, 100% pass rate)  
-✅ Stress tested (buffer overflow, concurrent connections)  
-✅ Professional features (filtering, transformation, recording, 14-bit CC)  
-✅ Device identity protocol (Universal Device Inquiry)  
+✅ Real-time safe (lock-free, no blocking, no allocations in audio thread)
+✅ Thread safe (C11 atomics with memory ordering)
+✅ High performance (42M+ events/sec throughput)
+✅ Sample-accurate timing (0.021ms precision @ 48kHz)
+✅ Cross-platform virtual MIDI (Windows/Linux/macOS)
+✅ Comprehensive testing (7 test programs, 100% pass rate)
+✅ Stress tested (buffer overflow, concurrent connections)
+✅ Professional features (filtering, transformation, recording, 14-bit CC)
+✅ Device identity protocol (Universal Device Inquiry)
 
 **Ready for:** DAW applications, game engines, audio plugins, music software, real-time performance, professional audio production
 
@@ -312,7 +314,7 @@ situation/                         # Project root
 
 ### Breaking Changes
 
-**None!** Version 2.4.0 is fully backward compatible with v2.3.64. 
+**None!** Version 2.4.0 is fully backward compatible with v2.3.64.
 
 - All new audio functionality is additive
 - Folder reorganization is transparent to users (they still just `#include "situation.h"`)
@@ -363,14 +365,14 @@ This release implements Phase 1 of the Audio Device Registry system, establishin
   - Registration API with validation and duplicate detection
   - Query API for introspection (by type, by index, iteration)
   - Helper functions for category/type names and error messages
-  
+
 - **Device Registration:**
   - Created `sit/aud/registry_init.h` with device registration functions
   - Registered 4 initial devices: Reverb, Echo, Tone Synth, Panner
   - Comprehensive control descriptors with ranges, defaults, units
   - Support for enum controls (e.g., waveform selection)
   - Support for control inputs (for modulation)
-  
+
 - **Integration:**
   - Registry automatically initializes on first audio device setup
   - One-time initialization with static flag
@@ -425,7 +427,7 @@ This release continues the audio subsystem modularization effort by extracting t
   - Created `doc/AUDIO_DEVICE_INVENTORY.md` documenting all 18+ audio processing devices.
   - Comprehensive catalog of effects, sources, dynamics, and utilities.
   - Organized by category with full control specifications.
-  
+
 - **Registry Plan Update:**
   - Updated `doc/plan_audio_registry.md` to reflect actual device count (18+ vs. original estimate of 7).
   - Revised Phase 2 to include all existing modular devices from `sit/aud/`.
@@ -826,7 +828,7 @@ SituationCreateImage(1024, 768, 4, &img);
 img.color_encoding = SITUATION_COLOR_LINEAR;  // Required for storage!
 
 SituationTexture tex;
-SituationCreateTextureEx(img, false, 
+SituationCreateTextureEx(img, false,
     SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE, &tex);
 ```
 
