@@ -1,3 +1,16 @@
+## [v2.4.4 "Edge-Case Engine Goofs"] - 2026-04-10
+
+### Description
+
+This patch addresses four obscure, edge-case bugs across the Vulkan and OpenGL renderers and the audio capture subsystem to prevent memory leaks, visual glitches, and micro-stutters.
+
+### Critical Fixes
+
+- **Vulkan Screenshot Layout Hazard:** Fixed a Vulkan Validation layer error when taking a screenshot. `SituationLoadImageFromScreen` now correctly expects `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR` as the image layout because the render pass is forcefully ended via `vkEndCommandBuffer` prior to the pixel copy.
+- **OpenGL Ghost Texture Cache:** Fixed a visual glitch in the Virtual Bindless LRU Cache. `SituationDestroyTexture` now actively searches for and erases the destroyed texture ID from `sit_render.gl.virtual_texture_slots` to prevent 'ghost textures' caused by OpenGL driver ID recycling.
+- **Vulkan Virtual Display Descriptor Leak:** Fixed a permanent VRAM exhaustion leak. If `SituationCreateVirtualDisplay` fails halfway through initialization, the cleanup block now explicitly frees the individual descriptor set using `vkFreeDescriptorSets`.
+- **Audio Capture Micro-Stutter:** Fixed main thread heap fragmentation and stuttering caused by polling audio capture events. `SituationPollInputEvents` now utilizes a persistent, dynamically growable scratch buffer (`audio_capture_temp_buffer` via `SIT_REALLOC`) instead of executing `SIT_MALLOC` and `SIT_FREE` every frame.
+
 ## [v2.4.3 "Virtual Display Compositing & Performance Parity"] - 2026-03-27
 
 ### Description
