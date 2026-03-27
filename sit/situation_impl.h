@@ -1384,6 +1384,9 @@ typedef struct {
     size_t audio_capture_queue_capacity;                      // Total size of the capture ring buffer
     ma_mutex audio_capture_mutex;                             // Mutex protecting the capture ring buffer
 
+    float* audio_capture_temp_buffer;                         // Permanent scratch buffer for main thread audio capture polling
+    size_t audio_capture_temp_buffer_capacity;                // Capacity of the permanent scratch buffer in floats
+
     // [NEW] Safety flag for Snapshotting
     atomic_bool is_processing_snapshot;
 
@@ -5522,6 +5525,9 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     sit_audio.audio_callback_decoder_temp_buffer = (float*)SIT_MALLOC(decoder_buf_size);
     sit_audio.audio_callback_effects_temp_buffer = (float*)SIT_MALLOC(effects_buf_size);
     sit_audio.audio_callback_converter_temp_buffer = (float*)SIT_MALLOC(converter_buf_size);
+
+    sit_audio.audio_capture_temp_buffer = NULL;
+    sit_audio.audio_capture_temp_buffer_capacity = 0;
     if (!sit_audio.audio_callback_decoder_temp_buffer || !sit_audio.audio_callback_effects_temp_buffer || !sit_audio.audio_callback_converter_temp_buffer) {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Audio callback temp buffers");
         return SITUATION_ERROR_MEMORY_ALLOCATION;
@@ -11804,12 +11810,19 @@ SITAPI void SituationPollInputEvents(void) {
         size_t samples_to_read = frames_available * channels;
 
         if (frames_available > 0) {
-            // 1. Allocate a linear temporary buffer
-            // We use SIT_MALLOC here to avoid stack overflow on large chunks,
-            // though a static scratch buffer would be an optimization for v2.4.
-            float* temp_buffer = (float*)SIT_MALLOC(samples_to_read * sizeof(float));
+            // 1. Ensure temporary scratch buffer is large enough
+            if (samples_to_read > sit_audio.audio_capture_temp_buffer_capacity) {
+                size_t new_capacity = samples_to_read * 2; // Grow with some headroom
+                void* new_buf = SIT_REALLOC(sit_audio.audio_capture_temp_buffer, new_capacity * sizeof(float));
+                if (new_buf) {
+                    sit_audio.audio_capture_temp_buffer = (float*)new_buf;
+                    sit_audio.audio_capture_temp_buffer_capacity = new_capacity;
+                }
+            }
 
-            if (temp_buffer) {
+            float* temp_buffer = sit_audio.audio_capture_temp_buffer;
+
+            if (temp_buffer && sit_audio.audio_capture_temp_buffer_capacity >= samples_to_read) {
                 // 2. Copy and Linearize Data
                 if (write_head >= read_head) {
                     // Contiguous block
@@ -11831,11 +11844,8 @@ SITAPI void SituationPollInputEvents(void) {
 
                 // 5. Dispatch to User
                 sit_audio.capture_callback(temp_buffer, (uint32_t)frames_available, sit_audio.capture_user_data);
-
-                // 6. Cleanup
-                SIT_FREE(temp_buffer);
             } else {
-                // Malloc failed, just unlock. We'll try again next frame.
+                // Realloc failed or buffer too small, just unlock. We'll try again next frame.
                 // Data remains in buffer (potentially overflowing eventually, but safe crash-wise).
                 ma_mutex_unlock(&sit_audio.audio_capture_mutex);
             }
@@ -12146,6 +12156,9 @@ static void _SituationCleanupSubsystems(void) {
     sit_audio.audio_callback_decoder_temp_buffer = NULL;
     sit_audio.audio_callback_effects_temp_buffer = NULL;
     sit_audio.audio_callback_converter_temp_buffer = NULL;
+
+    SIT_FREE(sit_audio.audio_capture_temp_buffer);
+    sit_audio.audio_capture_temp_buffer = NULL;
 
     // [v2.4] Cleanup Dynamic Audio Arrays
     SIT_FREE(sit_audio.active_voices);
@@ -18084,6 +18097,13 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
 
 #if defined(SITUATION_USE_OPENGL)
     _SitGLDeferDestroyTexture(slot->gl_texture_id);
+    // Erase from Virtual Bindless Cache to prevent ID-recycle collisions
+    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+        if (sit_render.gl.virtual_texture_slots[i].gl_texture_id == slot->gl_texture_id) {
+            sit_render.gl.virtual_texture_slots[i].is_active = false;
+            sit_render.gl.virtual_texture_slots[i].gl_texture_id = 0;
+        }
+    }
     slot->gl_texture_id = 0;
 #elif defined(SITUATION_USE_VULKAN)
     _SituationDeferDestroyImage(slot->image, slot->allocation, slot->image_view, slot->sampler);
@@ -23347,7 +23367,11 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
         if (vd->vk.depth_image != VK_NULL_HANDLE) vmaDestroyImage(sit_render.vk.vma_allocator, vd->vk.depth_image, vd->vk.depth_image_memory);
         if (vd->vk.image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_render.vk.device, vd->vk.image_view, NULL);
         if (vd->vk.image != VK_NULL_HANDLE) vmaDestroyImage(sit_render.vk.vma_allocator, vd->vk.image, vd->vk.image_memory);
-        // Note: descriptor set is freed when its pool is destroyed, we don't free individual sets on failure usually
+
+        if (vd->vk.descriptor_set != VK_NULL_HANDLE && vd->vk.descriptor_pool != VK_NULL_HANDLE) {
+            vkFreeDescriptorSets(sit_render.vk.device, vd->vk.descriptor_pool, 1, &vd->vk.descriptor_set);
+        }
+
         return SITUATION_ERROR_VULKAN_INIT_FAILED;
     }
 
@@ -29405,7 +29429,9 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
     // FIX: Since we are inside the render loop (between Acquire and EndFrame),
     // the image is currently being used as a Color Attachment.
     // We must tell the helper this so it can correctly transition it away and back.
-    VkImageLayout currentLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // Because we forcefully ended the render pass via vkEndCommandBuffer below,
+    // the image has implicitly transitioned to its final layout.
+    VkImageLayout currentLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     // 3. Perform the Copy.
     // [SAFETY] If the command buffer is recording, we must close it and sync with the GPU
