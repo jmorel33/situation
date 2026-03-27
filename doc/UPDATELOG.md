@@ -1,3 +1,14 @@
+## [v2.4.2 "OpenGL Deferred Rendering Architecture"] - 2026-03-12
+
+### Description
+
+This release addresses two critical architectural flaws in the OpenGL backend that previously broke the multithreaded Deferred Soft Command Buffer architecture. The OpenGL backend now achieves true architectural parity with Vulkan by enforcing all GL execution exclusively on the Render Thread. No regressions were found during compilation and basic tests.
+
+### Critical Fixes
+
+- **Deferred Virtual Displays:** `SituationRenderVirtualDisplays` no longer makes illegal synchronous OpenGL calls on the Main Thread. It now pushes a new `SIT_OP_RENDER_VIRTUAL_DISPLAYS` opcode to the Soft Command Buffer. The actual GL compositing logic has been successfully migrated to `_SituationGLExecuteCommands` to run safely on the Render Thread.
+- **Resize Context Corruption Fix:** Removed direct GL calls (`glViewport`, `glTexImage2D`) from the `_SituationGLFWFramebufferSizeCallback` which runs on the Main Thread. Window resizing now sets a `shadow_state_dirty` flag, allowing the Render Thread to lazily update its projection matrices and framebuffers during the next execution loop. This mirrors Vulkan's approach and prevents coordinate math breakage and context corruption.
+
 ## [v2.4.1 "Complete MIDI Architecture & Device Identity"] - 2026-03-09 [IN PROGRESS]
 
 ### Description

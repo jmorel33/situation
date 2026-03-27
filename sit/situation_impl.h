@@ -641,6 +641,7 @@ typedef enum {
     SIT_OP_DISPATCH,
     SIT_OP_BIND_COMPUTE_PIPELINE,
     SIT_OP_PRESENT,
+    SIT_OP_RENDER_VIRTUAL_DISPLAYS,
     SIT_OP_DRAW_TEXT, // Special op for deferred text drawing
     SIT_OP_DRAW_TEXT_EX, // [v2.3.23] Extended text op
     SIT_OP_UPDATE_BUFFER,
@@ -3893,25 +3894,9 @@ static void _SituationGLFWFramebufferSizeCallback(GLFWwindow* window, int width,
     sit_gs.was_window_resized_last_frame = true;
 
 #if defined(SITUATION_USE_OPENGL)
-    // For OpenGL, we can immediately update the viewport and projection matrices.
-    glViewport(0, 0, width, height);
-
-    // Update orthographic projection matrix for Virtual Display compositing
-    glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, sit_render.gl.vd_ortho_projection);
-
-    // Resize the texture used for advanced compositing
-    if (sit_render.gl.composite_copy_texture_id != 0) {
-        glBindTexture(GL_TEXTURE_2D, sit_render.gl.composite_copy_texture_id);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-
-    // Update the projection matrix for the internal quad renderer.
-    if (sit_render.gl.quad_shader_program) {
-        mat4 proj_quad;
-        glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, proj_quad);
-        glProgramUniformMatrix4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)proj_quad);
-    }
+    // Mark shadow state as dirty so the Render Thread knows it needs to rebuild
+    // internal textures and projections on its next loop.
+    sit_render.gl.shadow_state_dirty = true;
 
 #elif defined(SITUATION_USE_VULKAN)
     // For Vulkan, we CANNOT recreate the swapchain here because this callback can be called from within other functions (like glfwPollEvents) and
@@ -6019,6 +6004,29 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
     // [v2.3.31] Optimization: Track bound texture locally to avoid glGetIntegerv stalls in draw calls
     // GLuint current_bound_texture_id = 0; // REPLACED by sit_render.gl.current_bound_texture_id
 
+    static int cached_w = 0;
+    static int cached_h = 0;
+
+    // If the window resized, rebuild the Render Thread's target FBO resources safely
+    if (cached_w != sit_gs.main_window_width || cached_h != sit_gs.main_window_height || sit_render.gl.shadow_state_dirty) {
+        cached_w = sit_gs.main_window_width;
+        cached_h = sit_gs.main_window_height;
+
+        glm_ortho(0.0f, (float)cached_w, (float)cached_h, 0.0f, -1.0f, 1.0f, sit_render.gl.vd_ortho_projection);
+
+        if (sit_render.gl.composite_copy_texture_id != 0) {
+            glBindTexture(GL_TEXTURE_2D, sit_render.gl.composite_copy_texture_id);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, cached_w, cached_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        if (sit_render.gl.quad_shader_program) {
+            glProgramUniformMatrix4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_render.gl.vd_ortho_projection);
+        }
+
+        sit_render.gl.shadow_state_dirty = false;
+    }
+
     // --- [v2.3.27] State Hardening: Reset critical state ---
     // We cannot assume the state from the previous frame persists,
     // because external code (ImGui, etc.) might have run in between.
@@ -6562,6 +6570,86 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         0, 0, p->args.present.target_w, p->args.present.target_h,
                         GL_COLOR_BUFFER_BIT, GL_LINEAR);
                     glDeleteFramebuffers(1, &fbo);
+                }
+                break;
+
+            case SIT_OP_RENDER_VIRTUAL_DISPLAYS:
+                {
+                    _SitGLStateBackup gl_backup;
+                    _SitGLBackupState(&gl_backup);
+
+                    glDisable(GL_DEPTH_TEST);
+                    glDisable(GL_CULL_FACE);
+                    glBindVertexArray(sit_render.gl.vd_quad_vao);
+
+                    float target_width = (float)sit_gs.main_window_width;
+                    float target_height = (float)sit_gs.main_window_height;
+
+                    // Sort the active VDs by Z-Order
+                    SituationVirtualDisplay* vds[SITUATION_MAX_VIRTUAL_DISPLAYS];
+                    int v_count = 0;
+                    for (int v = 0; v < SITUATION_MAX_VIRTUAL_DISPLAYS; ++v) {
+                        if (sit_render.virtual_display_slots_used[v] &&
+                            sit_render.virtual_display_slots[v].visible &&
+                            sit_render.virtual_display_slots[v].opacity > 0.001f &&
+                            sit_render.virtual_display_slots[v].gl.texture_id != 0) {
+                            vds[v_count++] = &sit_render.virtual_display_slots[v];
+                        }
+                    }
+                    qsort(vds, v_count, sizeof(SituationVirtualDisplay*), _SituationSortVirtualDisplaysCallback);
+
+                    for (int v = 0; v < v_count; ++v) {
+                        const SituationVirtualDisplay* vd = vds[v];
+                        mat4 T_mat, S_mat, model_matrix;
+                        glm_mat4_identity(model_matrix);
+
+                        if (vd->scaling_mode == SITUATION_SCALING_STRETCH) {
+                            glm_translate_make(T_mat, (vec3){vd->offset.x, vd->offset.y, 0.0f});
+                            glm_scale_make(S_mat, (vec3){vd->resolution.x, vd->resolution.y, 1.0f});
+                            glm_mat4_mul(T_mat, S_mat, model_matrix);
+                        } else if (vd->scaling_mode == SITUATION_SCALING_FIT) {
+                            float final_scale = fminf(target_width / vd->resolution.x, target_height / vd->resolution.y);
+                            glm_translate_make(T_mat, (vec3){(target_width - (vd->resolution.x * final_scale)) / 2.0f, (target_height - (vd->resolution.y * final_scale)) / 2.0f, 0.0f});
+                            glm_scale_make(S_mat, (vec3){vd->resolution.x * final_scale, vd->resolution.y * final_scale, 1.0f});
+                            glm_mat4_mul(T_mat, S_mat, model_matrix);
+                        } else {
+                            float final_scale = fmaxf(1.0f, floorf(fminf(target_width / vd->resolution.x, target_height / vd->resolution.y)));
+                            glm_translate_make(T_mat, (vec3){(target_width - (vd->resolution.x * final_scale)) / 2.0f, (target_height - (vd->resolution.y * final_scale)) / 2.0f, 0.0f});
+                            glm_scale_make(S_mat, (vec3){vd->resolution.x * final_scale, vd->resolution.y * final_scale, 1.0f});
+                            glm_mat4_mul(T_mat, S_mat, model_matrix);
+                        }
+
+                        if (vd->blend_mode >= SITUATION_BLEND_OVERLAY) {
+                            glBindTexture(GL_TEXTURE_2D, sit_render.gl.composite_copy_texture_id);
+                            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, (GLsizei)target_width, (GLsizei)target_height);
+                            glProgramUniformMatrix4fv(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_render.gl.vd_ortho_projection);
+                            glProgramUniformMatrix4fv(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
+                            glProgramUniform1i(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_BLEND_MODE, vd->blend_mode);
+                            glProgramUniform1f(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
+                            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_1, sit_render.gl.composite_copy_texture_id);
+                            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->gl.texture_id);
+                            glUseProgram(sit_render.gl.composite_shader_program_id);
+                            glDisable(GL_BLEND);
+                            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                        } else {
+                            glProgramUniformMatrix4fv(sit_render.gl.vd_shader_program_id, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_render.gl.vd_ortho_projection);
+                            glProgramUniformMatrix4fv(sit_render.gl.vd_shader_program_id, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
+                            glProgramUniform1f(sit_render.gl.vd_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
+                            glUseProgram(sit_render.gl.vd_shader_program_id);
+                            glEnable(GL_BLEND);
+                            glBlendEquation(GL_FUNC_ADD);
+                            switch (vd->blend_mode) {
+                                case SITUATION_BLEND_ADDITIVE: glBlendFunc(GL_SRC_ALPHA, GL_ONE); break;
+                                case SITUATION_BLEND_MULTIPLY: glBlendFunc(GL_DST_COLOR, GL_ZERO); break;
+                                case SITUATION_BLEND_SCREEN:   glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
+                                case SITUATION_BLEND_NONE:     glDisable(GL_BLEND); break;
+                                default:                       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
+                            }
+                            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->gl.texture_id);
+                            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                        }
+                    }
+                    _SitGLRestoreState(&gl_backup);
                 }
                 break;
 
@@ -23546,115 +23634,10 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
 
     // --- Backend-Specific Rendering ---
 #if defined(SITUATION_USE_OPENGL)
-    (void)cmd; // Mark as unused for OpenGL backend.
-
-    // --- Robust State Backup ---
-    _SitGLStateBackup gl_backup;
-    _SitGLBackupState(&gl_backup);
-
-    // --- OpenGL State Setup for Virtual Display Compositing ---
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE); // Ensure we draw the quad regardless of winding
-
-    // 1. Bind OUR PRIVATE VAO for compositing.
-    glBindVertexArray(sit_render.gl.vd_quad_vao);
-    // sit_render.gl.current_vao_id = sit_render.gl.vd_quad_vao; // Assuming internal use doesn't require tracking for backup/restore as backup is already done
-
-    // Get the dimensions of the current render target
-    float target_width = (float)sit_gs.main_window_width;
-    float target_height = (float)sit_gs.main_window_height;
-
-    // --- Loop, Transform, and Draw ---
-    for (int i = 0; i < visible_count; ++i) {
-        const SituationVirtualDisplay* vd = visible_vds_to_render[i];
-
-        // Calculate Model Matrix
-        mat4 T_mat, S_mat;
-        mat4 model_matrix;
-        glm_mat4_identity(model_matrix);
-
-        switch (vd->scaling_mode) {
-            case SITUATION_SCALING_STRETCH: {
-                glm_translate_make(T_mat, (vec3){vd->offset.x, vd->offset.y, 0.0f});
-                glm_scale_make(S_mat, (vec3){vd->resolution.x, vd->resolution.y, 1.0f});
-                glm_mat4_mul(T_mat, S_mat, model_matrix);
-                break;
-            }
-            case SITUATION_SCALING_FIT: {
-                float scale_x = target_width / vd->resolution.x;
-                float scale_y = target_height / vd->resolution.y;
-                float final_scale = fminf(scale_x, scale_y);
-                float final_width = vd->resolution.x * final_scale;
-                float final_height = vd->resolution.y * final_scale;
-                float final_x = (target_width - final_width) / 2.0f;
-                float final_y = (target_height - final_height) / 2.0f;
-                glm_translate_make(T_mat, (vec3){final_x, final_y, 0.0f});
-                glm_scale_make(S_mat, (vec3){final_width, final_height, 1.0f});
-                glm_mat4_mul(T_mat, S_mat, model_matrix);
-                break;
-            }
-            case SITUATION_SCALING_INTEGER: {
-                float scale_x = target_width / vd->resolution.x;
-                float scale_y = target_height / vd->resolution.y;
-                float final_scale = fmaxf(1.0f, floorf(fminf(scale_x, scale_y)));
-                float final_width = vd->resolution.x * final_scale;
-                float final_height = vd->resolution.y * final_scale;
-                float final_x = (target_width - final_width) / 2.0f;
-                float final_y = (target_height - final_height) / 2.0f;
-                glm_translate_make(T_mat, (vec3){final_x, final_y, 0.0f});
-                glm_scale_make(S_mat, (vec3){final_width, final_height, 1.0f});
-                glm_mat4_mul(T_mat, S_mat, model_matrix);
-                break;
-            }
-        }
-
-        bool use_advanced_shader = (vd->blend_mode >= SITUATION_BLEND_OVERLAY);
-        if (use_advanced_shader) {
-            // --- ADVANCED SHADER PATH ---
-            glBindTexture(GL_TEXTURE_2D, sit_render.gl.composite_copy_texture_id);
-            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, sit_gs.main_window_width, sit_gs.main_window_height);
-
-            glProgramUniformMatrix4fv(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_render.gl.vd_ortho_projection);
-            glProgramUniformMatrix4fv(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
-            glProgramUniform1i(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_BLEND_MODE, vd->blend_mode);
-            glProgramUniform1f(sit_render.gl.composite_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
-
-            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_1, sit_render.gl.composite_copy_texture_id); // Destination
-            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->gl.texture_id);                  // Source
-
-            glUseProgram(sit_render.gl.composite_shader_program_id);
-            sit_render.gl.current_program_id = sit_render.gl.composite_shader_program_id;
-            glDisable(GL_BLEND); // Blending handled in shader
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-
-        } else {
-            // --- SIMPLE SHADER PATH ---
-            glProgramUniformMatrix4fv(sit_render.gl.vd_shader_program_id, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)sit_render.gl.vd_ortho_projection);
-            glProgramUniformMatrix4fv(sit_render.gl.vd_shader_program_id, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)model_matrix);
-            glProgramUniform1f(sit_render.gl.vd_shader_program_id, SIT_UNIFORM_LOC_OPACITY, vd->opacity);
-
-            glUseProgram(sit_render.gl.vd_shader_program_id);
-            sit_render.gl.current_program_id = sit_render.gl.vd_shader_program_id;
-            glEnable(GL_BLEND);
-            glBlendEquation(GL_FUNC_ADD);
-            switch (vd->blend_mode) {
-                case SITUATION_BLEND_ALPHA:    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
-                case SITUATION_BLEND_ADDITIVE: glBlendFunc(GL_SRC_ALPHA, GL_ONE); break;
-                case SITUATION_BLEND_MULTIPLY: glBlendFunc(GL_DST_COLOR, GL_ZERO); break;
-                case SITUATION_BLEND_SCREEN:   glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
-                case SITUATION_BLEND_NONE:     glDisable(GL_BLEND); break;
-                default:                       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
-            }
-
-            glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->gl.texture_id);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    if (!_SitGLSoftCmdPush(buf, SIT_OP_RENDER_VIRTUAL_DISPLAYS)) {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
-
-    // --- Robust State Restoration ---
-    _SitGLRestoreState(&gl_backup);
-
-    SIT_CHECK_GL_ERROR();
 #elif defined(SITUATION_USE_VULKAN)
     if (sit_render.vk.vd_compositing_pipeline == VK_NULL_HANDLE) return SITUATION_ERROR_NOT_INITIALIZED;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
