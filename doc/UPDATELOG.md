@@ -1,4 +1,4 @@
-## [v2.4.4 "Edge-Case Engine Goofs"] - 2026-04-10
+## [v2.4.4 "Edge-Case Engine Goofs"] - 2026-03-27
 
 ### Description
 
@@ -11,7 +11,7 @@ This patch addresses four obscure, edge-case bugs across the Vulkan and OpenGL r
 - **Vulkan Virtual Display Descriptor Leak:** Fixed a permanent VRAM exhaustion leak. If `SituationCreateVirtualDisplay` fails halfway through initialization, the cleanup block now explicitly frees the individual descriptor set using `vkFreeDescriptorSets`.
 - **Audio Capture Micro-Stutter:** Fixed main thread heap fragmentation and stuttering caused by polling audio capture events. `SituationPollInputEvents` now utilizes a persistent, dynamically growable scratch buffer (`audio_capture_temp_buffer` via `SIT_REALLOC`) instead of executing `SIT_MALLOC` and `SIT_FREE` every frame.
 
-## [v2.4.3 "Virtual Display Compositing & Performance Parity"] - 2026-03-27
+## [v2.4.3 "Virtual Display Compositing & Performance Parity"] - 2026-03-26
 
 ### Description
 
