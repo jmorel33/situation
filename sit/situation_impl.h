@@ -449,11 +449,9 @@ static void _SituationAssertMainThread(const char* file, int line) {
 #if defined(SITUATION_USE_VULKAN)
 
 static void _SituationFatalError(const char* msg) {
-    fprintf(stderr, "FATAL ERROR: %s
-", msg);
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
     exit(1);
 }
-
 // It is highly recommended to use the Vulkan Memory Allocator for production code.
 // Download the "vk_mem_alloc.h" file from the official repository and place it in your project.
 // Note: VMA is a C++ library. We use a C wrapper (vma_wrapper.h) to allow C compilation.
@@ -531,6 +529,11 @@ typedef struct _SituationUniformMap {
 typedef struct _SituationComputePipeline {
     uint32_t id; // Public facing ID
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     VkPipeline vk_pipeline;
     VkPipelineLayout vk_pipeline_layout;
     // --- NEW: Persistent Descriptor Set for this pipeline's layout ---
@@ -718,6 +721,11 @@ typedef struct _SitGLVaoCacheEntry {
 #endif
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
 // --- VULKAN IMPLEMENTATION SECTION ---
 
 // --- Internal Vulkan Helper Data Structures ---
@@ -1338,17 +1346,19 @@ typedef struct {
 typedef enum {
     SIT_AUDIO_CMD_PLAY_SOUND,
     SIT_AUDIO_CMD_STOP_SOUND,
-    SIT_AUDIO_CMD_STOP_ALL_SOUNDS,
     SIT_AUDIO_CMD_SET_SOUND_VOLUME,
     SIT_AUDIO_CMD_SET_SOUND_PAN,
     SIT_AUDIO_CMD_SET_SOUND_PITCH,
     SIT_AUDIO_CMD_PLAY_TONE,
-    SIT_AUDIO_CMD_STOP_TONE
+    SIT_AUDIO_CMD_STOP_TONE,
+    SIT_AUDIO_CMD_STOP_ALL_SOUNDS,
+    SIT_AUDIO_CMD_STOP_ALL_TONES
 } SituationAudioCommandType;
 
 typedef struct {
     SituationAudioCommandType type;
     struct _SituationSound* sound;
+    SituationToneHandle tone_handle;
     SituationWaveType tone_type;
     float frequency;
     float pan;
@@ -1357,8 +1367,7 @@ typedef struct {
     float sustain_level;
     float release_sec;
     float hold_sec;
-    uint32_t tone_id;
-    float value;
+    float value; // for volume/pan/pitch
 } SituationAudioCommand;
 
 #define SIT_AUDIO_CMD_QUEUE_SIZE 512
@@ -1392,9 +1401,11 @@ typedef struct {
 
     // [FIX v2.3.27B] Use C11 Recursive Mutex to prevent deadlocks when
     // API functions are called from within audio callbacks/processors.
+    mtx_t audio_queue_mutex;                                       // Mutex protecting structural queues
     SituationAudioCommand audio_command_queue[SIT_AUDIO_CMD_QUEUE_SIZE];
-    atomic_size_t audio_command_head;
-    atomic_size_t audio_command_tail;
+    atomic_size_t audio_command_write; // Main thread writes here, then advances commit
+    atomic_size_t audio_command_commit; // Audio thread reads from tail up to commit
+    atomic_size_t audio_command_tail; // Audio thread reads from here
 
     // Pre-allocated temp buffers for the audio callback (avoids SIT_MALLOC on audio thread)
     float* audio_callback_decoder_temp_buffer;            // Scratch buffer for decoding PCM
@@ -1538,6 +1549,11 @@ typedef struct _SituationTextureSlot {
 
     // Backend Resources
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     VkImage image;
     VkFormat format;                    // Texture format (UNORM or SRGB)
     VkImageView image_view;
@@ -1562,6 +1578,11 @@ typedef struct {
     bool debug_draw_command_issued_this_frame;                // Debug flag to detect illegal state changes during a frame
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     _SituationVulkanState vk;                                 // Encapsulated Vulkan-specific state handles
 #elif defined(SITUATION_USE_OPENGL)
     _SituationGLState gl;                                     // Encapsulated OpenGL-specific state handles
@@ -1939,6 +1960,11 @@ static const char* SIT_VD_VERTEX_SHADER_SRC =
     "layout(location = 0) out vec2 v_texCoord;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
     "layout(push_constant) uniform VDPushConstants { mat4 model; float opacity; } pc;\n"
     "void main() {\n"
@@ -1961,12 +1987,22 @@ static const char* SIT_VD_FRAGMENT_SHADER_SRC =
     "layout(location = 0) out vec4 outColor;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_VD_SOURCE) ") uniform sampler2D u_screenTexture;\n"
 #elif defined(SITUATION_USE_OPENGL)
     "uniform sampler2D u_screenTexture;\n"
 #endif
     "\n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     "layout(push_constant) uniform VDPushConstants { mat4 model; float opacity; } pc;\n"
     "void main() {\n"
     "    vec4 texColor = texture(u_screenTexture, v_texCoord);\n"
@@ -2001,6 +2037,11 @@ static const char* SIT_COMPOSITE_VERTEX_SHADER_SRC =
     "layout(location = 0) out vec2 v_texCoord;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
     "layout(push_constant) uniform CompositePushConstants { mat4 model; int blendMode; float opacity; } pc;\n"
     "void main() {\n"
@@ -2023,6 +2064,11 @@ static const char* SIT_COMPOSITE_FRAGMENT_SHADER_SRC =
     "layout(location = 0) out vec4 outColor;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     // Sampler bindings: Set 1 = VD source (binding 4), Set 2 = screen copy (binding 5)\n"
     "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_VD_SOURCE) ") uniform sampler2D u_sourceTexture;\n"
     "layout(set = 2, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_VD_DEST) ") uniform sampler2D u_destinationTexture;\n"
@@ -2037,6 +2083,11 @@ static const char* SIT_COMPOSITE_FRAGMENT_SHADER_SRC =
     "\n"
     // --- Backend-Specific Uniform/Push Constant Declarations ---\n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     "layout(push_constant) uniform CompositePushConstants { mat4 model; int blendMode; float opacity; } pc;\n"
 #elif defined(SITUATION_USE_OPENGL)
     "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_BLEND_MODE) ") uniform int u_blendMode;\n"
@@ -2048,6 +2099,11 @@ static const char* SIT_COMPOSITE_FRAGMENT_SHADER_SRC =
     "    int blendMode;\n"
     "    float opacity;\n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     "    blendMode = pc.blendMode;\n"
     "    opacity = pc.opacity;\n"
 #else // OpenGL
@@ -2097,6 +2153,11 @@ static const char* SIT_QUAD_VERTEX_SHADER =
     "\n"
     // --- Backend-Agnostic Uniform Block --- \n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
     // Added uv_rect to push constants
     "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; uint texture_id; int use_texture; } pc;\n"
@@ -2129,6 +2190,11 @@ static const char* SIT_QUAD_FRAGMENT_SHADER =
     "layout(location = 0) out vec4 outColor;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     "#extension GL_EXT_nonuniform_qualifier : require\n"
     "layout(set = 1, binding = 0) uniform sampler2D global_textures[];\n"
     "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; uint texture_id; int use_texture; } pc;\n"
@@ -2181,6 +2247,11 @@ static const char* SIT_TEXT_VERTEX_SHADER =
     "layout(location = 0) out vec2 v_TexCoord;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
     "layout(push_constant) uniform TextPushConstants { vec4 color; uint texture_id; } pc;\n"
     "void main() {\n"
@@ -2208,6 +2279,11 @@ static const char* SIT_TEXT_FRAGMENT_SHADER =
     "layout(location = 0) out vec4 outColor;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     "layout(set = 1, binding = 0) uniform sampler2D global_textures[];\n"
     // Note: Added texture_id to Push Constants
     "layout(push_constant) uniform TextPushConstants { vec4 color; uint texture_id; } pc;\n"
@@ -2333,6 +2409,11 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const _SituationSpirvBlo
 // Vulkan Backend Helpers
 //==================================================================================
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
 
 #define SITUATION_VULKAN_MAX_INSTANCE_EXTENSIONS      16
 #define SITUATION_VULKAN_UNIFORM_BUFFER_SIZE          256
@@ -2903,6 +2984,11 @@ static int32_t _sit_uniform_map_get(_SituationUniformMap* map, const char* key) 
 }
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
 /**
  * @brief [INTERNAL] Initializes the Per-Frame Staging Ring Buffers.
  *
@@ -4492,6 +4578,11 @@ static void _SituationFullCleanupOnError(void) {
     // Before attempting to destroy any graphics resources, it's prudent to wait for the GPU to finish any operations that might be using them.
     // This helps prevent validation errors or crashes during cleanup, especially if the error occurred partway through renderer initialization.
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     {
         // For Vulkan, wait for the logical device to be idle.
         // This ensures all submitted work on all queues is finished.
@@ -4811,6 +4902,11 @@ static void _SituationDestroyRenderThread(void) {
 // [v2.3.24b] Integration Zenith: Initialization Validation
 static bool _SituationValidateRenderCaps(void) {
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     if (sit_render.vk.device) {
         // Validate Semaphore Creation (Critical for Queue Sync)
         VkSemaphoreCreateInfo sema_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -4922,25 +5018,27 @@ static bool _SituationValidateRenderCaps(void) {
 #include <pthread.h>
 #include <sched.h>
 #endif
+#if defined(__APPLE__)
+#include <mach/mach_init.h>
+#include <mach/thread_policy.h>
+#include <mach/thread_act.h>
+#endif
 
 static void _SituationSetThreadAffinity(bool high_perf) {
 #if defined(_WIN32)
     HANDLE thread = GetCurrentThread();
-    DWORD_PTR mask = high_perf ? 1 : 2; // Extremely simplified, ideally you query cores. Let's just set to 1 for high perf, and 2 for low perf.
+    DWORD_PTR mask = high_perf ? 1 : 2;
     SetThreadAffinityMask(thread, mask);
 #elif defined(__linux__)
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     if (high_perf) {
-        CPU_SET(0, &cpuset); // Assume core 0 is P-core
+        CPU_SET(0, &cpuset);
     } else {
-        CPU_SET(1, &cpuset); // Assume core 1 is E-core
+        CPU_SET(1, &cpuset);
     }
     pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 #elif defined(__APPLE__)
-    #include <mach/mach_init.h>
-    #include <mach/thread_policy.h>
-    #include <mach/thread_act.h>
     thread_port_t mach_thread = mach_thread_self();
     thread_affinity_policy_data_t policyData = { high_perf ? 1 : 2 };
     thread_policy_set(mach_thread, THREAD_AFFINITY_POLICY, (thread_policy_t)&policyData, THREAD_AFFINITY_POLICY_COUNT);
@@ -5151,8 +5249,8 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
 
     // Clear any lingering error message and set a success indicator.
     _SituationSetError("SituationInit: No error. Initialization successful.");
-    _SituationSetThreadAffinity(true);
 
+    _SituationSetThreadAffinity(true);
     // --- 7. Return Success ---
     return SITUATION_SUCCESS;
 }
@@ -5326,6 +5424,11 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
     // Window hints must be set *before* calling glfwCreateWindow.
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     {
         // --- Vulkan-Specific Hints ---
         // For Vulkan, we explicitly tell GLFW *not* to create an OpenGL context.
@@ -5465,6 +5568,11 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
 
     // Dispatch to the appropriate backend initialization function based on the compile-time flag.
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
         // Vulkan backend is selected. Initialize it.
         return _SituationInitVulkan(init_info);
 #elif defined(SITUATION_USE_OPENGL)
@@ -5569,7 +5677,10 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     // [FIX v2.3.27B] Initialize recursive mutex
     // This allows the same thread (Audio Thread) to re-acquire the lock if a
     // user processor calls a Situation API function.
-    // audio_queue_mutex removed in favor of lock-free queue
+    if (mtx_init(&sit_audio.audio_queue_mutex, mtx_recursive) != thrd_success) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to initialize recursive audio mutex");
+        return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
+    }
 
     // Initialize capture queue if requested
     if (init_info->flags & SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD) {
@@ -5617,7 +5728,8 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     if (!sit_audio.active_voices) return SITUATION_ERROR_MEMORY_ALLOCATION;
     sit_audio.active_voice_capacity = initial_cap;
     sit_audio.active_voice_count = 0;
-    atomic_init(&sit_audio.audio_command_head, 0);
+    atomic_init(&sit_audio.audio_command_write, 0);
+    atomic_init(&sit_audio.audio_command_commit, 0);
     atomic_init(&sit_audio.audio_command_tail, 0);
 
     // Snapshot buffer (initialized to same capacity)
@@ -7687,6 +7799,11 @@ static int _SituationVirtualBindlessBind(GLuint gl_texture_id) {
 #endif // SITUATION_USE_OPENGL
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
 /**
  * @brief [INTERNAL] Initializes Vulkan pipelines for the Virtual Display Compositing system.
  * @details This function is the second stage of internal renderer setup. It compiles and creates the specific graphics pipelines used by `SituationRenderVirtualDisplays` to draw off-screen framebuffers onto the main screen.
@@ -12142,6 +12259,11 @@ SITAPI void SituationShutdown(void) {
 
     // Wait for the GPU to finish any in-flight work before we start tearing things down. This is especially critical for Vulkan.
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     if (sit_render.vk.device != VK_NULL_HANDLE) vkDeviceWaitIdle(sit_render.vk.device);
 #elif defined(SITUATION_USE_OPENGL)
     if (sit_gs.sit_glfw_window) glFinish();
@@ -12239,7 +12361,7 @@ static void _SituationCleanupSubsystems(void) {
 
     // Uninitialize mutexes.
     // [FIX v2.3.27B] Destroy the C11 recursive mutex used for the audio queue
-    // mtx_destroy(&sit_audio.audio_queue_mutex); // Removed
+    mtx_destroy(&sit_audio.audio_queue_mutex);
 
     // Input mutexes use standard miniaudio wrappers (non-recursive)
     ma_mutex_uninit(&sit_input.keyboard.event_queue_mutex);
@@ -12281,6 +12403,11 @@ static void _SituationCleanupRenderer(void) {
         }
     }
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     _SituationCleanupVulkan();
 #elif defined(SITUATION_USE_OPENGL)
     _SituationCleanupOpenGL();
@@ -12407,6 +12534,11 @@ static void _SituationInitDefaultFont(void) {
     // CRITICAL FIX: Font atlas needs text_sampler_layout (binding 0), not image_sampler_layout (binding 4)
     // Recreate the descriptor set with the correct layout
     #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     _SituationTextureSlot* font_slot = _SitGetTextureSlot(sit_render.default_font_atlas);
     if (font_slot && font_slot->descriptor_set != VK_NULL_HANDLE) {
         // Allocate new descriptor set with text_sampler_layout
@@ -12983,6 +13115,11 @@ static void _SituationCleanupOpenGL(void) {
  * @warning This function is for internal use by `_SituationCleanupRenderer` only.
  */
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
 static void _SituationCleanupVulkan(void) {
     // CRITICAL: Wait for device to be idle before destroying any resources
     // This ensures all GPU operations are complete and no resources are in use
@@ -13947,6 +14084,11 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
  * @see SituationAcquireFrameCommandBuffer()
  */
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
 static void _SituationSubmitCompute(VkCommandBuffer cmd) {
     // Submit compute work and signal semaphore in one go
     VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
@@ -14667,6 +14809,11 @@ SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void) {
 SITAPI SituationCommandBuffer SituationGetComputeCommandBuffer(void) {
     if (!SituationIsInitialized()) return NULL;
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     // Track usage for sync
     sit_render.frame_has_async_compute = true;
     VkCommandBuffer cmd = sit_render.vk.compute_command_buffers[sit_render.vk.current_frame_index];
@@ -15560,6 +15707,11 @@ SITAPI uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer) {
     if (!slot) return 0;
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     // IMPORTANT: This requires the bufferDeviceAddress feature to be enabled in Logical Device creation.
     // If compiling against Vulkan 1.2+:
     VkBufferDeviceAddressInfo info = {
@@ -15732,6 +15884,11 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
     if (!slot) {
         _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Attempted to bind an invalid shader handle.");
         #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
         sit_render.vk.current_pipeline_layout_for_push_constants = VK_NULL_HANDLE;
         #endif
         return SITUATION_ERROR_RESOURCE_INVALID;
@@ -16592,6 +16749,11 @@ static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
     }
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     // [Safety] Serialize recording to shared frame resources
     mtx_lock(&sit_render.render_queue_mutex);
 
@@ -16931,6 +17093,11 @@ SITAPI uint64_t SituationGetVRAMUsage(void) {
 
     // --- 1. VULKAN (Most Accurate) ---
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     if (sit_render.vk.vma_allocator) {
         // VMA statistics API changed - needs update
         // VmaTotalStatistics stats;
@@ -18198,6 +18365,11 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
 
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
 /**
  * @brief [INTERNAL] Creates a device-local GPU buffer and uploads data to it, using an asynchronous path when possible.
  *
@@ -19489,6 +19661,11 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
     if (!slot) return;
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     // Note: Compute pipelines don't usually own their layout (shared), but we own the pipeline.
     // We should defer destruction.
     _SituationDeferDestroyPipeline(slot->vk_pipeline, VK_NULL_HANDLE);
@@ -19777,12 +19954,22 @@ SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, Situatio
     if (!slot) {
          _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "Invalid compute pipeline handle provided.");
         #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
         sit_render.vk.current_compute_pipeline_layout = VK_NULL_HANDLE;
         #endif
         return;
     }
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for binding compute pipeline.");
         return;
@@ -20031,6 +20218,11 @@ SITAPI void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t*
 
     if (SituationIsInitialized()) {
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
         if (sit_render.vk.physical_device) {
             VkPhysicalDeviceProperties props;
             vkGetPhysicalDeviceProperties(sit_render.vk.physical_device, &props);
@@ -22928,6 +23120,11 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
 }
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
 /**
  * @brief [INTERNAL] Creates a VkImage and allocates its memory using VMA.
  * @details This is a core Vulkan helper function that abstracts the creation of an image and the allocation of its device memory. It uses the Vulkan Memory Allocator (VMA) to handle the memory binding, which is the recommended practice.
@@ -23291,6 +23488,11 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
     bool success = true; // Master success flag for the chain
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     // =================================================================
     // --- VULKAN IMPLEMENTATION ---
     // =================================================================
@@ -23528,6 +23730,11 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
     SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
     // Defer all destruction to the Graveyard to avoid stalling.
 
     // [FIX v2.3.27B] Pass the specific pool that owns this descriptor set
@@ -24598,6 +24805,11 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
     }
 
     #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
         // Standard PBR and Legacy Layouts
         // (Copied from original impl, updated to use slot)
         VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.image_sampler_layout };
@@ -25204,6 +25416,11 @@ static void _SituationPerformHotReloadPass(void) {
                         _SituationShaderSlot* new_slot = _SitGetShaderSlot(new_shader);
                         if (new_slot) {
                             #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s\n", msg);
+    exit(1);
+}
                             _SituationDeferDestroyPipeline(slot->vk_pipeline, slot->vk_pipeline_layout);
                             slot->vk_pipeline = new_slot->vk_pipeline;
                             slot->vk_pipeline_layout = new_slot->vk_pipeline_layout;
@@ -31386,9 +31603,9 @@ static int _SituationRenderThreadEntry(void* arg) {
         fflush(stdout);
         #endif
         VkResult submit_result = vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit_info, sit_render.vk.in_flight_fences[frame_index]);
-        if (submit_result == VK_ERROR_DEVICE_LOST) {
-            _SituationFatalError("Vulkan Device Lost (VK_ERROR_DEVICE_LOST) during Render Thread vkQueueSubmit. GPU crashed or disconnected. Terminating.");
-        }
+    if (submit_result == VK_ERROR_DEVICE_LOST) {
+        _SituationFatalError("Vulkan Device Lost (VK_ERROR_DEVICE_LOST) during vkQueueSubmit. GPU crashed or disconnected. Terminating.");
+    }
 
         #ifdef SITUATION_VULKAN_DEBUG
         printf("Situation [Vulkan Debug]: [RENDER THREAD] vkQueueSubmit result: %d (VK_SUCCESS=0)\n", submit_result);
