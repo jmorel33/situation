@@ -360,7 +360,7 @@ typedef struct SituationAudioBus {
     char name[64];
     int id;
     bool is_active;  // Added for consistency
-    
+
     // Graph: Input Sum -> Output Splitter -> Master
     ma_splitter_node input_node;
     ma_splitter_node output_node;
@@ -549,137 +549,8 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
     _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
     if (!pGs) return;
 
+    // Output Buffer (Mixing Destination)
     float* pOut = (float*)pOutput;
-
-    // Process audio commands lock-free
-    size_t tail = atomic_load_explicit(&pGs->audio_command_tail, memory_order_relaxed);
-    size_t head = atomic_load_explicit(&pGs->audio_command_head, memory_order_acquire);
-    while (tail != head) {
-        SituationAudioCommand cmd = pGs->audio_command_queue[tail];
-
-        if (cmd.type == SIT_AUDIO_CMD_PLAY_SOUND) {
-            bool present = false;
-            for (int i = 0; i < pGs->active_voice_count; i++) {
-                if (pGs->active_voices[i] == cmd.sound) {
-                    present = true;
-                    break;
-                }
-            }
-            if (!present) {
-                if (pGs->active_voice_count < pGs->active_voice_capacity) {
-                    pGs->active_voices[pGs->active_voice_count++] = cmd.sound;
-                } else {
-                    int new_cap = pGs->active_voice_capacity * 2;
-                    _SituationSound** new_array = (_SituationSound**)SIT_REALLOC(pGs->active_voices, new_cap * sizeof(_SituationSound*));
-                    if (new_array) {
-                        pGs->active_voices = new_array;
-                        pGs->active_voice_capacity = new_cap;
-                        pGs->active_voices[pGs->active_voice_count++] = cmd.sound;
-                    }
-                }
-            }
-        } else if (cmd.type == SIT_AUDIO_CMD_STOP_SOUND) {
-            for (int i = 0; i < pGs->active_voice_count; i++) {
-                if (pGs->active_voices[i] == cmd.sound) {
-                    pGs->active_voices[i] = pGs->active_voices[pGs->active_voice_count - 1];
-                    pGs->active_voice_count--;
-                    break;
-                }
-            }
-        } else if (cmd.type == SIT_AUDIO_CMD_STOP_ALL_SOUNDS) {
-            pGs->active_voice_count = 0;
-        } else if (cmd.type == SIT_AUDIO_CMD_SET_SOUND_VOLUME) {
-            cmd.sound->volume = cmd.value;
-        } else if (cmd.type == SIT_AUDIO_CMD_SET_SOUND_PAN) {
-            cmd.sound->pan = cmd.value;
-        } else if (cmd.type == SIT_AUDIO_CMD_SET_SOUND_PITCH) {
-            cmd.sound->pitch = cmd.value;
-        } else if (cmd.type == SIT_AUDIO_CMD_PLAY_TONE) {
-            int slot = -1;
-            for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
-                if (!pGs->tone_pool[i].active) {
-                    slot = i;
-                    break;
-                }
-            }
-            if (slot == -1) {
-                uint64_t max_release_cursor = 0;
-                int best_release_slot = -1;
-                for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
-                    if (pGs->tone_pool[i].active && pGs->tone_pool[i].state == SIT_ENV_RELEASE) {
-                        if (pGs->tone_pool[i].cursor_frames > max_release_cursor) {
-                            max_release_cursor = pGs->tone_pool[i].cursor_frames;
-                            best_release_slot = i;
-                        }
-                    }
-                }
-                slot = best_release_slot;
-            }
-            if (slot == -1) {
-                uint64_t min_cursor = UINT64_MAX;
-                int best_active_slot = -1;
-                for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
-                    if (pGs->tone_pool[i].active && pGs->tone_pool[i].cursor_frames < min_cursor) {
-                        min_cursor = pGs->tone_pool[i].cursor_frames;
-                        best_active_slot = i;
-                    }
-                }
-                slot = best_active_slot;
-            }
-
-            if (slot != -1) {
-                SituationTone* t = &pGs->tone_pool[slot];
-                memset(t, 0, sizeof(SituationTone));
-                t->id = cmd.tone_id;
-                t->active = true;
-                t->type = cmd.tone_type;
-                t->amplitude = cmd.value;
-                t->frequency = cmd.frequency;
-                t->pan = cmd.pan;
-                t->envelope.attack = cmd.attack_sec;
-                t->envelope.decay = cmd.decay_sec;
-                t->envelope.sustain_level = cmd.sustain_level;
-                t->envelope.release = cmd.release_sec;
-                t->envelope.hold = cmd.hold_sec;
-                t->state = SIT_ENV_ATTACK;
-                t->format = pGs->miniaudio_device.playback.format;
-                t->channels = pGs->miniaudio_device.playback.channels;
-                t->sample_rate = pGs->miniaudio_device.sampleRate;
-
-                if (t->type == SIT_WAVE_NOISE) {
-                    ma_noise_config noiseConfig = ma_noise_config_init(t->format, t->channels, t->sample_rate, 0, ma_noise_type_white);
-                    ma_noise_init(&noiseConfig, NULL, &t->noise);
-                } else {
-                    ma_waveform_type mtype = ma_waveform_type_sine;
-                    if (t->type == SIT_WAVE_SQUARE) mtype = ma_waveform_type_square;
-                    if (t->type == SIT_WAVE_TRIANGLE) mtype = ma_waveform_type_triangle;
-                    if (t->type == SIT_WAVE_SAW) mtype = ma_waveform_type_sawtooth;
-                    ma_waveform_config waveConfig = ma_waveform_config_init(t->format, t->channels, t->sample_rate, mtype, t->amplitude, t->frequency);
-                    ma_waveform_init(&waveConfig, &t->waveform);
-                }
-            }
-        } else if (cmd.type == SIT_AUDIO_CMD_STOP_TONE) {
-            if (cmd.tone_id == 0) {
-                for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
-                    if (pGs->tone_pool[i].active && pGs->tone_pool[i].state != SIT_ENV_RELEASE) {
-                        pGs->tone_pool[i].state = SIT_ENV_RELEASE;
-                        pGs->tone_pool[i].cursor_frames = 0;
-                    }
-                }
-            } else {
-                for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
-                    if (pGs->tone_pool[i].active && pGs->tone_pool[i].id == cmd.tone_id) {
-                        pGs->tone_pool[i].state = SIT_ENV_RELEASE;
-                        pGs->tone_pool[i].cursor_frames = 0;
-                        break;
-                    }
-                }
-            }
-        }
-
-        tail = (tail + 1) % SIT_AUDIO_CMD_QUEUE_SIZE;
-    }
-    atomic_store_explicit(&pGs->audio_command_tail, tail, memory_order_release);
 
     // Clear output buffer (silence)
     memset(pOut, 0, frameCount * pDevice->playback.channels * sizeof(float));
@@ -691,7 +562,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
 
     // --- [Phase 1] Mixer Integration ---
     // Acquire lock to safely check/use active_mixer
-
+    mtx_lock(&pGs->audio_queue_mutex);
     SituationAudioMixer* mixer = pGs->active_mixer;
     if (mixer && mixer->is_initialized) {
         // We must also lock the mixer topology because ma_node_graph_read_pcm_frames is not thread-safe vs modification
@@ -701,12 +572,13 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         ma_node_graph_read_pcm_frames(&mixer->graph, pOutput, frameCount, &framesRead);
 
         mtx_unlock(&mixer->topology_mutex);
-
+        mtx_unlock(&pGs->audio_queue_mutex);
         return;
     }
 
     // --- MIXING LOOP (Legacy/Fallback) ---
-
+    // Note: audio_queue_mutex is ALREADY LOCKED here.
+    // We snapshot the active voices to a local buffer to minimize lock duration.
 
     int voices_to_mix = pGs->active_voice_count;
     // We can't stack allocate dynamic size. Use the pre-allocated snapshot buffer.
@@ -714,7 +586,7 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         memcpy(pGs->snapshot_buffer, pGs->active_voices, voices_to_mix * sizeof(_SituationSound*));
     }
 
-
+    mtx_unlock(&pGs->audio_queue_mutex);
 
     if (voices_to_mix == 0 || !pGs->snapshot_buffer) return;
 
@@ -846,10 +718,10 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
 // --- Audio Output Monitoring (for visualization) ---
 SITAPI void SituationSetAudioOutputMonitor(void (*callback)(const float* samples, uint32_t frame_count, void* user_data), void* user_data) {
     if (!SituationIsInitialized()) return;
-
+    mtx_lock(&sit_audio.audio_queue_mutex);
     sit_audio.output_monitor_callback = callback;
     sit_audio.output_monitor_user_data = user_data;
-
+    mtx_unlock(&sit_audio.audio_queue_mutex);
 }
 
 static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
@@ -1605,14 +1477,14 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
 
     // If managed by mixer graph, detach and uninit node
     if (data->is_graph_managed) {
-
+        mtx_lock(&sit_audio.audio_queue_mutex);
         if (sit_audio.active_mixer) {
             mtx_lock(&sit_audio.active_mixer->topology_mutex);
             // This uninitializes the node and detaches it from the graph
             ma_data_source_node_uninit(&data->graph_node, NULL);
             mtx_unlock(&sit_audio.active_mixer->topology_mutex);
         }
-
+        mtx_unlock(&sit_audio.audio_queue_mutex);
         data->is_graph_managed = false;
     }
 
@@ -1656,34 +1528,54 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
  *
  * @see SituationStopLoadedSound(), SituationStopAllLoadedSounds()
  */
-
-static void _SitPushAudioCommand(SituationAudioCommandType type, _SituationSound* sound, float value) {
-    size_t head = atomic_load_explicit(&sit_audio.audio_command_head, memory_order_relaxed);
-    size_t next_head = (head + 1) % SIT_AUDIO_CMD_QUEUE_SIZE;
-    sit_audio.audio_command_queue[head].type = type;
-    sit_audio.audio_command_queue[head].sound = sound;
-    sit_audio.audio_command_queue[head].value = value;
-    atomic_store_explicit(&sit_audio.audio_command_head, next_head, memory_order_release);
-}
-
 SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound) {
     _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
     if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
 
-
     _SituationSound* data = &slot->sound_data;
 
+    // Add to active voices
+    mtx_lock(&sit_audio.audio_queue_mutex);
+
+    // Check duplicates? Or allow multiple?
+    // SituationSound is now a handle. We add pointer to DATA to mixer.
+    // If we want multiple instances of same sound, we need multiple slots (or mixer supports multiple cursors).
+    // The current design (and previous) embedded playback state (cursor) in the Sound struct.
+    // So playing it again restarts it.
+
+    // Reset cursor
     if (data->is_preloaded) {
         data->cursor_frames = 0;
     } else if (data->is_initialized) {
         ma_decoder_seek_to_pcm_frame(&data->decoder, 0);
     }
 
-    _SitPushAudioCommand(SIT_AUDIO_CMD_PLAY_SOUND, data, 0.0f);
+    // Add if not present
+    bool present = false;
+    for (int i = 0; i < sit_audio.active_voice_count; i++) {
+        if (sit_audio.active_voices[i] == data) {
+            present = true;
+            break;
+        }
+    }
+    if (!present) {
+        if (sit_audio.active_voice_count < sit_audio.active_voice_capacity) {
+            sit_audio.active_voices[sit_audio.active_voice_count++] = data;
+        } else {
+            // Realloc
+            int new_cap = sit_audio.active_voice_capacity * 2;
+            _SituationSound** new_array = (_SituationSound**)SIT_REALLOC(sit_audio.active_voices, new_cap * sizeof(_SituationSound*));
+            if (new_array) {
+                sit_audio.active_voices = new_array;
+                sit_audio.active_voice_capacity = new_cap;
+                sit_audio.active_voices[sit_audio.active_voice_count++] = data;
+            }
+        }
+    }
 
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
-
 
 /**
  * @brief Stops a specific sound from playing and removes it from the mixing queue.
@@ -1703,12 +1595,20 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
     _SituationSoundSlot* slot = _SitGetSoundSlot(*sound_to_stop);
     if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
 
-
     _SituationSound* data = &slot->sound_data;
-    _SitPushAudioCommand(SIT_AUDIO_CMD_STOP_SOUND, data, 0.0f);
+
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    for (int i = 0; i < sit_audio.active_voice_count; i++) {
+        if (sit_audio.active_voices[i] == data) {
+            // Remove (swap with last)
+            sit_audio.active_voices[i] = sit_audio.active_voices[sit_audio.active_voice_count - 1];
+            sit_audio.active_voice_count--;
+            break;
+        }
+    }
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
-
 
 /**
  * @brief Stops all currently playing sounds and clears the mixing queue.
@@ -1721,13 +1621,13 @@ SITAPI SituationError SituationStopLoadedSound(SituationSound* sound_to_stop) {
  *
  * @see SituationStopLoadedSound()
  */
-
 SITAPI SituationError SituationStopAllLoadedSounds(void) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    _SitPushAudioCommand(SIT_AUDIO_CMD_STOP_ALL_SOUNDS, NULL, 0.0f);
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    sit_audio.active_voice_count = 0;
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
-
 
 /**
  * @brief Creates a new sound by making a deep copy of a source sound's decoded PCM data.
@@ -2367,11 +2267,11 @@ SITAPI void SituationDestroyMixer(SituationAudioMixer* mixer) {
     if (!mixer) return;
 
     if (SituationIsInitialized()) {
-
+        mtx_lock(&sit_audio.audio_queue_mutex);
         if (sit_audio.active_mixer == mixer) {
             sit_audio.active_mixer = NULL;
         }
-
+        mtx_unlock(&sit_audio.audio_queue_mutex);
     }
 
     mtx_lock(&mixer->topology_mutex);
@@ -2419,9 +2319,9 @@ SITAPI SituationError SituationBindMixerToDevice(SituationAudioMixer* mixer, con
         }
     }
 
-
+    mtx_lock(&sit_audio.audio_queue_mutex);
     sit_audio.active_mixer = mixer;
-
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -2707,18 +2607,19 @@ SITAPI SituationError SituationSetTrackOutput(SituationAudioTrack* track, Situat
     return SITUATION_SUCCESS;
 }
 
-
 SITAPI SituationError SituationRouteSoundToTrack(SituationSoundHandle sound, SituationAudioTrack* track) {
-    if (!SituationIsInitialized() || !track || !track->is_active) return SITUATION_ERROR_INVALID_PARAM;
+    if (!track) return SITUATION_ERROR_INVALID_PARAM;
     _SituationSoundSlot* slot = _SitGetSoundSlot(sound);
     if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
 
     _SituationSound* data = &slot->sound_data;
 
-    SituationAudioMixer* mixer = sit_audio.active_mixer;
-    if (!mixer) {
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    if (!sit_audio.active_mixer) {
+        mtx_unlock(&sit_audio.audio_queue_mutex);
         return SITUATION_ERROR_NOT_INITIALIZED;
     }
+    SituationAudioMixer* mixer = sit_audio.active_mixer;
 
     mtx_lock(&mixer->topology_mutex);
 
@@ -2726,6 +2627,7 @@ SITAPI SituationError SituationRouteSoundToTrack(SituationSoundHandle sound, Sit
         ma_data_source_node_config cfg = ma_data_source_node_config_init(&data->decoder);
         if (ma_data_source_node_init(&mixer->graph, &cfg, NULL, &data->graph_node) != MA_SUCCESS) {
             mtx_unlock(&mixer->topology_mutex);
+            mtx_unlock(&sit_audio.audio_queue_mutex);
             return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
         }
         data->is_graph_managed = true;
@@ -2734,6 +2636,7 @@ SITAPI SituationError SituationRouteSoundToTrack(SituationSoundHandle sound, Sit
     ma_node_attach_output_bus(&data->graph_node, 0, &track->input_node, 0);
 
     mtx_unlock(&mixer->topology_mutex);
+    mtx_unlock(&sit_audio.audio_queue_mutex);
     return SITUATION_SUCCESS;
 }
 
@@ -3041,12 +2944,12 @@ static inline void _SituationProcessInsertChain(
         }
         return;
     }
-    
+
     if (!insert->is_active || !insert->chain || insert->bypass) {
         memcpy(output, input, frames * 2 * sizeof(float));
         return;
     }
-    
+
     SituationProcessGraph(insert->chain, output, frames, device_funcs, num_funcs);
     memcpy(output, input, frames * 2 * sizeof(float)); // TODO: Implement input injection
 }
@@ -3065,25 +2968,25 @@ SITAPI SituationError SituationSetTrackInsert(
     if (track_id < 0 || track_id >= SIT_MAX_TRACKS) return SITUATION_ERROR_MIXER_TRACK_INVALID;
     if (position < 0 || position >= SITUATION_INSERT_COUNT) return SITUATION_ERROR_MIXER_INSERT_INVALID;
     if (!insert_chain) return SITUATION_ERROR_INVALID_PARAM;
-    
+
     SituationAudioTrack* track = &mixer->tracks[track_id];
     if (!track->is_active) return SITUATION_ERROR_MIXER_TRACK_INVALID;
-    
+
     if (mtx_lock(&mixer->topology_mutex) != thrd_success) {
         return SITUATION_ERROR_MIXER_TOPOLOGY_LOCKED;
     }
-    
+
     SituationInsertChain* insert = &track->inserts[position];
-    
+
     if (insert->is_active && insert->chain) {
         mtx_unlock(&mixer->topology_mutex);
         return SITUATION_ERROR_MIXER_INSERT_ALREADY_ATTACHED;
     }
-    
+
     insert->chain = insert_chain;
     insert->bypass = false;
     insert->is_active = true;
-    
+
     mtx_unlock(&mixer->topology_mutex);
     return SITUATION_SUCCESS;
 }
@@ -3100,26 +3003,26 @@ SITAPI SituationError SituationClearTrackInsert(
     if (!mixer->is_initialized) return SITUATION_ERROR_MIXER_NOT_INITIALIZED;
     if (track_id < 0 || track_id >= SIT_MAX_TRACKS) return SITUATION_ERROR_MIXER_TRACK_INVALID;
     if (position < 0 || position >= SITUATION_INSERT_COUNT) return SITUATION_ERROR_MIXER_INSERT_INVALID;
-    
+
     SituationAudioTrack* track = &mixer->tracks[track_id];
     if (!track->is_active) return SITUATION_ERROR_MIXER_TRACK_INVALID;
-    
+
     if (mtx_lock(&mixer->topology_mutex) != thrd_success) {
         return SITUATION_ERROR_MIXER_TOPOLOGY_LOCKED;
     }
-    
+
     SituationInsertChain* insert = &track->inserts[position];
-    
+
     if (!insert->is_active || !insert->chain) {
         mtx_unlock(&mixer->topology_mutex);
         return SITUATION_ERROR_MIXER_INSERT_NOT_ATTACHED;
     }
-    
+
     SituationDestroyGraph(insert->chain);
     insert->chain = NULL;
     insert->is_active = false;
     insert->bypass = false;
-    
+
     mtx_unlock(&mixer->topology_mutex);
     return SITUATION_SUCCESS;
 }
@@ -3137,16 +3040,16 @@ SITAPI SituationError SituationBypassTrackInsert(
     if (!mixer->is_initialized) return SITUATION_ERROR_MIXER_NOT_INITIALIZED;
     if (track_id < 0 || track_id >= SIT_MAX_TRACKS) return SITUATION_ERROR_MIXER_TRACK_INVALID;
     if (position < 0 || position >= SITUATION_INSERT_COUNT) return SITUATION_ERROR_MIXER_INSERT_INVALID;
-    
+
     SituationAudioTrack* track = &mixer->tracks[track_id];
     if (!track->is_active) return SITUATION_ERROR_MIXER_TRACK_INVALID;
-    
+
     SituationInsertChain* insert = &track->inserts[position];
-    
+
     if (!insert->is_active) {
         return SITUATION_ERROR_MIXER_INSERT_NOT_ATTACHED;
     }
-    
+
     insert->bypass = bypass;
     return SITUATION_SUCCESS;
 }
@@ -3162,10 +3065,10 @@ SITAPI SituationAudioGraph* SituationGetTrackInsert(
     if (!mixer) return NULL;
     if (track_id < 0 || track_id >= SIT_MAX_TRACKS) return NULL;
     if (position < 0 || position >= SITUATION_INSERT_COUNT) return NULL;
-    
+
     SituationAudioTrack* track = &mixer->tracks[track_id];
     if (!track->is_active) return NULL;
-    
+
     SituationInsertChain* insert = &track->inserts[position];
     return insert->is_active ? insert->chain : NULL;
 }
@@ -3181,10 +3084,10 @@ SITAPI bool SituationIsTrackInsertBypassed(
     if (!mixer) return false;
     if (track_id < 0 || track_id >= SIT_MAX_TRACKS) return false;
     if (position < 0 || position >= SITUATION_INSERT_COUNT) return false;
-    
+
     SituationAudioTrack* track = &mixer->tracks[track_id];
     if (!track->is_active) return false;
-    
+
     SituationInsertChain* insert = &track->inserts[position];
     return insert->bypass;
 }
@@ -3210,17 +3113,17 @@ static inline void _SituationProcessAuxFXChain(
         }
         return;
     }
-    
+
     if (!fx_chain->is_active || !fx_chain->fx_chain || fx_chain->bypass) {
         memcpy(output, input, frames * 2 * sizeof(float));
         return;
     }
-    
+
     SituationProcessGraph(fx_chain->fx_chain, output, frames, device_funcs, num_funcs);
-    
+
     float wet = fx_chain->wet_mix;
     float dry = fx_chain->dry_mix;
-    
+
     if (wet < 1.0f || dry > 0.0f) {
         for (int i = 0; i < frames * 2; i++) {
             output[i] = output[i] * wet + input[i] * dry;
@@ -3240,26 +3143,26 @@ SITAPI SituationError SituationSetBusEffectChain(
     if (!mixer->is_initialized) return SITUATION_ERROR_MIXER_NOT_INITIALIZED;
     if (bus_id < 0 || bus_id >= SIT_MAX_AUX_BUSES) return SITUATION_ERROR_MIXER_BUS_INVALID;
     if (!fx_chain) return SITUATION_ERROR_INVALID_PARAM;
-    
+
     SituationAudioBus* bus = &mixer->aux_buses[bus_id];
-    
+
     if (mtx_lock(&mixer->topology_mutex) != thrd_success) {
         return SITUATION_ERROR_MIXER_TOPOLOGY_LOCKED;
     }
-    
+
     SituationAuxFXChain* fx = &bus->fx_chain;
-    
+
     if (fx->is_active && fx->fx_chain) {
         mtx_unlock(&mixer->topology_mutex);
         return SITUATION_ERROR_MIXER_INSERT_ALREADY_ATTACHED;
     }
-    
+
     fx->fx_chain = fx_chain;
     fx->bypass = false;
     fx->is_active = true;
     fx->wet_mix = 1.0f;
     fx->dry_mix = 0.0f;
-    
+
     mtx_unlock(&mixer->topology_mutex);
     return SITUATION_SUCCESS;
 }
@@ -3274,27 +3177,27 @@ SITAPI SituationError SituationClearBusEffectChain(
     if (!mixer) return SITUATION_ERROR_MIXER_NOT_INITIALIZED;
     if (!mixer->is_initialized) return SITUATION_ERROR_MIXER_NOT_INITIALIZED;
     if (bus_id < 0 || bus_id >= SIT_MAX_AUX_BUSES) return SITUATION_ERROR_MIXER_BUS_INVALID;
-    
+
     SituationAudioBus* bus = &mixer->aux_buses[bus_id];
-    
+
     if (mtx_lock(&mixer->topology_mutex) != thrd_success) {
         return SITUATION_ERROR_MIXER_TOPOLOGY_LOCKED;
     }
-    
+
     SituationAuxFXChain* fx = &bus->fx_chain;
-    
+
     if (!fx->is_active || !fx->fx_chain) {
         mtx_unlock(&mixer->topology_mutex);
         return SITUATION_ERROR_MIXER_INSERT_NOT_ATTACHED;
     }
-    
+
     SituationDestroyGraph(fx->fx_chain);
     fx->fx_chain = NULL;
     fx->is_active = false;
     fx->bypass = false;
     fx->wet_mix = 1.0f;
     fx->dry_mix = 0.0f;
-    
+
     mtx_unlock(&mixer->topology_mutex);
     return SITUATION_SUCCESS;
 }
@@ -3310,14 +3213,14 @@ SITAPI SituationError SituationBypassBusEffectChain(
     if (!mixer) return SITUATION_ERROR_MIXER_NOT_INITIALIZED;
     if (!mixer->is_initialized) return SITUATION_ERROR_MIXER_NOT_INITIALIZED;
     if (bus_id < 0 || bus_id >= SIT_MAX_AUX_BUSES) return SITUATION_ERROR_MIXER_BUS_INVALID;
-    
+
     SituationAudioBus* bus = &mixer->aux_buses[bus_id];
     SituationAuxFXChain* fx = &bus->fx_chain;
-    
+
     if (!fx->is_active) {
         return SITUATION_ERROR_MIXER_INSERT_NOT_ATTACHED;
     }
-    
+
     fx->bypass = bypass;
     return SITUATION_SUCCESS;
 }
@@ -3336,14 +3239,14 @@ SITAPI SituationError SituationSetBusEffectMix(
     if (bus_id < 0 || bus_id >= SIT_MAX_AUX_BUSES) return SITUATION_ERROR_MIXER_BUS_INVALID;
     if (wet_mix < 0.0f || wet_mix > 1.0f) return SITUATION_ERROR_INVALID_PARAM;
     if (dry_mix < 0.0f || dry_mix > 1.0f) return SITUATION_ERROR_INVALID_PARAM;
-    
+
     SituationAudioBus* bus = &mixer->aux_buses[bus_id];
     SituationAuxFXChain* fx = &bus->fx_chain;
-    
+
     if (!fx->is_active) {
         return SITUATION_ERROR_MIXER_INSERT_NOT_ATTACHED;
     }
-    
+
     fx->wet_mix = wet_mix;
     fx->dry_mix = dry_mix;
     return SITUATION_SUCCESS;
@@ -3358,10 +3261,10 @@ SITAPI SituationAudioGraph* SituationGetBusEffectChain(
 ) {
     if (!mixer) return NULL;
     if (bus_id < 0 || bus_id >= SIT_MAX_AUX_BUSES) return NULL;
-    
+
     SituationAudioBus* bus = &mixer->aux_buses[bus_id];
     SituationAuxFXChain* fx = &bus->fx_chain;
-    
+
     return fx->is_active ? fx->fx_chain : NULL;
 }
 
@@ -3374,10 +3277,10 @@ SITAPI bool SituationIsBusEffectBypassed(
 ) {
     if (!mixer) return false;
     if (bus_id < 0 || bus_id >= SIT_MAX_AUX_BUSES) return false;
-    
+
     SituationAudioBus* bus = &mixer->aux_buses[bus_id];
     SituationAuxFXChain* fx = &bus->fx_chain;
-    
+
     return fx->bypass;
 }
 
@@ -3393,14 +3296,14 @@ SITAPI SituationError SituationGetBusEffectMix(
     if (!mixer) return SITUATION_ERROR_MIXER_NOT_INITIALIZED;
     if (bus_id < 0 || bus_id >= SIT_MAX_AUX_BUSES) return SITUATION_ERROR_MIXER_BUS_INVALID;
     if (!out_wet_mix || !out_dry_mix) return SITUATION_ERROR_INVALID_PARAM;
-    
+
     SituationAudioBus* bus = &mixer->aux_buses[bus_id];
     SituationAuxFXChain* fx = &bus->fx_chain;
-    
+
     if (!fx->is_active) {
         return SITUATION_ERROR_MIXER_INSERT_NOT_ATTACHED;
     }
-    
+
     *out_wet_mix = fx->wet_mix;
     *out_dry_mix = fx->dry_mix;
     return SITUATION_SUCCESS;

@@ -447,6 +447,13 @@ static void _SituationAssertMainThread(const char* file, int line) {
 #include <ctype.h>
 
 #if defined(SITUATION_USE_VULKAN)
+
+static void _SituationFatalError(const char* msg) {
+    fprintf(stderr, "FATAL ERROR: %s
+", msg);
+    exit(1);
+}
+
 // It is highly recommended to use the Vulkan Memory Allocator for production code.
 // Download the "vk_mem_alloc.h" file from the official repository and place it in your project.
 // Note: VMA is a C++ library. We use a C wrapper (vma_wrapper.h) to allow C compilation.
@@ -1327,7 +1334,36 @@ typedef struct {
 } SituationTone;
 
 
- typedef struct {
+
+typedef enum {
+    SIT_AUDIO_CMD_PLAY_SOUND,
+    SIT_AUDIO_CMD_STOP_SOUND,
+    SIT_AUDIO_CMD_STOP_ALL_SOUNDS,
+    SIT_AUDIO_CMD_SET_SOUND_VOLUME,
+    SIT_AUDIO_CMD_SET_SOUND_PAN,
+    SIT_AUDIO_CMD_SET_SOUND_PITCH,
+    SIT_AUDIO_CMD_PLAY_TONE,
+    SIT_AUDIO_CMD_STOP_TONE
+} SituationAudioCommandType;
+
+typedef struct {
+    SituationAudioCommandType type;
+    struct _SituationSound* sound;
+    SituationWaveType tone_type;
+    float frequency;
+    float pan;
+    float attack_sec;
+    float decay_sec;
+    float sustain_level;
+    float release_sec;
+    float hold_sec;
+    uint32_t tone_id;
+    float value;
+} SituationAudioCommand;
+
+#define SIT_AUDIO_CMD_QUEUE_SIZE 512
+
+typedef struct {
     // -------------------------------------------------------------------------
     // Audio Subsystem (MiniAudio)
     // -------------------------------------------------------------------------
@@ -1356,7 +1392,9 @@ typedef struct {
 
     // [FIX v2.3.27B] Use C11 Recursive Mutex to prevent deadlocks when
     // API functions are called from within audio callbacks/processors.
-    mtx_t audio_queue_mutex;                                       // Mutex protecting the sound queue
+    SituationAudioCommand audio_command_queue[SIT_AUDIO_CMD_QUEUE_SIZE];
+    atomic_size_t audio_command_head;
+    atomic_size_t audio_command_tail;
 
     // Pre-allocated temp buffers for the audio callback (avoids SIT_MALLOC on audio thread)
     float* audio_callback_decoder_temp_buffer;            // Scratch buffer for decoding PCM
@@ -4876,6 +4914,39 @@ static bool _SituationValidateRenderCaps(void) {
  *      _SituationInitSubsystems (core worker), SITUATION_ERROR_INIT_FAILED,
  *      SITUATION_ERROR_ALREADY_INITIALIZED
  */
+
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#endif
+
+static void _SituationSetThreadAffinity(bool high_perf) {
+#if defined(_WIN32)
+    HANDLE thread = GetCurrentThread();
+    DWORD_PTR mask = high_perf ? 1 : 2; // Extremely simplified, ideally you query cores. Let's just set to 1 for high perf, and 2 for low perf.
+    SetThreadAffinityMask(thread, mask);
+#elif defined(__linux__)
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    if (high_perf) {
+        CPU_SET(0, &cpuset); // Assume core 0 is P-core
+    } else {
+        CPU_SET(1, &cpuset); // Assume core 1 is E-core
+    }
+    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+#elif defined(__APPLE__)
+    #include <mach/mach_init.h>
+    #include <mach/thread_policy.h>
+    #include <mach/thread_act.h>
+    thread_port_t mach_thread = mach_thread_self();
+    thread_affinity_policy_data_t policyData = { high_perf ? 1 : 2 };
+    thread_policy_set(mach_thread, THREAD_AFFINITY_POLICY, (thread_policy_t)&policyData, THREAD_AFFINITY_POLICY_COUNT);
+#endif
+}
+
 SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitInfo* init_info) {
     static int call_count = 0;
     call_count++;
@@ -5080,6 +5151,7 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
 
     // Clear any lingering error message and set a success indicator.
     _SituationSetError("SituationInit: No error. Initialization successful.");
+    _SituationSetThreadAffinity(true);
 
     // --- 7. Return Success ---
     return SITUATION_SUCCESS;
@@ -5497,10 +5569,7 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     // [FIX v2.3.27B] Initialize recursive mutex
     // This allows the same thread (Audio Thread) to re-acquire the lock if a
     // user processor calls a Situation API function.
-    if (mtx_init(&sit_audio.audio_queue_mutex, mtx_recursive) != thrd_success) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to initialize recursive audio mutex");
-        return SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED;
-    }
+    // audio_queue_mutex removed in favor of lock-free queue
 
     // Initialize capture queue if requested
     if (init_info->flags & SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD) {
@@ -5548,6 +5617,8 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     if (!sit_audio.active_voices) return SITUATION_ERROR_MEMORY_ALLOCATION;
     sit_audio.active_voice_capacity = initial_cap;
     sit_audio.active_voice_count = 0;
+    atomic_init(&sit_audio.audio_command_head, 0);
+    atomic_init(&sit_audio.audio_command_tail, 0);
 
     // Snapshot buffer (initialized to same capacity)
     sit_audio.snapshot_buffer = (_SituationSound**)SIT_MALLOC(initial_cap * sizeof(_SituationSound*));
@@ -12168,7 +12239,7 @@ static void _SituationCleanupSubsystems(void) {
 
     // Uninitialize mutexes.
     // [FIX v2.3.27B] Destroy the C11 recursive mutex used for the audio queue
-    mtx_destroy(&sit_audio.audio_queue_mutex);
+    // mtx_destroy(&sit_audio.audio_queue_mutex); // Removed
 
     // Input mutexes use standard miniaudio wrappers (non-recursive)
     ma_mutex_uninit(&sit_input.keyboard.event_queue_mutex);
@@ -13975,6 +14046,10 @@ static void _SituationSubmitGraphics(VkCommandBuffer cmd) {
     fflush(stdout);
     #endif
     VkResult submit_result = vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit, sit_render.vk.in_flight_fences[sit_render.vk.current_frame_index]);
+    if (submit_result == VK_ERROR_DEVICE_LOST) {
+        _SituationFatalError("Vulkan Device Lost (VK_ERROR_DEVICE_LOST) during vkQueueSubmit. GPU crashed or disconnected. Terminating.");
+    }
+
     #ifdef SITUATION_VULKAN_DEBUG
     // fprintf(stderr, "[Situation] [_SituationSubmitGraphics] vkQueueSubmit result: %d (VK_SUCCESS=0)\n", submit_result); fflush(stderr);
     printf("Situation [Vulkan Debug]: [_SituationSubmitGraphics] vkQueueSubmit result: %d (VK_SUCCESS=0)\n", submit_result);
@@ -14407,6 +14482,10 @@ SITAPI SituationError SituationEndFrame(void) {
         fflush(stdout);
         #endif
         VkResult submit_result = vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit_info, sit_render.vk.in_flight_fences[sit_render.vk.current_frame_index]);
+    if (submit_result == VK_ERROR_DEVICE_LOST) {
+        _SituationFatalError("Vulkan Device Lost (VK_ERROR_DEVICE_LOST) during vkQueueSubmit. GPU crashed or disconnected. Terminating.");
+    }
+
         fprintf(stderr, "[Situation] [SINGLE-THREADED] vkQueueSubmit result: %d (VK_SUCCESS=0)\n", submit_result); fflush(stderr);
         #ifdef SITUATION_VULKAN_DEBUG
         printf("Situation [Vulkan Debug]: [SINGLE-THREADED] vkQueueSubmit result: %d (VK_SUCCESS=0)\n", submit_result);
@@ -29933,6 +30012,7 @@ SITAPI size_t SituationGetIOQueueDepth(void) {
  *                 `pool->worker_cv`, `pool->queue_mutex`
  */
 static int _SituationWorkerEntry(void* arg) {
+    _SituationSetThreadAffinity(false);
     SituationThreadPool* pool = (SituationThreadPool*)arg;
 
     while (!atomic_load(&pool->shutdown)) {
@@ -31176,6 +31256,7 @@ static void _SitFlushFrameResources(int frame_index) {
  *                 frame_refcounts[], _SitFlushFrameResources()
  */
 static int _SituationRenderThreadEntry(void* arg) {
+    _SituationSetThreadAffinity(true);
     (void)arg;
     #ifdef _WIN32
     DWORD tid = GetCurrentThreadId();
@@ -31305,6 +31386,10 @@ static int _SituationRenderThreadEntry(void* arg) {
         fflush(stdout);
         #endif
         VkResult submit_result = vkQueueSubmit(sit_render.vk.graphics_queue, 1, &submit_info, sit_render.vk.in_flight_fences[frame_index]);
+        if (submit_result == VK_ERROR_DEVICE_LOST) {
+            _SituationFatalError("Vulkan Device Lost (VK_ERROR_DEVICE_LOST) during Render Thread vkQueueSubmit. GPU crashed or disconnected. Terminating.");
+        }
+
         #ifdef SITUATION_VULKAN_DEBUG
         printf("Situation [Vulkan Debug]: [RENDER THREAD] vkQueueSubmit result: %d (VK_SUCCESS=0)\n", submit_result);
         fflush(stdout);
