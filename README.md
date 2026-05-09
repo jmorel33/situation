@@ -19,6 +19,9 @@ Our immediate development roadmap is focused on expanding the library's capabili
 *   **Audio Node Graph — All 26 Devices Live (v2.4.35):** 🎉 **COMPLETE!** Completed the audio node graph system: all 26 device types are now registered, instantiable, and have live DSP processing. Nodes created via `SituationCreateNode` now properly initialize their device state and process audio through the graph.
 *   **Test Harness Expansion (v2.4.33):** 🎉 **COMPLETE!** Added 86 new audio tests covering the full audio subsystem: device registry, node graph lifecycle & patching, control parameters, all 16 registered effects modules, graph serialization roundtrip, and MIDI integration & learn.
 *   **Test Harness Complete (v2.4.28):** 🎉 **COMPLETE!** CTest-based unit test framework with headless execution, JSON reporters, memory leak detection, and 300+ assertions verifying API boundaries, GPU state, and audio concurrency.
+*   **Virtual Display Compositing & Performance Parity (v2.4.3):** 🚀 **COMPLETE!** Fixed critical Virtual Display Compositing flaws in Vulkan and OpenGL backends. Achieves peak performance by eliminating CPU stalling on the Main Thread during UBO updates.
+*   **OpenGL Deferred Rendering Architecture (v2.4.2):** 🛠️ **COMPLETE!** Addressed critical architectural flaws in the OpenGL backend. Achieves true architectural parity with Vulkan, preventing race conditions and visual tearing.
+*   **Complete MIDI Architecture (v2.4.1):** 🎹 **COMPLETE!** Implemented a complete professional-grade MIDI subsystem with hybrid hardware/virtual routing, advanced features (filtering, transformation, recording), and Universal Device Inquiry.
 *   **Modular Revolution & Architectural Reorganization (v2.4.0):** 🎉 **COMPLETE!** The monolithic `situation_impl.h` has been completely restructured into an aggregated header encompassing 16 independent modules (`sit/situation_impl_*.h`). This enables faster compilation and better code hygiene.
 *   **OpenGL Graveyard Flush Safety (v2.4.1):** 🧹 **COMPLETE!** Fixed a major race condition and VRAM leak in the OpenGL backend caused by internal polling in `_SitGLFlushGraveyard`. The Render Thread and single-threaded fallback loop now properly wait for the GL sync fence from the old frame to complete before issuing commands or executing resource cleanup.
 *   **Audio Modularization (v2.3.61):** 🧹 **COMPLETE!** Extracted the internal Reverb (`sit/aud/reverb.h`) and Echo (`sit/aud/echo.h`) implementations into standalone headers to improve codebase modularity.
@@ -504,4 +507,3 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## 8. Version History
 
 For a detailed history of changes, improvements, and fixes, please refer to the [**Update Log**](doc/UPDATELOG.md).
-
