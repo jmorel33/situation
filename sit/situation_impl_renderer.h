@@ -20,6 +20,18 @@
 #define SITUATION_IMPL_RENDERER_H
 
 // ============================================================================
+// Vulkan Defines
+// ============================================================================
+#if defined(SITUATION_USE_VULKAN)
+#define SITUATION_VULKAN_MAX_INSTANCE_EXTENSIONS      16
+#define SITUATION_VULKAN_UNIFORM_BUFFER_SIZE          256
+#define SITUATION_VULKAN_STORAGE_BUFFER_SIZE          256
+#define SITUATION_VULKAN_COMBINED_IMAGE_SAMPLER_SIZE  512
+#define SITUATION_VULKAN_DEFAULT_USER_STORAGE_IMAGES  128
+#endif // SITUATION_USE_VULKAN
+
+
+// ============================================================================
 // OpenGL Ring Buffer & MDI Helpers (needed early by _SituationInitOpenGL)
 // ============================================================================
 #if defined(SITUATION_USE_OPENGL)
@@ -87,20 +99,6 @@ static void _SituationGLRingWait(void) {
     }
 }
 #endif // SITUATION_USE_OPENGL
-
-// ============================================================================
-// Vulkan Defines
-// ============================================================================
-#if defined(SITUATION_USE_VULKAN)
-#define SITUATION_VULKAN_MAX_INSTANCE_EXTENSIONS      16
-#define SITUATION_VULKAN_UNIFORM_BUFFER_SIZE          256
-#define SITUATION_VULKAN_STORAGE_BUFFER_SIZE          256
-#define SITUATION_VULKAN_COMBINED_IMAGE_SAMPLER_SIZE  512
-#define SITUATION_VULKAN_DEFAULT_USER_STORAGE_IMAGES  128
-#endif // SITUATION_USE_VULKAN
-
-
-
 
 /**
  * @brief [INTERNAL] Creates and initializes a new uniform map.
@@ -7545,7 +7543,6 @@ static void _SituationVulkanCleanupSwapchain(void) {
     // It's set correctly by _SituationVulkanCreateSwapchain.
 }
 
-
 /**
  * @brief [INTERNAL] Recreates the Vulkan swapchain and all resources dependent on it.
  *
@@ -7645,9 +7642,6 @@ static void _SituationVulkanRecreateSwapchain(void) {
 }
 
 #endif // SITUATION_USE_VULKAN
-
-
-
 
 /**
  * @brief [INTERNAL] Initializes all backend-specific resources for the internal 2D quad renderer.
@@ -12768,7 +12762,6 @@ static _SituationModelSlot* _SitGetModelSlot(SituationModel handle) {
     return slot;
 }
 
-
 // --- Resource Allocation Helpers ---
 
 /**
@@ -13544,28 +13537,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
     texture->generation = 0;
 }
 
-
-
 #if defined(SITUATION_USE_VULKAN)
-/**
- * @brief [INTERNAL] Creates a device-local GPU buffer and uploads data to it, using an asynchronous path when possible.
- *
- * @details This is the core data upload utility for the Vulkan backend. It correctly handles the creation of high-performance, device-local buffers by using a temporary, host-visible "staging" buffer for the data transfer.
- *
- * @par Asynchronous Upload Path (The "Velocity" Solution)
- *   This function implements a dual-path mechanism to solve the "Synchronous Transfers" bottleneck:
- *   - **If `cmd` is a valid command buffer (not NULL):** This is the **asynchronous path**, used during the main render loop. The function records a `vkCmdCopyBuffer` command into the provided `cmd` and places the staging buffer into the graveyard for deferred deletion using `_SituationDeferDestroyBuffer`. This is a non-blocking operation that allows dozens of assets to be uploaded in a single frame without stalling the CPU.
- *   - **If `cmd` is NULL:** This is the **synchronous path**, used during initialization or outside the main render loop. The function creates its own temporary command buffer, submits the copy, and stalls the CPU by waiting for the transfer to complete (`vkQueueWaitIdle`). This is necessary when a frame is not in flight but is avoided at all costs during runtime.
- *
- * @param cmd The main command buffer for the current frame, or NULL to force a synchronous upload.
- * @param data Pointer to the data to upload.
- * @param size The size of the data in bytes.
- * @param usage The final usage flags for the destination buffer (e.g., `VK_BUFFER_USAGE_VERTEX_BUFFER_BIT`).
- * @param[out] out_buffer Pointer to store the handle of the final, device-local buffer.
- * @param[out] out_allocation Pointer to store the VMA allocation for the final buffer.
- *
- * @return `SITUATION_SUCCESS` on success.
- */
 /**
  * @brief [INTERNAL] Creates a device-local GPU buffer and uploads data to it, using an asynchronous path when possible.
  *
@@ -13917,7 +13889,6 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
     return SITUATION_SUCCESS;
 }
 
-
 /**
  * @brief Destroys a GPU buffer and frees all associated resources.
  * @details This is the only correct way to release a buffer created with SituationCreateBuffer.
@@ -13949,7 +13920,6 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
     _SitFreeBufferSlot(*buffer);
     memset(buffer, 0, sizeof(SituationBuffer));
 }
-
 
 /**
  * @brief Creates a self-contained GPU mesh from vertex and index data.
@@ -14042,7 +14012,6 @@ SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_co
     return SITUATION_SUCCESS;
 }
 
-
 /**
  * @brief Destroys a GPU mesh and frees all of its associated resources.
  * @details This is the only correct way to release a mesh created with `SituationCreateMesh`. It handles the full cleanup process, ensuring that all backend-specific GPU objects are deleted and that the mesh is removed from the library's internal resource tracking list.
@@ -14083,7 +14052,6 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
     _SitFreeMeshSlot(*mesh);
     memset(mesh, 0, sizeof(SituationMesh));
 }
-
 
 /**
  * @brief Reads geometry data back from a GPU mesh into CPU memory.
@@ -14670,7 +14638,6 @@ static GLuint _SituationCreateGLComputeProgram(const void* source_data, Situatio
 }
 #endif
 
-
  /**
  * @brief [core] Creates a compute pipeline directly from GLSL source code provided as a C string in memory.
  *
@@ -14791,7 +14758,6 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
     return SITUATION_SUCCESS;
 }
 
-
 /**
  * @brief Creates a compute pipeline by loading GLSL source code from a file.
  *
@@ -14831,7 +14797,6 @@ SITAPI SituationError SituationCreateComputePipeline(const char* compute_shader_
     SIT_FREE(source);
     return err;
 }
-
 
 // --- Updated/Added Documentation Block for SituationDestroyComputePipeline ---;
 /**
@@ -14878,7 +14843,6 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
     _SitFreeComputePipelineSlot(*pipeline);
     memset(pipeline, 0, sizeof(SituationComputePipeline));
 }
-
 
 /**
  * @brief [INTERNAL] Automates the cleanup of leaked resources during library shutdown.
@@ -14948,8 +14912,6 @@ static void _SituationCleanupDanglingResources(void) {
         }
     }
 }
-
-
 
 /**
  * @brief Updates a portion (or all) of an existing buffer's contents with new data.
@@ -15085,8 +15047,6 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
     return SITUATION_ERROR_NOT_IMPLEMENTED;
 }
 
-
-
 /**
  * @brief Reads data back from a GPU buffer to host memory.
  *
@@ -15128,8 +15088,6 @@ SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offs
 #endif
     return SITUATION_ERROR_NOT_IMPLEMENTED;
 }
-
-
 
 // --- Command Buffer Implementations ---
 
@@ -15439,8 +15397,6 @@ SITAPI void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t*
     if (z) *z = max_z;
 }
 
-
-
 /**
  * @brief Queries whether a specific rendering feature is supported on the current platform/backend.
  *
@@ -15495,9 +15451,6 @@ SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature) {
     // Check against the mask populated during backend initialization
     return (sit_render.enabled_features_mask & feature) != 0;
 }
-
-
-
 
 #if defined(SITUATION_USE_VULKAN)
 /**
@@ -15758,13 +15711,11 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
 
     return pipeline;
 }
-
 #endif // SITUATION_USE_VULKAN
 
 // ============================================================================
 // Virtual Display API
 // ============================================================================
-
 
 /**
  * @brief [INTERNAL] Extracts and interleaves geometry data from a raw GLTF primitive.
@@ -15910,7 +15861,6 @@ SITAPI SituationError SituationLoadTexture(const char* file_path, bool generate_
     return err;
 }
 
-
 /**
  * @brief Loads a 3D model from a GLTF/GLB file.
  *
@@ -16027,7 +15977,6 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
 #endif
 }
 
-
 /**
  * @brief Unloads a model and frees all of its associated GPU and CPU resources.
  * @details This is the only correct way to clean up a model loaded with `SituationLoadModel`.
@@ -16065,7 +16014,6 @@ SITAPI void SituationUnloadModel(SituationModel* model) {
     _SitFreeModelSlot(*model);
     memset(model, 0, sizeof(SituationModel));
 }
-
 
 /**
  * @brief Records commands to draw a complete 3D model with a given transformation.
@@ -16116,8 +16064,6 @@ SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model,
         SituationCmdDrawMesh(cmd, mesh->gpu_mesh);
     }
 }
-
-
 
 /**
  * @brief Saves a model's structure and geometry to a human-readable GLTF 2.0 file.
@@ -16184,7 +16130,6 @@ SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path
 #endif
 }
 
-
 /**
  * @brief [High-Level] Loads, compiles, and creates a graphics shader pipeline from GLSL source files.
  * @details This is the recommended high-level function for loading shaders from disk. It acts as a convenience wrapper, performing a multi-step process:
@@ -16237,7 +16182,6 @@ SITAPI SituationError SituationLoadShader(const char* vs_path, const char* fs_pa
     SIT_FREE(fs_source);
     return err;
 }
-
 
 /**
  * @brief [Core] Creates a graphics shader pipeline from GLSL source code provided as C strings.
@@ -16369,8 +16313,6 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
     *out_shader = handle;
     return SITUATION_SUCCESS;
 }
-
-
 
 /**
  * @brief Destroys a graphics shader pipeline and frees all of its associated GPU and CPU resources.
@@ -16511,7 +16453,6 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
 #endif
 }
 
-
 /**
  * @brief [DEPRECATED] Inserts a coarse-grained memory barrier.
  * @details This function provides a simple, but less optimal, way to synchronize memory.
@@ -16638,7 +16579,6 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
     return false;
 }
 
-
 //==================================================================================
 // Implementation for Hot-Reloading
 //==================================================================================
@@ -16693,7 +16633,6 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     return false;
 }
 
-
 /**
  * @brief Reloads a 3D model and all its dependencies.
  *
@@ -16746,7 +16685,6 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     }
     return false;
 }
-
 
 /**
  * @brief Reloads a compute pipeline from its original source file.
@@ -16802,7 +16740,6 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     }
     return false;
 }
-
 
 /**
  * @brief [INTERNAL] Executes one complete pass of the hot-reloading system (Velocity Module).
@@ -17005,8 +16942,6 @@ SITAPI SituationError SituationCheckHotReloads(void) {
     // Logic moved to I/O thread.
     return SITUATION_SUCCESS;
 }
-
-//==================================================================================
 
 // ==================================================================================
 //  Render Thread Implementation (Phase 2)
@@ -17289,7 +17224,5 @@ static int _SituationRenderThreadEntry(void* arg) {
     return 0;
 }
 #endif
-
-
 
 #endif // SITUATION_IMPL_RENDERER_H
