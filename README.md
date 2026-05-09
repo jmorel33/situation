@@ -66,7 +66,7 @@ This foundation enables precise **Control** over the entire application stack:
 *   **Threading:** A completely new **Generational Task System** supporting fork-join parallelism (`ParallelFor`), priority scheduling (High/Low rings), backpressure handling (`RUN_IF_FULL`), and a **Dedicated I/O Thread** for non-blocking asset loading. It features Small Object Optimization (SOO) for zero-allocation jobs and O(1) dependency resolution.
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management with explicit **State Hardening** to prevent context poisoning from external middleware (e.g., ImGui).
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events ensures no input is ever lost during frame spikes.
-*   **Audio:** A professional-grade pipeline featuring a **Snapshot-and-Unlock mixing architecture** for zero-stall concurrency, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
+*   **Audio:** A professional-grade pipeline featuring a **Node Graph architecture** for zero-stall concurrency, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
 *   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.4**. It manages complex resources automatically, utilizing **Best-Fit Descriptor Recycling** and **Persistent Staging Rings** to eliminate fragmentation and allocation overhead. The OpenGL backend now features **Multi-Draw Indirect (MDI)** batching and **Bindless Textures** for console-like efficiency. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering powered by **Zero-Copy Ring Buffers**.
 *   **Hot-Reloading:** A suite of tools for live-reloading assets (Shaders, Textures, Models) at runtime, safely handling GPU synchronization and resource rebuilding with **Debounced IO Polling** to prevent CPU storms.
 
@@ -229,7 +229,7 @@ graph TD
 
         subgraph Audio ["Audio Engine (Async)"]
             AU1["Audio Thread"]
-            AU2["Snapshot Mixer"]
+            AU2["Process Node Graph"]
             AU3["DSP Chain (Reverb/Delay)"]
             AU4["Decode Streams"]
 
@@ -267,6 +267,72 @@ graph TD
     TS_W -. "Results" .-> L3
 ```
 
+#### Audio Node Graph Architecture
+The audio engine utilizes a fully functional node graph system allowing comprehensive modular routing, per-channel effect insertions, and DSP control modulations. This completely replaces the legacy static mixer.
+
+```mermaid
+graph TD
+    %% ─── Sources ───
+    subgraph Sources
+        TS[Tone Synth]
+        SS[Sound Source]
+        MC[Mic Capture]
+    end
+
+    %% ─── Modulators ───
+    subgraph Modulators
+        LFO[LFO]
+        EF[Envelope Follower]
+    end
+
+    %% ─── Insert Effects Chain ───
+    subgraph "Insert Effects (per-channel)"
+        GAIN_PRE[Gain - Pre]
+        FX1[Effect Slot 1\nReverb / Echo / Chorus / etc.]
+        FX2[Effect Slot 2\nOverdrive / Phaser / etc.]
+        DYN[Dynamics\nCompressor / Gate]
+        EQ[EQ 4-Band]
+        FILT[Filter]
+        PAN[Panner]
+        GAIN_POST[Gain - Post]
+    end
+
+    %% ─── Bus / Mixer ───
+    subgraph "Mix Bus"
+        MIX[Mixer Node\nSum N inputs → stereo]
+    end
+
+    %% ─── Master Chain ───
+    subgraph "Master Chain"
+        MAMP[Mastering Amp]
+        MAX[Maximizer / DeafMax]
+        PEAK[Peak Meter]
+        SPEC[Spectrum Analyzer]
+    end
+
+    %% ─── Output ───
+    OUT[Audio Device Output\nminiaudio callback]
+
+    %% ─── Signal Flow ───
+    TS -->|audio| GAIN_PRE
+    SS -->|audio| GAIN_PRE
+    MC -->|audio| GAIN_PRE
+
+    GAIN_PRE --> FX1 --> FX2 --> DYN --> EQ --> FILT --> PAN --> GAIN_POST
+    GAIN_POST --> MIX
+
+    MIX --> MAMP --> MAX --> PEAK --> SPEC --> OUT
+
+    %% ─── Modulation (control signals) ───
+    LFO -.->|ctrl: rate/depth| PAN
+    LFO -.->|ctrl: mod| FX1
+    EF -.->|ctrl: envelope| DYN
+
+    %% ─── Analyzers (tap, no audio modification) ───
+    PEAK -.->|read-only levels| OUT
+    SPEC -.->|read-only FFT bins| OUT
+```
+
 #### OpenGL 4.6 Lifecycle (State Machine)
 The OpenGL backend is designed to be "stateless" from the user's perspective while managing complex state caching internally. It features a "Soft Command Buffer" that records commands for execution either immediately or on a dedicated render thread. Key features include **MDI Auto-Batching** for geometry and **Virtual Bindless** (LRU Slot Management) for texture compatibility.
 
@@ -297,7 +363,11 @@ graph TD
             R3 --> R6["glMultiDrawElementsIndirect"]
             R4 --> R7["glBindTextureUnit"]
             R5 --> R8["Draw/Dispatch"]
-            R8 --> S1["glfwSwapBuffers"]
+            R6 --> R9{"More Commands?"}
+            R7 --> R9
+            R8 --> R9
+            R9 -- "Yes" --> R2
+            R9 -- "No" --> S1["glfwSwapBuffers"]
             S1 --> S2["glFenceSync"]
             S2 --> S3["Flush Graveyard<br/>(Deferred Cleanup)"]
         end
