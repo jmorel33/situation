@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="/docs/situation_blackMetal_logo.jpg" alt="K-Term Logo">
+</div>
+
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
 _Core API library v2.4.42_
@@ -69,7 +73,6 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 
 ---
 
-
 ## 1. Introduction & Overview
 
 `situation.h` is a single-header C/C++ library that acts as a high-performance kernel for interactive software. It abstracts the fragmented landscape of OS APIs (Windows/Linux/macOS) and Graphics Backends (OpenGL/Vulkan) into a unified, deterministic "Situation" that you control.
@@ -86,11 +89,6 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 *   **Virtual Display Compositor:** Render your game to low-resolution off-screen targets (e.g., 320x240) and composite them to the main screen with precise control over scaling algorithms (Integer, Fit, Stretch) and blend modes.
 *   **First-Class Compute:** Compute Shaders are not an afterthought. The API treats Compute Pipelines and Storage Buffers (SSBOs) as primary citizens, enabling complex simulations and post-processing.
 *   **Deep System Awareness:** Query precise hardware details (GPU Name, dedicated VRAM usage, Monitor topology) to auto-configure your application's quality settings.
-
-
-
-
-
 
 ## 2. Getting Started
 
@@ -159,17 +157,6 @@ int main(int argc, char** argv) {
     return 0;
 }
 ```
-
-
----
-
-
-
-
-
-
-
-
 
 ## 3. Core Concepts & Architecture
 
@@ -375,10 +362,7 @@ graph TD
     E1 --> E2 --> E3 --> E4
 ```
 
-
-
 ---
-
 
 ## 4. Building & Configuration
 
@@ -410,10 +394,7 @@ Depending on your configuration, you must link against specific system libraries
 
 > **Note:** If using `SITUATION_ENABLE_SHADER_COMPILER`, ensure the `shaderc` includes and libraries are in your compiler's search path.
 
-
-
 ---
-
 
 ## 5. Examples & Tutorials
 
@@ -421,10 +402,7 @@ The repository includes a variety of examples demonstrating the library's featur
 
 The full source code for all examples can be found in the `/examples` directory.
 
-
-
 ---
-
 
 ## 6. Frequently Asked Questions (FAQ) & Troubleshooting
 
@@ -489,9 +467,7 @@ This library does not use garbage collection.
 **Q: My 3D Model renders black?**
 *   **Cause:** The model loader likely failed to find the texture files relative to the model. Check the console output; the library logs warnings if specific texture paths in a GLTF file could not be resolved.
 
-
 ---
-
 
 ## 7. API Reference
 
@@ -499,8 +475,6 @@ The documentation for "Situation" is split into two key documents:
 
 1.  [**Core API Library Reference Manual (situation_sdk.md)**](doc/situation_sdk.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
 2.  [**Situation API Programming Guide (situation_api.md)**](doc/situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
-
-
 
 ---
 
@@ -519,7 +493,6 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
-
 
 ## 8. Version History
 
