@@ -20,18 +20,6 @@
 #define SITUATION_IMPL_RENDERER_H
 
 // ============================================================================
-// Vulkan Defines
-// ============================================================================
-#if defined(SITUATION_USE_VULKAN)
-#define SITUATION_VULKAN_MAX_INSTANCE_EXTENSIONS      16
-#define SITUATION_VULKAN_UNIFORM_BUFFER_SIZE          256
-#define SITUATION_VULKAN_STORAGE_BUFFER_SIZE          256
-#define SITUATION_VULKAN_COMBINED_IMAGE_SAMPLER_SIZE  512
-#define SITUATION_VULKAN_DEFAULT_USER_STORAGE_IMAGES  128
-#endif // SITUATION_USE_VULKAN
-
-
-// ============================================================================
 // OpenGL Ring Buffer & MDI Helpers (needed early by _SituationInitOpenGL)
 // ============================================================================
 #if defined(SITUATION_USE_OPENGL)
@@ -1218,7 +1206,7 @@ SITAPI void _SituationLogGLError(const char* file, int line) {
  *
  *          On failure:
  *            - Logs error (e.g. thread creation fail)
- *            - Returns false ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ init aborts or falls back to main-thread rendering
+ *            - Returns false init aborts or falls back to main-thread rendering
  *
  * @param info Pointer to `SituationInitInfo` containing render thread preferences
  *             (e.g. enable/disable flag, thread priority hints if supported).
@@ -1238,7 +1226,7 @@ SITAPI void _SituationLogGLError(const char* file, int line) {
  *
  *       If render thread is disabled (`init_info->enable_render_thread = false`
  *       or compile-time define absent), this function returns true immediately
- *       (no-op) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â main thread retains context and does synchronous rendering.
+ *       (no-op) main thread retains context and does synchronous rendering.
  *
  *       Dependencies:
  *         - GLFW window must exist (`sit_gs.sit_glfw_window != NULL`)
@@ -1541,19 +1529,19 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
  *
  * @return SITUATION_SUCCESS on successful load and GPU upload,
  *         SITUATION_ERROR_INVALID_PARAM if data is NULL, dimensions invalid,
- *         num_chars ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ 0, or out_font is NULL,
+ *         num_chars 0, or out_font is NULL,
  *         SITUATION_ERROR_MEMORY_ALLOCATION if internal texture or glyph table allocation failed,
  *         SITUATION_ERROR_GL_UPLOAD_FAILED if texture upload failed (OpenGL),
  *         SITUATION_ERROR_VULKAN_UPLOAD_FAILED if texture creation/upload failed (Vulkan),
  *         or other backend-specific errors.
  *
- * @note The input data is **not** copied ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the function assumes it remains valid.
+ * @note The input data is **not** copied the function assumes it remains valid.
  *       For dynamic fonts or TTF loading, use `SituationLoadFontFromFile` or `SituationLoadFontFromMemory` instead.
  *       Texture is created with default sampler state (nearest filtering, clamp-to-edge).
  *       Caller is responsible for destroying the font with `SituationDestroyFont` when done.
  *       Thread safety: Must be called with active GL/VK context (typically render thread or init).
  *
- *       Recommended usage for embedded 8ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â8 VGA font:
+ *       Recommended usage for embedded VGA font:
  *       ```c
  *       SituationFont font;
  *       SituationLoadBitmapFontFromMemory(sit_default_8x8_font, 8, 8, 256, &font);
@@ -2770,7 +2758,7 @@ static bool _SituationInitGLVirtualDisplayRenderer(void) {
  *          macro is defined. It is responsible for establishing a fully functional OpenGL
  *          rendering environment that the rest of the library can rely on.
  *
- *          Execution order (critical sequence ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â do not reorder without care):
+ *          Execution order (critical sequence do not reorder without care):
  *            1. Makes the GLFW window context current on the calling thread
  *               (`glfwMakeContextCurrent(sit_gs.sit_glfw_window)`)
  *            2. Loads OpenGL function pointers via GLAD
@@ -2813,7 +2801,7 @@ static bool _SituationInitGLVirtualDisplayRenderer(void) {
  *
  * @note Must be called **with a valid GLFW window context current** on the calling thread.
  *       Thread safety: Only safe from the main thread or thread that owns the context
- *       during library initialization ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â not reentrant or thread-safe afterward.
+ *       during library initialization not reentrant or thread-safe afterward.
  *       If render thread is enabled, context is released after this function so render
  *       thread can acquire it.
  *
@@ -3359,9 +3347,9 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
  * @return true if bindless support is available and initialized successfully,
  *         false if extension missing or initialization failed (logs internally)
  *
- * @note This function is idempotent ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â safe to call multiple times.
+ * @note This function is idempotent safe to call multiple times.
  *       Thread safety: Must be called with GL context current (typically main/render thread during init).
- *       No runtime cost after init ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â only queried via flag.
+ *       No runtime cost after init only queried via flag.
  *
  *       If bindless is unavailable, virtual display rendering falls back to traditional
  *       `glActiveTexture` + `glBindTexture` per draw call (slower in complex scenes).
@@ -7543,6 +7531,7 @@ static void _SituationVulkanCleanupSwapchain(void) {
     // It's set correctly by _SituationVulkanCreateSwapchain.
 }
 
+
 /**
  * @brief [INTERNAL] Recreates the Vulkan swapchain and all resources dependent on it.
  *
@@ -7642,6 +7631,9 @@ static void _SituationVulkanRecreateSwapchain(void) {
 }
 
 #endif // SITUATION_USE_VULKAN
+
+
+
 
 /**
  * @brief [INTERNAL] Initializes all backend-specific resources for the internal 2D quad renderer.
@@ -7832,8 +7824,8 @@ static bool _SituationInitDefaultFont(void) {
  * @note Must be called **after** backend context is current (GL context or Vulkan device ready).
  *       Thread safety: Only safe from the thread owning the context (usually main thread during init
  *       or render thread if deferred).
- *       Dimensions are used for initial viewport/scissor setup ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â can be updated later via resize events.
- *       The quad is static (NDC coords) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â transformations are applied via model matrix in draw calls.
+ *       Dimensions are used for initial viewport/scissor setup can be updated later via resize events.
+ *       The quad is static (NDC coords) transformations are applied via model matrix in draw calls.
  *
  *       Critical dependencies:
  *         - OpenGL context current (GL path) or Vulkan device/queue ready
@@ -8108,7 +8100,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
  *            - Allocates scratch buffers for string processing and glyph batching
  *            - Caches common ASCII/Unicode ranges if using runtime glyph rasterization
  *
- *          On success, the text renderer is ready for immediate use ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â no further init required.
+ *          On success, the text renderer is ready for immediate use no further init required.
  *          On failure (e.g. texture allocation fail, shader compile error), logs warnings/errors
  *          and disables text rendering gracefully (future draw calls become no-ops).
  *
@@ -8118,7 +8110,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
  * @note This function is **called only once** during library lifetime.
  *       Thread safety: Must be called from the thread that owns the GL/VK context
  *       (typically main thread during init, or render thread if deferred).
- *       No locking ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â assumes exclusive access during startup.
+ *       No locking assumes exclusive access during startup.
  *
  *       If `SITUATION_ENABLE_TEXT_RENDERER` is not defined (or disabled at runtime),
  *       this function returns true immediately (no-op).
@@ -9254,7 +9246,7 @@ static void _SituationSubmitCompute(VkCommandBuffer cmd) {
  *            - Ends any active render pass
  *            - Ends command buffer recording
  *
- *          The function does **not** submit the command buffer to the queue ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â
+ *          The function does **not** submit the command buffer to the queue
  *          that is handled separately (e.g. `vkQueueSubmit` in the render thread).
  *
  * @param cmd A Vulkan command buffer handle in the recording state (or reset/ready).
@@ -9263,12 +9255,12 @@ static void _SituationSubmitCompute(VkCommandBuffer cmd) {
  * @note This function assumes the command buffer is already begun (via `vkBeginCommandBuffer`).
  *       Errors (validation failures, out-of-memory, invalid state) are logged internally
  *       and may set the global `SituationError` (e.g. SITUATION_ERROR_VULKAN_COMMAND_BUFFER_FAILED).
- *       No return value ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â failures are non-fatal but logged.
+ *       No return value failures are non-fatal but logged.
  *
  * Thread safety invariants:
  *   - Must be called from the **render thread** (owns the Vulkan context/queues)
  *   - Command buffer must not be in use by another thread
- *   - No internal locking ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â caller ensures exclusive access
+ *   - No internal locking caller ensures exclusive access
  *   - Safe during hot-reload if old resources are destroyed first
  *
  * @see _SituationRenderThreadEntry (main caller),
@@ -9349,12 +9341,12 @@ static void _SituationSubmitGraphics(VkCommandBuffer cmd) {
  *          (e.g. 1 second) and returns an error on expiry.
  *
  *          Call this at the end of your main loop after all `SituationCmd*` recordings
- *          for the frame. It does **not** perform polling or input handling ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â pair with
+ *          for the frame. It does **not** perform polling or input handling pair with
  *          `SituationPollEvents` at loop start.
  *
  * @return SITUATION_SUCCESS on successful submission,
  *         SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT if wait for free slot timed out
- *         (too many pending frames ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â reduce load or increase MAX_FRAMES_IN_FLIGHT),
+ *         (too many pending frames reduce load or increase MAX_FRAMES_IN_FLIGHT),
  *         SITUATION_ERROR_THREAD_VIOLATION if called from render thread (deadlock risk),
  *         or other appropriate error codes (e.g. mutex failure).
  *
@@ -9364,7 +9356,7 @@ static void _SituationSubmitGraphics(VkCommandBuffer cmd) {
  *       Metrics (latency, queue depth) are updated internally if enabled.
  *
  *       Thread safety:
- *         - Safe only from main thread ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â render thread calls would deadlock
+ *         - Safe only from main thread render thread calls would deadlock
  *         - Internal mutex + condvar protect queue access
  *         - Atomic ops for refcounts and metrics
  *
@@ -11330,7 +11322,7 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
  *         SITUATION_ERROR_RESOURCE_INVALID if internal quad pipeline/shader not ready,
  *         or other backend-specific errors
  *
- * @note This is a **very lightweight** draw call ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ideal for high-frequency use (e.g. UI, debug lines).
+ * @note This is a **very lightweight** draw call ideal for high-frequency use (e.g. UI, debug lines).
  *       No texture binding or complex state changes are performed.
  *       Assumes current pipeline layout supports the internal quad shader (set via `SituationCmdBindPipeline` if needed).
  *       For textured quads, use `SituationCmdBindTexture` + `SituationCmdDrawQuadTextured` variant (if exists).
@@ -11589,9 +11581,9 @@ SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns) {
  *            - Placeholder `bins` array (empty for now; reserved for future histogram buckets)
  *
  *          Safety features:
- *            - If buffer is NULL or size is 0 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ silent no-op
- *            - If buffer is too small (< 256 bytes) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ writes a minimal error JSON and truncates safely
- *            - If metrics are disabled (no render thread) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ `avg_ns` and `max_ns` are 0
+ *            - If buffer is NULL or size is 0 -> silent no-op
+ *            - If buffer is too small (< 256 bytes) -> writes a minimal error JSON and truncates safely
+ *            - If metrics are disabled (no render thread) -> `avg_ns` and `max_ns` are 0
  *
  *          Intended for:
  *            - Debug overlays / in-game performance HUD
@@ -11604,10 +11596,10 @@ SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns) {
  *                 Recommended minimum: 256 bytes (for error case).
  *                 Larger buffers allow future expansion (more fields, actual bins).
  *
- * @note The function is **fast, non-allocating, and thread-safe** ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â safe to call from any thread
+ * @note The function is **fast, non-allocating, and thread-safe** - safe to call from any thread
  *       at any time after initialization.
  *       Output is always null-terminated (even on truncation).
- *       No error code is returned ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â failures are handled gracefully via JSON error message.
+ *       No error code is returned - failures are handled gracefully via JSON error message.
  *       Metrics collection is compile-time gated (`SITUATION_ENABLE_RENDER_THREAD`).
  *       Future versions may populate `bins` with p50/p90/p99 buckets or queue-depth history.
  *
@@ -11911,7 +11903,7 @@ SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRende
  *            - Validates the list handle and frame_idx (0 to SITUATION_MAX_FRAMES_IN_FLIGHT-1)
  *            - Acquires the render queue mutex
  *            - Directly places the list reference into the queue at the requested frame_idx
- *              (overwriting if already occupied ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â caller must ensure slot is free or safe)
+ *              (overwriting if already occupied - caller must ensure slot is free or safe)
  *            - Increments the frame refcount for that slot
  *            - Signals the render thread condition variable to wake it if idle
  *            - Releases the mutex
@@ -11933,11 +11925,11 @@ SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRende
  *                  where the list should be placed for execution.
  *                  Invalid indices are ignored (logged as warning).
  *
- * @note This is a **forceful** operation ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â no queue-full check is performed.
+ * @note This is a **forceful** operation - no queue-full check is performed.
  *       If the slot is still in use (refcount > 0), behavior is undefined
  *       (possible overwrite, resource leak, or render corruption).
- *       Errors (invalid list/frame_idx) are logged internally only ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â function returns void.
- *       Use with extreme care ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â prefer normal `SituationSubmitRenderList` paths unless
+ *       Errors (invalid list/frame_idx) are logged internally only - function returns void.
+ *       Use with extreme care - prefer normal `SituationSubmitRenderList` paths unless
  *       you are implementing retry/hot-reload synchronization logic.
  *
  * @see _SituationEnqueueRenderList (normal enqueue), _SituationRenderThreadEntry,
@@ -12059,7 +12051,7 @@ static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
  *       If the queue is full (rare, high backpressure), logs a warning
  *       (e.g. SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT or similar)
  *       and may drop the list or block briefly (implementation-defined).
- *       No return value ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â errors are logged internally only.
+ *       No return value - errors are logged internally only.
  *
  * @see _SituationRenderThreadEntry (dequeue/execution side),
  *      SituationSubmitRenderList, SituationSubmitRenderList (pool variant),
@@ -12109,7 +12101,7 @@ typedef struct {
  *            - Waits (blocks the worker) until the render thread has fully processed the list
  *              (using fences or refcount zeroing to detect completion)
  *            - Upon completion, invokes the optional user callback `func(user_data, list)`
- *              **on this worker thread** (not render thread ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â safe for user code)
+ *              **on this worker thread** (not render thread - safe for user code)
  *            - Releases any temporary job resources and signals job completion
  *
  *          This design allows render list submission from any worker thread without
@@ -12224,10 +12216,10 @@ SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, Situa
  *            - The render thread picks up the list when a frame slot becomes free
  *            - Executes all commands in the list (binds, draws, dispatches, etc.)
  *            - Calls the optional user-provided callback `func(user_data, list)` upon completion
- *              (invoked on the **render thread** ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â caller must ensure callback is thread-safe)
+ *              (invoked on the **render thread** - caller must ensure callback is thread-safe)
  *            - Releases any internal resources associated with the list (if ref-count reaches zero)
  *
- *          This function is **non-blocking** from the caller's perspective ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â it returns immediately
+ *          This function is **non-blocking** from the caller's perspective - it returns immediately
  *          after queuing. Actual GPU work happens asynchronously on the render thread.
  *
  * @param list Valid `SituationRenderList` handle previously created and filled with commands
@@ -12240,7 +12232,7 @@ SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, Situa
  *
  * @note Errors during submission (invalid list, queue full, etc.) are logged internally
  *       via SITUATION_LOG_WARNING and may set the global error state, but the function itself
- *       returns void ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â no return code is provided.
+ *       returns void - no return code is provided.
  *       The list remains valid after submission until explicitly destroyed or ref-count drops.
  *       For synchronous wait, use `SituationWaitForRenderList` or `SituationWaitForAllRenderLists`.
  *
@@ -12762,6 +12754,7 @@ static _SituationModelSlot* _SitGetModelSlot(SituationModel handle) {
     return slot;
 }
 
+
 // --- Resource Allocation Helpers ---
 
 /**
@@ -13010,13 +13003,13 @@ SITAPI SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32
  *            - Returns a `SituationTexture` handle ready for binding/sampling
  *
  *          Required usage flags (caller responsibility):
- *            - `SITUATION_TEXTURE_USAGE_TRANSFER_DST` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â almost always needed for initial upload
- *            - `SITUATION_TEXTURE_USAGE_SAMPLED` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â if the texture will be sampled in shaders
- *            - `SITUATION_TEXTURE_USAGE_STORAGE` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â if used as storage image in compute
- *            - `SITUATION_TEXTURE_USAGE_TRANSFER_SRC` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â required when `generate_mipmaps` is true
+ *            - `SITUATION_TEXTURE_USAGE_TRANSFER_DST` - almost always needed for initial upload
+ *            - `SITUATION_TEXTURE_USAGE_SAMPLED` - if the texture will be sampled in shaders
+ *            - `SITUATION_TEXTURE_USAGE_STORAGE` - if used as storage image in compute
+ *            - `SITUATION_TEXTURE_USAGE_TRANSFER_SRC` - required when `generate_mipmaps` is true
  *              (for internal blit operations during mipmap generation)
- *            - `SITUATION_TEXTURE_USAGE_COLOR_ATTACHMENT` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â if used as render target
- *            - `SITUATION_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â for depth/stencil textures
+ *            - `SITUATION_TEXTURE_USAGE_COLOR_ATTACHMENT` - if used as render target
+ *            - `SITUATION_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT` - for depth/stencil textures
  *
  *          Invalid or insufficient flags result in error (e.g. mipmaps requested without TRANSFER_SRC).
  *
@@ -13037,7 +13030,7 @@ SITAPI SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32
  *         SITUATION_ERROR_BACKEND_SPECIFIC if Vulkan/GL texture creation/upload/blit failed,
  *         or other appropriate error codes.
  *
- * @note This is the low-level, flexible entry point ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â use `SituationCreateTexture` for the
+ * @note This is the low-level, flexible entry point - use `SituationCreateTexture` for the
  *       common case with automatic/default flags.
  *
  *       Performance considerations:
@@ -13889,6 +13882,7 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
     return SITUATION_SUCCESS;
 }
 
+
 /**
  * @brief Destroys a GPU buffer and frees all associated resources.
  * @details This is the only correct way to release a buffer created with SituationCreateBuffer.
@@ -13920,6 +13914,7 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
     _SitFreeBufferSlot(*buffer);
     memset(buffer, 0, sizeof(SituationBuffer));
 }
+
 
 /**
  * @brief Creates a self-contained GPU mesh from vertex and index data.
@@ -14012,6 +14007,7 @@ SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_co
     return SITUATION_SUCCESS;
 }
 
+
 /**
  * @brief Destroys a GPU mesh and frees all of its associated resources.
  * @details This is the only correct way to release a mesh created with `SituationCreateMesh`. It handles the full cleanup process, ensuring that all backend-specific GPU objects are deleted and that the mesh is removed from the library's internal resource tracking list.
@@ -14052,6 +14048,7 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
     _SitFreeMeshSlot(*mesh);
     memset(mesh, 0, sizeof(SituationMesh));
 }
+
 
 /**
  * @brief Reads geometry data back from a GPU mesh into CPU memory.
@@ -14638,6 +14635,7 @@ static GLuint _SituationCreateGLComputeProgram(const void* source_data, Situatio
 }
 #endif
 
+
  /**
  * @brief [core] Creates a compute pipeline directly from GLSL source code provided as a C string in memory.
  *
@@ -14758,6 +14756,7 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
     return SITUATION_SUCCESS;
 }
 
+
 /**
  * @brief Creates a compute pipeline by loading GLSL source code from a file.
  *
@@ -14797,6 +14796,7 @@ SITAPI SituationError SituationCreateComputePipeline(const char* compute_shader_
     SIT_FREE(source);
     return err;
 }
+
 
 // --- Updated/Added Documentation Block for SituationDestroyComputePipeline ---;
 /**
@@ -14843,6 +14843,7 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
     _SitFreeComputePipelineSlot(*pipeline);
     memset(pipeline, 0, sizeof(SituationComputePipeline));
 }
+
 
 /**
  * @brief [INTERNAL] Automates the cleanup of leaked resources during library shutdown.
@@ -15046,6 +15047,8 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
 #endif
     return SITUATION_ERROR_NOT_IMPLEMENTED;
 }
+
+
 
 /**
  * @brief Reads data back from a GPU buffer to host memory.
@@ -15711,6 +15714,7 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
 
     return pipeline;
 }
+
 #endif // SITUATION_USE_VULKAN
 
 // ============================================================================
@@ -15861,6 +15865,7 @@ SITAPI SituationError SituationLoadTexture(const char* file_path, bool generate_
     return err;
 }
 
+
 /**
  * @brief Loads a 3D model from a GLTF/GLB file.
  *
@@ -15977,6 +15982,7 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
 #endif
 }
 
+
 /**
  * @brief Unloads a model and frees all of its associated GPU and CPU resources.
  * @details This is the only correct way to clean up a model loaded with `SituationLoadModel`.
@@ -16014,6 +16020,7 @@ SITAPI void SituationUnloadModel(SituationModel* model) {
     _SitFreeModelSlot(*model);
     memset(model, 0, sizeof(SituationModel));
 }
+
 
 /**
  * @brief Records commands to draw a complete 3D model with a given transformation.
@@ -16064,6 +16071,7 @@ SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model,
         SituationCmdDrawMesh(cmd, mesh->gpu_mesh);
     }
 }
+
 
 /**
  * @brief Saves a model's structure and geometry to a human-readable GLTF 2.0 file.
@@ -16130,6 +16138,7 @@ SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path
 #endif
 }
 
+
 /**
  * @brief [High-Level] Loads, compiles, and creates a graphics shader pipeline from GLSL source files.
  * @details This is the recommended high-level function for loading shaders from disk. It acts as a convenience wrapper, performing a multi-step process:
@@ -16182,6 +16191,7 @@ SITAPI SituationError SituationLoadShader(const char* vs_path, const char* fs_pa
     SIT_FREE(fs_source);
     return err;
 }
+
 
 /**
  * @brief [Core] Creates a graphics shader pipeline from GLSL source code provided as C strings.
@@ -16313,6 +16323,7 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
     *out_shader = handle;
     return SITUATION_SUCCESS;
 }
+
 
 /**
  * @brief Destroys a graphics shader pipeline and frees all of its associated GPU and CPU resources.
@@ -16453,6 +16464,7 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
 #endif
 }
 
+
 /**
  * @brief [DEPRECATED] Inserts a coarse-grained memory barrier.
  * @details This function provides a simple, but less optimal, way to synchronize memory.
@@ -16579,6 +16591,7 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
     return false;
 }
 
+
 //==================================================================================
 // Implementation for Hot-Reloading
 //==================================================================================
@@ -16633,6 +16646,7 @@ SITAPI bool SituationReloadTexture(SituationTexture* texture) {
     return false;
 }
 
+
 /**
  * @brief Reloads a 3D model and all its dependencies.
  *
@@ -16685,6 +16699,7 @@ SITAPI bool SituationReloadModel(SituationModel* model) {
     }
     return false;
 }
+
 
 /**
  * @brief Reloads a compute pipeline from its original source file.
@@ -16740,6 +16755,7 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
     }
     return false;
 }
+
 
 /**
  * @brief [INTERNAL] Executes one complete pass of the hot-reloading system (Velocity Module).
@@ -16946,7 +16962,6 @@ SITAPI SituationError SituationCheckHotReloads(void) {
 // ==================================================================================
 //  Render Thread Implementation (Phase 2)
 // ==================================================================================
-
 #if !defined(__STDC_NO_THREADS__)
 
 // [v2.3.24a] Safety Zenith: Helper to flush resources for a specific frame index (or global for GL)

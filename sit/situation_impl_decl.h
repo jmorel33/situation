@@ -82,6 +82,14 @@ static void _SituationAssertMainThread(const char* file, int line) {
 // Internal Struct & Typedef Definitions
 // =================================================================================
 
+#if defined(SITUATION_USE_VULKAN)
+#define SITUATION_VULKAN_MAX_INSTANCE_EXTENSIONS      16
+#define SITUATION_VULKAN_UNIFORM_BUFFER_SIZE          256
+#define SITUATION_VULKAN_STORAGE_BUFFER_SIZE          256
+#define SITUATION_VULKAN_COMBINED_IMAGE_SAMPLER_SIZE  512
+#define SITUATION_VULKAN_DEFAULT_USER_STORAGE_IMAGES  128
+#endif // SITUATION_USE_VULKAN
+
 typedef struct _SituationUniformMapEntry {
     char* key;          // Uniform name
     int32_t value;        // Uniform location
