@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="/docs/situation_blackMetal_logo.jpg" alt="K-Term Logo">
+  <img src="/doc/situation_blackMetal_logo.jpg" alt="Situation Logo">
 </div>
 
 # The "Situation" Advanced Platform Awareness, Control, and Timing
