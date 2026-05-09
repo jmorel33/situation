@@ -20,7 +20,7 @@ Unlike simple windowing wrappers, Situation is an opinionated System Abstraction
 
 **🎉 Folder Reorganization & Audio Subsystem Organization**
 
-Version 2.4.0 establishes a professional, scalable folder structure:
+Version 2.4.10 establishes a professional, scalable folder structure:
 
 **Core Changes:**
 - All implementation files moved to `sit/` folder
@@ -32,16 +32,32 @@ Version 2.4.0 establishes a professional, scalable folder structure:
 **New Structure:**
 ```
 situation/
-├── situation.h              # ← Public API (include this)
-└── sit/                    # ← Implementation
-    ├── situation_api.h
-    ├── situation_impl.h
-    ├── situation_impl_audio.h
-    ├── aud/                # Audio subsystem
-    │   ├── fx/             # Effects
-    │   ├── polysonix/      # Synthesizer
+├── situation.h                         # ← Public entry point (include this)
+└── sit/                               # ← Implementation
+    ├── situation_api.h                # Public API declarations
+    │   └── situation_base_errno.h     # Error enum (SituationError)
+    ├── situation_impl.h              # Orchestrator (80 lines, includes only)
+    ├── situation_base_font.h         # Embedded VGA font
+    ├── situation_impl_deps.h         # Third-party libs
+    ├── situation_impl_decl.h         # Internal types & structs
+    ├── situation_impl_forward.h      # Forward declarations
+    │   └── situation_impl_renderer_fwd.h
+    ├── situation_impl_etc.h          # Utilities (math, strings)
+    ├── situation_impl_timer.h        # Oscillators, high-res time
+    ├── situation_impl_threading.h    # Thread pool, job system
+    ├── situation_impl_io.h           # File I/O, async, system info
+    ├── situation_impl_input.h        # Keyboard, mouse, gamepad
+    ├── situation_impl_wdm.h          # Window, display, monitor
+    ├── situation_impl_image.h        # Image, font, color
+    ├── situation_impl_renderer.h     # GL + VK backends (~17K lines)
+    ├── situation_impl_vd.h           # Virtual display compositing
+    ├── situation_impl_ctrl.h         # Lifecycle, init/shutdown
+    ├── situation_impl_audio.h        # Audio subsystem
+    ├── aud/                          # Audio subsystem
+    │   ├── fx/                       # Effects
+    │   ├── polysonix/                # Synthesizer
     │   └── ...
-    └── k-term/             # Terminal
+    └── k-term/                       # Terminal
 ```
 
 **Benefits:**
@@ -62,7 +78,7 @@ The library is engineered around three architectural pillars:
 
 2. **Control**
    The library hands the developer explicit, granular control over the application stack.
-   *   **Unified Graphics:** A modern Command Buffer architecture that abstracts OpenGL 4.6 and Vulkan 1.1 behind a single API. It manages complex resources—Shaders, Compute Pipelines, and Descriptor Sets—automatically, while enforcing correct synchronization barriers.
+   *   **Unified Graphics:** A modern Command Buffer architecture that abstracts OpenGL 4.6 and Vulkan 1.4 behind a single API. It manages complex resources—Shaders, Compute Pipelines, and Descriptor Sets—automatically, while enforcing correct synchronization barriers.
    *   **Hardened Audio:** A professional-grade audio engine supporting thread-safe capture (microphone), low-latency SFX playback, disk streaming for music, and a programmable DSP chain (Reverb, Echo, Filters).
    *   **Input:** A lock-free, ring-buffered input system that guarantees $O(1)$ access time and zero event loss, even during frame-rate spikes.
 
@@ -183,9 +199,12 @@ The library is engineered around three architectural pillars:
     - [4.5.1 Microphone Initialization](#451-microphone-initialization)
     - [4.5.2 Buffer Access](#452-buffer-access)
     - [4.5.3 Stopping Capture](#453-stopping-capture)
-  - [4.6 Mixer & Channel Strip](#46-mixer--channel-strip)
-    - [4.6.1 Mixer Structure](#461-mixer-structure)
-    - [4.6.2 The Channel Strip](#462-the-channel-strip)
+  - [4.6 Mixer (Deprecated — Use Node Graph)](#46-mixer-deprecated--use-node-graph)
+  - [4.7 Audio Node Graph](#47-audio-node-graph)
+    - [4.7.1 Core Concepts](#471-core-concepts)
+    - [4.7.2 Patching API](#472-patching-api)
+    - [4.7.3 Control Parameters](#473-control-parameters)
+    - [4.7.4 Cycle Detection](#474-cycle-detection)
 - [5.0 Input & Haptics](#50-input--haptics)
   - [5.1 Architecture: Ring Buffers & Polling](#51-architecture-ring-buffers--polling)
   - [5.2 Keyboard](#52-keyboard)
@@ -584,7 +603,7 @@ sequenceDiagram
 | :--- | :--- | :--- |
 | **Jittery Movement** | VSync fighting Physics | Use `SituationGetFrameTime()` for integration. |
 | **Spiral of Death** | Game slows to crawl | Cap `dt` (max 0.1s) to prevent physics explosion. |
-| **Drifting Sync** | Audio/Video desync | Re-sync oscillator phase to `SituationGetMusicTime()` periodically. |
+| **Drifting Sync** | Audio/Video desync | Oscillators now use anchor-based calculation (`anchor + count * period`) to prevent cumulative float drift. For external audio sync, re-sync oscillator phase to `SituationGetMusicTime()` periodically. |
 
 #### SituationTimerHasOscillatorUpdated
 
@@ -2911,8 +2930,10 @@ When you are finished recording, you must explicitly stop the capture device to 
 #### SituationStopAudioCapture
 
 ```c:disable-run
-SituationError SituationStopAudioCapture(void);
+void SituationStopAudioCapture(void);
 ```
+
+Stop audio capture and release the input device.
 
 **Behavior:**
 *   Halts the input stream immediately.
@@ -2921,62 +2942,170 @@ SituationError SituationStopAudioCapture(void);
 
 **Safety:** It is safe to call this function even if capture is not currently active (it will simply do nothing).
 
+---
+
+### 4.5.4 Audio Output Monitoring
+
+#### SituationSetAudioOutputMonitor
+
+```c:disable-run
+void SituationSetAudioOutputMonitor(void (*callback)(const float* samples, uint32_t frame_count, void* user_data), void* user_data);
+```
+
+Set a callback to receive mixed output samples for visualization purposes (VU meters, FFT spectrum analyzers, oscilloscopes, etc.).
+
+**Parameters:**
+*   `callback`: A function pointer that will be called with the final mixed audio output buffer each time a block is processed. Pass `NULL` to disable monitoring.
+*   `user_data`: A custom pointer passed through to your callback.
+
+**Callback Signature:**
+```c:disable-run
+void MyOutputMonitor(const float* samples, uint32_t frame_count, void* user_data) {
+    // 'samples' contains interleaved stereo float data [L, R, L, R, ...]
+    // 'frame_count' is the number of stereo frames (total samples = frame_count * 2)
+    // Use this data for visualization — do NOT modify the buffer.
+}
+```
+
+**Threading:** The callback runs on the **Audio Thread**. Keep processing minimal and lock-free. Copy data to a ring buffer if you need to use it on the main thread.
+
+**Usage Example:**
+```c:disable-run
+// Set up a VU meter monitor
+SituationSetAudioOutputMonitor(MyOutputMonitor, &my_vu_state);
+
+// Later, to disable:
+SituationSetAudioOutputMonitor(NULL, NULL);
+```
+
 > **Forward Look:** Full 3D Audio (HRTF) is not currently built-in. For 3D effects, calculate volume and pan manually based on distance and angle to the listener.
 >
 > **Ship Tease:** A lock-free Job System for massive audio concurrency is planned for v2.4.
 
-<a id="46-mixer--channel-strip"></a>
+<a id="46-mixer-deprecated--use-node-graph"></a>
 
-## 4.6 Mixer & Channel Strip
+## 4.6 Mixer (Deprecated — Use Node Graph)
 
-The Mixer architecture (introduced in v2.3.55) provides a professional-grade signal routing system.
+> **⚠️ Removed in v2.4.35 (Phase H).** The legacy Mixer API (`SituationCreateMixer`, `SituationAddTrack`, `SituationSetTrackVolume`, `SituationSetTrackEQ`, `SituationSetTrackDynamics`, `SituationSaveMixerSession`, etc.) has been removed from the public API.
 
-### 4.6.1 Mixer Structure
+The legacy Mixer modeled a traditional mixing console with fixed tracks, buses, and hard-wired channel strips. This architecture has been superseded by the **Node Graph system** (Section 4.7), which provides the same capabilities with far greater flexibility.
 
-*   **Mixer:** The top-level container (`SituationAudioMixer`). Represents the entire console.
-*   **Track:** A processing channel (`SituationAudioTrack`). Contains a Channel Strip and supports Aux Sends.
-*   **Bus:** A summing point (e.g., Master Bus, Drum Bus).
+### Migration Guide
 
-### 4.6.2 The Channel Strip
+| Legacy Mixer API | Node Graph Replacement |
+| :--- | :--- |
+| `SituationCreateMixer()` | `SituationCreateGraph()` |
+| `SituationAddTrack(mixer, name)` | `SituationCreateNode(graph, SITUATION_NODE_GAIN)` |
+| `SituationSetTrackVolume(track, vol)` | `SituationSetControl(graph, gain_node, 0, vol)` |
+| `SituationSetTrackEQ(track, ...)` | `SituationCreateNode(graph, SITUATION_NODE_EQ_4BAND)` + patch |
+| `SituationSetTrackDynamics(track, ...)` | `SituationCreateNode(graph, SITUATION_NODE_DYNAMICS)` + patch |
+| `SituationSetTrackSideChain(target, key)` | Control patch: `SituationCreatePatch(graph, key, 0, dynamics, 0, true)` |
+| `SituationInsertEffect(bus, slot, node)` | `SituationCreatePatch(graph, src, 0, effect, 0, false)` |
+| `SituationGetTrackMeter(track, ...)` | `SituationCreateNode(graph, SITUATION_NODE_PEAK_METER)` + patch |
+| Bus summing | `SituationCreateNode(graph, SITUATION_NODE_MIXER)` (16-input bus) |
+| `SituationSaveMixerSession(mixer, path)` | `SituationSaveGraphToFile(graph, path)` |
+| `SituationLoadMixerSession(mixer, path)` | Load via `SituationSerializeGraphToJSON` / file I/O |
 
-Every Track features a built-in, hard-wired Channel Strip for zero-latency processing.
+### Example: Equivalent of a 2-Track Mixer
 
-#### 4-Band Parametric EQ
-Configurable via `SituationSetTrackEQ`.
-1.  **High-Pass Filter:** Cuts low frequencies (rumble).
-2.  **Low-Shelf:** Boosts/Cuts bass.
-3.  **Peaking:** Bell curve for targeting specific frequencies.
-4.  **High-Shelf:** Boosts/Cuts treble (air).
-
-#### Dynamics Processor
-Configurable via `SituationSetTrackDynamics`.
-*   **Compressor:** Reduces dynamic range (evens out levels).
-*   **Limiter:** Hard ceiling to prevent clipping.
-*   **Noise Gate:** Silences the track when the signal is below a threshold.
-
-#### Side-Chain Ducking
-Route audio from one track to control the compression of another.
-*   `SituationSetTrackSideChain(target_track, key_track)`
-*   **Usage:** Duck the bass when the kick drum hits, or duck music when the announcer speaks.
-
-### 4.6.3 Session Persistence (Phase 5)
-
-The mixer supports full state serialization. This allows you to save the entire console state (Volume, Pan, EQ, Dynamics, Sends) to a binary file and restore it later. This is essential for save games or preserving user mix settings.
-
-*   `SituationSaveMixerSession(mixer, path)`: Saves the current state to a `.smx2` file.
-*   `SituationLoadMixerSession(mixer, path)`: Restores state. Safe to call on a live mixer (uses lock-free transitions where possible).
-
-**Example: Saving the Mix**
 ```c
-if (SituationSaveMixerSession(mixer, "user_mix.smx2")) {
-    printf("Mix saved successfully.\n");
-}
+// Create graph
+SituationAudioGraph* graph = SituationCreateGraph();
+
+// Create nodes
+SituationNodeHandle synth, reverb, gain_l, gain_r, bus;
+SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &synth);
+SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
+SituationCreateNode(graph, SITUATION_NODE_GAIN, &gain_l);
+SituationCreateNode(graph, SITUATION_NODE_GAIN, &gain_r);
+SituationCreateNode(graph, SITUATION_NODE_MIXER, &bus);
+
+// Patch: synth → reverb → gain_l → bus
+SituationCreatePatch(graph, synth, 0, reverb, 0, false);
+SituationCreatePatch(graph, reverb, 0, gain_l, 0, false);
+SituationCreatePatch(graph, gain_l, 0, bus, 0, false);
+
+// Direct dry path: synth → gain_r → bus
+SituationCreatePatch(graph, synth, 0, gain_r, 0, false);
+SituationCreatePatch(graph, gain_r, 0, bus, 1, false);
+
+// Set volumes
+SituationSetControl(graph, gain_l, 0, 0.8f);
+SituationSetControl(graph, gain_r, 0, 0.6f);
 ```
 
-### 4.6.4 Global & Hardware Control
+> **See Section 4.7** for the complete Node Graph API reference.
 
-*   `SituationSetMasterVolume(mixer, volume)`: Controls the final output gain of the mixer before it hits the endpoint.
-*   `SituationBindCaptureDevice(mixer, device_id, channels)`: Explicitly binds a hardware capture device (microphone) to the mixer for input routing.
+<a id="47-audio-node-graph"></a>
+
+## 4.7 Audio Node Graph
+
+The Node Graph system (introduced in v2.4.0) provides a modular, graph-based audio processing architecture. It allows arbitrary signal routing between typed processing nodes — effects, sources, analyzers, and modulators. As of v2.4.35, this is the sole audio routing system (the legacy Mixer API has been removed).
+
+### 4.7.1 Core Concepts
+
+*   **Graph:** A container (`SituationAudioGraph*`) that owns nodes and patches. Created with `SituationCreateGraph()`, destroyed with `SituationDestroyGraph()`.
+*   **Node:** A processing unit (reverb, filter, synth, LFO, meter, etc.) identified by a `SituationNodeHandle`. Created with `SituationCreateNode()`.
+*   **Patch:** A directed connection between an output port and an input port. Can be **audio** (carries signal) or **control** (carries modulation). Created with `SituationCreatePatch()`.
+
+### 4.7.2 Patching API
+
+#### SituationCreatePatch
+
+Connects an output port of one node to an input port of another.
+
+```c:disable-run
+SituationError SituationCreatePatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port, bool is_control);
+```
+
+*   `is_control = false`: Audio patch (signal flows from src to dst).
+*   `is_control = true`: Control patch (modulation — e.g., LFO → filter cutoff).
+
+**Example:**
+```c
+// Audio chain: Synth → Filter → Reverb
+SituationCreatePatch(graph, synth, 0, filter, 0, false);
+SituationCreatePatch(graph, filter, 0, reverb, 0, false);
+
+// Modulation: LFO → Filter cutoff (control patch)
+SituationCreatePatch(graph, lfo, 0, filter, 0, true);
+```
+
+#### SituationRemovePatch
+
+Disconnects a specific patch. This is the preferred function for removing connections, as it distinguishes between audio and control patches on the same port pair.
+
+```c:disable-run
+SituationError SituationRemovePatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port, bool is_control);
+```
+
+*   Pass `is_control = true` to remove a control patch, `false` for audio.
+*   Returns an error if the specified patch doesn't exist.
+
+#### SituationDestroyPatch (Legacy)
+
+The original disconnect function, retained for backward compatibility. Does not accept an `is_control` parameter — removes audio patches only.
+
+```c:disable-run
+SituationError SituationDestroyPatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port);
+```
+
+> **Migration Note:** Prefer `SituationRemovePatch` for new code. It handles both audio and control patch types explicitly.
+
+### 4.7.3 Control Parameters
+
+Every node exposes zero or more control parameters (knobs/sliders). Use `SituationSetControl` and `SituationGetControl` to manipulate them:
+
+```c:disable-run
+SituationSetControl(graph, reverb_node, 0, 0.7f);  // Set first control to 0.7
+
+float value;
+SituationGetControl(graph, reverb_node, 0, &value); // Read it back
+```
+
+### 4.7.4 Cycle Detection
+
+The graph enforces acyclicity. Attempting to create a patch that would form a cycle returns an error (`SITUATION_ERROR_AUDIO_GRAPH_CYCLE`). Self-loops (A→A) are also rejected.
 
 <a id="50-input--haptics"></a>
 
@@ -3844,10 +3973,15 @@ bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prer
 #### SituationDumpTaskGraph
 
 ```c:disable-run
-void SituationDumpTaskGraph(bool json_format);
+void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, bool json_mode);
 ```
 
-**Usage:** Prints a snapshot of the current job graph (active jobs, dependencies, priorities) to `stderr`.
+**Parameters:**
+*   `pool`: The thread pool instance to inspect.
+*   `out_stream`: File stream to write to (e.g., `stdout`, `stderr`, or a file opened with `fopen`). If `NULL`, defaults to `stderr`.
+*   `json_mode`: If `true`, outputs structured JSON (for tooling/visualization). If `false`, outputs a human-readable table.
+
+**Usage:** Prints a snapshot of the current job graph (active jobs, dependencies, priorities) to the specified stream.
 **Debug:** Useful for diagnosing deadlocks or visualizing complex dependency chains.
 
 **Visual Vault: Dependency Flow**

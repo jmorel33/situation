@@ -732,6 +732,7 @@ typedef struct SituationTimerOscillator {
     bool state;
     bool previous_state;
     double last_ping_time;
+    double anchor_time;
     uint64_t trigger_count;
 } SituationTimerOscillator;
 ```
@@ -739,6 +740,7 @@ typedef struct SituationTimerOscillator {
 -   `state`: The current binary state of the oscillator (`true` or `false`). This flips each time half of the `period` elapses.
 -   `previous_state`: The state of the oscillator in the previous frame. Used to detect when the state has changed.
 -   `last_ping_time`: An internal timestamp used by `SituationTimerPingOscillator()` to track time since the last successful "ping".
+-   `anchor_time`: The absolute start time used as a reference point for drift-free trigger calculation. When a period is set or changed, the anchor is reset to the current system time. Subsequent triggers are computed as `anchor + count * period`, preventing cumulative floating-point drift that would occur with repeated `next += period` additions.
 -   `trigger_count`: The total number of times the oscillator has flipped its state since initialization.
 
 ---
@@ -11286,7 +11288,7 @@ if (SituationLoadSoundFromFile("sounds/footstep.wav", SITUATION_AUDIO_LOAD_AUTO,
 #### Audio Capture
 ---
 #### `SituationStartAudioCapture`
-Initializes and starts capturing audio from the default microphone or recording device. The captured audio data is delivered via a callback that you provide.
+Start capturing audio input with default format. Initializes and starts capturing audio from the default microphone or recording device using the device's native sample rate and channel count. The captured audio data is delivered via a callback that you provide.
 ```c
 SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback on_capture, void* user_data);
 ```
@@ -11310,7 +11312,7 @@ if (SituationStartAudioCapture(MyAudioCaptureCallback, NULL) != SIT_SUCCESS) {
 
 ---
 #### `SituationStartAudioCaptureEx`
-Initializes and starts capturing audio with a specific sample rate and channel count. This is the extended version of `SituationStartAudioCapture`, which uses the device's native settings (0, 0) by default. Use this if your application requires a specific format (e.g. 44100Hz Mono for FFT analysis) regardless of the hardware default.
+Start capturing with explicit sample rate and channel count. This is the extended version of `SituationStartAudioCapture`, which uses the device's native settings (0, 0) by default. Use this if your application requires a specific format (e.g. 44100Hz Mono for FFT analysis) regardless of the hardware default.
 ```c
 SITAPI SituationError SituationStartAudioCaptureEx(SituationAudioCaptureCallback callback, void* user_data, uint32_t sample_rate, uint32_t channels);
 ```
@@ -11329,15 +11331,40 @@ if (SituationStartAudioCaptureEx(MyAudioCaptureCallback, NULL, 48000, 2) != SIT_
 
 ---
 #### `SituationStopAudioCapture`
-Stops the audio capture stream and releases the microphone device.
+Stops the audio capture stream and releases the input device.
 ```c
-SITAPI SituationError SituationStopAudioCapture(void);
+SITAPI void SituationStopAudioCapture(void);
 ```
 **Usage Example:**
 ```c
 // When the user clicks a "Stop Recording" button.
 SituationStopAudioCapture();
 printf("Audio capture stopped.\n");
+```
+
+---
+#### `SituationSetAudioOutputMonitor`
+Sets a callback to receive the final mixed audio output samples for visualization purposes (VU meters, FFT spectrum analyzers, oscilloscopes, etc.). Pass `NULL` to disable monitoring.
+```c
+SITAPI void SituationSetAudioOutputMonitor(void (*callback)(const float* samples, uint32_t frame_count, void* user_data), void* user_data);
+```
+-   `callback`: A function pointer invoked with the mixed output buffer each time a block is processed. Pass `NULL` to disable.
+-   `user_data`: Custom pointer passed through to your callback.
+
+**Threading:** The callback runs on the **Audio Thread**. Keep processing minimal and lock-free.
+
+**Usage Example:**
+```c
+// Monitor output for a VU meter
+void MyOutputMonitor(const float* samples, uint32_t frame_count, void* user_data) {
+    // 'samples' is interleaved stereo float data [L, R, L, R, ...]
+    // Compute RMS or peak levels here for visualization.
+}
+
+SituationSetAudioOutputMonitor(MyOutputMonitor, &my_vu_state);
+
+// To disable monitoring:
+SituationSetAudioOutputMonitor(NULL, NULL);
 ```
 
 ---
@@ -11532,6 +11559,167 @@ SituationSetToneReverbParameters(0.3f, 0.2f, 0.2f, 1.0f, 0.7f);
 // Subtle ambient space
 SituationSetToneReverbParameters(0.5f, 0.5f, 0.15f, 1.0f, 0.8f);
 ```
+
+</details>
+<details>
+<summary><h3>Audio Node Graph Module</h3></summary>
+
+**Overview:** The Audio Node Graph module provides a modular, graph-based audio processing system. You create nodes (effects, sources, analyzers, modulators), connect them via patches (audio or control connections), and process the graph to produce audio output. This is the foundation for building custom signal chains, synthesizer architectures, and advanced audio routing.
+
+### Functions
+
+#### Graph & Node Lifecycle
+---
+#### `SituationCreateGraph`
+Creates a new audio processing graph.
+```c
+SituationAudioGraph* SituationCreateGraph(void);
+```
+**Returns:** A pointer to the new graph, or NULL on failure.
+
+---
+#### `SituationDestroyGraph`
+Destroys a graph and all its nodes and patches.
+```c
+void SituationDestroyGraph(SituationAudioGraph* graph);
+```
+**Parameters:**
+- `graph`: The graph to destroy. Safe to pass NULL (no-op).
+
+---
+#### `SituationCreateNode`
+Creates a node of the given type in the graph.
+```c
+SituationError SituationCreateNode(SituationAudioGraph* graph, SituationNodeType type, SituationNodeHandle* handle);
+```
+**Parameters:**
+- `graph`: The graph to add the node to.
+- `type`: The device type (e.g., `SITUATION_NODE_REVERB`, `SITUATION_NODE_GAIN`, `SITUATION_NODE_TONE_SYNTH`).
+- `handle`: Receives the handle of the newly created node.
+
+**Returns:** `SITUATION_SUCCESS` on success, or an error code.
+
+---
+#### `SituationDestroyNode`
+Removes and destroys a node from the graph, disconnecting all its patches.
+```c
+SituationError SituationDestroyNode(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+**Parameters:**
+- `graph`: The graph containing the node.
+- `handle`: The handle of the node to destroy.
+
+**Returns:** `SITUATION_SUCCESS` on success, or an error code if the handle is invalid.
+
+---
+#### `SituationGetNode`
+Gets a direct pointer to a node (for advanced use).
+```c
+SituationNode* SituationGetNode(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+**Parameters:**
+- `graph`: The graph containing the node.
+- `handle`: The node handle.
+
+**Returns:** Pointer to the node, or NULL if the handle is invalid.
+
+#### Patching (Connections)
+---
+#### `SituationCreatePatch`
+Connects an output port of one node to an input port of another. Supports both audio and control (modulation) connections.
+```c
+SituationError SituationCreatePatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port, bool is_control);
+```
+**Parameters:**
+- `graph`: The graph containing both nodes.
+- `src`: The source node handle (output side).
+- `src_port`: The output port index on the source node.
+- `dst`: The destination node handle (input side).
+- `dst_port`: The input port index on the destination node.
+- `is_control`: `true` for a control/modulation connection, `false` for an audio connection.
+
+**Returns:** `SITUATION_SUCCESS` on success, or an error code (e.g., duplicate patch, invalid handle, cycle detected).
+
+**Usage Example:**
+```c
+// Audio chain: Synth → Filter → Reverb → Output
+SituationCreatePatch(graph, synth, 0, filter, 0, false);
+SituationCreatePatch(graph, filter, 0, reverb, 0, false);
+
+// Modulation: LFO controls filter cutoff
+SituationCreatePatch(graph, lfo, 0, filter, 0, true);
+```
+
+---
+#### `SituationRemovePatch`
+Disconnects a specific patch between two ports. This is the preferred function for removing connections, as it distinguishes between audio and control patches on the same port pair.
+```c
+SituationError SituationRemovePatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port, bool is_control);
+```
+**Parameters:**
+- `graph`: The graph containing the patch.
+- `src`: The source node handle.
+- `src_port`: The output port index on the source node.
+- `dst`: The destination node handle.
+- `dst_port`: The input port index on the destination node.
+- `is_control`: `true` to remove a control patch, `false` to remove an audio patch.
+
+**Returns:** `SITUATION_SUCCESS` on success, or an error code if the patch doesn't exist.
+
+**Usage Example:**
+```c
+// Remove the audio connection between filter and reverb
+SituationRemovePatch(graph, filter, 0, reverb, 0, false);
+
+// Remove the LFO modulation connection
+SituationRemovePatch(graph, lfo, 0, filter, 0, true);
+```
+
+---
+#### `SituationDestroyPatch` (Legacy)
+Disconnects a patch between two ports. This is the legacy version that does not accept an `is_control` parameter — it removes audio patches only. Prefer `SituationRemovePatch` for new code.
+```c
+SituationError SituationDestroyPatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port);
+```
+**Parameters:**
+- `graph`: The graph containing the patch.
+- `src`: The source node handle.
+- `src_port`: The output port index.
+- `dst`: The destination node handle.
+- `dst_port`: The input port index.
+
+**Returns:** `SITUATION_SUCCESS` on success, or an error code.
+
+**Note:** This function is retained for backward compatibility. Use `SituationRemovePatch` instead, which supports both audio and control patch types.
+
+#### Control Parameters
+---
+#### `SituationSetControl`
+Sets a control parameter (knob/slider value) on a node.
+```c
+SituationError SituationSetControl(SituationAudioGraph* graph, SituationNodeHandle handle, uint32_t control_id, float value);
+```
+**Parameters:**
+- `graph`: The graph containing the node.
+- `handle`: The node handle.
+- `control_id`: The index of the control parameter.
+- `value`: The new value (typically 0.0 to 1.0, but depends on the control).
+
+**Returns:** `SITUATION_SUCCESS` on success, or an error code.
+
+---
+#### `SituationGetControl`
+Gets the current value of a node's control parameter.
+```c
+SituationError SituationGetControl(SituationAudioGraph* graph, SituationNodeHandle handle, uint32_t control_id, float* out_value);
+```
+**Parameters:**
+- `graph`: The graph containing the node.
+- `handle`: The node handle.
+- `control_id`: The index of the control parameter.
+- `out_value`: Receives the current value.
+
+**Returns:** `SITUATION_SUCCESS` on success, or an error code.
 
 </details>
 <details>

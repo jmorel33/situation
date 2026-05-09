@@ -1,32 +1,50 @@
-# Situation API Quick Reference v2.4.0
+# Situation API Quick Reference v2.4.10
 
-**Single-header library for cross-platform graphics (Vulkan/OpenGL 4.6), windowing, input, audio, and system utilities.**
+**Single-header library for cross-platform graphics (Vulkan 1.4/OpenGL 4.6), windowing, input, audio, and system utilities.**
 
-## Project Structure (v2.4.0)
+## Project Structure (v2.4.10)
 
 ```
-situation/                         # Project root
-├── situation.h                    # ← Public API entry point (include this)
+situation/                              # Project root
+├── situation.h                         # ← Public entry point (include this)
 │
-├── sit/                          # ← Core implementation (internal)
-│   ├── situation_api.h           # Public API declarations
-│   ├── situation_impl.h          # Core implementation
-│   ├── situation_impl_audio.h    # Audio subsystem
+├── sit/                               # ← Core implementation (internal)
+│   ├── situation_api.h                # Public API declarations (~2,690 lines)
+│   │   └── situation_base_errno.h     # Error enum (SituationError)
 │   │
-│   ├── aud/                      # Audio Subsystem
-│   │   ├── fx/                   # Effects (15 files)
-│   │   ├── polysonix/            # Polyphonic synthesizer
-│   │   ├── node_graph*.h         # Node graph system
-│   │   ├── device_*.h            # Device system
-│   │   └── ...                   # Audio components
+│   ├── situation_impl.h              # Orchestrator (80 lines, includes only)
+│   ├── situation_base_font.h         # Embedded 8x8 VGA font (CP437)
+│   ├── situation_impl_deps.h         # Third-party libs (STB, miniaudio, glad, VMA)
+│   ├── situation_impl_decl.h         # Internal types, structs, globals, shaders
+│   ├── situation_impl_forward.h      # Cross-module forward declarations
+│   │   └── situation_impl_renderer_fwd.h  # Renderer-specific forward decls
+│   ├── situation_impl_etc.h          # Utilities (math, strings, SituationFreeString)
+│   ├── situation_impl_timer.h        # Oscillators, high-res time
+│   ├── situation_impl_threading.h    # Thread pool, job system
+│   ├── situation_impl_io.h           # File I/O, async, system info
+│   ├── situation_impl_input.h        # Keyboard, mouse, gamepad, GLFW callbacks
+│   ├── situation_impl_wdm.h          # Window, display, monitor management
+│   ├── situation_impl_image.h        # Image, font, color, screenshot
+│   ├── situation_impl_renderer.h     # GL + VK backends, resources, commands (~17K lines)
+│   ├── situation_impl_vd.h           # Virtual display compositing
+│   ├── situation_impl_ctrl.h         # Lifecycle, init/shutdown, update loop
+│   ├── situation_impl_audio.h        # Audio subsystem
 │   │
-│   └── k-term/                   # Terminal Subsystem
-│       └── ...                   # Terminal components
+│   ├── aud/                          # Audio Subsystem
+│   │   ├── fx/                       # Effects (15 files)
+│   │   ├── polysonix/                # Polyphonic synthesizer
+│   │   ├── node_graph*.h             # Node graph system
+│   │   ├── device_*.h                # Device system
+│   │   └── ...                       # Audio components
+│   │
+│   └── k-term/                       # Terminal Subsystem
+│       └── ...                       # Terminal components
 │
-├── examples/                     # Example programs
-├── ext/                         # External dependencies
-├── doc/                         # Documentation
-└── shaders/                     # Shader files
+├── examples/                          # Example programs
+├── ext/                              # External dependencies
+├── doc/                              # Documentation
+├── concat_situation.ps1              # Concatenate to single file (PowerShell)
+└── concat_situation.sh               # Concatenate to single file (Bash)
 ```
 
 ## Compilation
