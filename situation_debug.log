@@ -1,0 +1,1340 @@
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000000084FAA0
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: -600
+[FATAL] Renderer init failed with error: -600
+[ERROR_MSG] OpenGL: A general error occurred (glGetError): _SituationInitOpenGL: Failed to initialize default font.
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000c520fffb30
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+[WindowShouldClose] glfwWindowShouldClose returned: 0
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000e5dbdff900
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+[WindowShouldClose] glfwWindowShouldClose returned: 0
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000f6189ff950
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000a318dff8d0
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+[WindowShouldClose] glfwWindowShouldClose returned: 0
+=== SituationInit START (Call #2) ===
+[WARNING] Recursive call detected! Call #2
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000a318dff8d0
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+=== SituationInit START (Call #3) ===
+[WARNING] Recursive call detected! Call #3
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000a318dff8d0
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+=== SituationInit START (Call #4) ===
+[WARNING] Recursive call detected! Call #4
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000a318dff8d0
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 00000090d05ffa40
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=2
+
+[GLExecute] Processing packet 0, opcode=0
+
+[GLExecute] Processing packet 1, opcode=1
+
+[GLExecute] END_RENDER_PASS: About to unbind framebuffer
+
+[GLExecute] END_RENDER_PASS: Framebuffer unbound
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=4
+
+[GLExecute] Processing packet 0, opcode=0
+
+[GLExecute] Processing packet 1, opcode=2
+
+[GLExecute] Processing packet 2, opcode=3
+
+[GLExecute] Processing packet 3, opcode=1
+
+[GLExecute] END_RENDER_PASS: About to unbind framebuffer
+
+[GLExecute] END_RENDER_PASS: Framebuffer unbound
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=1
+
+[GLExecute] Processing packet 0, opcode=13
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=1
+
+[GLExecute] Processing packet 0, opcode=17
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 0000000e5adff650
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=2
+
+[GLExecute] Processing packet 0, opcode=0
+
+[GLExecute] Processing packet 1, opcode=1
+
+[GLExecute] END_RENDER_PASS: About to unbind framebuffer
+
+[GLExecute] END_RENDER_PASS: Framebuffer unbound
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=4
+
+[GLExecute] Processing packet 0, opcode=0
+
+[GLExecute] Processing packet 1, opcode=2
+
+[GLExecute] Processing packet 2, opcode=3
+
+[GLExecute] Processing packet 3, opcode=1
+
+[GLExecute] END_RENDER_PASS: About to unbind framebuffer
+
+[GLExecute] END_RENDER_PASS: Framebuffer unbound
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=1
+
+[GLExecute] Processing packet 0, opcode=13
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=1
+
+[GLExecute] Processing packet 0, opcode=17
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000cfde3ffb50
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+[WindowShouldClose] glfwWindowShouldClose returned: 0
+=== SituationInit START (Call #2) ===
+[WARNING] Recursive call detected! Call #2
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000cfde3ffb50
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+=== SituationInit START (Call #3) ===
+[WARNING] Recursive call detected! Call #3
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000cfde3ffb50
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+=== SituationInit START (Call #4) ===
+[WARNING] Recursive call detected! Call #4
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000cfde3ffb50
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+=== SituationInit START (Call #5) ===
+[WARNING] Recursive call detected! Call #5
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000cfde3ffb50
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=2
+
+[GLExecute] Processing packet 0, opcode=0
+
+[GLExecute] Processing packet 1, opcode=1
+
+[GLExecute] END_RENDER_PASS: About to unbind framebuffer
+
+[GLExecute] END_RENDER_PASS: Framebuffer unbound
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=4
+
+[GLExecute] Processing packet 0, opcode=0
+
+[GLExecute] Processing packet 1, opcode=2
+
+[GLExecute] Processing packet 2, opcode=3
+
+[GLExecute] Processing packet 3, opcode=1
+
+[GLExecute] END_RENDER_PASS: About to unbind framebuffer
+
+[GLExecute] END_RENDER_PASS: Framebuffer unbound
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=1
+
+[GLExecute] Processing packet 0, opcode=13
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=1
+
+[GLExecute] Processing packet 0, opcode=17
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000f6d5fff6f0
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+[WindowShouldClose] glfwWindowShouldClose returned: 0
+=== SituationInit START (Call #2) ===
+[WARNING] Recursive call detected! Call #2
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000f6d5fff6f0
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+[PollInputEvents] START
+=== SituationInit START (Call #3) ===
+[WARNING] Recursive call detected! Call #3
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000f6d5fff6f0
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+=== SituationInit START (Call #4) ===
+[WARNING] Recursive call detected! Call #4
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000f6d5fff6f0
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[PollInputEvents] START
+=== SituationInit START (Call #5) ===
+[WARNING] Recursive call detected! Call #5
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context exists
+[INFO] Context not initialized, will reset
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 000000f6d5fff6f0
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Resetting existing context
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=2
+
+[GLExecute] Processing packet 0, opcode=0
+
+[GLExecute] Processing packet 1, opcode=1
+
+[GLExecute] END_RENDER_PASS: About to unbind framebuffer
+
+[GLExecute] END_RENDER_PASS: Framebuffer unbound
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=4
+
+[GLExecute] Processing packet 0, opcode=0
+
+[GLExecute] Processing packet 1, opcode=2
+
+[GLExecute] Processing packet 2, opcode=3
+
+[GLExecute] Processing packet 3, opcode=1
+
+[GLExecute] END_RENDER_PASS: About to unbind framebuffer
+
+[GLExecute] END_RENDER_PASS: Framebuffer unbound
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=1
+
+[GLExecute] Processing packet 0, opcode=13
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=1
+
+[GLExecute] Processing packet 0, opcode=17
+
+[GLExecute] All packets processed, resetting buffer
+
+[GLExecute] Cleaning up MDI state
+
+[GLExecute] Inserting fence
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+[PollInputEvents] START
+[EndFrame] Executing GL commands
+
+[GLExecute] START: packet_count=0
+
+[EndFrame] About to call glfwSwapBuffers
+
+[EndFrame] glfwSwapBuffers completed
+
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 00000015cf1ff580
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[QUAD] Starting quad renderer initialization
+[QUAD] Compiling quad shader program
+[QUAD] Shader program created successfully, ID: 3
+[QUAD] Creating private VAO
+[QUAD] VAO created successfully, ID: 3
+[QUAD] Creating private VBO
+[QUAD] VBO created successfully, ID: 1
+[QUAD] Allocating VBO storage
+[QUAD] VBO storage allocated
+[QUAD] Binding private VAO
+[QUAD] Configuring VAO attributes
+[QUAD] VAO attributes configured
+[QUAD] Unbinding private VAO
+[QUAD] Setting projection matrix uniform
+[QUAD] Projection matrix set
+[QUAD] Restoring global VAO binding
+[QUAD] Quad renderer initialization complete
+[DEBUG] _SituationInitRenderer returned: 0
+=== SituationInit START (Call #1) ===
+[INIT] First call, ensuring context is NULL
+[STEP 1] Pre-initialization checks
+[CHECK] Threading enabled, setting main thread ID
+[OK] Main thread ID set
+[CHECK] Checking if already initialized
+[DEBUG] About to check _sit_current_context
+[INFO] Context is NULL
+[CHECK] Validating init_info
+[DEBUG] init_info pointer: 0000001f535ff710
+[OK] init_info is valid
+[STEP 1.5] Allocating context
+[INFO] Allocating new context
+[OK] Context allocated
+[STEP 2a] Calling _SituationInitPlatform
+[DEBUG] _SituationInitPlatform returned: 0
+[STEP 2b] Calling _SituationInitWindow
+[DEBUG] _SituationInitWindow returned: 0
+[STEP 2.5] Initializing resource registry mutex
+[STEP 3] Calling _SituationInitRenderer
+[DEBUG] _SituationInitRenderer returned: -700
+[FATAL] Renderer init failed with error: -700
+[ERROR_MSG] Vulkan: General initialization failed: _SituationInitVulkan: Failed to initialize default font.

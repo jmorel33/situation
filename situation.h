@@ -18,7 +18,7 @@
 // --- Version Macros ---
 #define SITUATION_VERSION_MAJOR 2
 #define SITUATION_VERSION_MINOR 4
-#define SITUATION_VERSION_PATCH 4
+#define SITUATION_VERSION_PATCH 42
 #define SITUATION_VERSION_REVISION ""
 #ifndef SITUATION_H
 #define SITUATION_H
@@ -26,6 +26,18 @@
 // ================================================================================================
 // EXTERNAL DEPENDENCIES AND PLATFORM CONFIGURATION
 // ================================================================================================
+
+// Require Windows Vista+ APIs (needed for SHGetKnownFolderPath, etc.)
+#if defined(_WIN32)
+    #if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600
+        #undef _WIN32_WINNT
+        #define _WIN32_WINNT 0x0600
+    #endif
+    #if !defined(WINVER) || WINVER < 0x0600
+        #undef WINVER
+        #define WINVER 0x0600
+    #endif
+#endif
 
 #include <stddef.h> // for audio stream
 #include <stdbool.h>
@@ -120,6 +132,7 @@
 // Include the implementation section (if requested)
 #ifdef SITUATION_IMPLEMENTATION
     #include "sit/situation_impl.h"
+    #include "sit/situation_impl_audio.h"
 #endif
 
 #endif // SITUATION_H

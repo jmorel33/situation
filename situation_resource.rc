@@ -1,0 +1,7 @@
+// situation_resource.rc
+// Resource script to embed situation.dll into the executable
+
+#include <windows.h>
+
+// Embed the DLL as a binary resource
+101 RCDATA "situation.dll"
