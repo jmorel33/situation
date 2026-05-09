@@ -111,6 +111,11 @@
     #endif
 #endif
 
+// C++ linkage guard: Ensures C++ compilers don't mangle SITAPI function names
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief The public-facing macro. It now ALWAYS calls the logging function.
  *      The logging function itself will decide whether to print to stderr based on the build type.
@@ -144,6 +149,10 @@ SITAPI void _SituationLogGLError(const char* file, int line);
 // This file now contains only pure API declarations (types, enums, function prototypes)
 // ================================================================================================
 
+#include "situation_base_errno.h"
+
+#include "situation_base_etc.h"
+
 // --- Initialization State Management (v2.3.40) ---
 typedef enum SituationInitState {
     SITUATION_STATE_UNINITIALIZED = 0,  // Library not initialized
@@ -151,276 +160,6 @@ typedef enum SituationInitState {
     SITUATION_STATE_READY = 2,           // Fully initialized, safe to create resources
     SITUATION_STATE_SHUTTING_DOWN = 3    // Cleanup in progress
 } SituationInitState;
-
-/**
- * @brief Logs a warning message in debug builds.
- * @details This function is intended for internal library use. It formats a warning message
- *          and, in debug builds (when NDEBUG is not defined), prints it to stderr and sets the
- *          library's last error state. In release builds, this function is compiled out to nothing.
- * @param code The SituationError code associated with the warning.
- * @param fmt The printf-style format string for the message.
- * @param ... Variable arguments for the format string.
- */
-//==================================================================================
-//  SituationError - Comprehensive, Strictly Ordered Error Code System (Titanium Grade)
-//==================================================================================
-//
-//  Every possible failure in the entire library has its own unique, permanent code.
-//  Ranges are sacred and immutable. No gaps. No re-use. Exhaustive switch() possible.
-//  All errors are negative. SITUATION_SUCCESS = 0.
-//
-//  0      → Success
-//  1–99   → Core & System
-//  100–199→ Platform & Windowing
-//  200–299→ Display System
-//  300–399→ Filesystem & Hot-Reloading
-//  400–499→ Audio Subsystem
-//  500–599→ Resource Management & Rendering Core
-//  600–699→ OpenGL Backend-Specific (OpenGL)
-//  700–799→ Backend-Specific (Vulkan)
-//  800–899→ Compute / GPGPU
-//  900–999→ Reserved (Debug/Profiler, Network, Future Platforms)
-
-typedef enum {
-    SITUATION_SUCCESS                                       =   0,  // Operation completed successfully
-
-    // ── Core & System Errors (1–99) ─────────────────────────────────────
-	SITUATION_ERROR_GENERAL                                	=   -1,  // Catch-all for unexpected errors
-    SITUATION_ERROR_NOT_IMPLEMENTED                        	=   -2,  // Feature declared but intentionally unimplemented on current backend
-    SITUATION_ERROR_NOT_INITIALIZED                        	=   -3,  // API called before SituationInit()
-    SITUATION_ERROR_ALREADY_INITIALIZED                    	=   -4,  // SituationInit() called twice
-    SITUATION_ERROR_INIT_FAILED                            	=   -5,  // Core initialization sequence failed
-    SITUATION_ERROR_SHUTDOWN_FAILED                        	=   -6,  // Resources still alive or backend refused cleanup
-    SITUATION_ERROR_INVALID_PARAM                          	=   -7,  // NULL pointer, out-of-range value, invalid enum, etc.
-    SITUATION_ERROR_MEMORY_ALLOCATION                      	=   -8,  // SIT_MALLOC/SIT_CALLOC/SIT_REALLOC/VmaAllocation failed
-    SITUATION_ERROR_INTERNAL_STATE_CORRUPTED               	=   -9,  // Internal invariant violated — fatal bug, please report
-    SITUATION_ERROR_ASSERTION_FAILED                       	=  -10,  // Debug assertion tripped (only in debug builds)
-    SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION            	=  -11,  // Critical architectural rule broken (debug builds only)
-    SITUATION_ERROR_TIMER_SYSTEM                           	=  -20,  // An error occurred within the internal timer/oscillator system
-	SITUATION_ERROR_THREAD_QUEUE_FULL  						=  -80,  // Threading Error: Thread Queue Full
-	SITUATION_ERROR_THREAD_VIOLATION   						=  -81,  // Main-thread-only function called from worker thread
-    SITUATION_ERROR_THREAD_CYCLE                            =  -82,  // Dependency cycle or depth limit exceeded
-    SITUATION_ERROR_THREAD_CREATION_FAILED                  =  -83,  // Failed to spawn a new thread (thrd_create)
-    SITUATION_ERROR_THREAD_MUTEX_INIT_FAILED                =  -84,  // Mutex initialization failed (mtx_init)
-    SITUATION_ERROR_THREAD_MUTEX_LOCK_FAILED                =  -85,  // Mutex lock operation failed (mtx_lock)
-    SITUATION_ERROR_THREAD_MUTEX_UNLOCK_FAILED              =  -86,  // Mutex unlock operation failed (mtx_unlock)
-    SITUATION_ERROR_THREAD_MUTEX_TIMEOUT                    =  -87,  // Mutex lock timeout (deadlock prevention)
-    SITUATION_ERROR_THREAD_JOIN_FAILED                      =  -88,  // Thread join operation failed (thrd_join)
-    SITUATION_ERROR_THREAD_DETACH_FAILED                    =  -89,  // Thread detach operation failed (thrd_detach)
-    SITUATION_ERROR_THREAD_NOT_AVAILABLE                    =  -90,  // Threading not available on this platform
-    SITUATION_ERROR_THREAD_ATOMIC_FAILED                    =  -91,  // Atomic operation failed or not supported
-    SITUATION_ERROR_THREAD_STATE_INVALID                    =  -92,  // Invalid thread state for requested operation
-    SITUATION_ERROR_THREAD_BUFFER_OVERFLOW                  =  -93,  // Thread-local buffer overflow
-    SITUATION_ERROR_THREAD_DEADLOCK_DETECTED                =  -94,  // Potential deadlock detected
-    SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT             =  -95,  // Render thread join timeout
-    SITUATION_ERROR_RENDER_LIST_INCOMPLETE                  =  -96,  // Render list incomplete (Momentum)
-    SITUATION_ERROR_ARM_INTRINSICS_FAILED                   =  -97,  // ARM-specific WFE/SEV intrinsic failure
-	SITUATION_ERROR_COMMAND_EXECUTION_FAILED                =  -98,  // External system command execution failed
-
-
-    // ── Platform & Windowing Errors (100–199) ───────────────────────────
-    SITUATION_ERROR_GLFW_FAILED                             = -100,  // Any GLFW function returned an error
-    SITUATION_ERROR_WINDOW_CREATION_FAILED                  = -101,  // Failed to create GLFW window
-    SITUATION_ERROR_WINDOW_FOCUS_FAILED                     = -102,  // Focus/minimize/restore operation failed
-    SITUATION_ERROR_CLIPBOARD_FAILED                        = -103,  // Clipboard get/set failed
-    SITUATION_ERROR_CURSOR_CREATION_FAILED                  = -104,  // Custom cursor creation failed
-    SITUATION_ERROR_COM_INITIALIZATION_FAILED               = -110,  // CoInitializeEx failed (Windows only)
-    SITUATION_ERROR_DXGI_QUERY_FAILED                       = -111,  // DXGI GPU query failed (Windows only)
-    SITUATION_ERROR_WINDOW_FOCUS							= -120,  // An operation related to window focus failed.
-    SITUATION_ERROR_DEVICE_QUERY							= -121,  // Failed to query system hardware or device information.
-    SITUATION_ERROR_COM_FAILED								= -123,  // [Win32] Failed to initialize the COM library.
-    SITUATION_ERROR_DXGI_FAILED								= -124,  // [Win32] A call to the DXGI library failed (e.g., for GPU info).
-
-	// ── Display & Virtual Display Errors (-200 to -299) ─────────────────
-    SITUATION_ERROR_DISPLAY_QUERY                           = -200,  // Failed to query physical monitor information
-    SITUATION_ERROR_DISPLAY_SET                             = -201,  // Failed to set a display mode on a physical monitor
-    SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT                   = -202,  // The maximum number of virtual displays has been reached
-    SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID              = -203,  // Invalid virtual display ID supplied
-    SITUATION_ERROR_DISPLAY_QUERY_FAILED                    = -210,  // glfwGetMonitors / mode query failed (detailed variant)
-    SITUATION_ERROR_DISPLAY_MODE_UNSUPPORTED                = -211,  // Requested resolution/refresh rate not available
-    SITUATION_ERROR_DISPLAY_MODE_SET_FAILED                 = -212,  // Failed to apply fullscreen mode
-    SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT_REACHED           = -213,  // Max virtual displays (32) already created (detailed variant)
-    SITUATION_ERROR_VIRTUAL_DISPLAY_NOT_FOUND               = -214,  // Virtual display ID not found in active list
-
-	// ── Filesystem & Hot-Reloading Errors (-300 to -399) ────────────────
-    SITUATION_ERROR_FILE_ACCESS                             = -300,  // A generic file or directory access error occurred
-    SITUATION_ERROR_PATH_NOT_FOUND                          = -301,  // The specified file or directory was not found
-    SITUATION_ERROR_PATH_INVALID                            = -302,  // The specified path is invalid or contains illegal characters
-    SITUATION_ERROR_PERMISSION_DENIED                       = -303,  // Permission was denied for the requested file operation
-    SITUATION_ERROR_DISK_FULL                               = -304,  // The disk is full; cannot complete a write operation
-    SITUATION_ERROR_FILE_LOCKED                             = -305,  // The file is locked or currently in use by another process
-    SITUATION_ERROR_DIR_NOT_EMPTY                           = -306,  // A directory is not empty and cannot be deleted non-recursively
-    SITUATION_ERROR_FILE_ALREADY_EXISTS                     = -307,  // The specified file already exists where it shouldn't
-    SITUATION_ERROR_PATH_IS_DIRECTORY                       = -308,  // A file operation was attempted on a path that is a directory
-    SITUATION_ERROR_PATH_IS_FILE                            = -309,  // A directory operation was attempted on a path that is a file
-    SITUATION_ERROR_FILE_NOT_FOUND                          = -310,  // File does not exist (detailed variant)
-    SITUATION_ERROR_FILE_ACCESS_DENIED                      = -311,  // Permission denied (detailed variant)
-    SITUATION_ERROR_FILE_OPEN_FAILED                        = -312,  // fopen() or equivalent failed
-    SITUATION_ERROR_FILE_READ_FAILED                        = -313,  // Read operation failed
-    SITUATION_ERROR_FILE_WRITE_FAILED                       = -314,  // Write operation failed
-    SITUATION_ERROR_FILE_TOO_LARGE                          = -315,  // File exceeds internal limits (>2 GB typically)
-    SITUATION_ERROR_DIRECTORY_CREATION_FAILED               = -316,  // Failed to create directory
-    SITUATION_ERROR_HOTRELOAD_WATCHER_FAILED                = -320,  // inotify / ReadDirectoryChangesW failed
-    SITUATION_ERROR_HOTRELOAD_FILE_CHANGED_TOO_FAST         = -321,  // File changed faster than debounce window
-    SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED               = -322,  // vkDeviceWaitIdle / glFinish failed during reload
-
-	// ── Audio Subsystem Errors (-400 to -499) ───────────────────────────
-    SITUATION_ERROR_AUDIO_CONTEXT                           = -400,  // Failed to initialize the audio context (MiniAudio)
-    SITUATION_ERROR_AUDIO_DEVICE                            = -401,  // Failed to initialize, start, or stop an audio device
-    SITUATION_ERROR_AUDIO_SOUND_LIMIT                       = -402,  // The sound playback queue limit was reached
-    SITUATION_ERROR_AUDIO_CONVERTER                         = -403,  // Failed to configure a data format/rate converter for a sound
-    SITUATION_ERROR_AUDIO_DECODING                          = -404,  // Failed to decode an audio file
-    SITUATION_ERROR_AUDIO_INVALID_OPERATION                 = -405,  // An invalid operation was attempted on a sound (e.g., cropping a stream)
-    SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED               = -410,  // MiniAudio context failed (detailed variant)
-    SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED                = -411,  // Device startup failed
-    SITUATION_ERROR_AUDIO_DEVICE_START_FAILED               = -412,  // ma_device_start() failed
-    SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED               = -413,  // ma_decoder_init failed
-    SITUATION_ERROR_AUDIO_DECODER_FORMAT_UNSUPPORTED        = -414,  // Codec/container not supported
-    SITUATION_ERROR_AUDIO_STREAM_ENDED                      = -415,  // Internal: stream reached EOF (not fatal)
-    SITUATION_ERROR_AUDIO_SOUND_LIMIT_REACHED               = -420,  // Max concurrent sounds exceeded (detailed variant)
-    SITUATION_ERROR_AUDIO_CAPTURE_NOT_AVAILABLE             = -430,  // No microphone or capture device found
-
-    // ── Audio Mixer Errors (-440 to -459) ───────────────────────────────
-    SITUATION_ERROR_MIXER_NOT_INITIALIZED                   = -440,  // Mixer not initialized
-    SITUATION_ERROR_MIXER_TRACK_LIMIT                       = -441,  // Maximum number of tracks reached
-    SITUATION_ERROR_MIXER_TRACK_INVALID                     = -442,  // Invalid track ID or track not active
-    SITUATION_ERROR_MIXER_BUS_LIMIT                         = -443,  // Maximum number of aux buses reached
-    SITUATION_ERROR_MIXER_BUS_INVALID                       = -444,  // Invalid bus ID or bus not active
-    SITUATION_ERROR_MIXER_INSERT_INVALID                    = -445,  // Invalid insert position
-    SITUATION_ERROR_MIXER_INSERT_ALREADY_ATTACHED           = -446,  // Insert chain already attached at this position
-    SITUATION_ERROR_MIXER_INSERT_NOT_ATTACHED               = -447,  // No insert chain at this position
-    SITUATION_ERROR_MIXER_ROUTING_CYCLE                     = -448,  // Routing would create a cycle (feedback loop)
-    SITUATION_ERROR_MIXER_ROUTING_INVALID                   = -449,  // Invalid routing configuration
-    SITUATION_ERROR_MIXER_SEND_INVALID                      = -450,  // Invalid aux send configuration
-    SITUATION_ERROR_MIXER_TOPOLOGY_LOCKED                   = -451,  // Cannot modify topology while processing
-    SITUATION_ERROR_MIXER_SCENE_LOAD_FAILED                 = -452,  // Failed to load mixer scene
-    SITUATION_ERROR_MIXER_SCENE_SAVE_FAILED                 = -453,  // Failed to save mixer scene
-    SITUATION_ERROR_MIXER_SCENE_VERSION_MISMATCH            = -454,  // Scene file version incompatible
-
-    // ── Audio Node Graph Errors (-460 to -479) ──────────────────────────
-    SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED              = -460,  // Node graph not initialized
-    SITUATION_ERROR_NODE_LIMIT_REACHED                      = -461,  // Maximum number of nodes reached
-    SITUATION_ERROR_NODE_INVALID_HANDLE                     = -462,  // Invalid node handle (generation mismatch or out of range)
-    SITUATION_ERROR_NODE_TYPE_INVALID                       = -463,  // Invalid or unregistered node type
-    SITUATION_ERROR_NODE_ALREADY_EXISTS                     = -464,  // Node with this ID already exists
-    SITUATION_ERROR_NODE_NOT_FOUND                          = -465,  // Node not found in graph
-    SITUATION_ERROR_NODE_PORT_INVALID                       = -466,  // Invalid port index (out of range)
-    SITUATION_ERROR_NODE_PORT_TYPE_MISMATCH                 = -467,  // Port type mismatch (audio vs control)
-    SITUATION_ERROR_NODE_CHANNEL_MISMATCH                   = -468,  // Channel count mismatch (mono vs stereo)
-    SITUATION_ERROR_NODE_PATCH_ALREADY_EXISTS               = -469,  // Patch already exists between these ports
-    SITUATION_ERROR_NODE_PATCH_NOT_FOUND                    = -470,  // Patch not found
-    SITUATION_ERROR_NODE_PATCH_CYCLE_DETECTED               = -471,  // Patch would create a cycle
-    SITUATION_ERROR_NODE_CONTROL_INVALID                    = -472,  // Invalid control ID or control not found
-    SITUATION_ERROR_NODE_CONTROL_OUT_OF_RANGE               = -473,  // Control value out of valid range
-    SITUATION_ERROR_NODE_CONTROL_TYPE_MISMATCH              = -474,  // Control type mismatch (float vs int vs bool)
-    SITUATION_ERROR_NODE_PROCESSING_FAILED                  = -475,  // Node processing failed (device error)
-    SITUATION_ERROR_NODE_SERIALIZATION_FAILED               = -476,  // Failed to serialize node graph
-    SITUATION_ERROR_NODE_DESERIALIZATION_FAILED             = -477,  // Failed to deserialize node graph
-    SITUATION_ERROR_NODE_TOPOLOGY_INVALID                   = -478,  // Invalid graph topology (disconnected, no output, etc.)
-    SITUATION_ERROR_NODE_ALLOCATION_FAILED                  = -479,  // Memory allocation failed during node operation
-
-    // ── Audio Device Registry Errors (-480 to -499) ─────────────────────
-    SITUATION_ERROR_DEVICE_REGISTRY_NOT_INITIALIZED         = -480,  // Device registry not initialized
-    SITUATION_ERROR_DEVICE_TYPE_INVALID                     = -481,  // Invalid device type ID
-    SITUATION_ERROR_DEVICE_TYPE_NOT_REGISTERED              = -482,  // Device type not found in registry
-    SITUATION_ERROR_DEVICE_TYPE_ALREADY_REGISTERED          = -483,  // Device type already registered (duplicate)
-    SITUATION_ERROR_DEVICE_REGISTRY_FULL                    = -484,  // Registry capacity reached (max 64 devices)
-    SITUATION_ERROR_DEVICE_METADATA_INVALID                 = -485,  // Invalid device metadata (missing name, ports, etc.)
-    SITUATION_ERROR_DEVICE_CONTROL_INVALID                  = -486,  // Invalid control definition
-    SITUATION_ERROR_DEVICE_PORT_INVALID                     = -487,  // Invalid port definition
-    SITUATION_ERROR_DEVICE_CATEGORY_INVALID                 = -488,  // Invalid device category
-    SITUATION_ERROR_DEVICE_QUERY_FAILED                     = -489,  // Device query operation failed
-    SITUATION_ERROR_DEVICE_FUNCTION_TABLE_INVALID           = -490,  // Invalid device function table
-    SITUATION_ERROR_DEVICE_CREATE_FAILED                    = -491,  // Device creation failed
-    SITUATION_ERROR_DEVICE_DESTROY_FAILED                   = -492,  // Device destruction failed
-    SITUATION_ERROR_DEVICE_PROCESS_FAILED                   = -493,  // Device processing failed
-    
-    // ── MIDI Integration Errors (-494 to -499) ──────────────────────────
-    SITUATION_ERROR_MIDI_INIT_FAILED                        = -494,  // Failed to initialize MIDI system
-    SITUATION_ERROR_MIDI_NO_DEVICES                         = -495,  // No MIDI devices available
-    SITUATION_ERROR_MIDI_DEVICE_OPEN_FAILED                 = -496,  // Failed to open MIDI device
-    SITUATION_ERROR_MIDI_NOT_SUPPORTED                      = -497,  // Device type doesn't support MIDI
-    SITUATION_ERROR_MIDI_LEARN_NOT_ENABLED                  = -498,  // MIDI Learn not enabled for node
-    SITUATION_ERROR_MIDI_LEARN_ALREADY_ENABLED              = -499,  // MIDI Learn already enabled
-
-	// ── Resource Management & Rendering Core Errors (-500 to -599) ──────
-    SITUATION_ERROR_RESOURCE_INVALID                        = -500,  // An invalid handle (shader, mesh, texture, buffer) was passed to a function
-    SITUATION_ERROR_BUFFER_INVALID_SIZE                     = -501,  // A buffer operation was attempted with an out-of-bounds offset or size
-    SITUATION_ERROR_RENDER_COMMAND_FAILED                   = -502,  // A command failed to be recorded to a command buffer
-    SITUATION_ERROR_RENDER_PASS_ACTIVE                      = -503,  // An operation was attempted that is illegal during a render pass
-    SITUATION_ERROR_INVALID_RESOURCE_HANDLE                 = -510,  // Null or corrupted handle passed (detailed variant)
-    SITUATION_ERROR_RESOURCE_ALREADY_DESTROYED              = -511,  // Use-after-free attempt
-    SITUATION_ERROR_BUFFER_MAP_FAILED                       = -512,  // vkMapMemory / glMapBuffer failed
-    SITUATION_ERROR_BUFFER_OVERFLOW                         = -513,  // Write beyond buffer bounds
-    SITUATION_ERROR_BUFFER_INVALID_USAGE                    = -514,  // Wrong usage flags for operation
-    SITUATION_ERROR_TEXTURE_UPLOAD_FAILED                   = -520,  // vkImage upload / glTexImage failed
-    SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER                = -530,  // No frame acquired
-    SITUATION_ERROR_COMMAND_BUFFER_FULL                     = -531,  // Command limit reached (extremely rare)
-    SITUATION_ERROR_NO_RENDER_PASS_ACTIVE                   = -540,  // Draw call outside render pass
-    SITUATION_ERROR_RENDER_PASS_ALREADY_ACTIVE              = -541,  // Nested render pass attempted
-    SITUATION_ERROR_BACKEND_MISMATCH                        = -550,  // Operation requested on wrong backend (e.g., GL call on Vulkan)
-    SITUATION_ERROR_PIPELINE_BIND_FAIL                      = -552,  // Failed to bind pipeline (incompatible layout or invalid handle)
-
-	// ── OpenGL Backend Errors (-600 to -699) ────────────────────────────
-    SITUATION_ERROR_OPENGL_GENERAL                          = -600,  // A generic OpenGL error occurred (glGetError)
-    SITUATION_ERROR_OPENGL_LOADER_FAILED                    = -601,  // Failed to load OpenGL functions (GLAD)
-    SITUATION_ERROR_OPENGL_UNSUPPORTED                      = -602,  // A required OpenGL version or extension is not supported by the driver
-    SITUATION_ERROR_OPENGL_SHADER_COMPILE                   = -610,  // GLSL shader compilation failed
-    SITUATION_ERROR_OPENGL_SHADER_LINK                      = -611,  // GLSL shader program linking failed
-    SITUATION_ERROR_OPENGL_FBO_INCOMPLETE                   = -620,  // A Framebuffer Object is not complete and cannot be used for rendering
-    SITUATION_ERROR_OPENGL_CONTEXT_CREATION_FAILED          = -630,  // OpenGL context creation failed
-    SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION              = -631,  // < GL 4.6 Core
-    SITUATION_ERROR_OPENGL_SHADER_COMPILE_FAILED            = -632,  // Detailed shader compile error
-    SITUATION_ERROR_OPENGL_SHADER_LINK_FAILED               = -633,  // Detailed link error
-    SITUATION_ERROR_OPENGL_PROGRAM_VALIDATION_FAILED        = -634,  // Program validation failed
-    SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND                = -635,  // Uniform location query failed
-
-	// ── Vulkan Backend Errors (-700 to -799) ────────────────────────────
-    SITUATION_ERROR_VULKAN_INIT_FAILED                      = -700,  // General Vulkan initialization failed
-    SITUATION_ERROR_VULKAN_INSTANCE_FAILED                  = -701,  // Failed to create a VkInstance
-    SITUATION_ERROR_VULKAN_DEVICE_FAILED                    = -702,  // Failed to select a physical or create a logical device
-    SITUATION_ERROR_VULKAN_UNSUPPORTED                      = -703,  // A required Vulkan layer, extension, or feature is unsupported
-    SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED                 = -710,  // A swapchain operation failed (creation, acquire, present)
-    SITUATION_ERROR_VULKAN_COMMAND_FAILED                   = -720,  // A command pool or buffer operation failed
-    SITUATION_ERROR_VULKAN_RENDERPASS_FAILED                = -730,  // Failed to create a VkRenderPass
-    SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED               = -731,  // Failed to create a VkFramebuffer
-    SITUATION_ERROR_VULKAN_PIPELINE_FAILED                  = -732,  // Failed to create a graphics or compute pipeline
-    SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED               = -733,  // Failed to create a fence or semaphore
-    SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED              = -734,  // A GPU memory allocation failed (VMA)
-    SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED                = -735,  // A descriptor set or pool operation failed
-    SITUATION_ERROR_VULKAN_INSTANCE_CREATION_FAILED         = -740,  // Detailed instance creation error
-    SITUATION_ERROR_VULKAN_PHYSICAL_DEVICE_UNSUITABLE       = -741,  // Physical device unsuitable
-    SITUATION_ERROR_VULKAN_DEVICE_CREATION_FAILED           = -742,  // Logical device creation failed
-    SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED        = -743,  // Detailed swapchain creation error
-    SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID                = -744,  // Invalid swapchain state
-    SITUATION_ERROR_VULKAN_IMAGE_ACQUIRE_FAILED             = -745,  // Image acquire failed
-    SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED              = -746,  // Queue submit failed
-    SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED         = -747,  // Detailed pipeline creation error
-    SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED             = -748,  // Shader module creation failed
-    SITUATION_ERROR_VULKAN_DESCRIPTOR_POOL_EXHAUSTED        = -749,  // Descriptor pool exhausted
-    SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED         = -750,  // Detailed memory allocation error
-    SITUATION_ERROR_VULKAN_VALIDATION_LAYER_ERROR           = -751,  // Validation layer error (debug only)
-    SITUATION_ERROR_SHADER_COMPILATION_FAILED               = -752,  // Shader compilation failed (shaderc)
-
-	// ── Compute / GPGPU Errors (-800 to -899) ───────────────────────────
-    SITUATION_ERROR_COMPUTE_PIPELINE_CREATION_FAILED        = -800,  // Compute pipeline creation failed
-    SITUATION_ERROR_COMPUTE_DISPATCH_FAILED                 = -801,  // Dispatch command failed
-    SITUATION_ERROR_COMPUTE_BUFFER_BINDING_MISSING          = -802,  // Missing storage buffer binding
-
-    // ── Network Errors (-900 to -949) ───────────────────────────────────
-    SITUATION_ERROR_NETWORK_INIT_FAILED                     = -900,  // Failed to initialize network subsystem
-    SITUATION_ERROR_NETWORK_SOCKET_CREATION_FAILED          = -901,  // Failed to create socket
-    SITUATION_ERROR_NETWORK_CONNECTION_FAILED               = -902,  // Failed to connect to remote host
-    SITUATION_ERROR_NETWORK_SEND_FAILED                     = -903,  // Failed to send data
-    SITUATION_ERROR_NETWORK_RECEIVE_FAILED                  = -904,  // Failed to receive data
-    SITUATION_ERROR_NETWORK_BIND_FAILED                     = -905,  // Failed to bind socket
-    SITUATION_ERROR_NETWORK_LISTEN_FAILED                   = -906,  // Failed to listen on socket
-    SITUATION_ERROR_NETWORK_ACCEPT_FAILED                   = -907,  // Failed to accept connection
-
-    // ── Unknown / Catch-All ─────────────────────────────────────────────
-    SITUATION_ERROR_UNKNOWN_ERROR                           = -999,  // Cosmic rays.
-
-} SituationError;
 
 /**
  * @brief Logs a warning message in debug builds.
@@ -442,10 +181,10 @@ typedef enum {
     SIT_LOG_NONE
 } SituationLogLevel;
 
-SITAPI void SituationLog(int msgType, const char* text, ...);
-SITAPI void SituationSetTraceLogLevel(int logType);
+SITAPI void SituationLog(int msgType, const char* text, ...);                           // Log a message at the specified level (SIT_LOG_*).
+SITAPI void SituationSetTraceLogLevel(int logType);                                     // Set the minimum log level for output filtering.
 
-SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);
+SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);             // Log a warning with an associated error code (debug builds only).
 #define SITUATION_LOG_WARNING SituationLogWarning
 
 // Enable runtime main-thread asserts (debug only)
@@ -719,145 +458,6 @@ typedef enum {
 #define SITUATION_JOYSTICK_DEADZONE_L           0.10f /* Default deadzone for left analog (anti-drift). */
 #define SITUATION_JOYSTICK_DEADZONE_R           0.10f /* Default deadzone for right analog (anti-drift). */
 
-
-/**
- * @brief Key Codes (from GLFW, re-defined for API stability)
- */
-#define SIT_KEY_SPACE              32
-#define SIT_KEY_APOSTROPHE         39  /* ' */
-#define SIT_KEY_COMMA              44  /* , */
-#define SIT_KEY_MINUS              45  /* - */
-#define SIT_KEY_PERIOD             46  /* . */
-#define SIT_KEY_SLASH              47  /* / */
-#define SIT_KEY_0                  48
-#define SIT_KEY_1                  49
-#define SIT_KEY_2                  50
-#define SIT_KEY_3                  51
-#define SIT_KEY_4                  52
-#define SIT_KEY_5                  53
-#define SIT_KEY_6                  54
-#define SIT_KEY_7                  55
-#define SIT_KEY_8                  56
-#define SIT_KEY_9                  57
-#define SIT_KEY_SEMICOLON          59  /* ; */
-#define SIT_KEY_EQUAL              61  /* = */
-#define SIT_KEY_A                  65
-#define SIT_KEY_B                  66
-#define SIT_KEY_C                  67
-#define SIT_KEY_D                  68
-#define SIT_KEY_E                  69
-#define SIT_KEY_F                  70
-#define SIT_KEY_G                  71
-#define SIT_KEY_H                  72
-#define SIT_KEY_I                  73
-#define SIT_KEY_J                  74
-#define SIT_KEY_K                  75
-#define SIT_KEY_L                  76
-#define SIT_KEY_M                  77
-#define SIT_KEY_N                  78
-#define SIT_KEY_O                  79
-#define SIT_KEY_P                  80
-#define SIT_KEY_Q                  81
-#define SIT_KEY_R                  82
-#define SIT_KEY_S                  83
-#define SIT_KEY_T                  84
-#define SIT_KEY_U                  85
-#define SIT_KEY_V                  86
-#define SIT_KEY_W                  87
-#define SIT_KEY_X                  88
-#define SIT_KEY_Y                  89
-#define SIT_KEY_Z                  90
-#define SIT_KEY_LEFT_BRACKET       91  /* [ */
-#define SIT_KEY_BACKSLASH          92  /* \ */
-#define SIT_KEY_RIGHT_BRACKET      93  /* ] */
-#define SIT_KEY_GRAVE_ACCENT       96  /* ` */
-#define SIT_KEY_WORLD_1            161 /* non-US #1 */
-#define SIT_KEY_WORLD_2            162 /* non-US #2 */
-
-// --- Function keys ---
-#define SIT_KEY_ESCAPE             256
-#define SIT_KEY_ENTER              257
-#define SIT_KEY_TAB                258
-#define SIT_KEY_BACKSPACE          259
-#define SIT_KEY_INSERT             260
-#define SIT_KEY_DELETE             261
-#define SIT_KEY_RIGHT              262
-#define SIT_KEY_LEFT               263
-#define SIT_KEY_DOWN               264
-#define SIT_KEY_UP                 265
-#define SIT_KEY_PAGE_UP            266
-#define SIT_KEY_PAGE_DOWN          267
-#define SIT_KEY_HOME               268
-#define SIT_KEY_END                269
-#define SIT_KEY_CAPS_LOCK          280
-#define SIT_KEY_SCROLL_LOCK        281
-#define SIT_KEY_NUM_LOCK           282
-#define SIT_KEY_PRINT_SCREEN       283
-#define SIT_KEY_PAUSE              284
-#define SIT_KEY_F1                 290
-#define SIT_KEY_F2                 291
-#define SIT_KEY_F3                 292
-#define SIT_KEY_F4                 293
-#define SIT_KEY_F5                 294
-#define SIT_KEY_F6                 295
-#define SIT_KEY_F7                 296
-#define SIT_KEY_F8                 297
-#define SIT_KEY_F9                 298
-#define SIT_KEY_F10                299
-#define SIT_KEY_F11                300
-#define SIT_KEY_F12                301
-#define SIT_KEY_F13                302
-#define SIT_KEY_F14                303
-#define SIT_KEY_F15                304
-#define SIT_KEY_F16                305
-#define SIT_KEY_F17                306
-#define SIT_KEY_F18                307
-#define SIT_KEY_F19                308
-#define SIT_KEY_F20                309
-#define SIT_KEY_F21                310
-#define SIT_KEY_F22                311
-#define SIT_KEY_F23                312
-#define SIT_KEY_F24                313
-#define SIT_KEY_F25                314
-
-// --- Keypad keys ---
-#define SIT_KEY_KP_0               320
-#define SIT_KEY_KP_1               321
-#define SIT_KEY_KP_2               322
-#define SIT_KEY_KP_3               323
-#define SIT_KEY_KP_4               324
-#define SIT_KEY_KP_5               325
-#define SIT_KEY_KP_6               326
-#define SIT_KEY_KP_7               327
-#define SIT_KEY_KP_8               328
-#define SIT_KEY_KP_9               329
-#define SIT_KEY_KP_DECIMAL         330
-#define SIT_KEY_KP_DIVIDE          331
-#define SIT_KEY_KP_MULTIPLY        332
-#define SIT_KEY_KP_SUBTRACT        333
-#define SIT_KEY_KP_ADD             334
-#define SIT_KEY_KP_ENTER           335
-#define SIT_KEY_KP_EQUAL           336
-
-// --- Modifier keys (positional) ---
-#define SIT_KEY_LEFT_SHIFT         340
-#define SIT_KEY_LEFT_CONTROL       341
-#define SIT_KEY_LEFT_ALT           342
-#define SIT_KEY_LEFT_SUPER         343 // Windows/Command/Meta key
-#define SIT_KEY_RIGHT_SHIFT        344
-#define SIT_KEY_RIGHT_CONTROL      345
-#define SIT_KEY_RIGHT_ALT          346
-#define SIT_KEY_RIGHT_SUPER        347
-#define SIT_KEY_MENU               348
-
-// --- Modifier Bitmasks ---
-#define SIT_MOD_SHIFT              0x0001
-#define SIT_MOD_CONTROL            0x0002
-#define SIT_MOD_ALT                0x0004
-#define SIT_MOD_SUPER              0x0008
-#define SIT_MOD_CAPS_LOCK          0x0010
-#define SIT_MOD_NUM_LOCK           0x0020
-
 /**
  * @brief Basic Math Types
  */
@@ -885,22 +485,6 @@ typedef union Vector4 {
 
 typedef struct SitRectangle { float x, y, width, height; } SitRectangle;
 
-/**
- * @brief MIDI note to Frequency hz table
- */
-static const float SITUATION_MIDI_NOTE_FREQUENCY[128] = {
-    8.1758f,   8.66196f,  9.17702f,  9.72272f,  10.3009f,  10.9134f,  11.5623f,  12.2499f,  12.9783f,  13.75f,    14.5676f,  15.4339f,
-    16.3516f,  17.3239f,  18.3540f,  19.4454f,  20.6017f,  21.8268f,  23.1247f,  24.4997f,  25.9565f,  27.5f,     29.1352f,  30.8677f,
-    32.7032f,  34.6478f,  36.7081f,  38.8909f,  41.2034f,  43.6535f,  46.2493f,  48.9994f,  51.9131f,  55.0f,     58.2705f,  61.7354f,
-    65.4064f,  69.2957f,  73.4162f,  77.7817f,  82.4069f,  87.3071f,  92.4986f,  97.9989f,  103.826f,  110.0f,    116.541f,  123.471f,
-    130.813f,  138.591f,  146.832f,  155.563f,  164.814f,  174.614f,  184.997f,  195.998f,  207.652f,  220.0f,    233.082f,  246.942f,
-    261.626f,  277.183f,  293.665f,  311.127f,  329.628f,  349.228f,  369.994f,  391.995f,  415.305f,  440.0f,    466.164f,  493.883f,
-    523.251f,  554.365f,  587.330f,  622.254f,  659.255f,  698.456f,  739.989f,  783.991f,  830.609f,  880.0f,    932.328f,  987.767f,
-    1046.50f,  1108.73f,  1174.66f,  1244.51f,  1318.51f,  1396.91f,  1479.98f,  1567.98f,  1661.22f,  1760.0f,   1864.66f,  1975.53f,
-    2093.00f,  2217.46f,  2349.32f,  2489.02f,  2637.02f,  2793.83f,  2959.96f,  3135.96f,  3322.44f,  3520.0f,   3729.31f,  3951.07f,
-    4186.01f,  4434.92f,  4698.64f,  4978.03f,  5274.04f,  5587.65f,  5919.91f,  6271.93f,  6644.88f,  7040.0f,   7458.62f,  7902.13f,
-    8372.02f,  8869.84f,  9397.27f,  9956.06f,  10548.1f,  11175.3f,  11839.8f,  12543.9f
-};
 //==================================================================================
 //  Callback Type Definitions - v2.3.4 "Velocity" Standard
 //==================================================================================
@@ -950,10 +534,10 @@ typedef void (*SituationWindowCloseCallback)(
 
 // ── Input Events (Optional Event-Driven API — polling API is always available) ──
 typedef void (*SituationKeyCallback)(
-    int   key,       // SIT_KEY_xxx code
-    int   scancode,  // Platform-specific scancode (useful for non-QWERTY layouts)
-    int   action,    // SIT_PRESS, SIT_RELEASE, or SIT_REPEAT
-    int   mods,      // Bitfield of SIT_MOD_xxx
+    int   key,       		// SIT_KEY_xxx code
+    int   scancode,  		// Platform-specific scancode (useful for non-QWERTY layouts)
+    int   action,    		// SIT_PRESS, SIT_RELEASE, or SIT_REPEAT
+    int   mods,      		// Bitfield of SIT_MOD_xxx
     void* user_data
 ); // Exact GLFW key callback signature
 
@@ -1019,7 +603,7 @@ typedef void (*SituationAudioProcessorCallback)(
 // ── Internal GLFW Error Callback (Exposed only for extremely advanced users) ──
 typedef void (*GLFWerrorfun)(int error_code, const char* description);
 
-SITAPI void SituationFreeString(char* str);
+SITAPI void SituationFreeString(char* str);                                             // Free a string allocated by the library (e.g., from path helpers).
 
 #if defined(__cplusplus)
 extern "C++" {
@@ -1090,7 +674,7 @@ typedef struct SituationImage {
     int width;                                      // Image width
     int height;                                     // Image height
     int channels;                                   // Number of channels (e.g., 4 for RGBA, 1 for Grayscale)
-    SituationColorEncoding color_encoding;      // Color space encoding (LINEAR or SRGB)
+    SituationColorEncoding color_encoding;      	// Color space encoding (LINEAR or SRGB)
 } SituationImage;
 
 /**
@@ -1362,6 +946,15 @@ typedef struct {
     SituationBufferUsageFlags usage_flags; // Cached metadata
 } SituationBuffer;
 
+// SAFETY: SituationBuffer handle identity is packed into a uint64_t (slot_index + generation = 8 bytes).
+// If you add fields, they will NOT be transmitted through the command buffer. Only slot_index and
+// generation are used for handle lookup. This assert ensures the packable portion stays at offset 0.
+#define SIT_BUFFER_HANDLE_PACK_SIZE 8  // bytes: slot_index(4) + generation(4)
+_Static_assert(
+    offsetof(SituationBuffer, generation) + sizeof(uint32_t) == SIT_BUFFER_HANDLE_PACK_SIZE,
+    "SituationBuffer handle fields (slot_index + generation) must be the first 8 bytes for command buffer packing"
+);
+
 
 // --- Cross-Platform Resource Validation Helpers ---
 
@@ -1597,13 +1190,13 @@ typedef struct SituationAudioBus SituationAudioBus;
 // ================================================================================================
 
 // --- Configuration Constants ---
-#define SITUATION_MAX_DEVICES           64      // Maximum number of registered device types
-#define SITUATION_MAX_DEVICE_NAME       64      // Maximum length of device name
-#define SITUATION_MAX_CONTROL_NAME      32      // Maximum length of control parameter name
-#define SITUATION_MAX_CONTROLS_PER_DEVICE 32    // Maximum controls per device
-#define SITUATION_MAX_NODES             256     // Maximum nodes in a graph
-#define SITUATION_MAX_PATCHES_PER_PORT  16      // Maximum connections per port
-#define SITUATION_MAX_AUDIO_BUFFER      2048    // Maximum audio buffer size (frames)
+#define SITUATION_MAX_DEVICES           	64      // Maximum number of registered device types
+#define SITUATION_MAX_DEVICE_NAME       	64      // Maximum length of device name
+#define SITUATION_MAX_CONTROL_NAME      	32      // Maximum length of control parameter name
+#define SITUATION_MAX_CONTROLS_PER_DEVICE 	32    	// Maximum controls per device
+#define SITUATION_MAX_NODES             	256     // Maximum nodes in a graph
+#define SITUATION_MAX_PATCHES_PER_PORT  	16      // Maximum connections per port
+#define SITUATION_MAX_AUDIO_BUFFER      	2048    // Maximum audio buffer size (frames)
 
 // --- Device Categories ---
 typedef enum {
@@ -1813,9 +1406,9 @@ SITAPI SituationToneHandle SituationPlayToneEx(
 // All oscillators run on the same global timebase but can have independent periods and phases.
 
 // --- Timer System Structures ---
-#define SITUATION_MAX_OSCILLATORS 256
-#define SITUATION_TIMER_GRID_PERIOD_EDGES 60.0
-#define SITUATION_TIMER_GRIDILON 1.182940076
+#define SITUATION_MAX_OSCILLATORS 			256
+#define SITUATION_TIMER_GRID_PERIOD_EDGES 	60.0
+#define SITUATION_TIMER_GRIDILON 			1.182940076
 
 typedef struct {
     // ── Oscillator Configuration ──
@@ -1830,6 +1423,7 @@ typedef struct {
     uint64_t trigger_count[SITUATION_MAX_OSCILLATORS];          // How many times this oscillator has fired since init (rolls over safely)
     double   next_trigger_time_seconds[SITUATION_MAX_OSCILLATORS]; // Absolute time when the next trigger is scheduled
     double   last_ping_time_seconds[SITUATION_MAX_OSCILLATORS];    // Time of the most recent trigger (for phase/duty queries)
+    double   anchor_time_seconds[SITUATION_MAX_OSCILLATORS];       // Absolute start time for drift-free trigger calculation
 
     // ── Global Timebase ──
     double   current_system_time_seconds;   // Monotonically increasing high-resolution time (updated every frame via SituationUpdateTimers())
@@ -1935,29 +1529,23 @@ typedef enum {
 
 } SituationRenderFeature;
 
-/**
- * @brief Checks if a specific graphics feature is supported and enabled on the current hardware.
- * @param feature The feature flag to check.
- * @return true if the feature is available for use.
- */
-SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature);
-
-
+SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature);                 // Check if a graphics feature is supported on current hardware.
+4
 // --- Deprecated Barrier Flags (for SituationMemoryBarrier) ---
-#define SITUATION_BARRIER_VERTEX_ATTRIB_ARRAY_BIT   0x00000001
-#define SITUATION_BARRIER_ELEMENT_ARRAY_BIT         0x00000002
-#define SITUATION_BARRIER_UNIFORM_BARRIER_BIT       0x00000004
-#define SITUATION_BARRIER_TEXTURE_FETCH_BARRIER_BIT 0x00000008
-#define SITUATION_BARRIER_SHADER_IMAGE_ACCESS_BARRIER_BIT 0x00000020
-#define SITUATION_BARRIER_COMMAND_BARRIER_BIT       0x00000040
-#define SITUATION_BARRIER_PIXEL_BUFFER_BARRIER_BIT  0x00000080
-#define SITUATION_BARRIER_TEXTURE_UPDATE_BARRIER_BIT 0x00000100
-#define SITUATION_BARRIER_BUFFER_UPDATE_BARRIER_BIT 0x00000200
-#define SITUATION_BARRIER_FRAMEBUFFER_BARRIER_BIT   0x00000400
-#define SITUATION_BARRIER_TRANSFORM_FEEDBACK_BARRIER_BIT 0x00000800
-#define SITUATION_BARRIER_ATOMIC_COUNTER_BARRIER_BIT 0x00001000
-#define SITUATION_BARRIER_SHADER_STORAGE_BARRIER_BIT 0x00002000
-#define SITUATION_BARRIER_ALL_BARRIER_BITS          0xFFFFFFFF
+#define SITUATION_BARRIER_VERTEX_ATTRIB_ARRAY_BIT   		0x00000001
+#define SITUATION_BARRIER_ELEMENT_ARRAY_BIT         		0x00000002
+#define SITUATION_BARRIER_UNIFORM_BARRIER_BIT       		0x00000004
+#define SITUATION_BARRIER_TEXTURE_FETCH_BARRIER_BIT 		0x00000008
+#define SITUATION_BARRIER_SHADER_IMAGE_ACCESS_BARRIER_BIT 	0x00000020
+#define SITUATION_BARRIER_COMMAND_BARRIER_BIT       		0x00000040
+#define SITUATION_BARRIER_PIXEL_BUFFER_BARRIER_BIT  		0x00000080
+#define SITUATION_BARRIER_TEXTURE_UPDATE_BARRIER_BIT 		0x00000100
+#define SITUATION_BARRIER_BUFFER_UPDATE_BARRIER_BIT 		0x00000200
+#define SITUATION_BARRIER_FRAMEBUFFER_BARRIER_BIT   		0x00000400
+#define SITUATION_BARRIER_TRANSFORM_FEEDBACK_BARRIER_BIT 	0x00000800
+#define SITUATION_BARRIER_ATOMIC_COUNTER_BARRIER_BIT 		0x00001000
+#define SITUATION_BARRIER_SHADER_STORAGE_BARRIER_BIT 		0x00002000
+#define SITUATION_BARRIER_ALL_BARRIER_BITS          		0xFFFFFFFF
 
 // Aliases to match implementation usage
 #define SITUATION_BARRIER_INDEX_BUFFER_BIT          SITUATION_BARRIER_ELEMENT_ARRAY_BIT
@@ -2157,8 +1745,7 @@ SITAPI void SituationUpdate(void);                                              
 SITAPI void SituationShutdown(void);                                                    // Shut down the library and release all resources.
 SITAPI bool SituationIsInitialized(void);                                               // Check if the library has been successfully initialized.
 
-// Query the current initialization state (thread-safe)
-SITAPI SituationInitState SituationGetInitState(void);
+SITAPI SituationInitState SituationGetInitState(void);                                  // Query the current initialization state (thread-safe).
 
 SITAPI bool SituationWindowShouldClose(void);                                           // Check if the application should close (e.g., user clicked X).
 SITAPI void SituationPauseApp(void);                                                    // Pause the application's internal state (e.g., audio).
@@ -2240,7 +1827,7 @@ SITAPI Vector2 SituationGetWindowScaleDPI(void);                                
 SITAPI int SituationGetMonitorCount(void);                                              // Get the number of connected monitors.
 SITAPI int SituationGetCurrentMonitor(void);                                            // Get the index of the monitor the window is on.
 SITAPI SituationError SituationGetDisplays(SituationDisplayInfo** out_displays, int* out_count); // Get information for all displays (caller must free).
-SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);
+SITAPI void SituationFreeDisplays(SituationDisplayInfo* displays, int count);            // Free a display info array returned by SituationGetDisplays.
 SITAPI void SituationRefreshDisplays(void);                                             // Force a refresh of the cached display information.
 SITAPI SituationError SituationSetDisplayMode(int monitor_id, const SituationDisplayMode* mode, bool fullscreen); // Set the display mode for a monitor.
 SITAPI void SituationSetWindowMonitor(int monitor_id);                                  // Set the window to be fullscreen on a specific monitor.
@@ -2289,7 +1876,7 @@ SITAPI void SituationSetPixelColor(SituationImage *img, int x, int y, ColorRGBA 
 SITAPI void SituationBlitRawDataToImage(SituationImage *dst, const void* data, int x, int y, int width, int height, int src_channels); // Copies raw byte data into a specific region of an image.
 
 SITAPI void SituationImageDraw(SituationImage *dst, SituationImage src, SitRectangle srcRect, Vector2 dstPos); // Copying portion of one image into another image at destination placement
-SITAPI void SituationImageDrawAlpha(SituationImage *dst, SituationImage src, SitRectangle srcRect, Vector2 dstPos, ColorRGBA tint);
+SITAPI void SituationImageDrawAlpha(SituationImage *dst, SituationImage src, SitRectangle srcRect, Vector2 dstPos, ColorRGBA tint); // Draw a portion of a source image onto dst with alpha tinting.
 SITAPI SituationError SituationGenImageColor(int width, int height, ColorRGBA color, SituationImage* out_image);   // Generate a new image of a solid color.
 SITAPI SituationError SituationGenImageGradient(int width, int height, ColorRGBA tl, ColorRGBA tr, ColorRGBA bl, ColorRGBA br, SituationImage* out_image); // Generate a new image with a gradient.
 
@@ -2303,13 +1890,13 @@ SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, floa
 SITAPI SituationError SituationLoadFont(const char *fileName, SituationFont* out_font);                         // Load a font from a TTF/OTF file for CPU rendering.
 SITAPI SituationError SituationLoadFontFromMemory(const void* data, int dataSize, SituationFont* out_font);		// Loads a font directly from a memory buffer (e.g., embedded resource).
 SITAPI SituationError SituationLoadBitmapFontFromMemory(const unsigned char* data, int char_width, int char_height, int num_chars, SituationFont* out_font); // Loads a raw bitmap font (e.g. 8x8 array).
-SITAPI SituationError SituationBakeFontAtlas(SituationFont* font, float fontSizePixels);
+SITAPI SituationError SituationBakeFontAtlas(SituationFont* font, float fontSizePixels); // Rasterize a font into a GPU-ready atlas at the given size.
 SITAPI void SituationUnloadFont(SituationFont font);                                    // Unload a CPU-side font and free its memory.
 SITAPI SitRectangle SituationMeasureText(SituationFont font, const char *text, float fontSize); // Measure the pixel dimensions of a string before drawing.
 SITAPI void SituationImageDrawCodepoint(SituationImage *dst, SituationFont font, int codepoint, Vector2 position, float fontSize, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness); // Draw a single Unicode character with advanced styling onto an image.
 SITAPI void SituationImageDrawText(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, ColorRGBA tint ); // Draw a simple, tinted text string onto an image.
 SITAPI void SituationImageDrawTextEx(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, float rotationDegrees, float skewFactor, ColorRGBA fillColor, ColorRGBA outlineColor, float outlineThickness); // Draw a text string with advanced styling (rotation, outline) onto an image.
-SITAPI void SituationImageDrawTextFormatted(SituationImage *dst, SituationFont font, Vector2 position, float fontSize, float spacing, ColorRGBA tint, const char* fmt, ...);
+SITAPI void SituationImageDrawTextFormatted(SituationImage *dst, SituationFont font, Vector2 position, float fontSize, float spacing, ColorRGBA tint, const char* fmt, ...); // Draw printf-style formatted text onto an image.
 
 //==================================================================================
 // Graphics Module: Rendering, Shaders, and GPU Resources
@@ -2318,7 +1905,7 @@ SITAPI void SituationImageDrawTextFormatted(SituationImage *dst, SituationFont f
 // --- Profiling & Diagnostics ---
 SITAPI uint32_t SituationGetDrawCallCount(void); 										// Number of draw commands this frame
 SITAPI uint64_t SituationGetVRAMUsage(void);     										// Total GPU memory allocated (Bytes)
-SITAPI void SituationExportRenderHistogram(char* buf, size_t buf_size);
+SITAPI void SituationExportRenderHistogram(char* buf, size_t buf_size);                  // Write a text-based frame time histogram into buf.
 #if defined(SITUATION_ENABLE_RENDER_THREAD)
 SITAPI size_t SituationGetRenderQueueDepth(void);                                       // Get the current depth of the render queue
 SITAPI void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);         // Get render thread latency metrics
@@ -2333,12 +1920,12 @@ SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 posi
 // --- Frame Lifecycle & Command Buffer ---
 SITAPI bool SituationAcquireFrameCommandBuffer(void);                                   // Prepare the backend for a new frame of rendering commands.
 #if defined(SITUATION_ENABLE_THREADING)
-SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data);
+SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data); // Submit a render list for async recording on a worker thread.
 #else
-SITAPI void SituationSubmitRenderList(SituationRenderList list, void (*func)(void*, void*), void* user_data);
+SITAPI void SituationSubmitRenderList(SituationRenderList list, void (*func)(void*, void*), void* user_data); // Submit a render list for immediate recording (single-threaded fallback).
 #endif
-SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRenderList list);
-SITAPI void SituationResetRenderList(SituationRenderList list);
+SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRenderList list); // Replay a previously recorded render list into a command buffer.
+SITAPI void SituationResetRenderList(SituationRenderList list);                         // Reset a render list for reuse next frame.
 SITAPI SituationCommandBuffer SituationGetMainCommandBuffer(void);                      // Get the primary command buffer for the current frame.
 SITAPI SituationCommandBuffer SituationGetComputeCommandBuffer(void);                   // [v2.3.23] Get the compute-specific command buffer (Vulkan only).
 SITAPI SituationError SituationEndFrame(void);                                          // Submit all commands for the frame and present the result.
@@ -2417,7 +2004,7 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
 SITAPI void SituationUnloadModel(SituationModel* model);                                // Frees all GPU and CPU resources associated with a loaded model.
 SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform); // Draws all sub-meshes of a model with a single root transformation.
 SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path);      // Exports a model to a human-readable .gltf and a .bin file for debugging.
-SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count);
+SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count); // Get raw vertex/index data pointers from a mesh (read-only).
 
 // --- Image & Screenshot Utilities ---
 SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image);          // Get a copy of the current screen backbuffer as an image.
@@ -2521,21 +2108,21 @@ SITAPI SituationError SituationPauseAudioDevice(void);                          
 SITAPI SituationError SituationResumeAudioDevice(void);                                 // Resume audio playback on the device.
 
 // --- Audio Capture ---
-SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data);
-SITAPI SituationError SituationStartAudioCaptureEx(SituationAudioCaptureCallback callback, void* user_data, uint32_t sample_rate, uint32_t channels);
-SITAPI void SituationStopAudioCapture(void);
+SITAPI SituationError SituationStartAudioCapture(SituationAudioCaptureCallback callback, void* user_data);                                          // Start capturing audio input with default format.
+SITAPI SituationError SituationStartAudioCaptureEx(SituationAudioCaptureCallback callback, void* user_data, uint32_t sample_rate, uint32_t channels); // Start capturing with explicit sample rate and channel count.
+SITAPI void SituationStopAudioCapture(void);                                            // Stop audio capture and release the input device.
 
 // --- Audio Output Monitoring (for visualization) ---
-SITAPI void SituationSetAudioOutputMonitor(void (*callback)(const float* samples, uint32_t frame_count, void* user_data), void* user_data);
+SITAPI void SituationSetAudioOutputMonitor(void (*callback)(const float* samples, uint32_t frame_count, void* user_data), void* user_data); // Set a callback to receive mixed output samples (for VU meters, FFT, etc.).
 
 // --- Sound Loading and Management ---
 // --- Audio Handle API ---
-SITAPI SituationSoundHandle SituationLoadAudio(const char* file_path, SituationAudioLoadMode mode, bool looping);
-SITAPI SituationError SituationPlayAudio(SituationSoundHandle handle);
-SITAPI void SituationUnloadAudio(SituationSoundHandle handle);
-SITAPI SituationError SituationSetAudioVolume(SituationSoundHandle handle, float volume);
-SITAPI SituationError SituationSetAudioPan(SituationSoundHandle handle, float pan);
-SITAPI SituationError SituationSetAudioPitch(SituationSoundHandle handle, float pitch);
+SITAPI SituationSoundHandle SituationLoadAudio(const char* file_path, SituationAudioLoadMode mode, bool looping); // Load audio and return a lightweight handle for playback control.
+SITAPI SituationError SituationPlayAudio(SituationSoundHandle handle);                  // Play audio by handle (restarts if already playing).
+SITAPI void SituationUnloadAudio(SituationSoundHandle handle);                          // Unload audio by handle and free resources.
+SITAPI SituationError SituationSetAudioVolume(SituationSoundHandle handle, float volume); // Set volume for a handle-based sound [0.0 to 1.0+].
+SITAPI SituationError SituationSetAudioPan(SituationSoundHandle handle, float pan);     // Set stereo pan for a handle-based sound [-1.0 to 1.0].
+SITAPI SituationError SituationSetAudioPitch(SituationSoundHandle handle, float pitch); // Set pitch multiplier for a handle-based sound (1.0 = normal).
 
 SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, SituationAudioLoadMode mode, bool looping, SituationSound* out_sound); // Load a sound from a file.
 SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback on_read, SituationStreamSeekCallback on_seek, void* user_data, const SituationAudioFormat* format, bool looping, SituationSound* out_sound); // Load a sound from a custom stream.
@@ -2544,20 +2131,11 @@ SITAPI SituationError SituationPlayLoadedSound(SituationSound* sound);          
 SITAPI SituationError SituationStopLoadedSound(SituationSound* sound);                  // Stop a specific sound from playing.
 SITAPI SituationError SituationStopAllLoadedSounds(void);                               // Stop all currently playing sounds.
 
-/**
- * @brief Gracefully stops a tone by triggering its release envelope.
- *        If the tone is already released or invalid, does nothing.
- *
- * @param handle The tone handle returned by SituationPlayToneEx()
- */
-SITAPI void SituationStopTone(SituationToneHandle handle);
+SITAPI void SituationStopTone(SituationToneHandle handle);                              // Gracefully stop a tone by triggering its release envelope. Invalid handles are ignored.
 
-/**
- * @brief Legacy simple blip (kept for backward compatibility and quick UI sounds)
- */
-SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec);
-SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec);
-SITAPI void SituationStopAllTones(void);
+SITAPI void SituationPlayTone(SituationWaveType type, float frequency, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec); // Legacy: play a simple ADSR tone (backward compat / quick UI sounds).
+SITAPI void SituationPlayMidiNote(int note, SituationWaveType type, float volume, float attack_sec, float decay_sec, float sustain_level, float release_sec, float hold_sec);   // Legacy: play a tone by MIDI note number (0-127).
+SITAPI void SituationStopAllTones(void);                                                // Stop all active tones (triggers release on each).
 
 // --- Sound Data Manipulation (Wave Utilities) ---
 SITAPI SituationError SituationSoundCopy(const SituationSound* source, SituationSound* out_destination);    // Create a new sound by copying the raw PCM data from a source.
@@ -2579,70 +2157,42 @@ SITAPI SituationError SituationSetSoundReverb(SituationSound* sound, bool enable
 SITAPI SituationError SituationAttachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Attach a custom DSP processor to a sound's effect chain.
 SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, SituationAudioProcessorCallback processor, void* user_data); // Detach a custom DSP processor from a sound.
 
-// --- Mixer API (Phase 1) ---
-SITAPI SituationAudioMixer* SituationCreateMixer(void);
-SITAPI void SituationDestroyMixer(SituationAudioMixer* mixer);
-
-SITAPI SituationAudioTrack* SituationAddTrack(SituationAudioMixer* mixer, const char* name);
-SITAPI void SituationRemoveTrack(SituationAudioTrack* track);
-SITAPI void SituationSetTrackName(SituationAudioTrack* track, const char* name);
-SITAPI SituationError SituationRouteSoundToTrack(SituationSoundHandle sound, SituationAudioTrack* track);
-
-SITAPI void SituationSetTrackVolume(SituationAudioTrack* track, float volume);
-SITAPI void SituationSetTrackPan(SituationAudioTrack* track, float pan);
-SITAPI void SituationSetTrackMute(SituationAudioTrack* track, bool mute);
-SITAPI void SituationSetTrackSolo(SituationAudioTrack* track, bool solo);
-
-SITAPI SituationAudioBus* SituationGetAuxBus(SituationAudioMixer* mixer, int bus_index);
-SITAPI SituationError SituationSetTrackSend(SituationAudioTrack* track, int aux_bus_index, float level, bool pre_fader);
-SITAPI SituationError SituationSetTrackOutput(SituationAudioTrack* track, SituationAudioBus* destination);
-
-SITAPI void SituationSetTrackEQ(SituationAudioTrack* track, bool enabled, float* freqs, float* gains, float* Qs);
-SITAPI void SituationSetTrackDynamics(SituationAudioTrack* track, bool enabled, int mode, float threshold_db, float ratio, float attack_ms, float release_ms, float makeup_gain);
-SITAPI void SituationSetTrackSideChain(SituationAudioTrack* target_track, SituationAudioTrack* source_track);
-
-SITAPI SituationError SituationSetMasterVolume(SituationAudioMixer* mixer, float volume);
-SITAPI float SituationGetMasterVolume(SituationAudioMixer* mixer);
-
-SITAPI bool SituationSaveMixerSession(SituationAudioMixer* mixer, const char* filepath);
-SITAPI bool SituationLoadMixerSession(SituationAudioMixer* mixer, const char* filepath);
-
-// --- Mixer API (Phase 4) ---
-SITAPI SituationError SituationInsertEffect(SituationAudioBus* bus, int slot, ma_node* effect_node);
-SITAPI void* SituationRemoveEffect(SituationAudioBus* bus, int slot);
-SITAPI void SituationGetTrackMeter(SituationAudioTrack* track, float* left_peak, float* right_peak, float* gain_reduction);
-SITAPI ma_node_graph* SituationGetMixerGraph(SituationAudioMixer* mixer);
+// [Phase H] Removed: Legacy Mixer API (replaced by node graph system)
+// Use SituationCreateGraph() + SituationCreateNode(SITUATION_NODE_MIXER) + SituationProcessGraph() instead.
 
 // ================================================================================================
 // NODE GRAPH & DEVICE REGISTRY API (Phase 3-5)
 // ================================================================================================
 
 // --- Device Registry Functions ---
-SITAPI void SituationInitDeviceRegistry(void);
-SITAPI int SituationGetRegisteredDeviceCount(void);
-SITAPI SituationError SituationRegisterDeviceType(const SituationDeviceMetadata* meta);
-SITAPI SituationError SituationGetDeviceMetadata(SituationNodeType type, SituationDeviceMetadata* out_meta);
-SITAPI bool SituationIsDeviceRegistered(SituationNodeType type);
-SITAPI const char* SituationGetCategoryName(SituationDeviceCategory category);
+SITAPI void SituationInitDeviceRegistry(void);                                          // Initialize the built-in device registry (call once at startup).
+SITAPI int SituationGetRegisteredDeviceCount(void);                                     // Get the number of registered audio device types.
+SITAPI SituationError SituationRegisterDeviceType(const SituationDeviceMetadata* meta); // Register a custom device type with the registry.
+SITAPI SituationError SituationGetDeviceMetadata(SituationNodeType type, SituationDeviceMetadata* out_meta); // Get metadata for a registered device type.
+SITAPI bool SituationIsDeviceRegistered(SituationNodeType type);                        // Check if a device type is registered.
+SITAPI const char* SituationGetCategoryName(SituationDeviceCategory category);          // Get the display name for a device category.
+
+// --- Active Graph (Audio Callback Integration) ---
+SITAPI SituationError SituationSetActiveGraph(SituationAudioGraph* graph);              // Set the active audio processing graph (replaces default). NULL disables graph processing.
+SITAPI SituationAudioGraph* SituationGetActiveGraph(void);                              // Get the currently active audio processing graph (NULL if none).
 
 // --- Node Graph Functions ---
-SITAPI SituationAudioGraph* SituationCreateGraph(void);
-SITAPI void SituationDestroyGraph(SituationAudioGraph* graph);
-SITAPI SituationError SituationCreateNode(SituationAudioGraph* graph, SituationNodeType type, SituationNodeHandle* handle);
-SITAPI SituationError SituationDestroyNode(SituationAudioGraph* graph, SituationNodeHandle handle);
-SITAPI SituationNode* SituationGetNode(SituationAudioGraph* graph, SituationNodeHandle handle);
-SITAPI SituationError SituationCreatePatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port, bool is_control);
-SITAPI SituationError SituationDestroyPatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port);
-SITAPI SituationError SituationSetControl(SituationAudioGraph* graph, SituationNodeHandle handle, uint32_t control_id, float value);
-SITAPI SituationError SituationGetControl(SituationAudioGraph* graph, SituationNodeHandle handle, uint32_t control_id, float* out_value);
+SITAPI SituationAudioGraph* SituationCreateGraph(void);                                 // Create a new audio processing graph.
+SITAPI void SituationDestroyGraph(SituationAudioGraph* graph);                          // Destroy a graph and all its nodes/patches.
+SITAPI SituationError SituationCreateNode(SituationAudioGraph* graph, SituationNodeType type, SituationNodeHandle* handle); // Create a node of the given type in the graph.
+SITAPI SituationError SituationDestroyNode(SituationAudioGraph* graph, SituationNodeHandle handle); // Remove and destroy a node from the graph.
+SITAPI SituationNode* SituationGetNode(SituationAudioGraph* graph, SituationNodeHandle handle); // Get a direct pointer to a node (for advanced use).
+SITAPI SituationError SituationCreatePatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port, bool is_control); // Connect an output port to an input port.
+SITAPI SituationError SituationRemovePatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port, bool is_control); // Disconnect a specific patch between two ports.
+SITAPI SituationError SituationDestroyPatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port); // Disconnect a patch between two ports (legacy, no is_control param).
+SITAPI SituationError SituationSetControl(SituationAudioGraph* graph, SituationNodeHandle handle, uint32_t control_id, float value); // Set a control parameter on a node.
+SITAPI SituationError SituationGetControl(SituationAudioGraph* graph, SituationNodeHandle handle, uint32_t control_id, float* out_value); // Get the current value of a node's control parameter.
 
 // ================================================================================================
 // MIDI CONTROL INTEGRATION
 // ================================================================================================
 
-/**
- * @brief MIDI device information for device selection.
- */
+/** @brief MIDI device information for device selection. */
 typedef struct {
     int device_id;                  // Device ID for use with SituationEnableMidiControl
     char device_name[128];          // Human-readable device name
@@ -2650,223 +2200,50 @@ typedef struct {
     int is_output;                  // 1 if output device, 0 otherwise
 } SituationMidiDeviceInfo;
 
-/**
- * @brief Enable MIDI control for a node.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @param device_id Hardware MIDI device ID (or -1 for auto-select).
- * @return SITUATION_SUCCESS on success, error code otherwise.
- * 
- * @details Automatically sets up MIDI callbacks based on node type.
- *          MIDI CC messages will control the node's parameters.
- *          Use -1 to auto-select the first available MIDI input.
- */
-SITAPI SituationError SituationEnableMidiControl(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle,
-    int device_id
-);
-
-/**
- * @brief Disable MIDI control for a node.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @return SITUATION_SUCCESS on success, error code otherwise.
- */
-SITAPI SituationError SituationDisableMidiControl(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle
-);
-
-/**
- * @brief Auto-select and connect first available MIDI input to a node.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @return SITUATION_SUCCESS on success, SITUATION_ERROR_MIDI_NO_DEVICES if no devices available.
- * 
- * @details Convenience function equivalent to:
- *          SituationEnableMidiControl(graph, handle, -1)
- */
-SITAPI SituationError SituationAutoConnectMidi(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle
-);
-
-/**
- * @brief List available MIDI input devices.
- * @param devices Output array for device information.
- * @param max_count Maximum number of devices to return.
- * @return Number of devices found (may be less than max_count).
- * 
- * @details Use this to present a device selection UI to the user.
- */
-SITAPI int SituationListMidiDevices(
-    SituationMidiDeviceInfo* devices,
-    int max_count
-);
-
-/**
- * @brief Check if a node has MIDI control enabled.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @return 1 if MIDI enabled, 0 otherwise.
- */
-SITAPI int SituationIsMidiEnabled(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle
-);
+// --- MIDI Device Control ---
+SITAPI SituationError SituationEnableMidiControl(SituationAudioGraph* graph, SituationNodeHandle handle, int device_id);  // Enable MIDI CC control for a node. Pass device_id=-1 for auto-select.
+SITAPI SituationError SituationDisableMidiControl(SituationAudioGraph* graph, SituationNodeHandle handle);                // Disable MIDI control for a node.
+SITAPI SituationError SituationAutoConnectMidi(SituationAudioGraph* graph, SituationNodeHandle handle);                   // Convenience: auto-select first available MIDI input. Equivalent to EnableMidiControl(..., -1).
+SITAPI int SituationListMidiDevices(SituationMidiDeviceInfo* devices, int max_count);                                     // List available MIDI input devices. Returns number found.
+SITAPI int SituationIsMidiEnabled(SituationAudioGraph* graph, SituationNodeHandle handle);                                // Check if a node has MIDI control enabled. Returns 1/0.
 
 // ================================================================================================
 // MIDI LEARN INTEGRATION (v2.6.0)
 // ================================================================================================
+// Dynamic MIDI CC learning: map physical knobs/faders to node parameters at runtime.
+// Requires MIDI to be enabled first via SituationEnableMidiControl().
 
-/**
- * @brief Enable MIDI Learn for a node.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @return SITUATION_SUCCESS on success, error code otherwise.
- * 
- * @details Enables dynamic MIDI CC learning for the node.
- *          MIDI must already be enabled via SituationEnableMidiControl().
- */
-SITAPI SituationError SituationEnableMidiLearn(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle
-);
+// --- MIDI Learn Lifecycle ---
+SITAPI SituationError SituationEnableMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle);                   // Enable MIDI Learn capability for a node. MIDI must already be enabled.
+SITAPI SituationError SituationDisableMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle);                  // Disable MIDI Learn for a node.
+SITAPI int SituationIsMidiLearnEnabled(SituationAudioGraph* graph, SituationNodeHandle handle);                           // Check if MIDI Learn is enabled. Returns 1/0.
 
-/**
- * @brief Disable MIDI Learn for a node.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @return SITUATION_SUCCESS on success, error code otherwise.
- */
-SITAPI SituationError SituationDisableMidiLearn(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle
-);
+// --- Learning Operations ---
+SITAPI SituationError SituationStartMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle, int control_index, const char* param_name, float min_value, float max_value, int scaling); // Start learning: next CC received maps to this param. Scaling: 0=linear, 1=log, 2=dB, 3=discrete. Times out after 5s.
+SITAPI SituationError SituationCancelMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle);                   // Cancel an active learn operation.
+SITAPI int SituationIsLearning(SituationAudioGraph* graph, SituationNodeHandle handle);                                   // Check if currently in learn mode. Returns 1/0.
 
-/**
- * @brief Start learning a parameter.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @param control_index Control index to learn (0-based).
- * @param param_name Human-readable parameter name.
- * @param min_value Minimum parameter value.
- * @param max_value Maximum parameter value.
- * @param scaling Scaling type (0=linear, 1=log, 2=dB, 3=discrete).
- * @return SITUATION_SUCCESS on success, error code otherwise.
- * 
- * @details Enters learn mode. The next MIDI CC received will be mapped to this parameter.
- *          Learning times out after 5 seconds if no CC is received.
- */
-SITAPI SituationError SituationStartMidiLearn(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle,
-    int control_index,
-    const char* param_name,
-    float min_value,
-    float max_value,
-    int scaling
-);
+// --- Mapping Management ---
+SITAPI SituationError SituationClearMidiMapping(SituationAudioGraph* graph, SituationNodeHandle handle, int control_index); // Clear a specific learned CC mapping.
+SITAPI SituationError SituationClearAllMidiMappings(SituationAudioGraph* graph, SituationNodeHandle handle);               // Clear all learned mappings for a node.
 
-/**
- * @brief Cancel learning.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @return SITUATION_SUCCESS on success, error code otherwise.
- */
-SITAPI SituationError SituationCancelMidiLearn(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle
-);
-
-/**
- * @brief Save MIDI Learn preset to file.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @param filename Path to JSON file.
- * @return SITUATION_SUCCESS on success, error code otherwise.
- */
-SITAPI SituationError SituationSaveMidiPreset(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle,
-    const char* filename
-);
-
-/**
- * @brief Load MIDI Learn preset from file.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @param filename Path to JSON file.
- * @return SITUATION_SUCCESS on success, error code otherwise.
- */
-SITAPI SituationError SituationLoadMidiPreset(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle,
-    const char* filename
-);
-
-/**
- * @brief Clear a specific learned mapping.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @param control_index Control index to clear.
- * @return SITUATION_SUCCESS on success, error code otherwise.
- */
-SITAPI SituationError SituationClearMidiMapping(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle,
-    int control_index
-);
-
-/**
- * @brief Clear all learned mappings.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @return SITUATION_SUCCESS on success, error code otherwise.
- */
-SITAPI SituationError SituationClearAllMidiMappings(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle
-);
-
-/**
- * @brief Check if MIDI Learn is enabled for a node.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @return 1 if enabled, 0 otherwise.
- */
-SITAPI int SituationIsMidiLearnEnabled(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle
-);
-
-/**
- * @brief Check if a node is currently in learn mode.
- * @param graph Graph containing the node.
- * @param handle Node handle.
- * @return 1 if learning, 0 otherwise.
- */
-SITAPI int SituationIsLearning(
-    SituationAudioGraph* graph,
-    SituationNodeHandle handle
-);
+// --- Preset Persistence ---
+SITAPI SituationError SituationSaveMidiPreset(SituationAudioGraph* graph, SituationNodeHandle handle, const char* filename);  // Save MIDI Learn mappings to JSON file.
+SITAPI SituationError SituationLoadMidiPreset(SituationAudioGraph* graph, SituationNodeHandle handle, const char* filename);  // Load MIDI Learn mappings from JSON file.
 
 // --- Graph Serialization Functions ---
-SITAPI SituationError SituationSaveGraphToFile(const SituationAudioGraph* graph, const char* filepath);
-SITAPI SituationError SituationLoadGraphFromFile(SituationAudioGraph* graph, const char* filepath, const SituationDeviceFunctions* device_funcs, int num_device_funcs);
-SITAPI char* SituationSerializeGraphToJSON(const SituationAudioGraph* graph);
-SITAPI SituationError SituationDeserializeGraphFromJSON(SituationAudioGraph* graph, const char* json_string, const SituationDeviceFunctions* device_funcs, int num_device_funcs);
-SITAPI void SituationFreeJSONString(char* json_string);
-SITAPI const char* SituationGetSerializationVersion(void);
-SITAPI bool SituationIsVersionCompatible(const char* json_version);
+SITAPI SituationError SituationSaveGraphToFile(const SituationAudioGraph* graph, const char* filepath);   // Save a graph to a JSON file.
+SITAPI SituationError SituationLoadGraphFromFile(SituationAudioGraph* graph, const char* filepath, const SituationDeviceFunctions* device_funcs, int num_device_funcs); // Load a graph from a JSON file, re-creating nodes via device_funcs.
+SITAPI char* SituationSerializeGraphToJSON(const SituationAudioGraph* graph);           // Serialize a graph to a JSON string (caller must free with SituationFreeJSONString).
+SITAPI SituationError SituationDeserializeGraphFromJSON(SituationAudioGraph* graph, const char* json_string, const SituationDeviceFunctions* device_funcs, int num_device_funcs); // Deserialize a graph from a JSON string.
+SITAPI void SituationFreeJSONString(char* json_string);                                 // Free a JSON string returned by SituationSerializeGraphToJSON.
+SITAPI const char* SituationGetSerializationVersion(void);                              // Get the current serialization format version string.
+SITAPI bool SituationIsVersionCompatible(const char* json_version);                     // Check if a serialized version is compatible with this library.
 
 // --- Device Enumeration (Phase 0) ---
-SITAPI SituationAudioDeviceInfo* SituationEnumerateAudioDevices(int* out_count);
-SITAPI void SituationFreeDeviceList(SituationAudioDeviceInfo* devices, int count);
-SITAPI SituationAudioDeviceInfo* SituationFindBestDevice(SituationAudioDeviceType preferred_type, uint32_t min_channels_out, uint32_t min_channels_in);
-SITAPI SituationError SituationBindMixerToDevice(SituationAudioMixer* mixer, const char* device_id, uint32_t requested_channels_out);
-SITAPI SituationError SituationBindCaptureDevice(SituationAudioMixer* mixer, const char* device_id, uint32_t requested_channels_in);
+SITAPI SituationAudioDeviceInfo* SituationEnumerateAudioDevices(int* out_count);         // Enumerate available audio devices. Caller must free with SituationFreeDeviceList.
+SITAPI void SituationFreeDeviceList(SituationAudioDeviceInfo* devices, int count);       // Free a device list returned by SituationEnumerateAudioDevices.
+SITAPI SituationAudioDeviceInfo* SituationFindBestDevice(SituationAudioDeviceType preferred_type, uint32_t min_channels_out, uint32_t min_channels_in); // Find the best matching device by type and channel requirements.
 
 
 //==================================================================================
@@ -2886,7 +2263,7 @@ SITAPI bool SituationDirectoryExists(const char* dir_path);                     
 SITAPI long SituationGetFileModTime(const char* file_path);                             // Get the last modification time of a file (Unix timestamp).
 
 // --- File Operations ---
-SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read, unsigned char** out_data);           // Load an entire file into a memory buffer (caller must free).
+SITAPI SituationError SituationLoadFileData(const char* file_path, unsigned int* out_bytes_read, unsigned char** out_data);   // Load an entire file into a memory buffer (caller must free).
 SITAPI SituationError SituationSaveFileData(const char* file_path, const void* data, unsigned int bytes_to_write);    // Save a block of memory to a file.
 #ifdef SITUATION_ENABLE_THREADING
 SITAPI SituationJobId SituationLoadFileAsync(SituationThreadPool* pool, const char* file_path, SituationFileLoadCallback callback, void* user_data); // Asynchronously load a file.
@@ -2894,12 +2271,12 @@ SITAPI SituationJobId SituationSaveFileAsync(SituationThreadPool* pool, const ch
 SITAPI SituationJobId SituationLoadFileTextAsync(SituationThreadPool* pool, const char* file_path, SituationFileTextLoadCallback callback, void* user_data); // Asynchronously load a text file.
 SITAPI SituationJobId SituationSaveFileTextAsync(SituationThreadPool* pool, const char* file_path, const char* text, SituationFileSaveCallback callback, void* user_data); // Asynchronously save a text file.
 #endif
-SITAPI char* SituationLoadFileText(const char* file_path);                                                  // Load a text file into a null-terminated string (caller must free).
-SITAPI bool SituationSaveFileText(const char* file_path, const char* text);                                 // Save a null-terminated string to a text file.
-SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path);                              // Copy a file.
-SITAPI bool SituationDeleteFile(const char* file_path);                                                     // Delete a file.
-SITAPI bool SituationMoveFile(const char* old_path, const char* new_path);                                  // Move/rename a file, even across drives on Windows.
-SITAPI bool SituationRenameFile(const char* old_path, const char* new_path);                                // Alias for SituationMoveFile.
+SITAPI char* SituationLoadFileText(const char* file_path);                              // Load a text file into a null-terminated string (caller must free).
+SITAPI bool SituationSaveFileText(const char* file_path, const char* text);             // Save a null-terminated string to a text file.
+SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path);          // Copy a file.
+SITAPI bool SituationDeleteFile(const char* file_path);                                 // Delete a file.
+SITAPI bool SituationMoveFile(const char* old_path, const char* new_path);              // Move/rename a file, even across drives on Windows.
+SITAPI bool SituationRenameFile(const char* old_path, const char* new_path);            // Alias for SituationMoveFile.
 
 // --- Directory Operations ---
 SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents);        // Create a directory, optionally creating parent directories.
@@ -2931,6 +2308,10 @@ SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color);                    
 //==================================================================================
 // Threading Module
 //==================================================================================
+// --- CPU & Thread Management ---
+SITAPI uint32_t SituationGetCPUThreadCount(void);           // Gets logical processors (Threads)
+SITAPI uint32_t SituationGetCPUCoreCount(void);             // Gets physical processors (Cores)
+SITAPI bool SituationSetThreadAffinity(uint64_t core_mask); // Pins the CURRENT thread to specific logical cores
 #ifdef SITUATION_ENABLE_THREADING
 SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size, double hot_reload_rate, bool disable_io); // Initializes the thread pool with dual-priority queues and worker threads.
 SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool); 											// Shuts down the thread pool and releases resources.
@@ -2947,5 +2328,10 @@ SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, 
 
 SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound); // Asynchronously loads and decodes a sound file.
 #endif // SITUATION_ENABLE_THREADING
+
+// Close C++ linkage guard
+#ifdef __cplusplus
+}
+#endif
 
 #endif // SITUATION_API_H
