@@ -1,7 +1,8 @@
 /***************************************************************************************************
-*   Situation Library - Example: Interactive Quad
+*   Situation Library - Example: Interactive Quad (DLL Version)
 *   -------------------------------------------
 *   This example demonstrates how to connect Input to Rendering using the High-Level API.
+*   This version is designed to work with situation_opengl.dll
 *
 *   Controls:
 *   - ARROW KEYS / WASD: Move the square.
@@ -9,21 +10,20 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
+// NO SITUATION_IMPLEMENTATION - we're using the DLL!
 #define SITUATION_USE_OPENGL
-#include "situation.h"
+#include "../situation.h"
 #include <cglm/cglm.h> // Matrix math library
 
 // --- Game State ---
 // We keep track of the player's position and color here.
-// Coordinates are in pixel space (0,0 = top-left, 800x600 = bottom-right)
-static vec3 player_pos = {400.0f, 300.0f, 0.0f};
+static vec3 player_pos = {0.0f, 0.0f, 0.0f};
 static Vector4 player_color = {{0.0f, 1.0f, 1.0f, 1.0f}}; // Start Cyan
 
 int main(int argc, char** argv) {
     // 1. Initialize
     SituationInitInfo config = { 
-        .window_title = "Situation - Interactive Quad",
+        .window_title = "Situation - Interactive Quad (DLL)",
         .window_width = 800, .window_height = 600 
     };
     if (SituationInit(argc, argv, &config) != SITUATION_SUCCESS) return -1;
@@ -39,10 +39,10 @@ int main(int argc, char** argv) {
         // A. Movement
         // We multiply speed by SituationGetFrameTime() (Delta Time) 
         // to ensure movement speed is the same on 60 FPS and 144 FPS.
-        float speed = 200.0f * SituationGetFrameTime(); 
+        float speed = 2.0f * SituationGetFrameTime(); 
 
-        if (SituationIsKeyDown(SIT_KEY_UP)    || SituationIsKeyDown(SIT_KEY_W)) player_pos[1] -= speed;
-        if (SituationIsKeyDown(SIT_KEY_DOWN)  || SituationIsKeyDown(SIT_KEY_S)) player_pos[1] += speed;
+        if (SituationIsKeyDown(SIT_KEY_UP)    || SituationIsKeyDown(SIT_KEY_W)) player_pos[1] += speed;
+        if (SituationIsKeyDown(SIT_KEY_DOWN)  || SituationIsKeyDown(SIT_KEY_S)) player_pos[1] -= speed;
         if (SituationIsKeyDown(SIT_KEY_LEFT)  || SituationIsKeyDown(SIT_KEY_A)) player_pos[0] -= speed;
         if (SituationIsKeyDown(SIT_KEY_RIGHT) || SituationIsKeyDown(SIT_KEY_D)) player_pos[0] += speed;
 
@@ -61,8 +61,7 @@ int main(int argc, char** argv) {
             // Setup Render Pass (Clear to Dark Gray)
             SituationRenderPassInfo pass = {
                 .display_id = -1,
-                .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = {30, 30, 30, 255} } },
-                .depth_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .depth = 1.0f } }
+                .color_attachment = { .loadOp = SIT_LOAD_OP_CLEAR, .clear = { .color = {30, 30, 30, 255} } }
             };
 
             SituationCmdBeginRenderPass(cmd, &pass);
@@ -70,10 +69,10 @@ int main(int argc, char** argv) {
             // Calculate Matrix
             mat4 model;
             glm_mat4_identity(model);
-            // Apply our game state position to the matrix (pixel coordinates)
+            // Apply our game state position to the matrix
             glm_translate(model, player_pos);
-            // Scale to 80x80 pixels (quad geometry is -1 to 1, so scale by half-size)
-            glm_scale(model, (vec3){40.0f, 40.0f, 1.0f}); 
+            // Scale it down slightly (default quad is -1 to 1, which fills screen)
+            glm_scale(model, (vec3){0.2f, 0.2f, 1.0f}); 
 
             // Draw using the internal renderer
             SituationCmdDrawQuad(cmd, model, player_color);
