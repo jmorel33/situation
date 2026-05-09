@@ -243,7 +243,7 @@ typedef struct {
 #if PM_HAS_HARDWARE_MIDI && PM_PLATFORM_WINDOWS
     MIDIHDR sysex_header_input;
 #endif
-    CRITICAL_SECTION lock;  // Windows critical section for thread safety
+    mtx_t lock;  // C11 mutex (portable via tinycthread)
 } MidiInputBuffer;
 
 #if PM_HAS_HARDWARE_MIDI && PM_PLATFORM_WINDOWS
@@ -304,7 +304,7 @@ typedef struct {
     
     // Context state
     int initialized;
-    CRITICAL_SECTION context_lock;  // Windows critical section for thread safety
+    mtx_t context_lock;  // C11 mutex (portable via tinycthread)
     volatile int device_list_changed_flag; 
     PmDeviceChangeCallback device_change_callback;
     void *device_change_user_data;
@@ -414,17 +414,17 @@ static void CALLBACK midi_in_proc(HMIDIIN hMidiIn, UINT wMsg, DWORD_PTR dwInstan
     if (!buffer) return;
 
     if (wMsg == MIM_DATA) { 
-        EnterCriticalSection(&buffer->lock);
+        mtx_lock(&buffer->lock);
         int next_head = (buffer->head + 1) % EVENT_BUFFER_SIZE;
         if (next_head != buffer->tail) { 
             buffer->events[buffer->head].message = (PmMessage)dwParam1;
             buffer->events[buffer->head].timestamp = (PmTimestamp)dwParam2; 
             buffer->head = next_head;
         }
-        LeaveCriticalSection(&buffer->lock);
+        mtx_unlock(&buffer->lock);
     } else if (wMsg == MIM_LONGDATA) { 
         MIDIHDR *hdr = (MIDIHDR *)dwParam1;
-        EnterCriticalSection(&buffer->lock);
+        mtx_lock(&buffer->lock);
         if (buffer->sysex_len + hdr->dwBytesRecorded <= SYSEX_BUFFER_SIZE) {
             memcpy(buffer->sysex_buffer + buffer->sysex_len, hdr->lpData, hdr->dwBytesRecorded);
             buffer->sysex_len += hdr->dwBytesRecorded;

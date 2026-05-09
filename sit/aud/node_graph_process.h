@@ -207,12 +207,13 @@ SituationError SituationProcessGraph(
         return SITUATION_ERROR_NODE_ALLOCATION_FAILED;
     }
     
-    // Step 1: Topological sort if needed
-    if (graph->needs_resort) {
-        SituationError err = SituationTopologicalSort(graph);
-        if (err != SITUATION_SUCCESS) {
-            return err;
-        }
+    // Step 1: Check if topology is valid
+    // NOTE: Sorting must happen on the main thread (via SituationTopologicalSort)
+    // when topology changes. The audio thread must NEVER allocate memory.
+    if (graph->needs_resort || graph->sorted_count == 0) {
+        // Graph not sorted yet — output silence until main thread sorts it
+        memset(output_buffer, 0, frames * 2 * sizeof(float));  // stereo silence
+        return SITUATION_SUCCESS;
     }
     
     // Step 2: Process each node in topological order

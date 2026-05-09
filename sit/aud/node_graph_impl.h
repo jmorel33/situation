@@ -27,6 +27,22 @@
 
 // Forward declarations
 static bool SituationWouldCreateCycle(SituationAudioGraph* graph, SituationNodeHandle src_handle, SituationNodeHandle dst_handle);
+SituationError SituationTopologicalSort(SituationAudioGraph* graph);
+
+// Device function table (defined in device_wrappers.h, included later in same TU)
+// SituationDeviceFunctions is already typedef'd in situation_api.h (included before us)
+extern const SituationDeviceFunctions g_device_function_table[];
+extern const int g_device_function_table_count;
+
+// Local lookup helper (mirrors _SituationFindDeviceFunctions in node_graph_process.h)
+static inline const SituationDeviceFunctions* _SituationLookupDeviceFuncs(SituationNodeType type) {
+    for (int i = 0; i < g_device_function_table_count; i++) {
+        if (g_device_function_table[i].type == type) {
+            return &g_device_function_table[i];
+        }
+    }
+    return NULL;
+}
 
 // ================================================================================================
 // HANDLE MANAGEMENT
@@ -106,10 +122,12 @@ void SituationDestroyGraph(SituationAudioGraph* graph) {
             if (node->input_patches) SIT_FREE(node->input_patches);
             if (node->output_patches) SIT_FREE(node->output_patches);
             
-            // TODO Phase 4: Call device-specific destroy function
-            // if (node->metadata->destroy_func && node->device_data) {
-            //     node->metadata->destroy_func(node->device_data);
-            // }
+            // Phase 4: Call device-specific destroy function
+            const SituationDeviceFunctions* funcs = _SituationLookupDeviceFuncs(node->type);
+            if (funcs && funcs->destroy && node->device_data) {
+                funcs->destroy(node->device_data);
+                node->device_data = NULL;
+            }
             
             SIT_FREE(node);
         }
@@ -275,15 +293,17 @@ SituationError SituationCreateNode(
         return SITUATION_ERROR_NODE_ALLOCATION_FAILED;
     }
     
-    // TODO Phase 4: Call device-specific create function
-    // if (metadata.create_func) {
-    //     node->device_data = metadata.create_func(&metadata);
-    // }
+    // Phase 4: Call device-specific create function
+    const SituationDeviceFunctions* funcs = _SituationLookupDeviceFuncs(type);
+    if (funcs && funcs->create) {
+        node->device_data = funcs->create(metadata);
+    }
     
     // Add to graph
     graph->nodes[index] = node;
     graph->node_count++;
     graph->needs_resort = true;
+    SituationTopologicalSort(graph);  // Sort immediately on main thread
     
     *handle = node->handle;
     return SITUATION_SUCCESS;
@@ -336,6 +356,13 @@ SituationError SituationDestroyNode(
     // (Implementation would iterate through patches and remove matching ones)
     // TODO: Implement patch removal
     
+    // Phase 4: Call device-specific destroy function
+    const SituationDeviceFunctions* funcs = _SituationLookupDeviceFuncs(node->type);
+    if (funcs && funcs->destroy && node->device_data) {
+        funcs->destroy(node->device_data);
+        node->device_data = NULL;
+    }
+    
     // Free resources (same as in DestroyGraph)
     // ... (omitted for brevity)
     
@@ -348,6 +375,7 @@ SituationError SituationDestroyNode(
     graph->needs_resort = true;
     
     SIT_FREE(node);
+    SituationTopologicalSort(graph);  // Re-sort immediately on main thread
     
     return SITUATION_SUCCESS;
 }
@@ -437,8 +465,9 @@ SituationError SituationCreatePatch(
         dst->ctrl_inputs[dst_port].is_modulated = true;
     }
     
-    // Mark graph for resort
+    // Mark graph for resort and sort immediately on main thread
     graph->needs_resort = true;
+    SituationTopologicalSort(graph);
     
     return SITUATION_SUCCESS;
 }
@@ -467,6 +496,7 @@ SituationError SituationRemovePatch(
             // TODO: Remove from node patch lists as well
             
             graph->needs_resort = true;
+            SituationTopologicalSort(graph);  // Re-sort immediately on main thread
             return SITUATION_SUCCESS;
         }
     }

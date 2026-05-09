@@ -44,6 +44,11 @@
 #include "fx/dynamics.h"
 #include "fx/compander.h"
 #include "fx/lfo.h"
+#include "fx/gain.h"
+#include "fx/mixer_node.h"
+#include "fx/envelope_follower.h"
+#include "fx/peak_meter.h"
+#include "fx/spectrum_analyzer.h"
 #include "sound_source.h"
 #include "mic_capture.h"
 
@@ -118,8 +123,7 @@ static void _SituationDestroyReverb(void* device_data) {
  * @brief Echo device state wrapper.
  */
 typedef struct {
-    ma_delay delay;
-    bool is_initialized;
+    sit_echo_t echo;
     uint32_t sample_rate;
     uint32_t channels;
 } SituationEchoNodeState;
@@ -137,7 +141,7 @@ static void* _SituationCreateEcho(const SituationDeviceMetadata* metadata) {
     
     state->sample_rate = 48000;  // Should get from audio context
     state->channels = 2;         // Stereo
-    state->is_initialized = false;
+    state->echo.is_initialized = false;
     
     return state;
 }
@@ -170,8 +174,7 @@ static void _SituationProcessEchoNode(
     
     // Configure echo (lazy init on first process)
     _SituationConfigEcho(
-        &state->delay,
-        &state->is_initialized,
+        &state->echo,
         state->sample_rate,
         state->channels,
         delay_time,
@@ -184,7 +187,7 @@ static void _SituationProcessEchoNode(
     memcpy(outputs[0].buffer, inputs[0].buffer, frames * inputs[0].channels * sizeof(float));
     
     // Process echo in-place
-    _SituationProcessEcho(&state->delay, outputs[0].buffer, (uint32_t)frames);
+    _SituationProcessEcho(&state->echo, outputs[0].buffer, (uint32_t)frames);
 }
 
 /**
@@ -196,8 +199,8 @@ static void _SituationDestroyEcho(void* device_data) {
     
     SituationEchoNodeState* state = (SituationEchoNodeState*)device_data;
     
-    if (state->is_initialized) {
-        _SituationUninitEcho(&state->delay);
+    if (state->echo.is_initialized) {
+        _SituationUninitEcho(&state->echo);
     }
     
     SIT_FREE(state);
@@ -1520,6 +1523,284 @@ static void _SituationDestroyMicCapture(void* device_data) {
 }
 
 // ================================================================================================
+// GAIN WRAPPER
+// ================================================================================================
+
+/**
+ * @brief Create gain device state.
+ */
+static void* _SituationCreateGain(const SituationDeviceMetadata* metadata) {
+    (void)metadata;
+    
+    SituationGainState* state = (SituationGainState*)SIT_CALLOC(1, sizeof(SituationGainState));
+    if (!state) return NULL;
+    
+    situation_gain_init(state, 48000.0f);
+    return state;
+}
+
+/**
+ * @brief Process audio through gain.
+ */
+static void _SituationProcessGainNode(
+    void* device_data,
+    SituationAudioPort* inputs,
+    SituationAudioPort* outputs,
+    float* controls,
+    int frames
+) {
+    if (!device_data || !inputs || !outputs) return;
+    
+    SituationGainState* state = (SituationGainState*)device_data;
+    float target_gain = controls ? controls[0] : 1.0f;
+    
+    situation_gain_process(
+        state,
+        inputs[0].buffer,
+        outputs[0].buffer,
+        frames,
+        inputs[0].channels,
+        target_gain
+    );
+}
+
+/**
+ * @brief Destroy gain device state.
+ */
+static void _SituationDestroyGain(void* device_data) {
+    if (device_data) {
+        SIT_FREE(device_data);
+    }
+}
+
+// ================================================================================================
+// MIXER NODE WRAPPER
+// ================================================================================================
+
+/**
+ * @brief Create mixer node state.
+ */
+static void* _SituationCreateMixerNode(const SituationDeviceMetadata* metadata) {
+    (void)metadata;
+    
+    SituationMixerNodeState* state = (SituationMixerNodeState*)SIT_CALLOC(1, sizeof(SituationMixerNodeState));
+    if (!state) return NULL;
+    
+    situation_mixer_node_init(state);
+    return state;
+}
+
+/**
+ * @brief Process mixer node — sum all inputs to stereo output.
+ */
+static void _SituationProcessMixerNodeNode(
+    void* device_data,
+    SituationAudioPort* inputs,
+    SituationAudioPort* outputs,
+    float* controls,
+    int frames
+) {
+    if (!device_data || !inputs || !outputs) return;
+    
+    SituationMixerNodeState* state = (SituationMixerNodeState*)device_data;
+    float master_gain = controls ? controls[0] : 1.0f;
+    
+    int channels = outputs[0].channels;
+    int total_samples = frames * channels;
+    float* out = outputs[0].buffer;
+    
+    // Zero output
+    for (int i = 0; i < total_samples; i++) {
+        out[i] = 0.0f;
+    }
+    
+    // Sum all input ports (up to 16)
+    for (int inp = 0; inp < SITUATION_MIXER_MAX_INPUTS; inp++) {
+        if (!inputs[inp].buffer) break;
+        
+        for (int i = 0; i < total_samples; i++) {
+            out[i] += inputs[inp].buffer[i];
+        }
+    }
+    
+    // Apply master gain
+    if (master_gain != 1.0f) {
+        for (int i = 0; i < total_samples; i++) {
+            out[i] *= master_gain;
+        }
+    }
+    
+    state->master_gain = master_gain;
+}
+
+/**
+ * @brief Destroy mixer node state.
+ */
+static void _SituationDestroyMixerNode(void* device_data) {
+    if (device_data) {
+        SIT_FREE(device_data);
+    }
+}
+
+// ================================================================================================
+// ENVELOPE FOLLOWER WRAPPER
+// ================================================================================================
+
+/**
+ * @brief Create envelope follower state.
+ */
+static void* _SituationCreateEnvelopeFollower(const SituationDeviceMetadata* metadata) {
+    (void)metadata;
+    
+    SituationEnvelopeFollowerState* state = (SituationEnvelopeFollowerState*)SIT_CALLOC(1, sizeof(SituationEnvelopeFollowerState));
+    if (!state) return NULL;
+    
+    situation_envf_init(state, 48000.0f);
+    return state;
+}
+
+/**
+ * @brief Process envelope follower — reads audio, outputs control signal.
+ */
+static void _SituationProcessEnvelopeFollowerNode(
+    void* device_data,
+    SituationAudioPort* inputs,
+    SituationAudioPort* outputs,
+    float* controls,
+    int frames
+) {
+    if (!device_data || !inputs || !outputs) return;
+    
+    SituationEnvelopeFollowerState* state = (SituationEnvelopeFollowerState*)device_data;
+    
+    // Update parameters from controls
+    // 0=attack, 1=release, 2=sensitivity
+    float sensitivity = 1.0f;
+    if (controls) {
+        situation_envf_set_attack(state, controls[0]);
+        situation_envf_set_release(state, controls[1]);
+        sensitivity = controls[2];
+    }
+    
+    situation_envf_process(
+        state,
+        inputs[0].buffer,
+        outputs[0].buffer,
+        frames,
+        inputs[0].channels,
+        sensitivity
+    );
+}
+
+/**
+ * @brief Destroy envelope follower state.
+ */
+static void _SituationDestroyEnvelopeFollower(void* device_data) {
+    if (device_data) {
+        SIT_FREE(device_data);
+    }
+}
+
+// ================================================================================================
+// PEAK METER WRAPPER
+// ================================================================================================
+
+/**
+ * @brief Create peak meter state.
+ */
+static void* _SituationCreatePeakMeter(const SituationDeviceMetadata* metadata) {
+    (void)metadata;
+    
+    SituationPeakMeterState* state = (SituationPeakMeterState*)SIT_CALLOC(1, sizeof(SituationPeakMeterState));
+    if (!state) return NULL;
+    
+    situation_peak_meter_init(state, 48000.0f);
+    return state;
+}
+
+/**
+ * @brief Process peak meter — passthrough audio, update levels.
+ */
+static void _SituationProcessPeakMeterNode(
+    void* device_data,
+    SituationAudioPort* inputs,
+    SituationAudioPort* outputs,
+    float* controls,
+    int frames
+) {
+    (void)controls;  // No controls
+    if (!device_data || !inputs || !outputs) return;
+    
+    SituationPeakMeterState* state = (SituationPeakMeterState*)device_data;
+    
+    situation_peak_meter_process(state, inputs[0].buffer, outputs[0].buffer, frames);
+}
+
+/**
+ * @brief Destroy peak meter state.
+ */
+static void _SituationDestroyPeakMeter(void* device_data) {
+    if (device_data) {
+        SIT_FREE(device_data);
+    }
+}
+
+// ================================================================================================
+// SPECTRUM ANALYZER WRAPPER
+// ================================================================================================
+
+/**
+ * @brief Create spectrum analyzer state.
+ */
+static void* _SituationCreateSpectrumAnalyzer(const SituationDeviceMetadata* metadata) {
+    (void)metadata;
+    
+    SituationSpectrumAnalyzerState* state = (SituationSpectrumAnalyzerState*)SIT_CALLOC(1, sizeof(SituationSpectrumAnalyzerState));
+    if (!state) return NULL;
+    
+    situation_spectrum_init(state, 512);  // Default 512-point FFT
+    return state;
+}
+
+/**
+ * @brief Process spectrum analyzer — passthrough audio, accumulate for FFT.
+ */
+static void _SituationProcessSpectrumAnalyzerNode(
+    void* device_data,
+    SituationAudioPort* inputs,
+    SituationAudioPort* outputs,
+    float* controls,
+    int frames
+) {
+    if (!device_data || !inputs || !outputs) return;
+    
+    SituationSpectrumAnalyzerState* state = (SituationSpectrumAnalyzerState*)device_data;
+    
+    // Control 0: fft_size (if changed, reinitialize)
+    if (controls) {
+        int requested_size = (int)controls[0];
+        if (requested_size != state->fft_size && 
+            (requested_size == 256 || requested_size == 512 || requested_size == 1024)) {
+            situation_spectrum_cleanup(state);
+            situation_spectrum_init(state, requested_size);
+        }
+    }
+    
+    situation_spectrum_process(state, inputs[0].buffer, outputs[0].buffer, frames);
+}
+
+/**
+ * @brief Destroy spectrum analyzer state.
+ */
+static void _SituationDestroySpectrumAnalyzer(void* device_data) {
+    if (device_data) {
+        SituationSpectrumAnalyzerState* state = (SituationSpectrumAnalyzerState*)device_data;
+        situation_spectrum_cleanup(state);
+        SIT_FREE(device_data);
+    }
+}
+
+// ================================================================================================
 // DEVICE FUNCTION TABLE
 // ================================================================================================
 
@@ -1716,6 +1997,46 @@ const SituationDeviceFunctions g_device_function_table[] = {
         .create = _SituationCreateDeafMax,
         .process = _SituationProcessDeafMaxNode,
         .destroy = _SituationDestroyDeafMax
+    },
+    
+    // Gain
+    {
+        .type = SITUATION_NODE_GAIN,
+        .create = _SituationCreateGain,
+        .process = _SituationProcessGainNode,
+        .destroy = _SituationDestroyGain
+    },
+    
+    // Mixer (Bus Summing)
+    {
+        .type = SITUATION_NODE_MIXER,
+        .create = _SituationCreateMixerNode,
+        .process = _SituationProcessMixerNodeNode,
+        .destroy = _SituationDestroyMixerNode
+    },
+    
+    // Envelope Follower
+    {
+        .type = SITUATION_NODE_ENVELOPE_FOLLOWER,
+        .create = _SituationCreateEnvelopeFollower,
+        .process = _SituationProcessEnvelopeFollowerNode,
+        .destroy = _SituationDestroyEnvelopeFollower
+    },
+    
+    // Peak Meter
+    {
+        .type = SITUATION_NODE_PEAK_METER,
+        .create = _SituationCreatePeakMeter,
+        .process = _SituationProcessPeakMeterNode,
+        .destroy = _SituationDestroyPeakMeter
+    },
+    
+    // Spectrum Analyzer
+    {
+        .type = SITUATION_NODE_SPECTRUM_ANALYZER,
+        .create = _SituationCreateSpectrumAnalyzer,
+        .process = _SituationProcessSpectrumAnalyzerNode,
+        .destroy = _SituationDestroySpectrumAnalyzer
     }
 };
 

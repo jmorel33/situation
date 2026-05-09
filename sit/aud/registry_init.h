@@ -2034,6 +2034,268 @@ static void _SituationRegisterCompander(void) {
 }
 
 // ================================================================================================
+// LFO REGISTRATION
+// ================================================================================================
+
+/**
+ * @brief Register the LFO (Low Frequency Oscillator) modulator device.
+ */
+static void _SituationRegisterLFO(void) {
+    SituationDeviceMetadata meta = {0};
+    
+    meta.type = SITUATION_NODE_LFO;
+    strncpy(meta.name, "LFO", SITUATION_MAX_DEVICE_NAME - 1);
+    meta.category = SITUATION_DEVICE_MODULATOR;
+    
+    meta.num_audio_ins = 0;     // No audio input (pure generator)
+    meta.num_audio_outs = 1;    // Control signal output (as audio buffer)
+    meta.audio_channels = 1;    // Mono control signal
+    meta.num_ctrl_ins = 0;
+    meta.num_ctrl_outs = 1;     // Control output port
+    
+    meta.num_controls = 2;
+    
+    // Control 0: waveform (enum)
+    strncpy(meta.controls[0].name, "waveform", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[0].id = 0;
+    meta.controls[0].type = SITUATION_CONTROL_ENUM;
+    meta.controls[0].min_value = 0.0f;
+    meta.controls[0].max_value = 4.0f;
+    meta.controls[0].default_value = 0.0f;
+    meta.controls[0].enum_count = 5;
+    static const char* lfo_waveform_labels[] = {"Sine", "Triangle", "Square", "Saw Up", "Saw Down", NULL};
+    meta.controls[0].enum_labels = lfo_waveform_labels;
+    
+    // Control 1: frequency
+    strncpy(meta.controls[1].name, "frequency", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[1].id = 1;
+    meta.controls[1].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[1].min_value = 0.01f;
+    meta.controls[1].max_value = 20.0f;
+    meta.controls[1].default_value = 1.0f;
+    meta.controls[1].units = "Hz";
+    meta.controls[1].is_logarithmic = true;
+    
+    meta.latency_samples = 0;
+    meta.description = "Low frequency oscillator for parameter modulation";
+    meta.author = "Situation Audio";
+    meta.version = 0x00010000;
+    
+    SituationRegisterDeviceType(&meta);
+}
+
+// ================================================================================================
+// GAIN REGISTRATION
+// ================================================================================================
+
+/**
+ * @brief Register the Gain utility device.
+ */
+static void _SituationRegisterGain(void) {
+    SituationDeviceMetadata meta = {0};
+    
+    meta.type = SITUATION_NODE_GAIN;
+    strncpy(meta.name, "Gain", SITUATION_MAX_DEVICE_NAME - 1);
+    meta.category = SITUATION_DEVICE_UTILITY;
+    
+    meta.num_audio_ins = 2;     // Stereo in
+    meta.num_audio_outs = 2;    // Stereo out
+    meta.audio_channels = 2;
+    meta.num_ctrl_ins = 0;
+    meta.num_ctrl_outs = 0;
+    
+    meta.num_controls = 1;
+    
+    // Control 0: gain
+    strncpy(meta.controls[0].name, "gain", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[0].id = 0;
+    meta.controls[0].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[0].min_value = 0.0f;
+    meta.controls[0].max_value = 4.0f;
+    meta.controls[0].default_value = 1.0f;
+    meta.controls[0].units = NULL;
+    meta.controls[0].is_logarithmic = false;
+    
+    meta.latency_samples = 0;
+    meta.description = "Simple gain stage with click-free smoothing";
+    meta.author = "Situation Audio";
+    meta.version = 0x00010000;
+    
+    SituationRegisterDeviceType(&meta);
+}
+
+// ================================================================================================
+// MIXER NODE REGISTRATION
+// ================================================================================================
+
+/**
+ * @brief Register the Mixer (bus summing) utility device.
+ */
+static void _SituationRegisterMixer(void) {
+    SituationDeviceMetadata meta = {0};
+    
+    meta.type = SITUATION_NODE_MIXER;
+    strncpy(meta.name, "Mixer", SITUATION_MAX_DEVICE_NAME - 1);
+    meta.category = SITUATION_DEVICE_UTILITY;
+    
+    meta.num_audio_ins = 16;    // Up to 16 stereo inputs
+    meta.num_audio_outs = 2;    // Stereo out (summed)
+    meta.audio_channels = 2;
+    meta.num_ctrl_ins = 0;
+    meta.num_ctrl_outs = 0;
+    
+    meta.num_controls = 1;
+    
+    // Control 0: master_gain
+    strncpy(meta.controls[0].name, "master_gain", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[0].id = 0;
+    meta.controls[0].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[0].min_value = 0.0f;
+    meta.controls[0].max_value = 4.0f;
+    meta.controls[0].default_value = 1.0f;
+    meta.controls[0].units = NULL;
+    meta.controls[0].is_logarithmic = false;
+    
+    meta.latency_samples = 0;
+    meta.description = "Bus summing mixer — sums up to 16 stereo inputs to one stereo output";
+    meta.author = "Situation Audio";
+    meta.version = 0x00010000;
+    
+    SituationRegisterDeviceType(&meta);
+}
+
+// ================================================================================================
+// ENVELOPE FOLLOWER REGISTRATION
+// ================================================================================================
+
+/**
+ * @brief Register the Envelope Follower modulator device.
+ */
+static void _SituationRegisterEnvelopeFollower(void) {
+    SituationDeviceMetadata meta = {0};
+    
+    meta.type = SITUATION_NODE_ENVELOPE_FOLLOWER;
+    strncpy(meta.name, "Envelope Follower", SITUATION_MAX_DEVICE_NAME - 1);
+    meta.category = SITUATION_DEVICE_MODULATOR;
+    
+    meta.num_audio_ins = 2;     // Stereo input (tap)
+    meta.num_audio_outs = 1;    // Control signal output (mono)
+    meta.audio_channels = 2;
+    meta.num_ctrl_ins = 0;
+    meta.num_ctrl_outs = 1;     // Envelope value output
+    
+    meta.num_controls = 3;
+    
+    // Control 0: attack
+    strncpy(meta.controls[0].name, "attack", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[0].id = 0;
+    meta.controls[0].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[0].min_value = 0.001f;
+    meta.controls[0].max_value = 0.5f;
+    meta.controls[0].default_value = 0.01f;
+    meta.controls[0].units = "s";
+    meta.controls[0].is_logarithmic = true;
+    
+    // Control 1: release
+    strncpy(meta.controls[1].name, "release", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[1].id = 1;
+    meta.controls[1].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[1].min_value = 0.01f;
+    meta.controls[1].max_value = 2.0f;
+    meta.controls[1].default_value = 0.1f;
+    meta.controls[1].units = "s";
+    meta.controls[1].is_logarithmic = true;
+    
+    // Control 2: sensitivity
+    strncpy(meta.controls[2].name, "sensitivity", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[2].id = 2;
+    meta.controls[2].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[2].min_value = 0.1f;
+    meta.controls[2].max_value = 10.0f;
+    meta.controls[2].default_value = 1.0f;
+    meta.controls[2].units = NULL;
+    meta.controls[2].is_logarithmic = false;
+    
+    meta.latency_samples = 0;
+    meta.description = "Envelope follower — outputs control signal tracking input amplitude";
+    meta.author = "Situation Audio";
+    meta.version = 0x00010000;
+    
+    SituationRegisterDeviceType(&meta);
+}
+
+// ================================================================================================
+// PEAK METER REGISTRATION
+// ================================================================================================
+
+/**
+ * @brief Register the Peak Meter analyzer device.
+ */
+static void _SituationRegisterPeakMeter(void) {
+    SituationDeviceMetadata meta = {0};
+    
+    meta.type = SITUATION_NODE_PEAK_METER;
+    strncpy(meta.name, "Peak Meter", SITUATION_MAX_DEVICE_NAME - 1);
+    meta.category = SITUATION_DEVICE_ANALYZER;
+    
+    meta.num_audio_ins = 2;     // Stereo in (passthrough)
+    meta.num_audio_outs = 2;    // Stereo out (passthrough)
+    meta.audio_channels = 2;
+    meta.num_ctrl_ins = 0;
+    meta.num_ctrl_outs = 0;
+    
+    meta.num_controls = 0;      // Read-only — no user controls
+    
+    meta.latency_samples = 0;
+    meta.description = "Peak and RMS level meter with ballistic decay (passthrough)";
+    meta.author = "Situation Audio";
+    meta.version = 0x00010000;
+    
+    SituationRegisterDeviceType(&meta);
+}
+
+// ================================================================================================
+// SPECTRUM ANALYZER REGISTRATION
+// ================================================================================================
+
+/**
+ * @brief Register the Spectrum Analyzer device.
+ */
+static void _SituationRegisterSpectrumAnalyzer(void) {
+    SituationDeviceMetadata meta = {0};
+    
+    meta.type = SITUATION_NODE_SPECTRUM_ANALYZER;
+    strncpy(meta.name, "Spectrum Analyzer", SITUATION_MAX_DEVICE_NAME - 1);
+    meta.category = SITUATION_DEVICE_ANALYZER;
+    
+    meta.num_audio_ins = 2;     // Stereo in (passthrough)
+    meta.num_audio_outs = 2;    // Stereo out (passthrough)
+    meta.audio_channels = 2;
+    meta.num_ctrl_ins = 0;
+    meta.num_ctrl_outs = 0;
+    
+    meta.num_controls = 1;
+    
+    // Control 0: fft_size
+    strncpy(meta.controls[0].name, "fft_size", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[0].id = 0;
+    meta.controls[0].type = SITUATION_CONTROL_ENUM;
+    meta.controls[0].min_value = 256.0f;
+    meta.controls[0].max_value = 1024.0f;
+    meta.controls[0].default_value = 512.0f;
+    meta.controls[0].enum_count = 3;
+    static const char* fft_size_labels[] = {"256", "512", "1024", NULL};
+    meta.controls[0].enum_labels = fft_size_labels;
+    
+    meta.latency_samples = 0;
+    meta.description = "FFT-based spectrum analyzer for frequency display (passthrough)";
+    meta.author = "Situation Audio";
+    meta.version = 0x00010000;
+    
+    SituationRegisterDeviceType(&meta);
+}
+
+// ================================================================================================
 // MASTER INITIALIZATION FUNCTION
 // ================================================================================================
 
@@ -2070,10 +2332,18 @@ void SituationInitDeviceRegistry(void) {
     // Capture (1 device)
     _SituationRegisterMicCapture();
     
-    // Utilities (1 device)
+    // Utilities (3 devices)
     _SituationRegisterPanner();
+    _SituationRegisterGain();
+    _SituationRegisterMixer();
     
-    // TODO Phase 3: Modulators (LFO, Envelope Follower) - need implementation
+    // Modulators (1 device)
+    _SituationRegisterLFO();
+    _SituationRegisterEnvelopeFollower();
+    
+    // Analyzers (2 devices)
+    _SituationRegisterPeakMeter();
+    _SituationRegisterSpectrumAnalyzer();
     
     // Debug: Print registry contents
     #ifdef SITUATION_DEBUG_REGISTRY

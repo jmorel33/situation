@@ -378,30 +378,37 @@ static void _sit_ma_processAmpNSIMD(const float* inputBuffer, float* outputBuffe
 
 // Process stereo audio stream with SIMD and LUT
 static void _SituationMasteringAmpProcessAudio(SituationMasteringAmp* amp, const float* inputBuffer, float* outputBuffer, int numFrames) {
-    // Temporary buffer for Amp saturation output (stereo: 2 * numFrames)
-    // WARNING: VLA on stack for large numFrames is dangerous.
-    // Better to use a fixed scratch buffer or process in chunks.
-    // For now, assuming numFrames is small (e.g. 512, 1024).
-    float ampBuffer[2 * numFrames];
+    // Fixed-size scratch buffer to avoid VLA stack overflow on large buffer sizes.
+    // Process in chunks of up to 1024 frames (8KB on stack, safe for audio threads).
+    #define SIT_MA_CHUNK_SIZE 1024
+    float ampBuffer[2 * SIT_MA_CHUNK_SIZE];
+
+    int framesRemaining = numFrames;
+    int frameOffset = 0;
+
+    while (framesRemaining > 0) {
+        int chunkFrames = (framesRemaining > SIT_MA_CHUNK_SIZE) ? SIT_MA_CHUNK_SIZE : framesRemaining;
+        const float* chunkIn = &inputBuffer[2 * frameOffset];
+        float* chunkOut = &outputBuffer[2 * frameOffset];
 
     // Step 1: Apply Amp saturation based on mode
     if (amp->ampType == SIT_AMP_TYPE_N) {
         // Vectorized hard clipping for SIT_AMP_TYPE_N using SIMD
-        _sit_ma_processAmpNSIMD(inputBuffer, ampBuffer, numFrames, amp->drive);
+        _sit_ma_processAmpNSIMD(chunkIn, ampBuffer, chunkFrames, amp->drive);
     } else if (amp->ampType == SIT_AMP_TYPE_C) {
         // Scalar soft clipping for SIT_AMP_TYPE_C
-        for (int i = 0; i < numFrames; i++) {
+        for (int i = 0; i < chunkFrames; i++) {
             float drive = amp->drive * 10.0f;
-            float x_left = inputBuffer[2 * i] * drive;
-            float x_right = inputBuffer[2 * i + 1] * drive;
+            float x_left = chunkIn[2 * i] * drive;
+            float x_right = chunkIn[2 * i + 1] * drive;
             ampBuffer[2 * i] = _sit_ma_softClip(x_left);
             ampBuffer[2 * i + 1] = _sit_ma_softClip(x_right);
         }
     } else { // SIT_AMP_TYPE_A with LUT
-        for (int i = 0; i < numFrames; i++) {
+        for (int i = 0; i < chunkFrames; i++) {
             float drive = amp->drive * 10.0f;
-            float x_left = inputBuffer[2 * i] * drive;
-            float x_right = inputBuffer[2 * i + 1] * drive;
+            float x_left = chunkIn[2 * i] * drive;
+            float x_right = chunkIn[2 * i + 1] * drive;
             // LUT index calculation
             float idx_left = (x_left + SIT_MASTERING_AMP_LUT_RANGE) / (2.0f * SIT_MASTERING_AMP_LUT_RANGE) * (amp->lutSize - 1);
             float idx_right = (x_right + SIT_MASTERING_AMP_LUT_RANGE) / (2.0f * SIT_MASTERING_AMP_LUT_RANGE) * (amp->lutSize - 1);
@@ -414,7 +421,7 @@ static void _SituationMasteringAmpProcessAudio(SituationMasteringAmp* amp, const
     }
 
     // Step 2: Process the rest of the audio chain sample-by-sample
-    for (int i = 0; i < numFrames; i++) {
+    for (int i = 0; i < chunkFrames; i++) {
         __m128 left = _mm_set1_ps(ampBuffer[2 * i]);
         __m128 right = _mm_set1_ps(ampBuffer[2 * i + 1]);
 
@@ -450,9 +457,14 @@ static void _SituationMasteringAmpProcessAudio(SituationMasteringAmp* amp, const
         right = _mm_set1_ps(mid - side);
 
         // Output with clipping prevention
-        outputBuffer[2 * i] = MIN(MAX(left[0], -1.0f), 1.0f);
-        outputBuffer[2 * i + 1] = MIN(MAX(right[0], -1.0f), 1.0f);
+        chunkOut[2 * i] = MIN(MAX(left[0], -1.0f), 1.0f);
+        chunkOut[2 * i + 1] = MIN(MAX(right[0], -1.0f), 1.0f);
     }
+
+        frameOffset += chunkFrames;
+        framesRemaining -= chunkFrames;
+    } // end while (framesRemaining > 0)
+    #undef SIT_MA_CHUNK_SIZE
 }
 
 static int _SituationMasteringAmpGetLatencySamples(SituationMasteringAmp* amp) {
