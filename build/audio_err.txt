@@ -1,0 +1,96 @@
+[1m[HARNESS][0m Situation Test Harness v1.0
+[1m[HARNESS][0m Backend: OpenGL
+[1m[HARNESS][0m Running 9 modules
+
+[36m[audio][0m (96 tests)
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 0
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 1
+[Situation] Initialization complete - state: READY
+=== AUDIO DEVICE INIT DEBUG ===
+Init result: No error
+Requested share mode: EXCLUSIVE
+Actual share mode: EXCLUSIVE
+Sample rate: 48000 Hz
+Period size: 1440 frames
+Periods: 2
+Buffer size: 2880 frames (60.00 ms)
+Backend: DirectSound
+================================
+  [32m✓ audio_get_devices[0m [2m(35.4ms)[0m
+  [32m✓ audio_playback_sample_rate[0m [2m(0.0ms)[0m
+  [32m✓ audio_master_volume[0m [2m(0.0ms)[0m
+  [32m✓ audio_device_playing[0m [2m(0.0ms)[0m
+  [32m✓ audio_pause_resume_device[0m [2m(72.7ms)[0m
+  [32m✓ load_sound_from_file[0m [2m(0.5ms)[0m
+  [32m✓ play_stop_loaded_sound[0m [2m(0.3ms)[0m
+  [32m✓ stop_all_loaded_sounds[0m [2m(0.0ms)[0m
+  [32m✓ load_audio_handle[0m [2m(0.4ms)[0m
+  [32m✓ audio_handle_vol_pan_pitch[0m [2m(0.3ms)[0m
+  [32m✓ play_tone_ex[0m [2m(0.0ms)[0m
+  [32m✓ play_tone_legacy[0m [2m(0.0ms)[0m
+  [32m✓ play_midi_note[0m [2m(0.0ms)[0m
+  [32m✓ stop_all_tones[0m [2m(0.0ms)[0m
+  [32m✓ stop_tone_invalid_handle[0m [2m(0.0ms)[0m
+  [32m✓ sound_volume[0m [2m(0.3ms)[0m
+  [32m✓ sound_pan[0m [2m(0.3ms)[0m
+  [32m✓ sound_pitch[0m [2m(0.3ms)[0m
+  [32m✓ sound_filter[0m [2m(0.3ms)[0m
+  [32m✓ sound_echo[0m [2m(0.3ms)[0m
+  [32m✓ sound_reverb[0m [2m(0.3ms)[0m
+  [32m✓ attach_detach_processor[0m [2m(0.3ms)[0m
+  [32m✓ audio_capture_start_stop[0m [2m(56.8ms)[0m
+  [32m✓ audio_output_monitor[0m [2m(0.0ms)[0m
+  [32m✓ enumerate_audio_devices[0m [2m(0.4ms)[0m
+  [32m✓ graph_serialize_to_json[0m [2m(0.0ms)[0m
+  [32m✓ graph_save_to_file[0m [2m(0.7ms)[0m
+  [32m✓ free_json_string_null[0m [2m(0.0ms)[0m
+  [32m✓ registry_init[0m [2m(0.0ms)[0m
+  [32m✓ registry_device_count[0m [2m(0.0ms)[0m
+  [32m✓ registry_reverb_registered[0m [2m(0.0ms)[0m
+  [32m✓ registry_unregistered_type[0m [2m(0.0ms)[0m
+  [32m✓ registry_reverb_metadata[0m [2m(0.0ms)[0m
+  [32m✓ registry_tone_synth_metadata[0m [2m(0.0ms)[0m
+  [32m✓ registry_lfo_metadata[0m [2m(0.0ms)[0m
+  [32m✓ registry_peak_meter_metadata[0m [2m(0.0ms)[0m
+  [32m✓ registry_category_name_effect[0m [2m(0.0ms)[0m
+  [32m✓ registry_category_name_source[0m [2m(0.0ms)[0m
+  [32m✓ registry_category_name_utility[0m [2m(0.0ms)[0m
+  [32m✓ registry_register_custom_device[0m [2m(0.0ms)[0m
+  [32m✓ registry_all_builtin_registered[0m [2m(0.0ms)[0m
+  [32m✓ graph_create[0m [2m(0.0ms)[0m
+  [32m✓ graph_destroy_valid[0m [2m(0.0ms)[0m
+  [32m✓ graph_destroy_null[0m [2m(0.0ms)[0m
+  [32m✓ graph_create_node_reverb[0m [2m(0.2ms)[0m
+  [32m✓ graph_create_node_gain[0m [2m(0.0ms)[0m
+  [32m✓ graph_create_node_tone_synth[0m [2m(0.0ms)[0m
+  [32m✓ graph_create_16_nodes[0m [2m(0.8ms)[0m
+  [32m✓ graph_destroy_node_valid[0m [2m(0.0ms)[0m
+  [32m✓ graph_destroy_node_invalid[0m [2m(0.0ms)[0m
+  [32m✓ graph_get_node_valid[0m [2m(0.2ms)[0m
+  [32m✓ graph_get_node_invalid[0m [2m(0.0ms)[0m
+  [32m✓ graph_create_patch_audio[0m [2m(0.0ms)[0m
+  [32m✓ graph_patch_synth_to_reverb[0m [2m(0.2ms)[0m
+  [32m✓ graph_patch_chain[0m [2m(0.2ms)[0m
+  [32m✓ graph_destroy_patch[0m [2m(0.0ms)[0m
+  [32m✓ graph_patch_duplicate[0m [2m(0.0ms)[0m
+  [32m✓ graph_patch_invalid_node[0m [2m(0.0ms)[0m
+  [32m✓ graph_patch_invalid_port[0m [2m(0.0ms)[0m
+  [32m✓ graph_create_patch_control[0m [2m(0.1ms)[0m
+  [32m✓ graph_destroy_patch_control[0m [2m(0.1ms)[0m
+  [32m✓ graph_cycle_detection_chain[0m [2m(0.0ms)[0m
+  [32m✓ graph_cycle_detection_simple[0m [2m(0.0ms)[0m
+  [32m✓ graph_cycle_detection_self_loop[0m [2m(0.0ms)[0m
+  [32m✓ control_set_value[0m [2m(0.1ms)[0m
+  [32m✓ control_get_value[0m [2m(0.1ms)[0m
+  [32m✓ control_set_min[0m [2m(0.1ms)[0m
+  [32m✓ control_set_max[0m [2m(0.1ms)[0m
+  [32m✓ control_set_invalid_node[0m [2m(0.0ms)[0m
+  [32m✓ control_set_invalid_id[0m [2m(0.1ms)[0m
+  [32m✓ control_get_invalid_id[0m [2m(0.1ms)[0m
+  [32m✓ control_metadata_reverb[0m [2m(0.

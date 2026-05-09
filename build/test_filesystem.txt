@@ -1,0 +1,33 @@
+[HARNESS] Situation Test Harness v1.0
+[HARNESS] Backend: OpenGL
+[HARNESS] Running 9 modules
+
+[filesystem] (23 tests)
+  ✓ get_base_path (0.0ms)
+  ✓ get_file_name (0.0ms)
+  ✓ get_file_name_no_dir (0.0ms)
+  ✓ get_file_extension (0.0ms)
+  ✓ get_file_extension_none (0.0ms)
+  ✓ join_path (0.0ms)
+  ✓ get_app_save_path (1.5ms)
+  ✓ file_exists_positive (0.6ms)
+  ✓ file_exists_negative (0.1ms)
+  ✓ directory_exists (0.4ms)
+  ✓ get_file_mod_time (1.1ms)
+  ✓ save_load_text_roundtrip (1.3ms)
+  ✓ save_load_binary_roundtrip (1.6ms)
+  ✓ copy_file (5.0ms)
+  ✓ move_file (2.2ms)
+  ✓ delete_file (0.8ms)
+  ✓ create_delete_directory (0.5ms)
+  ✓ create_directory_parents (1.8ms)
+  ✓ list_directory_files (1.5ms)
+  ✓ load_file_async (1.9ms)
+  ✓ load_file_text_async (1.8ms)
+  ✓ save_file_async (1.0ms)
+  ✓ save_file_text_async (1.6ms)
+
+═══════════════════════════════════════════
+RESULTS: 310 total, 23 passed, 0 failed, 287 skipped
+TIME: 0.03s
+═══════════════════════════════════════════

@@ -1,0 +1,30 @@
+[1m[HARNESS][0m Situation Test Harness v1.0
+[1m[HARNESS][0m Backend: OpenGL
+[1m[HARNESS][0m Running 9 modules
+
+[36m[audio][0m (96 tests)
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 0
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 1
+[Situation] Initialization complete - state: READY
+=== AUDIO DEVICE INIT DEBUG ===
+Init result: No error
+Requested share mode: EXCLUSIVE
+Actual share mode: EXCLUSIVE
+Sample rate: 48000 Hz
+Period size: 1440 frames
+Periods: 2
+Buffer size: 2880 frames (60.00 ms)
+Backend: DirectSound
+================================
+  [32m✓ control_sweep_all_devices[0m [2m(4.7ms)[0m
+
+[1m═══════════════════════════════════════════[0m
+[1mRESULTS[0m: 310 total, [32m1 passed[0m, 0 failed, 309 skipped
+[1mTIME[0m: 1.02s
+[1m═══════════════════════════════════════════[0m

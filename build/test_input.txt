@@ -1,0 +1,38 @@
+[HARNESS] Situation Test Harness v1.0
+[HARNESS] Backend: OpenGL
+[HARNESS] Running 9 modules
+
+[input] (17 tests)
+[Situation] Initialization complete - state: READY
+=== AUDIO DEVICE INIT DEBUG ===
+Init result: No error
+Requested share mode: EXCLUSIVE
+Actual share mode: EXCLUSIVE
+Sample rate: 48000 Hz
+Period size: 1440 frames
+Periods: 2
+Buffer size: 2880 frames (60.00 ms)
+Backend: DirectSound
+================================
+  ✓ key_down_default (0.0ms)
+  ✓ key_up_default (0.0ms)
+  ✓ key_pressed_default (0.0ms)
+  ✓ get_key_pressed_queue (0.0ms)
+  ✓ get_char_pressed_queue (0.0ms)
+  ✓ get_key_scancode (0.0ms)
+  ✓ modifier_not_pressed (0.0ms)
+  ✓ set_key_callback (0.0ms)
+  ✓ mouse_position (0.0ms)
+  ✓ mouse_delta (0.0ms)
+  ✓ mouse_wheel (0.0ms)
+  ✓ mouse_buttons_default (0.0ms)
+  ✓ set_mouse_position (0.1ms)
+  ✓ set_mouse_offset_scale (0.0ms)
+  ✓ joystick_not_present (0.0ms)
+  ✓ gamepad_query_graceful (0.0ms)
+  ✓ joystick_name (0.0ms)
+
+═══════════════════════════════════════════
+RESULTS: 310 total, 17 passed, 0 failed, 293 skipped
+TIME: 0.98s
+═══════════════════════════════════════════

@@ -1,0 +1,51 @@
+[HARNESS] Situation Test Harness v1.0
+[HARNESS] Backend: OpenGL
+[HARNESS] Running 9 modules
+
+[core] (29 tests)
+[Situation] Initialization complete - state: READY
+=== AUDIO DEVICE INIT DEBUG ===
+Init result: No error
+Requested share mode: EXCLUSIVE
+Actual share mode: EXCLUSIVE
+Sample rate: 48000 Hz
+Period size: 1440 frames
+Periods: 2
+Buffer size: 2880 frames (60.00 ms)
+Backend: DirectSound
+================================
+  ✓ version_string (0.0ms)
+  ✓ is_initialized (0.0ms)
+  ✓ init_state_ready (0.0ms)
+  ✓ poll_and_update (1.3ms)
+  ✓ get_frame_time (0.1ms)
+  ✓ get_fps (0.0ms)
+  ✓ set_target_fps (0.0ms)
+  ✓ window_should_close (0.0ms)
+  ✓ pause_resume (126.2ms)
+  ✓ set_exit_callback (0.0ms)
+  ✓ set_resize_callback (0.0ms)
+  ✓ set_focus_callback (0.0ms)
+  ✓ set_file_drop_callback (0.0ms)
+  ✓ get_cpu_thread_count (0.0ms)
+  ✓ get_gpu_name (0.0ms)
+  ✓ get_user_directory (0.2ms)
+  ✓ get_device_info (12.9ms)
+  ✓ get_last_error_msg (0.0ms)
+  ✓ argument_queries (0.0ms)
+  ✓ log_info (2.1ms)
+[Situation WARN] sit_test: Phase 20 warning test
+  ✓ log_warning (0.0ms)
+  ✓ set_trace_log_level_error (0.0ms)
+  ✓ set_trace_log_level_none (0.0ms)
+  ✓ free_string_null (0.0ms)
+  ✓ free_string_valid (0.0ms)
+  ✓ get_current_drive_letter (0.0ms)
+  ✓ get_drive_info (0.1ms)
+  ✓ execute_command (35.0ms)
+  ✓ error_msg_after_init (0.0ms)
+
+═══════════════════════════════════════════
+RESULTS: 310 total, 29 passed, 0 failed, 281 skipped
+TIME: 1.36s
+═══════════════════════════════════════════

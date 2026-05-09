@@ -1,0 +1,250 @@
+[1m[HARNESS][0m Situation Test Harness v1.0
+[1m[HARNESS][0m Backend: OpenGL
+[1m[HARNESS][0m Running 9 modules
+
+[36m[graphics][0m (81 tests)
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 0
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 1
+[Situation] Initialization complete - state: READY
+=== AUDIO DEVICE INIT DEBUG ===
+Init result: No error
+Requested share mode: EXCLUSIVE
+Actual share mode: EXCLUSIVE
+Sample rate: 48000 Hz
+Period size: 1440 frames
+Periods: 2
+Buffer size: 2880 frames (60.00 ms)
+Backend: DirectSound
+================================
+  [32m✓ create_destroy_mesh[0m [2m(0.1ms)[0m
+  [32m✓ mesh_metadata[0m [2m(0.0ms)[0m
+  [32m✓ get_mesh_data[0m [2m(0.0ms)[0m
+  [32m✓ load_shader_from_memory[0m [2m(0.3ms)[0m
+  [32m✓ shader_uniform[0m [2m(0.2ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 1
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 2
+  [32m✓ create_texture_from_image[0m [2m(2.1ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0x3
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 1
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 3
+  [32m✓ create_texture_ex_storage[0m [2m(1.5ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 1
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 4
+  [32m✓ get_texture_handle[0m [2m(0.9ms)[0m
+  [32m✓ create_destroy_buffer[0m [2m(0.3ms)[0m
+  [32m✓ buffer_update_and_readback[0m [2m(0.1ms)[0m
+  [32m✓ buffer_device_address[0m [2m(0.0ms)[0m
+  [32m✓ create_compute_pipeline[0m [2m(0.2ms)[0m
+  [32m✓ get_max_compute_work_groups[0m [2m(0.0ms)[0m
+  [32m✓ acquire_frame_command_buffer[0m [2m(1.2ms)[0m
+  [32m✓ get_main_command_buffer[0m [2m(80.5ms)[0m
+  [32m✓ begin_end_render_pass[0m [2m(0.7ms)[0m
+  [32m✓ cmd_set_viewport_scissor[0m [2m(0.9ms)[0m
+  [32m✓ cmd_pipeline_barrier[0m [2m(0.8ms)[0m
+  [32m✓ create_destroy_virtual_display[0m [2m(1.4ms)[0m
+  [32m✓ configure_virtual_display[0m [2m(0.6ms)[0m
+  [32m✓ get_virtual_display[0m [2m(0.7ms)[0m
+  [32m✓ virtual_display_dirty_flag[0m [2m(1.0ms)[0m
+  [32m✓ virtual_display_size[0m [2m(0.6ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+  [32m✓ render_virtual_displays[0m [2m(1.2ms)[0m
+  [32m✓ get_renderer_type[0m [2m(0.0ms)[0m
+  [32m✓ is_feature_supported[0m [2m(0.0ms)[0m
+  [32m✓ get_draw_call_count[0m [2m(0.7ms)[0m
+  [32m✓ get_vram_usage[0m [2m(0.0ms)[0m
+  [32m✓ take_screenshot[0m [2m(25.5ms)[0m
+    [31mFAIL[0m: [tests/harness/test_graphics.c:740] found_color
+  [31m✗ draw_pipeline_basic[0m [2m(2.0ms)[0m
+
+    [31mCRASH[0m: Signal SIGSEGV (Segmentation Fault) in test 'draw_indexed_quad'
+  [31m✗ draw_indexed_quad[0m [2m(0.3ms)[0m
+  [32m✓ draw_mesh_triangle[0m [2m(1.1ms)[0m
+  [32m✓ draw_quad_red[0m [2m(0.9ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 1
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 2
+    [31mFAIL[0m: [tests/harness/test_graphics.c:1038] found_bright
+  [31m✗ draw_textured_checkerboard[0m [2m(2.7ms)[0m
+    [31mFAIL[0m: [tests/harness/test_graphics.c:1149] pixel_approx_eq(pixels[idx], 128, 10)
+  [31m✗ uniform_float_multiplier[0m [2m(1.2ms)[0m
+    [31mFAIL[0m: [tests/harness/test_graphics.c:1224] pixel_approx_eq(pixels[idx + 1], 255, 5)
+  [31m✗ uniform_vec4_color[0m [2m(1.8ms)[0m
+    [31mFAIL[0m: [tests/harness/test_graphics.c:1341] pixels[idx] > 200
+  [31m✗ uniform_mat4_transform[0m [2m(3.6ms)[0m
+  [32m✓ push_constant_color[0m [2m(3.9ms)[0m
+  [32m✓ cmd_draw_text_bitmap[0m [2m(0.1ms)[0m
+  [32m✓ cmd_draw_text_ex_bounds[0m [2m(0.0ms)[0m
+  [32m✓ draw_metrics_overlay[0m [2m(1.8ms)[0m
+    [31mFAIL[0m: [tests/harness/test_graphics.c:1770] count >= (uint32_t)NUM_DRAWS
+  [31m✗ draw_call_count_after_draws[0m [2m(1.6ms)[0m
+  [32m✓ export_render_histogram[0m [2m(2.5ms)[0m
+  [32m✓ load_image_from_screen_dims[0m [2m(1.6ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:1945] found_red
+  [31m✗ vd_render_into_pipeline[0m [2m(3.1ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:2053] pixel_approx_eq(pixels[idx], 255, 10)
+  [31m✗ vd_z_ordering[0m [2m(4.6ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:2171] pixels[idx] > 200
+  [31m✗ vd_visibility_toggle[0m [2m(4.1ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:2248] r > 100
+  [31m✗ vd_opacity_blending[0m [2m(2.1ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+  [32m✓ vd_scaling_stretch[0m [2m(1.8ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:2409] pixels[center_idx] > 200
+  [31m✗ vd_scaling_fit[0m [2m(2.0ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:2488] pixels[center_idx] > 200
+  [31m✗ vd_scaling_integer[0m [2m(1.6ms)[0m
+  [32m✓ vd_scaling_mode_switch[0m [2m(0.7ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:2600] r > 100
+  [31m✗ vd_blend_alpha[0m [2m(3.1ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:2683] pixels[idx] >= 50
+  [31m✗ vd_blend_additive[0m [2m(4.1ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:2765] pixels[idx+1] > 150
+  [31m✗ vd_blend_multiply[0m [2m(2.0ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:2841] pixels[idx] > 200
+  [31m✗ vd_blend_none_overwrite[0m [2m(1.8ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+  [32m✓ vd_composite_time[0m [2m(2.8ms)[0m
+  [32m✓ vd_frame_time_multiplier[0m [2m(2.1ms)[0m
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_ENUM (0x500)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:3015] pixels[inside_idx] > 200
+  [31m✗ vd_offset_position[0m [2m(3.0ms)[0m
+  [32m✓ compute_dispatch_write42[0m [2m(0.3ms)[0m
+  [32m✓ compute_dispatch_write_ids[0m [2m(0.2ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0x6
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 2
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 15
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_OPERATION (0x502)
+  [32m✓ compute_image_write[0m [2m(3.4ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0x11
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 2
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 16
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_OPERATION (0x502)
+  [32m✓ compute_texture_read[0m [2m(1.6ms)[0m
+  [32m✓ compute_to_graphics_barrier[0m [2m(0.1ms)[0m
+  [32m✓ compute_chained_dispatches[0m [2m(0.2ms)[0m
+  [32m✓ buffer_partial_update[0m [2m(0.0ms)[0m
+  [32m✓ buffer_large_roundtrip[0m [2m(2.8ms)[0m
+  [32m✓ buffer_zero_offset_update[0m [2m(0.1ms)[0m
+  [32m✓ buffer_sequential_updates[0m [2m(0.0ms)[0m
+  [32m✓ descriptor_bind_ubo_color[0m [2m(36.9ms)[0m
+  [32m✓ descriptor_bind_dynamic_offset[0m [2m(0.2ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 2
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 15
+  [32m✓ descriptor_bind_texture_set[0m [2m(1.6ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 2
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 17
+  [32m✓ descriptor_bind_sampled_texture[0m [2m(1.3ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 2
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 18
+  [32m✓ descriptor_multi_set_binding[0m [2m(2.1ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 2
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 19
+    [31mFAIL[0m: [tests/harness/test_graphics.c:4506] pixels[tl_idx] > 180
+  [31m✗ texture_cpu_gpu_cpu_roundtrip[0m [2m(2.2ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0x6
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 3
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 15
+[DEBUG] OpenGL: A general error occurred (glGetError): OpenGL Error (sit/situation_impl_renderer.h:2651): GL_INVALID_OPERATION (0x502)
+    [31mFAIL[0m: [tests/harness/test_graphics.c:4646] pixels[pidx] > 80
+  [31m✗ texture_storage_write_readback[0m [2m(6.1ms)[0m
+[SituationCreateTextureEx] ENTRY: usage_flags=0xb
+[SituationCreateTextureEx] Checking image validity
+[SituationCreateTextureEx] Finding free slot
+[SituationCreateTextureEx] Mutex locked
+[SituationCreateTextureEx] Found slot 4
+[SituationCreateTextureEx] Mutex unlocked
+[SituationCreateTextureEx] Creating OpenGL texture
+[SituationCreateTextureEx] Created texture ID: 16
+    [31mFAIL[0m: [tests/harness/test_graphics.c:4725] pixel_approx_eq(pixels[tl_idx], 200, 30)
+  [31m✗ texture_format_preservation[0m [2m(1.8ms)[0m
+    [31mFAIL[0m: [tests/harness/test_graphics.c:4786] err == SITUATION_SUCCESS — expected 0, got 1
+  [31m✗ model_load_gltf[0m [2m(0.4ms)[0m
+    [31mFAIL[0m: [tests/harness/test_graphics.c:4844] err == SITUATION_SUCCESS — expected 0, got 1
+  [31m✗ model_draw_verify[0m [2m(0.4ms)[0m
+    [31mFAIL[0m: [tests/harness/test_graphics.c:4939] err == SITUATION_SUCCESS — expected 0, got 1
+  [31m✗ model_save_as_gltf[0m [2m(0.4ms)[0m
+    [31mFAIL[0m: [tests/harness/test_graphics.c:5005] err == SITUATION_SUCCESS — expected 0, got 1
+  [31m✗ model_unload_safety[0m [2m(0.4ms)[0m
+
+[1m═══════════════════════════════════════════[0m
+[1mRESULTS[0m: 310 total, 56 passed, [31m25 failed[0m, 229 skipped
+[1mTIME[0m: 1.25s
+[1m═══════════════════════════════════════════[0m

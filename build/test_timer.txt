@@ -1,0 +1,31 @@
+[HARNESS] Situation Test Harness v1.0
+[HARNESS] Backend: OpenGL
+[HARNESS] Running 9 modules
+
+[timer] (10 tests)
+[Situation] Initialization complete - state: READY
+=== AUDIO DEVICE INIT DEBUG ===
+Init result: No error
+Requested share mode: EXCLUSIVE
+Actual share mode: EXCLUSIVE
+Sample rate: 48000 Hz
+Period size: 1440 frames
+Periods: 2
+Buffer size: 2880 frames (60.00 ms)
+Backend: DirectSound
+================================
+  ✓ get_time (0.0ms)
+  ✓ get_time_advances (0.1ms)
+  ✓ set_oscillator_period (0.0ms)
+  ✓ get_oscillator_period (0.0ms)
+  ✓ oscillator_state (0.0ms)
+  ✓ oscillator_previous_state (0.0ms)
+  ✓ oscillator_has_updated (0.0ms)
+  ✓ oscillator_ping (0.0ms)
+  ✓ oscillator_trigger_count (0.0ms)
+  ✓ oscillator_ping_progress (0.0ms)
+
+═══════════════════════════════════════════
+RESULTS: 310 total, 10 passed, 0 failed, 300 skipped
+TIME: 0.98s
+═══════════════════════════════════════════
