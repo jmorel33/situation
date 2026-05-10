@@ -19,6 +19,11 @@
 #ifndef SITUATION_IMPL_RENDERER_H
 #define SITUATION_IMPL_RENDERER_H
 
+#if defined(SITUATION_USE_VULKAN)
+/** Pass as pipeline_flags to _SituationVulkanCreateGraphicsPipeline for opaque color (blend off). */
+#define SIT_VK_PIPELINE_BLEND_OPAQUE 1u
+#endif
+
 // ============================================================================
 // OpenGL Ring Buffer & MDI Helpers (needed early by _SituationInitOpenGL)
 // ============================================================================
@@ -633,6 +638,13 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
     }
     gy->render_pass_count = 0;
 }
+
+#if defined(SITUATION_USE_VULKAN)
+/** True during SituationShutdown after init_state is SHUTTING_DOWN — resource destroys must not defer to graveyard (VMA must be empty before vmaDestroyAllocator). */
+static bool _SituationVulkanImmediateDestroyDuringShutdown(void) {
+    return (SituationInitState)atomic_load(&sit_render.init_state) == SITUATION_STATE_SHUTTING_DOWN;
+}
+#endif
 
 /**
  * @brief [INTERNAL] Schedules a Vulkan Buffer for deferred destruction.
@@ -1448,6 +1460,7 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
         _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to initialize render queue mutex.");
         return SITUATION_ERROR_INIT_FAILED;
     }
+    sit_render.momentum_mutex_initialized = true;
 
     // 2. Initialize render queue mutex (needed for Vulkan backpressure even before render thread starts)
     #if !defined(__STDC_NO_THREADS__)
@@ -2905,7 +2918,7 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
 
-#ifndef NDEBUG
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     printf("Situation [OpenGL]: Initializing default font...\n"); fflush(stdout);
 #endif
 
@@ -2918,13 +2931,15 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
 
-#ifndef NDEBUG
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     printf("Situation [OpenGL]: Default font initialized\n"); fflush(stdout);
     printf("Situation [OpenGL]: About to initialize text renderer...\n"); fflush(stdout);
 #endif
 
     if (!_SituationInitTextRenderer()) {
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
         printf("Situation [OpenGL]: Text renderer init FAILED\n"); fflush(stdout);
+#endif
         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal text renderer.");
         glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
         glDeleteVertexArrays(1, &sit_render.gl.mesh_vao_id);
@@ -2933,7 +2948,7 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
     
-#ifndef NDEBUG
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     printf("Situation [OpenGL]: Text renderer initialized\n"); fflush(stdout);
     printf("Situation [OpenGL]: Creating virtual display shaders...\n"); fflush(stdout);
 #endif
@@ -2945,7 +2960,9 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // a. Create Shaders for Virtual Display Compositing
     sit_render.gl.vd_shader_program_id = _SituationCreateGLShaderProgram(SIT_VD_VERTEX_SHADER_SRC, SIT_VD_FRAGMENT_SHADER_SRC, &shader_err_code);
     if (shader_err_code != SITUATION_SUCCESS) {
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
         printf("Situation [OpenGL]: VD shader creation FAILED: %d\n", shader_err_code); fflush(stdout);
+#endif
         _SituationSetErrorFromCode(shader_err_code, "_SituationInitOpenGL: Failed to create standard virtual display shader.");
         // Cleanup VAOs
         glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
@@ -3610,7 +3627,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             vd_compositing_pipeline_layout,
             VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
             1, &binding_desc,
-            2, attr_descs
+            2, attr_descs,
+            0u
         );
         #ifdef SITUATION_VULKAN_DEBUG
         printf("Situation [Vulkan Debug]: VD graphics pipeline created, handle=%p\n", (void*)vd_compositing_pipeline); fflush(stdout);
@@ -3650,9 +3668,10 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             goto cleanup;
         }
 
-        VkDescriptorSetLayout layouts[] = {
+        VkDescriptorSetLayout layouts_adv[] = {
             sit_render.vk.view_data_ubo_layout,
-            sit_render.vk.composite_dual_sampler_layout  // Bindings 4 and 5 in one set
+            sit_render.vk.image_sampler_layout,
+            sit_render.vk.composite_dest_sampler_layout,
         };
 
         VkPushConstantRange push_constant_range = {
@@ -3663,8 +3682,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
 
         VkPipelineLayoutCreateInfo layout_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 2,  // Changed from 3 to 2
-            .pSetLayouts = layouts,
+            .setLayoutCount = 3,
+            .pSetLayouts = layouts_adv,
             .pushConstantRangeCount = 1,
             .pPushConstantRanges = &push_constant_range
         };
@@ -3672,15 +3691,11 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
         if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &advanced_compositing_pipeline_layout) != VK_SUCCESS) goto cleanup;
 
         VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
-        VkVertexInputAttributeDescription attr_descs[2];
-        attr_descs[0].binding = 0;
-        attr_descs[0].location = SIT_ATTR_POSITION;
-        attr_descs[0].format = VK_FORMAT_R32G32_SFLOAT;
-        attr_descs[0].offset = 0;
-        attr_descs[1].binding = 0;
-        attr_descs[1].location = SIT_ATTR_TEXCOORD_0;
-        attr_descs[1].format = VK_FORMAT_R32G32_SFLOAT;
-        attr_descs[1].offset = 0;
+        VkVertexInputAttributeDescription attr_desc;
+        attr_desc.binding = 0;
+        attr_desc.location = SIT_ATTR_POSITION;
+        attr_desc.format = VK_FORMAT_R32G32_SFLOAT;
+        attr_desc.offset = 0;
 
         advanced_compositing_pipeline = _SituationVulkanCreateGraphicsPipeline(
             vs_spirv.data, vs_spirv.size,
@@ -3688,7 +3703,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             advanced_compositing_pipeline_layout,
             VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
             1, &binding_desc,
-            2, attr_descs
+            1, &attr_desc,
+            0u
         );
 
         _SituationFreeSpirvBlob(&vs_spirv);
@@ -3764,7 +3780,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             text_pipeline_layout,
             VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
             1, &binding_desc,
-            2, attr_descs
+            2, attr_descs,
+            0u
         );
         _SituationFreeSpirvBlob(&vs_spirv);
         _SituationFreeSpirvBlob(&fs_spirv);
@@ -3813,13 +3830,16 @@ cleanup:
  *
  * @note This function is called automatically during swapchain creation/recreation to ensure the image dimensions match the window size.
  */
-static void _SituationVulkanCreateScreenCopyResource(void) {
+static SituationError _SituationVulkanCreateScreenCopyResource(void) {
+    /* Caller must have composite_dest_sampler_layout and swapchain extent/format valid. */
+    if (sit_render.vk.swapchain_extent.width == 0 || sit_render.vk.swapchain_extent.height == 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED, "Screen copy: zero swapchain extent.");
+    }
+
     // 1. Create the Image (Device Local, Usage: Transfer Dst + Sampled)
-    // It needs TRANSFER_DST because we copy FROM the swapchain TO this.
-    // It needs SAMPLED because the shader reads it.
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
-    _SituationVulkanCreateImage(
+    if (_SituationVulkanCreateImage(
         sit_render.vk.swapchain_extent.width,
         sit_render.vk.swapchain_extent.height,
         1,
@@ -3829,28 +3849,39 @@ static void _SituationVulkanCreateScreenCopyResource(void) {
         VMA_MEMORY_USAGE_GPU_ONLY,
         &sit_render.vk.screen_copy_image,
         &sit_render.vk.screen_copy_memory
-    );
+    ) != SITUATION_SUCCESS) {
+        sit_render.vk.screen_copy_image = VK_NULL_HANDLE;
+        sit_render.vk.screen_copy_memory = VK_NULL_HANDLE;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Screen copy: vkCreateImage failed.");
+    }
 
-    // 2. Create View
     sit_render.vk.screen_copy_view = _SituationVulkanCreateImageView(
         sit_render.vk.screen_copy_image,
         sit_render.vk.swapchain_image_format,
         VK_IMAGE_ASPECT_COLOR_BIT
     );
+    if (sit_render.vk.screen_copy_view == VK_NULL_HANDLE) {
+        vmaDestroyImage(sit_render.vk.vma_allocator, sit_render.vk.screen_copy_image, sit_render.vk.screen_copy_memory);
+        sit_render.vk.screen_copy_image = VK_NULL_HANDLE;
+        sit_render.vk.screen_copy_memory = VK_NULL_HANDLE;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Screen copy: vkCreateImageView failed.");
+    }
 
-    // 3. Create Persistent Descriptor Set (Using standard image_sampler_layout)
-    // [FIX v2.3.27B] Capture the pool so we can free this set on resize/shutdown
     sit_render.vk.screen_copy_descriptor_set = _SituationVulkanAllocateDescriptorSet(
-        sit_render.vk.image_sampler_layout,
+        sit_render.vk.composite_dest_sampler_layout,
         &sit_render.vk.screen_copy_descriptor_pool
     );
 
     if (sit_render.vk.screen_copy_descriptor_set == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate descriptor set for Screen Copy.");
+        vkDestroyImageView(sit_render.vk.device, sit_render.vk.screen_copy_view, NULL);
+        sit_render.vk.screen_copy_view = VK_NULL_HANDLE;
+        vmaDestroyImage(sit_render.vk.vma_allocator, sit_render.vk.screen_copy_image, sit_render.vk.screen_copy_memory);
+        sit_render.vk.screen_copy_image = VK_NULL_HANDLE;
+        sit_render.vk.screen_copy_memory = VK_NULL_HANDLE;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "Failed to allocate descriptor set for Screen Copy.");
     }
 
-    // Note: We update this descriptor set every frame in the render loop because
-    // we might need to change samplers, but for now, we can leave it un-updated until draw time.
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -4376,7 +4407,9 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
     // strlen(glsl_source) is used to determine the length of the input string.
     // shaderc makes a copy of the source internally, so the input string can be freed
     // after this call returns.
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     fprintf(stderr, "[Situation] About to call shaderc_compile_into_spv for '%s' (%zu bytes)\n", source_name, strlen(glsl_source)); fflush(stderr);
+#endif
     blob.internal_result = shaderc_compile_into_spv(
         compiler,               // The initialized shaderc compiler instance
         glsl_source,            // The GLSL source code string
@@ -4386,15 +4419,21 @@ static _SituationSpirvBlob _SituationVulkanCompileGLSLtoSPIRV(
         "main",                 // The entry point function name within the shader
         options                 // The configured compilation options
     );
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     fprintf(stderr, "[Situation] shaderc_compile_into_spv returned, checking status...\n"); fflush(stderr);
+#endif
     if (blob.internal_result) {
         shaderc_compilation_status status = shaderc_result_get_compilation_status(blob.internal_result);
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
         fprintf(stderr, "[Situation] Compilation status: %d\n", (int)status);
+#endif
         if (status != shaderc_compilation_status_success) {
             const char* err = shaderc_result_get_error_message(blob.internal_result);
             fprintf(stderr, "[Situation] Compilation FAILED: %s\n", err ? err : "<no message>");
         } else {
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
             fprintf(stderr, "[Situation] Compilation SUCCESS\n");
+#endif
         }
         fflush(stderr);
     } else {
@@ -4971,7 +5010,12 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     _SituationVulkanFreeSwapchainSupportDetails(&support_details);
 
     sit_render.vk.max_frames_in_flight = (desired_frames < image_count) ? desired_frames : image_count;
+    if (sit_render.vk.max_frames_in_flight > (uint32_t)SITUATION_MAX_FRAMES_IN_FLIGHT) {
+        sit_render.vk.max_frames_in_flight = (uint32_t)SITUATION_MAX_FRAMES_IN_FLIGHT;
+    }
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     printf("Situation [Vulkan]: Using %u frames in flight.\n", sit_render.vk.max_frames_in_flight);
+#endif
 
     uint32_t frame_count = sit_render.vk.max_frames_in_flight;
     // Use SIT_CALLOC to zero-initialize all handles to NULL
@@ -5114,6 +5158,18 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     VkDescriptorSetLayoutCreateInfo standard_sampler_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &standard_sampler_binding };
     if (vkCreateDescriptorSetLayout(sit_render.vk.device, &standard_sampler_info, NULL, &sit_render.vk.image_sampler_layout) != VK_SUCCESS) {
          _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+    }
+
+    /* Advanced VD composite FS: layout(set=2, binding=5) u_destinationTexture — must match screen_copy_descriptor_set */
+    VkDescriptorSetLayoutBinding composite_dest_binding = { SIT_SAMPLER_BINDING_VD_DEST, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
+    VkDescriptorSetLayoutCreateInfo composite_dest_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &composite_dest_binding };
+    if (vkCreateDescriptorSetLayout(sit_render.vk.device, &composite_dest_info, NULL, &sit_render.vk.composite_dest_sampler_layout) != VK_SUCCESS) {
+         _SituationCleanupVulkan(); return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+    }
+
+    if (_SituationVulkanCreateScreenCopyResource() != SITUATION_SUCCESS) {
+        _SituationCleanupVulkan();
+        return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
     }
 
     // --- 2. Create Bindless Layout (For Global Texture Array) ---
@@ -5379,6 +5435,23 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     printf("Situation [Vulkan Debug]: Setting renderer type and marking as initialized...\n"); fflush(stdout);
     #endif
     sit_render.renderer_type = SIT_RENDERER_VULKAN;
+
+    sit_render.vk.screenshot_staging_buffer = VK_NULL_HANDLE;
+    sit_render.vk.screenshot_staging_allocation = VK_NULL_HANDLE;
+    sit_render.vk.screenshot_buffer = NULL;
+    sit_render.vk.screenshot_width = 0;
+    sit_render.vk.screenshot_height = 0;
+    sit_render.vk.screenshot_valid = false;
+    for (int _si = 0; _si < SITUATION_MAX_FRAMES_IN_FLIGHT; _si++) {
+        sit_render.vk.screenshot_copy_pending[_si] = false;
+    }
+    sit_render.vk.screenshot_mutex_initialized = false;
+    if (mtx_init(&sit_render.vk.screenshot_mutex, mtx_plain) != thrd_success) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_INIT_FAILED, "_SituationInitVulkan: screenshot mutex init failed.");
+        _SituationCleanupVulkan();
+        return SITUATION_ERROR_VULKAN_INIT_FAILED;
+    }
+    sit_render.vk.screenshot_mutex_initialized = true;
 
     #ifdef SITUATION_VULKAN_DEBUG
     printf("Situation [Vulkan Debug]: Vulkan initialization COMPLETE!\n"); fflush(stdout);
@@ -5903,8 +5976,10 @@ static SituationError _SituationVulkanCreateImage(uint32_t width, uint32_t heigh
     image_info.tiling = tiling;
     image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     image_info.usage = usage;
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
         fprintf(stderr, "[Vulkan] Creating texture with usage flags: 0x%x (storage=%d)\n",
                 usage, (usage & VK_IMAGE_USAGE_STORAGE_BIT) ? 1 : 0);
+#endif
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -6054,10 +6129,11 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
     sit_render.vk.present_family_index = indices.present_family;
     sit_render.vk.compute_family_index = indices.compute_family_has_value ? indices.compute_family : indices.graphics_family;
 
-    // Log the chosen device for debugging
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(best_device, &properties);
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     printf("Situation [Vulkan]: Picked device '%s' with score %d\n", properties.deviceName, max_score);
+#endif
 
     return SITUATION_SUCCESS;
 }
@@ -6609,7 +6685,7 @@ static _SituationQueueFamilyIndices _SituationVulkanFindQueueFamilies(VkPhysical
  *
  * @par Creation Logic
  *   1.  **Query Support:** It first calls `_SituationVulkanQuerySwapchainSupport` to get the capabilities, formats, and present modes of the selected physical device.
- *   2.  **Select Best Format:** It iterates through the available formats, strongly preferring a `VK_FORMAT_B8G8R8A8_SRGB` format for standard sRGB color correct rendering.
+ *   2.  **Select Best Format:** Prefers **`VK_FORMAT_B8G8R8A8_UNORM`** (with `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR`) when offered so swapchain staging bytes match typical **`glReadPixels(..., GL_RGBA)`** / harness expectations. Falls back to **`B8G8R8A8_SRGB`**, then first listed format.
  *   3.  **Select Best Present Mode:** It iterates through available modes, preferring `VK_PRESENT_MODE_MAILBOX_KHR` (for low-latency, tear-free rendering) and falling back to the guaranteed `VK_PRESENT_MODE_FIFO_KHR` (standard V-Sync).
  *   4.  **Determine Extent & Image Count:** It determines the resolution of the swapchain images and the number of images in the chain based on the surface capabilities and current window size.
  *   5.  **Create Swapchain:** It populates the `VkSwapchainCreateInfoKHR` struct with the chosen settings and creates the `VkSwapchainKHR` object.
@@ -6641,11 +6717,27 @@ _SituationVulkanSwapchainSupportDetails swapchain_support = {0};
     }
 
     VkSurfaceFormatKHR surface_format = swapchain_support.formats[0];
-    for (uint32_t i = 0; i < swapchain_support.format_count; i++) {
+    bool picked = false;
+    /* UNORM first: readback + SituationLoadImageFromScreen parity with GL RGBA8 expectations (harness pixel asserts). */
+    for (uint32_t i = 0; i < swapchain_support.format_count && !picked; i++) {
+        if (swapchain_support.formats[i].format == VK_FORMAT_B8G8R8A8_UNORM &&
+            swapchain_support.formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            surface_format = swapchain_support.formats[i];
+            picked = true;
+        }
+    }
+    for (uint32_t i = 0; i < swapchain_support.format_count && !picked; i++) {
+        if (swapchain_support.formats[i].format == VK_FORMAT_R8G8B8A8_UNORM &&
+            swapchain_support.formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            surface_format = swapchain_support.formats[i];
+            picked = true;
+        }
+    }
+    for (uint32_t i = 0; i < swapchain_support.format_count && !picked; i++) {
         if (swapchain_support.formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
             swapchain_support.formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
             surface_format = swapchain_support.formats[i];
-            break;
+            picked = true;
         }
     }
 
@@ -6843,6 +6935,31 @@ sit_render.vk.depth_format = _SituationVulkanFindSupportedFormat(
     if (vkCreateRenderPass(sit_render.vk.device, &render_pass_info, NULL, &sit_render.vk.main_window_render_pass) != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_RENDERPASS_FAILED, "Failed to create render pass");
         return SITUATION_ERROR_VULKAN_RENDERPASS_FAILED;
+    }
+
+    sit_render.vk.main_window_render_pass_resume = VK_NULL_HANDLE;
+    {
+        /* Resume pass: color LOAD from PRESENT_SRC (after a prior EndRenderPass left the swapchain
+         * ready for present). The default pass uses CLEAR on every Begin — SituationRenderVirtualDisplays
+         * restarts the main-window pass after compositing; CLEAR would erase the VD draws (harness vd_*). */
+        VkAttachmentDescription color_resume = color_attachment;
+        color_resume.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        color_resume.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        VkAttachmentDescription depth_resume = depth_attachment;
+        depth_resume.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth_resume.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+
+        VkAttachmentDescription attachments_resume[] = { color_resume, depth_resume };
+        VkRenderPassCreateInfo rp_resume_info = render_pass_info;
+        rp_resume_info.pAttachments = attachments_resume;
+
+        if (vkCreateRenderPass(sit_render.vk.device, &rp_resume_info, NULL, &sit_render.vk.main_window_render_pass_resume) != VK_SUCCESS) {
+            vkDestroyRenderPass(sit_render.vk.device, sit_render.vk.main_window_render_pass, NULL);
+            sit_render.vk.main_window_render_pass = VK_NULL_HANDLE;
+            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_RENDERPASS_FAILED, "Failed to create main-window resume render pass (LOAD color)");
+            return SITUATION_ERROR_VULKAN_RENDERPASS_FAILED;
+        }
     }
     return SITUATION_SUCCESS;
 }
@@ -7141,8 +7258,59 @@ static SituationError _SituationVulkanCreateFramebuffers(void) {
     }
 
     // --- 3. Success ---
-    // If the loop completes without returning an error, all framebuffers have been successfully created and their handles are stored in the `sit_render.vk.main_window_framebuffers` array.
+        // If the loop completes without returning an error, all framebuffers have been successfully created and their handles are stored in the `sit_render.vk.main_window_framebuffers` array.
     // The next step in Vulkan initialization is typically creating command buffers or synchronization objects.
+
+    sit_render.vk.main_window_framebuffers_resume = NULL;
+    if (sit_render.vk.main_window_render_pass_resume != VK_NULL_HANDLE) {
+        sit_render.vk.main_window_framebuffers_resume = (VkFramebuffer*)SIT_CALLOC(sit_render.vk.swapchain_image_count, sizeof(VkFramebuffer));
+        if (!sit_render.vk.main_window_framebuffers_resume) {
+            for (uint32_t k = 0; k < sit_render.vk.swapchain_image_count; k++) {
+                if (sit_render.vk.main_window_framebuffers[k] != VK_NULL_HANDLE) {
+                    vkDestroyFramebuffer(sit_render.vk.device, sit_render.vk.main_window_framebuffers[k], NULL);
+                    sit_render.vk.main_window_framebuffers[k] = VK_NULL_HANDLE;
+                }
+            }
+            SIT_FREE(sit_render.vk.main_window_framebuffers);
+            sit_render.vk.main_window_framebuffers = NULL;
+            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_SituationVulkanCreateFramebuffers: resume framebuffer array alloc failed.");
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+        for (uint32_t j = 0; j < sit_render.vk.swapchain_image_count; j++) {
+            VkImageView attachments_r[] = {
+                sit_render.vk.swapchain_image_views[j],
+                sit_render.vk.depth_image_view
+            };
+            VkFramebufferCreateInfo fb_resume = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+            fb_resume.renderPass = sit_render.vk.main_window_render_pass_resume;
+            fb_resume.attachmentCount = 2;
+            fb_resume.pAttachments = attachments_r;
+            fb_resume.width = sit_render.vk.swapchain_extent.width;
+            fb_resume.height = sit_render.vk.swapchain_extent.height;
+            fb_resume.layers = 1;
+            VkResult rr = vkCreateFramebuffer(sit_render.vk.device, &fb_resume, NULL, &sit_render.vk.main_window_framebuffers_resume[j]);
+            if (rr != VK_SUCCESS) {
+                for (uint32_t k = 0; k < j; k++) {
+                    if (sit_render.vk.main_window_framebuffers_resume[k] != VK_NULL_HANDLE) {
+                        vkDestroyFramebuffer(sit_render.vk.device, sit_render.vk.main_window_framebuffers_resume[k], NULL);
+                    }
+                }
+                SIT_FREE(sit_render.vk.main_window_framebuffers_resume);
+                sit_render.vk.main_window_framebuffers_resume = NULL;
+                for (uint32_t k = 0; k < sit_render.vk.swapchain_image_count; k++) {
+                    if (sit_render.vk.main_window_framebuffers[k] != VK_NULL_HANDLE) {
+                        vkDestroyFramebuffer(sit_render.vk.device, sit_render.vk.main_window_framebuffers[k], NULL);
+                        sit_render.vk.main_window_framebuffers[k] = VK_NULL_HANDLE;
+                    }
+                }
+                SIT_FREE(sit_render.vk.main_window_framebuffers);
+                sit_render.vk.main_window_framebuffers = NULL;
+                _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "_SituationVulkanCreateFramebuffers: vkCreateFramebuffer (resume) failed.");
+                return SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED;
+            }
+        }
+    }
+
     return SITUATION_SUCCESS;
 }
 
@@ -7441,6 +7609,12 @@ static VkFormat _SituationVulkanFindSupportedFormat(
  *      _SituationVulkanCreateImageViews(), _SituationVulkanCreateDepthResources(),
  *      _SituationVulkanCreateFramebuffers()
  */
+#if defined(SITUATION_USE_VULKAN)
+static void _SituationVulkanDestroyScreenshotResources(void);
+static SituationError _SituationVulkanEnsureScreenshotResources(uint32_t width, uint32_t height);
+static void _SituationVulkanRecordScreenshotCopy(VkCommandBuffer cmd, VkImage swapchain_image, uint32_t width, uint32_t height);
+static void _SituationVulkanResolveScreenshotAfterSubmit(uint32_t frame_index);
+#endif
 static void _SituationVulkanCleanupSwapchain(void) {
     // --- 1. Validate Device Handle (Robustness) ---
     if (sit_render.vk.device == VK_NULL_HANDLE) {
@@ -7450,16 +7624,16 @@ static void _SituationVulkanCleanupSwapchain(void) {
     }
 
     // --- 2. Ensure GPU is Finished Using Resources ---
-    // Wait for the device to be idle to guarantee no commands are using swapchain-derived resources.
-    // This is the simplest and safest way, though it stalls the GPU pipeline.
-    VkResult wait_result = vkDeviceWaitIdle(sit_render.vk.device);
-    if (wait_result != VK_SUCCESS) {
-        // Log a warning, but proceed with cleanup to avoid leaking resources if possible.
-        fprintf(stderr, "WARNING: vkDeviceWaitIdle failed (0x%x) in _SituationVulkanCleanupSwapchain. Proceeding with cleanup.\n", wait_result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "vkDeviceWaitIdle failed in _SituationVulkanCleanupSwapchain");
-        // Depending on policy, you might choose to return or assert here if the device is in a bad state.
-    }
+    // Bounded wait + message pump (vkDeviceWaitIdle wedges forever if the GPU hangs — frozen pale window).
+    _SituationVulkanWaitInFlightFencesPump("_SituationVulkanCleanupSwapchain");
     sit_render.vk.swapchain_valid = false;
+
+    _SituationVulkanDestroyScreenCopyResource();
+
+    /* Do not tear down pre-present screenshot buffers here: vkQueuePresentKHR may trigger
+     * swapchain recreate (OUT_OF_DATE/SUBOPTIMAL) in the same EndFrame after CPU screenshot
+     * resolve — destroying here clears screenshot_valid before SituationLoadImageFromScreen.
+     * Extent/format changes are handled by _SituationVulkanEnsureScreenshotResources on next use. */
 
     // --- Render Pass Cache Cleanup ---
     for (uint32_t i = 0; i < sit_render.vk.render_pass_cache_count; ++i) {
@@ -7558,24 +7732,13 @@ static void _SituationVulkanRecreateSwapchain(void) {
     int width = 0, height = 0;
     glfwGetFramebufferSize(sit_gs.sit_glfw_window, &width, &height);
     while (width == 0 || height == 0) {
-        // Wait for events (like a resize/unminimize) to occur.
-        glfwWaitEvents();
-        // Re-check the size after an event.
+        /* Timeout wake keeps the loop from blocking indefinitely on some drivers if events stall */
+        glfwWaitEventsTimeout(0.05);
         glfwGetFramebufferSize(sit_gs.sit_glfw_window, &width, &height);
     }
 
-    // --- 2. Ensure GPU is Idle Before Recreation ---
-    // Although CleanupSwapchain also does this, an extra wait here is defensive
-    // and ensures any commands using the *old* swapchain are definitely finished.
-    if (sit_render.vk.device != VK_NULL_HANDLE) { // Defensive check
-        VkResult wait_result = vkDeviceWaitIdle(sit_render.vk.device);
-        if (wait_result != VK_SUCCESS) {
-            fprintf(stderr, "WARNING: vkDeviceWaitIdle failed (0x%x) before swapchain recreation. Attempting recreation anyway.\n", wait_result);
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "vkDeviceWaitIdle failed before swapchain recreation");
-        }
-    }
-
-    // --- 3. Orchestrate Recreation Steps ---
+    // --- 2. Orchestrate Recreation Steps ---
+    /* GPU idle: _SituationVulkanCleanupSwapchain uses bounded fence waits (not vkDeviceWaitIdle). */
     // It's crucial that these steps happen in order and that failures are handled.
 
     // 3.1. Cleanup old swapchain resources.
@@ -7624,10 +7787,15 @@ static void _SituationVulkanRecreateSwapchain(void) {
         return;
     }
 
-    // --- 4. Success ---
-    // If all steps succeeded, the swapchain and its dependent resources are now successfully recreated and ready for use in the rendering loop.
-    // The global state (sit_render.vk.*) should now reflect the new configuration.
-    // fprintf(stderr, "INFO: Vulkan swapchain successfully recreated.\n"); // Optional debug log
+    // --- 4. Screen copy (advanced VD Path A) — destroyed in CleanupSwapchain; must be recreated here ---
+    if (_SituationVulkanCreateScreenCopyResource() != SITUATION_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED,
+            "_SituationVulkanRecreateSwapchain: screen copy recreation failed after swapchain rebuild.");
+        _SituationVulkanCleanupSwapchain();
+        return;
+    }
+
+    // --- 5. Success ---
 }
 
 #endif // SITUATION_USE_VULKAN
@@ -8036,7 +8204,8 @@ static bool _SituationInitQuadRenderer(int width, int height) {
         sit_render.vk.quad_pipeline_layout,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, // Quads are drawn as a strip
         1, &binding_desc,
-        1, &attr_desc
+        1, &attr_desc,
+        SIT_VK_PIPELINE_BLEND_OPAQUE
     );
 
     _SituationFreeSpirvBlob(&vs_spirv);
@@ -8340,10 +8509,18 @@ static void _SituationCleanupOpenGL(void) {
  */
 #if defined(SITUATION_USE_VULKAN)
 static void _SituationCleanupVulkan(void) {
-    // CRITICAL: Wait for device to be idle before destroying any resources
-    // This ensures all GPU operations are complete and no resources are in use
+    /* Bounded idle + event pump — vkDeviceWaitIdle can wedge forever (frozen window). */
     if (sit_render.vk.device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(sit_render.vk.device);
+        _SituationVulkanWaitInFlightFencesPump("_SituationCleanupVulkan");
+    }
+
+    /* Drain graveyards before swapchain / internal teardown so deferred vmaDestroy* runs
+       before any path that might invalidate allocator state; pairs with immediate destroys
+       during SHUTTING_DOWN in SituationDestroy*. */
+    if (sit_render.vk.graveyards) {
+        for (uint32_t i = 0; i < sit_render.vk.max_frames_in_flight; i++) {
+            _SituationFlushGraveyard(i);
+        }
     }
 
     _SituationCleanupQuadRenderer();
@@ -8391,6 +8568,15 @@ static void _SituationCleanupVulkan(void) {
     vkDestroyCommandPool(sit_render.vk.device, sit_render.vk.command_pool, NULL);
     vkDestroyCommandPool(sit_render.vk.device, sit_render.vk.compute_command_pool, NULL);
     vkDestroyRenderPass(sit_render.vk.device, sit_render.vk.main_window_render_pass, NULL);
+    if (sit_render.vk.main_window_render_pass_resume != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(sit_render.vk.device, sit_render.vk.main_window_render_pass_resume, NULL);
+        sit_render.vk.main_window_render_pass_resume = VK_NULL_HANDLE;
+    }
+    if (sit_render.vk.screenshot_mutex_initialized) {
+        mtx_destroy(&sit_render.vk.screenshot_mutex);
+        sit_render.vk.screenshot_mutex_initialized = false;
+    }
+    _SituationVulkanDestroyScreenshotResources();
     vmaDestroyAllocator(sit_render.vk.vma_allocator);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.ssbo_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.ubo_layout, NULL);
@@ -8401,7 +8587,7 @@ static void _SituationCleanupVulkan(void) {
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.text_sampler_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.storage_image_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.compute_sampler_layout, NULL);
-    vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.composite_dual_sampler_layout, NULL);
+    vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.composite_dest_sampler_layout, NULL);
     vkDestroyDescriptorSetLayout(sit_render.vk.device, sit_render.vk.view_data_ubo_layout, NULL);
 
     // --- Safe Descriptor Pool Cleanup ---
@@ -8440,6 +8626,10 @@ static void _SituationCleanupVulkan(void) {
     }
     vkDestroySurfaceKHR(sit_render.vk.instance, sit_render.vk.surface, NULL);
     vkDestroyInstance(sit_render.vk.instance, NULL);
+    // Match OpenGL teardown: after destroying objects, clear handles so a later SituationInit
+    // cannot see stale non-NULL VkDevice/VkInstance pointers (same class of re-init bug as
+    // memset(&sit_render.gl, ...) in _SituationCleanupOpenGL).
+    memset(&sit_render.vk, 0, sizeof(sit_render.vk));
 }
 
 /**
@@ -8494,11 +8684,13 @@ static void _SituationCleanupVulkan(void) {
 
     // Layout 7: SIT_COMPUTE_LAYOUT_TERMINAL
     // Set 0: SSBO (Buffer), Set 1: Storage Image (Output), Set 2: Combined Image Sampler (Font), Set 3: Combined Image Sampler (Sixel)
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     fprintf(stderr, "[Vulkan] Creating SIT_COMPUTE_LAYOUT_TERMINAL with 4 sets...\n");
     fprintf(stderr, "[Vulkan]   Set 0: SSBO layout %p\n", (void*)sit_render.vk.ssbo_layout);
     fprintf(stderr, "[Vulkan]   Set 1: Storage Image layout %p\n", (void*)sit_render.vk.storage_image_layout);
     fprintf(stderr, "[Vulkan]   Set 2: Image Sampler layout %p\n", (void*)sit_render.vk.image_sampler_layout);
     fprintf(stderr, "[Vulkan]   Set 3: Image Sampler layout %p\n", (void*)sit_render.vk.image_sampler_layout);
+#endif
     set_layouts[0] = sit_render.vk.ssbo_layout;
     set_layouts[1] = sit_render.vk.storage_image_layout;
     set_layouts[2] = sit_render.vk.compute_sampler_layout;  // Use compute-specific layout
@@ -8564,7 +8756,7 @@ static void _SituationCleanupVulkan(void) {
  *   The function automatically determines the correct `srcStageMask`, `dstStageMask`, `srcAccessMask`, and `dstAccessMask` for a set of common, essential transitions:
  *   - `UNDEFINED` -> `TRANSFER_DST_OPTIMAL`: Prepares an image to be a destination for a copy operation.
  *   - `TRANSFER_DST_OPTIMAL` -> `SHADER_READ_ONLY_OPTIMAL`: Makes an image that has been written to available for sampling in a shader.
- *   - `PRESENT_SRC_KHR` -> `TRANSFER_SRC_OPTIMAL`: Prepares a swapchain image (that was ready for presentation) to be used as a source for a copy (e.g., for screenshots).
+ *   - `PRESENT_SRC_KHR` -> `TRANSFER_SRC_OPTIMAL`: After `vkCmdEndRenderPass` (finalLayout present), prepares the swapchain for `vkCmdCopyImageToBuffer`. Source stage must be **COLOR_ATTACHMENT_OUTPUT** so the copy waits on fragment writes, not `TRANSFER` (which would not synchronize with the draw that filled the image).
  *   - `TRANSFER_SRC_OPTIMAL` -> `PRESENT_SRC_KHR`: Transitions a swapchain image back to a presentable state after a copy.
  *
  * If an unsupported transition is requested, an error is set.
@@ -8603,16 +8795,33 @@ static void _SituationVulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage i
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && new_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        source_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     } else if (old_layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR && new_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        /* After vkCmdEndRenderPass, swapchain color is in PRESENT_SRC_KHR (see main_window_render_pass finalLayout). */
         barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        source_stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
         destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (old_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL && new_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        source_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && new_layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+        /* Prepare for vkCmdBeginRenderPass with attachment initialLayout UNDEFINED (discard + clear). */
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = 0;
+        source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        destination_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && new_layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
@@ -8656,6 +8865,28 @@ static void _SituationVulkanCopyBufferToImage(VkCommandBuffer cmd, VkBuffer buff
     region.imageExtent = (VkExtent3D){width, height, 1};
 
     vkCmdCopyBufferToImage(cmd, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+}
+
+/**
+ * Copy raw mapped swapchain/staging texels into RGBA8 order (SituationImage / OpenGL parity).
+ * Vulkan B8G8R8A8 layouts store B,G,R,A in memory; tests and GL readpixels expect R,G,B,A.
+ */
+static void _SituationVulkanCopyMappedColorToRGBA(uint8_t* dst, const void* mapped, size_t nbytes, VkFormat fmt) {
+    const uint8_t* s = (const uint8_t*)mapped;
+    switch (fmt) {
+    case VK_FORMAT_B8G8R8A8_UNORM:
+    case VK_FORMAT_B8G8R8A8_SRGB:
+        for (size_t i = 0; i < nbytes; i += 4) {
+            dst[i + 0] = s[i + 2];
+            dst[i + 1] = s[i + 1];
+            dst[i + 2] = s[i + 0];
+            dst[i + 3] = s[i + 3];
+        }
+        break;
+    default:
+        memcpy(dst, s, nbytes);
+        break;
+    }
 }
 
 /**
@@ -8731,7 +8962,7 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
     // Allocate the final buffer for the user and copy the data
     finalImageData = SIT_MALLOC(bufferSize);
     if (finalImageData) {
-        memcpy(finalImageData, mappedData, bufferSize);
+        _SituationVulkanCopyMappedColorToRGBA((uint8_t*)finalImageData, mappedData, (size_t)bufferSize, sit_render.vk.swapchain_image_format);
     } else {
         _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Final screenshot image buffer.");
     }
@@ -8740,6 +8971,128 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
     vmaDestroyBuffer(sit_render.vk.vma_allocator, dstBuffer, dstAllocation);
 
     return finalImageData;
+}
+
+static void _SituationVulkanDestroyScreenshotResources(void) {
+    if (sit_render.vk.screenshot_staging_buffer != VK_NULL_HANDLE && sit_render.vk.vma_allocator) {
+        vmaDestroyBuffer(sit_render.vk.vma_allocator, sit_render.vk.screenshot_staging_buffer, sit_render.vk.screenshot_staging_allocation);
+        sit_render.vk.screenshot_staging_buffer = VK_NULL_HANDLE;
+        sit_render.vk.screenshot_staging_allocation = VK_NULL_HANDLE;
+    }
+    if (sit_render.vk.screenshot_buffer) {
+        SIT_FREE(sit_render.vk.screenshot_buffer);
+        sit_render.vk.screenshot_buffer = NULL;
+    }
+    sit_render.vk.screenshot_width = 0;
+    sit_render.vk.screenshot_height = 0;
+    sit_render.vk.screenshot_valid = false;
+    for (int _si = 0; _si < SITUATION_MAX_FRAMES_IN_FLIGHT; _si++) {
+        sit_render.vk.screenshot_copy_pending[_si] = false;
+    }
+}
+
+static SituationError _SituationVulkanEnsureScreenshotResources(uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    if (sit_render.vk.screenshot_staging_buffer != VK_NULL_HANDLE &&
+        (uint32_t)sit_render.vk.screenshot_width == width &&
+        (uint32_t)sit_render.vk.screenshot_height == height) {
+        return SITUATION_SUCCESS;
+    }
+    _SituationVulkanDestroyScreenshotResources();
+    /* Same allocation pattern as _SituationVulkanBlitImageToHostVisibleBuffer (proven readback path). */
+    VkDeviceSize buffer_size = (VkDeviceSize)width * (VkDeviceSize)height * 4u;
+    VkBufferCreateInfo buf_info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    buf_info.size = buffer_size;
+    buf_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo alloc_info = {0};
+    alloc_info.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+    alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    if (vmaCreateBuffer(sit_render.vk.vma_allocator, &buf_info, &alloc_info,
+            &sit_render.vk.screenshot_staging_buffer,
+            &sit_render.vk.screenshot_staging_allocation, NULL) != VK_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Vulkan screenshot staging buffer creation failed.");
+        return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
+    }
+    sit_render.vk.screenshot_buffer = (uint8_t*)SIT_MALLOC((size_t)width * (size_t)height * 4u);
+    if (!sit_render.vk.screenshot_buffer) {
+        vmaDestroyBuffer(sit_render.vk.vma_allocator, sit_render.vk.screenshot_staging_buffer, sit_render.vk.screenshot_staging_allocation);
+        sit_render.vk.screenshot_staging_buffer = VK_NULL_HANDLE;
+        sit_render.vk.screenshot_staging_allocation = VK_NULL_HANDLE;
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    sit_render.vk.screenshot_width = (int)width;
+    sit_render.vk.screenshot_height = (int)height;
+    return SITUATION_SUCCESS;
+}
+
+static void _SituationVulkanRecordScreenshotCopy(VkCommandBuffer cmd, VkImage swapchain_image, uint32_t width, uint32_t height) {
+    _SituationVulkanTransitionImageLayout(cmd, swapchain_image, 1, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBufferImageCopy region = {};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = (VkOffset3D){0, 0, 0};
+    region.imageExtent = (VkExtent3D){width, height, 1};
+    vkCmdCopyImageToBuffer(cmd, swapchain_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        sit_render.vk.screenshot_staging_buffer, 1, &region);
+    _SituationVulkanTransitionImageLayout(cmd, swapchain_image, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    if (sit_render.vk.current_frame_index < SITUATION_MAX_FRAMES_IN_FLIGHT) {
+        sit_render.vk.screenshot_copy_pending[sit_render.vk.current_frame_index] = true;
+    }
+}
+
+static void _SituationVulkanResolveScreenshotAfterSubmit(uint32_t frame_index) {
+    bool do_copy = (frame_index < SITUATION_MAX_FRAMES_IN_FLIGHT) && sit_render.vk.screenshot_copy_pending[frame_index];
+    if (frame_index < SITUATION_MAX_FRAMES_IN_FLIGHT) {
+        sit_render.vk.screenshot_copy_pending[frame_index] = false;
+    }
+    if (!do_copy || sit_render.vk.screenshot_staging_buffer == VK_NULL_HANDLE || !sit_render.vk.screenshot_buffer) {
+        sit_render.vk.screenshot_valid = false;
+        return;
+    }
+
+    VkResult w = _SituationVulkanWaitFencePumpWindow(sit_render.vk.device, sit_render.vk.in_flight_fences[frame_index]);
+    if (w != VK_SUCCESS) {
+        if (w == VK_TIMEOUT) {
+            fprintf(stderr, "[Vulkan] Screenshot fence wait timed out (frame_index=%u)\n", frame_index);
+            fflush(stderr);
+        }
+        sit_render.vk.screenshot_valid = false;
+        return;
+    }
+
+    void* mapped = NULL;
+    if (vmaMapMemory(sit_render.vk.vma_allocator, sit_render.vk.screenshot_staging_allocation, &mapped) != VK_SUCCESS) {
+        sit_render.vk.screenshot_valid = false;
+        return;
+    }
+
+    VmaAllocationInfo alloc_inf = {};
+    vmaGetAllocationInfo(sit_render.vk.vma_allocator, sit_render.vk.screenshot_staging_allocation, &alloc_inf);
+    VkMappedMemoryRange flush_range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
+    flush_range.memory = alloc_inf.deviceMemory;
+    flush_range.offset = alloc_inf.offset;
+    flush_range.size = VK_WHOLE_SIZE;
+    vkInvalidateMappedMemoryRanges(sit_render.vk.device, 1, &flush_range);
+
+    size_t nbytes = (size_t)sit_render.vk.screenshot_width * (size_t)sit_render.vk.screenshot_height * 4u;
+
+    if (sit_render.vk.screenshot_mutex_initialized) {
+        mtx_lock(&sit_render.vk.screenshot_mutex);
+    }
+    _SituationVulkanCopyMappedColorToRGBA(sit_render.vk.screenshot_buffer, mapped, nbytes, sit_render.vk.swapchain_image_format);
+    sit_render.vk.screenshot_valid = true;
+    if (sit_render.vk.screenshot_mutex_initialized) {
+        mtx_unlock(&sit_render.vk.screenshot_mutex);
+    }
+
+    vmaUnmapMemory(sit_render.vk.vma_allocator, sit_render.vk.screenshot_staging_allocation);
 }
 
 /**
@@ -8999,12 +9352,9 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         fflush(stdout);
         #endif
 
-        VkResult wait_result = vkWaitForFences(
+        VkResult wait_result = _SituationVulkanWaitFencePumpWindow(
             sit_render.vk.device,
-            1,
-            &sit_render.vk.in_flight_fences[sit_render.vk.current_frame_index],
-            VK_TRUE,           // waitAll
-            UINT64_MAX         // timeout
+            sit_render.vk.in_flight_fences[sit_render.vk.current_frame_index]
         );
 
         #ifdef SITUATION_VULKAN_DEBUG
@@ -9012,6 +9362,13 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         fflush(stdout);
         #endif
 
+        if (wait_result == VK_TIMEOUT) {
+            fprintf(stderr, "[Vulkan] Frame fence wait timed out (max ~%.1fs) — see SITUATION_VULKAN_FENCE_WAIT_TIMEOUT_NS\n",
+                    (double)SITUATION_VULKAN_FENCE_WAIT_TIMEOUT_NS / 1e9);
+            fflush(stderr);
+            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Timed out waiting for frame fence in SituationAcquireFrameCommandBuffer.");
+            return false;
+        }
         if (wait_result != VK_SUCCESS) {
              _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Failed to wait for frame fence in SituationAcquireFrameCommandBuffer.");
              return false; // Indicate failure
@@ -9081,14 +9438,24 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 
         // 2.2. Acquire the next swapchain image.
         uint32_t image_index;
+        uint64_t sit_acquire_t0_ns = _SitGetMonotonicTimeNS();
         VkResult acquire_result = vkAcquireNextImageKHR(
             sit_render.vk.device,
             sit_render.vk.swapchain,
-            UINT64_MAX, // timeout
+            SITUATION_VULKAN_ACQUIRE_TIMEOUT_NS,
             sit_render.vk.image_available_semaphores[sit_render.vk.current_frame_index], // Signal this semaphore when the image is acquired
             VK_NULL_HANDLE,                                                     // No fence to signal
             &image_index                                                        // Output: index of the acquired image
         );
+        double sit_acquire_ms = (double)(_SitGetMonotonicTimeNS() - sit_acquire_t0_ns) / 1000000.0;
+        /* Surface stalls / waits-for-present show up here (TIMEOUT ~= SITUATION_VULKAN_ACQUIRE_TIMEOUT_NS).
+           Compile with -DSITUATION_VULKAN_LOG_SLOW_ACQUIRE_MIN_MS=0 to log every acquire (timing experiments). */
+        if (acquire_result == VK_TIMEOUT ||
+            SITUATION_VULKAN_LOG_SLOW_ACQUIRE_MIN_MS == 0 ||
+            sit_acquire_ms >= (double)SITUATION_VULKAN_LOG_SLOW_ACQUIRE_MIN_MS) {
+            fprintf(stderr, "[Vulkan] vkAcquireNextImageKHR %.2f ms result=%d\n", sit_acquire_ms, (int)acquire_result);
+            fflush(stderr);
+        }
 
         // 2.3. Handle Swapchain State.
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -9097,6 +9464,11 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
             _SituationVulkanRecreateSwapchain();
             // Return false to signal that the frame setup was interrupted.
             // The caller should retry SituationAcquireFrameCommandBuffer next frame.
+            return false;
+        } else if (acquire_result == VK_TIMEOUT) {
+            // Surface did not provide an image in time (minimized window, occlusion, driver quirks).
+            // UINT64_MAX would block forever and freeze the app on a black window.
+            _SituationVulkanRecreateSwapchain();
             return false;
         } else if (acquire_result == VK_SUBOPTIMAL_KHR) {
              // The swapchain can still be used, but surface properties have changed.
@@ -9158,6 +9530,8 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to begin recording command buffer in SituationAcquireFrameCommandBuffer!");
             return false; // Indicate failure
         }
+
+        sit_render.vk.inside_main_swapchain_render_pass = false;
 
         // Mark that we're now recording a frame
         sit_render.in_frame = true;
@@ -9268,7 +9642,7 @@ static void _SituationSubmitCompute(VkCommandBuffer cmd) {
  *      vkBeginCommandBuffer, vkCmdDrawIndexed, vkEndCommandBuffer,
  *      SITUATION_ERROR_VULKAN_COMMAND_BUFFER_FAILED
  */
-static void _SituationSubmitGraphics(VkCommandBuffer cmd) {
+static VkResult _SituationSubmitGraphics(VkCommandBuffer cmd) {
     VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
 
     // Wait for Image Available (always)
@@ -9314,6 +9688,7 @@ static void _SituationSubmitGraphics(VkCommandBuffer cmd) {
     if (submit_result != VK_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "_SituationSubmitGraphics: vkQueueSubmit failed.");
     }
+    return submit_result;
 }
 #endif
 
@@ -9665,6 +10040,29 @@ SITAPI SituationError SituationEndFrame(void) {
              return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
         }
 
+        // [FIX V6] Pre-present screenshot: copy swapchain image to host-visible staging while the image is
+        // still in a well-defined state (see LIBRARY_BUGFIX_PLAN — same idea as OpenGL pre-swap ReadPixels).
+        // Clear only this frame slot — not a global flag (render thread may still need prior slots).
+        if (sit_render.vk.current_frame_index < SITUATION_MAX_FRAMES_IN_FLIGHT) {
+            sit_render.vk.screenshot_copy_pending[sit_render.vk.current_frame_index] = false;
+        }
+        {
+            uint32_t sw = sit_render.vk.swapchain_extent.width;
+            uint32_t sh = sit_render.vk.swapchain_extent.height;
+            if (sit_render.vk.swapchain_valid && sw > 0 && sh > 0 && sit_render.vk.swapchain_images &&
+                sit_render.vk.current_image_index < sit_render.vk.swapchain_image_count) {
+                VkImage swap_img = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
+                SituationError cap_err = _SituationVulkanEnsureScreenshotResources(sw, sh);
+                if (cap_err == SITUATION_SUCCESS && sit_render.vk.screenshot_staging_buffer != VK_NULL_HANDLE) {
+                    _SituationVulkanRecordScreenshotCopy(cmd, swap_img, sw, sh);
+                } else {
+                    sit_render.vk.screenshot_valid = false;
+                }
+            } else {
+                sit_render.vk.screenshot_valid = false;
+            }
+        }
+
         if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, "Failed to end recording command buffer!");
             return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
@@ -9714,7 +10112,15 @@ SITAPI SituationError SituationEndFrame(void) {
                 _SituationSubmitCompute(compute_cmd);
             }
 
-            _SituationSubmitGraphics(cmd);
+            VkResult submit_res = _SituationSubmitGraphics(cmd);
+            if (submit_res == VK_SUCCESS) {
+                _SituationVulkanResolveScreenshotAfterSubmit(sit_render.vk.current_frame_index);
+            } else {
+                if (sit_render.vk.current_frame_index < SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                    sit_render.vk.screenshot_copy_pending[sit_render.vk.current_frame_index] = false;
+                }
+                sit_render.vk.screenshot_valid = false;
+            }
 
             // 3. Present the rendered image to the screen.
             VkSemaphore signal_semaphores[] = { sit_render.vk.render_finished_semaphores[sit_render.vk.current_frame_index] };
@@ -9793,9 +10199,15 @@ SITAPI SituationError SituationEndFrame(void) {
         fflush(stdout);
         #endif
         if (submit_result != VK_SUCCESS) {
+            if (sit_render.vk.current_frame_index < SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                sit_render.vk.screenshot_copy_pending[sit_render.vk.current_frame_index] = false;
+            }
+            sit_render.vk.screenshot_valid = false;
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "Failed to submit draw command buffer!");
             return SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED;
         }
+
+        _SituationVulkanResolveScreenshotAfterSubmit(sit_render.vk.current_frame_index);
 
         // 3. Present the rendered image to the screen.
         VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
@@ -10086,6 +10498,10 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
     scissor.extent = render_pass_info.renderArea.extent;
     vkCmdSetScissor((VkCommandBuffer)cmd, 0, 1, &scissor);
 
+    if (info->display_id < 0) {
+        sit_render.vk.inside_main_swapchain_render_pass = true;
+    }
+
     return SITUATION_SUCCESS;
 #endif
 }
@@ -10133,6 +10549,7 @@ SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
 #elif defined(SITUATION_USE_VULKAN)
     if (cmd == 0) return SITUATION_ERROR_INVALID_PARAM; // Basic validation
     vkCmdEndRenderPass((VkCommandBuffer)cmd);
+    sit_render.vk.inside_main_swapchain_render_pass = false;
 #endif
     return SITUATION_SUCCESS;
 }
@@ -11067,6 +11484,8 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
     }
 #elif defined(SITUATION_USE_VULKAN)
     vkCmdBindPipeline((VkCommandBuffer)cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, slot->vk_pipeline);
+    /* Descriptor binds route via current_* layout; clear compute so UBO/texture binds hit this graphics layout after compute tests. */
+    sit_render.vk.current_compute_pipeline_layout = VK_NULL_HANDLE;
     sit_render.vk.current_pipeline_layout_for_push_constants = slot->vk_pipeline_layout;
     sit_render.vk.current_pbr_pipeline = slot->vk_pipeline; // Track for debugging
     sit_render.vk.current_bound_shader_slot = slot;          // For stride-based pipeline selection
@@ -11258,12 +11677,21 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
 
+    /* Quad VS reads view/proj from set 0 — same as SituationCmdDrawQuad. Missing this bind
+       left projection garbage → black/wrong pixels for all textured quad draws (harness). */
+    vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline_layout, 0, 1,
+        &sit_render.vk.view_proj_ubo_descriptor_set[sit_render.vk.current_frame_index], 0, NULL);
+
     // [Bindless] Bind the Global Descriptor Set (Set 1)
     vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline_layout, 1, 1, &sit_render.vk.global_bindless_set, 0, NULL);
 
-    // We MUST use the push constant to enable texturing in the shader.
+    /* Bindless array index must match vkUpdateDescriptorSets(dstArrayElement) in CreateTextureEx.
+       Never fall back to slot 0 — stale handles silently sampled the wrong texture (black/wrong harness pixels). */
     _SituationTextureSlot* tex_slot = _SitGetTextureSlot(texture);
-    uint32_t slot_idx = tex_slot ? (uint32_t)(tex_slot - sit_render.texture_registry) : 0;
+    if (!tex_slot || texture.slot_index >= SITUATION_MAX_TEXTURES) {
+        return SITUATION_ERROR_RESOURCE_INVALID;
+    }
+    uint32_t slot_idx = texture.slot_index;
 
     struct {
         mat4 model;
@@ -11279,7 +11707,8 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
     push_data.texture_id = slot_idx;
     push_data.use_texture = use_texture; // 1
 
-    vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_data), &push_data);
+    const uint32_t quad_push_bytes = (uint32_t)(sizeof(mat4) + sizeof(vec4) + sizeof(vec4) + sizeof(uint32_t) + sizeof(int));
+    vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, quad_push_bytes, &push_data);
     vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 #endif
     return SITUATION_SUCCESS;
@@ -11386,25 +11815,27 @@ SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 mode
         vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline_layout, 1, 1, &sit_render.vk.global_bindless_set, 0, NULL);
     }
 
-    // [Fix] Split Push Constants to preserve texture_id at offset 96
-
-    // Part 1: Model, Color, UV (Offsets 0 - 96)
+    // Single push block (must match QuadPushConstants in internal_quad shaders — 104 bytes).
+    // Always set texture_id + use_texture; leaving bytes 96–99 uninitialized caused undefined
+    // bindless indexing / black output on some drivers when set 1 is bound.
     struct {
         mat4 model;
         vec4 color;
         vec4 uv_rect;
-    } push_part1;
+        uint32_t texture_id;
+        int use_texture;
+    } push_quad;
 
-    glm_mat4_copy(model, push_part1.model);
-    glm_vec4_copy(color.raw, push_part1.color);
-    glm_vec4_copy(uv_rect.raw, push_part1.uv_rect);
+    glm_mat4_copy(model, push_quad.model);
+    glm_vec4_copy(color.raw, push_quad.color);
+    glm_vec4_copy(uv_rect.raw, push_quad.uv_rect);
+    push_quad.texture_id = 0;
+    push_quad.use_texture = use_texture;
 
-    vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_part1), &push_part1);
-
-    // Part 2: Use Texture (Offset 100 - 104)
-    // We skip offset 96 (texture_id) to avoid clobbering any previously bound texture state.
-    int use_texture_val = use_texture;
-    vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 100, sizeof(int), &use_texture_val);
+    // Exact shader/layout size (104); sizeof(struct) may include tail padding to 112 on some ABIs.
+    const uint32_t quad_push_bytes = (uint32_t)(sizeof(mat4) + sizeof(vec4) + sizeof(vec4) + sizeof(uint32_t) + sizeof(int));
+    vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        0, quad_push_bytes, &push_quad);
     vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 #endif
     return SITUATION_SUCCESS;
@@ -12541,28 +12972,15 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
 
     // [Bindless] Standard Textures (Sampled)
     // If the texture has no descriptor set, it is part of the Bindless Array.
-    // We update the Push Constant (texture_id) and bind the global set if needed.
     if (slot->descriptor_set == VK_NULL_HANDLE) {
-        // 1. Bind Global Set (Set 1) if not already active (User logic must handle redundancy if desired, or we just bind)
-        // Optimization: We bind the global set to the requested set_index (usually 1).
+        /* SituationLoadShaderFromMemory: set 1 = text_sampler_layout; bind per-texture set (see CreateTextureEx). */
+        if (bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS && set_index == 1u && slot->single_sampler_descriptor_set != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(vk_cmd, bind_point, layout, set_index, 1, &slot->single_sampler_descriptor_set, 0, NULL);
+            return SITUATION_SUCCESS;
+        }
+        /* Internal quad/text/bindless: global array + push texture_id (slot index). */
         vkCmdBindDescriptorSets(vk_cmd, bind_point, layout, set_index, 1, &sit_render.vk.global_bindless_set, 0, NULL);
-
-        // 2. Push Texture ID
-        // Note: The shader MUST declare `uint texture_id` in its push constant block at the correct offset.
-        // We assume standard layout here. If the user has a custom pipeline, they must ensure compatibility.
-        // For standard "Situation" shaders (Quad, Text), the texture_id is after UV_Rect.
-        // Assuming offset 144 bytes (Model 64 + Color 16 + UVRect 16).
-        // Wait, standard user shaders might not have this.
-        // THIS IS A BREAKING CHANGE FOR CUSTOM SHADERS if they don't support bindless.
-        // However, for internal shaders, we handle it.
-        // For custom user shaders, they should use `SituationCmdSetPushConstant` manually or update their shader.
-        // But `SituationCmdBindTextureSet` implies "Make this texture available".
-
-        // For simplicity in this migration: We define that `SituationCmdBindTextureSet`
-        // pushes the texture ID to offset 96 (standard location in our internal convention).
-        // Model(64) + Color(16) + UVRect(16) = 96 bytes offset.
-        // WARNING: Custom shaders using SituationCmdBindTextureSet MUST follow this layout or manually push texture_id!
-        uint32_t texture_id = (uint32_t)(slot - sit_render.texture_registry);
+        uint32_t texture_id = texture.slot_index;
         vkCmdPushConstants(vk_cmd, layout, VK_SHADER_STAGE_ALL, 96, sizeof(uint32_t), &texture_id);
 
     } else {
@@ -13235,13 +13653,18 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     if (generate_mipmaps) {
         _SituationVulkanGenerateMipmaps(command_buffer, slot->image, image.width, image.height, mip_levels);
     } else {
-        // CRITICAL FIX: Storage images need GENERAL layout, not SHADER_READ_ONLY
-        VkImageLayout target_layout = (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE)
+        // Pure storage (imageLoad/imageStore) uses GENERAL. Textures that are also SAMPLED
+        // (default SituationCreateTexture) go through the bindless path and must end in
+        // SHADER_READ_ONLY_OPTIMAL to match global_textures[] descriptor layout.
+        VkImageLayout target_layout = ((usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) != 0u
+                                      && (usage_flags & SITUATION_TEXTURE_USAGE_SAMPLED) == 0u)
             ? VK_IMAGE_LAYOUT_GENERAL
             : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         _SituationVulkanTransitionImageLayout(command_buffer, slot->image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, target_layout);
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
         fprintf(stderr, "[Vulkan] Transitioned texture to layout: %s\n",
-                (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) ? "GENERAL" : "SHADER_READ_ONLY");
+                target_layout == VK_IMAGE_LAYOUT_GENERAL ? "GENERAL" : "SHADER_READ_ONLY");
+#endif
     }
 
     if (cmd == VK_NULL_HANDLE) {
@@ -13285,25 +13708,37 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     VkDescriptorType descriptor_type;
     VkDescriptorSetLayout layout_to_use;
 
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     fprintf(stderr, "[SituationCreateTextureEx] Selecting layout: usage_flags=0x%x, STORAGE=%d, COMPUTE_SAMPLED=%d\n",
             usage_flags,
             !!(usage_flags & SITUATION_TEXTURE_USAGE_STORAGE),
             !!(usage_flags & SITUATION_TEXTURE_USAGE_COMPUTE_SAMPLED));
+#endif
 
-    if (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) {
+    /* Storage-only images use a dedicated storage descriptor set. If SAMPLED is also set,
+       use bindless COMBINED_IMAGE_SAMPLER so fragment shaders (internal quad, VD compositor)
+       see vkUpdateDescriptorSets on global_bindless_set — STORAGE alone skipped that write. */
+    if ((usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) != 0u
+        && (usage_flags & SITUATION_TEXTURE_USAGE_SAMPLED) == 0u) {
         layout_to_use = sit_render.vk.storage_image_layout;
         descriptor_type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
         fprintf(stderr, "[SituationCreateTextureEx] -> Using STORAGE layout\n");
+#endif
     } else if (usage_flags & SITUATION_TEXTURE_USAGE_COMPUTE_SAMPLED) {
         // Textures that will be sampled in compute shaders need binding 0
         layout_to_use = sit_render.vk.compute_sampler_layout;
         descriptor_type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
         fprintf(stderr, "[SituationCreateTextureEx] -> Using COMPUTE_SAMPLER layout\n");
+#endif
     } else {
         // Regular graphics pipeline textures use bindless layout (binding 0)
         layout_to_use = sit_render.vk.bindless_descriptor_layout;
         descriptor_type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
         fprintf(stderr, "[SituationCreateTextureEx] -> Using BINDLESS layout\n");
+#endif
     }
 
     // [FIX v2.3.27B] Capture the pool
@@ -13330,6 +13765,18 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
 
         mtx_lock(&sit_render.resource_registry_mutex); // [LOCK]
         vkUpdateDescriptorSets(sit_render.vk.device, 1, &bindless_write, 0, NULL);
+        /* LoadShaderFromMemory / harness: pipeline set 1 is text_sampler_layout (binding 0), not the bindless array. */
+        slot->single_sampler_descriptor_set = _SituationVulkanAllocateDescriptorSet(sit_render.vk.text_sampler_layout, &slot->single_sampler_descriptor_pool);
+        if (slot->single_sampler_descriptor_set != VK_NULL_HANDLE) {
+            VkWriteDescriptorSet sw = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            sw.dstSet = slot->single_sampler_descriptor_set;
+            sw.dstBinding = SIT_SAMPLER_BINDING_ALBEDO;
+            sw.dstArrayElement = 0;
+            sw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            sw.descriptorCount = 1;
+            sw.pImageInfo = &bindless_image_info;
+            vkUpdateDescriptorSets(sit_render.vk.device, 1, &sw, 0, NULL);
+        }
         mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
     } else {
         // Fallback for Storage/Compute layouts (until they are bindless-ready)
@@ -13385,6 +13832,25 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     if (slot->descriptor_set != VK_NULL_HANDLE) {
         mtx_lock(&sit_render.resource_registry_mutex); // [LOCK]
         vkUpdateDescriptorSets(sit_render.vk.device, 1, &write, 0, NULL);
+        /* SituationCmdDrawTexture binds global_bindless_set only (internal quad FS).
+           Storage-only textures skip the bindless branch above — mirror into global_bindless_set
+           so textured draws sample the same image (descriptor layout = GENERAL, matching slot layout). */
+        if (sit_render.vk.global_bindless_set != VK_NULL_HANDLE
+            && (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) != 0u
+            && (usage_flags & SITUATION_TEXTURE_USAGE_SAMPLED) == 0u) {
+            VkDescriptorImageInfo bindless_mirror = {};
+            bindless_mirror.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            bindless_mirror.imageView = slot->image_view;
+            bindless_mirror.sampler = slot->sampler;
+            VkWriteDescriptorSet bw = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            bw.dstSet = sit_render.vk.global_bindless_set;
+            bw.dstBinding = 0;
+            bw.dstArrayElement = (uint32_t)slot_idx;
+            bw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bw.descriptorCount = 1;
+            bw.pImageInfo = &bindless_mirror;
+            vkUpdateDescriptorSets(sit_render.vk.device, 1, &bw, 0, NULL);
+        }
         mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
     }
 
@@ -13520,9 +13986,37 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
     }
     slot->gl_texture_id = 0;
 #elif defined(SITUATION_USE_VULKAN)
-    _SituationDeferDestroyImage(slot->image, slot->allocation, slot->image_view, slot->sampler);
-    if (slot->descriptor_set != VK_NULL_HANDLE) {
-        _SituationDeferDestroyDescriptorSet(slot->descriptor_set, slot->descriptor_pool);
+    if (_SituationVulkanImmediateDestroyDuringShutdown() && sit_render.vk.device != VK_NULL_HANDLE && sit_render.vk.vma_allocator) {
+        if (slot->sampler != VK_NULL_HANDLE) {
+            vkDestroySampler(sit_render.vk.device, slot->sampler, NULL);
+            slot->sampler = VK_NULL_HANDLE;
+        }
+        if (slot->image_view != VK_NULL_HANDLE) {
+            vkDestroyImageView(sit_render.vk.device, slot->image_view, NULL);
+            slot->image_view = VK_NULL_HANDLE;
+        }
+        if (slot->image != VK_NULL_HANDLE) {
+            vmaDestroyImage(sit_render.vk.vma_allocator, slot->image, slot->allocation);
+            slot->image = VK_NULL_HANDLE;
+            slot->allocation = VK_NULL_HANDLE;
+        }
+        if (slot->descriptor_set != VK_NULL_HANDLE && slot->descriptor_pool != VK_NULL_HANDLE) {
+            vkFreeDescriptorSets(sit_render.vk.device, slot->descriptor_pool, 1, &slot->descriptor_set);
+            slot->descriptor_set = VK_NULL_HANDLE;
+        }
+        if (slot->single_sampler_descriptor_set != VK_NULL_HANDLE && slot->single_sampler_descriptor_pool != VK_NULL_HANDLE) {
+            vkFreeDescriptorSets(sit_render.vk.device, slot->single_sampler_descriptor_pool, 1, &slot->single_sampler_descriptor_set);
+            slot->single_sampler_descriptor_set = VK_NULL_HANDLE;
+        }
+    } else {
+        _SituationDeferDestroyImage(slot->image, slot->allocation, slot->image_view, slot->sampler);
+        if (slot->descriptor_set != VK_NULL_HANDLE) {
+            _SituationDeferDestroyDescriptorSet(slot->descriptor_set, slot->descriptor_pool);
+        }
+        if (slot->single_sampler_descriptor_set != VK_NULL_HANDLE) {
+            _SituationDeferDestroyDescriptorSet(slot->single_sampler_descriptor_set, slot->single_sampler_descriptor_pool);
+            slot->single_sampler_descriptor_set = VK_NULL_HANDLE;
+        }
     }
 #endif
 
@@ -13905,9 +14399,21 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
 #if defined(SITUATION_USE_OPENGL)
     _SitGLDeferDestroyBuffer(slot->gl_buffer_id);
 #elif defined(SITUATION_USE_VULKAN)
-    _SituationDeferDestroyBuffer(slot->vk_buffer, slot->vma_allocation);
-    if (slot->descriptor_set != VK_NULL_HANDLE) {
-        _SituationDeferDestroyDescriptorSet(slot->descriptor_set, slot->descriptor_pool);
+    if (_SituationVulkanImmediateDestroyDuringShutdown() && sit_render.vk.device != VK_NULL_HANDLE && sit_render.vk.vma_allocator) {
+        if (slot->descriptor_set != VK_NULL_HANDLE && slot->descriptor_pool != VK_NULL_HANDLE) {
+            vkFreeDescriptorSets(sit_render.vk.device, slot->descriptor_pool, 1, &slot->descriptor_set);
+            slot->descriptor_set = VK_NULL_HANDLE;
+        }
+        if (slot->vk_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(sit_render.vk.vma_allocator, slot->vk_buffer, slot->vma_allocation);
+            slot->vk_buffer = VK_NULL_HANDLE;
+            slot->vma_allocation = VK_NULL_HANDLE;
+        }
+    } else {
+        _SituationDeferDestroyBuffer(slot->vk_buffer, slot->vma_allocation);
+        if (slot->descriptor_set != VK_NULL_HANDLE) {
+            _SituationDeferDestroyDescriptorSet(slot->descriptor_set, slot->descriptor_pool);
+        }
     }
 #endif
 
@@ -14039,9 +14545,22 @@ SITAPI void SituationDestroyMesh(SituationMesh* mesh) {
     // Let's rely on VBO ID for cache key.
     _SitGLDeferCleanMeshVAO(slot->vbo_id); // Assuming VBO ID is unique key
 #elif defined(SITUATION_USE_VULKAN)
-    _SituationDeferDestroyBuffer(slot->vertex_buffer, slot->vertex_buffer_memory);
-    if (slot->index_buffer) {
-        _SituationDeferDestroyBuffer(slot->index_buffer, slot->index_buffer_memory);
+    if (_SituationVulkanImmediateDestroyDuringShutdown() && sit_render.vk.device != VK_NULL_HANDLE && sit_render.vk.vma_allocator) {
+        if (slot->vertex_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(sit_render.vk.vma_allocator, slot->vertex_buffer, slot->vertex_buffer_memory);
+            slot->vertex_buffer = VK_NULL_HANDLE;
+            slot->vertex_buffer_memory = VK_NULL_HANDLE;
+        }
+        if (slot->index_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(sit_render.vk.vma_allocator, slot->index_buffer, slot->index_buffer_memory);
+            slot->index_buffer = VK_NULL_HANDLE;
+            slot->index_buffer_memory = VK_NULL_HANDLE;
+        }
+    } else {
+        _SituationDeferDestroyBuffer(slot->vertex_buffer, slot->vertex_buffer_memory);
+        if (slot->index_buffer) {
+            _SituationDeferDestroyBuffer(slot->index_buffer, slot->index_buffer_memory);
+        }
     }
 #endif
 
@@ -14705,6 +15224,17 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
         return err;
     }
 
+    /* Vulkan TWO_SSBOS uses two descriptor sets (binding 0 each). OpenGL maps API set_index to
+     * glBindBufferBase(SSBO, set_index, ...), i.e. SSBO binding points 0 and 1. SPIR-V from the same
+     * GLSL can still reflect both blocks at binding 0 unless we assign block bindings explicitly. */
+    if (layout_type == SIT_COMPUTE_LAYOUT_TWO_SSBOS && slot->gl_program_id != 0) {
+        GLuint prog = slot->gl_program_id;
+        GLuint r_in = glGetProgramResourceIndex(prog, GL_SHADER_STORAGE_BLOCK, "InBuffer");
+        GLuint r_out = glGetProgramResourceIndex(prog, GL_SHADER_STORAGE_BLOCK, "OutBuffer");
+        if (r_in != GL_INVALID_INDEX) glShaderStorageBlockBinding(prog, r_in, 0);
+        if (r_out != GL_INVALID_INDEX) glShaderStorageBlockBinding(prog, r_out, 1);
+    }
+
 #elif defined(SITUATION_USE_VULKAN)
     // Vulkan Compute Creation
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
@@ -14822,17 +15352,18 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
     if (!slot) return;
 
 #if defined(SITUATION_USE_VULKAN)
-    // Note: Compute pipelines don't usually own their layout (shared), but we own the pipeline.
-    // We should defer destruction.
-    _SituationDeferDestroyPipeline(slot->vk_pipeline, VK_NULL_HANDLE);
-    // Also destroy shader module if we stored it? vkDestroyPipeline doesn't destroy module.
-    // We can't defer module destruction easily with current Graveyard.
-    // However, shader modules can be destroyed after pipeline creation.
-    // If we kept it, we should destroy it now immediately? Or is it in use?
-    // It's safe to destroy shader module after pipeline creation. We should have destroyed it in Create.
-    // In my inlined create logic, I didn't destroy it. I stored it in slot->shader_module.
-    // So I can destroy it now.
-    vkDestroyShaderModule(sit_render.vk.device, slot->shader_module, NULL);
+    if (_SituationVulkanImmediateDestroyDuringShutdown() && sit_render.vk.device != VK_NULL_HANDLE) {
+        if (slot->vk_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline, NULL);
+            slot->vk_pipeline = VK_NULL_HANDLE;
+        }
+    } else {
+        _SituationDeferDestroyPipeline(slot->vk_pipeline, VK_NULL_HANDLE);
+    }
+    if (slot->shader_module != VK_NULL_HANDLE && sit_render.vk.device != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(sit_render.vk.device, slot->shader_module, NULL);
+        slot->shader_module = VK_NULL_HANDLE;
+    }
 
 #elif defined(SITUATION_USE_OPENGL)
     if (glIsProgram(slot->gl_program_id)) {
@@ -15611,6 +16142,7 @@ static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_
  * @param pVertexBindingDescriptions A pointer to an array of vertex binding descriptions.
  * @param vertexAttributeCount The number of vertex attributes.
  * @param pVertexAttributeDescriptions A pointer to an array of vertex attribute descriptions.
+ * @param pipeline_flags Bit **SIT_VK_PIPELINE_BLEND_OPAQUE** — disable color blending (opaque writes). Used by built-in quad draws so results match OpenGL solid fills under alpha blending.
  * @return A valid VkPipeline handle on success, or VK_NULL_HANDLE on failure.
  */
 static VkPipeline _SituationVulkanCreateGraphicsPipeline(
@@ -15621,7 +16153,8 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     uint32_t vertexBindingCount,
     const VkVertexInputBindingDescription* pVertexBindingDescriptions,
     uint32_t vertexAttributeCount,
-    const VkVertexInputAttributeDescription* pVertexAttributeDescriptions)
+    const VkVertexInputAttributeDescription* pVertexAttributeDescriptions,
+    uint32_t pipeline_flags)
 {
     // 1. Create Shader Modules from the raw SPIR-V data.
     VkShaderModule vs_module = _SituationVulkanCreateShaderModule(vs_data, vs_size);
@@ -15665,13 +16198,22 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     multisampling.sampleShadingEnable = VK_FALSE;
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    // For text rendering (TRIANGLE_LIST), disable depth write so transparent pixels don't block background
-    VkBool32 enableDepthWrite = (topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST) ? VK_FALSE : VK_TRUE;
-    VkPipelineDepthStencilStateCreateInfo depth_stencil = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = VK_TRUE, .depthWriteEnable = enableDepthWrite, .depthCompareOp = VK_COMPARE_OP_LESS, .depthBoundsTestEnable = VK_FALSE, .stencilTestEnable = VK_FALSE };
+    /* TRIANGLE_LIST: depth write off (text passes transparent fragments without occluding).
+       TRIANGLE_STRIP: 2D quad strips — depth write off; use <= so fragments at z matching cleared depth pass. */
+    VkBool32 depth_test_enable = VK_TRUE;
+    VkBool32 enableDepthWrite = VK_TRUE;
+    VkCompareOp depth_compare = VK_COMPARE_OP_LESS;
+    if (topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST) {
+        enableDepthWrite = VK_FALSE;
+    } else if (topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP) {
+        enableDepthWrite = VK_FALSE;
+        depth_compare = VK_COMPARE_OP_LESS_OR_EQUAL;
+    }
+    VkPipelineDepthStencilStateCreateInfo depth_stencil = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = depth_test_enable, .depthWriteEnable = enableDepthWrite, .depthCompareOp = depth_compare, .depthBoundsTestEnable = VK_FALSE, .stencilTestEnable = VK_FALSE };
 
     VkPipelineColorBlendAttachmentState color_blend_attachment = {};
     color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    color_blend_attachment.blendEnable = VK_TRUE;
+    color_blend_attachment.blendEnable = (pipeline_flags & SIT_VK_PIPELINE_BLEND_OPAQUE) ? VK_FALSE : VK_TRUE;
     color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
     color_blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     color_blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;
@@ -16246,7 +16788,10 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
     #if defined(SITUATION_USE_VULKAN)
         // Standard PBR and Legacy Layouts
         // (Copied from original impl, updated to use slot)
-        VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.image_sampler_layout };
+        /* Set 0: dynamic UBO @ binding 0 (matches SituationCmdBindDescriptorSet + harness `set=0,binding=0`).
+           Set 1: text_sampler_layout @ binding 0 (SIT_SAMPLER_BINDING_ALBEDO) for `layout(set=1,binding=0) sampler2D`.
+           Do not use view_data_ubo_layout (UBO at binding 1) or image_sampler_layout (sampler at binding 4). */
+        VkDescriptorSetLayout layouts[] = { sit_render.vk.dynamic_ubo_layout, sit_render.vk.text_sampler_layout };
         VkPushConstantRange push_constant_range = { .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS, .offset = 0, .size = 128 };
         VkPipelineLayoutCreateInfo pipeline_layout_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 2, .pSetLayouts = layouts, .pushConstantRangeCount = 1, .pPushConstantRanges = &push_constant_range };
 
@@ -16259,7 +16804,7 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
             attr_descs_pbr[2].binding = 0; attr_descs_pbr[2].location = SIT_ATTR_TANGENT; attr_descs_pbr[2].format = VK_FORMAT_R32G32B32A32_SFLOAT; attr_descs_pbr[2].offset = 6 * sizeof(float);
             attr_descs_pbr[3].binding = 0; attr_descs_pbr[3].location = SIT_ATTR_TEXCOORD_0; attr_descs_pbr[3].format = VK_FORMAT_R32G32_SFLOAT; attr_descs_pbr[3].offset = 10 * sizeof(float);
 
-            slot->vk_pipeline = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr);
+            slot->vk_pipeline = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u);
 
             // 2. Legacy Pipeline
             VkVertexInputBindingDescription binding_desc_legacy = { .binding = 0, .stride = (3 + 3 + 2) * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
@@ -16268,14 +16813,14 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
             attr_descs_legacy[1].binding = 0; attr_descs_legacy[1].location = SIT_ATTR_NORMAL; attr_descs_legacy[1].format = VK_FORMAT_R32G32B32_SFLOAT; attr_descs_legacy[1].offset = 3 * sizeof(float);
             attr_descs_legacy[2].binding = 0; attr_descs_legacy[2].location = SIT_ATTR_TEXCOORD_0; attr_descs_legacy[2].format = VK_FORMAT_R32G32_SFLOAT; attr_descs_legacy[2].offset = 6 * sizeof(float);
 
-            slot->vk_pipeline_legacy = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy);
+            slot->vk_pipeline_legacy = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u);
 
             // 3. Simple Pipeline (position-only, for basic shaders)
             VkVertexInputBindingDescription binding_desc_simple = { .binding = 0, .stride = 3 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
             VkVertexInputAttributeDescription attr_descs_simple[1];
             attr_descs_simple[0].binding = 0; attr_descs_simple[0].location = SIT_ATTR_POSITION; attr_descs_simple[0].format = VK_FORMAT_R32G32B32_SFLOAT; attr_descs_simple[0].offset = 0;
 
-            slot->vk_pipeline_simple = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple);
+            slot->vk_pipeline_simple = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u);
 
             if (slot->vk_pipeline == VK_NULL_HANDLE || slot->vk_pipeline_legacy == VK_NULL_HANDLE) {
                 _SitFreeShaderSlot(handle); // Will perform deferred cleanup if resources were created
@@ -16361,9 +16906,24 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
     SIT_CHECK_GL_ERROR();
 
 #elif defined(SITUATION_USE_VULKAN)
-    _SituationDeferDestroyPipeline(slot->vk_pipeline, slot->vk_pipeline_layout);
-    if (slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
-        _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy, VK_NULL_HANDLE);
+    if (_SituationVulkanImmediateDestroyDuringShutdown() && sit_render.vk.device != VK_NULL_HANDLE) {
+        if (slot->vk_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline, NULL);
+            slot->vk_pipeline = VK_NULL_HANDLE;
+        }
+        if (slot->vk_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(sit_render.vk.device, slot->vk_pipeline_layout, NULL);
+            slot->vk_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
+            vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_legacy, NULL);
+            slot->vk_pipeline_legacy = VK_NULL_HANDLE;
+        }
+    } else {
+        _SituationDeferDestroyPipeline(slot->vk_pipeline, slot->vk_pipeline_layout);
+        if (slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
+            _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy, VK_NULL_HANDLE);
+        }
     }
 #endif
 
@@ -17149,8 +17709,14 @@ static int _SituationRenderThreadEntry(void* arg) {
         fflush(stdout);
         #endif
         if (submit_result != VK_SUCCESS) {
+            if (frame_index < SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                sit_render.vk.screenshot_copy_pending[frame_index] = false;
+            }
+            sit_render.vk.screenshot_valid = false;
             // Logging from thread is tricky but we can set the global error.
              _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "RenderThread: Failed to submit draw command buffer!");
+        } else {
+            _SituationVulkanResolveScreenshotAfterSubmit(frame_index);
         }
 
         // 2. Present

@@ -596,12 +596,16 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
     if (sit_render.vk.vd_compositing_pipeline == VK_NULL_HANDLE) return SITUATION_ERROR_NOT_INITIALIZED;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
-    // [FIX] End any active render pass from the caller before we manage our own.
-    // The caller may have started a render pass (e.g., SituationCmdBeginRenderPass targeting
-    // the main window) before calling this function. We must end it because Vulkan doesn't
-    // support nested render passes, and we need to manage our own render pass lifecycle
-    // for the composite operations (especially advanced blending which requires image copies).
-    vkCmdEndRenderPass(vk_cmd);
+    /* End caller's main-window render pass only if one is active. Unconditional vkCmdEndRenderPass
+     * crashes when the caller never began a pass (e.g. harness render_virtual_displays).
+     * If we end the caller's pass, the swapchain image already holds their draws — the next
+     * vkCmdBeginRenderPass for VD must use LOAD (main_window_render_pass_resume), not CLEAR,
+     * or alpha/opacity tests composite against black instead of the cleared background. */
+    bool vd_resume_swapchain_after_caller_rp = sit_render.vk.inside_main_swapchain_render_pass;
+    if (sit_render.vk.inside_main_swapchain_render_pass) {
+        vkCmdEndRenderPass(vk_cmd);
+        sit_render.vk.inside_main_swapchain_render_pass = false;
+    }
 
     // --- 1. UBO Update (Zero-Stall Persistent Write) ---
     float target_width = (float)sit_render.vk.swapchain_extent.width;
@@ -620,11 +624,22 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
     // Track render pass state to minimize switching
     bool is_render_pass_active = false;
 
-    // Pre-fill the RenderPassBeginInfo struct for reuse
+    // Pre-fill the RenderPassBeginInfo struct for reuse (must supply clear values: color+depth CLEAR in main pass).
+    VkClearValue vd_main_rp_clear_values[2] = {0};
+    vd_main_rp_clear_values[1].depthStencil.depth = 1.0f;
     VkRenderPassBeginInfo rp_info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     rp_info.renderPass = sit_render.vk.main_window_render_pass;
     rp_info.framebuffer = sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
     rp_info.renderArea.extent = sit_render.vk.swapchain_extent;
+    rp_info.clearValueCount = 2;
+    rp_info.pClearValues = vd_main_rp_clear_values;
+
+    bool screen_copy_was_sampled = false;
+    /* Path A vkCmdBeginRenderPass must use COLOR CLEAR only for the first advanced layer. Each extra
+     * non-alpha VD used main_window_render_pass → CLEAR wiped the swapchain between layers → corrupt
+     * compositing, GPU faults, and harness cascade (fence timeouts). Subsequent layers need LOAD
+     * (main_window_render_pass_resume + main_window_framebuffers_resume). */
+    uint32_t path_a_restart_index = 0;
 
     // Set up standard Viewport and Scissor for the screen
     VkViewport viewport = {0.0f, 0.0f, target_width, target_height, 0.0f, 1.0f};
@@ -672,7 +687,16 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
             }
         }
 
-        bool use_advanced = (vd->blend_mode >= SITUATION_BLEND_OVERLAY);
+        /* Path A: needs swapchain + destination sample (advanced FS). Path B: premultiplied-style
+           alpha only. ADDITIVE/MULTIPLY/SCREEN/NONE were incorrectly on Path B (blend mode ignored). */
+        bool use_advanced = (vd->blend_mode != SITUATION_BLEND_ALPHA);
+        /* Screen copy is torn down on swapchain cleanup and must be recreated with the swapchain.
+           If it is missing (should not happen after fix), Path A would vkCmdCopyImage into VK_NULL_HANDLE. */
+        if (use_advanced && (sit_render.vk.screen_copy_image == VK_NULL_HANDLE ||
+                             sit_render.vk.screen_copy_view == VK_NULL_HANDLE ||
+                             sit_render.vk.screen_copy_descriptor_set == VK_NULL_HANDLE)) {
+            use_advanced = false;
+        }
 
         if (use_advanced) {
             // ---------------------------------------------------------
@@ -680,6 +704,7 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
             // ---------------------------------------------------------
 
             // 1. Stop Render Pass (Illegal to copy image inside RP)
+            bool path_a_preserves_prior_draws = is_render_pass_active;
             if (is_render_pass_active) {
                 vkCmdEndRenderPass(vk_cmd);
                 is_render_pass_active = false;
@@ -688,30 +713,51 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
             VkImage swapchainImg = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
 
             // 2. Barriers: Prepare Swapchain for Read, CopyTarget for Write
-            _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            _SituationVulkanTransitionImageLayout(vk_cmd, sit_render.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            /* Caller ended main pass above (or here via is_render_pass_active): swapchain is PRESENT_SRC_KHR; main_window_render_pass uses finalLayout PRESENT for color. */
+            _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            if (!screen_copy_was_sampled) {
+                _SituationVulkanTransitionImageLayout(vk_cmd, sit_render.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            } else {
+                _SituationVulkanTransitionImageLayout(vk_cmd, sit_render.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            }
 
             // 3. Perform Copy
             VkImageCopy region = { .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, .extent = {sit_render.vk.swapchain_extent.width, sit_render.vk.swapchain_extent.height, 1} };
             vkCmdCopyImage(vk_cmd, swapchainImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sit_render.vk.screen_copy_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
             // 4. Barriers: Restore Swapchain for Drawing, CopyTarget for Reading
-            _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            /* Destination for the composite FS is screen_copy (filled above); swapchain may CLEAR+redraw each layer. */
+            _SituationVulkanTransitionImageLayout(vk_cmd, swapchainImg, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_UNDEFINED);
             _SituationVulkanTransitionImageLayout(vk_cmd, sit_render.vk.screen_copy_image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            screen_copy_was_sampled = true;
 
             // 5. Update Descriptor for Screen Copy (Bind the texture we just filled)
             VkDescriptorImageInfo copy_info = { .sampler = vd->vk.sampler, .imageView = sit_render.vk.screen_copy_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             VkWriteDescriptorSet write = {};
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             write.dstSet = sit_render.vk.screen_copy_descriptor_set;
-            write.dstBinding = 0;
+            write.dstBinding = SIT_SAMPLER_BINDING_VD_DEST;
             write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             write.descriptorCount = 1;
             write.pImageInfo = &copy_info;
             vkUpdateDescriptorSets(sit_render.vk.device, 1, &write, 0, NULL);
 
-            // 6. Restart Render Pass (Path A)
-            vkCmdBeginRenderPass(vk_cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+            // 6. Restart Render Pass (Path A): use CLEAR only when the swapchain image has no scene
+            //    content yet; otherwise LOAD (resume pass) so we keep caller clears / Path B output.
+            {
+                bool use_resume = (path_a_restart_index > 0 || vd_resume_swapchain_after_caller_rp || path_a_preserves_prior_draws) &&
+                    sit_render.vk.main_window_render_pass_resume != VK_NULL_HANDLE &&
+                    sit_render.vk.main_window_framebuffers_resume != NULL &&
+                    sit_render.vk.current_image_index < sit_render.vk.swapchain_image_count;
+                rp_info.renderPass = use_resume ? sit_render.vk.main_window_render_pass_resume
+                                               : sit_render.vk.main_window_render_pass;
+                rp_info.framebuffer = use_resume
+                    ? sit_render.vk.main_window_framebuffers_resume[sit_render.vk.current_image_index]
+                    : sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
+                vkCmdBeginRenderPass(vk_cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+                path_a_restart_index++;
+                vd_resume_swapchain_after_caller_rp = false;
+            }
             vkCmdSetViewport(vk_cmd, 0, 1, &viewport);
             vkCmdSetScissor(vk_cmd, 0, 1, &scissor);
             is_render_pass_active = true;
@@ -731,7 +777,9 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
             pc.b = vd->blend_mode;
             pc.o = vd->opacity;
 
-            vkCmdPushConstants(vk_cmd, sit_render.vk.advanced_compositing_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(pc), &pc);
+            /* SPIR-V CompositePushConstants size is mat4+int+float (72); MSVC may pad sizeof(pc). */
+            vkCmdPushConstants(vk_cmd, sit_render.vk.advanced_compositing_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0,
+                               (uint32_t)(sizeof(mat4) + sizeof(int) + sizeof(float)), &pc);
             vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 
         } else {
@@ -741,7 +789,17 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
 
             // 1. Ensure Render Pass is active
             if (!is_render_pass_active) {
+                bool use_resume_begin = vd_resume_swapchain_after_caller_rp &&
+                    sit_render.vk.main_window_render_pass_resume != VK_NULL_HANDLE &&
+                    sit_render.vk.main_window_framebuffers_resume != NULL &&
+                    sit_render.vk.current_image_index < sit_render.vk.swapchain_image_count;
+                rp_info.renderPass = use_resume_begin ? sit_render.vk.main_window_render_pass_resume
+                                                      : sit_render.vk.main_window_render_pass;
+                rp_info.framebuffer = use_resume_begin
+                    ? sit_render.vk.main_window_framebuffers_resume[sit_render.vk.current_image_index]
+                    : sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
                 vkCmdBeginRenderPass(vk_cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+                vd_resume_swapchain_after_caller_rp = false;
 
                 // [CRITICAL VULKAN FIX] Must push dynamic viewport/scissor state
                 // every time a new render pass begins!
@@ -762,7 +820,9 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
             glm_mat4_copy(model_matrix, pc.m);
             pc.o = vd->opacity;
 
-            vkCmdPushConstants(vk_cmd, sit_render.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+            /* Pipeline layout push range is sizeof(mat4)+sizeof(float) (68); MSVC may pad sizeof(pc). */
+            vkCmdPushConstants(vk_cmd, sit_render.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               (uint32_t)(sizeof(mat4) + sizeof(float)), &pc);
             vkCmdDraw(vk_cmd, 4, 1, 0, 0);
         }
     }
@@ -773,15 +833,20 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
     }
 
     // [FIX] Restart the main window render pass so the caller can continue recording
-    // commands (or call SituationCmdEndRenderPass). Use LOAD_OP_LOAD to preserve
-    // the composite output we just rendered.
+    // commands (or call SituationCmdEndRenderPass). Must use the resume render pass:
+    // main_window_render_pass clears color on every Begin — that erased VD composite output.
     {
         VkRenderPassBeginInfo restart_info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-        restart_info.renderPass = sit_render.vk.main_window_render_pass;
-        restart_info.framebuffer = sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
+        if (sit_render.vk.main_window_render_pass_resume != VK_NULL_HANDLE &&
+            sit_render.vk.main_window_framebuffers_resume != NULL &&
+            sit_render.vk.current_image_index < sit_render.vk.swapchain_image_count) {
+            restart_info.renderPass = sit_render.vk.main_window_render_pass_resume;
+            restart_info.framebuffer = sit_render.vk.main_window_framebuffers_resume[sit_render.vk.current_image_index];
+        } else {
+            restart_info.renderPass = sit_render.vk.main_window_render_pass;
+            restart_info.framebuffer = sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
+        }
         restart_info.renderArea.extent = sit_render.vk.swapchain_extent;
-        // No clear values needed — we're using LOAD_OP_LOAD implicitly via the render pass
-        // (the main_window_render_pass uses LOAD_OP_CLEAR but the content is already there)
         VkClearValue clear_values[2] = {0};
         restart_info.clearValueCount = 2;
         restart_info.pClearValues = clear_values;
@@ -793,6 +858,7 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
         VkRect2D sc = {{0, 0}, sit_render.vk.swapchain_extent};
         vkCmdSetViewport(vk_cmd, 0, 1, &vp);
         vkCmdSetScissor(vk_cmd, 0, 1, &sc);
+        sit_render.vk.inside_main_swapchain_render_pass = true;
     }
 #endif
     double end_time = glfwGetTime();

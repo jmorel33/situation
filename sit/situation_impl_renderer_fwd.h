@@ -139,7 +139,7 @@ static void _SituationVulkanRecreateSwapchain(void);
 static SituationError _SituationVulkanCreateRenderPass(void);
 static VkRenderPass _SituationVulkanGetOrCreateRenderPass(_SituationVulkanState* vk_state, const SituationRenderPassInfo* info);
 static VkFormat _SituationVulkanFindSupportedFormat(const VkFormat* candidates, uint32_t candidate_count, VkImageTiling tiling, VkFormatFeatureFlags features);
-static VkPipeline _SituationVulkanCreateGraphicsPipeline(const void* vs_code, size_t vs_size, const void* fs_code, size_t fs_size, VkPipelineLayout layout, VkPrimitiveTopology topology, uint32_t binding_count, const VkVertexInputBindingDescription* bindings, uint32_t attr_count, const VkVertexInputAttributeDescription* attrs);
+static VkPipeline _SituationVulkanCreateGraphicsPipeline(const void* vs_code, size_t vs_size, const void* fs_code, size_t fs_size, VkPipelineLayout layout, VkPrimitiveTopology topology, uint32_t binding_count, const VkVertexInputBindingDescription* bindings, uint32_t attr_count, const VkVertexInputAttributeDescription* attrs, uint32_t pipeline_flags);
 
 // Command Pool & Buffers
 static SituationError _SituationVulkanCreateCommandPool(void);
@@ -167,12 +167,12 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
 static VkDescriptorSet _SituationVulkanAllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool* out_pool);
 
 // Screen Copy
-static void _SituationVulkanCreateScreenCopyResource(void);
+static SituationError _SituationVulkanCreateScreenCopyResource(void);
 static void _SituationVulkanDestroyScreenCopyResource(void);
 
 // Submit
 static void _SituationSubmitCompute(VkCommandBuffer cmd);
-static void _SituationSubmitGraphics(VkCommandBuffer cmd);
+static VkResult _SituationSubmitGraphics(VkCommandBuffer cmd);
 
 // Init & Cleanup
 static SituationError _SituationInitVulkan(const SituationInitInfo* init_info);

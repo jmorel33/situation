@@ -659,7 +659,7 @@ SITAPI void SituationSetVSync(bool enable) {
 
     // For Vulkan, we need to recreate the swapchain with the new present mode
     #ifdef SITUATION_USE_VULKAN
-    vkDeviceWaitIdle(sit_render.vk.device);  // Wait for GPU to finish
+    _SituationVulkanWaitInFlightFencesPump("SituationSetVSync");
     _SituationVulkanRecreateSwapchain();
     #endif
 

@@ -25,27 +25,9 @@
 
 /**
  * @brief Returns the number of logical CPU cores (threads) available.
- *        Uses GetSystemInfo on Windows.
+ * @note Full implementation lives in `situation_impl_io.h` (included after this file).
  */
-SITAPI uint32_t SituationGetCPUThreadCount(void) {
-#if defined(_WIN32)
-    SYSTEM_INFO sysinfo;
-    GetSystemInfo(&sysinfo);
-    return (uint32_t)sysinfo.dwNumberOfProcessors;
-
-#elif defined(__APPLE__)
-    int count;
-    size_t size = sizeof(count);
-    if (sysctlbyname("hw.logicalcpu", &count, &size, NULL, 0) == 0) return (uint32_t)(count > 0 ? count : 1);
-    return 1;
-
-#elif defined(__linux__)
-    long cores = sysconf(_SC_NPROCESSORS_ONLN);
-    return (uint32_t)(cores > 0 ? cores : 1);
-#else
-    return 1;
-#endif
-}
+SITAPI uint32_t SituationGetCPUThreadCount(void);
 
 /**
  * @brief Returns the number of physical CPU cores (ignoring Hyper-Threading).
@@ -568,6 +550,12 @@ static int _SituationWorkerEntry(void* arg) {
 
         // --- Execute Job ---
         if (job_ptr) {
+            // Dependency edge may be added on the main thread after dequeue but before we run
+            // (submit job B, submit A, SituationAddJobDependency(A,B)). Wait until prereqs fire.
+            while (atomic_load(&job_ptr->dependency_count) != 0) {
+                if (atomic_load(&pool->shutdown)) break;
+                thrd_yield();
+            }
             // 1. Run User Function
             void* data_arg = job_ptr->uses_large_data ? job_ptr->large_data_ptr : job_ptr->storage;
             if (job_ptr->func) {
@@ -1176,6 +1164,10 @@ SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int 
                 atomic_store(&pool->queues[1].tail, tail + 1);
                 mtx_unlock(&pool->queues[1].lock);
 
+                while (atomic_load(&job_ptr->dependency_count) != 0) {
+                    if (atomic_load(&pool->shutdown)) break;
+                    thrd_yield();
+                }
                 // Execute Stolen Job
                 void* d = job_ptr->uses_large_data ? job_ptr->large_data_ptr : job_ptr->storage;
                 if (job_ptr->func) job_ptr->func(d, NULL);

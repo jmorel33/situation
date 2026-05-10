@@ -38,6 +38,8 @@
 #ifndef SITUATION_IMPL_AUDIO_H
 #define SITUATION_IMPL_AUDIO_H
 
+#include <math.h>
+
 // Define implementation guards for MIDI headers
 #define MIDI_IMPLEMENTATION
 #define MIDI_DEVICE_IMPLEMENTATION
@@ -69,6 +71,13 @@ static void _SituationEnsureRegistryInit(void) {
 // These were part of the legacy ma_node_graph mixer, replaced by the node graph system.
 
 // Audio-related implementation extracted from situation_impl.h
+
+/** Spin until the playback callback finishes decoding/mixing from a voice snapshot (see `is_processing_snapshot`). */
+static void _SituationWaitUntilVoiceSnapshotIdle(void) {
+    while (atomic_load(&sit_audio.is_processing_snapshot)) {
+        thrd_yield();
+    }
+}
 
 static _SituationSoundSlot* _SitGetSoundSlot(SituationSound handle) {
     if (handle.slot_index >= SITUATION_MAX_LOADED_SOUNDS) return NULL;
@@ -154,6 +163,139 @@ static void _SitFreeSoundSlot(SituationSound handle) {
 
 // --- Tone Synthesis Functions (moved to sit/aud/tone_synth.h) ---
 
+/** True if the graph contains at least one SITUATION_NODE_MIXER instance. */
+static bool _SituationGraphHasMixerNode(const SituationAudioGraph* graph) {
+    if (!graph) return false;
+    for (int i = 0; i < graph->node_count; ++i) {
+        const SituationNode* n = graph->nodes[i];
+        if (n && n->type == SITUATION_NODE_MIXER) return true;
+    }
+    return false;
+}
+
+/**
+ * Whether loaded/streamed voices (active_voices) should be summed into pOut after the graph.
+ * - No graph, empty graph, or graph without a mixer: latent audio must hit the main bus.
+ * - Library default_graph with Policy B: voices are fed into the graph Sound Source — no latent sum.
+ * - default_graph but voice source missing: fall back to latent sum (init failure).
+ * - User graph that includes a mixer: assume the graph owns summing (avoid double-mix).
+ */
+static bool _SituationShouldMixLatentVoices(const _SituationAudioState* pGs) {
+    if (!pGs->active_graph) return true;
+    if (pGs->active_graph->node_count == 0) return true;
+    if (!_SituationGraphHasMixerNode(pGs->active_graph)) return true;
+    if (pGs->active_graph == pGs->default_graph) {
+        return pGs->default_graph_voice_source == NULL;
+    }
+    return false;
+}
+
+/** Mix decoded/processed active voices from snapshot_buffer into an interleaved stereo buffer (accumulate). */
+static void _SituationMixLoadedVoicesFromSnapshot(
+    _SituationAudioState* pGs,
+    ma_device* pDevice,
+    uint32_t frameCount,
+    float* decoder_buffer,
+    float* effects_buffer,
+    float* mix_dest_stereo,
+    int voices_to_mix
+) {
+    for (int i = 0; i < voices_to_mix; ++i) {
+        _SituationSound* sound = pGs->snapshot_buffer[i];
+        if (!sound) continue;
+
+        ma_uint64 frames_read = 0;
+
+        if (sound->is_preloaded && sound->preloaded_data) {
+            ma_uint64 frames_remaining = sound->total_frames - sound->cursor_frames;
+            frames_read = (frames_remaining > frameCount) ? frameCount : frames_remaining;
+
+            memcpy(decoder_buffer, (float*)sound->preloaded_data + (sound->cursor_frames * 2), frames_read * 2 * sizeof(float));
+
+            sound->cursor_frames += frames_read;
+
+            if (frames_read < frameCount && sound->is_looping) {
+                sound->cursor_frames = 0;
+                if (sound->total_frames > 0) {
+                    ma_uint64 remainder = frameCount - frames_read;
+                    ma_uint64 loop_read = (sound->total_frames > remainder) ? remainder : sound->total_frames;
+                    memcpy(decoder_buffer + (frames_read * 2), sound->preloaded_data, loop_read * 2 * sizeof(float));
+                    frames_read += loop_read;
+                    sound->cursor_frames += loop_read;
+                }
+            }
+        } else if (sound->is_initialized) {
+            // Same lock as SituationPlayLoadedSound / queue edits: serialize ma_decoder vs main-thread seek/uninit.
+            mtx_lock(&pGs->audio_queue_mutex);
+            ma_result res = ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer, frameCount, &frames_read);
+
+            if (res == MA_AT_END && sound->is_looping) {
+                ma_decoder_seek_to_pcm_frame(&sound->decoder, 0);
+                ma_uint64 remainder = frameCount - frames_read;
+                ma_uint64 loop_read = 0;
+                ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer + (frames_read * 2), remainder, &loop_read);
+                frames_read += loop_read;
+            }
+            mtx_unlock(&pGs->audio_queue_mutex);
+        }
+
+        if (frames_read > 0) {
+            memcpy(effects_buffer, decoder_buffer, frames_read * 2 * sizeof(float));
+
+            if (sound->processors) {
+                for (int p = 0; p < sound->processor_count; ++p) {
+                    if (sound->processors[p]) {
+                        sound->processors[p](effects_buffer, (uint32_t)frames_read, 2, pDevice->sampleRate, sound->processor_user_data[p]);
+                    }
+                }
+            }
+
+            if (sound->effects.echo_enabled && sound->effects.echo.is_initialized) {
+                _SituationProcessEcho((sit_echo_t*)&sound->effects.echo, effects_buffer, (uint32_t)frames_read);
+            }
+
+            if (sound->effects.reverb_enabled && sound->effects.reverb_state) {
+                _SituationProcessReverb(sound->effects.reverb_state, effects_buffer, effects_buffer, (uint32_t)frames_read, 2);
+            }
+
+            float vol = atomic_load(&sound->volume);
+            float pan = atomic_load(&sound->pan);
+
+            for (ma_uint64 f = 0; f < frames_read; ++f) {
+                float sampleL = effects_buffer[f * 2 + 0];
+                float sampleR = effects_buffer[f * 2 + 1];
+
+                float gainL = (pan <= 0.0f) ? 1.0f : (1.0f - pan);
+                float gainR = (pan >= 0.0f) ? 1.0f : (1.0f + pan);
+
+                mix_dest_stereo[f * 2 + 0] += sampleL * vol * gainL;
+                mix_dest_stereo[f * 2 + 1] += sampleR * vol * gainR;
+            }
+        }
+    }
+}
+
+/** Peak + RMS over the final mixed buffer; atomics for main-thread poll; optional legacy monitor callback. */
+static void _SituationPublishMasterBusLevels(_SituationAudioState* pGs, const float* pOut, uint32_t frameCount, uint32_t channels) {
+    if (!pGs || !pOut || frameCount == 0 || channels == 0) return;
+
+    float peak = 0.f;
+    double sum_sq = 0.0;
+    size_t n = (size_t)frameCount * (size_t)channels;
+    for (size_t i = 0; i < n; i++) {
+        float s = pOut[i];
+        float a = fabsf(s);
+        if (a > peak) peak = a;
+        sum_sq += (double)s * (double)s;
+    }
+    float rms = (float)sqrt(sum_sq / (double)n);
+    atomic_store_explicit(&pGs->audio_meter_peak, peak, memory_order_relaxed);
+    atomic_store_explicit(&pGs->audio_meter_rms, rms, memory_order_relaxed);
+
+    void (*mon)(const float*, uint32_t, void*) = pGs->output_monitor_callback;
+    if (mon) mon(pOut, frameCount, pGs->output_monitor_user_data);
+}
+
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
     _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
     if (!pGs) return;
@@ -195,142 +337,57 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         // ... (Capture logic omitted for brevity, usually distinct device)
     }
 
-    // --- [Phase H] Node Graph Processing ---
-    // If an active graph is set, process it and skip the legacy mixer path.
-    // The tone pool still runs after this (tone_mixing label).
-    if (pGs->active_graph) {
-        SituationProcessGraph(pGs->active_graph, pOut, frameCount,
-                              g_device_function_table, g_device_function_table_count);
-        goto tone_mixing;
-    }
-
-    // --- MIXING LOOP (Legacy/Fallback) ---
-    // Note: audio_queue_mutex is ALREADY LOCKED here.
-    // We snapshot the active voices to a local buffer to minimize lock duration.
+    // --- Voice snapshot (locked copy of active_voices for this callback) ---
     mtx_lock(&pGs->audio_queue_mutex);
 
     int voices_to_mix = pGs->active_voice_count;
-    // We can't stack allocate dynamic size. Use the pre-allocated snapshot buffer.
     if (pGs->snapshot_buffer && voices_to_mix > 0) {
         memcpy(pGs->snapshot_buffer, pGs->active_voices, voices_to_mix * sizeof(_SituationSound*));
     }
 
     mtx_unlock(&pGs->audio_queue_mutex);
 
-    if (voices_to_mix > 0 && pGs->snapshot_buffer) {
-
-    // Process Snapshot
-    // Temp buffer for mixing one sound before adding to accumulation
-    // float* mix_buffer = ... (we need a scratch buffer for effects)
-    // Using pGs->audio_callback_decoder_temp_buffer etc.
-
-    // We need to verify we have scratch buffers. Assuming they are init in InitAudio.
     float* decoder_buffer = pGs->audio_callback_decoder_temp_buffer;
     float* effects_buffer = pGs->audio_callback_effects_temp_buffer;
+    float* voice_bus = pGs->audio_callback_converter_temp_buffer;
 
-    // Sanity check
-    if (!decoder_buffer || !effects_buffer) return;
+    bool route_voices_via_default_ss =
+        pGs->active_graph &&
+        pGs->active_graph == pGs->default_graph &&
+        pGs->default_graph_voice_source != NULL &&
+        decoder_buffer && effects_buffer && voice_bus &&
+        pDevice->playback.channels == 2;
 
-    for (int i = 0; i < voices_to_mix; ++i) {
-        _SituationSound* sound = pGs->snapshot_buffer[i];
-        if (!sound) continue;
-
-        // 1. Read/Decode PCM
-        ma_uint64 frames_read = 0;
-
-        if (sound->is_preloaded && sound->preloaded_data) {
-            // RAM Playback
-            ma_uint64 frames_remaining = sound->total_frames - sound->cursor_frames;
-            frames_read = (frames_remaining > frameCount) ? frameCount : frames_remaining;
-
-            // Copy from RAM to decoder_buffer (or directly mix if no effects? Effects need inplace usually)
-            // Let's copy to decoder_buffer to standardize pipeline.
-            memcpy(decoder_buffer, (float*)sound->preloaded_data + (sound->cursor_frames * 2), frames_read * 2 * sizeof(float));
-
-            // Advance cursor
-            sound->cursor_frames += frames_read;
-
-            // Loop?
-            if (frames_read < frameCount && sound->is_looping) {
-                sound->cursor_frames = 0;
-                // Read remainder
-                ma_uint64 remainder = frameCount - frames_read;
-                // Simple loop: just read from start.
-                // Note: infinite loop risk if file is 0 length. check total_frames > 0.
-                if (sound->total_frames > 0) {
-                    ma_uint64 loop_read = (sound->total_frames > remainder) ? remainder : sound->total_frames;
-                    memcpy(decoder_buffer + (frames_read * 2), sound->preloaded_data, loop_read * 2 * sizeof(float));
-                    frames_read += loop_read;
-                    sound->cursor_frames += loop_read;
-                }
-            }
-        } else if (sound->is_initialized) {
-            // Streaming (ma_decoder)
-            // Note: ma_decoder_read_pcm_frames is not fully thread safe if main thread seeks/unloads!
-            // But we hold a reference (via active_voices). Unload stops sound first.
-            // Seek is the main risk. We need per-voice lock or atomic flags?
-            // For now assuming safe-ish via stop-before-unload pattern.
-
-            ma_result res = ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer, frameCount, &frames_read);
-
-            if (res == MA_AT_END && sound->is_looping) {
-                ma_decoder_seek_to_pcm_frame(&sound->decoder, 0);
-                ma_uint64 remainder = frameCount - frames_read;
-                ma_uint64 loop_read = 0;
-                ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer + (frames_read * 2), remainder, &loop_read);
-                frames_read += loop_read;
-            }
-        }
-
-        if (frames_read > 0) {
-            // 2. Effects Processing (In-Place on decoder_buffer or copy to effects_buffer)
-            // Let's use effects_buffer as destination
-            memcpy(effects_buffer, decoder_buffer, frames_read * 2 * sizeof(float));
-
-            // Custom Processors
-            if (sound->processors) {
-                for (int p = 0; p < sound->processor_count; ++p) {
-                    if (sound->processors[p]) {
-                        sound->processors[p](effects_buffer, (uint32_t)frames_read, 2, pDevice->sampleRate, sound->processor_user_data[p]);
-                    }
-                }
-            }
-
-            // Built-in Effects (Filter, Echo, Reverb)
-            if (sound->effects.echo_enabled && sound->effects.echo.is_initialized) {
-                _SituationProcessEcho((sit_echo_t*)&sound->effects.echo, effects_buffer, (uint32_t)frames_read);
-            }
-
-            if (sound->effects.reverb_enabled && sound->effects.reverb_state) {
-                _SituationProcessReverb(sound->effects.reverb_state, effects_buffer, effects_buffer, (uint32_t)frames_read, 2);
-            }
-
-            // 3. Apply Volume/Pan & Mix to Output
-            float vol = atomic_load(&sound->volume);
-            float pan = atomic_load(&sound->pan);
-
-            // Simple Stereo Mix
-            for (ma_uint64 f = 0; f < frames_read; ++f) {
-                float sampleL = effects_buffer[f*2 + 0];
-                float sampleR = effects_buffer[f*2 + 1];
-
-                // Pan law (linear approximation)
-                float gainL = (pan <= 0.0f) ? 1.0f : (1.0f - pan);
-                float gainR = (pan >= 0.0f) ? 1.0f : (1.0f + pan);
-
-                pOut[f*2 + 0] += sampleL * vol * gainL;
-                pOut[f*2 + 1] += sampleR * vol * gainR;
-            }
+    // Policy B: sum loaded voices into converter scratch, feed default graph Sound Source, then graph owns the bus.
+    if (route_voices_via_default_ss) {
+        SituationSoundSource* voice_src = (SituationSoundSource*)pGs->default_graph_voice_source;
+        if (voices_to_mix > 0) {
+            memset(voice_bus, 0, frameCount * 2 * sizeof(float));
+            atomic_store(&pGs->is_processing_snapshot, true);
+            _SituationMixLoadedVoicesFromSnapshot(pGs, pDevice, frameCount, decoder_buffer, effects_buffer, voice_bus, voices_to_mix);
+            atomic_store(&pGs->is_processing_snapshot, false);
+            sound_source_feed_interleaved_frames(voice_src, voice_bus, (int)frameCount, 2);
         } else {
-            // Sound finished?
-            if (!sound->is_looping && !sound->is_streamed && (sound->is_preloaded && sound->cursor_frames >= sound->total_frames)) {
-                // Mark for removal?
-                // The mixer cannot remove from the main list easily without lock.
-                // We typically handle this via stop-before-unload pattern.
-            }
+            sound_source_stop(voice_src);
         }
     }
-    } // end if (voices_to_mix > 0 && pGs->snapshot_buffer)
+
+    // --- [Phase H] Node graph ---
+    if (pGs->active_graph) {
+        SituationProcessGraph(pGs->active_graph, pOut, frameCount,
+                              g_device_function_table, g_device_function_table_count);
+    }
+
+    // --- Loaded voices onto main bus when the graph does not own them ---
+    if (!_SituationShouldMixLatentVoices(pGs)) {
+        goto tone_mixing;
+    }
+
+    if (voices_to_mix > 0 && pGs->snapshot_buffer && decoder_buffer && effects_buffer) {
+        atomic_store(&pGs->is_processing_snapshot, true);
+        _SituationMixLoadedVoicesFromSnapshot(pGs, pDevice, frameCount, decoder_buffer, effects_buffer, pOut, voices_to_mix);
+        atomic_store(&pGs->is_processing_snapshot, false);
+    }
 
 tone_mixing:
     // --- [Phase 2] Tone Synthesis Mixing ---
@@ -390,6 +447,8 @@ tone_mixing:
             t->cursor_frames++;
         }
     }
+
+    _SituationPublishMasterBusLevels(pGs, pOut, frameCount, pDevice->playback.channels);
 }
 
 
@@ -410,6 +469,18 @@ SITAPI void SituationSetAudioOutputMonitor(void (*callback)(const float* samples
     sit_audio.output_monitor_callback = callback;
     sit_audio.output_monitor_user_data = user_data;
     mtx_unlock(&sit_audio.audio_queue_mutex);
+}
+
+SITAPI void SituationGetMasterOutputMeter(float* out_peak, float* out_rms) {
+    if (!SituationIsInitialized()) {
+        if (out_peak) *out_peak = 0.f;
+        if (out_rms) *out_rms = 0.f;
+        return;
+    }
+    float pk = atomic_load_explicit(&sit_audio.audio_meter_peak, memory_order_relaxed);
+    float rms = atomic_load_explicit(&sit_audio.audio_meter_rms, memory_order_relaxed);
+    if (out_peak) *out_peak = pk;
+    if (out_rms) *out_rms = rms;
 }
 
 static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
@@ -633,25 +704,11 @@ SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
 }
 
 /**
- * @brief Switches the active audio output to a specific device.
- * @details This function re-initializes the audio subsystem to use the device specified by its internal ID (obtained from `SituationGetAudioDevices`). It allows the user to select their preferred output, such as switching between speakers and a headset.
- *
- * @par Behavior
- *   If an audio device is already active, it will be stopped and uninitialized before the new device is started. The new device will be configured with the specified format, or with sensible defaults (stereo, 48kHz float32) if `format` is NULL.
- *
- * @param situation_internal_id The internal ID of the target device, corresponding to its index in the array returned by `SituationGetAudioDevices`.
- * @param format A pointer to a `SituationAudioFormat` struct specifying the desired sample rate, channel count, and bit depth for the new device. Can be `NULL` to use defaults.
- *
- * @return `SITUATION_SUCCESS` on successful switch.
- * @return `SITUATION_ERROR_AUDIO_CONTEXT` if the audio system is not initialized.
- * @return `SITUATION_ERROR_AUDIO_DEVICE` if the ID is invalid, or if the new device fails to initialize or start.
- * @return `SITUATION_ERROR_INVALID_PARAM` if the requested format contains an unsupported bit depth.
- *
- * @warning Switching devices may cause a brief interruption in audio playback.
- *
- * @see SituationGetAudioDevices()
+ * @brief Internal: open playback with explicit WASAPI/DirectSound share mode (exclusive vs shared).
+ * @details `SituationSetAudioDevice` passes exclusive. Init step 7 on Windows passes shared on 2nd+
+ * in-process session to avoid `ma_device_init` blocking when exclusive mode is slow to release.
  */
-SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const SituationAudioFormat* format) {
+static SituationError _SituationSetAudioDeviceInternal(int situation_internal_id, const SituationAudioFormat* format, ma_share_mode playback_share_mode) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!sit_audio.is_miniaudio_context_initialized) return SITUATION_ERROR_AUDIO_CONTEXT;
 
@@ -669,13 +726,14 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
     if (sit_audio.is_miniaudio_device_active) {
         // [FIX v2.4.38] Stop callback processing before tearing down the device
         atomic_store(&sit_audio.audio_ready, false);
+        ma_device_stop(&sit_audio.miniaudio_device);
         ma_device_uninit(&sit_audio.miniaudio_device);
         sit_audio.is_miniaudio_device_active = false;
     }
 
     ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
     device_config.playback.pDeviceID = target_device_id;
-    device_config.playback.shareMode = ma_share_mode_exclusive;  // EXCLUSIVE MODE for low latency
+    device_config.playback.shareMode = playback_share_mode;
     device_config.dataCallback = sit_miniaudio_data_callback;
     device_config.pUserData = &sit_audio; // Pass audio state if callback needs it (e.g. for temp buffers)
                                       // User data is accessed via pDevice->pUserData in callback
@@ -706,7 +764,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
 
     res = ma_device_init(&sit_audio.miniaudio_context, &device_config, &sit_audio.miniaudio_device);
 
-    // [DEBUG] Verify exclusive mode actually activated
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     fprintf(stderr, "=== AUDIO DEVICE INIT DEBUG ===\n");
     fprintf(stderr, "Init result: %s\n", ma_result_description(res));
     if (res == MA_SUCCESS) {
@@ -723,6 +781,7 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
         fprintf(stderr, "Backend: %s\n", ma_get_backend_name(sit_audio.miniaudio_device.pContext->backend));
     }
     fprintf(stderr, "================================\n");
+#endif
 
     if (res != MA_SUCCESS) {
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, ma_result_description(res));
@@ -764,6 +823,13 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
                 SituationCreatePatch(graph, sound_src, 0, mixer_node, 1, false);
             }
 
+            {
+                SituationNode* ss_node = SituationGetNode(graph, sound_src);
+                if (ss_node && ss_node->device_data) {
+                    sit_audio.default_graph_voice_source = ss_node->device_data;
+                }
+            }
+
             sit_audio.default_graph = graph;
             sit_audio.active_graph = graph;  // [Phase H] Activate the node graph path
         }
@@ -774,6 +840,29 @@ SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const S
     atomic_store(&sit_audio.audio_ready, true);
 
     return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Switches the active audio output to a specific device.
+ * @details This function re-initializes the audio subsystem to use the device specified by its internal ID (obtained from `SituationGetAudioDevices`). It allows the user to select their preferred output, such as switching between speakers and a headset. Always requests **exclusive** mode for low latency.
+ *
+ * @par Behavior
+ *   If an audio device is already active, it will be stopped and uninitialized before the new device is started. The new device will be configured with the specified format, or with sensible defaults (stereo, 48kHz float32) if `format` is `NULL`.
+ *
+ * @param situation_internal_id The internal ID of the target device, corresponding to its index in the array returned by `SituationGetAudioDevices`.
+ * @param format A pointer to a `SituationAudioFormat` struct specifying the desired sample rate, channel count, and bit depth for the new device. Can be `NULL` to use defaults.
+ *
+ * @return `SITUATION_SUCCESS` on successful switch.
+ * @return `SITUATION_ERROR_AUDIO_CONTEXT` if the audio system is not initialized.
+ * @return `SITUATION_ERROR_AUDIO_DEVICE` if the ID is invalid, or if the new device fails to initialize or start.
+ * @return `SITUATION_ERROR_INVALID_PARAM` if the requested format contains an unsupported bit depth.
+ *
+ * @warning Switching devices may cause a brief interruption in audio playback.
+ *
+ * @see SituationGetAudioDevices()
+ */
+SITAPI SituationError SituationSetAudioDevice(int situation_internal_id, const SituationAudioFormat* format) {
+    return _SituationSetAudioDeviceInternal(situation_internal_id, format, ma_share_mode_exclusive);
 }
 
 /**
@@ -1194,6 +1283,9 @@ SITAPI void SituationUnloadSound(SituationSound* sound) {
 
     // Stop playback first
     SituationStopLoadedSound(sound);
+
+    // Wait until the audio callback is not decoding/mixing from a snapshot that may reference this sound.
+    _SituationWaitUntilVoiceSnapshotIdle();
 
     // If managed by mixer graph, detach and uninit node
     // [Phase H] Legacy mixer graph management removed â€” node graph handles routing now

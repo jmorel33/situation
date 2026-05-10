@@ -428,6 +428,10 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
 
     VkRenderPass main_window_render_pass;       // The default render pass for the window
     VkFramebuffer* main_window_framebuffers;    // Array of framebuffers for the swapchain
+    /** Same attachments as main window FBs but color loadOp LOAD — required after VD composite
+     *  so vkCmdBeginRenderPass does not CLEAR the swapchain (wiping composite output). */
+    VkRenderPass main_window_render_pass_resume;
+    VkFramebuffer* main_window_framebuffers_resume;
 
     VkImage depth_image;                        // The depth buffer image
     VmaAllocation depth_image_memory;           // Memory allocation for the depth buffer
@@ -478,7 +482,7 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
     VkDescriptorSetLayout storage_buffer_layout;// Layout for storage buffers (redundant with ssbo?)
     VkDescriptorSetLayout storage_image_layout; // Layout for storage images
     VkDescriptorSetLayout compute_sampler_layout;
-    VkDescriptorSetLayout composite_dual_sampler_layout;  // Bindings 4 and 5 for composite shader // Layout for compute shader samplers (binding 0, compute stage)
+    VkDescriptorSetLayout composite_dest_sampler_layout;   // Set 2 in advanced VD FS: binding 5 (framebuffer copy / destination)
 
     // Compute Pipeline Layout Cache
     VkPipelineLayout current_pipeline_layout_for_push_constants; // Last bound graphics layout
@@ -547,6 +551,21 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
     // Render Pass Cache
     _SituationCachedRenderPass render_pass_cache[32];
     uint32_t render_pass_cache_count;
+
+    // Pre-present screenshot (parity with OpenGL `screenshot_buffer` — see LIBRARY_BUGFIX_PLAN V6)
+    VkBuffer screenshot_staging_buffer;
+    VmaAllocation screenshot_staging_allocation;
+    uint8_t* screenshot_buffer;
+    int screenshot_width;
+    int screenshot_height;
+    bool screenshot_valid;
+    /** Per frame-in-flight slot: copy command recorded for that slot's submission (required when render thread may lag main). */
+    bool screenshot_copy_pending[SITUATION_MAX_FRAMES_IN_FLIGHT];
+    mtx_t screenshot_mutex;
+    bool screenshot_mutex_initialized;
+
+    /** Recording state: main swapchain render pass open (SituationCmdBeginRenderPass with display_id == -1). Prevents stray vkCmdEndRenderPass in VD composite. */
+    bool inside_main_swapchain_render_pass;
 
 } _SituationVulkanState;
 
@@ -1002,9 +1021,14 @@ typedef struct {
     void (*output_monitor_callback)(const float* samples, uint32_t frame_count, void* user_data);
     void* output_monitor_user_data;
 
+    /* Last playback block levels (written from audio callback; read from main/UI via SituationGetMasterOutputMeter). */
+    _Atomic float audio_meter_peak;
+    _Atomic float audio_meter_rms;
+
     // [Phase H] Node Graph Integration
     SituationAudioGraph*    active_graph;    // Currently active processing graph (NULL = legacy path)
     SituationAudioGraph*    default_graph;   // Auto-created minimal graph (Sound Source + Tone Synth → Mixer)
+    void*                   default_graph_voice_source; // SituationSoundSource* — default graph SITUATION_NODE_SOUND_SOURCE (Policy B voice bus)
 } _SituationAudioState;
 
 //==================================================================================
@@ -1113,6 +1137,11 @@ typedef struct _SituationTextureSlot {
     VmaAllocation allocation;
     VkDescriptorSet descriptor_set;
     VkDescriptorPool descriptor_pool; // Owner pool
+    /** Extra set: single combined image sampler at binding 0 (`text_sampler_layout`) for
+     *  SituationLoadShaderFromMemory pipelines (set 1). Bindless textures only populate the
+     *  global array; this set lets SituationCmdBindTextureSet(cmd, 1, tex) work with harness shaders. */
+    VkDescriptorSet single_sampler_descriptor_set;
+    VkDescriptorPool single_sampler_descriptor_pool;
 #elif defined(SITUATION_USE_OPENGL)
     GLuint gl_texture_id;
     GLenum internal_format;             // Texture internal format (GL_RGBA8 or GL_SRGB8_ALPHA8)
@@ -1224,9 +1253,11 @@ typedef struct {
     atomic_int momentum_head;
     atomic_int momentum_tail;
     mtx_t momentum_mutex; // Protects the queue
+    bool momentum_mutex_initialized;
 
     // [v2.3.34] Thread Safety for Resource Lists (Hot-Reload offload)
     mtx_t resource_registry_mutex;
+    bool resource_registry_mutex_initialized;
 
     // [v2.3.40] Initialization state for safe multi-threaded resource creation
     atomic_int init_state;  // SituationInitState
@@ -1356,6 +1387,66 @@ static SituationContext* _sit_current_context = NULL;
 #define sit_audio (_sit_current_context->audio)
 #define sit_input (_sit_current_context->input) // [NEW]
 
+#if defined(SITUATION_USE_VULKAN)
+/**
+ * Wait on a fence without freezing the window: try non-blocking first (happy path is ~free),
+ * then short timeouts + glfwPollEvents only while the GPU is still busy or wedged.
+ * @param max_ns Total wait budget for the chunked loop (not per-iteration).
+ */
+static VkResult _SituationVulkanWaitFencePumpWindowBudget(VkDevice device, VkFence fence, uint64_t max_ns) {
+    VkResult imm = vkWaitForFences(device, 1, &fence, VK_TRUE, 0);
+    if (imm == VK_SUCCESS) return VK_SUCCESS;
+    if (imm != VK_TIMEOUT) return imm;
+
+    const uint64_t chunk_ns = 16000000ULL; /* 16 ms chunks — frequent enough for responsiveness, rare on hot path */
+    uint64_t waited = 0;
+    while (waited < max_ns) {
+        uint64_t remain = max_ns - waited;
+        uint64_t step = chunk_ns < remain ? chunk_ns : remain;
+        VkResult r = vkWaitForFences(device, 1, &fence, VK_TRUE, step);
+        if (r == VK_SUCCESS) return VK_SUCCESS;
+        if (r != VK_TIMEOUT) return r;
+        waited += step;
+        glfwPollEvents();
+    }
+    return VK_TIMEOUT;
+}
+
+static VkResult _SituationVulkanWaitFencePumpWindow(VkDevice device, VkFence fence) {
+    return _SituationVulkanWaitFencePumpWindowBudget(device, fence, SITUATION_VULKAN_FENCE_WAIT_TIMEOUT_NS);
+}
+
+/**
+ * Bounded substitute for vkDeviceWaitIdle: wait each in-flight frame fence with short timeouts + glfwPollEvents.
+ * Used on shutdown, swapchain teardown/recreate, VSync/full cleanup, and init error paths — anywhere indefinite idle would freeze the OS window.
+ */
+static void _SituationVulkanWaitInFlightFencesPump(const char* context_label) {
+    VkDevice device = sit_render.vk.device;
+    if (device == VK_NULL_HANDLE) return;
+    VkFence* fences = sit_render.vk.in_flight_fences;
+    uint32_t mf = sit_render.vk.max_frames_in_flight;
+    if (fences == NULL || mf == 0) {
+        fprintf(stderr, "[Situation] WARNING: Vulkan (%s): no in-flight fences tracked; skipping bounded GPU idle wait.\n",
+                context_label ? context_label : "unknown");
+        return;
+    }
+    const uint64_t budget = SITUATION_VULKAN_SHUTDOWN_FENCE_WAIT_NS;
+    for (uint32_t i = 0; i < mf; ++i) {
+        VkFence f = fences[i];
+        if (f == VK_NULL_HANDLE) continue;
+        VkResult r = _SituationVulkanWaitFencePumpWindowBudget(device, f, budget);
+        if (r == VK_TIMEOUT) {
+            fprintf(stderr, "[Situation] WARNING: Vulkan (%s): in_flight_fences[%u] timed out (~%.1fs, SITUATION_VULKAN_SHUTDOWN_FENCE_WAIT_NS); continuing.\n",
+                    context_label ? context_label : "unknown", i, (double)budget / 1e9);
+        } else if (r != VK_SUCCESS) {
+            fprintf(stderr, "[Situation] WARNING: Vulkan (%s): in_flight_fences[%u] vkWaitForFences returned %d; continuing.\n",
+                    context_label ? context_label : "unknown", i, (int)r);
+        }
+    }
+}
+
+static void _SituationVulkanShutdownWaitGpuPump(void) { _SituationVulkanWaitInFlightFencesPump("SituationShutdown"); }
+#endif
 
 // =================================================================================
 // Shader Contract & Embedded Shader Sources
@@ -1509,7 +1600,9 @@ static const char* SIT_VD_FRAGMENT_SHADER_SRC =
 static const char* SIT_COMPOSITE_VERTEX_SHADER_SRC =
     "#version 450 core\n"
     "layout(location = " SIT_STRINGIFY(SIT_ATTR_POSITION) ") in vec2 aPos;\n"
+#if defined(SITUATION_USE_OPENGL)
     "layout(location = " SIT_STRINGIFY(SIT_ATTR_TEXCOORD_0) ") in vec2 aTexCoords;\n"
+#endif
     "layout(location = 0) out vec2 v_texCoord;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
@@ -1517,7 +1610,7 @@ static const char* SIT_COMPOSITE_VERTEX_SHADER_SRC =
     "layout(push_constant) uniform CompositePushConstants { mat4 model; int blendMode; float opacity; } pc;\n"
     "void main() {\n"
     "    gl_Position = ubo.projection * pc.model * vec4(aPos, 0.0, 1.0);\n"
-    "    v_texCoord = aTexCoords;\n"
+    "    v_texCoord = aPos;\n"
     "}\n"
 #elif defined(SITUATION_USE_OPENGL)
     "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_PROJECTION_MATRIX) ") uniform mat4 u_projection;\n"
@@ -1633,6 +1726,9 @@ static const char* SIT_QUAD_VERTEX_SHADER =
 
 static const char* SIT_QUAD_FRAGMENT_SHADER =
     "#version 450 core\n"
+#if defined(SITUATION_USE_VULKAN)
+    "#extension GL_EXT_nonuniform_qualifier : require\n"
+#endif
 #if defined(SITUATION_USE_OPENGL)
     "#extension GL_ARB_bindless_texture : enable\n"
     "#extension GL_ARB_gpu_shader_int64 : enable\n"
@@ -1641,7 +1737,6 @@ static const char* SIT_QUAD_FRAGMENT_SHADER =
     "layout(location = 0) out vec4 outColor;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
-    "#extension GL_EXT_nonuniform_qualifier : require\n"
     "layout(set = 1, binding = 0) uniform sampler2D global_textures[];\n"
     "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; uint texture_id; int use_texture; } pc;\n"
     "void main() {\n"

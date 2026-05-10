@@ -332,13 +332,7 @@ static void _SituationFullCleanupOnError(void) {
  // This ensures all submitted work on all queues is finished.
  // It's safe to call this even if the device creation failed, as sit_render.vk.device would be VK_NULL_HANDLE.
  if (sit_render.vk.device != VK_NULL_HANDLE) {
- VkResult result = vkDeviceWaitIdle(sit_render.vk.device);
- // Ignore the result. If it fails, proceeding with cleanup is still the best option.
- // Potential failures (VK_ERROR_DEVICE_LOST) indicate a serious problem, but cleanup should still be attempted to free other resources (GLFW, audio context).
- if (result != VK_SUCCESS) {
- // Optional: Log in debug builds if a logger is available.
- // fprintf(stderr, "WARNING: vkDeviceWaitIdle failed (0x%x) during error cleanup.\n", result);
- }
+ _SituationVulkanWaitInFlightFencesPump("SituationInit error cleanup");
  }
  }
 #elif defined(SITUATION_USE_OPENGL)
@@ -640,7 +634,12 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
  // [CRITICAL] Initialize resource_registry_mutex BEFORE renderer init
  // The renderer initialization (font loading, texture creation) needs this mutex
  SIT_DEBUG_LOG("[STEP 2.5] Initializing resource registry mutex");
- mtx_init(&sit_render.resource_registry_mutex, mtx_plain);
+ if (mtx_init(&sit_render.resource_registry_mutex, mtx_plain) != thrd_success) {
+ _SituationSetErrorFromCode(SITUATION_ERROR_INIT_FAILED, "Failed to initialize resource registry mutex.");
+ _SituationFullCleanupOnError();
+ return SITUATION_ERROR_INIT_FAILED;
+ }
+ sit_render.resource_registry_mutex_initialized = true;
  
  SIT_DEBUG_LOG("[STEP 3] Calling _SituationInitRenderer");
  err = _SituationInitRenderer(init_info);
@@ -703,7 +702,9 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
 
  // [v2.3.40] Render thread initialized, now safe to create resources
  atomic_store(&sit_render.init_state, SITUATION_STATE_READY);
+#if defined(SITUATION_VERBOSE_DIAGNOSTICS)
  fprintf(stderr, "[Situation] Initialization complete - state: READY\n");
+#endif
  fflush(stderr);
 
  #endif
@@ -717,8 +718,18 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
 
  // --- 7. Start Default Audio Device ---
  // Open the system default playback device so tones and sounds work out of the box.
+ // Windows: 2nd SituationInit() in the same process often blocked inside ma_device_init() when
+ // requesting exclusive mode again — DirectSound/WASAPI may not have released the endpoint.
+ // Auto-start uses shared mode on session 2+; explicit SituationSetAudioDevice() stays exclusive.
  if (sit_audio.is_miniaudio_context_initialized) {
+#if defined(_WIN32)
+     static unsigned _sit_audio_step7_session;
+     _sit_audio_step7_session++;
+     ma_share_mode sm = (_sit_audio_step7_session > 1u) ? ma_share_mode_shared : ma_share_mode_exclusive;
+     SituationError audio_dev_err = _SituationSetAudioDeviceInternal(0, NULL, sm);
+#else
      SituationError audio_dev_err = SituationSetAudioDevice(0, NULL);
+#endif
      if (audio_dev_err != SITUATION_SUCCESS) {
          fprintf(stderr, "[Situation Audio] Warning: Could not start default audio device (error %d). Call SituationSetAudioDevice() manually.\n", audio_dev_err);
      }
@@ -1115,6 +1126,8 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
  sit_audio.audio_callback_temp_buffer_frames_capacity = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES;
 
  atomic_init(&sit_audio.is_processing_snapshot, false);
+ atomic_init(&sit_audio.audio_meter_peak, 0.f);
+ atomic_init(&sit_audio.audio_meter_rms, 0.f);
 
  // [v2.4] Audio Queue Initialization
  sit_audio.config_max_voices = init_info->max_audio_voices;
@@ -1557,10 +1570,11 @@ SITAPI void SituationShutdown(void) {
 
  if (!_sit_current_context) return;
  // [FIX v2.3.27B] Atomic check-and-set
+ /* Exchange returns the *previous* value. After this, SituationIsInitialized() is false
+    until the next successful SituationInit — do NOT call SituationIsInitialized() here. */
  if (!atomic_exchange(&sit_gs.is_initialized, false)) {
  return; // Already shut down or shutting down
  }
- if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_SHUTDOWN_FAILED, "Not initialized"); return; }
  if (sit_gs.exit_callback != NULL) { sit_gs.exit_callback(sit_gs.exit_callback_user_data); }
 
  // 1. Kill Thread Pool (stops I/O thread hot-reload polling)
@@ -1568,9 +1582,21 @@ SITAPI void SituationShutdown(void) {
  SituationDestroyThreadPool(&sit_gs.thread_pool);
 #endif
 
+ // [v2.4.52] Stop miniaudio before blocking GPU sync. Exclusive-mode output + a long or
+ // stuck glFinish / vkDeviceWaitIdle can present as "sound faded, then the UI locked" on shutdown.
+ atomic_store(&sit_audio.audio_ready, false);
+ (void)SituationStopAllLoadedSounds();
+ (void)SituationStopAllTones();
+ (void)SituationStopAudioCapture();
+ if (sit_audio.is_miniaudio_device_active) {
+ ma_device_stop(&sit_audio.miniaudio_device);
+ ma_device_uninit(&sit_audio.miniaudio_device);
+ sit_audio.is_miniaudio_device_active = false;
+ }
+
  // Wait for the GPU to finish any in-flight work before we start tearing things down. This is especially critical for Vulkan.
 #if defined(SITUATION_USE_VULKAN)
- if (sit_render.vk.device != VK_NULL_HANDLE) vkDeviceWaitIdle(sit_render.vk.device);
+ _SituationVulkanShutdownWaitGpuPump();
 #elif defined(SITUATION_USE_OPENGL)
  if (sit_gs.sit_glfw_window) glFinish();
 #endif
@@ -1639,8 +1665,20 @@ static void _SituationCleanupSubsystems(void) {
  SituationStopAllTones(); // [Resonance]
 	SituationStopAudioCapture(); // Stop recording if active
  if (sit_audio.is_miniaudio_device_active) {
+ ma_device_stop(&sit_audio.miniaudio_device);
  ma_device_uninit(&sit_audio.miniaudio_device);
  sit_audio.is_miniaudio_device_active = false;
+ }
+
+ // [Phase H] Destroy auto-created graph after device stopped so the audio thread cannot touch it.
+ // If active_graph pointed at default_graph, clear it before free.
+ if (sit_audio.active_graph == sit_audio.default_graph) {
+ sit_audio.active_graph = NULL;
+ }
+ sit_audio.default_graph_voice_source = NULL;
+ if (sit_audio.default_graph) {
+ SituationDestroyGraph(sit_audio.default_graph);
+ sit_audio.default_graph = NULL;
  }
 
  // [FIX v2.4.15] Destroy audio queue mutex BEFORE context uninit, while we can
@@ -1722,7 +1760,14 @@ static void _SituationCleanupRenderer(void) {
 #elif defined(SITUATION_USE_OPENGL)
  _SituationCleanupOpenGL();
 #endif
+ if (sit_render.resource_registry_mutex_initialized) {
+ mtx_destroy(&sit_render.resource_registry_mutex);
+ sit_render.resource_registry_mutex_initialized = false;
+ }
+ if (sit_render.momentum_mutex_initialized) {
  mtx_destroy(&sit_render.momentum_mutex);
+ sit_render.momentum_mutex_initialized = false;
+ }
 }
 
 /**

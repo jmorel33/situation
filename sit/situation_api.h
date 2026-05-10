@@ -70,6 +70,9 @@
  *
  *  Note: Ensure you link against GLFW3 and your system's OpenGL libraries.
  *        The 'ext' directory should contain the required dependencies (stb, glad, miniaudio).
+ *
+ *  Optional: define SITUATION_VERBOSE_DIAGNOSTICS (e.g. -DSITUATION_VERBOSE_DIAGNOSTICS) before including headers
+ *  to enable extra renderer init/logging chatter on OpenGL and Vulkan (default builds stay quiet).
  */
 
 #ifndef SITUATION_API_H
@@ -422,6 +425,18 @@ typedef enum {
 #define SITUATION_VK_STAGING_BUFFER_SIZE 		(128 * 1024 * 1024) /* 128 MB — great for large texture/model uploads in Vulkan */
 #define SITUATION_GL_RING_SIZE                  (64 * 1024 * 1024) /* 64MB Persistent Ring Buffer for OpenGL Zero-Copy updates */
 #define SITUATION_MAX_FRAMES_IN_FLIGHT          2    /* Max overlapping frames for VK/GL swapchains (2-3 typical for V-Sync). */
+#ifndef SITUATION_VULKAN_ACQUIRE_TIMEOUT_NS
+#define SITUATION_VULKAN_ACQUIRE_TIMEOUT_NS     1000000000ULL /* Nanoseconds for vkAcquireNextImageKHR; avoids indefinite wait when the surface will not provide an image (minimized/occluded). Override before including this header if needed. */
+#endif
+#ifndef SITUATION_VULKAN_FENCE_WAIT_TIMEOUT_NS
+#define SITUATION_VULKAN_FENCE_WAIT_TIMEOUT_NS 15000000000ULL /* Total nanoseconds for chunked vkWaitForFences (+ glfwPollEvents) per fence; avoids infinite stall / Windows "Not responding". */
+#endif
+#ifndef SITUATION_VULKAN_SHUTDOWN_FENCE_WAIT_NS
+#define SITUATION_VULKAN_SHUTDOWN_FENCE_WAIT_NS 3000000000ULL /* Per in-flight fence: chunked vkWaitForFences + glfwPollEvents anywhere we would have used vkDeviceWaitIdle (shutdown, swapchain teardown/recreate, VSync/full cleanup, init error path). vkDeviceWaitIdle blocks the main thread with no event pump and never returns if the GPU is wedged → frozen pale window. */
+#endif
+#ifndef SITUATION_VULKAN_LOG_SLOW_ACQUIRE_MIN_MS
+#define SITUATION_VULKAN_LOG_SLOW_ACQUIRE_MIN_MS 100 /* Log vkAcquire timing to stderr if acquire >= this many ms, or on TIMEOUT. Use 0 to log every acquire (verbose). */
+#endif
 #define SITUATION_MAX_STORAGE_DEVICES           8    /* Max detected storage volumes (e.g., drives, mounts). */
 #define SITUATION_MAX_NETWORK_ADAPTERS          8    /* Max network interfaces (e.g., Ethernet/Wi-Fi). */
 #define SITUATION_MAX_DEVICE_NAME_LEN           128  /* Max length for device strings (e.g., GPU/CPU names). */
@@ -1530,7 +1545,7 @@ typedef enum {
 } SituationRenderFeature;
 
 SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature);                 // Check if a graphics feature is supported on current hardware.
-4
+
 // --- Deprecated Barrier Flags (for SituationMemoryBarrier) ---
 #define SITUATION_BARRIER_VERTEX_ATTRIB_ARRAY_BIT   		0x00000001
 #define SITUATION_BARRIER_ELEMENT_ARRAY_BIT         		0x00000002
@@ -2114,6 +2129,7 @@ SITAPI void SituationStopAudioCapture(void);                                    
 
 // --- Audio Output Monitoring (for visualization) ---
 SITAPI void SituationSetAudioOutputMonitor(void (*callback)(const float* samples, uint32_t frame_count, void* user_data), void* user_data); // Set a callback to receive mixed output samples (for VU meters, FFT, etc.).
+SITAPI void SituationGetMasterOutputMeter(float* out_peak, float* out_rms); // Last playback callback block: peak sample magnitude & RMS (optional pointers; safe from main/UI thread).
 
 // --- Sound Loading and Management ---
 // --- Audio Handle API ---

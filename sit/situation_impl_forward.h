@@ -65,6 +65,7 @@ static void _SituationRenderJobWorker(void* data, void* unused);
 //----------------------------------------------------------------------------------
 // Audio Helpers
 //----------------------------------------------------------------------------------
+static SituationError _SituationSetAudioDeviceInternal(int situation_internal_id, const SituationAudioFormat* format, ma_share_mode playback_share_mode);
 static void _SitAudioInitPool(void);
 static void _SitAudioCleanupPool(void);
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount);
