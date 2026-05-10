@@ -1241,7 +1241,7 @@ SITAPI void _SituationLogGLError(const char* file, int line) {
  */
 static bool _SituationInitRenderThread(const SituationInitInfo* info) {
     // Note: resource_registry_mutex is now initialized earlier in SituationInit, before renderer init
-    
+
     #if defined(SITUATION_ENABLE_RENDER_THREAD)
     if (info->render_thread_count == 0) return true;
 
@@ -1632,7 +1632,7 @@ static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, Si
     printf("[OpenGL Debug] _SitGLSoftCmdPush: ENTRY, buf=%p, opcode=%d\n", buf, opcode);
     fflush(stdout);
     #endif
-    
+
     // [FIX v2.3.27B] Fail fast if buffer is already compromised
     if (buf->is_broken) {
         #ifdef SITUATION_OPENGL_DEBUG
@@ -1649,12 +1649,12 @@ static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, Si
 
     if (buf->packet_count >= buf->packet_capacity) {
         size_t new_cap = (buf->packet_capacity == 0) ? 64 : buf->packet_capacity * 2;
-        
+
         #ifdef SITUATION_OPENGL_DEBUG
         printf("[OpenGL Debug] _SitGLSoftCmdPush: Reallocating packets, new_cap=%zu\n", new_cap);
         fflush(stdout);
         #endif
-        
+
         SitCommandPacket* new_ptr = (SitCommandPacket*)SIT_REALLOC(buf->packets, new_cap * sizeof(SitCommandPacket));
 
         if (!new_ptr) {
@@ -1668,26 +1668,26 @@ static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, Si
         }
         buf->packets = new_ptr;
         buf->packet_capacity = new_cap;
-        
+
         #ifdef SITUATION_OPENGL_DEBUG
         printf("[OpenGL Debug] _SitGLSoftCmdPush: Realloc SUCCESS, new packets=%p\n", new_ptr);
         fflush(stdout);
         #endif
     }
-    
+
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] _SitGLSoftCmdPush: Getting packet at index %zu\n", buf->packet_count);
     fflush(stdout);
     #endif
-    
+
     SitCommandPacket* packet = &buf->packets[buf->packet_count++];
     packet->opcode = opcode;
-    
+
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] _SitGLSoftCmdPush: SUCCESS, returning packet=%p\n", packet);
     fflush(stdout);
     #endif
-    
+
     return packet;
 }
 
@@ -1743,7 +1743,7 @@ static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* d
  */
 static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int frame_index) {
     #ifdef SITUATION_OPENGL_DEBUG
-    printf("[OpenGL Debug] _SituationGLExecuteCommands: ENTRY, buf=%p, frame_index=%d, packet_count=%d\n", 
+    printf("[OpenGL Debug] _SituationGLExecuteCommands: ENTRY, buf=%p, frame_index=%d, packet_count=%d\n",
            (void*)buf, frame_index, buf ? buf->packet_count : -1);
     fflush(stdout);
     #endif
@@ -2932,7 +2932,7 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         sit_render.gl.mesh_vao_id = 0;
         return SITUATION_ERROR_OPENGL_GENERAL;
     }
-    
+
 #ifndef NDEBUG
     printf("Situation [OpenGL]: Text renderer initialized\n"); fflush(stdout);
     printf("Situation [OpenGL]: Creating virtual display shaders...\n"); fflush(stdout);
@@ -4746,7 +4746,7 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
 
         return (SituationShader){0}; // Return invalid shader
     }
-    
+
     // NOTE: This function is incomplete and doesn't properly store the pipeline in a slot
     // Use SituationLoadShader() or SituationLoadShaderFromMemory() instead
     return (SituationShader){0};
@@ -9369,7 +9369,7 @@ SITAPI SituationError SituationEndFrame(void) {
     printf("[OpenGL Debug] SituationEndFrame: ENTRY\n");
     fflush(stdout);
     #endif
-    
+
     // Mark that we're no longer recording a frame
     sit_render.in_frame = false;
 
@@ -9399,7 +9399,7 @@ SITAPI SituationError SituationEndFrame(void) {
         printf("[OpenGL Debug] SituationEndFrame: Locking momentum mutex\n");
         fflush(stdout);
         #endif
-        
+
         mtx_lock(&sit_render.momentum_mutex);
 
         #ifdef SITUATION_OPENGL_DEBUG
@@ -9435,7 +9435,7 @@ SITAPI SituationError SituationEndFrame(void) {
         #endif
 
         mtx_unlock(&sit_render.momentum_mutex);
-        
+
         #ifdef SITUATION_OPENGL_DEBUG
         printf("[OpenGL Debug] SituationEndFrame: Momentum mutex unlocked\n");
         fflush(stdout);
@@ -9539,8 +9539,8 @@ SITAPI SituationError SituationEndFrame(void) {
         {
             #ifdef SITUATION_OPENGL_DEBUG
             printf("[OpenGL Debug] SituationEndFrame: About to call _SituationGLExecuteCommands\n");
-            printf("[OpenGL Debug] current_frame_index=%d, packet_count=%d\n", 
-                   sit_render.current_frame_index, 
+            printf("[OpenGL Debug] current_frame_index=%d, packet_count=%d\n",
+                   sit_render.current_frame_index,
                    sit_render.gl.soft_buffers[sit_render.current_frame_index].packet_count);
             fflush(stdout);
             #endif
@@ -9733,6 +9733,20 @@ SITAPI SituationError SituationEndFrame(void) {
                 return SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID;
             }
 
+            // --- [BUGFIX V6] Pre-Present Screenshot Capture ---
+            if (sit_render.vk.screenshot_valid) {
+                // Need to wait for rendering to finish before copying
+                vkQueueWaitIdle(sit_render.vk.graphics_queue);
+
+                VkImage src_image = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
+                _SituationVulkanBlitImageToHostVisibleBuffer(
+                    src_image, sit_render.vk.swapchain_extent.width, sit_render.vk.swapchain_extent.height,
+                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, sit_render.vk.screenshot_buffer
+                );
+                sit_render.vk.screenshot_width = sit_render.vk.swapchain_extent.width;
+                sit_render.vk.screenshot_height = sit_render.vk.swapchain_extent.height;
+            }
+
             // Perform the presentation.
             #ifdef SITUATION_VULKAN_DEBUG
             // fprintf(stderr, "[Situation] About to call vkQueuePresentKHR (image_index=%u)\n", sit_render.vk.current_image_index); fflush(stderr);
@@ -9806,6 +9820,20 @@ SITAPI SituationError SituationEndFrame(void) {
         present_info.swapchainCount = 1;
         present_info.pSwapchains = swapchains;
         present_info.pImageIndices = &sit_render.vk.current_image_index; // Present the image we acquired/used this frame
+
+        // --- [BUGFIX V6] Pre-Present Screenshot Capture ---
+        if (sit_render.vk.screenshot_valid) {
+            // Need to wait for rendering to finish before copying
+            vkQueueWaitIdle(sit_render.vk.graphics_queue);
+
+            VkImage src_image = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
+            _SituationVulkanBlitImageToHostVisibleBuffer(
+                src_image, sit_render.vk.swapchain_extent.width, sit_render.vk.swapchain_extent.height,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, sit_render.vk.screenshot_buffer
+            );
+            sit_render.vk.screenshot_width = sit_render.vk.swapchain_extent.width;
+            sit_render.vk.screenshot_height = sit_render.vk.swapchain_extent.height;
+        }
 
         // Perform the presentation.
         VkResult result = vkQueuePresentKHR(sit_render.vk.present_queue, &present_info);
@@ -10115,17 +10143,17 @@ SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
     printf("[OpenGL Debug] SituationCmdEndRenderPass: ENTRY, cmd=%p\n", cmd);
     fflush(stdout);
     #endif
-    
+
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
     if (!buf) return SITUATION_ERROR_INVALID_PARAM;
-    
+
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] SituationCmdEndRenderPass: buf=%p, calling _SitGLSoftCmdPush\n", buf);
     fflush(stdout);
     #endif
-    
+
     if (!_SitGLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS)) return SITUATION_ERROR_MEMORY_ALLOCATION;
-    
+
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] SituationCmdEndRenderPass: SUCCESS, returning\n");
     fflush(stdout);
@@ -14168,7 +14196,7 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
             const char* next_line = strchr(version_pos, '\n');
             if (next_line) {
                 next_line++; // Skip newline
-                
+
                 // Skip past any existing #extension directives
                 const char* injection_point = next_line;
                 while (1) {
@@ -14269,7 +14297,7 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
 
                 // Set the final, combined error message.
                 _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, final_error_message);
-                
+
                 // Log to debug file
                 SIT_DEBUG_LOG("[SHADER_ERROR] %s", final_error_message);
 
@@ -17021,8 +17049,8 @@ static int _SituationRenderThreadEntry(void* arg) {
 
     // Pin the Render Thread strictly to Logical Core 1
     // (Leaving Core 0 free for the OS and Main Game loop)
-    SituationSetThreadAffinity(1 << 1); 
-	
+    SituationSetThreadAffinity(1 << 1);
+
     // [OpenGL] We must acquire the context here.
     // Note: Initialization (SituationInit) happens on Main.
     // The Main thread must release the context (glfwMakeContextCurrent(NULL)) before triggering this thread.
@@ -17162,6 +17190,20 @@ static int _SituationRenderThreadEntry(void* arg) {
         present_info.swapchainCount = 1;
         present_info.pSwapchains = swapchains;
         present_info.pImageIndices = &sit_render.vk.acquired_image_indices[frame_index];
+
+        // --- [BUGFIX V6] Pre-Present Screenshot Capture ---
+        if (sit_render.vk.screenshot_valid) {
+            // Need to wait for rendering to finish before copying
+            vkQueueWaitIdle(sit_render.vk.graphics_queue);
+
+            VkImage src_image = sit_render.vk.swapchain_images[sit_render.vk.acquired_image_indices[frame_index]];
+            _SituationVulkanBlitImageToHostVisibleBuffer(
+                src_image, sit_render.vk.swapchain_extent.width, sit_render.vk.swapchain_extent.height,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, sit_render.vk.screenshot_buffer
+            );
+            sit_render.vk.screenshot_width = sit_render.vk.swapchain_extent.width;
+            sit_render.vk.screenshot_height = sit_render.vk.swapchain_extent.height;
+        }
 
         // Perform the presentation.
         VkResult result = vkQueuePresentKHR(sit_render.vk.present_queue, &present_info);

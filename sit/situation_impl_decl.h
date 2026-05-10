@@ -548,6 +548,14 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
     _SituationCachedRenderPass render_pass_cache[32];
     uint32_t render_pass_cache_count;
 
+    // --- Pre-Present Screenshot Buffer [BUGFIX V6] ---
+    bool screenshot_valid;
+    VkBuffer screenshot_buffer;
+    VmaAllocation screenshot_buffer_alloc;
+    void* screenshot_buffer_mapped;
+    int screenshot_width;
+    int screenshot_height;
+
 } _SituationVulkanState;
 
 #elif defined(SITUATION_USE_OPENGL)

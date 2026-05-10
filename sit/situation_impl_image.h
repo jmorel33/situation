@@ -1,4 +1,4 @@
-﻿/***************************************************************************************************
+/***************************************************************************************************
 *
 *   situation_impl_image.h - Image, Font & Color Module Implementation
 *   (c) 2025-2026 Jacques Morel
@@ -2089,36 +2089,52 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
     // Use our new, generic utility function to correct the orientation.
     SituationImageFlip(out_image, SIT_FLIP_VERTICAL);
 #elif defined(SITUATION_USE_VULKAN)
-    // 1. Identify the source image.
-    // After EndFrame, the image has been presented. Use current_image_index which still
-    // points to the last rendered image (it's updated in AcquireFrameCommandBuffer).
-    VkImage srcImage = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
-    if (srcImage == VK_NULL_HANDLE) {
-        char err_msg[128];
-        snprintf(err_msg, sizeof(err_msg), "Cannot get screenshot: source swapchain image index %u is invalid", sit_render.vk.current_image_index);
-		return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID, err_msg);
-	}
+    // --- [BUGFIX V6] Pre-Present Screenshot Readback ---
+    // Instead of dynamically copying the swapchain image (which might be in an unreadable state after present),
+    // we read from the persistent CPU staging buffer populated during SituationEndFrame.
 
-    // 2. Wait for all GPU work to complete so the image content is finalized.
-    vkQueueWaitIdle(sit_render.vk.graphics_queue);
+    if (sit_render.vk.screenshot_valid && sit_render.vk.screenshot_buffer_mapped) {
+        // We have a valid pre-present capture
+        if (sit_render.vk.screenshot_width != width || sit_render.vk.screenshot_height != height) {
+             return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_GENERAL, "Screenshot buffer dimensions do not match window dimensions.");
+        }
 
-    // 3. The image is in PRESENT_SRC_KHR layout after EndFrame presented it.
-    VkImageLayout currentLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        size_t image_size = (size_t)width * height * 4;
+        out_image->data = SIT_MALLOC(image_size);
+        if (out_image->data) {
+            // Swapchain is typically BGRA, we need to convert to RGBA for consistency with OpenGL
+            uint8_t* src_ptr = (uint8_t*)sit_render.vk.screenshot_buffer_mapped;
+            uint8_t* dst_ptr = (uint8_t*)out_image->data;
+            for (size_t i = 0; i < (size_t)width * height; i++) {
+                dst_ptr[i*4 + 0] = src_ptr[i*4 + 2]; // R <- B
+                dst_ptr[i*4 + 1] = src_ptr[i*4 + 1]; // G <- G
+                dst_ptr[i*4 + 2] = src_ptr[i*4 + 0]; // B <- R
+                dst_ptr[i*4 + 3] = src_ptr[i*4 + 3]; // A <- A
+            }
+        } else {
+             return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MALLOC_FAILED, "Failed to allocate memory for screenshot readback.");
+        }
+    } else {
+        // Fallback to legacy dynamic capture (likely to return black on some drivers)
+        VkImage srcImage = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
+        if (srcImage == VK_NULL_HANDLE) {
+            char err_msg[128];
+            snprintf(err_msg, sizeof(err_msg), "Cannot get screenshot: source swapchain image index %u is invalid", sit_render.vk.current_image_index);
+            return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SWAPCHAIN_INVALID, err_msg);
+        }
 
-    // 4. Perform the copy using a fresh single-time command buffer.
-    // This helper will:
-    //   a. Transition image from PRESENT_SRC_KHR -> TRANSFER_SRC
-    //   b. Copy pixels to CPU buffer
-    //   c. Transition image back to PRESENT_SRC_KHR
-    out_image->data = _SituationVulkanBlitImageToHostVisibleBuffer(
-        srcImage,
-        currentLayout,
-        (uint32_t)width,
-        (uint32_t)height
-    );
+        vkQueueWaitIdle(sit_render.vk.graphics_queue);
+        VkImageLayout currentLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
-    // 5. Validation
-    if (out_image->data == NULL) { return SITUATION_ERROR_TEXTURE_UPLOAD_FAILED; }
+        out_image->data = _SituationVulkanBlitImageToHostVisibleBuffer(
+            srcImage,
+            currentLayout,
+            (uint32_t)width,
+            (uint32_t)height
+        );
+
+        if (out_image->data == NULL) { return SITUATION_ERROR_TEXTURE_UPLOAD_FAILED; }
+    }
 
     // Note: Vulkan blits usually preserve orientation or can be flipped via coordinates.
     // Unlike OpenGL, we usually don't need a CPU-side flip here depending on the projection matrix used.
