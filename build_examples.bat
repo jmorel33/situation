@@ -74,7 +74,7 @@ gcc examples/%EXAMPLE%.c ext/glfw/deps/tinycthread.c ^
     -std=c11 -O2 ^
     -msse -msse2 -msse4.1 ^
     -I. -Iext -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
-    -DSITUATION_USE_OPENGL ^
+    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING ^
     -L%GLFW_LIB% ^
     -static-libgcc ^
     -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive ^

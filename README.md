@@ -1,35 +1,40 @@
 <div align="center">
-  <img src="/doc/situation_blackMetal_logo.jpg" alt="Situation Logo">
+  <img src="doc/situation_blackMetal_logo.jpg" alt="Situation logo">
 </div>
 
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.4.42_
+_Core API library v2.4.62_
 
 _(c) 2025-2026 Jacques Morel_
 
-_MIT Licenced_
+_MIT Licensed_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](doc/C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
 Our immediate development roadmap is focused on expanding the library's capability:
-*   **Vulkan Test Harness (v2.4.42):** 🧹 **COMPLETE!** First pass at getting the Vulkan backend operational under the test harness. Fixes critical bugs in shader compilation, buffer updates, VD creation, VD compositing, pipeline vertex layout selection, and screenshot readback. Vulkan now passes ~55/78 graphics tests.
-*   **Graphics Clean Sweep (v2.4.41):** 🎉 **COMPLETE!** Fix all remaining graphics test failures — graphics module now passes 81/81. Fixes span shader uniforms, textured quad rendering, compute pipeline binding, buffer updates, and GL state cleanup for re-initialization.
-*   **Node Graph Takeover — Mixer Removed (v2.4.36):** 🛠️ **COMPLETE!** Removed the legacy miniaudio-based mixer API. The node graph system (`SituationAudioGraph` + `SituationProcessGraph`) is now the sole audio routing path. miniaudio remains as the audio device backend.
-*   **Audio Node Graph — All 26 Devices Live (v2.4.35):** 🎉 **COMPLETE!** Completed the audio node graph system: all 26 device types are now registered, instantiable, and have live DSP processing. Nodes created via `SituationCreateNode` now properly initialize their device state and process audio through the graph.
-*   **Test Harness Expansion (v2.4.33):** 🎉 **COMPLETE!** Added 86 new audio tests covering the full audio subsystem: device registry, node graph lifecycle & patching, control parameters, all 16 registered effects modules, graph serialization roundtrip, and MIDI integration & learn.
-*   **Test Harness Complete (v2.4.28):** 🎉 **COMPLETE!** CTest-based unit test framework with headless execution, JSON reporters, memory leak detection, and 300+ assertions verifying API boundaries, GPU state, and audio concurrency.
-*   **Test Harness Framework (v2.4.24):** 🛠️ **COMPLETE!** Introduced a formal test harness for regression testing the entire SITAPI public surface. The harness links against the pre-built DLL and exercises API functions as a black-box consumer.
-*   **Renderer Robustness Audit (v2.4.18 - v2.4.20):** 🛠️ **COMPLETE!** Systematic audit and hardening of all OpenGL and Vulkan runtime resource creation, command recording, frame lifecycle, and hot-reloading paths.
-*   **X-Macro Errno (v2.4.13):** 🛠️ **COMPLETE!** Error system refactor: single source of truth via X-macros. The `SituationError` enum and the human-readable message switch are now generated from one table.
-*   **Threading Manicure (v2.4.11):** 🛠️ **COMPLETE!** Non-disruptive hardening pass on the thread pool implementation. Seven targeted patches addressing platform correctness, edge-case safety, and documentation accuracy.
-*   **Internal Subsystem Extractions (v2.4.5 - v2.4.9):** 🛠️ **COMPLETE!** Pure structural refactor: extracted IO, Input, WDM, Image, Timer, Virtual Display, Control and Renderer subsystems into their own modules.
-*   **Virtual Display Compositing & Performance Parity (v2.4.3):** 🚀 **COMPLETE!** Fixed critical Virtual Display Compositing flaws in Vulkan and OpenGL backends. Achieves peak performance by eliminating CPU stalling on the Main Thread during UBO updates.
-*   **OpenGL Deferred Rendering Architecture (v2.4.2):** 🛠️ **COMPLETE!** Addressed critical architectural flaws in the OpenGL backend. Achieves true architectural parity with Vulkan, preventing race conditions and visual tearing.
-*   **Complete MIDI Architecture (v2.4.1):** 🎹 **COMPLETE!** Implemented a complete professional-grade MIDI subsystem with hybrid hardware/virtual routing, advanced features (filtering, transformation, recording), and Universal Device Inquiry.
-*   **OpenGL Graveyard Flush Safety (v2.4.1):** 🧹 **COMPLETE!** Fixed a major race condition and VRAM leak in the OpenGL backend caused by internal polling in `_SitGLFlushGraveyard`. The Render Thread and single-threaded fallback loop now properly wait for the GL sync fence from the old frame to complete before issuing commands or executing resource cleanup.
-*   **Modular Revolution & Architectural Reorganization (v2.4.0):** 🎉 **COMPLETE!** The monolithic `situation_impl.h` has been completely restructured into an aggregated header encompassing 16 independent modules (`sit/situation_impl_*.h`). This enables faster compilation and better code hygiene.
-*   **Audio Modularization (v2.3.61):** 🧹 **COMPLETE!** Extracted the internal Reverb (`sit/aud/reverb.h`) and Echo (`sit/aud/echo.h`) implementations into standalone headers to improve codebase modularity.
+
+*   **OpenGL diagnostics & compute harness (v2.4.62):** 🛠️ **COMPLETE!** Default-font / text / VD init **`stdout`** lines are gated behind **`SITUATION_VERBOSE_DIAGNOSTICS`** (same knob as Vulkan extras). **`SIT_COMPUTE_LAYOUT_TWO_SSBOS`** assigns **`glShaderStorageBlockBinding`** for **`InBuffer` / `OutBuffer`** so **`compute_chained_dispatches`** matches Vulkan’s two-set SPIR-V layout — full sequential **`sit_test`** (**OpenGL DLL**) **310/310**.
+*   **Vulkan VD compositing & graphics harness (v2.4.61):** 🎉 **COMPLETE!** Virtual-display compositing preserves the caller’s framebuffer (**resume render pass / LOAD**), screen-copy targets are recreated after swapchain rebuild, and Path A/B **`vkCmdPushConstants`** ranges match SPIR-V layouts. Vulkan **`sit_test --module graphics`** reaches **78/78** on the maintained harness.
+*   **Vulkan VD advanced compositor (v2.4.60):** 🎉 **COMPLETE!** Three-set pipeline layout for Path A with correct destination sampler (**binding 5**). See **`doc/UPDATELOG.md`**.
+*   **Vulkan test harness & backend hardening (v2.4.42 era):** 🛠️ **COMPLETE!** First sustained push: shaders, buffers, VD creation/compositing, pipeline layouts, screenshot readback — toward full Vulkan graphics parity (superseded by fixes through **v2.4.61**).
+*   **Graphics regression sweep (v2.4.41 era):** 🎉 **COMPLETE!** Bulk clears for uniforms, textured draws, compute binding, buffer updates, GL re-init hygiene; per-module counts evolve — see **`doc/UPDATELOG.md`**.
+*   **Node graph takeover — mixer removed (v2.4.36):** 🛠️ **COMPLETE!** Legacy mixer API removed; **`SituationAudioGraph`** + **`SituationProcessGraph`** are the routing path. miniaudio stays the device backend.
+*   **Audio node graph — devices live (v2.4.35):** 🎉 **COMPLETE!** Device types registered and processed through the graph (**`SituationCreateNode`**).
+*   **Test harness expansion (v2.4.33):** 🎉 **COMPLETE!** Broad audio coverage: registry, graph lifecycle, effects, serialization, MIDI.
+*   **Test harness complete (v2.4.28):** 🎉 **COMPLETE!** **CTest**-based runs, reporters, leak detection.
+*   **Test harness framework (v2.4.24):** 🛠️ **COMPLETE!** DLL-linked black-box **SITAPI** harness.
+*   **Renderer robustness audit (v2.4.18–v2.4.20):** 🛠️ **COMPLETE!** GL/VK resource paths and frame lifecycle.
+*   **X-macro errno (v2.4.13):** 🛠️ **COMPLETE!** **`SituationError`** table-driven messages.
+*   **Threading manicure (v2.4.11):** 🛠️ **COMPLETE!** Thread-pool hardening.
+*   **Internal subsystem extractions (v2.4.5–v2.4.9):** 🛠️ **COMPLETE!** Modular **`sit/situation_impl_*.h`** split.
+*   **Virtual display compositing & UBO performance (v2.4.3):** 🚀 **COMPLETE!** VD compositing fixes; less main-thread UBO stall.
+*   **OpenGL deferred rendering architecture (v2.4.2):** 🛠️ **COMPLETE!** GL/Vulkan structural parity.
+*   **Complete MIDI architecture (v2.4.1):** 🎹 **COMPLETE!** Routing, transforms, recording, UD inquiry.
+*   **OpenGL graveyard flush safety (v2.4.1):** 🧹 **COMPLETE!** **`_SitGLFlushGraveyard`** waits on prior-frame **`GL_ARB_sync`** before cleanup.
+*   **Modular revolution (v2.4.0):** 🎉 **COMPLETE!** Monolithic impl split into **16** internal modules.
+
+*   **Audio modularization (v2.3.61):** 🧹 **COMPLETE!** Extracted the internal Reverb (`sit/aud/reverb.h`) and Echo (`sit/aud/echo.h`) implementations into standalone headers to improve codebase modularity.
 *   **Uniform Optimization (v2.3.60):** 🛠️ **COMPLETE!** Implemented dynamic resizing for the internal OpenGL uniform hash map. The map now doubles its capacity and rehashes entries when the load factor exceeds 0.75, ensuring stable performance for complex shaders.
 *   **Mixer Persistence (v2.3.59):** 🎉 **COMPLETE!** Implemented Phase 5 of the Audio Mixer architecture. Added full session persistence (Save/Load) with cached EQ/Dynamics state, capture device binding, and thread-safe parameter caching.
 *   **FX & Metering (v2.3.58):** 🎉 **COMPLETE!** Implemented Phase 4 of the Audio Mixer architecture. Added FX Insert slots for Aux buses and atomic peak metering for all tracks and buses.
@@ -66,7 +71,7 @@ This foundation enables precise **Control** over the entire application stack:
 *   **Threading:** A completely new **Generational Task System** supporting fork-join parallelism (`ParallelFor`), priority scheduling (High/Low rings), backpressure handling (`RUN_IF_FULL`), and a **Dedicated I/O Thread** for non-blocking asset loading. It features Small Object Optimization (SOO) for zero-allocation jobs and O(1) dependency resolution.
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management with explicit **State Hardening** to prevent context poisoning from external middleware (e.g., ImGui).
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events ensures no input is ever lost during frame spikes.
-*   **Audio:** A professional-grade pipeline featuring a **Node Graph architecture** for zero-stall concurrency, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
+*   **Audio:** **Node graph** output (**`SituationProcessGraph`**) plus **Snapshot-and-Unlock** mixing for loaded/streamed voices, zero-stall concurrency, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
 *   **Graphics:** A unified command-buffer abstraction for **OpenGL 4.6** and **Vulkan 1.4**. It manages complex resources automatically, utilizing **Best-Fit Descriptor Recycling** and **Persistent Staging Rings** to eliminate fragmentation and allocation overhead. The OpenGL backend now features **Multi-Draw Indirect (MDI)** batching and **Bindless Textures** for console-like efficiency. It includes high-level utilities for **Compute Shaders**, **Virtual Display Compositing**, and high-quality text rendering powered by **Zero-Copy Ring Buffers**.
 *   **Hot-Reloading:** A suite of tools for live-reloading assets (Shaders, Textures, Models) at runtime, safely handling GPU synchronization and resource rebuilding with **Debounced IO Polling** to prevent CPU storms.
 
@@ -80,6 +85,7 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 - [1. Introduction & Overview](#1-introduction--overview)
 - [2. Getting Started](#2-getting-started)
 - [3. Core Concepts & Architecture](#3-core-concepts--architecture)
+    - [Audio node graph (conceptual)](#audio-node-graph-architecture)
 - [4. Building & Configuration](#4-building--configuration)
 - [5. Examples & Tutorials](#5-examples--tutorials)
 - [6. Frequently Asked Questions (FAQ) & Troubleshooting](#6-frequently-asked-questions-faq--troubleshooting)
@@ -87,6 +93,7 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 - [8. Version History](#8-version-history)
 
 ---
+
 
 ## 1. Introduction & Overview
 
@@ -98,12 +105,17 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 
 *   **Unified Command Architecture:** Write your rendering code once using abstract `SituationCmd*` functions. The library compiles this into direct state changes for **OpenGL 4.6** or optimized command buffers for **Vulkan 1.4**.
 *   **Generational Task System:** A C11-native, lock-free thread pool supporting fork-join parallelism (`ParallelFor`), priority scheduling, and backpressure handling.
-*   **"Hardened" Audio Engine:** A professional audio pipeline built on miniaudio. It features **thread-safe asset loading** (decoding SFX to RAM to prevent stalling), background music streaming, real-time DSP effects (Reverb/Delay), and low-latency microphone capture.
+*   **"Hardened" Audio Engine:** miniaudio drives the device; the callback mixes **active graph** processing, **voice snapshots**, and the **tone pool** into the output buffer. **Thread-safe asset loading** (decode SFX to RAM to avoid stalls), background music streaming, real-time DSP effects (Reverb/Delay), and low-latency microphone capture.
 *   **Dynamic Resource Management:** No arbitrary limits. The Vulkan backend features a **Dynamic Descriptor Manager** with a linear allocation strategy that automatically grows resource pools as you load assets, supporting scenes with thousands of textures and buffers without fragmentation.
 *   **O(1) Input System:** A lock-free, ring-buffered input architecture ensures that no keypress or mouse click is ever lost, even during frame-rate spikes.
 *   **Virtual Display Compositor:** Render your game to low-resolution off-screen targets (e.g., 320x240) and composite them to the main screen with precise control over scaling algorithms (Integer, Fit, Stretch) and blend modes.
 *   **First-Class Compute:** Compute Shaders are not an afterthought. The API treats Compute Pipelines and Storage Buffers (SSBOs) as primary citizens, enabling complex simulations and post-processing.
 *   **Deep System Awareness:** Query precise hardware details (GPU Name, dedicated VRAM usage, Monitor topology) to auto-configure your application's quality settings.
+
+
+
+
+
 
 ## 2. Getting Started
 
@@ -173,6 +185,17 @@ int main(int argc, char** argv) {
 }
 ```
 
+
+---
+
+
+
+
+
+
+
+
+
 ## 3. Core Concepts & Architecture
 
 The library is built on several core principles to ensure a simple, predictable, and high-performance development experience.
@@ -209,12 +232,10 @@ graph TD
         I6["SituationCreateThreadPool"]
     end
 
-    subgraph Loop ["Main Loop (Update Phase)"]
-        L1["SituationBeginFrame"]
-
+    subgraph Loop ["Main Loop"]
         subgraph Input ["Input Processing"]
-            IN1["Poll Events (GLFW)"]
-            IN2["Update O(1) Ring Buffers"]
+            IN1["SituationPollInputEvents<br/>(GLFW pump)"]
+            IN2["O(1) ring buffers"]
         end
 
         subgraph TaskSystem ["Generational Task System (Parallel)"]
@@ -227,14 +248,19 @@ graph TD
             TS2 -.-> TS_IO
         end
 
-        subgraph Audio ["Audio Engine (Async)"]
-            AU1["Audio Thread"]
-            AU2["Process Node Graph"]
-            AU3["DSP Chain (Reverb/Delay)"]
-            AU4["Decode Streams"]
-
-            AU1 --> AU2 --> AU3
-            TS_IO -. "Async Load to RAM" .-> AU4
+        subgraph Audio ["Audio Engine (miniaudio callback thread)"]
+            AU1["Playback callback"]
+            AU_G["Node graph<br/>SituationProcessGraph"]
+            AU_V["Loaded voices<br/>(snapshot mix + FX)"]
+            AU_T["Tone pool"]
+            AU_OUT["Mixed stereo → device"]
+            AU1 --> AU_G
+            AU1 --> AU_V
+            AU1 --> AU_T
+            AU_G --> AU_OUT
+            AU_V --> AU_OUT
+            AU_T --> AU_OUT
+            TS_IO -. "Async preload / streaming feeds voices" .-> AU_V
         end
 
         L2["Update Timers & Logic"]
@@ -252,13 +278,13 @@ graph TD
     end
 
     %% Flow Connections
-    I1 --> I2 --> I3 --> I4 --> I5 --> I6 --> L1
-    L1 --> IN1 --> IN2 --> L2
+    I1 --> I2 --> I3 --> I4 --> I5 --> I6 --> IN1
+    IN1 --> IN2 --> L2
     L2 --> L3
     L3 -- "Dispatch Jobs" --> TS1
     L3 -- "Load Asset" --> TS2
     L3 --> L4 --> L5
-    L5 -- "Next Frame" --> L1
+    L5 -- "Next Frame" --> IN1
     L5 -- "Quit" --> E1
     E1 --> E2 --> E3 --> E4 --> E5
 
@@ -267,8 +293,11 @@ graph TD
     TS_W -. "Results" .-> L3
 ```
 
+**Audio pipeline (Phase H+):** The hardware callback sums **three paths** into one buffer when enabled: **`SituationProcessGraph`** (`active_graph`, optional **default graph** at init), **`SituationPlayLoadedSound`** / streaming (**`active_voices`** snapshot + per-voice DSP), and **`SituationPlayTone`** (**tone pool**). The legacy console **`SituationAudioMixer`** has been removed in favor of **node graphs**; the diagram above replaces the older linear “snapshot mixer → DSP chain only” picture. Details: **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`** § *Canonical miniaudio callback pipeline*.
+
 #### Audio Node Graph Architecture
-The audio engine utilizes a fully functional node graph system allowing comprehensive modular routing, per-channel effect insertions, and DSP control modulations. This completely replaces the legacy static mixer.
+
+Conceptual **signal-flow** diagram (channel strip → bus → master → device). Real routing uses the registered node types and **`SituationAudioGraph`** / **`SituationProcessGraph`**; node names are illustrative.
 
 ```mermaid
 graph TD
@@ -347,8 +376,8 @@ graph TD
     end
 
     subgraph Loop ["Frame Cycle"]
-        L1["SituationBeginFrame"]
-        L2["Poll Input & Timers"]
+        L1["SituationPollInputEvents"]
+        L2["SituationUpdateTimers"]
         L3["User Update Logic"]
         L4["SituationAcquireFrameCommandBuffer<br/>(Get SoftBuffer)"]
         L5["Record Commands<br/>(SoftBuffer)"]
@@ -402,8 +431,8 @@ graph TD
     end
 
     subgraph Loop ["Frame Cycle"]
-        L1["SituationBeginFrame"]
-        L2["Poll Input & Timers"]
+        L1["SituationPollInputEvents"]
+        L2["SituationUpdateTimers"]
         L3["User Update Logic"]
         L4["SituationAcquireFrameCommandBuffer"]
         L4a["Wait for Fence"]
@@ -447,7 +476,10 @@ graph TD
     E1 --> E2 --> E3 --> E4
 ```
 
+
+
 ---
+
 
 ## 4. Building & Configuration
 
@@ -458,10 +490,10 @@ graph TD
 | Macro | Type | Description |
 | :--- | :--- | :--- |
 | `SITUATION_IMPLEMENTATION` | **Required** | Define this in **exactly one** `.c` or `.cpp` file to compile the library's implementation code. |
-| `SITUATION_USE_VULKAN` | Backend | Selects the **Vulkan 1.2+** backend. Best for high-performance, multi-threaded asset loading, and modern GPU features. |
+| `SITUATION_USE_VULKAN` | Backend | Selects the **Vulkan 1.4** backend. Best for high-performance, multi-threaded asset loading, and modern GPU features. |
 | `SITUATION_USE_OPENGL` | Backend | Selects the **OpenGL 4.6** backend using GLAD (included). Best for compatibility and smaller binary sizes. |
 | `SITUATION_ENABLE_THREADING` | Feature | **(New in v2.3.15)** Enables the Generational Task System. Requires C11 support. |
-| `SITUATION_ENABLE_SHADER_COMPILER` | Feature | Enables runtime GLSL $\to$ SPIR-V compilation. **Mandatory for Vulkan** if you wish to use the built-in Text or Virtual Display renderers. Requires linking `shaderc`. |
+| `SITUATION_ENABLE_SHADER_COMPILER` | Feature | Enables runtime GLSL → SPIR-V compilation. **Mandatory for Vulkan** if you wish to use the built-in Text or Virtual Display renderers. Requires linking `shaderc`. |
 | `SITUATION_ENABLE_DXGI` | Feature | **(Windows Only)** Enables high-precision VRAM monitoring and GPU naming using the DXGI API. Requires linking `dxgi.lib` and `ole32.lib`. |
 | `SITUATION_NO_STB` | Integration | "Situation" embeds `stb_image`, `stb_truetype`, etc. Define this to disable them if your project already links these libraries to avoid symbol collisions. |
 
@@ -479,7 +511,10 @@ Depending on your configuration, you must link against specific system libraries
 
 > **Note:** If using `SITUATION_ENABLE_SHADER_COMPILER`, ensure the `shaderc` includes and libraries are in your compiler's search path.
 
+
+
 ---
+
 
 ## 5. Examples & Tutorials
 
@@ -487,7 +522,10 @@ The repository includes a variety of examples demonstrating the library's featur
 
 The full source code for all examples can be found in the `/examples` directory.
 
+
+
 ---
+
 
 ## 6. Frequently Asked Questions (FAQ) & Troubleshooting
 
@@ -498,7 +536,7 @@ The full source code for all examples can be found in the `/examples` directory.
 | Macro | Description |
 | :--- | :--- |
 | `SITUATION_IMPLEMENTATION` | **Required** in exactly one source file to compile the library implementation. |
-| `SITUATION_USE_VULKAN` | Selects the **Vulkan** backend. Requires the Vulkan SDK to be installed/linked. |
+| `SITUATION_USE_VULKAN` | Selects the **Vulkan 1.4** backend. Requires the Vulkan SDK to be installed/linked. |
 | `SITUATION_USE_OPENGL` | Selects the **OpenGL** backend. Uses GLAD (included) to load GL 4.6 Core functions. |
 | `SITUATION_ENABLE_SHADER_COMPILER` | Enables runtime GLSL to SPIR-V compilation (requires `shaderc`). **Mandatory** for Vulkan if using internal renderers (Text, Virtual Displays). |
 | `SITUATION_ENABLE_DXGI` | **(Windows Only)** Enables high-precision VRAM monitoring and GPU naming using the DXGI API. Requires linking `dxgi.lib` and `ole32.lib`. |
@@ -552,7 +590,9 @@ This library does not use garbage collection.
 **Q: My 3D Model renders black?**
 *   **Cause:** The model loader likely failed to find the texture files relative to the model. Check the console output; the library logs warnings if specific texture paths in a GLTF file could not be resolved.
 
+
 ---
+
 
 ## 7. API Reference
 
@@ -560,6 +600,8 @@ The documentation for "Situation" is split into two key documents:
 
 1.  [**Core API Library Reference Manual (situation_sdk.md)**](doc/situation_sdk.md): The primary SDK documentation and technical reference manual. This is the "Bible" for the library, covering architecture, concepts, and detailed component specifications.
 2.  [**Situation API Programming Guide (situation_api.md)**](doc/situation_api.md): A comprehensive list of all functions, structs, and enums with usage examples.
+
+
 
 ---
 
@@ -579,6 +621,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ---
 
+
 ## 8. Version History
 
 For a detailed history of changes, improvements, and fixes, please refer to the [**Update Log**](doc/UPDATELOG.md).
+

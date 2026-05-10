@@ -268,11 +268,15 @@ gcc -c "%DLL_SRC%" ^
     -Isit\k-term ^
     -I"%VULKAN_SDK%\Include" ^
     -DSITUATION_USE_VULKAN ^
+    -DCGLM_FORCE_DEPTH_ZERO_TO_ONE ^
     -DSITUATION_ENABLE_THREADING ^
     -DSITUATION_ENABLE_SHADER_COMPILER ^
     -DSITUATION_BUILD_SHARED ^
     -DKTERM_BUILD_SHARED ^
-    -DKTERM_IMPLEMENTATION
+    -DKTERM_IMPLEMENTATION ^
+    %EXTRA_VULKAN_CFLAGS%
+
+REM Optional extra flags (user env): set EXTRA_VULKAN_CFLAGS=-DSITUATION_VERBOSE_DIAGNOSTICS for shader/Vulkan/init stderr spam.
 
 if errorlevel 1 (
     echo [FAILED] Situation DLL compilation failed!

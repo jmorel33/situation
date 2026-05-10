@@ -1,0 +1,60 @@
+{
+  "version": "2.4.0",
+  "sample_rate": 48000,
+  "nodes": [
+    {
+      "id": 0,
+      "type": "Tone Synth",
+      "active": true,
+      "controls": {
+        "frequency": 440.000000,
+        "waveform": 0.300000,
+        "volume": 0.000000,
+        "pan": 0.000000,
+        "attack": 0.010000,
+        "decay": 0.100000,
+        "sustain": 0.700000,
+        "release": 0.200000,
+        "hold": 1.000000
+      }
+    },
+    {
+      "id": 1,
+      "type": "Filter",
+      "active": true,
+      "controls": {
+        "cutoff": 20.000000,
+        "resonance": 10.000000,
+        "type": 0.700000
+      }
+    },
+    {
+      "id": 2,
+      "type": "Reverb",
+      "active": true,
+      "controls": {
+        "room_size": 0.800000,
+        "damping": 0.500000,
+        "wet_level": 0.300000,
+        "dry_level": 0.700000,
+        "width": 1.000000
+      }
+    }
+  ],
+  "patches": [
+    {
+      "src_node": 0,
+      "src_port": 0,
+      "dst_node": 1,
+      "dst_port": 0,
+      "type": "audio"
+    },
+    {
+      "src_node": 1,
+      "src_port": 0,
+      "dst_node": 2,
+      "dst_port": 0,
+      "type": "audio"
+    }
+  ]
+}

@@ -127,7 +127,7 @@ gcc %TEST_SOURCES% ^
     -I. -Iext -Iext/vulkan -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
     -Itests/harness ^
     -I"%VULKAN_SDK%\Include" ^
-    -DSITUATION_USE_VULKAN -DSITUATION_USE_SHARED -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER ^
+    -DSITUATION_USE_VULKAN -DCGLM_FORCE_DEPTH_ZERO_TO_ONE -DSITUATION_USE_SHARED -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER ^
     -L%DLL_DIR% ^
     -lsituation_vulkan ^
     -static-libgcc ^
