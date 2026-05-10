@@ -1203,6 +1203,15 @@ static void* _SituationCreateSoundSource(const SituationDeviceMetadata* metadata
     if (!src) return NULL;
     
     sound_source_init(src, 48000.0f);
+
+    /* Pre-size for Policy B live feed from the audio callback (no heap growth on RT thread). */
+    {
+        int cap_samples = SIT_SOUND_SOURCE_FEED_MAX_FRAMES * 2;
+        src->buffer = (float*)malloc((size_t)cap_samples * sizeof(float));
+        if (src->buffer) {
+            src->buffer_capacity_samples = cap_samples;
+        }
+    }
     
     return src;
 }

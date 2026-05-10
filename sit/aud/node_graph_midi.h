@@ -108,7 +108,7 @@ SituationError SituationEnableMidiControl(
         return SITUATION_ERROR_MIDI_NOT_SUPPORTED;  // Device type doesn't support MIDI
     }
     
-    // Create MIDI device
+    // Create MIDI device (processor + identity + callbacks; virtual input opened here — closed in Disable/Destroy)
     node->midi_device = SIT_MidiDevice_Create(
         callback_entry->device_name,
         SIT_MIDI_DEVICE_EFFECT,

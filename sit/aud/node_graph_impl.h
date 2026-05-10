@@ -92,10 +92,10 @@ SituationAudioGraph* SituationCreateGraph(void) {
 void SituationDestroyGraph(SituationAudioGraph* graph) {
     if (!graph) return;
     
-    // Destroy all nodes
-    for (int i = 0; i < graph->node_count; i++) {
-        if (graph->nodes[i]) {
-            SituationNode* node = graph->nodes[i];
+    /* Visit every slot — node indices can be sparse (holes); node_count alone is not a valid upper bound. */
+    for (int i = 0; i < SITUATION_MAX_NODES; i++) {
+        if (!graph->nodes[i]) continue;
+        SituationNode* node = graph->nodes[i];
             
             // Free port buffers
             if (node->audio_inputs) {
@@ -121,6 +121,20 @@ void SituationDestroyGraph(SituationAudioGraph* graph) {
             if (node->control_values) SIT_FREE(node->control_values);
             if (node->input_patches) SIT_FREE(node->input_patches);
             if (node->output_patches) SIT_FREE(node->output_patches);
+
+            /* Same ordering as SituationDestroyNode — graph teardown must not leak hardware MIDI */
+            if (node->midi_input) {
+                Pm_Close((PmStream*)node->midi_input);
+                node->midi_input = NULL;
+            }
+            if (node->learn_state) {
+                SIT_MidiLearn_Destroy(node->learn_state);
+                node->learn_state = NULL;
+            }
+            if (node->midi_device) {
+                SIT_MidiDevice_Destroy(node->midi_device);
+                node->midi_device = NULL;
+            }
             
             // Phase 4: Call device-specific destroy function
             const SituationDeviceFunctions* funcs = _SituationLookupDeviceFuncs(node->type);
@@ -130,7 +144,7 @@ void SituationDestroyGraph(SituationAudioGraph* graph) {
             }
             
             SIT_FREE(node);
-        }
+            graph->nodes[i] = NULL;
     }
     
     SIT_FREE(graph->patches);

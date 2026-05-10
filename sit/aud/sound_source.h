@@ -10,13 +10,20 @@
 #define SITUATION_SOUND_SOURCE_H
 
 #include <string.h>
+#include <stdlib.h>
 #include <stdbool.h>
 
 #define MAX_SOUND_BUFFER_SIZE 48000 * 10  // 10 seconds at 48kHz
 
+/** Must cover audio callback period (same order of magnitude as `SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES`). */
+#ifndef SIT_SOUND_SOURCE_FEED_MAX_FRAMES
+#define SIT_SOUND_SOURCE_FEED_MAX_FRAMES 2048
+#endif
+
 typedef struct {
     float* buffer;
     int buffer_size;
+    int buffer_capacity_samples; /* allocated interleaved samples (buffer_size * channels upper bound for feed path) */
     int channels;
     int sample_rate;
     int playback_position;
@@ -29,6 +36,7 @@ typedef struct {
 static void sound_source_init(SituationSoundSource* src, float sample_rate) {
     src->buffer = NULL;
     src->buffer_size = 0;
+    src->buffer_capacity_samples = 0;
     src->channels = 2;
     src->sample_rate = (int)sample_rate;
     src->playback_position = 0;
@@ -46,10 +54,31 @@ static void sound_source_load_buffer(SituationSoundSource* src, const float* dat
     src->channels = channels;
     src->buffer_size = frames;
     src->buffer = (float*)malloc(frames * channels * sizeof(float));
+    src->buffer_capacity_samples = src->buffer ? (frames * channels) : 0;
     
     if (src->buffer) {
         memcpy(src->buffer, data, frames * channels * sizeof(float));
     }
+}
+
+/** Push one block of interleaved PCM for playback on the next process(). Grows storage only when needed (real-time friendly). */
+static void sound_source_feed_interleaved_frames(SituationSoundSource* src, const float* pcm, int frames, int channels) {
+    if (!src || frames <= 0 || channels <= 0 || !pcm) return;
+
+    size_t need_samples = (size_t)frames * (size_t)channels;
+    size_t need_bytes = need_samples * sizeof(float);
+
+    if (!src->buffer || src->buffer_size < frames || src->channels != channels) {
+        float* nb = (float*)realloc(src->buffer, need_bytes);
+        if (!nb) return;
+        src->buffer = nb;
+        src->buffer_size = frames;
+        src->channels = channels;
+    }
+
+    memcpy(src->buffer, pcm, need_bytes);
+    src->playback_position = 0;
+    src->is_playing = true;
 }
 
 // Playback control
@@ -124,6 +153,7 @@ static void sound_source_cleanup(SituationSoundSource* src) {
         free(src->buffer);
         src->buffer = NULL;
     }
+    src->buffer_capacity_samples = 0;
 }
 
 #endif // SITUATION_SOUND_SOURCE_H
