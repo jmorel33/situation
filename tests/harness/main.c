@@ -32,7 +32,7 @@ static void sit_signal_handler(int sig) {
     }
 
     fprintf(stderr, "\n    %sCRASH%s: Signal %s in test '%s'\n",
-            sit_color(SIT_COLOR_RED), sit_color(SIT_COLOR_RESET),
+            sit_color(SIT_TEST_COLOR_RED), sit_color(SIT_TEST_COLOR_RESET),
             sig_name, g_sit_current_test_name ? g_sit_current_test_name : "(unknown)");
 
     // Mark test as failed and jump back to runner
@@ -72,23 +72,23 @@ int main(int argc, char** argv) {
 
     // Print banner
     fprintf(stderr, "%s[HARNESS]%s Situation Test Harness v1.0\n",
-            sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET));
+            sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET));
 #if defined(SITUATION_USE_VULKAN)
     fprintf(stderr, "%s[HARNESS]%s Backend: Vulkan\n",
-            sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET));
+            sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET));
 #elif defined(SITUATION_USE_OPENGL)
     fprintf(stderr, "%s[HARNESS]%s Backend: OpenGL\n",
-            sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET));
+            sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET));
 #else
     fprintf(stderr, "%s[HARNESS]%s Backend: None (context-free tests only)\n",
-            sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET));
+            sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET));
 #endif
 
     // Register all modules
     sit_test_register_all();
 
     fprintf(stderr, "%s[HARNESS]%s Running %d modules\n",
-            sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET),
+            sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET),
             g_sit_module_count);
 
     // Install crash handlers

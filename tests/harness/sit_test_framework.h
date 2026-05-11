@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <setjmp.h>
 #include <time.h>
+#include <math.h>
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -106,13 +107,14 @@ extern bool g_sit_shared_context_active;
 //  Color Output
 // ============================================================================
 
-#define SIT_COLOR_RESET   "\033[0m"
-#define SIT_COLOR_GREEN   "\033[32m"
-#define SIT_COLOR_RED     "\033[31m"
-#define SIT_COLOR_YELLOW  "\033[33m"
-#define SIT_COLOR_CYAN    "\033[36m"
-#define SIT_COLOR_BOLD    "\033[1m"
-#define SIT_COLOR_DIM     "\033[2m"
+/* Prefix with SIT_TEST_ — situation_base_etc.h already uses SIT_COLOR_* for ColorRGBA. */
+#define SIT_TEST_COLOR_RESET   "\033[0m"
+#define SIT_TEST_COLOR_GREEN   "\033[32m"
+#define SIT_TEST_COLOR_RED     "\033[31m"
+#define SIT_TEST_COLOR_YELLOW  "\033[33m"
+#define SIT_TEST_COLOR_CYAN    "\033[36m"
+#define SIT_TEST_COLOR_BOLD    "\033[1m"
+#define SIT_TEST_COLOR_DIM     "\033[2m"
 
 static inline const char* sit_color(const char* code) {
     return g_sit_config.no_color ? "" : code;
@@ -141,7 +143,7 @@ static inline double sit_get_time_seconds(void) {
 
 static inline void sit_test_fail_impl(const char* file, int line, const char* expr, const char* msg) {
     fprintf(stderr, "    %sFAIL%s: [%s:%d] %s", 
-            sit_color(SIT_COLOR_RED), sit_color(SIT_COLOR_RESET),
+            sit_color(SIT_TEST_COLOR_RED), sit_color(SIT_TEST_COLOR_RESET),
             file, line, expr);
     if (msg && msg[0]) {
         fprintf(stderr, " — %s", msg);
@@ -155,7 +157,7 @@ static inline void sit_test_pass_impl(const char* file, int line, const char* ex
     g_sit_assertion_count++;
     if (g_sit_config.verbose) {
         fprintf(stderr, "    %sPASS%s: [%s:%d] %s\n",
-                sit_color(SIT_COLOR_GREEN), sit_color(SIT_COLOR_RESET),
+                sit_color(SIT_TEST_COLOR_GREEN), sit_color(SIT_TEST_COLOR_RESET),
                 file, line, expr);
     }
 }
@@ -257,7 +259,7 @@ static inline void sit_test_pass_impl(const char* file, int line, const char* ex
                 g_sit_visual_warning_count++; \
                 if (g_sit_config.verbose) { \
                     fprintf(stderr, "    %sVISUAL%s: [%s:%d] %s\n", \
-                            sit_color(SIT_COLOR_YELLOW), sit_color(SIT_COLOR_RESET), \
+                            sit_color(SIT_TEST_COLOR_YELLOW), sit_color(SIT_TEST_COLOR_RESET), \
                             __FILE__, __LINE__, #expr); \
                 } \
             } \
@@ -280,6 +282,19 @@ void sit_test_print_results(SitTestResults results);
 // ============================================================================
 
 #ifdef SIT_TEST_IMPLEMENTATION
+
+/* Serialize harness stderr vs other threads (audio callback, drivers) writing to stderr. */
+#ifdef _WIN32
+static CRITICAL_SECTION g_sit_harness_stderr_cs;
+static void sit_harness_stderr_enter(void) { EnterCriticalSection(&g_sit_harness_stderr_cs); }
+static void sit_harness_stderr_leave(void) {
+    fflush(stderr);
+    LeaveCriticalSection(&g_sit_harness_stderr_cs);
+}
+#else
+static void sit_harness_stderr_enter(void) { (void)0; }
+static void sit_harness_stderr_leave(void) { fflush(stderr); }
+#endif
 
 void sit_test_register_module(const SitTestModule* module) {
     if (g_sit_module_count < SIT_MAX_MODULES) {
@@ -334,6 +349,7 @@ void sit_test_init(int argc, char** argv) {
 
     // Enable ANSI on Windows
 #ifdef _WIN32
+    InitializeCriticalSection(&g_sit_harness_stderr_cs);
     if (!g_sit_config.no_color) {
         HANDLE hOut = GetStdHandle(STD_ERROR_HANDLE);
         DWORD mode = 0;
@@ -376,7 +392,7 @@ SitTestResults sit_test_run_all(void) {
         }
         if (!found) {
             fprintf(stderr, "%sERROR%s: Module '%s' not found. Available modules:\n",
-                    sit_color(SIT_COLOR_RED), sit_color(SIT_COLOR_RESET),
+                    sit_color(SIT_TEST_COLOR_RED), sit_color(SIT_TEST_COLOR_RESET),
                     g_sit_config.filter_module);
             for (int m = 0; m < g_sit_module_count; m++) {
                 fprintf(stderr, "  - %s\n", g_sit_modules[m]->name);
@@ -405,9 +421,11 @@ SitTestResults sit_test_run_all(void) {
             continue;
         }
 
+        sit_harness_stderr_enter();
         fprintf(stderr, "\n%s[%s]%s (%d tests)\n",
-                sit_color(SIT_COLOR_CYAN), mod->name, sit_color(SIT_COLOR_RESET),
+                sit_color(SIT_TEST_COLOR_CYAN), mod->name, sit_color(SIT_TEST_COLOR_RESET),
                 mod->test_count);
+        sit_harness_stderr_leave();
 
         // Module setup
         bool setup_ok = true;
@@ -423,7 +441,7 @@ SitTestResults sit_test_run_all(void) {
 
         if (!setup_ok) {
             fprintf(stderr, "  %sSETUP FAILED%s — skipping all tests in module\n",
-                    sit_color(SIT_COLOR_YELLOW), sit_color(SIT_COLOR_RESET));
+                    sit_color(SIT_TEST_COLOR_YELLOW), sit_color(SIT_TEST_COLOR_RESET));
             results.skipped += mod->test_count;
             results.total += mod->test_count;
             if (mod->teardown) mod->teardown();
@@ -455,9 +473,9 @@ SitTestResults sit_test_run_all(void) {
 
             if (g_sit_current_test_failed) {
                 results.failed++;
-                fprintf(stderr, "  %s✗ %s%s %s(%.1fms)%s\n",
-                        sit_color(SIT_COLOR_RED), tc->name, sit_color(SIT_COLOR_RESET),
-                        sit_color(SIT_COLOR_DIM), test_elapsed, sit_color(SIT_COLOR_RESET));
+                fprintf(stderr, "  %s[FAIL] %s%s %s(%.1fms)%s\n",
+                        sit_color(SIT_TEST_COLOR_RED), tc->name, sit_color(SIT_TEST_COLOR_RESET),
+                        sit_color(SIT_TEST_COLOR_DIM), test_elapsed, sit_color(SIT_TEST_COLOR_RESET));
 
                 if (g_sit_config.stop_on_fail) {
                     // Skip remaining tests
@@ -474,9 +492,11 @@ SitTestResults sit_test_run_all(void) {
                 }
             } else {
                 results.passed++;
-                fprintf(stderr, "  %s✓ %s%s %s(%.1fms)%s\n",
-                        sit_color(SIT_COLOR_GREEN), tc->name, sit_color(SIT_COLOR_RESET),
-                        sit_color(SIT_COLOR_DIM), test_elapsed, sit_color(SIT_COLOR_RESET));
+                sit_harness_stderr_enter();
+                fprintf(stderr, "  %s[ OK ] %s%s %s(%.1fms)%s\n",
+                        sit_color(SIT_TEST_COLOR_GREEN), tc->name, sit_color(SIT_TEST_COLOR_RESET),
+                        sit_color(SIT_TEST_COLOR_DIM), test_elapsed, sit_color(SIT_TEST_COLOR_RESET));
+                sit_harness_stderr_leave();
             }
         }
 
@@ -491,35 +511,37 @@ done:
 }
 
 void sit_test_print_results(SitTestResults results) {
-    fprintf(stderr, "\n%s═══════════════════════════════════════════%s\n",
-            sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET));
+    sit_harness_stderr_enter();
+    fprintf(stderr, "\n%s============================================%s\n",
+            sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET));
 
     if (results.failed == 0) {
         fprintf(stderr, "%sRESULTS%s: %d total, %s%d passed%s, %d failed, %d skipped\n",
-                sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET),
+                sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET),
                 results.total,
-                sit_color(SIT_COLOR_GREEN), results.passed, sit_color(SIT_COLOR_RESET),
+                sit_color(SIT_TEST_COLOR_GREEN), results.passed, sit_color(SIT_TEST_COLOR_RESET),
                 results.failed, results.skipped);
     } else {
         fprintf(stderr, "%sRESULTS%s: %d total, %d passed, %s%d failed%s, %d skipped\n",
-                sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET),
+                sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET),
                 results.total, results.passed,
-                sit_color(SIT_COLOR_RED), results.failed, sit_color(SIT_COLOR_RESET),
+                sit_color(SIT_TEST_COLOR_RED), results.failed, sit_color(SIT_TEST_COLOR_RESET),
                 results.skipped);
     }
 
     if (results.visual_warnings > 0) {
         fprintf(stderr, "%sVISUAL%s: %s%d visual assertions skipped%s (use --strict-visual to enforce)\n",
-                sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET),
-                sit_color(SIT_COLOR_YELLOW), results.visual_warnings, sit_color(SIT_COLOR_RESET));
+                sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET),
+                sit_color(SIT_TEST_COLOR_YELLOW), results.visual_warnings, sit_color(SIT_TEST_COLOR_RESET));
     }
 
     fprintf(stderr, "%sTIME%s: %.2fs\n",
-            sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET),
+            sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET),
             results.elapsed_seconds);
 
-    fprintf(stderr, "%s═══════════════════════════════════════════%s\n",
-            sit_color(SIT_COLOR_BOLD), sit_color(SIT_COLOR_RESET));
+    fprintf(stderr, "%s============================================%s\n",
+            sit_color(SIT_TEST_COLOR_BOLD), sit_color(SIT_TEST_COLOR_RESET));
+    sit_harness_stderr_leave();
 }
 
 #endif // SIT_TEST_IMPLEMENTATION

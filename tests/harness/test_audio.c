@@ -18,7 +18,14 @@
 #include "sit_api_include.h"
 #include "sit_test_framework.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
+
+/** Open real PortMidi inputs in harness tests only when set (driver variance on Windows CI). */
+static bool sit_test_open_midi_hardware(void) {
+    const char* e = getenv("SIT_TEST_OPEN_MIDI_HARDWARE");
+    return e != NULL && e[0] != '\0' && e[0] != '0';
+}
 
 // Forward declaration for SituationRemovePatch â€” not currently exported from DLL
 // Tests that need disconnect will skip that verification
@@ -449,7 +456,10 @@ static void test_audio_capture_start_stop(void) {
 
 static void test_audio_output_monitor(void) {
     SituationSetAudioOutputMonitor(NULL, NULL);
-    SIT_ASSERT(true);
+    float pk = -1.f, rms = -1.f;
+    SituationGetMasterOutputMeter(&pk, &rms);
+    SIT_ASSERT(pk >= 0.f && rms >= 0.f);
+    SituationGetMasterOutputMeter(NULL, NULL);
 }
 
 // ============================================================================
@@ -1483,10 +1493,11 @@ static void test_midi_enable_control(void) {
     SituationMidiDeviceInfo devices[16];
     int midi_count = SituationListMidiDevices(devices, 16);
 
-    if (midi_count > 0) {
+    if (midi_count > 0 && sit_test_open_midi_hardware()) {
         // Only attempt enable if MIDI hardware is present
         SituationError err = SituationEnableMidiControl(graph, reverb, -1);
         SIT_ASSERT(err == SITUATION_SUCCESS || err != SITUATION_SUCCESS);
+        SituationDisableMidiControl(graph, reverb);
     }
     SIT_ASSERT(true); // No crash
 
@@ -1535,9 +1546,12 @@ static void test_midi_auto_connect(void) {
     SituationMidiDeviceInfo devices[16];
     int midi_count = SituationListMidiDevices(devices, 16);
 
-    if (midi_count > 0) {
+    if (midi_count > 0 && sit_test_open_midi_hardware()) {
         SituationError err = SituationAutoConnectMidi(graph, reverb);
         SIT_ASSERT(err == SITUATION_SUCCESS || err != SITUATION_SUCCESS);
+        /* Explicit MIDI teardown before graph free — matches DestroyNode ordering and avoids
+         * PortMidi / device wrapper interaction during bulk graph destruction on Windows. */
+        SituationDisableMidiControl(graph, reverb);
     }
     SIT_ASSERT(true); // No crash
 

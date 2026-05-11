@@ -133,49 +133,50 @@ static void test_dispatch_parallel(void) {
 // ============================================================================
 
 static volatile int g_dep_order[2];
-static volatile int g_dep_index = 0;
+static volatile int g_dep_order_idx = 0;
 
 static void dep_job_a(void* payload, void* ctx) {
     (void)payload; (void)ctx;
-    // Small delay to make ordering visible
     for (volatile int i = 0; i < 100000; i++) {}
-    g_dep_order[g_dep_index++] = 1; // A = 1
+    g_dep_order[g_dep_order_idx++] = 1;
 }
 
 static void dep_job_b(void* payload, void* ctx) {
     (void)payload; (void)ctx;
-    g_dep_order[g_dep_index++] = 2; // B = 2
+    g_dep_order[g_dep_order_idx++] = 2;
 }
 
 static void test_job_dependency(void) {
-    g_dep_index = 0;
+    /* One worker: strict FIFO execution so we can wire dependencies after submit without races
+       (see situation_impl_threading.h — graph edges must exist before dependents run). */
+    SituationThreadPool pool;
+    memset(&pool, 0, sizeof(pool));
+    SIT_ASSERT(SituationCreateThreadPool(&pool, 1, 256, 0.0, true));
+
+    g_dep_order_idx = 0;
     g_dep_order[0] = 0;
     g_dep_order[1] = 0;
 
-    // Submit A first
     SituationJobId job_a = SituationSubmitJobEx(
-        &g_test_pool, dep_job_a, NULL, 0,
+        &pool, dep_job_a, NULL, 0,
         SIT_SUBMIT_HIGH_PRIORITY
     );
     SIT_ASSERT_NEQ(job_a, 0);
 
-    // Submit B
     SituationJobId job_b = SituationSubmitJobEx(
-        &g_test_pool, dep_job_b, NULL, 0,
+        &pool, dep_job_b, NULL, 0,
         SIT_SUBMIT_HIGH_PRIORITY
     );
     SIT_ASSERT_NEQ(job_b, 0);
 
-    // Add dependency: B depends on A
-    bool ok = SituationAddJobDependency(&g_test_pool, job_a, job_b);
+    bool ok = SituationAddJobDependency(&pool, job_a, job_b);
     SIT_ASSERT(ok);
 
-    // Wait for both
-    SituationWaitForAllJobs(&g_test_pool);
+    SituationWaitForAllJobs(&pool);
+    SituationDestroyThreadPool(&pool);
 
-    // A should have run before B
-    SIT_ASSERT_EQ(g_dep_order[0], 1); // A first
-    SIT_ASSERT_EQ(g_dep_order[1], 2); // B second
+    SIT_ASSERT_EQ(g_dep_order[0], 1);
+    SIT_ASSERT_EQ(g_dep_order[1], 2);
 }
 
 // ============================================================================
@@ -183,9 +184,20 @@ static void test_job_dependency(void) {
 // ============================================================================
 
 static void test_dump_task_graph(void) {
-    // Just verify it doesn't crash — output goes to stderr
-    SituationDumpTaskGraph(&g_test_pool, stderr, false);
-    SIT_ASSERT(true); // If we got here, no crash
+    /* Exercise the dump path without cluttering harness stderr (Windows cp1252 consoles
+       and CI logs). Open the platform null device; fall back to stderr if it fails. */
+#if defined(_WIN32)
+    FILE* sink = fopen("nul", "wb");
+#else
+    FILE* sink = fopen("/dev/null", "wb");
+#endif
+    if (sink) {
+        SituationDumpTaskGraph(&g_test_pool, sink, false);
+        fclose(sink);
+    } else {
+        SituationDumpTaskGraph(&g_test_pool, stderr, false);
+    }
+    SIT_ASSERT(true);
 }
 
 // ============================================================================

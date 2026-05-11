@@ -582,6 +582,10 @@ static void test_render_virtual_displays(void) {
     err = SituationRenderVirtualDisplays(cmd);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
+    /* SituationRenderVirtualDisplays leaves the main-window render pass active (resume pass for caller draws). */
+    err = SituationCmdEndRenderPass(cmd);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
     SituationEndFrame();
     SituationDestroyVirtualDisplay(vd_id);
 }
@@ -3102,13 +3106,14 @@ static const char* g_cs_texture_read =
     "}\n";
 
 // Compute shader: reads from SSBO A, doubles each value, writes to SSBO B (for chained dispatch test)
+// Matches SIT_COMPUTE_LAYOUT_TWO_SSBOS: two descriptor sets, each SSBO at binding 0 (not two bindings in set 0).
 static const char* g_cs_double_buffer =
     "#version 460 core\n"
     "layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;\n"
-    "layout(std430, binding = 0) buffer InBuffer {\n"
+    "layout(std430, set = 0, binding = 0) buffer InBuffer {\n"
     "    float inData[];\n"
     "};\n"
-    "layout(std430, binding = 1) buffer OutBuffer {\n"
+    "layout(std430, set = 1, binding = 0) buffer OutBuffer {\n"
     "    float outData[];\n"
     "};\n"
     "void main() {\n"
@@ -4278,7 +4283,8 @@ static void test_descriptor_bind_sampled_texture(void) {
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
     SituationCmdBindPipeline(cmd, shader);
-    err = SituationCmdBindSampledTexture(cmd, 0, tex);
+    /* Fragment shader samples at set=1 binding=0; Vulkan uses set index (not GL binding). */
+    err = SituationCmdBindSampledTexture(cmd, 1, tex);
     if (err != SITUATION_SUCCESS) {
         SituationCmdEndRenderPass(cmd);
         SituationEndFrame();
@@ -4608,10 +4614,10 @@ static void test_texture_storage_write_readback(void) {
     SituationCmdBindComputeTexture(cmd, 0, storage_tex);
     SituationCmdDispatch(cmd, 4, 4, 1);
 
-    // Barrier: compute writes â†’ transfer read
+    // Barrier: compute writes â†’ fragment sampling next frame (same visibility pattern as compute_to_graphics_barrier)
     SituationCmdPipelineBarrier(cmd,
         SITUATION_BARRIER_COMPUTE_SHADER_WRITE,
-        SITUATION_BARRIER_TRANSFER_READ);
+        SITUATION_BARRIER_FRAGMENT_SHADER_READ);
 
     err = SituationEndFrame();
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -5139,7 +5145,6 @@ static SitTestCase graphics_tests[] = {
     {"draw_call_count_after_draws",     test_draw_call_count_after_draws,   true},
     {"export_render_histogram",         test_export_render_histogram,       true},
     {"load_image_from_screen_dims",     test_load_image_from_screen_dimensions, true},
-    // Virtual Display Deep Tests (Phase 9 ΓÇö Compositing Pipeline)
     {"vd_render_into_pipeline",         test_vd_render_into_pipeline,       true},
     {"vd_z_ordering",                   test_vd_z_ordering,                 true},
     {"vd_visibility_toggle",            test_vd_visibility_toggle,          true},
