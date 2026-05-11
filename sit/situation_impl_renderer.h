@@ -2570,27 +2570,25 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                     }
                     int final_vert_count = v_idx / 4;
 
-                    // [v2.3.30] Bindless Text
-                    if (SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
-                        uint64_t handle = SituationGetTextureHandle(font.atlas_texture);
-                        if (handle) {
-                            // Location 6: u_use_bindless = 1
-                            glProgramUniform1i(sit_render.gl.text_shader_program, 6, 1);
-                            // Location 7: u_TextureHandle (uint64 handle)
-                            // We must use extension function for 64-bit handle
-                            #if defined(GLAD_GL_ARB_bindless_texture)
-                            glProgramUniformHandleui64ARB(sit_render.gl.text_shader_program, 7, handle);
-                            #endif
-                        } else {
-                            glProgramUniform1i(sit_render.gl.text_shader_program, 6, 0); // Fallback
+                    // Text path: bindless only if API exists — glad_glProgramUniformHandleui64ARB can be NULL even when
+                    // Situation reports bindless/handles; calling it crashes instantly (often first DrawText).
+                    {
+                        bool did_bindless = false;
+#if defined(GLAD_GL_ARB_bindless_texture)
+                        if (SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES) && glad_glProgramUniformHandleui64ARB) {
+                            uint64_t handle = SituationGetTextureHandle(font.atlas_texture);
+                            if (handle) {
+                                glProgramUniform1i(sit_render.gl.text_shader_program, 6, 1);
+                                glad_glProgramUniformHandleui64ARB(sit_render.gl.text_shader_program, 7, handle);
+                                did_bindless = true;
+                            }
+                        }
+#endif
+                        if (!did_bindless) {
+                            glProgramUniform1i(sit_render.gl.text_shader_program, 6, 0);
                             _SituationTextureSlot* slot = _SitGetTextureSlot(font.atlas_texture);
                             if (slot) glBindTextureUnit(SIT_SAMPLER_BINDING_ALBEDO, slot->gl_texture_id);
                         }
-                    } else {
-                        // Standard Bind
-                        glProgramUniform1i(sit_render.gl.text_shader_program, 6, 0);
-                        _SituationTextureSlot* slot = _SitGetTextureSlot(font.atlas_texture);
-                        if (slot) glBindTextureUnit(SIT_SAMPLER_BINDING_ALBEDO, slot->gl_texture_id);
                     }
 
                     if (data_size > 524288) data_size = 524288;
@@ -2608,8 +2606,16 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                     glm_ortho(0.0f, (float)sit_gs.main_window_width, (float)sit_gs.main_window_height, 0.0f, -1.0f, 1.0f, text_proj);
                     glProgramUniformMatrix4fv(sit_render.gl.text_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)text_proj);
 
-                    glBindVertexArray(sit_render.gl.text_vao);
-                    glDrawArrays(GL_TRIANGLES, 0, final_vert_count);
+                    if (sit_render.gl.text_shader_program && final_vert_count > 0) {
+                        /* Same as DRAW_QUAD: 2D overlays must not lose to the depth buffer — quads wrote ~same Z first. */
+                        glDisable(GL_DEPTH_TEST);
+                        glEnable(GL_BLEND);
+                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                        glBindVertexArray(sit_render.gl.text_vao);
+                        glDrawArrays(GL_TRIANGLES, 0, final_vert_count);
+                        glDisable(GL_BLEND);
+                        glEnable(GL_DEPTH_TEST);
+                    }
 
                     // [CRITICAL] Restore global VAO state
                     glBindVertexArray(sit_render.gl.global_vao_id);

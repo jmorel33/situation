@@ -866,16 +866,16 @@ typedef struct _SituationSound {
         float filter_cutoff_hz;
         float filter_q;
         bool echo_enabled;
+        /* Must match sit_echo_t in sit/aud/fx/echo.h (cast in situation_impl_audio). */
         struct {
             ma_delay delay;
             uint32_t channels;
             bool is_initialized;
+            float* dry_scratch;
             float current_feedback;
             float current_wet;
-            float current_dry;
             float target_feedback;
             float target_wet;
-            float target_dry;
         } echo;
         float echo_delay_sec;
         float echo_feedback;
