@@ -29,11 +29,9 @@
 *   
 ***************************************************************************************************/
 
-#define MINIAUDIO_IMPLEMENTATION
-#include "../sit/miniaudio.h"
-
 #define SITUATION_IMPLEMENTATION
-#include "../sit/situation.h"
+#define SITUATION_USE_OPENGL
+#include "../situation.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,14 +52,20 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
         return;
     }
     
-    // Process graph (MIDI is handled automatically!)
-    SituationProcessGraph(g_app.graph, (float*)output, frame_count, NULL, 0);
+    SituationProcessGraph(
+        g_app.graph,
+        (float*)output,
+        frame_count,
+        g_device_function_table,
+        g_device_function_table_count
+    );
 }
 
 int main(void) {
     printf("=== MIDI Auto-Connect Example ===\n\n");
-    
-    // Create graph
+
+    SituationInitDeviceRegistry();
+
     g_app.graph = SituationCreateGraph();
     
     // Create compander node

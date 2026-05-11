@@ -55,6 +55,7 @@
 #endif
 
 #define SITUATION_IMPLEMENTATION
+#define SITUATION_USE_OPENGL
 #define STB_TRUETYPE_IMPLEMENTATION  // Define before situation.h to prevent double inclusion
 #include "situation.h"
 

@@ -18,7 +18,7 @@
 
 #define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
-#include "../sit/situation.h"
+#include "../situation.h"
 
 #define MIDI_LEARN_IMPLEMENTATION
 #include "../sit/aud/midi_learn.h"
