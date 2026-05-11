@@ -8,6 +8,9 @@ REM   build_examples.bat vulkan [example_name]    Build Vulkan example
 REM
 REM Examples:
 REM   build_examples.bat opengl basic_quad
+REM   build_examples.bat opengl shader_lab_torus
+REM   build_examples.bat opengl shader_lab_raytrace
+REM   build_examples.bat opengl node_graph_piano_demo
 REM   build_examples.bat vulkan diagnostic_render_vk
 REM   build_examples.bat opengl quad_storm
 REM
@@ -69,14 +72,19 @@ echo.
 echo [BUILD] %EXAMPLE% (OpenGL) - GCC %GCC_VER%
 echo.
 
+REM node_graph_piano_demo: GUI subsystem so no extra console window behind the app.
+set "EXTRA_LDFLAGS="
+if /i "%EXAMPLE%"=="node_graph_piano_demo" set "EXTRA_LDFLAGS=-mwindows"
+
 gcc examples/%EXAMPLE%.c ext/glfw/deps/tinycthread.c ^
     -o %BUILD_DIR%/%EXAMPLE%.exe ^
     -std=c11 -O2 ^
     -msse -msse2 -msse4.1 ^
     -I. -Iext -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
-    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING ^
+    -DSITUATION_ENABLE_THREADING ^
     -L%GLFW_LIB% ^
     -static-libgcc ^
+    %EXTRA_LDFLAGS% ^
     -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive ^
     -lglfw3 -lopengl32 -lgdi32 -lwinmm -luser32 -lshell32 -lole32 ^
     -liphlpapi -lsetupapi -ldxgi -lshlwapi -luuid -lxinput -lws2_32 -lm
@@ -116,7 +124,7 @@ gcc -c examples/%EXAMPLE%.c ^
     -msse -msse2 -msse4.1 ^
     -I. -Iext -Iext/vulkan -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
     -I"%VULKAN_SDK%\Include" ^
-    -DSITUATION_USE_VULKAN -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER
+    -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER
 
 if errorlevel 1 (
     echo [FAILED] C compilation failed!
