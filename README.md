@@ -41,6 +41,7 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
 - [1. Introduction & Overview](#1-introduction--overview)
 - [2. Getting Started](#2-getting-started)
 - [3. Core Concepts & Architecture](#3-core-concepts--architecture)
+    - [Threading architecture](#threading-architecture)
     - [Audio node graph (conceptual)](#audio-node-graph-architecture)
 - [4. Building & Configuration](#4-building--configuration)
 - [5. Examples & Tutorials](#5-examples--tutorials)
@@ -250,6 +251,130 @@ graph TD
 ```
 
 **Audio pipeline (Phase H+):** The hardware callback sums **three paths** into one buffer when enabled: **`SituationProcessGraph`** (`active_graph`, optional **default graph** at init), **`SituationPlayLoadedSound`** / streaming (**`active_voices`** snapshot + per-voice DSP), and **`SituationPlayTone`** (**tone pool**). The legacy console **`SituationAudioMixer`** has been removed in favor of **node graphs**; the diagram above replaces the older linear “snapshot mixer → DSP chain only” picture. Details: **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`** § *Canonical miniaudio callback pipeline*.
+
+#### Threading Architecture
+
+Situation's threading layer is a C11 generational job system with two priority queues, explicit wait semantics, optional CPU/NUMA placement, a dedicated I/O lane, and runtime diagnostics. The queues use a mutex per ring for mutation, while job IDs, state transitions, counters, and queue indices are tracked with atomics.
+
+```mermaid
+graph TD
+    subgraph Init ["Initialization and Placement Policy"]
+        INIT["SituationInitInfo"]
+        TOPO["CPU topology cache<br/>logical CPUs, physical cores"]
+        NUMA["NUMA topology cache<br/>node masks and preferred node"]
+        POLICY["Placement policy<br/>thread_affinity_main/render/audio<br/>worker_numa_spread<br/>io_thread_numa_node"]
+        SIZE["Auto worker sizing<br/>SituationGetRecommendedWorkerCount<br/>logical or physical cores minus reserved"]
+        POOL["SituationCreateThreadPool<br/>workers, queues, generations, counters"]
+
+        INIT --> TOPO
+        INIT --> NUMA
+        INIT --> POLICY
+        INIT --> SIZE
+        TOPO --> SIZE
+        NUMA --> POLICY
+        SIZE --> POOL
+        POLICY --> POOL
+    end
+
+    subgraph Submit ["Job Submission"]
+        CALLER["Main thread or user thread"]
+        DISPATCH["SituationDispatchParallel<br/>fork-join batches"]
+        SUBMIT["SituationSubmitJobEx"]
+        JOBID["Generational job ID<br/>slot + generation"]
+        DEP["Optional dependency check"]
+        ROUTE{"Queue mask / priority"}
+        BACKPRESSURE{"Queue full?"}
+        INLINE["RUN_IF_FULL<br/>execute inline"]
+        BLOCK["BLOCK_IF_FULL<br/>spin/yield until room"]
+        FAIL["Return queue-full error"]
+
+        CALLER --> DISPATCH
+        CALLER --> SUBMIT
+        DISPATCH --> SUBMIT
+        SUBMIT --> JOBID
+        JOBID --> DEP
+        DEP --> ROUTE
+        ROUTE -->|"High priority"| HQ
+        ROUTE -->|"Low priority / I/O"| LQ
+        HQ --> BACKPRESSURE
+        LQ --> BACKPRESSURE
+        BACKPRESSURE -->|"run inline policy"| INLINE
+        BACKPRESSURE -->|"blocking policy"| BLOCK
+        BACKPRESSURE -->|"nonblocking policy"| FAIL
+        BLOCK --> ROUTE
+    end
+
+    subgraph Queues ["Dual Priority Rings"]
+        HQ["High queue<br/>frame-critical work<br/>physics, culling, gameplay"]
+        LQ["Low queue<br/>background work<br/>asset decode, streaming, file I/O"]
+        HQM["High queue mutex<br/>atomic head/tail and pending depth"]
+        LQM["Low queue mutex<br/>atomic head/tail and pending depth"]
+
+        HQ --> HQM
+        LQ --> LQM
+    end
+
+    subgraph Workers ["Execution Lanes"]
+        WORKERS["Worker threads"]
+        WPLACED["Worker placement<br/>optional affinity / NUMA spread"]
+        SCAN["Dynamic high-queue scan depth<br/>scales 4-32 by pending work"]
+        STEAL["Main-thread helping<br/>DispatchParallel drains high queue while waiting"]
+        IO["Dedicated I/O thread<br/>low queue lane"]
+        RUN["Run callback"]
+        COMPLETE["Mark job complete<br/>atomic state + counters"]
+
+        POOL --> WPLACED --> WORKERS
+        HQM --> SCAN --> WORKERS
+        HQM --> STEAL
+        LQM --> WORKERS
+        LQM --> IO
+        WORKERS --> RUN
+        IO --> RUN
+        STEAL --> RUN
+        RUN --> COMPLETE
+    end
+
+    subgraph Wait ["Synchronization"]
+        WAITJOB["SituationWaitForJob"]
+        WAITALL["SituationWaitForAllJobs"]
+        DEPWAKE["Dependent jobs become runnable"]
+        JOIN["DispatchParallel returns<br/>batch complete"]
+
+        COMPLETE --> DEPWAKE
+        DEPWAKE --> ROUTE
+        CALLER --> WAITJOB
+        CALLER --> WAITALL
+        DISPATCH --> JOIN
+        COMPLETE --> WAITJOB
+        COMPLETE --> WAITALL
+        COMPLETE --> JOIN
+    end
+
+    subgraph Observe ["Observability and Metrics"]
+        SNAP["SituationGetThreadPoolSnapshot<br/>worker/I/O/render/audio CPU + NUMA"]
+        STATUS["SituationGetThreadingStatus<br/>capabilities and pool summary"]
+        DEPTH["Queue depth APIs<br/>high, low, active jobs"]
+        METRICS["Scheduler metrics<br/>lock ops/ns, scans, inline runs,<br/>queue-full spins, I/O idle/jobs"]
+        DUMP["Dump helpers<br/>threading report, pool status, metrics"]
+        STRESS["Harness CPU stress<br/>10 s all-core Task Manager correlation"]
+
+        POOL --> SNAP
+        POOL --> STATUS
+        HQM --> DEPTH
+        LQM --> DEPTH
+        RUN --> METRICS
+        BACKPRESSURE --> METRICS
+        SCAN --> METRICS
+        IO --> METRICS
+        SNAP --> DUMP
+        STATUS --> DUMP
+        DEPTH --> DUMP
+        METRICS --> DUMP
+        DISPATCH --> STRESS
+    end
+```
+
+In practice, use **high priority** for frame-critical jobs that the main thread may help drain during `SituationDispatchParallel`, and **low priority** for background work that can tolerate latency. Use `SituationInitInfo` affinity and NUMA fields only when you need predictable placement; the default path auto-sizes the pool and keeps affinity fail-soft so initialization does not break on restricted systems.
 
 #### Audio Node Graph Architecture
 
