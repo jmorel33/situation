@@ -5,9 +5,16 @@ vec4 UnpackColor(uint c) {
 
 void main() {
     // Bindless Accessors
+#ifdef VULKAN_BACKEND
     KTermBuffer terminal_data = KTermBuffer(pc.terminal_buffer_addr);
-    sampler2D font_texture = sampler2D(pc.font_texture_handle);
-    sampler2D sixel_texture = sampler2D(pc.sixel_texture_handle);
+#endif
+#ifdef VULKAN_BACKEND
+#define KTERM_FONT_TEXTURE u_font_texture
+#define KTERM_SIXEL_TEXTURE u_sixel_texture
+#else
+#define KTERM_FONT_TEXTURE u_font_texture
+#define KTERM_SIXEL_TEXTURE u_sixel_texture
+#endif
 
     uvec2 pixel_coords = gl_GlobalInvocationID.xy;
     if (pixel_coords.x >= uint(pc.screen_size.x) || pixel_coords.y >= uint(pc.screen_size.y)) return;
@@ -21,6 +28,7 @@ void main() {
     float voice_energy = 0.0;
     uint config_flags = 0;
 
+#ifdef VULKAN_BACKEND
     if (pc.shader_config_addr != 0) {
         ConfigBuffer config = ConfigBuffer(pc.shader_config_addr);
         config_flags = config.flags;
@@ -31,6 +39,7 @@ void main() {
         visual_bell_intensity = config.visual_bell_intensity;
         voice_energy = config.voice_energy;
     }
+#endif
 
     vec2 uv_screen = vec2(pixel_coords) / pc.screen_size;
 
@@ -51,11 +60,11 @@ void main() {
     }
 
     // Sixel Overlay Sampling (using possibly distorted UV)
-    vec4 sixel_color = texture(sixel_texture, uv_screen);
+    vec4 sixel_color = texture(KTERM_SIXEL_TEXTURE, uv_screen);
 
     // Re-calculate cell coordinates based on distorted UV or original pixel coords
     // If CRT is on, we should sample based on distorted UV to map screen to terminal grid
-    uvec2 sample_coords = uvec2(uv_screen * pc.screen_size);
+    uvec2 sample_coords = uvec2(pixel_coords.x, uint(pc.screen_size.y) - 1u - pixel_coords.y);
 
     uint cell_x = sample_coords.x / uint(pc.char_size.x);
     uint cell_y = sample_coords.y / uint(pc.char_size.y);
@@ -164,19 +173,29 @@ void main() {
 
     float font_val = 0.0;
     if (in_glyph_bounds) {
-        ivec2 tex_size = textureSize(font_texture, 0);
-        vec2 uv = vec2(float(glyph_col * pc.char_size.x + u_pixel) / float(tex_size.x),
-                       float(glyph_row * pc.char_size.y + v_pixel) / float(tex_size.y));
+        ivec2 tex_size = textureSize(KTERM_FONT_TEXTURE, 0);
+        float glyph_w = pc.font_data_width > 0u ? float(pc.font_data_width) : float(tex_size.x) / float(pc.atlas_cols);
+        float glyph_h = pc.font_data_height > 0u ? float(pc.font_data_height) : glyph_w;
+        float pad_x = floor(max(pc.char_size.x - glyph_w, 0.0) * 0.5);
+        float pad_y = floor(max(pc.char_size.y - glyph_h, 0.0) * 0.5);
+        if (u_pixel < pad_x || u_pixel >= pad_x + glyph_w || v_pixel < pad_y || v_pixel >= pad_y + glyph_h) {
+            in_glyph_bounds = false;
+        }
+        float glyph_u = clamp(u_pixel - pad_x, 0.0, max(glyph_w - 1.0, 0.0));
+        float glyph_v = clamp(v_pixel - pad_y, 0.0, max(glyph_h - 1.0, 0.0));
+        ivec2 glyph_texel = ivec2(int(float(glyph_col) * glyph_w + floor(glyph_u)),
+                                  int(float(glyph_row) * glyph_h + floor(glyph_v)));
 
-        font_val = texture(font_texture, uv).r;
+        if (in_glyph_bounds) {
+            font_val = texelFetch(KTERM_FONT_TEXTURE, glyph_texel, 0).a;
+        }
 
         // Bold (Bit 0) - Simulated Smear
-        if ((flags & (1 << 0)) != 0) {
-             float one_pixel_u = 1.0 / float(tex_size.x);
+        if (in_glyph_bounds && (flags & (1 << 0)) != 0) {
              // Sample 1 pixel to the left to smear right
              float font_val_right = 0.0;
              if (u_pixel >= 1.0) { // Avoid bleeding from left neighbor in atlas
-                 font_val_right = texture(font_texture, uv - vec2(one_pixel_u, 0.0)).r;
+                font_val_right = texelFetch(KTERM_FONT_TEXTURE, glyph_texel - ivec2(1, 0), 0).a;
              }
              font_val = max(font_val, font_val_right);
         }
@@ -305,13 +324,8 @@ void main() {
     // Sixel Blend
     pixel_color = mix(pixel_color, sixel_color, sixel_color.a);
 
-    // Vector Graphics Overlay (Storage Tube Glow)
-    if (pc.vector_texture_handle != 0) {
-        sampler2D vector_tex = sampler2D(pc.vector_texture_handle);
-        vec4 vec_col = texture(vector_tex, uv_screen);
-        // Additive blending for CRT glow effect
-        pixel_color += vec_col;
-    }
+    // Vector overlay is rendered by the vector pipeline; avoid backend-specific
+    // bindless sampling here so the terminal shader remains portable.
 
     // Scanlines & Vignette (Retro Effects)
     if (scanline_intensity > 0.0) {
