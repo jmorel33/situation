@@ -1,6 +1,6 @@
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.4.0 "Folder Reorganization & Audio Subsystem"_
+_Core API library v2.4.106 — see [UPDATELOG.md](UPDATELOG.md) for release notes._
 
 _(c) 2025-2026 Jacques Morel_
 
@@ -9,6 +9,10 @@ _MIT Licenced_
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
 > **See the complete changelog:** [UPDATELOG.md](UPDATELOG.md)
+
+> **Documentation coverage (v2.4.106):** **438/438** public `SITAPI` functions documented in this guide (verified by `python scripts/generate_situation_api_docs.py`).
+> - **[situation_api_index.md](situation_api_index.md)** — categorized index (auto-generated)
+> - **[situation_sdk.md](situation_sdk.md)** — SDK manual (architecture & workflows)
 
 ---
 
@@ -255,20 +259,14 @@ Added `SituationGetIOQueueDepth()` to monitor pending background asset loading t
 
 ### Learning & Support
 5. [Examples & Tutorials](#examples--tutorials)
-   - Terminal Module
-   - Basic Triangle Rendering
-   - 3D Model Loading
-   - Audio Playback
-   - Input Handling
-   - Compute Shaders
-   - GPU Particle Systems
-6. [FAQ & Troubleshooting](#faq--troubleshooting)
+6. [Complete API Index (generated)](#complete-api-index-generated)
+7. [FAQ & Troubleshooting](#faq--troubleshooting)
    - Common Issues
    - Performance Tips
    - Debugging Guide
 
 ### Legal
-7. [License](#license-mit) - MIT License
+8. [License](#license-mit) - MIT License
 
 ---
 
@@ -997,6 +995,55 @@ if (SituationInit(argc, argv, &init_info) != SITUATION_SUCCESS) {
     return -1;
 }
 ```
+
+---
+#### `SituationGetLastErrorCode`
+Returns the **`SituationError`** enum value from the most recent call to `_SituationSetErrorFromCode` inside the library. Use this when you need a stable, programmatic error category (logging, telemetry, switch statements) without parsing the detail string from **`SituationGetLastErrorMsg`**.
+
+```c
+SituationError SituationGetLastErrorCode(void);
+```
+
+**Returns:** The last error code, or **`SITUATION_SUCCESS`** (0) if no error was recorded on the current context.
+
+**Thread safety:** Safe from the main thread after **`SituationInit`**. After **`SituationShutdown`**, the error buffer is not updated (see v2.4.104 mutex guard).
+
+**Usage Example:**
+```c
+if (SituationLoadShader("a.vert", "a.frag", &shader) != SITUATION_SUCCESS) {
+    SituationError code = SituationGetLastErrorCode();
+    fprintf(stderr, "Load failed: %s (%d)\n", SituationErrorToString(code), (int)code);
+}
+```
+
+**See also:** **`SituationGetLastErrorMsg`**, **`SituationErrorToString`**, **`sit/situation_base_errno.h`** (full enum).
+
+---
+#### `SituationErrorToString`
+Maps any **`SituationError`** value to a short, human-readable label from the errno table (e.g. **`"Shader compile or link still in progress (poll again next frame)"`** for **`SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS`**). The returned pointer is static string storage — **do not free**.
+
+```c
+const char* SituationErrorToString(SituationError err);
+```
+
+**Parameters:**
+- `err` — Any **`SituationError`** value, including codes not produced by the last API call.
+
+**Returns:** Non-null C string label. Unknown codes fall back to a generic `"Unknown SituationError"` label.
+
+**Usage Example:**
+```c
+SituationError poll = SituationPollShaderLoad(shader);
+if (poll == SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS) {
+    /* Expected while async compile runs — not a hard failure */
+} else if (poll != SITUATION_SUCCESS) {
+    fprintf(stderr, "Shader load failed: %s\n", SituationErrorToString(poll));
+}
+```
+
+**Notes:**
+- Prefer **`SituationGetLastErrorMsg`** when you need compiler/driver detail (GLSL line numbers, Vulkan validation text).
+- Pair with **`SituationGetLastErrorCode`** after failures for structured handling.
 
 ---
 #### `SituationSetExitCallback`
@@ -1884,6 +1931,51 @@ if (main_render_pass != VK_NULL_HANDLE) {
 - The render pass is managed by Situation - do not destroy it
 - Useful for creating custom Vulkan pipelines compatible with the main window
 - Render pass format matches the swapchain format
+
+---
+#### `SituationGetInitState`
+Returns the library initialization state as a thread-safe **`SituationInitState`** enum. Use this to detect partial init, shutdown in progress, or re-entrancy during tooling that calls **`SituationInit`** / **`SituationShutdown`** in one process.
+
+```c
+SituationInitState SituationGetInitState(void);
+```
+
+**Returns:** One of **`SITUATION_INIT_STATE_UNINITIALIZED`**, **`INITIALIZING`**, **`INITIALIZED`**, **`SHUTTING_DOWN`**, etc. (see header).
+
+**Usage Example:**
+```c
+if (SituationGetInitState() != SITUATION_INIT_STATE_INITIALIZED) {
+    fprintf(stderr, "Situation not ready for this call\n");
+    return;
+}
+```
+
+---
+#### `SituationGetGraphicsCaps`
+Fills **`SituationGraphicsCaps`** with backend feature flags (bindless, compute, max push constant size, SPIR-V path, etc.). Examples and the test harness use this to skip or classify driver-specific tests.
+
+```c
+void SituationGetGraphicsCaps(SituationGraphicsCaps* out_caps);
+```
+
+**Parameters:**
+- `out_caps` — Output struct; must not be NULL.
+
+**Notes:** Safe after successful **`SituationInit`**. Values reflect the **active** backend (OpenGL vs Vulkan).
+
+---
+#### `SituationShowMessageBox`
+Displays a blocking native message box (Win32 **`MessageBox`**, platform equivalent elsewhere). Intended for **fatal init errors** when stderr is not visible (GUI apps without a console).
+
+```c
+void SituationShowMessageBox(const char* title, const char* message);
+```
+
+**Parameters:**
+- `title` — Dialog title (UTF-8).
+- `message` — Body text (UTF-8).
+
+**Notes:** Blocks until the user dismisses the dialog. Do not call from the audio callback thread.
 
 </details>
 <details>
@@ -3801,6 +3893,18 @@ if (SituationIsKeyPressed(SIT_KEY_F12)) {
 - Use for performance optimization
 - Data accumulates until export
 
+---
+#### `SituationSetMaximizeCallback`
+Registers a callback invoked when the window is **maximized** or **restored** from maximized state. Complements **`SituationSetResizeCallback`** (framebuffer size) for UI that tracks window chrome state.
+
+```c
+void SituationSetMaximizeCallback(SituationMaximizeCallback callback, void* user_data);
+```
+
+**Parameters:**
+- `callback` — `void (*)(bool maximized, void* user_data)` or NULL to clear.
+- `user_data` — Opaque pointer passed to the callback.
+
 </details>
 <details>
 <summary><h3>Image Module</h3></summary>
@@ -5037,6 +5141,8 @@ SituationImageDrawTextFormatted(&image, font, (Vector2){10, 10}, WHITE, "Score: 
 
 **Overview:** The Graphics module forms the core of the rendering pipeline, offering a powerful, backend-agnostic API for interacting with the GPU. It is responsible for all GPU resource management (meshes, shaders, textures) and its command-buffer-centric design (`SituationCmd...`) allows you to precisely sequence rendering operations.
 
+**Command buffer catalog (Situation 2.4.125):** See **[situation_command_reference.md](situation_command_reference.md)** for every `SituationCmd*` function — full signatures, OpenGL/Vulkan notes, recommended order, and use cases (render pass, raster state, descriptors, manual draw, compute, deprecated aliases).
+
 ### Structs, Enums, and Handles
 
 #### `SituationCommandBuffer`
@@ -5078,29 +5184,32 @@ SituationCmdEndRenderPass(cmd);
 - **Reuse:** The main command buffer is reused each frame
 - **Thread Safety:** Command buffers are not thread-safe; use one per thread
 
-**Common Operations:**
+**Common operations** (see [situation_command_reference.md](situation_command_reference.md) for the complete list):
+
 ```c
-// Render pass management
+// Render pass
 SituationCmdBeginRenderPass(cmd, &pass_info);
+SituationCmdSetViewport(cmd, 0, 0, w, h);
 SituationCmdEndRenderPass(cmd);
 
-// Pipeline binding
+// Graphics pipeline + resources
 SituationCmdBindPipeline(cmd, shader);
-SituationCmdBindComputePipeline(cmd, compute_shader);
+SituationCmdBindDescriptorSet(cmd, 0, ubo);
+SituationCmdBindTextureSet(cmd, 1, albedo);
 
-// Resource binding
-SituationCmdBindDescriptorSet(cmd, 0, descriptor_set);
-SituationCmdBindTextureSet(cmd, 0, texture_set);
-
-// Drawing
-SituationCmdDrawMesh(cmd, mesh);
+// Low-level draw (Core)
+SituationCmdBindVertexBuffer(cmd, 0, vbo, 0, vertex_stride);
+SituationCmdBindIndexBuffer(cmd, ibo, 0);
 SituationCmdDrawIndexed(cmd, index_count, 1, 0, 0, 0);
-SituationCmdDispatch(cmd, work_groups_x, work_groups_y, work_groups_z);
 
-// State changes
-SituationCmdSetPushConstant(cmd, 0, &data, sizeof(data));
-SituationCmdSetScissor(cmd, x, y, width, height);
-SituationCmdPipelineBarrier(cmd, &barrier);
+// High-level draw
+SituationCmdDrawMesh(cmd, mesh);
+
+// Compute + sync
+SituationCmdBindComputePipeline(cmd, compute);
+SituationCmdDispatch(cmd, gx, gy, gz);
+SituationCmdPipelineBarrier(cmd, SITUATION_BARRIER_COMPUTE_SHADER_WRITE,
+                                SITUATION_BARRIER_VERTEX_SHADER_READ);
 ```
 
 **Notes:**
@@ -5221,7 +5330,7 @@ typedef struct SituationShader {
     uint64_t id;
 } SituationShader;
 ```
-- **Creation:** `SituationLoadShader()`, `SituationLoadShaderFromMemory()`
+- **Creation:** `SituationLoadShader()`, `SituationLoadShaderFromMemory()`, `SituationBeginLoadShaderFromMemory()` (+ poll), `SituationLoadShaderFromSpirv*`, `SituationBeginLoadShaderFromSpirvMemory(Ex)`
 - **Usage:** `SituationCmdBindPipeline()`
 - **Destruction:** `SituationUnloadShader()`
 
@@ -5438,328 +5547,28 @@ SituationCmdEndRenderPass(cmd);
 - Thread-safe for single-threaded rendering
 
 ---
-#### `SituationCmdBeginRenderPass` / `SituationCmdEndRenderPass`
-Begins and ends a render pass. A render pass defines the render target (e.g., the main window or a virtual display) and how its attachments (color, depth) should be handled. All drawing commands must be recorded between these two calls.
-```c
-SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);
-SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd);
-```
-**Usage Example:**
-```c
-// Define a render pass that clears the screen to a dark blue color.
-SituationRenderPassInfo pass_info = {
-    .color_load_action = SIT_LOAD_ACTION_CLEAR,
-    .clear_color = {20, 30, 40, 255},
-    .color_store_action = SIT_STORE_ACTION_STORE,
-    .virtual_display_id = -1 // Target the main window
-};
-SituationCmdBeginRenderPass(SituationGetMainCommandBuffer(), &pass_info);
 
-// ... All your drawing commands for this pass go here ...
+### `SituationCmd*` — command buffer recording
 
-SituationCmdEndRenderPass(SituationGetMainCommandBuffer());
-```
+**Canonical reference:** **[situation_command_reference.md](situation_command_reference.md)** (Situation 2.4.125+).
 
----
-#### Rendering Commands
-These functions record drawing and state-setting operations into the command buffer.
+All GPU recording functions use `SituationGetMainCommandBuffer()` between `SituationAcquireFrameCommandBuffer()` and `SituationEndFrame()`. Signatures, OpenGL/Vulkan matrix, ordering, and use cases are maintained in the command reference only.
 
----
+| Section | Commands |
+|---------|----------|
+| [§1 Render pass](situation_command_reference.md#1-render-pass--framebuffer) | `BeginRenderPass`, `EndRenderPass` |
+| [§2 Viewport / scissor](situation_command_reference.md#2-dynamic-viewport--scissor) | `SetViewport`, `SetScissor` |
+| [§3 Raster state](situation_command_reference.md#3-raster-state-fixed-function) | `PushRasterState`, `PopRasterState`, `SetCullMode`, `SetDepthTest`, `SetDepthWrite`, `SetBlendEnable`, `SetBlendFuncSeparate` |
+| [§4 Pipeline & descriptors](situation_command_reference.md#4-graphics-pipeline--shader-data) | `BindPipeline`, `SetPushConstant`, `SetPushConstantData`, `BindDescriptorSet`, `BindDescriptorSetDynamic`, `BindTextureSet`, `BindSampledTexture` |
+| [§5 Vertex input & draw](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | `SetVertexAttribute` (GL), `BindVertexBuffer`, `BindIndexBuffer`, `Draw`, `DrawIndexed` |
+| [§6 High-level draw](situation_command_reference.md#6-high-level-draw-helpers) | `DrawMesh`, `DrawQuad`, `DrawTexture`, `DrawText`, `DrawTextEx` |
+| [§7 Compute](situation_command_reference.md#7-compute) | `BindComputePipeline`, `BindComputeTexture`, `Dispatch`, `PipelineBarrier` |
+| [§8 Transfer](situation_command_reference.md#8-transfer--presentation) | `CopyBuffer`, `Present` |
+| [§9 Debug](situation_command_reference.md#9-debug-markers) | `BeginDebugGroup`, `EndDebugGroup` |
+| [§10 Recipe](situation_command_reference.md#10-recommended-command-order-one-3d-object-core-path) | Full frame ordering example |
+| [§11 Deprecated](situation_command_reference.md#11-deprecated-commands) | `BeginRenderToDisplay`, `EndRender`, `BindUniformBuffer`, `BindTexture`, `BindComputeBuffer`, `MemoryBarrier` |
 
-#### `SituationPauseApp`
-
-Pauses the application.
-
-```c
-SITAPI void SituationPauseApp(void);
-```
-
-**Usage Example:**
-```c
-SituationPauseApp();
-```
-
----
-
-#### `SituationGetMonitorHeight`
-
-Gets the current height of a monitor in screen coordinates.
-
-```c
-SITAPI int SituationGetMonitorHeight(int monitor_id);
-```
-
-**Usage Example:**
-```c
-int primary_monitor_height = SituationGetMonitorHeight(0);
-printf("Primary monitor height: %d\n", primary_monitor_height);
-```
-
----
-#### `SituationCmdSetViewport` / `SituationCmdSetScissor`
-Sets the dynamic viewport or scissor rectangle for the current render pass. The viewport transforms the normalized device coordinates to window coordinates, while the scissor rectangle discards fragments outside its bounds.
-```c
-SituationError SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height);
-SituationError SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);
-```
-**Usage Example:**
-```c
-// Render to the left half of the screen for a split-screen effect.
-int w = SituationGetRenderWidth();
-int h = SituationGetRenderHeight();
-SituationCmdSetViewport(SituationGetMainCommandBuffer(), 0, 0, w / 2.0f, h);
-SituationCmdSetScissor(SituationGetMainCommandBuffer(), 0, 0, w / 2, h);
-```
-
----
-#### `SituationCmdBindPipeline`
-Binds a graphics pipeline (which includes the shader program and its state) for subsequent drawing commands. All draws following this call will use this pipeline until a new one is bound.
-```c
-SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader);
-```
-**Usage Example:**
-```c
-// Bind the main shader for drawing the 3D scene.
-SituationCmdBindPipeline(SituationGetMainCommandBuffer(), my_3d_shader);
-SituationCmdDrawMesh(SituationGetMainCommandBuffer(), my_scene_mesh);
-
-// Bind a different shader for drawing the UI.
-SituationCmdBindPipeline(SituationGetMainCommandBuffer(), my_ui_shader);
-SituationCmdDrawMesh(SituationGetMainCommandBuffer(), my_ui_mesh);
-```
-
----
-#### `SituationCmdBindVertexBuffer`
-Binds a vertex buffer for subsequent drawing commands. The bound vertex buffer provides the vertex data (position, color, normals, etc.) for the draws that follow.
-```c
-void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer);
-```
-**Usage Example:**
-```c
-// Before drawing, bind the vertex buffer containing your model's vertices.
-SituationCmdBindVertexBuffer(cmd, my_model_vertex_buffer);
-SituationCmdDraw(cmd, 0, 36); // Draw 36 vertices from the bound buffer.
-```
-
----
-#### `SituationCmdBindIndexBuffer`
-Binds an index buffer for subsequent indexed drawing commands (`SituationCmdDrawIndexed`). An index buffer tells the GPU the order in which to draw vertices from the vertex buffer, allowing for the reuse of vertices and more efficient rendering of complex meshes.
-```c
-void SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer);
-```
-**Usage Example:**
-```c
-// Before an indexed draw, bind both the vertex and index buffers.
-SituationCmdBindVertexBuffer(cmd, my_mesh_vbo);
-SituationCmdBindIndexBuffer(cmd, my_mesh_ibo);
-// Draw using the index buffer. This will draw 12 triangles (36 indices).
-SituationCmdDrawIndexed(cmd, 0, 36, 0);
-```
-
----
-#### `SituationCmdBindShaderBuffer` / `SituationCmdBindShaderTexture`
-Binds a uniform/storage buffer or a texture to a specific binding point, making it accessible to the currently bound shader. The `binding` index corresponds to the `binding = N` layout qualifier in the GLSL shader code.
-```c
-void SituationCmdBindShaderBuffer(SituationCommandBuffer cmd, int binding, SituationBuffer buffer);
-void SituationCmdBindShaderTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture);
-```
-**Usage Example:**
-```c
-/* GLSL Shader Code:
-layout(binding = 0) uniform sampler2D u_albedo;
-layout(binding = 1) uniform SceneData {
-    mat4 view;
-    mat4 proj;
-} u_scene;
-*/
-
-// In C, bind the corresponding resources to the correct binding points:
-SituationCmdBindShaderTexture(cmd, 0, my_albedo_texture);
-SituationCmdBindShaderBuffer(cmd, 1, my_scene_ubo);
-```
-
----
-#### `SituationCmdDraw` / `SituationCmdDrawIndexed`
-Records a non-indexed or indexed drawing command into the command buffer. `SituationCmdDraw` draws vertices sequentially from the bound vertex buffer, while `SituationCmdDrawIndexed` uses the bound index buffer to determine the order of vertices.
-```c
-SituationError SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance);
-SituationError SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance);
-```
-**Usage Example:**
-```c
-// Draw a mesh using previously bound vertex and index buffers.
-SituationCmdBindVertexBuffer(cmd, my_vbo);
-SituationCmdBindIndexBuffer(cmd, my_ibo);
-// Draw 36 indices, starting from the beginning of the index buffer.
-SituationCmdDrawIndexed(cmd, 36, 1, 0, 0, 0);
-```
-
----
-#### `SituationCmdDrawMesh`
-A high-level drawing command that records a command to draw a complete, pre-configured `SituationMesh` object. This is often more convenient than binding vertex and index buffers manually.
-```c
-SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh);
-```
-**Usage Example:**
-```c
-// Bind the shader you want to use for this mesh.
-SituationCmdBindPipeline(SituationGetMainCommandBuffer(), my_shader);
-// The mesh object contains its own vertex and index buffers, which are automatically used.
-SituationCmdDrawMesh(SituationGetMainCommandBuffer(), my_complex_model_mesh);
-```
-
----
-#### `SituationCmdDrawQuad`
-Records a command to draw a simple, colored, and transformed 2D quad. This uses an internally managed quad mesh, so you don't need to create your own. It's useful for debug rendering, particles, or simple UI elements.
-```c
-SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color);
-```
-**Usage Example:**
-```c
-// Create a transformation matrix to position and scale the quad.
-mat4 transform;
-glm_translate_make(transform, (vec3){100.0f, 200.0f, 0.0f});
-glm_scale_uni(transform, 50.0f); // Make it 50x50 pixels
-
-// Define a color (in this case, magenta).
-Vector4 quad_color = {{1.0f, 0.0f, 1.0f, 1.0f}};
-
-// Record the draw command.
-SituationCmdDrawQuad(SituationGetMainCommandBuffer(), transform, quad_color);
-```
-
----
-#### `SituationCmdDrawTexture`
-Draws a portion of a texture with transformation, rotation, and tint. This is a high-level convenience function for sprite rendering.
-```c
-SituationError SituationCmdDrawTexture(
-    SituationCommandBuffer cmd,
-    SituationTexture texture,
-    Rectangle source,
-    Rectangle dest,
-    Vector2 origin,
-    float rotation,
-    ColorRGBA tint
-);
-```
-**Parameters:**
-- `source`: Source rectangle in the texture (in pixels)
-- `dest`: Destination rectangle on screen (in pixels)
-- `origin`: Rotation origin point (relative to dest)
-- `rotation`: Rotation angle in radians
-- `tint`: Color tint to apply (use WHITE for no tint)
-
-**Usage Example:**
-```c
-// Draw a sprite from a texture atlas
-Rectangle source = {0, 0, 32, 32};  // 32x32 sprite in atlas
-Rectangle dest = {100, 100, 64, 64}; // Draw at 2x scale
-Vector2 origin = {32, 32};           // Rotate around center
-float rotation = glm_rad(45.0f);     // 45 degree rotation
-ColorRGBA tint = {255, 255, 255, 255}; // No tint
-
-SituationCmdDrawTexture(cmd, sprite_atlas, source, dest, origin, rotation, tint);
-```
-
----
-#### `SituationCmdDrawText`
-Draws a text string using GPU-accelerated textured quads. Uses the default font size.
-```c
-SituationError SituationCmdDrawText(
-    SituationCommandBuffer cmd,
-    SituationFont font,
-    const char* text,
-    Vector2 pos,
-    ColorRGBA color
-);
-```
-**Usage Example:**
-```c
-// Draw simple text
-Vector2 pos = {10, 10};
-ColorRGBA white = {255, 255, 255, 255};
-SituationCmdDrawText(cmd, my_font, "Hello, World!", pos, white);
-```
-
----
-#### `SituationCmdDrawTextEx`
-Advanced text drawing with custom font size and character spacing.
-```c
-SituationError SituationCmdDrawTextEx(
-    SituationCommandBuffer cmd,
-    SituationFont font,
-    const char* text,
-    Vector2 pos,
-    float fontSize,
-    float spacing,
-    ColorRGBA color
-);
-```
-**Usage Example:**
-```c
-// Draw large, spaced-out text
-Vector2 pos = {100, 100};
-ColorRGBA yellow = {255, 255, 0, 255};
-SituationCmdDrawTextEx(cmd, my_font, "GAME OVER", pos, 48.0f, 2.0f, yellow);
-```
-
----
-#### `SituationCmdPresent`
-Submits a command to copy a texture to the main window's swapchain. This is primarily used in compute-only rendering pipelines where you render to a texture and then present it.
-```c
-SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationTexture texture);
-```
-**Usage Example:**
-```c
-// Render to texture, then present
-SituationRenderPassInfo pass_info = {0};
-pass_info.display_id = offscreen_texture;
-pass_info.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
-pass_info.color_attachment.storeOp = SIT_STORE_OP_STORE;
-SituationCmdBeginRenderPass(cmd, &pass_info);
-// ... render scene ...
-SituationCmdEndRenderPass(cmd);
-
-// Present the offscreen texture to the window
-SituationCmdPresent(cmd, offscreen_texture);
-```
-
----
-#### `SituationCmdBindSampledTexture`
-Binds a texture as a sampled image (sampler2D) to a specific binding point in shaders.
-```c
-SituationError SituationCmdBindSampledTexture(
-    SituationCommandBuffer cmd,
-    int binding,
-    SituationTexture texture
-);
-```
-**Usage Example:**
-```c
-// Bind texture to binding point 0 in fragment shader
-SituationCmdBindSampledTexture(cmd, 0, diffuse_texture);
-```
-
----
-#### `SituationCmdBindDescriptorSetDynamic`
-Binds a dynamic buffer descriptor set with an offset. This allows you to use a single large buffer for multiple objects by offsetting into it.
-```c
-SituationError SituationCmdBindDescriptorSetDynamic(
-    SituationCommandBuffer cmd,
-    uint32_t set_index,
-    SituationBuffer buffer,
-    uint32_t dynamic_offset
-);
-```
-**Usage Example:**
-```c
-// Bind different parts of a large uniform buffer for each object
-for (int i = 0; i < object_count; i++) {
-    uint32_t offset = i * sizeof(ObjectUniforms);
-    SituationCmdBindDescriptorSetDynamic(cmd, 0, uniform_buffer, offset);
-    SituationCmdDrawMesh(cmd, objects[i].mesh);
-}
-```
+**Related non-command APIs in this file:** `SituationCreateMesh`, `SituationLoadShader`, `SituationUpdateBuffer`, `SituationSetShaderUniform*`, virtual displays, compute pipeline creation, readback buffers.
 
 ---
 #### Resource Management
@@ -6022,53 +5831,6 @@ SituationCmdDrawMesh(cmd, mesh);
 - Texture must remain valid while handle is in use
 - Handles are resident (always accessible) once obtained
 - Part of modern GPU-driven rendering techniques
-
----
-#### `SituationCmdCopyTexture`
-Records a command to copy pixel data from a source texture to a destination texture. This is a GPU-side operation that efficiently transfers texture data without CPU involvement.
-
-```c
-SituationError SituationCmdCopyTexture(SituationCommandBuffer cmd, SituationTexture src, SituationTexture dst);
-```
-
-**Parameters:**
-- `cmd` - The command buffer to record into
-- `src` - The source texture to copy from
-- `dst` - The destination texture to copy to
-
-**Returns:** `SITUATION_SUCCESS` on success, error code otherwise
-
-**Usage Example:**
-```c
-// Create a render target and a backup texture
-SituationTexture render_target = SituationCreateRenderTexture(1920, 1080);
-SituationTexture backup = SituationCreateTexture(1920, 1080, SITUATION_PIXEL_FORMAT_RGBA8);
-
-// Render to the target
-SituationRenderPassInfo pass = {
-    .virtual_display_id = -1,
-    .color_attachments[0] = render_target,
-    .color_load_action = SIT_LOAD_ACTION_CLEAR
-};
-SituationCmdBeginRenderPass(cmd, &pass);
-// ... rendering commands ...
-SituationCmdEndRenderPass(cmd);
-
-// Copy the render result to backup for post-processing
-SituationCmdCopyTexture(cmd, render_target, backup);
-
-// Apply post-processing effects to the backup
-SituationCmdBindPipeline(cmd, blur_shader);
-SituationCmdBindShaderTexture(cmd, 0, backup);
-SituationCmdDrawQuad(cmd);
-```
-
-**Notes:**
-- Source and destination textures must have compatible formats and dimensions
-- Useful for feedback loops, copying render targets for post-processing, or backing up texture state
-- This is a GPU-side operation - much faster than reading to CPU and uploading
-- May require a pipeline barrier if the source texture was just written to
-- On Vulkan, maps to `vkCmdCopyImage`; on OpenGL, uses `glCopyImageSubData`
 
 ---
 #### `SituationGetTextureFormat`
@@ -6336,243 +6098,9 @@ SituationDestroyComputePipeline(&blur_pipeline);
 - The pipeline pointer's ID field is set to 0 to prevent use-after-free
 
 ---
-#### `SituationCmdBindComputePipeline`
-Binds a compute pipeline to the command buffer for subsequent dispatch commands. All compute dispatches following this call will use this pipeline until a new one is bound.
+### Compute command recording
 
-```c
-void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline);
-```
-
-**Parameters:**
-- `cmd` - The command buffer to record into
-- `pipeline` - The compute pipeline to bind
-
-**Usage Example:**
-```c
-// Particle simulation with multiple compute passes
-SituationComputePipeline update_positions, update_velocities, apply_forces;
-// ... create pipelines ...
-
-// Pass 1: Apply forces
-SituationCmdBindComputePipeline(cmd, apply_forces);
-SituationCmdBindComputeBuffer(cmd, 0, particle_buffer);
-SituationCmdDispatch(cmd, particle_groups, 1, 1);
-
-// Barrier: Ensure forces are applied before updating velocities
-SituationCmdPipelineBarrier(cmd,
-    SITUATION_BARRIER_COMPUTE_SHADER_WRITE,
-    SITUATION_BARRIER_COMPUTE_SHADER_READ);
-
-// Pass 2: Update velocities
-SituationCmdBindComputePipeline(cmd, update_velocities);
-SituationCmdDispatch(cmd, particle_groups, 1, 1);
-
-// Barrier again
-SituationCmdPipelineBarrier(cmd,
-    SITUATION_BARRIER_COMPUTE_SHADER_WRITE,
-    SITUATION_BARRIER_COMPUTE_SHADER_READ);
-
-// Pass 3: Update positions
-SituationCmdBindComputePipeline(cmd, update_positions);
-SituationCmdDispatch(cmd, particle_groups, 1, 1);
-```
-
-**Notes:**
-- Must be called before `SituationCmdDispatch()`
-- Binding a new pipeline is a lightweight operation
-- Use barriers between dependent compute passes
-- Pipeline remains bound until explicitly changed
-
----
-#### `SituationCmdBindComputeBuffer`
-Binds a storage buffer to a specific binding point for use in a compute shader. The buffer can be read from and written to by the shader.
-
-```c
-void SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, int binding, SituationBuffer buffer);
-```
-
-**Parameters:**
-- `cmd` - The command buffer to record into
-- `binding` - The binding point index (corresponds to `binding = N` in GLSL)
-- `buffer` - The buffer to bind (must be created with `SITUATION_BUFFER_USAGE_STORAGE`)
-
-**Usage Example:**
-```c
-/* GLSL Compute Shader:
-#version 450
-layout(local_size_x = 256) in;
-
-layout(binding = 0) buffer ParticleData {
-    vec4 positions[];
-};
-
-layout(binding = 1) buffer VelocityData {
-    vec4 velocities[];
-};
-
-void main() {
-    uint id = gl_GlobalInvocationID.x;
-    positions[id] += velocities[id] * dt;
-}
-*/
-
-// Create storage buffers
-SituationBuffer position_buffer = SituationCreateBuffer(
-    particle_count * sizeof(vec4),
-    SITUATION_BUFFER_USAGE_STORAGE);
-
-SituationBuffer velocity_buffer = SituationCreateBuffer(
-    particle_count * sizeof(vec4),
-    SITUATION_BUFFER_USAGE_STORAGE);
-
-// Bind buffers to compute shader
-SituationCmdBindComputePipeline(cmd, particle_pipeline);
-SituationCmdBindComputeBuffer(cmd, 0, position_buffer);
-SituationCmdBindComputeBuffer(cmd, 1, velocity_buffer);
-SituationCmdDispatch(cmd, particle_count / 256, 1, 1);
-```
-
-**Notes:**
-- Buffer must be created with `SITUATION_BUFFER_USAGE_STORAGE` flag
-- Binding index must match the `binding = N` in the shader
-- Buffers remain bound until explicitly changed
-- Use barriers if the buffer is read after being written
-
----
-#### `SituationCmdBindComputeTexture`
-Binds a texture as a storage image to a specific binding point for use in a compute shader. The texture can be read from and written to by the shader.
-
-```c
-void SituationCmdBindComputeTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture);
-```
-
-**Parameters:**
-- `cmd` - The command buffer to record into
-- `binding` - The binding point index (corresponds to `binding = N` in GLSL)
-- `texture` - The texture to bind (must support storage image usage)
-
-**Usage Example:**
-```c
-/* GLSL Compute Shader:
-#version 450
-layout(local_size_x = 16, local_size_y = 16) in;
-
-layout(binding = 0, rgba8) uniform image2D input_image;
-layout(binding = 1, rgba8) uniform image2D output_image;
-
-void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    vec4 color = imageLoad(input_image, pixel);
-
-    // Apply blur or other effect
-    vec4 processed = ApplyEffect(color);
-
-    imageStore(output_image, pixel, processed);
-}
-*/
-
-// Create textures with storage usage
-SituationTexture input_tex = SituationCreateTexture(1920, 1080,
-    SITUATION_PIXEL_FORMAT_RGBA8);
-SituationTexture output_tex = SituationCreateTexture(1920, 1080,
-    SITUATION_PIXEL_FORMAT_RGBA8);
-
-// Bind textures to compute shader
-SituationCmdBindComputePipeline(cmd, image_process_pipeline);
-SituationCmdBindComputeTexture(cmd, 0, input_tex);
-SituationCmdBindComputeTexture(cmd, 1, output_tex);
-
-// Dispatch with work groups covering the image
-SituationCmdDispatch(cmd, 1920 / 16, 1080 / 16, 1);
-```
-
-**Notes:**
-- Texture must support storage image usage
-- Binding index must match the `binding = N` in the shader
-- Format in shader (`rgba8`) must match texture format
-- Use barriers if texture is read after being written
-- Useful for image processing, procedural generation, and post-processing
-
----
-#### `SituationCmdDispatch`
-Records a command to execute a compute shader.
-```c
-void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
-```
-**Usage Example:**
-```c
-// In render loop, before the main render pass
-SituationCmdBindComputePipeline(SituationGetMainCommandBuffer(), my_compute_pipeline);
-SituationCmdBindComputeTexture(SituationGetMainCommandBuffer(), 0, my_storage_image);
-// Dispatch a 16x16 grid of thread groups.
-SituationCmdDispatch(SituationGetMainCommandBuffer(), 16, 16, 1);
-// A pipeline barrier is needed here to sync with the graphics pass
-```
-
----
-#### `SituationGetComputeCommandBuffer`
-Gets a command buffer specifically for compute shader operations.
-```c
-SituationCommandBuffer SituationGetComputeCommandBuffer(void);
-```
-**Usage Example:**
-```c
-// Dispatch compute shader
-SituationCommandBuffer compute_cmd = SituationGetComputeCommandBuffer();
-SituationCmdBindComputePipeline(compute_cmd, compute_pipeline);
-SituationCmdDispatch(compute_cmd, work_groups_x, work_groups_y, work_groups_z);
-```
-
----
-#### `SituationCmdPipelineBarrier`
-Inserts a memory barrier into the command buffer to synchronize memory access between different pipeline stages. This ensures that writes from one stage (e.g., compute shader) are visible to reads in another stage (e.g., vertex shader), preventing race conditions and data hazards.
-
-```c
-void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags);
-```
-
-**Parameters:**
-- `cmd` - The command buffer to record into
-- `src_flags` - Source stage flags (what wrote the data) - bitmask of `SituationBarrierSrcFlags`
-- `dst_flags` - Destination stage flags (what will read the data) - bitmask of `SituationBarrierDstFlags`
-
-**Source Flags:**
-- `SITUATION_BARRIER_VERTEX_SHADER_WRITE` - Vertex shader wrote to SSBO/Image
-- `SITUATION_BARRIER_FRAGMENT_SHADER_WRITE` - Fragment shader wrote to SSBO/Image/Attachment
-- `SITUATION_BARRIER_COMPUTE_SHADER_WRITE` - Compute shader wrote to Storage Buffer/Image
-- `SITUATION_BARRIER_TRANSFER_WRITE` - Transfer operation (Copy/Blit/Fill) wrote data
-
-**Destination Flags:**
-- `SITUATION_BARRIER_VERTEX_SHADER_READ` - Vertex shader will read data
-- `SITUATION_BARRIER_FRAGMENT_SHADER_READ` - Fragment shader will read data
-- `SITUATION_BARRIER_COMPUTE_SHADER_READ` - Compute shader will read data
-- `SITUATION_BARRIER_TRANSFER_READ` - Transfer operation will read data
-- `SITUATION_BARRIER_INDIRECT_COMMAND_READ` - Data will be read as indirect command parameters
-
-**Usage Example:**
-```c
-// GPU particle simulation: compute updates positions, then render them
-SituationCmdBindComputePipeline(cmd, particle_update_pipeline);
-SituationCmdBindComputeBuffer(cmd, 0, particle_ssbo);
-SituationCmdDispatch(cmd, PARTICLE_GROUPS, 1, 1);
-
-// CRITICAL: Ensure compute writes finish before vertex shader reads
-SituationCmdPipelineBarrier(cmd,
-    SITUATION_BARRIER_COMPUTE_SHADER_WRITE,
-    SITUATION_BARRIER_VERTEX_SHADER_READ);
-
-// Now safe to render using the updated particle data
-SituationCmdBindPipeline(cmd, particle_render_pipeline);
-SituationCmdBindVertexBuffer(cmd, particle_ssbo);
-SituationCmdDraw(cmd, PARTICLE_COUNT, 1, 0, 0);
-```
-
-**Notes:**
-- Essential for compute-to-graphics workflows (particle systems, procedural generation, etc.)
-- On Vulkan, maps to precise `vkCmdPipelineBarrier` with optimal stage/access masks
-- On OpenGL, emulated using `glMemoryBarrier` (has performance cost)
-- Automatically handles queue family ownership transfers on multi-queue systems
-- Replaces the deprecated `SituationMemoryBarrier()` function
+See **[situation_command_reference.md §7](situation_command_reference.md#7-compute)** for `SituationCmdBindComputePipeline`, `BindComputeTexture`, `Dispatch`, and `PipelineBarrier`.
 
 ---
 #### Virtual Displays
@@ -6944,479 +6472,9 @@ if (SituationIsKeyPressed(SIT_KEY_F12)) {
 ```
 
 ---
-#### `SituationCmdBeginRenderToDisplay`
-**[DEPRECATED]** Begins a render pass on a target (-1 for main window), clearing it. Use `SituationCmdBeginRenderPass()` instead for more control.
+### Deprecated `SituationCmd*` (migration only)
 
-```c
-SituationError SituationCmdBeginRenderToDisplay(SituationCommandBuffer cmd, int display_id, ColorRGBA clear_color);
-```
-
-**Migration Guide:**
-
-**Old Code:**
-```c
-// DEPRECATED
-ColorRGBA clear = {20, 30, 40, 255};
-SituationCmdBeginRenderToDisplay(cmd, -1, clear);
-// ... draw commands ...
-SituationCmdEndRender(cmd);
-```
-
-**New Code:**
-```c
-// RECOMMENDED
-SituationRenderPassInfo pass_info = {0};
-pass_info.display_id = -1;  // Main window
-pass_info.color_attachment.clear.color = (ColorRGBA){20, 30, 40, 255};
-pass_info.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
-pass_info.color_attachment.storeOp = SIT_STORE_OP_STORE;
-pass_info.depth_attachment.loadOp = SIT_LOAD_OP_CLEAR;
-pass_info.depth_attachment.storeOp = SIT_STORE_OP_DONT_CARE;
-pass_info.depth_attachment.clear.depth = 1.0f;
-
-SituationCmdBeginRenderPass(cmd, &pass_info);
-// ... draw commands ...
-SituationCmdEndRenderPass(cmd);
-
-// **Note on Vulkan O(1) Render Pass Cache**:
-// The Vulkan backend automatically hashes the `loadOp` and `storeOp` configurations into a 32-bit key.
-// It uses this key to perform an O(1) lookup in an internal cache (`render_pass_cache`) to retrieve or
-// generate the correct `VkRenderPass` object dynamically. This completely eliminates the need to manually
-// manage render pass objects for different clear/load configurations.
-```
-
-**Why Deprecated:**
-- `SituationCmdBeginRenderPass()` provides more control (load/store actions)
-- Consistent with modern Vulkan terminology
-- Supports depth/stencil attachments
-- Better performance with explicit load/store actions
-
----
-#### `SituationCmdEndRender`
-**[DEPRECATED]** End the current render pass. Use `SituationCmdEndRenderPass()` instead.
-
-```c
-SituationError SituationCmdEndRender(SituationCommandBuffer cmd);
-```
-
-**Migration Guide:**
-
-**Old Code:**
-```c
-// DEPRECATED
-SituationCmdBeginRenderToDisplay(cmd, -1, clear_color); // DEPRECATED, use SituationCmdBeginRenderPass
-// ... draw commands ...
-SituationCmdEndRender(cmd);
-```
-
-**New Code:**
-```c
-// RECOMMENDED
-SituationCmdBeginRenderPass(cmd, &pass_info);
-// ... draw commands ...
-SituationCmdEndRenderPass(cmd);
-```
-
-**Why Deprecated:**
-- Matches `SituationCmdBeginRenderPass()` naming
-- More explicit about what's being ended
-- Consistent with Vulkan terminology
-
----
-#### `SituationCmdSetScissor`
-Sets the dynamic scissor rectangle to clip rendering. Only pixels inside the scissor rect will be drawn.
-
-```c
-void SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);
-```
-
-**Parameters:**
-- `cmd` - Command buffer to record into
-- `x` - Left edge of scissor rectangle
-- `y` - Top edge of scissor rectangle
-- `width` - Width of scissor rectangle
-- `height` - Height of scissor rectangle
-
-**Usage Example:**
-```c
-// Clip rendering to a specific region
-SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
-
-// Enable scissor test for UI panel
-SituationCmdSetScissor(cmd, 100, 100, 400, 300);
-DrawUIPanel();  // Only visible within scissor rect
-
-// Reset to full screen
-int screen_width = SituationGetRenderWidth();
-int screen_height = SituationGetRenderHeight();
-SituationCmdSetScissor(cmd, 0, 0, screen_width, screen_height);
-
-// Split-screen rendering
-// Left half
-SituationCmdSetScissor(cmd, 0, 0, screen_width / 2, screen_height);
-RenderPlayer1View();
-
-// Right half
-SituationCmdSetScissor(cmd, screen_width / 2, 0, screen_width / 2, screen_height);
-RenderPlayer2View();
-
-// Restore full screen
-SituationCmdSetScissor(cmd, 0, 0, screen_width, screen_height);
-```
-
-**Notes:**
-- Coordinates are in pixels, origin at top-left
-- Scissor test must be enabled in pipeline state
-- Useful for UI clipping and split-screen
-- Reset to full screen when done
-
----
-#### `SituationCmdSetPushConstant`
-Sets a small block of per-draw uniform data (push constant) that is sent directly to the shader without requiring a buffer. Push constants are the fastest way to send small amounts of data (typically up to 128 bytes) that change frequently per draw call.
-
-```c
-SituationError SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);
-```
-
-**Parameters:**
-- `cmd` - The command buffer to record into
-- `contract_id` - The push constant block index (corresponds to shader layout)
-- `data` - Pointer to the data to copy
-- `size` - Size of the data in bytes (typically ≤ 128 bytes)
-
-**Returns:** `SITUATION_SUCCESS` on success, error code otherwise
-
-**Usage Example:**
-```c
-/* GLSL Shader:
-layout(push_constant) uniform PushConstants {
-    mat4 model;
-    vec4 color;
-} pc;
-*/
-
-typedef struct {
-    mat4 model;
-    vec4 color;
-} PushConstants;
-
-// Update push constants before each draw
-for (int i = 0; i < object_count; i++) {
-    PushConstants pc = {
-        .model = objects[i].transform,
-        .color = objects[i].color
-    };
-    
-    SituationCmdSetPushConstant(cmd, 0, &pc, sizeof(PushConstants));
-    SituationCmdDrawMesh(cmd, objects[i].mesh);
-}
-```
-
-**Notes:**
-- Push constants are ideal for per-draw data like model matrices, colors, or time values
-- Much faster than updating uniform buffers for small, frequently-changing data
-- Data is copied by value into the command buffer, so the source pointer doesn't need to remain valid
-- Maximum size is typically 128 bytes (guaranteed by Vulkan spec)
-- For larger data or data shared across multiple draws, use uniform buffers instead
-
----
-#### `SituationCmdBindDescriptorSet`
-Binds a buffer's descriptor set (uniform buffer or storage buffer) to a specific set index in the shader pipeline. This is the primary API for binding buffers to shaders, replacing older functions like `SituationCmdBindUniformBuffer`.
-
-```c
-SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer);
-```
-
-**Parameters:**
-- `cmd` - The command buffer to record into
-- `set_index` - The descriptor set index (corresponds to `set = N` in GLSL)
-- `buffer` - The buffer handle to bind (UBO or SSBO)
-
-**Returns:** `SITUATION_SUCCESS` on success, error code otherwise
-
-**Usage Example:**
-```c
-/* GLSL Shader:
-layout(set = 0, binding = 0) uniform CameraData {
-    mat4 view;
-    mat4 projection;
-} u_camera;
-*/
-
-// Create and update the camera uniform buffer
-SituationBuffer camera_ubo = SituationCreateBuffer(sizeof(CameraData), 
-    SITUATION_BUFFER_USAGE_UNIFORM);
-SituationUpdateBuffer(camera_ubo, &camera_data, sizeof(CameraData));
-
-// Bind to set 0 before drawing
-SituationCmdBindDescriptorSet(cmd, 0, camera_ubo);
-SituationCmdDrawMesh(cmd, scene_mesh);
-```
-
-**Notes:**
-- Automatically handles dynamic buffers (created with `SITUATION_BUFFER_USAGE_DYNAMIC_UNIFORM`) by using offset 0
-- For dynamic buffers with custom offsets, use `SituationCmdBindDescriptorSetDynamic()`
-- This is a low-overhead operation on Vulkan thanks to persistent descriptor sets
-- Set indices must match the `set = N` layout qualifier in your shader
-
----
-#### `SituationCmdBindTextureSet`
-Binds a texture resource to the pipeline.
-
-*   **Vulkan (Bindless):** For standard sampled textures, this updates the Push Constant with the texture's global array index. It does NOT bind a new descriptor set if the Global Set is already active. This enables extremely fast draw call batching.
-*   **Vulkan (Storage/Legacy):** For storage images or compute-sampled textures, this binds a dedicated descriptor set as before.
-*   **OpenGL:** Binds the texture to the corresponding Texture Unit (or uses a Bindless Handle).
-
-```c
-SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);
-```
-
-**Parameters:**
-- `cmd` - The command buffer to record into
-- `set_index` - The descriptor set index (corresponds to `set = N` in GLSL)
-- `texture` - The texture handle to bind
-
-**Returns:** `SITUATION_SUCCESS` on success, error code otherwise
-
-**Usage Example:**
-```c
-/* GLSL Shader:
-layout(set = 1, binding = 0) uniform sampler2D u_albedo;
-layout(set = 2, binding = 0) uniform sampler2D u_normal;
-*/
-
-// Load textures
-SituationTexture albedo = SituationLoadTexture("textures/albedo.png");
-SituationTexture normal = SituationLoadTexture("textures/normal.png");
-
-// Bind textures to their respective sets
-SituationCmdBindTextureSet(cmd, 1, albedo);
-SituationCmdBindTextureSet(cmd, 2, normal);
-SituationCmdDrawMesh(cmd, model_mesh);
-```
-
-**Notes:**
-- Works with both sampled textures and storage images
-- Set indices must match the `set = N` layout qualifier in your shader
-- Replaces older functions like `SituationCmdBindTexture()`
-- Persistent descriptor sets make this a fast operation on Vulkan
-
----
-#### `SituationCmdBindComputeTexture`
-Binds a texture as a storage image for compute shaders. Storage images allow compute shaders to read and write to textures.
-
-```c
-SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture);
-```
-
-**Parameters:**
-- `cmd` - Command buffer to record into
-- `binding` - Binding point (matches shader layout binding)
-- `texture` - Texture to bind as storage image
-
-**Returns:** `SITUATION_SUCCESS` on success, error code otherwise
-
-**Usage Example:**
-```c
-// Create texture for compute shader output
-SituationTexture output_texture;
-SituationCreateTexture2D(512, 512, SITUATION_FORMAT_RGBA8, &output_texture);
-
-// Bind to compute shader
-SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
-SituationCmdBindComputePipeline(cmd, compute_pipeline);
-SituationCmdBindComputeTexture(cmd, 0, output_texture);  // binding = 0
-
-// Dispatch compute shader
-SituationCmdDispatch(cmd, 512 / 16, 512 / 16, 1);  // 16x16 work groups
-
-// Use barrier before reading
-SituationPipelineBarrierInfo barrier = {
-    .src_stage = SITUATION_PIPELINE_STAGE_COMPUTE_SHADER,
-    .dst_stage = SITUATION_PIPELINE_STAGE_FRAGMENT_SHADER,
-    .src_access = SITUATION_ACCESS_SHADER_WRITE,
-    .dst_access = SITUATION_ACCESS_SHADER_READ
-};
-SituationCmdPipelineBarrier(cmd, &barrier);
-
-// Now safe to read in fragment shader
-SituationCmdBindTextureSet(cmd, 0, output_texture);
-
-// Shader example (GLSL)
-// layout(binding = 0, rgba8) uniform image2D output_image;
-// void main() {
-//     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-//     vec4 color = vec4(1.0, 0.0, 0.0, 1.0);
-//     imageStore(output_image, pixel, color);
-// }
-```
-
-**Notes:**
-- Texture must be created with storage usage flag
-- Binding matches shader layout binding
-- Use barriers when transitioning between compute and graphics
-- Storage images support read/write operations
-
----
-#### `SituationCmdSetVertexAttribute`
-**[OpenGL Only]** Defines the format and layout of a vertex attribute for the currently active Vertex Array Object (VAO). This function is used to describe how vertex data in a buffer should be interpreted by the shader.
-
-```c
-SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset);
-```
-
-**Parameters:**
-- `cmd` - The command buffer to record into
-- `location` - The attribute location (corresponds to `location = N` in GLSL)
-- `size` - Number of components (1-4, e.g., 3 for vec3)
-- `type` - Data type (e.g., `SITUATION_DATA_TYPE_FLOAT`)
-- `normalized` - Whether integer types should be normalized to [0,1] or [-1,1]
-- `offset` - Byte offset from the start of the vertex structure
-
-**Returns:** `SITUATION_SUCCESS` on OpenGL, `SITUATION_ERROR_NOT_IMPLEMENTED` on Vulkan
-
-**Usage Example:**
-```c
-/* GLSL Shader:
-layout(location = 0) in vec3 a_position;
-layout(location = 1) in vec2 a_texcoord;
-layout(location = 2) in vec3 a_normal;
-*/
-
-typedef struct {
-    vec3 position;  // offset 0
-    vec2 texcoord;  // offset 12
-    vec3 normal;    // offset 20
-} Vertex;
-
-// Define vertex format (OpenGL only)
-SituationCmdSetVertexAttribute(cmd, 0, 3, SITUATION_DATA_TYPE_FLOAT, false, offsetof(Vertex, position));
-SituationCmdSetVertexAttribute(cmd, 1, 2, SITUATION_DATA_TYPE_FLOAT, false, offsetof(Vertex, texcoord));
-SituationCmdSetVertexAttribute(cmd, 2, 3, SITUATION_DATA_TYPE_FLOAT, false, offsetof(Vertex, normal));
-```
-
-**Notes:**
-- **OpenGL Only:** This function only works on the OpenGL backend. Vulkan pipelines have immutable vertex formats defined at pipeline creation time
-- For Vulkan, vertex formats are specified when creating the shader/pipeline
-- This is considered a legacy API; modern code should use SSBO vertex pulling where possible
-- The command is recorded into the soft command buffer and executed during frame submission
-
----
-#### `SituationCmdDrawIndexed`
-Records an indexed draw call to the command buffer. This is the core rendering command for drawing meshes with index buffers.
-
-```c
-SituationError SituationCmdDrawIndexed(
-    SituationCommandBuffer cmd,
-    uint32_t index_count,
-    uint32_t instance_count,
-    uint32_t first_index,
-    int32_t vertex_offset,
-    uint32_t first_instance
-);
-```
-
-**Parameters:**
-- `cmd` - Command buffer to record into
-- `index_count` - Number of indices to draw
-- `instance_count` - Number of instances to draw (1 for non-instanced)
-- `first_index` - Offset into the index buffer
-- `vertex_offset` - Value added to vertex index before indexing into vertex buffer
-- `first_instance` - First instance ID (usually 0)
-
-**Returns:** `SITUATION_SUCCESS` on success, error code otherwise
-
-**Usage Example:**
-```c
-// Basic indexed draw
-SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
-
-// Set up render pass
-SituationRenderPassInfo pass_info = {
-    .target_display_id = -1,  // Main window
-    .clear_color = {0.1f, 0.1f, 0.1f, 1.0f}
-};
-SituationCmdBeginRenderPass(cmd, &pass_info);
-
-// Bind pipeline and resources
-SituationCmdBindPipeline(cmd, shader);
-SituationCmdBindDescriptorSet(cmd, 0, descriptor_set);
-
-// Draw mesh (36 indices, 1 instance)
-SituationCmdDrawIndexed(cmd, 36, 1, 0, 0, 0);
-
-SituationCmdEndRenderPass(cmd);
-
-// Instanced rendering
-SituationCmdDrawIndexed(cmd, mesh.index_count, 100, 0, 0, 0);  // Draw 100 instances
-
-// Draw subset of mesh
-SituationCmdDrawIndexed(cmd, 12, 1, 24, 0, 0);  // Draw indices 24-35
-```
-
-**Notes:**
-- Must be called inside a render pass
-- Requires bound pipeline and vertex/index buffers
-- Use instance_count > 1 for instanced rendering
-- vertex_offset is added to each index value
-
----
-#### `SituationCmdEndRenderPass`
-Ends the current render pass. Must be called after `SituationCmdBeginRenderPass` and all drawing commands.
-
-```c
-SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd);
-```
-
-**Parameters:**
-- `cmd` - Command buffer containing the render pass
-
-**Returns:** `SITUATION_SUCCESS` on success, error code otherwise
-
-**Usage Example:**
-```c
-// Basic render pass
-SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
-
-SituationRenderPassInfo pass_info = {
-    .target_display_id = -1,
-    .clear_color = {0.0f, 0.0f, 0.0f, 1.0f}
-};
-
-SituationCmdBeginRenderPass(cmd, &pass_info);
-
-// Draw commands here
-SituationCmdBindPipeline(cmd, shader);
-SituationCmdDrawMesh(cmd, mesh);
-
-// Always end the render pass
-SituationCmdEndRenderPass(cmd);
-
-// Multi-pass rendering
-// Pass 1: Render to virtual display
-SituationRenderPassInfo vd_pass = {
-    .target_display_id = 0,
-    .clear_color = {0.0f, 0.0f, 0.0f, 1.0f}
-};
-SituationCmdBeginRenderPass(cmd, &vd_pass);
-RenderScene();
-SituationCmdEndRenderPass(cmd);
-
-// Pass 2: Post-process to main window
-SituationRenderPassInfo main_pass = {
-    .target_display_id = -1,
-    .clear_color = {0.0f, 0.0f, 0.0f, 1.0f}
-};
-SituationCmdBeginRenderPass(cmd, &main_pass);
-ApplyPostProcessing();
-SituationCmdEndRenderPass(cmd);
-```
-
-**Notes:**
-- Must match every `SituationCmdBeginRenderPass`
-- Finalizes rendering to the target
-- Required before starting a new render pass
-- Errors if no render pass is active
+See **[situation_command_reference.md §11](situation_command_reference.md#11-deprecated-commands)**. Prefer `SituationCmdBeginRenderPass` / `EndRenderPass`, `BindDescriptorSet`, `BindTextureSet`, `SituationCmdPipelineBarrier` over legacy names.
 
 ---
 #### `SituationLoadShaderFromMemory`
@@ -7496,6 +6554,193 @@ SituationLoadShaderFromMemory(standard_vs, fs_code, &tinted_shader);
 - Useful for shader hot-reloading during development
 - Can embed shaders to avoid external file dependencies
 - Performance is identical to file-based shaders after compilation
+
+---
+#### `SituationBeginLoadShaderFromMemory`
+Starts a **non-blocking** graphics shader load from in-memory GLSL. The output handle is valid immediately, but the pipeline is not ready until **`SituationPollShaderLoad`** returns **`SITUATION_SUCCESS`**.
+
+**Backend behavior:**
+
+| Backend | Work performed asynchronously |
+|---------|------------------------------|
+| **OpenGL** | Async compile/link (`KHR_parallel_shader_compile` where available) |
+| **Vulkan** | GLSL→SPIR-V via shaderc on the **high-priority worker queue** (v2.4.105+), then pipeline build across subsequent frames |
+
+```c
+SituationError SituationBeginLoadShaderFromMemory(const char* vs_code, const char* fs_code, SituationShader* out_shader);
+```
+
+**Parameters:** Same as **`SituationLoadShaderFromMemory`**.
+
+**Returns:**
+- **`SITUATION_SUCCESS`** — Load started; poll until ready.
+- Immediate errors (bad source, out of memory, not initialized) — do not poll.
+
+**Usage Example:**
+```c
+SituationShader shader = {0};
+SituationError err = SituationBeginLoadShaderFromMemory(vs_src, fs_src, &shader);
+if (err != SITUATION_SUCCESS && err != SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS) {
+    fprintf(stderr, "Begin load failed: %s\n", SituationErrorToString(err));
+    return;
+}
+
+while (SituationWindowShouldClose() == false) {
+    SituationPollInputEvents();
+    SituationUpdateTimers();
+
+    err = SituationPollShaderLoad(shader);
+    if (err == SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS) {
+        DrawLoadingSpinner(); /* optional progress UI */
+    } else if (err == SITUATION_SUCCESS) {
+        break;
+    } else {
+        char* detail = NULL;
+        SituationGetLastErrorMsg(&detail);
+        fprintf(stderr, "Shader failed: %s\n", detail ? detail : SituationErrorToString(err));
+        if (detail) SituationFreeString(detail);
+        return;
+    }
+
+  /* ... rest of frame ... */
+}
+
+SituationCmdBindPipeline(cmd, shader);
+```
+
+**Notes:**
+- Call **`SituationPollShaderLoad`** once per frame on the **main thread** (same thread as **`SituationPollInputEvents`**).
+- Do not **`SituationUnloadShader`** while poll returns **`IN_PROGRESS`** — unload waits for the worker (Vulkan).
+- Blocking equivalent: **`SituationLoadShaderFromMemory`**.
+
+---
+#### `SituationPollShaderLoad`
+Advances an async shader load started by **`SituationBeginLoadShaderFromMemory`** or **`SituationBeginLoadShaderFromSpirvMemory(Ex)`**.
+
+```c
+SituationError SituationPollShaderLoad(SituationShader shader);
+```
+
+**Returns:**
+
+| Code | Meaning |
+|------|---------|
+| **`SITUATION_SUCCESS`** | Pipeline ready — safe to bind and draw |
+| **`SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS`** | Still compiling/linking/building — call again next frame |
+| Other **`SituationError`** | Hard failure — check **`SituationGetLastErrorMsg`** |
+
+**Usage:** See **`SituationBeginLoadShaderFromMemory`** example above.
+
+---
+#### `SituationSpirvLayoutProfile` (enum)
+Selects the **Vulkan** descriptor set layout when loading user SPIR-V that uses non-default UBO/SSBO bindings. Ignored on **OpenGL** (profile treated as mesh/default).
+
+```c
+typedef enum SituationSpirvLayoutProfile {
+    SIT_SPIRV_LAYOUT_PROFILE_MESH = 0,   /* Set 0: dynamic UBO; set 1: combined sampler (default) */
+    SIT_SPIRV_LAYOUT_PROFILE_DUAL_SSBO,  /* Set 0 + set 1: SSBO @ binding 0 each */
+    SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO,   /* Set 0: UBO; set 1: SSBO @ binding 0 */
+} SituationSpirvLayoutProfile;
+```
+
+Use **`SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO`** for large production shaders (e.g. Demon Hunt sky) that exceed default mesh layout assumptions. Harness regression: **`sit_test_vulkan.exe --module graphics --filter spirv`**.
+
+---
+#### `SituationLoadShaderFromSpirv`
+Loads a graphics pipeline from **precompiled `.spv` files** on disk. **Blocking** — returns when the pipeline is ready.
+
+- **OpenGL:** **`GL_ARB_gl_spirv`** path when available.
+- **Vulkan:** Creates shader modules and graphics pipeline directly (no shaderc).
+
+```c
+SituationError SituationLoadShaderFromSpirv(const char* vs_spv_path, const char* fs_spv_path, SituationShader* out_shader);
+```
+
+**Hot-reload:** File paths are stored; **`SituationReloadShader`** can refresh from disk where supported.
+
+**Usage Example:**
+```c
+SituationShader shader;
+if (SituationLoadShaderFromSpirv("shaders/mesh.vert.spv", "shaders/mesh.frag.spv", &shader) != SITUATION_SUCCESS) {
+    char* msg = NULL;
+    SituationGetLastErrorMsg(&msg);
+    fprintf(stderr, "SPIR-V load: %s\n", msg ? msg : "unknown");
+    if (msg) SituationFreeString(msg);
+}
+```
+
+---
+#### `SituationLoadShaderFromSpirvMemory`
+Same as **`SituationLoadShaderFromSpirv`**, but vertex and fragment SPIR-V bytecode are provided as memory buffers (embedded assets, harness precompiles, tools). **Blocking.**
+
+```c
+SituationError SituationLoadShaderFromSpirvMemory(
+    const void* vs_spirv, size_t vs_len,
+    const void* fs_spirv, size_t fs_len,
+    SituationShader* out_shader);
+```
+
+**Notes:**
+- No hot-reload file paths — bytecode is copied internally.
+- Default Vulkan layout: **`SIT_SPIRV_LAYOUT_PROFILE_MESH`**.
+- For custom descriptor layouts, use **`SituationLoadShaderFromSpirvMemoryEx`**.
+
+---
+#### `SituationLoadShaderFromSpirvMemoryEx`
+Blocking SPIR-V load with an explicit **`SituationSpirvLayoutProfile`** (**Vulkan**). **OpenGL:** profile ignored; behavior matches **`SituationLoadShaderFromSpirvMemory`**.
+
+```c
+SituationError SituationLoadShaderFromSpirvMemoryEx(
+    const void* vs_spirv, size_t vs_len,
+    const void* fs_spirv, size_t fs_len,
+    SituationSpirvLayoutProfile layout_profile,
+    SituationShader* out_shader);
+```
+
+**Usage Example:**
+```c
+extern const uint8_t demon_hunt_vs_spv[];
+extern const uint8_t demon_hunt_fs_spv[];
+extern const size_t demon_hunt_vs_spv_len, demon_hunt_fs_spv_len;
+
+SituationShader sky;
+SituationError err = SituationLoadShaderFromSpirvMemoryEx(
+    demon_hunt_vs_spv, demon_hunt_vs_spv_len,
+    demon_hunt_fs_spv, demon_hunt_fs_spv_len,
+    SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO,
+    &sky);
+```
+
+---
+#### `SituationBeginLoadShaderFromSpirvMemory`
+Non-blocking SPIR-V pipeline build (**Vulkan**). **OpenGL:** falls back to **blocking** load (same as sync API).
+
+```c
+SituationError SituationBeginLoadShaderFromSpirvMemory(
+    const void* vs_spirv, size_t vs_len,
+    const void* fs_spirv, size_t fs_len,
+    SituationShader* out_shader);
+```
+
+Bytecode is **copied** at kickoff. Poll with **`SituationPollShaderLoad`**. Default layout profile: **mesh**.
+
+---
+#### `SituationBeginLoadShaderFromSpirvMemoryEx`
+Non-blocking SPIR-V load with **`SituationSpirvLayoutProfile`** (**Vulkan**). **OpenGL:** profile ignored; blocking equivalent of **`SituationBeginLoadShaderFromSpirvMemory`**.
+
+```c
+SituationError SituationBeginLoadShaderFromSpirvMemoryEx(
+    const void* vs_spirv, size_t vs_len,
+    const void* fs_spirv, size_t fs_len,
+    SituationSpirvLayoutProfile layout_profile,
+    SituationShader* out_shader);
+```
+
+**Typical pattern:** Begin → loop with **`SituationPollShaderLoad`** → bind when **`SITUATION_SUCCESS`**. See **`doc/TEST_SPIRV_SHADER_API.md`** for harness and offline debug workflow.
+
+**Notes:**
+- Prefer precompiled SPIR-V in shipping builds to avoid shaderc dependency at runtime.
+- Async GLSL on Vulkan requires worker thread pool (**`SituationInit`** with threading enabled — default for shared DLL builds).
 
 ---
 #### `SituationSetShaderUniform`
@@ -8107,193 +7352,176 @@ SituationTakeScreenshot("screenshots/capture.png");
 - Overwrites existing files without warning
 
 ---
-#### `SituationCmdBindUniformBuffer`
-**[DEPRECATED]** Binds a Uniform Buffer Object (UBO) to a shader binding point. This function is deprecated in favor of the more explicit `SituationCmdBindDescriptorSet()`.
+### Deprecated `SituationCmd*` (migration only)
 
-```c
-SituationError SituationCmdBindUniformBuffer(SituationCommandBuffer cmd, uint32_t contract_id, SituationBuffer buffer);
-```
-
-**Migration Guide:**
-```c
-// OLD (Deprecated):
-SituationCmdBindUniformBuffer(cmd, 0, camera_ubo);
-
-// NEW (Recommended):
-SituationCmdBindDescriptorSet(cmd, 0, camera_ubo);
-```
-
-**Why Deprecated:**
-- `SituationCmdBindDescriptorSet()` provides a unified API for both UBOs and SSBOs
-- More consistent with modern Vulkan terminology
-- Better performance on Vulkan backend with persistent descriptor sets
-
-**Notes:**
-- Still functional but will be removed in a future version
-- Update code to use `SituationCmdBindDescriptorSet()` for forward compatibility
+See **[situation_command_reference.md §11](situation_command_reference.md#11-deprecated-commands)**. Prefer `SituationCmdBeginRenderPass` / `EndRenderPass`, `BindDescriptorSet`, `BindTextureSet`, `SituationCmdPipelineBarrier` over legacy names.
 
 ---
-#### `SituationCmdBindTexture`
-**[DEPRECATED]** Binds a texture and sampler to a shader binding point. This function is deprecated in favor of `SituationCmdBindTextureSet()`.
+### Dynamic raster & debug commands
 
-```c
-SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);
-```
-
-**Migration Guide:**
-```c
-// OLD (Deprecated):
-SituationCmdBindTexture(cmd, 0, albedo_texture);
-
-// NEW (Recommended):
-SituationCmdBindTextureSet(cmd, 0, albedo_texture);
-```
-
-**Why Deprecated:**
-- `SituationCmdBindTextureSet()` provides unified API for all texture types
-- Consistent naming with descriptor set model
-- Better performance with persistent descriptor sets on Vulkan
-
-**Notes:**
-- Still functional but will be removed in a future version
-- Update code to use `SituationCmdBindTextureSet()` for forward compatibility
+See **[situation_command_reference.md §3](situation_command_reference.md#3-raster-state-fixed-function)** and **[§9](situation_command_reference.md#9-debug-markers)**.
 
 ---
-#### `SituationCmdBindComputeBuffer`
-**[DEPRECATED]** Binds a buffer to a compute shader binding point. This function still works but the naming is being standardized.
+### Camera & projection helpers
+
+#### `SituationCameraDesc`
+Shared inputs for view/projection builders and picking:
 
 ```c
-SituationError SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer);
+typedef struct SituationCameraDesc {
+    Vector3 eye, target, up;
+    float fov_y_deg, aspect, near_z, far_z;
+    bool perspective;
+} SituationCameraDesc;
 ```
 
-**Migration Guide:**
+#### `SituationCameraBuildView` / `SituationCameraBuildProj` / `SituationCameraBuildViewProj`
 ```c
-// OLD (Deprecated):
-SituationCmdBindComputeBuffer(cmd, 0, particle_buffer);
-
-// NEW (Recommended):
-SituationCmdBindComputeBuffer(cmd, 0, particle_buffer);  // Same function, just marked deprecated
+void SituationCameraBuildView(const SituationCameraDesc* desc, mat4 out_view);
+void SituationCameraBuildProj(const SituationCameraDesc* desc, mat4 out_proj);
+void SituationCameraBuildViewProj(const SituationCameraDesc* desc, mat4 out_vp);
 ```
 
-**Why Deprecated:**
-- Function is being consolidated into the main binding API
-- May be merged with `SituationCmdBindDescriptorSet()` in future versions
+#### `SituationCameraBuildInvViewProj`
+```c
+void SituationCameraBuildInvViewProj(const SituationCameraDesc* desc, mat4 out_inv_vp);
+```
 
-**Notes:**
-- Currently still the correct function to use for compute buffers
-- Deprecation warning is for future API consolidation
+#### `SituationCameraUnprojectPixel`
+Builds a world-space ray from a framebuffer pixel (picking, gizmos, editor tools).
+
+```c
+void SituationCameraUnprojectPixel(const SituationCameraDesc* desc, const mat4 inv_vp,
+    Vector2 pixel, Vector2 framebuffer_px,
+    Vector3* out_ray_origin, Vector3* out_ray_dir);
+```
 
 ---
-#### `SituationLoadComputeShader`
-**[DEPRECATED]** Loads a compute shader from a file. Use `SituationCreateComputePipeline()` instead for better API consistency.
+### Shader binding & validation (OpenGL-focused)
+
+#### `SituationBindUniformBlock` / `SituationBindShaderStorageBlock`
+Explicit **`glUniformBlockBinding`** / **`glShaderStorageBlockBinding`** when SPIR-V reflection reports binding 0 but GLSL used **`layout(binding=N)`**.
 
 ```c
-SituationError SituationLoadComputeShader(const char* cs_path, SituationShader* out_shader);
+SituationError SituationBindUniformBlock(SituationShader shader, const char* block_name, uint32_t binding_point);
+SituationError SituationBindShaderStorageBlock(SituationShader shader, const char* block_name, uint32_t binding_point);
 ```
 
-**Migration Guide:**
+#### `SituationSetShaderUniform1fv` / `SituationSetShaderUniform1iv` / `SituationSetShaderUniformMatrix4fv`
+Array uniform uploads on OpenGL. **`SituationSetShaderUniform1iv`** records **`SIT_OP_SET_UNIFORM`** when **`sit_render.in_frame`** is true (same deferral as scalar uniforms).
+
 ```c
-// OLD (Deprecated):
-SituationShader compute_shader;
-SituationLoadComputeShader("shaders/particles.comp", &compute_shader);
-
-// NEW (Recommended):
-SituationComputePipeline compute_pipeline;
-SituationCreateComputePipeline("shaders/particles.comp", 
-    SITUATION_COMPUTE_LAYOUT_STANDARD, &compute_pipeline);
+SituationError SituationSetShaderUniform1fv(SituationShader shader, const char* uniform_name, int count, const float* values);
+SituationError SituationSetShaderUniform1iv(SituationShader shader, const char* uniform_name, int count, const int* values);
+SituationError SituationSetShaderUniformMatrix4fv(SituationShader shader, const char* uniform_name, int count, const mat4* matrices);
 ```
 
-**Why Deprecated:**
-- Compute shaders now use dedicated `SituationComputePipeline` type
-- Clearer separation between graphics and compute pipelines
-- Better type safety and API clarity
+#### `SituationSetShaderUniformLocation`
+Set uniform by **explicit location** (SPIR-V **`layout(location=)`**). Defers during active frames like **`SituationSetShaderUniform`**.
 
-**Notes:**
-- Returns `SituationShader` instead of `SituationComputePipeline`
-- Update to `SituationCreateComputePipeline()` for new code
+```c
+SituationError SituationSetShaderUniformLocation(SituationShader shader, int location,
+    const void* data, SituationUniformType type);
+```
+
+#### `SituationValidateShaderUniforms`
+Checks that expected uniforms exist with compatible types before drawing. Fills **`error_buf`** with the first mismatch.
+
+```c
+SituationError SituationValidateShaderUniforms(SituationShader shader,
+    const SituationUniformExpectation* table, int table_count,
+    char* error_buf, size_t error_buf_size);
+```
 
 ---
-#### `SituationLoadComputeShaderFromMemory`
-**[DEPRECATED]** Creates a compute shader from memory. Use `SituationCreateComputePipelineFromMemory()` instead.
+### GPU readback buffers
+
+#### `SituationCreateReadbackBuffer`
+Creates a staging buffer optimized for **GPU→CPU** copy + mapped read (NRC counters, harness tests).
 
 ```c
-SituationError SituationLoadComputeShaderFromMemory(const char* cs_code, SituationShader* out_shader);
+SituationError SituationCreateReadbackBuffer(size_t size, SituationBuffer* out_buffer);
 ```
 
-**Migration Guide:**
-```c
-// OLD (Deprecated):
-const char* shader_code = "#version 450\n...";
-SituationShader compute_shader;
-SituationLoadComputeShaderFromMemory(shader_code, &compute_shader);
+#### `SituationCmdCopyBuffer`
 
-// NEW (Recommended):
-const char* shader_code = "#version 450\n...";
-SituationComputePipeline compute_pipeline;
-SituationCreateComputePipelineFromMemory(shader_code,
-    SITUATION_COMPUTE_LAYOUT_STANDARD, &compute_pipeline);
-```
-
-**Why Deprecated:**
-- Compute shaders now use dedicated `SituationComputePipeline` type
-- Consistent with file-based compute pipeline creation
-- Better type safety
-
-**Notes:**
-- Returns `SituationShader` instead of `SituationComputePipeline`
-- Update to `SituationCreateComputePipelineFromMemory()` for new code
+See **[situation_command_reference.md §8](situation_command_reference.md#8-transfer--presentation)** (`SituationCmdCopyBuffer`).
 
 ---
-#### `SituationMemoryBarrier`
-**[DEPRECATED]** Inserts a coarse-grained memory barrier. Use `SituationCmdPipelineBarrier()` instead for fine-grained control.
+#### `SituationReadBuffer`
+CPU **`memcpy`** from a readback buffer's mapped memory. Call **next frame** after the copy command.
 
 ```c
-void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_bits);
+void SituationReadBuffer(SituationBuffer readback_buf, void* dst, size_t size);
 ```
 
-**Migration Guide:**
+See **`doc/situation_sdk_requirements.md`** § NRC adaptive training pattern.
 
-**Old Code:**
+---
+### Texture queries & readback
+
+#### `SituationGetTextureInfo`
 ```c
-// DEPRECATED - Coarse-grained barrier
-SituationMemoryBarrier(cmd, SITUATION_BARRIER_COMPUTE_TO_GRAPHICS);
+SituationError SituationGetTextureInfo(SituationTexture texture, SituationTextureInfo* out_info);
 ```
 
-**New Code:**
+#### `SituationSetTextureSamplerParams`
+Updates min/mag filter and wrap modes on an existing texture.
+
 ```c
-// RECOMMENDED - Fine-grained barrier
-SituationPipelineBarrierInfo barrier = {
-    .src_stage = SITUATION_PIPELINE_STAGE_COMPUTE_SHADER,
-    .dst_stage = SITUATION_PIPELINE_STAGE_FRAGMENT_SHADER,
-    .src_access = SITUATION_ACCESS_SHADER_WRITE,
-    .dst_access = SITUATION_ACCESS_SHADER_READ
-};
-SituationCmdPipelineBarrier(cmd, &barrier);
+SituationError SituationSetTextureSamplerParams(SituationTexture texture,
+    SituationTextureFilter min_filter, SituationTextureFilter mag_filter,
+    SituationTextureWrap wrap_s, SituationTextureWrap wrap_t);
 ```
 
-**Why Deprecated:**
-- `SituationCmdPipelineBarrier()` provides fine-grained control over synchronization
-- Better performance by specifying exact pipeline stages
-- More explicit about memory access patterns
-- Matches Vulkan's pipeline barrier model
+#### `SituationReadTexture` / `SituationReadTextureAlloc` / `SituationReadFramebuffer`
+Blocking CPU readback paths for tests, screenshots, and tools.
 
-**Common Migration Patterns:**
 ```c
-// Compute-to-Graphics barrier
-SituationPipelineBarrierInfo barrier = {
-    .src_stage = SITUATION_PIPELINE_STAGE_COMPUTE_SHADER,
-    .dst_stage = SITUATION_PIPELINE_STAGE_VERTEX_SHADER | SITUATION_PIPELINE_STAGE_FRAGMENT_SHADER,
-    .src_access = SITUATION_ACCESS_SHADER_WRITE,
-    .dst_access = SITUATION_ACCESS_SHADER_READ
-};
-SituationCmdPipelineBarrier(cmd, &barrier);
+SituationError SituationReadTexture(SituationTexture texture, const SituationTextureReadbackDesc* desc,
+    void* dst_pixels, size_t dst_size_bytes);
+SituationError SituationReadTextureAlloc(SituationTexture texture, const SituationTextureReadbackDesc* desc,
+    SituationImage* out_image);
+SituationError SituationReadFramebuffer(const SituationReadPixelsDesc* desc,
+    void* dst_pixels, size_t dst_size_bytes);
+```
 
-// Graphics-to-Compute barrier
-barrier.src_stage = SITUATION_PIPELINE_STAGE_FRAGMENT_SHADER;
-barrier.dst_stage = SITUATION_PIPELINE_STAGE_COMPUTE_SHADER;
-barrier.src_access = SITUATION_ACCESS_COLOR_ATTACHMENT_WRITE;
-barrier.dst_access = SITUATION_ACCESS_SHADER_READ;
-SituationCmdPipelineBarrier(cmd, &barrier);
+---
+### Virtual display dirty tracking
+
+#### `SituationSetVirtualDisplayDirty` / `SituationIsVirtualDisplayDirty`
+Mark whether a virtual display texture needs re-compositing this frame (skip work when unchanged).
+
+```c
+void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty);
+bool SituationIsVirtualDisplayDirty(int display_id);
+```
+
+#### `SituationGetLastVDCompositeTimeMS`
+Returns milliseconds spent in the last **`SituationRenderVirtualDisplays`** composite pass (profiling HUD).
+
+```c
+double SituationGetLastVDCompositeTimeMS(void);
+```
+
+---
+### Render lists & latency
+
+#### `SituationSubmitRenderList`
+Record **`SituationRenderList`** packets either **async** (worker + job id) or **immediate** (single-threaded fallback). Overloaded by signature:
+
+```c
+SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list,
+    void (*func)(void*, void*), void* user_data);
+void SituationSubmitRenderList(SituationRenderList list,
+    void (*func)(void*, void*), void* user_data);
+```
+
+#### `SituationGetRenderLatencyStats`
+Query render-thread timing averages (nanoseconds) for diagnostics overlays.
+
+```c
+void SituationGetRenderLatencyStats(uint64_t* avg_ns, uint64_t* max_ns);
 ```
 
 </details>
@@ -9455,6 +8683,12 @@ SituationSetMousePosition(center);
 <summary><h3>Audio Module</h3></summary>
 
 **Overview:** The Audio module offers a full-featured audio engine capable of loading sounds (`SituationLoadSoundFromFile`) for low-latency playback and streaming longer tracks (`SituationLoadSoundFromStream`) to conserve memory. It supports device management, playback control (volume, pan, pitch), a built-in effects chain (filters, reverb), and custom real-time audio processors.
+
+### Playback path & threading (v2.4.48+)
+
+- **Default graph (`Policy B`)**: After **`SituationInit`**, the library may enable an internal **`default_graph`** where **`SituationPlayLoadedSound`** voices are summed into the **`SITUATION_NODE_SOUND_SOURCE`** before **`SituationProcessGraph`**, so the **mixer** combines loaded sounds with the graph tone synth. Latent mixing into the device buffer is skipped when that path is active (see **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`** § *Canonical miniaudio callback pipeline*).
+- **Graph topology**: Call **`SituationCreateNode`**, **`SituationDestroyNode`**, **`SituationCreatePatch`**, **`SituationRemovePatch`**, and **`SituationTopologicalSort`** from the **main / control thread** only — **not** from a device **`process`** callback running inside **`SituationProcessGraph`**.
+- **Streaming decoder**: **`ma_decoder`** reads on the audio thread and seeks / queue updates on the main thread are serialized via the same **`audio_queue_mutex`** used for the voice queue (**`SituationPlayLoadedSound`** restart seek runs under that lock).
 
 ### Structs and Enums
 
@@ -11368,6 +10602,24 @@ SituationSetAudioOutputMonitor(NULL, NULL);
 ```
 
 ---
+#### `SituationGetMasterOutputMeter`
+Reads **approximate peak** (max absolute sample in the block) and **RMS** for the **last completed** playback callback mix (**final stereo buffer** after graph + latent voices + tones). Updated once per audio period; safe to poll from the **main thread** or UI (**relaxed atomic** loads internally).
+
+```c
+SITAPI void SituationGetMasterOutputMeter(float* out_peak, float* out_rms);
+```
+
+- Pass **`NULL`** for either pointer if you only need one value.
+- **Not** a substitute for per-node metering inside **`SITUATION_NODE_PEAK_METER`** — this is the **master bus** snapshot for lightweight VU / HUD.
+
+**Usage Example:**
+```c
+float peak, rms;
+SituationGetMasterOutputMeter(&peak, &rms);
+// Drive a UI level meter (clamp display range as needed)
+```
+
+---
 #### `SituationIsAudioCapture`
 Checks if the audio capture stream is currently active.
 ```c
@@ -11562,6 +10814,29 @@ SituationSetToneReverbParameters(0.5f, 0.5f, 0.15f, 1.0f, 0.8f);
 
 </details>
 <details>
+---
+### Extended device enumeration (Phase 0)
+
+#### `SituationEnumerateAudioDevices`
+Returns a heap-allocated device list with richer metadata than **`SituationGetAudioDevices`**. **Caller must free** with **`SituationFreeDeviceList`**.
+
+```c
+SituationAudioDeviceInfo* SituationEnumerateAudioDevices(int* out_count);
+```
+
+#### `SituationFindBestDevice`
+Selects a device matching preferred type (playback/capture) and minimum channel counts.
+
+```c
+SituationAudioDeviceInfo* SituationFindBestDevice(SituationAudioDeviceType preferred_type,
+    uint32_t min_channels_out, uint32_t min_channels_in);
+```
+
+#### `SituationFreeDeviceList`
+```c
+void SituationFreeDeviceList(SituationAudioDeviceInfo* devices, int count);
+```
+
 <summary><h3>Audio Node Graph Module</h3></summary>
 
 **Overview:** The Audio Node Graph module provides a modular, graph-based audio processing system. You create nodes (effects, sources, analyzers, modulators), connect them via patches (audio or control connections), and process the graph to produce audio output. This is the foundation for building custom signal chains, synthesizer architectures, and advanced audio routing.
@@ -11723,6 +10998,118 @@ SituationError SituationGetControl(SituationAudioGraph* graph, SituationNodeHand
 
 </details>
 <details>
+---
+### Device registry
+
+Built-in and custom audio node types register metadata (ports, controls, categories) used by **`SituationCreateNode`** and serialization.
+
+#### `SituationInitDeviceRegistry`
+Idempotent — registers all built-in FX/source/utility devices. Called automatically on first graph use; safe to call from tests.
+
+```c
+void SituationInitDeviceRegistry(void);
+```
+
+#### `SituationRegisterDeviceType` / `SituationIsDeviceRegistered` / `SituationGetRegisteredDeviceCount`
+```c
+SituationError SituationRegisterDeviceType(const SituationDeviceMetadata* meta);
+bool SituationIsDeviceRegistered(SituationNodeType type);
+int SituationGetRegisteredDeviceCount(void);
+```
+
+#### `SituationGetDeviceMetadata` / `SituationGetCategoryName`
+```c
+SituationError SituationGetDeviceMetadata(SituationNodeType type, SituationDeviceMetadata* out_meta);
+char* SituationGetCategoryName(SituationDeviceCategory category);
+```
+**Note:** **`SituationGetCategoryName`** returns allocated string — free when done.
+
+---
+### Active graph (audio callback)
+
+#### `SituationGetActiveGraph` / `SituationSetActiveGraph`
+```c
+SituationAudioGraph* SituationGetActiveGraph(void);
+SituationError SituationSetActiveGraph(SituationAudioGraph* graph);
+```
+**Behavior:** **`SituationSetActiveGraph(NULL)`** disables graph processing in the miniaudio callback. Only one graph is mixed at a time.
+
+---
+### Graph serialization
+
+Persist and restore node graphs as JSON (session save, editor files, harness round-trips).
+
+#### `SituationSerializeGraphToJSON` / `SituationFreeJSONString`
+```c
+char* SituationSerializeGraphToJSON(const SituationAudioGraph* graph);
+void SituationFreeJSONString(char* json_string);
+```
+
+#### `SituationDeserializeGraphFromJSON` / `SituationSaveGraphToFile` / `SituationLoadGraphFromFile`
+```c
+SituationError SituationDeserializeGraphFromJSON(SituationAudioGraph* graph, const char* json_string,
+    const SituationDeviceFunctions* device_funcs, int num_device_funcs);
+SituationError SituationSaveGraphToFile(const SituationAudioGraph* graph, const char* filepath);
+SituationError SituationLoadGraphFromFile(SituationAudioGraph* graph, const char* filepath,
+    const SituationDeviceFunctions* device_funcs, int num_device_funcs);
+```
+
+#### `SituationGetSerializationVersion` / `SituationIsVersionCompatible`
+```c
+char* SituationGetSerializationVersion(void);
+bool SituationIsVersionCompatible(const char* json_version);
+```
+
+---
+### Procedural tone routing (SFX → graph)
+
+#### `SituationSetToneRouting` / `SituationSetGraphSFXSource`
+Route **`SituationPlayToneEx`** output into the active graph's sound-source node instead of the legacy voice path.
+
+```c
+SituationError SituationSetToneRouting(SituationToneHandle handle, bool route_to_graph);
+SituationError SituationSetGraphSFXSource(SituationNodeHandle handle);
+```
+
+---
+### MIDI control & learn
+
+Integrated MIDI for graph nodes. Full architecture: **`doc/midi_api.md`**.
+
+#### Device control
+```c
+int SituationListMidiDevices(SituationMidiDeviceInfo* devices, int max_count);
+SituationError SituationEnableMidiControl(SituationAudioGraph* graph, SituationNodeHandle handle, int device_id);
+SituationError SituationDisableMidiControl(SituationAudioGraph* graph, SituationNodeHandle handle);
+SituationError SituationAutoConnectMidi(SituationAudioGraph* graph, SituationNodeHandle handle);
+int SituationIsMidiEnabled(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+**Note:** **`device_id = -1`** auto-selects the first available input. **`SituationAutoConnectMidi`** is shorthand for enable + auto-select.
+
+#### Learn lifecycle
+```c
+SituationError SituationEnableMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle);
+SituationError SituationDisableMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle);
+int SituationIsMidiLearnEnabled(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+
+#### Learning operations
+```c
+SituationError SituationStartMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle,
+    int control_index, const char* param_name, float min_value, float max_value, int scaling);
+SituationError SituationCancelMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle);
+int SituationIsLearning(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+**Scaling:** `0=linear`, `1=log`, `2=dB`, `3=discrete`. Learn mode **times out after 5 seconds** without a CC.
+
+#### Mapping & presets
+```c
+SituationError SituationClearMidiMapping(SituationAudioGraph* graph, SituationNodeHandle handle, int control_index);
+SituationError SituationClearAllMidiMappings(SituationAudioGraph* graph, SituationNodeHandle handle);
+SituationError SituationSaveMidiPreset(SituationAudioGraph* graph, SituationNodeHandle handle, const char* filename);
+SituationError SituationLoadMidiPreset(SituationAudioGraph* graph, SituationNodeHandle handle, const char* filename);
+```
+
 <summary><h3>Filesystem Module</h3></summary>
 
 **Overview:** The Filesystem module provides a robust, cross-platform, and UTF-8 aware API for interacting with the host's file system. It includes functions for checking file/directory existence, reading/writing files, and path manipulation. Use helpers like `SituationGetBasePath()` (for assets) and `SituationGetAppSavePath()` (for user data) for maximum portability.
@@ -12954,6 +12341,39 @@ SituationJobId SituationSaveFileTextAsync(SituationThreadPool* pool, const char*
 
 </details>
 <details>
+---
+#### `SituationDispatchParallel`
+Fork-join parallel loop over **`count`** indices using the thread pool. Each invocation receives **`index`** and **`user_data`**.
+
+```c
+void SituationDispatchParallel(SituationThreadPool* pool, int count, int min_batch_size,
+    void (*func)(int index, void* user_data), void* user_data);
+```
+
+**Parameters:**
+- `pool` — Worker pool (often **`SituationGetThreadPool()`**).
+- `count` — Number of iterations.
+- `min_batch_size` — Granularity hint; larger values reduce scheduling overhead.
+- `func` — Called as `func(i, user_data)` for each index `i`.
+
+---
+#### `SituationSetThreadAffinity`
+Pins the **calling thread** to logical cores selected in **`core_mask`** (bit N = core N). Returns **`false`** if the OS rejected the affinity request.
+
+```c
+bool SituationSetThreadAffinity(uint64_t core_mask);
+```
+
+**Usage:** Call from the thread you want to pin (e.g. audio or render worker after pool creation).
+
+---
+#### `SituationGetCPUCoreCount`
+Returns the number of **physical** CPU cores detected at init (not hyper-thread logical count on all platforms).
+
+```c
+uint32_t SituationGetCPUCoreCount(void);
+```
+
 <summary><h3>Miscellaneous Module</h3></summary>
 
 **Overview:** This module includes powerful utilities like the Temporal Oscillator System for rhythmic timing, a suite of color space conversion functions (RGBA, HSV, YPQA), and essential memory management helpers for data allocated by the library.
@@ -13891,6 +13311,16 @@ SituationSetTraceLogLevel(SIT_LOG_ALL);
 </details>
 
 <details>
+---
+#### `SituationSetLogCallback`
+Redirects library log output to a custom sink. Receives **`SituationLogLevel`**, message string, and **`user`** pointer.
+
+```c
+void SituationSetLogCallback(void (*callback)(SituationLogLevel level, const char* message, void* user), void* user);
+```
+
+**Notes:** Pass **`NULL`** callback to restore default stderr logging. Callback must be thread-safe if invoked from worker or audio threads.
+
 <summary><h3>Compute Shaders</h3></summary>
 
 ### Overview & Capabilities
@@ -14274,9 +13704,21 @@ This bridges the gap between the existing separate compute and graphics examples
 
 ### Debugging Tips (Validation Layers, Error Messages)
 - Always check the return value of \`SituationInit\` and resource creation functions.
-- Use \`SituationGetLastErrorMsg()\` to get detailed error descriptions.
+- Use \`SituationGetLastErrorMsg()\`, \`SituationGetLastErrorCode()\`, and \`SituationErrorToString()\` to diagnose failures.
 - For Vulkan, enable validation layers during development (\`init_info.enable_vulkan_validation = true;\`) to catch API misuse.
 </details>
+
+---
+
+## Complete API Index (generated)
+
+Every public **`SITAPI`** function is documented in **this file** (**438/438**). The categorized index is **[situation_api_index.md](situation_api_index.md)** (auto-generated from `sit/situation_api.h`).
+
+After header changes, verify parity:
+
+```bat
+python scripts\generate_situation_api_docs.py
+```
 
 ---
 

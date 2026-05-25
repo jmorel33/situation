@@ -1,8 +1,8 @@
-# Situation API Quick Reference v2.4.10
+# Situation API Quick Reference
 
-**Single-header library for cross-platform graphics (Vulkan 1.4/OpenGL 4.6), windowing, input, audio, and system utilities.**
+**Single-header library for cross-platform graphics (Vulkan 1.4/OpenGL 4.6), windowing, input, audio, and system utilities.** Release version is defined only in root **`situation.h`** (`SITUATION_VERSION_*` macros).
 
-## Project Structure (v2.4.10)
+## Project Structure
 
 ```
 situation/                              # Project root

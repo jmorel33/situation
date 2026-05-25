@@ -524,6 +524,8 @@ endif()
 ## Additional Resources
 
 - **Main Documentation**: `doc/situation_api.md`
+- **Complete API Index** (auto-generated): `doc/situation_api_index.md`
+- **API supplement** (header-sync gaps): `doc/situation_api_generated.md` — regenerate with `python scripts/generate_situation_api_docs.py`
 - **Quick Reference**: `doc/SITUATION_QUICK_REFERENCE.md`
 - **SDK Manual**: `doc/situation_sdk.md`
 - **Examples**: `examples/` directory

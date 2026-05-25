@@ -1,3 +1,2655 @@
+## [v2.4.146 "Renderer Text Cleanup"] - 2026-05-24
+
+### Description
+
+Renderer/internal cleanup release: normalizes corrupted punctuation in renderer diagnostics and comments, and restores indentation in the control implementation header.
+
+### Library Changes
+
+- **`situation_impl_renderer.h`** — replaced mojibake punctuation in docs and the metric contention log with plain ASCII
+- **`situation_impl_ctrl.h`** — indentation-only formatting pass
+
+### Verification
+
+- **OpenGL DLL build**: pass
+- **Vulkan DLL build**: pass
+
+---
+
+## [v2.4.145 "Typed Audio Controls"] - 2026-05-24
+
+### Description
+
+Audio graph control readback now matches declared control types: `FLOAT` remains continuous, while `INT` / `ENUM` round to integer slots and `BOOL` normalizes to 0/1. This fixes the long-standing `audio.control_sweep_all_devices` failure without weakening the test.
+
+### Library Changes
+
+- **`SituationSetControl`** — clamps, then coerces by `SituationControlType` before storing/readback
+- **Harness diagnostics** — `control_sweep_all_devices` now reports device/control/min/max/requested/expected/readback and set/get errors on mismatch
+
+### Verification
+
+- **OpenGL full harness**: **391/391**
+- **Vulkan full harness**: **381/381** (rebuilt; no stale binary)
+- Fixed: **`audio.control_sweep_all_devices`**
+
+---
+
+## [v2.4.144 "Threading Bolstering Complete"] - 2026-05-24
+
+### Description
+
+**Threading Bolstering — release cap** (Epics A–E, v2.4.139–143): topology/affinity, pool observability, NUMA placement, scheduler metrics, API hygiene, and a **10 s all-core harness stress** with Task Manager–correlatable CPU reports. See **`doc/THREADING_BOLSTERING_API.md`** for the consolidated public API reference.
+
+### Library Changes
+
+- **Harness** — `cpu_stress_10s_taskmgr`: ~10 s `SituationDispatchParallel` CPU burn, logical-CPU histogram, worker snapshot, `SituationDumpThreadPoolStatus`; skip via `SIT_SKIP_CPU_STRESS`
+- **Docs** — `doc/THREADING_BOLSTERING_API.md` (API catalog); plan Epics A–E marked complete
+
+### Verification
+
+- **`sit_test.exe --module threading`**: **21/21**
+- **OpenGL full harness**: **391** total
+- CPU stress: sustained **~100%** `_Total` processor time over the 10 s window (validated via performance counters)
+
+---
+
+## [v2.4.143 "Threading API Hygiene"] - 2026-05-24
+
+### Description
+
+**Threading Bolstering — Epic E** (`doc/plan/THREADING_BOLSTERING_PLAN.md`): accurate public API docs, main-thread affinity init hook, fail-soft affinity warnings, harness coverage, and dual-socket manual validation guide. Consolidates Epics A–D (v2.4.139–142).
+
+### Library Changes
+
+- **`SituationInitInfo::thread_affinity_main`** — optional main-thread pin after window creation (0 = no pin)
+- **`SituationGetConfiguredMainThreadAffinity()`** — read effective main mask
+- **Fail-soft affinity** — `_SituationSetThreadAffinityForRole` logs debug warning on pin failure; init continues
+- **Docs** — `situation_api.h` / worker impl comments (mutex + atomics, not “lock-free”); README threading; `sit/k-term/doc/situation_api.md` bolstering table; `doc/THREADING_MANUAL_VALIDATION.md`
+- **Trace** — `10030035` `SituationGetConfiguredMainThreadAffinity`
+
+### Verification
+
+- **`sit_test.exe --module threading`**: **20/20** (+ `configured_main_affinity`, `metrics_reset_and_dump`)
+
+---
+
+## [v2.4.142 "Scheduler Metrics"] - 2026-05-24
+
+### Description
+
+**Threading Bolstering — Epic D** (`doc/plan/THREADING_BOLSTERING_PLAN.md`): scheduler contention counters, dynamic high-queue scan depth, physical-core pool sizing, and sizing helpers — without lock-free MPMC or worker-to-worker steal (deferred).
+
+### Library Changes
+
+- **New** `sit/situation_impl_threading_scheduler.h` — `SituationGetRecommendedWorkerCount`, `SituationGetThreadPoolMetrics`, `SituationResetThreadPoolStats`, `SituationDumpThreadPoolMetrics`
+- **`SituationThreadPoolMetrics`** — high-queue lock ops/ns, main steal ok/fail/empty, scan-forward swap/exhausted, I/O idle/jobs + busy ratio, inline submit, queue-full spins, `DispatchParallel` call count
+- **Dynamic scan** — `_SitWorkerScanDepthForPending()` scales 4–32 from pending depth (replaces fixed `SIT_WORKER_SCAN_DEPTH` 8)
+- **`SituationCreateThreadPool(..., num_threads=0)`** — `_SitResolveAutoWorkerCount()` from `SituationInitInfo` `thread_pool_use_physical_cores` / `thread_pool_reserved_threads`
+- **Instrumentation** — worker high-queue lock timing; I/O `stats_io_idle_waits` / `stats_io_jobs_run`
+- **Trace IDs** — `10030031`–`10030034`
+
+### Verification
+
+- **`sit_test.exe --module threading`**: **18/18** (+ `recommended_worker_count`, `scheduler_metrics_parallel`)
+
+---
+
+## [v2.4.141 "NUMA Awareness"] - 2026-05-24
+
+### Description
+
+**Threading Bolstering — Epic C** (`doc/plan/THREADING_BOLSTERING_PLAN.md`): NUMA topology snapshot, init-time placement policy, worker/I/O/render/audio pinning hooks, and thread-local preferred NUMA node for allocators.
+
+### Library Changes
+
+- **New** `sit/situation_impl_threading_numa.h` — `SituationRefreshNumaTopology`, `SituationGetNumaTopology`, `SituationGetPreferredNumaNode`
+- **Types** — `SituationNumaTopology`, `SituationNumaNodeInfo` (`processor_count`, `memory_bytes`, `processor_mask_low`)
+- **`SituationInitInfo`** — `numa_prefer_local`, `worker_numa_spread`, `io_thread_numa_node` (default `< 0` = no I/O pin)
+- **Placement** — workers spread across nodes when enabled; I/O thread optional node pin; render/audio use `_SituationSetThreadAffinityForRole` + `numa_prefer_local` when masks are 0
+- **Windows** — `GetNumaHighestNodeNumber`, `GetNumaAvailableMemoryNode`; **Linux** — sysfs `nodeN/meminfo`
+- **Trace IDs** — `10030028`–`10030030`
+
+### Verification
+
+- **`sit_test.exe --module threading`**: **16/16** (+ `numa_topology_refresh`, `numa_node_mask`)
+
+---
+
+## [v2.4.140 "Thread Pool Observability"] - 2026-05-24
+
+### Description
+
+**Threading Bolstering — Epic B** (`doc/plan/THREADING_BOLSTERING_PLAN.md`): export threading diagnostics, per-worker CPU sampling, queue/active-job metrics, pool snapshots, and combined debug dumps — additive on the v2.4.139 topology/affinity layer.
+
+### Library Changes
+
+- **New** `sit/situation_impl_threading_observability.h` — `SituationGetThreadingStatus`, `SituationPrintThreadingStatus`, queue depth APIs, pool snapshot, `SituationDumpThreadPoolStatus`, `SituationDumpThreadingReport`
+- **`SituationThreadPool`** — worker `SituationWorkerStartArg`, `worker_last_logical_cpu[]`, job submit/complete + main-thread steal stats, `io_last_logical_cpu`
+- **Workers** — CPU sample every 8 jobs + on idle wake; I/O thread samples each loop
+- **Render / audio** — record affinity mask + sampled CPU into snapshot (`_SituationObservabilityRecord*`)
+- **`SituationGetIOQueueDepth`** — delegates to `SituationGetQueueDepth(..., SIT_JOB_QUEUE_LOW)`
+- **`SituationDrawMetricsOverlay`** — shows active jobs + low/high queue depths when threading enabled
+- **Docs** — `doc/THREADING_TROUBLESHOOTING_GUIDE.md` (replaces broken diag header reference)
+- **Trace IDs** — `10030020`–`10030027`
+
+### Verification
+
+- OpenGL DLL rebuild + **`sit_test.exe --module threading`**: **14/14** (7 original + 4 Epic A + 3 Epic B)
+
+---
+
+## [v2.4.139 "CPU Topology & Affinity"] - 2026-05-24
+
+### Description
+
+**Threading Bolstering — Epic A** (`doc/plan/THREADING_BOLSTERING_PLAN.md`): read-only CPU topology cache, affinity query/set with previous-mask feedback, HT/NUMA mask builders, and configurable render/audio affinity via init — additive on the existing generational thread pool (no scheduler rewrite).
+
+### Library Changes
+
+- **New** `sit/situation_impl_threading_topology.h` — topology refresh/query; `SituationGetCPUCoreCount()` now uses cached physical-core count (Linux sysfs; Windows `GetLogicalProcessorInformation`; macOS `sysctl`)
+- **Types** — `SituationCpuTopology`, `SituationLogicalProcessorInfo`; limits `SITUATION_MAX_LOGICAL_PROCESSORS` (256), `SITUATION_AFFINITY_MASK_BITS` (64)
+- **API** — `SituationRefreshCpuTopology`, `SituationGetCpuTopology`, `SituationSetThreadAffinityEx`, `SituationGetThreadAffinity`, `SituationGetCurrentProcessorIndex`, `SituationGetThreadNumaNode`, `SituationBuildPhysicalCoreMask`, `SituationBuildUniqueCoreMask`, `SituationBuildNumaNodeMask`, `SituationGetConfiguredRenderThreadAffinity`, `SituationGetConfiguredAudioThreadAffinity`
+- **`SituationInitInfo`** — `thread_affinity_render`, `thread_affinity_audio` (0 = defaults: logical core 1 / 2)
+- **Render / audio** — pin via configured masks at thread entry (same defaults as before when fields are 0)
+- **Trace IDs** — `10030011`–`10030019` in `situation_base_trace.h`
+
+### Verification
+
+- OpenGL DLL rebuild + **`sit_test.exe --module threading`**: **11/11** (was 7/7; adds `cpu_topology_refresh`, `affinity_roundtrip`, `mask_builders`, `configured_affinity`)
+- Pool worker / submit paths unchanged
+
+---
+
+## [v2.4.138 "Internal Caller Audit"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 10** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): final caller audit — init tree and Vulkan create chain already propagate **`SituationError`**; fixed remaining swapchain recreate and render-list enqueue sites that dropped return values.
+
+### Library Changes (internal only — no public API break)
+
+- **`SituationAcquireFrameCommandBuffer`** (Vulkan) — **`VK_ERROR_OUT_OF_DATE_KHR`** / **`VK_TIMEOUT`** paths now check **`_SituationVulkanRecreateSwapchain()`** (was bare / `(void)` call)
+- **`SituationSetVSync`** (Vulkan) — propagate swapchain recreate failure via **`_SituationSetErrorFromCode`**
+- **`SituationSubmitRenderList`** — check **`_SituationEnqueueRenderList`**; set global error on failure (matches render-job worker)
+- Gate script **`scripts/audit_phase10_caller.py`**: **0** unchecked **`_SituationInit*`** / **`_SituationVulkanCreate*`** calls in init tree
+
+### Verification
+
+- Gate script **`scripts/audit_phase10_caller.py`**: **0** unchecked init/Vulkan-create calls
+- **Internal hardening complete at v2.4.138** (Phases 0–10, patches **127→138**)
+
+#### Post-hardening full harness (OpenGL + Vulkan DLLs rebuilt)
+
+**Build:** `build_situation.bat` + `build_tests.bat` for **opengl** and **vulkan** — both green.
+
+**Single-shot full suite** (`sit_test.exe` / `sit_test_vulkan.exe`, all 12 modules, no flags):
+
+- Both backends **abort mid-`tone_synth`** with access violation (**`0xC0000005`**) after ~15–25 long MIDI tests in one process — does **not** reproduce when those tests are run alone or in small groups.
+- Logs: **`build/harness_ogl_full.log`**, **`build/harness_vk_full.log`** (partial runs).
+
+**Per-module harness** (authoritative sign-off run):
+
+| Module | OpenGL | Vulkan |
+|--------|--------|--------|
+| filesystem | 23/23 | 23/23 |
+| threading | 7/7 | 7/7 |
+| core | 31/31 | 31/31 |
+| window | 27/27 | 27/27 |
+| input | 17/17 | 17/17 |
+| timer | 10/10 | 10/10 |
+| Projection | 2/2 | 2/2 |
+| audio | **80/81** | **80/81** |
+| audio_effects_heard | 17/17 | 17/17 |
+| graphics | **107/107** | **97/97** |
+| misc | 20/20 | 20/20 |
+| tone_synth | **35/35**† | **35/35** |
+| **Suite total** | **376 pass, 1 fail** / 377 | **366 pass, 1 fail** / 367 |
+
+† OpenGL **`tone_synth`**: all 35 pass per-module or per-test; **continuous `--module tone_synth` crashes** (sustained MIDI + GL — follow-up bug, not a Phase 10 regression). Vulkan completes **`tone_synth`** in one module run.
+
+**Known failure (both backends, pre-existing):** **`control_sweep_all_devices`** — log-scale tone_synth control midpoint readback tolerance (`test_audio.c`).
+
+**Graphics delta:** Vulkan harness has **10 fewer** registered tests than OpenGL (GL/SPIR-V–only cases) — expected.
+
+**Hardening-relevant modules:** init/window/graphics/misc and backend-specific paths — **green** on both backends aside from the audio control sweep above.
+
+---
+
+## [v2.4.137 "Internal Void By Design Docs"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 9** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): Bucket B — every intentional internal **`void`** helper tagged at forward decl with **`/* HARDENING: void by design — … */`** so Phase 10 caller audit can distinguish documented sinks from conversion debt.
+
+### Library Changes (internal only — no public API break)
+
+- **`situation_impl_forward.h`** — lifecycle, GLFW callbacks, thread/render worker forward decls
+- **`situation_impl_renderer_fwd.h`** — VK/GL cleanup, graveyard, defer-destroy, record-only helpers, bind helpers
+- **`situation_impl_decl.h`**, **`situation_impl_io.h`**, **`situation_impl_audio.h`**, **`situation_impl_threading.h`** — assert/pump, async file workers, RT mix/capture, parallel worker
+- **`_SituationPopulateGLShaderUniformMap`** — N/A (returns **`SituationError`** since Phase 4); not re-tagged as void
+- One-shot helper: **`scripts/tag_phase9_hardening.py`** (88 new tags; gate count **101** in `sit/situation_impl*.h`)
+
+### Verification
+
+- Gate: **`HARDENING: void by design`** count ≥ 68 in `sit/situation_impl*.h` → **101**
+- OpenGL harness: **`core` 31/31**, **`graphics` 107/107** (comment-only; no signature changes)
+
+---
+
+## [v2.4.136 "Internal Hardening Stragglers"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 8** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): last init-style **`bool`** helpers normalized to **`SituationError`**; intentional query/resolver **`bool`**s documented with **`HARDENING:`** notes.
+
+### Library Changes (internal only — no public API break)
+
+- **`_SituationExtractGLTFPrimitive`** — **`SituationError`** (`ASSET_PARSE_FAILED`, `MEMORY_ALLOCATION`); model load caller checks return
+- **`_SituationSaveImageBMP`** — **`SituationError`**; **`SituationExportImage`** BMP path returns helper result directly
+- **Documented void-by-design / bool-by-design**: **`_sit_directory_exists`**, **`_SituationGraphHasMixerNode`**, **`_SituationShouldMixLatentVoices`**, **`_SituationDetectCycle`**, **`_SituationVulkanResolveBufferDescriptor`**, **`_SituationVulkanImmediateDestroyDuringShutdown`**
+
+### Verification
+
+- OpenGL harness: **`core` 31/31**, **`graphics` 107/107** (includes **`model_*`** glTF load path)
+
+---
+
+## [v2.4.135 "Internal Audio Errors"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 7** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): non-RT audio paths return **`SituationError`**; reverb init checks OOM on every buffer; sound load wires effects init; RT miniaudio/reverb callbacks stay **`void`** with **`HARDENING:`** notes.
+
+### Library Changes (internal only — no public API break)
+
+- **`_SitFreeSoundSlot`** — invalid handle → **`RESOURCE_INVALID`**; success returns **`SITUATION_SUCCESS`**
+- **`_SituationInitReverb`** — **`SituationError`** + **`void** out_state`**; per-buffer OOM with **`_SituationUninitReverb`** rollback
+- **`_SituationInitSoundEffects`** — called from **`SituationLoadSoundFromFile`** / **`SituationLoadSoundFromStream`**; propagates reverb alloc failures
+- **`_SituationAsyncAudioWorker`** — clears target handle on load fail; error channel via **`SituationLoadSoundFromFile`**; void-by-design (pool ABI)
+- **`_SitAudioCleanupPool`** — uses **`_SituationUninitReverb`** instead of raw **`SIT_FREE`**
+- RT paths unchanged: **`sit_miniaudio_data_callback`**, **`_SituationProcessReverb`**, etc.
+
+### Verification
+
+- OpenGL harness: **`core` 31/31**, **`audio` 80/81** (`control_sweep_all_devices` — log-scale tone_synth control midpoint readback; pre-existing graph test tolerance, not Phase 7 regression)
+
+---
+
+## [v2.4.134 "Internal Render Thread Errors"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 6** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): render-thread shutdown and per-frame graveyard flush return **`SituationError`**; GL fence timeouts and join failures propagate to **`SituationShutdown`** instead of only logging.
+
+### Library Changes (internal only — no public API break)
+
+- **`_SituationDestroyRenderThread`** — returns join timeout / **`THREAD_JOIN_FAILED`** (fixes mistaken **`THREAD_CREATION_FAILED`** on join)
+- **`_SitFlushFrameResources`** — bounds check + **`SituationError`**; render thread logs flush failures
+- **Render thread (OpenGL)** — **`glClientWaitSync`** timeout/failure sets **`RENDER_BACKPRESSURE_TIMEOUT`** / **`OPENGL_GENERAL`**
+- **`SituationShutdown`** — preserves render-thread error (skips "Shutdown complete" overlay when join failed)
+- **`_SituationRenderJobWorker`** — checks **`_SituationEnqueueRenderList`**; **`HARDENING:`** void-by-design note (pool ABI)
+
+### Verification
+
+- OpenGL harness: **`core` 31/31**, **`graphics` 107/107**
+
+---
+
+## [v2.4.133 "Internal Shader Async Errors"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 5** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): OpenGL/Vulkan async shader poll paths and the hot-reload I/O pass return **`SituationError`** so in-progress (`SHADER_LOAD_IN_PROGRESS`), terminal compile/link/SPIR-V failures, and reload failures propagate without relying on a prior global error read.
+
+### Library Changes (internal only — no public API break)
+
+- **`_SituationSetGLErrorFromSpirvStage`** — returns **`SituationError`** (drops `out_code` parameter; callers assign optional `error_code` pointers)
+- **`_SituationGLAsyncLoadFail`**, **`_SituationPollGLAsyncShaderLoad`**, **`_SituationPollGLAsyncSpirvShaderLoad`**, **`_SituationPollGLPendingProgramLink`** — **`SituationError`** with explicit in-progress vs terminal mapping
+- **`_SituationPollVkAsyncShaderLoad`** — **`SituationError`**; **`SituationPollShaderLoad`** uses poll return values directly
+- **`_SituationPerformHotReloadPass`** — returns first reload failure (shader/texture/audio) or **`SITUATION_SUCCESS`**
+- **`_SituationVulkanFreeAsyncShaderLoad`** — stays **`void`** with **`HARDENING:`** comment (Phase 9 doc)
+
+### Verification
+
+- OpenGL harness: **`core` 31/31**, **`graphics` 107/107**, **`--filter spirv` 10/10**
+
+---
+
+## [v2.4.132 "Internal Uniform Map Errors"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 4** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): shader uniform location cache and resource slot allocators report **`SituationError`** (or set the error channel on NULL) instead of silent OOM / registry-full failures.
+
+### Library Changes (internal only — no public API break)
+
+- **`_sit_uniform_map_resize`**, **`_sit_uniform_map_set`** — `void` → **`SituationError`**
+- **`_sit_uniform_map_create`** — enables **`_SituationSetErrorFromCode`** on alloc failure (still returns NULL per Rule I4)
+- **`_SituationPopulateGLShaderUniformMap`** — propagates map set failures
+- **`_SitAlloc*Slot`** — registry full → **`SITUATION_ERROR_RESOURCE_INVALID`** + message; callers check NULL via **`SituationGetLastErrorCode()`**
+- **`_SitFree*Slot`** — stay **`void`** with **`HARDENING: void by design`** (idempotent; invalid handles ignored)
+- **`SIT_GL_SOFT_CMD_PUSH_VOID`** — void compute record cmds no longer use error-return macro
+
+### Verification
+
+- OpenGL harness: **`core` 31/31**, **`graphics` 107/107**
+
+---
+
+## [v2.4.131 "Internal GL Soft Buffer Errors"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 3** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): OpenGL deferred record path and momentum enqueue return **`SituationError`** so OOM, broken soft buffers, GL replay failures, and queue-full propagate to **`SituationEndFrame`** / record APIs instead of silent drops.
+
+### Library Changes (internal only — no public API break)
+
+- **`_SitGLSoftCmdPush`**, **`_SitGLSoftDataPush`** — return **`SituationError`** + out-pointers; macros **`SIT_GL_SOFT_CMD_PUSH`** / **`SIT_GL_SOFT_DATA_PUSH`**
+- **`_SituationGLExecuteCommands`** — broken buffer → **`RENDER_COMMAND_FAILED`**; per-packet **`glGetError`** → **`OPENGL_GENERAL`**
+- **`_SituationReplayToQueue`**, **`_SituationEnqueueRenderList`** — **`SituationError`** (queue full → **`THREAD_QUEUE_FULL`**)
+- Callers: all OpenGL **`SituationCmd*`** record paths, **`SituationRenderVirtualDisplays`**, **`SituationEndFrame`** (execute path), render thread (logs execute failure)
+- Debug: optional **`SITUATION_DEBUG_GL_SOFT_CMD_MAX_PACKETS`** cap for OOM simulation
+- **`_SituationCheckGLError`** — stays **`void`** (decision in plan §3.3)
+
+### Verification
+
+- OpenGL harness: **`core`**, **`graphics`** (rebuild + full module pass after gate)
+
+---
+
+## [v2.4.130 "Errno Table Phase 2.1"] - 2026-05-24
+
+### Description
+
+Errno table **Phase 2.1**: close doc/comment gaps from the errno audit — add missing codes, document legacy duplicates with **`EOL:`** comments for a future caller sanitisation pass, and add **`scripts/audit_errno.ps1`**.
+
+### Library Changes
+
+- **`sit/situation_base_errno.h`**:
+  - **New codes**: `MEMORY_ACCESS` (-12), `FILE_MODIFIED` (-317), `BACKEND_SPECIFIC` (-551), `VULKAN_COMMAND_BUFFER_FAILED` (-721)
+  - **`#define` aliases** after enum (not in X-macro switch table): `GLAD_LOAD_FAILED`, `GL_UPLOAD_FAILED`, `ACCESS_DENIED`, … → canonical names
+  - **`EOL:`** on legacy pairs (display, filesystem, audio, GL/Vulkan generics, platform Win32)
+- **`scripts/audit_errno.ps1`**: table vs usage; flags phantoms and duplicate alias values
+- **`tests/harness/test_core.c`**: **`errno_table_phase_2_1`**
+
+### Verification
+
+- `.\scripts\audit_errno.ps1` — no phantom names
+- OpenGL harness: **`core` 31/31** (`errno_table_phase_2_1`)
+
+---
+
+## [v2.4.129 "Internal Vulkan Swapchain Errors"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 2** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): Vulkan swapchain recreation, single-time command submit, and compute queue submit return **`SituationError`** and propagate to frame acquire / **`SituationEndFrame`** instead of side-channel-only failures.
+
+### Library Changes (internal only — no public API break)
+
+- **`_SituationVulkanRecreateSwapchain`**, **`_SituationVulkanCleanupSwapchain`** — `void` → **`SituationError`**
+- **`_SituationVulkanEndSingleTimeCommands`**, **`_SituationSubmitCompute`** — `void` → **`SituationError`**
+- Callers: **`SituationAcquireFrameCommandBuffer`**, **`SituationEndFrame`** (present OUT_OF_DATE / resize), **`SituationSetVSync`**, texture/buffer/mesh upload paths, screenshot blit
+- Forward decls: **`situation_impl_renderer_fwd.h`**
+- Verified existing **`SituationError`** helpers on recreate path: **`_SituationVulkanCreateSwapchain`**, **`_SituationVulkanCreateScreenCopyResource`**, **`_SituationVulkanEnsureScreenshotResources`**
+
+### Verification
+
+- OpenGL harness: **`core`**, **`graphics`** (no Vulkan-specific regressions in shared code paths)
+- Vulkan build: **`build_tests.bat vulkan`** — **`graphics`** module
+
+---
+
+## [v2.4.128 "Internal Init Error Propagation"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 1** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): init-chain helpers return **`SituationError`** and propagate to **`SituationInit`** instead of side-channel-only **`_SituationSetErrorFromCode`** from **`void`** / **`bool`** stubs.
+
+### Library Changes (internal only — no public API break)
+
+- **GL ring/MDI/fences**: **`_SituationInitGLRingBuffer`**, **`_SituationInitGLMDIBuffer`**, **`_SituationInitGLRingFences`**
+- **Renderer inits** (`bool` → **`SituationError`**): **`_SituationInitDefaultFont`**, **`_SituationInitTextRenderer`**, **`_SituationInitQuadRenderer`**, **`_SituationInitGLVirtualDisplayRenderer`**, **`_SituationValidateRenderCaps`**, **`_SituationInitRenderThread`**
+- **Subsystems**: **`_SitAudioInitPool`**, **`_SituationCachePhysicalDisplays`**
+- Callers: **`_SituationInitOpenGL`**, **`_SituationInitVulkan`**, **`SituationInit`** (ctrl)
+- Forward decls: **`situation_impl_forward.h`**, **`situation_impl_renderer_fwd.h`**, **`situation_impl_decl.h`**
+
+### Verification
+
+- OpenGL harness: **`core` 30/30**, **`graphics` 107/107**
+
+---
+
+## [v2.4.127 "Internal Hardening Tooling"] - 2026-05-24
+
+### Description
+
+Internal hardening **Phase 0** (`doc/plan/INTERNAL_HARDENING_PLAN.md`): tooling and test baseline for the void → **`SituationError`** migration.
+
+### Library Changes
+
+- **`SIT_RETURN_IF_ERR`** macro in **`sit/situation_impl_decl.h`**
+- **`scripts/list_internal_voids.ps1`** → **`doc/plan/internal_void_inventory.csv`**
+- **`doc/plan/INTERNAL_HARDENING_PLAN.md`** — phased task board + per-phase version policy
+
+### Tests
+
+- **`tests/harness/test_core.c`**: **`init_double_init_error`** — second **`SituationInit`** returns **`ALREADY_INITIALIZED`**; **`SituationGetLastErrorCode`** matches
+
+### Verification
+
+- OpenGL harness: **`core`** includes new error-propagation smoke test
+
+---
+
+## [v2.4.126 "Vertex Index Bind SituationError"] - 2026-05-24
+
+### Description
+
+**`SituationCmdBindVertexBuffer`** and **`SituationCmdBindIndexBuffer`** now return **`SituationError`**, matching other Core recording commands (`BindPipeline`, `Draw`, `DrawIndexed`). Removes silent failure paths (null command buffer on Vulkan vertex bind, OpenGL soft-buffer allocation failure) so callers and docs do not rely on **`SituationGetLastError()`** alone.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **126**.
+- **`sit/situation_api.h`**: `void` → **`SituationError`** for both bind functions.
+- **`sit/situation_impl_renderer.h`**: Return codes aligned with **`SituationCmdBindPipeline`** / **`SituationCmdDraw`**; **`MEMORY_ALLOCATION`** when **`_SitGLSoftCmdPush`** fails.
+- **`tests/harness/test_graphics.c`**: **`bind_index_buffer_low_level`** asserts bind success.
+- **`doc/situation_command_reference.md`**: Signatures and **Returns** sections updated.
+
+### API note (breaking, source)
+
+```c
+/* Before (v2.4.125) */
+void SituationCmdBindVertexBuffer(...);
+void SituationCmdBindIndexBuffer(...);
+
+/* After (v2.4.126) */
+SituationError SituationCmdBindVertexBuffer(...);
+SituationError SituationCmdBindIndexBuffer(...);
+```
+
+Recompile callers; check return value like other **`SituationCmd*`** Core APIs.
+
+---
+
+## [v2.4.125 "Vertex Attribute Binding"] - 2026-05-24
+
+### Description
+
+Fixes **OpenGL low-level draw replay** (`SituationCmdBindVertexBuffer` + `SituationCmdDraw` / `SituationCmdDrawIndexed`) and makes **vertex input binding explicit** on the public API. The GL executor now **binds the global VAO** before vertex-buffer and draw packets (DSA updates alone were not enough when VAO 0 was active). **`SituationCmdSetVertexAttribute`** gains a **`binding`** parameter (must match the **`binding`** passed to **`SituationCmdBindVertexBuffer`**); use **`0`** for all attributes in an **interleaved** layout. This unblocks **RGL** batch flush (smoke test no longer crashes in **`SituationEndFrame`** on the first **`SIT_OP_DRAW`**) and matches how Vulkan thinks about vertex streams without hard-coding RGL’s layout in the core.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **125**.
+- **`sit/situation_api.h`**: **`SituationCmdSetVertexAttribute(cmd, location, binding, size, type, normalized, offset)`** — new **`binding`** argument after **`location`**.
+- **`sit/situation_impl_decl.h`**: **`set_vertex_attr.binding`** in soft-command packet.
+- **`sit/situation_impl_renderer.h`**:
+  - Record/replay **`binding`** via **`glVertexArrayAttribBinding`** (replaces incorrect **`location == binding`** assumption).
+  - **`SIT_OP_BIND_VERTEX_BUFFER`** / **`SIT_OP_DRAW`**: bind **`sit_render.gl.global_vao_id`** when needed before DSA / draw.
+- **`misc/rgl.h`**: **`_RGL_ConfigureBatchVertexLayout`** passes **`binding = 0`** for all five interleaved attributes (13-float batch stride).
+- **`tests/harness/test_graphics.c`**: **`bind_index_buffer_low_level`** OpenGL path uses **`SetVertexAttribute(..., 0, ...)`**.
+
+### API note (breaking, OpenGL-only path)
+
+Callers of **`SituationCmdSetVertexAttribute`** must pass **`binding`** explicitly:
+
+```c
+/* Interleaved: one VBO at binding 0 */
+SituationCmdSetVertexAttribute(cmd, 0, 0, 3, SIT_DATA_FLOAT, false, offsetof(Vertex, pos));
+SituationCmdBindVertexBuffer(cmd, 0, vbo, 0, sizeof(Vertex));
+
+/* Separate streams: attribute location N from binding N */
+SituationCmdSetVertexAttribute(cmd, 1, 1, 2, SIT_DATA_FLOAT, false, 0);
+SituationCmdBindVertexBuffer(cmd, 1, uv_vbo, 0, 8);
+```
+
+Vulkan: unchanged — vertex layout remains pipeline-creation time; **`SetVertexAttribute`** still returns **`SITUATION_ERROR_NOT_IMPLEMENTED`**.
+
+### Harness
+
+| Backend | Command | Graphics module |
+|---------|---------|-----------------|
+| OpenGL | `build\sit_test.exe --module graphics` | **107** passed |
+| Vulkan | `build\sit_test_vulkan.exe --module graphics` | **97** passed |
+
+Includes **`bind_index_buffer_low_level`**, **`draw_indexed_quad`**, **`draw_pipeline_basic`**. **`build\examples\rgl_smoke_test.exe`** (monolithic OpenGL) runs past first frame after fix.
+
+---
+
+## [v2.4.124 "Bind Index Buffer API"] - 2026-05-24
+
+### Description
+
+Public **low-level indexed draw** API for OpenGL 4.6 and Vulkan: **`SituationCmdBindIndexBuffer`** (with byte **`offset`**) pairs with **`SituationCmdBindVertexBuffer`** and **`SituationCmdDrawIndexed`**. Index format is **32-bit** (`GL_UNSIGNED_INT` / `VK_INDEX_TYPE_UINT32`), matching **`SituationCreateMesh`**. On Vulkan, **`SituationCmdBindVertexBuffer`** now selects **`vk_pipeline_simple`** / legacy / PBR from **stride** after **`SituationCmdBindPipeline`**, same rules as **`SituationCmdDrawMesh`**, so manual VBO+IBO draws work without calling **`DrawMesh`**.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **124**.
+- **`sit/situation_api.h`**: **`SituationCmdBindIndexBuffer`**, **`SituationCmdBindVertexBuffer`** (public declarations).
+- **`sit/situation_impl_renderer.h`**: OpenGL soft replay uses **`glVertexArrayElementBuffer`** on the global VAO; IBO byte offset applied at indexed draw (including MDI **`firstIndex`** bias); Vulkan **`vkCmdBindIndexBuffer`** with offset; Vulkan vertex bind rebinds stride-matched pipeline variant.
+- **`sit/situation_impl_decl.h`**: **`bind_ibo.offset`** packet field; **`bound_ibo_byte_offset`** GL replay state.
+- **`tests/harness/test_graphics.c`**: **`bind_index_buffer_low_level`** (bind VBO/IBO + **`DrawIndexed`** + screen readback); dual-backend harness pass with **`draw_indexed_quad`**.
+
+### Harness
+
+| Test | Path |
+|------|------|
+| `bind_index_buffer_low_level` | `BindPipeline` → `BindVertexBuffer` → `BindIndexBuffer` → `DrawIndexed` |
+| `draw_indexed_quad` | High-level **`SituationCmdDrawMesh`** (regression) |
+
+---
+
+## [v2.4.123 "Tone Synth Patch Memory"] - 2026-05-23
+
+### Description
+
+Each graph **Tone Synth** node has **16 patch slots** storing a snapshot of controls **1–36** (waveform through `sub_ring_mod`; manual **frequency** ctrl **0** is excluded). **MIDI CC114** selects slot **0–15** and **recalls** when the CC value changes; **CC115** **≥64** saves the current control state into the selected slot (rising edge). Controls **37–38** (`patch_slot`, `patch_store`) mirror the same behaviour via `SituationSetControl`.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **123**.
+- **`sit/aud/tone_synth_graph.h`**: `patch_slots[16]` on node state; save/recall + voice template sync on recall.
+- **`sit/aud/registry_init.h`**: **39** controls.
+- **`sit/aud/node_graph_impl.h`**: `SituationSetControl` hooks patch slot/store for tone synth nodes.
+- **`tests/harness/test_tone_synth.c`**: `patch_memory`.
+- **`doc/tone_synth.md`**: §3.2 patch memory.
+
+| Idx | Name | MIDI CC |
+|-----|------|---------|
+| 37 | `patch_slot` | **114** |
+| 38 | `patch_store` | **115** (≥64 save) |
+
+---
+
+## [v2.4.122 "Tone Synth Sub Sync Ring Listen"] - 2026-05-23
+
+### Description
+
+Graph **Tone Synth** sub **sync** and **ring mod** fixes and audible harness coverage. **Ring mod** uses the same sub-oscillator pitch as additive (`sub_note` + `sub_octave` / `sub_fine`), so **CC111** sweeps audibly retune the modulator while **A4** is held. **Fix:** ring multiply is no longer skipped when the sub waveform crosses zero (was outputting dry main at those samples). Dedicated listen tests **`sub_sync`** and **`sub_ring_mod`**: each runs ~**3.5 s** with `sub_note=0` (sub tracks main), then ~**3.5 s** with **CC111** stepped **1→127** (note held; only CC111 between steps).
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **122**.
+- **`sit/aud/tone_synth_graph.h`**: Ring path uses `_SituationToneSynthSubFrequencyHz` (same as additive sub); ring mix always applied when sub is active (not gated on `sub_s != 0`).
+- **`tests/harness/test_tone_synth.c`**: `sub_sync` — saw main, pulse sub, oct −1, sync on; `sub_ring_mod` — sine×sine oct −1, ring on; sustained **A4** + CC111 coarse sweep (**40** steps); ring asserts weak **440 Hz** vs **220/660 Hz** sidebands.
+- **`doc/tone_synth.md`**: Ring and sync behaviour aligned with shared sub pitch.
+
+### Harness (listen)
+
+| Test | Effect | Segment A | Segment B |
+|------|--------|-----------|-------------|
+| `sub_sync` | **CC112** on | **A4** hold, `sub_note=0` | **A4** hold, **CC111** 1→127 |
+| `sub_ring_mod` | **CC113** on | **A4** hold, `sub_note=0` | **A4** hold, **CC111** 1→127 |
+
+---
+
+## [v2.4.121 "Tone Synth Sub Switches"] - 2026-05-23
+
+### Description
+
+Graph **Tone Synth** sub-oscillator gains three switches: **sub_note** (ctrl/MIDI **0** = track main note pitch; **1–127** = fixed sub MIDI note), **sync with sub** (main phase hard-resets each sub cycle), and **ring modulation** (multiply main×sub with `sub_level` as wet depth). MIDI **CC111–113**.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **121**.
+- **`sit/aud/tone_synth_graph.h`**: Controls **34–36**; `_SituationToneSynthMixMainSub`; `sub_cycle_pending` on voice/node.
+- **`sit/aud/device_wrappers.h`**: Voice/manual paths use shared mix helper.
+- **`sit/aud/registry_init.h`**: **37** controls.
+- **`doc/tone_synth.md`**: §3.2 sub switches.
+
+| Idx | Name | MIDI CC |
+|-----|------|---------|
+| 34 | `sub_note` (0=track, 1–127=fixed) | **111** |
+| 35 | `sub_sync` | **112** |
+| 36 | `sub_ring_mod` | **113** |
+
+---
+
+## [v2.4.120 "Tone Synth Sum Limiter"] - 2026-05-23
+
+### Description
+
+Graph **Tone Synth** applies the same **post-voice-sum enhanced lookahead limiter** as **Polysonix** (`EnhancedLimiter` in `sit/aud/polysonix/polysonix.h`) after panning and before the node output. Fixed patch defaults: threshold **0.95**, release **50 ms**, ratio **20:1**, **1 ms** lookahead (buffer **2 ms** at sample rate, min 16 samples).
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **120**.
+- **`sit/aud/tone_synth_graph.h`**: `SituationToneSynthSumLimiter`, init/process/alloc (Polysonix-identical); `sum_limiter` on `SituationToneSynthNodeState`.
+- **`sit/aud/device_wrappers.h`**: Allocate/free limiter on create/destroy; per-sample limit after voice sum.
+- **`doc/tone_synth.md`**: Signal-flow note for sum limiter.
+
+---
+
+## [v2.4.119 "Tone Synth Sub Osc"] - 2026-05-23
+
+### Description
+
+Graph **Tone Synth** (patch **119**): **16 voices** per node (was 64), plus a per-voice **sub-oscillator** mixed before the SVF — same five waveforms as the main osc, **0 / −1 / −2 octave** offset, **±1 semitone** fine tune, level **0–1**. Legacy **`SituationPlayToneEx`** pool stays at 64 voices. Override voice cap: `-DSITUATION_TONE_SYNTH_MAX_VOICES=N`.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **119**.
+- **`sit/aud/tone_synth_graph.h`**: `sub_phase`, `sub_waveform`; controls **30–33**; `_SituationToneSynthOscSampleWave`, `_SituationToneSynthSubFrequencyHz`; legato preserves `sub_phase`; MIDI **CC107–110**.
+- **`sit/aud/device_wrappers.h`**: Main + sub sum pre-filter; manual path sub mix.
+- **`sit/aud/registry_init.h`**: **34** controls.
+- **`sit/situation_api.h`**: `SITUATION_MAX_CONTROLS_PER_DEVICE` **32 → 48** (Tone Synth exceeded the old cap).
+- **`tests/harness/test_tone_synth.c`**: `sub_oscillator`.
+- **`doc/tone_synth.md`**: §3.2 sub-oscillator.
+
+### Sub-oscillator controls
+
+| Idx | Name | Default | Range | MIDI CC |
+|-----|------|---------|-------|---------|
+| 30 | `sub_level` | 0 | 0–1 | **107** |
+| 31 | `sub_waveform` | Sine | 0–4 (same as main) | **108** (`value % 5`) |
+| 32 | `sub_octave` | Oct −1 | 0=unison, 1=−1 oct, 2=−2 oct | **109** |
+| 33 | `sub_fine` | 0 | ±1 semitone | **110** (`norm×2−1`) |
+
+Pitch: `sub_hz = main_hz × 2^((fine − octave×12) / 12)` (octave 0/1/2 = unison / −1 oct / −2 oct) where `main_hz` is the voice pitch after bend, portamento, and mod LFO.
+
+---
+
+## [v2.4.118 "Tone Synth Portamento"] - 2026-05-23
+
+### Description
+
+Graph **Tone Synth** in **mono** mode gains **portamento** (pitch glide on legato note changes) with two complementary controls: fixed **glide time** and interval-aware **glide speed** (semitones per second). **Legato** re-triggers preserve envelope sustain and oscillator phase when a new note arrives while the prior note is still in attack, decay, or sustain; a gap or release before the next note-on starts a fresh voice. Harness: dedicated **`tone_synth`** module with linked vs unlinked four-note phrases.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **118**.
+- **`sit/aud/tone_synth_graph.h`**: Controls **28–29** (`portamento_time`, `portamento_speed`); `base_hz` / `target_hz`; `_SituationToneSynthVoicePortamentoTauSec`, `_SituationToneSynthVoiceGlidePitch`, `_SituationToneSynthVoiceLegatoFromControls`; MIDI **CC5** (time), **CC20** (speed).
+- **`sit/aud/device_wrappers.h`**: Per-sample RC glide in mono when time or speed &gt; 0.
+- **`sit/aud/registry_init.h`**: **30** controls registered.
+- **`tests/harness/test_tone_synth.c`**: Module **`tone_synth`**; `mono_portamento_linked`, `mono_portamento_unlinked` (4-note C–E–G–C phrases).
+- **`doc/tone_synth.md`**: Portamento / legato section (§3.1).
+
+### Portamento controls (registry indices)
+
+| Idx | Name | Default | Range | MIDI CC |
+|-----|------|---------|-------|---------|
+| 28 | `portamento_time` | 0 | 0–2 s | **CC5** (`norm × 2`) |
+| 29 | `portamento_speed` | 0 | 0–48 st/s | **CC20** (`norm × 48`) |
+
+**Effective glide time** `τ` (seconds, used as RC time constant):
+
+| `portamento_time` | `portamento_speed` | `τ` |
+|-------------------|--------------------|-----|
+| ≤ 0 | ≤ 0 | Instant (snap `base_hz` → `target_hz`) |
+| &gt; 0 | ≤ 0 | `τ = time` (same for every interval) |
+| ≤ 0 | &gt; 0 | `τ = semitones ÷ speed` (interval from current `base_hz` to `target_hz`) |
+| &gt; 0 | &gt; 0 | `τ = max(time, semitones ÷ speed)` — **slower glide wins** |
+
+Poly mode ignores portamento (pitch snaps each voice). Mono + legato sets `target_hz` on note-on; glide runs in the audio loop.
+
+---
+
+## [v2.4.117 "Tone Synth Filter Env Mod"] - 2026-05-23
+
+### Description
+
+Graph **Tone Synth** routes the per-voice **ADSR envelope** to filter cutoff via **amount × range** (same formula as mod LFO filter depth). Off by default; stacks with LFO filter offset.
+
+### Library Changes
+
+- **`sit/aud/tone_synth_graph.h`**: Controls **26–27** (`filter_env_amount`, `filter_env_range`), CC **32–33**.
+- **`sit/aud/device_wrappers.h`**: Per-voice `cutoff_offset += envelope × amount × range` (manual path uses amplitude).
+- **`sit/aud/registry_init.h`**: 28 controls registered.
+- **`tests/harness/test_audio.c`**: `graph_tone_synth_filter_env_adsr`.
+
+### Filter env CC map
+
+| CC | Control | Scaling |
+|----|---------|---------|
+| 32 | Filter env amount | 0–1 |
+| 33 | Filter env range | log 20–8000 Hz span |
+
+Modulation: `cutoff += envelope × amount × range` (0–1 ADSR, added before keytrack/clamp).
+
+---
+
+## [v2.4.116 "Tone Synth Mod LFO"] - 2026-05-23
+
+### Description
+
+Graph **Tone Synth** adds one **global mod LFO** (triangle / square / random S&H): rate + waveform, with independent **amount × range** for **pitch**, **PWM**, and **filter cutoff**. Separate from CC1 vibrato (fixed 5 Hz) and CC92 tremolo. All CC-mapped; off by default (LFO rate 0).
+
+### Library Changes
+
+- **`sit/aud/tone_synth_graph.h`**: Controls **18–25**, `mod_lfo_phase`, CC **24–31**.
+- **`sit/aud/device_wrappers.h`**: Per-sample LFO applied to pitch, pulse width, filter.
+- **`sit/aud/registry_init.h`**: 26 controls registered.
+- **`tests/harness/test_audio.c`**: `graph_tone_synth_lfo_mod`, `graph_tone_synth_waveforms_all` (+ filter/pulse width).
+
+### Mod LFO CC map
+
+| CC | Control | Scaling |
+|----|---------|---------|
+| 24 | LFO rate | 0=off; else log 0.05–20 Hz |
+| 25 | LFO waveform | 0=tri, 1=square, 2=random |
+| 26 | Pitch amount | 0–1 |
+| 27 | Pitch range | 0–12 semitones |
+| 28 | PWM amount | 0–1 |
+| 29 | PWM range | 0–0.45 duty |
+| 30 | Filter amount | 0–1 |
+| 31 | Filter range | log 20–8000 Hz span |
+
+Modulation: `target += lfo × amount × range` (bipolar LFO −1..1).
+
+---
+
+## [v2.4.115 "Tone Synth Pulse Width"] - 2026-05-23
+
+### Description
+
+Graph **Tone Synth** waveform **1** is now a **pulse** (variable duty cycle) instead of a fixed 50% square. Pulse width is control **17** (default 0.5 = square) and **MIDI CC106** (5%–95% duty).
+
+### Library Changes
+
+- **`sit/aud/tone_synth_graph.h`**: `_SituationToneSynthClampPulseWidth`, pulse osc in case 1, CC106 → control 17.
+- **`sit/aud/registry_init.h`**: Control **17** `pulse_width`; waveform enum label **Pulse**.
+- **`sit/aud/device_wrappers.h`**: Pass pulse width into oscillator.
+- **`tests/harness/test_audio.c`**: `graph_tone_synth_filter_modes`, `graph_tone_synth_pulse_width` harness tests.
+
+---
+
+## [v2.4.114 "Tone Synth Mono Poly"] - 2026-05-23
+
+### Description
+
+Graph **Tone Synth** adds a **mono / poly pivot**: poly keeps the existing 64-voice allocator; mono uses **voice slot 0 only** and cuts any other active voices on each new note (last-note priority, no stack).
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **114**.
+- **`sit/aud/tone_synth_graph.h`**: Control **16** `voice_mode` (0=poly, 1=mono); `_SituationToneSynthSetVoiceMode`, `_SituationToneSynthEnforceMonoVoices`.
+- **MIDI**: **CC126** → mono, **CC127** → poly (GM mode CCs). Also set via `SituationSetControl(graph, handle, 16, 0|1)`.
+
+---
+
+## [v2.4.113 "Tone Synth SVF Filter"] - 2026-05-23
+
+### Description
+
+Graph **Tone Synth** gains a **per-voice Polysonix-style multi-pole SVF** (`sit/aud/fx/filter.h`): LP/HP/BP/notch/combo modes, 1–4 poles, drive, optional 2× oversampling, and MIDI-note key tracking. Filter runs after the oscillator envelope, before pan — same order as Polysonix voices.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **113**, description **"Tone Synth SVF Filter"**.
+- **`sit/aud/tone_synth_graph.h`**: Per-voice `SituationToneSynthVoiceFilter`; controls **9–15**; MIDI CC **16** mode, **74** cutoff, **71** resonance, **102** poles, **17** drive, **22** keytrack, **18** oversampling.
+- **`sit/aud/device_wrappers.h`**: `_SituationProcessToneSynthNode` applies filter per voice (and manual fallback path).
+- **`sit/aud/registry_init.h`**: Tone synth **16** controls (filter block registered with defaults; filter **off** by default for harness parity).
+
+### MIDI filter map (Tone Synth node)
+
+| CC | Control |
+|----|---------|
+| 16 | Filter mode 0=OFF … 8=BP+HP |
+| 74 | Cutoff 20 Hz–20 kHz (log) |
+| 71 | Resonance Q 0.5–20 |
+| 102 | Poles 1–4 |
+| 17 | Drive 1–10 |
+| 22 | Keytrack 0–1 |
+| 18 | Oversampling 0=off, ≥1=2× |
+
+---
+
+## [v2.4.112 "Tone Synth Compare Ready"] - 2026-05-23
+
+### Description
+
+Situation **v2.4.112** is a patch bump after **v2.4.111** verification: all **15** `graph_tone_synth_*` harness tests pass in one run, including stable sequential Phase 8 MIDI tests via **`sit_midi_graph_fixture_release`**. This release marks the graph tone synth as ready for side-by-side scrutiny against the legacy 64-voice pool and app-level switching.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **112**, description **"Tone Synth Compare Ready"**.
+- No additional library API changes beyond **v2.4.111** (harness fixture cleanup only).
+- **`tone_synth_phase1_compare_a4`** harness test — Phase 1 side-by-side: legacy-only A4 then graph-only A4 (exclusive paths), prints `[COMPARE Phase 1]` hz/peak/rms delta.
+
+### Verification
+
+```powershell
+Set-Location "c:\Users\User\Desktop\hobby\_kiro\situation"
+& ".\build_situation.bat" opengl
+& ".\build_tests.bat" opengl
+Set-Location build
+$env:PATH = "dll;C:\msys64\mingw64\bin;$env:PATH"
+& ".\sit_test.exe" --module audio --filter graph_tone_synth
+& ".\sit_test.exe" --module audio --filter tone_synth_phase1_compare_a4
+```
+
+**Results (2026-05-23):** 15 passed, 0 failed.
+
+---
+
+## [v2.4.111 "Graph Tone Synth Full MIDI"] - 2026-05-23
+
+### Description
+
+Situation **v2.4.111** completes the agreed **“everything through MIDI”** follow-up for the graph tone synth: **channel-aware virtual note APIs**, **per-node MIDI channel filtering**, the remaining **ADSR CC map**, **CC70 waveform**, **CC92 true amplitude tremolo** (5 Hz LFO), and harness migration to the `*Ex` virtual MIDI helpers.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **111**, description **"Graph Tone Synth Full MIDI"**.
+- **`sit/situation_api.h`**:
+  - **`SituationVirtualMidiNoteOnEx` / `NoteOffEx`** — channel 0–15 note injection.
+  - **`SituationVirtualMidiProgramChange`** — channel-aware program change.
+  - **`SituationSetNodeMidiChannel`** — filter node MIDI to one channel (`-1` = omni).
+  - Legacy **`SituationVirtualMidiNoteOn/Off`** remain as channel-0 wrappers.
+- **`sit/aud/node_graph_midi.h`**: implementations for the new APIs; **`_SituationVirtualMidiWrite`** shared helper.
+- **`sit/aud/node_graph_process.h`**: **`_SituationNodeMidiAcceptsChannel`** — drops messages not matching `node->midi_device->midi_channel` when set.
+- **`sit/aud/tone_synth_graph.h`**:
+  - **`_SituationToneSynthApplyControlChange`** — centralized CC map: CC1, 7, 10, 11, 64, **70**, **72–77** (ADSR), **92** (tremolo depth), 123.
+  - **CC92 tremolo** state (`tremolo_depth`, `tremolo_phase`) + **5 Hz** default.
+- **`sit/aud/device_wrappers.h`**: amplitude tremolo LFO applied to combined MIDI volume during voice mix.
+- **`sit/aud/midi_device_callbacks.h`**: tone synth CC handler delegates to **`_SituationToneSynthApplyControlChange`**.
+
+### Graph tone synth MIDI CC map
+
+| CC | Function |
+|----|----------|
+| 1 | Vibrato depth (5 Hz pitch LFO) |
+| 7 | Channel volume |
+| 10 | Pan |
+| 11 | Expression |
+| 64 | Sustain pedal |
+| 70 | Waveform (0–4) |
+| 72 | Release time |
+| 73 | Attack time |
+| 75 | Decay time |
+| 76 | Sustain level |
+| 77 | Hold time |
+| 92 | Tremolo depth (5 Hz amplitude LFO) |
+| 123 | All notes off |
+
+### Harness (Phase 8)
+
+- All graph tone synth tests use **`SituationVirtualMidiNoteOnEx/OffEx(SITUATION_TEST_MIDI_CHANNEL, …)`**.
+- **`sit_midi_tone_graph_setup`** calls **`SituationSetNodeMidiChannel`** after MIDI enable.
+- **`sit_midi_tone_graph_silence_midi`** resets **CC92** before teardown.
+- **`graph_tone_synth_cc7_tremolo`** renamed **`graph_tone_synth_cc92_tremolo`** — tests true LFO tremolo via **CC92**, not CC7 toggling.
+- **`sit_midi_graph_fixture_release`** — cleans up graph/MIDI state when a prior test **longjmp**'s on assertion failure (prevents `-496` MIDI open errors on the next test).
+
+### Verification
+
+```bat
+build_situation.bat opengl
+build_tests.bat opengl
+cd build
+set PATH=build\dll;C:\msys64\mingw64\bin;%PATH%
+sit_test.exe --module audio --filter graph_tone_synth
+```
+
+**Results (2026-05-23):** all **15** `graph_tone_synth_*` tests pass in one run (including Phase 8 MIDI frequency/CC tests).
+
+---
+
+## [v2.4.110 "Graph Tone Synth Legacy Parity"] - 2026-05-23
+
+### Description
+
+Situation **v2.4.110** brings the **graph tone synth** (`SITUATION_NODE_TONE_SYNTH`, PortMidi path) to **feature parity with the legacy 64-voice tone pool**: polyphonic voice allocation with stealing, per-voice **ADSR + hold**, stereo **pan**, all five **waveforms**, velocity-scaled envelopes, and expanded **MIDI CC / program change** mapping. The legacy **`SituationPlayToneEx`** pool is unchanged; this patch upgrades the MIDI-controllable graph node only.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **110**, description **"Graph Tone Synth Legacy Parity"**.
+- **`sit/aud/tone_synth_graph.h`** (major rewrite):
+  - **`SituationToneSynthVoice`** pool (**64** voices per node) with attack/decay/sustain/release/hold frame counts.
+  - Voice **steal order**: inactive slot → furthest-in-**release** → newest active (matches legacy pool policy).
+  - Shared helpers: alloc/release note, envelope step, oscillator sample (sine/square/triangle/saw/noise), pitch bend + **CC1** LFO on all voices.
+  - **`SituationToneSynthNodeState`**: voice array + MIDI globals (CC7/CC11 volume, CC64 sustain, bend, mod depth) + manual **`SetControl`** fallback when no voices active.
+- **`sit/aud/device_wrappers.h`** — **`_SituationProcessToneSynthNode`**:
+  - Sums all active voices with **ADSR × velocity × channel volume × expression**.
+  - **Stereo pan** (legacy linear L/R gains from control 3).
+  - Manual control path preserved for harness **`SituationSetControl`** (instant amp when no MIDI voices).
+- **`sit/aud/midi_device_callbacks.h`** — graph tone synth MIDI:
+  - **Poly note on/off** (per-note voice alloc/release; sustain-pedal deferral).
+  - **CC1** vibrato depth, **CC7** volume, **CC10** pan, **CC11** expression, **CC64** sustain, **CC72/73** release/attack, **CC123** all-notes-off.
+  - **`_SituationToneSynthOnProgramChange`** — program **% 5** → waveform enum.
+- **`sit/aud/node_graph_process.h`**: dispatch **0xC0 program change** to graph tone synth.
+
+### Legacy pool vs graph (after this patch)
+
+| Feature | Legacy pool | Graph tone synth |
+|---------|-------------|------------------|
+| 64-voice poly | ✓ | ✓ |
+| ADSR + hold | ✓ | ✓ (per voice, from controls 4–8) |
+| Pan | ✓ | ✓ (control 3 / CC10) |
+| Waveforms ×5 | ✓ (miniaudio) | ✓ (RT-safe oscillators) |
+| PortMidi | — | ✓ |
+| `PlayToneEx` handles | ✓ | — (internal voices only) |
+
+### Verification
+
+Rebuild **DLL** after library changes (`build_tests.bat` only if harness sources changed):
+
+```bat
+build_situation.bat opengl
+cd build
+set PATH=build\dll;C:\msys64\mingw64\bin;%PATH%
+sit_test.exe --module audio --filter graph_tone_synth_midi
+sit_test.exe --module audio --filter graph_tone_synth_velocity_ramp
+sit_test.exe --module audio --filter graph_tone_synth_cc
+sit_test.exe --module audio_effects_heard --filter graph_tone_synth_effect_heard_reverb
+```
+
+**Results (2026-05-23):**
+
+| Check | Result |
+|-------|--------|
+| **`graph_tone_synth_midi_note_frequency`** | pass |
+| **`graph_tone_synth_midi_complex_melody`** | pass |
+| **`graph_tone_synth_velocity_ramp`** | pass (run isolated if prior tests left audio busy) |
+| **`graph_tone_synth_cc_mod_vibrato`** / **`cc7_tremolo`** | pass |
+| **`graph_tone_synth_effect_heard_reverb`** | pass |
+
+### Still open (graph tone synth)
+
+- Manual **`SetControl`** path: instant volume (no ADSR) when no MIDI voices — legacy **`PlayToneEx`** always envelopes.
+- **`SituationVirtualMidiNoteOn/Off`**: channel-0 only; no public voice handles.
+- **CC decay/sustain/hold** not on dedicated CCs (set via node controls or CC72/73 for attack/release only).
+- Oscillator DSP differs from miniaudio **`ma_waveform`** (same shapes, not bit-identical).
+
+---
+
+## [v2.4.109 "MIDI Device Names & Test Routing"] - 2026-05-23
+
+### Description
+
+Situation **v2.4.109** adds **official PortMidi device name constants** for harness virtual MIDI and the graph tone synth target, a **`SituationGetMidiDeviceName`** lookup API, a fix for **virtual device enumeration** in **`SituationListMidiDevices`**, **virtual loopback CC / pitch-bend injection** for integration tests, and **per-test MIDI routing banners** (device name, PortMidi id, channel, CC usage) on all graph tone synth MIDI verification tests. **CC7 tremolo bleed** between sequential harness runs is flushed via a shared MIDI silence helper before teardown.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **109**, description **"MIDI Device Names & Test Routing"**.
+- **`sit/situation_api.h`**:
+  - **`SITUATION_TEST_MIDI_CHANNEL`** (0-based; harness displays as MIDI channel 0 → channel 1).
+  - **`SITUATION_VIRTUAL_MIDI_IN_NAME`** / **`SITUATION_VIRTUAL_MIDI_OUT_NAME`** — official virtual loopback PortMidi names.
+  - **`SITUATION_TONE_SYNTH_MIDI_DEVICE_NAME`** — graph tone synth **`SIT_MidiDevice`** target name (**`"Tone Synth"`**).
+  - **`SituationGetMidiDeviceName()`** — resolve PortMidi name for hardware or virtual **`device_id`** (virtual ids ≥ 32).
+  - **`SituationVirtualMidiControlChange()`**, **`SituationVirtualMidiPitchBend()`** — inject CC / bend into the virtual loopback output stream.
+- **`sit/aud/node_graph_midi.h`**:
+  - **`SituationListMidiDevices()`** — enumerate hardware ids **0…MAX_DEVICES−1** plus active virtual ids **MAX_DEVICES+slot** (fixes missing virtual devices when **`Pm_CountDevices()`** count ≠ index space).
+  - Virtual loopback **`Pm_CreateVirtualDevice`** uses **`SITUATION_VIRTUAL_MIDI_*_NAME`** constants.
+  - **`SituationSetupVirtualMidiLoopback()`** returns the virtual input **`PmDeviceID`** for **`SituationEnableMidiControl()`**.
+
+### Tests
+
+- **`tests/harness/midi_test_info.h`** (new):
+  - **`sit_midi_log_graph_tone_synth_route()`** — asserts official input + synth names via **`SituationGetMidiDeviceName`** / registry metadata; prints **`[MIDI]`** routing line (channel + per-test CC/note usage).
+  - **`sit_midi_log_legacy_tone_pool_route()`** — labels legacy **`SituationPlayMidiNote`** path (no PortMidi).
+- **`tests/harness/test_audio.c`** (Phase 8 — MIDI / audio frequency verification):
+  - Documented per-test **MIDI channel / CC** table in file header.
+  - **`graph_tone_synth_midi_note_frequency`**, **`graph_tone_synth_midi_complex_melody`**, **`graph_tone_synth_velocity_ramp`**, **`graph_tone_synth_cc_mod_vibrato`**, **`graph_tone_synth_cc7_tremolo`** — each prints official routing banner at start.
+  - **`sit_midi_tone_graph_setup()`** / **`sit_midi_tone_graph_teardown()`** shared helpers for graph + virtual MIDI tests.
+  - **`sit_midi_tone_graph_silence_midi()`** — CC123 all-notes-off, CC64/1/7/11 reset, pitch bend center, note-off; prevents **CC7 tremolo** volume state leaking into later tests.
+  - **`graph_tone_synth_cc_mod_vibrato`**: Goertzel wander test updated for **5 Hz LFO vibrato** from **CC1** (not static detune).
+  - **`graph_tone_synth_midi_complex_melody`**: velocity, pitch bend, **CC1** vibrato windows on G4 phrase.
+
+### Verification
+
+From project root (rebuild **DLL + harness** after library changes):
+
+```bat
+build_situation.bat opengl
+build_tests.bat opengl
+cd build
+set PATH=build\dll;C:\msys64\mingw64\bin;%PATH%
+sit_test.exe --module audio --filter graph_tone_synth_midi
+sit_test.exe --module audio --filter graph_tone_synth_velocity_ramp
+sit_test.exe --module audio --filter graph_tone_synth_cc
+sit_test.exe --module audio --filter legacy_tone_pool_midi
+```
+
+**Results (2026-05-23):**
+
+| Check | Result |
+|-------|--------|
+| **`graph_tone_synth_midi_note_frequency`** | pass — `in="Situation Test MIDI In"`, `synth="Tone Synth"`, ch0 |
+| **`graph_tone_synth_midi_complex_melody`** | pass |
+| **`graph_tone_synth_velocity_ramp`** | pass (run isolated if prior module left audio busy) |
+| **`graph_tone_synth_cc_mod_vibrato`** | pass |
+| **`graph_tone_synth_cc7_tremolo`** | pass |
+| **`legacy_tone_pool_midi_note_frequency`** | pass — legacy path banner, no PortMidi |
+
+### Not yet MIDI-driven (graph tone synth)
+
+Registry controls **waveform (1)**, **pan (3)**, **ADSR/hold (4–8)** remain harness/API-only; **CC92** true tremolo LFO not wired — **CC7** volume toggle used in tests. **`SituationVirtualMidiNoteOn/Off`** remain channel-0 status bytes; CC/bend APIs accept explicit channel.
+
+---
+
+## [v2.4.108 "Effect Heard Tests & Harness Fixes"] - 2026-05-23
+
+### Description
+
+Situation **v2.4.108** adds **per-effect audible verification** in the harness (brief 440 Hz tone through each FX node, wet vs dry analysis), a **reverb dry/wet mix sweep** test (440 Hz square wave, wet **0→1** then **1→0** over 4 s each), aligns **Filter** and **EQ 4-Band** process wrappers with registry control layout, and fixes harness **SPIR-V disk path** resolution when running from **`build/dll`**.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **108**, description **"Effect Heard Tests & Harness Fixes"**.
+- **`sit/aud/device_wrappers.h`**:
+  - **Filter**: map registry controls (**cutoff / resonance / type**) to **`PxFilterMode`** processing (fixes default-off / OOB reads).
+  - **EQ 4-Band**: map registry shelf/peak controls to **`eq4band_set_band`** (fixes misaligned band gains from registry defaults).
+  - **Maximizer**: init hop size **64** to match playback period.
+  - **EQ 4-Band**: band-3 gain no longer reads past control array.
+  - **Tone synth**: phase increment uses **`SituationGetAudioPlaybackSampleRate()`**.
+- **`sit/aud/tone_synth_graph.h`**: per-node MIDI voice state + `SituationToneSynthMidiCtx` (controls + synth state).
+- **`sit/aud/midi_device_callbacks.h`**: mono note on/off (matching note), **CC1** → vibrato LFO depth, **CC7/CC11** → `base × channel × expression`, **CC64** sustain; removed file-static globals.
+- **`sit/aud/device_wrappers.h`**: 5 Hz vibrato LFO in process when `mod_depth_semitones > 0`; volume/pitch driven from MIDI state while sounding.
+- **`sit/aud/node_graph_midi.h`**: allocate/free tone synth MIDI ctx on enable/disable.
+- **`sit/aud/node_graph_process.h`**: dispatch MIDI to `midi_device->device_ptr` (fixes tone synth ctx vs control array).
+
+### Tests
+
+- **`tests/harness/test_audio_effects_heard.c`**: module **`audio_effects_heard`** — **17** named tests:
+  - **`graph_tone_synth_effect_heard_*`** (×16): one per registered effect; 440 Hz sine from graph tone synth, ~400 ms capture, wet vs dry.
+  - **`effect_reverb_mix_dry_wet_sweep`**: 440 Hz **square** → **Reverb**; **`wet_level`** ramp **0→1** (4 s) then **1→0** (4 s) while graph runs; RMS envelope at dry vs wet windows proves mix responds.
+- **`tests/harness/audio_freq_detect.c`**: **`sit_audio_effect_heard()`**, **`sit_audio_capture_window_rms()`**, **`sit_audio_capture_window_correlation()`** (Goertzel + windowed analysis for mix sweep).
+- **`tests/harness/test_graphics_spirv.c`**: resolve disk SPIR-V under **`../../tests/harness/spirv_out/`** when cwd is **`build/dll`** (fixes **`spirv_disk_roundtrip`**, **`async_shader_spirv_memory_vulkan`**).
+- **`tests/harness/test_audio.c`**: Harness names prefix synth path — **`legacy_tone_pool_*`** (`SituationPlayToneEx` / `PlayMidiNote`) vs **`graph_tone_synth_*`** (graph `SITUATION_NODE_TONE_SYNTH` + virtual MIDI). Examples: **`graph_tone_synth_velocity_ramp`**, **`graph_tone_synth_midi_complex_melody`**, **`graph_tone_synth_cc7_tremolo`**, **`legacy_tone_pool_midi_note_frequency`**.
+- **`tests/harness/test_audio_effects_heard.c`**: **`graph_tone_synth_effect_heard_*`** (×16), **`graph_tone_synth_reverb_mix_dry_wet_sweep`**.
+- **`tests/harness/sit_test_registry.c`**, **`build_tests.bat`**: register module and build wiring.
+
+### Verification
+
+From project root (MinGW on **`PATH`**, no `.bat` required):
+
+```powershell
+$env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+Set-Location build\dll
+.\sit_test_gl.exe --module audio_effects_heard
+.\sit_test_gl.exe --module audio_effects_heard --filter mix_dry_wet
+.\sit_test_gl.exe
+.\sit_test_vk.exe
+```
+
+Rebuild DLL + harness with **`gcc`** after library changes; run exes from **`build\dll`** so the fresh **`situation_opengl.dll`** / **`situation_vulkan.dll`** is loaded.
+
+**Results (2026-05-23):**
+
+| Check | Result |
+|-------|--------|
+| OpenGL **`audio_effects_heard`** | **17/17** passed (incl. mix sweep ~9 s) |
+| OpenGL full harness | **356/356** passed |
+| Vulkan full harness | **345/345** passed |
+
+---
+
+## [v2.4.107 "MIDI Audio Frequency Verification"] - 2026-05-23
+
+### Description
+
+Situation **v2.4.107** adds end-to-end **MIDI → audio** verification: virtual MIDI loopback injects note-on into a graph **tone synth** node, the output monitor captures mixed samples, and a Goertzel pass confirms the expected pitch (e.g. A4 = **440 Hz**). Legacy **`SituationPlayMidiNote`** is covered by the same frequency helper.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **107**, description **"MIDI Audio Frequency Verification"**.
+- **`sit/aud/midi_device_callbacks.h`**: **Tone Synth** MIDI note-on/off → frequency / volume controls.
+- **`sit/aud/node_graph_process.h`**: dispatch **0x90** / **0x80** to node note callbacks.
+- **`sit/aud/node_graph_midi.h`**: **`SituationSetupVirtualMidiLoopback`**, **`SituationVirtualMidiNoteOn`/`NoteOff`**, **`SituationTeardownVirtualMidiLoopback`**.
+- **`sit/situation_api.h`**: export virtual MIDI loopback helpers.
+- **`sit/aud/device_wrappers.h`**: tone synth uses **`SituationGetAudioPlaybackSampleRate()`** for phase increment.
+
+### Tests
+
+- **`tests/harness/audio_freq_detect.c`**: Goertzel capture/verify helper.
+- **`tests/harness/test_audio.c`**: **`legacy_midi_note_emits_frequency`**, **`graph_midi_note_emits_frequency`**.
+- **`tests/harness/midi_audio_probe.c`**: standalone probe → **`build/midi_audio_probe.exe`** (via **`build_tests.bat`**).
+
+### Verification
+
+```bat
+build_situation.bat opengl
+build_tests.bat opengl
+cd build\dll
+sit_test.exe --module audio --filter emits_frequency --verbose
+midi_audio_probe.exe
+```
+
+Run from **`build\dll\`** (or **`copy /Y build\dll\situation_opengl.dll build\`**) so the harness loads the fresh DLL.
+
+---
+
+## [v2.4.106 "Windows Audio Shared Auto-Start Fix"] - 2026-05-23
+
+### Description
+
+Situation **v2.4.106** fixes Windows system audio being **muted or left broken** after running the test harness (or any app that calls **`SituationInit`** / **`SituationShutdown`** repeatedly in one process). Auto-start of the default playback device in **`SituationInit`** step 7 no longer requests **WASAPI exclusive** mode on the first in-process session; it always uses **shared** mode. Exclusive output remains available via explicit **`SituationSetAudioDevice()`** for low-latency games.
+
+### Root cause
+
+- The harness runs **one `SituationInit` + `SituationShutdown` per module** (core, window, input, timer, audio, graphics, misc) in a **single process**.
+- On Windows, step 7 previously used **`ma_share_mode_exclusive`** on **session 1** and shared mode only on session 2+ (workaround for re-init blocking).
+- **Exclusive mode hijacks the default endpoint** and mutes other apps (browser, Spotify, system sounds). Repeated exclusive grab/release across module cycles could leave WASAPI in a bad state after teardown — reported as “harness nuked my audio.”
+- Related prior work: **v2.4.52** (release miniaudio before GPU sync on shutdown), Bug 6 notes in **`doc/plan/LIBRARY_BUGFIX_PLAN.md`** (exclusive re-init lifecycle).
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **106**, description **"Windows Audio Shared Auto-Start Fix"**.
+- **`sit/situation_impl_ctrl.h`**:
+  - **`SituationInit`** step 7 (Windows): always call **`_SituationSetAudioDeviceInternal(..., ma_share_mode_shared)`**; removed session-counter exclusive-first policy.
+  - **`SituationShutdown`** / **`_SituationCleanupSubsystems`**: reset **`is_miniaudio_device_internally_paused`** after device stop/uninit so pause/resume tests cannot leave stale pause state across module cycles.
+- **`sit/situation_impl_audio.h`**: comment update — auto-start is shared; explicit **`SituationSetAudioDevice`** is exclusive.
+
+### Verification
+
+```bat
+build_situation.bat all
+build_tests.bat opengl
+build_tests.bat vulkan
+copy /Y build\dll\situation_opengl.dll build\
+copy /Y build\dll\situation_vulkan.dll build\
+build\sit_test.exe --module audio
+build\sit_test.exe
+build\sit_test_vulkan.exe
+```
+
+**Important:** Windows loads the DLL beside the exe first. If **`build\situation_opengl.dll`** is stale (e.g. locked by a running **`sit_test.exe`**), the harness silently tests an old build — always **`copy /Y`** from **`build\dll\`** after **`build_situation.bat`**, or run with **`PATH`** pointing at **`build\dll`**.
+
+**Results (2026-05-23, reference Windows config):**
+
+| Check | Result |
+|-------|--------|
+| OpenGL full harness | **337/337** passed |
+| OpenGL **`--module audio`** | **96/96** passed |
+| Vulkan full harness | **327/327** passed |
+| Audio probe (7× **`SituationInit`/`Shutdown`**, 2 s tone/cycle) | Init OK, **`SituationIsAudioDevicePlaying()`** true, master meter peak ≈ **0.56** each cycle; audible output confirmed |
+| System audio after harness | Default playback (browser/Spotify/system sounds) still works — no device toggle or reboot required |
+
+Optional deeper probe: compile/run **`build/dll/audio_probe.exe`** (7-cycle stress test with **`SituationGetMasterOutputMeter`** — non-zero peak/RMS confirms the callback is mixing samples even when harness tones are too short to hear).
+
+---
+
+## [v2.4.105 "Vulkan Async GLSL Worker Queue Fix"] - 2026-05-23
+
+### Description
+
+Situation **v2.4.105** fixes Vulkan **`SituationBeginLoadShaderFromMemory`** async GLSL loads that never completed: compile jobs were submitted to the **low-priority I/O queue** (serviced by the dedicated I/O thread), but after **`SituationInit`** those jobs were not dequeued (`SituationGetIOQueueDepth()` stayed at 1, **`SituationPollShaderLoad`** returned **`SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS`** until harness timeout). Sync GLSL load and async SPIR-V load were unaffected. CPU-bound shaderc work now runs on the **high-priority worker queue**; unload waits for the compile worker before freeing async context (prevents use-after-free once workers actually run).
+
+### Root cause (investigation)
+
+- **`_SituationVkAsyncShaderLoad`** is **120 bytes** (> **`SITUATION_JOB_PAYLOAD_MAX`** 64), so **`SIT_SUBMIT_POINTER_ONLY`** was already correct — not a small-object copy bug.
+- Repro: **`SituationGetIOQueueDepth() == 1`** indefinitely after **`SituationBeginLoadShaderFromMemory`**; **`disable_io_thread=true`** (inline submit path) completed on frame 0; standalone **`SituationCreateThreadPool`** low-priority jobs still work.
+- Misclassification: GLSL→SPIR-V via shaderc is **CPU-bound**, not I/O; it must not use **`SIT_SUBMIT_DEFAULT`** / queue 0 when a dedicated I/O thread owns that queue (see also **v2.4.103** worker skip of queue 0).
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **105**, description **"Vulkan Async GLSL Worker Queue Fix"**.
+- **`sit/situation_impl_renderer.h`**:
+  - **`SituationBeginLoadShaderFromMemory`** (Vulkan): submit **`_SituationVkAsyncCompileWorker`** with **`SIT_SUBMIT_HIGH_PRIORITY | SIT_SUBMIT_POINTER_ONLY | SIT_SUBMIT_BLOCK_IF_FULL`** instead of default low-priority I/O queue.
+  - **`_SituationVulkanFreeAsyncShaderLoad`**: spin on **`compile_done == 0`** with **`thrd_yield()`** before freeing **`ctx`** / source strings (safe **`SituationUnloadShader`** during in-flight compile).
+- **`sit/situation_impl_io.h`**: when the I/O queue head job has unmet dependencies, **`thrd_yield()`** after unlock (avoids busy-spin on head-of-line block).
+
+### Tests (regression)
+
+Previously failing Vulkan harness tests (all now pass):
+
+- **`graphics.async_shader_begin_reports_in_progress`**
+- **`graphics.async_shader_load_memory_draw`**
+- **`graphics.async_shader_renderer_alive_while_loading`**
+- **`graphics.sync_shader_after_async_cycle`**
+
+### Verification
+
+```bat
+build_situation.bat vulkan
+build_tests.bat vulkan
+build\sit_test_vulkan.exe --filter async_shader
+build\sit_test_vulkan.exe
+```
+
+**Result (2026-05-23):** Vulkan harness **327/327** passed (GCC 15.1.0, Vulkan SDK 1.4.313.2).
+
+---
+
+## [v2.4.104 "Error Mutex, Image Resize, SPIR-V Load Ex"] - 2026-05-21
+
+### Description
+
+Situation **v2.4.104** fixes post-shutdown error handling and CPU image resize, adds **`SituationBeginLoadShaderFromSpirvMemoryEx`** so Vulkan async SPIR-V loads can select descriptor layout profiles (mesh, dual-SSBO, UBO+SSBO), and hardens SPIR-V poll tests in the harness. Full OpenGL harness **337/337**; Vulkan **`--module graphics --filter spirv`** passes, including a large UBO+SSBO Begin/Poll regression.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **104**.
+- **`sit/situation_impl_ctrl.h`**: **`_SituationSetErrorFromCode`** returns early when **`_sit_current_context`** is NULL (avoids locking **`error_mutex`** after **`SituationShutdown()`**); **`error_mutex`** init/uninit in **`SituationInit`** / **`SituationShutdown`**.
+- **`sit/situation_impl_deps.h`**: **`stb_image_resize2.h`** implementation for **`SituationResizeImage`**; **`STBIR_FREE`** routed through expression-safe **`sit_stbir_free`** (stb internals use comma expressions — cannot expand statement-form **`SIT_FREE`**).
+- **`sit/situation_api.h`**: **`SituationBeginLoadShaderFromSpirvMemoryEx`** — async SPIR-V kickoff with **`SituationSpirvLayoutProfile`** (**Vulkan**: layout profile selects pipeline descriptor layout; **OpenGL**: profile ignored, same as **`SituationBeginLoadShaderFromSpirvMemory`**).
+- **`sit/situation_impl_renderer.h`**: Vulkan async SPIR-V load stores **`layout_profile`** on the load context; **`SituationBeginLoadShaderFromSpirvMemory`** delegates to Ex with **`SIT_SPIRV_LAYOUT_PROFILE_MESH`**.
+
+### Tests
+
+- **`tests/harness/test_graphics.c`**: **`demon_hunt_sky_spirv_begin_poll`** (OpenGL) — prefers devel fragment SPIR-V for link; accepts **`OPENGL_SPIRV_PROGRAM_LINK_FAILED`** (-641) when driver log contains **“too many instructions”** (async API + error reporting still validated).
+- **`tests/harness/test_graphics_spirv.c`**: **`demon_hunt_sky_spirv_vk_begin_poll`** (Vulkan) — large production SPIR-V via **`SituationBeginLoadShaderFromSpirvMemoryEx(..., SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO)`** + Begin/Poll.
+
+### Demo (examples only)
+
+The **`demon_hunt`** example was updated to call the new Vulkan SPIR-V API; it is not part of the library surface.
+
+### Verification
+
+```bat
+build_situation.bat opengl
+build\sit_test.exe
+
+build_situation.bat vulkan
+build\sit_test_vulkan.exe --module graphics --filter spirv
+```
+
+---
+
+## [v2.4.103 "Thread Pool IO Queue Fix"] - 2026-05-21
+
+### Description
+
+Fixes a **double consumer** on the low-priority job queue: worker threads and the dedicated I/O thread both dequeued `SIT_SUBMIT_DEFAULT` jobs (async file I/O), which could **double-free** job payloads and corrupt the heap. Symptoms included harness `save_file_text_async` passing then **SIGSEGV** in `filesystem` module teardown on Windows.
+
+### Changes
+
+- **`sit/situation_impl_threading.h`**: Workers skip queue 0 when `pool->io_thread` is active; idle wait checks high-priority queue too.
+- **`tests/harness/test_filesystem.c`**: Module teardown no longer calls redundant `SituationDeleteFile` after async tests (per-test cleanup remains).
+
+---
+
+## [v2.4.102 "SPIR-V Diagnostics GL+VK"] - 2026-05-21
+
+### Description
+
+Documentation and API parity: recent SPIR-V work is **not OpenGL-only**. **`SituationPollShaderLoad`** on Vulkan now calls **`_SituationPollVkAsyncShaderLoad`** (same as frame acquire), and returns **`SituationGetLastErrorCode()`** on failure instead of a generic pipeline code only.
+
+### Changes
+
+- **`sit/situation_impl_renderer.h`**: Vulkan poll path aligned with OpenGL poll-driven async SPIR-V load.
+- **`doc/TEST_SPIRV_SHADER_API.md`**: Dual-backend matrix, `sit_test` + `sit_test_vulkan` commands, separate error tables.
+- **`doc/UPDATELOG.md`**, **`sit/situation_base_version.h`**: Version titles/descriptions name **GL+VK**, not OpenGL-only.
+
+---
+
+## [v2.4.101 "SPIR-V Driver Log Capture"] - 2026-05-21
+
+### Tooling
+
+- **`scripts/spirv_shader_debug.py`**: offline GLSL + SPIR-V stats; `demon_hunt --devel` compiles FS without `-O` for per-function instruction map.
+- **`doc/SHADER_DEBUG.md`**: usage, bisect workflow, NVIDIA limit notes.
+- **`compile_demon_hunt_shaders.bat`**: runs debug report after `glslc`.
+
+### Description
+
+SPIR-V compile/link failures now capture the **full driver diagnostic** in `SituationGetLastErrorMsg` (up to 16 KiB). **OpenGL:** `GL_INFO_LOG_LENGTH` via `_SituationDupGLInfoLog`. **Vulkan:** `vkCreateShaderModule` VkResult + stage label in `_SituationVulkanCreateShaderModuleEx` (unchanged; now documented alongside GL). Removes the old 900-character truncation in `_SituationSetGLErrorFromSpirvStage`.
+
+### Changes
+
+- **`sit/situation_api.h`**: `SITUATION_MAX_ERROR_MSG_LEN` / `SITUATION_MAX_SHADER_LOG_LEN` → **16384**.
+- **`sit/situation_impl_renderer.h`**: `_SituationDupGLInfoLog`; async link failures use `_SituationSetGLErrorFromSpirvStage` with full program log; SPIR-V blob sizes kept until link completes.
+- **`tests/harness/sit_graphics_test_helpers.h`**: Poll helper returns terminal errors (prints driver log before assert).
+- **`examples/demon_hunt.c`**: Logs driver text on a separate line (not truncated in 768-byte buffer).
+
+---
+
+## [v2.4.100 "SPIR-V Poll Diagnostics"] - 2026-05-21
+
+### Description
+
+Fixes misleading silence after SPIR-V kickoff on **OpenGL** (Vulkan poll path unchanged this patch): progress log was suppressed for 2s, and `AcquireFrameCommandBuffer` advanced SPIR-V specialize a second time inside `render_frame`.
+
+### Changes
+
+- **`sit/situation_impl_renderer.h`**: SPIR-V specialize only from **`SituationPollShaderLoad`**; frame acquire still polls pending program link.
+- **`examples/demon_hunt.c`**: First progress log immediate; poll diagnostics for invalid handle / `RESOURCE_INVALID`.
+- **`tests/harness/test_graphics.c`**: **`demon_hunt_sky_spirv_begin_poll`** — real Demon Hunt `.spv` via Begin+Poll API.
+- **`doc/TEST_SPIRV_SHADER_API.md`**: Full rebuild + harness + manual test checklist.
+
+---
+
+## [v2.4.99 "SPIR-V Link Poll Fix"] - 2026-05-21
+
+### Description
+
+**OpenGL:** SPIR-V loads that never completed after kickoff — **`SituationPollShaderLoad`** drives specialize/link polling; program link finalization falls back to **`GL_LINK_STATUS`** when **`GL_COMPLETION_STATUS_KHR`** never becomes true (large SPIR-V on NVIDIA). **Vulkan:** async SPIR-V/GLSL pipeline build still polled from **`SituationAcquireFrameCommandBuffer`** until v2.4.102.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **99**.
+- **`sit/situation_impl_renderer.h`**: **`_SituationPollGLPendingProgramLink`**, **`_SituationFinalizeGLPendingProgramLink`**; parallel-compile detection; SPIR-V link sets **`gl_pending_link_spirv`** and binds UBO/SSBO blocks on success.
+- **`SituationPollShaderLoad`**: makes GL context current and polls async SPIR-V + pending link before returning status.
+
+### Examples
+
+- **`examples/demon_hunt.c`**: Poll shader load **before** **`render_frame`**; clearer progress log lines.
+
+---
+
+## [v2.4.98 "Async SPIR-V Load"] - 2026-05-21
+
+### Description
+
+**`SituationBeginLoadShaderFromSpirvMemory`** no longer blocks the main thread for the full compile/link of large SPIR-V blobs. **OpenGL:** kickoff uploads bytecode; **`SituationPollShaderLoad`** advances VS specialize → FS specialize → async program link. **Vulkan:** kickoff copies bytecode; pipeline build runs when the poll path completes (frame acquire; **`SituationPollShaderLoad`** from v2.4.102). Fixes blank frozen window with only `loading embedded SPIR-V (...)` in the log (OpenGL Demon Hunt).
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **98**.
+- **`sit/situation_impl_decl.h`**: Shader slot stores SPIR-V copies + substage for async load.
+- **`sit/situation_impl_renderer.h`**:
+  - **`SIT_GL_ASYNC_STAGE_SPIRV`**: **`_SituationBeginGLSpirvShaderLoadAsync`**, **`_SituationPollGLAsyncSpirvShaderLoad`** (one specialize or link step per poll).
+  - **`SituationBeginLoadShaderFromSpirvMemory`**: async kickoff on **OpenGL and Vulkan**; **`SituationLoadShaderFromSpirvMemory`** remains synchronous on both.
+  - **`SituationUnloadShader`**: frees SPIR-V async copies.
+
+### Examples
+
+- **`examples/demon_hunt.c`**: Renders one frame before shader kickoff; logs SPIR-V load progress every 2s while polling.
+
+### Verification
+
+Rebuild **`build_situation.bat opengl`**, then **`build_examples.bat opengl demon_hunt`**. Log should show kickoff OK, optional `still loading...`, then **`init_sky_gpu`** lines.
+
+---
+
+## [v2.4.97 "SPIR-V Error Reporting"] - 2026-05-21
+
+### Description
+
+SPIR-V load failures are no longer reported as generic GLSL compile/link errors. Each failure stage (missing extension, bad blob, VS/FS/CS specialize, program link, file read, Vulkan module create) gets a dedicated **`SituationError`** code, a structured detail string (stage label + byte size + driver log), and optional retrieval via **`SituationGetLastErrorCode()`** / **`SituationErrorToString()`**.
+
+Fixes Demon Hunt debugging where a GLSL fallback OOM looked identical to an SPIR-V path failure in logs.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **97**.
+- **`sit/situation_base_errno.h`**: New codes:
+  - **Rendering:** **`SITUATION_ERROR_SPIRV_FILE_READ_FAILED`** (-554), **`SITUATION_ERROR_SPIRV_INVALID_BINARY`** (-555).
+  - **OpenGL SPIR-V:** **`OPENGL_SPIRV_UNAVAILABLE`** (-636), **`OPENGL_SPIRV_INVALID_BINARY`** (-637), **`OPENGL_SPIRV_VS_SPECIALIZE_FAILED`** (-638), **`OPENGL_SPIRV_FS_SPECIALIZE_FAILED`** (-639), **`OPENGL_SPIRV_CS_SPECIALIZE_FAILED`** (-640), **`OPENGL_SPIRV_PROGRAM_LINK_FAILED`** (-641).
+  - **Vulkan SPIR-V:** **`VULKAN_SPIRV_INVALID`** (-753), **`VULKAN_SPIRV_VS_MODULE_FAILED`** (-754), **`VULKAN_SPIRV_FS_MODULE_FAILED`** (-755), **`VULKAN_SPIRV_CS_MODULE_FAILED`** (-756).
+- **`sit/situation_api.h`**: **`SituationGetLastErrorCode()`**, **`SituationErrorToString()`**.
+- **`sit/situation_impl_decl.h`**: **`sit_gs.last_error_code`** stored on every **`_SituationSetErrorFromCode`** call.
+- **`sit/situation_impl_ctrl.h`**: Implements error-code query + string table lookup from the X-macro errno table.
+- **`sit/situation_impl_renderer.h`**:
+  - OpenGL: **`_SituationSetGLErrorFromSpirvStage`**, **`_SituationValidateSpirvBinary`**; SPIR-V graphics/compute paths use stage-specific codes instead of **`OPENGL_SHADER_COMPILE`/`LINK`**.
+  - **`_SituationReadSpirvFile`**: **`SPIRV_FILE_READ_FAILED`** / **`SPIRV_INVALID_BINARY`** with filename in detail.
+  - Vulkan: **`_SituationVulkanCreateShaderModuleEx`** (per-stage module errors); async compile distinguishes vertex vs fragment shaderc failure.
+  - **`SituationPollShaderLoad`**: returns last SPIR-V-specific code when program link never completed (OpenGL).
+
+### Harness
+
+- **`tests/harness/test_graphics_spirv.c`**: **`spirv_memory_invalid_params`** expects backend-specific misalignment codes; new **`spirv_error_code_reporting`** ( **`SituationErrorToString`**, **`SituationGetLastErrorCode`**, detail message).
+- **`tests/harness/test_graphics.c`**: registers **`spirv_error_code_reporting`**.
+
+### Examples
+
+- **`examples/demon_hunt.c`**: **`sky_log_situation_error`** logs numeric code + table label + driver detail; logs embedded SPIR-V byte sizes when embed is missing; distinguishes SPIR-V kickoff vs GLSL fallback vs poll failure.
+
+### Verification
+
+| Command | Expected |
+|---------|----------|
+| `build\sit_test.exe --module graphics --filter spirv` | all **`spirv_*`** pass (OpenGL) |
+| `build\sit_test_vulkan.exe --module graphics --filter spirv` | all **`spirv_*`** pass (Vulkan) |
+
+---
+
+## [v2.4.96 "GL VK Async Shader Load"] - 2026-05-21
+
+### Description
+
+Graphics shaders can be loaded **without blocking the main thread** during compile/link (OpenGL) or shaderc + pipeline creation (Vulkan). Work is spread across frames; on Vulkan, GLSL→SPIR-V runs on the thread pool and pipeline build runs when the poll path completes. Demon Hunt and similar apps stay responsive instead of freezing for a minute at play start.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **96**.
+- **`sit/situation_base_errno.h`**: **`SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS`** (-553).
+- **`sit/situation_api.h`**: **`SituationBeginLoadShaderFromMemory`**, **`SituationBeginLoadShaderFromSpirvMemory`**, **`SituationPollShaderLoad`**.
+- **`sit/situation_impl_decl.h`**: OpenGL async compile/link fields; Vulkan **`vk_async_load`** context on shader slots.
+- **`sit/situation_impl_renderer_fwd.h`**: Forward decls for async compile/link helpers (all renderer fwd decls stay in this file only).
+- **`sit/situation_impl_renderer.h`**:
+  - **OpenGL:** **`_SituationCompileGLShaderEx`**, **`_SituationPollGLShaderCompile`**, **`_SituationPollGLAsyncShaderLoad`** — polled from **`SituationAcquireFrameCommandBuffer`** with existing async link poll.
+  - **Vulkan** ( **`SITUATION_ENABLE_SHADER_COMPILER`** ): GLSL begin-load compiles on the I/O pool; SPIR-V begin-load copies bytecode and defers **`vkCreateGraphicsPipelines`**; **`_SituationVulkanBuildGraphicsPipelinesOnSlot`** shared by sync and async paths. Thread-pool submit uses **`SIT_SUBMIT_POINTER_ONLY`** so the worker updates the heap async context (struct copy previously left poll stuck forever).
+  - **Both:** **`SituationBeginLoadShaderFromMemory`**, **`SituationBeginLoadShaderFromSpirvMemory`** (Vulkan non-blocking pipeline build; OpenGL SPIR-V begin-load remains blocking), **`SituationPollShaderLoad`**, **`SituationUnloadShader`** cleanup for in-flight async state.
+  - Without the shader compiler, begin-load APIs fall back to blocking **`SituationLoadShaderFromMemory`** / **`SituationLoadShaderFromSpirvMemory`**.
+
+### Harness
+
+- **`tests/harness/sit_graphics_test_helpers.h`**: **`graphics_test_async_poll_shader_ready`**, **`graphics_test_glsl_vs_passthrough`**, **`graphics_test_glsl_fs_solid_red`** — GLSL matched to active backend (`#version 450` Vulkan, `#version 460 core` OpenGL).
+- **`tests/harness/test_graphics.c`**: **`async_shader_*`** (kickoff, draw readback, renderer alive while loading, unload during load, sync load after async).
+- **`tests/harness/test_graphics_spirv.c`**: **`async_shader_spirv_memory_vulkan`**.
+- **`tests/harness/shaders/harness_solid_red_{gl,vk}.fs`**: mesh-layout red SPIR-V sources for disk/async tests.
+- **`compile_harness_shaders.bat`**: builds solid-red SPIR-V alongside existing harness shaders.
+
+### Verification (GTX 1070 reference)
+
+| Command | Result |
+|---------|--------|
+| `build\sit_test.exe` (full suite) | **335 / 335** pass |
+| `build\sit_test_vulkan.exe` (full suite) | **325 / 325** pass |
+| `--module graphics --filter async_shader` (either backend, after **`compile_harness_shaders.bat`**) | all **`async_shader_*`** pass |
+
+### Examples
+
+- **`examples/demon_hunt.c`**: No synchronous GPU init on first play frame; **`SituationBeginLoadShaderFromMemory`** at startup, poll after **`render_frame`**, CPU world until ready; no runtime embedded SPIR-V; shader path resolution fixed when GLSL lives under **`examples/`**.
+
+---
+
+## [v2.4.95 "GL VK Screen Text Parity Tests"] - 2026-05-21
+
+### Description
+
+Closes the harness gap for **OpenGL vs Vulkan screen-space parity**: framebuffer readback uses a consistent top-left origin (+Y down), and **`SituationCmdDrawText`** placement is regression-tested on **both** backends with the same pixel contract.
+
+Complements **v2.4.94** SPIR-V descriptor parity and **v2.4.58** Vulkan vertical flip on **`SituationLoadImageFromScreen`**.
+
+### Harness
+
+- **`tests/harness/sit_graphics_test_helpers.h`**: Shared readback helpers (`graphics_test_sample_rgba`, region bright/dark scans, solid-color texture + bitmap font setup).
+- **`tests/harness/test_graphics.c`**:
+  - **`screen_readback_corner_layout`** — 2×2 quadrant texture stretched to the window; asserts TL/TR/BL/BR colors and rejects vertical/horizontal flip misreads.
+  - **`cmd_draw_text_screen_layout`** — **"TOP"** / **"BOT"** at fixed pixel positions; asserts bright text bands, dark gap, and no top string mirrored to the bottom.
+- **`build_tests.bat`**: Reminder to run **`compile_harness_shaders.bat`** + **`scripts/spirv_desc_spike.py`** after SPIR-V shader changes.
+
+### Verification (GTX 1070 reference)
+
+| Command | Result |
+|---------|--------|
+| `build\sit_test.exe --module graphics --filter screen_readback_corner_layout` | PASS |
+| `build\sit_test.exe --module graphics --filter cmd_draw_text_screen_layout` | PASS |
+| `build\sit_test_vulkan.exe --module graphics --filter screen_readback_corner_layout` | PASS |
+| `build\sit_test_vulkan.exe --module graphics --filter cmd_draw_text_screen_layout` | PASS |
+
+Graphics module counts after this patch: **98** tests (OpenGL), **88** (Vulkan) — use harness printout as truth.
+
+---
+
+## [v2.4.94 "Vulkan SPIR-V Descriptor Bind"] - 2026-05-21
+
+### Description
+
+Phases 2–3 of [`doc/plan/VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md`](plan/VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md): Vulkan **`SituationCmdBindDescriptorSet`** respects **`SituationSpirvLayoutProfile`** (static UBO on UBO+SSBO profile); harness SPIR-V pixel readback tests run on Vulkan without deferral.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **94**.
+- **`sit/situation_impl_renderer.h`**: Profile-aware descriptor layout/type selection; per-buffer descriptor cache keyed by layout + type; static **`UNIFORM_BUFFER`** for UBO+SSBO set 0.
+- **`sit/situation_impl_decl.h`**: Buffer slot tracks cached descriptor layout/type.
+
+### Harness
+
+- **`tests/harness/test_graphics_spirv.c`**: Loads via **`SituationLoadShaderFromSpirvMemoryEx`** with **`DUAL_SSBO`** / **`UBO_SSBO`** on Vulkan; removed Vulkan pixel-test skip.
+- **`tests/harness/shaders/harness_ubo_ssbo_vk.fs`**: Literal **`set = 0`** Frame / **`set = 1`** TagBlock (fixes inverted SPIR-V sets vs harness binds); regen via **`compile_harness_shaders.bat`** + **`python scripts/spirv_desc_spike.py`**.
+- **Verified (GTX 1070)**: **`sit_test_vulkan.exe --module graphics`** **86/86**; **`--filter spirv`** **5/5**; OpenGL **`--filter spirv`** **7/7**.
+
+**Plan status:** [`doc/plan/VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md`](plan/VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md) Phases **0–3 complete**; Phase **4** (reflection) deferred.
+
+---
+
+## [v2.4.93 "Vulkan SPIR-V Layout Profiles"] - 2026-05-21
+
+### Description
+
+Phase 1 of [`doc/plan/VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md`](plan/VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md): Vulkan user SPIR-V graphics shaders can select a descriptor **pipeline layout profile** via **`SituationLoadShaderFromSpirvMemoryEx`**.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **93**.
+- **`sit/situation_api.h`**: **`SituationSpirvLayoutProfile`** (`MESH`, `DUAL_SSBO`, `UBO_SSBO`); **`SituationLoadShaderFromSpirvMemoryEx`**.
+- **`sit/situation_impl_decl.h`**: **`graphics_spirv_layout_ubo_ssbo`**; per-shader **`vk_spirv_layout_profile`** / **`vk_owns_pipeline_layout`**.
+- **`sit/situation_impl_renderer.h`**: **`_SituationVulkanInitGraphicsSpirvLayouts`**; **`DUAL_SSBO`** reuses **`SIT_COMPUTE_LAYOUT_TWO_SSBOS`**; **`SituationUnloadShader`** does not destroy cached layouts.
+
+**Default unchanged:** **`SituationLoadShaderFromSpirvMemory`** still uses **`SIT_SPIRV_LAYOUT_PROFILE_MESH`** (dynamic UBO + sampler).
+
+---
+
+## [v2.4.92 "SPIR-V Harness And Block Bind"] - 2026-05-21
+
+### Description
+
+Hardens graphics regression coverage for **SituationLoadShaderFromSpirvMemory** and OpenGL block binding on both **OpenGL** and **Vulkan** harness builds. Fixes SPIR-V programs where `glGetProgramResourceIndex` does not resolve UBO/SSBO block names.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **92**.
+- **`sit/situation_impl_renderer.h`**: Close the large OpenGL section before the Vulkan SPIR-V loader (fixes Vulkan link); `_SituationGLFindProgramResourceIndex`, `_SituationGLFindBlockIndexByBinding`, `_SituationBindGLProgramUniformBlocks` at SPIR-V link; name/binding fallbacks in **`SituationBindShaderStorageBlock`** / **`SituationBindUniformBlock`**; **`SituationSetShaderUniformLocation`** uses **`int`** in the public API.
+
+### Harness (tests only)
+
+- **`compile_harness_shaders.ps1`**, **`tests/harness/shaders/*`**, embedded **`sit_harness_spirv_*_embed.c`**: OpenGL- and Vulkan-target SPIR-V blobs.
+- **`tests/harness/test_graphics_spirv.c`**: **`spirv_memory_*`**, **`spirv_disk_roundtrip`** (fail if embed empty).
+- **`build_tests.bat`**: compiles harness SPIR-V and links embed TU per backend.
+- **`demon_hunt_sky_shader_link`**: fails when GLSL link fails (no silent pass).
+
+**Follow-up (shipped v2.4.93–94)**: Vulkan user SPIR-V descriptor layouts — [`doc/plan/VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md`](plan/VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md).
+
+---
+
+## [v2.4.91 "Renderer Header Guard Fix"] - 2026-05-20
+
+### Description
+
+Fixes a **compile failure** (`unterminated #ifndef` at `SITUATION_IMPL_RENDERER_H`) in **`sit/situation_impl_renderer.h`**: the final `#endif` before the file end closed the large **`#if defined(SITUATION_USE_OPENGL)`** block opened at line 1613, not the include guard. Adds the missing **`#endif // SITUATION_IMPL_RENDERER_H`** and removes a redundant nested **`#if defined(SITUATION_USE_OPENGL)`** around the SPIR-V program loader.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **91**.
+- **`sit/situation_impl_renderer.h`**: Restore balanced preprocessor guards at file end; drop duplicate SPIR-V sub-`#if`.
+
+---
+
+## [v2.4.90 "SPIR-V Link Without Queue Spin"] - 2026-05-20
+
+### Description
+
+Removes **`_SituationWaitForRenderQueueIdle()`** from **`SituationLoadShaderFromSpirvMemory()`**. The v2.4.89 spin/yield loop had no completion guarantee beyond a fixed iteration cap and could still leave host SPIR-V link contending with the render thread in ways that stalled the application before the first presented frame.
+
+SPIR-V load again uses only **`_SituationMakeGLContextCurrentForHostThread()`** on the loader window (v2.4.87–88 behavior). **`SituationBindUniformBlock()`**, SSBO bind API, uniform-by-location, and UBO-member skip in **`_SituationPopulateGLShaderUniformMap()`** are unchanged from v2.4.89.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **90**.
+- **`sit/situation_impl_renderer.h`**: Drop **`_SituationWaitForRenderQueueIdle()`** and its call before SPIR-V program link.
+
+---
+
+## [v2.4.89 "SPIR-V UBO Bind & Host Link Sync"] - 2026-05-20
+
+### Description
+
+**OpenGL SPIR-V** follow-up to v2.4.88: std140 **uniform block** binding, safer host-thread link when **`SITUATION_ENABLE_RENDER_THREAD`** is on, and leaner uniform reflection after link.
+
+1. **Uniform blocks** — New **`SituationBindUniformBlock(shader, block_name, binding_point)`** calls **`glGetProgramResourceIndex`** + **`glUniformBlockBinding`** so GLSL **`layout(std140, binding = N) uniform …`** matches **`SituationCmdBindDescriptorSet(cmd, N, ubo_buffer)`** when SPIR-V reflection reports the wrong block index (same pattern as **`SituationBindShaderStorageBlock`** for SSBOs).
+2. **Uniform map** — **`_SituationPopulateGLShaderUniformMap()`** skips uniforms with **`GL_BLOCK_INDEX >= 0`** (UBO members are not standalone **`glProgramUniform`** locations). Standalone and array entry names still use **`GL_LOCATION`** then **`glGetUniformLocation`**.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **89**.
+- **`sit/situation_api.h`**: **`SituationBindUniformBlock()`**.
+- **`sit/situation_impl_renderer.h`**: **`SituationBindUniformBlock()`**; UBO-member skip in **`_SituationPopulateGLShaderUniformMap()`**.
+
+---
+
+## [v2.4.88 "SPIR-V SSBO Binding & Uniform Locations"] - 2026-05-20
+
+### Description
+
+**OpenGL SPIR-V** (`GL_ARB_gl_spirv`): fixes storage-block binding and uniform upload after **`SituationLoadShaderFromSpirvMemory()`**, especially with **`SITUATION_ENABLE_RENDER_THREAD`**.
+
+SPIR-V link could leave **`glShaderStorageBlockBinding`** out of sync with GLSL **`layout(binding = N)`** (reflection often reports **0**; **`_SituationBindGLProgramStorageBlocks()`** only fixes duplicate bindings). Uniform maps built at link could miss **`layout(location = N)`** slots; per-frame **`SituationSetShaderUniform`** then failed or targeted the wrong location. v2.4.87 host/loader GL context behavior for post-link **`SituationCreateBuffer`** / **`SituationCreateMesh`** is unchanged.
+
+1. **SSBO binding** — SPIR-V reflection often reports `GL_BUFFER_BINDING` **0** for storage blocks whose GLSL source uses a non-zero `layout(binding = N)`. **`_SituationBindGLProgramStorageBlocks()`** only resolves **duplicate** bindings; a single block can remain on **0** while the shader reads **N**. New **`SituationBindShaderStorageBlock(shader, block_name, binding_point)`** uses **`glGetProgramResourceIndex`** + **`glShaderStorageBlockBinding`** so the host can assign the block to the binding declared in GLSL. **`SituationCmdBindDescriptorSet(cmd, set_index, buffer)`** must use the same index.
+2. **Uniform locations** — **`_SituationPopulateGLShaderUniformMap()`** (called after SPIR-V link) now records **`GL_LOCATION`** from the `GL_UNIFORM` program interface when available, falls back to **`glGetUniformLocation(name)`**, and registers indexed array entry names (`name[k]`). New **`SituationSetShaderUniformLocation(shader, location, data, type)`** sets uniforms by explicit location with the same defer path as **`SituationSetShaderUniform`** (**`SIT_OP_SET_UNIFORM`** on the render thread while a frame command buffer is active).
+3. **Host GL context (v2.4.87, retained)** — **`SituationLoadShaderFromSpirvMemory()`** keeps the loader/host context current after a successful link for immediate **`SituationCreateBuffer`** / **`SituationCreateMesh`**; **`SituationAcquireFrame()`** releases it before command recording; **`SituationCreateBuffer`** and **`SituationCreateMesh`** call **`_SituationMakeGLContextCurrentForHostThread()`** at entry when threading is enabled.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **88**.
+- **`sit/situation_api.h`**: **`SituationBindShaderStorageBlock()`**, **`SituationSetShaderUniformLocation()`**.
+- **`sit/situation_impl_renderer.h`**: SSBO block bind API; **`_SituationSetShaderUniformLocationImpl()`** shared by name and location entry points; uniform map populate via **`GL_LOCATION`** + name fallback; host GL context helpers unchanged from v2.4.87.
+
+---
+
+## [v2.4.87 "SPIR-V Host GL Context & Init Fix"] - 2026-05-20
+
+### Description
+
+Fixes Demon Hunt (and any **`SituationLoadShaderFromSpirvMemory`** user) still crashing/hanging after v2.4.86:
+
+1. **Demon Hunt `init_sky_gpu`** — After SPIR-V load succeeded, **`if (!g_sky_ok) return 0`** aborted before SSBO/mesh setup ( **`g_sky_ok` was never set until the end** ), leaving a half-loaded shader or retry loops. Now continues when **`g_sky_shader.generation != 0`** and sets **`g_sky_ok`** only after full init.
+2. **Sky init timing** — GPU skydome init runs at the start of **`render_frame`** during **ENTERING** (inside **`SituationAcquireFrameCommandBuffer`**), not after **`EndFrame`** without a GL context.
+3. **Library SPIR-V uniforms** — **`_SituationPopulateGLShaderUniformMap`** uses **`GL_UNIFORM` program-interface reflection** (SPIR-V-safe) instead of **`glGetActiveUniform`**. **`_SituationMakeGLContextCurrentForHostThread()`** (loader window when render thread is on) runs before SPIR-V link/populate and on uniform cache miss. Removed v2.4.86 guard that returned **`SUCCESS` without uploading** missing uniforms.
+
+Disk **`SituationLoadShaderFromSpirv`** still reads files then calls the same memory path; behavior should match the previously working disk load once init and context are correct.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **87**.
+- **`sit/situation_impl_renderer.h`**: Host-thread GL context helper; SPIR-V uniform reflection; revert silent uniform skip.
+- **`examples/demon_hunt.c`**: Init order and **`g_sky_ok`** / handle checks; unload before reload.
+
+---
+
+## [v2.4.86 "SPIR-V Uniform Cache At Load"] - 2026-05-20
+
+### Description
+
+Fixes a **hang/freeze** when using **`SituationLoadShaderFromSpirvMemory()`** (e.g. Demon Hunt embedded skydome SPIR-V) with **`SITUATION_ENABLE_THREADING`**: gameplay was calling **`SituationSetShaderUniform`** many times per frame with an **empty** uniform cache, so the main thread repeatedly called **`glGetUniformLocation`** while the **render thread** owned the GL context.
+
+**OpenGL:** After SPIR-V link, **`_SituationPopulateGLShaderUniformMap()`** fills the shader slot uniform map (active uniforms plus indexed array names such as `uTeleporters[0]`). **`SituationSetShaderUniform`** skips driver uniform queries on the main thread during an active frame when the render thread is enabled and the name is not cached.
+
+**Demon Hunt:** **`g_sky_ok`** is set only after SSBO + fullscreen mesh + shader are all ready (not immediately after SPIR-V load).
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **86**.
+- **`sit/situation_impl_renderer.h`**: `_SituationPopulateGLShaderUniformMap()`; called from **`SituationLoadShaderFromSpirvMemory()`** (OpenGL); render-thread guard in **`SituationSetShaderUniform`**.
+
+### Examples
+
+- **`examples/demon_hunt.c`**: `g_sky_ok` lifecycle tied to full GPU skydome init success.
+
+---
+
+## [v2.4.85 "SPIR-V Memory Load & Demon Hunt Embed"] - 2026-05-20
+
+### Description
+
+Adds **`SituationLoadShaderFromSpirvMemory()`** on **OpenGL** and **Vulkan**: same pipeline behavior as **`SituationLoadShaderFromSpirv()`** (disk), but from caller-supplied SPIR-V bytes (word-aligned sizes). File-based **`SituationLoadShaderFromSpirv()`** now reads `.spv` into a temp buffer and delegates to the memory entry point, then stores paths and mod times for hot-reload when loading from disk. Memory-only loads leave shader paths unset.
+
+**Demon Hunt (OpenGL):** `compile_demon_hunt_shaders.bat` runs **`scripts/gen_demon_hunt_spirv_embed.ps1`** after `glslc` to regenerate **`examples/demon_hunt_sky_spirv_embed.c`**. A committed **stub** (zero lengths) keeps the tree buildable without `glslc`; **`build_examples.bat opengl demon_hunt`** links **`demon_hunt_sky_spirv_embed.c`**. At runtime the game tries **embedded** SPIR-V first, then the existing **disk** path resolution.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch **85**.
+- **`sit/situation_api.h`**: `SituationLoadShaderFromSpirvMemory()` declaration.
+- **`sit/situation_impl_renderer.h`**: OpenGL + Vulkan implementations; disk SPIR-V loaders refactored to call memory API.
+
+### Tooling / Examples
+
+- **`scripts/gen_demon_hunt_spirv_embed.ps1`**: SPIR-V → C array embed generator.
+- **`examples/demon_hunt_sky_spirv_embed.h`**, **`examples/demon_hunt_sky_spirv_embed.c`**: embed symbols (stub until precompile runs).
+- **`compile_demon_hunt_shaders.bat`**: Regenerate embed after successful `glslc`.
+- **`build_examples.bat`**: Link Demon Hunt embed translation unit for OpenGL.
+- **`examples/demon_hunt.c`**: Prefer embedded skydome SPIR-V when lengths are non-zero; disk fallback unchanged.
+
+---
+
+## [v2.4.84 "SPIR-V Load Vulkan Parity"] - 2026-05-20
+
+### Description
+
+**Vulkan** `SituationLoadShaderFromSpirv()` is fully implemented: same `VkPipelineLayout`, descriptor sets (dynamic UBO @ set 0, sampler @ set 1), push constant range, and three `VkPipeline` variants (PBR / legacy / simple vertex input) as `SituationLoadShaderFromMemory()` after shaderc. Reads vertex and fragment `.spv` from disk via `_SituationReadSpirvFile` → `vkCreateShaderModule` / `vkCreateGraphicsPipelines`. **Does not require** `SITUATION_ENABLE_SHADER_COMPILER`.
+
+**SPIR-V target:** Shaders must be compiled for **Vulkan** (e.g. `glslc --target-env=vulkan1.3`, or the same shaderc target as `SituationLoadShaderFromMemory`). OpenGL-only precompiled shaders (`glslc --target-env=opengl`, as used for Demon Hunt skydome) are **not** interchangeable with this Vulkan path.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch `84`.
+- **`sit/situation_api.h`**: Clarified `SituationLoadShaderFromSpirv` comment for both backends.
+- **`sit/situation_impl_renderer.h`**: Vulkan body for `SituationLoadShaderFromSpirv` (replaces temporary `NOT_IMPLEMENTED` stub).
+- **`build_tests.bat`**: Vulkan build writes **`build\sit_test_vulkan.exe`** (OpenGL unchanged: **`build\sit_test.exe`**) so the linker does not overwrite a running/locked harness when switching backends.
+
+---
+
+## [v2.4.83 "SPIR-V Shader Load & Harness SSBO"] - 2026-05-20
+
+### Description
+
+Adds a public SPIR-V load path for **OpenGL** (no runtime GLSL compile for that path), five graphics harness regression tests for fragment multi-SSBO / SPIR-V, and Demon Hunt build-time shader precompile so launch no longer stalls ~20s on driver GLSL compile. Vulkan parity for the same API is in **v2.4.84** above.
+
+1. **`SituationLoadShaderFromSpirv()`** — **OpenGL:** load linked graphics programs from precompiled `.spv` vertex/fragment pairs via `GL_ARB_gl_spirv` (`glShaderBinary` + `glSpecializeShader`).
+2. **SPIR-V file loader placement** — `_SituationReadSpirvFile()` is implemented **outside** `#if SITUATION_USE_OPENGL` so both backends compile it. An earlier refactor had left it only under OpenGL, which broke **`situation_vulkan.dll`** link (`undefined reference to _SituationReadSpirvFile`) for internal callers such as `_SituationCreateVulkanPipeline`. **OpenGL-only:** `SituationLoadShaderFromSpirv` implementation + `_SituationCreateGLShaderProgramFromSpirv` remain under `SITUATION_USE_OPENGL`.
+3. **Graphics harness Phases 23–29** — Five new OpenGL-only tests in `test_graphics.c` with shared helpers in `tests/harness/sit_graphics_test_helpers.h`:
+   - **`graphics_helpers_smoke`** — Fullscreen draw + center-pixel readback smoke test.
+   - **`fragment_dual_ssbo_readback`** — Two SSBOs at bindings 0/1; regression for v2.4.82 duplicate-binding fix.
+   - **`fragment_combined_scene_ssbo`** — `ShaderScenePack` header + `spriteData[0]` layout (matches Demon Hunt after `SCENE_SPRITE_VEC4_BASE = 0`).
+   - **`uniform_1iv_int_array`** — `SituationSetShaderUniform1iv` int-array upload (graceful skip when SPIR-V strips the uniform).
+   - **`demon_hunt_sky_shader_link`** — Compile-link full Demon Hunt world shader sources (~11s); catches GLSL regressions before playtesting.
+4. **Demon Hunt precompiled shaders** — `compile_demon_hunt_shaders.bat` uses `glslc` with `--target-env=opengl -fauto-map-locations -fauto-bind-uniforms` to emit `demon_hunt_sky.{vs,fs}.spv`. `build_examples.bat opengl demon_hunt` runs precompile before linking; runtime loads `.spv` only (CPU world fallback if missing).
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch `83` (Vulkan SPIR-V-from-disk completion: **v2.4.84**).
+- **`sit/situation_api.h`**: `SituationLoadShaderFromSpirv()` declaration.
+- **`sit/situation_impl_decl.h`**: `SituationSpirvBinary` struct for in-memory SPIR-V blobs.
+- **`sit/situation_impl_renderer.h`**: `_SituationReadSpirvFile()` in a **backend-neutral** region; `SituationLoadShaderFromSpirv()` **OpenGL** implementation + `_SituationCreateGLShaderProgramFromSpirv()` under `SITUATION_USE_OPENGL` (no `SITUATION_ENABLE_SHADER_COMPILER` required for disk `.spv` on GL). **Vulkan** full implementation: **v2.4.84**.
+- **`compile_demon_hunt_shaders.bat`**: Build-time GLSL → SPIR-V for Demon Hunt skydome.
+- **`build_examples.bat`**: Precompile Demon Hunt shaders before exe link (warn-only on failure).
+- **`examples/demon_hunt.c`**: `try_load_sky_shader_spirv()`; SPIR-V-only GPU init; CPU column fallback when skydome unavailable; periodic SPIR-V retry.
+- **`examples/demon_hunt_sky.fs`**: Structural recovery (shared DDA, dynamic lights budget, sprite shading helpers); `SCENE_SPRITE_VEC4_BASE = 0` SSBO layout fix.
+- **`tests/harness/sit_graphics_test_helpers.h`**: Shared fullscreen mesh, draw, readback, SSBO create, SPIR-V skip helpers.
+- **`tests/harness/test_graphics.c`**: Five Phase 23–29 tests registered under `#if SITUATION_USE_OPENGL`.
+
+### Test Harness
+
+OpenGL full sequential run: **320 / 320** pass (was 315; **+5** graphics tests). Filter examples:
+
+```bat
+build\sit_test.exe --module graphics --filter fragment_dual_ssbo
+build\sit_test.exe --module graphics --filter demon_hunt_sky_shader_link
+```
+
+### Observations
+
+- SPIR-V precompile moves the heavy fragment compile (~13s) to **build** time; launch should log `[demon_hunt] init_sky_gpu: SPIR-V load OK.` instead of blocking on GLSL.
+- Rebuild **`situation_opengl.dll`** (if used) and run **`compile_demon_hunt_shaders.bat`** after editing `demon_hunt_sky.fs` / `.vs`.
+- **`build_situation.bat vulkan`** must succeed again after the `_SituationReadSpirvFile` placement fix; verify `build\dll\situation_vulkan.dll` after pulls touching `situation_impl_renderer.h`.
+- **Backend parity:** OpenGL uses **OpenGL-target** `.spv` (e.g. Demon Hunt `glslc --target-env=opengl`). Vulkan uses **Vulkan-target** `.spv` via the same API; see **v2.4.84**.
+- `demon_hunt_sky_shader_link` still exercises runtime GLSL compile for CI guard; the game itself does not fall back to GLSL at launch on OpenGL.
+
+---
+
+## [v2.4.82 "SPIR-V SSBO Unique Bindings"] - 2026-05-18
+
+### Description
+
+Fixed OpenGL SPIR-V programs where multiple `layout(binding=N)` SSBOs could reflect the same binding point, so only the last block was reachable and hosts binding `set_index` 0 vs 1 still aliased the same GPU slot.
+
+1. **Unique SSBO bindings at link** — `_SituationBindGLProgramStorageBlocks()` now detects duplicate declared bindings and assigns the next free binding index in block order, so a second block at binding 0 becomes binding 1 instead of overwriting the first.
+2. **Demon Hunt scene SSBO** — Maze wall rows and the sprite pack live in one `ShaderScenePack` buffer at binding 1, uploaded once per frame, avoiding a separate binding-0 map buffer that SPIR-V could collapse with the sprite block.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch `82`.
+- **`sit/situation_impl_renderer.h`**: Duplicate-binding fix in `_SituationBindGLProgramStorageBlocks()`.
+- **`examples/demon_hunt.c`**, **`examples/demon_hunt_sky.fs`**: Combined map + sprite SSBO; single `SituationCmdBindDescriptorSet(cmd, 1, …)`.
+
+### Observations
+
+- Passing harness tests does not exercise multi-SSBO fragment shaders with SPIR-V on Windows; Demon Hunt exposed binding aliasing (walls never hit, open rays + heavy sprite shading → severe stutter).
+- Rebuild **`situation_opengl.dll`** before **`demon_hunt.exe`** after pulling this patch.
+
+---
+
+## [v2.4.81 "GL Shader Storage Block Binding"] - 2026-05-18
+
+### Description
+
+Fixed OpenGL fragment shaders that read sprite (or other) data from SSBOs but appeared to ignore uploads, which broke Demon Hunt’s Phase 3 world rendering after CPU fallbacks were disabled.
+
+1. **SSBO binding at link** — After a graphics program links, Situation now walks active `GL_SHADER_STORAGE_BLOCK` resources and calls `glShaderStorageBlockBinding()` using each block’s `layout(binding=N)` from GLSL. Some Windows GL drivers do not apply `binding=` at link time alone; without this, `layout(std430, binding = 0) buffer ShaderSpritePack` could stay unbound and the shader would read garbage while the host still uploaded valid data.
+2. **Demon Hunt fallback contract** — Shader sprite drawing (including Phase 3 portals, particles, shots, exit pillar) is gated on `g_sky_ok && g_sprite_ssbo_ok`, not only `g_shader_sprites_enabled`. If the skydome fails to compile/link or the SSBO is missing, CPU sprite drawing runs again instead of skipping both paths and leaving a blank world.
+3. **HUD clarity** — In-game status text reports when the world shader failed and points at `demon_hunt_sky.log` instead of claiming “shader sprites OK” while nothing draws.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch `81`, description updated.
+- **`sit/k-term/example/situation.h`**: Mirrored patch `81`.
+- **`sit/situation_impl_renderer.h`**: Added `_SituationBindGLProgramStorageBlocks()`; invoked after successful link in `_SituationCreateGLShaderProgramFromSpirv()` and `_SituationCreateGLShaderProgram()`.
+- **`examples/demon_hunt.c`**: `shader_sprite_runtime_enabled()` requires live skydome + SSBO; HUD reflects shader failure vs active sprite path.
+
+### Observations
+
+- This patch addresses the **transport/contract** side (SSBO must be bound; do not disable CPU draws unless the GPU path is actually live). It does not change the separate fragment uniform budget that can still cause skydome **link** failure when too many `uniform` arrays are added; Demon Hunt moved sprites to an SSBO partly to relieve that pressure.
+- If Phase 3 is enabled and link still fails, check `demon_hunt_sky.log`; with this fix the game should remain playable on CPU sprites when the shader path is down.
+
+---
+
+## [v2.4.80 "VSync State Query Fix"] - 2026-05-18
+
+### Description
+
+Fixed VSync toggle and HUD reporting when using `SituationIsWindowState(SITUATION_FLAG_VSYNC_HINT)`.
+
+1. **VSync query** — `SituationGetCurrentActualWindowStateFlags()` now reflects the active/inactive window profile’s `SITUATION_FLAG_VSYNC_HINT`, since GLFW cannot query `glfwSwapInterval` after the fact. `SituationIsWindowState()` for VSync now matches what `SituationSetVSync()` applied.
+2. **Demon Hunt** — **V** toggles a local `g_vsync_on` flag (same pattern as `shader_lab_torus.c`) so the F10 overlay always shows the real state.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Patch `80`, description updated.
+- **`sit/situation_impl_wdm.h`**: VSync bit derived from the applied focus profile in `SituationGetCurrentActualWindowStateFlags()`.
+- **`examples/demon_hunt.c`**: Track `g_vsync_on` for toggle and HUD.
+
+### Observations
+
+- With VSync off, FPS may still sit near your monitor refresh if the GPU is vsync-limited elsewhere (driver “Fast Sync”, compositor, etc.). After this fix, **V** should at least call `glfwSwapInterval(0)` when the HUD reads `VSYNC OFF`.
+
+---
+
+## [v2.4.79 "Borderless Fullscreen & Monitor Targeting"] - 2026-05-18
+
+### Description
+
+Follow-up to the maximize-callback work: Demon Hunt and Situation now use **borderless** presentation (not exclusive fullscreen) on the **monitor that already owns the window**, with a stable F11 / title-bar path.
+
+1. **Borderless presentation unified** — F11, Alt+Enter, and the maximize callback all call `SituationToggleBorderlessWindowed()` through one helper. OS maximize is cleared with `SituationRestoreWindow()` before entering borderless so bordered maximize and borderless do not stack.
+2. **F11 after maximize** — Fixed a crash/conflict when pressing F11 right after title-bar maximize: the game no longer mixes exclusive fullscreen with OS-maximized state. Any stale exclusive mode is exited before toggling borderless.
+3. **Correct monitor for borderless** — `SituationToggleBorderlessWindowed()` used window top-left and position `(0,0)`, which often jumped to the primary display. Added `_SituationGetWindowGLFWMonitor()` (same overlap heuristic as exclusive fullscreen) and place the borderless window at `glfwGetMonitorPos()` for that monitor.
+4. **Maximize callback behavior (Demon Hunt)** — Title-bar maximize enters borderless (same as F11); restore exits borderless. Reentrancy guard ignores nested callbacks from `RestoreWindow()`.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Bumped `SITUATION_VERSION_PATCH` to `79` and updated `SITUATION_VERSION_DESCRIPTION`.
+- **`sit/k-term/example/situation.h`**: Mirrored the patch bump to `79`.
+- **`sit/situation_impl_wdm.h`**: Added `_SituationGetWindowGLFWMonitor()`; borderless enter uses overlap-based monitor selection and `(mx, my)` placement instead of `(0, 0)`; `glfwPollEvents()` after borderless transition.
+- **`examples/demon_hunt.c`**: `demon_hunt_toggle_borderless_presentation()` shared by F11 and maximize callback; prepares by restoring OS maximize and leaving exclusive fullscreen if needed.
+
+### Observations
+
+- Borderless fullscreen is the intended Demon Hunt presentation mode: desktop resolution is preserved, alt-tab stays friendly, and the `960×600` virtual display still composites with nearest scaling.
+- Multi-monitor setups need monitor **position** in virtual desktop space, not just correct video mode size at the origin.
+
+---
+
+## [v2.4.78 "Maximize Callback & Demon Hunt Polish"] - 2026-05-18
+
+### Description
+
+Added a small window-management callback for OS maximize/restore events and continued Demon Hunt polish: title-screen presentation, drone-missile impact feedback, shader DDA tuning, and fullscreen wiring through the new API.
+
+1. **Maximize Callback API** — Introduced `SituationMaximizeCallback` and `SituationSetMaximizeCallback()`. GLFW's `glfwSetWindowMaximizeCallback` is registered at init; the handler forwards title-bar maximize/restore and programmatic `SituationMaximizeWindow()` / `SituationRestoreWindow()` transitions to application code. Requires `SITUATION_FLAG_WINDOW_RESIZABLE` at init for the OS chrome control to be enabled.
+2. **Demon Hunt Fullscreen Chrome** — Demon Hunt now requests a resizable window and wires title-bar maximize through the new callback (later revised to borderless in v2.4.79).
+3. **Drone Missile Impacts** — Fixed invisible bolt explosions: dedicated `DroneExplosionFlash` CPU burst, bolt-trail eviction before debris spawn, swept segment hits, wall stepping along the travel segment, and trail emission after hit tests so impacts always show orange flash, particles, and SFX.
+4. **Title Screen Refresh** — Reworked copy/layout (subtler Hellraiser tease), pulsing title, centered scoring card, and a scrolling YPQ color border around the frame.
+5. **Shader DDA Tuning** — Reduced `cast_prim` loop guard from `512` to `128` in `demon_hunt_sky.fs` (sufficient for 24×24 maps, lower per-ray ALU cost).
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Bumped `SITUATION_VERSION_PATCH` to `78` and updated `SITUATION_VERSION_DESCRIPTION`.
+- **`sit/k-term/example/situation.h`**: Mirrored the patch bump to `78`.
+- **`sit/situation_api.h`**, **`sit/k-term/example/situation_api.h`**: Added `SituationMaximizeCallback` and `SituationSetMaximizeCallback()`.
+- **`sit/situation_impl_decl.h`**: Stored maximize callback fn/user pointer in global state.
+- **`sit/situation_impl_forward.h`**, **`sit/situation_impl_input.h`**: Added `_SituationGLFWWindowMaximizeCallback`.
+- **`sit/situation_impl_ctrl.h`**: Registered `glfwSetWindowMaximizeCallback` during GLFW callback setup.
+- **`sit/situation_impl_wdm.h`**: Implemented `SituationSetMaximizeCallback()`.
+- **`examples/demon_hunt.c`**: Resizable init flag, maximize callback, drone explosion/visual/hit-test fixes, title-screen YPQ border and copy refresh; in-play HUD strings de-spoilered (`HUNTERS` / `SOMETHING IN` / `Snared by the wire`).
+- **`examples/demon_hunt_sky.fs`**: `cast_prim` guard `512` → `128`.
+
+### Observations
+
+- Maximize and exclusive fullscreen are different OS concepts; the new callback lets apps choose bordered maximize, borderless maximize, or custom handling without polling every frame.
+- Drone-missile explosions failed visually because the particle pool was saturated by bolt trails before hit tests ran; the flash layer and trail eviction make impacts reliable even under heavy fire.
+
+---
+
+## [v2.4.77 "Opaque Blend State & Demon Hunt Polish"] - 2026-05-18
+
+### Description
+
+Locked down the OpenGL window and presentation paths so alpha-blended UI and text keep the final framebuffer alpha opaque, then resolved Demon Hunt's fullscreen scaling/sharpness issue by separating the game's fixed logical render resolution from the monitor's desktop fullscreen presentation size. This patch also documents the Demon Hunt work that turned the example into a fuller mini-game and a stronger stress test for Situation's rendering, input, timing, audio, and shader APIs.
+
+1. **Opaque Final Framebuffer Alpha** - Updated the OpenGL quad/text/default alpha blend paths to use `glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)`. RGB still blends normally, while destination alpha is preserved instead of being gradually reduced by translucent overlays.
+2. **Fullscreen/Overlay Hardening** - The NVIDIA overlay fullscreen dimming issue suggested that an external compositor could interpret a partially transparent backbuffer as intentional opacity, so Situation now explicitly requests a non-transparent OpenGL window framebuffer and stamps the default framebuffer alpha to `1.0` immediately before swap, without changing RGB. This is a correctness hardening step, but the NVIDIA overlay can still dim text-heavy/title/pause fullscreen scenes while showing its own logo.
+3. **Solid Quad Texture-State Fix** - Fixed OpenGL `SIT_OP_DRAW_QUAD` so texture sampling is carried by the draw command instead of inferred from stale global texture binding state. Solid fullscreen UI quads in text-heavy modes such as title/pause can no longer accidentally sample a previously bound texture.
+4. **Pixel Font Sampling Fix** - Re-locked the built-in bitmap font atlas to nearest filtering with mip level clamped to `0` on OpenGL and a nearest/no-LOD Vulkan sampler, and routed grid-font OpenGL text through the bound texture path instead of bindless handles so stale resident sampler state cannot reintroduce linear/mipmapped blur.
+5. **Resolved Fullscreen Scaling & Sharpness** - Fullscreen toggling now uses desktop-fullscreen semantics: Situation keeps the monitor at its current video mode and attaches the window to that monitor instead of changing the monitor resolution to the game resolution. Demon Hunt renders through a fixed `960x600` virtual display and composites it to the real fullscreen backbuffer with nearest fit scaling and mip level clamped to `0`, preserving sharp game pixels and bitmap text without right/bottom clipping or UI bleed. Situation records the committed fullscreen monitor size (`fullscreen_w/fullscreen_h`) only for window-state bookkeeping, while render-size callbacks, `SituationGetRenderWidth/Height`, and OpenGL render-pass/present sizing continue to use the actual backbuffer dimensions.
+6. **Focus-Loss Pause Stability** - Demon Hunt now reacts to focus-loss transitions instead of continuously fighting the window state. Fullscreen toggles also receive a short focus-loss grace window so transition overlays do not immediately trigger the pause dimming overlay.
+7. **Demon Hunt Systems Pass** - Expanded the example with score/high-score presentation, level progression, intermissions, death screen, configurable levels, Hellraiser enemies, teleporters, ammo scoring, the gauntlet level, screenshot/FPS/VSync controls, pause, Alt+Enter fullscreen, and walk/run movement with sound feedback.
+8. **Demon Hunt Rendering Pass** - Added true shader-rendered 3D arch blocks, procedural clouds/godrays, Hellraiser and projectile lighting, slower visible player bolts, floor-anchored static sprites, corrected wall/floor projection math, DDA line-of-sight, qsort sprite ordering, and shader-side optimizations including early-outs and FMA usage.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Bumped `SITUATION_VERSION_PATCH` to `77` and updated `SITUATION_VERSION_DESCRIPTION`.
+- **`sit/k-term/example/situation.h`**: Mirrored the patch bump to `77`.
+- **`sit/situation_impl_ctrl.h`**: Requested an opaque OpenGL framebuffer during GLFW window creation through `GLFW_TRANSPARENT_FRAMEBUFFER = GLFW_FALSE` and `GLFW_ALPHA_BITS = 0`.
+- **`sit/situation_impl_decl.h`**, **`sit/situation_impl_renderer.h`**: Added explicit `use_texture` state to quad draw packets so solid and textured quads no longer depend on stale OpenGL texture binding state. Clarified that `main_window_width/height` track framebuffer/render pixels internally.
+- **`sit/situation_impl_renderer.h`**: Preserved destination alpha for OpenGL internal quads, text, and default alpha blending through `glBlendFuncSeparate`, enforced opaque default-framebuffer alpha immediately before `glfwSwapBuffers`, and restored pixel-perfect bitmap font sampling by forcing nearest/no-mipmap state and avoiding stale bindless font sampler handles.
+- **`sit/situation_impl_renderer.h` / `sit/situation_impl_decl.h`**: OpenGL now tracks the active render-pass target size, and Vulkan refreshes the view/projection UBO for virtual-display render passes. Quad and text projections now match virtual-display dimensions instead of always using the physical window framebuffer.
+- **`sit/situation_impl_decl.h`**, **`sit/situation_impl_wdm.h`**: Added explicit `fullscreen_w/fullscreen_h` state for the committed desktop-fullscreen monitor size. Fullscreen toggling now preserves the monitor's current video mode and tracks presentation size separately from the game's logical render resolution, fixing the earlier fullscreen path that incorrectly tried to use the game's `960x600` logical resolution as a hardware/display mode.
+- **`sit/situation_impl_vd.h`**: Clamped OpenGL virtual-display textures to mip level `0` and nearest sampling for non-stretch modes, preventing final virtual-display composition from accidentally sampling mip levels.
+- **`sit/situation_impl_wdm.h`**: Saved logical window bounds before entering fullscreen, attaches the window to the current monitor mode without changing the monitor resolution, and restores the saved bounds when returning to windowed mode. `SituationToggleFullscreen()` now uses actual fullscreen state instead of blindly toggling only the current focus profile.
+- **`examples/demon_hunt.c`**: Added a fixed `960x600` virtual display and UI layout with text fit/shrink helpers so text positions, font sizes, long labels, and the minimap overlay stay inside the intended frame. The virtual display now composites to desktop fullscreen with nearest fit scaling and no mipmapped sampling, resolving the fullscreen blur, oversized UI, right/bottom clipping, and minimap/text bleed while preserving the game's logical resolution. Documented the accumulated gameplay, input, pause, progression, and projection cleanup work performed during this patch cycle.
+- **`examples/demon_hunt_sky.fs`**: Documented the accumulated shader rendering work, including arches, lighting, shadowing, projection alignment, and optimization passes.
+
+### Observations
+
+- Demon Hunt has become a useful end-to-end validation example because it exercises many library surfaces at once: input edge detection, focus state, timers/oscillators, procedural audio, shader uniforms, screenshots, fullscreen/vsync control, command-buffer UI, and custom GLSL rendering.
+- The final-alpha issue is subtle because the engine can look correct in normal windowed rendering while still handing a compositor or overlay a buffer whose alpha channel implies translucency. Internal immediate-mode blending should preserve opaque destination alpha, and the presentation path should guarantee an opaque default framebuffer unless the application explicitly asks for different alpha semantics. After hardening, the remaining NVIDIA dimming appears to be overlay/driver behavior rather than a clear library framebuffer-alpha failure.
+- The fullscreen scaling/sharpness issue is resolved by treating `960x600` as Demon Hunt's logical game resolution only, not as a monitor mode. The monitor remains at its desktop resolution, the fullscreen backbuffer fills that display, and the fixed game image is presented into it with nearest/no-mip sampling.
+- The Vulkan backend projection warning from `v2.4.76` still stands: Demon Hunt should continue to be treated as an OpenGL validation target until the Vulkan upside-down projection issue is addressed.
+
+---
+
+## [v2.4.76 "Parallel Audio Mixer, Left-Ear Click Fix, & Sync"] - 2026-05-17
+
+### Description
+
+Introduced a parallel summing mixer node graph to achieve absolute dry/wet separation, completely resolved the left-ear initialization pop/click bug, synced the floor teleporter tiles to camera rolls, and documented Vulkan rendering limitations.
+
+1. **Parallel Summing Mixer** — Integrated a `SITUATION_NODE_MIXER` into the custom gameplay audio graph. Patched dry sounds directly to the mixer and wet effects to a parallel aux send path, ensuring dry sounds remain 100% dry and clear while retaining immersive effects.
+2. **Left-Ear Click Resolution** — Swapped `SIT_MALLOC` to `SIT_CALLOC` for all temporary audio callback buffers and the main-thread audio capture queue in `situation_impl_ctrl.h`. This guarantees clean zero-initialization on startup, preventing heap garbage from causing a DC offset click in the left channel (channel 0) during device initialization. WASAPI initialization sequence was also prioritized.
+3. **Selective Clean SFX** — Added selective routing support so gameplay cues (demon alert grunts, portals, hit responses) play completely dry and clean directly to master, while player gunfire and teleporter tiles retain their rich, spacious spatialized reverb and echo.
+4. **Floor Teleporter Skew Sync** — Corrected fragment floor raycasting NDC Y projections in `demon_hunt_sky.fs` by factoring in the player `uRoll` column skew parameter, aligning floors, ceilings, and teleporter pads perfectly with walls under all rolls.
+
+### IMPORTANT: Vulkan Backend Known Issue & Warning
+- **Upside-Down Projection in Vulkan**: The Vulkan backend currently has a major projection pipeline bug where the entire 3D scene/camera projection is rendered completely upside down. **This is a known issue that has been left unfixed by design for this phase**. It is strictly noted here that this must be addressed in future projection pipeline updates. Users should build and run the example in **OpenGL** to experience correct rendering.
+
+### Library Changes
+
+- **`sit/situation_base_version.h`**: Bumped `SITUATION_VERSION_PATCH` to `76` and description.
+- **`sit/k-term/example/situation.h`**: Bumped `SITUATION_VERSION_PATCH` to `76`.
+- **`sit/situation_impl_ctrl.h`**: Replaced all temporary audio callback buffer allocations with `SIT_CALLOC` to prevent startup pops.
+- **`examples/demon_hunt.c`**: Added `SITUATION_NODE_MIXER` and patched dry/wet lines in parallel.
+- **`examples/demon_hunt_sky.fs`**: Factored skew into camera NDC Y calculation.
+
+---
+
+## [v2.4.75 "Tone Pool Stolen Slot Routing Leak Fix"] - 2026-05-17
+
+### Description
+
+Fixed a critical state leak in the `SituationPlayToneEx` tone voice allocation system. When a tone slot was stolen or reused, the library failed to reset the `route_to_graph` flag. Consequently, any voice slot that had previously been used for an SFX (which sets `route_to_graph = true`) would permanently route future sounds played on that slot to the graph instead of the dry master output bypass. Because slots are constantly stolen and reused in games with dense audio (like Demon Hunt), this resulted in clean music, drum tracks, and ambient sounds leaking into the custom graph's wet insert effects (echo and reverb) over time, playing them 100% wet and destroying all acoustic separation.
+
+1. **Routing State Reset** — Added an explicit reset of `route_to_graph` to `false` whenever a tone slot is allocated or reused inside `SituationPlayToneEx`.
+2. **Acoustic Separation** — Restored absolute separation between the pristine dry background music / drums and the wet spatial SFX routed through the custom effects graph.
+
+### Library Changes
+
+- **`sit/aud/tone_synth.h`**: Initialized `t->route_to_graph = false` upon retrieving a new or recycled slot in `SituationPlayToneEx`.
+
+### Version
+
+- **`sit/situation_base_version.h`**: Bumped **`SITUATION_VERSION_PATCH`** to **`75`** and updated **`SITUATION_VERSION_DESCRIPTION`** to **`"Tone Pool Stolen Slot Routing Leak Fix"`**.
+
+---
+
+## [v2.4.74 "Sound Source Control Index Mapping Fix"] - 2026-05-17
+
+### Description
+
+Fixed a severe control index mapping discrepancy in the `SITUATION_NODE_SOUND_SOURCE` processing wrapper. The device registry defined control `0` as "volume" (default `1.0f`) and control `2` as "play_state" (default `0.0f`), whereas the node processing wrapper `_SituationProcessSoundSourceNode` read control `0` as "play/stop" and control `2` as "volume". This mismatch resulted in newly created Sound Source nodes (including the voice bus target in custom and default graphs) having a default volume of `0.0f` and rendering all routed audio (such as Demon Hunt gameplay SFX and preloaded voices) completely silent.
+
+1. **Control Index Alignment** — Corrected `_SituationProcessSoundSourceNode` in `sit/aud/device_wrappers.h` to correctly read "volume" from control `0` and "play_state" from control `2`.
+2. **Active-by-Default Play State** — Updated the `SITUATION_NODE_SOUND_SOURCE` metadata registry in `sit/aud/registry_init.h` to initialize the default value of the `play_state` control to `1.0f` (playing). This ensures that any fed audio frames or loaded sample buffers play out-of-the-box at full volume (`1.0f`) by default.
+3. **Restored Audio Playback** — Restored full rich wet gameplay SFX (gunshots, damage tones, monster growls) in Demon Hunt's custom series reverb/echo graph while maintaining a perfectly silent-by-default environment.
+
+### Library Changes
+
+- **`sit/aud/device_wrappers.h`**: Refactored control parameter extraction in `_SituationProcessSoundSourceNode` to correctly map `controls[0]` to volume and `controls[2]` to play/stop.
+- **`sit/aud/registry_init.h`**: Bumped default value of `play_state` control `2` to `1.0f` in `_SituationRegisterSoundSource`.
+
+### Version
+
+- **`sit/situation_base_version.h`**: Bumped **`SITUATION_VERSION_PATCH`** to **`74`** and updated **`SITUATION_VERSION_DESCRIPTION`** to **`"Sound Source Control Index Mapping Fix"`**.
+
+---
+
+## [v2.4.73 "Default Audio Graph Test Tone Elimination"] - 2026-05-17
+
+
+### Description
+
+Eliminated the extremely annoying 440 Hz sine test tone that played continuously by default upon initializing the audio system. The library previously created a `SITUATION_NODE_TONE_SYNTH` node and patched it directly into the master mixer inside the auto-created minimal `default_graph` at a default volume of `0.5f`. This resulted in a continuous test tone playing in all applications, examples, and tests without explicit authorization.
+
+1. **Test Tone Elimination** — Removed the `SITUATION_NODE_TONE_SYNTH` creation and patch from the auto-generated minimal `default_graph` in `situation_impl_audio.h`.
+2. **Simplified Default Routing** — Streamlined `default_graph` initialization to only create a `SITUATION_NODE_SOUND_SOURCE` node patched into input `0` of the master `SITUATION_NODE_MIXER` node, ensuring all loaded voices, stream playbacks, and voice pool items route perfectly clean and dry out-of-the-box.
+3. **No Test Regressions** — Confirmed that the change does not impact any unit tests or custom audio graphs (such as the rich series graph effects chain built for `demon_hunt`), since they all explicitly create and patch their own `SITUATION_NODE_TONE_SYNTH` instances.
+
+### Library Changes
+
+- **`sit/situation_impl_audio.h`**: Removed `SITUATION_NODE_TONE_SYNTH` initialization and routing patch from the auto-created `default_graph`. Streamlined routing path for `default_graph` sound source directly into the mixer.
+
+### Version
+
+- **`sit/situation_base_version.h`**: Bumped **`SITUATION_VERSION_PATCH`** to **`73`** and updated **`SITUATION_VERSION_DESCRIPTION`** to **`"Default Audio Graph Test Tone Elimination"`**.
+
+---
+
+## [v2.4.72 "Audio Node Graph Routing & Clean Music for Demon Hunt"] - 2026-05-17
+
+
+### Description
+
+Implemented robust, fine-grained routing support for procedural tone-synthesis voices to be directed through active audio node graphs. This solves a major architectural limitation where all sounds (including dry music and synth melodies) were globally forced through inline reverb and echo processing via master output monitors. 
+
+1. **Procedural Voice Routing** — Introduced `route_to_graph` flags inside the tone voice synthesizer context to determine if a voice should bypass or be mixed into the active node graph.
+2. **Audio Graph Input Interface** — Created new public API methods `SituationSetToneRouting` and `SituationSetGraphSFXSource` to dynamically route individual voices and designate a specific node (e.g., `SITUATION_NODE_SOUND_SOURCE`) as the voice bus target inside the graph.
+3. **Graph Rendering Pipelines** — Refactored the core audio thread processing loop in `situation_impl_audio.h` to perform high-performance pre-mixing. Routed voices are summed directly into the target node's input buffers before topological graph processing runs, while unrouted voices bypass the graph to output clean and dry.
+4. **Demon Hunt Refactoring** — Completely removed legacy master output monitor callbacks and global static echo buffers. Replaced them with a dynamically generated custom graph (Sound Source → Echo → Reverb in series). Game audio effects (gunshots, monster hurts, damage tones) are explicitly routed into the graph for a rich dungeon aesthetic, while background synth patterns play dry and pristine.
+5. **Robustness & Cleanup** — Added proper graph deletion routines to the game's termination logic to ensure zero memory leaks or dangling audio processors on exit.
+
+### Library Changes
+
+- **`sit/situation_api.h`**: Declared new public functions `SituationSetToneRouting` and `SituationSetGraphSFXSource`.
+- **`sit/situation_impl_decl.h`**: Extended `SituationTone` with `route_to_graph` flags, and added `graph_voice_source` pointer to the global audio container.
+- **`sit/situation_impl_audio.h`**: Extracted internal helper `_SituationMixToneToBuffer` and updated the miniaudio data callback to perform clean pre-mixing and bypass sum.
+- **`examples/demon_hunt.c`**: Replaced monitoring callbacks with a series node graph effects chain and enabled routed sfx tones.
+
+### Version
+
+- **`sit/situation_base_version.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **72**, **`SITUATION_VERSION_DESCRIPTION`** → **"Audio Node Graph Routing & Clean Music for Demon Hunt"**.
+
+---
+
+## [v2.4.71 "Phase 5: Unified Camera and Projection Pipeline"] - 2026-05-17
+
+### Description
+
+Implemented Phase 5 of the `v2.5` API expansion roadmap, introducing a unified camera and projection pipeline. This subsystem simplifies 3D scene setup and guarantees consistency across both OpenGL and Vulkan.
+
+1. **Camera Abstraction** — Introduced `SituationCameraDesc` to provide an engine-agnostic configuration for matrices. Supports Perspective, Orthographic, Infinite Projection, and automatic aspect ratio generation using active window bounds.
+2. **Projection Implementation** — Created `situation_impl_proj.h` containing inline projection math powered by `cglm`. Includes explicit functions like `SituationCameraBuildInvViewProj`.
+3. **Screen-Space Unprojection** — Added `SituationCameraUnprojectPixel` for highly accurate raycasting from standard UI top-left coordinates into a 3D world ray, leveraging inverted matrix caching.
+4. **Depth Convention Standardization** — Addressed a major bug where OpenGL and Vulkan used differing `cglm` projection matrices due to disparate depth ranges (`[-1, 1]` vs `[0, 1]`). Forced `CGLM_FORCE_DEPTH_ZERO_TO_ONE` on all builds to achieve identical NDC math and unified rendering behavior.
+5. **Testing** — Implemented comprehensive validation in the new `test_proj.c` harness module to lock in bounds and inverse projection math against regressions.
+
+### Existing Holes & Known Issues
+
+Since the new projection subsystem changes core math conventions to align with Vulkan's `[0, 1]` depth, a few gaps remain:
+- **Headless Mode Limitations**: Automatic aspect ratio calculation in `SituationCameraBuildProj` relies on `SituationGetRenderWidth/Height()`. This will fail or yield incorrect results if invoked in a completely headless context without an active backbuffer.
+- **True Infinite Projection**: The `SIT_CAMERA_FLAG_INFINITE_PROJECTION` flag is currently implemented using a hardcoded placeholder far plane (`1,000,000.0f`) instead of pure infinite perspective projection formulations.
+- **Example Porting**: The existing 3D examples (e.g., `demon_hunt`) still use their old duplicated math. They need to be refactored to utilize the newly unified `SituationCameraDesc` subsystem.
+
+### Version
+
+- **`sit/situation_base_version.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **71**, **`SITUATION_VERSION_DESCRIPTION`** → **"Phase 5 Unified Camera & Projection Pipeline"**.
+
+---
+
+## [v2.4.70 "API Expansion Phase 4: Raster State Command Finalization"] - 2026-05-17
+
+### Description
+
+Implemented Phase 4 of the `v2.5` API expansion roadmap, transitioning the engine towards a deterministic, command-buffer-driven state management model. This phase introduces opcodes for explicit rasterization and rendering state control, moving away from implicit state changes and improving parity between OpenGL and Vulkan.
+
+1. **Raster State Commands** — Added new opcodes (`SIT_OP_SET_CULL_MODE`, `SIT_OP_SET_DEPTH_TEST`, `SIT_OP_SET_DEPTH_WRITE`, `SIT_OP_SET_BLEND_ENABLE`, `SIT_OP_SET_BLEND_FUNC_SEPARATE`) to the software command buffer for precise state control during drawing.
+2. **Debug Groups** — Implemented `SituationCmdBeginDebugGroup` and `SituationCmdEndDebugGroup` for inserting labels into GPU command streams, leveraging `vkCmdBeginDebugUtilsLabelEXT` (loaded dynamically) for Vulkan and `glPushDebugGroup` for OpenGL.
+3. **Implicit State Sandboxing** — Updated the internal primitive rendering paths (like `SIT_OP_DRAW_QUAD` and `SIT_OP_DRAW_TEXT`) to properly use `_SitGLBackupState` and `_SitGLRestoreState`, ensuring these engine-internal draws do not inadvertently clobber the user-defined raster states.
+4. **Vulkan Dynamic State** — Hardened the Vulkan pipeline creation logic to consistently enable `VK_DYNAMIC_STATE_CULL_MODE`, `VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE`, `VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE`, and `VK_DYNAMIC_STATE_DEPTH_COMPARE_OP`, ensuring compatibility with the new deferred state commands.
+
+### Existing Holes & Known Issues
+
+Since these specific raster state commands and push constant opcodes are largely new and untested in complex scenarios, the following gaps remain:
+- **Push Constant Layouts**: `SituationCmdSetPushConstantData` is implemented as a stub returning `SITUATION_ERROR_NOT_IMPLEMENTED` on OpenGL because explicit shader layouts and mapping are not yet finalized in the engine.
+- **Extended Dynamic State**: Vulkan `SIT_OP_SET_BLEND_FUNC_SEPARATE` currently returns `NOT_IMPLEMENTED` to maintain compatibility with core Vulkan 1.3 without depending on `VK_EXT_extended_dynamic_state3` for dynamic blend modes.
+- **Rigorous Test Coverage**: ~~While the harness verifies the engine continues to render correctly, comprehensive unit tests for these explicit state commands and their edge cases have not yet been written.~~ **[Update]** Added explicit raster state command testing in `test_graphics.c` which verified the commands execute flawlessly across both OpenGL and Vulkan command buffering engines.
+
+### Architecture Note: The Danger Zone & "Update-Before-Draw"
+
+With the introduction of explicit raster state queues, it is important to clarify that **Raster State Commands are perfectly safe and queued linearly**. They will not cause out-of-order execution. 
+
+However, the **Danger Zone** lies in data uploads like `SituationUpdateBuffer`. To avoid the complexities of intermediate staging queues, data uploads execute *immediately* on the CPU. This creates a hard architectural requirement: you must adhere to the **Update-Before-Draw Contract**. 
+All data modifications (`SituationUpdateBuffer`, `SituationSetShaderUniform`) **must** be executed before recording any draw commands (`SituationCmdDrawMesh`) in a given frame. Failing to do so will result in deferred draw calls executing with out-of-order (future) data.
+### Library Changes
+
+- **`sit/situation_api.h`**: Declared new raster state enums (`SituationCullMode`, `SituationDepthCompareOp`, `SituationBlendFactor`) and command functions.
+- **`sit/situation_impl_decl.h`**: Extended `SitOpCode` and `SitCommandPacket` to support the new commands.
+- **`sit/situation_impl_renderer.h`**: Implemented command execution for OpenGL and Vulkan dynamic state application.
+- **`sit/situation_impl_ctrl.h`**: Fixed cross-backend graphics capabilities querying for Vulkan MSAA limits.
+
+### Version
+
+- **`sit/situation_base_version.h`**: **`SITUATION_VERSION_PATCH`** → **70**, **`SITUATION_VERSION_DESCRIPTION`** → **"API Expansion Phase 4"**.
+
+---
+
+## [v2.4.69 "API Expansion Phase 3"] - 2026-05-17
+
+### Description
+
+Implemented Phase 3 of the `v2.5` API expansion roadmap, focusing on developer ergonomics and cross-backend capability querying.
+
+1. **Uniform Array/Matrix Helpers** — Added `SituationSetShaderUniform1fv` and `SituationSetShaderUniformMatrix4fv` for direct uploading of array and matrix uniform data. Fixed an underlying bug in `SIT_OP_SET_UNIFORM` instruction packing that restricted float/vector arrays to a length of 1 on the deferred render thread.
+2. **Shader Uniform Validation** — Added `SituationValidateShaderUniforms` (OpenGL) to rigorously cross-reference expected uniform types, bounds, and array lengths against the active shader program's compiled expectations using `glGetActiveUniform`.
+3. **Application Logging & Control** — Added a `SituationSetLogCallback` interface to intercept and reroute internal engine logs, along with `SituationShowMessageBox` for raising native modal dialogues (utilizing `MessageBoxA` on Windows platforms).
+4. **Graphics Capabilities Query** — Introduced `SituationGetGraphicsCaps` to expose unified backend properties (e.g., max MSAA samples, API version, compute support, bindless texture status) to applications, reducing the need for explicit backend/compiler checks in examples.
+
+### Library Changes
+
+- **`sit/situation_api.h`**: Declared uniform array helpers, uniform validation struct, logging/messagebox API, and the graphics capability struct.
+- **`sit/situation_impl_decl.h`**: Added custom log callback pointers to `_SituationGlobalStateContainer`.
+- **`sit/situation_impl_ctrl.h`**: Implemented `SituationSetLogCallback`, `SituationShowMessageBox`, updated `SituationLog` to route via callback, and implemented `SituationGetGraphicsCaps`.
+- **`sit/situation_impl_renderer.h`**: Implemented `SituationSetShaderUniform1fv`, `SituationSetShaderUniformMatrix4fv`, `SituationValidateShaderUniforms`, and fixed `SIT_OP_SET_UNIFORM` array length propagation for float types.
+
+### Documentation
+
+- **`doc/plan/v2.5-api-expansion.md`**: Marked Phase 3 roadmap tasks as completed.
+
+### Version
+
+- **`sit/situation_base_version.h`**: **`SITUATION_VERSION_PATCH`** → **69**.
+
+---
+
+## [v2.4.68 "Readback Test Harness Parity"] - 2026-05-17
+
+### Description
+
+Solidified Phase 1 and Phase 2 Readback API additions by expanding the C test harness (`sit_test.exe`) to cover asynchronous buffer copies and framebuffer readbacks on both OpenGL and Vulkan.
+
+1. **Test Coverage Expansion** — Added `test_async_buffer_readback` to verify `SituationCreateReadbackBuffer`, `SituationCmdCopyBuffer`, and `SituationReadBuffer` data integrity. Added `test_framebuffer_diagnostic_readback` to verify `SituationReadFramebuffer` across differing frame swap boundaries.
+2. **OpenGL Readback Fix** — Switched OpenGL's `SituationCmdCopyBuffer` implementation to properly push packets (`_SitGLSoftCmdPush`) instead of referencing an outdated legacy append function, fixing linkage and command execution.
+3. **Version Macro Extraction** — Extracted version macros from `situation.h` into a standalone `sit/situation_base_version.h` header and introduced `SITUATION_VERSION_DESCRIPTION` to provide immediate context on current version changes.
+
+### Library Changes
+
+- **`tests/harness/test_graphics.c`**: Implemented the two new C-level tests and verified identical execution flow on both backend runners.
+- **`sit/situation_impl_renderer.h`**: Fixed OpenGL command buffer append references for asynchronous copy operations.
+- **`sit/situation_base_version.h`**: New dedicated header for base version macros.
+
+### Version
+
+- **`situation.h`**: Now includes `sit/situation_base_version.h` instead of defining versions directly.
+- **`sit/situation_base_version.h`**: **`SITUATION_VERSION_PATCH`** → **68**.
+
+---
+
+## [v2.4.67 "Vulkan Diagnostic Parity & Readbacks"] - 2026-05-17
+
+### Description
+
+Implemented a robust, synchronous staging readback mechanism for Vulkan to support `K-Term` diagnostic visibility, bringing the Vulkan backend to parity with OpenGL diagnostics.
+
+1. **Vulkan Compilation Fixes** — Resolved dormant struct reference errors (`physical_device` vs `physicalDevice`) and fixed memory property queries to use standard `vkGetPhysicalDeviceMemoryProperties`.
+2. **Synchronous Staging Capture** — Fixed `SituationReadFramebuffer` for Vulkan. It now safely transitions swapchain images (`PRESENT_SRC_KHR` to `TRANSFER_SRC_OPTIMAL`), performs a `vkCmdCopyImageToBuffer` via single-time command buffers, and maps the output for host readback.
+3. **Amped-Up Diagnostics (KTerm)** — `KTerm_ShowDiagnostics` was significantly enhanced to query a `4x4` pixel grid instead of a single `[0,0]` pixel. Outputs verbose metrics including texture formats, mipmap levels, and staging buffer footprints.
+
+### Library Changes
+
+- **`sit/situation_impl_renderer.h`**: Fixed `SituationCmdCopyBuffer` command handle type references. Fully implemented Vulkan framebuffer readback and corrected VMA memory flag queries.
+- **`sit/k-term/kterm_impl.h`**: Expanded `KTerm_ShowDiagnostics` readback dimensions and enhanced stdout formatting for exact VRAM metrics.
+
+### Documentation
+
+- **`doc/whatsnew.md`**: Logged the v2.4.67 achievement.
+- **`doc/plan/v2.5-api-expansion.md`**: Marked Phase 2 tasks as complete.
+
+### Version
+
+- **`situation.h`**: **`SITUATION_VERSION_PATCH`** → **67**.
+
+---
+
+## [v2.4.66 "Phase 1 Async Buffer Readback"] - 2026-05-17
+
+### Description
+
+Implemented Phase 1: Async Buffer Readback to support GPU-to-CPU telemetry and diagnostics without stalling the rendering pipeline. This ensures strict backend parity for both OpenGL and Vulkan.
+
+1. **`SituationCreateReadbackBuffer`** — creates a staging buffer with persistent mapping (OpenGL) or `VMA_MEMORY_USAGE_GPU_TO_CPU` (Vulkan) for fast readbacks.
+2. **`SituationCmdCopyBuffer`** — asynchronous buffer copying command. Integrated `SIT_OP_COPY_BUFFER` into the OpenGL command executor and mapped directly to `vkCmdCopyBuffer` on Vulkan.
+3. **`SituationReadBuffer`** — safely reads mapped buffer data back into CPU memory. Added `vmaInvalidateAllocation` on Vulkan for non-coherent memory types.
+
+### Library Changes
+
+- **`sit/situation_api.h`**: Added prototypes for `SituationCreateReadbackBuffer`, `SituationCmdCopyBuffer`, and `SituationReadBuffer`.
+- **`sit/situation_impl_decl.h`**: Extended `_SituationBufferSlot` with `is_readback`, `mapped_ptr`, `mapped_size`, and `readback_is_host_coherent`. Added `SIT_OP_COPY_BUFFER` to `SitOpCode`.
+- **`sit/situation_impl_renderer.h`**: Implemented `SituationCreateReadbackBuffer`, updated `SituationDestroyBuffer` to unmap memory automatically, implemented OpenGL/Vulkan `SituationCmdCopyBuffer`, and implemented `SituationReadBuffer`.
+
+### Documentation
+
+- **`sit/k-term/doc/situation_api.md`**: Added comprehensive documentation for the new Readback APIs, including parameters, return values, and usage guidelines.
+- **`doc/plan/v2.5-api-expansion.md`**: Marked Phase 1 tasks as complete.
+
+### Version
+
+- **`situation.h`**, **`README.md`**: **`SITUATION_VERSION_PATCH`** → **66**.
+
+---
+
+## [v2.4.65 "OpenGL: `demon_hunt` skydome path — Hi-DPI viewport, depth clear, uniforms, demo"] - 2026-05-16
+
+### Description
+
+1. **Hi-DPI / viewport vs uniforms** — **`SituationGetRenderWidth` / `Height`** use **`glfwGetFramebufferSize`**, while **`SituationCmdBeginRenderPass`** previously stored **`sit_gs.main_window_*`** from the requested window size until a framebuffer callback. **`gl_FragCoord`** then did not match **`uResolution`** / horizon uniforms (e.g. **`demon_hunt`** sky **`uSkyMinFragY`**), so the sky branch could never run and floor shading looked wrong. **Fix:** after **`glfwCreateWindow`**, seed **`sit_gs.main_window_*`** from **`glfwGetFramebufferSize`**; when recording **`SIT_OP_BEGIN_RENDER_PASS`** and **`SIT_OP_PRESENT`** (OpenGL), capture the same framebuffer size for **`target_w` / `target_h`**.
+
+2. **Depth clear when depth writes are masked** — **`glClear(GL_DEPTH_BUFFER_BIT)`** can be ineffective with **`GL_DEPTH_WRITEMASK`** off. **Fix:** **`glDepthMask(GL_TRUE)`** before assembling the clear in **`SIT_OP_BEGIN_RENDER_PASS`**.
+
+3. **Soft command buffer** — **`SituationAcquireFrameCommandBuffer`** resets **`current_recording_shader_id`** to **0** when clearing the per-frame soft buffer.
+
+4. **Int array uniforms** — **`SituationSetShaderUniform1iv`** and **`SIT_OP_SET_UNIFORM`** with **`elem_count`** for **`glProgramUniform1iv`** on int arrays (**`n > 1`**).
+
+5. **Standalone uniforms during a frame** — **`SituationSetShaderUniform`** / **`SituationSetShaderUniform1iv`** now **record** **`SIT_OP_SET_UNIFORM`** into the soft buffer whenever **`sit_render.in_frame`** (in addition to the existing GL render-thread path), so **`glProgramUniform`** runs during **`_SituationGLExecuteCommands`** in packet order after **`SituationCmdBeginRenderPass`** / **`SituationCmdBindPipeline`**.
+
+6. **OpenGL + C11 threads (`SITUATION_ENABLE_THREADING` without GL render thread)** — **`SituationAcquireFrameCommandBuffer`** binds **`glfwMakeContextCurrent`** when the main thread owns GL (**not** when **`SITUATION_ENABLE_RENDER_THREAD`** and **`sit_render.enabled`**).
+
+7. **Single-triangle mesh draws (`SIT_OP_DRAW_MESH`)** — Fullscreen skydome-style passes use **3** indexed vertices; with **`GL_CULL_FACE`** + **`GL_BACK`**, the wrong winding **culls the entire pass** (no sky, no shader floor). **Fix:** temporarily **`glDisable(GL_CULL_FACE)`** around **`glDrawElements`** when **`index_count == 3`** and **`vertex_count == 3`** (heuristic for one-triangle draws, including **`demon_hunt`**).
+
+8. **`examples/demon_hunt`** — Skydome VS **NDC z = 0**, horizon **`fy + 0.5`**, wall rows via **`SituationSetShaderUniform1iv(..., "uWallRows[0]", MAP_H, rows)`**.
+
+### How to build / test
+
+- **Shared OpenGL DLL + harness:** **`build_situation.bat opengl`** then **`build_tests.bat opengl`** → **`build\sit_test.exe`**, **`build\situation_opengl.dll`**.
+- **`demon_hunt`** (single TU with **`SITUATION_IMPLEMENTATION`):** **`build_examples.bat opengl demon_hunt`** → **`build\examples\demon_hunt.exe`**. For both link styles: run DLL build + tests, then the example build.
+
+### Library Changes
+
+- **`sit/situation_impl_ctrl.h`**: **`_SituationInitWindow`** — sync **`sit_gs.main_window_*`** to **`glfwGetFramebufferSize`** after window creation.
+- **`sit/situation_impl_renderer.h`**: **`SIT_OP_DRAW_MESH`** — disable **`GL_CULL_FACE`** around **`glDrawElements`** for **single-triangle** meshes (**3** indices and **3** vertices) so fullscreen passes (e.g. **`demon_hunt`** skydome) are not dropped when winding does not match the default back-face cull; **`SituationAcquireFrameCommandBuffer`** (OpenGL) — **`glfwMakeContextCurrent`** when the main thread owns GL; **`SituationSetShaderUniform`** / **`SituationSetShaderUniform1iv`** — defer **`SIT_OP_SET_UNIFORM`** while **`sit_render.in_frame`** (not only render-thread mode); **`SituationCmdBeginRenderPass`** / **`SituationCmdPresent`** — framebuffer dimensions; **`SIT_OP_BEGIN_RENDER_PASS`** — **`glDepthMask(GL_TRUE)`** before clear; soft-buffer **`current_recording_shader_id`** reset; **`SIT_OP_SET_UNIFORM`** execute for **`n`** ints.
+- **`sit/situation_impl_decl.h`**: **`set_uniform`** — **`elem_count`**.
+- **`sit/situation_api.h`**, **`sit/k-term/example/situation_api.h`**: **`SituationSetShaderUniform1iv`**.
+
+### Sample
+
+- **`examples/demon_hunt.c`**: skydome + wall rows (see above).
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **65**.
+
+---
+
+## [v2.4.64 "OpenGL: `SituationCmdDrawText` / soft-buffer text draws visible over quad depth"] - 2026-05-11
+
+### Description
+
+1. **Symptom** — After **`SituationCmdDrawQuad`** (and similar 2D world draws), **`_SituationGLExecuteCommands`** leaves **`GL_DEPTH_TEST`** enabled with **`GL_LESS`**. The OpenGL text shader uses the same orthographic projection as quads with **z = 0**, so **`SIT_OP_DRAW_TEXT` / `SIT_OP_DRAW_TEXT_EX`** fragments often **fail the depth test** against geometry already written to the depth buffer. HUD, titles, and overlays appeared **missing** while the rest of the frame rendered normally.
+
+2. **Fix** — For each text batch draw, temporarily **`glDisable(GL_DEPTH_TEST)`**, **`glEnable(GL_BLEND)`** with **`glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`**, issue **`glDrawArrays`**, then restore depth and disable blend. Aligns text with the quad path’s “2D overlay” behavior and ensures alpha compositing for glyph edges.
+
+3. **Bindless path** — Text execution still uploads bindless handles only when **`glad_glProgramUniformHandleui64ARB`** is non-**NULL** (unchanged guard); the depth/blend fix is independent and addresses the invisible-text regression on all configs.
+
+### Library Changes
+
+- **`sit/situation_impl_renderer.h`**: **`_SituationGLExecuteCommands`** — **`SIT_OP_DRAW_TEXT` / `SIT_OP_DRAW_TEXT_EX`** branch: depth off + premultiplied-style alpha blend around **`glDrawArrays`** for the text VBO.
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **64**.
+
+---
+
+## [v2.4.63 "Echo: parallel dry/wet; wet applied once"] - 2026-05-10
+
+### Description
+
+1. **Node-graph / `ma_delay` echo** — Miniaudio’s **`dry`** / **`wet`** are not a send-style dry/wet pair on the output. The graph wrapper now keeps **line feed at unity**, runs the delay **out-of-place**, and mixes **`(1 − w)·dry + w·tap`** with UI wet **`w`** applied **once** (avoids **`w²`** on the tail and restores a working wet control).
+
+2. **`examples/node_graph_piano_demo`** — OpenGL keyboard graph demo (**`-mwindows`** for that target), on-screen FX hints, live **`SituationSetControl`** for tone / echo / reverb / gain.
+
+### Library Changes
+
+- **`sit/aud/fx/echo.h`**: **`dry_scratch`**, **`_SituationProcessEcho`** parallel mix; **`ma_delay`** tap gain fixed at **1.0** for the wet path.
+- **`sit/aud/device_wrappers.h`**: Echo node **`_SituationConfigEcho(..., 1.0f)`** line feed.
+- **`sit/situation_impl_decl.h`**: **`effects.echo`** layout aligned with **`sit_echo_t`** (cast from **`situation_impl_audio`**).
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **63**.
+
+---
+
+## [v2.4.62 "OpenGL: verbose init gated; TWO_SSBOS shader storage block bindings"] - 2026-05-10
+
+### Description
+
+1. **Quiet default OpenGL init** — **`Situation [OpenGL]: …`** **`printf`** lines during **`_SituationInitOpenGL`** (default font, text renderer, VD shaders) moved from **`#ifndef NDEBUG`** to **`#if defined(SITUATION_VERBOSE_DIAGNOSTICS)`**, aligned with Vulkan diagnostic style. Optional **`stderr`** lines on rare init failures are gated the same way; **`SituationSetErrorFromCode`** remains authoritative.
+
+2. **Chained compute (`SIT_COMPUTE_LAYOUT_TWO_SSBOS`)** — After linking an OpenGL compute program from SPIR-V, **`glShaderStorageBlockBinding`** maps **`InBuffer` → 0** and **`OutBuffer` → 1**, matching **`SituationCmdBindDescriptorSet(..., 0/1, …)` → `glBindBufferBase(SSBO, …)`**. Fixes **`compute_chained_dispatches`** in the full **`sit_test`** OpenGL run.
+
+### Library Changes
+
+- **`sit/situation_impl_renderer.h`**: **`_SituationInitOpenGL`** diagnostics; **`SituationCreateComputePipelineFromMemory`** TWO_SSBOS block bindings.
+- **`sit/situation_api.h`**, **`sit/k-term/example/situation_api.h`**: Compilation note for **`SITUATION_VERBOSE_DIAGNOSTICS`**.
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **62**.
+
+---
+
+## [v2.4.61 "Vulkan VD follow-up: framebuffer LOAD, push constants, screen-copy lifecycle"] - 2026-05-10
+
+### Description
+
+**Since v2.4.60** (three-set advanced compositor + correct destination binding), these changes finish the Vulkan virtual-display path so the graphics harness reaches **78/78** and resize/swapchain paths stay safe.
+
+1. **Preserve the caller’s framebuffer when compositing** — **`SituationRenderVirtualDisplays`** ends the app’s main-window pass, then must **not** start VD work with **`main_window_render_pass`** (color **`LOAD_OP_CLEAR`**), or the swapchain is wiped to **black** before blending. Tests that clear **white** (**`vd_opacity_blending`**, **`vd_blend_alpha`**) or depend on the real backdrop (**FIT / integer / offset / multiply**) failed for that reason. **Fix:** use **`main_window_render_pass_resume`** + **`main_window_framebuffers_resume`** (**`LOAD`**) when continuing right after the caller’s pass (**`vd_resume_swapchain_after_caller_rp`**).
+
+2. **Path A after Path B (and multi-layer Path A)** — If Path B left an active pass, or multiple Path A layers run, the next **`vkCmdBeginRenderPass`** must **LOAD** prior draws (**`path_a_preserves_prior_draws`**, **`path_a_restart_index`**, same resume pass + framebuffers). Otherwise CLEAR erases earlier VD layers or Path B output.
+
+3. **Push constant sizes vs pipeline layout** — **`VDPushConstants`** (Path B) and **`CompositePushConstants`** (Path A) must match **`vkCmdPushConstants`** byte counts; **`sizeof()`** on a host struct can include tail padding (**MSVC**). **Fix:** push **`sizeof(mat4) + sizeof(float)`** (68) on Path B and **`sizeof(mat4) + sizeof(int) + sizeof(float)`** (72) on Path A.
+
+4. **Screen-copy image after swapchain recreation** — **`_SituationVulkanCleanupSwapchain`** destroys the screen-copy target used for Path A **`vkCmdCopyImage`**. **`_SituationVulkanRecreateSwapchain`** now calls **`_SituationVulkanCreateScreenCopyResource()`** again after framebuffers succeed (init already required creation). Avoids null **`vkCmdCopyImage`** / faults after **`OUT_OF_DATE`**, resize, or acquire timeouts.
+
+### Library Changes
+
+- **`sit/situation_impl_vd.h`**: Resume-pass selection for Path A/B; **`vd_resume_swapchain_after_caller_rp`** / **`path_a_preserves_prior_draws`**; explicit Path A/B **`vkCmdPushConstants`** sizes; Path A fallback when screen-copy handles are missing.
+- **`sit/situation_impl_renderer.h`**: **`_SituationVulkanCreateScreenCopyResource`** returns **`SituationError`** with cleanup on failure; **`_SituationVulkanRecreateSwapchain`** recreates screen copy after **`_SituationVulkanCreateFramebuffers`**; init aborts if screen-copy creation fails.
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **61**.
+
+---
+
+## [v2.4.60 "Vulkan VD advanced compositor: 3 descriptor sets + dest binding 5"] - 2026-05-10
+
+### Description
+
+Non-alpha blend modes use **`advanced_compositing_pipeline`**, whose fragment shader expects **set 1 = VD** (`binding` **4**) and **set 2 = screen copy** (`binding` **5**). The pipeline layout only listed **two** set layouts (the second was an **uninitialized** `composite_dual_sampler_layout` placeholder). The screen-copy descriptor set was allocated with **`image_sampler_layout`** (binding **4**) and updated at **`dstBinding` 0** — **undefined** and could **SIGSEGV** when additive/multiply/none started using Path A.
+
+**Fix:** create **`composite_dest_sampler_layout`** (single combined sampler at **`SIT_SAMPLER_BINDING_VD_DEST`**), use **three** sets in the advanced layout (**view UBO**, **`image_sampler_layout`**, **`composite_dest_sampler_layout`**), allocate/update the screen-copy set with **binding 5**, and keep **`use_advanced = (blend_mode != SITUATION_BLEND_ALPHA)`** (v2.4.59).
+
+### Library Changes
+
+- **`sit/situation_impl_decl.h`**: **`composite_dest_sampler_layout`** (replaces unused dual placeholder).
+- **`sit/situation_impl_renderer.h`**: create/destroy layout; advanced pipeline **setLayoutCount = 3**; screen-copy set allocation.
+- **`sit/situation_impl_vd.h`**: **`vkUpdateDescriptorSets`** → **`SIT_SAMPLER_BINDING_VD_DEST`**; blend routing as above.
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **60**.
+
+---
+
+## [v2.4.59 "Vulkan VD: route non-alpha blend modes to advanced compositor"] - 2026-05-10
+
+### Description
+
+**`SituationRenderVirtualDisplays`** chose the “advanced” compositing path only when **`blend_mode >= SITUATION_BLEND_OVERLAY`**. **ADDITIVE**, **MULTIPLY**, **SCREEN**, and **BLEND_NONE** were drawn with the **fast** pipeline, which does not apply those blend equations — pixel checks in **`vd_blend_additive`**, **`vd_blend_multiply`**, **`vd_blend_none_overwrite`**, and **`vd_offset_position`** (NONE) failed.
+
+**Fix:** use the advanced path (screen copy + **`advanced_compositing_pipeline`**) for every mode **except** **ALPHA**. (Superseded by **v2.4.60** for descriptor/layout correctness.)
+
+### Library Changes
+
+- **`sit/situation_impl_vd.h`**: **`use_advanced = (blend_mode != SITUATION_BLEND_ALPHA)`**.
+
+### Version
+
+- **`SITUATION_VERSION_PATCH`** → **59** (then **60** in v2.4.60).
+
+---
+
+## [v2.4.58 "Vulkan: screenshot row order + storage bindless + DrawTexture slot validation"] - 2026-05-10
+
+### Description
+
+**`SituationLoadImageFromScreen`** (Vulkan) copied the pre-present screenshot without the **vertical flip** applied on the OpenGL path after `glReadPixels`. Row **0** of the returned image did not match **top-of-window** pixel coordinates — harness tests that sample quadrants (**`texture_cpu_gpu_cpu_roundtrip`**, **`texture_format_preservation`**) failed while **`draw_textured_checkerboard`** still passed (full-frame scan for bright/dark only).
+
+**Fix:** **`SituationImageFlip(..., SIT_FLIP_VERTICAL)`** after Vulkan screenshot memcpy / swapchain fallback blit.
+
+**Storage-only textures** (**`SituationCreateTextureEx`** without **SAMPLED**) never wrote **`global_bindless_set`**; **`SituationCmdDrawTexture`** samples only that set — mirror storage textures into bindless at creation (**`VK_IMAGE_LAYOUT_GENERAL`**).
+
+**`SituationCmdDrawTexture`** no longer falls back to **texture_id = 0** when **`_SitGetTextureSlot`** fails (**`SITUATION_ERROR_RESOURCE_INVALID`**).
+
+### Library Changes
+
+- **`sit/situation_impl_image.h`**: Vulkan **`SituationLoadImageFromScreen`** — vertical flip parity with OpenGL.
+- **`sit/situation_impl_renderer.h`**: **`SituationCreateTextureEx`** bindless mirror for storage-only textures; **`SituationCmdDrawTexture`** invalid-handle handling.
+
+### Harness / Tests
+
+- **`tests/harness/test_graphics.c`**: **`test_texture_storage_write_readback`** uses **`SITUATION_BARRIER_FRAGMENT_SHADER_READ`** after compute (already aligned with **`compute_to_graphics_barrier`**).
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **58**.
+
+---
+
+## [v2.4.56 "Vulkan VD composite: resume render pass (LOAD color)"] - 2026-05-10
+
+### Description
+
+After **`SituationRenderVirtualDisplays`** composites virtual displays into the swapchain, the implementation restarts the main-window render pass so the caller can **`SituationCmdEndRenderPass`**. That restart used **`main_window_render_pass`**, whose color attachment uses **`VK_ATTACHMENT_LOAD_OP_CLEAR`** — every **`vkCmdBeginRenderPass`** cleared the swapchain and **erased** the composite. Harness **`vd_*`** pixel checks failed broadly.
+
+**Fix:** **`main_window_render_pass_resume`** — same attachments as the main pass but color **`LOAD`** with **`initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`**, plus per-swapchain-image **`main_window_framebuffers_resume`**. The restart block binds this pass/framebuffer when available.
+
+### Library Changes
+
+- **`sit/situation_impl_decl.h`**, **`sit/situation_impl_renderer.h`**: resume render pass + resume framebuffers (create + swapchain cleanup + teardown).
+- **`sit/situation_impl_vd.h`**: post-composite **`vkCmdBeginRenderPass`** uses resume resources.
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **56**.
+
+---
+
+## [v2.4.55 "Vulkan user-shader descriptors + bindless/harness alignment"] - 2026-05-10
+
+### Description
+
+**`SituationLoadShaderFromMemory`** built user pipelines with **`view_data_ubo_layout`** / **`image_sampler_layout`** (bindings **1** and **4**) while **`SituationCmdBindDescriptorSet`** and typical FS used **dynamic UBO at set 0 binding 0** and **combined sampler at set 1 binding 0** — descriptor-set indices did not match the recorded layout. **Fix:** pipeline layout **set 0** = **`dynamic_ubo_layout`**, **set 1** = **`text_sampler_layout`** (aligned with **`SIT_SAMPLER_BINDING_ALBEDO`**).
+
+Bindless **`global_textures[]`** coexisted with harness shaders that declare a plain **`sampler2D`** at set **1**; bindless-only routing left that sampler unwired. **Fix:** per **`_SituationTextureSlot`**, optional **`single_sampler_descriptor_set`** / pool — allocated when creating sampled textures, same combined image–sampler write as bindless, freed on destroy; **`SituationCmdBindTextureSet`** binds that set for graphics **set index 1** when present, else bindless + push slot index.
+
+**`SituationCmdBindPipeline`** (Vulkan graphics) cleared **`current_compute_pipeline_layout`** so a prior compute test could not make **`SituationCmdBindDescriptorSet`** target the wrong layout.
+
+Harness: **`compute_chained_dispatches`** SSBO bindings aligned with **`SIT_COMPUTE_LAYOUT_TWO_SSBOS`** (**set 0** + **set 1**, each **binding 0**); **`test_descriptor_bind_sampled_texture`** uses **`SituationCmdBindSampledTexture(cmd, 1, tex)`** to match the FS.
+
+### Library Changes
+
+- **`sit/situation_impl_decl.h`**, **`sit/situation_impl_renderer.h`**: user shader memory pipeline layout; per-texture **`text_sampler`** descriptor; **`SituationCmdBindTextureSet`** / pipeline bind behavior above.
+
+### Harness / Tests
+
+- **`tests/harness/test_graphics.c`**: **`compute_chained_dispatches`** descriptor sets; **`test_descriptor_bind_sampled_texture`** set index **1**.
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **55**.
+
+---
+
+## [v2.4.54 "Vulkan shutdown: immediate destroys + early graveyard flush (VMA clean)"] - 2026-05-10
+
+### Description
+
+On **`SituationShutdown`**, **`_SituationCleanupDanglingResources`** calls **`SituationDestroyTexture`** / **`*Buffer`** / **`*Mesh`** / **`SituationUnloadShader`** / **`SituationDestroyComputePipeline`**. On Vulkan those APIs **deferred** GPU frees to the per-frame graveyard. Deferred **`vmaDestroy*`** could still be pending when **`vmaDestroyAllocator`** ran → **`[VMA LEAK] UNFREED ALLOCATION`** from VMA’s leak checker and **`SITUATION WARNING: Leaked …`** spam after long **`sit_test`** runs.
+
+**Fix:** When **`sit_render.init_state == SITUATION_STATE_SHUTTING_DOWN`**, use **immediate** **`vkDestroy*` / `vmaDestroy*`** (device already idle from **`SituationShutdown`**). **`_SituationCleanupVulkan`** also **flushes all graveyards** immediately after **`vkDeviceWaitIdle`** (before swapchain / quad teardown) so any remaining deferred work drains before allocator destroy.
+
+### Library Changes
+
+- **`sit/situation_impl_renderer.h`**: **`_SituationVulkanImmediateDestroyDuringShutdown()`**; immediate paths in **`SituationDestroyTexture`**, **`SituationDestroyBuffer`**, **`SituationDestroyMesh`**, **`SituationUnloadShader`**, **`SituationDestroyComputePipeline`**; early **`_SituationFlushGraveyard`** loop in **`_SituationCleanupVulkan`**.
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **54**.
+
+---
+
+## [v2.4.53 "Shutdown teardown + harness milestone"] - 2026-05-10
+
+### Description
+
+**`SituationShutdown`** cleared **`is_initialized`** with **`atomic_exchange(..., false)`** and then called **`SituationIsInitialized()`**, which was **always false** after the exchange — the function **returned immediately** and **skipped** renderer / window / Vulkan cleanup. The next **`SituationInit`** could **`memset`** the context while GLFW and the GPU were still live (**access violation** on multi-module **`sit_test`**). That erroneous check is removed; teardown runs when the exchange proves we were initialized.
+
+Harness: **`dump_task_graph`** still exercises **`SituationDumpTaskGraph`** but writes to the platform **null device** so stderr stays clean; **RESULTS** banner uses ASCII **`=`** lines (legacy Windows consoles). Optional **`SITUATION_VERBOSE_DIAGNOSTICS`** (Vulkan build) remains the switch for init-path chatter.
+
+### Library Changes
+
+- **`sit/situation_impl_ctrl.h`**: **`SituationShutdown`** — removed **`SituationIsInitialized()`** guard after **`atomic_exchange`**; comment explains ordering.
+
+### Harness / Tests
+
+- **`tests/harness/test_threading.c`**: **`test_dump_task_graph`** → **`nul`** / **`/dev/null`** with stderr fallback.
+- **`tests/harness/sit_test_framework.h`**: ASCII **`============================================`** results banner.
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **53**.
+
+---
+
+## [v2.4.52 "Shutdown: release miniaudio before GPU sync"] - 2026-05-10
+
+### Description
+
+**`SituationShutdown`** called **`glFinish()`** (OpenGL) or **`vkDeviceWaitIdle`** (Vulkan) **before** stopping the **miniaudio** device. On Windows, **exclusive** output plus an **indefinite** GPU wait can look like **normal fade-out, then a hard lock** — audio has finished but the main thread is stuck before **`_SituationCleanupSubsystems`**.
+
+### Library Changes
+
+- **`sit/situation_impl_ctrl.h`**: **`audio_ready`**, **`SituationStopAllLoadedSounds`**, **`SituationStopAllTones`**, **`SituationStopAudioCapture`**, then **`ma_device_stop` / `ma_device_uninit`** when the playback device is active — **before** **`glFinish` / `vkDeviceWaitIdle`**. **`_SituationCleanupSubsystems`** still runs later and **skips** duplicate **`ma_device`** teardown (**`is_miniaudio_device_active`** guard).
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **52**.
+
+---
+
+## [v2.4.51 "MIDI graph teardown + hardware MIDI harness gate"] - 2026-05-10
+
+### Description
+
+**`SituationDestroyGraph`** scanned **`node_count`** contiguous indices only — **skipped sparse node slots**, leaked nodes, and skipped **MIDI** teardown (**`Pm_Close`** / **`SIT_MidiDevice_Destroy`**) when holes existed in **`graph->nodes[]`**. Loop now walks **`0 .. SITUATION_MAX_NODES-1`**. Harness **`test_midi_enable_control`** / **`test_midi_auto_connect`** call **`SituationDisableMidiControl`** before **`SituationDestroyGraph`** when **`SIT_TEST_OPEN_MIDI_HARDWARE`** is set and **`Pm_OpenInput`** runs (**PortMidi / driver variance**); default **`sit_test`** skips opening hardware MIDI so **`--module audio`** stays green without privileged drivers.
+
+### Library Changes
+
+- **`sit/aud/node_graph_impl.h`**: **`SituationDestroyGraph`** — full-slot iteration; **MIDI / learn** teardown order aligned with **`SituationDestroyNode`**; clear **`graph->nodes[i]`** after **`free`**.
+
+### Harness / Tests
+
+- **`tests/harness/test_audio.c`**: **`getenv("SIT_TEST_OPEN_MIDI_HARDWARE")`** gates **`SituationEnableMidiControl`** / **`SituationAutoConnectMidi`**; **`SituationDisableMidiControl`** before **`SituationDestroyGraph`** when hardware MIDI was opened.
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **51**.
+
+### Verification
+
+- **`build\sit_test.exe --module audio`** (OpenGL DLL): **96 passed**, **0 failed**; **`cmd /v:on /c "sit_test.exe --module audio >NUL & echo ERRORLEVEL"`** → **`0`** (avoid **`2>NUL`** if the runner appears to hang — stderr is part of the harness).
+
+---
+
+## [v2.4.50 "Harness stderr lock — audio module green"] - 2026-05-10
+
+### Description
+
+Fixes intermittent **native fault / truncated harness lines** when running **`build\sit_test.exe --module audio`** on Windows: **`tests/harness/sit_test_framework.h`** serializes **stderr** output from the runner with a **critical section** ( **`InitializeCriticalSection`** in **`sit_test_init`** ), wraps per-test pass/fail lines and **`sit_test_print_results`** , **`fflush(stderr)`** on unlock, and guards **`test_elapsed`** with **`isfinite`**. Root cause: concurrent **`fprintf(stderr, …)`** from the **audio thread** (and drivers) vs the main-thread harness — CRT **`stderr`** is not reliably thread-safe for interleaved writes.
+
+### Harness / Tooling
+
+- **`tests/harness/sit_test_framework.h`**: **`#include <math.h>`**; **`sit_harness_stderr_enter` / `leave`**; module banner + result **`fprintf`** protected on Windows; non-Windows **`fflush`** only.
+
+### Version
+
+- **`situation.h`**, **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** → **50**.
+
+### Verification
+
+- **`build\sit_test.exe --module audio`**: **96 passed**, **0 failed**, exit code **0** (OpenGL DLL reference build).
+
+### Documentation
+
+- **`doc/situation_api.md`**: **Playback path & threading** overview (**Policy B**, graph edits, **`audio_queue_mutex`**); **`SituationGetMasterOutputMeter`**.
+- **`doc/plan/LIBRARY_BUGFIX_PLAN.md`**: Bug 6 / harness note — sequential **`stderr`** fix; exclusive **re-init** lifecycle still tracked separately.
+
+---
+
+## [v2.4.49 "Master bus meter + completion-plan contracts"] - 2026-05-10
+
+### Description
+
+Adds **`SituationGetMasterOutputMeter`** (**peak** / **RMS** over each final mixed block, relaxed atomics) and **`_SituationPublishMasterBusLevels`** at the end of **`sit_miniaudio_data_callback`** (after tone pool). **`SituationSetAudioOutputMonitor`** is now actually invoked with the final **`pOut`** buffer each period (previously only stored). **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`** updated: **Policy B** pipeline order, **§ Graph topology mutation**, **§ Streaming decoder** (**`audio_queue_mutex`**), master-bus metering checklist.
+
+### Library Changes
+
+- **`sit/situation_impl_decl.h`**: **`audio_meter_peak`**, **`audio_meter_rms`** (`_Atomic float`).
+- **`sit/situation_impl_ctrl.h`**: **`atomic_init`** for meter atomics at audio init.
+- **`sit/situation_impl_audio.h`**: **`_SituationPublishMasterBusLevels`**, **`SituationGetMasterOutputMeter`**; **`#include <math.h>`**.
+- **`sit/situation_api.h`**: **`SituationGetMasterOutputMeter`** declaration.
+- **`sit/k-term/example/situation.h`**: **`SITUATION_VERSION_PATCH`** aligned with root **`situation.h`**.
+
+### Documentation & Tests
+
+- **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`**: Canonical callback stages, contracts, checklist.
+- **`tests/harness/test_audio.c`**: **`test_audio_output_monitor`** calls **`SituationGetMasterOutputMeter`**.
+
+---
+
+## [v2.4.48 "Policy B — loaded voices via default graph Sound Source"] - 2026-05-10
+
+### Description
+
+Implements **Policy B** for **Phase H**: **`SituationPlayLoadedSound`** / streamed **`active_voices`** are decoded and summed **before** **`SituationProcessGraph`** into scratch, then **`sound_source_feed_interleaved_frames`** primes the auto-created **`default_graph`** **`SITUATION_NODE_SOUND_SOURCE`** so the **mixer node** is the real summing path alongside the tone synth. **`_SituationShouldMixLatentVoices`** no longer adds loaded voices after the graph when **`active_graph == default_graph`** and the voice **`SituationSoundSource`** pointer is valid (fallback to latent sum if that pointer is missing).
+
+### Library Changes
+
+- **`sit/aud/sound_source.h`**: **`sound_source_feed_interleaved_frames`**, **`buffer_capacity_samples`**; live feed is memcpy-only (buffer pre-sized at node create).
+- **`sit/aud/device_wrappers.h`**: **`_SituationCreateSoundSource`** preallocates up to **`SIT_SOUND_SOURCE_FEED_MAX_FRAMES`** stereo samples for the callback.
+- **`sit/situation_impl_decl.h`**: **`default_graph_voice_source`** on **`_SituationAudioState`**.
+- **`sit/situation_impl_audio.h`**: **`_SituationMixLoadedVoicesFromSnapshot`**, callback order (**snapshot → Policy B feed → ProcessGraph → conditional latent mix → tones**), capture **`default_graph`** Sound Source **`device_data`** at graph creation; streaming **`ma_decoder_*`** under **`audio_queue_mutex`** (same lock as play/seek/stop queue).
+- **`sit/situation_impl_ctrl.h`**: Clear **`default_graph_voice_source`** before **`SituationDestroyGraph(default_graph)`**.
+
+### Documentation
+
+- **`doc/UPDATELOG.md`**: This entry and v2.4.47 follow-up note.
+
+---
+
+## [v2.4.47 "Unload vs Voice Snapshot — is_processing_snapshot"] - 2026-05-10
+
+### Description
+
+Implements the **`is_processing_snapshot`** contract documented since Velocity-era commentary but previously never wired: the playback callback sets **`atomic_bool is_processing_snapshot`** true while decoding/mixing from **`snapshot_buffer`**, and clears it after the per-frame voice loop. **`SituationUnloadSound`** calls **`SituationStopLoadedSound`** then **`_SituationWaitUntilVoiceSnapshotIdle()`** ( **`thrd_yield`** spin ) before **`ma_free` / `ma_decoder_uninit`**. Prevents use-after-free when unload races the audio thread.
+
+Also fixes **scratch-buffer failure path**: missing decoder/effects temp buffers no longer **`return`** early (which skipped **`tone_mixing`**); **`goto tone_mixing`** instead.
+
+### Library Changes
+
+- **`sit/situation_impl_audio.h`**: **`_SituationWaitUntilVoiceSnapshotIdle`**, atomic snapshot bracket around voice **`for`** loop, unload wait; **`goto tone_mixing`** when scratch buffers NULL.
+
+### Follow-up (post–Policy B / node audio)
+
+**Shipped in v2.4.48**: Policy B voice routing into **`default_graph`** **`SITUATION_NODE_SOUND_SOURCE`** (see entry above).
+
+**Still open**: harness **Bug 6** / full **`sit_test.exe --module audio`** stability (**debugger**); optional **`situation_api.md`** reflection of Policy B + graph-edit rules ( **`AUDIO_NODE_COMPLETION_PLAN.md`** now describes mutation + decoder + meter — **v2.4.49**).
+
+---
+
+## [v2.4.46 "Audio Callback Pipeline + Documentation Alignment"] - 2026-05-10
+
+### Description
+
+Closes the **Phase H integration gap** where **`active_graph`** (including the auto-created **default graph**) caused **`SituationProcessGraph`** to run but **`goto tone_mixing`** skipped **`active_voices`** — loaded/streamed sounds could be **inaudible**. The callback now **conditionally** mixes **latent voices** into the main buffer after the graph when **`_SituationShouldMixLatentVoices`** (no graph, empty graph, no mixer node in graph, **`default_graph`**, or user graph without mixer — user graph **with** mixer defers in-graph routing until wired). **Shutdown** destroys **`default_graph`** via **`SituationDestroyGraph`** after the playback device is stopped, clearing **`active_graph`** when it pointed at **`default_graph`**.
+
+Embeddable examples: **`build_examples.bat`** (OpenGL) now passes **`-DSITUATION_ENABLE_THREADING`** so monolithic builds link **`SituationSetThreadAffinity`** (audio callback). **`examples/tone_test.c`** no longer redefines **`SITUATION_USE_OPENGL`**.
+
+Documentation: **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`** — new **§ Canonical miniaudio callback pipeline** (library contract, Phase H post-mortem, checklist). **`doc/plan/PHASE_H_DETAILED_PLAN.md`** — revision note pointing to that contract. **`doc/plan/LIBRARY_BUGFIX_PLAN.md`** — **§ Version milestones** (**v2.5** minor bump gated until full shipping bar). **`README.md`** — Global Architecture mermaid **Audio** subgraph updated (graph + voices + tones → device).
+
+### Library Changes
+
+- **`sit/situation_impl_audio.h`**: **`_SituationGraphHasMixerNode`**, **`_SituationShouldMixLatentVoices`**; callback runs graph then latent mix (no unconditional **`goto tone_mixing`** after graph); tone pool unchanged.
+- **`sit/situation_impl_ctrl.h`**: **`_SituationCleanupSubsystems`** — **`SituationDestroyGraph(default_graph)`** after device teardown.
+
+### Documentation & Build
+
+- **`README.md`**, **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`**, **`doc/plan/PHASE_H_DETAILED_PLAN.md`**, **`doc/plan/LIBRARY_BUGFIX_PLAN.md`**, **`build_examples.bat`**, **`examples/tone_test.c`** — as above.
+
+### Goals for the **next** patch (v2.4.47+ direction — not committed scope)
+
+1. **Thread safety**: Implement **`is_processing_snapshot`** (or equivalent) so **`SituationUnloadSound`** cannot free **`_SituationSound`** while the callback decodes from a snapshot pointer; or document **hard** threading constraints if intentional.
+2. **Harness / Bug 6**: Pin **full** **`sit_test.exe`** failure (audio module sequential crash / sequential suite); continue **device lifecycle** proof (**`ma_device_init`** boundaries, exclusive vs shared policy).
+3. **Pipeline policy**: Choose and implement **graph-only voice routing** (**policy B**) *or* keep **dual-path** and expose **meter / LED** taps consistent with **`AUDIO_NODE_COMPLETION_PLAN.md`**.
+4. **Graph mutation**: Define **when** the main thread may change topology relative to **`SituationProcessGraph`** (immutable graph vs queued edits).
+
+---
+
+## [v2.4.45 "Vulkan Responsive Waits + VD Composite Guard"] - 2026-05-10
+
+### Description
+
+Improves **interactive** behavior and **harness stability** on Windows: GPU waits no longer monopolize the main thread without pumping the message queue, and **virtual display compositing** no longer calls **`vkCmdEndRenderPass`** when the application never started a main swapchain pass (fixes **SIGSEGV** in **`render_virtual_displays`**). Screenshot readback sync waits only the **previous frame’s fence** (not every in-flight slot) after a **zero-timeout** fast path on `vkWaitForFences`. Optional tunables: **`SITUATION_VULKAN_FENCE_WAIT_TIMEOUT_NS`**, **`SITUATION_VULKAN_ACQUIRE_TIMEOUT_NS`**, **`SITUATION_VULKAN_LOG_SLOW_ACQUIRE_MIN_MS`** (`sit/situation_api.h`). **`build_situation.bat`** accepts **`%EXTRA_VULKAN_CFLAGS%`** for experiment defines.
+
+### Library Changes
+
+- **`sit/situation_impl_decl.h`**: **`_SituationVulkanWaitFencePumpWindow`** — try **`vkWaitForFences(..., 0)`** first; then **16 ms** slices + **`glfwPollEvents`** until **`SITUATION_VULKAN_FENCE_WAIT_TIMEOUT_NS`**. **`inside_main_swapchain_render_pass`** on **`_SituationVulkanState`**.
+- **`sit/situation_impl_renderer.h`**: Reset **`inside_main_swapchain_render_pass`** after **`vkBeginCommandBuffer`** on acquire; set/clear in **`SituationCmdBeginRenderPass`** / **`SituationCmdEndRenderPass`** (main swapchain only for begin).
+- **`sit/situation_impl_vd.h`**: **`SituationRenderVirtualDisplays`** — end caller’s pass **only if** **`inside_main_swapchain_render_pass`**; set flag **`true`** after restart **`vkCmdBeginRenderPass`** at end of composite.
+- **`sit/situation_impl_image.h`**: Vulkan **`SituationLoadImageFromScreen`** — wait **one** fence (**prev** frame slot) via the pump helper instead of **`vkDeviceWaitIdle`** on all slots.
+
+### Harness (reference: NVIDIA GTX 1070, Vulkan)
+
+- **`sit_test.exe --module graphics`**: completes in ~**13 s** wall time (typical); **55 / 78** tests passed on this run — remaining failures are mostly **pixel readback / descriptor / texture** assertions, not UI hangs.
+
+### Known Issues
+
+- Full **78/78** Vulkan graphics parity not yet achieved on this GPU; sequential **`sit_test.exe`** without filters may still hit **Bug 6** (audio).
+
+---
+
+## [v2.4.44 "Vulkan Screenshot Swapchain Recreate"] - 2026-05-10
+
+### Description
+
+Fixes Vulkan **`SituationLoadImageFromScreen`** seeing an empty screenshot cache (`screenshot_valid == false`, `screenshot_width/height == 0`) even after a successful pre-present GPU copy and CPU resolve. **`vkQueuePresentKHR`** often returns **`VK_SUBOPTIMAL_KHR`** / **`VK_ERROR_OUT_OF_DATE_KHR`**, which triggers **`_SituationVulkanRecreateSwapchain`** → **`_SituationVulkanCleanupSwapchain`**. That path previously called **`_SituationVulkanDestroyScreenshotResources()`**, wiping the cache **in the same `SituationEndFrame`** after **`_SituationVulkanResolveScreenshotAfterSubmit`** had already filled it — before the application could call **`SituationLoadImageFromScreen`**. Swapchain recreation still reallocates screenshot staging via **`_SituationVulkanEnsureScreenshotResources`** when the extent changes.
+
+### Library Changes
+
+- **`sit/situation_impl_renderer.h`**: Removed **`_SituationVulkanDestroyScreenshotResources`** from **`_SituationVulkanCleanupSwapchain`** (comment explains ordering vs present/recreate). Clamp **`sit_render.vk.max_frames_in_flight`** to **`SITUATION_MAX_FRAMES_IN_FLIGHT`** so fixed-size ring buffers and **`screenshot_copy_pending`** slots cannot diverge. **`_SituationVulkanEnsureScreenshotResources`**: staging buffer allocation matches **`_SituationVulkanBlitImageToHostVisibleBuffer`**; CPU **`screenshot_buffer`** sized **`width × height × 4`** (tight RGBA).
+- **`sit/situation_impl_renderer_fwd.h`**: Forward declaration for **`_SituationVulkanCreateGraphicsPipeline`** includes **`uint32_t pipeline_flags`** (matches definition; fixes Vulkan DLL build).
+
+### Documentation
+
+- **`doc/plan/LIBRARY_BUGFIX_PLAN.md`**: Vulkan Bug **V6** primary failure mode closed; version policy and summary table updated.
+
+### Known Issues
+
+- Full **`sit_test.exe`** sequential run may still hit **Bug 6** (audio re-init / exclusive mode) or unrelated crashes; re-measure Vulkan graphics pass count after stabilization.
+
+---
+
+## [v2.4.43 "Vulkan Screenshot Readback"] - 2026-05-10
+
+### Description
+
+Refines Vulkan pre-present screenshot capture (Bug V6 follow-up): correct CPU-side pixel layout vs swapchain **BGRA**, per-frame pending flags for the render thread, synchronization before readback, dimension/index alignment with the swapchain, and quad push constant sizing. Vulkan DLL builds define **`CGLM_FORCE_DEPTH_ZERO_TO_ONE`** so orthographic projection matches Vulkan clip space.
+
+### Library Changes
+
+- **BGRA → RGBA normalization** (`sit/situation_impl_renderer.h`): After `vkCmdCopyImageToBuffer`, map staging memory through `_SituationVulkanCopyMappedColorToRGBA` so CPU buffers match OpenGL `GL_RGBA` / harness expectations for `VK_FORMAT_B8G8R8A8_*` swapchains.
+- **Per-slot screenshot pending** (`sit/situation_impl_decl.h`, `sit/situation_impl_renderer.h`): Replaced global `screenshot_copy_recorded_this_frame` with `screenshot_copy_pending[SITUATION_MAX_FRAMES_IN_FLIGHT]` so the next frame’s `EndFrame` does not clear another frame’s copy flag before the render thread resolves it.
+- **Readback sync** (`sit/situation_impl_image.h`): `SituationLoadImageFromScreen` calls `vkDeviceWaitIdle` before using the cached buffer so submit + GPU copy + CPU resolve complete when using the async render thread.
+- **Dimension / fallback** (`sit/situation_impl_image.h`): Prefer `swapchain_extent` for width/height when comparing to the cached screenshot; fallback blit uses `last_presented_image_index` when valid.
+- **Quad push constants** (`sit/situation_impl_renderer.h`): Push exactly **104** bytes (layout match), not `sizeof(struct)` which may include tail padding on some ABIs.
+- **Build** (`build_situation.bat`, `build_tests.bat`): Vulkan compile adds `-DCGLM_FORCE_DEPTH_ZERO_TO_ONE`.
+- **Screenshot barrier (Gate B)** (`sit/situation_impl_renderer.h`): `PRESENT_SRC_KHR` → `TRANSFER_SRC_OPTIMAL` now waits on **`VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT`** / **`VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT`** instead of using `TRANSFER` as the source stage (which did not order against the render pass that drew into the swapchain image). Avoids undefined readback timing before fragment output is visible.
+
+### Documentation
+
+- **`doc/plan/LIBRARY_BUGFIX_PLAN.md`**: Bug V6 status and Vulkan summary updated for this release.
+
+### Known Issues
+
+- Pixel-equality tests could still fail when **`vkQueuePresentKHR`** triggered swapchain recreate **before `SituationLoadImageFromScreen`** — resolved in **`v2.4.44`** (do not destroy screenshot buffers inside **`_SituationVulkanCleanupSwapchain`**). Driver-specific edge cases may still warrant validation-layer runs.
+
+---
+
 ## [v2.4.42 "Vulkan Test Harness"] - 2026-05-08
 
 ### Description
@@ -1840,2665 +4492,7 @@ situation/                         # Project root
 - `doc/ERROR_FUNCTION_CLEANUP.md` - Error handling standardization
 - `doc/COMPILATION_GUIDE.md` - Comprehensive compilation instructions
 - `doc/DOCUMENTATION_UPDATE_V2_4_0.md` - Documentation update summary
-
-## [v2.3.64 "Registry Phase 1"] - 2026-03-01
-
-### Description
-
-This release implements Phase 1 of the Audio Device Registry system, establishing the foundation for a unified, registry-driven audio processing architecture. All audio devices (effects, sources, captures, utilities) will be registered with metadata and instantiable as nodes in a graph.
-
-### New Features
-
-- **Device Registry System:**
-  - Created `sit/aud/device_registry.h` with complete registry API
-  - Enumerations for device categories, control types, node types, and errors
-  - Structures for device metadata, control descriptors, and ports
-  - Registration API with validation and duplicate detection
-  - Query API for introspection (by type, by index, iteration)
-  - Helper functions for category/type names and error messages
-
-- **Device Registration:**
-  - Created `sit/aud/registry_init.h` with device registration functions
-  - Registered 4 initial devices: Reverb, Echo, Tone Synth, Panner
-  - Comprehensive control descriptors with ranges, defaults, units
-  - Support for enum controls (e.g., waveform selection)
-  - Support for control inputs (for modulation)
-
-- **Integration:**
-  - Registry automatically initializes on first audio device setup
-  - One-time initialization with static flag
-  - No API changes, fully internal
-
-### Architecture
-
-- **Registry Storage:** Static array (64 device max)
-- **Metadata Validation:** Ranges, names, consistency checks
-- **Thread Safety:** Single-threaded registration, thread-safe queries
-- **Extensibility:** Function pointers for Phase 3 (node lifecycle)
-
-### Documentation
-
-- Created `doc/PHASE1_COMPLETE.md` - Phase 1 completion summary
-- Updated `doc/plan_audio_registry.md` - Reflects Phase 1 completion
-- Comprehensive inline documentation in all new headers
-
-### Next Steps
-
-- Phase 2: Register remaining 14+ devices (Chorus, Phaser, Overdrive, Dynamics, EQ, etc.)
-- Phase 3: Node instantiation and patching API
-- Phase 4: Graph evaluation in audio callback
-- Phase 5: Persistence and custom device registration
-
-## [v2.3.63 "Tone Synth Modularization"] - 2026-03-01
-
-### Description
-
-This release continues the audio subsystem modularization effort by extracting the built-in Tone Synthesizer into a dedicated internal header. The tone synthesis implementation has been moved from the monolithic audio file into `sit/aud/tone_synth.h`, improving code organization and maintainability without altering the public API.
-
-### Refactoring
-
-- **Tone Synthesizer Modularization:**
-  - Extracted all tone synthesis functions into `sit/aud/tone_synth.h`.
-  - Includes tone playback APIs (`SituationPlayToneEx`, `SituationPlayTone`, `SituationStopTone`, `SituationStopAllTones`, `SituationPlayMidiNote`).
-  - Includes internal handle management helpers (`_MakeToneHandle`, `_IsValidToneHandle`, `_GetToneFromHandle`).
-  - The header is automatically included by `situation_impl_audio.h`.
-  - Follows the same modularization pattern as `sit/aud/reverb.h` and `sit/aud/echo.h`.
-
-### Architectural Correction
-
-- **Removed Tone-Specific Reverb:**
-  - Removed `SituationSetToneReverbEnabled()` and `SituationSetToneReverbParameters()` functions.
-  - Removed `tone_reverb_state` and `tone_reverb_enabled` fields from audio state.
-  - Tone effects should be handled through the mixer's aux bus system, not as a separate global reverb.
-  - This aligns the tone synthesizer with the professional mixer architecture introduced in v2.3.55-59.
-
-### Documentation
-
-- **Audio Device Inventory:**
-  - Created `doc/AUDIO_DEVICE_INVENTORY.md` documenting all 18+ audio processing devices.
-  - Comprehensive catalog of effects, sources, dynamics, and utilities.
-  - Organized by category with full control specifications.
-
-- **Registry Plan Update:**
-  - Updated `doc/plan_audio_registry.md` to reflect actual device count (18+ vs. original estimate of 7).
-  - Revised Phase 2 to include all existing modular devices from `sit/aud/`.
-  - Clarified integration path for mixer-embedded devices (Dynamics, EQ, Panner).
-
-## [v2.3.62 "Render Pass Cache"] - 2026-03-11
-
-### Description
-
-This release introduces a unified Render Pass caching mechanism for the Vulkan backend, aiming to optimize draw call submissions and improve API parity between Vulkan and OpenGL. The core structures and systems as described in the `RENDER_PASS_CACHE_PLAN.md` have been fully integrated, alongside legacy API deprecations.
-
-### New Features & Optimizations
-
-- **Vulkan Render Pass Cache (Phase 1 & 2):**
-  - Implemented `_SituationVulkanGetOrCreateRenderPass` to dynamically cache and reuse `VkRenderPass` handles based on attachment layout, formats, and load/store operations.
-  - Added a deterministic 32-bit bitfield (`_SituationRenderPassKey`) to ensure O(1) cache lookups.
-  - Resolved the `initialLayout` Vulkan requirements (handling `VK_IMAGE_LAYOUT_UNDEFINED`, `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`, and `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` states) based on the specified `SituationLoadOp`.
-  - Added proper lifecycle hooks to destroy the cache during swapchain resizes and full shutdown to prevent memory leaks.
-
-- **Unified Command Routing (Phase 3 & 4):**
-  - Updated `SituationCmdBeginRenderPass` to construct render passes via the new caching system, fully supporting custom load/store configurations in Vulkan.
-  - Modified OpenGL `SIT_OP_BEGIN_RENDER_PASS` packets to directly respect `SIT_LOAD_OP_LOAD`, ensuring `glClear` is skipped correctly on all respective buffers.
-  - Re-implemented `SituationCmdBeginRenderToDisplay` as a backward-compatible wrapper that translates hardcoded parameters into a fully compliant `SituationCmdBeginRenderPass` request with `SIT_LOAD_OP_CLEAR`.
-  - Deprecated `SituationCmdBeginRenderToDisplay` and `SituationCmdEndRender` via compiler macros in favor of the new verbose APIs.
-
-- **Edge Cases & Subpass Dependencies (Phase 5):**
-  - Integrated `VkSubpassDependency` injections for proper GPU memory barriers to prevent read/write hazards across sequential passes.
-  - Enhanced cache keys and cache generation logic to properly support explicit operations on the Stencil buffer.
-
-### Known Issues & Ongoing Work
-
-- **Virtual Display Compositing Regression:** Although Phase 4 specifies migrating Virtual Display compositing logic (`SituationRenderVirtualDisplays`) to use `SituationCmdBeginRenderPass` with `SIT_LOAD_OP_LOAD` for advanced blending, the current implementation still relies heavily on explicit backend-specific commands (raw `vkCmdBeginRenderPass`, `vkCmdCopyImage`, and `glDrawArrays` calls). The final blit operations violate the unified standard and bypass the new cache mechanisms. This requires an immediate refactoring pass in a subsequent update to achieve true API unification.
-
-## [v2.3.61 "Code Hygiene"] - 2026-03-10
-
-### Description
-
-This release focuses on improving the internal organization of the library by modularizing the audio subsystem. The built-in Reverb and Echo implementations have been extracted from the monolithic implementation file into dedicated internal headers. This change improves code navigability and maintainability without altering the public API.
-
-### Refactoring
-
-- **Audio Modularization:**
-  - Extracted the Schroeder/Freeverb implementation into `sit/aud/reverb.h`.
-  - Extracted the Echo/Delay logic into `sit/aud/echo.h`.
-  - Implemented `_SituationConfigEcho` to handle safe initialization and runtime parameter updates for `ma_delay`.
-  - Restored the missing echo processing hook in `sit_miniaudio_data_callback`.
-  - Added `delay_initialized` state tracking to `_SituationSound` to prevent use of uninitialized resources.
-  - Both headers are automatically included by `situation_impl_audio.h`.
-
-## [v2.3.60 "Uniform Optimization"] - 2026-03-09
-
-### Description
-
-This release focuses on optimizing the internal rendering infrastructure, specifically the OpenGL backend's uniform management system. To prevent performance degradation in complex scenes with heavy shader usage, the uniform cache (`_SituationUniformMap`) now features dynamic resizing. This ensures that uniform lookups remain fast (O(1)) even as the number of unique uniforms grows beyond the initial capacity.
-
-### Optimizations
-
-- **Dynamic Uniform Map Resizing:**
-  - Implemented `_sit_uniform_map_resize` to automatically double the capacity of the internal hash map when the load factor exceeds 0.75.
-  - Eliminated potential hash collision chains in scenarios with hundreds of shader uniforms, ensuring consistent frame times.
-  - This addresses a long-standing TODO item in the rendering core.
-
-## [v2.3.59 "Mixer Persistence" (Phase 5)] - 2026-03-08
-
-### Description
-
-This release completes Phase 5 of the Situation Mixer roadmap, introducing full session persistence and the final set of missing API controls. The mixer is now a fully stateful console, capable of saving and restoring complex routing, FX chains, and mix parameters with a single call. This "Polish" release also hardens the internal threading model to ensure lock-free safety during rapid session loading.
-
-### New Features
-
-- **Session Persistence:**
-  - `SituationSaveMixerSession`: Serializes the entire mixer state (Tracks, Buses, EQ, Dynamics, Routing, Levels) to a highly optimized binary file (`.smx2`).
-  - `SituationLoadMixerSession`: Reconstructs a full mixing console from disk, automatically creating tracks and restoring all parameters with bit-perfect accuracy.
-  - **Lossless Parameter Caching:** Refactored `SituationAudioTrack` to strictly cache all EQ and Dynamics settings, ensuring that what you save is exactly what you get back, even if the graph nodes are re-instantiated.
-- **Global Controls:**
-  - `SituationSetMasterVolume` / `SituationGetMasterVolume`: Added the final missing link—a master fader for the entire mix.
-  - `SituationBindCaptureDevice`: Allows explicit binding of hardware capture devices (microphones) to specific mixer tracks, persisting across sessions.
-- **Safety & Polish:**
-  - **Deadlock-Free Loading:** Refactored track addition and sidechain routing to use lock-free internal helpers, preventing mutex contention during heavy session loads.
-  - **Validation:** Added magic number checks (`SMX2`) and versioning to the save format to prevent loading corrupted or incompatible session files.
-
-## [v2.3.58 "FX & Metering" (Phase 4)] - 2026-03-07
-
-### Description
-
-This release implements Phase 4 of the Audio Mixer roadmap, introducing a powerful "Plug-in" architecture for Aux Buses and real-time metering for tracks. Developers can now insert any standard `miniaudio` node (filters, reverbs, delays) directly into the signal chain of an Aux bus, creating a modular FX system. Additionally, thread-safe metering APIs provide real-time visualization of signal levels and compressor gain reduction.
-
-### New Features
-
-- **FX Slots:** Aux Buses now support an insert chain of up to 8 generic `ma_node` effects.
-  - `SituationInsertEffect`: Dynamically inserts an effect node into a specific slot, automatically rewiring the audio graph.
-  - `SituationRemoveEffect`: Safely removes an effect node and bridges the connection gap.
-  - `SituationGetMixerGraph`: Exposes the mixer's internal graph, allowing users to initialize their own custom `ma_node` instances.
-- **Metering System:**
-  - **Track Peak Metering:** Added `SituationGetTrackMeter` to retrieve real-time Left/Right peak levels safely from the audio thread.
-  - **Gain Reduction:** `SituationGetTrackMeter` also reports the instantaneous gain reduction (dB) from the track's dynamics processor, essential for visualizing compression.
-  - **Zero-Lock Monitoring:** All metering data is exposed via atomic variables, ensuring that UI visualization never blocks or stalls the audio processing thread.
-
-## [v2.3.57 "Mixer Routing" (Phase 3)] - 2026-03-06
-
-### Description
-
-This release delivers the routing infrastructure for the Situation Mixer (Phase 3). It introduces 8 Auxiliary Buses, comprehensive Send controls (Pre/Post-Fader), and flexible output routing. Additionally, standard mixer controls like Pan, Mute, and Solo (Solo-In-Place) are now fully implemented, turning the engine into a capable mixing console.
-
-### New Features
-
-- **Auxiliary Buses:** The mixer now initializes 8 stereo Aux buses (`SituationAudioBus`). These can be used for effects sends (Reverb/Delay) or sub-grouping.
-- **Flexible Sends:** Tracks can now send audio to any Aux bus via `SituationSetTrackSend`.
-  - **Pre-Fader:** Sends signal before the fader (useful for monitoring/foldback).
-  - **Post-Fader:** Sends signal after the fader (useful for FX sends).
-- **Output Routing:** Tracks can be routed to the Master Bus (default) or any Aux Bus (for subgroups like "Drums") using `SituationSetTrackOutput`.
-- **Mixer Controls:**
-  - **Pan:** Added `SituationPannerNode` for stereo positioning (`SituationSetTrackPan`).
-  - **Mute:** `SituationSetTrackMute` silences the track (and its Pre-Fader sends).
-  - **Solo:** `SituationSetTrackSolo` implements exclusive listening logic, automatically muting all non-soloed tracks.
-
-## [v2.3.56 "Channel Strip" (Phase 2)] - 2026-03-05
-
-### Description
-
-This release completes Phase 2 of the Audio Mixer roadmap, transforming each track into a professional-grade mixing console channel. Every `SituationAudioTrack` now includes a hard-wired Channel Strip featuring a 4-band Parametric EQ and a full Dynamics Processor (Compressor/Limiter/Gate) with side-chain support.
-
-### New Features
-
-- **4-Band Parametric EQ:** Each track now has a built-in EQ chain: High-Pass Filter, Low-Shelf, Peaking, and High-Shelf. Configurable via `SituationSetTrackEQ`.
-- **Dynamics Processor:** Implemented `SituationDynamicsNode` providing Compressor, Limiter, and Noise Gate functionality per track. Configurable via `SituationSetTrackDynamics`.
-- **Side-Chain Ducking:** Added `SituationSetTrackSideChain` to route audio from one track (Key) to control the compression of another (Target), enabling classic radio ducking and EDM pumping effects.
-- **Zero-Allocation Routing:** The new EQ and Dynamics nodes are pre-allocated within the `SituationAudioTrack` struct, ensuring no memory allocation occurs when enabling or tweaking effects during playback.
-
-## [v2.3.55 "Audio Mixer Foundation" (Phase 0 & 1)] - 2026-03-04
-
-### Description
-
-This release lays the groundwork for the new professional-grade Audio Mixer architecture. It introduces the core infrastructure for track management, device enumeration, and graph-based routing, moving beyond simple sound playback towards a full mixing console model.
-
-### New Features
-
-- **Device Enumeration (Phase 0):** Added `SituationEnumerateAudioDevices` and `SituationFindBestDevice`. Applications can now query detailed capabilities (channels, sample rates) of all available playback and capture devices and intelligently select the best match.
-- **Mixer Core (Phase 1):** Introduced `SituationAudioMixer`, `SituationAudioTrack`, and `SituationAudioBus` structures. Implemented the lifecycle functions `SituationCreateMixer` and `SituationDestroyMixer`.
-- **Track Management:** Added `SituationAddTrack` to create tracks dynamically. Implemented basic volume controls (`SituationSetTrackVolume`).
-- **Graph Routing:** Implemented `SituationRouteSoundToTrack`. Sounds can now be routed into specific mixer tracks instead of playing directly to the endpoint, enabling per-track processing.
-- **Thread-Safe Integration:** Updated the main audio callback to support the new mixer graph. If a mixer is active, the callback safely locks the topology mutex and delegates processing to the mixer's node graph (`ma_node_graph_read_pcm_frames`).
-
-## [2.3.54] - 2026-02-xx
-**"Documentation Fortress" Release**
-
-### Documentation Overhaul (Massive)
-- Added **over 2,000 lines** of comprehensive, consistent inline documentation across the entire codebase.
-- Covered nearly every major subsystem with detailed headers:
-  - Full init chain (`SituationInit` → `_SituationInitSubsystems` → backend-specific `_SituationInitOpenGL`/`_SituationInitVulkan`)
-  - Render thread startup, handoff, and queue management (`_SituationInitRenderThread`, `_SituationRenderThreadEntry`, `_SituationEnqueueRenderList`, `_SituationReplayToQueue`)
-  - Resource slot patterns (alloc/get/free/validate for shaders, meshes, buffers, compute pipelines, models)
-  - Virtual display & compositing paths (`SituationCreateVirtualDisplay`, `SituationRenderVirtualDisplays`)
-  - Texture/buffer creation wrappers (`SituationCreateTexture`, `SituationCreateTextureEx`, `SituationUpdateBuffer`)
-  - Quad renderer init (`_SituationInitQuadRenderer`) and draw command (`SituationCmdDrawQuad`)
-  - Text renderer bootstrap (`_SituationInitTextRenderer`, bitmap font loading)
-  - Bindless GL glue for virtual displays (`_SituationVirtualBindlessInit`, `_SituationVirtualBindlessBind`)
-  - Async submission paths (`SituationSubmitRenderList` variants with thread pool)
-  - Performance/debug helpers (`SituationExportRenderHistogram` — JSON latency export)
-  - Filesystem & hot-reload helpers (load/save async workers, path utils)
-  - And many more internal helpers, getters, and Vulkan/OpenGL specifics
-- Standardized style: `[INTERNAL]` for private helpers, full SITAPI docs with error codes, thread safety notes, cross-references, and usage examples where helpful.
-- Result: The codebase is now **self-documenting** — much easier to navigate, maintain, extend, or hand off.
-
-### Critical Stability Fixes (from v2.3.53)
-
-This release also addresses critical stability issues identified in the OpenGL backend, specifically targeting Multi-Draw Indirect (MDI) batching, resource destruction safety, and ring buffer management. These fixes prevent driver crashes, visual corruption, and potential memory leaks during high-load scenarios and application shutdown.
-
-- **MDI Pipeline Consistency:** Fixed a severe bug in the MDI auto-batcher (`_SituationGLExecuteCommands`) where batches were formed based solely on VAO continuity, ignoring shader program changes. This could cause meshes to be drawn with the wrong shader, leading to corruption or crashes. The batcher now strictly enforces pipeline consistency (`current_recording_shader_id`) during lookahead.
-- **Fence Cleanup on Shutdown:** `_SituationCleanupOpenGL` now performs a timed wait (`glClientWaitSync` with 100ms timeout) on any remaining fences before deletion. This prevents driver stalls or crashes caused by deleting active sync objects during context teardown.
-- **VAO Restore Safety:** Added a safety check to ensure `global_vao_id` is valid before attempting to restore it after an MDI batch. This prevents undefined behavior if the global VAO was never created or has been destroyed.
-- **MDI Ring Buffer Overflow:** Implemented a lower-bound check in the MDI ring buffer allocation logic. This prevents the atomic offset from wrapping around (negative values) or overlapping with the frame start offset, protecting against silent buffer corruption during long sessions.
-
-## [v2.3.52 "Virtual Bindless" (OpenGL Fallback)] - 2026-03-02
-
-### Description
-
-This release introduces the "Virtual Bindless" texture system, a powerful compatibility layer for the OpenGL backend. It allows users to write modern, bindless-style shader code (accessing global texture arrays via indices) that runs transparently on hardware lacking native `GL_ARB_bindless_texture` support (e.g., older Intel iGPUs).
-
-### New Features
-
-- **Virtual Bindless Fallback:** Implemented a CPU-side texture slot manager (`_SituationVirtualBindlessBind`) that emulates bindless access using a limited pool of 32 texture units and an LRU eviction strategy.
-- **Shader Injection:** The shader compiler (`_SituationCompileGLShader`) now automatically detects if the fallback is active and injects compatibility macros and uniforms (`_sit_virtual_textures`, `_sit_texture_slot_id`). This allows standard bindless shaders (`global_textures[nonuniformEXT(id)]`) to compile and run without modification on legacy hardware.
-- **Unified Command Execution:** `SituationCmdBindTextureSet` and `_SituationGLExecuteCommands` now intelligently switch between native bindless, virtual bindless, and standard binding paths based on runtime feature detection.
-- **Debug Stats:** Added real-time tracking of Virtual Bindless cache hits and misses to the `SituationDrawMetricsOverlay`.
-
-## [v2.3.51 "MDI-Boosted" (OpenGL Multi-Draw Indirect)] - 2026-03-02
-
-### Description
-
-This release implements the "Max Out Core" optimization strategy for the OpenGL backend with Multi-Draw Indirect (MDI) auto-batching. It drastically reduces CPU-to-driver overhead for repetitive mesh rendering by intelligently collapsing consecutive draw commands into a single dispatch. This brings OpenGL performance significantly closer to Vulkan for high-instance-count scenarios while maintaining the simple "Immediate Mode" API surface.
-
-### New Features
-
-- **MDI Auto-Batching:** The Soft Command Buffer executor (`_SituationGLExecuteCommands`) now detects sequences of `SIT_OP_DRAW_MESH` commands that share the same Vertex Array Object (VAO). Instead of issuing individual `glDrawElements` calls, it batches them into a persistent, mapped `GL_DRAW_INDIRECT_BUFFER` ring and executes them with a single `glMultiDrawElementsIndirect` call.
-- **Robust Detection:** Implemented strict lookahead logic to ensure batching only occurs when it is safe (same VAO, same pipeline implied by opcode continuity).
-- **Persistent Ring Buffer:** Added `_SituationInitGLMDIBuffer` to manage a per-frame segmented ring buffer (1MB per frame) for zero-copy command generation.
-
-## [v2.3.50 "Fence-Guarded" (OpenGL Deferred Destruction)] - 2026-03-01
-
-### Description
-
-This release introduces a robust, fence-guarded deferred destruction system for the OpenGL backend. It eliminates CPU stalls caused by blocking `glFinish` or unsafe immediate resource deletion. By utilizing `GL_ARB_sync` fences and per-frame graveyards, the engine now ensures resources are only destroyed once the GPU has fully completed the frame in which they were queued, matching the reliability of the Vulkan backend.
-
-### Critical Fixes
-
-- **Non-Blocking Destruction:** Replaced the global OpenGL graveyard with per-frame queues.
-- **Fence Synchronization:** Implemented `glFenceSync` tracking for every frame.
-- **Safe Flushing:** `_SitGLFlushGraveyard` now polls fences using `glClientWaitSync` with a timeout of 0, ensuring deletions only occur when safe without stalling the main thread.
-- **Polish:** Fence creation is now correctly sequenced after `glfwSwapBuffers` with an explicit `glFlush` for maximum driver compatibility.
-
-## [v2.3.49 "Async Shader Linking" (Eliminate Hot-Reload Stalls)] - 2026-02-26
-
-### Description
-
-This release introduces Asynchronous Shader Linking for the OpenGL backend, utilizing `KHR_parallel_shader_compile`. This eliminates the CPU stall previously caused by `glLinkProgram` during hot-reloading, making OpenGL hot-reloading instantaneous and stutter-free, matching the performance of the Vulkan backend.
-
-### Critical Fixes
-
-- **Async Linking:** Implemented `_SituationCreateGLShaderProgramAsync` to initiate linking without blocking.
-- **Non-Blocking Hot-Reload:** Refactored `_SituationPerformHotReloadPass` to use the async creation path.
-- **Background Polling:** Modified `SituationAcquireFrameCommandBuffer` to poll for `GL_COMPLETION_STATUS_KHR` and finalize the shader swap only when linking is complete.
-
-## [v2.3.48 "Hardening" (Thread Safety & Verification)] - 2026-02-25
-
-### Description
-
-This release hardens the library against critical race conditions between the main thread and the I/O thread (Hot-Reloading), and ensures safer shutdown sequences. It specifically targets potential crashes during resource creation and cleanup in multi-threaded environments.
-
-### Critical Fixes
-
-- **Resource Registry Locking:** Protected resource slot allocation in `SituationCreateTextureEx`, `SituationCreateMesh`, and `SituationLoadShaderFromMemory` with `resource_registry_mutex`. This prevents the I/O thread from corrupting the registry while the main thread creates resources.
-- **Bindless Descriptor Safety:** Protected `vkUpdateDescriptorSets` calls in `SituationCreateTextureEx` (both bindless and standard paths) with `resource_registry_mutex`. This prevents race conditions where the hot-reload system might be updating descriptors concurrently with new resource creation.
-- **Shutdown Safety:** Reordered `SituationShutdown` to destroy the thread pool *before* waiting for the GPU and cleaning up resources. This eliminates a class of shutdown crashes where background threads attempted to access resources that were already being destroyed.
-
-### Documentation
-
-- **Verification Suite:** Added `situation_verify.cpp`, a standalone test suite to validate registry stress, hot-reload logic, and bindless descriptor integrity.
-
-## [v2.3.47 "Renderer Stability" (Vulkan Push Constant Fix)] - 2026-02-24
-
-### Description
-
-This release addresses a critical alignment issue in the Vulkan backend's push constant logic. It resolves a state corruption bug where `SituationCmdDrawQuad` would overwrite the texture ID bound by `SituationCmdBindTextureSet`, ensuring consistent "bind-then-draw" behavior across both OpenGL and Vulkan backends.
-
-### Critical Fixes
-
-- **Vulkan State Preservation:** Fixed `SituationCmdDrawQuad` to use split `vkCmdPushConstants` calls. This preserves the `texture_id` (located at offset 96) when updating the `use_texture` flag (offset 100), preventing the shader from reverting to untextured rendering unexpectedly.
-- **Struct Alignment:** Corrected the internal push constant structure in `SituationCmdDrawQuad` to include padding for the `texture_id` field, ensuring the `use_texture` flag aligns correctly with the shader's memory layout.
-
-### Documentation
-
-- **Custom Shader Warning:** Added a warning to `SituationCmdBindTextureSet` clarifying that custom shaders using this command must adhere to the standard push constant layout (Model 64b + Color 16b + UVRect 16b = 96b offset for `texture_id`).
-
-## [v2.3.46 "Bindless" (Hotfix: Text Crash)] - 2026-02-23
-
-### Description
-
-This is a critical hotfix for the v2.3.45 "Bindless" release. It resolves a crash in the Vulkan Text Renderer where legacy "Bindful" logic (expecting specific descriptor sets) was incompatible with the new Bindless architecture (global descriptor array).
-
-### Critical Fixes
-
-- **Vulkan Text Renderer:** Updated `SIT_TEXT_FRAGMENT_SHADER` and pipeline logic to correctly use the global bindless descriptor set.
-- **Shader Correction:** Moved GLSL extension directives to the top of the shader source to comply with strict driver validation.
-- **Draw Logic:** `SituationCmdDrawTextEx` now pushes texture IDs via Push Constants instead of attempting to bind non-existent descriptor sets.
-
-## [v2.3.45 "Bindless" (Vulkan Descriptor Indexing)] - 2026-02-17
-
-### Description
-
-This release migrates the Vulkan backend to a "Bindless" architecture using Descriptor Indexing. This eliminates the CPU overhead of binding individual descriptor sets for every texture and enables massive draw call batching.
-
-### New Features
-
-- **Bindless Textures (Vulkan):**
-  - Textures are now accessed via a global descriptor array (`global_textures[]`) indexed by a push constant (`texture_id`).
-  - Removed per-texture `VkDescriptorSet` allocation, solving pool fragmentation issues.
-  - Enabled Vulkan 1.2+ features: `shaderSampledImageArrayNonUniformIndexing`, `runtimeDescriptorArray`, `descriptorBindingPartiallyBound`.
-
-### Technical Details
-
-- **Global Descriptor Set:** A single `VkDescriptorSet` (Set 1) now contains all active textures (up to 4096).
-- **Zero-Bind Draw Loop:** `SituationCmdDrawTexture` no longer calls `vkCmdBindDescriptorSets` for textures, reducing driver overhead.
-- **Shader Update:** Updated internal Quad shaders to use `GL_EXT_nonuniform_qualifier` for accessing the global texture array.
-
----
-
-## [v2.3.44 "Optimization" (Vulkan Memory & Hot-Reload)] - 2026-02-10
-
-### Description
-
-This release addresses key performance and scalability feedback from architectural reviews. It introduces runtime configuration for Vulkan memory usage and optimizes the Hot-Reloading system to prevent I/O storms. These changes allow the engine to scale down to lower-end devices and scale up to large projects with thousands of assets.
-
-### New Features
-
-- **Configurable Staging Buffers:** Added `staging_buffer_size` to `SituationInitInfo`.
-  - **Default:** 128MB (same as before).
-  - **Customizable:** Users can now reduce this value (e.g., to 16MB) to significantly lower the VRAM/RAM footprint on constrained devices, or increase it for massive bandwidth requirements.
-- **Optimized Hot-Reloading:** The hot-reload logic now respects the user-defined `hot_reload_poll_rate` strictly.
-  - **Reduced Overhead:** Removed hardcoded internal throttling. The I/O thread now sleeps efficiently based on the configured rate, eliminating redundant file system checks.
-
----
-
-## [v2.3.43 "System Unification" (Universal Handles)] - 2026-02-09
-
-### Description
-
-This release represents a monumental architectural shift for the Situation engine, codenamed "System Unification". It implements the **Universal Handle Architecture** (v2.4 Milestone), unifying all resource management (Textures, Sounds, Shaders, Meshes, Buffers, Models, Compute Pipelines) under a single, high-performance **Generational Handle** system.
-
-This upgrade eliminates ~1400 lines of legacy code, replacing O(N) linked-list traversals with O(1) array-based registries. It provides mathematically provable resource safety (preventing Use-After-Free via generation counters) and enables a unified, robust Hot-Reloading system for all asset types.
-
-### Architectural Changes
-
-- **Universal Handles:** All resources are now opaque 64-bit handles (`{ index, generation }`) backed by fixed-size static registries.
-- **Legacy Removal:** Deleted all `_Situation*Node` linked-list structures and associated traversal logic.
-- **O(1) Access:** Resource validation and retrieval is now constant-time, eliminating performance degradation as scene complexity grows.
-- **Unified Hot-Reload:** Centralized the hot-reload logic into a single generic pass that iterates registries, replacing scattered per-resource logic.
-
-### Critical Fixes
-
-- **Compilation Fix:** Removed the dead code function `_SitGetBufferNode`, which was causing compilation errors by referencing deleted structs.
-- **Registry Safety:** Implemented atomic generation counters for all resource slots to prevent ABA problems during rapid load/unload cycles.
-
-### Documentation
-
-- **Regression Analysis:** Added `REGRESSION_ANALYSIS.md` detailing the migration, code reduction stats, and impact analysis.
-
----
-
-## [v2.3.42 "Flexible Formats" (Audio Capture & Native Formats)] - 2026-02-08
-
-### Description
-
-This release significantly enhances the Audio subsystem by introducing support for multi-channel audio capture (e.g., Stereo Microphones) and custom sample rates. Crucially, the default `SituationStartAudioCapture` API now utilizes the device's **Native Format** (0, 0) instead of hardcoding 44.1kHz/Mono. This eliminates unnecessary resampling overhead and ensures optimal latency and quality on professional audio interfaces running at 48kHz or higher.
-
-### New Features
-
-- **`SituationStartAudioCaptureEx`** - New API to start audio capture with specific `sample_rate` and `channels`.
-- **Native Format Default** - `SituationStartAudioCapture` now defaults to the device's native configuration (via Miniaudio's auto-negotiation) instead of forcing Mono/44.1kHz.
-- **Multi-Channel Support** - The internal ring buffer logic (`_sit_miniaudio_capture_callback` and `SituationPollInputEvents`) now correctly handles and linearizes interleaved multi-channel audio data.
-
-### Critical Fixes
-
-- **Buffer Safety:** Updated the ring buffer read/write logic to calculate sizes based on *samples* rather than *frames*. This prevents potential buffer overflows or misalignment when capturing stereo or multi-channel audio.
-- **Resampling Overhead:** By defaulting to the native format, the engine avoids the CPU cost and latency of Miniaudio's internal resampler when the requested format doesn't match the hardware.
-
----
-
-## [v2.3.41 "Flexible Formats" (Color Encoding & Format Selection)] - 2026-02-07
-
-### Description
-
-This release introduces flexible texture format selection through the new `SituationColorEncoding` enum. Images can now specify whether their data is in linear or SRGB color space, enabling automatic GPU format selection that works identically across both OpenGL and Vulkan backends. This fixes storage image compatibility issues while maintaining proper gamma correction for sampled textures.
-
-### Critical Fix: Storage Image Format Compatibility
-
-**Problem:** All textures were hardcoded to use SRGB format (`VK_FORMAT_R8G8B8A8_SRGB` in Vulkan, `GL_SRGB8_ALPHA8` in OpenGL). This format is incompatible with storage images (textures writable by compute shaders) on most GPUs, causing validation errors and black screens in applications like K-Term that use compute shaders for rendering.
-
-**Solution:** Implemented color encoding abstraction with automatic format selection:
-- Added `SituationColorEncoding` enum with `LINEAR` and `SRGB` values
-- Added `color_encoding` field to `SituationImage` struct
-- Texture creation now selects format based on color encoding:
-  - `SITUATION_COLOR_LINEAR` → `VK_FORMAT_R8G8B8A8_UNORM` (Vulkan) or `GL_RGBA8` (OpenGL)
-  - `SITUATION_COLOR_SRGB` → `VK_FORMAT_R8G8B8A8_SRGB` (Vulkan) or `GL_SRGB8_ALPHA8` (OpenGL)
-- Storage images automatically use LINEAR format regardless of specified encoding
-
-### New Features
-
-- **`SituationColorEncoding` enum** - Describes color space of image data
-  - `SITUATION_COLOR_LINEAR` (0) - Linear color space, required for storage images
-  - `SITUATION_COLOR_SRGB` (1) - SRGB color space with gamma correction
-- **`color_encoding` field** - Added to `SituationImage` struct
-- **Automatic format selection** - Texture creation uses encoding to select GPU format
-- **Backend-neutral API** - Same enum works for both OpenGL and Vulkan
-- **Storage image override** - Textures with `SITUATION_TEXTURE_USAGE_STORAGE` flag automatically use LINEAR
-
-### Technical Details
-
-**Format Mappings:**
-
-| Color Encoding | Vulkan Format | OpenGL Format | Use Case |
-|----------------|---------------|---------------|----------|
-| `SITUATION_COLOR_LINEAR` | `VK_FORMAT_R8G8B8A8_UNORM` | `GL_RGBA8` | Storage images, compute writes |
-| `SITUATION_COLOR_SRGB` | `VK_FORMAT_R8G8B8A8_SRGB` | `GL_SRGB8_ALPHA8` | Sampled textures, photos, UI |
-
-**Key Rules:**
-- Storage images MUST use LINEAR encoding (SRGB doesn't support storage operations)
-- Sampled-only textures SHOULD use SRGB encoding for proper gamma correction
-- Format selection happens automatically during texture creation
-- Both backends enforce the same rules for consistency
-
-### Usage Examples
-
-**Creating a storage image for compute shader:**
-```c
-SituationImage img;
-SituationCreateImage(1024, 768, 4, &img);
-img.color_encoding = SITUATION_COLOR_LINEAR;  // Required for storage!
-
-SituationTexture tex;
-SituationCreateTextureEx(img, false,
-    SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE, &tex);
-```
-
-**Loading a texture for display:**
-```c
-SituationImage img;
-SituationLoadImage("photo.png", &img);
-img.color_encoding = SITUATION_COLOR_SRGB;  // Gamma correction for display
-
-SituationTexture tex;
-SituationCreateTexture(img, false, &tex);
-```
-
-### Documentation Updates
-
-- Updated `doc/SITUATION_QUICK_REFERENCE.md` with color encoding examples
-- Added format mapping table for both backends
-- Updated common patterns to show correct usage
-- Added storage image compatibility warnings
-
-### Architecture Impact
-
-This change provides a clean abstraction layer for color space management:
-- Single API works across both OpenGL and Vulkan
-- Fixes K-Term black screen issue (storage image format incompatibility)
-- Maintains proper gamma correction for sampled textures
-- Sets foundation for future color space extensions (HDR, wide gamut)
-- No breaking changes (existing code continues to work)
-
-### Platform Support
-
-- ✅ Windows (MSVC, MinGW, GCC 15.1.0)
-- ✅ Vulkan 1.4.313.2
-- ✅ OpenGL 4.6
-- ✅ Backend-neutral API design
-
-### Migration Notes
-
-**For existing code:**
-- No changes required - existing textures continue to work
-- To use storage images, set `img.color_encoding = SITUATION_COLOR_LINEAR` before creating texture
-- Loaded images default to SRGB (when image loading functions are updated)
-
-**For new code:**
-- Always set `color_encoding` explicitly for clarity
-- Use LINEAR for storage images and compute shader outputs
-- Use SRGB for photos, UI elements, and sampled-only textures
-
----
-
-## [v2.3.40 "State Machine" (Multi-Threaded Initialization Safety)] - 2026-02-07
-
-### Description
-
-This release introduces atomic state management to prevent initialization race conditions and deadlocks in multi-threaded environments. The addition of `SituationInitState` provides thread-safe queries for initialization status, enabling safe integration with external libraries like K-Term that create GPU resources during startup.
-
-### Critical Fix: Mutex Deadlock Prevention
-
-**Problem:** Applications creating GPU resources (pipelines, textures) immediately after `SituationInit()` would deadlock. The render thread was still initializing and held the `resource_registry_mutex`, causing the main thread to block indefinitely when attempting resource creation.
-
-**Solution:** Implemented atomic state tracking with explicit initialization phases:
-- `SITUATION_STATE_UNINITIALIZED` - Library not initialized
-- `SITUATION_STATE_INITIALIZING` - Init in progress, render thread starting (unsafe for resource creation)
-- `SITUATION_STATE_READY` - Fully initialized, safe to create resources
-- `SITUATION_STATE_SHUTTING_DOWN` - Cleanup in progress
-
-### New Features
-
-- **`SituationInitState` enum** - Atomic state tracking for initialization phases
-- **`SituationGetInitState()`** - Thread-safe API to query current initialization state
-- **`atomic_int init_state`** - Added to `_SituationRenderState` struct for lock-free state queries
-- **State transitions** - Automatic state updates in `SituationInit()` and `SituationShutdown()`
-
-### Technical Details
-
-- State is set to `INITIALIZING` at the start of `SituationInit()`
-- State transitions to `READY` after render thread successfully spawns
-- State transitions to `SHUTTING_DOWN` when `SituationShutdown()` is called
-- All state queries use `atomic_load()` for thread-safe, lock-free access
-- Debug logging added: `[Situation] Initialization complete - state: READY`
-
-### Integration Pattern
-
-Applications can now safely defer resource creation until Situation is ready:
-
-```c
-SituationInit(...);
-
-// Wait for Situation to be fully ready (optional - can defer to first frame)
-while (SituationGetInitState() != SITUATION_STATE_READY) {
-    // Spin or yield
-}
-
-// Now safe to create pipelines, textures, etc.
-ExternalLibrary_Init();
-```
-
-### Architecture Impact
-
-This change is critical for the "house of cards" multi-threaded architecture:
-- Prevents race conditions during initialization
-- Enables safe integration with external GPU libraries (K-Term, Quest renderer)
-- Provides clear synchronization points for complex startup sequences
-- Maintains backward compatibility (existing code continues to work)
-
-### Platform Support
-
-- ✅ Windows (MSVC, MinGW, GCC 15.1.0)
-- ✅ Vulkan 1.4.313.2
-- ✅ C11 with atomic operations
-- ✅ Thread-safe state queries
-
----
-
-## [v2.3.39 "Triumph" (Vulkan Text Rendering Complete)] - 2026-02-07
-
-### Description
-
-This release represents a major milestone in the Situation library's Vulkan backend development. After extensive debugging across multiple sessions, all text rendering issues have been resolved. The library now features fully functional, production-ready text rendering with proper transparency, alpha blending, and runtime VSync control.
-
-### Major Achievement: Vulkan Text Rendering Fixed
-
-Fixed 15 critical bugs in the Vulkan text rendering pipeline:
-1. Internal renderer return value check (treating SUCCESS as failure)
-2. Texture generation initialization (generation=0 → generation=1)
-3. Descriptor set binding (UBO now bound in text pipeline)
-4. Projection matrix updates (now set in `SituationCmdBeginRenderToDisplay`)
-5. UBO memory type (GPU_ONLY → CPU_TO_GPU for dynamic updates)
-6. Vertex attribute offset (texcoord at correct 8-byte offset)
-7. Backface culling (disabled for text quads)
-8. Viewport/scissor state (now properly set)
-9. Fragment shader descriptor set (added `set = 1` qualifier)
-10. Font atlas descriptor layout (uses `text_sampler_layout` binding 0)
-11. UV calculation (fixed row division and v0/v1 swap for Vulkan Y-down)
-12. Font atlas transparency (background pixels now (0,0,0,0) instead of (255,255,255,0))
-13. Fragment shader alpha masking (proper colored text with transparency)
-14. Depth write disabled for text (transparent pixels don't block background)
-15. VSync present mode selection (respects flag, prefers IMMEDIATE for unlimited FPS)
-
-### New Features
-
-- **`SituationSetVSync(bool enable)`** - Convenience function for runtime VSync control
-  - Automatically recreates Vulkan swapchain with new present mode
-  - VSync ON: `VK_PRESENT_MODE_FIFO_KHR` (~60 FPS)
-  - VSync OFF: `VK_PRESENT_MODE_IMMEDIATE_KHR` (unlimited FPS, 2000+)
-  - OpenGL: Uses `glfwSwapInterval()` for immediate effect
-
-### Technical Improvements
-
-- Text rendering now uses alpha masking for proper colored text
-- Depth writing disabled for text to allow transparent spacing
-- Present mode selection based on VSync flag
-- Fixed `glfwSwapInterval()` to only be called for OpenGL (prevents GLFW errors)
-- Swapchain recreation on VSync toggle for immediate effect
-
-### Platform Support
-
-- ✅ Windows (MSVC, MinGW, GCC 15.1.0)
-- ✅ Vulkan 1.4.313.2
-- ✅ C11 with C++ linking for VMA
-
----
-
-## [v2.3.38 "Native Bitmap Font Support"] - 2025-12-27
-
-### New Features
-
-- Added `SituationLoadBitmapFontFromMemory` to load raw bitmap fonts.
-- Extended `SituationFont` struct to support bitmap fonts alongside TrueType.
-- Updated `SituationImageDrawCodepoint` to implement a nearest-neighbor forward-mapping rasterizer for bitmap fonts, supporting rotation and scaling.
-- Updated `SituationImageDrawTextEx` and `SituationImageDrawText` to seamlessly handle bitmap fonts using the new rasterizer and simplified layout logic.
-- Updated `SituationMeasureText` to correctly calculate dimensions for monospaced bitmap fonts.
-- Refactored `examples/hello_world.c` to use the new native bitmap font API instead of manual pixel pushing.
-
----
-
-## [v2.3.37 "Trinity Polish" (Async I/O Hardening)] - 2025-12-25
-
-### Description
-
-This release solidifies the "Trinity" architecture by addressing critical thread-safety and runtime configuration issues in the I/O subsystem. It ensures clean shutdowns by properly joining the I/O thread, exposes configuration options to disable the I/O thread or adjust hot-reload polling, and adds robust fallback paths for single-threaded environments.
-
-### Critical Fixes
-
-*   **Shutdown Safety:** `SituationDestroyThreadPool` now explicitly joins the `io_thread` if it exists. This prevents race conditions where the application would exit while the I/O thread was still accessing memory or filesystem resources.
-*   **Fallback Execution:** `SituationSubmitJobEx` now includes a "Synchronous Fallback" path for Low Priority (I/O) jobs. If the I/O thread is disabled (via config or failure), these jobs are executed immediately on the calling thread, preventing infinite stalls.
-
-### New Features
-
-*   **Runtime Configuration:** Added `disable_io_thread` and `hot_reload_poll_rate` to `SituationInitInfo`.
-    *   **Disable IO Thread:** Useful for debugging or restricted environments (e.g., WASM) where spawning background threads is undesirable.
-    *   **Poll Rate Control:** Developers can now tune the hot-reload frequency (default 0.5s) or disable it entirely (0.0) to save CPU cycles in production.
-*   **I/O Metrics:** Added `SituationGetIOQueueDepth()` to monitor pending background tasks.
-
----
-
-## [v2.3.36 "Velocity" (OpenGL 4.6 Optimization Complete)] - 2025-12-24
-
-### Description
-
-This release marks the completion of the "Max Out Core" OpenGL upgrade plan. It finalizes the transition to a high-performance, parallel-friendly architecture by implementing Multi-Draw Indirect (MDI) batching in the Soft Command Buffer replay loop. This optimization automatically collapses consecutive draw calls into a single driver invocation, significantly reducing CPU overhead for high-count rendering scenarios.
-
-### New Features
-
-*   **Multi-Draw Indirect (MDI):** The OpenGL backend now automatically detects consecutive `SituationCmdDraw` and `SituationCmdDrawIndexed` commands. Instead of issuing individual GL calls, it batches them into a persistent `GL_DRAW_INDIRECT_BUFFER` and executes them with a single `glMultiDraw*Indirect` call.
-*   **Persistent MDI Ring Buffer:** Introduced `_SituationInitGLMDIBuffer` to manage a multi-megabyte persistent ring buffer for indirect command data, segmented by frame to ensure thread-safe, lock-free batching.
-*   **Bindless Textures:** Completed implementation of `GL_ARB_bindless_texture` logic. `SituationCreateTexture` now automatically retrieves and makes resident a 64-bit handle (`glGetTextureHandleARB`), storing it for high-performance access in shaders.
-
-### Completion Status
-
-*   **Phase 1 (Zero-Copy):** Complete (Persistent Mapping).
-*   **Phase 2 (Stateless):** Complete (DSA Adoption).
-*   **Phase 3 (Bindless):** Complete (Bindless Textures).
-*   **Phase 4 (GPU-Driven):** Complete (MDI Optimizer).
-
-The OpenGL backend now operates with a modern, "console-like" efficiency profile, rivaling Vulkan in many CPU-bound scenarios while maintaining the ease of use of the Situation.
-
----
-
-## [2.3.35D - Stability & Safety Hardening] - 2025-12-23
-This release addresses critical integration issues and runtime safety hazards identified in the v2.3.34 "Velocity" codebase.
-
-#### Critical Fixes
-- **Linkage:** Removed erroneous `static` keyword from `SituationGetMeshData` declaration in the public header. This fixes compilation errors when linking against the library.
-- **Vulkan Screenshots:** Fixed a severe race condition in `SituationLoadImageFromScreen` (and `SituationTakeScreenshot`). The function now correctly flushes the current command buffer and waits for the GPU to idle before attempting to transition the swapchain image layout, preventing validation errors and driver crashes.
-
-#### Threading & Safety
-- **Thread Pool Safety:** `SituationSubmitJobEx` now defaults to **Copy-by-Value** for data payloads larger than 64 bytes. This prevents "Stack Use-After-Free" crashes where a worker thread attempts to read a struct from a stack frame that has already unwound.
-    - Added internal flag to track and free these heap allocations automatically.
-    - **New Flag:** Added `SIT_SUBMIT_POINTER_ONLY` for advanced users who wish to opt-out of this safety copy (e.g., when passing pointers to static/global data).
-- **Audio Callbacks:** Fixed a potential 32-bit truncation issue in the audio stream thunk where `size_t` was implicitly cast to `ma_uint64`, ensuring stability on 32-bit build targets.
-
-#### Backend Internals
-- **Vulkan Buffer Usage:** `SituationCreateBuffer` now automatically appends the `VK_BUFFER_USAGE_TRANSFER_DST_BIT` flag. This ensures that buffers created for Uniforms or Storage can be legally updated via `SituationUpdateBuffer` without triggering Vulkan validation errors.
-- **Model Saving:** Added a preprocessor guard to `SituationSaveModelAsGltf`. Calls to this function will now trigger a compile-time `#error` if `CGLTF_WRITE_H` is not defined, preventing confusing runtime `NOT_IMPLEMENTED` returns.
-- **API Clarity:** Explicitly documented `SituationCmdSetVertexAttribute` as **[OpenGL Only]** to reflect the immutable nature of Vulkan pipelines.
-
----
-
-## [v2.3.35C - API Refactor & Backend Isolation] - 2025-12-23
-- [API] Refactored core resource creation functions to return `SituationError` and output handles via pointers, replacing direct handle returns. This standardizes error handling across the entire API.
-  - Updated: `SituationCreateBuffer`, `SituationCreateMesh`, `SituationLoadImage`, `SituationLoadTexture`, `SituationLoadModel`, `SituationCreateTexture`, `SituationCreateTextureEx`.
-  - Updated: `SituationCreateComputePipeline`, `SituationCreateComputePipelineFromMemory`.
-  - Updated: `SituationLoadImageFromScreen`, `SituationTakeScreenshot`.
-- [Fix] Fixed internal variable scoping issues in the new implementations of `SituationCreateBuffer` and `SituationCreateMesh`.
-- [Fix] Added missing error checks in `SituationLoadModel` when creating textures.
-- [Fix] Verified `SituationRenderVirtualDisplays` backend guards to ensure no regression.
-- [Fix] Updated `SituationReloadTexture` implementation to handle the new `SituationLoadImage` signature correctly (though the function itself still returns `bool` for now).
-
----
-
-## [v2.3.34A "Trinity Threads" (Missing PR Restoration)] - 2025-12-22
-
-### Description
-
-This release restores the "Trinity Threads" architecture changes that were accidentally omitted in a previous merge. It completes the asynchronous I/O vision by introducing a dedicated I/O thread, thread-safe resource registry, and offloading hot-reload polling from the main thread.
-
-### New Features
-
-*   **Dedicated I/O Thread:** Introduced a specialized thread for handling low-priority jobs (Asset Loading) and periodic maintenance tasks.
-    *   **Hot-Reload Offloading:** The file system polling for hot-reloading (Shaders, Textures, Models) now runs exclusively on the I/O thread, eliminating file system stalls from the main thread.
-    *   **Priority Queue:** The thread pool now strictly segregates High Priority (Physics/Logic) and Low Priority (IO) work, with the I/O thread servicing the latter.
-
-### Architectural Changes
-
-*   **Thread-Safe Resource Registry:** Added a `resource_registry_mutex` to the render state.
-    *   **Protected Access:** All `SituationLoad*` and `SituationUnload*` functions now acquire this lock when modifying the global linked lists of tracked resources.
-    *   **Safe Traversal:** The hot-reload logic safely iterates these lists under lock, preventing race conditions during concurrent loading/unloading.
-
-### Critical Fixes
-
-*   **Restored Functionality:** Re-integrated the `_SituationIOThreadEntry` function and updated `SituationCreateThreadPool` to spawn the IO thread, ensuring the async architecture functions as designed.
-
----
-
-## [v2.3.34 "Velocity" (Async I/O & Loader Safety)] - 2025-12-22
-
-### Description
-
-This release fulfills the "Velocity" promise of a complete Asynchronous I/O system. It introduces a fully featured Async Text File API, mirroring the existing binary loaders, allowing developers to load level data, configuration files, and large text blobs on background threads without stalling the main loop. Additionally, it hardens the Hot-Reloading system against race conditions in multi-threaded environments.
-
-### New Features
-
-*   **Async Text API:** Completed the Async I/O suite with `SituationLoadFileTextAsync` and `SituationSaveFileTextAsync`.
-    *   **Architecture:** Leverages the `SituationThreadPool` (Small Object Optimization) to dispatch I/O tasks.
-    *   **Context Safety:** Inputs (file paths and content) are atomically duplicated (`_sit_strdup`) before job submission, ensuring thread safety and preventing use-after-free errors on the worker thread.
-    *   **Callback Model:** Uses `SituationFileTextLoadCallback` to return null-terminated, caller-owned strings directly to the main thread.
-
-### Critical Fixes
-
-*   **Loader Race Condition:** Fixed a thread-safety hazard in the Hot-Reload resource tracking logic for `SituationLoadShader`, `SituationLoadTexture`, and `SituationCreateComputePipeline`.
-    *   *The Issue:* Previously, the code assumed the newly created resource would always be at the *head* of the global tracking list (`sit_render.all_*`). In a threaded environment, another thread could insert a resource immediately after creation but before tracking, causing the wrong resource to be tagged.
-    *   *The Fix:* The tracking logic now performs a safe linked-list traversal to locate the *exact* resource ID before updating its source path and modification time.
-
-### API Changes
-
-*   **New Typedef:** Added `SituationFileTextLoadCallback` for async text loading results.
-*   **New Prototypes:** Added `SituationLoadFileTextAsync` and `SituationSaveFileTextAsync` to the public API.
-
----
-
-## [v2.3.33A - Cross-Platform Hidden Command Execution] - 2025-12-21
-- [Feature] Added `SituationExecuteCommand` to run system shell commands in a hidden window/process while capturing stdout/stderr output.
-- [Feature] Implemented cross-platform support using `CreateProcess` (Windows) and `fork/exec/pipe` (Linux/macOS) with output redirection.
-- [Safety] Ensures no console windows pop up on Windows and no terminal allocation on Unix-like systems.
-- [API] Returns the process exit code and provides a heap-allocated output string that must be freed by the user.
-
----
-
-## [v2.3.33 "Velocity" - Audio Hardening (Titanium Standard)] - 2025-12-21
-- [Audio] Implemented the "Titanium Standard" Audio Action Plan (Section 4 of Audio Analysis).
-- [Safety] Enforced consistent locking across all audio setters (`SituationSetSoundVolume`, `SituationSetSoundPan`) to eliminate data races.
-- [Optimization] Converted real-time audio parameters (`volume`, `pan`, `pitch`) to `_Atomic float` for lock-free access on the mixing thread.
-- [Architecture] Introduced a Generational Handle System (`SituationSoundHandle`) to replace raw pointers, enabling O(1) validation and eliminating Use-After-Free errors.
-
----
-
-## [v2.3.32G - Cross-Platform CPU Thread Count Utility] - 2025-12-21
-- [Feature] Added `SituationGetCPUThreadCount` to reliably query the number of logical CPU cores on Windows, macOS, and Linux.
-- [Improvement] Updated `SituationGetDeviceInfo` to use the new utility, standardizing `cpu_cores` to report logical cores across all platforms (fixing macOS inconsistency).
-- [Improvement] Updated `SituationCreateThreadPool` to use the new utility for auto-detecting thread counts, replacing ad-hoc logic.
-
----
-
-## [v2.3.32F - Compute Limits Helper (Max Work Groups)] - 2025-12-21
-- [Feature] Added `SituationGetMaxComputeWorkGroups` to query hardware limits for local work group counts (X, Y, Z) per dispatch.
-- [Feature] Implemented backend-specific limit queries for both Vulkan (`maxComputeWorkGroupCount`) and OpenGL (`GL_MAX_COMPUTE_WORK_GROUP_COUNT`).
-- [Safety] Added `SituationIsInitialized` checks to `SituationGetMaxComputeWorkGroups` to prevent unsafe access to internal state.
-
----
-
-## [v2.3.32E - SituationError Return Type Migration & Docs] - 2025-12-20
-- [Breaking Change] Updated `SituationCmd*` functions to return `SituationError` instead of `void` for better error propagation (e.g., `SituationCmdDraw`, `SituationCmdEndRenderPass`).
-- [Breaking Change] Updated `SituationCmdDraw` and `SituationCmdDrawIndexed` parameter types (`int` -> `uint32_t`) and added `instance_count` to support instanced rendering directly.
-- [Docs] Updated `situation_api.md` to reflect new signatures and added documentation for `SituationCmdDrawText`, `SituationCmdDrawTextEx`, and `SituationCmdPresent`.
-- [Examples] Updated `examples/handling_keyboard_and_mouse_input.c` to use `Vector4` and fix `SituationGetMousePosition` usage.
-
----
-
-## [v2.3.32D - Terminal VT UTF-8 & REP Support] - 2025-12-20
-- [Feature] Implemented UTF-8 decoding in `ProcessNormalChar` (Terminal), enabling full multibyte Unicode support (e.g., Box Drawing characters, international text).
-- [Feature] Implemented `MapUnicodeToCP437` helper to map decoded Unicode codepoints to the internal CP437 font atlas indices.
-- [Feature] Implemented `ExecuteREP` (CSI b) for Repeat Preceding Graphic Character, significantly optimizing rendering for repetitive text patterns.
-- [Fix] Hardened `ProcessNormalChar` state machine to robustly handle invalid UTF-8 sequences by resetting state and reprocessing the byte.
-- [Fix] Fixed potential logic duplication in `ExecuteREP` by reusing core insertion logic.
-
----
-
-## [v2.3.32C - Complete VT Support (Sixel, Soft Fonts, Window Ops, Pipeline Fix)] - 2025-12-20
-- [Critical] Fixed `SIT_COMPUTE_LAYOUT_TERMINAL` in `situation.h` to include the 4th descriptor set (Sixel texture sampler), ensuring the Vulkan pipeline matches the Compute Shader expectations.
-- [Feature] Implemented `ProcessSoftFontDownload` (DECDLD) in `sit/terminal/terminal.h` with robust Sixel-encoded bitmap decoding and texture atlas regeneration.
-- [Feature] Updated `CreateFontTexture` to seamlessly support active Soft Fonts, falling back to the built-in font for missing glyphs.
-- [Feature] Implemented `ExecuteWindowOps` (CSI t), mapping terminal sequences to `Situation` window management APIs (Resize, Move, Restore, Minimize, Maximize, Fullscreen).
-- [Feature] Wired up `DrawSixelGraphics` to trigger dirty state updates for texture uploads.
-- [Improvement] Added support for standard DECDLD format (`DCS ... {`) in `ExecuteDCSCommand`.
-
----
-
-## [v2.3.32B - Complete VT Sixel Support & Logging API (Terminal Deep Dive)] - 2025-12-19
-- Implemented `ProcessSixelData` in `sit/terminal/terminal.h` for full Sixel graphics parsing support.
-- Added `SituationLog` and `SituationSetTraceLogLevel` to `situation.h` with ANSI color-coded output.
-- Fixed Linux compilation issue (`IFF_LOOPBACK` undefined) by adding `_DEFAULT_SOURCE`.
-- Verified and fixed missing function definitions in the single-header implementation.
-
-# Situation Update Log
-
-This document tracks the evolution of the Situation library, detailing new features, architectural changes, and critical fixes.
-
----
-
-## [2.3.32A "Velocity" (VT Console Support)] - 2025-12-14
-
-### Description
-
-This update introduces native Virtual Terminal (VT) support for the Windows console subsystem. This enhancement enables correct rendering of ANSI escape codes in `cmd.exe` and PowerShell, allowing for colored text output in logs and diagnostic messages. This aligns the Windows development experience with Linux and macOS, where ANSI support is standard.
-
-### New Features
-
-*   **Windows Console VT Support:** Added logic to `_SituationInitPlatform` to explicitly enable `ENABLE_VIRTUAL_TERMINAL_PROCESSING` on the standard output and error handles. This ensures that `SituationLogWarning` and other console output functions can use color coding for better readability.
-
----
-
-## [2.3.32 "Velocity" (Vulkan 1.4 Upgrade)] - 2025-12-14
-
-### Description
-
-This release updates the engine to target **Vulkan 1.4**, preparing the architecture for modern high-performance rendering techniques such as full Bindless Descriptor support and Dynamic Uniform Buffer Objects (Dynamic UBOs). This strategic update aligns the library with the latest industry standards used in AAA development, enabling more efficient GPU resource management and execution.
-
-### Architectural Updates
-
-*   **Vulkan 1.4 Target:** The `VkApplicationInfo` and `VmaAllocatorCreateInfo` structures now explicitly request `VK_API_VERSION_1_4`. This ensures the application is initialized with a Vulkan 1.4 context, unlocking access to core features like `VK_KHR_dynamic_rendering`, `VK_KHR_maintenance4`, and improved synchronization primitives that were previously extensions.
-*   **Documentation Alignment:** All documentation and version strings have been updated to reflect the new API target. The README.md section order has also been corrected for better readability.
-
----
-
-## [2.3.31A "Velocity" (Hotfix: Compilation & Thread Safety)] - 2025-12-14
-
-### Description
-
-This is a critical hotfix addressing several compilation errors and thread-safety hazards introduced during the recent texture system refactor. It ensures proper visibility of internal helpers, fixes type mismatches in mutex usage, and corrects structural errors in the render thread loop.
-
-
-### Critical Fixes
-
-*   **Compilation Fix:** Moved the `_SitGetTextureSlot` forward declaration to the top of the implementation block to resolve "implicit declaration" errors and visibility issues with internal structs.
-*   **Mutex Safety:** Resolved a type mismatch where `sit_render.momentum_mutex` and `sit_audio.audio_queue_mutex` (declared as C11 `mtx_t`) were being accessed via Miniaudio's `ma_mutex_*` API. Replaced all invalid calls with standard C11 `mtx_*` equivalents (`mtx_lock`, `mtx_unlock`, `mtx_destroy`), ensuring correct locking behavior and preventing undefined behavior.
-*   **Render Thread Logic:** Fixed a syntax error in `_SituationRenderThreadEntry` where a missing closing brace caused compilation failure.
-*   **API Resilience:** Added missing return statements to `SituationCmdBeginRenderToDisplay` to prevent "control reaches end of non-void function" warnings.
-
-
-### Validation
-
-*   **Compilation:** Clean compilation with `-Wall -Wextra` on standard GCC setup.
-*   **Thread Safety:** Verified mutex initialization and locking calls align with C11 threading primitives.
-
-
----
-
-## [2.3.31 "Velocity" (Texture System Refactor)] - 2025-12-13
-
-### Description
-
-This release executes a major refactor of the Texture System to align with Bindless architecture standards. It replaces direct texture handles with a Registry ID system (Generation + Index), enabling robust hot-reloading and eliminating use-after-free risks for GPU resources.
-
-
-### Architectural Changes
-
-*   **Registry ID System:** Textures are now referenced by a 64-bit ID combining a generation counter and a slot index. This allows O(1) lookups while preventing access to stale or destroyed resources.
-*   **Bindless Compliance:** The new ID structure prepares the engine for full Bindless Descriptor support, where resources are accessed directly by index in shaders.
-*   **Safe Hot-Reloading:** The Registry system ensures that reloading a texture updates the underlying GPU resource while keeping the handle ID valid for the user application, or safely invalidates it if necessary.
-
-
----
-
-## [v2.3.30A (Hotfix) - Performance & Roadmap Correction]
-
-### Description
-
-- [Fix] Performance Regression: Removed `glGetIntegerv` from `SIT_OP_DRAW_QUAD` handler.
-- Replaced slow driver query with local state tracking (`current_bound_texture_id`) in `_SituationGLExecuteCommands`.
-- Eliminates pipeline stall when drawing quads (e.g., UI/Debug) in OpenGL backend.
-- [Doc] Updated README roadmap to correctly reflect that Dynamic UBOs were implemented in v2.3.29.
-
----
-
-## [2.3.30 "Velocity" (Bindless Revolution)] - 2025-12-13
-
-### Description
-
-This release introduces the Bindless Texture architecture, a transformative optimization for the OpenGL backend. It eliminates the need for manual texture unit management by treating textures as resident, 64-bit GPU handles. This significantly reduces CPU overhead in high-draw-count scenarios (e.g., UI, particles) and prepares the API for the upcoming unified bindless model.
-
-### New Features
-
-*   **Bindless Texture Support (OpenGL):** Implemented full support for `GL_ARB_bindless_texture`.
-*   **Handle Retrieval:** Added `SituationGetTextureHandle()` to retrieve 64-bit resident handles for textures on OpenGL.
-*   **Internal Optimization:** Updated internal Quad (`SituationCmdDrawQuad`) and Text (`SituationCmdDrawText`) renderers to automatically utilize bindless handles when available, bypassing `glBindTextureUnit` calls entirely.
-*   **Shader Support:** Added internal shader capabilities for `GL_ARB_gpu_shader_int64` to support 64-bit sampler types.
-
----
-
-## [2.3.29 "Velocity" (Dynamic UBOs)] - 2025-12-13
-
-### Description
-
-This release implements proper support for Dynamic Uniform Buffer Objects (Dynamic UBOs) in the Vulkan backend, enabling efficient rendering by binding different ranges of a single large buffer without re-binding descriptor sets. This addresses a key performance limitation in scenarios requiring frequent per-draw data updates.
-
-
-### New Features
-
-*   **Dynamic UBO Support:** Introduced `SITUATION_BUFFER_USAGE_DYNAMIC_UNIFORM`. When creating a buffer with this flag, the Vulkan backend now allocates a descriptor set using the new `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` layout.
-*   **Dynamic Binding API:** Added `SituationCmdBindDescriptorSetDynamic`. This new API allows binding a descriptor set with a dynamic offset, essential for utilizing the Dynamic UBO capability.
-*   **Backward Compatibility:** Updated `SituationCmdBindDescriptorSet` to seamlessly handle dynamic buffers by defaulting the offset to 0, ensuring existing code continues to function correctly while enabling the new optimization.
-
-
-### Architectural Changes
-
-*   **Dynamic Layout:** A new `dynamic_ubo_layout` is initialized in the Vulkan render state to support the dynamic descriptor type.
-*   **Cleanup:** The system correctly cleans up the new layout resource during shutdown.
-
-
----
-
-## [2.3.28 "Titanium Core C" (Velocity & Concurrency)]
-
-### Description
-
-The final installment of the "Titanium" stability trilogy, focusing on eliminating architectural bottlenecks and CPU overhead. While v2.3.27 fixed crashes, v2.3.28 achieves "Zero-Allocation" behavior in hot paths. This release introduces the "Velocity" Ring Buffer for Vulkan, a "Snapshot-and-Unlock" audio mixer, and intelligent resource recycling, resulting in a dramatic reduction in frame-time variance and CPU usage.
-
-
-### Critical Fixes
-
-*   **Vulkan Buffer Velocity (Staging Ring Buffer):** Replaced the per-update allocation strategy in `SituationUpdateBuffer` with a persistent, mapped, per-frame ring buffer (32MB default). Data uploads now use a fast `memcpy` path with zero API calls or allocations, eliminating the #1 cause of micro-stutter in dynamic scenes. Includes a robust fallback allocator for overflow cases.
-*   **Audio Concurrency (Snapshot-and-Unlock):** Overhauled `sit_miniaudio_data_callback` to minimize mutex contention. The mixer now snapshots the active sound list and releases the lock *before* processing effects/mixing. Added an atomic `is_processing_snapshot` guard to `SituationUnloadSound` to prevent Use-After-Free race conditions with zero regressions.
-*   **Render Thread Efficiency (No Spinlock):** Removed the busy-wait spinlock in `SituationEndFrame` backpressure logic. Replaced with a Condition Variable (`cnd_wait`/`cnd_signal`) synchronization model. The main thread now sleeps (0% CPU) rather than spinning (100% Core Usage) when the GPU queue is full, significantly reducing battery drain and thermal throttling.
-*   **Descriptor Pool Recycling (Best-Fit):** Upgraded `_SituationVulkanAllocateDescriptorSet` from a "Linear Growth" to a "Recycling" strategy. The allocator now scans existing pools for freed slots (reclaimed via the Graveyard) before creating new pools, preventing unbounded memory growth during long sessions with frequent level loads.
-*   **Hot-Reload IO Debounce:** Throttled `SituationCheckHotReloads` to a 2Hz polling rate (down from 60Hz+). Added `#ifndef NDEBUG` guards to compile the system out entirely in Release builds. This eliminates thousands of redundant filesystem syscalls per second, resolving CPU spikes in development builds.
-
-
-### KNOWN LIMITATIONS (Deferred to v2.4)
-
-*   **Render Graph:** Manual barriers are still required for complex compute-to-graphics dependencies. v2.4 will introduce automatic barrier insertion.
-*   **Vulkan Pipeline Cache:** Pipeline creation still compiles from SPIR-V every run. v2.4 will implement on-disk `VkPipelineCache` serialization for faster startup.
-
-
-### Validation
-
-*   **Performance:** `SituationUpdateBuffer` call overhead reduced by ~98%.
-*   **Thermals:** Main thread CPU usage dropped from ~15% to <1% in GPU-bound scenarios due to spinlock removal.
-*   **Audio:** Seamless playback of new sounds while mixing heavy reverb loads; no main-thread stalling.
-*   **Stability:** 24-hour soak test with random asset loading/unloading showed stable VRAM usage (Descriptor Recycling).
-
-
----
-
-## [2.3.27B "Titanium Core B" (Hardening Patch)] - 2025-12-12
-
-### Description
-
-A rapid-response hardening patch building on v2.3.27, addressing post-release audit findings for concurrency deadlocks, memory leaks, and race conditions. This release fortifies the library's core invariants—ensuring recursive safety in audio callbacks, leak-free descriptor management, and race-proof render list handling—elevating it from "Production-Ready" to "Audit-Proof" for mission-critical deployments.
-
-
-### Critical Fixes
-
-*   **Audio Deadlock Prevention (Recursive Mutex):** Resolved recursive locking hazards in `sit_miniaudio_data_callback` where user processors could trigger API calls (e.g., `SituationPlayLoadedSound`) under the same mutex. Switched to `mtx_recursive` initialization for safe nesting without deadlocks.
-*   **Vulkan Descriptor Leak Fix (Pool Recycling):** Re-enabled `VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT` and restored `vkFreeDescriptorSets` in `SituationDestroyTexture` et al., with refcounted pool recycling to eliminate OOM crashes in asset-streaming workloads (e.g., open-world unloads).
-*   **Momentum Race Guard (In-Flight Tracking):** Added atomic `in_flight_count` to `SituationRenderList` structs. `SituationSubmitRenderList` increments on enqueue; `SituationReplayRenderList` decrements post-execution. `SituationResetRenderList` now spin-waits or errors on active lists, preventing data corruption during MT replays.
-*   **Soft Command Buffer Resilience (Realloc Guards):** Hardened `_SitGLSoftCmdPush` and `_SitGLSoftDataPush` with explicit failure paths: On `SIT_REALLOC` OOM, mark the buffer invalid and abort frame commands, avoiding dangling pointers and partial renders.
-*   **Input Unified Processing (Atomic Polling):** Consolidated joystick event handling into `SituationPollInputEvents` (from `SituationUpdateTimers`), ensuring consistent state queries and eliminating lag windows between poll and logic phases.
-*   **Hot-Reload TOCTOU Safety (Staged Validation):** Refined `SituationReloadTexture` (and siblings) to stage new resource creation in temp buffers before destroying old ones, preventing black screens from mid-save file locks.
-*   **Global Context Threading (TLS Safeguard):** Enforced thread-local checks on `_sit_current_context` access with explicit guards in all API entrypoints, mitigating data races in unauthorized MT usage while preserving singleton semantics.
-*   **Swapchain Recreate Sync (Barrier Hardening):** In `SituationAcquireFrameCommandBuffer` and `SituationEndFrame`, added pre-present validity checks and immediate aborts on pending recreates, averting validation errors during resize storms.
-
-
-### KNOWN LIMITATIONS (Deferred to v2.4)
-
-*   **Vulkan Dynamic UBOs:** `SituationUpdateBuffer` still relies on staging for non-dynamic paths; serialization persists for large buffers. v2.4 will fully implement `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` with ring versioning.
-*   **Render Graph Absence:** Manual barriers remain brittle for complex passes; auto-aliasing deferred to v2.4 for VRAM optimization.
-
-
-### Validation
-
-*   **Concurrency Stress:** 100+ recursive audio callbacks (user processors calling Play/Stop) no deadlocks; TSan clean under 10k iterations.
-*   **Memory Audit:** 1M texture load/unload cycles: Zero leaks (Valgrind/ASan); descriptor pools recycle without fragmentation.
-*   **MT Replay Test:** 4-worker submits of in-flight lists: No races/corruption; 20k packets at 144FPS stable.
-*   **Input/Resize Fury:** Rapid poll-logic queries + window resizes: Zero lag or validation errors; consistent joystick state.
-*   **Hot-Reload Edge:** Editor-save collisions during reload: Graceful fallbacks, no asset loss.
-
-
----
-
-## [2.3.27 "Titanium Core" (Architectural Hardening)] - 2025-12-11
-
-### Description
-
-A comprehensive stability overhaul addressing critical thread-safety hazards, memory fragmentation, and cross-backend parity. This release transforms the library from "Functional" to "Production-Ready" by eliminating race conditions in the Audio and Rendering subsystems and optimizing high-frequency text rendering.
-
-
-### Critical Fixes
-
-*   **Audio Safety (Lock-the-World):** Fixed a Use-After-Free race condition where unloading a sound during playback could crash the audio thread. Implemented a robust mutex strategy and fused mixing loop for stability.
-*   **Vulkan Text Perf (Ring Buffer):** Replaced per-draw buffer allocations with a persistent mapped ring buffer. Text rendering is now zero-copy and allocation-free in the hot path.
-*   **Momentum Thread Safety:** Decoupled Render List submission from execution. `SituationSubmitRenderList` now safely enqueues pointers; `SituationEndFrame` replays them serially on the main thread, preventing Vulkan command buffer corruption.
-*   **OpenGL State Hardening:** `_SituationGLExecuteCommands` now explicitly resets critical GL state (Blend, Depth, Cull) before execution, preventing "state poisoning" from external middleware (e.g., ImGui).
-*   **Vulkan Descriptor Stability:** Switched to a Linear "Allocate-Only" strategy for descriptors. Removed `vkFreeDescriptorSets` calls to prevent pool fragmentation crashes during long sessions.
-
-
-### KNOWN LIMITATIONS (Deferred to v2.3.x)
-
-*   **Vulkan Dynamic UBOs:** `SituationUpdateBuffer` currently uses a staging path with barriers. Updating the same UBO multiple times per frame is safe (correct barriers added) but serializes execution on the GPU. Future v2.3.x will implement `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` for high-performance versioned updates.
-
-
-### Validation
-
-*   **Stress Test:** 50+ concurrent sounds with reverb/echo no longer crash on unload.
-*   **UI Test:** Rendering 1000+ text labels per frame no longer spikes CPU/VRAM usage.
-*   **Thread Test:** Parallel submission of Render Lists from 4 worker threads is now stable.
-
-
----
-
-## [2.3.26 "Silent Zenith" (Micro-Polish)] - 2025-12-10
-
-### Description
-
-Tweaks v2.3.25 metrics: Release-mute warns, namespace unify, retry thresh 20—silent prod.
-
-
-### Fixes
-
-*   **Warn Mute:** #ifndef NDEBUG on drift log.
-*   **Namespace:** sit_frame_ -> sit_render.
-*   **Retry:** Log >20 for early hint.
-
-
-### Validation
-
-*   Silent under load; consistent.
-
-
----
-
-## [2.3.25 "Polish Zenith" (Micro-Hotfix)] - 2025-12-10
-
-### Description
-
-Tweaks v2.3.24b metrics: Namespace unify, TS store, once-warn drift, retry log—silent & accurate.
-
-
-### Fixes
-
-*   **Namespace:** sit_frame_ -> sit_render—consistency.
-*   **TS Store:** Push monotonic—non-zero latencies.
-*   **Warn Polish:** Drift log once; retries >50 flagged.
-
-
-### Validation
-
-*   1k frames: Accurate avg/max; no spam; TSan clean.
-
-
----
-
-## [2.3.24b "Integration Zenith"] - 2025-12-10
-
-### Description
-
-Integrates PR1 safety: Batched replay (multi-queue), init val (sema checks), histogram export (JSON safe)—overlap + tuning.
-
-
-### Integration
-
-*   **Batched Replay:** One compute submit post-barrier; graphics waits DRAW_INDIRECT_BIT.
-
-
-### Validation
-
-*   **Init Suite:** Sema/queue scans; fallback warn.
-*   **Export Guard:** Min 256B JSON.
-
-
-### Validation
-
-*   20k packets 140FPS; Valgrind clean.
-
----
-
-## [2.3.24a "Safety Zenith"] - 2025-12-10
-
-### Description
-
-Hardens v2.3.23 MT: Race-free refcounts, FPS-relative adaptive policies, basic histogram—leak-free, self-tuning queue.
-
-
-### Safety
-
-*   **Refcounts:** fetch_sub==1 flush—0 leaks 20k handoffs.
-*   **Adaptive:** Relative thresh (144Hz=6.9ms spike → SLEEP).
-
-
-### Metrics
-
-*   **Basic Histogram:** Sum/count avg; max atomic.
-
-
-### Validation
-
-*   <0.05ms overhead; TSan clean.
-
----
-
-## [2.3.23 "Velocity" (Multi-Queue & ARM Hotfix)] - 2025-12-09
-
-### Description
-
-Elevates v2.3.22 MT with VK sema-synced multi-queue (compute/graphics overlap), ARM wfe/yield spins (<10% CPU), and zero-config overlay (8x8 default font)—mobile/prod decoupling.
-
-
-### Performance
-
-*   **VK Multi-Queue:** Sema waits + concurrent sharing; 1.5x FPS on compute/draw (e.g., 8k particles).
-*   **ARM Spins:** wfe primary, yield fallback—no deadlocks, battery-friendly.
-
-
-### Debug Ux
-
-*   **Metrics Overlay:** NULL-safe DrawText (hardcoded font); depth bars + latency text.
-
-
-### Safety
-
-*   **Force Single-Queue:** InitInfo opt-in for debug; new -86 for ARM intrinsics fail.
-
-
-### Validation
-
-*   **VK:** Overlap 130FPS (vs. 90); no ownership barriers.
-*   **ARM:** QEMU <5% CPU; fallback yield clean.
-*   **Overlay:** <0.3ms; TSan/Valgrind ok.
-
-
----
-
-## [2.3.22 "Velocity" (Backpressure & Metrics Hotfix)] - 2025-12-07
-
-### Description
-
-Armors v2.3.21 MT with hybrid backpressure (pause-hinted spins), Momentum queuing (replay → auto-push), and drift-proof latency metrics—burst-resilient decoupling.
-
-
-### Resilience
-
-*   **Hybrid Backpressure:** Policies (SPIN w/ _mm_pause/ARM yield | YIELD | SLEEP 1ms); EndFrame applies on full queue.
-*   **ARM64 Compatibility:** Added `__yield()` support for MSVC ARM64 (_M_ARM64) builds in spin loops.
-
-
-### Integration
-
-*   **Momentum Bridge:** Replay lists to per-frame cmds → queue indices; reset safe via offsets.
-*   **Render Lists:** Promoted `_SituationQueueRenderList` to public `SituationSubmitRenderList` for streamlined render list submission.
-
-
-### Metrics
-
-*   **Latency Stats:** Monotonic clocks (CLOCK_MONOTONIC/QPC); `GetRenderLatencyStats(avg/max_ns)` for stutter hunts.
-
-
-### Safety
-
-*   **Timed Joins:** 1s loop (100ms ticks, log every 500ms); new `-84` for timeouts.
-
-
-### Validation
-
-*   SPIN: <50% CPU during bursts; no thrash.
-*   Latency: ±1ns; no neg on drifts.
-*   Replay: 10k packets MT → FPS match.
-
-
----
-
-## [2.3.21 "Velocity" (Render Thread Polish)] - 2025-12-06
-
-### Description
-
-This release polishes the v2.3.20 render thread isolation with four targeted refinements, boosting robustness, debuggability, and integration without perf hits or API breaks. It addresses GL context pitfalls, graceful shutdowns, queue visibility, and seamless integration for MT-enabled flows.
-
-
-### New Features
-
-*   **Metrics API:** Introduced `SituationGetRenderQueueDepth()` to expose the current depth of the render thread's queue. This allows UI overlays to visualize backpressure (e.g., "Queue: 2/3") in real-time.
-*   **EndFrame Integration:** `SituationEndFrame` now automatically queues frames when the render thread is enabled. Users enable threading via `SituationInitInfo.render_thread_count > 0`, and the loop handles the rest transparently.
-
-
-### Critical Fixes & Safety
-
-*   **Context Handover (GL):** Implemented `_SituationInitRenderThread` with explicit GL context release on the main thread before spawning the render thread. This prevents "current context" conflicts that could crash drivers on thread startup.
-*   **Shutdown Robustness:** Hardened `_SituationDestroyRenderThread` with a comprehensive shutdown sequence:
-*   Sets shutdown flag.
-*   Broadcasts condition variables to wake both producer (Main) and consumer (Render) threads if blocked.
-*   Joins the thread to ensure clean termination before resource cleanup.
-*   Releases the GL context on the render thread before exit.
-*   **Error Reporting:** Added `SITUATION_ERROR_THREAD_CREATION_FAILED` (-83) to report thread spawning failures specifically.
-
-
----
-
-## [2.3.20 "Velocity" (Phase 2.5: High-Performance Mesh Architecture)] - 2025-12-06
-
-### Description
-
-This PR implements Phase 2.5 of the rendering engine refactor, introducing a High-Performance Mesh Architecture with a Lazy VAO Cache.
-
-
-### Key Changes
-
-*   **Lazy VAO Cache:** Replaces the shared global VAO with a per-mesh VAO cache. VAOs are created and configured lazily on the Render Thread inside `_SituationGLExecuteCommands` using `_SitGLGetCachedVAO`. This restores optimal VAO usage while respecting OpenGL context rules.
-*   **OpenGL Graveyard:** Implements a deferred deletion system (`_SituationGLGraveyard`). Resources destroyed on the Main Thread (`SituationDestroyMesh`, etc.) are queued and safely deleted on the Render Thread via `_SitGLFlushGraveyard` to prevent race conditions.
-*   **Renaming:** Renamed internal graveyards to `_SituationVKGraveyard` and `_SituationGLGraveyard` for clarity.
-
-
----
-
-## [2.3.19 "Velocity" (Phase 2: Threading Infrastructure)] - 2025-12-06
-
-### Description
-
-This release delivers the core infrastructure for the decoupled rendering system (Phase 2). It successfully establishes the Render Thread, Frame Queue, and Context Handover mechanisms for both OpenGL and Vulkan, enabling the main thread to produce frames while the background thread consumes and renders them. This separation paves the way for higher frame rates and smoother gameplay by unblocking logic updates from VSync.
-
-
-### Architectural Changes
-
-*   **Render Thread:** Implemented `_SituationRenderThreadEntry`. The main thread records commands into double-buffered Soft Command Buffers (GL) or uses standard Vulkan Command Buffers, which are pushed to a thread-safe ring buffer and consumed by the Render Thread.
-*   **Context Handover (OpenGL):**
-*   **Main Thread (Loader):** Now manages a hidden `loader_window` (shared context) for async asset loading.
-*   **Render Thread (Presenter):** Takes ownership of the main window context (`glfwMakeContextCurrent`) to perform presentation (`glfwSwapBuffers`).
-*   **Vulkan Threading:**
-*   **Queue Submission:** `vkQueueSubmit` and `vkQueuePresentKHR` are now executed exclusively on the Render Thread to prevent driver stalls on the Main Thread.
-*   **Swapchain Signal:** Introduced `recreate_swapchain_request` (atomic bool). The Render Thread signals this flag if presentation fails (`VK_ERROR_OUT_OF_DATE_KHR`), and the Main Thread handles the recreation logic safely during the next Acquire phase.
-*   **Image Index Tracking:** Added `acquired_image_indices` array to robustly track which swapchain image corresponds to which frame slot, solving race conditions between the Main Thread's `vkAcquireNextImageKHR` and the Render Thread's `vkQueuePresentKHR`.
-*   **Frame Queue & Backpressure:** Implemented a ring buffer for frame submission. `SituationAcquireFrameCommandBuffer` now waits on a condition variable if the queue is full (Backpressure), ensuring the main thread doesn't overrun the GPU.
-
-
-### Critical Fixes
-
-*   **Race Condition Prevention:** `SIT_OP_BEGIN_RENDER_PASS` and `SIT_OP_PRESENT` now capture the current window resolution at record-time (on the Main Thread), preventing race conditions where the Render Thread might read a changing `main_window_width/height` during a resize event.
-*   **Fallback Path:** Restored the non-threaded execution path in `SituationEndFrame`. The library continues to function correctly (albeit synchronously) on platforms without C11 thread support (`__STDC_NO_THREADS__`).
-
-
-### DEFERRED IMPLEMENTATION (Phase 2.5)
-
-*   **Shared Global VAO Strategy:** To resolve immediate context sharing issues (VAOs are not shared between contexts), the current implementation uses a single, global shared VAO (`mesh_vao_id`) for all meshes.
-*   *Impact:* This works correctly but incurs a small CPU overhead as VBOs must be re-bound for every draw call.
-*   *Plan:* Phase 2.5 will introduce a "Lazy Per-Mesh VAO Cache" on the Render Thread to restore maximum performance by caching fully configured VAOs.
-
-
----
-
-## [2.3.18A "Velocity" (Hotfix: Phase 1 Completion)] - 2025-12-05
-
-### Description
-
-This release completes Phase 1 of the OpenGL backend refactor by implementing the missing deferred operations for buffer updates and vertex attribute configuration. This ensures that all `SituationCmd*` and `SituationUpdate*` calls respect the "Soft Command Buffer" architecture, preventing any immediate GL calls during the render recording phase.
-
-
-### Critical Fixes
-
-*   **Deferred Buffer Updates:** Implemented `SIT_OP_UPDATE_BUFFER`. `SituationUpdateBuffer` now correctly records an update packet instead of calling `glNamedBufferSubData` immediately.
-*   **Deferred Vertex Attributes:** Implemented `SIT_OP_SET_VERTEX_ATTRIBUTE`. `SituationCmdSetVertexAttribute` now records a configuration packet.
-*   **Soft Command Buffer Execution:** Updated `_SituationGLExecuteCommands` to handle the new opcodes, ensuring data and state changes occur in the correct order during replay.
-
-
----
-
-## [2.3.18 "Velocity" (Phase 1: Deferred OpenGL)] - 2025-12-05
-
-### Description
-
-This release implements Phase 1 of the OpenGL backend refactor, introducing a Soft Command Buffer for deferred execution. It addresses a critical regression where `SIT_OP_DRAW_MESH` would leave a mesh-specific VAO bound, breaking subsequent generic draw calls. It also fixes a memory leak in the soft buffer cleanup logic.
-
-
-### Architectural Changes
-
-*   **Soft Command Buffer:** Introduced `SituationSoftCommandBuffer` and `SitOpCode` infrastructure for OpenGL.
-*   **Deferred Execution:** Refactored all `SituationCmd*` functions to record packets instead of executing GL calls directly. Implemented `_SituationGLExecuteCommands` to replay recorded commands at `SituationEndFrame`.
-
-
-### Critical Fixes
-
-*   **VAO State Corruption:** `SIT_OP_DRAW_MESH` now explicitly restores `sit_render.gl.global_vao_id` after execution. This prevents subsequent generic draw calls (like `SituationCmdDrawQuad`) from failing due to incorrect vertex attribute bindings.
-*   **Memory Leak:** Added cleanup logic for `soft_buffer.packets` and `soft_buffer.data_buffer` in `_SituationCleanupOpenGL`.
-
-
----
-
-## [2.3.17 "Velocity" (Refactor: Render State Separation)] - 2025-12-05
-
-### Description
-
-This release implements a massive architectural refactor to decouple the rendering state from the core global state. This change is purely structural and preserves identical API behavior and performance, but paves the way for future multi-context support and cleaner internal modularity.
-
-
-### Architectural Changes
-
-*   **State Decoupling:** The monolithic `_SituationGlobalStateContainer` has been split. A new `_SituationRenderState` struct now encapsulates all graphics-related state (Vulkan handles, OpenGL context data, virtual displays, resource trackers).
-*   **Context Object:** Introduced a heap-allocated `SituationContext` that holds the Global, Render, Audio, and Input states, replacing static global variables with a structured context pointer.
-*   **Access:** Internal access is now routed through context-aware macros (`sit_render`, `sit_gs`, etc.) that resolve to the active context instance.
-*   **Memory Management:** `SituationInit` now allocates the context on the heap (previously BSS/static), and `SituationShutdown` frees it. This ensures cleaner memory lifetime management and better compatibility with hot-reloading entire DLLs.
-
-
-### Migration
-
-*   **Internal:** All internal references to `sit_gs.vk` or `sit_gs.gl` have been updated to `sit_render.vk` and `sit_render.gl`.
-*   **Public API:** No breaking changes to the public API surface.
-
-
----
-
-## [2.3.16A "Velocity" (Hotfix: Vector & Docs)] - 2025-12-03
-
-### Description
-
-This release solidifies the API type system and documentation. It replaces legacy `vec2`/`vec3`/`vec4` array typedefs with C11-compliant `Vector2`/`Vector3`/`Vector4` unions, ensuring strict standards compliance and resolving ambiguity. It also elevates the threading module documentation to "Titanium" standards.
-
-
-### Api Changes
-
-*   **Vector Standardization:** Replaced `vec2`, `vec3`, `vec4` array typedefs with `Vector2`, `Vector3`, `Vector4` unions.
-*   **Impact:** Access members via `.x`, `.y`, etc., instead of array indexing `[0]`. Use `.raw` for CGLM interop.
-*   **Compatibility:** This is a breaking change for code directly accessing vector components via array syntax on Situation structs.
-
-
-### Documentation
-
-*   **Titanium Threading Docs:** Moved all detailed threading documentation from `situation.h` header declarations to the implementation section, ensuring a clean API surface while maintaining exhaustive developer reference.
-*   **Cleanup:** Fixed typos in `SituationWaitForAllJobs` and `SituationLoadSoundFromFileAsync` documentation.
-
-
----
-
-## [2.3.16 "Velocity" (Task Safety Hotfix)] - 2025-12-03
-
-### Description
-
-Bolsters v2.3.15 tasks with lock-free dep linking (CAS), cycle guards (depth traversal), and graph viz—deadlock-proof chains for physics/cull flows.
-
-
-### Safety Enhancements
-
-*   **Cycle Detection:** Traverse cont chains in `AddJobDependency`; error/assert on loops (>32 hops/self). New: `-82` code.
-*   **Lock-Free Links:** CAS for `continuation_id`; atomic dec + cond signal on ready.
-*   **HoL Mitigation:** Workers skip blocked deps, yield on full-block.
-
-
-### Debug Tools
-
-*   **Graph Dump:** `SituationDumpTaskGraph` snapshots active jobs (prio/depth/deps); JSON mode for scripts. Racy warning included.
-
-
-### Api
-
-*   `AddJobDependencies` for fan-in (N prereqs → 1 dep).
-*   Examples: `task_graph_demo.c` (chains + injects).
-
-
-### Validation
-
-*   Cycles: 100% detected (loops/self/deep).
-*   Perf: <0.1% overhead; TSan/Valgrind clean.
-*   C11: Atomics explicit; no extra deps.
-
-
----
-
-## [2.3.15 "Velocity" (Generational Task System)] - 2025-12-02
-
-### Description
-
-This release replaces the previous basic threading implementation with a hardened Generational Task System. It introduces O(1) job tracking, dual priority queues (High/Low) to prevent asset loading from stalling gameplay physics, and "Small Object Optimization" to remove malloc overhead for 95% of tasks.
-
-
-### New Features
-
-*   **Generational Ring Buffer:** Replaced the linear-scan thread pool with a Generational Ring Buffer System, enabling O(1) job submission and tracking.
-*   **Dual Priority Queues:** Jobs can now be submitted to High (Physics/Logic) or Low (Assets/IO) priority queues. Workers prioritize the High queue to prevent frame spikes.
-*   **Small Object Optimization (SOO):** Job payloads <= 64 bytes are now embedded directly in the job structure, eliminating heap allocation overhead for most tasks.
-*   **Parallel Dispatch:** Added `SituationDispatchParallel` for easy fork-join parallelism (parallel-for loops). The calling thread actively participates in execution ("helping") to prevent stalls.
-*   **Advanced Submission Control:** Introduced `SituationSubmitJobEx` with flags for Backpressure handling:
-*   `SIT_SUBMIT_BLOCK_IF_FULL`: Spin/yield until a slot opens.
-*   `SIT_SUBMIT_RUN_IF_FULL`: Execute immediately on the calling thread if the queue is full.
-*   **Generational IDs:** `SituationJobId` now packs a generation counter to prevent ABA problems and allow safe O(1) validity checks.
-
-
-### Api Changes
-
-*   Replaced previous threading API with the new Generational Task System API.
-*   Updated `SituationLoadSoundFromFileAsync` to utilize the new Generational Task System (now utilizes Small Object Optimization for zero-allocation submission).
-*   Added `<threads.h>` and `<stdatomic.h>` as hard dependencies when `SITUATION_ENABLE_THREADING` is defined (C11 support required).
-
-
----
-
-## [2.3.14A "Velocity" (Stability / Bug Fix / Compatibility)] - 2025-12-02
-
-### Description
-
-This patch hardens the "Velocity" architecture, focusing on audio stability, graphics compatibility, and backend robustness. It addresses critical issues that could cause audio dropouts, crashes with legacy meshes, and state desynchronization in OpenGL.
-
-
-### Critical Fixes
-
-*   **Audio Snapshot Mixing:** Replaced the v2.3.14 `try_lock` strategy in the audio callback with a Snapshot-Mixing strategy. This reduces the critical section to pointer copying only (O(1)), eliminating silence and dropouts during main-thread contention (e.g., asset loading).
-*   **Graphics Auto-Padding:** Added an Auto-Padding Layer to `SituationCreateMesh`. Legacy 32-byte vertex data (Pos/Norm/UV) is now automatically detected and upgraded to the required 48-byte format (Pos/Norm/Tan/UV) by inserting default tangents. This prevents crashes and validation errors when using new PBR shaders with older assets.
-*   **OpenGL Shadow State Invalidation:** Introduced `_SitGLInvalidateShadowState()` and integrated it into the frame start sequence. This invalidates internal state tracking at the beginning of every frame, allowing the library to recover gracefully if external tools (like ImGui) modify the GL state behind its back.
-*   **Vulkan Staging Buffer Cleanup:** Consolidated logic in `_SituationVulkanCreateAndUploadBuffer` to ensure robust cleanup of staging buffers. It now safely handles both synchronous (initialization) and asynchronous (runtime) upload paths, preventing potential double-frees or leaks.
-*   **Header Cleanup:** Removed the empty `SITUATION_VERSION_STRING` macro definition to clean up the public header.
-
-
----
-
-## [2.3.14 "Velocity" (Stability & Performance)] - 2025-12-01
-
-### Description
-
-This release addresses critical stability issues and performance bottlenecks identified in the Velocity architecture. It introduces key optimizations for both OpenGL and Vulkan backends, fixes a severe heap corruption bug, and adds support for Tangent Space geometry, enabling advanced PBR rendering.
-
-
-### Critical Fixes
-
-*   **Heap Corruption Fix:** Removed invalid pointer poisoning logic in `SituationFreeString` that caused undefined behavior and heap corruption.
-*   **Audio Thread Safety:** Implemented `try_lock` logic in the audio callback to prevent the high-priority audio thread from stalling if the main thread hangs during asset loading.
-*   **Vulkan Buffer Race Condition:** Fixed a race condition in `SituationUpdateBuffer` by forcing the use of staging buffers for all updates within the render loop, ensuring correct synchronization.
-*   **Vulkan PBR Regression Fix:** Resolved a blocking regression where new 48-byte stride PBR pipelines broke compatibility with legacy 32-byte meshes. The Vulkan backend now dynamically selects between Legacy and PBR pipelines based on mesh vertex stride.
-
-
-### Performance Optimizations
-
-*   **OpenGL Shadow State:** Implemented software tracking of GL state (program, VAO, FBO, blend modes) to eliminate redundant `glGetIntegerv` calls from the hot render loop. This removes significant CPU-GPU synchronization bubbles.
-*   **Vulkan Asset Descriptor Pool:** Introduced a dedicated, freeable `VkDescriptorPool` for long-lived assets (Textures/Models). This prevents descriptor exhaustion and fragmentation during level transitions, which was a risk with the previous linear-only allocator.
-*   **Text Rendering Allocations:** Replaced per-frame `malloc/free` calls in `SituationCmdDrawText` with a persistent, auto-growing scratch buffer (`text_batch_scratch`), significantly reducing heap allocator pressure during UI rendering.
-
-
-### New Features
-
-*   **Tangent Space Support:** Updated `SituationCreateMesh` and the internal GLTF loader to extract and store Tangent data (12-float stride: Pos, Norm, Tangent, UV). This enables correct normal mapping for PBR shaders.
-
-
-### Migration Guide
-
-*   **Shader Contract Update:** The vertex input layout has changed to support Tangents. Custom shaders using `SituationCmdDrawMesh` must update their input layout:
-*   **Location 0:** Position (vec3)
-*   **Location 1:** Normal (vec3)
-*   **Location 2:** TexCoord0 (vec2)
-*   **Location 3:** Color (vec4) - *Reserved/Legacy*
-*   **Location 4:** Tangent (vec4) - **[NEW]**
-
-
----
-
-## [2.3.13 "Velocity" (Async Threading Module)] - 2025-11-30
-
-### Description
-
-This release introduces the **Async Threading Module**, a C11-compliant job system designed to eliminate main-thread stalls caused by heavy operations like audio decoding and file I/O. It provides a high-performance, lock-minimized ring buffer for job submission and worker management, paving the way for the upcoming v2.4 "Momentum" engine architecture.
-
-
-### New Features
-
-*   **SituationThreadPool:** A robust, user-managed thread pool implementation using C11 primitives (`<threads.h>`, `<stdatomic.h>`). Features a fixed-size ring buffer (default 256 slots) for zero-allocation job submission at runtime.
-*   **Async Audio Loading:** Added `SituationLoadSoundFromFileAsync`, allowing audio files to be decoded to RAM in the background without blocking the rendering loop.
-*   **Job System API:**
-*   `SituationCreateThreadPool`: Auto-detects logical cores to spawn an optimal number of worker threads.
-*   `SituationSubmitJob`: Pushes generic work units to the background workers.
-*   `SituationWaitForJob` / `SituationWaitForAllJobs`: Provides flexible synchronization options, using condition variables to sleep efficiently (zero CPU usage) while waiting.
-*   `SituationDestroyThreadPool`: Signals shutdown, wakes all workers, drains the pending queue, and joins threads for a clean exit.
-*   **Safety Mechanisms:**
-*   **Main Thread Assertions:** New `SIT_ASSERT_MAIN_THREAD()` macro ensures thread-sensitive APIs (OpenGL, Windowing) are never called from worker threads.
-*   **Atomic State Tracking:** Job completion status and active worker counts are managed atomically to prevent race conditions.
-
-
-### Architectural Changes
-
-*   **Worker Logic:** Implemented a robust worker loop that handles spurious wakeups and ensures the `active_jobs` counter is decremented only *after* job execution is fully complete, preventing race conditions in `WaitForAll`.
-*   **Error Handling:** Added threading-specific error codes (`SITUATION_ERROR_THREAD_QUEUE_FULL`, `SITUATION_ERROR_THREAD_VIOLATION`) to the core error enum.
-
-
-### Validation
-
-*   **Sanitizer Clean:** Passed 1k-job stress tests under ThreadSanitizer (TSan) and Helgrind with zero data races or deadlocks.
-
-
----
-
-## [2.3.12A "Velocity" (critical fixes)] - 2025-11-30
-
-### Description
-
-This release was strictly critical fixes done to help compile the library.
-
-
-### Critical Fixes
-
-*   **Audio Hardening:** Fixes to SituationLoadSoundFromStream, SituationSetSoundPitch, SituationSetSoundFilter fixes to signatures when calling miniaudio.
-*   **Input Hardening:** Fixes to SituationSetMousePosition, SituationSetMouseOffset, SituationSetMouseScale rewrite of the functions for accuracy.
-
-
----
-
-## [2.3.12 "Velocity" (Input Subsystem Refactor)] - 2025-11-30
-
-### Description
-
-This release executes a major architectural refactor of the Input Subsystem. All Human Interface Device (HID) state—Keyboard, Mouse, Joysticks, and Cursors—has been decoupled from the monolithic global state container and moved into a dedicated `_SituationInputState` structure within the main context.
-
-
-### Architectural Changes
-
-*   **Input State Isolation:** Introduced `_SituationInputState` to encapsulate all input-related data structures. This cleanly separates input logic from windowing and rendering state.
-*   **Context Expansion:** Updated `SituationContext` to include the new `input` container. Added the `sit_input` macro for internal access.
-*   **Thread Safety Prep:** This refactor is the foundational prerequisite for the upcoming "Double-Buffered Input" system, which will allow game logic and rendering to run on separate threads without locking or race conditions.
-
-
----
-
-## [2.3.11 "Velocity" (Vulkan Stability & Errno Fixes)] - 2025-11-30
-
-### Description
-
-This release addresses critical stability issues in the Vulkan backend regarding descriptor set allocation and resource cleanup. It also removes invalid errno checks in memory management functions to prevent false error reporting.
-
-
-### Critical Fixes
-
-*   **Vulkan Descriptor Hardening:** `_SituationVulkanAllocateDescriptorSet` now strictly checks for `VK_ERROR_OUT_OF_POOL_MEMORY` or `VK_ERROR_FRAGMENTED_POOL` before attempting to grow the pool. Other errors fail fast to prevent infinite loops.
-*   **Zombie Resource Prevention:** Hardened `SituationCreateBuffer` and `SituationCreateTexture` to safely defer destruction of underlying Vulkan resources (Buffers/Images) if descriptor set allocation fails, preventing VRAM leaks and GPU stalls.
-*   **Errno Safety:** Removed invalid `if (errno != 0)` checks after `SIT_FREE` calls in `SituationUnloadImage` and `SituationFreeDisplays`, which could lead to false positive error reports.
-*   **Cosmetic:** Added braces to single-line statements in `SituationUnloadFont`.
-
-
----
-
-## [2.3.10C "Velocity" (Error Reporting Refactor)] - 2025-11-30
-
-### Description
-
-This update completes the overhaul of the error reporting system, ensuring that every failure case reports a specific, granular `SituationError` code rather than a generic failure. This allows for precise programmatic handling of errors across all subsystems (Filesystem, Audio, Display, Graphics).
-
-
-### Critical Fixes
-
-*   **Filesystem Error Fidelity:** `_SituationSetFilesystemError` now accepts a `SituationError` code argument. This allows filesystem operations (load, save, list) to report specific errors like `SITUATION_ERROR_FILE_NOT_FOUND` or `SITUATION_ERROR_ACCESS_DENIED` while still preserving the OS-specific error string (strerror/FormatMessage) for logging.
-*   **Audio Decoder Reporting:** Fixed `SituationLoadSoundFromStream`. Previously, if the decoder initialization failed, it returned a generic context error. It now explicitly returns `SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED`.
-*   **Global Error Refactor:** Replaced all remaining instances of generic error codes (like `-1` or `0`) with specific `SituationError` enums in:
-*   **Audio:** `SituationSetAudioDevice`, `SituationStartAudioCapture`.
-*   **Display:** `SituationSetDisplayMode`.
-*   **Graphics:** `SituationCreateTexture`, `SituationCreateShader`, `SituationCreateComputePipeline`.
-*   **Filesystem:** `SituationLoadFileData`, `SituationSaveFileData`, `SituationListDirectoryFiles`.
-
-
----
-
-## [2.3.10B "Velocity" (Feature Parity & Error Reporting)] - 2025-11-29
-
-### Description
-
-This release significantly enhances the robustness of the library by expanding error reporting and ensuring correct feature management across both OpenGL and Vulkan backends. It addresses critical gaps in error code handling and implements proper feature detection and enablement for Vulkan extensions.
-
-
-### Critical Fixes & Safety
-
-*   **Comprehensive Error Support:** Added a full block of `NETWORK` error codes (`-900` to `-907`) and updated `_SituationSetErrorFromCode` to include specific case handlers for *every* `SituationError` defined in the enum. This eliminates generic "Unknown Error" messages for defined failure states.
-*   **Renaming:** Renamed `SituationFeature` to `SituationRenderFeature` to better reflect its scope and purpose within the graphics subsystem.
-*   **Vulkan Feature Management:**
-*   Fixed a critical issue in `_SituationVulkanCreateLogicalDevice` where optional features (Mesh Shaders, Ray Tracing) were not being correctly enabled.
-*   Implemented robust `pNext` chaining logic to properly link `VkPhysicalDeviceMeshShaderFeaturesEXT`, `VkPhysicalDeviceRayTracingPipelineFeaturesKHR`, and other feature structs to the `VkDeviceCreateInfo` chain. This ensures that requested features are actually activated on the logical device.
-*   **OpenGL Feature Detection:** Updated `_SituationInitOpenGL` to correctly populate the `enabled_features_mask` based on available GLAD extensions and core version capabilities, ensuring `SituationIsFeatureSupported` returns accurate results.
-
-
----
-
-## [2.3.10A "Velocity" (Stability Fixes & Optimization)] - 2025-11-29
-
-### Description
-
-This is a "surgical fix" release targeting stability, memory safety, and text rendering performance. It introduces configurable memory allocators, C++ RAII wrappers for strings, and a significant optimization for text rendering that replaces character-by-character draw calls with batched rendering.
-
-
-### Critical Fixes & Safety
-
-*   **Memory Safety Macros:** Replaced all internal calls to `malloc`, `calloc`, `realloc` with overridable macros `SIT_MALLOC`, `SIT_CALLOC`, `SIT_REALLOC`. This allows users to integrate custom allocators (e.g., for tracking or pools) by defining these macros before including the header.
-*   **RAII String Wrapper (C++):** Added `SituationScopedString` struct for C++ users. This RAII wrapper automatically calls `SituationFreeString()` when it goes out of scope, preventing memory leaks from API functions that return heap-allocated strings (like `SituationGetLastErrorMsg`).
-
-
-### Optimizations
-
-*   **Batched Text Rendering:** Completely rewrote `SituationCmdDrawText`.
-*   **Old Behavior:** Issued one draw call per character, causing massive driver overhead.
-*   **New Behavior:** Batches all characters into a single dynamic vertex buffer and issues one draw call per string.
-*   **Backend Support:** Implemented efficient dynamic buffer updates for both OpenGL (`glNamedBufferSubData`) and Vulkan (Staging Buffer + Pipeline Barrier).
-
-
----
-
-## [2.3.10 "Velocity" (Feature Flag System & API Refinement)] - 2025-11-29
-
-### Description
-
-This release introduces a comprehensive Feature Flag system to `situation.h`, enabling applications to query granular GPU capabilities at runtime. It also resolves critical compilation issues in the OpenGL backend related to extension macros and duplicate definitions.
-
-
-### New Features
-
-*   **Feature Flag System:** Introduced the `SituationFeature` enum and `SituationIsFeatureSupported()` function.
-*   Allows querying support for advanced features like `SIT_FEATURE_BINDLESS_BUFFERS`, `SIT_FEATURE_MESH_SHADER`, `SIT_FEATURE_RAY_TRACING`, and more.
-*   Automatically populated during backend initialization based on available extensions and driver limits.
-
-
-### Critical Fixes
-
-*   **Compilation Fixes:**
-*   Corrected the definition order of `SITAPI` to resolve "expected ‘;’ before ‘void’" errors.
-*   Removed duplicate function definitions (`SituationGetBufferDeviceAddress`, `SituationGetTextureHandle`) that caused redefinition errors.
-*   Added proper `#ifdef` guards around OpenGL extension macros (`GLAD_GL_NV_shader_buffer_load`, etc.) to prevent compile-time failures when extensions are missing from the loader.
-*   **Missing Definitions:** Verified presence of `_SituationCachePhysicalDisplays` and `_SituationGLFWJoystickCallback` to resolve linker warnings.
-
-
-### Documentation
-
-*   **Versioning:** Updated all version macros and documentation to 2.3.10.
-
-
----
-
-## [2.3.9 "Velocity" (Vulkan 1.2 & Buffer Device Address)] - 2025-11-29
-
-### Description
-
-This release marks a critical update to the Situation SDK, bumping the minimum Vulkan requirement to version 1.2. This change enables access to advanced features like Bindless Descriptors and Buffer Device Address, paving the way for high-performance GPU-driven rendering architectures.
-
-
-### Api Additions
-
-*   **Bindless Graphics & Compute:**
-*   `SituationGetBufferDeviceAddress`: Retrieves the 64-bit physical GPU address of a buffer, enabling direct pointer access in shaders via `GL_EXT_buffer_reference`.
-*   `SituationGetTextureHandle`: Retrieves a 64-bit handle for bindless texture access (OpenGL only).
-*   `SituationCmdBindSampledTexture`: Binds a texture specifically for sampling (sampler2D) operations, distinct from storage image bindings.
-
-*   **Compute Workflow Enhancements:**
-*   `SituationCmdPresent`: Introduced a command to manually present a texture to the swapchain. This is essential for "Compute-Only" pipelines where the final image is generated by a compute shader rather than a rasterization pass.
-*   `SIT_COMPUTE_LAYOUT_BUFFER_IMAGE`: Added a new compute layout configuration supporting one SSBO and one Storage Image, optimizing binding for common post-processing shaders.
-
-*   **Image Module Utilities:**
-*   `SituationCreateImage`: Added helper to allocate an uninitialized CPU-side image buffer.
-*   `SituationBlitRawDataToImage`: Efficiently copies raw byte arrays into an image region (useful for font atlas generation).
-*   `SituationSetPixelColor`: CPU-side helper for setting individual pixels.
-
-
-### Technical Changes
-
-*   **Vulkan 1.2 Mandate:**
-*   The internal Vulkan initialization sequence now explicitly requests API version 1.2.
-*   `bufferDeviceAddress` feature is enabled during logical device creation if supported by the GPU.
-*   VMA (Vulkan Memory Allocator) configuration updated to target Vulkan 1.2.
-
-*   **Internal Refactoring:**
-*   Updated `_SituationVulkanState` and initialization logic to support the expanded compute layout array.
-*   Standardized `SituationCmdPresent` implementation across OpenGL (using `glBlitNamedFramebuffer`) and Vulkan (using `vkCmdBlitImage` and barrier transitions).
-
-
----
-
-## [2.3.8B "Velocity" (Production Readiness)] - 2025-11-29
-
-### Description
-
-This release is an affirming hardening production readiness release. It aims to polish and wrap up the progressive work done in the "Velocity" saga from codebase to the SDK documentation.
-
-
-### Improvements
-
-*   **Documentation Polish:** Comprehensive review and update of the SDK documentation (`situation_sdk_238.md`) to reflect the finalized state of the Velocity module.
-*   **Version Synchronization:** Aligned version numbers across all documentation and header files to 2.3.8B.
-
-
----
-
-## [2.3.8A "Velocity" (Hotfix A)] - 2025-11-29
-
-### Description
-
-This release achieves production-readiness for the "Velocity" hot-reloading module. It introduces a robust "Fail-Safe" reloading architecture that prevents application crashes or visual corruption when reloading assets with errors.
-
-
-### New Features
-
-*   **Fail-Safe Hot-Reloading:**
-*   **Shaders:** Refactored `SituationReloadShader` and `SituationReloadComputePipeline` to use a "Load-Swap-Destroy" pattern. New shaders are compiled and verified *before* the old ones are destroyed. If compilation fails, the old shader remains active, and an error is logged. This prevents "black screen" states during shader development.
-*   **Textures:** Applied fail-safe logic to `SituationReloadTexture`. Invalid image files or load errors no longer invalidate the existing texture handle.
-*   **Models:** Implemented deep-swap reloading for `SituationReloadModel`. The entire model hierarchy (meshes and textures) is rebuilt in the background and swapped atomically on success.
-*   **Stability:** The hot-reload loop (`SituationCheckHotReloads`) is now resilient to list mutation and ensures safe iteration even if resources are added or removed during the reload process.
-
-
-### Critical Fixes
-
-*   **Internal robustness:** Corrected resource tracking node management during reloads to prevent memory leaks and ensure persistent tracking of reloaded assets.
-
-
----
-
-## [2.3.8 "Velocity" (Hot-Reload Implementation & API Fixes)] - 2025-11-29
-
-### Description
-
-This release finalizes the "Velocity" feature set by implementing the Hot-Reloading module and addressing critical API inconsistencies. It introduces the `SituationCheckHotReloads` function, enabling runtime asset reloading, and corrects strict typing issues in the Input and Graphics modules.
-
-
-### New Features
-
-*   **Hot-Reloading Implementation:** Fully implemented `SituationCheckHotReloads` and resource tracking.
-*   **Resource Tracking:** Internal resource nodes (`_SituationShaderNode`, `_SituationTextureNode`, `_SituationModelNode`, `_SituationComputePipelineNode`) now store source file paths and last modification times.
-*   **Loader Integration:** `SituationLoadShader`, `SituationLoadTexture`, `SituationLoadModel`, and `SituationCreateComputePipeline` now capture file modification times upon successful load.
-*   **Polling:** `SituationCheckHotReloads` (intended for development builds) polls these files for changes and triggers the appropriate `SituationReload*` function.
-
-
-### Critical Fixes
-
-*   **Input API Strict Typing:** Corrected function signatures in `situation.h` for `SituationSetMousePosition`, `SituationSetMouseOffset`, and `SituationSetMouseScale`. They now correctly accept `Vector2` structs instead of `vec2` arrays, matching their implementations and ensuring Strict C11 compliance.
-*   **Vulkan/OpenGL State Consistency:** Moved `last_vd_composite_time_ms` from the backend-specific structs to the common `_SituationGlobalStateContainer`. This fixes a bug where profiling data was inaccessible or reading from uninitialized memory depending on the active backend.
-*   **OpenGL Error Macro Visibility:** Added a forward declaration for `_SituationLogGLError` in the public section of `situation.h`. This ensures the `SIT_CHECK_GL_ERROR` macro compiles correctly in user applications when `SITUATION_USE_OPENGL` is defined.
-*   **Memory Leaks Plugged:** Fixed memory leaks in `SituationDestroyTexture`, `SituationUnloadShader`, `SituationUnloadModel`, and `SituationDestroyComputePipeline` where the path strings (`source_path`, `vs_path`, `fs_path`) tracked for hot-reloading were not being freed during destruction.
-*   **Hot-Reload Loop Prevention:** Updated `SituationCheckHotReloads` to update the file modification timestamp *before* attempting a reload. This prevents infinite retry loops and GPU stalls if a file has syntax errors (avoiding a "reload -> fail -> retry next frame" cycle).
-
-
----
-
-## [2.3.7C "Velocity" (Graveyard & Reverb Documentation)] - 2025-11-29
-
-### Description
-
-This update focuses on documentation completeness and internal clarity. It retroactively documents the "Graveyard" deferred destruction system introduced in previous versions and finalizes the description of the embedded reverb implementation.
-
-
-### Documentation
-
-*   **Vulkan Graveyard:** Added comprehensive internal documentation for `SituationGraveyard` and its associated helper functions (`_SituationInitGraveyard`, `_SituationFlushGraveyard`). This clarifies how the library prevents GPU stalls during resource destruction.
-*   **Reverb Internals:** Documented the Schroeder/Freeverb implementation details, including the structure of the `SituationReverbState` and the logic behind the parallel comb filters and all-pass filters.
-
-
----
-
-## [2.3.7B "Velocity" (Embedded Reverb Implementation)] - 2025-11-28
-
-### Description
-
-This patch implements a custom Schroeder/Freeverb reverberation algorithm directly within the `situation.h` header, replacing the missing `miniaudio` reverb dependency. This ensures that the `SituationSetSoundReverb` function is fully operational and self-contained, providing high-quality environmental audio effects without requiring external DSP libraries.
-
-
-### New Features
-
-*   **Embedded Reverb Algorithm:** Implemented a complete Schroeder/Freeverb reverb engine (8 comb filters, 4 all-pass filters) within the library's implementation block. This restores full functionality to the `SituationSetSoundReverb` API, enabling Room Size, Damping, and Wet/Dry mix controls.
-*   **Opaque State Management:** The public `SituationSound` struct now uses an opaque `void* reverb_state` pointer, completely hiding the internal reverb data structures (`SituationReverbState`, `SituationReverbComb`, etc.) from the public API. This improves encapsulation and prevents ABI breakage if the reverb implementation changes in the future.
-
-
-### Critical Fixes
-
-*   **Missing Dependency Resolution:** Replaced calls to non-existent `ma_reverb` functions with internal helpers (`_SituationInitReverb`, `_SituationProcessReverb`, `_SituationUninitReverb`). The Audio Engine now initializes and processes the custom reverb chain seamlessly as part of the standard audio pipeline.
-*   **Initialization Safety:** Added robust null checks for memory allocation in `_SituationInitReverb` to prevent potential crashes during sound loading or effect initialization.
-*   **API Cleanliness:** Removed redundant macro definitions (`SIT_REVERB_COMB_COUNT`, etc.) from the public header section, keeping the global namespace clean.
-
-
----
-
-## [2.3.7A "Velocity" (Audio Safety Hotfix)] - 2025-11-28
-
-### Description
-
-This hotfix addresses critical stability regressions introduced in the 2.3.7 Audio Architecture Refactor. It focuses on ensuring that the Audio API is robust against invalid usage and that the core initialization check is correctly exported for external use.
-
-
-### Critical Fixes
-
-*   **Audio API Safety Guards:** Implemented explicit `SituationIsInitialized()` checks at the entry point of every public Audio API function. This prevents the application from crashing with a null pointer dereference if audio functions (like `SituationPlayLoadedSound` or `SituationSetAudioDevice`) are called before `SituationInit()` or after `SituationShutdown()`. Instead of crashing, these functions now safely return an error code.
-*   **SITAPI Export Fix:** The implementation of `SituationIsInitialized()` was missing the `SITAPI` macro in its definition. This has been corrected to ensure the function is properly exported in shared library (DLL) builds, matching its forward declaration.
-*   **Error Reporting Safety:** Hardened the `_SituationSetError` internal helper to check for a valid context pointer before attempting to write error messages. This prevents a secondary crash when the library attempts to report an "Uninitialized" error.
-
-
----
-
-## [2.3.7 "Velocity" (Audio Architecture Refactor)] - 2025-11-26
-
-### Description
-
-This release finalizes the architectural separation of the Audio subsystem from the central global state. It moves all audio-related state into a dedicated `_SituationAudioState` container (`sit_audio`), improving modularity and memory organization. This update also includes critical fixes for audio capture and device management that were identified during the refactor.
-
-
-### Critical Fixes
-
-*   **Audio State Separation:** Completed the migration of audio state variables (MiniAudio context, device handles, capture queues) from `sit_gs` to the new `sit_audio` static container. This decoupling ensures cleaner subsystem isolation.
-*   **Audio Capture Logic:** Fixed a severe logic error in `SituationPollInputEvents` where the audio capture ring buffer's write head was being incorrectly initialized with the read head's value, and where state was being read from the wrong structure. This restores functional audio capture on the main thread.
-*   **User Data Pointer Safety:** Corrected `SituationStartAudioCapture` and `SituationSetAudioDevice` to pass the correct `&sit_audio` pointer to MiniAudio callbacks. Previously, they passed `&sit_gs`, which would have caused a crash or memory corruption when the callback cast it to `_SituationAudioState*`.
-
-
----
-
-## [2.3.6 "Velocity" (OpenGL Hardening & DSA Optimization)] - 2025-11-25
-
-### Description
-
-This release hardens the OpenGL backend by strictly enforcing OpenGL 4.6 Core Profile at context creation. It also refactors the internal rendering pipeline to utilize Direct State Access (DSA), resulting in significantly faster internal rendering passes by eliminating CPU-GPU pipeline stalls.
-
-
-### Breaking Changes
-
-*   **macOS Support Dropped:** By enforcing OpenGL 4.6, this library is no longer compatible with macOS (which is capped at OpenGL 4.1). Users on macOS must now use the Vulkan backend (via MoltenVK) or remain on v2.3.5.
-*   **Legacy GPU Support Dropped:** Older integrated graphics (pre-Intel Skylake/HD 500 series) that do not support GL_ARB_direct_state_access will now fail to initialize SituationInit.
-
-
-### Technical Details
-
-*   **Strict Context Creation:** `_SituationInitWindow` now sends strict hints to GLFW to request an OpenGL 4.6 Core Profile context. If the driver cannot provide it, window creation fails immediately.
-*   **Elimination of State Query Stalls:** The `_SitGLBackupState` function has been optimized to remove slow `glGetIntegerv` calls that queried texture unit bindings, which are no longer needed with DSA.
-*   **DSA Implementation:** `SituationRenderVirtualDisplays` now uses `glBindTextureUnit` for direct texture binding, eliminating the need to modify `glActiveTexture` state.
-*   **Immutable Buffer Storage:** `SituationCreateBuffer` now mandates `glNamedBufferStorage` (Immutable Storage) over `glBufferData` (Mutable), providing better optimization hints to the driver.
-
-
----
-
-## [2.3.5B "Velocity" (Documentation Overhaul)] - 2025-11-25
-
-### Description
-
-This release is a comprehensive documentation overhaul, bringing the `situation_api.md` programming guide to 100% parity with the `v2.3.5A` "Velocity" header. It addresses the significant documentation debt accrued over multiple hotfix and feature releases, ensuring every public function, struct, and feature is now fully and accurately documented. This makes the library significantly easier to learn, use, and maintain.
-
-
-### Documentation
-
-*   **Complete API Parity:** Performed a full audit of `situation.h` against `situation_api.md`. Every undocumented function has been added to the guide.
-*   **New Modules Documented:**
-*   **Hot-Reloading Module:** Added a complete section for the "Velocity" Hot-Reloading feature set (`SituationCheckHotReloads`, `SituationReloadShader`, `SituationReloadTexture`, etc.), explaining its usage and benefits for rapid development.
-*   **Audio Capture API:** Added a new "Audio Capture" subsection to the Audio Module, documenting `SituationStartAudioCapture`, `SituationStopAudioCapture`, and related functions.
-*   **Signature Corrections & Refinements:**
-*   Updated dozens of function signatures and usage examples throughout `situation_api.md` to reflect the strict C11 `struct`-based approach (e.g., changing `vec2` return types to `Vector2`).
-*   Corrected parameter lists and descriptions for functions whose behavior had diverged from the old documentation (e.g., `SituationSetSoundReverb`, `SituationGenImageGradient`).
-*   Added documentation for recently introduced performance and hardware query functions (`SituationGetVRAMUsage`, `SituationGetDrawCallCount`).
-*   **Structural Improvements:** Re-organized sections for better logical flow and readability. Ensured all new entries follow the established documentation format with clear signatures, descriptions, and copy-paste-friendly usage examples.
-
-
-### Consistency & Aesthetics
-
-*   **Version Sync:** The version number in `situation_api.md` is now correctly updated to `v2.3.5B`.
-*   **Formatting:** Ensured consistent Markdown formatting, code blocks, and section headers across the entire document.
-
-
----
-
-## [2.3.5A "Velocity" (Pristine)] - 2025-11-25
-
-### Description
-
-This is a documentation and refinement release. Following the major performance overhaul in 2.3.5, this update focuses on making the solutions "absolutely pristine" by adding comprehensive documentation and ensuring the code is clean, consistent, and easy to understand. It verifies that the fixes for the critical performance bottlenecks are robust and clearly explains the "why" behind the architecture.
-
-
-### Documentation & Refinement
-
-*   **Vulkan Graveyard System:** Added a detailed documentation block explaining the entire deferred deletion ("graveyard") system. It explicitly details how this architecture solves the `vkDeviceWaitIdle` abuse problem by queuing resources for deletion instead of stalling the GPU.
-*   **Asynchronous Uploads:** Added a comprehensive header to the `_SituationVulkanCreateAndUploadBuffer` function. It now clearly documents the dual-path (asynchronous/synchronous) mechanism and explains how the asynchronous path eliminates CPU-GPU stalls during in-game asset streaming.
-*   **Linear Descriptor Allocation:** Verified that `vkFreeDescriptorSets` is not used in the hot path. Added documentation to the `_SituationVulkanAllocateDescriptorSet` function explaining how the "Dynamic Descriptor Manager" acts as a high-performance, auto-growing linear allocator, solving the descriptor pool fragmentation issue.
-*   **API Consistency:** Refined internal function signatures for the deferred deletion system for better consistency.
-
-
----
-
-## [2.3.5 "Velocity"] - 2025-11-25
-
-### Description
-
-This release focuses on critical performance optimization for the Vulkan backend. It eliminates severe CPU-side stalls during resource management and data transfer, transforming the engine's streaming capabilities. It also implements a "Linear Allocator" strategy for descriptor pools to prevent fragmentation and reduce allocation overhead.
-
-
-### Critical Performance Fixes
-
-*   **Deferred Resource Destruction:** Implemented a `SituationGraveyard` system. Resources (Buffers, Images, Pipelines, Descriptor Sets) destroyed during a frame are no longer deleted immediately (which required a stalling `vkDeviceWaitIdle`). Instead, they are queued and safely destroyed only after the frame that used them has completed execution on the GPU. This eliminates the massive frame spikes previously seen during asset unloading.
-*   **Asynchronous Buffer Uploads:** Refactored `_SituationVulkanCreateAndUploadBuffer`. It now uses the main command buffer to perform data transfers when inside a frame, inserting pipeline barriers for synchronization. This replaces the previous synchronous "allocate-record-submit-wait" cycle for every single buffer creation, significantly speeding up asset loading during gameplay.
-*   **Linear Descriptor Allocation:** Modified the `_SituationFlushGraveyard` logic to skip individual `vkFreeDescriptorSets` calls. By treating descriptor pools as append-only and resetting/destroying them only when full or at shutdown, we eliminate memory fragmentation and the high CPU cost of freeing sets individually.
-
-
----
-
-## [2.3.4M "Velocity" (Hotfix M)] - 2025-11-24
-
-### Description
-
-This release focuses on "surgical precision" in error handling and reporting. It ensures that every error code defined in the library is correctly mapped to a human-readable string, eliminating "Unknown Error" responses for defined failures. It also hardens the Hot-Reloading module against race conditions and resource invalidation.
-
-
-### Critical Fixes
-
-*   **Exhaustive Error Mapping:** Updated `_SituationSetErrorFromCode` to include `case` statements for *every* `SITUATION_ERROR_*` constant defined in the enum. This guarantees that all internal failures report specific, actionable error messages instead of falling back to generic codes.
-*   **Hot-Reload Safety:** Enhanced `SituationReloadShader`, `SituationReloadTexture`, `SituationReloadModel`, and `SituationReloadComputePipeline` to explicitly check for GPU synchronization failures (`vkDeviceWaitIdle`). If the GPU cannot be idled (e.g., device lost), the reload operation now safely aborts with `SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED` instead of risking a crash or undefined behavior.
-*   **Precise Error Reporting:**
-*   `_SituationInitOpenGL` now returns `SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION` (instead of generic unsupported) when the GL version check fails.
-*   Vulkan internal resource creation (Depth Resources) now specifically reports `SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED` on allocation failure.
-*   Hot-reload functions now return `SITUATION_ERROR_RESOURCE_INVALID` if the source file path was not correctly tracked, aiding in debugging.
-
-
----
-
-## [2.3.4L "Velocity" (Hotfix L)] - 2025-11-24
-
-### Description
-
-This release brings the SDK documentation and codebase into perfect synchronization regarding error handling. It resolves long-standing discrepancies in error code values and introduces granular, actionable error reporting for the Vulkan backend. Additionally, it addresses critical header dependency issues to ensure robust compilation in strict C environments.
-
-
-### Critical Fixes
-
-*   **Header Compilation & Dependency Ordering:** Solved a compilation order dependency in `situation.h`. Moved `SituationError` and `SituationBufferUsageFlags` typedefs to the top of the header. This ensures that these types are defined before they are used in function prototypes or macros (like `SITUATION_LOG_WARNING`), preventing "unknown type" errors in single-pass C compilers.
-*   **Vulkan Descriptor Logic:** Fixed a memory leak in `_SituationVulkanAllocateDescriptorSet`. Previously, if `realloc` failed, the original pointer was lost. The logic now safely handles reallocation failures.
-
-
-### Error Handling & Documentation
-
-*   **Error Code Synchronization:** Performed a comprehensive audit of `situation.h` and `situation_sdk_234.md`.
-*   Verified `SITUATION_ERROR_UNKNOWN_ERROR` is explicitly `-999`.
-*   Updated documentation to match implementation values for `SITUATION_ERROR_INVALID_ENUM` (-4), `SITUATION_ERROR_ALREADY_INITIALIZED` (-310), and filesystem errors (-550, -551).
-*   **Granular Vulkan Errors:** Implemented specific, high-value error codes for the Vulkan backend to aid in debugging resource exhaustion:
-*   `_SituationVulkanAllocateDescriptorSet` now returns `SITUATION_ERROR_VULKAN_DESCRIPTOR_POOL_EXHAUSTED` (-749) instead of a generic error.
-*   `_SituationVulkanCreateImage` and `_SituationVulkanCreateAndUploadBuffer` now return `SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED` (-750) on memory failures.
-
-
----
-
-## [2.3.4K "Velocity" (Hotfix K)] - 2025-11-24
-
-### Description
-
-This micro-hotfix delivers a single-line safeguard for OpenGL backend portability, ensuring seamless compilation in header-only environments without external GL headers.
-
-
-### Critical Fixes
-
-*   **GLFW Include Guard:** Added `#define GLFW_INCLUDE_NONE` immediately before `<GLFW/glfw3.h>` inclusion to prevent GLFW from auto-including system `GL/gl.h` (or GL ES equivalents). This resolves "missing header" compilation failures in minimal setups (e.g., cross-compiles, embedded toolchains, or when bundling with GLAD). The change is non-intrusive, with zero runtime impact, and maintains full compatibility with existing builds.
-
-
-### Documentation
-
-*   **Inline Comment:** Accompanied the define with a precise, self-explanatory comment detailing the rationale, environments affected, and synergy with GLAD loader. This enhances developer onboarding without bloating the header.
-
-
----
-
-## [2.3.4J "Velocity" (Hotfix J)] - 2025-11-24
-
-### Description
-
-This release delivers critical stability fixes for the audio subsystem and resource management, specifically targeting initialization logic, 64-bit system compatibility, and memory safety during asset loading.
-
-
-### Critical Fixes
-
-*   **Audio Initialization Logic:** Resolved a critical logic error in `_SituationInitSubsystems` where the audio capture initialization block was unreachable due to incorrect nesting within an error check. The `SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD` flag now correctly initializes the capture ring buffer.
-*   **64-bit Pointer Safety:** Fixed a truncation bug where Vulkan and OpenGL resource handles (which are pointers) were being cast to `uint32_t` before being assigned to `uint64_t` IDs. This caused invalid handles on 64-bit systems. Handles are now correctly cast to `uintptr_t` first.
-*   **Model Loading Safety:** Added robust `NULL` checks for `calloc` memory allocations in `SituationLoadModel`.
-*   **Resource Cleanup on Failure:** Implemented proper cleanup logic in `SituationLoadModel`. If mesh allocation fails after textures have been loaded, the function now correctly destroys the loaded textures before returning, preventing resource leaks.
-*   **API Consistency:** Updated `_SituationInitSubsystems` to accept `const SituationInitInfo*` to match the initialization flow.
-
-
----
-
-## [2.3.4I "Velocity" (Hotfix I)] - 2025-11-23
-
-### Description
-
-This release, designated "Surgical Fixes," focuses on resolving specific defects identified in the codebase, ranging from strict C11 compliance issues to logic bugs in resource creation and input handling.
-
-
-### Critical Fixes
-
-*   **Resource Initialization:** Fixed a critical bug in `SituationCreateBuffer` where `buffer.usage_flags` was not being assigned, potentially leading to undefined behavior or validation errors in backend resource creation.
-*   **Pointer Safety:** Corrected a pointer access error in `SituationDestroyTexture` (`texture.id` -> `texture->id`), preventing compilation errors and potential crashes during cleanup.
-*   **Clipboard Logic:** Fixed `SituationSetClipboardText` to correctly pass the `text` argument to the underlying GLFW function, restoring clipboard functionality.
-
-
-### Api Compliance & Refactoring
-
-*   **C11 Compliance (Input Module):** Refactored mouse input functions (`SituationGetMousePosition`, `SituationGetMouseDelta`, `SituationGetMouseWheelMoveV`) to return `Vector2` structs instead of `vec2` arrays. This resolves a strict C11 compliance violation regarding returning arrays from functions.
-*   **Implementation Correctness:** Updated the implementation of the above mouse functions to correctly cast `Vector2*` to `float*` (or `vec2`) when interfacing with the `cglm` math library, ensuring correct data layout and processing.
-
-
----
-
-## [2.3.4H "Velocity" (Hotfix H)] - 2025-11-23
-
-### Description
-
-The "Titanium Robustness" release.
-This hotfix completes the error handling overhaul, eliminating every silent failure, double-free risk, and vague diagnostic in the codebase. Every allocation now pairs perfectly with SIT_FREE, and every failure path now returns a precise, actionable SituationError code. The library is now truly unbreakable — no more "it just didn't work" mysteries.
-
-
-### Critical Fixes
-
-*   **Universal SIT_FREE Adoption:** Replaced every instance of `free()` with `SIT_FREE()` throughout the implementation. This ensures full allocator override compatibility (e.g., debug trackers, memory pools) without breaking any existing code.
-*   **Exhaustive Error Path Coverage:** Audited and fixed 12+ silent failure spots across core functions (`SituationLoadImageFromScreen`, `SituationTakeScreenshot`, `SituationUnloadImage`, etc.):
-*   Added specific error codes for backend validations (e.g., GLAD loader fail → `SITUATION_ERROR_OPENGL_LOADER_FAILED`).
-*   Proactive checks for invalid states (e.g., zero dimensions in screenshot → `SITUATION_ERROR_NOT_INITIALIZED` with context).
-*   Defensive free checks (e.g., post-SIT_FREE errno validation in `SituationUnloadImage` and `SituationFreeDisplays`).
-*   **Debug Double-Free Detection:** Enhanced `SituationFreeString` with poison-pointer tracking (debug-only) to catch use-after-free bugs immediately, preventing heap corruption.
-*   **Void Function Warnings:** Introduced `SITUATION_LOG_WARNING` macro for non-fatal issues in void APIs (e.g., null params in unloads), with debug-only stderr output for zero-overhead diagnostics.
-
-
-### Documentation
-
-*   **Error Enum Finalization:** Fully documented the expanded `SituationError` enum with every original code preserved, merged duplicates intelligently, and filled gaps for complete range utilization. Every code now has precise EOL comments explaining triggers and platform specifics.
-*   **API Safety Notes:** Updated function docs for new return types (e.g., `SituationUnloadImage` now bool for failure propagation) and emphasized error querying via `SituationGetLastError()`.
-
-
-### Consistency & Aesthetics
-
-*   **Error Uniformity:** All error sets now use `_SituationSetErrorFromCode` with specific enums and contextual messages (e.g., "%dx%d RGBA alloc failed" for screenshots). No more generic fallbacks.
-*   **Memory Hygiene:** SIT_FREE macro now consistently nulls pointers post-free (updated definition: `#define SIT_FREE(p) do { if (p) { free(p); (p) = NULL; } } while(0)`).
-*   **Debug Polish:** All new checks guarded by `#ifndef NDEBUG` for release-zero overhead; warnings follow the exact same tone and format as other logs.
-
-
----
-
-## [2.3.4G "Velocity" (Hotfix G)] - 2025-11-23
-
-### Description
-
-The "Polish" release.
-
-
-### Documentation
-
-*   Every single struct in the public and internal API now carries full comments with logical grouping, separator lines, and deep explanatory notes.
-*   The entire callback section has been rewritten for consistency, real-time safety warnings, exact format guarantees.
-*   The API Usage Guide section has been replaced with a more complete version.
-*   All enum blocks (SituationDataType, SituationBufferUsageFlags, barrier flags, etc.) received full professional commentary, useful combination presets, and performance guidance.
-*   Custom DSP and audio capture callbacks finalised with correct float* buffers and complete real-time safety documentation.
-
-
-### Consistency & Aesthetics
-
-*   Universal adoption of snake_case: every callback parameter is now user_data (including the MiniAudio stream callbacks).
-*   SituationFocusCallback parameter renamed from focused → gained_focus for instant, unambiguous clarity.
-*   All comment blocks now follow the exact same visual structure, density, and tone.
-*   Minor spacing, alignment, and comment style harmonisation across the entire file.
-
-
----
-
-## [2.3.4F "Velocity" (Hotfix F)] - 2025-11-22
-
-### Description
-
-This update focuses purely on code hygiene and developer reference. It finalizes the internal state architecture by applying professional, line-by-line documentation to the global state container and its subsystems. It also adds comprehensive API documentation for several core modules.
-
-
-### Internal Refactoring
-
-*   **State Structure Finalization:** Completed the cleanup of `_SituationGlobalStateContainer`.
-*   Moved all subsystem struct definitions (`_SituationKeyboardState`, `_SituationVulkanState`, etc.) outside the main container.
-*   Applied "Professional Grade" formatting: Grouped fields by logical category and added explicit End-of-Line (EOL) comments for every single variable in the global state.
-
-
-### Documentation
-
-*   **API Reference:** Added detailed Doxygen-style headers for the following functions:
-*   **Display:** `SituationSetDisplayMode`, `SituationRefreshDisplays`, `_SituationGetCurrentDisplayIdentifier`, `_SituationCachePhysicalDisplays`.
-*   **Filesystem:** `SituationGetUserDirectory`, `SituationLoadDroppedFiles`, `SituationUnloadDroppedFiles`.
-*   **Input:** `SituationIsFileDropped`, `SituationSetFileDropCallback`, `SituationSetClipboardText`, `SituationGetClipboardText`.
-*   **Lifecycle:** `SituationIsInitialized`, `_SituationCleanupDanglingResources`.
-*   **Rendering:** `SituationCmdBeginRenderPass`, `SituationCmdEndRenderPass`.
-
-
----
-
-## [2.3.4E "Velocity" (Hotfix E)] - 2025-11-22
-
-### Description
-
-This update completes the architectural refactoring started in Hotfix D, solidifying the internal state management and fixing critical initialization bugs. It also standardizes the documentation for core APIs, making the library easier to maintain and integrate.
-
-
-### Critical Fixes
-
-*   **Input Subsystem Initialization:** Fixed a severe regression in `_SituationInitSubsystems` where `memset` was called *after* mutex initialization, corrupting the keyboard event lock and causing potential deadlocks. The memory zeroing now correctly happens before resource allocation.
-
-*   **Render Pass Logic:** Replaced placeholder pseudo-code in `SituationCmdBeginRenderPass` with a fully functional implementation.
-*   **OpenGL:** Now correctly handles Virtual Display targets and `glClearColor` type casting.
-*   **Vulkan:** Now correctly delegates standard clear operations and safely rejects unsupported `LOAD_OP_LOAD` requests instead of crashing.
-
-
-### Documentation
-
-*   **API Reference:** Added comprehensive Doxygen-style documentation for:
-*   Display Management (`SituationSetDisplayMode`, `SituationRefreshDisplays`)
-*   Filesystem (`SituationGetUserDirectory`, `SituationLoadDroppedFiles`)
-*   Input & Clipboard (`SituationIsFileDropped`, `SituationGetClipboardText`)
-*   Core Lifecycle (`SituationIsInitialized`, `_SituationCleanupDanglingResources`)
-*   Render Pass Control (`SituationCmdBeginRenderPass`, `SituationCmdEndRenderPass`)
-
-
 ---
 
-## [2.3.4D "Velocity" (Hotfix D)] - 2025-11-22
+> **Current releases:** [`UPDATELOG.md`](UPDATELOG.md) (v2.4.x+).
 
-### Description
-
-This update focuses on code hygiene and architectural clarity. It refactors the internal global state container, breaking it down into distinct, self-documenting structures for each subsystem (Input, Audio, Backend). This change improves readability and maintainability without altering the public API or runtime behavior.
-
-
-### Internal Refactoring
-
-*   **State Container Modernization:**
-*   Decomposed `_SituationGlobalStateContainer` into logical sub-structures:
-*   `_SituationKeyboardState`: Encapsulates key arrays, ring buffers, and the event mutex.
-*   `_SituationMouseState`: Encapsulates position, buttons, and scrolling data.
-*   `_SituationJoystickManager`: Encapsulates controller states and connection events.
-*   `_SituationGLState` / `_SituationVulkanState`: Segregated backend-specific resources.
-*   This grouping makes the global state definition significantly easier to parse and manage.
-
-*   **Naming Consistency:**
-*   Moved the keyboard event mutex inside the keyboard state struct (`sit_gs.keyboard.event_queue_mutex`) to match the pattern used by the mouse and joystick subsystems.
-*   Standardized initialization order in `_SituationInitSubsystems` to prevent mutex corruption during state zeroing.
-
-*   **Documentation:** Added comprehensive Doxygen headers to all new internal structures to explain their specific roles in the engine lifecycle.
-
-
----
-
-## [2.3.4C "Velocity" (Hotfix C)] - 2025-11-22
-
-### Description
-
-This update finalizes the strict C11 compliance overhaul and refactors the internal state architecture for better consistency between backends. It resolves several compilation errors related to function signatures and macro definitions that appeared when building against strict standards.
-
-
-### Critical Fixes
-
-*   **Function Signature Mismatch:** Fixed a critical bug in `SituationCmdBindVertexBuffer` where the implementation signature did not match the header declaration, causing immediate compilation failure.
-
-*   **Extension Macro Safety:** Fixed `SituationGetVRAMUsage` to correctly guard GLAD extension macros (like `GL_NVX_gpu_memory_info`) with `#ifdef`. This prevents "undeclared identifier" errors when compiling with headers that don't include specific vendor extensions.
-
-*   **Control Flow Safety:** Refactored `SituationCreateVirtualDisplay` to replace `goto` error handling with a structured control flow. This eliminates potential "jump bypasses variable initialization" warnings in strict C modes.
-
-
-### Internal Refactoring
-
-*   **Global State Architecture:** Refactored the `_SituationGlobalStateContainer`. OpenGL state variables are now grouped into a dedicated `_SituationGLState` struct (`sit_gs.gl`), mirroring the Vulkan backend's structure. This improves code organization and maintainability.
-
-*   **Standard Compliance:**
-*   Added `_POSIX_C_SOURCE` and `_XOPEN_SOURCE` feature macros to correctly expose system headers on Linux/macOS.
-*   Replaced all C++ style empty initializers (`{}`) with C11 universal zero initializers (`{0}`).
-*   Implemented internal helpers `_sit_strdup` and `_sit_strcasecmp` to remove dependency on non-standard headers.
-*   Replaced deprecated `usleep` with `nanosleep` for POSIX frame limiting.
-
-
----
-
-## [2.3.4B "Velocity" (Hotfix B)] - 2025-11-22
-
-### Description
-
-This update focuses on achieving strict standard compliance and cross-platform portability. It eliminates non-standard C extensions, ensuring the library compiles cleanly under strict C11 environments (e.g., `gcc -std=c11 -pedantic`) while maintaining full backend fidelity.
-
-
-### Critical Fixes
-
-*   **Strict C11 Syntax:** Replaced all instances of C++ style empty struct initialization (`{}`) with the universal zero initializer (`{0}`). This resolves syntax errors in strict C compilers throughout the Vulkan backend and internal structures.
-
-*   **Portability Layer:** Replaced non-standard POSIX string functions (`strdup`, `strcasecmp`) and threading calls (`usleep`) with internal, standard-compliant helper implementations (`_sit_strdup`, `_sit_strcasecmp`, `nanosleep`). Added necessary feature test macros (`_POSIX_C_SOURCE`) to correctly expose system headers on Linux/macOS.
-
-*   **Control Flow Refactoring:** Rewrote `SituationCreateVirtualDisplay` to eliminate `goto` statements and fix variable scoping issues. This prevents "jump bypasses initialization" warnings and improves code safety during resource cleanup.
-
-*   **Math Constants:** Added fallback definitions for `M_PI_2` to ensure compilation on MSVC and strict C11 math environments where non-standard constants are not defined by default.
-
-
----
-
-## [2.3.4A "Velocity" (Hotfix)] - 2025-11-22
-
-### Description
-
-This patch solidifies the "Velocity" feature set, addressing specific architectural constraints in the Vulkan backend and ensuring strict C standard compliance. It transforms the Virtual Display compositor into a "Titanium" grade implementation, guaranteeing validation-free operation for advanced blending modes.
-
-
-### Critical Fixes
-
-*   **Vulkan Compositor Architecture:** Completely rewrote the `SituationRenderVirtualDisplays` logic for Vulkan. It now automatically manages Render Pass state (starting/stopping) to perform legal `vkCmdCopyImage` operations. This fixes validation errors when using "Screen Grab" blend modes (Overlay, Soft Light) and ensures correct layering over the main scene.
-
-*   **Scaling Math Correction:** Fixed the matrix calculation for `SITUATION_SCALING_STRETCH`. It now correctly scales content to fill the *target* framebuffer dimensions rather than preserving the source resolution 1:1.
-
-*   **Strict C Compliance:** Removed C++-style syntax (lambdas and anonymous struct initializers) from the implementation block. The library now compiles cleanly on strict C99/C11 compilers (MSVC/GCC/Clang) without warnings.
-
-
-### Documentation
-
-*   **API Reference:** Added comprehensive Doxygen-style header documentation for the entire Hot-Reloading module (`SituationReloadShader`, `SituationReloadTexture`, etc.), detailing synchronization behavior and usage constraints.
-
-
----
-
-## [2.3.4 "Velocity"] - 2025-11-22
-
-### Description
-
-This release transforms "Situation" from a static framework into a live development environment. The "Velocity" update introduces a comprehensive **Hot-Reloading Module**, allowing developers to modify Shaders, Compute Pipelines, Textures, and 3D Models on disk and see the changes instantly in the running application without restarting. This feature significantly accelerates the iteration loop for visual adjustments and shader programming.
-
-
-### New Features
-
-*   **Hot-Reloading Module:** Added a suite of functions to safely reload assets at runtime. The engine handles the complex task of synchronization with the GPU, ensuring the device is idle, destroying old resources, and seamlessly swapping in the new data while maintaining the original handle IDs.
-*   `SituationReloadShader`: Recompiles and links graphics pipelines.
-*   `SituationReloadComputePipeline`: Recompiles compute shaders, preserving the original layout configuration.
-*   `SituationReloadTexture`: Re-uploads image data to GPU memory (requires texture to be loaded from file).
-*   `SituationReloadModel`: Re-parses GLTF/GLB files and rebuilds all sub-meshes and material textures.
-
-*   **Texture Loading Helper:** Added `SituationLoadTexture(path, mips)`. This new high-level function combines image loading, texture creation, and cleanup into one call. Crucially, it registers the file path with the internal resource tracker, making the texture eligible for hot-reloading.
-
-*   **Shader #include Support:** The runtime GLSL compiler (`shaderc` integration) now supports `#include "filename.glsl"` directives. This allows developers to construct complex "Uber Shaders" by sharing common logic and struct definitions across multiple shader files.
-
-
-### Critical Bug Fixes
-
-*   **Vulkan Stale Layout Crash:** Fixed a "time bomb" crash in the Vulkan backend where a failed shader hot-reload (e.g., due to syntax error) would destroy the pipeline layout but leave a dangling pointer in the global state cache. Subsequent calls to `SituationCmdSetPushConstant` would then crash the driver. The system now correctly invalidates the cached layout on binding failure.
-
-
-### Internal Improvements
-
-*   **Resource Path Tracking:** The internal linked-list resource managers have been upgraded to store the source file paths of loaded assets.
-*   Updated all `SituationLoad*` functions to capture and store these paths upon successful creation.
-*   Updated all `SituationDestroy*` and `SituationUnload*` functions to correctly free these path strings, ensuring zero memory leaks.
-
-*   **Compute Pipeline State:** Updated `_SituationComputePipelineNode` to cache the `SituationComputeLayoutType` used during creation. This ensures that when a compute pipeline is hot-reloaded, it is rebuilt with the exact same descriptor layout as the original.
-
-
----
-
-## [2.3.3D "Production"] - 2025-11-22
-
-### Description
-
-This patch resolves three high-priority logic errors discovered in the Vulkan and Audio backends of the "Hardened" release. While 2.3.3C introduced the architecture for robustness, 2.3.3D connects the final wires to ensure those systems function correctly under real-world stress tests. It is highly recommended for all users to update to this version immediately.
-
-
-### Critical Bug Fixes
-
-*   **Audio Capture Dispatch:** Fixed a "phantom" logic bug where the audio capture callback was executing on the high-priority audio thread, completely bypassing the thread-safe ring buffer intended for the main thread. The callback now correctly linearizes data into the ring buffer, ensuring thread safety for user logic.
-
-*   **Vulkan Screenshot Crash:** Fixed a validation error and potential device loss when calling `SituationTakeScreenshot` inside a render loop. The image layout transition was incorrectly assuming `PRESENT_SRC`, causing barriers to fail. It now correctly handles `COLOR_ATTACHMENT_OPTIMAL` transitions.
-
-*   **Pipeline Layout Leak:** Added missing cleanup logic in `_SituationVulkanCreateComputePipeline`. Previously, if shader compilation failed or the pipeline creation errored, the intermediate `VkPipelineLayout` object was leaked on the GPU.
-
-
-### Architectural Improvements
-
-*   **Dynamic Descriptor Manager:** Finalized the implementation of the dynamic descriptor pool system.
-*   Added the `descriptor_manager` struct to the global Vulkan state.
-*   Implemented `_SituationVulkanAllocateDescriptorSet` to automatically create and register new descriptor pools when the current one fills up.
-*   Fixed initialization logic to correctly "seed" the manager with the initial persistent pool, preventing immediate duplicate pool creation on startup.
-
-*   **Backend Consistency:** Added internal state tracking (`debug_draw_command_issued_this_frame`) to detect and warn developers (in debug builds) if `SituationUpdateBuffer` is called after draw commands, preventing divergent behavior between OpenGL (Immediate) and Vulkan (Deferred) backends.
-
-
----
-
-## [2.3.3C "Hardened"] - 2025-11-21
-
-### Description
-
-This release is a major stability overhaul focused on thread safety, resource management, and preventing runtime crashes in long-running applications. It addresses several critical architectural flaws identified in the Audio and Vulkan backends, transforming the library from a prototype into a production-ready framework.
-
-
-### Breaking Api Changes
-
-*   **Audio Loading Strategy:** The signature of `SituationLoadSoundFromFile` has changed.
-*   *Old:* `(path, looping, out_sound)`
-*   *New:* `(path, mode, looping, out_sound)`
-*   *Reason:* Users must now specify `SITUATION_AUDIO_LOAD_AUTO`, `FULL` (RAM decode), or `STREAM` (Disk I/O) to prevent the audio thread from blocking on disk operations.
-
-
-### Critical Stability Fixes
-
-*   **Audio Thread "Death Spiral":** Completely rewrote the audio loading logic. Short sounds (SFX) are now decoded fully to RAM upon load. The audio callback no longer performs blocking disk I/O for these sounds, eliminating stuttering/popping during gameplay or background loading.
-
-*   **Vulkan Descriptor Exhaustion:** Replaced the fixed-size descriptor pool (limit 512) with a **Dynamic Descriptor Manager**. The engine now automatically allocates new pools as needed, allowing for an effectively infinite number of textures and materials.
-
-*   **OpenGL State Leak:** Implemented a "State Guard" in `SituationRenderVirtualDisplays`. The compositor now backs up the active Shader Program, VAO, Texture Units, and Blend Modes before rendering and restores them exactly afterwards. This prevents internal rendering passes from corrupting user rendering state.
-
-*   **Compute Pipeline Crash:** Fixed a severe memory offset bug in `SituationDestroyComputePipeline`. The function was passing a public struct pointer to an internal helper expecting a different memory layout, which would have caused heap corruption or driver crashes on cleanup.
-
-
-### Optimizations
-
-*   **O(1) Input Processing:** Replaced the `O(N)` memory-shifting queues in the Keyboard, Mouse, and Gamepad subsystems with **Ring Buffers**. Input processing time is now constant regardless of queue depth.
-
-*   **Audio Capture Logic:** Fixed a logic hole in `SituationPollInputEvents` where captured audio data was locked but never dispatched to the user. Added a thread-safe linearization step to correctly pass ring-buffer data to the user callback.
-
-
----
-
-## [2.3.3B "Refinement"] - 2025-11-21
-
-### Description
-
-This patch release resolves critical compilation errors in the Vulkan backend introduced in 2.3.3A. It solidifies the "Unified Resource" system, ensuring textures and compute pipelines are correctly configured and stable across both backends.
-
-
-### Api Changes & Improvements
-
-*   **Unified Texture Creation:** `SituationCreateTexture()` now automatically applies `VK_IMAGE_USAGE_STORAGE_BIT` (Vulkan) and compatible storage flags (OpenGL) to all new textures.
-*   *Impact:* All textures created via the standard API are now "Compute-Ready" by default. Users can bind any texture to a Compute Shader without needing special creation flags or distinct API calls.
-
-
-### Bug Fixes
-
-*   **Vulkan Compilation:** Resolved an undefined variable error (`usage_flags`) inside `SituationCreateTexture` that prevented the library from compiling when `SITUATION_USE_VULKAN` was defined.
-
-*   **Missing Definitions:** Added the missing `SituationTextureUsageFlags` enum and replaced undefined macros in `_SituationInitVulkan` with defined numeric constants for descriptor pool sizing.
-
-*   **Compute Binding Crash:** Fixed a runtime crash during Vulkan initialization by ensuring the `storage_image_layout` is correctly created. This resolves issues when binding textures to Compute Shaders.
-
-
----
-
-## [2.3.3A "Refinement"] - 2025-11-21
-
-### Description
-
-This maintenance release tightens the API surface and improves developer ergonomics. It addresses several "friction points" identified in previous versions, particularly around string handling and file export safety.
-
-
-### Api Changes & Improvements
-
-*   **Static Version String:** `SituationGetVersionString()` now returns a pointer to a static, read-only string buffer.
-*   *Impact:* Users no longer need to `free()` the returned pointer, making version logging a simple one-liner: `printf("Situation v%s\n", SituationGetVersionString());`.
-
-*   **Strict PNG Screenshots:** `SituationTakeScreenshot()` now strictly enforces the `.png` file extension.
-*   *Impact:* Prevents silent failures or garbage output when users attempt to save with unsupported extensions (like `.jpg` or `.txt`). The function now returns `false` and sets a clear error message if a non-PNG path is provided.
-*   *Cleanup:* The legacy BMP fallback writer has been removed to reduce binary size and maintenance surface area.
-
-*   **Documentation:** Added comprehensive internal documentation for complex Vulkan helpers (e.g., `_SituationVulkanBlitImageToHostVisibleBuffer`) to aid future maintenance and auditing.
-
-
-### Bug Fixes
-
-*   **VRAM Reporting:** Implemented a multi-backend strategy for `SituationGetVRAMUsage()`. It now supports Windows (DXGI), Vulkan (VMA), and NVIDIA OpenGL extensions, providing accurate memory tracking across a wider range of configurations.
-
-
----
-
-## [2.3.3 "Insight"] - 2025-11-21
-
-### Description
-
-Version 2.3.3 is a "quality of life" feature release that expands the developer's ability to monitor performance and embed assets. It introduces the "Small but Deadly" feature set: direct memory loading for fonts, formatted text drawing, and hardware profiling hooks.
-
-
-### New Features
-
-*   **Memory Asset Loading:** Added `SituationLoadFontFromMemory`. This allows developers to embed fonts (e.g., using `xxd -i`) directly into their executable for truly single-file distribution, bypassing the filesystem.
-*   **Formatted Text:** Added `SituationImageDrawTextFormatted`. This convenience function accepts `printf`-style format strings (e.g., `"Score: %d", score`), eliminating the need for users to manually `snprintf` into temporary buffers before drawing text.
-*   **Hardware Info:** Added `SituationGetGPUName()` to retrieve the human-readable model name of the active graphics adapter.
-
-
-### Profiling & Diagnostics
-
-*   **Draw Call Counting:** The engine now tracks the number of draw commands issued per frame. This data is accessible via `SituationGetDrawCallCount()`.
-*   **VRAM Monitoring:** On Vulkan, `SituationGetVRAMUsage()` now returns the precise number of bytes allocated by the engine's internal allocator (VMA), allowing for real-time memory budget monitoring.
-
-
-### Internal Improvements
-
-*   **Quad Renderer Refactor:** The internal 2D quad renderer has been modernized (Phase 2.5 prep). It now supports dynamic UV coordinates via push constants, paving the way for future GPU-accelerated text rendering.
-*   **Pipeline Layout Optimization:** Vulkan internal pipelines now use more efficient layout creation strategies, reducing initialization overhead.
-
-
----
-
-## [2.3.2D "Integrity"] - 2025-11-20
-
-### Description
-
-This is a critical stability release. It addresses a severe race condition in the audio streaming subsystem, plugs memory leaks in the Vulkan swapchain recreation logic, and ensures OpenGL state isolation.
-
-
-### Critical Fixes
-
-*   **Audio Stream Thread-Safety:** Completely refactored `SituationLoadSoundFromStream`. Previously, a shared global vtable caused race conditions and data corruption when loading multiple streams. This has been replaced with instance-based callback storage and static thunks, ensuring complete isolation and thread safety.
-*   **Vulkan Swapchain Leak:** Fixed a memory leak where the `swapchain_images` handle array was not freed during swapchain recreation (e.g., window resize).
-*   **OpenGL State Corruption:** `SituationRenderVirtualDisplays` now correctly saves and restores the Depth Test state (`GL_DEPTH_TEST`), preventing it from accidentally enabling depth testing for subsequent 2D rendering passes.
-
-
-### Logic & Safety
-
-*   **Vulkan Pipeline Barriers:** Fixed logic that prevented Execution-Only barriers (barriers with 0 access masks but valid stage masks) from being recorded.
-*   **Model Loading Safety:** `SituationLoadModel` now validates texture creation. If a texture file is missing, it logs a warning instead of assigning a null ID, preventing silent rendering failures.
-*   **Shader Debugging:** Increased the internal error message buffer size (to 2048 bytes) to prevent truncation of complex GLSL compilation errors.
-*   **API Clarity:** `SituationCmdSetVertexAttribute` now returns a precise error message on Vulkan, explaining that vertex formats are immutable in that backend.
-
-
----
-
-## [2.3.2C "Zero Friction"] - 2025-11-20
-
-### Description
-
-This micro-release focuses purely on developer experience and removal of friction. It transforms "Situation" into a true "drop-in" library where advanced features like image loading, screenshots, and text rendering work immediately without external configuration.
-
-
-### Zero Friction Updates
-
-*   **Embedded STB Libraries:** `stb_image`, `stb_image_write`, and `stb_truetype` are now automatically implemented by `SITUATION_IMPLEMENTATION`.
-*   **Impact:** `SituationLoadImage`, `SituationTakeScreenshot(.png)`, and `SituationDrawTextStyled` work out-of-the-box with zero additional defines or includes.
-*   **Opt-Out:** Users can define `SITUATION_NO_STB` (or specific flags like `SITUATION_NO_STB_IMAGE`) to disable this if they manage dependencies externally.
-
-
-### Api Additions
-
-*   **Version Querying:** Added `SITUATION_VERSION_MAJOR/MINOR/PATCH` macros and `SituationGetVersionString()` for runtime version checking.
-
-
-### Summary
-
-With 2.3.2C, the "Hello World" for a graphical, audio-enabled application with font support is now literally one C file with two #defines.
-
-
----
-
-## [2.3.2B "Consistency"] - 2025-11-20
-
-### Description
-
-This hotfix eliminates cross-backend inconsistencies and improves safety. The execution-model difference between OpenGL and Vulkan is now actively enforced in debug builds.
-
-
-### Critical Fixes & Behavioral Guarantees
-
-*   **Enforced Buffer-Update-Before-Draw Rule:** In OpenGL debug builds, `SituationUpdateBuffer` now triggers a loud warning/error if called *after* any draw command in the current frame. This prevents the most common cause of cross-backend logic divergence.
-*   **SituationSetGamepadVibration Return Type:** Now returns `bool` (true on success) instead of `void`. It correctly returns `false` and sets an error on non-Windows platforms.
-*   **PNG Screenshots:** `stb_image_write.h` is now automatically implemented if available (unless `SITUATION_NO_STB_PNG` is defined), fixing silent failures when saving PNGs.
-
-
-### Usability
-
-*   **SITUATION_BEGIN_FRAME():** Added a macro to standardize the start of the render loop (`PollInput` + `UpdateTimers`).
-*   **Main-Thread Audio Capture:** Added `SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD` flag to `SituationInitInfo`. When set, audio capture callbacks are safely routed to the main thread during `SituationPollInputEvents`, preventing threading crashes for users.
-*   **Vulkan No-Shaderc Fallback:** Internal 2D renderers now elegantly disable themselves if `SITUATION_ENABLE_SHADER_COMPILER` is not defined, removing the hard dependency on `shaderc` for basic initialization.
-
-
-### Internal Refactoring
-
-*   **Vulkan Pipeline Optimization:** Refactored the internal Advanced Compositing pipeline initialization. It now reuses existing descriptor set layouts instead of allocating temporary ones, reducing code size and initialization overhead.
-
-
----
-
-## [2.3.2A "Hotfix"] - 2025-11-20
-
-### Description
-
-This is a maintenance release addressing critical issues identified in the v2.3.2 "Parity" release. It focuses on correcting data capture logic in Vulkan, improving cross-platform error reporting, and loosening dependency requirements.
-
-
-### Critical Fixes
-
-*   **Fixed Vulkan Screenshot Source:** `SituationLoadImageFromScreen` (and by extension `SituationTakeScreenshot`) now captures the `current_image_index` instead of `last_presented_image_index`. Previously, taking a screenshot in Vulkan would capture the *previous* frame's output.
-
-*   **Non-Windows Gamepad Error:** `SituationSetGamepadVibration` now properly sets the `SITUATION_ERROR_NOT_IMPLEMENTED` error code on Linux and macOS, rather than failing silently.
-
-*   **Optional Shaderc Dependency:** The `#error` forcing `SITUATION_ENABLE_SHADER_COMPILER` for Vulkan has been removed. Users can now compile the Vulkan backend without `shaderc` if they provide their own pre-compiled SPIR-V pipelines.
-*   *Note:* Disabling the compiler disables the internal 2D renderers (`SituationCmdDrawQuad` and Virtual Displays) on Vulkan, as they rely on runtime GLSL compilation.
-
-
-### Documentation
-
-*   **Execution Model Warning:** Added a critical warning to the documentation regarding the Immediate (OpenGL) vs. Deferred (Vulkan) execution models. Developers are strictly advised to update all buffer data *before* recording draw commands to ensure consistent behavior across backends.
-
-
----
-
-## [2.3.2 "Parity"] - 2025-11-19
-
-### Description
-
-Version 2.3.2 addresses the major feature gaps identified in previous versions, achieving functional parity between the OpenGL and Vulkan backends, and introducing key new capabilities. This release enables "Advanced Blending" for Vulkan Virtual Displays, adds a complete Audio Capture (Microphone) API, and finalizes the 3D Model Exporting tools. Under the hood, it includes critical fixes for Vulkan synchronization (pipeline barriers), memory safety, and descriptor binding logic.
-
-
-### New Features
-
-*   **Audio Capture API:** Added `SituationStartAudioCapture`, `SituationStopAudioCapture`, and the `SituationAudioCaptureCallback` type. This allows applications to record raw audio data (Mono, 32-bit Float, 44.1kHz) from the system's default input device for real-time processing.
-
-*   **Vulkan Advanced Blending:** Implemented the complex "Copy-Before-Draw" architecture for the Vulkan backend. `SituationRenderVirtualDisplays` now correctly handles advanced blend modes (Overlay, Soft Light, etc.) on Vulkan by copying the swapchain image to a readable texture before rendering, matching the visual fidelity of the OpenGL backend.
-
-*   **3D Model Exporting:** Finalized the `SituationSaveModelAsGltf` utility. This required implementing the previously stubbed `SituationGetMeshData` function to perform geometry readback from the GPU to CPU memory, enabling users to save runtime-generated or modified meshes to standard `.gltf` files.
-
-
-### Improvements & Fixes
-
-### [CRITICAL] Vulkan Synchronization & Stability
-*   **Fixed Buffer Readback Synchronization:** Completely refactored `SituationGetBufferData`. It now uses a new internal helper `_SituationVulkanReadBackBuffer` that correctly inserts `vkCmdPipelineBarrier` commands before and after transfers. This fixes race conditions where the CPU would read stale data before the GPU finished writing.
-*   **Fixed Texture Usage Flags:** `SituationCreateTexture` now automatically includes the `VK_IMAGE_USAGE_STORAGE_BIT`. This fixes a crash/validation error when binding textures to Compute Shaders (`SituationCmdBindComputeTexture`).
-*   **Fixed Memory Leaks in Buffer Updates:** Resolved memory leaks in `SituationUpdateBuffer` where temporary staging buffers were not freed if mapping or command allocation failed.
-
-### [BUG FIXES]
-*   **OpenGL Initialization:** Implemented the missing `_SituationInitGLVirtualDisplayRenderer` function. Previously, the OpenGL Virtual Display compositor relied on uninitialized Vertex Array Objects, leading to potential rendering failures.
-*   **Vulkan Compute Binding:** Fixed logic in `SituationCmdBindComputeTexture` that ignored the user's `binding` parameter and always bound to index 0.
-*   **API Safety:** Explicitly disabled `SituationCmdSetVertexAttribute` on the Vulkan backend (returning `SITUATION_ERROR_NOT_IMPLEMENTED`), as dynamic vertex format changes are architecturally impossible in Vulkan pipelines.
-
-### [REFACTORING]
-*   **Internal Helpers:** Refactored massive logic blocks from `SituationGetBufferData` into reusable internal helpers, which allowed `SituationGetMeshData` to share the robust memory readback logic without code duplication.
-*   **Documentation:** Added comprehensive header documentation for all new internal helpers (`_SituationVulkanCreateScreenCopyResource`, `_SituationVulkanReadBackBuffer`, etc.) and updated public API headers to reflect the new capabilities.
-
-
----
-
-## [2.3.1A "Refinement"] - 2025-10-31
-
-### Description
-
-Version 2.3.1A is a significant quality-of-life and performance refinement of the "Base" API. This update focuses on improving API safety, enhancing performance on the Vulkan backend, achieving greater feature parity between backends, and improving documentation clarity. While introducing no new major features, this release makes the existing API more robust, efficient, and easier to use correctly.
-
-
-### Changes & Improvements
-
-### [CRITICAL] API & Main Loop Refinement
-
-*   **Deprecated SituationUpdate():** The monolithic SituationUpdate() function has been deprecated. It encouraged a main loop structure that was less explicit and prone to off-by-one-frame input bugs.
-
-*   **New Main Loop Workflow:** Introduced two new core functions, SituationPollInputEvents() and SituationUpdateTimers().
--   SituationPollInputEvents() is now the dedicated function for gathering all OS events and updating input state for the current frame.
--   SituationUpdateTimers() is the dedicated function for advancing all internal clocks, calculating delta time, and updating joystick/gamepad state.
-
-*   **Updated Documentation:** The API documentation has been updated to reflect this new, clearer main loop structure, providing a best-practice example to guide users.
-
-### [PERFORMANCE] Vulkan Backend Enhancements
-
-*   **High-Performance Virtual Display Compositing:** The SituationRenderVirtualDisplays() function on the Vulkan backend has been completely overhauled. It now uses the "Persistent Descriptor Set" pattern, pre-allocating a descriptor set for each virtual display at creation time. This eliminates all runtime descriptor allocation and updates from the main render loop, resulting in a massive performance improvement when compositing many virtual displays.
-
-*   **Unified & Performant Resource Binding:**
--   Introduced SituationCmdBindDescriptorSet() and SituationCmdBindTextureSet() as the new, primary API for binding buffers and textures.
--   Deprecated the older, less explicit SituationCmdBindUniformBuffer, SituationCmdBindTexture, and SituationCmdBindComputeBuffer functions, which now wrap the new API.
--   This change leverages the persistent descriptor set model for ALL buffers and textures, making resource binding a consistently fast, low-overhead operation on Vulkan.
-
-### [BUG FIXES & STABILITY]
-
-*   **Fixed Input System Crash:** Resolved a critical bug where the mouse input callbacks would attempt to use an uninitialized mutex, leading to a crash. The mouse state struct now correctly contains and initializes its mutex, ensuring thread-safe event handling.
-
-*   **Fixed Vulkan Resource Leak:** Corrected a resource leak in the internal Vulkan pipeline creation logic. The VkPipelineLayout is now properly destroyed if the subsequent vkCreateGraphicsPipelines call fails, preventing leaks on shader compilation or linking errors.
-
-### [DOCUMENTATION & API CLARITY]
-
-*   **Detailed Color Function Docs:** The documentation for all color conversion functions (SituationRgbToHsv, SituationColorToYPQ, etc.) and SituationImageAdjustHSV has been significantly expanded to explain the color spaces, parameter ranges, and algorithms used.
-
-*   **Improved Image Drawing Docs:** The documentation for all SituationImageDraw...() functions has been updated to clarify their distinct rendering methods (bitmap vs. SDF), performance characteristics, boundary handling, and alpha blending formulas.
-
-*   **Added API Safety Functions:** Introduced new helper functions to make the library's manual memory management safer and more explicit:
--   SituationFreeDisplays() for correctly deallocating the complex SituationDisplayInfo array.
--   SituationFreeString() as the designated function for freeing strings returned by the library.
--   Documentation for all functions that return heap-allocated data now explicitly points to these new, safe deallocation functions.
-
-
-### Known Issues & Feature Gaps
-
-*   **Vulkan Advanced Blending:** The Vulkan backend's SituationRenderVirtualDisplays function currently only supports simple blend modes (Alpha, Additive, etc.). The complex, multi-pass logic required for advanced Photoshop-style blend modes (Overlay, Soft Light), which is fully implemented in the OpenGL backend, remains a feature gap. This will be addressed in a future update.
-
-
----
-
-## [2.3.1 "Base"] - 2025-10-18
-
-### Description
-
-Version 2.3.1, designated as the "Base" version, establishes the foundational public API for the "Situation" library. This release provides a single-file, cross-platform C/C++ library designed to abstract low-level system interactions for windowing, graphics, audio, and input. The primary goal of this version is to offer a stable, lean, and powerful foundation for building sophisticated, high-performance software, such as games, creative coding projects, and data visualization tools.
-
-
-### Scope & Key Features
-
-This version includes a comprehensive feature set across several core domains:
-
-*   **Lifecycle & Windowing:** Full application lifecycle management (`SituationInit`, `SituationShutdown`) and robust window controls (fullscreen, borderless, multi-monitor awareness) via a GLFW3 backend.
-*   **Dual Graphics Backend:** A unified graphics API with compile-time support for both modern OpenGL (4.6+ Core) and Vulkan (1.1+). This includes abstractions for shaders, meshes, textures, and generic buffers.
-*   **Command Buffer Model:** A core architectural feature for recording rendering and compute commands. This provides a modern, explicit model for GPU interaction, inspired by Vulkan.
-*   **Compute Shaders:** A unified API for GPGPU tasks, supporting both OpenGL Compute Shaders and Vulkan Compute Pipelines, with runtime GLSL-to-SPIR-V compilation via `shaderc`.
-*   **2D & 3D Rendering:** High-level helpers for drawing 2D primitives (quads) and textured sprites, alongside a robust system for rendering 3D meshes. Includes a Virtual Display system for off-screen rendering, UI layering, and post-processing.
-*   **Audio System:** A full-featured audio engine powered by `miniaudio`, supporting playback, capture, device enumeration, and a real-time effects chain (Filters, Echo, Reverb) with support for custom DSP callbacks.
-*   **Input Handling:** Unified polling and event-based handling for keyboard, mouse, and gamepads.
-*   **Timing System:** Includes high-resolution timers, FPS management, and an advanced "Temporal Oscillator System" for creating rhythmically synchronized events.
-*   **Filesystem Utilities:** A cross-platform API for path manipulation and file I/O, including access to standard application directories.
-
-
-### Implementation Details
-
-*   **Header-Only Library:** The library is distributed as a single header file (`situation.h`). The implementation is included by defining `SITUATION_IMPLEMENTATION` in one C/C++ file.
-*   **Dependencies:**
-*   **Required:** GLFW3, cglm.
-*   **Optional (Backend-Specific):** GLAD (for OpenGL), Vulkan SDK (for Vulkan).
-*   **Optional (Features):** `stb_image`, `stb_truetype`, `miniaudio`.
-*   **Resource Management:** The library follows an explicit, manual resource management philosophy. All resources created with `SituationCreate*` or `SituationLoad*` functions must be manually destroyed with their corresponding `SituationDestroy*` or `SituationUnload*` functions. The library includes leak detection at shutdown to assist developers.
-
-
-### Quirks & Notable Design Decisions
-
-*   **[CRITICAL] Single-Threaded API:** All `SITAPI` functions **must** be called from the main thread (the thread that called `SituationInit`). The library is not internally synchronized, and calling API functions from other threads will lead to undefined behavior and likely crashes. Any multithreading must be managed by the client application, with communication back to the main thread for any API calls.
-*   **[CRITICAL] Emulated OpenGL Command Buffer:** While the API presents a unified command buffer model, its execution differs significantly between backends. On Vulkan, commands are deferred and executed upon `SituationEndFrame()`. On OpenGL, the command buffer is an *emulation*, and `SituationCmd*` calls often translate to immediate OpenGL API calls. Developers must not write code that depends on the deferred execution of commands when using the OpenGL backend.
-*   **Explicit Backend Selection:** The graphics backend (OpenGL or Vulkan) must be selected at compile time by defining either `SITUATION_USE_OPENGL` or `SITUATION_USE_VULKAN`.
-*   **Manual Memory Management for Returned Data:** Functions that return dynamically allocated data (e.g., `SituationGetLastErrorMsg()`, `SituationGetDisplays()`) explicitly state that the caller is responsible for freeing the memory to prevent leaks.
-
----
---------------------------------------------------------------------------------
-v2.3.38 (2025-??-??) - Resonance Module
---------------------------------------------------------------------------------
-- [NEW] Added **Resonance Module** for procedural audio synthesis (zero-allocation).
-  - `SituationPlayTone`: Play sine, square, triangle, or saw waves with full ADSR envelopes.
-  - `SituationPlayMidiNote`: Play tones using MIDI note numbers (0-127).
-  - `SituationStopAllTones`: Panic function to stop all procedural sounds.
-  - Supports 64-voice polyphony with intelligent voice stealing (prioritizes releasing/oldest notes).
-  - Frame-perfect timing using integer frame counters instead of floats.
-  - Zero-allocation design: All voices pre-allocated in `sit_audio.tone_pool`.
-- [INT] Integrated Resonance mixer into the main audio callback (runs after SFX/DSP).
-- [INT] Added `SituationWaveType` enum and `SituationTone` structure.
-- [FIX] Updated cleanup routines to properly uninitialize synth waveforms.
