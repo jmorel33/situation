@@ -190,8 +190,8 @@ static BOOL CALLBACK _SituationMonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor
  *      SituationGetMonitorBounds, SituationGetPrimaryMonitor,
  *      SITUATION_ERROR_DISPLAY_QUERY, SITUATION_ERROR_DISPLAY_QUERY_FAILED
  */
-static void _SituationCachePhysicalDisplays(void) {
-    if (!SituationIsInitialized()) return;
+static SituationError _SituationCachePhysicalDisplays(void) {
+    if (!SituationIsInitialized()) return SITUATION_SUCCESS;
     if (sit_gs.cached_physical_displays_array) {
         for (int i = 0; i < sit_gs.cached_physical_display_count; ++i) {
             SIT_FREE(sit_gs.cached_physical_displays_array[i].available_modes);
@@ -203,11 +203,11 @@ static void _SituationCachePhysicalDisplays(void) {
     #if defined(_WIN32)
     int win32_monitor_count = GetSystemMetrics(SM_CMONITORS);
     if (win32_monitor_count <= 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "No physical monitors reported by GetSystemMetrics(SM_CMONITORS)."); return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "No physical monitors reported by GetSystemMetrics(SM_CMONITORS).");
     }
     sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)SIT_CALLOC(win32_monitor_count, sizeof(SituationDisplayInfo));
     if (!sit_gs.cached_physical_displays_array) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache"); return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache");
     }
     int glfw_monitor_count;
     GLFWmonitor** glfw_monitors = glfwGetMonitors(&glfw_monitor_count);
@@ -219,10 +219,9 @@ static void _SituationCachePhysicalDisplays(void) {
     enum_data.glfw_monitor_count = glfw_monitor_count;
 
     if (!EnumDisplayMonitors(NULL, NULL, _SituationMonitorEnumProc, (LPARAM)&enum_data)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "EnumDisplayMonitors failed.");
         for (int i = 0; i < enum_data.current_display_idx; ++i) SIT_FREE(sit_gs.cached_physical_displays_array[i].available_modes);
         SIT_FREE(sit_gs.cached_physical_displays_array); sit_gs.cached_physical_displays_array = NULL;
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "EnumDisplayMonitors failed.");
     }
     sit_gs.cached_physical_display_count = enum_data.current_display_idx;
     #else
@@ -231,7 +230,7 @@ static void _SituationCachePhysicalDisplays(void) {
     if (glfw_count > 0) {
         sit_gs.cached_physical_displays_array = (SituationDisplayInfo*)SIT_CALLOC(glfw_count, sizeof(SituationDisplayInfo));
         if (!sit_gs.cached_physical_displays_array) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache (non-Win32)"); return;
+            return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Physical displays cache (non-Win32)");
         }
         sit_gs.cached_physical_display_count = glfw_count;
         for (int i = 0; i < glfw_count; ++i) {
@@ -268,9 +267,10 @@ static void _SituationCachePhysicalDisplays(void) {
             } else { disp->available_mode_count = 0; }
         }
     } else {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "No monitors reported by GLFW.");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY_FAILED, "No monitors reported by GLFW.");
     }
     #endif
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -403,6 +403,24 @@ SITAPI int _SituationGetCurrentDisplayIdentifier(void) {
     return -1;
 }
 
+static GLFWmonitor* _SituationGetWindowGLFWMonitor(void) {
+    GLFWmonitor* attached = glfwGetWindowMonitor(sit_gs.sit_glfw_window);
+    if (attached) {
+        return attached;
+    }
+    if (sit_gs.cached_physical_display_count == 0) {
+        _SituationCachePhysicalDisplays();
+    }
+    int monitor_id = _SituationGetCurrentDisplayIdentifier();
+    if (monitor_id != -1 && sit_gs.cached_physical_displays_array) {
+        GLFWmonitor* on_display = sit_gs.cached_physical_displays_array[monitor_id].glfw_monitor_handle;
+        if (on_display) {
+            return on_display;
+        }
+    }
+    return glfwGetPrimaryMonitor();
+}
+
 /**
  * @brief Sets the display mode (resolution, refresh rate, etc.) and fullscreen state for a specific monitor.
  *
@@ -501,8 +519,12 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
 #endif
     if (glfw_mon) {
         if (fullscreen) {
+            sit_gs.fullscreen_w = mode->width;
+            sit_gs.fullscreen_h = mode->height;
             glfwSetWindowMonitor(sit_gs.sit_glfw_window, glfw_mon, 0, 0, mode->width, mode->height, mode->refresh_rate > 0 ? mode->refresh_rate : GLFW_DONT_CARE);
         } else {
+            sit_gs.fullscreen_w = 0;
+            sit_gs.fullscreen_h = 0;
             const GLFWvidmode* current_mon_mode = glfwGetVideoMode(glfw_mon);
             int win_x = 0, win_y = 0;
             if(current_mon_mode) {
@@ -660,7 +682,10 @@ SITAPI void SituationSetVSync(bool enable) {
     // For Vulkan, we need to recreate the swapchain with the new present mode
     #ifdef SITUATION_USE_VULKAN
     _SituationVulkanWaitInFlightFencesPump("SituationSetVSync");
-    _SituationVulkanRecreateSwapchain();
+    SituationError recreate_err = _SituationVulkanRecreateSwapchain();
+    if (recreate_err != SITUATION_SUCCESS) {
+        _SituationSetErrorFromCode(recreate_err, "SituationSetVSync failed to recreate swapchain.");
+    }
     #endif
 
     // For OpenGL, glfwSwapInterval is already called by SituationSetWindowState
@@ -673,8 +698,23 @@ SITAPI void SituationSetVSync(bool enable) {
  * @see SituationToggleBorderlessWindowed(), SituationIsWindowFullscreen()
  */
 SITAPI void SituationToggleFullscreen(void) {
-    // This existing function in your library already does exactly what's needed.
-    SituationToggleWindowStateFlags((SituationWindowStateFlags)SITUATION_FLAG_FULLSCREEN_MODE);
+    if (!SituationIsInitialized()) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationToggleFullscreen");
+        return;
+    }
+
+    bool is_fullscreen = SituationIsWindowFullscreen();
+    if (is_fullscreen) {
+        sit_gs.active_profile_window_flags &= ~SITUATION_FLAG_FULLSCREEN_MODE;
+        sit_gs.inactive_profile_window_flags &= ~SITUATION_FLAG_FULLSCREEN_MODE;
+    } else {
+        sit_gs.active_profile_window_flags |= SITUATION_FLAG_FULLSCREEN_MODE;
+        sit_gs.inactive_profile_window_flags |= SITUATION_FLAG_FULLSCREEN_MODE;
+        sit_gs.active_profile_window_flags &= ~(SITUATION_FLAG_WINDOW_MAXIMIZED | SITUATION_FLAG_WINDOW_MINIMIZED);
+        sit_gs.inactive_profile_window_flags &= ~(SITUATION_FLAG_WINDOW_MAXIMIZED | SITUATION_FLAG_WINDOW_MINIMIZED);
+    }
+
+    SituationApplyCurrentProfileWindowState();
 }
 
 /**
@@ -691,28 +731,17 @@ SITAPI void SituationToggleBorderlessWindowed(void) {
         glfwGetWindowPos(sit_gs.sit_glfw_window, &sit_gs.windowed_x, &sit_gs.windowed_y);
         glfwGetWindowSize(sit_gs.sit_glfw_window, &sit_gs.windowed_w, &sit_gs.windowed_h);
 
-        // Get monitor info — use the monitor the window is currently on
-        int wx, wy;
-        glfwGetWindowPos(sit_gs.sit_glfw_window, &wx, &wy);
-        int monitor_count = 0;
-        GLFWmonitor** monitors = glfwGetMonitors(&monitor_count);
-        GLFWmonitor* monitor = glfwGetPrimaryMonitor(); // fallback
-        for (int i = 0; i < monitor_count; i++) {
-            int mx, my;
-            glfwGetMonitorPos(monitors[i], &mx, &my);
-            const GLFWvidmode* m = glfwGetVideoMode(monitors[i]);
-            if (m && wx >= mx && wx < mx + m->width && wy >= my && wy < my + m->height) {
-                monitor = monitors[i];
-                break;
-            }
-        }
+        GLFWmonitor* monitor = _SituationGetWindowGLFWMonitor();
         const GLFWvidmode* mode = glfwGetVideoMode(monitor);
         if (!mode) { _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "SituationToggleBorderlessWindowed: glfwGetVideoMode returned NULL"); return; }
 
-        // Set window to be undecorated and match monitor size/pos
+        int mx = 0;
+        int my = 0;
+        glfwGetMonitorPos(monitor, &mx, &my);
         glfwSetWindowAttrib(sit_gs.sit_glfw_window, GLFW_DECORATED, GLFW_FALSE);
-        glfwSetWindowMonitor(sit_gs.sit_glfw_window, NULL, 0, 0, mode->width, mode->height, 0);
+        glfwSetWindowMonitor(sit_gs.sit_glfw_window, NULL, mx, my, mode->width, mode->height, 0);
         sit_gs.is_borderless_active = true;
+        glfwPollEvents();
     } else {
         // --- LEAVING BORDERLESS ---
         // Restore decoration and previous size/pos
@@ -1175,6 +1204,19 @@ SITAPI void SituationSetFocusCallback(SituationFocusCallback gained_focus, void*
 }
 
 /**
+ * @brief Sets a callback when the window is maximized or restored from the title bar.
+ * @details Requires `SITUATION_FLAG_WINDOW_RESIZABLE` at init so the OS maximize control is enabled.
+ *          Also fires when `SituationMaximizeWindow()` / `SituationRestoreWindow()` change maximize state.
+ * @param callback Function to invoke, or `NULL` to clear.
+ * @param user_data Opaque pointer passed to the callback.
+ * @see SituationIsWindowMaximized(), SituationMaximizeWindow(), SituationRestoreWindow()
+ */
+SITAPI void SituationSetMaximizeCallback(SituationMaximizeCallback callback, void* user_data) {
+    sit_gs.maximize_callback_fn = callback;
+    sit_gs.maximize_callback_user_ptr = user_data;
+}
+
+/**
  * @brief Sets a set of window state profiles for specific window behavior during different states.
  * @details This sets profiles for an active (focused) and inactive (unfocused) window, letting the application dynamically change its state based on focus to conserve power or avoid unwanted behavior.
  * @param active_flags A bitmask of `SITUATION_FLAG_*` defines to set when the window has focus.
@@ -1211,6 +1253,14 @@ SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
     // Handle fullscreen/windowed transition first, as it can affect other attributes or require specific order.
     if (target_flags & SITUATION_FLAG_FULLSCREEN_MODE) {
         if (!is_currently_fullscreen) {
+            // Save logical window coordinates before exclusive fullscreen replaces
+            // the window size with the monitor/video-mode resolution.
+            glfwGetWindowPos(sit_gs.sit_glfw_window, &sit_gs.windowed_x, &sit_gs.windowed_y);
+            glfwGetWindowSize(sit_gs.sit_glfw_window, &sit_gs.windowed_w, &sit_gs.windowed_h);
+            if (sit_gs.windowed_w <= 0 || sit_gs.windowed_h <= 0) {
+                sit_gs.windowed_w = sit_gs.main_window_width;
+                sit_gs.windowed_h = sit_gs.main_window_height;
+            }
             int monitor_id = _SituationGetCurrentDisplayIdentifier();
             if (monitor_id == -1) { // If no specific monitor, try primary
                 if (sit_gs.cached_physical_display_count > 0) {
@@ -1226,13 +1276,21 @@ SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
 
             if (monitor_id != -1 && sit_gs.cached_physical_displays_array) {
                 SituationDisplayInfo* disp = &sit_gs.cached_physical_displays_array[monitor_id];
-                // Use monitor's current native resolution for fullscreen typically, or a user-defined one.
-                // Here, using its current mode ensures it fills that monitor.
-                SituationSetDisplayMode(monitor_id, &disp->current_mode, true);
+                GLFWmonitor* monitor = disp->glfw_monitor_handle;
+                if (monitor) {
+                    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+                    if (mode) {
+                        sit_gs.fullscreen_w = mode->width;
+                        sit_gs.fullscreen_h = mode->height;
+                        glfwSetWindowMonitor(sit_gs.sit_glfw_window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+                    }
+                }
             } else { // Absolute fallback: use GLFW primary monitor with its current mode
                 GLFWmonitor* primary = glfwGetPrimaryMonitor();
                 const GLFWvidmode* mode = glfwGetVideoMode(primary);
                 if (primary && mode) {
+                    sit_gs.fullscreen_w = mode->width;
+                    sit_gs.fullscreen_h = mode->height;
                     glfwSetWindowMonitor(sit_gs.sit_glfw_window, primary, 0, 0, mode->width, mode->height, mode->refreshRate);
                 } else {
                      _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_QUERY, "Cannot enter fullscreen, primary monitor info unavailable.");
@@ -1245,7 +1303,8 @@ SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
         }
     } else { // Not fullscreen mode - ensure windowed
         if (is_currently_fullscreen) {
-            // Revert to windowed, using stored main_window_width/height
+            // Revert to the saved logical window size, not the fullscreen
+            // framebuffer/display resolution tracked by main_window_*.
             // And try to center on primary monitor (or current monitor if identifiable)
             int current_mon_id = _SituationGetCurrentDisplayIdentifier();
             GLFWmonitor* target_mon_for_windowed = NULL;
@@ -1256,13 +1315,18 @@ SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
 
             const GLFWvidmode* mode = glfwGetVideoMode(target_mon_for_windowed);
             int win_x = 100, win_y = 100; // Default position
+            int restore_w = sit_gs.windowed_w > 0 ? sit_gs.windowed_w : sit_gs.main_window_width;
+            int restore_h = sit_gs.windowed_h > 0 ? sit_gs.windowed_h : sit_gs.main_window_height;
+            int have_saved_window_rect = sit_gs.windowed_w > 0 && sit_gs.windowed_h > 0;
             if (mode) {
                 int mon_x_pos, mon_y_pos;
                 glfwGetMonitorPos(target_mon_for_windowed, &mon_x_pos, &mon_y_pos);
-                win_x = mon_x_pos + (mode->width - sit_gs.main_window_width) / 2;
-                win_y = mon_y_pos + (mode->height - sit_gs.main_window_height) / 2;
+                win_x = have_saved_window_rect ? sit_gs.windowed_x : mon_x_pos + (mode->width - restore_w) / 2;
+                win_y = have_saved_window_rect ? sit_gs.windowed_y : mon_y_pos + (mode->height - restore_h) / 2;
             }
-            glfwSetWindowMonitor(sit_gs.sit_glfw_window, NULL, win_x, win_y, sit_gs.main_window_width, sit_gs.main_window_height, 0);
+            glfwSetWindowMonitor(sit_gs.sit_glfw_window, NULL, win_x, win_y, restore_w, restore_h, 0);
+            sit_gs.fullscreen_w = 0;
+            sit_gs.fullscreen_h = 0;
             // [FIX] Pump events after windowed mode restore to let the OS complete the transition.
             glfwPollEvents();
         }
@@ -1369,9 +1433,16 @@ SITAPI uint32_t SituationGetCurrentActualWindowStateFlags(void) {
     if (glfwGetWindowAttrib(sit_gs.sit_glfw_window, GLFW_RESIZABLE)) flags |= SITUATION_FLAG_WINDOW_RESIZABLE;
 
     // SITUATION_FLAG_MSAA_4X_HINT: Can't query samples from default FBO easily after creation.
-    // SITUATION_FLAG_VSYNC_HINT: glfwSwapInterval state is not directly queryable.
-    // We can store the last set VSync state if needed.
-    // For now, reflect profile if desired, or accept it's not fully queryable.
+    // VSync: GLFW cannot query swap interval; reflect the profile last applied by
+    // SituationApplyCurrentProfileWindowState (same focus rule as glfwSwapInterval there).
+    {
+        uint32_t applied_profile = sit_gs.current_window_focus_state
+            ? sit_gs.active_profile_window_flags
+            : sit_gs.inactive_profile_window_flags;
+        if (applied_profile & SITUATION_FLAG_VSYNC_HINT) {
+            flags |= SITUATION_FLAG_VSYNC_HINT;
+        }
+    }
 
     // Borderless check: if undecorated, not fullscreen, and window size matches monitor size.
     // This is a heuristic and can be complex.

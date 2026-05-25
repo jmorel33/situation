@@ -50,6 +50,27 @@
         #include "stb_image_write.h"
     #endif
 
+    // --- stb_image_resize2.h (CPU resize) ---
+    #if !defined(SITUATION_NO_STB_IMAGE_RESIZE)
+        #ifndef STB_IMAGE_RESIZE_IMPLEMENTATION
+            #define STB_IMAGE_RESIZE_IMPLEMENTATION
+        #endif
+        #ifndef STBIR_MALLOC
+            #define STBIR_MALLOC(size,user_data) ((void)(user_data), SIT_MALLOC(size))
+        #endif
+        #ifndef STBIR_FREE
+            /* STBIR_FREE must be an expression (comma-op in stbir internals); SIT_FREE is a statement. */
+            static inline void sit_stbir_free(void* ptr, void* user_data) {
+                (void)user_data;
+                if (ptr) {
+                    free(ptr);
+                }
+            }
+            #define STBIR_FREE(ptr,user_data) (sit_stbir_free((ptr), (user_data)), (void)0)
+        #endif
+        #include "stb_image_resize2.h"
+    #endif
+
     // --- stb_truetype.h (Text Rendering) ---
     #if !defined(SITUATION_NO_STB_TRUETYPE)
         #ifndef STB_TRUETYPE_IMPLEMENTATION

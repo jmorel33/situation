@@ -14,115 +14,15 @@
 
 // Include threading diagnostics for SITUATION_SLEEP_MS and debug macros
 #include "situation_impl_threading_diag.h"
+#include "situation_impl_threading_observability.h"
+#include "situation_impl_threading_scheduler.h"
 
 // ==================================================================================
 //  Threading Implementation (v2.3.15+patch)
 // ==================================================================================
 
-// [Patch 3] Maximum slots to scan past a blocked tail job before giving up
-#define SIT_WORKER_SCAN_DEPTH 8
 
-
-/**
- * @brief Returns the number of logical CPU cores (threads) available.
- * @note Full implementation lives in `situation_impl_io.h` (included after this file).
- */
-SITAPI uint32_t SituationGetCPUThreadCount(void);
-
-/**
- * @brief Returns the number of physical CPU cores (ignoring Hyper-Threading).
- *        Uses GetLogicalProcessorInformation on Windows.
- */
-SITAPI uint32_t SituationGetCPUCoreCount(void) {
-#if defined(_WIN32)
-    DWORD returnLength = 0;
-    // First call gets the required buffer size
-    GetLogicalProcessorInformation(NULL, &returnLength);
-    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return SituationGetCPUThreadCount();
-
-    SYSTEM_LOGICAL_PROCESSOR_INFORMATION* buffer = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION*)SIT_MALLOC(returnLength);
-    if (!buffer) return SituationGetCPUThreadCount();
-
-    // Second call actually fills the buffer
-    if (!GetLogicalProcessorInformation(buffer, &returnLength)) {
-        SIT_FREE(buffer);
-        return SituationGetCPUThreadCount();
-    }
-
-    uint32_t physical_cores = 0;
-    DWORD ptrOffset = 0;
-    SYSTEM_LOGICAL_PROCESSOR_INFORMATION* ptr = buffer;
-    
-    while (ptrOffset < returnLength) {
-        // RelationProcessorCore represents a physical core
-        if (ptr->Relationship == RelationProcessorCore) {
-            physical_cores++;
-        }
-        ptrOffset += sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
-        ptr++;
-    }
-    
-    SIT_FREE(buffer);
-    return physical_cores > 0 ? physical_cores : SituationGetCPUThreadCount();
-
-#elif defined(__APPLE__)
-    int count;
-    size_t size = sizeof(count);
-    if (sysctlbyname("hw.physicalcpu", &count, &size, NULL, 0) == 0) return (uint32_t)(count > 0 ? count : 1);
-    return SituationGetCPUThreadCount();
-
-#elif defined(__linux__)
-    // Parsing /proc/cpuinfo for "core id" uniqueness is the standard Linux way,
-    // but as a fast fallback we just return threads / 2 if hyperthreading is assumed.
-    // For a robust implementation, you'd parse /proc/cpuinfo.
-    long threads = sysconf(_SC_NPROCESSORS_ONLN);
-    return (uint32_t)(threads > 1 ? threads / 2 : 1); 
-#else
-    return SituationGetCPUThreadCount();
-#endif
-}
-
-/**
- * @brief Pins the calling thread to specific logical cores.
- * @param core_mask A bitmask where bit 0 is core 0, bit 1 is core 1, etc.
- *                  (e.g., 0x01 pins to core 0, 0x03 pins to cores 0 and 1).
- * @return true on success, false on failure.
- */
-SITAPI bool SituationSetThreadAffinity(uint64_t core_mask) {
-    if (core_mask == 0) return false;
-
-#if defined(_WIN32)
-    // GetCurrentThread() returns a pseudo-handle for the calling thread
-    HANDLE thread = GetCurrentThread();
-    
-    // SetThreadAffinityMask returns 0 on failure, or the previous mask on success
-    DWORD_PTR result = SetThreadAffinityMask(thread, (DWORD_PTR)core_mask);
-    
-    if (result == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "SetThreadAffinityMask failed.");
-        return false;
-    }
-    return true;
-
-#elif defined(__linux__)
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    for (int i = 0; i < 64; i++) {
-        if ((core_mask & (1ULL << i)) != 0) {
-            CPU_SET(i, &cpuset);
-        }
-    }
-    pthread_t current_thread = pthread_self();
-    return pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset) == 0;
-
-#elif defined(__APPLE__)
-    // macOS does not support strict thread affinity (it uses Mach thread policy hints instead).
-    // Returning false or true is a design choice. True allows the code to proceed gracefully.
-    return true; 
-#else
-    return false;
-#endif
-}
+/* CPU topology / affinity: situation_impl_threading_topology.h (included after io.h). */
 
 // ==================================================================================
 //  Cycle Detection & ID Helpers
@@ -199,6 +99,7 @@ static SituationJob* _SitGetJobFromId(SituationThreadPool* pool, SituationJobId 
  * @see SituationAddJobDependency, SituationAddJobDependencies,
  *      SITUATION_ERROR_THREAD_CYCLE
  */
+/* HARDENING: bool by design — true when cycle or depth limit detected (caller sets THREAD_CYCLE). */
 static bool _SituationDetectCycle(SituationThreadPool* pool, SituationJobId prereq_id, SituationJobId dep_id, uint8_t* out_new_depth) {
     uint8_t depth = 0;
     SituationJobId current_cursor = dep_id;
@@ -395,98 +296,54 @@ SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out, bool js
     else fprintf(out, "=========================================\n\n");
 }
 
-/**
- * @brief Returns the current number of pending asynchronous I/O jobs in the thread pool.
- *
- * @details Queries the combined depth of the high-priority and low-priority queues
- *          in the given thread pool, giving an indication of how many async file load/save
- *          or other I/O-bound jobs are waiting to be processed by worker threads.
- *
- *          This is a lightweight, atomic read -- it does not block or lock.
- *          Useful for:
- *            - Monitoring system load / backpressure
- *            - Deciding whether to submit more jobs or throttle
- *            - Debugging or displaying queue health in tools/profilers
- *
- * @param pool Pointer to an initialized `SituationThreadPool` (must have been created
- *             with `SituationCreateThreadPool` and not yet destroyed).
- *             Passing NULL or an invalid pool results in 0 being returned.
- *
- * @return The total number of jobs currently enqueued (high + low priority).
- *         This count includes jobs that are:
- *           - Waiting to be picked up by a worker
- *           - Being processed (popped but not yet completed)
- *         It does **not** include completed jobs or jobs that failed to submit.
- *
- * @note This is a snapshot-in-time value -- the actual queue may change immediately
- *       after the call returns. For precise synchronization, combine with
- *       `SituationWaitForAllJobs` or `SituationWaitForJob`.
- *
- * @see SituationThreadPool, SituationCreateThreadPool, SituationSubmitJobEx,
- *      SituationWaitForAllJobs, SituationWaitForJob
- */
 // ==================================================================================
 //  Worker Thread Implementation (Updated)
 // ==================================================================================
 
 /**
- * @brief [INTERNAL] Main entry point / infinite loop for each worker thread in the thread pool.
+ * @brief [INTERNAL] Worker thread main loop for `SituationCreateThreadPool`.
  *
- * @details This function is the body of every worker thread created by `SituationCreateThreadPool`.
- *          Each worker runs this loop indefinitely until shutdown is requested, waiting for
- *          available jobs in either the high- or low-priority queue.
+ * @details Each worker waits on `wake_condition` when both relevant queues are empty,
+ *          then dequeues under `queues[q].lock` (high queue first). Dequeue may scan
+ *          forward past blocked tail jobs (dynamic depth, Epic D). Low queue is skipped
+ *          when a dedicated I/O thread owns it (`pool->io_thread != 0`).
  *
- *          The worker uses a condition variable to sleep efficiently when both queues are empty.
- *          When woken, it atomically pops the highest-priority pending job (high first, then low),
- *          executes the user-provided function with its payload, and notifies any dependent jobs
- *          or waiting threads upon completion.
- *
- * Key responsibilities:
- *   - Waits on `worker_cv` when no work is available
- *   - Prioritizes high-priority jobs over low-priority ones
- *   - Executes the job callback (`func(data, user_data)`)
- *   - Handles job completion signaling (increments done count, wakes dependents or waiters)
- *   - Checks shutdown flag periodically to exit cleanly
- *   - Maintains thread-local scratch space / state if needed
- *
- * Thread safety invariants:
- *   - Queue access is protected by `pool->queue_mutex`
- *   - Atomic operations used for refcounts, done flags, and shutdown detection
- *   - Job payload is owned by the submitter until popped -- worker does not free it
- *   - Multiple workers can run concurrently without interfering (disjoint jobs)
- *   - Safe to call from any thread context (but only pool workers invoke it)
- *
- * @param arg Pointer to the owning `SituationThreadPool*` structure (passed via thrd_create).
- *            The worker uses this to access shared queues, mutexes, condvars, and shutdown state.
- * @return 0 on clean exit (when shutdown is complete and queues are drained)
- *
- * @note This function never returns until the pool is being destroyed.
- *       Shutdown is cooperative: workers check `atomic_load(&pool->shutdown_requested)`
- *       after each job and during wait wakeups.
- *       See also: `SituationCreateThreadPool`, `SituationDestroyThreadPool`,
- *                 `pool->high_priority_queue`, `pool->low_priority_queue`,
- *                 `pool->worker_cv`, `pool->queue_mutex`
+ * @param arg `SituationWorkerStartArg` (pool handle + worker index for NUMA spread).
+ * @return 0 after cooperative shutdown (`pool->shutdown`).
  */
 static int _SituationWorkerEntry(void* arg) {
-    SituationThreadPool* pool = (SituationThreadPool*)arg;
+    SituationWorkerStartArg* start = (SituationWorkerStartArg*)arg;
+    SituationThreadPool* pool = start->pool_handle;
+    size_t worker_index = start->worker_index;
+    int jobs_since_cpu_sample = 0;
+
+    _SituationApplyWorkerNumaPlacement(pool, worker_index);
 
     while (!atomic_load(&pool->shutdown)) {
         SituationJob* job_ptr = NULL;
         int queue_idx = -1;
 
-        // --- Job Picking Loop (Priority 1 -> 0) ---
+        // --- Job Picking Loop (High priority first; low only when no dedicated I/O thread) ---
         for (int q = 1; q >= 0; --q) {
+            if (q == 0 && pool->io_thread != 0) {
+                continue; /* _SituationIOThreadEntry owns the low-priority (I/O) queue */
+            }
+            uint64_t lock_start_ns = (q == 1) ? _SitGetMonotonicTimeNS() : 0;
             mtx_lock(&pool->queues[q].lock);
+            if (q == 1) {
+                atomic_fetch_add(&pool->stats_high_queue_lock_ops, 1);
+            }
 
             size_t head = atomic_load(&pool->queues[q].head);
             size_t tail = atomic_load(&pool->queues[q].tail);
 
             if (tail != head) {
-                // [Patch 3] Scan-forward: check up to SIT_WORKER_SCAN_DEPTH slots
-                // past tail to find a ready job, mitigating head-of-line blocking
-                // when the tail job has unmet dependencies.
+                // [Epic D] Dynamic scan-forward past blocked tail jobs (HOL mitigation).
                 size_t pending = head - tail;
-                size_t scan_limit = (pending < SIT_WORKER_SCAN_DEPTH) ? pending : SIT_WORKER_SCAN_DEPTH;
+                size_t scan_limit = _SitWorkerScanDepthForPending(pending);
+                if (scan_limit > pending) {
+                    scan_limit = pending;
+                }
                 bool found_ready = false;
 
                 for (size_t scan = 0; scan < scan_limit; ++scan) {
@@ -497,6 +354,7 @@ static int _SituationWorkerEntry(void* arg) {
                         !atomic_load(&candidate->is_completed)) {
                         // Found a ready job. If it's not at the tail, swap it there.
                         if (scan > 0) {
+                            atomic_fetch_add(&pool->stats_scan_forward_swap, 1);
                             size_t tail_idx = tail & pool->queues[q].mask;
                             SituationJob tmp = pool->queues[q].jobs[tail_idx];
                             pool->queues[q].jobs[tail_idx] = *candidate;
@@ -511,27 +369,46 @@ static int _SituationWorkerEntry(void* arg) {
                 }
 
                 if (!found_ready) {
+                    if (q == 1) {
+                        atomic_fetch_add(&pool->stats_scan_forward_exhausted, 1);
+                    }
+                    if (q == 1 && lock_start_ns != 0) {
+                        atomic_fetch_add(&pool->stats_high_queue_lock_ns,
+                            _SitGetMonotonicTimeNS() - lock_start_ns);
+                    }
                     mtx_unlock(&pool->queues[q].lock);
                     thrd_yield();
                     continue; // Try next priority queue
                 }
 
+                if (q == 1 && lock_start_ns != 0) {
+                    atomic_fetch_add(&pool->stats_high_queue_lock_ns,
+                        _SitGetMonotonicTimeNS() - lock_start_ns);
+                }
                 mtx_unlock(&pool->queues[q].lock);
                 break; // Stop searching, we found work
             } else {
+                if (q == 1 && lock_start_ns != 0) {
+                    atomic_fetch_add(&pool->stats_high_queue_lock_ns,
+                        _SitGetMonotonicTimeNS() - lock_start_ns);
+                }
                 mtx_unlock(&pool->queues[q].lock);
             }
         }
 
         // If no job found in either queue
         if (!job_ptr) {
-            mtx_lock(&pool->queues[0].lock); // Lock low prio for condition var
-            // Double check to prevent race where signal came before wait
-            size_t head = atomic_load(&pool->queues[0].head);
-            size_t tail = atomic_load(&pool->queues[0].tail);
-            // Also check High prio emptiness? Ideally yes, but for simplicity we sleep on Low lock.
-            // Real robustness would use a dedicated condition mutex.
-            if (head == tail && !atomic_load(&pool->shutdown)) {
+            mtx_lock(&pool->queues[0].lock);
+            size_t head_hi = atomic_load(&pool->queues[1].head);
+            size_t tail_hi = atomic_load(&pool->queues[1].tail);
+            size_t head_lo = atomic_load(&pool->queues[0].head);
+            size_t tail_lo = atomic_load(&pool->queues[0].tail);
+            int work_pending = (head_hi != tail_hi);
+            if (!pool->io_thread) {
+                work_pending = work_pending || (head_lo != tail_lo);
+            }
+            if (!work_pending && !atomic_load(&pool->shutdown)) {
+                _SitWorkerSampleCpu(pool, worker_index);
                 // [FIX] Use timed wait (1ms) instead of indefinite wait
                 // This ensures workers wake up regularly to check for work
                 // even if condition signals are missed
@@ -602,6 +479,11 @@ static int _SituationWorkerEntry(void* arg) {
             // Decrement global active count
             if (atomic_fetch_sub(&pool->active_jobs, 1) == 1) {
                 cnd_broadcast(&pool->idle_condition); // Wake Main Thread (WaitForAll)
+            }
+            atomic_fetch_add(&pool->stats_jobs_completed, 1);
+            if (++jobs_since_cpu_sample >= SIT_WORKER_CPU_SAMPLE_INTERVAL) {
+                jobs_since_cpu_sample = 0;
+                _SitWorkerSampleCpu(pool, worker_index);
             }
         }
     }
@@ -696,10 +578,9 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
     }
     memset(pool, 0, sizeof(SituationThreadPool));
 
-    // Auto-detect threads if 0
+    // Auto-detect threads if 0 (Epic D: logical or physical cores minus reserved)
     if (num_threads == 0) {
-        num_threads = (size_t)SituationGetCPUThreadCount();
-        num_threads = (num_threads > 1) ? num_threads - 1 : 1; // Leave one for main
+        num_threads = _SitResolveAutoWorkerCount();
 #ifdef SITUATION_DEBUG_THREADING
         printf("[THREADING] Auto-detected %zu worker threads\n", num_threads);
         fflush(stdout);
@@ -741,6 +622,26 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
     cnd_init(&pool->idle_condition);
     atomic_init(&pool->active_jobs, 0);
     atomic_init(&pool->shutdown, false);
+    atomic_init(&pool->io_last_logical_cpu, -1);
+    atomic_init(&pool->stats_jobs_submitted, 0);
+    atomic_init(&pool->stats_jobs_completed, 0);
+    atomic_init(&pool->stats_main_steal_success, 0);
+    atomic_init(&pool->stats_main_steal_fail, 0);
+    atomic_init(&pool->stats_main_steal_empty_queue, 0);
+    atomic_init(&pool->stats_high_queue_lock_ops, 0);
+    atomic_init(&pool->stats_high_queue_lock_ns, 0);
+    atomic_init(&pool->stats_scan_forward_swap, 0);
+    atomic_init(&pool->stats_scan_forward_exhausted, 0);
+    atomic_init(&pool->stats_io_idle_waits, 0);
+    atomic_init(&pool->stats_io_jobs_run, 0);
+    atomic_init(&pool->stats_submit_run_inline, 0);
+    atomic_init(&pool->stats_queue_full_spins, 0);
+    atomic_init(&pool->stats_dispatch_parallel_calls, 0);
+    for (size_t wi = 0; wi < SITUATION_MAX_THREADS; ++wi) {
+        atomic_init(&pool->worker_last_logical_cpu[wi], -1);
+        pool->worker_args[wi].pool_handle = pool;
+        pool->worker_args[wi].worker_index = wi;
+    }
 
 #ifdef SITUATION_DEBUG_THREADING
     printf("[THREADING] About to create %zu worker threads...\n", num_threads);
@@ -752,7 +653,9 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
         printf("[THREADING] Creating worker thread %zu...\n", i);
         fflush(stdout);
 #endif
-        if (thrd_create(&pool->threads[i], _SituationWorkerEntry, pool) != thrd_success) {
+        pool->worker_args[i].pool_handle = pool;
+        pool->worker_args[i].worker_index = i;
+        if (thrd_create(&pool->threads[i], _SituationWorkerEntry, &pool->worker_args[i]) != thrd_success) {
 #ifdef SITUATION_DEBUG_THREADING
             printf("[THREADING] ERROR: Failed to create worker thread %zu\n", i);
             fflush(stdout);
@@ -858,6 +761,7 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
     // SIT_SUBMIT_RUN_IF_FULL behavior). Callers already handle 0 as "no handle needed."
     if (q_idx == 0 && pool->io_thread == 0) {
         mtx_unlock(&pool->queues[q_idx].lock);
+        atomic_fetch_add(&pool->stats_submit_run_inline, 1);
         // Execute immediately
         if (func) {
             SituationError dummy_err = SITUATION_SUCCESS;
@@ -877,6 +781,7 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
 
             // Handle Backpressure
             if (flags & SIT_SUBMIT_RUN_IF_FULL) {
+                atomic_fetch_add(&pool->stats_submit_run_inline, 1);
                 // "Velocity" Path: Run immediately to avoid stutter
                 if(func) {
                     // [CRITICAL FIX] Legacy Support for SituationError* signature
@@ -887,12 +792,9 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
                 return 0; // 0 indicates job is already done/invalid handle
             }
             else if (flags & SIT_SUBMIT_BLOCK_IF_FULL) {
+                atomic_fetch_add(&pool->stats_queue_full_spins, 1);
                 // "Robust" Path: Spin-wait (polite yield) until slot opens
-                // [Patch 1] Use SITUATION_SLEEP_MS instead of thrd_sleep to avoid
-                // tinycthread hang on Windows. Sleep(0) yields the timeslice.
                 SITUATION_SLEEP_MS(0);
-
-                // Re-acquire lock and try again
                 mtx_lock(&pool->queues[q_idx].lock);
                 continue;
             }
@@ -958,6 +860,7 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
     // Commit
     atomic_fetch_add(&pool->queues[q_idx].head, 1);
     atomic_fetch_add(&pool->active_jobs, 1);
+    atomic_fetch_add(&pool->stats_jobs_submitted, 1);
 
     // [FIX] Signal BEFORE unlock to prevent lost wakeups
     cnd_signal(&pool->wake_condition);
@@ -1067,6 +970,7 @@ typedef struct {
  * @see SituationDispatchParallel, _SitParallelDispatchCtx,
  *      SituationSubmitJobEx, SituationThreadPool
  */
+/* HARDENING: void by design — thread-pool parallel dispatch ABI. */
 static void _SitParallelWorker(void* data, void* ctx) {
     (void)ctx;
     _SitParallelCtx* pctx = (_SitParallelCtx*)data;
@@ -1102,6 +1006,8 @@ SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int 
     SIT_ASSERT_MAIN_THREAD();
     if (!pool) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationDispatchParallel: pool is NULL"); return; }
     if (count <= 0) return;
+
+    atomic_fetch_add(&pool->stats_dispatch_parallel_calls, 1);
 
     // 1. Calculate Chunking
     int thread_count = (int)pool->thread_count;
@@ -1144,7 +1050,8 @@ SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int 
         bool stole_work = false;
 
         // Peek into High Priority Queue (Non-blocking try)
-        if (mtx_trylock(&pool->queues[1].lock) == thrd_success) {
+        int try_result = mtx_trylock(&pool->queues[1].lock);
+        if (try_result == thrd_success) {
             size_t head = atomic_load(&pool->queues[1].head);
             size_t tail = atomic_load(&pool->queues[1].tail);
 
@@ -1177,10 +1084,15 @@ SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int 
                 atomic_store(&job_ptr->generation, (uint16_t)((g + 1) & SIT_ID_GEN_MASK));
                 atomic_fetch_sub(&pool->active_jobs, 1);
 
+                atomic_fetch_add(&pool->stats_jobs_completed, 1);
+                atomic_fetch_add(&pool->stats_main_steal_success, 1);
                 stole_work = true;
             } else {
+                atomic_fetch_add(&pool->stats_main_steal_empty_queue, 1);
                 mtx_unlock(&pool->queues[1].lock);
             }
+        } else {
+            atomic_fetch_add(&pool->stats_main_steal_fail, 1);
         }
 
         if (!stole_work) {
@@ -1253,7 +1165,6 @@ SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
 
     pool->is_active = false;
 }
-
 
 #endif // SITUATION_ENABLE_THREADING
 #endif // SITUATION_IMPL_THREADING_H

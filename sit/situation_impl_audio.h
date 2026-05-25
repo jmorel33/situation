@@ -1,4 +1,4 @@
-﻿/***************************************************************************************************
+/***************************************************************************************************
 *
 *   situation_impl_audio.h - Audio Subsystem Implementation
 *   (c) 2025-2026 Jacques Morel
@@ -58,6 +58,7 @@
 #include "sit/aud/tone_synth.h"                // Tone synthesizer (audio API functions)
 
 // Initialize the device registry on first inclusion
+/* HARDENING: void by design — intentional void internal helper (Bucket B). */
 static void _SituationEnsureRegistryInit(void) {
     static bool registry_init_done = false;
     if (!registry_init_done) {
@@ -73,11 +74,16 @@ static void _SituationEnsureRegistryInit(void) {
 // Audio-related implementation extracted from situation_impl.h
 
 /** Spin until the playback callback finishes decoding/mixing from a voice snapshot (see `is_processing_snapshot`). */
+/* HARDENING: void by design — RT spin-wait until audio snapshot completes. */
 static void _SituationWaitUntilVoiceSnapshotIdle(void) {
     while (atomic_load(&sit_audio.is_processing_snapshot)) {
         thrd_yield();
     }
 }
+
+// Forward declaration of internal tone mixing helper
+/* HARDENING: void by design — real-time tone mix path. */
+static void _SituationMixToneToBuffer(SituationTone* t, float* buffer, uint32_t frameCount);
 
 static _SituationSoundSlot* _SitGetSoundSlot(SituationSound handle) {
     if (handle.slot_index >= SITUATION_MAX_LOADED_SOUNDS) return NULL;
@@ -107,15 +113,22 @@ static _SituationSoundSlot* _SitAllocSoundSlot(SituationSound* out_handle) {
     return NULL;
 }
 
-static void _SitFreeSoundSlot(SituationSound handle) {
+static SituationError _SitFreeSoundSlot(SituationSound handle) {
     _SituationSoundSlot* slot = _SitGetSoundSlot(handle);
-    if (!slot) return;
+    if (!slot) {
+        return _SituationSetErrorFromCode(
+            SITUATION_ERROR_RESOURCE_INVALID, "Invalid sound slot handle.");
+    }
 
     mtx_lock(&sit_audio.pool_mutex);
-    if (slot->source_path) SIT_FREE(slot->source_path);
+    if (slot->source_path) {
+        SIT_FREE(slot->source_path);
+        slot->source_path = NULL;
+    }
     // Note: sound_data cleanup (ma_decoder_uninit) should be done before calling this
     slot->is_active = false;
     mtx_unlock(&sit_audio.pool_mutex);
+    return SITUATION_SUCCESS;
 }
 
 
@@ -163,7 +176,7 @@ static void _SitFreeSoundSlot(SituationSound handle) {
 
 // --- Tone Synthesis Functions (moved to sit/aud/tone_synth.h) ---
 
-/** True if the graph contains at least one SITUATION_NODE_MIXER instance. */
+/** HARDENING: bool by design — graph topology query (true if a mixer node exists). */
 static bool _SituationGraphHasMixerNode(const SituationAudioGraph* graph) {
     if (!graph) return false;
     for (int i = 0; i < graph->node_count; ++i) {
@@ -179,6 +192,7 @@ static bool _SituationGraphHasMixerNode(const SituationAudioGraph* graph) {
  * - Library default_graph with Policy B: voices are fed into the graph Sound Source — no latent sum.
  * - default_graph but voice source missing: fall back to latent sum (init failure).
  * - User graph that includes a mixer: assume the graph owns summing (avoid double-mix).
+ * HARDENING: bool by design — routing policy query, not a failure path.
  */
 static bool _SituationShouldMixLatentVoices(const _SituationAudioState* pGs) {
     if (!pGs->active_graph) return true;
@@ -191,6 +205,7 @@ static bool _SituationShouldMixLatentVoices(const _SituationAudioState* pGs) {
 }
 
 /** Mix decoded/processed active voices from snapshot_buffer into an interleaved stereo buffer (accumulate). */
+/* HARDENING: void by design — real-time voice mix path. */
 static void _SituationMixLoadedVoicesFromSnapshot(
     _SituationAudioState* pGs,
     ma_device* pDevice,
@@ -276,6 +291,7 @@ static void _SituationMixLoadedVoicesFromSnapshot(
 }
 
 /** Peak + RMS over the final mixed buffer; atomics for main-thread poll; optional legacy monitor callback. */
+/* HARDENING: void by design — RT level metering side-channel. */
 static void _SituationPublishMasterBusLevels(_SituationAudioState* pGs, const float* pOut, uint32_t frameCount, uint32_t channels) {
     if (!pGs || !pOut || frameCount == 0 || channels == 0) return;
 
@@ -296,6 +312,7 @@ static void _SituationPublishMasterBusLevels(_SituationAudioState* pGs, const fl
     if (mon) mon(pOut, frameCount, pGs->output_monitor_user_data);
 }
 
+/* HARDENING: void by design — miniaudio RT callback ABI. */
 static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
     _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
     if (!pGs) return;
@@ -317,8 +334,12 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
     #endif
 
     if (!s_audio_thread_pinned) {
-        // Pin Audio to Logical Core 2 (Bitmask: 1 << 2 = 0x04)
-        SituationSetThreadAffinity(1ULL << 2);
+        // Pin audio callback (default: logical core 2; override via SituationInitInfo::thread_affinity_audio)
+        {
+            uint64_t audio_aff = SituationGetConfiguredAudioThreadAffinity();
+            _SituationSetThreadAffinityForRole(SIT_THREAD_ROLE_AUDIO, audio_aff);
+            _SituationObservabilityRecordAudioThread(audio_aff);
+        }
         
         // Optional: Log it so you know it worked
         // fprintf(stderr, "[Situation Audio] Audio thread pinned to core 2.\n");
@@ -372,6 +393,29 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         }
     }
 
+    // --- [Phase G1] Routed Tone Pre-Mixing ---
+    bool has_routed_tones = false;
+    for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+        if (pGs->tone_pool[i].active && pGs->tone_pool[i].route_to_graph) {
+            has_routed_tones = true;
+            break;
+        }
+    }
+
+    if (has_routed_tones && pGs->sfx_graph_voice_source) {
+        if (voice_bus) {
+            memset(voice_bus, 0, frameCount * 2 * sizeof(float));
+            for (int i = 0; i < SITUATION_MAX_TONES; ++i) {
+                SituationTone* t = &pGs->tone_pool[i];
+                if (!t->active || !t->route_to_graph) continue;
+                _SituationMixToneToBuffer(t, voice_bus, frameCount);
+            }
+            sound_source_feed_interleaved_frames((SituationSoundSource*)pGs->sfx_graph_voice_source, voice_bus, (int)frameCount, 2);
+        }
+    } else if (pGs->sfx_graph_voice_source) {
+        sound_source_stop((SituationSoundSource*)pGs->sfx_graph_voice_source);
+    }
+
     // --- [Phase H] Node graph ---
     if (pGs->active_graph) {
         SituationProcessGraph(pGs->active_graph, pOut, frameCount,
@@ -396,56 +440,12 @@ tone_mixing:
         SituationTone* t = &pGs->tone_pool[i];
         if (!t->active) continue;
 
-        for (ma_uint32 f = 0; f < frameCount; ++f) {
-            // 1. Generate sample
-            float sample = 0.0f;
-            if (t->wave_type == SIT_WAVE_NOISE) {
-                ma_noise_read_pcm_frames(&t->noise, &sample, 1, NULL);
-            } else {
-                ma_waveform_read_pcm_frames(&t->waveform, &sample, 1, NULL);
-            }
-
-            // 2. Envelope
-            float envelope = 0.0f;
-            switch (t->state) {
-                case SIT_ENV_ATTACK:
-                    envelope = (t->t_attack > 0) ? (float)t->cursor_frames / (float)t->t_attack : 1.0f;
-                    if (t->cursor_frames >= t->t_attack) { t->state = SIT_ENV_DECAY; t->cursor_frames = 0; }
-                    break;
-                case SIT_ENV_DECAY: {
-                    float progress = (t->t_decay > 0) ? (float)t->cursor_frames / (float)t->t_decay : 1.0f;
-                    envelope = 1.0f - (1.0f - t->level_sustain) * progress;
-                    if (t->cursor_frames >= t->t_decay) { t->state = SIT_ENV_SUSTAIN; t->cursor_frames = 0; }
-                    } break;
-                case SIT_ENV_SUSTAIN:
-                    envelope = t->level_sustain;
-                    if (t->t_hold != UINT64_MAX && t->cursor_frames >= t->t_hold) { t->state = SIT_ENV_RELEASE; t->cursor_frames = 0; }
-                    break;
-                case SIT_ENV_RELEASE: {
-                    float progress = (t->t_release > 0) ? (float)t->cursor_frames / (float)t->t_release : 1.0f;
-                    envelope = t->level_sustain * (1.0f - progress);
-                    if (t->cursor_frames >= t->t_release) { t->active = false; }
-                    } break;
-                default:
-                    t->active = false;
-                    break;
-            }
-
-            if (!t->active) break;
-
-            // 3. Apply volume and envelope
-            float final_sample = sample * envelope * t->volume_peak;
-
-            // 4. Pan and mix to stereo output
-            float pan = t->pan;
-            float gainL = (pan <= 0.0f) ? 1.0f : (1.0f - pan);
-            float gainR = (pan >= 0.0f) ? 1.0f : (1.0f + pan);
-
-            pOut[f * 2 + 0] += final_sample * gainL;
-            pOut[f * 2 + 1] += final_sample * gainR;
-
-            t->cursor_frames++;
+        if (t->route_to_graph) {
+            // Already processed and fed to the graph's SFX sound source, so skip here
+            continue;
         }
+
+        _SituationMixToneToBuffer(t, pOut, frameCount);
     }
 
     _SituationPublishMasterBusLevels(pGs, pOut, frameCount, pDevice->playback.channels);
@@ -483,6 +483,7 @@ SITAPI void SituationGetMasterOutputMeter(float* out_peak, float* out_rms) {
     if (out_rms) *out_rms = rms;
 }
 
+/* HARDENING: void by design — miniaudio RT capture callback ABI. */
 static void _sit_miniaudio_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount) {
     (void)pOutput;
     _SituationAudioState* pGs = (_SituationAudioState*)pDevice->pUserData;
@@ -705,8 +706,8 @@ SITAPI SituationAudioDeviceInfo* SituationGetAudioDevices(int* count) {
 
 /**
  * @brief Internal: open playback with explicit WASAPI/DirectSound share mode (exclusive vs shared).
- * @details `SituationSetAudioDevice` passes exclusive. Init step 7 on Windows passes shared on 2nd+
- * in-process session to avoid `ma_device_init` blocking when exclusive mode is slow to release.
+ * @details `SituationSetAudioDevice` passes exclusive. `SituationInit` step 7 on Windows passes shared
+ * so auto-start does not mute other apps; explicit `SituationSetAudioDevice()` is for exclusive/low-latency.
  */
 static SituationError _SituationSetAudioDeviceInternal(int situation_internal_id, const SituationAudioFormat* format, ma_share_mode playback_share_mode) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
@@ -807,20 +808,15 @@ static SituationError _SituationSetAudioDeviceInternal(int situation_internal_id
     if (!sit_audio.default_graph) {
         SituationAudioGraph* graph = SituationCreateGraph();
         if (graph) {
-            SituationNodeHandle tone_synth = SITUATION_INVALID_NODE_HANDLE;
             SituationNodeHandle sound_src  = SITUATION_INVALID_NODE_HANDLE;
             SituationNodeHandle mixer_node = SITUATION_INVALID_NODE_HANDLE;
 
-            SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &tone_synth);
             SituationCreateNode(graph, SITUATION_NODE_SOUND_SOURCE, &sound_src);
             SituationCreateNode(graph, SITUATION_NODE_MIXER, &mixer_node);
 
-            // Patch: Tone Synth â†’ Mixer input 0, Sound Source â†’ Mixer input 1
-            if (tone_synth != SITUATION_INVALID_NODE_HANDLE && mixer_node != SITUATION_INVALID_NODE_HANDLE) {
-                SituationCreatePatch(graph, tone_synth, 0, mixer_node, 0, false);
-            }
+            // Patch: Sound Source â†’ Mixer input 0
             if (sound_src != SITUATION_INVALID_NODE_HANDLE && mixer_node != SITUATION_INVALID_NODE_HANDLE) {
-                SituationCreatePatch(graph, sound_src, 0, mixer_node, 1, false);
+                SituationCreatePatch(graph, sound_src, 0, mixer_node, 0, false);
             }
 
             {
@@ -1070,9 +1066,14 @@ static SituationError _SituationInitSoundEffects(_SituationSound* sound) {
     // Note: We need sample rate. If preloaded, assume 48000? Or store it.
     // If streamed, decoder has it.
     uint32_t sample_rate = 48000;
-    if (sound->is_initialized) sample_rate = sound->decoder.outputSampleRate;
+    if (sound->is_initialized && sound->is_streamed) {
+        sample_rate = sound->decoder.outputSampleRate;
+    }
 
-    sound->effects.reverb_state = _SituationInitReverb(sample_rate);
+    SituationError rev_err = _SituationInitReverb(sample_rate, &sound->effects.reverb_state);
+    if (rev_err != SITUATION_SUCCESS) {
+        return rev_err;
+    }
 
     return SITUATION_SUCCESS;
 }
@@ -1143,7 +1144,15 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
         ma_uint64 framesRead;
         ma_result result = ma_decode_file(file_path, &config, &framesRead, &sound->preloaded_data);
         if (result != MA_SUCCESS) {
-            _SitFreeSoundSlot(handle);
+            if (sound->is_preloaded && sound->preloaded_data) {
+                ma_free(sound->preloaded_data, NULL);
+                sound->preloaded_data = NULL;
+            }
+            if (sound->is_streamed && sound->is_initialized) {
+                ma_decoder_uninit(&sound->decoder);
+                sound->is_initialized = false;
+            }
+            (void)_SitFreeSoundSlot(handle);
             return SITUATION_ERROR_AUDIO_DECODING;
         }
         sound->total_frames = framesRead;
@@ -1152,11 +1161,31 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
     } else {
         // Stream
         if (ma_decoder_init_file(file_path, &config, &sound->decoder) != MA_SUCCESS) {
-            _SitFreeSoundSlot(handle);
+            (void)_SitFreeSoundSlot(handle);
             return SITUATION_ERROR_AUDIO_DECODING;
         }
         sound->is_streamed = true;
         sound->is_initialized = true;
+    }
+
+    SituationError fx_err = _SituationInitSoundEffects(sound);
+    if (fx_err != SITUATION_SUCCESS) {
+        if (sound->effects.reverb_state) {
+            _SituationUninitReverb(sound->effects.reverb_state);
+            sound->effects.reverb_state = NULL;
+        }
+        if (sound->is_preloaded && sound->preloaded_data) {
+            ma_free(sound->preloaded_data, NULL);
+            sound->preloaded_data = NULL;
+            sound->is_preloaded = false;
+        }
+        if (sound->is_streamed && sound->is_initialized) {
+            ma_decoder_uninit(&sound->decoder);
+            sound->is_initialized = false;
+            sound->is_streamed = false;
+        }
+        (void)_SitFreeSoundSlot(handle);
+        return fx_err;
     }
 
     *out_sound = handle;
@@ -1251,10 +1280,22 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     ma_decoder_config config = ma_decoder_config_init(ma_format_f32, format ? format->channels : 2, format ? format->sample_rate : 48000);
     ma_result res = ma_decoder_init(_situation_stream_read_thunk, _situation_stream_seek_thunk, NULL, &config, &sound->decoder);
     if (res != MA_SUCCESS) {
-        _SitFreeSoundSlot(handle);
+        (void)_SitFreeSoundSlot(handle);
         return SITUATION_ERROR_AUDIO_DECODING;
     }
     sound->is_initialized = true;
+
+    SituationError fx_err = _SituationInitSoundEffects(sound);
+    if (fx_err != SITUATION_SUCCESS) {
+        ma_decoder_uninit(&sound->decoder);
+        sound->is_initialized = false;
+        if (sound->effects.reverb_state) {
+            _SituationUninitReverb(sound->effects.reverb_state);
+            sound->effects.reverb_state = NULL;
+        }
+        (void)_SitFreeSoundSlot(handle);
+        return fx_err;
+    }
 
     *out_sound = handle;
     return SITUATION_SUCCESS;
@@ -1466,7 +1507,7 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
         size_t size = (size_t)src_data->total_frames * sizeof(float) * 2; // Stereo f32
         dst_data->preloaded_data = SIT_MALLOC(size);
         if (!dst_data->preloaded_data) {
-            _SitFreeSoundSlot(handle);
+            (void)_SitFreeSoundSlot(handle);
             return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
         memcpy(dst_data->preloaded_data, src_data->preloaded_data, size);
@@ -1474,7 +1515,7 @@ SITAPI SituationError SituationSoundCopy(const SituationSound* source, Situation
         dst_data->is_preloaded = true;
     } else {
         // Cannot easily copy streamed sound state without reopening file
-        _SitFreeSoundSlot(handle);
+        (void)_SitFreeSoundSlot(handle);
         return SITUATION_ERROR_NOT_IMPLEMENTED;
     }
 
@@ -1785,9 +1826,9 @@ SITAPI SituationError SituationDetachAudioProcessor(SituationSound* sound, Situa
 // ==================================================================================
 
 // Helper: Initialize the audio pool
-static void _SitAudioInitPool(void) {
+static SituationError _SitAudioInitPool(void) {
     if (mtx_init(&sit_audio.pool_mutex, mtx_plain) != thrd_success) {
-        SITUATION_LOG_WARNING(SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED, "Failed to init audio pool mutex");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_MUTEX_INIT_FAILED, "Failed to init audio pool mutex");
     }
 
     for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
@@ -1796,9 +1837,11 @@ static void _SitAudioInitPool(void) {
         memset(&sit_audio.sound_pool[i].sound_data, 0, sizeof(_SituationSound));
         sit_audio.sound_pool[i].source_path = NULL;
     }
+    return SITUATION_SUCCESS;
 }
 
 // Helper: Cleanup the audio pool
+/* HARDENING: void by design — idempotent teardown or free helper. */
 static void _SitAudioCleanupPool(void) {
     for (int i = 0; i < SITUATION_MAX_LOADED_SOUNDS; ++i) {
         if (sit_audio.sound_pool[i].is_active) {
@@ -1807,7 +1850,9 @@ static void _SitAudioCleanupPool(void) {
             if (snd->is_preloaded && snd->preloaded_data) SIT_FREE(snd->preloaded_data);
             if (snd->processors) SIT_FREE(snd->processors);
             if (snd->processor_user_data) SIT_FREE(snd->processor_user_data);
-            if (snd->effects.reverb_state) SIT_FREE(snd->effects.reverb_state); // Or _SituationUninitReverb if available
+            if (snd->effects.reverb_state) {
+                _SituationUninitReverb(snd->effects.reverb_state);
+            }
 
             if (sit_audio.sound_pool[i].source_path) SIT_FREE(sit_audio.sound_pool[i].source_path);
         }
@@ -1883,15 +1928,17 @@ typedef struct {
  * @param data Pointer to the _SitAsyncAudioCtx (embedded in job storage).
  * @param unused Unused user context.
  */
+/* HARDENING: void by design — thread-pool job ABI; use SituationGetLastErrorCode after wait if handle invalid. */
 static void _SituationAsyncAudioWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncAudioCtx* ctx = (_SitAsyncAudioCtx*)data;
 
-    // Use FULL load mode to decode to RAM on this background thread.
-    // This ensures no disk I/O happens on the main thread later.
-    SituationLoadSoundFromFile(ctx->path, SITUATION_AUDIO_LOAD_FULL, ctx->looping, ctx->target);
+    SituationError err = SituationLoadSoundFromFile(
+        ctx->path, SITUATION_AUDIO_LOAD_FULL, ctx->looping, ctx->target);
+    if (err != SITUATION_SUCCESS) {
+        memset(ctx->target, 0, sizeof(SituationSound));
+    }
 
-    // Cleanup string copy
     SIT_FREE(ctx->path);
     // Note: We don't free 'ctx' here because it's embedded in the job storage!
     // The beauty of Small Object Optimization.
@@ -2020,6 +2067,95 @@ SITAPI SituationError SituationSetActiveGraph(SituationAudioGraph* graph) {
 SITAPI SituationAudioGraph* SituationGetActiveGraph(void) {
     if (!SituationIsInitialized()) return NULL;
     return sit_audio.active_graph;
+}
+
+
+// ================================================================================================
+// PHASE H — NODE GRAPH SFX ROUTING SYSTEM
+// ================================================================================================
+
+/* HARDENING: void by design — real-time tone mix path. */
+static void _SituationMixToneToBuffer(SituationTone* t, float* buffer, uint32_t frameCount) {
+    if (!t || !t->active || !buffer) return;
+
+    for (ma_uint32 f = 0; f < frameCount; ++f) {
+        // 1. Generate sample
+        float sample = 0.0f;
+        if (t->wave_type == SIT_WAVE_NOISE) {
+            ma_noise_read_pcm_frames(&t->noise, &sample, 1, NULL);
+        } else {
+            ma_waveform_read_pcm_frames(&t->waveform, &sample, 1, NULL);
+        }
+
+        // 2. Envelope progress
+        float envelope = 0.0f;
+        switch (t->state) {
+            case SIT_ENV_ATTACK:
+                envelope = (t->t_attack > 0) ? (float)t->cursor_frames / (float)t->t_attack : 1.0f;
+                if (t->cursor_frames >= t->t_attack) { t->state = SIT_ENV_DECAY; t->cursor_frames = 0; }
+                break;
+            case SIT_ENV_DECAY: {
+                float progress = (t->t_decay > 0) ? (float)t->cursor_frames / (float)t->t_decay : 1.0f;
+                envelope = 1.0f - (1.0f - t->level_sustain) * progress;
+                if (t->cursor_frames >= t->t_decay) { t->state = SIT_ENV_SUSTAIN; t->cursor_frames = 0; }
+                } break;
+            case SIT_ENV_SUSTAIN:
+                envelope = t->level_sustain;
+                if (t->t_hold != UINT64_MAX && t->cursor_frames >= t->t_hold) { t->state = SIT_ENV_RELEASE; t->cursor_frames = 0; }
+                break;
+            case SIT_ENV_RELEASE: {
+                float progress = (t->t_release > 0) ? (float)t->cursor_frames / (float)t->t_release : 1.0f;
+                envelope = t->level_sustain * (1.0f - progress);
+                if (t->cursor_frames >= t->t_release) { t->active = false; }
+                } break;
+            default:
+                t->active = false;
+                break;
+        }
+
+        if (!t->active) break;
+
+        // 3. Apply volume and envelope
+        float final_sample = sample * envelope * t->volume_peak;
+
+        // 4. Pan and mix to stereo output
+        float pan = t->pan;
+        float gainL = (pan <= 0.0f) ? 1.0f : (1.0f - pan);
+        float gainR = (pan >= 0.0f) ? 1.0f : (1.0f + pan);
+
+        buffer[f * 2 + 0] += final_sample * gainL;
+        buffer[f * 2 + 1] += final_sample * gainR;
+
+        t->cursor_frames++;
+    }
+}
+
+SITAPI SituationError SituationSetToneRouting(SituationToneHandle handle, bool route_to_graph) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+
+    mtx_lock(&sit_audio.audio_queue_mutex);
+    SituationTone* t = _GetToneFromHandle(handle);
+    if (!t) {
+        mtx_unlock(&sit_audio.audio_queue_mutex);
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    t->route_to_graph = route_to_graph;
+    mtx_unlock(&sit_audio.audio_queue_mutex);
+
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationSetGraphSFXSource(SituationNodeHandle handle) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!sit_audio.active_graph) return SITUATION_ERROR_INVALID_PARAM;
+
+    SituationNode* node = SituationGetNode(sit_audio.active_graph, handle);
+    if (!node || node->type != SITUATION_NODE_SOUND_SOURCE) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+
+    sit_audio.sfx_graph_voice_source = node->device_data;
+    return SITUATION_SUCCESS;
 }
 
 #endif // SITUATION_IMPL_AUDIO_H

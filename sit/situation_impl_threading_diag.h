@@ -22,123 +22,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-// ================================================================================================
-// THREADING CAPABILITY DETECTION
-// ================================================================================================
-
-/**
- * @brief Threading capability flags
- */
-typedef enum {
-    SITUATION_THREAD_CAP_NONE           = 0,
-    SITUATION_THREAD_CAP_C11_THREADS    = (1 << 0),  // C11 threads available
-    SITUATION_THREAD_CAP_C11_ATOMICS    = (1 << 1),  // C11 atomics available
-    SITUATION_THREAD_CAP_MUTEX          = (1 << 2),  // Mutex support
-    SITUATION_THREAD_CAP_SLEEP          = (1 << 3),  // Sleep support (platform-specific)
-    SITUATION_THREAD_CAP_PLATFORM_SLEEP = (1 << 4),  // Platform-specific sleep (recommended)
-} SituationThreadCapability;
-
-/**
- * @brief Threading status information
- */
-typedef struct {
-    bool available;                      // Threading available
-    int capabilities;                    // Bitmask of SituationThreadCapability
-    const char* platform;                // Platform name ("Windows", "POSIX", "Unknown")
-    const char* sleep_impl;              // Sleep implementation ("Windows Sleep", "POSIX usleep", "thrd_sleep", "None")
-    bool sleep_reliable;                 // Is sleep implementation reliable?
-    int max_threads;                     // Maximum recommended threads (0 = unknown)
-    const char* warnings[4];             // Warning messages (NULL-terminated)
-    int warning_count;                   // Number of warnings
-} SituationThreadingStatus;
-
-/**
- * @brief Get threading status and capabilities
- * @return Threading status structure
- */
-static SituationThreadingStatus SituationGetThreadingStatus(void) {
-    SituationThreadingStatus status = {0};
-    
-    #if !defined(__STDC_NO_THREADS__)
-        status.available = true;
-        status.capabilities |= SITUATION_THREAD_CAP_C11_THREADS;
-        status.capabilities |= SITUATION_THREAD_CAP_MUTEX;
-        
-        #if !defined(__STDC_NO_ATOMICS__)
-            status.capabilities |= SITUATION_THREAD_CAP_C11_ATOMICS;
-        #else
-            status.warnings[status.warning_count++] = "C11 atomics not available";
-        #endif
-        
-        // Platform detection
-        #if defined(_WIN32)
-            status.platform = "Windows";
-            status.sleep_impl = "Windows Sleep (recommended)";
-            status.sleep_reliable = true;
-            status.capabilities |= SITUATION_THREAD_CAP_PLATFORM_SLEEP;
-            status.max_threads = 64;  // Reasonable default for Windows
-        #elif defined(__unix__) || defined(__APPLE__)
-            status.platform = "POSIX";
-            status.sleep_impl = "POSIX usleep (recommended)";
-            status.sleep_reliable = true;
-            status.capabilities |= SITUATION_THREAD_CAP_PLATFORM_SLEEP;
-            status.max_threads = 64;  // Reasonable default for POSIX
-        #else
-            status.platform = "Unknown";
-            status.sleep_impl = "thrd_sleep (may have issues)";
-            status.sleep_reliable = false;
-            status.capabilities |= SITUATION_THREAD_CAP_SLEEP;
-            status.warnings[status.warning_count++] = "Platform-specific sleep not available, using thrd_sleep (may be unreliable)";
-            status.max_threads = 0;
-        #endif
-        
-        // Check for tinycthread issues
-        #if defined(_WIN32) && !defined(SITUATION_USE_PLATFORM_SLEEP)
-            status.warnings[status.warning_count++] = "Using tinycthread on Windows - recommend defining SITUATION_USE_PLATFORM_SLEEP";
-        #endif
-        
-    #else
-        status.available = false;
-        status.platform = "None";
-        status.sleep_impl = "None";
-        status.sleep_reliable = false;
-        status.max_threads = 0;
-        status.warnings[status.warning_count++] = "C11 threads not available - threading disabled";
-    #endif
-    
-    return status;
-}
-
-/**
- * @brief Print threading status to stdout
- */
-static void SituationPrintThreadingStatus(void) {
-    SituationThreadingStatus status = SituationGetThreadingStatus();
-    
-    printf("========================================\n");
-    printf("Threading Status\n");
-    printf("========================================\n");
-    printf("Available:       %s\n", status.available ? "YES" : "NO");
-    printf("Platform:        %s\n", status.platform);
-    printf("Sleep Impl:      %s\n", status.sleep_impl);
-    printf("Sleep Reliable:  %s\n", status.sleep_reliable ? "YES" : "NO");
-    printf("Max Threads:     %d\n", status.max_threads);
-    
-    printf("\nCapabilities:\n");
-    printf("  C11 Threads:   %s\n", (status.capabilities & SITUATION_THREAD_CAP_C11_THREADS) ? "YES" : "NO");
-    printf("  C11 Atomics:   %s\n", (status.capabilities & SITUATION_THREAD_CAP_C11_ATOMICS) ? "YES" : "NO");
-    printf("  Mutex:         %s\n", (status.capabilities & SITUATION_THREAD_CAP_MUTEX) ? "YES" : "NO");
-    printf("  Platform Sleep:%s\n", (status.capabilities & SITUATION_THREAD_CAP_PLATFORM_SLEEP) ? "YES" : "NO");
-    
-    if (status.warning_count > 0) {
-        printf("\nWarnings:\n");
-        for (int i = 0; i < status.warning_count; i++) {
-            printf("  - %s\n", status.warnings[i]);
-        }
-    }
-    
-    printf("========================================\n");
-}
+// Threading status API: SituationGetThreadingStatus / SituationPrintThreadingStatus
+// (situation_impl_threading_observability.h). See doc/THREADING_TROUBLESHOOTING_GUIDE.md.
 
 // ================================================================================================
 // DEBUG LOGGING SYSTEM
@@ -302,7 +187,7 @@ static void SituationPrintThreadingStatus(void) {
 // CRITICAL: On Windows, tinycthread's thrd_sleep() has a bug that causes hangs.
 // Always use SITUATION_SLEEP_MS() which uses native Windows Sleep() on Windows,
 // POSIX usleep() on Unix/macOS, or falls back to thrd_sleep() on other platforms.
-// See THREADING_TROUBLESHOOTING_GUIDE.md for details.
+// See doc/THREADING_TROUBLESHOOTING_GUIDE.md for details.
 
 #if defined(_WIN32)
     #include <windows.h>

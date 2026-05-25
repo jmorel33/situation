@@ -28,59 +28,59 @@
 // OpenGL Ring Buffer & MDI Helpers (needed early by _SituationInitOpenGL)
 // ============================================================================
 #if defined(SITUATION_USE_OPENGL)
-static void _SituationInitGLRingBuffer(void) {
-    if (sit_render.gl.ring_buffer_id != 0) return;
+static SituationError _SituationInitGLRingBuffer(void) {
+    if (sit_render.gl.ring_buffer_id != 0) return SITUATION_SUCCESS;
 
     sit_render.gl.ring_size = SITUATION_GL_RING_SIZE;
     GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
 
     glCreateBuffers(1, &sit_render.gl.ring_buffer_id);
     if (sit_render.gl.ring_buffer_id == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to create persistent ring buffer object.");
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to create persistent ring buffer object.");
     }
     glNamedBufferStorage(sit_render.gl.ring_buffer_id, sit_render.gl.ring_size, NULL, flags);
     SIT_CHECK_GL_ERROR();
     sit_render.gl.ring_data_ptr = glMapNamedBufferRange(sit_render.gl.ring_buffer_id, 0, sit_render.gl.ring_size, flags);
     if (!sit_render.gl.ring_data_ptr) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to map persistent ring buffer.");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to map persistent ring buffer.");
     }
 
     atomic_init(&sit_render.gl.ring_head, 0);
+    return SITUATION_SUCCESS;
 }
 
-static void _SituationInitGLMDIBuffer(void) {
-    if (sit_render.gl.mdi_buffer_id != 0) return;
+static SituationError _SituationInitGLMDIBuffer(void) {
+    if (sit_render.gl.mdi_buffer_id != 0) return SITUATION_SUCCESS;
 
     sit_render.gl.mdi_ring_size = 1024 * 1024 * SITUATION_MAX_FRAMES_IN_FLIGHT;
     GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
 
     glCreateBuffers(1, &sit_render.gl.mdi_buffer_id);
     if (sit_render.gl.mdi_buffer_id == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to create MDI ring buffer object.");
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to create MDI ring buffer object.");
     }
     glNamedBufferStorage(sit_render.gl.mdi_buffer_id, sit_render.gl.mdi_ring_size, NULL, flags);
     SIT_CHECK_GL_ERROR();
     sit_render.gl.mdi_data_ptr = glMapNamedBufferRange(sit_render.gl.mdi_buffer_id, 0, sit_render.gl.mdi_ring_size, flags);
     if (!sit_render.gl.mdi_data_ptr) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to map MDI ring buffer.");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to map MDI ring buffer.");
     }
 
     atomic_init(&sit_render.gl.mdi_ring_head, 0);
+    return SITUATION_SUCCESS;
 }
 
-static void _SituationInitGLRingFences(void) {
+static SituationError _SituationInitGLRingFences(void) {
     sit_render.gl.ring_fence_count = 3;
     sit_render.gl.current_fence_index = 0;
     sit_render.gl.ring_fences = (GLsync*)SIT_CALLOC(sit_render.gl.ring_fence_count, sizeof(GLsync));
+    if (!sit_render.gl.ring_fences) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate GL ring buffer fence array.");
+    }
     for(size_t i=0; i<sit_render.gl.ring_fence_count; i++) {
         sit_render.gl.ring_fences[i] = 0;
     }
-
-    if (!sit_render.gl.ring_data_ptr) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "Failed to map persistent ring buffer.");
-    }
+    return SITUATION_SUCCESS;
 }
 
 static void _SituationGLRingWait(void) {
@@ -114,10 +114,7 @@ static _SituationUniformMap* _sit_uniform_map_create() {
 
     // Check if allocation for the map struct itself was successful.
     if (!map) {
-        // Allocation failed for the main struct.
-        // _SituationSetErrorFromCode might be overkill for internal alloc failures,
-        // but could be considered if the library does this for internal helpers.
-        // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_create: Failed to allocate map struct.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_create: Failed to allocate map struct.");
         return NULL;
     }
 
@@ -136,7 +133,7 @@ static _SituationUniformMap* _sit_uniform_map_create() {
         // Allocation failed for the bucket array.
         // Free the previously allocated map struct to prevent a memory leak.
         SIT_FREE(map);
-        // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_create: Failed to allocate bucket array.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_create: Failed to allocate bucket array.");
         return NULL;
     }
 
@@ -220,20 +217,21 @@ static void _sit_uniform_map_destroy(_SituationUniformMap* map) {
  * @brief [INTERNAL] Resizes the uniform map when the load factor exceeds a threshold.
  * @details Doubles the capacity of the hash map and rehashes all existing entries.
  *          This function is called by _sit_uniform_map_set when the load factor > 0.75.
- * @param map The map to resize.
+ * @return `SITUATION_SUCCESS` or `SITUATION_ERROR_MEMORY_ALLOCATION` / `SITUATION_ERROR_INVALID_PARAM`.
  */
-static void _sit_uniform_map_resize(_SituationUniformMap* map) {
-    if (!map) return;
+static SituationError _sit_uniform_map_resize(_SituationUniformMap* map) {
+    if (!map) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_sit_uniform_map_resize: map is NULL.");
+    }
 
     int new_capacity = map->capacity * 2;
-    if (new_capacity <= map->capacity) return; // Overflow check
+    if (new_capacity <= map->capacity) {
+        return SITUATION_SUCCESS;
+    }
 
-    // Allocate new buckets
     _SituationUniformMapEntry** new_buckets = (_SituationUniformMapEntry**)SIT_CALLOC(new_capacity, sizeof(_SituationUniformMapEntry*));
     if (!new_buckets) {
-        // Allocation failed. Keep old map as is.
-        // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_resize: Failed to allocate new buckets.");
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_resize: Failed to allocate new buckets.");
     }
 
     // Rehash all entries
@@ -260,6 +258,7 @@ static void _sit_uniform_map_resize(_SituationUniformMap* map) {
     // Update map properties
     map->buckets = new_buckets;
     map->capacity = new_capacity;
+    return SITUATION_SUCCESS;
 }
 
 // --- Updated/Added Documentation Block for _sit_uniform_map_set ---
@@ -277,27 +276,12 @@ static void _sit_uniform_map_resize(_SituationUniformMap* map) {
  * @param key A null-terminated C string representing the uniform name (the key).
  * @param value The GLint value (typically the uniform location) to associate with the key.
  *
- * @note This function performs memory allocation for new keys and map entries.
- *       If allocation fails, the function returns silently without adding the entry.
- *       This is generally acceptable for a cache mechanism.
- * @note The function currently does not implement dynamic resizing of the hash table.
- *       If the number of entries (`map->count`) grows significantly larger than the `map->capacity`, performance may degrade due to longer linked list chains.
- *       A TODO exists in the original code for this.
- * @warning This function is for internal library use only and is not part of the public API.
- *
- * @see _sit_uniform_map_get(), _sit_hash_string()
+ * @return `SITUATION_SUCCESS` or `SITUATION_ERROR_INVALID_PARAM` / `SITUATION_ERROR_MEMORY_ALLOCATION`.
  */
-static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, int32_t value) {
-    // --- 1. Input Validation ---
-    // Check if the map or key pointer is NULL.
+static SituationError _sit_uniform_map_set(_SituationUniformMap* map, const char* key, int32_t value) {
     if (!map || !key) {
-        // Cannot operate on a NULL map or NULL key.
-        // Silently return, consistent with other void internal functions.
-        // Could consider logging/asserting in debug builds.
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_sit_uniform_map_set: map or key is NULL.");
     }
-
-    // --- 2. Calculate Hash and Bucket Index ---
     // Compute the hash value of the key string.
     unsigned long hash = _sit_hash_string(key);
     // Determine the index of the bucket where this key/value pair should reside.
@@ -316,8 +300,7 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, int
         if (strcmp(entry->key, key) == 0) {
             // Key found. Update the existing entry's value.
             entry->value = value;
-            // No need to modify the list structure or count.
-            return; // Exit early, operation complete.
+            return SITUATION_SUCCESS;
         }
         // Key not found in this entry, move to the next one in the chain.
         entry = entry->next;
@@ -331,10 +314,8 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, int
     _SituationUniformMapEntry* new_entry = (_SituationUniformMapEntry*)SIT_MALLOC(sizeof(_SituationUniformMapEntry));
     // Check if allocation for the new entry was successful.
     if (!new_entry) {
-        // Allocation failed for the new entry struct.
-        // This is a memory-constrained situation. Silently failing to add the entry is often acceptable for a cache, as glGetUniformLocation can be called again.
-        // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_set: Failed to allocate new entry struct.");
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION,
+            "_sit_uniform_map_set: Failed to allocate new entry struct.");
     }
 
     // --- 5. Initialize New Entry ---
@@ -343,11 +324,9 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, int
     new_entry->key = _sit_strdup(key);
     // Check if strdup was successful.
     if (!new_entry->key) {
-        // Allocation failed for duplicating the key string.
-        // Free the previously allocated entry struct to prevent a leak.
         SIT_FREE(new_entry);
-        // _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "_sit_uniform_map_set: Failed to duplicate key string.");
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION,
+            "_sit_uniform_map_set: Failed to duplicate key string.");
     }
 
     // Set the value for the new entry.
@@ -366,8 +345,12 @@ static void _sit_uniform_map_set(_SituationUniformMap* map, const char* key, int
     // --- 7. Consider Resizing ---
     // Check if the load factor (count/capacity) is too high.
     if (map->count > map->capacity * 0.75) {
-        _sit_uniform_map_resize(map);
+        SituationError resize_err = _sit_uniform_map_resize(map);
+        if (resize_err != SITUATION_SUCCESS) {
+            return resize_err;
+        }
     }
+    return SITUATION_SUCCESS;
 }
 
 // --- Updated/Added Documentation Block for _sit_uniform_map_get ---
@@ -402,7 +385,6 @@ static int32_t _sit_uniform_map_get(_SituationUniformMap* map, const char* key) 
     }
 
     // --- 2. Calculate Hash and Bucket Index ---
-    // Compute the hash value of the key string.
     unsigned long hash = _sit_hash_string(key);
     // Determine the index of the bucket where this key might reside.
     int index = hash % map->capacity;
@@ -640,7 +622,7 @@ static void _SituationFlushGraveyard(uint32_t frame_index) {
 }
 
 #if defined(SITUATION_USE_VULKAN)
-/** True during SituationShutdown after init_state is SHUTTING_DOWN — resource destroys must not defer to graveyard (VMA must be empty before vmaDestroyAllocator). */
+/* HARDENING: bool by design — shutdown-state query for immediate vs deferred destroy. */
 static bool _SituationVulkanImmediateDestroyDuringShutdown(void) {
     return (SituationInitState)atomic_load(&sit_render.init_state) == SITUATION_STATE_SHUTTING_DOWN;
 }
@@ -1251,11 +1233,11 @@ SITAPI void _SituationLogGLError(const char* file, int line) {
  *      SITUATION_ERROR_THREAD_CREATION_FAILED,
  *      SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT (related)
  */
-static bool _SituationInitRenderThread(const SituationInitInfo* info) {
+static SituationError _SituationInitRenderThread(const SituationInitInfo* info) {
     // Note: resource_registry_mutex is now initialized earlier in SituationInit, before renderer init
     
     #if defined(SITUATION_ENABLE_RENDER_THREAD)
-    if (info->render_thread_count == 0) return true;
+    if (info->render_thread_count == 0) return SITUATION_SUCCESS;
 
     sit_render.enabled = true;
     atomic_init(&sit_render.thread_active, true);
@@ -1278,11 +1260,10 @@ static bool _SituationInitRenderThread(const SituationInitInfo* info) {
     fprintf(stderr, "[Situation] [MAIN] About to create render thread...\n"); fflush(stderr);
     if (thrd_create(&sit_render.render_thread, _SituationRenderThreadEntry, NULL) != thrd_success) {
         fprintf(stderr, "[Situation] [MAIN] Render thread creation FAILED\n"); fflush(stderr);
-        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Failed to spawn render thread");
         #if defined(SITUATION_USE_OPENGL)
         if (sit_gs.sit_glfw_window) glfwMakeContextCurrent(sit_gs.sit_glfw_window); // Reacquire on fail
         #endif
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Failed to spawn render thread");
     }
     fprintf(stderr, "[Situation] [MAIN] Render thread created successfully\n"); fflush(stderr);
 
@@ -1297,17 +1278,23 @@ static bool _SituationInitRenderThread(const SituationInitInfo* info) {
     }
     #endif
 
-    return true;
+    return SITUATION_SUCCESS;
     #else
-    return true;
+    return SITUATION_SUCCESS;
     #endif
 }
 
-static void _SituationDestroyRenderThread(void) {
+static SituationError _SituationDestroyRenderThread(void) {
     #if defined(SITUATION_ENABLE_RENDER_THREAD)
-    if (!sit_render.enabled || !atomic_load(&sit_render.thread_active)) return;
+    if (!sit_render.enabled || !atomic_load(&sit_render.thread_active)) {
+        return SITUATION_SUCCESS;
+    }
 
-    if (atomic_load(&sit_render.thread_shutdown_req)) return;
+    if (atomic_load(&sit_render.thread_shutdown_req)) {
+        return SITUATION_SUCCESS;
+    }
+
+    SituationError result = SITUATION_SUCCESS;
 
     atomic_store(&sit_render.thread_shutdown_req, true);
 
@@ -1337,12 +1324,18 @@ static void _SituationDestroyRenderThread(void) {
     }
 
     if (timed_out) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT, "Render thread join timeoutÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Âaborted.");
+        result = _SituationSetErrorFromCode(
+            SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT,
+            "Render thread join timeout—aborted.");
         // Proceed to join anyway to avoid leaking a running thread, but the error is logged.
     }
 
     if (thrd_join(sit_render.render_thread, NULL) != thrd_success) {
-         _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Render thread join failed.");
+        SituationError join_err = _SituationSetErrorFromCode(
+            SITUATION_ERROR_THREAD_JOIN_FAILED, "Render thread join failed.");
+        if (result == SITUATION_SUCCESS) {
+            result = join_err;
+        }
     }
 
     // Fence for cleanup vis
@@ -1360,6 +1353,9 @@ static void _SituationDestroyRenderThread(void) {
     glfwMakeContextCurrent(NULL);
     #endif
 
+    return result;
+    #else
+    return SITUATION_SUCCESS;
     #endif
 }
 #endif
@@ -1405,15 +1401,14 @@ static void _SituationDestroyRenderThread(void) {
  */
 
 // [v2.3.24b] Integration Zenith: Initialization Validation
-static bool _SituationValidateRenderCaps(void) {
+static SituationError _SituationValidateRenderCaps(void) {
 #if defined(SITUATION_USE_VULKAN)
     if (sit_render.vk.device) {
         // Validate Semaphore Creation (Critical for Queue Sync)
         VkSemaphoreCreateInfo sema_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         VkSemaphore sema = VK_NULL_HANDLE;
         if (vkCreateSemaphore(sit_render.vk.device, &sema_info, NULL, &sema) != VK_SUCCESS) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Validation: Semaphore creation failed.");
-            return false;
+            return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Validation: Semaphore creation failed.");
         }
         vkDestroySemaphore(sit_render.vk.device, sema, NULL);
 
@@ -1426,7 +1421,7 @@ static bool _SituationValidateRenderCaps(void) {
         }
     }
 #endif
-    return true;
+    return SITUATION_SUCCESS;
 }
 
 
@@ -1578,6 +1573,51 @@ SITAPI SituationError SituationLoadBitmapFontFromMemory(const unsigned char* dat
     return SITUATION_SUCCESS;
 }
 
+static char* _SituationReadSpirvFile(const char* filename, size_t* out_size) {
+    if (!filename) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationReadSpirvFile: filename cannot be NULL.");
+        if (out_size) *out_size = 0;
+        return NULL;
+    }
+    if (!out_size) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationReadSpirvFile: out_size cannot be NULL.");
+        return NULL;
+    }
+
+    *out_size = 0;
+    unsigned int bytes_read_u32 = 0;
+    unsigned char* buffer_tmp = NULL;
+    SituationLoadFileData(filename, &bytes_read_u32, &buffer_tmp);
+    char* buffer = (char*)buffer_tmp;
+
+    if (!buffer) {
+        char detail[SITUATION_MAX_ERROR_MSG_LEN];
+        char* prior = NULL;
+        const char* prior_text = "";
+        if (SituationGetLastErrorMsg(&prior) == SITUATION_SUCCESS && prior && prior[0]) {
+            prior_text = prior;
+        }
+        snprintf(detail, sizeof(detail),
+                 "SPIR-V file '%s': %s", filename, prior_text);
+        _SituationSetErrorFromCode(SITUATION_ERROR_SPIRV_FILE_READ_FAILED, detail);
+        SituationFreeString(prior);
+        return NULL;
+    }
+
+    if ((bytes_read_u32 & 3u) != 0) {
+        char detail[192];
+        snprintf(detail, sizeof(detail),
+                 "SPIR-V file '%s': size %u is not a multiple of 4 bytes", filename, bytes_read_u32);
+        SIT_FREE(buffer);
+        *out_size = 0;
+        _SituationSetErrorFromCode(SITUATION_ERROR_SPIRV_INVALID_BINARY, detail);
+        return NULL;
+    }
+
+    *out_size = (size_t)bytes_read_u32;
+    return buffer;
+}
+
 #if defined(SITUATION_USE_OPENGL)
 /**
  * @brief [INTERNAL] Maps library-agnostic data types to OpenGL constants.
@@ -1637,71 +1677,49 @@ static GLenum _SituationMapDataTypeToGL(SituationDataType type) {
  *
  * @param buf The soft command buffer to append to.
  * @param opcode The operation code for the new command.
- * @return A pointer to the allocated `SitCommandPacket` struct within the buffer.
- *         Returns NULL if memory allocation fails.
+ * @param out_packet Optional output; set to the new packet on success.
+ * @return `SITUATION_SUCCESS` or `SITUATION_ERROR_COMMAND_BUFFER_FULL` / `SITUATION_ERROR_MEMORY_ALLOCATION`.
  */
-static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, SitOpCode opcode) {
-    #ifdef SITUATION_OPENGL_DEBUG
-    printf("[OpenGL Debug] _SitGLSoftCmdPush: ENTRY, buf=%p, opcode=%d\n", buf, opcode);
-    fflush(stdout);
-    #endif
-    
-    // [FIX v2.3.27B] Fail fast if buffer is already compromised
-    if (buf->is_broken) {
-        #ifdef SITUATION_OPENGL_DEBUG
-        printf("[OpenGL Debug] _SitGLSoftCmdPush: Buffer is broken, returning NULL\n");
-        fflush(stdout);
-        #endif
-        return NULL;
+static SituationError _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, SitOpCode opcode, SitCommandPacket** out_packet) {
+    if (out_packet) {
+        *out_packet = NULL;
     }
-
-    #ifdef SITUATION_OPENGL_DEBUG
-    printf("[OpenGL Debug] _SitGLSoftCmdPush: packet_count=%zu, capacity=%zu\n", buf->packet_count, buf->packet_capacity);
-    fflush(stdout);
-    #endif
+    if (!buf) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitGLSoftCmdPush: buf is NULL.");
+    }
+    if (buf->is_broken) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_BUFFER_FULL,
+            "_SitGLSoftCmdPush: soft buffer broken (prior record failure).");
+    }
 
     if (buf->packet_count >= buf->packet_capacity) {
         size_t new_cap = (buf->packet_capacity == 0) ? 64 : buf->packet_capacity * 2;
-        
-        #ifdef SITUATION_OPENGL_DEBUG
-        printf("[OpenGL Debug] _SitGLSoftCmdPush: Reallocating packets, new_cap=%zu\n", new_cap);
-        fflush(stdout);
-        #endif
-        
+#if defined(SITUATION_DEBUG_GL_SOFT_CMD_MAX_PACKETS)
+        if (new_cap > (size_t)SITUATION_DEBUG_GL_SOFT_CMD_MAX_PACKETS) {
+            if (buf->packet_capacity >= (size_t)SITUATION_DEBUG_GL_SOFT_CMD_MAX_PACKETS) {
+                buf->is_broken = true;
+                return _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_BUFFER_FULL,
+                    "_SitGLSoftCmdPush: debug soft-buffer packet cap reached.");
+            }
+            new_cap = (size_t)SITUATION_DEBUG_GL_SOFT_CMD_MAX_PACKETS;
+        }
+#endif
         SitCommandPacket* new_ptr = (SitCommandPacket*)SIT_REALLOC(buf->packets, new_cap * sizeof(SitCommandPacket));
-
         if (!new_ptr) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer packets realloc failed. Frame dropped.");
-            buf->is_broken = true; // Trip the breaker
-            #ifdef SITUATION_OPENGL_DEBUG
-            printf("[OpenGL Debug] _SitGLSoftCmdPush: Realloc FAILED\n");
-            fflush(stdout);
-            #endif
-            return NULL;
+            buf->is_broken = true;
+            return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION,
+                "Soft command buffer packets realloc failed.");
         }
         buf->packets = new_ptr;
         buf->packet_capacity = new_cap;
-        
-        #ifdef SITUATION_OPENGL_DEBUG
-        printf("[OpenGL Debug] _SitGLSoftCmdPush: Realloc SUCCESS, new packets=%p\n", new_ptr);
-        fflush(stdout);
-        #endif
     }
-    
-    #ifdef SITUATION_OPENGL_DEBUG
-    printf("[OpenGL Debug] _SitGLSoftCmdPush: Getting packet at index %zu\n", buf->packet_count);
-    fflush(stdout);
-    #endif
-    
+
     SitCommandPacket* packet = &buf->packets[buf->packet_count++];
     packet->opcode = opcode;
-    
-    #ifdef SITUATION_OPENGL_DEBUG
-    printf("[OpenGL Debug] _SitGLSoftCmdPush: SUCCESS, returning packet=%p\n", packet);
-    fflush(stdout);
-    #endif
-    
-    return packet;
+    if (out_packet) {
+        *out_packet = packet;
+    }
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -1712,33 +1730,61 @@ static SitCommandPacket* _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, Si
  * @param buf The soft command buffer.
  * @param data Pointer to the source data to copy. If NULL, space is reserved but not written.
  * @param size Size in bytes to allocate/copy.
- * @return A pointer to the data's location *within the buffer*.
- *         Warning: This pointer may be invalidated by subsequent calls to _SitGLSoftDataPush if the buffer reallocates.
- *         Always use offsets for long-term storage.
+ * @param out_ptr Optional output pointer to data inside the buffer.
+ * @return `SITUATION_SUCCESS` or `SITUATION_ERROR_COMMAND_BUFFER_FULL` / `SITUATION_ERROR_MEMORY_ALLOCATION`.
  */
-static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* data, size_t size) {
-    // [FIX v2.3.27B] Fail fast
-    if (buf->is_broken) return NULL;
+static SituationError _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* data, size_t size, void** out_ptr) {
+    if (out_ptr) {
+        *out_ptr = NULL;
+    }
+    if (!buf) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitGLSoftDataPush: buf is NULL.");
+    }
+    if (buf->is_broken) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_BUFFER_FULL,
+            "_SitGLSoftDataPush: soft buffer broken (prior record failure).");
+    }
 
     if (buf->data_cursor + size > buf->data_capacity) {
         size_t new_cap = (buf->data_capacity == 0) ? 4096 : buf->data_capacity * 2;
-        while (buf->data_cursor + size > new_cap) new_cap *= 2;
+        while (buf->data_cursor + size > new_cap) {
+            new_cap *= 2;
+        }
 
         uint8_t* new_ptr = (uint8_t*)SIT_REALLOC(buf->data_buffer, new_cap);
         if (!new_ptr) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Soft command buffer data realloc failed. Frame dropped.");
-            buf->is_broken = true; // Trip the breaker
-            return NULL;
+            buf->is_broken = true;
+            return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION,
+                "Soft command buffer data realloc failed.");
         }
         buf->data_buffer = new_ptr;
         buf->data_capacity = new_cap;
     }
 
     void* dest = buf->data_buffer + buf->data_cursor;
-    if (data) memcpy(dest, data, size);
+    if (data) {
+        memcpy(dest, data, size);
+    }
     buf->data_cursor += size;
-    return dest;
+    if (out_ptr) {
+        *out_ptr = dest;
+    }
+    return SITUATION_SUCCESS;
 }
+
+#if defined(SITUATION_USE_OPENGL)
+#define SIT_GL_SOFT_CMD_PUSH(buf, opcode, pvar) do { \
+    SituationError _sit_gl_push_err_ = _SitGLSoftCmdPush((buf), (opcode), &(pvar)); \
+    if (_sit_gl_push_err_ != SITUATION_SUCCESS) return _sit_gl_push_err_; \
+} while (0)
+#define SIT_GL_SOFT_CMD_PUSH_VOID(buf, opcode, pvar) do { \
+    if (_SitGLSoftCmdPush((buf), (opcode), &(pvar)) != SITUATION_SUCCESS) return; \
+} while (0)
+#define SIT_GL_SOFT_DATA_PUSH(buf, data, size, pvar) do { \
+    SituationError _sit_gl_data_err_ = _SitGLSoftDataPush((buf), (data), (size), &(pvar)); \
+    if (_sit_gl_data_err_ != SITUATION_SUCCESS) return _sit_gl_data_err_; \
+} while (0)
+#endif
 
 /**
  * @brief [INTERNAL] Replays the soft command buffer to the OpenGL driver.
@@ -1754,7 +1800,10 @@ static void* _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* d
  *
  * @param buf The soft command buffer to execute.
  */
-static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int frame_index) {
+static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int frame_index) {
+    if (!buf) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationGLExecuteCommands: buf is NULL.");
+    }
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] _SituationGLExecuteCommands: ENTRY, buf=%p, frame_index=%d, packet_count=%d\n", 
            (void*)buf, frame_index, buf ? buf->packet_count : -1);
@@ -1769,7 +1818,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
     printf("[OpenGL Debug] _SituationGLExecuteCommands: About to check if packet_count == 0\n");
     fflush(stdout);
     #endif
-    if (buf->packet_count == 0) return;
+    if (buf->packet_count == 0) return SITUATION_SUCCESS;
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] _SituationGLExecuteCommands: packet_count > 0, continuing\n");
     printf("[OpenGL Debug] _SituationGLExecuteCommands: Checking is_broken=%d\n", buf->is_broken);
@@ -1777,12 +1826,14 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
     #endif
     // [FIX v2.3.27B] Do not execute incomplete/corrupted buffers
     if (buf->is_broken) {
-        // Reset state for next frame and return
         buf->packet_count = 0;
         buf->data_cursor = 0;
-        buf->is_broken = false; // Reset flag for next attempt
-        return;
+        buf->is_broken = false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED,
+            "_SituationGLExecuteCommands: skipped broken soft buffer.");
     }
+
+    sit_render.gl.bound_ibo_byte_offset = 0;
 
     // [v2.3.31] Optimization: Track bound texture locally to avoid glGetIntegerv stalls in draw calls
     // GLuint current_bound_texture_id = 0; // REPLACED by sit_render.gl.current_bound_texture_id
@@ -1914,6 +1965,8 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         sit_render.gl.current_fbo_id = 0;
                         // Use captured resolution from packet to avoid race condition
                         glViewport(0, 0, p->args.begin_pass.target_w, p->args.begin_pass.target_h);
+                        sit_render.gl.current_target_width = p->args.begin_pass.target_w;
+                        sit_render.gl.current_target_height = p->args.begin_pass.target_h;
                     } else {
                         int did = p->args.begin_pass.display_id;
                         if (did < SITUATION_MAX_VIRTUAL_DISPLAYS && sit_render.virtual_display_slots_used[did]) {
@@ -1921,8 +1974,21 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                             glBindFramebuffer(GL_FRAMEBUFFER, vd->gl.fbo_id);
                             sit_render.gl.current_fbo_id = vd->gl.fbo_id;
                             glViewport(0, 0, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
+                            sit_render.gl.current_target_width = (int)vd->resolution.x;
+                            sit_render.gl.current_target_height = (int)vd->resolution.y;
                         }
                     }
+
+                    if (sit_render.gl.current_target_width < 1) sit_render.gl.current_target_width = sit_gs.main_window_width;
+                    if (sit_render.gl.current_target_height < 1) sit_render.gl.current_target_height = sit_gs.main_window_height;
+                    if (sit_render.gl.quad_shader_program) {
+                        mat4 pass_proj;
+                        glm_ortho(0.0f, (float)sit_render.gl.current_target_width, (float)sit_render.gl.current_target_height, 0.0f, -1.0f, 1.0f, pass_proj);
+                        glProgramUniformMatrix4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)pass_proj);
+                    }
+
+                    /* Depth clears are ignored if GL_DEPTH_WRITEMASK is false; previous passes may leave it off. */
+                    glDepthMask(GL_TRUE);
 
                     GLbitfield clear_mask = 0;
                     if (p->args.begin_pass.info.color_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
@@ -1963,14 +2029,132 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                 #endif
                 break;
 
+            case SIT_OP_SET_CULL_MODE:
+                if (p->args.set_cull_mode.mode == SIT_CULL_NONE) {
+                    glDisable(GL_CULL_FACE);
+                    sit_render.gl.cull_face_enabled = 0;
+                } else {
+                    glEnable(GL_CULL_FACE);
+                    sit_render.gl.cull_face_enabled = 1;
+                    if (p->args.set_cull_mode.mode == SIT_CULL_BACK) glCullFace(GL_BACK);
+                    else if (p->args.set_cull_mode.mode == SIT_CULL_FRONT) glCullFace(GL_FRONT);
+                }
+                break;
+
+            case SIT_OP_SET_DEPTH_TEST:
+                {
+                    if (p->args.set_depth_test.enable) {
+                        glEnable(GL_DEPTH_TEST);
+                        sit_render.gl.depth_test_enabled = 1;
+                    } else {
+                        glDisable(GL_DEPTH_TEST);
+                        sit_render.gl.depth_test_enabled = 0;
+                    }
+                    GLenum gl_op = GL_LESS;
+                    switch (p->args.set_depth_test.depth_op) {
+                        case SIT_DEPTH_COMPARE_ALWAYS:   gl_op = GL_ALWAYS; break;
+                        case SIT_DEPTH_COMPARE_LESS:     gl_op = GL_LESS; break;
+                        case SIT_DEPTH_COMPARE_LEQUAL:   gl_op = GL_LEQUAL; break;
+                        case SIT_DEPTH_COMPARE_GREATER:  gl_op = GL_GREATER; break;
+                        case SIT_DEPTH_COMPARE_GEQUAL:   gl_op = GL_GEQUAL; break;
+                        case SIT_DEPTH_COMPARE_EQUAL:    gl_op = GL_EQUAL; break;
+                        case SIT_DEPTH_COMPARE_NOTEQUAL: gl_op = GL_NOTEQUAL; break;
+                        case SIT_DEPTH_COMPARE_NEVER:    gl_op = GL_NEVER; break;
+                    }
+                    glDepthFunc(gl_op);
+                }
+                break;
+
+            case SIT_OP_SET_DEPTH_WRITE:
+                glDepthMask(p->args.set_depth_write.enable ? GL_TRUE : GL_FALSE);
+                break;
+
+            case SIT_OP_SET_BLEND_ENABLE:
+                if (p->args.set_blend_enable.enable) {
+                    glEnable(GL_BLEND);
+                    sit_render.gl.blend_enabled = 1;
+                } else {
+                    glDisable(GL_BLEND);
+                    sit_render.gl.blend_enabled = 0;
+                }
+                break;
+
+            case SIT_OP_SET_BLEND_FUNC_SEPARATE:
+                {
+                    GLenum srgb = GL_ZERO, drgb = GL_ZERO, sa = GL_ZERO, da = GL_ZERO;
+#define SIT_MAP_BLEND(bf, out_gl) \
+    switch(bf) { \
+        case SIT_BLEND_ZERO: out_gl = GL_ZERO; break; \
+        case SIT_BLEND_ONE: out_gl = GL_ONE; break; \
+        case SIT_BLEND_SRC_COLOR: out_gl = GL_SRC_COLOR; break; \
+        case SIT_BLEND_ONE_MINUS_SRC_COLOR: out_gl = GL_ONE_MINUS_SRC_COLOR; break; \
+        case SIT_BLEND_DST_COLOR: out_gl = GL_DST_COLOR; break; \
+        case SIT_BLEND_ONE_MINUS_DST_COLOR: out_gl = GL_ONE_MINUS_DST_COLOR; break; \
+        case SIT_BLEND_SRC_ALPHA: out_gl = GL_SRC_ALPHA; break; \
+        case SIT_BLEND_ONE_MINUS_SRC_ALPHA: out_gl = GL_ONE_MINUS_SRC_ALPHA; break; \
+        case SIT_BLEND_DST_ALPHA: out_gl = GL_DST_ALPHA; break; \
+        case SIT_BLEND_ONE_MINUS_DST_ALPHA: out_gl = GL_ONE_MINUS_DST_ALPHA; break; \
+        default: out_gl = GL_ZERO; break; \
+    }
+                    SIT_MAP_BLEND(p->args.set_blend_func.src_rgb, srgb);
+                    SIT_MAP_BLEND(p->args.set_blend_func.dst_rgb, drgb);
+                    SIT_MAP_BLEND(p->args.set_blend_func.src_a, sa);
+                    SIT_MAP_BLEND(p->args.set_blend_func.dst_a, da);
+#undef SIT_MAP_BLEND
+                    glBlendFuncSeparate(srgb, drgb, sa, da);
+                    
+                    sit_render.gl.blend_src_rgb = srgb;
+                    sit_render.gl.blend_dst_rgb = drgb;
+                    sit_render.gl.blend_src_alpha = sa;
+                    sit_render.gl.blend_dst_alpha = da;
+                }
+                break;
+
+            case SIT_OP_PUSH_RASTER_STATE:
+                // For Phase 4, we don't strictly manage a stack in the command buffer natively yet,
+                // but we could just do a local backup/restore or ignore if not heavily utilized.
+                // Not fully implemented as a stack here since we rely on explicit setting in Phase 4.
+                break;
+
+            case SIT_OP_POP_RASTER_STATE:
+                break;
+                
+            case SIT_OP_BEGIN_DEBUG_GROUP:
+                if (glPushDebugGroup) {
+                    const char* name = (const char*)(buf->data_buffer + p->args.begin_debug_group.name_offset);
+                    glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 0, -1, name);
+                }
+                break;
+
+            case SIT_OP_END_DEBUG_GROUP:
+                if (glPopDebugGroup) {
+                    glPopDebugGroup();
+                }
+                break;
+
+            case SIT_OP_SET_PUSH_CONSTANT_DATA:
+                // Not implemented for OpenGL yet.
+                break;
+
             case SIT_OP_SET_VIEWPORT:
                 glViewport((GLint)p->args.viewport.x, (GLint)p->args.viewport.y,
                            (GLsizei)p->args.viewport.w, (GLsizei)p->args.viewport.h);
                 break;
 
             case SIT_OP_SET_SCISSOR:
-                glEnable(GL_SCISSOR_TEST);
-                glScissor(p->args.scissor.x, p->args.scissor.y, p->args.scissor.w, p->args.scissor.h);
+                {
+                    /* API uses top-left (same as ortho/text); GL scissor origin is bottom-left. */
+                    glEnable(GL_SCISSOR_TEST);
+                    int th = sit_render.gl.current_target_height;
+                    if (th < 1) {
+                        th = sit_gs.main_window_height;
+                    }
+                    if (th < 1) {
+                        th = 1;
+                    }
+                    GLint gl_y = (GLint)th - p->args.scissor.y - p->args.scissor.h;
+                    glScissor(p->args.scissor.x, gl_y, p->args.scissor.w, p->args.scissor.h);
+                }
                 break;
 
             case SIT_OP_BIND_PIPELINE:
@@ -2012,7 +2196,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
 
                     // Tune threshold: Batching has overhead. Start with >= 8.
                     if (batch_size >= 8 && sit_render.gl.mdi_data_ptr) {
-                        size_t cmd_size = sizeof(SitDrawElementsIndirectCommand);
+                        size_t cmd_size = sizeof(_SituationGLDrawElementsIndirectCommand);
                         size_t total_size = batch_size * cmd_size;
 
                         // Atomic reservation in ring buffer
@@ -2020,7 +2204,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
 
                         // Safety check: Ensure we stay within the CURRENT FRAME's slice (1MB per frame)
                         if (offset >= mdi_frame_offset && (offset + total_size <= mdi_frame_offset + (1024 * 1024))) {
-                            SitDrawElementsIndirectCommand* cmds = (SitDrawElementsIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
+                            _SituationGLDrawElementsIndirectCommand* cmds = (_SituationGLDrawElementsIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
 
                             for (size_t k = 0; k < batch_size; ++k) {
                                 SitCommandPacket* bp = &buf->packets[i + k];
@@ -2046,12 +2230,36 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         } else {
                             // Fallback single draw (buffer full)
                             struct _SituationMeshSlot* slot = _SitGetMeshSlot(p->args.draw_mesh.mesh);
-                            if (slot) glDrawElements(GL_TRIANGLES, slot->index_count, GL_UNSIGNED_INT, NULL);
+                            if (slot) {
+                                int single_tri = (slot->index_count == 3 && slot->vertex_count == 3);
+                                if (single_tri) {
+                                    /* Fullscreen-style passes (e.g. fps_ray_demo skydome): ignore depth so stale
+                                     * or driver-quirky depth buffer cannot reject the whole triangle. */
+                                    glDisable(GL_CULL_FACE);
+                                    glDisable(GL_DEPTH_TEST);
+                                }
+                                glDrawElements(GL_TRIANGLES, slot->index_count, GL_UNSIGNED_INT, NULL);
+                                if (single_tri) {
+                                    glEnable(GL_DEPTH_TEST);
+                                    glEnable(GL_CULL_FACE);
+                                }
+                            }
                         }
                     } else {
                         // Single draw fallback
                         struct _SituationMeshSlot* slot = _SitGetMeshSlot(p->args.draw_mesh.mesh);
-                        if (slot) glDrawElements(GL_TRIANGLES, slot->index_count, GL_UNSIGNED_INT, NULL);
+                        if (slot) {
+                            int single_tri = (slot->index_count == 3 && slot->vertex_count == 3);
+                            if (single_tri) {
+                                glDisable(GL_CULL_FACE);
+                                glDisable(GL_DEPTH_TEST);
+                            }
+                            glDrawElements(GL_TRIANGLES, slot->index_count, GL_UNSIGNED_INT, NULL);
+                            if (single_tri) {
+                                glEnable(GL_DEPTH_TEST);
+                                glEnable(GL_CULL_FACE);
+                            }
+                        }
                     }
 
                     // [CRITICAL] Restore global VAO state for subsequent generic draw calls
@@ -2066,22 +2274,25 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                 {
                     if (sit_render.gl.quad_shader_program == 0) break;
 
-                    // Disable culling for 2D quads (winding order depends on projection)
+                    // Disable culling and depth for 2D quads, but restore them afterwards to avoid clobbering user state (Phase 4)
+                    bool was_cull = sit_render.gl.cull_face_enabled > 0;
+                    bool was_depth = sit_render.gl.depth_test_enabled > 0;
+                    bool was_blend = sit_render.gl.blend_enabled > 0;
+                    
                     glDisable(GL_CULL_FACE);
                     glDisable(GL_DEPTH_TEST);
+                    glEnable(GL_BLEND);
+                    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
                     // Only bind program if not already bound (avoids driver overhead on repeated quads)
                     if (sit_render.gl.current_program_id != sit_render.gl.quad_shader_program) {
                         glUseProgram(sit_render.gl.quad_shader_program);
                         sit_render.gl.current_program_id = sit_render.gl.quad_shader_program;
-                        glBindVertexArray(sit_render.gl.quad_vao);
                     }
 
-                    // [Bug 9 Fix] Set texture mode based on whether a texture is bound
-                    if (sit_render.gl.current_bound_texture_id == 0) {
-                        glProgramUniform1i(sit_render.gl.quad_shader_program, 6, 0); // Mode 0: No Texture
-                    } else {
-                        glProgramUniform1i(sit_render.gl.quad_shader_program, 6, 1); // Mode 1: Use Texture
+                    if (sit_render.gl.current_vao_id != sit_render.gl.quad_vao) {
+                        glBindVertexArray(sit_render.gl.quad_vao);
+                        sit_render.gl.current_vao_id = sit_render.gl.quad_vao;
                     }
 
                     // --- Batch: process consecutive DRAW_QUAD opcodes ---
@@ -2089,6 +2300,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         size_t batch_start = i;
                         while (i < buf->packet_count && buf->packets[i].opcode == SIT_OP_DRAW_QUAD) {
                             SitCommandPacket* qp = &buf->packets[i];
+                            glProgramUniform1i(sit_render.gl.quad_shader_program, 6, qp->args.draw_quad.use_texture ? 1 : 0);
                             glProgramUniformMatrix4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)qp->args.draw_quad.model);
                             glProgramUniform4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)qp->args.draw_quad.color.raw);
                             // [Bug 9 Fix] Upload UV rect to location 5 (u_uv_rect)
@@ -2099,10 +2311,17 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         i--; // The for loop will increment
                     }
 
-                    // Restore state
-                    glEnable(GL_DEPTH_TEST);
-                    glEnable(GL_CULL_FACE);
-                    glBindVertexArray(sit_render.gl.global_vao_id);
+                    // Restore state to avoid clobbering user settings (Phase 4)
+                    if (was_cull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+                    if (was_depth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+                    if (!was_blend) glDisable(GL_BLEND);
+                    glBlendFuncSeparate(sit_render.gl.blend_src_rgb, sit_render.gl.blend_dst_rgb, sit_render.gl.blend_src_alpha, sit_render.gl.blend_dst_alpha);
+                    
+                    // Restore global VAO
+                    if (sit_render.gl.global_vao_id != 0) {
+                        glBindVertexArray(sit_render.gl.global_vao_id);
+                        sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                    }
                 }
                 break;
 
@@ -2121,6 +2340,18 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         else if (sz == sizeof(vec2)) glProgramUniform2fv(prog, loc, 1, (const GLfloat*)data);
                         else if (sz == sizeof(float)) glProgramUniform1fv(prog, loc, 1, (const GLfloat*)data);
                         else if (sz == sizeof(int)) glProgramUniform1iv(prog, loc, 1, (const GLint*)data);
+                        else {
+                            static GLuint push_constant_ssbo = 0;
+                            static GLsizeiptr push_constant_capacity = 0;
+                            if (push_constant_ssbo == 0 || push_constant_capacity < (GLsizeiptr)sz) {
+                                if (push_constant_ssbo != 0) glDeleteBuffers(1, &push_constant_ssbo);
+                                glCreateBuffers(1, &push_constant_ssbo);
+                                push_constant_capacity = (GLsizeiptr)sz;
+                                glNamedBufferStorage(push_constant_ssbo, push_constant_capacity, NULL, GL_DYNAMIC_STORAGE_BIT);
+                            }
+                            glNamedBufferSubData(push_constant_ssbo, 0, (GLsizeiptr)sz, data);
+                            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, loc, push_constant_ssbo);
+                        }
                     }
                 }
                 break;
@@ -2201,6 +2432,11 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                 break;
 
             case SIT_OP_BIND_VERTEX_BUFFER:
+                if (sit_render.gl.global_vao_id != 0 &&
+                    sit_render.gl.current_vao_id != sit_render.gl.global_vao_id) {
+                    glBindVertexArray(sit_render.gl.global_vao_id);
+                    sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                }
                 glVertexArrayVertexBuffer(sit_render.gl.global_vao_id, p->args.bind_vbo.binding,
                                           (GLuint)p->args.bind_vbo.buffer_id,
                                           (GLintptr)p->args.bind_vbo.offset,
@@ -2208,11 +2444,22 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                 break;
 
             case SIT_OP_BIND_INDEX_BUFFER:
-                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)p->args.bind_ibo.buffer_id);
+                if (sit_render.gl.global_vao_id != 0) {
+                    glVertexArrayElementBuffer(sit_render.gl.global_vao_id, (GLuint)p->args.bind_ibo.buffer_id);
+                    sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                } else {
+                    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)p->args.bind_ibo.buffer_id);
+                }
+                sit_render.gl.bound_ibo_byte_offset = p->args.bind_ibo.offset;
                 break;
 
             case SIT_OP_DRAW:
                 {
+                    if (sit_render.gl.global_vao_id != 0 &&
+                        sit_render.gl.current_vao_id != sit_render.gl.global_vao_id) {
+                        glBindVertexArray(sit_render.gl.global_vao_id);
+                        sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                    }
                     // [Phase 4] Multi-Draw Indirect Optimization
                     // Check for subsequent draw commands with the same opcode
                     size_t batch_count = 1;
@@ -2231,13 +2478,13 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                         // 1. Allocate space in MDI ring
                         // Note: Simple linear allocator for now. Assuming 1MB is enough per frame.
                         // Ideally check wrap-around/overflow.
-                        size_t cmd_size = sizeof(SitDrawArraysIndirectCommand);
+                        size_t cmd_size = sizeof(_SituationGLDrawArraysIndirectCommand);
                         size_t total_size = batch_count * cmd_size;
                         size_t offset = atomic_fetch_add(&sit_render.gl.mdi_ring_head, total_size);
 
                         // Safety check: Ensure we stay within the CURRENT FRAME's slice
                         if (offset >= mdi_frame_offset && offset + total_size <= mdi_frame_offset + (1024 * 1024)) {
-                            SitDrawArraysIndirectCommand* cmds = (SitDrawArraysIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
+                            _SituationGLDrawArraysIndirectCommand* cmds = (_SituationGLDrawArraysIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
 
                             // 2. Fill commands
                             for (size_t k = 0; k < batch_count; ++k) {
@@ -2281,21 +2528,24 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                     }
 
                     if (batch_count > 1 && sit_render.gl.mdi_data_ptr) {
-                        size_t cmd_size = sizeof(SitDrawElementsIndirectCommand);
+                        size_t cmd_size = sizeof(_SituationGLDrawElementsIndirectCommand);
                         size_t total_size = batch_count * cmd_size;
                         size_t offset = atomic_fetch_add(&sit_render.gl.mdi_ring_head, total_size);
 
                         // Safety check: Ensure we stay within the CURRENT FRAME's slice
                         if (offset >= mdi_frame_offset && offset + total_size <= mdi_frame_offset + (1024 * 1024)) {
-                            SitDrawElementsIndirectCommand* cmds = (SitDrawElementsIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
+                            _SituationGLDrawElementsIndirectCommand* cmds = (_SituationGLDrawElementsIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
 
-                            for (size_t k = 0; k < batch_count; ++k) {
-                                SitCommandPacket* next_p = &buf->packets[i + k];
-                                cmds[k].count = next_p->args.draw_indexed.idx_count;
-                                cmds[k].instanceCount = next_p->args.draw_indexed.inst_count;
-                                cmds[k].firstIndex = next_p->args.draw_indexed.first_idx;
-                                cmds[k].baseVertex = next_p->args.draw_indexed.v_offset;
-                                cmds[k].baseInstance = next_p->args.draw_indexed.first_inst;
+                            {
+                                const uint32_t ibo_first_index_bias = (uint32_t)(sit_render.gl.bound_ibo_byte_offset / sizeof(uint32_t));
+                                for (size_t k = 0; k < batch_count; ++k) {
+                                    SitCommandPacket* next_p = &buf->packets[i + k];
+                                    cmds[k].count = next_p->args.draw_indexed.idx_count;
+                                    cmds[k].instanceCount = next_p->args.draw_indexed.inst_count;
+                                    cmds[k].firstIndex = ibo_first_index_bias + next_p->args.draw_indexed.first_idx;
+                                    cmds[k].baseVertex = next_p->args.draw_indexed.v_offset;
+                                    cmds[k].baseInstance = next_p->args.draw_indexed.first_inst;
+                                }
                             }
 
                             glBindBuffer(GL_DRAW_INDIRECT_BUFFER, sit_render.gl.mdi_buffer_id);
@@ -2305,10 +2555,14 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                             i += (batch_count - 1);
                         } else {
                             // Overflow
-                            glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, p->args.draw_indexed.idx_count, GL_UNSIGNED_INT, (void*)((uintptr_t)(p->args.draw_indexed.first_idx * 4)), p->args.draw_indexed.inst_count, p->args.draw_indexed.v_offset, p->args.draw_indexed.first_inst);
+                            glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, p->args.draw_indexed.idx_count, GL_UNSIGNED_INT,
+                                (void*)((uintptr_t)(sit_render.gl.bound_ibo_byte_offset + (size_t)p->args.draw_indexed.first_idx * sizeof(uint32_t))),
+                                p->args.draw_indexed.inst_count, p->args.draw_indexed.v_offset, p->args.draw_indexed.first_inst);
                         }
                     } else {
-                        glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, p->args.draw_indexed.idx_count, GL_UNSIGNED_INT, (void*)((uintptr_t)(p->args.draw_indexed.first_idx * 4)), p->args.draw_indexed.inst_count, p->args.draw_indexed.v_offset, p->args.draw_indexed.first_inst);
+                        glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, p->args.draw_indexed.idx_count, GL_UNSIGNED_INT,
+                            (void*)((uintptr_t)(sit_render.gl.bound_ibo_byte_offset + (size_t)p->args.draw_indexed.first_idx * sizeof(uint32_t))),
+                            p->args.draw_indexed.inst_count, p->args.draw_indexed.v_offset, p->args.draw_indexed.first_inst);
                     }
                 }
                 break;
@@ -2341,6 +2595,11 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
             case SIT_OP_BIND_COMPUTE_PIPELINE:
                 glUseProgram((GLuint)p->args.bind_pipeline.shader_id);
                 sit_render.gl.current_program_id = (GLuint)p->args.bind_pipeline.shader_id;
+                if (!SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
+                    sit_render.gl.current_virtual_loc = glGetUniformLocation(sit_render.gl.current_program_id, "_sit_texture_slot_id");
+                } else {
+                    sit_render.gl.current_virtual_loc = -1;
+                }
                 break;
 
             case SIT_OP_PRESENT:
@@ -2362,7 +2621,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                     glBlitNamedFramebuffer(fbo, 0,
                         0, 0, p->args.present.texture.width, p->args.present.texture.height,
                         0, 0, p->args.present.target_w, p->args.present.target_h,
-                        GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                        GL_COLOR_BUFFER_BIT, GL_NEAREST);
                     glDeleteFramebuffers(1, &fbo);
                 }
                 break;
@@ -2447,7 +2706,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                                 case SITUATION_BLEND_MULTIPLY: glBlendFunc(GL_DST_COLOR, GL_ZERO); break;
                                 case SITUATION_BLEND_SCREEN:   glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
                                 case SITUATION_BLEND_NONE:     glDisable(GL_BLEND); break;
-                                default:                       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
+                                default:                       glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
                             }
                             glBindTextureUnit(SIT_SAMPLER_BINDING_SOURCE_0, vd->gl.texture_id);
                             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -2575,7 +2834,7 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                     {
                         bool did_bindless = false;
 #if defined(GLAD_GL_ARB_bindless_texture)
-                        if (SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES) && glad_glProgramUniformHandleui64ARB) {
+                        if (!is_grid_font && SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES) && glad_glProgramUniformHandleui64ARB) {
                             uint64_t handle = SituationGetTextureHandle(font.atlas_texture);
                             if (handle) {
                                 glProgramUniform1i(sit_render.gl.text_shader_program, 6, 1);
@@ -2603,22 +2862,34 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
 
                     // Set projection matrix for text shader (ortho, top-left origin)
                     mat4 text_proj;
-                    glm_ortho(0.0f, (float)sit_gs.main_window_width, (float)sit_gs.main_window_height, 0.0f, -1.0f, 1.0f, text_proj);
+                    int text_target_w = sit_render.gl.current_target_width > 0 ? sit_render.gl.current_target_width : sit_gs.main_window_width;
+                    int text_target_h = sit_render.gl.current_target_height > 0 ? sit_render.gl.current_target_height : sit_gs.main_window_height;
+                    glm_ortho(0.0f, (float)text_target_w, (float)text_target_h, 0.0f, -1.0f, 1.0f, text_proj);
                     glProgramUniformMatrix4fv(sit_render.gl.text_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)text_proj);
 
                     if (sit_render.gl.text_shader_program && final_vert_count > 0) {
                         /* Same as DRAW_QUAD: 2D overlays must not lose to the depth buffer — quads wrote ~same Z first. */
+                        bool was_cull = sit_render.gl.cull_face_enabled > 0;
+                        bool was_depth = sit_render.gl.depth_test_enabled > 0;
+                        bool was_blend = sit_render.gl.blend_enabled > 0;
+
+                        glDisable(GL_CULL_FACE);
                         glDisable(GL_DEPTH_TEST);
                         glEnable(GL_BLEND);
-                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
                         glBindVertexArray(sit_render.gl.text_vao);
                         glDrawArrays(GL_TRIANGLES, 0, final_vert_count);
-                        glDisable(GL_BLEND);
-                        glEnable(GL_DEPTH_TEST);
+                        
+                        // Restore state (Phase 4 fix)
+                        if (was_cull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+                        if (was_depth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+                        if (!was_blend) glDisable(GL_BLEND);
+                        glBlendFuncSeparate(sit_render.gl.blend_src_rgb, sit_render.gl.blend_dst_rgb, sit_render.gl.blend_src_alpha, sit_render.gl.blend_dst_alpha);
                     }
 
                     // [CRITICAL] Restore global VAO state
                     glBindVertexArray(sit_render.gl.global_vao_id);
+                    sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
                 }
                 #endif
                 break;
@@ -2643,8 +2914,8 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                                                   gl_type,
                                                   p->args.set_vertex_attr.normalized ? GL_TRUE : GL_FALSE,
                                                   (GLuint)p->args.set_vertex_attr.offset);
-                        // Assumption: Binding index matches location for simplicity
-                        glVertexArrayAttribBinding(sit_render.gl.global_vao_id, loc, loc);
+                        glVertexArrayAttribBinding(sit_render.gl.global_vao_id, loc,
+                                                    p->args.set_vertex_attr.binding);
                         glEnableVertexArrayAttrib(sit_render.gl.global_vao_id, loc);
                     }
                 }
@@ -2656,18 +2927,26 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
                     GLint loc = p->args.set_uniform.location;
                     GLuint prog = (GLuint)p->args.set_uniform.shader_id;
                     int type = p->args.set_uniform.type;
+                    int n = p->args.set_uniform.elem_count > 0 ? p->args.set_uniform.elem_count : 1;
 
                     switch (type) {
-                        case SIT_UNIFORM_FLOAT: glProgramUniform1fv(prog, loc, 1, (const GLfloat*)data); break;
-                        case SIT_UNIFORM_VEC2:  glProgramUniform2fv(prog, loc, 1, (const GLfloat*)data); break;
-                        case SIT_UNIFORM_VEC3:  glProgramUniform3fv(prog, loc, 1, (const GLfloat*)data); break;
-                        case SIT_UNIFORM_VEC4:  glProgramUniform4fv(prog, loc, 1, (const GLfloat*)data); break;
-                        case SIT_UNIFORM_INT:   glProgramUniform1iv(prog, loc, 1, (const GLint*)data); break;
-                        case SIT_UNIFORM_IVEC2: glProgramUniform2iv(prog, loc, 1, (const GLint*)data); break;
-                        case SIT_UNIFORM_IVEC3: glProgramUniform3iv(prog, loc, 1, (const GLint*)data); break;
-                        case SIT_UNIFORM_IVEC4: glProgramUniform4iv(prog, loc, 1, (const GLint*)data); break;
-                        case SIT_UNIFORM_MAT4:  glProgramUniformMatrix4fv(prog, loc, 1, GL_FALSE, (const GLfloat*)data); break;
+                        case SIT_UNIFORM_FLOAT: glProgramUniform1fv(prog, loc, n, (const GLfloat*)data); break;
+                        case SIT_UNIFORM_VEC2:  glProgramUniform2fv(prog, loc, n, (const GLfloat*)data); break;
+                        case SIT_UNIFORM_VEC3:  glProgramUniform3fv(prog, loc, n, (const GLfloat*)data); break;
+                        case SIT_UNIFORM_VEC4:  glProgramUniform4fv(prog, loc, n, (const GLfloat*)data); break;
+                        case SIT_UNIFORM_INT:   glProgramUniform1iv(prog, loc, n, (const GLint*)data); break;
+                        case SIT_UNIFORM_IVEC2: glProgramUniform2iv(prog, loc, n, (const GLint*)data); break;
+                        case SIT_UNIFORM_IVEC3: glProgramUniform3iv(prog, loc, n, (const GLint*)data); break;
+                        case SIT_UNIFORM_IVEC4: glProgramUniform4iv(prog, loc, n, (const GLint*)data); break;
+                        case SIT_UNIFORM_MAT4:  glProgramUniformMatrix4fv(prog, loc, n, GL_FALSE, (const GLfloat*)data); break;
                     }
+                }
+                break;
+            case SIT_OP_COPY_BUFFER:
+                {
+                    GLuint src_gl = (GLuint)p->args.copy_buffer.src_id;
+                    GLuint dst_gl = (GLuint)p->args.copy_buffer.dst_id;
+                    glCopyNamedBufferSubData(src_gl, dst_gl, (GLintptr)p->args.copy_buffer.offset, 0, (GLsizeiptr)p->args.copy_buffer.size);
                 }
                 break;
         }
@@ -2675,7 +2954,18 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
         printf("[OpenGL Debug] _SituationGLExecuteCommands: Exited switch, about to check GL error\n");
         fflush(stdout);
         #endif
-        SIT_CHECK_GL_ERROR();
+        {
+            GLenum gl_err = glGetError();
+            if (gl_err != GL_NO_ERROR) {
+                char gl_detail[128];
+                snprintf(gl_detail, sizeof(gl_detail),
+                    "_SituationGLExecuteCommands: GL 0x%X after opcode %d",
+                    (unsigned)gl_err, (int)p->opcode);
+                buf->packet_count = 0;
+                buf->data_cursor = 0;
+                return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, gl_detail);
+            }
+        }
         #ifdef SITUATION_OPENGL_DEBUG
         printf("[OpenGL Debug] _SituationGLExecuteCommands: GL error check complete, continuing loop\n");
         fflush(stdout);
@@ -2730,6 +3020,8 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
         }
         sit_render.gl.ring_fences[frame_idx] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     }
+
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -2740,10 +3032,12 @@ static void _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int f
  * @return `true` on success, `false` if GL resource creation fails.
  * @note Called once during `_SituationInitOpenGL`.
  */
-static bool _SituationInitGLVirtualDisplayRenderer(void) {
+static SituationError _SituationInitGLVirtualDisplayRenderer(void) {
     glCreateVertexArrays(1, &sit_render.gl.vd_quad_vao);
     glCreateBuffers(1, &sit_render.gl.vd_quad_vbo);
-    if (sit_render.gl.vd_quad_vao == 0 || sit_render.gl.vd_quad_vbo == 0) return false;
+    if (sit_render.gl.vd_quad_vao == 0 || sit_render.gl.vd_quad_vbo == 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitGLVirtualDisplayRenderer: Failed to create VD quad VAO/VBO.");
+    }
 
     // Unit quad [0,1] — the model matrix scales to pixel size and the ortho projection
     // maps pixel coords to NDC. Using [0,1] means: scale by resolution = correct pixel rect.
@@ -2766,7 +3060,7 @@ static bool _SituationInitGLVirtualDisplayRenderer(void) {
     glVertexArrayAttribBinding(sit_render.gl.vd_quad_vao, SIT_ATTR_TEXCOORD_0, 0);
     glBindVertexArray(0);
     glBindVertexArray(sit_render.gl.global_vao_id);
-    return true;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -2863,11 +3157,9 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // Note: Absence of ARB_gl_spirv is NOT a fatal error. It just means we must fallback to GLSL.
     // The refactored _SituationCreateGLComputeProgram handles this logic.
     sit_render.gl.arb_spirv_available = GLAD_GL_ARB_gl_spirv;
-    // Optional debug log:
-    // if (!sit_render.gl.arb_spirv_available) {
-    //     fprintf(stdout, "INFO: GL_ARB_gl_spirv not available. OpenGL compute shaders will use standard GLSL path.\n");
-    // }
 #endif // SITUATION_ENABLE_SHADER_COMPILER
+    sit_render.gl.parallel_shader_compile_available =
+        (GLAD_GL_KHR_parallel_shader_compile != 0) || (GLAD_GL_ARB_parallel_shader_compile != 0);
 
     // --- 3. VAO Abstraction Initialization ---
     // Create and bind the SINGLE, GLOBAL VAO for all USER rendering (Dynamic/Custom).
@@ -2914,27 +3206,30 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // Initialize internal renderers (Quad Renderer, Virtual Display Renderer).
     // These functions MUST create, configure, and then unbind their own PRIVATE VAOs/VBOs.
     // They MUST leave sit_render.gl.global_vao_id bound upon successful return.
-    if (!_SituationInitQuadRenderer(sit_gs.main_window_width, sit_gs.main_window_height)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal quad renderer.");
-        // Cleanup both VAOs on failure
-        glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
-        glDeleteVertexArrays(1, &sit_render.gl.mesh_vao_id);
-        sit_render.gl.global_vao_id = 0;
-        sit_render.gl.mesh_vao_id = 0;
-        return SITUATION_ERROR_OPENGL_GENERAL;
+    {
+        SituationError quad_err = _SituationInitQuadRenderer(sit_gs.main_window_width, sit_gs.main_window_height);
+        if (quad_err != SITUATION_SUCCESS) {
+            glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
+            glDeleteVertexArrays(1, &sit_render.gl.mesh_vao_id);
+            sit_render.gl.global_vao_id = 0;
+            sit_render.gl.mesh_vao_id = 0;
+            return quad_err;
+        }
     }
 
 #if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     printf("Situation [OpenGL]: Initializing default font...\n"); fflush(stdout);
 #endif
 
-    if (!_SituationInitDefaultFont()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize default font.");
-        glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
-        glDeleteVertexArrays(1, &sit_render.gl.mesh_vao_id);
-        sit_render.gl.global_vao_id = 0;
-        sit_render.gl.mesh_vao_id = 0;
-        return SITUATION_ERROR_OPENGL_GENERAL;
+    {
+        SituationError font_err = _SituationInitDefaultFont();
+        if (font_err != SITUATION_SUCCESS) {
+            glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
+            glDeleteVertexArrays(1, &sit_render.gl.mesh_vao_id);
+            sit_render.gl.global_vao_id = 0;
+            sit_render.gl.mesh_vao_id = 0;
+            return font_err;
+        }
     }
 
 #if defined(SITUATION_VERBOSE_DIAGNOSTICS)
@@ -2942,16 +3237,18 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     printf("Situation [OpenGL]: About to initialize text renderer...\n"); fflush(stdout);
 #endif
 
-    if (!_SituationInitTextRenderer()) {
+    {
+        SituationError text_err = _SituationInitTextRenderer();
+        if (text_err != SITUATION_SUCCESS) {
 #if defined(SITUATION_VERBOSE_DIAGNOSTICS)
         printf("Situation [OpenGL]: Text renderer init FAILED\n"); fflush(stdout);
 #endif
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal text renderer.");
         glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
         glDeleteVertexArrays(1, &sit_render.gl.mesh_vao_id);
         sit_render.gl.global_vao_id = 0;
         sit_render.gl.mesh_vao_id = 0;
-        return SITUATION_ERROR_OPENGL_GENERAL;
+        return text_err;
+        }
     }
     
 #if defined(SITUATION_VERBOSE_DIAGNOSTICS)
@@ -3013,8 +3310,9 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // b. Initialize the Virtual Display Quad Renderer
     // This function is responsible for creating sit_render.gl.vd_quad_vao/vbo, configuring them for a simple textured quad, and unbinding them, ensuring sit_render.gl.global_vao_id is bound again at the end.
     // You need to implement this function, similar to _SituationInitQuadRenderer.
-    if (!_SituationInitGLVirtualDisplayRenderer()) { // <-- You need this function
-         _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitOpenGL: Failed to initialize internal virtual display renderer.");
+    {
+        SituationError vd_err = _SituationInitGLVirtualDisplayRenderer();
+        if (vd_err != SITUATION_SUCCESS) {
          // Cleanup global VAO and shaders
         glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
         sit_render.gl.global_vao_id = 0;
@@ -3022,8 +3320,8 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
         sit_render.gl.vd_shader_program_id = 0;
         glDeleteProgram(sit_render.gl.composite_shader_program_id);
         sit_render.gl.composite_shader_program_id = 0;
-        // Assume _SituationInitQuadRenderer cleaned up after itself on failure
-        return SITUATION_ERROR_OPENGL_GENERAL;
+        return vd_err;
+        }
     }
 
     // c. Create UBO for View/Projection data (used by user shaders, potentially internal ones too)
@@ -3048,16 +3346,14 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     SIT_CHECK_GL_ERROR();
 
     // --- [Phase 1] Initialize Persistent Ring Buffer ---
-    _SituationInitGLRingBuffer();
-    if (!sit_render.gl.ring_data_ptr) return SITUATION_ERROR_OPENGL_GENERAL;
+    SIT_RETURN_IF_ERR(_SituationInitGLRingBuffer());
     SIT_CHECK_GL_ERROR();
 
     // --- [Phase 1.5] Initialize Ring Buffer Fences ---
-    _SituationInitGLRingFences();
+    SIT_RETURN_IF_ERR(_SituationInitGLRingFences());
 
     // --- [Phase 4] Initialize Multi-Draw Indirect Buffer ---
-    _SituationInitGLMDIBuffer();
-    if (!sit_render.gl.mdi_data_ptr) return SITUATION_ERROR_OPENGL_GENERAL;
+    SIT_RETURN_IF_ERR(_SituationInitGLMDIBuffer());
     SIT_CHECK_GL_ERROR();
 
     // d. Initialize Virtual Display Slots (Data structures)
@@ -3179,56 +3475,349 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     return SITUATION_SUCCESS;
 }
 
+#if defined(SITUATION_USE_OPENGL)
+#define SIT_GL_ASYNC_STAGE_IDLE    0u
+#define SIT_GL_ASYNC_STAGE_COMPILE 1u
+#define SIT_GL_ASYNC_STAGE_SPIRV   2u
 
-#if defined(SITUATION_ENABLE_SHADER_COMPILER)
+/** Main/loader thread GL context for shader compile, SPIR-V link, and uniform reflection (not the render thread). */
+static void _SituationMakeGLContextCurrentForHostThread(void) {
+    GLFWwindow* win = sit_gs.sit_glfw_window;
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+    if (sit_render.enabled && sit_render.gl.loader_window) {
+        win = sit_render.gl.loader_window;
+    }
+#endif
+    if (win) {
+        glfwMakeContextCurrent(win);
+        _SitGLInvalidateShadowState();
+    }
+}
+
+/** Release host compile context so the render thread can use the main GLFW context. */
+static void _SituationReleaseHostGLContextForRenderThread(void) {
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+    if (sit_render.enabled) {
+        glfwMakeContextCurrent(NULL);
+    }
+#endif
+}
+
+/** Fill uniform location cache after link (SPIR-V / GLSL). SPIR-V: use glGetUniformLocation (GL_LOCATION from resource query is often -1). */
+static SituationError _SituationPopulateGLShaderUniformMap(GLuint program, _SituationUniformMap* map) {
+    if (!map || program == 0 || !glIsProgram(program)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+            "_SituationPopulateGLShaderUniformMap: invalid program or map.");
+    }
+
+    GLint uniform_count = 0;
+    glGetProgramInterfaceiv(program, GL_UNIFORM, GL_ACTIVE_RESOURCES, &uniform_count);
+    for (GLint j = 0; j < uniform_count; j++) {
+        GLenum size_prop = GL_ARRAY_SIZE;
+        GLint array_size = 1;
+        glGetProgramResourceiv(program, GL_UNIFORM, (GLuint)j, 1, &size_prop, 1, NULL, &array_size);
+        if (array_size < 1) {
+            array_size = 1;
+        }
+
+        GLenum block_prop = GL_BLOCK_INDEX;
+        GLint block_index = -1;
+        glGetProgramResourceiv(program, GL_UNIFORM, (GLuint)j, 1, &block_prop, 1, NULL, &block_index);
+        if (block_index >= 0) {
+            continue; /* std140 UBO member — not a standalone glProgramUniform location */
+        }
+
+        char name[256];
+        GLsizei name_len = 0;
+        glGetProgramResourceName(program, GL_UNIFORM, (GLuint)j, (GLsizei)sizeof(name), &name_len, name);
+        if (name_len <= 0) {
+            continue;
+        }
+        if (name_len >= (GLsizei)sizeof(name)) {
+            name_len = (GLsizei)sizeof(name) - 1;
+        }
+        name[name_len] = '\0';
+
+        GLint location = -1;
+        GLenum loc_prop = GL_LOCATION;
+        glGetProgramResourceiv(program, GL_UNIFORM, (GLuint)j, 1, &loc_prop, 1, NULL, &location);
+        if (location < 0) {
+            location = glGetUniformLocation(program, name);
+        }
+        if (location >= 0) {
+            SituationError set_err = _sit_uniform_map_set(map, name, location);
+            if (set_err != SITUATION_SUCCESS) {
+                return set_err;
+            }
+        }
+
+        char base[256];
+        strncpy(base, name, sizeof(base) - 1u);
+        base[sizeof(base) - 1u] = '\0';
+        char* bracket = strchr(base, '[');
+        if (bracket) {
+            *bracket = '\0';
+        }
+        for (GLint k = 0; k < array_size; k++) {
+            char indexed[256];
+            snprintf(indexed, sizeof(indexed), "%s[%d]", base, (int)k);
+            GLint loc_k = glGetUniformLocation(program, indexed);
+            if (loc_k >= 0) {
+                SituationError set_err = _sit_uniform_map_set(map, indexed, loc_k);
+                if (set_err != SITUATION_SUCCESS) {
+                    return set_err;
+                }
+            }
+        }
+    }
+    return SITUATION_SUCCESS;
+}
+
+/** Find SSBO/UBO block index by name (glGetProgramResourceIndex + active-resource name scan). */
+static GLuint _SituationGLFindProgramResourceIndex(GLuint program, GLenum resource_interface, const char* name) {
+    if (!program || !name) {
+        return GL_INVALID_INDEX;
+    }
+
+    GLuint idx = glGetProgramResourceIndex(program, resource_interface, name);
+    if (idx != GL_INVALID_INDEX) {
+        return idx;
+    }
+
+    GLint count = 0;
+    glGetProgramInterfaceiv(program, resource_interface, GL_ACTIVE_RESOURCES, &count);
+    for (GLint i = 0; i < count; i++) {
+        char res_name[256];
+        GLsizei name_len = 0;
+        glGetProgramResourceName(program, resource_interface, (GLuint)i, (GLsizei)sizeof(res_name), &name_len, res_name);
+        if (name_len <= 0) {
+            continue;
+        }
+        if (name_len >= (GLsizei)sizeof(res_name)) {
+            name_len = (GLsizei)sizeof(res_name) - 1;
+        }
+        res_name[name_len] = '\0';
+        if (strcmp(res_name, name) == 0) {
+            return (GLuint)i;
+        }
+    }
+    return GL_INVALID_INDEX;
+}
+
+/** Match active block whose GL_BUFFER_BINDING equals binding_point (SPIR-V name fallback). */
+static GLuint _SituationGLFindBlockIndexByBinding(GLuint program, GLenum resource_interface, uint32_t binding_point) {
+    GLint count = 0;
+    glGetProgramInterfaceiv(program, resource_interface, GL_ACTIVE_RESOURCES, &count);
+    for (GLint i = 0; i < count; i++) {
+        GLenum binding_prop = GL_BUFFER_BINDING;
+        GLint reported = -1;
+        glGetProgramResourceiv(
+            program, resource_interface, (GLuint)i, 1, &binding_prop, 1, NULL, &reported);
+        if (reported >= 0 && (uint32_t)reported == binding_point) {
+            return (GLuint)i;
+        }
+    }
+    if (binding_point < (uint32_t)count) {
+        return binding_point;
+    }
+    return GL_INVALID_INDEX;
+}
+
+static void _SituationBindGLProgramStorageBlocks(GLuint program) {
+    GLint ssbo_count = 0;
+    glGetProgramInterfaceiv(program, GL_SHADER_STORAGE_BLOCK, GL_ACTIVE_RESOURCES, &ssbo_count);
+    if (ssbo_count <= 0) {
+        return;
+    }
+
+    /* SPIR-V reflection can report the same GL_BUFFER_BINDING for multiple blocks (e.g. both 0).
+     * Assign unique binding points in block_index order so layout(binding=1) blocks are not
+     * overwritten when the host binds set_index 0 vs 1 (demon_hunt sky pass). */
+    enum { kSitMaxSsboBlocks = 16 };
+    GLuint block_indices[kSitMaxSsboBlocks];
+    GLint desired_bindings[kSitMaxSsboBlocks];
+    GLint assigned_bindings[kSitMaxSsboBlocks];
+    int block_count = ssbo_count > kSitMaxSsboBlocks ? kSitMaxSsboBlocks : (int)ssbo_count;
+    int assigned_count = 0;
+
+    for (int i = 0; i < block_count; i++) {
+        GLenum binding_prop = GL_BUFFER_BINDING;
+        GLint binding_point = 0;
+        block_indices[i] = (GLuint)i;
+        glGetProgramResourceiv(
+            program,
+            GL_SHADER_STORAGE_BLOCK,
+            (GLuint)i,
+            1,
+            &binding_prop,
+            1,
+            NULL,
+            &binding_point);
+        desired_bindings[i] = binding_point >= 0 ? binding_point : i;
+    }
+
+    for (int i = 0; i < block_count; i++) {
+        GLint want = desired_bindings[i];
+        int clash = 0;
+        for (int j = 0; j < assigned_count; j++) {
+            if (assigned_bindings[j] == want) {
+                clash = 1;
+                break;
+            }
+        }
+        if (clash) {
+            GLint free_slot = 0;
+            for (;;) {
+                int used = 0;
+                for (int j = 0; j < assigned_count; j++) {
+                    if (assigned_bindings[j] == free_slot) {
+                        used = 1;
+                        break;
+                    }
+                }
+                if (!used) {
+                    want = free_slot;
+                    break;
+                }
+                free_slot++;
+            }
+        }
+        assigned_bindings[assigned_count++] = want;
+        glShaderStorageBlockBinding(program, block_indices[i], (GLuint)want);
+    }
+}
+
+/** Assign std140 UBO blocks to layout(binding=N) after SPIR-V link (name lookup often fails). */
+static void _SituationBindGLProgramUniformBlocks(GLuint program) {
+    GLint ubo_count = 0;
+    glGetProgramInterfaceiv(program, GL_UNIFORM_BLOCK, GL_ACTIVE_RESOURCES, &ubo_count);
+    if (ubo_count <= 0) {
+        return;
+    }
+
+    enum { kSitMaxUboBlocks = 16 };
+    int block_count = ubo_count > kSitMaxUboBlocks ? kSitMaxUboBlocks : (int)ubo_count;
+    for (int i = 0; i < block_count; i++) {
+        GLenum binding_prop = GL_BUFFER_BINDING;
+        GLint binding_point = 0;
+        glGetProgramResourceiv(
+            program, GL_UNIFORM_BLOCK, (GLuint)i, 1, &binding_prop, 1, NULL, &binding_point);
+        GLuint want = (GLuint)(binding_point >= 0 ? binding_point : i);
+        glUniformBlockBinding(program, (GLuint)i, want);
+    }
+}
+
+/** Fetch the full OpenGL program or shader info log (size from GL_INFO_LOG_LENGTH). Caller frees with SIT_FREE. */
+static char* _SituationDupGLInfoLog(GLuint name, int is_program) {
+    GLint log_len = 0;
+    if (is_program) {
+        glGetProgramiv(name, GL_INFO_LOG_LENGTH, &log_len);
+    } else {
+        glGetShaderiv(name, GL_INFO_LOG_LENGTH, &log_len);
+    }
+    if (log_len <= 0) {
+        char* empty = (char*)SIT_MALLOC(1);
+        if (empty) {
+            empty[0] = '\0';
+        }
+        return empty;
+    }
+    char* buf = (char*)SIT_MALLOC((size_t)log_len + 1);
+    if (!buf) {
+        return NULL;
+    }
+    GLsizei written = 0;
+    if (is_program) {
+        glGetProgramInfoLog(name, log_len, &written, buf);
+    } else {
+        glGetShaderInfoLog(name, log_len, &written, buf);
+    }
+    buf[written > 0 ? (size_t)written : 0] = '\0';
+    return buf;
+}
+
+static SituationError _SituationSetGLErrorFromSpirvStage(
+    SituationError code, const char* stage, size_t blob_bytes, const char* driver_log) {
+    char detail[SITUATION_MAX_ERROR_MSG_LEN];
+    const char* log = (driver_log && driver_log[0]) ? driver_log : "(no driver log)";
+    int prefix = snprintf(detail, sizeof(detail), "%s SPIR-V (%zu bytes):\n", stage, blob_bytes);
+    if (prefix > 0 && (size_t)prefix < sizeof(detail)) {
+        size_t cap = sizeof(detail) - (size_t)prefix - 1u;
+        strncat(detail, log, cap);
+    }
+    return _SituationSetErrorFromCode(code, detail);
+}
+
+static SituationError _SituationValidateSpirvBinary(const void* data, size_t size, const char* label) {
+    if (!data || size == 0) {
+        char detail[160];
+        snprintf(detail, sizeof(detail), "%s: null or empty SPIR-V blob", label);
+        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SPIRV_INVALID_BINARY, detail);
+        return SITUATION_ERROR_OPENGL_SPIRV_INVALID_BINARY;
+    }
+    if ((size & 3u) != 0) {
+        char detail[160];
+        snprintf(detail, sizeof(detail), "%s: SPIR-V size %zu is not a multiple of 4", label, size);
+        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SPIRV_INVALID_BINARY, detail);
+        return SITUATION_ERROR_OPENGL_SPIRV_INVALID_BINARY;
+    }
+    return SITUATION_SUCCESS;
+}
+
 /**
  * @brief Creates a complete, linked OpenGL shader program from SPIR-V binary blobs.
- * @details This is the second stage of the unified shader pipeline for the OpenGL backend.
- *          It leverages the `GL_ARB_gl_spirv` extension to load the pre-compiled SPIR-V bytecode directly, bypassing the driver's GLSL compiler. This offers two key advantages:
- *          1) It ensures that shaders behave identically to the Vulkan backend.
- *          2) It can significantly speed up shader loading, as the driver only needs to ingest the binary, not perform a full compilation.
- *
- * @param vs_blob A pointer to the compiled SPIR-V blob for the vertex shader.
- * @param fs_blob A pointer to the compiled SPIR-V blob for the fragment shader.
- * @param error_code A pointer to a SituationError that will be filled on failure.
- * @return A valid OpenGL program ID on success, or 0 on failure.
+ * @details Uses `GL_ARB_gl_spirv` to load pre-compiled SPIR-V (no runtime GLSL compile).
  */
-static GLuint _SituationCreateGLShaderProgramFromSpirv(const _SituationSpirvBlob* vs_blob, const _SituationSpirvBlob* fs_blob, SituationError* error_code) {
-    if (!vs_blob || !fs_blob || !vs_blob->data || !fs_blob->data) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SPIR-V blob data cannot be null.");
+static GLuint _SituationCreateGLShaderProgramFromSpirv(const SituationSpirvBinary* vs_blob, const SituationSpirvBinary* fs_blob, SituationError* error_code) {
+    if (!vs_blob || !fs_blob) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SPIR-V blob pointers cannot be null.");
         if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
+        return 0;
+    }
+    SituationError v_err = _SituationValidateSpirvBinary(vs_blob->data, vs_blob->size, "vertex");
+    if (v_err != SITUATION_SUCCESS) {
+        if (error_code) *error_code = v_err;
+        return 0;
+    }
+    SituationError f_err = _SituationValidateSpirvBinary(fs_blob->data, fs_blob->size, "fragment");
+    if (f_err != SITUATION_SUCCESS) {
+        if (error_code) *error_code = f_err;
         return 0;
     }
 
     if (!GLAD_GL_ARB_gl_spirv) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "Driver does not support GL_ARB_gl_spirv. Cannot load SPIR-V shaders.");
-        if (error_code) *error_code = SITUATION_ERROR_OPENGL_UNSUPPORTED;
+        _SituationSetErrorFromCode(
+            SITUATION_ERROR_OPENGL_SPIRV_UNAVAILABLE,
+            "GL_ARB_gl_spirv is required to load SPIR-V on OpenGL.");
+        if (error_code) *error_code = SITUATION_ERROR_OPENGL_SPIRV_UNAVAILABLE;
         return 0;
     }
 
     GLint success = 0;
-    char infoLog[SITUATION_MAX_SHADER_LOG_LEN];
 
     // --- Create and load the Vertex Shader ---
     GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-    // 1. Load the binary SPIR-V data into the shader object.
     glShaderBinary(1, &vs, GL_SHADER_BINARY_FORMAT_SPIR_V, vs_blob->data, (GLsizei)vs_blob->size);
-    // 2. Specialize the shader. This is the SPIR-V equivalent of "compiling" the binary for the driver.
-    //    It specifies the entry point ("main") and any specialization constants (none in this case).
     glSpecializeShader(vs, "main", 0, NULL, NULL);
     SIT_CHECK_GL_ERROR();
 
-    // 3. Verify that the specialization was successful.
     glGetShaderiv(vs, GL_COMPILE_STATUS, &success);
     if (!success) {
-        glGetShaderInfoLog(vs, sizeof(infoLog), NULL, infoLog);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, infoLog);
-        if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_COMPILE;
+        char* infoLog = _SituationDupGLInfoLog(vs, 0);
+        SituationError spirv_err = _SituationSetGLErrorFromSpirvStage(
+            SITUATION_ERROR_OPENGL_SPIRV_VS_SPECIALIZE_FAILED, "vertex", vs_blob->size,
+            infoLog ? infoLog : "");
+        if (error_code) {
+            *error_code = spirv_err;
+        }
+        if (infoLog) {
+            SIT_FREE(infoLog);
+        }
         glDeleteShader(vs);
         return 0;
     }
 
-    // --- Create and load the Fragment Shader (identical process) ---
+    // --- Create and load the Fragment Shader ---
     GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderBinary(1, &fs, GL_SHADER_BINARY_FORMAT_SPIR_V, fs_blob->data, (GLsizei)fs_blob->size);
     glSpecializeShader(fs, "main", 0, NULL, NULL);
@@ -3236,9 +3825,16 @@ static GLuint _SituationCreateGLShaderProgramFromSpirv(const _SituationSpirvBlob
 
     glGetShaderiv(fs, GL_COMPILE_STATUS, &success);
     if (!success) {
-        glGetShaderInfoLog(fs, sizeof(infoLog), NULL, infoLog);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, infoLog);
-        if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_COMPILE;
+        char* infoLog = _SituationDupGLInfoLog(fs, 0);
+        SituationError spirv_err = _SituationSetGLErrorFromSpirvStage(
+            SITUATION_ERROR_OPENGL_SPIRV_FS_SPECIALIZE_FAILED, "fragment", fs_blob->size,
+            infoLog ? infoLog : "");
+        if (error_code) {
+            *error_code = spirv_err;
+        }
+        if (infoLog) {
+            SIT_FREE(infoLog);
+        }
         glDeleteShader(vs);
         glDeleteShader(fs);
         return 0;
@@ -3250,25 +3846,173 @@ static GLuint _SituationCreateGLShaderProgramFromSpirv(const _SituationSpirvBlob
     glAttachShader(program, fs);
     glLinkProgram(program);
 
-    // The individual shader objects are no longer needed after linking.
     glDeleteShader(vs);
     glDeleteShader(fs);
     SIT_CHECK_GL_ERROR();
 
-    // Verify the linking was successful.
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
-        glGetProgramInfoLog(program, sizeof(infoLog), NULL, infoLog);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
-        if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_LINK;
+        char* infoLog = _SituationDupGLInfoLog(program, 1);
+        SituationError spirv_err = _SituationSetGLErrorFromSpirvStage(
+            SITUATION_ERROR_OPENGL_SPIRV_PROGRAM_LINK_FAILED, "graphics program",
+            vs_blob->size + fs_blob->size, infoLog ? infoLog : "");
+        if (error_code) {
+            *error_code = spirv_err;
+        }
+        if (infoLog) {
+            SIT_FREE(infoLog);
+        }
         glDeleteProgram(program);
         return 0;
     }
+
+    _SituationBindGLProgramStorageBlocks(program);
+    _SituationBindGLProgramUniformBlocks(program);
 
     if (error_code) *error_code = SITUATION_SUCCESS;
     return program;
 }
 
+/**
+ * @brief Load a graphics pipeline from in-memory SPIR-V (vertex + fragment).
+ * @details OpenGL: uses GL_ARB_gl_spirv (`glShaderBinary` + `glSpecializeShader`). Caller must pass SPIR-V word-aligned sizes (multiple of 4). Shader bytes need only remain valid until this function returns.
+ */
+SITAPI SituationError SituationLoadShaderFromSpirvMemory(const void* vs_spirv, size_t vs_len, const void* fs_spirv, size_t fs_len, SituationShader* out_shader) {
+    if (!out_shader) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_shader, 0, sizeof(SituationShader));
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!vs_spirv || !fs_spirv) return SITUATION_ERROR_INVALID_PARAM;
+    if (vs_len == 0 || fs_len == 0) return SITUATION_ERROR_INVALID_PARAM;
+    SituationError v_err = _SituationValidateSpirvBinary(vs_spirv, vs_len, "vertex");
+    if (v_err != SITUATION_SUCCESS) return v_err;
+    SituationError f_err = _SituationValidateSpirvBinary(fs_spirv, fs_len, "fragment");
+    if (f_err != SITUATION_SUCCESS) return f_err;
+    if (!GLAD_GL_ARB_gl_spirv) {
+        _SituationSetErrorFromCode(
+            SITUATION_ERROR_OPENGL_SPIRV_UNAVAILABLE,
+            "GL_ARB_gl_spirv is required for SituationLoadShaderFromSpirvMemory on OpenGL.");
+        return SITUATION_ERROR_OPENGL_SPIRV_UNAVAILABLE;
+    }
+
+    SituationShader handle;
+    mtx_lock(&sit_render.resource_registry_mutex);
+    _SituationShaderSlot* slot = _SitAllocShaderSlot(&handle);
+    mtx_unlock(&sit_render.resource_registry_mutex);
+    if (!slot) {
+        _SituationReleaseHostGLContextForRenderThread();
+        return SituationGetLastErrorCode();
+    }
+
+    SituationSpirvBinary vs_blob = { vs_spirv, vs_len };
+    SituationSpirvBinary fs_blob = { fs_spirv, fs_len };
+    SituationError err = SITUATION_SUCCESS;
+
+    _SituationMakeGLContextCurrentForHostThread();
+    slot->gl_program_id = _SituationCreateGLShaderProgramFromSpirv(&vs_blob, &fs_blob, &err);
+    if (err == SITUATION_SUCCESS) {
+        /* Lazy uniform cache: SituationSetShaderUniform fills locations on demand.
+         * Skipping a full-program scan here avoids multi-second stalls after SPIR-V link
+         * on very large fragment shaders (e.g. Demon Hunt ~1MB SPIR-V). */
+        slot->uniform_map = NULL;
+        /* Keep loader context current for back-to-back host init (CreateBuffer / CreateMesh). */
+    }
+
+    if (err != SITUATION_SUCCESS) {
+        _SitFreeShaderSlot(handle);
+        _SituationReleaseHostGLContextForRenderThread();
+        return err;
+    }
+
+    *out_shader = handle;
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationLoadShaderFromSpirvMemoryEx(const void* vs_spirv, size_t vs_len, const void* fs_spirv, size_t fs_len, SituationSpirvLayoutProfile layout_profile, SituationShader* out_shader) {
+    (void)layout_profile;
+    return SituationLoadShaderFromSpirvMemory(vs_spirv, vs_len, fs_spirv, fs_len, out_shader);
+}
+
+SITAPI SituationError SituationBindShaderStorageBlock(SituationShader shader, const char* block_name, uint32_t binding_point) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!block_name) return SITUATION_ERROR_INVALID_PARAM;
+
+    _SituationShaderSlot* slot = _SitGetShaderSlot(shader);
+    if (!slot || slot->gl_program_id == 0) return SITUATION_ERROR_INVALID_PARAM;
+
+    _SituationMakeGLContextCurrentForHostThread();
+    GLuint block_index = _SituationGLFindProgramResourceIndex(
+        slot->gl_program_id, GL_SHADER_STORAGE_BLOCK, block_name);
+    if (block_index == GL_INVALID_INDEX) {
+        block_index = _SituationGLFindBlockIndexByBinding(
+            slot->gl_program_id, GL_SHADER_STORAGE_BLOCK, binding_point);
+        if (block_index == GL_INVALID_INDEX) {
+            return SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND;
+        }
+    }
+    glShaderStorageBlockBinding(slot->gl_program_id, block_index, binding_point);
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationBindUniformBlock(SituationShader shader, const char* block_name, uint32_t binding_point) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!block_name) return SITUATION_ERROR_INVALID_PARAM;
+
+    _SituationShaderSlot* slot = _SitGetShaderSlot(shader);
+    if (!slot || slot->gl_program_id == 0) return SITUATION_ERROR_INVALID_PARAM;
+
+    _SituationMakeGLContextCurrentForHostThread();
+    GLuint block_index = _SituationGLFindProgramResourceIndex(
+        slot->gl_program_id, GL_UNIFORM_BLOCK, block_name);
+    if (block_index == GL_INVALID_INDEX) {
+        block_index = _SituationGLFindBlockIndexByBinding(
+            slot->gl_program_id, GL_UNIFORM_BLOCK, binding_point);
+        if (block_index == GL_INVALID_INDEX) {
+            return SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND;
+        }
+    }
+    glUniformBlockBinding(slot->gl_program_id, block_index, binding_point);
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Load a graphics pipeline from precompiled SPIR-V files (`.spv`).
+ * @details OpenGL: uses GL_ARB_gl_spirv (glShaderBinary + glSpecializeShader) — no GLSL compile at launch.
+ */
+SITAPI SituationError SituationLoadShaderFromSpirv(const char* vs_spv_path, const char* fs_spv_path, SituationShader* out_shader) {
+    if (!out_shader) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_shader, 0, sizeof(SituationShader));
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!vs_spv_path || !fs_spv_path) return SITUATION_ERROR_INVALID_PARAM;
+
+    size_t vs_size = 0;
+    size_t fs_size = 0;
+    char* vs_data = _SituationReadSpirvFile(vs_spv_path, &vs_size);
+    char* fs_data = _SituationReadSpirvFile(fs_spv_path, &fs_size);
+    if (!vs_data || !fs_data) {
+        if (vs_data) SIT_FREE(vs_data);
+        if (fs_data) SIT_FREE(fs_data);
+        return SITUATION_ERROR_FILE_NOT_FOUND;
+    }
+
+    SituationError err = SituationLoadShaderFromSpirvMemory(vs_data, vs_size, fs_data, fs_size, out_shader);
+    SIT_FREE(vs_data);
+    SIT_FREE(fs_data);
+
+    if (err != SITUATION_SUCCESS) {
+        return err;
+    }
+
+    _SituationShaderSlot* slot = _SitGetShaderSlot(*out_shader);
+    if (slot) {
+        slot->vs_path = _sit_strdup(vs_spv_path);
+        slot->fs_path = _sit_strdup(fs_spv_path);
+        slot->vs_mod_time = SituationGetFileModTime(vs_spv_path);
+        slot->fs_mod_time = SituationGetFileModTime(fs_spv_path);
+    }
+    return SITUATION_SUCCESS;
+}
+
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
 /**
  * @brief [INTERNAL] Creates a single-stage (compute) OpenGL shader program from a single SPIR-V blob.
  * @details This is the modern, preferred creation path for compute shaders on the OpenGL backend when `GL_ARB_gl_spirv` is available. It uses `glShaderBinary` to load the pre-compiled SPIR-V bytecode directly, bypassing the driver's GLSL compiler.
@@ -3295,52 +4039,59 @@ static GLuint _SituationCreateGLShaderProgramFromSpirv(const _SituationSpirvBlob
 static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationSpirvBlob* cs_blob, SituationError* error_code) {
     if (error_code) *error_code = SITUATION_SUCCESS;
 
-    // 1. --- Validation ---
-    if (!cs_blob || !cs_blob->data || cs_blob->size == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SPIR-V blob for compute shader cannot be null or empty.");
+    if (!cs_blob) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SPIR-V compute blob pointer is null.");
         if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
         return 0;
     }
+    SituationError blob_err = _SituationValidateSpirvBinary(cs_blob->data, cs_blob->size, "compute");
+    if (blob_err != SITUATION_SUCCESS) {
+        if (error_code) *error_code = blob_err;
+        return 0;
+    }
     if (!GLAD_GL_ARB_gl_spirv) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_UNSUPPORTED, "Driver does not support GL_ARB_gl_spirv. Cannot load SPIR-V shaders.");
-        if (error_code) *error_code = SITUATION_ERROR_OPENGL_UNSUPPORTED;
+        _SituationSetErrorFromCode(
+            SITUATION_ERROR_OPENGL_SPIRV_UNAVAILABLE,
+            "GL_ARB_gl_spirv is required to load SPIR-V compute shaders on OpenGL.");
+        if (error_code) *error_code = SITUATION_ERROR_OPENGL_SPIRV_UNAVAILABLE;
         return 0;
     }
 
     GLint success = 0;
     char infoLog[SITUATION_MAX_SHADER_LOG_LEN];
 
-    // 2. --- Create and Specialize the Compute Shader Object ---
     GLuint cs = glCreateShader(GL_COMPUTE_SHADER);
     glShaderBinary(1, &cs, GL_SHADER_BINARY_FORMAT_SPIR_V, cs_blob->data, (GLsizei)cs_blob->size);
     glSpecializeShader(cs, "main", 0, NULL, NULL);
     SIT_CHECK_GL_ERROR();
 
-    // Verify that the specialization was successful.
     glGetShaderiv(cs, GL_COMPILE_STATUS, &success);
     if (!success) {
         glGetShaderInfoLog(cs, sizeof(infoLog), NULL, infoLog);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, infoLog);
-        if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_COMPILE;
+        SituationError spirv_err = _SituationSetGLErrorFromSpirvStage(
+            SITUATION_ERROR_OPENGL_SPIRV_CS_SPECIALIZE_FAILED, "compute", cs_blob->size, infoLog);
+        if (error_code) {
+            *error_code = spirv_err;
+        }
         glDeleteShader(cs);
         return 0;
     }
 
-    // 3. --- Link the Shader into a Program ---
     GLuint program = glCreateProgram();
     glAttachShader(program, cs);
     glLinkProgram(program);
-
-    // The individual shader object is no longer needed after linking.
     glDeleteShader(cs);
     SIT_CHECK_GL_ERROR();
 
-    // Verify that the linking was successful.
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
         glGetProgramInfoLog(program, sizeof(infoLog), NULL, infoLog);
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_LINK, infoLog);
-        if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_LINK;
+        SituationError spirv_err = _SituationSetGLErrorFromSpirvStage(
+            SITUATION_ERROR_OPENGL_SPIRV_PROGRAM_LINK_FAILED, "compute program",
+            cs_blob->size, infoLog);
+        if (error_code) {
+            *error_code = spirv_err;
+        }
         glDeleteProgram(program);
         return 0;
     }
@@ -3381,8 +4132,8 @@ static GLuint _SituationCreateGLComputeProgramFromSpirv(const struct _SituationS
  *      SITUATION_ERROR_GL_EXTENSION_MISSING, glGetTextureHandleARB
  */
 static void _SituationVirtualBindlessInit(void) {
-    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
-        _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[i];
+    for (int i = 0; i < SITUATION_GL_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+        _SituationGLVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[i];
         slot->texture_slot_index = i;
         slot->gl_texture_id = 0;
         slot->last_used_counter = 0;
@@ -3434,8 +4185,8 @@ static int _SituationVirtualBindlessBind(GLuint gl_texture_id) {
     uint64_t current_counter = sit_render.gl.virtual_lru_counter;
 
     // 1. Check if the texture is already bound (Hit?)
-    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
-        _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[i];
+    for (int i = 0; i < SITUATION_GL_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+        _SituationGLVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[i];
         if (slot->is_active && slot->gl_texture_id == gl_texture_id) {
 
             // Hit! Update LRU
@@ -3452,7 +4203,7 @@ static int _SituationVirtualBindlessBind(GLuint gl_texture_id) {
     uint64_t oldest_counter = UINT64_MAX;
 
     // First pass: look for empty slot
-    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+    for (int i = 0; i < SITUATION_GL_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
         if (!sit_render.gl.virtual_texture_slots[i].is_active) {
             best_slot = i;
             break;
@@ -3462,7 +4213,7 @@ static int _SituationVirtualBindlessBind(GLuint gl_texture_id) {
     // Second pass: if full, find LRU
     if (best_slot == -1) {
         sit_render.gl.virtual_stats.evictions++;
-        for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+        for (int i = 0; i < SITUATION_GL_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
             if (sit_render.gl.virtual_texture_slots[i].last_used_counter < oldest_counter) {
                 oldest_counter = sit_render.gl.virtual_texture_slots[i].last_used_counter;
                 best_slot = i;
@@ -3474,7 +4225,7 @@ static int _SituationVirtualBindlessBind(GLuint gl_texture_id) {
     if (best_slot == -1) best_slot = 0;
 
     // 3. Bind the texture to the chosen slot
-    _SituationVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[best_slot];
+    _SituationGLVirtualTextureSlot* slot = &sit_render.gl.virtual_texture_slots[best_slot];
 
     // Bind the actual texture to the texture unit using DSA
     glBindTextureUnit(best_slot, gl_texture_id);
@@ -3487,9 +4238,274 @@ static int _SituationVirtualBindlessBind(GLuint gl_texture_id) {
     return best_slot;
 }
 
-#endif // SITUATION_USE_OPENGL
+#endif /* SITUATION_USE_OPENGL (host GL helpers opened ~line 3408) */
+
+#endif /* SITUATION_USE_OPENGL (renderer GL backend opened at line 1613) */
 
 #if defined(SITUATION_USE_VULKAN)
+
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
+typedef struct _SituationVkAsyncShaderLoad {
+    _Atomic int compile_done; /* 0 = in progress, 1 = SPIR-V ready, -1 = failed */
+    SituationSpirvLayoutProfile layout_profile;
+    char* vs_src;
+    char* fs_src;
+    uint8_t* vs_spirv_copy;
+    size_t vs_spirv_len;
+    uint8_t* fs_spirv_copy;
+    size_t fs_spirv_len;
+    _SituationSpirvBlob vs_spirv;
+    _SituationSpirvBlob fs_spirv;
+} _SituationVkAsyncShaderLoad;
+
+/* HARDENING: void by design — async teardown; poll path sets terminal error before free. */
+static void _SituationVulkanFreeAsyncShaderLoad(_SituationShaderSlot* slot) {
+    if (!slot || !slot->vk_async_load) return;
+    _SituationVkAsyncShaderLoad* ctx = (_SituationVkAsyncShaderLoad*)slot->vk_async_load;
+    while (atomic_load(&ctx->compile_done) == 0) {
+        thrd_yield();
+    }
+    if (ctx->vs_src) SIT_FREE(ctx->vs_src);
+    if (ctx->fs_src) SIT_FREE(ctx->fs_src);
+    if (ctx->vs_spirv_copy) SIT_FREE(ctx->vs_spirv_copy);
+    if (ctx->fs_spirv_copy) SIT_FREE(ctx->fs_spirv_copy);
+    _SituationFreeSpirvBlob(&ctx->vs_spirv);
+    _SituationFreeSpirvBlob(&ctx->fs_spirv);
+    SIT_FREE(ctx);
+    slot->vk_async_load = NULL;
+}
+
+static void _SituationVkAsyncCompileWorker(void* payload, void* unused) {
+    (void)unused;
+    _SituationVkAsyncShaderLoad* ctx = (_SituationVkAsyncShaderLoad*)payload;
+    ctx->vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(ctx->vs_src, "async_vertex", shaderc_glsl_vertex_shader);
+    ctx->fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(ctx->fs_src, "async_fragment", shaderc_glsl_fragment_shader);
+    if (ctx->vs_spirv.data && ctx->fs_spirv.data) {
+        atomic_store(&ctx->compile_done, 1);
+    } else {
+        atomic_store(&ctx->compile_done, -1);
+    }
+}
+#endif /* SITUATION_ENABLE_SHADER_COMPILER */
+
+static SituationError _SituationVulkanBuildGraphicsPipelinesOnSlot(
+    _SituationShaderSlot* slot,
+    const void* vs_spirv, size_t vs_len,
+    const void* fs_spirv, size_t fs_len,
+    SituationSpirvLayoutProfile layout_profile) {
+    if (!slot || !vs_spirv || !fs_spirv || vs_len == 0 || fs_len == 0) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    if ((vs_len & 3u) != 0 || (fs_len & 3u) != 0) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SPIRV_INVALID, "SPIR-V bytecode size must be a multiple of 4.");
+        return SITUATION_ERROR_VULKAN_SPIRV_INVALID;
+    }
+    if (layout_profile > SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+
+    slot->vk_spirv_layout_profile = layout_profile;
+    slot->vk_owns_pipeline_layout = false;
+
+    if (layout_profile == SIT_SPIRV_LAYOUT_PROFILE_MESH) {
+        VkDescriptorSetLayout layouts[] = { sit_render.vk.dynamic_ubo_layout, sit_render.vk.text_sampler_layout };
+        VkPushConstantRange push_constant_range = { .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS, .offset = 0, .size = 128 };
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 2,
+            .pSetLayouts = layouts,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &push_constant_range
+        };
+        if (vkCreatePipelineLayout(sit_render.vk.device, &pipeline_layout_info, NULL, &slot->vk_pipeline_layout) != VK_SUCCESS) {
+            return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+        }
+        slot->vk_owns_pipeline_layout = true;
+    } else if (layout_profile == SIT_SPIRV_LAYOUT_PROFILE_DUAL_SSBO) {
+        slot->vk_pipeline_layout = sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_TWO_SSBOS];
+        if (slot->vk_pipeline_layout == VK_NULL_HANDLE) {
+            return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+        }
+    } else {
+        slot->vk_pipeline_layout = sit_render.vk.graphics_spirv_layout_ubo_ssbo;
+        if (slot->vk_pipeline_layout == VK_NULL_HANDLE) {
+            return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+        }
+    }
+
+    VkVertexInputBindingDescription binding_desc_pbr = { .binding = 0, .stride = (3 + 3 + 4 + 2) * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription attr_descs_pbr[4];
+    attr_descs_pbr[0].binding = 0; attr_descs_pbr[0].location = SIT_ATTR_POSITION; attr_descs_pbr[0].format = VK_FORMAT_R32G32B32_SFLOAT; attr_descs_pbr[0].offset = 0;
+    attr_descs_pbr[1].binding = 0; attr_descs_pbr[1].location = SIT_ATTR_NORMAL; attr_descs_pbr[1].format = VK_FORMAT_R32G32B32_SFLOAT; attr_descs_pbr[1].offset = 3 * sizeof(float);
+    attr_descs_pbr[2].binding = 0; attr_descs_pbr[2].location = SIT_ATTR_TANGENT; attr_descs_pbr[2].format = VK_FORMAT_R32G32B32A32_SFLOAT; attr_descs_pbr[2].offset = 6 * sizeof(float);
+    attr_descs_pbr[3].binding = 0; attr_descs_pbr[3].location = SIT_ATTR_TEXCOORD_0; attr_descs_pbr[3].format = VK_FORMAT_R32G32_SFLOAT; attr_descs_pbr[3].offset = 10 * sizeof(float);
+
+    slot->vk_pipeline = _SituationVulkanCreateGraphicsPipeline(
+        vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u);
+
+    VkVertexInputBindingDescription binding_desc_legacy = { .binding = 0, .stride = (3 + 3 + 2) * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription attr_descs_legacy[3];
+    attr_descs_legacy[0].binding = 0; attr_descs_legacy[0].location = SIT_ATTR_POSITION; attr_descs_legacy[0].format = VK_FORMAT_R32G32B32_SFLOAT; attr_descs_legacy[0].offset = 0;
+    attr_descs_legacy[1].binding = 0; attr_descs_legacy[1].location = SIT_ATTR_NORMAL; attr_descs_legacy[1].format = VK_FORMAT_R32G32B32_SFLOAT; attr_descs_legacy[1].offset = 3 * sizeof(float);
+    attr_descs_legacy[2].binding = 0; attr_descs_legacy[2].location = SIT_ATTR_TEXCOORD_0; attr_descs_legacy[2].format = VK_FORMAT_R32G32_SFLOAT; attr_descs_legacy[2].offset = 6 * sizeof(float);
+
+    slot->vk_pipeline_legacy = _SituationVulkanCreateGraphicsPipeline(
+        vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u);
+
+    VkVertexInputBindingDescription binding_desc_simple = { .binding = 0, .stride = 3 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription attr_descs_simple[1];
+    attr_descs_simple[0].binding = 0; attr_descs_simple[0].location = SIT_ATTR_POSITION; attr_descs_simple[0].format = VK_FORMAT_R32G32B32_SFLOAT; attr_descs_simple[0].offset = 0;
+
+    slot->vk_pipeline_simple = _SituationVulkanCreateGraphicsPipeline(
+        vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u);
+
+    if (slot->vk_pipeline == VK_NULL_HANDLE || slot->vk_pipeline_legacy == VK_NULL_HANDLE) {
+        if (slot->vk_owns_pipeline_layout && slot->vk_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(sit_render.vk.device, slot->vk_pipeline_layout, NULL);
+        }
+        return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+    }
+
+    return SITUATION_SUCCESS;
+}
+
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
+static SituationError _SituationVulkanBuildMeshPipelinesOnSlot(
+    _SituationShaderSlot* slot, const void* vs_spirv, size_t vs_len, const void* fs_spirv, size_t fs_len) {
+    return _SituationVulkanBuildGraphicsPipelinesOnSlot(
+        slot, vs_spirv, vs_len, fs_spirv, fs_len, SIT_SPIRV_LAYOUT_PROFILE_MESH);
+}
+
+static SituationError _SituationPollVkAsyncShaderLoad(_SituationShaderSlot* slot) {
+    if (!slot || !slot->vk_async_load) {
+        return SITUATION_SUCCESS;
+    }
+
+    _SituationVkAsyncShaderLoad* ctx = (_SituationVkAsyncShaderLoad*)slot->vk_async_load;
+    int done = atomic_load(&ctx->compile_done);
+    if (done == 0) {
+        return SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS;
+    }
+
+    if (done < 0) {
+        if (!ctx->vs_spirv.data && !ctx->vs_spirv_copy) {
+            _SituationSetErrorFromCode(
+                SITUATION_ERROR_SHADER_COMPILATION_FAILED,
+                "Async Vulkan vertex GLSL to SPIR-V failed (shaderc).");
+        } else if (!ctx->fs_spirv.data && !ctx->fs_spirv_copy) {
+            _SituationSetErrorFromCode(
+                SITUATION_ERROR_SHADER_COMPILATION_FAILED,
+                "Async Vulkan fragment GLSL to SPIR-V failed (shaderc).");
+        } else {
+            _SituationSetErrorFromCode(
+                SITUATION_ERROR_SHADER_COMPILATION_FAILED,
+                "Async Vulkan shader compile failed.");
+        }
+        _SituationVulkanFreeAsyncShaderLoad(slot);
+        return SituationGetLastErrorCode();
+    }
+
+    const void* vs = ctx->vs_spirv.data ? (const void*)ctx->vs_spirv.data : (const void*)ctx->vs_spirv_copy;
+    size_t vs_len = ctx->vs_spirv.data ? ctx->vs_spirv.size : ctx->vs_spirv_len;
+    const void* fs = ctx->fs_spirv.data ? (const void*)ctx->fs_spirv.data : (const void*)ctx->fs_spirv_copy;
+    size_t fs_len = ctx->fs_spirv.data ? ctx->fs_spirv.size : ctx->fs_spirv_len;
+
+    SituationError err = _SituationVulkanBuildGraphicsPipelinesOnSlot(
+        slot, vs, vs_len, fs, fs_len, ctx->layout_profile);
+    _SituationVulkanFreeAsyncShaderLoad(slot);
+    if (err != SITUATION_SUCCESS) {
+        return _SituationSetErrorFromCode(err, "Async Vulkan pipeline creation failed.");
+    }
+    return SITUATION_SUCCESS;
+}
+#endif /* SITUATION_ENABLE_SHADER_COMPILER */
+
+static SituationError _SituationVulkanLoadShaderFromSpirvMemoryWithProfile(
+    const void* vs_spirv, size_t vs_len, const void* fs_spirv, size_t fs_len,
+    SituationSpirvLayoutProfile layout_profile, SituationShader* out_shader) {
+    if (!out_shader) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_shader, 0, sizeof(SituationShader));
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!vs_spirv || !fs_spirv) return SITUATION_ERROR_INVALID_PARAM;
+    if (vs_len == 0 || fs_len == 0) return SITUATION_ERROR_INVALID_PARAM;
+    if ((vs_len & 3u) != 0 || (fs_len & 3u) != 0) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SPIRV_INVALID, "SPIR-V bytecode size must be a multiple of 4.");
+        return SITUATION_ERROR_VULKAN_SPIRV_INVALID;
+    }
+
+    SituationShader handle;
+    mtx_lock(&sit_render.resource_registry_mutex);
+    _SituationShaderSlot* slot = _SitAllocShaderSlot(&handle);
+    mtx_unlock(&sit_render.resource_registry_mutex);
+    if (!slot) {
+        return SituationGetLastErrorCode();
+    }
+
+    SituationError err = _SituationVulkanBuildGraphicsPipelinesOnSlot(
+        slot, vs_spirv, vs_len, fs_spirv, fs_len, layout_profile);
+    if (err != SITUATION_SUCCESS) {
+        _SitFreeShaderSlot(handle);
+        return err;
+    }
+
+    *out_shader = handle;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Load a graphics pipeline from in-memory SPIR-V (vertex + fragment), **Vulkan** backend.
+ * @details Same triple-pipeline contract as `SituationLoadShaderFromMemory` / disk `SituationLoadShaderFromSpirv` (PBR, legacy, simple vertex layouts; set 0 = dynamic UBO, set 1 = sampler; 128-byte push constants). SPIR-V must be **Vulkan**-target bytecode. Caller buffers need only remain valid until this function returns. Does not record file paths (no hot-reload).
+ */
+SITAPI SituationError SituationLoadShaderFromSpirvMemory(const void* vs_spirv, size_t vs_len, const void* fs_spirv, size_t fs_len, SituationShader* out_shader) {
+    return _SituationVulkanLoadShaderFromSpirvMemoryWithProfile(
+        vs_spirv, vs_len, fs_spirv, fs_len, SIT_SPIRV_LAYOUT_PROFILE_MESH, out_shader);
+}
+
+SITAPI SituationError SituationLoadShaderFromSpirvMemoryEx(const void* vs_spirv, size_t vs_len, const void* fs_spirv, size_t fs_len, SituationSpirvLayoutProfile layout_profile, SituationShader* out_shader) {
+    return _SituationVulkanLoadShaderFromSpirvMemoryWithProfile(
+        vs_spirv, vs_len, fs_spirv, fs_len, layout_profile, out_shader);
+}
+
+/**
+ * @brief Load a graphics pipeline from precompiled SPIR-V files (`.spv`).
+ * @details **Vulkan:** builds the same triple-pipeline layout as `SituationLoadShaderFromMemory` (PBR, legacy, position-only vertex formats; set 0 = dynamic UBO, set 1 = sampler; 128-byte push constants). SPIR-V must match that resource interface and be compiled for **Vulkan** (same family as `SituationLoadShaderFromMemory` / shaderc `shaderc_target_env_vulkan`, e.g. `glslc --target-env=vulkan1.3`). OpenGL-target `.spv` (`--target-env=opengl`, Demon Hunt skydome) is **not** valid here. Does **not** require `SITUATION_ENABLE_SHADER_COMPILER` — only disk I/O and `vkCreateShaderModule` / `vkCreateGraphicsPipelines`.
+ */
+SITAPI SituationError SituationLoadShaderFromSpirv(const char* vs_spv_path, const char* fs_spv_path, SituationShader* out_shader) {
+    if (!out_shader) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_shader, 0, sizeof(SituationShader));
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!vs_spv_path || !fs_spv_path) return SITUATION_ERROR_INVALID_PARAM;
+
+    size_t vs_size = 0;
+    size_t fs_size = 0;
+    char* vs_data = _SituationReadSpirvFile(vs_spv_path, &vs_size);
+    char* fs_data = _SituationReadSpirvFile(fs_spv_path, &fs_size);
+    if (!vs_data || !fs_data) {
+        if (vs_data) SIT_FREE(vs_data);
+        if (fs_data) SIT_FREE(fs_data);
+        return SITUATION_ERROR_FILE_NOT_FOUND;
+    }
+
+    SituationError err = SituationLoadShaderFromSpirvMemory(vs_data, vs_size, fs_data, fs_size, out_shader);
+    SIT_FREE(vs_data);
+    SIT_FREE(fs_data);
+    if (err != SITUATION_SUCCESS) {
+        return err;
+    }
+
+    _SituationShaderSlot* slot = _SitGetShaderSlot(*out_shader);
+    if (slot) {
+        slot->vs_path = _sit_strdup(vs_spv_path);
+        slot->fs_path = _sit_strdup(fs_spv_path);
+        slot->vs_mod_time = SituationGetFileModTime(vs_spv_path);
+        slot->fs_mod_time = SituationGetFileModTime(fs_spv_path);
+    }
+    return SITUATION_SUCCESS;
+}
+
 /**
  * @brief [INTERNAL] Initializes Vulkan pipelines for the Virtual Display Compositing system.
  * @details This function is the second stage of internal renderer setup. It compiles and creates the specific graphics pipelines used by `SituationRenderVirtualDisplays` to draw off-screen framebuffers onto the main screen.
@@ -4066,7 +5082,7 @@ static VkCommandBuffer _SituationVulkanBeginSingleTimeCommands(void) {
  *
  * @see _SituationVulkanBeginSingleTimeCommands(), vkEndCommandBuffer(), vkQueueSubmit(), vkQueueWaitIdle(), vkFreeCommandBuffers()
  */
-static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer) {
+static SituationError _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer) {
 #ifdef SITUATION_VULKAN_DEBUG
     printf("Situation [Vulkan Debug]: _SituationVulkanEndSingleTimeCommands called\n"); fflush(stdout);
     printf("Situation [Vulkan Debug]:   command_buffer=%p\n", (void*)command_buffer); fflush(stdout);
@@ -4075,10 +5091,7 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
     // --- 1. Input Validation ---
     // While internal, checking for VK_NULL_HANDLE prevents potential crashes.
     if (command_buffer == VK_NULL_HANDLE) {
-        // Silently return if an invalid handle is passed.
-        // This prevents crashing but indicates a logic error upstream.
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanEndSingleTimeCommands: command_buffer is VK_NULL_HANDLE.");
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationVulkanEndSingleTimeCommands: command_buffer is VK_NULL_HANDLE.");
     }
     // Note: We don't check sit_render.vk.device/queue/pool here as they should be valid if this function is called correctly after Begin. A check could be added if paranoia dictates.
 
@@ -4088,14 +5101,8 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
                  "_SituationVulkanEndSingleTimeCommands: vkEndCommandBuffer failed (VkResult: 0x%x).", result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
-        // --- CRITICAL DECISION ---
-        // If vkEndCommandBuffer fails, the command buffer is in an undefined state.
-        // Attempting to submit it would be incorrect.
-        // The safest approach is to free it immediately to prevent leaks, even though submission/waiting will be skipped.
         vkFreeCommandBuffers(sit_render.vk.device, sit_render.vk.command_pool, 1, &command_buffer);
-        // --- END CRITICAL DECISION ---
-        return; // Exit early, do not proceed with submission/waiting
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
     }
 
     // --- 3. Submit the Command Buffer to the Graphics Queue ---
@@ -4115,13 +5122,8 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
         char error_detail[256];
         snprintf(error_detail, sizeof(error_detail),
                  "_SituationVulkanEndSingleTimeCommands: vkQueueSubmit failed (VkResult: 0x%x).", result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED, error_detail);
-        // --- CRITICAL CLEANUP ---
-        // Even if submission fails, we must still free the command buffer
-        // to prevent a resource leak.
         vkFreeCommandBuffers(sit_render.vk.device, sit_render.vk.command_pool, 1, &command_buffer);
-        // --- END CRITICAL CLEANUP ---
-        return; // Exit early, do not proceed with waiting
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, error_detail);
     }
 
     // --- 4. Wait for the Submitted Commands to Finish ---
@@ -4142,89 +5144,10 @@ static void _SituationVulkanEndSingleTimeCommands(VkCommandBuffer command_buffer
     // Regardless of whether the wait succeeded (in terms of device health), we must free the command buffer to prevent leaks.
     vkFreeCommandBuffers(sit_render.vk.device, sit_render.vk.command_pool, 1, &command_buffer);
     // After this call, `command_buffer` is an invalid handle and must not be used.
+
+    return (result == VK_SUCCESS) ? SITUATION_SUCCESS : SITUATION_ERROR_VULKAN_COMMAND_FAILED;
 }
 
-
-// --- Updated/Added Documentation Block for _SituationReadSpirvFile ---
-/**
- * @brief [INTERNAL] Reads a raw SPIR-V binary file into memory.
- *
- * @details This helper function is a convenience wrapper designed specifically for loading compiled SPIR-V shader binaries (`.spv` files) from the filesystem.
- *          It leverages the library's existing `SituationLoadFileData` function to perform the actual file I/O, ensuring consistency in file access methods.
- *
- * @par Expected File Format
- * The file pointed to by `filename` is expected to be a raw binary file containing the compiled SPIR-V bytecode. No text parsing or conversion is performed.
- *
- * @param filename The null-terminated path to the `.spv` file to be read. This pointer must not be NULL.
- * @param[out] out_size A pointer to a `size_t` variable where the size of the read data (in bytes) will be stored. This pointer must not be NULL.
- *
- * @return A pointer to a newly allocated block of memory containing the raw bytes of the SPIR-V file.
- *         - The caller takes ownership of this memory and is responsible for calling `free()` on the returned pointer when it is no longer needed.
- *         - The memory block is guaranteed to be at least `*out_size` bytes long and null-terminated (an extra byte is allocated and set to 0, though the SPIR-V data itself is binary and might contain 0s).
- * @return NULL if the function fails. This can happen if:
- *         - `filename` is NULL.
- *         - `out_size` is NULL.
- *         - `SituationLoadFileData` fails to open or read the file (e.g., file not found, permission denied, read error).
- *         - Memory allocation fails.
- *         In case of failure, `*out_size` is set to 0, and a specific error message is set via `_SituationSetErrorFromCode` (inherited from `SituationLoadFileData` or generated by this function).
- *
- * @note This function is for internal library use and is not part of the public API.
- * @note The returned pointer points to memory allocated using the standard `SIT_MALLOC`.
- *       It must be freed using the standard `free`.
- * @warning The caller must check the return value for NULL before using it.
- * @warning The contents of the returned buffer are raw binary data and should be treated as such. Casting it to other types (e.g., `uint32_t*` for
- *          SPIR-V words) is safe, but care must be taken with endianness if the file was compiled for a different architecture.
- *
- * @see SituationLoadFileData(), SIT_FREE()
- */
-static char* _SituationReadSpirvFile(const char* filename, size_t* out_size) {
-    // --- 1. Input Validation ---
-    if (!filename) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationReadSpirvFile: filename cannot be NULL.");
-        if (out_size) *out_size = 0;
-        return NULL;
-    }
-    if (!out_size) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationReadSpirvFile: out_size cannot be NULL.");
-        // Cannot set *out_size to 0 as it's NULL, but error is set.
-        return NULL;
-    }
-
-    // --- 2. Initialize Output ---
-    *out_size = 0; // Initialize output size to zero in case of early return.
-
-    // --- 3. Use Existing File Loading Logic ---
-    // Leverage the library's established `SituationLoadFileData` function.
-    // This function is assumed to handle file opening, reading into a SIT_MALLOC'd buffer, and null-terminating the buffer. It returns the number of bytes read.
-    unsigned int bytes_read_u32 = 0; // Use the type expected by SituationLoadFileData
-    unsigned char* buffer_tmp = NULL;
-    SituationLoadFileData(filename, &bytes_read_u32, &buffer_tmp);
-    char* buffer = (char*)buffer_tmp;
-
-    // --- 4. Handle Result from SituationLoadFileData ---
-    if (!buffer) {
-        // SituationLoadFileData failed. It should have set a specific error message in sit_gs.last_error_msg (e.g., "File not found", "Permission denied").
-        // We can optionally prefix this message for context.
-        char prefixed_error[SITUATION_MAX_ERROR_MSG_LEN];
-        snprintf(prefixed_error, sizeof(prefixed_error),
-                 "_SituationReadSpirvFile: Failed to load file '%s'. Reason: %s",
-                 filename);
-        char* error_msg = NULL;
-        SituationGetLastErrorMsg(&error_msg); // Get error from SituationLoadFileData
-        _SituationSetError(prefixed_error); // Update global error with context
-        // *out_size is already 0.
-        return NULL; // Return NULL to indicate failure
-    }
-
-    // --- 5. Success ---
-    // SituationLoadFileData succeeded. `buffer` points to the allocated data, and `bytes_read_u32` contains the number of bytes read.
-    // Convert the byte count to size_t for the output parameter.
-    *out_size = (size_t)bytes_read_u32;
-
-    // The buffer is allocated by SituationLoadFileData and is owned by the caller.
-    // It is guaranteed to be at least *out_size bytes + 1 (null terminator).
-    return buffer;
-}
 
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
 
@@ -4585,65 +5508,38 @@ static void _SituationFreeSpirvBlob(_SituationSpirvBlob* blob) {
  * @see _SituationVulkanCreateComputePipeline(), _SituationVulkanCreateGraphicsPipeline(), vkCreateShaderModule(), vkDestroyShaderModule()
  */
 static VkShaderModule _SituationCreateVulkanShaderModule(const char* code, size_t code_size) {
-    // --- 1. Input Validation ---
-    // Check for invalid inputs before proceeding. This prevents crashes
-    // and provides clearer error feedback early.
-    if (!code) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationCreateVulkanShaderModule: SPIR-V code pointer is NULL." );
+    if (!code || code_size == 0) {
+        _SituationSetErrorFromCode(
+            SITUATION_ERROR_VULKAN_SPIRV_INVALID,
+            "SPIR-V code pointer is NULL or size is zero.");
         return VK_NULL_HANDLE;
     }
-    if (code_size == 0) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationCreateVulkanShaderModule: SPIR-V code size is zero." );
-        return VK_NULL_HANDLE;
-    }
-    // Optional: Check if code_size is a multiple of 4 (size of a SPIR-V word).
-    // While vkCreateShaderModule might catch this, checking here is defensive.
-    if (code_size % 4 != 0) {
-        _SituationSetErrorFromCode( SITUATION_ERROR_INVALID_PARAM, "_SituationCreateVulkanShaderModule: SPIR-V code size is not a multiple of 4 bytes." );
+    if ((code_size & 3u) != 0) {
+        char detail[160];
+        snprintf(detail, sizeof(detail),
+                 "SPIR-V size %zu is not a multiple of 4 bytes", code_size);
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SPIRV_INVALID, detail);
         return VK_NULL_HANDLE;
     }
 
-    // --- 2. Prepare VkShaderModuleCreateInfo ---
-    // This struct tells Vulkan how to create the shader module from the provided data.
-    VkShaderModuleCreateInfo create_info = {}; // Explicitly zero-initialize
-    create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; // Mandatory sType
-    create_info.pNext = NULL; // No extension structures
-    create_info.flags = 0; // No special flags for shader module creation
-    create_info.codeSize = code_size; // Size of the SPIR-V bytecode in bytes
-    // Cast the const char* to const uint32_t* as required by VkShaderModuleCreateInfo.
-    // The Vulkan specification allows this for SPIR-V data.
+    VkShaderModuleCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    create_info.codeSize = code_size;
     create_info.pCode = (const uint32_t*)code;
 
-    // --- 3. Create the VkShaderModule ---
-    // This is the actual Vulkan API call that creates the shader module object.
-    VkShaderModule shader_module = VK_NULL_HANDLE; // Initialize handle
+    VkShaderModule shader_module = VK_NULL_HANDLE;
     VkResult result = vkCreateShaderModule(
-        sit_render.vk.device,       // The logical device the module is associated with
-        &create_info,           // Creation parameters
-        NULL,                   // Optional allocation callbacks (use default)
-        &shader_module          // Output: the created VkShaderModule handle
-    );
-
-    // --- 4. Handle Result ---
+        sit_render.vk.device, &create_info, NULL, &shader_module);
     if (result != VK_SUCCESS) {
-        // vkCreateShaderModule failed. This usually indicates a problem with
-        // the provided SPIR-V data (invalid format, unsupported instructions)
-        // or a driver/device issue.
         char error_detail[256];
         snprintf(
-            error_detail,
-            sizeof(error_detail),
-            "_SituationCreateVulkanShaderModule failed: vkCreateShaderModule returned VkResult 0x%x. Check SPIR-V validity or driver state.",
-            result
-        );
+            error_detail, sizeof(error_detail),
+            "shader SPIR-V (%zu bytes): vkCreateShaderModule VkResult 0x%x",
+            code_size, (unsigned)result);
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED, error_detail);
-        // Ensure the output handle remains VK_NULL_HANDLE on failure.
-        shader_module = VK_NULL_HANDLE;
-        // Note: No need to call vkDestroyShaderModule as it wasn't successfully created.
+        return VK_NULL_HANDLE;
     }
 
-    // --- 5. Return Result ---
-    // Return the created handle (VK_NULL_HANDLE on failure).
     return shader_module;
 }
 
@@ -4740,8 +5636,15 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
     color_blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     color_blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
     VkPipelineColorBlendStateCreateInfo color_blending = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .logicOpEnable = VK_FALSE, .attachmentCount = 1, .pAttachments = &color_blend_attachment };
-    VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dynamic_state_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dynamic_states };
+    VkDynamicState dynamic_states[] = { 
+        VK_DYNAMIC_STATE_VIEWPORT, 
+        VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_CULL_MODE,
+        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_COMPARE_OP
+    };
+    VkPipelineDynamicStateCreateInfo dynamic_state_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 6, .pDynamicStates = dynamic_states };
 
     // 5. Create Pipeline Layout
     // This defines what uniforms/push constants the pipeline will use. A real engine has a complex system for this.
@@ -5371,6 +6274,11 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         _SituationCleanupVulkan();
         return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
     }
+    if (_SituationVulkanInitGraphicsSpirvLayouts() != SITUATION_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create graphics SPIR-V pipeline layouts.");
+        _SituationCleanupVulkan();
+        return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+    }
 
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     // 1. Initialize the Quad Renderer (Shared Function)
@@ -5378,18 +6286,23 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
 #ifdef SITUATION_VULKAN_DEBUG
     printf("Situation [Vulkan Debug]: Initializing quad renderer...\n"); fflush(stdout);
     #endif
-    if (!_SituationInitQuadRenderer(0, 0)) {
+    {
+        SituationError quad_err = _SituationInitQuadRenderer(0, 0);
+        if (quad_err != SITUATION_SUCCESS) {
         _SituationCleanupVulkan();
-        return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+        return quad_err;
+        }
     }
 
     #ifdef SITUATION_VULKAN_DEBUG
     printf("Situation [Vulkan Debug]: About to call _SituationInitDefaultFont...\n"); fflush(stdout);
     #endif
-    if (!_SituationInitDefaultFont()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_INIT_FAILED, "_SituationInitVulkan: Failed to initialize default font.");
+    {
+        SituationError font_err = _SituationInitDefaultFont();
+        if (font_err != SITUATION_SUCCESS) {
         _SituationCleanupVulkan();
-        return SITUATION_ERROR_VULKAN_INIT_FAILED;
+        return font_err;
+        }
     }
     #ifdef SITUATION_VULKAN_DEBUG
     printf("Situation [Vulkan Debug]: _SituationInitDefaultFont succeeded!\n"); fflush(stdout);
@@ -7621,12 +8534,12 @@ static SituationError _SituationVulkanEnsureScreenshotResources(uint32_t width, 
 static void _SituationVulkanRecordScreenshotCopy(VkCommandBuffer cmd, VkImage swapchain_image, uint32_t width, uint32_t height);
 static void _SituationVulkanResolveScreenshotAfterSubmit(uint32_t frame_index);
 #endif
-static void _SituationVulkanCleanupSwapchain(void) {
+static SituationError _SituationVulkanCleanupSwapchain(void) {
     // --- 1. Validate Device Handle (Robustness) ---
     if (sit_render.vk.device == VK_NULL_HANDLE) {
         // Nothing to clean up if the device isn't created.
         // This can happen during partial init/cleanup.
-        return;
+        return SITUATION_SUCCESS;
     }
 
     // --- 2. Ensure GPU is Finished Using Resources ---
@@ -7709,6 +8622,9 @@ static void _SituationVulkanCleanupSwapchain(void) {
     // sit_render.vk.swapchain_image_count could be reset here, but it's often left
     // for the recreation process to potentially reuse if the new swapchain has the same count.
     // It's set correctly by _SituationVulkanCreateSwapchain.
+
+    // HARDENING: best-effort teardown — vkDestroy* does not surface failures; always succeeds.
+    return SITUATION_SUCCESS;
 }
 
 
@@ -7732,7 +8648,7 @@ static void _SituationVulkanCleanupSwapchain(void) {
  *
  * @see _SituationVulkanCleanupSwapchain(), SituationEndFrame()
  */
-static void _SituationVulkanRecreateSwapchain(void) {
+static SituationError _SituationVulkanRecreateSwapchain(void) {
     // --- 1. Handle Window Minimization ---
     // If the window is minimized, width/height can be 0. We must wait for a valid size.
     int width = 0, height = 0;
@@ -7748,60 +8664,49 @@ static void _SituationVulkanRecreateSwapchain(void) {
     // It's crucial that these steps happen in order and that failures are handled.
 
     // 3.1. Cleanup old swapchain resources.
-    _SituationVulkanCleanupSwapchain();
+    (void)_SituationVulkanCleanupSwapchain();
 
     // 3.2. Create the new swapchain.
     // If this fails, there's nothing to clean up further as CleanupSwapchain already ran.
     SituationError create_swapchain_result = _SituationVulkanCreateSwapchain();
     if (create_swapchain_result != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(create_swapchain_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateSwapchain.");
-        // The state is now inconsistent (no swapchain). The application loop should detect this (e.g., via error state or failed subsequent BeginFrame) and handle appropriately.
-        return;
+        return _SituationSetErrorFromCode(create_swapchain_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateSwapchain.");
     }
 
     // 3.3. Create image views for the new swapchain images.
     SituationError create_views_result = _SituationVulkanCreateImageViews();
     if (create_views_result != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(create_views_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateImageViews.");
-        // State: Swapchain exists, but no image views.
-        // Clean up the swapchain we just made.
         if (sit_render.vk.swapchain != VK_NULL_HANDLE) {
             vkDestroySwapchainKHR(sit_render.vk.device, sit_render.vk.swapchain, NULL);
             sit_render.vk.swapchain = VK_NULL_HANDLE;
         }
-        return;
+        return _SituationSetErrorFromCode(create_views_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateImageViews.");
     }
 
     // 3.4. Create depth resources for the new swapchain extent.
     SituationError create_depth_result = _SituationVulkanCreateDepthResources();
     if (create_depth_result != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(create_depth_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateDepthResources.");
-        // State: Swapchain and image views exist, but no depth.
-        // We need to clean up the resources created so far in this cycle.
-        // CleanupSwapchain can handle this general case now.
         _SituationVulkanCleanupSwapchain();
-        return;
+        return _SituationSetErrorFromCode(create_depth_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateDepthResources.");
     }
 
     // 3.5. Create framebuffers linking the new image views and depth buffer.
     SituationError create_framebuffers_result = _SituationVulkanCreateFramebuffers();
     if (create_framebuffers_result != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(create_framebuffers_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateFramebuffers.");
-        // State: Swapchain, image views, and depth exist, but no framebuffers.
-        // Clean up all swapchain-derived resources created in this cycle.
         _SituationVulkanCleanupSwapchain();
-        return;
+        return _SituationSetErrorFromCode(create_framebuffers_result, "_SituationVulkanRecreateSwapchain failed in _SituationVulkanCreateFramebuffers.");
     }
 
     // --- 4. Screen copy (advanced VD Path A) — destroyed in CleanupSwapchain; must be recreated here ---
-    if (_SituationVulkanCreateScreenCopyResource() != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED,
-            "_SituationVulkanRecreateSwapchain: screen copy recreation failed after swapchain rebuild.");
+    SituationError screen_copy_result = _SituationVulkanCreateScreenCopyResource();
+    if (screen_copy_result != SITUATION_SUCCESS) {
         _SituationVulkanCleanupSwapchain();
-        return;
+        return _SituationSetErrorFromCode(screen_copy_result,
+            "_SituationVulkanRecreateSwapchain: screen copy recreation failed after swapchain rebuild.");
     }
 
     // --- 5. Success ---
+    return SITUATION_SUCCESS;
 }
 
 #endif // SITUATION_USE_VULKAN
@@ -7841,7 +8746,7 @@ static void _SituationVulkanRecreateSwapchain(void) {
  *
  * @see _SituationCleanupQuadRenderer(), SituationCmdDrawQuad(), SituationCmdDrawText()
  */
-static bool _SituationInitDefaultFont(void) {
+static SituationError _SituationInitDefaultFont(void) {
     // 8x8 font bitmap from sit_default_8x8_font. 256 chars.
     // Layout: 16 chars per row, 16 rows.
     const int tex_w = 128;
@@ -7850,8 +8755,7 @@ static bool _SituationInitDefaultFont(void) {
     uint8_t* pixels = (uint8_t*)SIT_CALLOC(1, data_size);
 
     if (!pixels) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate default font atlas.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate default font atlas.");
     }
 
     // Expand 1-bit font data to RGBA texture
@@ -7885,9 +8789,8 @@ static bool _SituationInitDefaultFont(void) {
     SituationError tex_result = SituationCreateTexture(img, false, &sit_render.default_font_atlas);
 
     if (tex_result != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(tex_result, "_SituationInitDefaultFont: Failed to create font atlas texture");
         SIT_FREE(pixels);
-        return false;
+        return _SituationSetErrorFromCode(tex_result, "_SituationInitDefaultFont: Failed to create font atlas texture");
     }
 
     // Override filtering to NEAREST for pixel-perfect bitmap font rendering
@@ -7897,6 +8800,10 @@ static bool _SituationInitDefaultFont(void) {
         if (slot && slot->gl_texture_id) {
             glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_BASE_LEVEL, 0);
+            glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MAX_LEVEL, 0);
+            slot->min_filter = SIT_TEXTURE_FILTER_NEAREST;
+            slot->mag_filter = SIT_TEXTURE_FILTER_NEAREST;
         }
     }
     #endif
@@ -7905,6 +8812,49 @@ static bool _SituationInitDefaultFont(void) {
     // Recreate the descriptor set with the correct layout
     #if defined(SITUATION_USE_VULKAN)
     _SituationTextureSlot* font_slot = _SitGetTextureSlot(sit_render.default_font_atlas);
+    if (font_slot) {
+        if (font_slot->sampler != VK_NULL_HANDLE) {
+            _SituationDeferDestroyImage(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, font_slot->sampler);
+            font_slot->sampler = VK_NULL_HANDLE;
+        }
+
+        VkSamplerCreateInfo sampler_info = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        sampler_info.minFilter = VK_FILTER_NEAREST;
+        sampler_info.magFilter = VK_FILTER_NEAREST;
+        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.anisotropyEnable = VK_FALSE;
+        sampler_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        sampler_info.unnormalizedCoordinates = VK_FALSE;
+        sampler_info.compareEnable = VK_FALSE;
+        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler_info.mipLodBias = 0.0f;
+        sampler_info.minLod = 0.0f;
+        sampler_info.maxLod = 0.0f;
+        if (vkCreateSampler(sit_render.vk.device, &sampler_info, NULL, &font_slot->sampler) == VK_SUCCESS) {
+            font_slot->min_filter = SIT_TEXTURE_FILTER_NEAREST;
+            font_slot->mag_filter = SIT_TEXTURE_FILTER_NEAREST;
+            font_slot->wrap_s = SIT_TEXTURE_WRAP_CLAMP_TO_EDGE;
+            font_slot->wrap_t = SIT_TEXTURE_WRAP_CLAMP_TO_EDGE;
+
+            if (sit_render.vk.global_bindless_set != VK_NULL_HANDLE) {
+                VkDescriptorImageInfo bindless_image_info = {};
+                bindless_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                bindless_image_info.imageView = font_slot->image_view;
+                bindless_image_info.sampler = font_slot->sampler;
+
+                VkWriteDescriptorSet bindless_write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+                bindless_write.dstSet = sit_render.vk.global_bindless_set;
+                bindless_write.dstBinding = 0;
+                bindless_write.dstArrayElement = (uint32_t)sit_render.default_font_atlas.slot_index;
+                bindless_write.descriptorCount = 1;
+                bindless_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                bindless_write.pImageInfo = &bindless_image_info;
+                vkUpdateDescriptorSets(sit_render.vk.device, 1, &bindless_write, 0, NULL);
+            }
+        }
+    }
     if (font_slot && font_slot->descriptor_set != VK_NULL_HANDLE) {
         // Allocate new descriptor set with text_sampler_layout
         VkDescriptorPool used_pool = VK_NULL_HANDLE;
@@ -7950,7 +8900,7 @@ static bool _SituationInitDefaultFont(void) {
     sit_render.default_font.bitmap_width = 0;
     sit_render.default_font.bitmap_height = 0;
     sit_render.default_font.bitmap_count = 0;
-    return true;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -8011,7 +8961,7 @@ static bool _SituationInitDefaultFont(void) {
  *      SITUATION_ERROR_SHADER_COMPILATION_FAILED,
  *      SITUATION_ERROR_VULKAN_PIPELINE_CREATE_FAILED
  */
-static bool _SituationInitQuadRenderer(int width, int height) {
+static SituationError _SituationInitQuadRenderer(int width, int height) {
 #if defined(SITUATION_USE_OPENGL)
     // --- OpenGL Quad Renderer Initialization ---
     SIT_DEBUG_LOG("[QUAD] Starting quad renderer initialization");
@@ -8024,7 +8974,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     if (shader_err_code != SITUATION_SUCCESS || sit_render.gl.quad_shader_program == 0) {
         SIT_DEBUG_LOG("[QUAD] FAILED: Shader compilation failed, error code: %d", shader_err_code);
         // Error message should already be set by _SituationCreateGLShaderProgram
-        return false;
+        return (shader_err_code != SITUATION_SUCCESS) ? shader_err_code : SITUATION_ERROR_OPENGL_GENERAL;
     }
     SIT_DEBUG_LOG("[QUAD] Shader program created successfully, ID: %u", sit_render.gl.quad_shader_program);
 
@@ -8044,11 +8994,9 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     glCreateVertexArrays(1, &sit_render.gl.quad_vao);
     if (sit_render.gl.quad_vao == 0) {
         SIT_DEBUG_LOG("[QUAD] FAILED: VAO creation failed");
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitQuadRenderer: Failed to create private quad VAO.");
-        // Cleanup shader program on VAO creation failure
         glDeleteProgram(sit_render.gl.quad_shader_program);
         sit_render.gl.quad_shader_program = 0;
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitQuadRenderer: Failed to create private quad VAO.");
     }
     SIT_DEBUG_LOG("[QUAD] VAO created successfully, ID: %u", sit_render.gl.quad_vao);
     SIT_CHECK_GL_ERROR(); // Check for errors during VAO creation
@@ -8057,13 +9005,11 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     glCreateBuffers(1, &sit_render.gl.quad_vbo);
     if (sit_render.gl.quad_vbo == 0) {
         SIT_DEBUG_LOG("[QUAD] FAILED: VBO creation failed");
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitQuadRenderer: Failed to create private quad VBO.");
-        // Cleanup shader program and VAO on VBO creation failure
         glDeleteProgram(sit_render.gl.quad_shader_program);
         sit_render.gl.quad_shader_program = 0;
         glDeleteVertexArrays(1, &sit_render.gl.quad_vao);
         sit_render.gl.quad_vao = 0;
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitQuadRenderer: Failed to create private quad VBO.");
     }
     SIT_DEBUG_LOG("[QUAD] VBO created successfully, ID: %u", sit_render.gl.quad_vbo);
     SIT_CHECK_GL_ERROR(); // Check for errors during VBO creation
@@ -8121,7 +9067,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     SIT_CHECK_GL_ERROR();
 
     SIT_DEBUG_LOG("[QUAD] Quad renderer initialization complete");
-    return true; // Indicate success
+    return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
     // --- Vulkan Quad Renderer Initialization ---
@@ -8149,7 +9095,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
         #endif
         _SituationFreeSpirvBlob(&vs_spirv);
         _SituationFreeSpirvBlob(&fs_spirv);
-        return false; // Error already set by compiler
+        return SituationGetLastErrorCode();
     }
 #ifdef SITUATION_VULKAN_DEBUG
     printf("Situation [Vulkan Debug]:   Shaders compiled successfully\n"); fflush(stdout);
@@ -8186,11 +9132,8 @@ static bool _SituationInitQuadRenderer(int width, int height) {
         _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create quad pipeline layout.");
         _SituationFreeSpirvBlob(&vs_spirv);
         _SituationFreeSpirvBlob(&fs_spirv);
-        return false;
+        return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
     }
-#ifdef SITUATION_VULKAN_DEBUG
-    printf("Situation [Vulkan Debug]:   Pipeline layout created successfully\n"); fflush(stdout);
-    #endif
 
     // 3. Define the quad's specific vertex input layout.
     VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
@@ -8221,7 +9164,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
 #ifdef SITUATION_VULKAN_DEBUG
         printf("Situation [Vulkan Debug]:   ERROR: Pipeline creation returned NULL!\n"); fflush(stdout);
         #endif
-        return false;
+        return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
     }
 #ifdef SITUATION_VULKAN_DEBUG
     printf("Situation [Vulkan Debug]:   Graphics pipeline created successfully\n"); fflush(stdout);
@@ -8241,8 +9184,7 @@ static bool _SituationInitQuadRenderer(int width, int height) {
         1.0f, 1.0f
     };
     if (_SituationVulkanCreateAndUploadBuffer(VK_NULL_HANDLE, quad_vertices, sizeof(quad_vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &sit_render.vk.quad_vertex_buffer, &sit_render.vk.quad_vertex_buffer_memory) != SITUATION_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create quad vertex buffer.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED, "Failed to create quad vertex buffer.");
     }
 #ifdef SITUATION_VULKAN_DEBUG
     printf("Situation [Vulkan Debug]:   Quad vertex buffer created successfully\n"); fflush(stdout);
@@ -8250,9 +9192,9 @@ static bool _SituationInitQuadRenderer(int width, int height) {
     printf("Situation [Vulkan Debug]:   Quad renderer initialization complete!\n"); fflush(stdout);
     #endif
 
-    return true;
+    return SITUATION_SUCCESS;
 #endif
-    return false; // Should not be reached
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
 }
 
 /**
@@ -8299,22 +9241,21 @@ static bool _SituationInitQuadRenderer(int width, int height) {
  *      SITUATION_ENABLE_TEXT_RENDERER (compile-time toggle),
  *      SITUATION_ERROR_SHADER_COMPILATION_FAILED, SITUATION_ERROR_MEMORY_ALLOCATION
  */
-static bool _SituationInitTextRenderer(void) {
+static SituationError _SituationInitTextRenderer(void) {
 #if defined(SITUATION_USE_OPENGL)
     SituationError shader_err;
     sit_render.gl.text_shader_program = _SituationCreateGLShaderProgram(SIT_TEXT_VERTEX_SHADER, SIT_TEXT_FRAGMENT_SHADER, &shader_err);
-    if (shader_err != SITUATION_SUCCESS) return false;
+    if (shader_err != SITUATION_SUCCESS) return shader_err;
 
     glCreateVertexArrays(1, &sit_render.gl.text_vao);
     glCreateBuffers(1, &sit_render.gl.text_vbo);
 
     if (sit_render.gl.text_vao == 0 || sit_render.gl.text_vbo == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitTextRenderer: Failed to create text VAO/VBO");
         if (sit_render.gl.text_vao) { glDeleteVertexArrays(1, &sit_render.gl.text_vao); sit_render.gl.text_vao = 0; }
         if (sit_render.gl.text_vbo) { glDeleteBuffers(1, &sit_render.gl.text_vbo); sit_render.gl.text_vbo = 0; }
         glDeleteProgram(sit_render.gl.text_shader_program);
         sit_render.gl.text_shader_program = 0;
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "_SituationInitTextRenderer: Failed to create text VAO/VBO");
     }
 
     // Pre-allocate a dynamic buffer (512KB = ~5400 characters)
@@ -8336,14 +9277,14 @@ static bool _SituationInitTextRenderer(void) {
 
     glBindVertexArray(0);
     // sit_render.gl.current_vao_id = 0;
-    return true;
+    return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
     // Vulkan initialization is handled in _SituationVulkanInitInternalRenderers due to complex dependency chains
     // (Pipeline Layouts, SPIR-V compilation, etc.)
-    return true;
+    return SITUATION_SUCCESS;
 #endif
-    return false;
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
 }
 
 /**
@@ -8571,6 +9512,10 @@ static void _SituationCleanupVulkan(void) {
             vkDestroyPipelineLayout(sit_render.vk.device, sit_render.vk.compute_layouts[i], NULL);
         }
     }
+    if (sit_render.vk.graphics_spirv_layout_ubo_ssbo != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(sit_render.vk.device, sit_render.vk.graphics_spirv_layout_ubo_ssbo, NULL);
+        sit_render.vk.graphics_spirv_layout_ubo_ssbo = VK_NULL_HANDLE;
+    }
     vkDestroyCommandPool(sit_render.vk.device, sit_render.vk.command_pool, NULL);
     vkDestroyCommandPool(sit_render.vk.device, sit_render.vk.compute_command_pool, NULL);
     vkDestroyRenderPass(sit_render.vk.device, sit_render.vk.main_window_render_pass, NULL);
@@ -8722,6 +9667,26 @@ static void _SituationCleanupVulkan(void) {
 
     if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.compute_layouts[SIT_COMPUTE_LAYOUT_VECTOR]) != VK_SUCCESS) return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
 
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief [INTERNAL] Cached graphics pipeline layouts for user SPIR-V (harness / custom descriptors).
+ */
+static SituationError _SituationVulkanInitGraphicsSpirvLayouts(void) {
+    VkDescriptorSetLayout set_layouts[2] = {
+        sit_render.vk.ubo_layout,
+        sit_render.vk.ssbo_layout
+    };
+    VkPipelineLayoutCreateInfo layout_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 2,
+        .pSetLayouts = set_layouts,
+        .pushConstantRangeCount = 0
+    };
+    if (vkCreatePipelineLayout(sit_render.vk.device, &layout_info, NULL, &sit_render.vk.graphics_spirv_layout_ubo_ssbo) != VK_SUCCESS) {
+        return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+    }
     return SITUATION_SUCCESS;
 }
 
@@ -8955,7 +9920,10 @@ static void* _SituationVulkanBlitImageToHostVisibleBuffer(VkImage srcImage, VkIm
     _SituationVulkanTransitionImageLayout(cmd, srcImage, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, srcImageLayout);
 
     // Submit and wait for completion
-    _SituationVulkanEndSingleTimeCommands(cmd);
+    if (_SituationVulkanEndSingleTimeCommands(cmd) != SITUATION_SUCCESS) {
+        vmaDestroyBuffer(sit_render.vk.vma_allocator, dstBuffer, dstAllocation);
+        return NULL;
+    }
 
     // --- Step 3: Map the memory, copy it, and clean up ---
     void* mappedData;
@@ -9257,58 +10225,16 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 
 #if defined(SITUATION_USE_OPENGL)
     {
-        // [Hot-Reload] Poll Async Shader Linking
+        // [Async load / Hot-Reload] Poll non-blocking GLSL compile stages, then program link.
         for (int i = 0; i < SITUATION_MAX_SHADERS; i++) {
             _SituationShaderSlot* slot = &sit_render.shader_registry[i];
-            if (slot->is_active && slot->gl_is_linking) {
-                GLint status = 0;
-                // Check if linking has finished (non-blocking if supported)
-                glGetProgramiv(slot->gl_pending_program_id, GL_COMPLETION_STATUS_KHR, &status);
-
-                if (status == GL_TRUE) {
-                    // Linking complete. Check success.
-                    GLint success = 0;
-                    glGetProgramiv(slot->gl_pending_program_id, GL_LINK_STATUS, &success);
-
-                    if (success) {
-                        // Success: Swap
-                        if (slot->gl_program_id) glDeleteProgram(slot->gl_program_id);
-                        slot->gl_program_id = slot->gl_pending_program_id;
-                        slot->gl_pending_program_id = 0;
-
-                        // Recreate Uniform Map for the new program
-                        if (slot->uniform_map) _sit_uniform_map_destroy(slot->uniform_map);
-                        slot->uniform_map = _sit_uniform_map_create();
-
-                        if (slot->uniform_map) {
-                             GLint count;
-                             glGetProgramiv(slot->gl_program_id, GL_ACTIVE_UNIFORMS, &count);
-                             for (GLint j = 0; j < count; j++) {
-                                 char name[256];
-                                 GLsizei length;
-                                 GLint size;
-                                 GLenum type;
-                                 glGetActiveUniform(slot->gl_program_id, (GLuint)j, sizeof(name), &length, &size, &type, name);
-                                 GLint location = glGetUniformLocation(slot->gl_program_id, name);
-                                 if (location != -1) {
-                                     _sit_uniform_map_set(slot->uniform_map, name, location);
-                                 }
-                             }
-                        }
-
-                        #ifndef NDEBUG
-                        printf("[Situation] Shader %d Hot-Reloaded Successfully (Async)\n", i);
-                        #endif
-                    } else {
-                         // Failed: Log and discard
-                         char infoLog[1024];
-                         glGetProgramInfoLog(slot->gl_pending_program_id, 1024, NULL, infoLog);
-                         fprintf(stderr, "[Situation] Hot-Reload Link Failed for Shader %d: %s\n", i, infoLog);
-                         glDeleteProgram(slot->gl_pending_program_id);
-                         slot->gl_pending_program_id = 0;
-                    }
-                    slot->gl_is_linking = false;
+            if (slot->is_active) {
+                /* SPIR-V specialize is driven from SituationPollShaderLoad (one step per app poll).
+                 * Polling here too caused FS specialize inside render_frame (UI freeze, no sky_poll logs). */
+                if (slot->gl_async_load_stage != SIT_GL_ASYNC_STAGE_SPIRV) {
+                    _SituationPollGLAsyncShaderLoad(slot);
                 }
+                _SituationPollGLPendingProgramLink(slot);
             }
         }
 
@@ -9328,6 +10254,26 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
             cnd_wait(&sit_render.main_wait_cv, &sit_render.render_queue_mutex);
         }
         mtx_unlock(&sit_render.render_queue_mutex);
+        /* Drop loader-thread context before recording so the render thread can use the main window. */
+        _SituationReleaseHostGLContextForRenderThread();
+        /* With C11 threads (e.g. MinGW + SITUATION_ENABLE_THREADING), the #else branch below
+         * never ran, so the main thread often had no current GL context here.
+         * SituationSetShaderUniform / glGetUniformLocation then do not apply (fps_ray_demo skydome).
+         * Skip when the dedicated GL render thread owns the context. */
+        {
+            int own_gl = 1;
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+            if (sit_render.enabled) {
+                own_gl = 0;
+            }
+#endif
+            if (own_gl) {
+                if (sit_gs.sit_glfw_window) {
+                    glfwMakeContextCurrent(sit_gs.sit_glfw_window);
+                }
+                _SitGLInvalidateShadowState();
+            }
+        }
         #else
         // Make the context current for this thread (Single Threaded Mode)
         glfwMakeContextCurrent(sit_gs.sit_glfw_window);
@@ -9340,6 +10286,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         sit_render.gl.soft_buffers[sit_render.current_frame_index].data_cursor = 0;
         // [FIX v2.3.27B] Reset breaker
         sit_render.gl.soft_buffers[sit_render.current_frame_index].is_broken = false;
+        sit_render.gl.soft_buffers[sit_render.current_frame_index].current_recording_shader_id = 0;
 
         // Mark that we're now recording a frame
         sit_render.in_frame = true;
@@ -9349,6 +10296,15 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 #elif defined(SITUATION_USE_VULKAN)
     {
         // --- 2. Vulkan Frame Setup ---
+
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
+        for (int i = 0; i < SITUATION_MAX_SHADERS; i++) {
+            _SituationShaderSlot* slot = &sit_render.shader_registry[i];
+            if (slot->is_active) {
+                _SituationPollVkAsyncShaderLoad(slot);
+            }
+        }
+#endif
 
         // 2.1. Wait for the previous frame (using this frame's fence) to finish.
         // This ensures the command buffer and swapchain image are free to be reused.
@@ -9438,7 +10394,9 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
             }
             mtx_unlock(&sit_render.render_queue_mutex);
             #endif
-            _SituationVulkanRecreateSwapchain();
+            if (_SituationVulkanRecreateSwapchain() != SITUATION_SUCCESS) {
+                return false;
+            }
             return false;
         }
 
@@ -9466,15 +10424,16 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // 2.3. Handle Swapchain State.
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
             // The swapchain is incompatible (e.g., window resized) and must be recreated.
-            // This function handles the recreation internally.
-            _SituationVulkanRecreateSwapchain();
-            // Return false to signal that the frame setup was interrupted.
-            // The caller should retry SituationAcquireFrameCommandBuffer next frame.
+            if (_SituationVulkanRecreateSwapchain() != SITUATION_SUCCESS) {
+                return false;
+            }
             return false;
         } else if (acquire_result == VK_TIMEOUT) {
             // Surface did not provide an image in time (minimized window, occlusion, driver quirks).
             // UINT64_MAX would block forever and freeze the app on a black window.
-            _SituationVulkanRecreateSwapchain();
+            if (_SituationVulkanRecreateSwapchain() != SITUATION_SUCCESS) {
+                return false;
+            }
             return false;
         } else if (acquire_result == VK_SUBOPTIMAL_KHR) {
              // The swapchain can still be used, but surface properties have changed.
@@ -9553,6 +10512,29 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
     return false;
 }
 
+#if defined(SITUATION_USE_OPENGL)
+static void _SitGLEnsureDefaultFramebufferOpaqueAlpha(void) {
+    GLboolean color_mask[4];
+    GLboolean scissor_was_enabled = glIsEnabled(GL_SCISSOR_TEST);
+    GLfloat clear_color[4];
+
+    glGetBooleanv(GL_COLOR_WRITEMASK, color_mask);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, clear_color);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glColorMask(color_mask[0], color_mask[1], color_mask[2], color_mask[3]);
+    glClearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
+    if (scissor_was_enabled) {
+        glEnable(GL_SCISSOR_TEST);
+    }
+}
+#endif
+
 /**
  * @brief Submits all recorded commands for the current frame and presents the result.
  *
@@ -9584,7 +10566,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
  * @see SituationAcquireFrameCommandBuffer()
  */
 #if defined(SITUATION_USE_VULKAN)
-static void _SituationSubmitCompute(VkCommandBuffer cmd) {
+static SituationError _SituationSubmitCompute(VkCommandBuffer cmd) {
     // Submit compute work and signal semaphore in one go
     VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     submit.commandBufferCount = 1;
@@ -9596,8 +10578,9 @@ static void _SituationSubmitCompute(VkCommandBuffer cmd) {
 
     VkResult result = vkQueueSubmit(sit_render.vk.compute_queue, 1, &submit, VK_NULL_HANDLE);
     if (result != VK_SUCCESS) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "_SituationSubmitCompute: vkQueueSubmit failed.");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_QUEUE_SUBMIT_FAILED, "_SituationSubmitCompute: vkQueueSubmit failed.");
     }
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -9937,7 +10920,15 @@ SITAPI SituationError SituationEndFrame(void) {
             }
 
             SIT_DEBUG_LOG("[EndFrame] Executing GL commands\n");
-            _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
+            {
+                SituationError exec_err = _SituationGLExecuteCommands(
+                    &sit_render.gl.soft_buffers[sit_render.current_frame_index],
+                    sit_render.current_frame_index);
+                if (exec_err != SITUATION_SUCCESS) {
+                    return exec_err;
+                }
+            }
+            _SitGLEnsureDefaultFramebufferOpaqueAlpha();
 
             SIT_DEBUG_LOG("[EndFrame] About to call glfwSwapBuffers\n");
             GLenum err = glGetError();
@@ -9989,7 +10980,15 @@ SITAPI SituationError SituationEndFrame(void) {
         }
 
         SIT_DEBUG_LOG("[EndFrame] Executing GL commands (non-threaded path)\n");
-        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[sit_render.current_frame_index], sit_render.current_frame_index);
+        {
+            SituationError exec_err = _SituationGLExecuteCommands(
+                &sit_render.gl.soft_buffers[sit_render.current_frame_index],
+                sit_render.current_frame_index);
+            if (exec_err != SITUATION_SUCCESS) {
+                return exec_err;
+            }
+        }
+        _SitGLEnsureDefaultFramebufferOpaqueAlpha();
 
         SIT_DEBUG_LOG("[EndFrame] About to call glfwSwapBuffers (non-threaded)\n");
         GLenum err = glGetError();
@@ -10115,7 +11114,14 @@ SITAPI SituationError SituationEndFrame(void) {
             if (sit_render.frame_has_async_compute) {
                 VkCommandBuffer compute_cmd = sit_render.vk.compute_command_buffers[sit_render.vk.current_frame_index];
                 vkEndCommandBuffer(compute_cmd);
-                _SituationSubmitCompute(compute_cmd);
+                SituationError compute_err = _SituationSubmitCompute(compute_cmd);
+                if (compute_err != SITUATION_SUCCESS) {
+                    if (sit_render.vk.current_frame_index < SITUATION_MAX_FRAMES_IN_FLIGHT) {
+                        sit_render.vk.screenshot_copy_pending[sit_render.vk.current_frame_index] = false;
+                    }
+                    sit_render.vk.screenshot_valid = false;
+                    return compute_err;
+                }
             }
 
             VkResult submit_res = _SituationSubmitGraphics(cmd);
@@ -10159,8 +11165,10 @@ SITAPI SituationError SituationEndFrame(void) {
                 // The swapchain is out of date or not optimal. Recreate it.
                 // Reset the resize flag if it was set.
                 sit_render.vk.framebuffer_resized = false;
-                _SituationVulkanRecreateSwapchain();
-                // Note: We don't return an error here. Recreating the swapchain is handled internally.
+                if (_SituationVulkanRecreateSwapchain() != SITUATION_SUCCESS) {
+                    return SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED;
+                }
+                // Note: We don't return an error here on success. Recreating the swapchain is handled internally.
                 // The application should check for swapchain recreation needs in SituationAcquireFrameCommandBuffer.
             } else if (result != VK_SUCCESS) {
                 // An unexpected error occurred during presentation.
@@ -10233,8 +11241,10 @@ SITAPI SituationError SituationEndFrame(void) {
             // The swapchain is out of date or not optimal. Recreate it.
             // Reset the resize flag if it was set.
             sit_render.vk.framebuffer_resized = false;
-            _SituationVulkanRecreateSwapchain();
-            // Note: We don't return an error here. Recreating the swapchain is handled internally.
+            if (_SituationVulkanRecreateSwapchain() != SITUATION_SUCCESS) {
+                return SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED;
+            }
+            // Note: We don't return an error here on success. Recreating the swapchain is handled internally.
             // The application should check for swapchain recreation needs in SituationAcquireFrameCommandBuffer.
         } else if (result != VK_SUCCESS) {
             // An unexpected error occurred during presentation.
@@ -10427,13 +11437,28 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BEGIN_RENDER_PASS);
-    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_BEGIN_RENDER_PASS, p);
 
     p->args.begin_pass.display_id = info->display_id;
-    // Capture current window resolution to prevent race conditions on render thread
-    p->args.begin_pass.target_w = sit_gs.main_window_width;
-    p->args.begin_pass.target_h = sit_gs.main_window_height;
+    /* Must match SituationGetRenderWidth/Height (glfwGetFramebufferSize): using only
+     * sit_gs.main_window_* can lag the real backbuffer on Hi-DPI until a resize callback,
+     * breaking shaders that pair gl_FragCoord with those dimensions (e.g. fps_ray_demo sky). */
+    {
+        int fbw = sit_gs.main_window_width;
+        int fbh = sit_gs.main_window_height;
+        if (sit_gs.sit_glfw_window) {
+            glfwGetFramebufferSize(sit_gs.sit_glfw_window, &fbw, &fbh);
+        }
+        if (fbw < 1) {
+            fbw = 1;
+        }
+        if (fbh < 1) {
+            fbh = 1;
+        }
+        p->args.begin_pass.target_w = fbw;
+        p->args.begin_pass.target_h = fbh;
+    }
     p->args.begin_pass.info = *info;
 
     return SITUATION_SUCCESS;
@@ -10486,6 +11511,13 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
         render_pass_info.framebuffer = vd->vk.framebuffer;
         render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
         render_pass_info.renderArea.extent = (VkExtent2D){(uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y};
+
+        float target_width = vd->resolution.x;
+        float target_height = vd->resolution.y;
+        ViewDataUBO ubo_data;
+        glm_mat4_identity(ubo_data.view);
+        glm_ortho(0.0f, target_width, target_height, 0.0f, -1.0f, 1.0f, ubo_data.projection);
+        memcpy(sit_render.vk.view_proj_ubo_mapped[sit_render.vk.current_frame_index], &ubo_data, sizeof(ViewDataUBO));
     }
 
     vkCmdBeginRenderPass((VkCommandBuffer)cmd, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
@@ -10546,7 +11578,7 @@ SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
     fflush(stdout);
     #endif
     
-    if (!_SitGLSoftCmdPush(buf, SIT_OP_END_RENDER_PASS)) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    SitCommandPacket* _sit_pkt_ = NULL; SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_END_RENDER_PASS, _sit_pkt_);
     
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] SituationCmdEndRenderPass: SUCCESS, returning\n");
@@ -10641,7 +11673,8 @@ SITAPI SituationError SituationCmdSetViewport(SituationCommandBuffer cmd, float 
 #if defined(SITUATION_USE_OPENGL)
     {
         SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-        SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_VIEWPORT);
+        SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_VIEWPORT, p);
         if (p) {
             p->args.viewport.x = x;
             p->args.viewport.y = y;
@@ -10713,7 +11746,8 @@ SITAPI SituationError SituationCmdSetScissor(SituationCommandBuffer cmd, int x, 
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_SCISSOR);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_SCISSOR, p);
     if (p) {
         p->args.scissor.x = x;
         p->args.scissor.y = y;
@@ -10744,73 +11778,107 @@ SITAPI SituationError SituationCmdSetScissor(SituationCommandBuffer cmd, int x, 
 
 /**
  * @brief [Core] Binds a vertex buffer for subsequent draw calls.
- * @details Records a command to set the active vertex buffer. All subsequent draw calls will source their vertex data from this buffer, starting from binding point 0.
+ * @details Records a command to set the active vertex buffer at the given binding point.
  *
  * @par Backend-Specific Behavior
- * - **OpenGL:** Binds the buffer to the `GL_ARRAY_BUFFER` target. This is associated with the globally active VAO, making it the source for vertex attributes.
- * - **Vulkan:** Records a `vkCmdBindVertexBuffers` command for binding point 0.
+ * - **OpenGL 4.6:** Records `glVertexArrayVertexBuffer` on the global VAO (DSA).
+ * - **Vulkan 1.x:** Records `vkCmdBindVertexBuffers` at `binding` with `offset`. If `SituationCmdBindPipeline` was called
+ *   earlier in the same pass, selects `vk_pipeline_simple` / `vk_pipeline_legacy` / PBR from `stride` (same rules as `SituationCmdDrawMesh`).
  *
- * @param cmd The command buffer to record the command into. (Ignored in OpenGL).
- * @param buffer The `SituationBuffer` handle of the vertex buffer to bind.
+ * @param cmd The command buffer to record into.
+ * @param binding Vertex input binding index (usually 0).
+ * @param buffer Vertex buffer handle.
+ * @param offset Byte offset into the buffer.
+ * @param stride Stride between vertices (OpenGL soft replay; must match pipeline on Vulkan).
  */
-SITAPI void SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer, size_t offset, size_t stride) {
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdBindVertexBuffer"); return; }
+SITAPI SituationError SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer, size_t offset, size_t stride) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
     _SituationBufferSlot* slot = _SitGetBufferSlot(buffer);
-    if (!slot) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdBindVertexBuffer: invalid buffer handle"); return; }
+    if (!slot) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdBindVertexBuffer: invalid buffer handle");
+        return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
+    }
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_VERTEX_BUFFER);
-    if (p) {
-        p->args.bind_vbo.binding = binding;
-        p->args.bind_vbo.buffer_id = (uint64_t)slot->gl_buffer_id;
-        p->args.bind_vbo.offset = offset;
-        p->args.bind_vbo.stride = stride;
-    }
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_BIND_VERTEX_BUFFER, p);
+    p->args.bind_vbo.binding = binding;
+    p->args.bind_vbo.buffer_id = (uint64_t)slot->gl_buffer_id;
+    p->args.bind_vbo.offset = offset;
+    p->args.bind_vbo.stride = stride;
+    return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-    if (vk_cmd == VK_NULL_HANDLE) return;
+    if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
+
+    /* Match DrawMesh: pick pipeline variant from stride after BindPipeline (default vk_pipeline has no vertex input). */
+    if (sit_render.vk.current_bound_shader_slot) {
+        _SituationShaderSlot* shader_slot = sit_render.vk.current_bound_shader_slot;
+        VkPipeline target_pipeline = shader_slot->vk_pipeline;
+
+        if (stride <= 3 * sizeof(float) && shader_slot->vk_pipeline_simple != VK_NULL_HANDLE) {
+            target_pipeline = shader_slot->vk_pipeline_simple;
+        } else if (stride <= (3 + 3 + 2) * sizeof(float) && shader_slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
+            target_pipeline = shader_slot->vk_pipeline_legacy;
+        }
+
+        if (target_pipeline != shader_slot->vk_pipeline) {
+            vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, target_pipeline);
+            sit_render.vk.current_pbr_pipeline = target_pipeline;
+        }
+    }
 
     VkBuffer vertex_buffers[] = { slot->vk_buffer };
     VkDeviceSize offsets[] = { (VkDeviceSize)offset };
-    // Bind the buffer to the specified vertex input binding point.
     vkCmdBindVertexBuffers(vk_cmd, binding, 1, vertex_buffers, offsets);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
 #endif
 }
 
 /**
  * @brief [Core] Binds an index buffer for subsequent indexed draw calls.
- * @details Records a command to set the active index buffer. Subsequent indexed draw calls (`SituationCmdDrawIndexed`) will use this buffer.
+ * @details Records a command to set the active index buffer. Subsequent `SituationCmdDrawIndexed` calls use
+ *          32-bit indices (`VK_INDEX_TYPE_UINT32` / `GL_UNSIGNED_INT`), matching `SituationCreateMesh`.
  *
  * @par Backend-Specific Behavior
- * - **OpenGL:** Binds the buffer to the `GL_ELEMENT_ARRAY_BUFFER` target, associating it with the globally active VAO.
- * - **Vulkan:** Records a `vkCmdBindIndexBuffer` command. Assumes 32-bit unsigned integer indices.
+ * - **OpenGL 4.6:** Records `glVertexArrayElementBuffer` on the global VAO (DSA). `offset` is added to the
+ *   byte pointer passed to `glDrawElements*BaseVertex*` at draw time (same as Vulkan bind offset + `first_index`).
+ * - **Vulkan 1.x:** Records `vkCmdBindIndexBuffer` with `offset` and `VK_INDEX_TYPE_UINT32`.
  *
- * @param cmd The command buffer to record the command into. (Ignored in OpenGL).
- * @param buffer The `SituationBuffer` handle of the index buffer to bind.
+ * @param cmd The command buffer to record into.
+ * @param buffer Index buffer handle (`SITUATION_BUFFER_USAGE_INDEX_BUFFER` or mesh index buffer).
+ * @param offset Byte offset into the index buffer (typically 0).
  */
-SITAPI void SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer) {
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdBindIndexBuffer"); return; }
+SITAPI SituationError SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer, size_t offset) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
     _SituationBufferSlot* slot = _SitGetBufferSlot(buffer);
     if (!slot) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdBindIndexBuffer: invalid buffer handle");
-        return;
+        return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
     }
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_INDEX_BUFFER);
-    if (p) {
-        p->args.bind_ibo.buffer_id = (uint64_t)slot->gl_buffer_id;
-    }
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_BIND_INDEX_BUFFER, p);
+    p->args.bind_ibo.buffer_id = (uint64_t)slot->gl_buffer_id;
+    p->args.bind_ibo.offset = offset;
+    return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-    if (vk_cmd == VK_NULL_HANDLE) return;
+    if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
 
-    // Bind the buffer for indexed drawing, specifying 32-bit unsigned integers as the index type.
-    vkCmdBindIndexBuffer(vk_cmd, slot->vk_buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindIndexBuffer(vk_cmd, slot->vk_buffer, (VkDeviceSize)offset, VK_INDEX_TYPE_UINT32);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
 #endif
 }
 
@@ -10836,8 +11904,8 @@ SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd,
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
     // [Bug Fix] Use LEGACY_TEXTURE_HANDLING opcode which correctly handles resource_type=3 (storage image)
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING);
-    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING, p);
 
     p->args.bind_desc.set_index = binding;
     p->args.bind_desc.resource_id = slot->gl_texture_id;
@@ -10887,7 +11955,8 @@ SITAPI SituationError SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vert
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_DRAW, p);
     if (p) {
         p->args.draw.v_count = vertex_count;
         p->args.draw.i_count = instance_count;
@@ -10928,7 +11997,8 @@ SITAPI SituationError SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_INDEXED);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_DRAW_INDEXED, p);
     if (p) {
         p->args.draw_indexed.idx_count = index_count;
         p->args.draw_indexed.inst_count = instance_count;
@@ -11014,11 +12084,12 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
 #if defined(SITUATION_USE_OPENGL)
     // --- OPENGL PATH (Standard Soft Buffer) ---
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    void* text_ptr = _SitGLSoftDataPush(buf, text, len + 1);
-    if (!text_ptr) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    void* text_ptr = NULL;
+    SIT_GL_SOFT_DATA_PUSH(buf, text, len + 1, text_ptr);
     size_t text_offset = (size_t)((uint8_t*)text_ptr - buf->data_buffer);
 
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_TEXT_EX);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_DRAW_TEXT_EX, p);
     if (p) {
         p->args.draw_text_ex.font = use_font;
         p->args.draw_text_ex.pos = pos;
@@ -11227,11 +12298,25 @@ SITAPI SituationError SituationCmdPresent(SituationCommandBuffer cmd, SituationT
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_PRESENT);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_PRESENT, p);
     if (p) {
         p->args.present.texture = texture;
-        p->args.present.target_w = sit_gs.main_window_width;
-        p->args.present.target_h = sit_gs.main_window_height;
+        {
+            int fbw = sit_gs.main_window_width;
+            int fbh = sit_gs.main_window_height;
+            if (sit_gs.sit_glfw_window) {
+                glfwGetFramebufferSize(sit_gs.sit_glfw_window, &fbw, &fbh);
+            }
+            if (fbw < 1) {
+                fbw = 1;
+            }
+            if (fbh < 1) {
+                fbh = 1;
+            }
+            p->args.present.target_w = fbw;
+            p->args.present.target_h = fbh;
+        }
     } else {
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
@@ -11401,12 +12486,13 @@ SITAPI SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd,
  *
  * @param cmd The command buffer (Ignored in OpenGL).
  * @param location The shader attribute location index (e.g., `layout(location=0)`).
+ * @param binding Vertex input binding index; must match the `binding` passed to `SituationCmdBindVertexBuffer` for that stream (use 0 for interleaved data).
  * @param size The number of components (1, 2, 3, or 4).
  * @param type The data type of the components (e.g., `SIT_DATA_FLOAT`).
  * @param normalized Whether fixed-point data should be normalized.
- * @param offset The byte offset of this attribute within the vertex structure.
+ * @param offset The byte offset of this attribute within the bound vertex buffer stride.
  */
-SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, int size, SituationDataType type, bool normalized, size_t offset) {
+SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, uint32_t binding, int size, SituationDataType type, bool normalized, size_t offset) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
 #if defined(SITUATION_USE_OPENGL)
@@ -11415,9 +12501,11 @@ SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd,
         return SITUATION_ERROR_INVALID_PARAM;
     }
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_VERTEX_ATTRIBUTE);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_VERTEX_ATTRIBUTE, p);
     if (p) {
         p->args.set_vertex_attr.location = location;
+        p->args.set_vertex_attr.binding = binding;
         p->args.set_vertex_attr.size = size;
         p->args.set_vertex_attr.type = (int)type;
         p->args.set_vertex_attr.normalized = normalized ? 1 : 0;
@@ -11430,7 +12518,7 @@ SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd,
     // FIX: Explicitly report that this is not supported in the Vulkan backend.
     // In Vulkan, vertex attributes are baked into the immutable VkPipeline object at creation.
     // To change attributes, you must create a new pipeline with the desired vertex input state.
-    (void)cmd; (void)location; (void)size; (void)type; (void)normalized; (void)offset;
+    (void)cmd; (void)location; (void)binding; (void)size; (void)type; (void)normalized; (void)offset;
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
         "SituationCmdSetVertexAttribute is incompatible with Vulkan's architecture. "
         "Vulkan Pipelines are immutable; vertex attributes must be defined at pipeline creation time "
@@ -11481,8 +12569,8 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
 #if defined(SITUATION_USE_OPENGL)
     {
         SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-        SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_PIPELINE);
-        if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+        SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_BIND_PIPELINE, p);
 
         p->args.bind_pipeline.shader_id = (uint64_t)slot->gl_program_id;
         buf->current_recording_shader_id = (uint64_t)slot->gl_program_id;
@@ -11529,6 +12617,183 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
  *       2. (Vulkan) The command buffer `cmd` is valid and in the recording state.
  *       3. The mesh data (vertex/index buffers) is valid and accessible by the GPU.
  */
+// --- Raster & Fixed-Function State (Phase 4) ---
+
+SITAPI SituationError SituationCmdSetCullMode(SituationCommandBuffer cmd, SituationCullMode mode) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_CULL_MODE, p);
+    p->args.set_cull_mode.mode = mode;
+#elif defined(SITUATION_USE_VULKAN)
+    VkCullModeFlags vk_mode = VK_CULL_MODE_NONE;
+    if (mode == SIT_CULL_BACK) vk_mode = VK_CULL_MODE_BACK_BIT;
+    else if (mode == SIT_CULL_FRONT) vk_mode = VK_CULL_MODE_FRONT_BIT;
+    vkCmdSetCullMode(cmd, vk_mode);
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetDepthTest(SituationCommandBuffer cmd, bool enable, SituationDepthCompareOp depth_op) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_DEPTH_TEST, p);
+    p->args.set_depth_test.enable = enable;
+    p->args.set_depth_test.depth_op = depth_op;
+#elif defined(SITUATION_USE_VULKAN)
+    vkCmdSetDepthTestEnable(cmd, enable ? VK_TRUE : VK_FALSE);
+    VkCompareOp vk_op = VK_COMPARE_OP_LESS; // Default
+    switch (depth_op) {
+        case SIT_DEPTH_COMPARE_ALWAYS:   vk_op = VK_COMPARE_OP_ALWAYS; break;
+        case SIT_DEPTH_COMPARE_LESS:     vk_op = VK_COMPARE_OP_LESS; break;
+        case SIT_DEPTH_COMPARE_LEQUAL:   vk_op = VK_COMPARE_OP_LESS_OR_EQUAL; break;
+        case SIT_DEPTH_COMPARE_GREATER:  vk_op = VK_COMPARE_OP_GREATER; break;
+        case SIT_DEPTH_COMPARE_GEQUAL:   vk_op = VK_COMPARE_OP_GREATER_OR_EQUAL; break;
+        case SIT_DEPTH_COMPARE_EQUAL:    vk_op = VK_COMPARE_OP_EQUAL; break;
+        case SIT_DEPTH_COMPARE_NOTEQUAL: vk_op = VK_COMPARE_OP_NOT_EQUAL; break;
+        case SIT_DEPTH_COMPARE_NEVER:    vk_op = VK_COMPARE_OP_NEVER; break;
+    }
+    vkCmdSetDepthCompareOp(cmd, vk_op);
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetDepthWrite(SituationCommandBuffer cmd, bool enable) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_DEPTH_WRITE, p);
+    p->args.set_depth_write.enable = enable;
+#elif defined(SITUATION_USE_VULKAN)
+    vkCmdSetDepthWriteEnable(cmd, enable ? VK_TRUE : VK_FALSE);
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetBlendEnable(SituationCommandBuffer cmd, bool enable) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_BLEND_ENABLE, p);
+    p->args.set_blend_enable.enable = enable;
+#elif defined(SITUATION_USE_VULKAN)
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetBlendFuncSeparate(SituationCommandBuffer cmd, SituationBlendFactor src_rgb, SituationBlendFactor dst_rgb, SituationBlendFactor src_a, SituationBlendFactor dst_a) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_BLEND_FUNC_SEPARATE, p);
+    p->args.set_blend_func.src_rgb = src_rgb;
+    p->args.set_blend_func.dst_rgb = dst_rgb;
+    p->args.set_blend_func.src_a = src_a;
+    p->args.set_blend_func.dst_a = dst_a;
+#elif defined(SITUATION_USE_VULKAN)
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdPushRasterState(SituationCommandBuffer cmd, uint32_t scope_id) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_PUSH_RASTER_STATE, p);
+    p->args.push_pop_raster_state.scope_id = scope_id;
+#elif defined(SITUATION_USE_VULKAN)
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdPopRasterState(SituationCommandBuffer cmd, uint32_t scope_id) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_POP_RASTER_STATE, p);
+    p->args.push_pop_raster_state.scope_id = scope_id;
+#elif defined(SITUATION_USE_VULKAN)
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetPushConstantData(SituationCommandBuffer cmd, SituationShader shader, uint32_t offset, const void* data, size_t size) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd || !data || size == 0) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    // OpenGL implementation requires explicit shader layouts which are not implemented yet in Phase 4.
+    // Use SituationCmdSetPushConstant instead for OpenGL.
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#elif defined(SITUATION_USE_VULKAN)
+    _SituationShaderSlot* slot = _SitGetShaderSlot(shader);
+    if (!slot) return SITUATION_ERROR_RESOURCE_INVALID;
+    vkCmdPushConstants(cmd, slot->vk_pipeline_layout, VK_SHADER_STAGE_ALL, offset, size, data);
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdBeginDebugGroup(SituationCommandBuffer cmd, const char* name, ColorRGBA color) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd || !name) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_BEGIN_DEBUG_GROUP, p);
+    size_t name_len = strlen(name) + 1;
+    void* ptr = NULL;
+    SIT_GL_SOFT_DATA_PUSH(buf, name, name_len, ptr);
+    p->args.begin_debug_group.name_offset = (size_t)((uint8_t*)ptr - buf->data_buffer);
+    p->args.begin_debug_group.color = color;
+#elif defined(SITUATION_USE_VULKAN)
+    PFN_vkCmdBeginDebugUtilsLabelEXT pfn = (PFN_vkCmdBeginDebugUtilsLabelEXT)vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdBeginDebugUtilsLabelEXT");
+    if (pfn) {
+        VkDebugUtilsLabelEXT label = {};
+        label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+        label.pLabelName = name;
+        label.color[0] = color.r / 255.0f;
+        label.color[1] = color.g / 255.0f;
+        label.color[2] = color.b / 255.0f;
+        label.color[3] = color.a / 255.0f;
+        pfn((VkCommandBuffer)cmd, &label);
+    }
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdEndDebugGroup(SituationCommandBuffer cmd) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* _sit_pkt_ = NULL; SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_END_DEBUG_GROUP, _sit_pkt_);
+#elif defined(SITUATION_USE_VULKAN)
+    PFN_vkCmdEndDebugUtilsLabelEXT pfn = (PFN_vkCmdEndDebugUtilsLabelEXT)vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdEndDebugUtilsLabelEXT");
+    if (pfn) {
+        pfn((VkCommandBuffer)cmd);
+    }
+#endif
+    return SITUATION_SUCCESS;
+}
+
 SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
@@ -11545,8 +12810,8 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_MESH);
-    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_DRAW_MESH, p);
     p->args.draw_mesh.mesh = mesh; // Store handle
     p->args.draw_mesh.shader_id = buf->current_recording_shader_id;
     return SITUATION_SUCCESS;
@@ -11664,11 +12929,13 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
 
     // The texture bind above handled the state setting. We just push the geometry.
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_QUAD);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_DRAW_QUAD, p);
     if (p) {
         glm_mat4_copy(model, p->args.draw_quad.model);
         p->args.draw_quad.color = color_vec;
         p->args.draw_quad.uv_rect = uv_rect;
+        p->args.draw_quad.use_texture = 1;
     } else {
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
@@ -11794,11 +13061,13 @@ SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 mode
     // We update SituationCmdBindTexture to set the `u_use_texture` uniform to 2 (Bindless) instead of 1 (Bindful)
     // if bindless is active.
 
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DRAW_QUAD);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_DRAW_QUAD, p);
     if (p) {
         glm_mat4_copy(model, p->args.draw_quad.model);
         p->args.draw_quad.color = color;
         p->args.draw_quad.uv_rect = uv_rect;
+        p->args.draw_quad.use_texture = use_texture;
     } else {
         return SITUATION_ERROR_MEMORY_ALLOCATION;
     }
@@ -11895,13 +13164,14 @@ SITAPI SituationError SituationCmdSetPushConstant(SituationCommandBuffer cmd, ui
         SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
 
         // Allocate space in the data buffer
-        void* ptr = _SitGLSoftDataPush(buf, data, size);
-        if (!ptr) return SITUATION_ERROR_MEMORY_ALLOCATION;
+        void* ptr = NULL;
+    SIT_GL_SOFT_DATA_PUSH(buf, data, size, ptr);
 
         // Calculate offset relative to buffer start
         size_t offset = (size_t)((uint8_t*)ptr - buf->data_buffer);
 
-        SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_SET_PUSH_CONSTANT);
+        SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_PUSH_CONSTANT, p);
         if (p) {
             p->args.push_constant.offset = contract_id;
             p->args.push_constant.size = size;
@@ -12129,7 +13399,19 @@ SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 posi
     SituationCmdDrawTextEx(cmd, font, buffer, (Vector2){position.x, y}, font_size, spacing, color);
     y += line_height;
 
-    // 5. VRAM
+    // 5. Thread pool (when enabled)
+    #if defined(SITUATION_ENABLE_THREADING)
+    if (sit_gs.thread_pool.is_active) {
+        snprintf(buffer, sizeof(buffer), "Jobs: %d  Q lo/hi: %zu/%zu",
+            SituationGetActiveJobCount(&sit_gs.thread_pool),
+            SituationGetQueueDepth(&sit_gs.thread_pool, SIT_JOB_QUEUE_LOW),
+            SituationGetQueueDepth(&sit_gs.thread_pool, SIT_JOB_QUEUE_HIGH));
+        SituationCmdDrawTextEx(cmd, font, buffer, (Vector2){position.x, y}, font_size, spacing, color);
+        y += line_height;
+    }
+    #endif
+
+    // 6. VRAM
     uint64_t vram = SituationGetVRAMUsage();
     if (vram > 0) {
         snprintf(buffer, sizeof(buffer), "VRAM: %.2f MB", vram / (1024.0 * 1024.0));
@@ -12373,10 +13655,9 @@ SITAPI void SituationReplayRenderList(SituationCommandBuffer cmd, SituationRende
  *      SituationSubmitRenderList, sit_render.render_queue,
  *      sit_render.frame_refcounts, SITUATION_MAX_FRAMES_IN_FLIGHT
  */
-static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
+static SituationError _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
     if (!list || list->is_recording) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "List unfinished or null.");
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_LIST_INCOMPLETE, "List unfinished or null.");
     }
 
 #if defined(SITUATION_USE_VULKAN)
@@ -12397,7 +13678,8 @@ static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
     VkCommandBuffer c_cmd;
     if (vkAllocateCommandBuffers(sit_render.vk.device, &alloc, &c_cmd) != VK_SUCCESS) {
         mtx_unlock(&sit_render.render_queue_mutex);
-        return; // Fail gracefully
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_COMMAND_FAILED,
+            "_SituationReplayToQueue: vkAllocateCommandBuffers failed.");
     }
 
     VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -12448,7 +13730,7 @@ static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
 
     mtx_unlock(&sit_render.render_queue_mutex);
 #endif
-    // OpenGL replay is simpler (immediate) or handled via SoftBuffer
+    return SITUATION_SUCCESS;
 }
 
 // --- [INTERNAL] Thread-Safe Queue Push ---
@@ -12488,15 +13770,17 @@ static void _SituationReplayToQueue(SituationRenderList list, int frame_idx) {
  *       If the queue is full (rare, high backpressure), logs a warning
  *       (e.g. SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT or similar)
  *       and may drop the list or block briefly (implementation-defined).
- *       No return value - errors are logged internally only.
+ *       On queue full returns `SITUATION_ERROR_THREAD_QUEUE_FULL` (caller should handle).
  *
  * @see _SituationRenderThreadEntry (dequeue/execution side),
  *      SituationSubmitRenderList, SituationSubmitRenderList (pool variant),
  *      sit_render.render_queue, sit_render.render_queue_mutex,
  *      sit_render.render_queue_cv, SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT
  */
-static void _SituationEnqueueRenderList(SituationRenderList list) {
-    if (!list) return;
+static SituationError _SituationEnqueueRenderList(SituationRenderList list) {
+    if (!list) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationEnqueueRenderList: list is NULL.");
+    }
 
     mtx_lock(&sit_render.momentum_mutex);
 
@@ -12504,17 +13788,18 @@ static void _SituationEnqueueRenderList(SituationRenderList list) {
     int tail = atomic_load(&sit_render.momentum_tail);
     int next_head = (head + 1) % 256;
 
-    if (next_head != tail) {
-        // [FIX v2.3.27B] Mark as in-flight before queueing
-        atomic_fetch_add(&list->in_flight_count, 1);
-
-        sit_render.momentum_queue[head] = list;
-        atomic_store(&sit_render.momentum_head, next_head);
-    } else {
-        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Momentum render queue full. Frame data dropped.");
+    if (next_head == tail) {
+        mtx_unlock(&sit_render.momentum_mutex);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL,
+            "Momentum render queue full. Frame data dropped.");
     }
 
+    atomic_fetch_add(&list->in_flight_count, 1);
+    sit_render.momentum_queue[head] = list;
+    atomic_store(&sit_render.momentum_head, next_head);
+
     mtx_unlock(&sit_render.momentum_mutex);
+    return SITUATION_SUCCESS;
 }
 
 #if defined(SITUATION_ENABLE_THREADING)
@@ -12563,6 +13848,7 @@ typedef struct {
  *      _SituationRenderThreadEntry, SITUATION_ERROR_RENDER_LIST_INCOMPLETE,
  *      SITUATION_ERROR_THREAD_QUEUE_FULL
  */
+/* HARDENING: void by design — thread-pool job ABI; failures use _SituationSetErrorFromCode. */
 static void _SituationRenderJobWorker(void* data, void* unused) {
     (void)unused;
     _SitRenderJobCtx* ctx = (_SitRenderJobCtx*)data;
@@ -12577,7 +13863,10 @@ static void _SituationRenderJobWorker(void* data, void* unused) {
 
     // 2. Submit Completed List to Main Thread Queue
     // This is now thread-safe!
-    _SituationEnqueueRenderList(ctx->list);
+    SituationError enq_err = _SituationEnqueueRenderList(ctx->list);
+    if (enq_err != SITUATION_SUCCESS) {
+        _SituationSetErrorFromCode(enq_err, "Render job worker failed to enqueue render list.");
+    }
 }
 
 /**
@@ -12694,7 +13983,10 @@ SITAPI void SituationSubmitRenderList(SituationRenderList list, void (*func)(voi
     }
 
     // 2. Enqueue (or just replay immediately if you prefer, but queueing keeps logic unified)
-    _SituationEnqueueRenderList(list);
+    SituationError enq_err = _SituationEnqueueRenderList(list);
+    if (enq_err != SITUATION_SUCCESS) {
+        _SituationSetErrorFromCode(enq_err, "SituationSubmitRenderList failed to enqueue render list.");
+    }
 }
 
 #endif
@@ -12800,6 +14092,137 @@ SITAPI uint64_t SituationGetVRAMUsage(void) {
 // --- [NEW UNIFIED API] Resource Binding ---
 //==================================================================================
 
+#if defined(SITUATION_USE_VULKAN)
+static void _SituationVulkanFreeBufferDescriptorSet(_SituationBufferSlot* slot) {
+    if (!slot || slot->descriptor_set == VK_NULL_HANDLE || slot->descriptor_pool == VK_NULL_HANDLE) {
+        return;
+    }
+    vkFreeDescriptorSets(sit_render.vk.device, slot->descriptor_pool, 1, &slot->descriptor_set);
+    slot->descriptor_set = VK_NULL_HANDLE;
+    slot->vk_cached_descriptor_layout = VK_NULL_HANDLE;
+    slot->vk_cached_descriptor_type = 0;
+}
+
+/* HARDENING: bool by design — descriptor resolver; false paths set *out_err. */
+static bool _SituationVulkanResolveBufferDescriptor(
+    uint32_t set_index,
+    SituationBufferUsageFlags usage,
+    VkDescriptorSetLayout* out_layout,
+    VkDescriptorType* out_type,
+    bool* out_use_dynamic_offset,
+    SituationError* out_err) {
+    const bool is_storage = (usage & SITUATION_BUFFER_USAGE_STORAGE_BUFFER) != 0;
+    const bool is_compute = sit_render.vk.current_compute_pipeline_layout != VK_NULL_HANDLE;
+
+    if (is_compute) {
+        *out_layout = is_storage ? sit_render.vk.ssbo_layout : sit_render.vk.dynamic_ubo_layout;
+        *out_type = is_storage ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        *out_use_dynamic_offset = !is_storage;
+        return true;
+    }
+
+    if (sit_render.vk.current_pipeline_layout_for_push_constants == VK_NULL_HANDLE) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED, "Cannot bind descriptor set; no graphics pipeline is bound.");
+        *out_err = SITUATION_ERROR_RENDER_COMMAND_FAILED;
+        return false;
+    }
+
+    SituationSpirvLayoutProfile profile = SIT_SPIRV_LAYOUT_PROFILE_MESH;
+    if (sit_render.vk.current_bound_shader_slot) {
+        profile = sit_render.vk.current_bound_shader_slot->vk_spirv_layout_profile;
+    }
+
+    switch (profile) {
+    case SIT_SPIRV_LAYOUT_PROFILE_DUAL_SSBO:
+        if (set_index > 1u) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "DUAL_SSBO profile supports descriptor sets 0 and 1 only.");
+            *out_err = SITUATION_ERROR_INVALID_PARAM;
+            return false;
+        }
+        if (!is_storage) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "DUAL_SSBO profile requires storage buffers.");
+            *out_err = SITUATION_ERROR_INVALID_PARAM;
+            return false;
+        }
+        *out_layout = sit_render.vk.ssbo_layout;
+        *out_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        *out_use_dynamic_offset = false;
+        return true;
+
+    case SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO:
+        if (set_index > 1u) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "UBO_SSBO profile supports descriptor sets 0 and 1 only.");
+            *out_err = SITUATION_ERROR_INVALID_PARAM;
+            return false;
+        }
+        if (set_index == 0u) {
+            if (is_storage) {
+                _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "UBO_SSBO set 0 requires a uniform buffer.");
+                *out_err = SITUATION_ERROR_INVALID_PARAM;
+                return false;
+            }
+            *out_layout = sit_render.vk.ubo_layout;
+            *out_type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            *out_use_dynamic_offset = false;
+        } else {
+            if (!is_storage) {
+                _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "UBO_SSBO set 1 requires a storage buffer.");
+                *out_err = SITUATION_ERROR_INVALID_PARAM;
+                return false;
+            }
+            *out_layout = sit_render.vk.ssbo_layout;
+            *out_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            *out_use_dynamic_offset = false;
+        }
+        return true;
+
+    default:
+        *out_layout = is_storage ? sit_render.vk.ssbo_layout : sit_render.vk.dynamic_ubo_layout;
+        *out_type = is_storage ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        *out_use_dynamic_offset = !is_storage;
+        return true;
+    }
+}
+
+static SituationError _SituationVulkanEnsureBufferDescriptorSet(
+    _SituationBufferSlot* slot,
+    VkDescriptorSetLayout layout,
+    VkDescriptorType descriptor_type) {
+    if (slot->descriptor_set != VK_NULL_HANDLE
+        && slot->vk_cached_descriptor_layout == layout
+        && slot->vk_cached_descriptor_type == descriptor_type) {
+        return SITUATION_SUCCESS;
+    }
+
+    if (slot->descriptor_set != VK_NULL_HANDLE) {
+        _SituationVulkanFreeBufferDescriptorSet(slot);
+    }
+
+    slot->descriptor_set = _SituationVulkanAllocateDescriptorSet(layout, &slot->descriptor_pool);
+    if (slot->descriptor_set == VK_NULL_HANDLE) {
+        return SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED;
+    }
+
+    VkDescriptorBufferInfo buffer_info = {0};
+    buffer_info.buffer = slot->vk_buffer;
+    buffer_info.offset = 0;
+    buffer_info.range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet descriptor_write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    descriptor_write.dstSet = slot->descriptor_set;
+    descriptor_write.dstBinding = 0;
+    descriptor_write.dstArrayElement = 0;
+    descriptor_write.descriptorType = descriptor_type;
+    descriptor_write.descriptorCount = 1;
+    descriptor_write.pBufferInfo = &buffer_info;
+
+    vkUpdateDescriptorSets(sit_render.vk.device, 1, &descriptor_write, 0, NULL);
+    slot->vk_cached_descriptor_layout = layout;
+    slot->vk_cached_descriptor_type = descriptor_type;
+    return SITUATION_SUCCESS;
+}
+#endif /* SITUATION_USE_VULKAN */
+
 /**
  * @brief Binds a buffer's pre-packaged descriptor set to a specific set index in the currently bound pipeline.
  * @details This is the primary, unified function for making a GPU buffer's data (UBO or SSBO) available to a shader.
@@ -12828,8 +14251,8 @@ SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffe
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET);
-    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_BIND_DESCRIPTOR_SET, p);
 
     // We pack only slot_index + generation into resource_id (uint64)
     // SituationBuffer grew beyond 8 bytes (added size_in_bytes, usage_flags),
@@ -12847,37 +14270,36 @@ SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffe
     return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
-    // Logic to bind Vulkan descriptor set
-    // We need the descriptor set from the slot.
-    if (slot->descriptor_set == VK_NULL_HANDLE) {
-        // Allocate descriptor set if missing (lazy init)
-        VkDescriptorSetLayout layout = (slot->usage_flags & SITUATION_BUFFER_USAGE_STORAGE_BUFFER) ? sit_render.vk.ssbo_layout : sit_render.vk.dynamic_ubo_layout;
-        slot->descriptor_set = _SituationVulkanAllocateDescriptorSet(layout, &slot->descriptor_pool);
-
-        VkDescriptorBufferInfo bufferInfo = {0};
-        bufferInfo.buffer = slot->vk_buffer;
-        bufferInfo.offset = 0;
-        bufferInfo.range = VK_WHOLE_SIZE;
-
-        VkWriteDescriptorSet descriptorWrite = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        descriptorWrite.dstSet = slot->descriptor_set;
-        descriptorWrite.dstBinding = 0;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = (slot->usage_flags & SITUATION_BUFFER_USAGE_STORAGE_BUFFER) ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &bufferInfo;
-
-        vkUpdateDescriptorSets(sit_render.vk.device, 1, &descriptorWrite, 0, NULL);
+    VkDescriptorSetLayout desc_layout = VK_NULL_HANDLE;
+    VkDescriptorType desc_type = 0;
+    bool use_dynamic_offset = false;
+    SituationError resolve_err = SITUATION_SUCCESS;
+    if (!_SituationVulkanResolveBufferDescriptor(
+            set_index, slot->usage_flags, &desc_layout, &desc_type, &use_dynamic_offset, &resolve_err)) {
+        return resolve_err;
     }
 
-    VkPipelineLayout layout = (sit_render.vk.current_compute_pipeline_layout != VK_NULL_HANDLE) ?
-                              sit_render.vk.current_compute_pipeline_layout :
-                              sit_render.vk.current_pipeline_layout_for_push_constants;
+    SituationError ensure_err = _SituationVulkanEnsureBufferDescriptorSet(slot, desc_layout, desc_type);
+    if (ensure_err != SITUATION_SUCCESS) {
+        return ensure_err;
+    }
 
-    VkPipelineBindPoint bindPoint = (sit_render.vk.current_compute_pipeline_layout != VK_NULL_HANDLE) ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+    VkPipelineLayout pipeline_layout = (sit_render.vk.current_compute_pipeline_layout != VK_NULL_HANDLE)
+        ? sit_render.vk.current_compute_pipeline_layout
+        : sit_render.vk.current_pipeline_layout_for_push_constants;
 
-    uint32_t dyn_offset = dynamic_offset;
-    vkCmdBindDescriptorSets((VkCommandBuffer)cmd, bindPoint, layout, set_index, 1, &slot->descriptor_set, 1, &dyn_offset);
+    VkPipelineBindPoint bind_point = (sit_render.vk.current_compute_pipeline_layout != VK_NULL_HANDLE)
+        ? VK_PIPELINE_BIND_POINT_COMPUTE
+        : VK_PIPELINE_BIND_POINT_GRAPHICS;
+
+    if (use_dynamic_offset) {
+        uint32_t dyn_offset = dynamic_offset;
+        vkCmdBindDescriptorSets(
+            (VkCommandBuffer)cmd, bind_point, pipeline_layout, set_index, 1, &slot->descriptor_set, 1, &dyn_offset);
+    } else {
+        vkCmdBindDescriptorSets(
+            (VkCommandBuffer)cmd, bind_point, pipeline_layout, set_index, 1, &slot->descriptor_set, 0, NULL);
+    }
     return SITUATION_SUCCESS;
 #endif
     return SITUATION_ERROR_NOT_IMPLEMENTED;
@@ -12937,8 +14359,8 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
 
     // Standard Bind (always safe fallback and required for non-bindless shaders)
     // [Phase 2] Use Legacy Texture Opcode to avoid buffer logic in main opcode
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING);
-    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING, p);
 
     p->args.bind_desc.set_index = set_index;
     p->args.bind_desc.resource_id = slot->gl_texture_id;
@@ -13190,6 +14612,10 @@ static _SituationModelSlot* _SitGetModelSlot(SituationModel handle) {
  * @see _SitFreeShaderSlot, SituationCreateShader, SituationCreateShaderFromSpirv
  */
 static _SituationShaderSlot* _SitAllocShaderSlot(SituationShader* out_handle) {
+    if (!out_handle) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitAllocShaderSlot: out_handle is NULL.");
+        return NULL;
+    }
     for (int i = 0; i < SITUATION_MAX_SHADERS; i++) {
         if (!sit_render.shader_registry[i].is_active) {
             _SituationShaderSlot* slot = &sit_render.shader_registry[i];
@@ -13203,6 +14629,8 @@ static _SituationShaderSlot* _SitAllocShaderSlot(SituationShader* out_handle) {
             return slot;
         }
     }
+    _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID,
+        "_SitAllocShaderSlot: shader registry full (SITUATION_MAX_SHADERS).");
     return NULL;
 }
 
@@ -13214,6 +14642,7 @@ static _SituationShaderSlot* _SitAllocShaderSlot(SituationShader* out_handle) {
  * @see _SitAllocShaderSlot, SituationDestroyShader
  */
 static void _SitFreeShaderSlot(SituationShader handle) {
+    /* HARDENING: void by design — idempotent slot release; invalid/stale handles ignored. */
     _SituationShaderSlot* slot = _SitGetShaderSlot(handle);
     if (!slot) return;
 
@@ -13232,6 +14661,10 @@ static void _SitFreeShaderSlot(SituationShader handle) {
  * @see _SitFreeComputePipelineSlot, SituationCreateComputePipeline
  */
 static _SituationComputePipelineSlot* _SitAllocComputePipelineSlot(SituationComputePipeline* out_handle) {
+    if (!out_handle) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitAllocComputePipelineSlot: out_handle is NULL.");
+        return NULL;
+    }
     for (int i = 0; i < SITUATION_MAX_COMPUTE_PIPELINES; i++) {
         if (!sit_render.compute_registry[i].is_active) {
             _SituationComputePipelineSlot* slot = &sit_render.compute_registry[i];
@@ -13245,6 +14678,8 @@ static _SituationComputePipelineSlot* _SitAllocComputePipelineSlot(SituationComp
             return slot;
         }
     }
+    _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID,
+        "_SitAllocComputePipelineSlot: compute pipeline registry full.");
     return NULL;
 }
 
@@ -13256,6 +14691,7 @@ static _SituationComputePipelineSlot* _SitAllocComputePipelineSlot(SituationComp
  * @see _SitAllocComputePipelineSlot, SituationDestroyComputePipeline
  */
 static void _SitFreeComputePipelineSlot(SituationComputePipeline handle) {
+    /* HARDENING: void by design — idempotent slot release; invalid/stale handles ignored. */
     _SituationComputePipelineSlot* slot = _SitGetComputePipelineSlot(handle);
     if (!slot) return;
 
@@ -13273,6 +14709,10 @@ static void _SitFreeComputePipelineSlot(SituationComputePipeline handle) {
  * @see _SitFreeMeshSlot, SituationCreateMesh
  */
 static _SituationMeshSlot* _SitAllocMeshSlot(SituationMesh* out_handle) {
+    if (!out_handle) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitAllocMeshSlot: out_handle is NULL.");
+        return NULL;
+    }
     for (int i = 0; i < SITUATION_MAX_MESHES; i++) {
         if (!sit_render.mesh_registry[i].is_active) {
             _SituationMeshSlot* slot = &sit_render.mesh_registry[i];
@@ -13286,6 +14726,8 @@ static _SituationMeshSlot* _SitAllocMeshSlot(SituationMesh* out_handle) {
             return slot;
         }
     }
+    _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID,
+        "_SitAllocMeshSlot: mesh registry full (SITUATION_MAX_MESHES).");
     return NULL;
 }
 
@@ -13297,6 +14739,7 @@ static _SituationMeshSlot* _SitAllocMeshSlot(SituationMesh* out_handle) {
  * @see _SitAllocMeshSlot, SituationDestroyMesh
  */
 static void _SitFreeMeshSlot(SituationMesh handle) {
+    /* HARDENING: void by design — idempotent slot release; invalid/stale handles ignored. */
     _SituationMeshSlot* slot = _SitGetMeshSlot(handle);
     if (slot) slot->is_active = false;
 }
@@ -13310,6 +14753,10 @@ static void _SitFreeMeshSlot(SituationMesh handle) {
  * @see _SitFreeBufferSlot, SituationCreateBuffer
  */
 static _SituationBufferSlot* _SitAllocBufferSlot(SituationBuffer* out_handle) {
+    if (!out_handle) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitAllocBufferSlot: out_handle is NULL.");
+        return NULL;
+    }
     for (int i = 0; i < SITUATION_MAX_BUFFERS; i++) {
         if (!sit_render.buffer_registry[i].is_active) {
             _SituationBufferSlot* slot = &sit_render.buffer_registry[i];
@@ -13323,6 +14770,8 @@ static _SituationBufferSlot* _SitAllocBufferSlot(SituationBuffer* out_handle) {
             return slot;
         }
     }
+    _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID,
+        "_SitAllocBufferSlot: buffer registry full (SITUATION_MAX_BUFFERS).");
     return NULL;
 }
 
@@ -13334,6 +14783,7 @@ static _SituationBufferSlot* _SitAllocBufferSlot(SituationBuffer* out_handle) {
  * @see _SitAllocBufferSlot, SituationDestroyBuffer
  */
 static void _SitFreeBufferSlot(SituationBuffer handle) {
+    /* HARDENING: void by design — idempotent slot release; invalid/stale handles ignored. */
     _SituationBufferSlot* slot = _SitGetBufferSlot(handle);
     if (slot) slot->is_active = false;
 }
@@ -13348,6 +14798,10 @@ static void _SitFreeBufferSlot(SituationBuffer handle) {
  * @see _SitFreeModelSlot, SituationCreateModel
  */
 static _SituationModelSlot* _SitAllocModelSlot(SituationModel* out_handle) {
+    if (!out_handle) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SitAllocModelSlot: out_handle is NULL.");
+        return NULL;
+    }
     for (int i = 0; i < SITUATION_MAX_MODELS; i++) {
         if (!sit_render.model_registry[i].is_active) {
             _SituationModelSlot* slot = &sit_render.model_registry[i];
@@ -13361,6 +14815,8 @@ static _SituationModelSlot* _SitAllocModelSlot(SituationModel* out_handle) {
             return slot;
         }
     }
+    _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID,
+        "_SitAllocModelSlot: model registry full (SITUATION_MAX_MODELS).");
     return NULL;
 }
 
@@ -13372,6 +14828,7 @@ static _SituationModelSlot* _SitAllocModelSlot(SituationModel* out_handle) {
  * @see _SitAllocModelSlot, SituationDestroyModel (public API)
  */
 static void _SitFreeModelSlot(SituationModel handle) {
+    /* HARDENING: void by design — idempotent slot release; invalid/stale handles ignored. */
     _SituationModelSlot* slot = _SitGetModelSlot(handle);
     if (!slot) return;
     if (slot->source_path) SIT_FREE(slot->source_path);
@@ -13516,6 +14973,11 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
     slot->width = image.width;
     slot->height = image.height;
+    slot->mip_levels = generate_mipmaps ? (int)floor(log2(fmax(image.width, image.height))) + 1 : 1;
+    slot->format_api = (image.color_encoding == SITUATION_COLOR_SRGB) ? SIT_TEXTURE_FORMAT_RGBA8_SRGB : SIT_TEXTURE_FORMAT_RGBA8_UNORM;
+    slot->usage_flags = usage_flags;
+    slot->wrap_s = SIT_TEXTURE_WRAP_REPEAT;
+    slot->wrap_t = SIT_TEXTURE_WRAP_REPEAT;
     slot->bindless_handle = 0;
 
 #if defined(SITUATION_USE_OPENGL)
@@ -13569,6 +15031,8 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MIN_FILTER, generate_mipmaps ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
     glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    slot->min_filter = SIT_TEXTURE_FILTER_LINEAR;
+    slot->mag_filter = SIT_TEXTURE_FILTER_LINEAR;
     SIT_CHECK_GL_ERROR();
 
     // [Phase 3] Bindless Texture: Make Resident immediately
@@ -13592,10 +15056,7 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
 
 #elif defined(SITUATION_USE_VULKAN)
     // --- Step 0: Calculate Mipmap Levels ---
-    uint32_t mip_levels = 1;
-    if (generate_mipmaps) {
-        mip_levels = (uint32_t)floor(log2(fmax(image.width, image.height))) + 1;
-    }
+    uint32_t mip_levels = slot->mip_levels;
 
     VkDeviceSize image_size = (VkDeviceSize)image.width * image.height * 4;
     VkBuffer staging_buffer;
@@ -13674,9 +15135,13 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     }
 
     if (cmd == VK_NULL_HANDLE) {
-        _SituationVulkanEndSingleTimeCommands(command_buffer);
-        // --- Step 4: Cleanup Staging Buffer (Synchronous) ---
+        SituationError end_err = _SituationVulkanEndSingleTimeCommands(command_buffer);
         vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
+        if (end_err != SITUATION_SUCCESS) {
+            _SituationDeferDestroyImage(slot->image, slot->allocation, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            slot->is_active = false;
+            return end_err;
+        }
     } else {
         // --- Step 4: Defer Cleanup Staging Buffer (Asynchronous) ---
         _SituationDeferDestroyBuffer(staging_buffer, staging_allocation);
@@ -13690,6 +15155,8 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sampler_info.magFilter = VK_FILTER_NEAREST;  // Pixel-perfect for bitmap fonts
     sampler_info.minFilter = VK_FILTER_NEAREST;  // No blurring when scaling
+    slot->min_filter = SIT_TEXTURE_FILTER_NEAREST;
+    slot->mag_filter = SIT_TEXTURE_FILTER_NEAREST;
     sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -13925,7 +15392,7 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
  *         SITUATION_ERROR_BACKEND_SPECIFIC if Vulkan/GL texture creation/upload failed,
  *         or other appropriate error codes propagated from `SituationCreateTextureEx`.
  *
- * @note This is the most commonly used texture creation entry point ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â it provides sensible
+ * @note This is the most commonly used texture creation entry point  -  it provides sensible
  *       defaults while still allowing full control via the `Ex` variant when needed.
  *       Mipmap generation adds a small GPU cost (especially for large textures) but greatly
  *       improves quality when minification occurs.
@@ -13984,7 +15451,7 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
 #if defined(SITUATION_USE_OPENGL)
     _SitGLDeferDestroyTexture(slot->gl_texture_id);
     // Erase from Virtual Bindless Cache to prevent ID-recycle collisions
-    for (int i = 0; i < SITUATION_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
+    for (int i = 0; i < SITUATION_GL_MAX_VIRTUAL_TEXTURE_UNITS; i++) {
         if (sit_render.gl.virtual_texture_slots[i].gl_texture_id == slot->gl_texture_id) {
             sit_render.gl.virtual_texture_slots[i].is_active = false;
             sit_render.gl.virtual_texture_slots[i].gl_texture_id = 0;
@@ -14028,6 +15495,308 @@ SITAPI void SituationDestroyTexture(SituationTexture* texture) {
 
     slot->is_active = false;
     texture->generation = 0;
+}
+
+SITAPI SituationError SituationGetTextureInfo(SituationTexture texture, SituationTextureInfo* out_info) {
+    if (!out_info) return SITUATION_ERROR_INVALID_PARAM;
+    _SituationTextureSlot* slot = _SitGetTextureSlot(texture);
+    if (!slot || !slot->is_active) return SITUATION_ERROR_RESOURCE_INVALID;
+
+    out_info->width = slot->width;
+    out_info->height = slot->height;
+    out_info->mip_levels = slot->mip_levels;
+    out_info->format = slot->format_api;
+    out_info->usage_flags = slot->usage_flags;
+    out_info->min_filter = slot->min_filter;
+    out_info->mag_filter = slot->mag_filter;
+    out_info->wrap_s = slot->wrap_s;
+    out_info->wrap_t = slot->wrap_t;
+
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationSetTextureSamplerParams(SituationTexture texture, SituationTextureFilter min_filter, SituationTextureFilter mag_filter, SituationTextureWrap wrap_s, SituationTextureWrap wrap_t) {
+    _SituationTextureSlot* slot = _SitGetTextureSlot(texture);
+    if (!slot || !slot->is_active) return SITUATION_ERROR_RESOURCE_INVALID;
+
+    slot->min_filter = min_filter;
+    slot->mag_filter = mag_filter;
+    slot->wrap_s = wrap_s;
+    slot->wrap_t = wrap_t;
+
+#if defined(SITUATION_USE_OPENGL)
+    GLint gl_min = (min_filter == SIT_TEXTURE_FILTER_LINEAR) ? ((slot->mip_levels > 1) ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR) : GL_NEAREST;
+    GLint gl_mag = (mag_filter == SIT_TEXTURE_FILTER_LINEAR) ? GL_LINEAR : GL_NEAREST;
+    GLint gl_wrap_s = (wrap_s == SIT_TEXTURE_WRAP_REPEAT) ? GL_REPEAT : GL_CLAMP_TO_EDGE;
+    GLint gl_wrap_t = (wrap_t == SIT_TEXTURE_WRAP_REPEAT) ? GL_REPEAT : GL_CLAMP_TO_EDGE;
+
+    glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MIN_FILTER, gl_min);
+    glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MAG_FILTER, gl_mag);
+    glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_WRAP_S, gl_wrap_s);
+    glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_WRAP_T, gl_wrap_t);
+    SIT_CHECK_GL_ERROR();
+#elif defined(SITUATION_USE_VULKAN)
+    // Destroy the old sampler
+    if (slot->sampler != VK_NULL_HANDLE) {
+        _SituationDeferDestroyImage(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, slot->sampler); // Queue for cleanup
+    }
+
+    // Create a new sampler
+    VkSamplerCreateInfo sampler_info = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+    sampler_info.minFilter = (min_filter == SIT_TEXTURE_FILTER_LINEAR) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    sampler_info.magFilter = (mag_filter == SIT_TEXTURE_FILTER_LINEAR) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    sampler_info.addressModeU = (wrap_s == SIT_TEXTURE_WRAP_REPEAT) ? VK_SAMPLER_ADDRESS_MODE_REPEAT : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = (wrap_t == SIT_TEXTURE_WRAP_REPEAT) ? VK_SAMPLER_ADDRESS_MODE_REPEAT : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = sampler_info.addressModeU;
+    sampler_info.anisotropyEnable = VK_FALSE;
+    sampler_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    sampler_info.unnormalizedCoordinates = VK_FALSE;
+    sampler_info.compareEnable = VK_FALSE;
+    sampler_info.mipmapMode = (min_filter == SIT_TEXTURE_FILTER_LINEAR) ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler_info.mipLodBias = 0.0f;
+    sampler_info.minLod = 0.0f;
+    sampler_info.maxLod = (float)slot->mip_levels;
+
+    if (vkCreateSampler(sit_render.vk.device, &sampler_info, NULL, &slot->sampler) != VK_SUCCESS) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED, "vkCreateSampler failed.");
+    }
+
+    // Update descriptor sets
+    VkDescriptorImageInfo image_info = {};
+    if (slot->usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) {
+        image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    } else {
+        image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    image_info.imageView = slot->image_view;
+    image_info.sampler = slot->sampler;
+
+    VkWriteDescriptorSet writes[2] = {0};
+    int write_count = 0;
+
+    if (slot->descriptor_set == VK_NULL_HANDLE && sit_render.vk.global_bindless_set != VK_NULL_HANDLE) {
+        // It's in the bindless set!
+        writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[write_count].dstSet = sit_render.vk.global_bindless_set;
+        writes[write_count].dstBinding = 0;
+        writes[write_count].dstArrayElement = (uint32_t)texture.slot_index;
+        writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[write_count].descriptorCount = 1;
+        writes[write_count].pImageInfo = &image_info;
+        write_count++;
+    } else if (slot->descriptor_set != VK_NULL_HANDLE) {
+        writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[write_count].dstSet = slot->descriptor_set;
+        writes[write_count].dstBinding = 0;
+        writes[write_count].dstArrayElement = 0;
+        writes[write_count].descriptorType = ((slot->usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) && !(slot->usage_flags & SITUATION_TEXTURE_USAGE_COMPUTE_SAMPLED)) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[write_count].descriptorCount = 1;
+        writes[write_count].pImageInfo = &image_info;
+        write_count++;
+    }
+
+    if (slot->single_sampler_descriptor_set != VK_NULL_HANDLE) {
+        writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[write_count].dstSet = slot->single_sampler_descriptor_set;
+        writes[write_count].dstBinding = SIT_SAMPLER_BINDING_ALBEDO; // Usually 0
+        writes[write_count].dstArrayElement = 0;
+        writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[write_count].descriptorCount = 1;
+        writes[write_count].pImageInfo = &image_info;
+        write_count++;
+    }
+
+    if (write_count > 0) {
+        mtx_lock(&sit_render.resource_registry_mutex);
+        vkUpdateDescriptorSets(sit_render.vk.device, write_count, writes, 0, NULL);
+        mtx_unlock(&sit_render.resource_registry_mutex);
+    }
+#endif
+
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationReadTexture(SituationTexture texture, const SituationTextureReadbackDesc* desc, void* dst_pixels, size_t dst_size_bytes) {
+    if (!dst_pixels) return SITUATION_ERROR_INVALID_PARAM;
+    _SituationTextureSlot* slot = _SitGetTextureSlot(texture);
+    if (!slot || !slot->is_active) return SITUATION_ERROR_RESOURCE_INVALID;
+
+    SituationTextureReadbackDesc local_desc = {0};
+    if (!desc) {
+        local_desc.region.width = slot->width;
+        local_desc.region.height = slot->height;
+        local_desc.region.mip_level = 0;
+        local_desc.format = SIT_TEXTURE_READ_RGBA8;
+        local_desc.dst_row_pitch_bytes = slot->width * 4;
+        desc = &local_desc;
+    }
+
+    if (desc->format != SIT_TEXTURE_READ_RGBA8) return SITUATION_ERROR_INVALID_PARAM;
+
+    int read_w = desc->region.width ? desc->region.width : slot->width;
+    int read_h = desc->region.height ? desc->region.height : slot->height;
+    size_t pitch = desc->dst_row_pitch_bytes ? desc->dst_row_pitch_bytes : (size_t)(read_w * 4);
+
+    if (dst_size_bytes < pitch * read_h) return SITUATION_ERROR_BUFFER_OVERFLOW;
+
+#if defined(SITUATION_USE_OPENGL)
+    glPixelStorei(GL_PACK_ROW_LENGTH, (GLint)(pitch / 4));
+    glGetTextureSubImage(slot->gl_texture_id, desc->region.mip_level, desc->region.x, desc->region.y, 0, read_w, read_h, 1, GL_RGBA, GL_UNSIGNED_BYTE, (GLsizei)dst_size_bytes, dst_pixels);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0); // Restore
+    SIT_CHECK_GL_ERROR();
+#elif defined(SITUATION_USE_VULKAN)
+    VkBuffer staging_buffer;
+    VmaAllocation staging_allocation;
+    VkDeviceSize size = pitch * read_h;
+
+    VkBufferCreateInfo buffer_info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    buffer_info.size = size;
+    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo alloc_info = {0};
+    alloc_info.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+    
+    if (vmaCreateBuffer(sit_render.vk.vma_allocator, &buffer_info, &alloc_info, &staging_buffer, &staging_allocation, NULL) != VK_SUCCESS) {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+
+    VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
+    VkImageLayout old_layout = (slot->usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    _SituationVulkanTransitionImageLayout(cmd, slot->image, slot->mip_levels, old_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = 0;
+    region.bufferRowLength = (uint32_t)(pitch / 4);
+    region.bufferImageHeight = read_h;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = desc->region.mip_level;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = (VkOffset3D){desc->region.x, desc->region.y, 0};
+    region.imageExtent = (VkExtent3D){(uint32_t)read_w, (uint32_t)read_h, 1};
+
+    vkCmdCopyImageToBuffer(cmd, slot->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging_buffer, 1, &region);
+
+    _SituationVulkanTransitionImageLayout(cmd, slot->image, slot->mip_levels, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, old_layout);
+    SIT_RETURN_IF_ERR(_SituationVulkanEndSingleTimeCommands(cmd));
+
+    void* mapped = NULL;
+    vmaMapMemory(sit_render.vk.vma_allocator, staging_allocation, &mapped);
+    memcpy(dst_pixels, mapped, size);
+    vmaUnmapMemory(sit_render.vk.vma_allocator, staging_allocation);
+    vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
+#endif
+
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationReadTextureAlloc(SituationTexture texture, const SituationTextureReadbackDesc* desc, SituationImage* out_image) {
+    if (!out_image) return SITUATION_ERROR_INVALID_PARAM;
+    
+    _SituationTextureSlot* slot = _SitGetTextureSlot(texture);
+    if (!slot || !slot->is_active) return SITUATION_ERROR_RESOURCE_INVALID;
+
+    SituationTextureReadbackDesc local_desc = {0};
+    if (desc) {
+        local_desc = *desc;
+    } else {
+        local_desc.region.width = slot->width;
+        local_desc.region.height = slot->height;
+        local_desc.region.mip_level = 0;
+        local_desc.format = SIT_TEXTURE_READ_RGBA8;
+    }
+
+    int read_w = local_desc.region.width ? local_desc.region.width : slot->width;
+    int read_h = local_desc.region.height ? local_desc.region.height : slot->height;
+    local_desc.dst_row_pitch_bytes = read_w * 4;
+
+    size_t required_bytes = local_desc.dst_row_pitch_bytes * read_h;
+    void* pixels = SIT_MALLOC(required_bytes);
+
+    SituationError err = SituationReadTexture(texture, &local_desc, pixels, required_bytes);
+    if (err != SITUATION_SUCCESS) {
+        SIT_FREE(pixels);
+        return err;
+    }
+
+    out_image->width = read_w;
+    out_image->height = read_h;
+    out_image->data = (uint8_t*)pixels;
+    out_image->color_encoding = SITUATION_COLOR_SRGB;
+    
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationReadFramebuffer(const SituationReadPixelsDesc* desc, void* dst_pixels, size_t dst_size_bytes) {
+    if (!dst_pixels) return SITUATION_ERROR_INVALID_PARAM;
+
+    SituationReadPixelsDesc default_desc = {0};
+    if (!desc) {
+        default_desc.width = sit_gs.main_window_width;
+        default_desc.height = sit_gs.main_window_height;
+        default_desc.format = SIT_TEXTURE_READ_RGBA8;
+        default_desc.dst_row_pitch_bytes = sit_gs.main_window_width * 4;
+        desc = &default_desc;
+    }
+
+    int read_w = desc->width ? desc->width : sit_gs.main_window_width;
+    int read_h = desc->height ? desc->height : sit_gs.main_window_height;
+    size_t pitch = desc->dst_row_pitch_bytes ? desc->dst_row_pitch_bytes : (size_t)(read_w * 4);
+
+    if (dst_size_bytes < pitch * read_h) return SITUATION_ERROR_BUFFER_OVERFLOW;
+
+#if defined(SITUATION_USE_OPENGL)
+    glPixelStorei(GL_PACK_ROW_LENGTH, (GLint)(pitch / 4));
+    glReadPixels(desc->x, desc->y, read_w, read_h, GL_RGBA, GL_UNSIGNED_BYTE, dst_pixels);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0); // Restore
+    SIT_CHECK_GL_ERROR();
+#elif defined(SITUATION_USE_VULKAN)
+    VkBuffer staging_buffer;
+    VmaAllocation staging_allocation;
+    VkDeviceSize size = pitch * read_h;
+
+    VkBufferCreateInfo buffer_info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    buffer_info.size = size;
+    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo alloc_info = {0};
+    alloc_info.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+    
+    if (vmaCreateBuffer(sit_render.vk.vma_allocator, &buffer_info, &alloc_info, &staging_buffer, &staging_allocation, NULL) != VK_SUCCESS) {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+
+    VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
+    VkImage swap_image = sit_render.vk.swapchain_images[sit_render.vk.current_image_index];
+
+    _SituationVulkanTransitionImageLayout(cmd, swap_image, 1, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = 0;
+    region.bufferRowLength = (uint32_t)(pitch / 4);
+    region.bufferImageHeight = read_h;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = (VkOffset3D){desc->x, desc->y, 0};
+    region.imageExtent = (VkExtent3D){(uint32_t)read_w, (uint32_t)read_h, 1};
+
+    vkCmdCopyImageToBuffer(cmd, swap_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging_buffer, 1, &region);
+
+    _SituationVulkanTransitionImageLayout(cmd, swap_image, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    SituationError end_err = _SituationVulkanEndSingleTimeCommands(cmd);
+    if (end_err != SITUATION_SUCCESS) {
+        vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
+        return end_err;
+    }
+
+    void* mapped = NULL;
+    vmaMapMemory(sit_render.vk.vma_allocator, staging_allocation, &mapped);
+    memcpy(dst_pixels, mapped, size);
+    vmaUnmapMemory(sit_render.vk.vma_allocator, staging_allocation);
+    vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
+#endif
+
+    return SITUATION_SUCCESS;
 }
 
 #if defined(SITUATION_USE_VULKAN)
@@ -14169,7 +15938,7 @@ static SituationError _SituationVulkanCreateAndUploadBuffer(VkCommandBuffer cmd,
         vkCmdCopyBuffer(temp_cmd, staging_buffer, *out_buffer, 1, &copy_region);
 
         // Execute and Wait
-        _SituationVulkanEndSingleTimeCommands(temp_cmd);
+        SIT_RETURN_IF_ERR(_SituationVulkanEndSingleTimeCommands(temp_cmd));
 
         // SAFE CLEANUP [2.3.14A]:
         // If we are initializing, Graveyards might not be ready or flushed yet.
@@ -14272,7 +16041,11 @@ static SituationError _SituationVulkanReadBackBuffer(VkBuffer src_buffer, VmaAll
 
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &host_barrier, 0, NULL);
 
-    _SituationVulkanEndSingleTimeCommands(cmd);
+    SituationError submit_err = _SituationVulkanEndSingleTimeCommands(cmd);
+    if (submit_err != SITUATION_SUCCESS) {
+        vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
+        return submit_err;
+    }
 
     // 3. Map and Copy
     void* mapped_data;
@@ -14325,14 +16098,33 @@ static SituationError _SituationVulkanReadBackBuffer(VkBuffer src_buffer, VmaAll
  * @see SituationGetBufferData()
  * @see SituationBufferUsageFlags
  */
+#if defined(SITUATION_USE_OPENGL)
+static GLenum _SitGLUploadNamedBuffer(GLuint buffer_id, GLsizeiptr size, const void* initial_data) {
+    while (glGetError() != GL_NO_ERROR) {}
+
+    glNamedBufferStorage(buffer_id, size, initial_data, GL_DYNAMIC_STORAGE_BIT);
+    GLenum err = glGetError();
+    if (err == GL_NO_ERROR) {
+        return GL_NO_ERROR;
+    }
+
+    /* Many Windows GL drivers reject glNamedBufferStorage; glNamedBufferData still works. */
+    glNamedBufferData(buffer_id, size, initial_data, GL_DYNAMIC_DRAW);
+    return glGetError();
+}
+#endif
+
 SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_data, SituationBufferUsageFlags usage_flags, SituationBuffer* out_buffer) {
     if (!out_buffer) return SITUATION_ERROR_INVALID_PARAM;
     memset(out_buffer, 0, sizeof(SituationBuffer));
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (size == 0) return SITUATION_ERROR_INVALID_PARAM;
 
     SituationBuffer handle;
     _SituationBufferSlot* slot = _SitAllocBufferSlot(&handle);
-    if (!slot) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    if (!slot) {
+        return SituationGetLastErrorCode();
+    }
 
     slot->size_in_bytes = size;
     slot->usage_flags = usage_flags;
@@ -14340,19 +16132,19 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
     handle.usage_flags = usage_flags;
 
 #if defined(SITUATION_USE_OPENGL)
+    _SituationMakeGLContextCurrentForHostThread();
     glCreateBuffers(1, &slot->gl_buffer_id);
     if (slot->gl_buffer_id == 0) {
         _SitFreeBufferSlot(handle);
         return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateBuffers failed for SituationCreateBuffer.");
     }
-    // Use dynamic storage if we plan to map/update often?
-    GLbitfield flags = GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
-    glNamedBufferStorage(slot->gl_buffer_id, size, initial_data, flags); // initial_data can be NULL
-    SIT_CHECK_GL_ERROR();
-    if (strcmp(sit_gs.last_error_msg, "No error") != 0) {
+    GLenum storage_err = _SitGLUploadNamedBuffer(slot->gl_buffer_id, (GLsizeiptr)size, initial_data);
+    if (storage_err != GL_NO_ERROR) {
         glDeleteBuffers(1, &slot->gl_buffer_id);
         _SitFreeBufferSlot(handle);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glNamedBufferStorage failed for SituationCreateBuffer.");
+        char detail[96];
+        snprintf(detail, sizeof(detail), "buffer upload failed (GL error 0x%X)", (unsigned int)storage_err);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, detail);
     }
 
 #elif defined(SITUATION_USE_VULKAN)
@@ -14370,12 +16162,79 @@ SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_dat
 
     VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
     SituationError err = _SituationVulkanCreateAndUploadBuffer(cmd, initial_data, size, vk_usage, &slot->vk_buffer, &slot->vma_allocation);
-    _SituationVulkanEndSingleTimeCommands(cmd);
+    SituationError end_err = _SituationVulkanEndSingleTimeCommands(cmd);
 
+    if (end_err != SITUATION_SUCCESS) {
+        _SitFreeBufferSlot(handle);
+        return end_err;
+    }
     if (err != SITUATION_SUCCESS) {
         _SitFreeBufferSlot(handle);
         return err;
     }
+#endif
+
+    *out_buffer = handle;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief [Phase 1] Creates an asynchronous GPU->CPU staging buffer for readback.
+ */
+SITAPI SituationError SituationCreateReadbackBuffer(size_t size, SituationBuffer* out_buffer) {
+    if (!out_buffer) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_buffer, 0, sizeof(SituationBuffer));
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+
+    SituationBuffer handle;
+    _SituationBufferSlot* slot = _SitAllocBufferSlot(&handle);
+    if (!slot) {
+        return SituationGetLastErrorCode();
+    }
+
+    slot->size_in_bytes = size;
+    slot->usage_flags = SITUATION_BUFFER_USAGE_TRANSFER_DST;
+    slot->is_readback = true;
+    handle.size_in_bytes = size;
+    handle.usage_flags = SITUATION_BUFFER_USAGE_TRANSFER_DST;
+
+#if defined(SITUATION_USE_OPENGL)
+    glCreateBuffers(1, &slot->gl_buffer_id);
+    if (slot->gl_buffer_id == 0) {
+        _SitFreeBufferSlot(handle);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateBuffers failed for readback.");
+    }
+    GLbitfield flags = GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+    glNamedBufferStorage(slot->gl_buffer_id, size, NULL, flags);
+    SIT_CHECK_GL_ERROR();
+    if (strcmp(sit_gs.last_error_msg, "No error") != 0) {
+        glDeleteBuffers(1, &slot->gl_buffer_id);
+        _SitFreeBufferSlot(handle);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glNamedBufferStorage failed for readback.");
+    }
+    slot->mapped_ptr = glMapNamedBufferRange(slot->gl_buffer_id, 0, size, flags);
+    slot->mapped_size = size;
+    slot->readback_is_host_coherent = true;
+#elif defined(SITUATION_USE_VULKAN)
+    slot->vk_usage_flags = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer_info.size = size;
+    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo alloc_info = {0};
+    alloc_info.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+    alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo vma_info;
+    if (vmaCreateBuffer(sit_render.vk.vma_allocator, &buffer_info, &alloc_info, &slot->vk_buffer, &slot->vma_allocation, &vma_info) != VK_SUCCESS) {
+        _SitFreeBufferSlot(handle);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED, "Failed to create readback buffer.");
+    }
+    slot->mapped_ptr = vma_info.pMappedData;
+    slot->mapped_size = size;
+    VkMemoryPropertyFlags mem_prop_flags = 0;
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(sit_render.vk.physical_device, &memProperties);
+    mem_prop_flags = memProperties.memoryTypes[vma_info.memoryType].propertyFlags;
+    slot->readback_is_host_coherent = (mem_prop_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
 #endif
 
     *out_buffer = handle;
@@ -14403,8 +16262,15 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer) {
     if (!slot) return;
 
 #if defined(SITUATION_USE_OPENGL)
+    if (slot->is_readback && slot->mapped_ptr) {
+        glUnmapNamedBuffer(slot->gl_buffer_id);
+        slot->mapped_ptr = NULL;
+    }
     _SitGLDeferDestroyBuffer(slot->gl_buffer_id);
 #elif defined(SITUATION_USE_VULKAN)
+    if (slot->is_readback) {
+        slot->mapped_ptr = NULL; // VMA unmaps automatically
+    }
     if (_SituationVulkanImmediateDestroyDuringShutdown() && sit_render.vk.device != VK_NULL_HANDLE && sit_render.vk.vma_allocator) {
         if (slot->descriptor_set != VK_NULL_HANDLE && slot->descriptor_pool != VK_NULL_HANDLE) {
             vkFreeDescriptorSets(sit_render.vk.device, slot->descriptor_pool, 1, &slot->descriptor_set);
@@ -14458,8 +16324,10 @@ SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_co
     SituationMesh handle;
     mtx_lock(&sit_render.resource_registry_mutex); // [LOCK]
     _SituationMeshSlot* slot = _SitAllocMeshSlot(&handle);
-    mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
-    if (!slot) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    mtx_unlock(&sit_render.resource_registry_mutex);
+    if (!slot) {
+        return SituationGetLastErrorCode();
+    }
 
     slot->vertex_count = vertex_count;
     slot->index_count = index_count;
@@ -14471,6 +16339,7 @@ SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_co
     handle.vertex_stride = vertex_stride;
 
 #if defined(SITUATION_USE_OPENGL)
+    _SituationMakeGLContextCurrentForHostThread();
     // Create VAO/VBO/EBO
     glCreateBuffers(1, &slot->vbo_id);
     if (slot->vbo_id == 0) {
@@ -14496,22 +16365,22 @@ SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_co
     // Create Vertex Buffer
     VkDeviceSize vSize = vertex_count * vertex_stride;
     if (_SituationVulkanCreateAndUploadBuffer(cmd, vertex_data, vSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &slot->vertex_buffer, &slot->vertex_buffer_memory) != SITUATION_SUCCESS) {
-        _SituationVulkanEndSingleTimeCommands(cmd);
+        SituationError end_err = _SituationVulkanEndSingleTimeCommands(cmd);
         _SitFreeMeshSlot(handle);
-        return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
+        return (end_err != SITUATION_SUCCESS) ? end_err : SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
     }
 
     // Create Index Buffer
     if (index_count > 0 && index_data) {
         VkDeviceSize iSize = index_count * sizeof(uint32_t);
         if (_SituationVulkanCreateAndUploadBuffer(cmd, index_data, iSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, &slot->index_buffer, &slot->index_buffer_memory) != SITUATION_SUCCESS) {
-            _SituationVulkanEndSingleTimeCommands(cmd);
+            SituationError end_err = _SituationVulkanEndSingleTimeCommands(cmd);
             _SituationVulkanDestroyBuffer(slot->vertex_buffer, slot->vertex_buffer_memory); // Clean up VBO
             _SitFreeMeshSlot(handle);
-            return SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
+            return (end_err != SITUATION_SUCCESS) ? end_err : SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED;
         }
     }
-    _SituationVulkanEndSingleTimeCommands(cmd);
+    SIT_RETURN_IF_ERR(_SituationVulkanEndSingleTimeCommands(cmd));
 #endif
 
     // Track for leaks? No need, registry handles it.
@@ -14675,7 +16544,7 @@ SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* ve
  *
  * @see _SituationCreateGLShaderProgram(), _SituationCreateGLShaderProgramFromSource()
  */
-static GLuint _SituationCompileGLShader(const char* source, GLenum type, SituationError* error_code) {
+static GLuint _SituationCompileGLShaderEx(const char* source, GLenum type, SituationError* error_code, bool wait_for_compile) {
     if (!source) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Null shader source");
         if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
@@ -14761,6 +16630,11 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
 
     glCompileShader(shader);
 
+    if (!wait_for_compile) {
+        if (error_code) *error_code = SITUATION_SUCCESS;
+        return shader;
+    }
+
     GLint success = 0;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
     if (!success) {
@@ -14816,6 +16690,398 @@ static GLuint _SituationCompileGLShader(const char* source, GLenum type, Situati
 
     if (error_code) *error_code = SITUATION_SUCCESS;
     return shader;
+}
+
+static GLuint _SituationCompileGLShader(const char* source, GLenum type, SituationError* error_code) {
+    return _SituationCompileGLShaderEx(source, type, error_code, true);
+}
+
+/** Returns 1 when compile finished (success or failure). On failure deletes shader and sets error_code. */
+static int _SituationPollGLShaderCompile(GLuint shader, GLenum type, SituationError* error_code) {
+    if (!shader) {
+        if (error_code) *error_code = SITUATION_ERROR_INVALID_PARAM;
+        return 1;
+    }
+    GLint completion = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPLETION_STATUS_KHR, &completion);
+    if (completion != GL_TRUE) {
+        return 0;
+    }
+    GLint success = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (success) {
+        if (error_code) *error_code = SITUATION_SUCCESS;
+        return 1;
+    }
+    GLint log_length = 0;
+    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_length);
+    if (log_length > 0) {
+        const char* type_name = (type == GL_VERTEX_SHADER) ? "Vertex Shader" : "Fragment Shader";
+        size_t prefix_len = strlen(type_name) + 2;
+        size_t total_buffer_size = prefix_len + (size_t)log_length;
+        char* final_error_message = (char*)SIT_MALLOC(total_buffer_size);
+        if (final_error_message) {
+            strcpy(final_error_message, type_name);
+            strcat(final_error_message, ": ");
+            glGetShaderInfoLog(shader, log_length, NULL, final_error_message + prefix_len);
+            _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, final_error_message);
+            SIT_FREE(final_error_message);
+        }
+    } else {
+        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_SHADER_COMPILE, "Async shader compilation failed");
+    }
+    if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_COMPILE;
+    return 1;
+}
+
+static void _SituationGLFreeSpirvAsyncCopies(_SituationShaderSlot* slot) {
+    if (!slot) return;
+    if (slot->gl_spirv_vs_copy) { SIT_FREE(slot->gl_spirv_vs_copy); slot->gl_spirv_vs_copy = NULL; }
+    if (slot->gl_spirv_fs_copy) { SIT_FREE(slot->gl_spirv_fs_copy); slot->gl_spirv_fs_copy = NULL; }
+    slot->gl_spirv_substage = 0;
+}
+
+static SituationError _SituationGLAsyncLoadFail(_SituationShaderSlot* slot) {
+    SituationError err = SituationGetLastErrorCode();
+    if (err == SITUATION_SUCCESS || err == SITUATION_ERROR_UNKNOWN_ERROR) {
+        err = SITUATION_ERROR_OPENGL_SHADER_COMPILE_FAILED;
+    }
+    if (!slot) {
+        return err;
+    }
+    if (slot->gl_async_vs_shader) { glDeleteShader(slot->gl_async_vs_shader); slot->gl_async_vs_shader = 0; }
+    if (slot->gl_async_fs_shader) { glDeleteShader(slot->gl_async_fs_shader); slot->gl_async_fs_shader = 0; }
+    if (slot->gl_pending_program_id) { glDeleteProgram(slot->gl_pending_program_id); slot->gl_pending_program_id = 0; }
+    _SituationGLFreeSpirvAsyncCopies(slot);
+    slot->gl_spirv_vs_len = 0;
+    slot->gl_spirv_fs_len = 0;
+    slot->gl_pending_link_spirv = false;
+    slot->gl_is_linking = false;
+    slot->gl_async_load_stage = SIT_GL_ASYNC_STAGE_IDLE;
+    return err;
+}
+
+static int _SituationGLSpecializeSpirvShader(
+    GLuint shader, GLenum type, size_t blob_bytes, SituationError fail_code, SituationError* out_err) {
+    const char* stage =
+        (type == GL_VERTEX_SHADER) ? "vertex" :
+        (type == GL_FRAGMENT_SHADER) ? "fragment" : "shader";
+
+    glSpecializeShader(shader, "main", 0, NULL, NULL);
+    SIT_CHECK_GL_ERROR();
+
+    GLint success = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char* infoLog = _SituationDupGLInfoLog(shader, 0);
+        SituationError spirv_err = _SituationSetGLErrorFromSpirvStage(
+            fail_code, stage, blob_bytes, infoLog ? infoLog : "");
+        if (out_err) {
+            *out_err = spirv_err;
+        }
+        if (infoLog) {
+            SIT_FREE(infoLog);
+        }
+        return 0;
+    }
+    if (out_err) {
+        *out_err = SITUATION_SUCCESS;
+    }
+    return 1;
+}
+
+static int _SituationFinalizeGLPendingProgramLink(_SituationShaderSlot* slot) {
+    if (!slot || !slot->gl_is_linking || !slot->gl_pending_program_id) {
+        return 0;
+    }
+
+    GLuint program = slot->gl_pending_program_id;
+    GLint success = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char* infoLog = _SituationDupGLInfoLog(program, 1);
+        SituationError code = slot->gl_pending_link_spirv
+            ? SITUATION_ERROR_OPENGL_SPIRV_PROGRAM_LINK_FAILED
+            : SITUATION_ERROR_OPENGL_SHADER_LINK;
+        if (slot->gl_pending_link_spirv) {
+            size_t blob_bytes = slot->gl_spirv_vs_len + slot->gl_spirv_fs_len;
+            _SituationSetGLErrorFromSpirvStage(
+                code, "graphics program", blob_bytes, infoLog ? infoLog : "");
+        } else {
+            _SituationSetErrorFromCode(code, (infoLog && infoLog[0]) ? infoLog : "(no driver log)");
+        }
+        if (infoLog) {
+            SIT_FREE(infoLog);
+        }
+        glDeleteProgram(program);
+        slot->gl_pending_program_id = 0;
+        slot->gl_is_linking = false;
+        slot->gl_pending_link_spirv = false;
+        slot->gl_spirv_vs_len = 0;
+        slot->gl_spirv_fs_len = 0;
+        return 0;
+    }
+
+    if (slot->gl_pending_link_spirv) {
+        _SituationBindGLProgramStorageBlocks(program);
+        _SituationBindGLProgramUniformBlocks(program);
+        if (slot->uniform_map) {
+            _sit_uniform_map_destroy(slot->uniform_map);
+            slot->uniform_map = NULL;
+        }
+    } else {
+        if (slot->uniform_map) {
+            _sit_uniform_map_destroy(slot->uniform_map);
+        }
+        slot->uniform_map = _sit_uniform_map_create();
+        if (!slot->uniform_map) {
+            glDeleteProgram(program);
+            slot->gl_pending_program_id = 0;
+            slot->gl_is_linking = false;
+            return 0;
+        }
+        GLint count = 0;
+        glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &count);
+        for (GLint j = 0; j < count; j++) {
+            char name[256];
+            GLsizei length = 0;
+            GLint size = 0;
+            GLenum type = 0;
+            glGetActiveUniform(program, (GLuint)j, sizeof(name), &length, &size, &type, name);
+            GLint location = glGetUniformLocation(program, name);
+            if (location != -1) {
+                SituationError set_err = _sit_uniform_map_set(slot->uniform_map, name, location);
+                if (set_err != SITUATION_SUCCESS) {
+                    glDeleteProgram(program);
+                    slot->gl_pending_program_id = 0;
+                    slot->gl_is_linking = false;
+                    return 0;
+                }
+            }
+        }
+    }
+
+    if (slot->gl_program_id) {
+        glDeleteProgram(slot->gl_program_id);
+    }
+    slot->gl_program_id = program;
+    slot->gl_pending_program_id = 0;
+    slot->gl_is_linking = false;
+    slot->gl_pending_link_spirv = false;
+    slot->gl_spirv_vs_len = 0;
+    slot->gl_spirv_fs_len = 0;
+    return 1;
+}
+
+static SituationError _SituationPollGLPendingProgramLink(_SituationShaderSlot* slot) {
+    if (!slot || !slot->gl_is_linking || !slot->gl_pending_program_id) {
+        return SITUATION_SUCCESS;
+    }
+
+    int ready = 0;
+    if (sit_render.gl.parallel_shader_compile_available) {
+        GLint status = GL_FALSE;
+        glGetProgramiv(slot->gl_pending_program_id, GL_COMPLETION_STATUS_KHR, &status);
+        ready = (status == GL_TRUE);
+        if (!ready) {
+            /* Some drivers never set COMPLETION for SPIR-V links; fall back to LINK_STATUS. */
+            GLint link_ok = GL_FALSE;
+            glGetProgramiv(slot->gl_pending_program_id, GL_LINK_STATUS, &link_ok);
+            if (link_ok == GL_TRUE) {
+                ready = 1;
+            } else {
+                GLint log_len = 0;
+                glGetProgramiv(slot->gl_pending_program_id, GL_INFO_LOG_LENGTH, &log_len);
+                if (log_len > 1) {
+                    ready = 1;
+                }
+            }
+        }
+    } else {
+        ready = 1;
+    }
+
+    if (!ready) {
+        return SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS;
+    }
+
+    if (!_SituationFinalizeGLPendingProgramLink(slot)) {
+        SituationError err = SituationGetLastErrorCode();
+        if (err == SITUATION_SUCCESS || err == SITUATION_ERROR_UNKNOWN_ERROR) {
+            err = slot->gl_pending_link_spirv
+                ? SITUATION_ERROR_OPENGL_SPIRV_PROGRAM_LINK_FAILED
+                : SITUATION_ERROR_OPENGL_SHADER_LINK;
+        }
+        return err;
+    }
+    return SITUATION_SUCCESS;
+}
+
+static SituationError _SituationPollGLAsyncSpirvShaderLoad(_SituationShaderSlot* slot) {
+    if (!slot || slot->gl_async_load_stage != SIT_GL_ASYNC_STAGE_SPIRV) {
+        return SITUATION_SUCCESS;
+    }
+    if (!GLAD_GL_ARB_gl_spirv) {
+        _SituationSetErrorFromCode(
+            SITUATION_ERROR_OPENGL_SPIRV_UNAVAILABLE,
+            "GL_ARB_gl_spirv required for async SPIR-V load.");
+        return _SituationGLAsyncLoadFail(slot);
+    }
+
+    SituationError err = SITUATION_SUCCESS;
+
+    if (slot->gl_spirv_substage == 0) {
+        if (!_SituationGLSpecializeSpirvShader(
+                slot->gl_async_vs_shader, GL_VERTEX_SHADER, slot->gl_spirv_vs_len,
+                SITUATION_ERROR_OPENGL_SPIRV_VS_SPECIALIZE_FAILED, &err)) {
+            return _SituationGLAsyncLoadFail(slot);
+        }
+        slot->gl_spirv_substage = 1;
+        return SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS;
+    }
+
+    if (slot->gl_spirv_substage == 1) {
+        if (!_SituationGLSpecializeSpirvShader(
+                slot->gl_async_fs_shader, GL_FRAGMENT_SHADER, slot->gl_spirv_fs_len,
+                SITUATION_ERROR_OPENGL_SPIRV_FS_SPECIALIZE_FAILED, &err)) {
+            return _SituationGLAsyncLoadFail(slot);
+        }
+        slot->gl_spirv_substage = 2;
+        return SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS;
+    }
+
+    if (slot->gl_spirv_substage != 2) {
+        return SITUATION_SUCCESS;
+    }
+
+    GLuint program = glCreateProgram();
+    if (!program) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateProgram failed during SPIR-V async link.");
+        return _SituationGLAsyncLoadFail(slot);
+    }
+    glAttachShader(program, slot->gl_async_vs_shader);
+    glAttachShader(program, slot->gl_async_fs_shader);
+    glLinkProgram(program);
+    glDeleteShader(slot->gl_async_vs_shader);
+    glDeleteShader(slot->gl_async_fs_shader);
+    slot->gl_async_vs_shader = 0;
+    slot->gl_async_fs_shader = 0;
+    _SituationGLFreeSpirvAsyncCopies(slot);
+    slot->gl_pending_program_id = program;
+    slot->gl_pending_link_spirv = true;
+    slot->gl_is_linking = true;
+    slot->gl_async_load_stage = SIT_GL_ASYNC_STAGE_IDLE;
+    return _SituationPollGLPendingProgramLink(slot);
+}
+
+static SituationError _SituationBeginGLSpirvShaderLoadAsync(
+    const void* vs_spirv, size_t vs_len, const void* fs_spirv, size_t fs_len, SituationShader* out_shader) {
+    if (!out_shader) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    memset(out_shader, 0, sizeof(SituationShader));
+
+    SituationError v_err = _SituationValidateSpirvBinary(vs_spirv, vs_len, "vertex");
+    if (v_err != SITUATION_SUCCESS) {
+        return v_err;
+    }
+    SituationError f_err = _SituationValidateSpirvBinary(fs_spirv, fs_len, "fragment");
+    if (f_err != SITUATION_SUCCESS) {
+        return f_err;
+    }
+    if (!GLAD_GL_ARB_gl_spirv) {
+        _SituationSetErrorFromCode(
+            SITUATION_ERROR_OPENGL_SPIRV_UNAVAILABLE,
+            "GL_ARB_gl_spirv is required for SituationBeginLoadShaderFromSpirvMemory on OpenGL.");
+        return SITUATION_ERROR_OPENGL_SPIRV_UNAVAILABLE;
+    }
+
+    SituationShader handle;
+    mtx_lock(&sit_render.resource_registry_mutex);
+    _SituationShaderSlot* slot = _SitAllocShaderSlot(&handle);
+    mtx_unlock(&sit_render.resource_registry_mutex);
+    if (!slot) {
+        return SituationGetLastErrorCode();
+    }
+
+    slot->gl_spirv_vs_copy = (uint8_t*)SIT_MALLOC(vs_len);
+    slot->gl_spirv_fs_copy = (uint8_t*)SIT_MALLOC(fs_len);
+    if (!slot->gl_spirv_vs_copy || !slot->gl_spirv_fs_copy) {
+        _SituationGLAsyncLoadFail(slot);
+        _SitFreeShaderSlot(handle);
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    memcpy(slot->gl_spirv_vs_copy, vs_spirv, vs_len);
+    memcpy(slot->gl_spirv_fs_copy, fs_spirv, fs_len);
+    slot->gl_spirv_vs_len = vs_len;
+    slot->gl_spirv_fs_len = fs_len;
+    slot->gl_spirv_substage = 0;
+
+    _SituationMakeGLContextCurrentForHostThread();
+
+    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+    glShaderBinary(1, &vs, GL_SHADER_BINARY_FORMAT_SPIR_V, slot->gl_spirv_vs_copy, (GLsizei)vs_len);
+    GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderBinary(1, &fs, GL_SHADER_BINARY_FORMAT_SPIR_V, slot->gl_spirv_fs_copy, (GLsizei)fs_len);
+    SIT_CHECK_GL_ERROR();
+
+    slot->gl_async_vs_shader = vs;
+    slot->gl_async_fs_shader = fs;
+    slot->gl_async_load_stage = SIT_GL_ASYNC_STAGE_SPIRV;
+    *out_shader = handle;
+    return SITUATION_SUCCESS;
+}
+
+static SituationError _SituationPollGLAsyncShaderLoad(_SituationShaderSlot* slot) {
+    if (!slot) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    if (slot->gl_async_load_stage == SIT_GL_ASYNC_STAGE_SPIRV) {
+        return _SituationPollGLAsyncSpirvShaderLoad(slot);
+    }
+    if (slot->gl_async_load_stage != SIT_GL_ASYNC_STAGE_COMPILE) {
+        return SITUATION_SUCCESS;
+    }
+
+    SituationError vs_err = SITUATION_SUCCESS;
+    SituationError fs_err = SITUATION_SUCCESS;
+
+    if (slot->gl_async_vs_shader) {
+        int vs_done = _SituationPollGLShaderCompile(slot->gl_async_vs_shader, GL_VERTEX_SHADER, &vs_err);
+        if (!vs_done) {
+            return SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS;
+        }
+        if (vs_err != SITUATION_SUCCESS) {
+            return _SituationGLAsyncLoadFail(slot);
+        }
+    }
+    if (slot->gl_async_fs_shader) {
+        int fs_done = _SituationPollGLShaderCompile(slot->gl_async_fs_shader, GL_FRAGMENT_SHADER, &fs_err);
+        if (!fs_done) {
+            return SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS;
+        }
+        if (fs_err != SITUATION_SUCCESS) {
+            return _SituationGLAsyncLoadFail(slot);
+        }
+    }
+
+    GLuint program = glCreateProgram();
+    if (!program) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, "glCreateProgram failed during async GLSL link.");
+        return _SituationGLAsyncLoadFail(slot);
+    }
+    glAttachShader(program, slot->gl_async_vs_shader);
+    glAttachShader(program, slot->gl_async_fs_shader);
+    glLinkProgram(program);
+    glDeleteShader(slot->gl_async_vs_shader);
+    glDeleteShader(slot->gl_async_fs_shader);
+    slot->gl_async_vs_shader = 0;
+    slot->gl_async_fs_shader = 0;
+    slot->gl_pending_program_id = program;
+    slot->gl_is_linking = true;
+    slot->gl_pending_link_spirv = false;
+    slot->gl_async_load_stage = SIT_GL_ASYNC_STAGE_IDLE;
+    return SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS;
 }
 
 /**
@@ -14920,13 +17186,13 @@ static GLuint _SituationCreateGLShaderProgramAsync(const char* vs_src, const cha
  * Thread safety invariants:
  *   - Must be called from a thread that has an active OpenGL context (typically render thread
  *     or main thread during init/hot-reload)
- *   - No internal locking ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â caller must ensure no concurrent GL calls on the same context
+ *   - No internal locking  -  caller must ensure no concurrent GL calls on the same context
  *   - Safe during hot-reload if old programs are deleted first
  *
  * @note In debug builds, full GLSL compile/link info logs are printed to stderr on failure.
  *       In release builds, only high-level errors are logged.
  *       The function does **not** validate GLSL syntax beyond what the driver reports.
- *       Shader objects are always detached and deleted ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â caller only needs to manage the returned program.
+ *       Shader objects are always detached and deleted  -  caller only needs to manage the returned program.
  *
  * @see _SituationCreateGLShaderProgramFromSpirv, _SituationCreateGLComputeProgramFromSpirv,
  *      glCreateShader, glShaderSource, glCompileShader, glCreateProgram, glLinkProgram,
@@ -15008,6 +17274,8 @@ static GLuint _SituationCreateGLShaderProgram(const char* vs_src, const char* fs
         if (error_code) *error_code = SITUATION_ERROR_OPENGL_SHADER_LINK;
         return 0;
     }
+
+    _SituationBindGLProgramStorageBlocks(program);
 
     if (error_code) *error_code = SITUATION_SUCCESS;
     return program;
@@ -15113,7 +17381,7 @@ static GLuint _SituationCreateGLShaderProgramFromSource(const char* cs_src, Situ
 /**
  * @brief [INTERNAL] Creates a single-stage OpenGL compute program, dispatching to the optimal creation path.
  * @details This function acts as a high-level dispatcher for creating OpenGL compute shaders.
- *          It intelligently selects the best methodÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Âeither using modern, pre-compiled SPIR-V bytecode or falling back to traditional GLSL source compilationÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Âbased on the type of data provided and the capabilities of the current OpenGL driver.
+ *          It intelligently selects the best method - either using modern, pre-compiled SPIR-V bytecode or falling back to traditional GLSL source compilation - based on the type of data provided and the capabilities of the current OpenGL driver.
  *
  * @par Dispatch Logic
  *   - If `source_type` is `SITUATION_GL_SHADER_SOURCE_TYPE_SPIRV` and the `GL_ARB_gl_spirv` extension is available, it calls `_SituationCreateGLComputeProgramFromSpirv` for the fastest and most consistent creation path.
@@ -15203,7 +17471,9 @@ SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compu
 
     SituationComputePipeline handle;
     _SituationComputePipelineSlot* slot = _SitAllocComputePipelineSlot(&handle);
-    if (!slot) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    if (!slot) {
+        return SituationGetLastErrorCode();
+    }
 
     slot->layout_type = layout_type;
 
@@ -15468,7 +17738,7 @@ static void _SituationCleanupDanglingResources(void) {
  *              transfer queue or immediate command recording (slower, may block)
  *            - **Persistent mapped buffers**: direct write to persistent mapping
  *
- *          The update is **synchronous** from the caller's perspective ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the data is guaranteed
+ *          The update is **synchronous** from the caller's perspective  -  the data is guaranteed
  *          to be visible to subsequent GPU commands after this function returns (subject to
  *          proper pipeline barriers/sync inserted by the library).
  *
@@ -15479,7 +17749,7 @@ static void _SituationCleanupDanglingResources(void) {
  * @param size Number of bytes to copy from `data`. Must satisfy `offset + size <= buffer size`.
  * @param data Pointer to the source data to copy into the buffer.
  *             Must remain valid for the duration of the call.
- *             Ownership is **not** transferred ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â caller retains the source buffer.
+ *             Ownership is **not** transferred  -  caller retains the source buffer.
  *
  * @return SITUATION_SUCCESS on successful update,
  *         SITUATION_ERROR_INVALID_PARAM if buffer is invalid, offset+size out of bounds,
@@ -15492,7 +17762,7 @@ static void _SituationCleanupDanglingResources(void) {
  * @note Performance:
  *       - Fastest for persistently mapped or staging buffers
  *       - Slower for device-local buffers (implicit staging/transfer)
- *       - Avoid frequent small updates on device-local buffers ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â batch changes or use persistent mapping
+ *       - Avoid frequent small updates on device-local buffers  -  batch changes or use persistent mapping
  *
  *       Thread safety:
  *       - Safe to call from **main thread** or any thread that does not hold the render context
@@ -15506,6 +17776,57 @@ static void _SituationCleanupDanglingResources(void) {
  *      SituationCreateBufferFromData (for initial upload),
  *      SITUATION_ERROR_INVALID_PARAM, SITUATION_ERROR_RESOURCE_INVALID
  */
+/**
+ * @brief [Phase 1] Record an async copy between buffers.
+ */
+SITAPI void SituationCmdCopyBuffer(SituationCommandBuffer cmd, SituationBuffer src, SituationBuffer dst, size_t offset, size_t size) {
+    if (!cmd) return;
+
+    _SituationBufferSlot* slot_src = _SitGetBufferSlot(src);
+    _SituationBufferSlot* slot_dst = _SitGetBufferSlot(dst);
+    if (!slot_src || !slot_dst) return;
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* s_cmd = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH_VOID(s_cmd, SIT_OP_COPY_BUFFER, p);
+    if (p) {
+        p->args.copy_buffer.src_id = slot_src->gl_buffer_id;
+        p->args.copy_buffer.dst_id = slot_dst->gl_buffer_id;
+        p->args.copy_buffer.offset = offset;
+        p->args.copy_buffer.size = size;
+    }
+#elif defined(SITUATION_USE_VULKAN)
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    VkBufferCopy region = {0};
+    region.srcOffset = offset;
+    region.dstOffset = 0; // Readback buffer writes start at 0
+    region.size = size;
+    vkCmdCopyBuffer(vk_cmd, slot_src->vk_buffer, slot_dst->vk_buffer, 1, &region);
+#endif
+}
+
+/**
+ * @brief [Phase 1] Read mapped buffer data safely.
+ */
+SITAPI void SituationReadBuffer(SituationBuffer readback_buf, void* dst, size_t size) {
+    _SituationBufferSlot* slot = _SitGetBufferSlot(readback_buf);
+    if (!slot || !slot->is_readback || !slot->mapped_ptr) return;
+
+    size_t copy_size = size > slot->mapped_size ? slot->mapped_size : size;
+
+#if defined(SITUATION_USE_VULKAN)
+    if (!slot->readback_is_host_coherent) {
+        VmaAllocationInfo vma_info;
+        vmaGetAllocationInfo(sit_render.vk.vma_allocator, slot->vma_allocation, &vma_info);
+        vmaInvalidateAllocation(sit_render.vk.vma_allocator, slot->vma_allocation, 0, copy_size);
+    }
+#endif
+
+    // The driver has synchronized this mapped_ptr up to the last frame.
+    memcpy(dst, slot->mapped_ptr, copy_size);
+}
+
 SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offset, size_t size, const void* data) {
     if (!data) return SITUATION_ERROR_INVALID_PARAM;
     _SituationBufferSlot* slot = _SitGetBufferSlot(buffer);
@@ -15566,10 +17887,9 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
 
             VkBufferCopy region = { .srcOffset = 0, .dstOffset = offset, .size = size };
             vkCmdCopyBuffer(cmd, staging_buffer, slot->vk_buffer, 1, &region);
-            _SituationVulkanEndSingleTimeCommands(cmd);
-
+            SituationError end_err = _SituationVulkanEndSingleTimeCommands(cmd);
             vmaDestroyBuffer(sit_render.vk.vma_allocator, staging_buffer, staging_allocation);
-            return SITUATION_SUCCESS;
+            return end_err;
         } else {
             // Small update: use vkCmdUpdateBuffer in a single-time command buffer
             VkCommandBuffer cmd = _SituationVulkanBeginSingleTimeCommands();
@@ -15577,8 +17897,7 @@ SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offse
                 return SITUATION_ERROR_VULKAN_COMMAND_FAILED;
             }
             vkCmdUpdateBuffer(cmd, slot->vk_buffer, offset, size, data);
-            _SituationVulkanEndSingleTimeCommands(cmd);
-            return SITUATION_SUCCESS;
+            return _SituationVulkanEndSingleTimeCommands(cmd);
         }
     }
 #endif
@@ -15674,7 +17993,8 @@ SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, Situatio
     sit_render.vk.current_compute_pipeline_layout = slot->vk_pipeline_layout;
 #elif defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_BIND_COMPUTE_PIPELINE);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH_VOID(buf, SIT_OP_BIND_COMPUTE_PIPELINE, p);
     if (p) {
         p->args.bind_pipeline.shader_id = (uint64_t)slot->gl_program_id;
     }
@@ -15736,7 +18056,8 @@ SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_PIPELINE_BARRIER);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH_VOID(buf, SIT_OP_PIPELINE_BARRIER, p);
     if (p) {
         p->args.barrier.src = src_flags;
         p->args.barrier.dst = dst_flags;
@@ -15859,7 +18180,8 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = _SitGLSoftCmdPush(buf, SIT_OP_DISPATCH);
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH_VOID(buf, SIT_OP_DISPATCH, p);
     if (p) {
         p->args.dispatch.x = group_count_x;
         p->args.dispatch.y = group_count_y;
@@ -15943,7 +18265,7 @@ SITAPI void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t*
  * @details Returns true if the given render feature (or combination of features when using a bitmask)
  *          is fully supported by the active graphics backend (OpenGL or Vulkan) and current hardware/driver.
  *
- *          This function supports **bitmask queries** ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â you can pass a combination of features using bitwise OR
+ *          This function supports **bitmask queries**  -  you can pass a combination of features using bitwise OR
  *          (e.g. `SITUATION_FEATURE_COMPUTE | SITUATION_FEATURE_MESH_SHADING`). In mask mode, the function
  *          returns true **only if all requested features are supported** (logical AND semantics).
  *
@@ -15969,9 +18291,9 @@ SITAPI void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t*
  *         false otherwise.
  *         Returns true for unknown/undefined feature bits (safe default).
  *
- * @note This is a fast, cached query ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â results are determined during initialization (`SituationInit`)
+ * @note This is a fast, cached query  -  results are determined during initialization (`SituationInit`)
  *       by checking extension strings, device properties, feature structs (Vulkan), or GL version/extensions.
- *       Thread-safe and non-blocking ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â safe to call from any thread at any time after init.
+ *       Thread-safe and non-blocking  -  safe to call from any thread at any time after init.
  *       Result does **not** change during the application lifetime unless the backend is reinitialized.
  *
  *       **Mask behavior example:**
@@ -16083,7 +18405,7 @@ static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat forma
  *          in your render thread or hot-reload path).
  *
  * @param code Pointer to the SPIR-V bytecode buffer (must be 4-byte aligned, little-endian).
- *             Ownership is **not** transferred ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â caller must keep the memory alive until
+ *             Ownership is **not** transferred  -  caller must keep the memory alive until
  *             the returned module is destroyed.
  * @param code_size Size of the SPIR-V buffer in bytes.
  *                  Must be > 0 and a multiple of 4 (SPIR-V word size).
@@ -16096,12 +18418,12 @@ static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat forma
  * Thread safety invariants:
  *   - Must be called from a thread that has access to the Vulkan device/queue
  *     (typically the render thread or during init/hot-reload on main thread)
- *   - No internal locking ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â caller must ensure no concurrent module creation/destruction
+ *   - No internal locking  -  caller must ensure no concurrent module creation/destruction
  *   - Safe to call during hot-reload if old modules are destroyed first
  *
  * @note This function does **not** validate the SPIR-V itself (use shaderc validation
  *       or spirv-val during compilation/hot-reload for that).
- *       The returned module is not cached ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â caller is responsible for lifetime management
+ *       The returned module is not cached  -  caller is responsible for lifetime management
  *       and reuse (your shader cache or hot-reload system should handle deduplication).
  *       In debug builds with Vulkan validation layers enabled, invalid SPIR-V will trigger
  *       layer messages before the function returns VK_ERROR_INVALID_SHADER_NV or similar.
@@ -16110,28 +18432,44 @@ static VkImageView _SituationVulkanCreateImageView(VkImage image, VkFormat forma
  *      SituationCreateShader (public API), vkCreateShaderModule,
  *      SITUATION_ERROR_SHADER_MODULE_CREATE_FAILED
  */
-static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_t code_size) {
+static VkShaderModule _SituationVulkanCreateShaderModuleEx(
+    const void* code, size_t code_size, const char* stage_label, SituationError fail_code) {
     if (!code || code_size == 0) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Shader code is NULL or size is zero in _SituationVulkanCreateShaderModule.");
+        char detail[160];
+        snprintf(detail, sizeof(detail), "%s: null or empty SPIR-V blob", stage_label);
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SPIRV_INVALID, detail);
+        return VK_NULL_HANDLE;
+    }
+    if ((code_size & 3u) != 0) {
+        char detail[160];
+        snprintf(detail, sizeof(detail), "%s: SPIR-V size %zu is not a multiple of 4", stage_label, code_size);
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SPIRV_INVALID, detail);
         return VK_NULL_HANDLE;
     }
 
     VkShaderModuleCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     create_info.codeSize = code_size;
-    // Cast away const for pCode (Vulkan spec allows this for SPIR-V blobs)
     create_info.pCode = (const uint32_t*)code;
 
     VkShaderModule shader_module;
     VkResult result = vkCreateShaderModule(sit_render.vk.device, &create_info, NULL, &shader_module);
     if (result != VK_SUCCESS) {
-        char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "vkCreateShaderModule failed: VkResult = %d", (int)result);
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED, err_msg);
+        char detail[SITUATION_MAX_ERROR_MSG_LEN];
+        snprintf(
+            detail, sizeof(detail),
+            "%s SPIR-V (%zu bytes): vkCreateShaderModule VkResult 0x%x",
+            stage_label, code_size, (unsigned)result);
+        _SituationSetErrorFromCode(fail_code, detail);
         return VK_NULL_HANDLE;
     }
 
     return shader_module;
+}
+
+static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_t code_size) {
+    return _SituationVulkanCreateShaderModuleEx(
+        code, code_size, "shader", SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED);
 }
 
 /**
@@ -16162,14 +18500,15 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     const VkVertexInputAttributeDescription* pVertexAttributeDescriptions,
     uint32_t pipeline_flags)
 {
-    // 1. Create Shader Modules from the raw SPIR-V data.
-    VkShaderModule vs_module = _SituationVulkanCreateShaderModule(vs_data, vs_size);
-    VkShaderModule fs_module = _SituationVulkanCreateShaderModule(fs_data, fs_size);
-
-    if (vs_module == VK_NULL_HANDLE || fs_module == VK_NULL_HANDLE) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create shader modules from SPIR-V.");
-        if(vs_module) vkDestroyShaderModule(sit_render.vk.device, vs_module, NULL);
-        if(fs_module) vkDestroyShaderModule(sit_render.vk.device, fs_module, NULL);
+    VkShaderModule vs_module = _SituationVulkanCreateShaderModuleEx(
+        vs_data, vs_size, "vertex", SITUATION_ERROR_VULKAN_SPIRV_VS_MODULE_FAILED);
+    if (vs_module == VK_NULL_HANDLE) {
+        return VK_NULL_HANDLE;
+    }
+    VkShaderModule fs_module = _SituationVulkanCreateShaderModuleEx(
+        fs_data, fs_size, "fragment", SITUATION_ERROR_VULKAN_SPIRV_FS_MODULE_FAILED);
+    if (fs_module == VK_NULL_HANDLE) {
+        vkDestroyShaderModule(sit_render.vk.device, vs_module, NULL);
         return VK_NULL_HANDLE;
     }
 
@@ -16228,8 +18567,15 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     color_blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
     VkPipelineColorBlendStateCreateInfo color_blending = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .logicOpEnable = VK_FALSE, .attachmentCount = 1, .pAttachments = &color_blend_attachment };
 
-    VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dynamic_state = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dynamic_states };
+    VkDynamicState dynamic_states[] = { 
+        VK_DYNAMIC_STATE_VIEWPORT, 
+        VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_CULL_MODE,
+        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_COMPARE_OP
+    };
+    VkPipelineDynamicStateCreateInfo dynamic_state = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 6, .pDynamicStates = dynamic_states };
 
     // 3. Assemble the pipeline create info struct.
     VkGraphicsPipelineCreateInfo pipeline_info = {};
@@ -16296,10 +18642,20 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
  * @return `false` if the primitive is not a triangle list or if allocation failed.
  */
 #if defined(CGLTF_IMPLEMENTATION)
-static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count) {
-    if (prim->type != cgltf_primitive_type_triangles) return false;
+static SituationError _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_vertices, int* out_v_count, uint32_t** out_indices, int* out_i_count) {
+    if (!prim || !out_vertices || !out_v_count || !out_indices || !out_i_count) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    *out_vertices = NULL;
+    *out_indices = NULL;
+    *out_v_count = 0;
+    *out_i_count = 0;
 
-    // 1. Find Accessors
+    if (prim->type != cgltf_primitive_type_triangles) {
+        return _SituationSetErrorFromCode(
+            SITUATION_ERROR_ASSET_PARSE_FAILED, "glTF primitive is not a triangle list.");
+    }
+
     cgltf_accessor* pos_acc = NULL;
     cgltf_accessor* norm_acc = NULL;
     cgltf_accessor* uv_acc = NULL;
@@ -16310,42 +18666,41 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
         if (prim->attributes[i].type == cgltf_attribute_type_texcoord) uv_acc = prim->attributes[i].data;
     }
 
-    if (!pos_acc) return false; // Position is mandatory
+    if (!pos_acc) {
+        return _SituationSetErrorFromCode(
+            SITUATION_ERROR_ASSET_PARSE_FAILED, "glTF primitive has no POSITION attribute.");
+    }
 
     *out_v_count = (int)pos_acc->count;
 
-    // 2. Allocate Interleaved Vertex Buffer (12 floats per vertex)
-    // Layout: X, Y, Z, Nx, Ny, Nz, Tx, Ty, Tz, Tw, U, V
     *out_vertices = (float*)SIT_MALLOC(*out_v_count * 12 * sizeof(float));
-    if (!*out_vertices) return false;
+    if (!*out_vertices) {
+        return _SituationSetErrorFromCode(
+            SITUATION_ERROR_MEMORY_ALLOCATION, "glTF vertex buffer allocation failed.");
+    }
 
     cgltf_accessor* tan_acc = NULL;
     for (size_t i = 0; i < prim->attributes_count; ++i) {
         if (prim->attributes[i].type == cgltf_attribute_type_tangent) tan_acc = prim->attributes[i].data;
     }
 
-    // 3. Interleave Data
     for (int i = 0; i < *out_v_count; ++i) {
         float* v_ptr = &(*out_vertices)[i * 12];
 
-        // Position
         cgltf_accessor_read_float(pos_acc, i, v_ptr, 3);
 
-        // Normal (Default to 0,0,1 if missing)
         if (norm_acc) {
             cgltf_accessor_read_float(norm_acc, i, v_ptr + 3, 3);
         } else {
             v_ptr[3] = 0.0f; v_ptr[4] = 0.0f; v_ptr[5] = 1.0f;
         }
 
-        // Tangent (Default to 1,0,0,1 if missing)
         if (tan_acc) {
             cgltf_accessor_read_float(tan_acc, i, v_ptr + 6, 4);
         } else {
             v_ptr[6] = 1.0f; v_ptr[7] = 0.0f; v_ptr[8] = 0.0f; v_ptr[9] = 1.0f;
         }
 
-        // UV (Default to 0,0 if missing)
         if (uv_acc) {
             cgltf_accessor_read_float(uv_acc, i, v_ptr + 10, 2);
         } else {
@@ -16353,28 +18708,35 @@ static bool _SituationExtractGLTFPrimitive(cgltf_primitive* prim, float** out_ve
         }
     }
 
-    // 4. Extract Indices
     if (prim->indices) {
         *out_i_count = (int)prim->indices->count;
         *out_indices = (uint32_t*)SIT_MALLOC(*out_i_count * sizeof(uint32_t));
-        if (!*out_indices) { SIT_FREE(*out_vertices); return false; }
+        if (!*out_indices) {
+            SIT_FREE(*out_vertices);
+            *out_vertices = NULL;
+            return _SituationSetErrorFromCode(
+                SITUATION_ERROR_MEMORY_ALLOCATION, "glTF index buffer allocation failed.");
+        }
 
         for (int k = 0; k < *out_i_count; ++k) {
-            // cgltf handles u8/u16/u32 conversion automatically here
             (*out_indices)[k] = (uint32_t)cgltf_accessor_read_index(prim->indices, k);
         }
     } else {
-        // Non-indexed geometry: generate 0, 1, 2... sequence
         *out_i_count = *out_v_count;
         *out_indices = (uint32_t*)SIT_MALLOC(*out_i_count * sizeof(uint32_t));
-        if (!*out_indices) { SIT_FREE(*out_vertices); return false; }
+        if (!*out_indices) {
+            SIT_FREE(*out_vertices);
+            *out_vertices = NULL;
+            return _SituationSetErrorFromCode(
+                SITUATION_ERROR_MEMORY_ALLOCATION, "glTF generated index buffer allocation failed.");
+        }
 
         for (int k = 0; k < *out_i_count; ++k) {
             (*out_indices)[k] = (uint32_t)k;
         }
     }
 
-    return true;
+    return SITUATION_SUCCESS;
 }
 #endif // CGLTF_IMPLEMENTATION
 
@@ -16448,7 +18810,7 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
     // 2. Allocate Slot
     SituationModel handle;
     _SituationModelSlot* slot = _SitAllocModelSlot(&handle);
-    if (!slot) { cgltf_free(data); return SITUATION_ERROR_MEMORY_ALLOCATION; }
+    if (!slot) { cgltf_free(data); return SituationGetLastErrorCode(); }
 
     slot->source_path = _sit_strdup(file_path);
     slot->mod_time = SituationGetFileModTime(file_path);
@@ -16494,9 +18856,12 @@ SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* 
             if (gltf_mesh->primitives_count > 0) {
                 cgltf_primitive* prim = &gltf_mesh->primitives[0];
                 float* vertex_data = NULL; uint32_t* index_data = NULL; int v_count = 0; int i_count = 0;
-                if (_SituationExtractGLTFPrimitive(prim, &vertex_data, &v_count, &index_data, &i_count)) {
+                SituationError extract_err = _SituationExtractGLTFPrimitive(
+                    prim, &vertex_data, &v_count, &index_data, &i_count);
+                if (extract_err == SITUATION_SUCCESS) {
                     sit_mesh->gpu_mesh = SituationCreateMesh(vertex_data, v_count, 12 * sizeof(float), index_data, i_count);
-                    SIT_FREE(vertex_data); SIT_FREE(index_data);
+                    SIT_FREE(vertex_data);
+                    SIT_FREE(index_data);
                 }
 
                 cgltf_material* mat = prim->material;
@@ -16771,8 +19136,10 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
     SituationShader handle;
     mtx_lock(&sit_render.resource_registry_mutex); // [LOCK]
     _SituationShaderSlot* slot = _SitAllocShaderSlot(&handle);
-    mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
-    if (!slot) return SITUATION_ERROR_MEMORY_ALLOCATION; // Limit reached
+    mtx_unlock(&sit_render.resource_registry_mutex);
+    if (!slot) {
+        return SituationGetLastErrorCode();
+    }
 
 #if defined(SITUATION_ENABLE_SHADER_COMPILER) && defined(SITUATION_USE_VULKAN)
     // --- PATH A: Runtime Compilation (Shaderc) ---
@@ -16842,7 +19209,9 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
         }
     #elif defined(SITUATION_USE_OPENGL)
         SituationError err;
-        slot->gl_program_id = _SituationCreateGLShaderProgramFromSpirv(&vs_spirv, &fs_spirv, &err);
+        SituationSpirvBinary vs_bin = { vs_spirv.data, vs_spirv.size };
+        SituationSpirvBinary fs_bin = { fs_spirv.data, fs_spirv.size };
+        slot->gl_program_id = _SituationCreateGLShaderProgramFromSpirv(&vs_bin, &fs_bin, &err);
         if(err != SITUATION_SUCCESS) {
             _SitFreeShaderSlot(handle);
             _SituationFreeSpirvBlob(&vs_spirv);
@@ -16859,8 +19228,11 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
         SituationError err;
         slot->gl_program_id = _SituationCreateGLShaderProgram(vs_code, fs_code, &err);
         if (err == SITUATION_SUCCESS) {
-            // --- Create the uniform map for this shader ---
             slot->uniform_map = _sit_uniform_map_create();
+            if (!slot->uniform_map) {
+                _SitFreeShaderSlot(handle);
+                return SITUATION_ERROR_MEMORY_ALLOCATION;
+            }
         } else {
             _SitFreeShaderSlot(handle);
             return err;
@@ -16873,6 +19245,224 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
 
     *out_shader = handle;
     return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationBeginLoadShaderFromMemory(const char* vs_code, const char* fs_code, SituationShader* out_shader) {
+#if defined(SITUATION_USE_OPENGL)
+    if (!out_shader) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_shader, 0, sizeof(SituationShader));
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!vs_code || !fs_code) return SITUATION_ERROR_INVALID_PARAM;
+
+    SituationShader handle;
+    mtx_lock(&sit_render.resource_registry_mutex);
+    _SituationShaderSlot* slot = _SitAllocShaderSlot(&handle);
+    mtx_unlock(&sit_render.resource_registry_mutex);
+    if (!slot) {
+        return SituationGetLastErrorCode();
+    }
+
+    _SituationMakeGLContextCurrentForHostThread();
+    SituationError err = SITUATION_SUCCESS;
+    slot->gl_async_vs_shader = _SituationCompileGLShaderEx(vs_code, GL_VERTEX_SHADER, &err, false);
+    if (err != SITUATION_SUCCESS || !slot->gl_async_vs_shader) {
+        _SitFreeShaderSlot(handle);
+        _SituationReleaseHostGLContextForRenderThread();
+        return err != SITUATION_SUCCESS ? err : SITUATION_ERROR_OPENGL_SHADER_COMPILE;
+    }
+    slot->gl_async_fs_shader = _SituationCompileGLShaderEx(fs_code, GL_FRAGMENT_SHADER, &err, false);
+    if (err != SITUATION_SUCCESS || !slot->gl_async_fs_shader) {
+        if (slot->gl_async_vs_shader) glDeleteShader(slot->gl_async_vs_shader);
+        _SitFreeShaderSlot(handle);
+        _SituationReleaseHostGLContextForRenderThread();
+        return err != SITUATION_SUCCESS ? err : SITUATION_ERROR_OPENGL_SHADER_COMPILE;
+    }
+    slot->gl_async_load_stage = SIT_GL_ASYNC_STAGE_COMPILE;
+    *out_shader = handle;
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_VULKAN) && defined(SITUATION_ENABLE_SHADER_COMPILER)
+    if (!out_shader) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_shader, 0, sizeof(SituationShader));
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!vs_code || !fs_code) return SITUATION_ERROR_INVALID_PARAM;
+
+    SituationShader handle;
+    mtx_lock(&sit_render.resource_registry_mutex);
+    _SituationShaderSlot* slot = _SitAllocShaderSlot(&handle);
+    mtx_unlock(&sit_render.resource_registry_mutex);
+    if (!slot) {
+        return SituationGetLastErrorCode();
+    }
+
+    _SituationVkAsyncShaderLoad* ctx = (_SituationVkAsyncShaderLoad*)SIT_MALLOC(sizeof(_SituationVkAsyncShaderLoad));
+    if (!ctx) {
+        _SitFreeShaderSlot(handle);
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    memset(ctx, 0, sizeof(*ctx));
+    atomic_init(&ctx->compile_done, 0);
+    ctx->layout_profile = SIT_SPIRV_LAYOUT_PROFILE_MESH;
+    ctx->vs_src = _sit_strdup(vs_code);
+    ctx->fs_src = _sit_strdup(fs_code);
+    if (!ctx->vs_src || !ctx->fs_src) {
+        SIT_FREE(ctx->vs_src);
+        SIT_FREE(ctx->fs_src);
+        SIT_FREE(ctx);
+        _SitFreeShaderSlot(handle);
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    slot->vk_async_load = ctx;
+
+    if (sit_gs.thread_pool.is_active) {
+        /* CPU-bound shaderc compile: high-priority worker queue (not I/O thread).
+         * POINTER_ONLY: ctx is heap-allocated; a struct copy would break atomic compile_done. */
+        SituationSubmitJobEx(
+            &sit_gs.thread_pool, _SituationVkAsyncCompileWorker, ctx, sizeof(*ctx),
+            SIT_SUBMIT_BLOCK_IF_FULL | SIT_SUBMIT_POINTER_ONLY | SIT_SUBMIT_HIGH_PRIORITY);
+    } else {
+        _SituationVkAsyncCompileWorker(ctx, NULL);
+    }
+
+    *out_shader = handle;
+    return SITUATION_SUCCESS;
+#else
+    return SituationLoadShaderFromMemory(vs_code, fs_code, out_shader);
+#endif
+}
+
+SITAPI SituationError SituationBeginLoadShaderFromSpirvMemoryEx(
+    const void* vs_spirv, size_t vs_len, const void* fs_spirv, size_t fs_len,
+    SituationSpirvLayoutProfile layout_profile, SituationShader* out_shader) {
+#if defined(SITUATION_USE_VULKAN)
+    if (!out_shader) return SITUATION_ERROR_INVALID_PARAM;
+    memset(out_shader, 0, sizeof(SituationShader));
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!vs_spirv || !fs_spirv || vs_len == 0 || fs_len == 0) return SITUATION_ERROR_INVALID_PARAM;
+    if ((vs_len & 3u) != 0 || (fs_len & 3u) != 0) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SPIRV_INVALID, "SPIR-V bytecode size must be a multiple of 4.");
+        return SITUATION_ERROR_VULKAN_SPIRV_INVALID;
+    }
+    if (layout_profile > SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+
+    SituationShader handle;
+    mtx_lock(&sit_render.resource_registry_mutex);
+    _SituationShaderSlot* slot = _SitAllocShaderSlot(&handle);
+    mtx_unlock(&sit_render.resource_registry_mutex);
+    if (!slot) {
+        return SituationGetLastErrorCode();
+    }
+
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
+    _SituationVkAsyncShaderLoad* ctx = (_SituationVkAsyncShaderLoad*)SIT_MALLOC(sizeof(_SituationVkAsyncShaderLoad));
+    if (!ctx) {
+        _SitFreeShaderSlot(handle);
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    memset(ctx, 0, sizeof(*ctx));
+    atomic_init(&ctx->compile_done, 1);
+    ctx->layout_profile = layout_profile;
+    ctx->vs_spirv_copy = (uint8_t*)SIT_MALLOC(vs_len);
+    ctx->fs_spirv_copy = (uint8_t*)SIT_MALLOC(fs_len);
+    if (!ctx->vs_spirv_copy || !ctx->fs_spirv_copy) {
+        SIT_FREE(ctx->vs_spirv_copy);
+        SIT_FREE(ctx->fs_spirv_copy);
+        SIT_FREE(ctx);
+        _SitFreeShaderSlot(handle);
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    memcpy(ctx->vs_spirv_copy, vs_spirv, vs_len);
+    memcpy(ctx->fs_spirv_copy, fs_spirv, fs_len);
+    ctx->vs_spirv_len = vs_len;
+    ctx->fs_spirv_len = fs_len;
+    slot->vk_async_load = ctx;
+    *out_shader = handle;
+    return SITUATION_SUCCESS;
+#else
+    return SituationLoadShaderFromSpirvMemoryEx(vs_spirv, vs_len, fs_spirv, fs_len, layout_profile, out_shader);
+#endif
+#elif defined(SITUATION_USE_OPENGL)
+    (void)layout_profile;
+    if (!out_shader) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    if (!SituationIsInitialized()) {
+        return SITUATION_ERROR_NOT_INITIALIZED;
+    }
+    if (!vs_spirv || !fs_spirv || vs_len == 0 || fs_len == 0) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    return _SituationBeginGLSpirvShaderLoadAsync(vs_spirv, vs_len, fs_spirv, fs_len, out_shader);
+#else
+    (void)layout_profile;
+    (void)vs_spirv;
+    (void)vs_len;
+    (void)fs_spirv;
+    (void)fs_len;
+    (void)out_shader;
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+SITAPI SituationError SituationBeginLoadShaderFromSpirvMemory(
+    const void* vs_spirv, size_t vs_len, const void* fs_spirv, size_t fs_len, SituationShader* out_shader) {
+    return SituationBeginLoadShaderFromSpirvMemoryEx(
+        vs_spirv, vs_len, fs_spirv, fs_len, SIT_SPIRV_LAYOUT_PROFILE_MESH, out_shader);
+}
+
+SITAPI SituationError SituationPollShaderLoad(SituationShader shader) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    _SituationShaderSlot* slot = _SitGetShaderSlot(shader);
+    if (!slot || !slot->is_active) return SITUATION_ERROR_RESOURCE_INVALID;
+#if defined(SITUATION_USE_OPENGL)
+    _SituationMakeGLContextCurrentForHostThread();
+    SituationError poll_err = _SituationPollGLAsyncShaderLoad(slot);
+    if (poll_err != SITUATION_SUCCESS) {
+        return poll_err;
+    }
+    poll_err = _SituationPollGLPendingProgramLink(slot);
+    if (poll_err != SITUATION_SUCCESS) {
+        return poll_err;
+    }
+
+    if (slot->gl_async_load_stage != SIT_GL_ASYNC_STAGE_IDLE || slot->gl_is_linking) {
+        return SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS;
+    }
+    if (slot->gl_async_vs_shader || slot->gl_async_fs_shader) {
+        return SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS;
+    }
+    if (slot->gl_program_id != 0) {
+        return SITUATION_SUCCESS;
+    }
+    SituationError last = SituationGetLastErrorCode();
+    if (last != SITUATION_SUCCESS && last != SITUATION_ERROR_UNKNOWN_ERROR) {
+        return last;
+    }
+    return SITUATION_ERROR_OPENGL_SHADER_LINK;
+#elif defined(SITUATION_USE_VULKAN)
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
+    SituationError poll_err = _SituationPollVkAsyncShaderLoad(slot);
+    if (poll_err != SITUATION_SUCCESS) {
+        return poll_err;
+    }
+#endif
+    if (slot->vk_async_load) {
+        return SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS;
+    }
+    if (slot->vk_pipeline != VK_NULL_HANDLE) {
+        return SITUATION_SUCCESS;
+    }
+    {
+        SituationError last = SituationGetLastErrorCode();
+        if (last != SITUATION_SUCCESS && last != SITUATION_ERROR_UNKNOWN_ERROR) {
+            return last;
+        }
+    }
+    return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+#else
+    return SITUATION_ERROR_RESOURCE_INVALID;
+#endif
 }
 
 
@@ -16905,6 +19495,13 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
         _sit_uniform_map_destroy(slot->uniform_map);
         slot->uniform_map = NULL;
     }
+    if (slot->gl_async_vs_shader) { glDeleteShader(slot->gl_async_vs_shader); slot->gl_async_vs_shader = 0; }
+    if (slot->gl_async_fs_shader) { glDeleteShader(slot->gl_async_fs_shader); slot->gl_async_fs_shader = 0; }
+    if (slot->gl_pending_program_id) { glDeleteProgram(slot->gl_pending_program_id); slot->gl_pending_program_id = 0; }
+    _SituationGLFreeSpirvAsyncCopies(slot);
+    slot->gl_is_linking = false;
+    slot->gl_pending_link_spirv = false;
+    slot->gl_async_load_stage = SIT_GL_ASYNC_STAGE_IDLE;
     if (glIsProgram(slot->gl_program_id)) {
         glDeleteProgram(slot->gl_program_id);
         slot->gl_program_id = 0;
@@ -16912,30 +19509,103 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
     SIT_CHECK_GL_ERROR();
 
 #elif defined(SITUATION_USE_VULKAN)
-    if (_SituationVulkanImmediateDestroyDuringShutdown() && sit_render.vk.device != VK_NULL_HANDLE) {
-        if (slot->vk_pipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline, NULL);
-            slot->vk_pipeline = VK_NULL_HANDLE;
+    {
+#if defined(SITUATION_ENABLE_SHADER_COMPILER)
+        _SituationVulkanFreeAsyncShaderLoad(slot);
+#endif
+        VkPipelineLayout layout_to_destroy = VK_NULL_HANDLE;
+        if (slot->vk_owns_pipeline_layout) {
+            layout_to_destroy = slot->vk_pipeline_layout;
         }
-        if (slot->vk_pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(sit_render.vk.device, slot->vk_pipeline_layout, NULL);
-            slot->vk_pipeline_layout = VK_NULL_HANDLE;
+        if (_SituationVulkanImmediateDestroyDuringShutdown() && sit_render.vk.device != VK_NULL_HANDLE) {
+            if (slot->vk_pipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline, NULL);
+                slot->vk_pipeline = VK_NULL_HANDLE;
+            }
+            if (layout_to_destroy != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(sit_render.vk.device, layout_to_destroy, NULL);
+                slot->vk_pipeline_layout = VK_NULL_HANDLE;
+            }
+            if (slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_legacy, NULL);
+                slot->vk_pipeline_legacy = VK_NULL_HANDLE;
+            }
+            if (slot->vk_pipeline_simple != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_simple, NULL);
+                slot->vk_pipeline_simple = VK_NULL_HANDLE;
+            }
+        } else {
+            _SituationDeferDestroyPipeline(slot->vk_pipeline, layout_to_destroy);
+            if (slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy, VK_NULL_HANDLE);
+            }
+            if (slot->vk_pipeline_simple != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_simple, VK_NULL_HANDLE);
+            }
         }
-        if (slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
-            vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_legacy, NULL);
-            slot->vk_pipeline_legacy = VK_NULL_HANDLE;
-        }
-    } else {
-        _SituationDeferDestroyPipeline(slot->vk_pipeline, slot->vk_pipeline_layout);
-        if (slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
-            _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy, VK_NULL_HANDLE);
-        }
+        slot->vk_pipeline_layout = VK_NULL_HANDLE;
+        slot->vk_owns_pipeline_layout = false;
     }
 #endif
 
     _SitFreeShaderSlot(*shader);
     memset(shader, 0, sizeof(SituationShader));
 }
+
+#if defined(SITUATION_USE_OPENGL)
+static size_t _sit_uniform_scalar_payload_bytes(SituationUniformType type) {
+    switch (type) {
+        case SIT_UNIFORM_FLOAT:
+            return sizeof(GLfloat);
+        case SIT_UNIFORM_VEC2:
+            return 2u * sizeof(GLfloat);
+        case SIT_UNIFORM_VEC3:
+            return 3u * sizeof(GLfloat);
+        case SIT_UNIFORM_VEC4:
+            return 4u * sizeof(GLfloat);
+        case SIT_UNIFORM_INT:
+            return sizeof(GLint);
+        case SIT_UNIFORM_IVEC2:
+            return 2u * sizeof(GLint);
+        case SIT_UNIFORM_IVEC3:
+            return 3u * sizeof(GLint);
+        case SIT_UNIFORM_IVEC4:
+            return 4u * sizeof(GLint);
+        case SIT_UNIFORM_MAT4:
+            return 16u * sizeof(GLfloat);
+        default:
+            return 0;
+    }
+}
+
+static SituationError _SitGLDeferProgramUniform(SituationGLSoftCommandBuffer* buf, GLuint prog, GLint loc, SituationUniformType type,
+                                                int elem_count, const void* data, size_t payload_bytes) {
+    if (!buf || !data || payload_bytes == 0) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    if (elem_count < 1) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    size_t off_before = buf->data_cursor;
+    void* blob = NULL;
+    SIT_GL_SOFT_DATA_PUSH(buf, data, payload_bytes, blob);
+    if (!blob) {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_UNIFORM, p);
+    if (!p) {
+        buf->data_cursor = off_before;
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    p->args.set_uniform.shader_id = (uint64_t)prog;
+    p->args.set_uniform.location = loc;
+    p->args.set_uniform.type = (int)type;
+    p->args.set_uniform.elem_count = elem_count;
+    p->args.set_uniform.data_offset = off_before;
+    return SITUATION_SUCCESS;
+}
+#endif /* SITUATION_USE_OPENGL */
 
 
 /**
@@ -16963,8 +19633,22 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
  *
  * @note In OpenGL, if the specified `uniform_name` does not exist in the shader or is optimized out by the compiler, this function will silently do nothing and return `SITUATION_SUCCESS`. This is standard behavior for `glGetUniformLocation`.
  *
- * @see SituationCmdSetPushConstant(), SituationCmdBindUniformBuffer()
+ * @note **Render thread (`SITUATION_ENABLE_RENDER_THREAD`, `render_thread_count > 0`):** the main thread does not
+ *       have the window GL context current during the frame. Standalone `glProgramUniform` calls would not apply
+ *       reliably. While `SituationAcquireFrameCommandBuffer` is active, this function **records** `SIT_OP_SET_UNIFORM`
+ *       into the main soft buffer so uploads run on the render thread during `_SituationGLExecuteCommands`.
+ *
+ * @note **OpenGL (any build):** while `SituationAcquireFrameCommandBuffer` is active (`sit_render.in_frame`), uploads
+ *       are also **deferred** into the soft buffer (unless the GL render-thread path already handled the call) so they
+ *       execute with the rest of the frame’s GL commands—avoiding ordering issues with `SituationCmdBeginRenderPass`
+ *       viewport and user draws.
+ *
+ * @see SituationCmdSetPushConstant(), SituationCmdBindUniformBuffer(), SituationSetShaderUniform1iv()
  */
+#if defined(SITUATION_USE_OPENGL)
+static SituationError _SituationSetShaderUniformLocationImpl(_SituationShaderSlot* slot, GLint location, const void* data, SituationUniformType type);
+#endif
+
 SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const char* uniform_name, const void* data, SituationUniformType type) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
 
@@ -16992,12 +19676,16 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
         // Safety: Ensure program exists
         if (!glIsProgram(slot->gl_program_id)) return SITUATION_ERROR_RESOURCE_INVALID;
 
+        _SituationMakeGLContextCurrentForHostThread();
         location = glGetUniformLocation(slot->gl_program_id, uniform_name);
 
         // Cache result (even -1, to avoid re-querying invalid uniforms?)
         // Map stores -1? Yes.
         if (location != -1) {
-            _sit_uniform_map_set(slot->uniform_map, uniform_name, location);
+            SituationError set_err = _sit_uniform_map_set(slot->uniform_map, uniform_name, location);
+            if (set_err != SITUATION_SUCCESS) {
+                return set_err;
+            }
         } else {
              // Optional: Cache miss to avoid spamming driver for typo'd uniforms?
              // For now, don't cache failures to save memory/logic.
@@ -17005,28 +19693,388 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
         }
     }
 
-    // 2. Set Value Immediately via glProgramUniform* (DSA — does not require program to be bound)
-    // [Bug 8 Fix] Previously deferred to soft command buffer, but the buffer gets reset by
-    // SituationAcquireFrameCommandBuffer, so uniforms set before frame acquisition were lost.
-    // glProgramUniform* applies immediately to the program object's state and persists until changed.
-    {
-        GLuint prog = slot->gl_program_id;
-        switch(type) {
-            case SIT_UNIFORM_FLOAT: glProgramUniform1fv(prog, location, 1, (const GLfloat*)data); break;
-            case SIT_UNIFORM_VEC2:  glProgramUniform2fv(prog, location, 1, (const GLfloat*)data); break;
-            case SIT_UNIFORM_VEC3:  glProgramUniform3fv(prog, location, 1, (const GLfloat*)data); break;
-            case SIT_UNIFORM_VEC4:  glProgramUniform4fv(prog, location, 1, (const GLfloat*)data); break;
-            case SIT_UNIFORM_INT:   glProgramUniform1iv(prog, location, 1, (const GLint*)data); break;
-            case SIT_UNIFORM_IVEC2: glProgramUniform2iv(prog, location, 1, (const GLint*)data); break;
-            case SIT_UNIFORM_IVEC3: glProgramUniform3iv(prog, location, 1, (const GLint*)data); break;
-            case SIT_UNIFORM_IVEC4: glProgramUniform4iv(prog, location, 1, (const GLint*)data); break;
-            case SIT_UNIFORM_MAT4:  glProgramUniformMatrix4fv(prog, location, 1, GL_FALSE, (const GLfloat*)data); break;
+    return _SituationSetShaderUniformLocationImpl(slot, location, data, type);
+#else
+    (void)shader;
+    (void)uniform_name;
+    (void)data;
+    (void)type;
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+SITAPI SituationError SituationSetShaderUniformLocation(SituationShader shader, int location, const void* data, SituationUniformType type) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    _SituationShaderSlot* slot = _SitGetShaderSlot(shader);
+    if (!slot || !data) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    return _SituationSetShaderUniformLocationImpl(slot, location, data, type);
+#else
+    (void)location;
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+#if defined(SITUATION_USE_OPENGL)
+static SituationError _SituationSetShaderUniformLocationImpl(_SituationShaderSlot* slot, GLint location, const void* data, SituationUniformType type) {
+    if (!slot || !data || location < 0) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+
+    GLuint prog = slot->gl_program_id;
+    if (!glIsProgram(prog)) return SITUATION_ERROR_RESOURCE_INVALID;
+
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+    if (sit_render.enabled) {
+        if (!sit_render.in_frame) {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+                                            "SituationSetShaderUniform: render thread owns GL; call only between SituationAcquireFrameCommandBuffer and SituationEndFrame.");
+        }
+        size_t payload = _sit_uniform_scalar_payload_bytes(type);
+        if (payload == 0) {
+            return SITUATION_ERROR_INVALID_PARAM;
+        }
+        SituationGLSoftCommandBuffer* gbuf = &sit_render.gl.soft_buffers[sit_render.current_frame_index];
+        return _SitGLDeferProgramUniform(gbuf, prog, location, type, 1, data, payload);
+    }
+#endif
+
+    if (sit_render.in_frame) {
+        size_t payload = _sit_uniform_scalar_payload_bytes(type);
+        if (payload == 0) {
+            return SITUATION_ERROR_INVALID_PARAM;
+        }
+        SituationGLSoftCommandBuffer* gbuf = &sit_render.gl.soft_buffers[sit_render.current_frame_index];
+        return _SitGLDeferProgramUniform(gbuf, prog, location, type, 1, data, payload);
+    }
+
+    switch (type) {
+        case SIT_UNIFORM_FLOAT:
+            glProgramUniform1fv(prog, location, 1, (const GLfloat*)data);
+            break;
+        case SIT_UNIFORM_VEC2:
+            glProgramUniform2fv(prog, location, 1, (const GLfloat*)data);
+            break;
+        case SIT_UNIFORM_VEC3:
+            glProgramUniform3fv(prog, location, 1, (const GLfloat*)data);
+            break;
+        case SIT_UNIFORM_VEC4:
+            glProgramUniform4fv(prog, location, 1, (const GLfloat*)data);
+            break;
+        case SIT_UNIFORM_INT:
+            glProgramUniform1iv(prog, location, 1, (const GLint*)data);
+            break;
+        case SIT_UNIFORM_IVEC2:
+            glProgramUniform2iv(prog, location, 1, (const GLint*)data);
+            break;
+        case SIT_UNIFORM_IVEC3:
+            glProgramUniform3iv(prog, location, 1, (const GLint*)data);
+            break;
+        case SIT_UNIFORM_IVEC4:
+            glProgramUniform4iv(prog, location, 1, (const GLint*)data);
+            break;
+        case SIT_UNIFORM_MAT4:
+            glProgramUniformMatrix4fv(prog, location, 1, GL_FALSE, (const GLfloat*)data);
+            break;
+        default:
+            return SITUATION_ERROR_INVALID_PARAM;
+    }
+    return SITUATION_SUCCESS;
+}
+#endif /* SITUATION_USE_OPENGL */
+
+SITAPI SituationError SituationSetShaderUniform1iv(SituationShader shader, const char* uniform_name, int count, const int* values) {
+#if !defined(SITUATION_USE_OPENGL)
+    (void)shader;
+    (void)uniform_name;
+    (void)count;
+    (void)values;
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#else
+    if (!SituationIsInitialized()) {
+        return SITUATION_ERROR_NOT_INITIALIZED;
+    }
+    if (count < 1 || !values || !uniform_name) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+
+    _SituationShaderSlot* slot = _SitGetShaderSlot(shader);
+    if (!slot) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+
+    if (!slot->uniform_map) {
+        slot->uniform_map = _sit_uniform_map_create();
+        if (!slot->uniform_map) {
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+    }
+
+    GLint location = _sit_uniform_map_get(slot->uniform_map, uniform_name);
+    if (location == -1) {
+        if (!glIsProgram(slot->gl_program_id)) {
+            return SITUATION_ERROR_RESOURCE_INVALID;
+        }
+        location = glGetUniformLocation(slot->gl_program_id, uniform_name);
+        if (location == -1) {
+            const char* bracket = strchr(uniform_name, '[');
+            if (bracket && bracket != uniform_name) {
+                char alt[96];
+                size_t base_len = (size_t)(bracket - uniform_name);
+                if (base_len < sizeof(alt)) {
+                    memcpy(alt, uniform_name, base_len);
+                    alt[base_len] = '\0';
+                    location = glGetUniformLocation(slot->gl_program_id, alt);
+                }
+            }
+        }
+        if (location != -1) {
+            SituationError set_err = _sit_uniform_map_set(slot->uniform_map, uniform_name, location);
+            if (set_err != SITUATION_SUCCESS) {
+                return set_err;
+            }
+        } else {
+            return SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND;
+        }
+    }
+
+    GLuint prog = slot->gl_program_id;
+    size_t payload = (size_t)count * sizeof(GLint);
+
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+    if (sit_render.enabled) {
+        if (!sit_render.in_frame) {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+                                            "SituationSetShaderUniform1iv: render thread owns GL; call only between SituationAcquireFrameCommandBuffer and SituationEndFrame.");
+        }
+        SituationGLSoftCommandBuffer* gbuf = &sit_render.gl.soft_buffers[sit_render.current_frame_index];
+        return _SitGLDeferProgramUniform(gbuf, prog, location, SIT_UNIFORM_INT, count, values, payload);
+    }
+#endif
+
+    if (sit_render.in_frame) {
+        SituationGLSoftCommandBuffer* gbuf = &sit_render.gl.soft_buffers[sit_render.current_frame_index];
+        return _SitGLDeferProgramUniform(gbuf, prog, location, SIT_UNIFORM_INT, count, values, payload);
+    }
+
+    glProgramUniform1iv(prog, location, count, values);
+    return SITUATION_SUCCESS;
+#endif
+}
+
+SITAPI SituationError SituationSetShaderUniform1fv(SituationShader shader, const char* uniform_name, int count, const float* values) {
+#if !defined(SITUATION_USE_OPENGL)
+    (void)shader;
+    (void)uniform_name;
+    (void)count;
+    (void)values;
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#else
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (count < 1 || !values || !uniform_name) return SITUATION_ERROR_INVALID_PARAM;
+
+    _SituationShaderSlot* slot = _SitGetShaderSlot(shader);
+    if (!slot) return SITUATION_ERROR_INVALID_PARAM;
+
+    if (!slot->uniform_map) {
+        slot->uniform_map = _sit_uniform_map_create();
+        if (!slot->uniform_map) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+
+    GLint location = _sit_uniform_map_get(slot->uniform_map, uniform_name);
+    if (location == -1) {
+        if (!glIsProgram(slot->gl_program_id)) return SITUATION_ERROR_RESOURCE_INVALID;
+        location = glGetUniformLocation(slot->gl_program_id, uniform_name);
+        if (location == -1) {
+            const char* bracket = strchr(uniform_name, '[');
+            if (bracket && bracket != uniform_name) {
+                char alt[96];
+                size_t base_len = (size_t)(bracket - uniform_name);
+                if (base_len < sizeof(alt)) {
+                    memcpy(alt, uniform_name, base_len);
+                    alt[base_len] = '\0';
+                    location = glGetUniformLocation(slot->gl_program_id, alt);
+                }
+            }
+        }
+        if (location != -1) {
+            SituationError set_err = _sit_uniform_map_set(slot->uniform_map, uniform_name, location);
+            if (set_err != SITUATION_SUCCESS) {
+                return set_err;
+            }
+        } else {
+            return SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND;
+        }
+    }
+
+    GLuint prog = slot->gl_program_id;
+    size_t payload = (size_t)count * sizeof(GLfloat);
+
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+    if (sit_render.enabled) {
+        if (!sit_render.in_frame) {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+                                            "SituationSetShaderUniform1fv: render thread owns GL; call only between SituationAcquireFrameCommandBuffer and SituationEndFrame.");
+        }
+        SituationGLSoftCommandBuffer* gbuf = &sit_render.gl.soft_buffers[sit_render.current_frame_index];
+        return _SitGLDeferProgramUniform(gbuf, prog, location, SIT_UNIFORM_FLOAT, count, values, payload);
+    }
+#endif
+
+    if (sit_render.in_frame) {
+        SituationGLSoftCommandBuffer* gbuf = &sit_render.gl.soft_buffers[sit_render.current_frame_index];
+        return _SitGLDeferProgramUniform(gbuf, prog, location, SIT_UNIFORM_FLOAT, count, values, payload);
+    }
+
+    glProgramUniform1fv(prog, location, count, values);
+    return SITUATION_SUCCESS;
+#endif
+}
+
+SITAPI SituationError SituationSetShaderUniformMatrix4fv(SituationShader shader, const char* uniform_name, int count, const mat4* matrices) {
+#if !defined(SITUATION_USE_OPENGL)
+    (void)shader;
+    (void)uniform_name;
+    (void)count;
+    (void)matrices;
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#else
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (count < 1 || !matrices || !uniform_name) return SITUATION_ERROR_INVALID_PARAM;
+
+    _SituationShaderSlot* slot = _SitGetShaderSlot(shader);
+    if (!slot) return SITUATION_ERROR_INVALID_PARAM;
+
+    if (!slot->uniform_map) {
+        slot->uniform_map = _sit_uniform_map_create();
+        if (!slot->uniform_map) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+
+    GLint location = _sit_uniform_map_get(slot->uniform_map, uniform_name);
+    if (location == -1) {
+        if (!glIsProgram(slot->gl_program_id)) return SITUATION_ERROR_RESOURCE_INVALID;
+        location = glGetUniformLocation(slot->gl_program_id, uniform_name);
+        if (location == -1) {
+            const char* bracket = strchr(uniform_name, '[');
+            if (bracket && bracket != uniform_name) {
+                char alt[96];
+                size_t base_len = (size_t)(bracket - uniform_name);
+                if (base_len < sizeof(alt)) {
+                    memcpy(alt, uniform_name, base_len);
+                    alt[base_len] = '\0';
+                    location = glGetUniformLocation(slot->gl_program_id, alt);
+                }
+            }
+        }
+        if (location != -1) {
+            SituationError set_err = _sit_uniform_map_set(slot->uniform_map, uniform_name, location);
+            if (set_err != SITUATION_SUCCESS) {
+                return set_err;
+            }
+        } else {
+            return SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND;
+        }
+    }
+
+    GLuint prog = slot->gl_program_id;
+    size_t payload = (size_t)count * sizeof(mat4);
+
+#if defined(SITUATION_ENABLE_RENDER_THREAD)
+    if (sit_render.enabled) {
+        if (!sit_render.in_frame) {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+                                            "SituationSetShaderUniformMatrix4fv: render thread owns GL; call only between SituationAcquireFrameCommandBuffer and SituationEndFrame.");
+        }
+        SituationGLSoftCommandBuffer* gbuf = &sit_render.gl.soft_buffers[sit_render.current_frame_index];
+        return _SitGLDeferProgramUniform(gbuf, prog, location, SIT_UNIFORM_MAT4, count, matrices, payload);
+    }
+#endif
+
+    if (sit_render.in_frame) {
+        SituationGLSoftCommandBuffer* gbuf = &sit_render.gl.soft_buffers[sit_render.current_frame_index];
+        return _SitGLDeferProgramUniform(gbuf, prog, location, SIT_UNIFORM_MAT4, count, matrices, payload);
+    }
+
+    glProgramUniformMatrix4fv(prog, location, count, GL_FALSE, (const GLfloat*)matrices);
+    return SITUATION_SUCCESS;
+#endif
+}
+
+SITAPI SituationError SituationValidateShaderUniforms(SituationShader shader, const SituationUniformExpectation* table, int table_count, char* error_buf, size_t error_buf_size) {
+#if !defined(SITUATION_USE_OPENGL)
+    (void)shader;
+    (void)table;
+    (void)table_count;
+    if (error_buf && error_buf_size > 0) error_buf[0] = '\0';
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#else
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (error_buf && error_buf_size > 0) error_buf[0] = '\0';
+    if (!table || table_count <= 0) return SITUATION_ERROR_INVALID_PARAM;
+    
+    _SituationShaderSlot* slot = _SitGetShaderSlot(shader);
+    if (!slot || !glIsProgram(slot->gl_program_id)) return SITUATION_ERROR_INVALID_PARAM;
+    
+    GLuint prog = slot->gl_program_id;
+    GLint active_uniforms = 0;
+    glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &active_uniforms);
+    
+    for (int i = 0; i < table_count; i++) {
+        const SituationUniformExpectation* exp = &table[i];
+        GLint loc = glGetUniformLocation(prog, exp->name);
+        
+        char expected_name[256];
+        strncpy(expected_name, exp->name, sizeof(expected_name)-1);
+        expected_name[sizeof(expected_name)-1] = '\0';
+        char* exp_bracket = strchr(expected_name, '[');
+        if (exp_bracket) *exp_bracket = '\0';
+        
+        bool found_match = false;
+        for (GLuint u = 0; u < (GLuint)active_uniforms; u++) {
+            char name[256];
+            GLsizei length;
+            GLint size;
+            GLenum type;
+            glGetActiveUniform(prog, u, sizeof(name), &length, &size, &type, name);
+            
+            char* bracket = strchr(name, '[');
+            if (bracket) *bracket = '\0';
+            
+            if (strcmp(name, expected_name) == 0) {
+                found_match = true;
+                bool type_ok = true;
+                if (exp->type == SIT_UNIFORM_FLOAT && type != GL_FLOAT) type_ok = false;
+                else if (exp->type == SIT_UNIFORM_VEC2 && type != GL_FLOAT_VEC2) type_ok = false;
+                else if (exp->type == SIT_UNIFORM_VEC3 && type != GL_FLOAT_VEC3) type_ok = false;
+                else if (exp->type == SIT_UNIFORM_VEC4 && type != GL_FLOAT_VEC4) type_ok = false;
+                else if (exp->type == SIT_UNIFORM_INT && (type != GL_INT && type != GL_SAMPLER_2D && type != GL_SAMPLER_CUBE && type != GL_SAMPLER_2D_SHADOW)) type_ok = false;
+                else if (exp->type == SIT_UNIFORM_MAT4 && type != GL_FLOAT_MAT4) type_ok = false;
+                
+                if (!type_ok) {
+                    if (error_buf && error_buf_size > 0) {
+                        snprintf(error_buf, error_buf_size, "Type mismatch for %s", exp->name);
+                    }
+                    return SITUATION_ERROR_INVALID_PARAM;
+                }
+                
+                if (exp->array_length > 0 && size < exp->array_length) {
+                    if (error_buf && error_buf_size > 0) {
+                        snprintf(error_buf, error_buf_size, "Array size mismatch for %s (expected %d, got %d)", exp->name, exp->array_length, size);
+                    }
+                    return SITUATION_ERROR_INVALID_PARAM;
+                }
+                break;
+            }
+        }
+        
+        if (!found_match && loc == -1) {
+            if (error_buf && error_buf_size > 0) {
+                snprintf(error_buf, error_buf_size, "Missing uniform: %s", exp->name);
+            }
+            return SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND;
         }
     }
     return SITUATION_SUCCESS;
-
-#else
-    return SITUATION_ERROR_NOT_IMPLEMENTED;
 #endif
 }
 
@@ -17343,31 +20391,34 @@ SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline) {
  *          The pass is designed to be fast and non-blocking in most cases:
  *            - Only changed assets are processed
  *            - Resource recreation is deferred to the render thread when possible
- *            - Failures during reload (e.g. shader compilation error) are graceful ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â
+ *            - Failures during reload (e.g. shader compilation error) are graceful  - 
  *              the old resource remains active and an error is logged/set
  *
  * Thread safety invariants:
  *   - Typically called from the main thread or a dedicated hot-reload timer thread
  *   - Filesystem access is protected where necessary (e.g. stat() calls)
  *   - GPU resource updates are queued to the render thread to avoid context conflicts
- *   - No long-blocking operations ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â filesystem checks are lightweight
+ *   - No long-blocking operations  -  filesystem checks are lightweight
  *
  * @note This function is usually invoked automatically by the thread pool's hot-reload timer
  *       (if enabled via `SituationCreateThreadPool` hot_reload_rate parameter).
  *       Manual calls are safe but redundant unless forcing an immediate reload.
  *       Reload rate should be tuned to balance responsiveness vs CPU usage
- *       (typical values: 0.1ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ1.0 seconds).
+ *       (typical values: 0.1-1.0 seconds).
  *
  * @see SituationCreateThreadPool (hot_reload_rate parameter),
  *      _SituationCompileGLSLtoSPIRV, _SituationFreeSpirvBlob,
  *      Velocity Module documentation, SITUATION_ERROR_FILE_MODIFIED
  */
 // [v2.3.34] Hot-Reload Logic (Running on I/O Thread)
-static void _SituationPerformHotReloadPass(void) {
+static SituationError _SituationPerformHotReloadPass(void) {
 #if defined(NDEBUG) && !defined(SITUATION_FORCE_HOTRELOAD)
-    return;
+    return SITUATION_SUCCESS;
 #else
-    if (!SituationIsInitialized()) return;
+    if (!SituationIsInitialized()) {
+        return SITUATION_SUCCESS;
+    }
+    SituationError first_err = SITUATION_SUCCESS;
 
     // [Optimized] The polling frequency is now controlled by the caller (IO Thread)
     // using pool->hot_reload_rate.
@@ -17398,6 +20449,9 @@ static void _SituationPerformHotReloadPass(void) {
                             slot->gl_is_linking = true;
                         } else {
                             printf("[Situation] Hot-Reload Compile Failed for shader %d (GL)\n", i);
+                            if (first_err == SITUATION_SUCCESS) {
+                                first_err = (err != SITUATION_SUCCESS) ? err : SituationGetLastErrorCode();
+                            }
                         }
                     }
                     #else
@@ -17405,7 +20459,11 @@ static void _SituationPerformHotReloadPass(void) {
                     SituationShader new_shader;
                     SituationError err = SituationLoadShaderFromMemory(vs_src, fs_src, &new_shader);
 
-                    if (err == SITUATION_SUCCESS) {
+                    if (err != SITUATION_SUCCESS) {
+                        if (first_err == SITUATION_SUCCESS) {
+                            first_err = err;
+                        }
+                    } else {
                         _SituationShaderSlot* new_slot = _SitGetShaderSlot(new_shader);
                         if (new_slot) {
                             #if defined(SITUATION_USE_VULKAN)
@@ -17434,9 +20492,11 @@ static void _SituationPerformHotReloadPass(void) {
                 slot->mod_time = mod;
 
                 SituationImage img;
-                if (SituationLoadImage(slot->source_path, &img) == SITUATION_SUCCESS) {
+                SituationError img_err = SituationLoadImage(slot->source_path, &img);
+                if (img_err == SITUATION_SUCCESS) {
                     SituationTexture temp;
-                    if (SituationCreateTexture(img, true, &temp) == SITUATION_SUCCESS) {
+                    SituationError tex_err = SituationCreateTexture(img, true, &temp);
+                    if (tex_err == SITUATION_SUCCESS) {
                         _SituationTextureSlot* new_slot = _SitGetTextureSlot(temp);
                         if (new_slot) {
                             // Swap internals
@@ -17455,8 +20515,12 @@ static void _SituationPerformHotReloadPass(void) {
 
                             new_slot->is_active = false;
                         }
+                    } else if (first_err == SITUATION_SUCCESS) {
+                        first_err = tex_err;
                     }
                     SituationUnloadImage(img);
+                } else if (first_err == SITUATION_SUCCESS) {
+                    first_err = img_err;
                 }
             }
         }
@@ -17490,7 +20554,9 @@ static void _SituationPerformHotReloadPass(void) {
                 // Actually, SituationLoadSoundFromFile allocates a NEW slot.
                 // So we should do:
                 SituationSound temp_handle;
-                if (SituationLoadSoundFromFile(slot->source_path, SITUATION_AUDIO_LOAD_AUTO, sound->is_looping, &temp_handle) == SITUATION_SUCCESS) {
+                SituationError snd_err = SituationLoadSoundFromFile(
+                    slot->source_path, SITUATION_AUDIO_LOAD_AUTO, sound->is_looping, &temp_handle);
+                if (snd_err == SITUATION_SUCCESS) {
                     _SituationSoundSlot* new_slot = _SitGetSoundSlot(temp_handle);
                     if (new_slot) {
                         // Move data from new_slot to current slot
@@ -17510,12 +20576,15 @@ static void _SituationPerformHotReloadPass(void) {
                         // Free new slot
                         new_slot->is_active = false;
                     }
+                } else if (first_err == SITUATION_SUCCESS) {
+                    first_err = snd_err;
                 }
             }
         }
     }
     mtx_unlock(&sit_audio.pool_mutex);
 
+    return first_err;
 #endif
 }
 
@@ -17531,14 +20600,17 @@ SITAPI SituationError SituationCheckHotReloads(void) {
 #if !defined(__STDC_NO_THREADS__)
 
 // [v2.3.24a] Safety Zenith: Helper to flush resources for a specific frame index (or global for GL)
-static void _SitFlushFrameResources(int frame_index) {
+static SituationError _SitFlushFrameResources(int frame_index) {
+    if (frame_index < 0 || frame_index >= SITUATION_MAX_FRAMES_IN_FLIGHT) {
+        return _SituationSetErrorFromCode(
+            SITUATION_ERROR_INVALID_PARAM, "frame_index out of range for graveyard flush");
+    }
     #if defined(SITUATION_USE_OPENGL)
-        // OpenGL uses a global graveyard (deferred command buffer system handles synchronization)
         _SitGLFlushGraveyard(frame_index);
     #elif defined(SITUATION_USE_VULKAN)
-        // Vulkan uses per-frame graveyards
         _SituationFlushGraveyard((uint32_t)frame_index);
     #endif
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -17585,9 +20657,12 @@ static int _SituationRenderThreadEntry(void* arg) {
     #endif
     fprintf(stderr, "[Situation] [Thread %lu] RENDER THREAD STARTED\n", (unsigned long)tid); fflush(stderr);
 
-    // Pin the Render Thread strictly to Logical Core 1
-    // (Leaving Core 0 free for the OS and Main Game loop)
-    SituationSetThreadAffinity(1 << 1); 
+    // Pin render thread (default: logical core 1; override via SituationInitInfo::thread_affinity_render)
+    {
+        uint64_t render_aff = SituationGetConfiguredRenderThreadAffinity();
+        _SituationSetThreadAffinityForRole(SIT_THREAD_ROLE_RENDER, render_aff);
+        _SituationObservabilityRecordRenderThread(render_aff);
+    }
 	
     // [OpenGL] We must acquire the context here.
     // Note: Initialization (SituationInit) happens on Main.
@@ -17648,16 +20723,33 @@ static int _SituationRenderThreadEntry(void* arg) {
         // 1. Wait for OLD frame to finish and flush its graveyard (Vulkan Parity)
         // This ensures the GPU isn't still reading buffers we are about to overwrite/delete.
         if (sit_render.gl.frame_fences[frame_index]) {
-            glClientWaitSync(sit_render.gl.frame_fences[frame_index], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000); // 1 sec timeout
+            GLenum wait_result = glClientWaitSync(
+                sit_render.gl.frame_fences[frame_index], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
+            if (wait_result == GL_TIMEOUT_EXPIRED) {
+                _SituationSetErrorFromCode(
+                    SITUATION_ERROR_RENDER_BACKPRESSURE_TIMEOUT,
+                    "Render thread: GL frame fence wait timed out.");
+            } else if (wait_result == GL_WAIT_FAILED) {
+                _SituationSetErrorFromCode(
+                    SITUATION_ERROR_OPENGL_GENERAL, "Render thread: GL frame fence wait failed.");
+            }
 
-            _SitGLFlushGraveyard(frame_index); // Safe to flush now
+            (void)_SitFlushFrameResources(frame_index);
 
             glDeleteSync(sit_render.gl.frame_fences[frame_index]);
             sit_render.gl.frame_fences[frame_index] = 0;
         }
 
         // 2. Execute Soft Command Buffer
-        _SituationGLExecuteCommands(&sit_render.gl.soft_buffers[frame_index], frame_index);
+        {
+            SituationError exec_err = _SituationGLExecuteCommands(
+                &sit_render.gl.soft_buffers[frame_index], frame_index);
+            if (exec_err != SITUATION_SUCCESS) {
+                fprintf(stderr, "[Situation] Render thread GL execute failed: %d\n", (int)exec_err);
+                fflush(stderr);
+            }
+        }
+        _SitGLEnsureDefaultFramebufferOpaqueAlpha();
 
         // 3. Present
         glfwSwapBuffers(sit_gs.sit_glfw_window);
@@ -17771,7 +20863,7 @@ static int _SituationRenderThreadEntry(void* arg) {
             int retries = 0;
             while (latency > global_max && !atomic_compare_exchange_weak(&sit_render.metric_max_latency_ns, &global_max, latency)) {
                  retries++;
-                 if (retries > 20) { fprintf(stderr, "[METRIC] Retries %dÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Âcontention hint.\n", retries); break; }
+                 if (retries > 20) { fprintf(stderr, "[METRIC] Retries %d - contention hint.\n", retries); break; }
             }
 
             atomic_fetch_add(&sit_render.metric_latency_sum_ns, latency);
@@ -17782,7 +20874,11 @@ static int _SituationRenderThreadEntry(void* arg) {
         // Refcount (Unify)
         if (atomic_fetch_sub(&sit_render.frame_refcounts[frame_index], 1) == 1) {
             // Refcount reached 0 (fetch_sub returned 1). Safe to recycle.
-            _SitFlushFrameResources(frame_index);
+            SituationError flush_err = _SitFlushFrameResources(frame_index);
+            if (flush_err != SITUATION_SUCCESS) {
+                fprintf(stderr, "[Situation] Render thread graveyard flush failed: %d\n", (int)flush_err);
+                fflush(stderr);
+            }
         }
 
         // --- FRAME COMPLETE ---

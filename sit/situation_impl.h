@@ -17,10 +17,11 @@
 *     3. Internal declarations (types, structs, globals, shaders)
 *     4. Forward declarations (cross-module prototypes)
 *     5. Utilities (math, string, time helpers)
-*     6. Subsystem modules (threading, IO, input, WDM, image, timer)
-*     7. Renderer (GL + VK backends, resources, commands)
-*     8. Virtual Display (compositing, uses renderer)
-*     9. Control (lifecycle, init/shutdown, update — orchestrates everything)
+*     6. Timer & Oscillator System
+*     7. Subsystem modules (threading, IO, input, WDM, image, timer)
+*     8. Renderer (GL + VK backends, resources, commands)
+*     9. Virtual Display (compositing, uses renderer)
+*     10. Control (Lifecycle, Init/Shutdown, Error Handling, Update Loop)
 *
 ***************************************************************************************************/
 
@@ -47,9 +48,10 @@
 #include "situation_impl_forward.h"
 
 // ============================================================================
-// 5. Utilities (math, string, time helpers)
+// 5. Utilities (math, string, time helpers, projection)
 // ============================================================================
 #include "situation_impl_etc.h"
+#include "situation_impl_proj.h"
 
 // ============================================================================
 // 6. Timer & Oscillator System
@@ -61,6 +63,8 @@
 // ============================================================================
 #include "situation_impl_threading.h"
 #include "situation_impl_io.h"
+#include "situation_impl_threading_topology.h"
+#include "situation_impl_threading_numa.h"
 #include "situation_impl_input.h"
 #include "situation_impl_wdm.h"
 #include "situation_impl_image.h"

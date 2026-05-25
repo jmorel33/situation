@@ -294,6 +294,8 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
         GLenum filter_mode = (scaling_mode == SITUATION_SCALING_STRETCH) ? GL_LINEAR : GL_NEAREST;
         glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_MIN_FILTER, filter_mode);
         glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_MAG_FILTER, filter_mode);
+        glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_BASE_LEVEL, 0);
+        glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_MAX_LEVEL, 0);
         glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
@@ -589,9 +591,8 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
     // --- Backend-Specific Rendering ---
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    if (!_SitGLSoftCmdPush(buf, SIT_OP_RENDER_VIRTUAL_DISPLAYS)) {
-        return SITUATION_ERROR_MEMORY_ALLOCATION;
-    }
+    SitCommandPacket* _sit_vd_pkt = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_RENDER_VIRTUAL_DISPLAYS, _sit_vd_pkt);
 #elif defined(SITUATION_USE_VULKAN)
     if (sit_render.vk.vd_compositing_pipeline == VK_NULL_HANDLE) return SITUATION_ERROR_NOT_INITIALIZED;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;

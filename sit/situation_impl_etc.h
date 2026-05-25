@@ -56,6 +56,7 @@ static char* _sit_dirname(const char* path) {
 
 /**
  * @brief [INTERNAL] Alias for SituationDirectoryExists used in internal helpers.
+ * HARDENING: bool by design — existence query, not a failure path.
  */
 static bool _sit_directory_exists(const char* dir_path) {
     return SituationDirectoryExists(dir_path);

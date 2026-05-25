@@ -139,6 +139,17 @@ static void _SituationGLFWWindowFocusCallback(GLFWwindow* window, int focused) {
 }
 
 /**
+ * @brief [INTERNAL] GLFW callback when the window is maximized or restored via the OS chrome.
+ * @see SituationSetMaximizeCallback(), SituationIsWindowMaximized()
+ */
+static void _SituationGLFWWindowMaximizeCallback(GLFWwindow* window, int maximized) {
+    (void)window;
+    if (sit_gs.maximize_callback_fn) {
+        sit_gs.maximize_callback_fn(maximized == GLFW_TRUE, sit_gs.maximize_callback_user_ptr);
+    }
+}
+
+/**
  * @brief [INTERNAL] GLFW callback function invoked when the window is iconified (minimized) or restored.
  * @details This function is called by GLFW when the user minimizes or restores the application window. Its primary role is to automatically pause and resume the application to conserve system resources while it is not visible.
  *

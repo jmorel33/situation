@@ -1,13 +1,17 @@
 /**
- * @brief Logs a warning message in debug builds.
- * @details This function is intended for internal library use. It formats a warning message
- *          and, in debug builds (when NDEBUG is not defined), prints it to stderr and sets the
- *          library's last error state. In release builds, this function is compiled out to nothing.
- * @param code The SituationError code associated with the warning.
- * @param fmt The printf-style format string for the message.
- * @param ... Variable arguments for the format string.
+ * @brief SituationError — X-Macro errno table (single source of truth).
+ *
+ * FORMAT: X(NAME, VALUE, MESSAGE)
+ *
+ * Values are permanent (never renumber). New codes use gaps in the section range.
+ *
+ * EOL: Entries marked `EOL:` are retained for ABI/docs; prefer the named successor
+ *      when adding call sites. A future sanitisation pass may redirect callers and
+ *      remove duplicate names (same value aliases in SITUATION_ERRORS_COMPAT).
+ *
+ * @see scripts/audit_errno.ps1 — table vs codebase usage report
  */
- 
+
 #ifndef SITUATION_BASE_ERRNO_H
 #define SITUATION_BASE_ERRNO_H
 
@@ -15,28 +19,19 @@
 //  SituationError — X-Macro Error Table (Single Source of Truth)
 //==================================================================================
 //
-//  FORMAT: X(NAME, VALUE, MESSAGE)
-//
-//  - NAME:    The enum constant (e.g., SITUATION_ERROR_GENERAL)
-//  - VALUE:   The integer value (negative, unique, permanent)
-//  - MESSAGE: Human-readable description (used in _SituationSetErrorFromCode)
-//
-//  To add a new error: add ONE line to the appropriate section below.
-//  The enum, the switch, and any future string tables are generated automatically.
-//
 //  Ranges:
 //    0        → Success
-//   -1 to -99 → Core & System
-//  -100 to -199→ Platform & Windowing
-//  -200 to -299→ Display System
-//  -300 to -399→ Filesystem & Hot-Reloading
-//  -400 to -499→ Audio Subsystem
-//  -500 to -599→ Resource Management & Rendering Core
-//  -600 to -699→ OpenGL Backend
-//  -700 to -799→ Vulkan Backend
-//  -800 to -899→ Compute / GPGPU
-//  -900 to -949→ Network
-//  -999        → Unknown / Catch-All
+//   -1 to -99 → Core, System & Threading
+// -100 to -199→ Platform, Windowing & Input
+// -200 to -299→ Display System
+// -300 to -399→ Filesystem, Assets & Plugins
+// -400 to -499→ Audio Subsystem
+// -500 to -599→ Resource Management, Rendering Core & Fonts
+// -600 to -699→ OpenGL Backend
+// -700 to -799→ Vulkan Backend
+// -800 to -899→ Compute / GPGPU
+// -900 to -949→ Network
+// -999        → Unknown / Catch-All
 //
 
 // ── Core & System Errors (0 to -99) ─────────────────────────────────────────────
@@ -53,6 +48,7 @@
     X(SITUATION_ERROR_INTERNAL_STATE_CORRUPTED,     -9, "Internal invariant violated -- fatal bug") \
     X(SITUATION_ERROR_ASSERTION_FAILED,            -10, "Debug assertion tripped") \
     X(SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION, -11, "Architectural rule broken: Update called after Draw") \
+    X(SITUATION_ERROR_MEMORY_ACCESS,               -12, "Invalid or unmapped memory access") \
     X(SITUATION_ERROR_TIMER_SYSTEM,                -20, "An error occurred within the internal timer/oscillator system")
 
 // ── Threading Errors (-80 to -98) ───────────────────────────────────────────────
@@ -84,18 +80,24 @@
     X(SITUATION_ERROR_WINDOW_FOCUS_FAILED,         -102, "Window focus/minimize/restore operation failed") \
     X(SITUATION_ERROR_CLIPBOARD_FAILED,            -103, "Clipboard operation failed") \
     X(SITUATION_ERROR_CURSOR_CREATION_FAILED,      -104, "Custom cursor creation failed") \
-    X(SITUATION_ERROR_COM_INITIALIZATION_FAILED,   -110, "COM initialization failed (Windows)") \
-    X(SITUATION_ERROR_DXGI_QUERY_FAILED,           -111, "DXGI GPU query failed (Windows)") \
-    X(SITUATION_ERROR_WINDOW_FOCUS,                -120, "An operation related to window focus failed") \
+    X(SITUATION_ERROR_COM_INITIALIZATION_FAILED,   -110, "COM initialization failed (Windows)") /* EOL: prefer SITUATION_ERROR_COM_FAILED */ \
+    X(SITUATION_ERROR_DXGI_QUERY_FAILED,           -111, "DXGI GPU query failed (Windows)") /* EOL: prefer SITUATION_ERROR_DXGI_FAILED */ \
+    X(SITUATION_ERROR_WINDOW_FOCUS,                -120, "An operation related to window focus failed") /* EOL: prefer SITUATION_ERROR_WINDOW_FOCUS_FAILED */ \
     X(SITUATION_ERROR_DEVICE_QUERY,                -121, "Failed to query system hardware or device information") \
     X(SITUATION_ERROR_COM_FAILED,                  -123, "[Win32] Failed to initialize the COM library") \
     X(SITUATION_ERROR_DXGI_FAILED,                 -124, "[Win32] A call to the DXGI library failed")
 
+// ── Input & HID (-130 to -149) ──────────────────────────────────────────────────
+#define SITUATION_ERRORS_INPUT(X) \
+    X(SITUATION_ERROR_INPUT_DEVICE_DISCONNECTED,    -130, "Input device disconnected during operation") \
+    X(SITUATION_ERROR_INPUT_MAPPING_INVALID,        -131, "Invalid input mapping or layout definition") \
+    X(SITUATION_ERROR_INPUT_HAPTIC_FAILED,          -132, "Failed to initialize or play haptic feedback")
+
 // ── Display & Virtual Display (-200 to -299) ────────────────────────────────────
 #define SITUATION_ERRORS_DISPLAY(X) \
-    X(SITUATION_ERROR_DISPLAY_QUERY,                    -200, "Failed to query physical monitor information") \
-    X(SITUATION_ERROR_DISPLAY_SET,                      -201, "Failed to set a display mode on a physical monitor") \
-    X(SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT,            -202, "The maximum number of virtual displays has been reached") \
+    X(SITUATION_ERROR_DISPLAY_QUERY,                    -200, "Failed to query physical monitor information") /* EOL: prefer SITUATION_ERROR_DISPLAY_QUERY_FAILED */ \
+    X(SITUATION_ERROR_DISPLAY_SET,                      -201, "Failed to set a display mode on a physical monitor") /* EOL: prefer SITUATION_ERROR_DISPLAY_MODE_SET_FAILED */ \
+    X(SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT,            -202, "The maximum number of virtual displays has been reached") /* EOL: prefer SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT_REACHED */ \
     X(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID,       -203, "Invalid virtual display ID supplied") \
     X(SITUATION_ERROR_DISPLAY_QUERY_FAILED,             -210, "Display query failed (glfwGetMonitors)") \
     X(SITUATION_ERROR_DISPLAY_MODE_UNSUPPORTED,         -211, "Requested resolution/refresh rate not available") \
@@ -103,12 +105,12 @@
     X(SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT_REACHED,    -213, "Max virtual displays (32) already created") \
     X(SITUATION_ERROR_VIRTUAL_DISPLAY_NOT_FOUND,        -214, "Virtual display ID not found in active list")
 
-// ── Filesystem & Hot-Reloading (-300 to -399) ───────────────────────────────────
+// ── Filesystem & Hot-Reloading (-300 to -329) ───────────────────────────────────
 #define SITUATION_ERRORS_FILESYSTEM(X) \
-    X(SITUATION_ERROR_FILE_ACCESS,                      -300, "A generic file or directory access error occurred") \
+    X(SITUATION_ERROR_FILE_ACCESS,                      -300, "A generic file or directory access error occurred") /* EOL: prefer specific SITUATION_ERROR_FILE_* / PATH_* */ \
     X(SITUATION_ERROR_PATH_NOT_FOUND,                   -301, "The specified file or directory was not found") \
     X(SITUATION_ERROR_PATH_INVALID,                     -302, "The specified path is invalid or contains illegal characters") \
-    X(SITUATION_ERROR_PERMISSION_DENIED,                -303, "Permission was denied for the requested file operation") \
+    X(SITUATION_ERROR_PERMISSION_DENIED,                -303, "Permission was denied for the requested file operation") /* EOL: prefer SITUATION_ERROR_FILE_ACCESS_DENIED */ \
     X(SITUATION_ERROR_DISK_FULL,                        -304, "The disk is full; cannot complete a write operation") \
     X(SITUATION_ERROR_FILE_LOCKED,                      -305, "The file is locked or currently in use by another process") \
     X(SITUATION_ERROR_DIR_NOT_EMPTY,                    -306, "A directory is not empty and cannot be deleted non-recursively") \
@@ -122,16 +124,29 @@
     X(SITUATION_ERROR_FILE_WRITE_FAILED,                -314, "Write operation failed") \
     X(SITUATION_ERROR_FILE_TOO_LARGE,                   -315, "File exceeds internal limits") \
     X(SITUATION_ERROR_DIRECTORY_CREATION_FAILED,        -316, "Failed to create directory") \
+    X(SITUATION_ERROR_FILE_MODIFIED,                    -317, "File changed on disk during operation (hot-reload / race)") \
     X(SITUATION_ERROR_HOTRELOAD_WATCHER_FAILED,         -320, "Hot-reload watcher failed (inotify/ReadDirectoryChangesW)") \
     X(SITUATION_ERROR_HOTRELOAD_FILE_CHANGED_TOO_FAST,  -321, "File changed faster than debounce window") \
     X(SITUATION_ERROR_HOTRELOAD_GPU_SYNC_FAILED,        -322, "GPU sync failed during hot-reload (vkDeviceWaitIdle/glFinish)")
 
+// ── Asset & Serialization (-330 to -349) ────────────────────────────────────────
+#define SITUATION_ERRORS_ASSET(X) \
+    X(SITUATION_ERROR_ASSET_PARSE_FAILED,               -330, "Failed to parse asset file (malformed JSON/XML/Binary)") \
+    X(SITUATION_ERROR_ASSET_CORRUPTED,                  -331, "Asset data is corrupted or failed checksum validation") \
+    X(SITUATION_ERROR_ASSET_VERSION_MISMATCH,           -332, "Asset was built for an incompatible engine version") \
+    X(SITUATION_ERROR_ASSET_DECOMPRESSION_FAILED,       -333, "Failed to decompress asset payload")
+
+// ── Plugins & Scripting (-360 to -379) ──────────────────────────────────────────
+#define SITUATION_ERRORS_PLUGIN(X) \
+    X(SITUATION_ERROR_PLUGIN_LOAD_FAILED,               -360, "Failed to load dynamic library / shared object") \
+    X(SITUATION_ERROR_PLUGIN_SYMBOL_NOT_FOUND,          -361, "Required symbol or function not found in plugin") \
+    X(SITUATION_ERROR_PLUGIN_ABI_MISMATCH,              -362, "Plugin ABI version does not match the host engine")
 
 // ── Audio Subsystem (-400 to -439) ──────────────────────────────────────────────
 #define SITUATION_ERRORS_AUDIO(X) \
-    X(SITUATION_ERROR_AUDIO_CONTEXT,                    -400, "Failed to initialize the audio context (MiniAudio)") \
-    X(SITUATION_ERROR_AUDIO_DEVICE,                     -401, "Failed to initialize, start, or stop an audio device") \
-    X(SITUATION_ERROR_AUDIO_SOUND_LIMIT,                -402, "The sound playback queue limit was reached") \
+    X(SITUATION_ERROR_AUDIO_CONTEXT,                    -400, "Failed to initialize the audio context (MiniAudio)") /* EOL: prefer SITUATION_ERROR_AUDIO_BACKEND_INIT_FAILED */ \
+    X(SITUATION_ERROR_AUDIO_DEVICE,                     -401, "Failed to initialize, start, or stop an audio device") /* EOL: prefer SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED */ \
+    X(SITUATION_ERROR_AUDIO_SOUND_LIMIT,                -402, "The sound playback queue limit was reached") /* EOL: prefer SITUATION_ERROR_AUDIO_SOUND_LIMIT_REACHED */ \
     X(SITUATION_ERROR_AUDIO_CONVERTER,                  -403, "Failed to configure a data format/rate converter") \
     X(SITUATION_ERROR_AUDIO_DECODING,                   -404, "Failed to decode an audio file") \
     X(SITUATION_ERROR_AUDIO_INVALID_OPERATION,          -405, "Invalid operation on a sound (e.g., cropping a stream)") \
@@ -213,7 +228,7 @@
 
 // ── Resource Management & Rendering Core (-500 to -599) ─────────────────────────
 #define SITUATION_ERRORS_RENDERING(X) \
-    X(SITUATION_ERROR_RESOURCE_INVALID,                 -500, "Invalid resource handle (shader, mesh, texture, buffer)") \
+    X(SITUATION_ERROR_RESOURCE_INVALID,                 -500, "Invalid resource handle (shader, mesh, texture, buffer)") /* EOL: prefer SITUATION_ERROR_INVALID_RESOURCE_HANDLE */ \
     X(SITUATION_ERROR_BUFFER_INVALID_SIZE,              -501, "Buffer operation with out-of-bounds offset or size") \
     X(SITUATION_ERROR_RENDER_COMMAND_FAILED,            -502, "Command failed to be recorded to command buffer") \
     X(SITUATION_ERROR_RENDER_PASS_ACTIVE,               -503, "Operation illegal during an active render pass") \
@@ -228,36 +243,53 @@
     X(SITUATION_ERROR_NO_RENDER_PASS_ACTIVE,            -540, "Draw call outside render pass") \
     X(SITUATION_ERROR_RENDER_PASS_ALREADY_ACTIVE,       -541, "Nested render pass attempted") \
     X(SITUATION_ERROR_BACKEND_MISMATCH,                 -550, "Operation requested on wrong backend") \
-    X(SITUATION_ERROR_PIPELINE_BIND_FAIL,               -552, "Failed to bind pipeline (incompatible layout or invalid handle)")
+    X(SITUATION_ERROR_BACKEND_SPECIFIC,                 -551, "Backend-specific GPU operation failed (see detail)") \
+    X(SITUATION_ERROR_PIPELINE_BIND_FAIL,               -552, "Failed to bind pipeline (incompatible layout or invalid handle)") \
+    X(SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS,          -553, "Shader compile or link still in progress (poll again next frame)") \
+    X(SITUATION_ERROR_SPIRV_FILE_READ_FAILED,           -554, "SPIR-V file read failed (.spv missing or unreadable)") \
+    X(SITUATION_ERROR_SPIRV_INVALID_BINARY,             -555, "SPIR-V binary invalid (null, empty, or misaligned size)")
+
+// ── Fonts & Typography (-560 to -579) ───────────────────────────────────────────
+#define SITUATION_ERRORS_FONT(X) \
+    X(SITUATION_ERROR_FONT_LOAD_FAILED,                 -560, "Failed to load font face (e.g., FreeType/stb_truetype error)") \
+    X(SITUATION_ERROR_FONT_GLYPH_MISSING,               -561, "Requested glyph is not present in the font") \
+    X(SITUATION_ERROR_FONT_ATLAS_FULL,                  -562, "Font texture atlas is full; cannot pack more glyphs")
 
 // ── OpenGL Backend (-600 to -699) ───────────────────────────────────────────────
 #define SITUATION_ERRORS_OPENGL(X) \
     X(SITUATION_ERROR_OPENGL_GENERAL,                   -600, "OpenGL: A general error occurred (glGetError)") \
     X(SITUATION_ERROR_OPENGL_LOADER_FAILED,             -601, "OpenGL: Failed to load functions (GLAD)") \
     X(SITUATION_ERROR_OPENGL_UNSUPPORTED,               -602, "OpenGL: Required version or extension not supported") \
-    X(SITUATION_ERROR_OPENGL_SHADER_COMPILE,            -610, "OpenGL: GLSL shader compilation failed") \
-    X(SITUATION_ERROR_OPENGL_SHADER_LINK,               -611, "OpenGL: GLSL shader program linking failed") \
+    X(SITUATION_ERROR_OPENGL_SHADER_COMPILE,            -610, "OpenGL: GLSL shader compilation failed") /* EOL: prefer SITUATION_ERROR_OPENGL_SHADER_COMPILE_FAILED */ \
+    X(SITUATION_ERROR_OPENGL_SHADER_LINK,               -611, "OpenGL: GLSL shader program linking failed") /* EOL: prefer SITUATION_ERROR_OPENGL_SHADER_LINK_FAILED */ \
     X(SITUATION_ERROR_OPENGL_FBO_INCOMPLETE,            -620, "OpenGL: Framebuffer Object is not complete") \
     X(SITUATION_ERROR_OPENGL_CONTEXT_CREATION_FAILED,   -630, "OpenGL: Context creation failed") \
     X(SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION,       -631, "OpenGL: Version too old (requires 4.6+)") \
     X(SITUATION_ERROR_OPENGL_SHADER_COMPILE_FAILED,     -632, "OpenGL: Detailed shader compilation error") \
     X(SITUATION_ERROR_OPENGL_SHADER_LINK_FAILED,        -633, "OpenGL: Detailed shader linking error") \
     X(SITUATION_ERROR_OPENGL_PROGRAM_VALIDATION_FAILED, -634, "OpenGL: Program validation failed") \
-    X(SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND,         -635, "OpenGL: Uniform location query failed")
+    X(SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND,         -635, "OpenGL: Uniform location query failed") \
+    X(SITUATION_ERROR_OPENGL_SPIRV_UNAVAILABLE,         -636, "OpenGL: GL_ARB_gl_spirv not available (cannot load SPIR-V)") \
+    X(SITUATION_ERROR_OPENGL_SPIRV_INVALID_BINARY,      -637, "OpenGL: SPIR-V blob invalid (null, empty, or misaligned size)") \
+    X(SITUATION_ERROR_OPENGL_SPIRV_VS_SPECIALIZE_FAILED,-638, "OpenGL: SPIR-V vertex shader specialization failed") \
+    X(SITUATION_ERROR_OPENGL_SPIRV_FS_SPECIALIZE_FAILED,-639, "OpenGL: SPIR-V fragment shader specialization failed") \
+    X(SITUATION_ERROR_OPENGL_SPIRV_CS_SPECIALIZE_FAILED,-640, "OpenGL: SPIR-V compute shader specialization failed") \
+    X(SITUATION_ERROR_OPENGL_SPIRV_PROGRAM_LINK_FAILED, -641, "OpenGL: SPIR-V graphics program link failed")
 
 // ── Vulkan Backend (-700 to -799) ───────────────────────────────────────────────
 #define SITUATION_ERRORS_VULKAN(X) \
-    X(SITUATION_ERROR_VULKAN_INIT_FAILED,               -700, "Vulkan: General initialization failed") \
-    X(SITUATION_ERROR_VULKAN_INSTANCE_FAILED,           -701, "Vulkan: Failed to create VkInstance") \
-    X(SITUATION_ERROR_VULKAN_DEVICE_FAILED,             -702, "Vulkan: Failed to select physical or create logical device") \
+    X(SITUATION_ERROR_VULKAN_INIT_FAILED,               -700, "Vulkan: General initialization failed") /* EOL: prefer detailed SITUATION_ERROR_VULKAN_*_FAILED codes */ \
+    X(SITUATION_ERROR_VULKAN_INSTANCE_FAILED,           -701, "Vulkan: Failed to create VkInstance") /* EOL: prefer SITUATION_ERROR_VULKAN_INSTANCE_CREATION_FAILED */ \
+    X(SITUATION_ERROR_VULKAN_DEVICE_FAILED,             -702, "Vulkan: Failed to select physical or create logical device") /* EOL: prefer SITUATION_ERROR_VULKAN_DEVICE_CREATION_FAILED */ \
     X(SITUATION_ERROR_VULKAN_UNSUPPORTED,               -703, "Vulkan: Required layer, extension, or feature unsupported") \
-    X(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED,          -710, "Vulkan: Swapchain operation failed") \
+    X(SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED,          -710, "Vulkan: Swapchain operation failed") /* EOL: prefer SITUATION_ERROR_VULKAN_SWAPCHAIN_CREATION_FAILED */ \
     X(SITUATION_ERROR_VULKAN_COMMAND_FAILED,            -720, "Vulkan: Command pool or buffer operation failed") \
+    X(SITUATION_ERROR_VULKAN_COMMAND_BUFFER_FAILED,     -721, "Vulkan: Command buffer record, submit, or sync failed") \
     X(SITUATION_ERROR_VULKAN_RENDERPASS_FAILED,         -730, "Vulkan: Failed to create VkRenderPass") \
     X(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED,        -731, "Vulkan: Failed to create VkFramebuffer") \
-    X(SITUATION_ERROR_VULKAN_PIPELINE_FAILED,           -732, "Vulkan: Failed to create graphics or compute pipeline") \
+    X(SITUATION_ERROR_VULKAN_PIPELINE_FAILED,           -732, "Vulkan: Failed to create graphics or compute pipeline") /* EOL: prefer SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED */ \
     X(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED,        -733, "Vulkan: Failed to create fence or semaphore") \
-    X(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED,       -734, "Vulkan: GPU memory allocation failed (VMA)") \
+    X(SITUATION_ERROR_VULKAN_MEMORY_ALLOC_FAILED,       -734, "Vulkan: GPU memory allocation failed (VMA)") /* EOL: prefer SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED */ \
     X(SITUATION_ERROR_VULKAN_DESCRIPTOR_FAILED,         -735, "Vulkan: Descriptor set or pool operation failed") \
     X(SITUATION_ERROR_VULKAN_INSTANCE_CREATION_FAILED,  -740, "Vulkan: Detailed instance creation failure") \
     X(SITUATION_ERROR_VULKAN_PHYSICAL_DEVICE_UNSUITABLE,-741, "Vulkan: No suitable physical device found") \
@@ -271,7 +303,11 @@
     X(SITUATION_ERROR_VULKAN_DESCRIPTOR_POOL_EXHAUSTED, -749, "Vulkan: Descriptor pool exhausted") \
     X(SITUATION_ERROR_VULKAN_MEMORY_ALLOCATION_FAILED,  -750, "Vulkan: Detailed memory allocation error") \
     X(SITUATION_ERROR_VULKAN_VALIDATION_LAYER_ERROR,    -751, "Vulkan: Validation layer reported error") \
-    X(SITUATION_ERROR_SHADER_COMPILATION_FAILED,        -752, "Shader compilation failed (shaderc)")
+    X(SITUATION_ERROR_SHADER_COMPILATION_FAILED,        -752, "Shader compilation failed (shaderc)") \
+    X(SITUATION_ERROR_VULKAN_SPIRV_INVALID,             -753, "Vulkan: SPIR-V blob invalid (null, empty, or misaligned size)") \
+    X(SITUATION_ERROR_VULKAN_SPIRV_VS_MODULE_FAILED,    -754, "Vulkan: SPIR-V vertex shader module creation failed") \
+    X(SITUATION_ERROR_VULKAN_SPIRV_FS_MODULE_FAILED,    -755, "Vulkan: SPIR-V fragment shader module creation failed") \
+    X(SITUATION_ERROR_VULKAN_SPIRV_CS_MODULE_FAILED,    -756, "Vulkan: SPIR-V compute shader module creation failed")
 
 // ── Compute / GPGPU (-800 to -899) ──────────────────────────────────────────────
 #define SITUATION_ERRORS_COMPUTE(X) \
@@ -288,7 +324,10 @@
     X(SITUATION_ERROR_NETWORK_RECEIVE_FAILED,           -904, "Network: Receive failed") \
     X(SITUATION_ERROR_NETWORK_BIND_FAILED,              -905, "Network: Bind failed") \
     X(SITUATION_ERROR_NETWORK_LISTEN_FAILED,            -906, "Network: Listen failed") \
-    X(SITUATION_ERROR_NETWORK_ACCEPT_FAILED,            -907, "Network: Accept failed")
+    X(SITUATION_ERROR_NETWORK_ACCEPT_FAILED,            -907, "Network: Accept failed") \
+    X(SITUATION_ERROR_NETWORK_TIMEOUT,                  -908, "Network: Operation timed out") \
+    X(SITUATION_ERROR_NETWORK_DNS_RESOLUTION_FAILED,    -909, "Network: DNS resolution failed") \
+    X(SITUATION_ERROR_NETWORK_TLS_HANDSHAKE_FAILED,     -910, "Network: TLS/SSL handshake failed")
 
 //==================================================================================
 // Master Table — expands all sections in order
@@ -297,14 +336,18 @@
     SITUATION_ERRORS_CORE(X) \
     SITUATION_ERRORS_THREADING(X) \
     SITUATION_ERRORS_PLATFORM(X) \
+    SITUATION_ERRORS_INPUT(X) \
     SITUATION_ERRORS_DISPLAY(X) \
     SITUATION_ERRORS_FILESYSTEM(X) \
+    SITUATION_ERRORS_ASSET(X) \
+    SITUATION_ERRORS_PLUGIN(X) \
     SITUATION_ERRORS_AUDIO(X) \
     SITUATION_ERRORS_MIXER(X) \
     SITUATION_ERRORS_NODE_GRAPH(X) \
     SITUATION_ERRORS_DEVICE_REGISTRY(X) \
     SITUATION_ERRORS_MIDI(X) \
     SITUATION_ERRORS_RENDERING(X) \
+    SITUATION_ERRORS_FONT(X) \
     SITUATION_ERRORS_OPENGL(X) \
     SITUATION_ERRORS_VULKAN(X) \
     SITUATION_ERRORS_COMPUTE(X) \
@@ -319,5 +362,17 @@ typedef enum {
     SITUATION_ERROR_TABLE(_SIT_ERRNO_ENUM)
     #undef _SIT_ERRNO_ENUM
 } SituationError;
+
+/* Historical / doc names — #define aliases only (not in switch table; duplicate values). */
+#define SITUATION_ERROR_GLAD_LOAD_FAILED              SITUATION_ERROR_OPENGL_LOADER_FAILED
+#define SITUATION_ERROR_GL_VERSION_TOO_LOW              SITUATION_ERROR_OPENGL_UNSUPPORTED_VERSION
+#define SITUATION_ERROR_GL_ERROR                        SITUATION_ERROR_OPENGL_GENERAL
+#define SITUATION_ERROR_GL_EXTENSION_MISSING            SITUATION_ERROR_OPENGL_UNSUPPORTED
+#define SITUATION_ERROR_GL_UPLOAD_FAILED                SITUATION_ERROR_TEXTURE_UPLOAD_FAILED
+#define SITUATION_ERROR_VULKAN_UPLOAD_FAILED            SITUATION_ERROR_TEXTURE_UPLOAD_FAILED
+#define SITUATION_ERROR_VULKAN_PIPELINE_CREATE_FAILED   SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED
+#define SITUATION_ERROR_SHADER_LINK_FAILED              SITUATION_ERROR_OPENGL_SHADER_LINK_FAILED
+#define SITUATION_ERROR_SHADER_MODULE_CREATE_FAILED     SITUATION_ERROR_VULKAN_SHADER_MODULE_FAILED
+#define SITUATION_ERROR_ACCESS_DENIED                   SITUATION_ERROR_FILE_ACCESS_DENIED
 
 #endif // SITUATION_BASE_ERRNO_H

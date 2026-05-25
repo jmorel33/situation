@@ -21,7 +21,7 @@
 #define SITUATION_IMPL_IMAGE_H
 
 // Forward declarations for internal helpers defined later in this file
-static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* image);
+static SituationError _SituationSaveImageBMP(const char* fileName, const SituationImage* image);
 
 // Image Module Implementation
 //==================================================================================
@@ -141,22 +141,21 @@ SITAPI SituationError SituationExportImage(SituationImage image, const char *fil
     if (!SituationIsImageValid(image) || !fileName) return SITUATION_ERROR_INVALID_PARAM;
 
     const char *ext = SituationGetFileExtension(fileName);
-    bool success = false;
 
-    // Use helper here
     if (ext != NULL && _sit_strcasecmp(ext, ".png") == 0) {
 #if defined(STB_IMAGE_WRITE_IMPLEMENTATION)
-        success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, image.width * 4) != 0);
+        if (stbi_write_png(fileName, image.width, image.height, 4, image.data, image.width * 4) != 0) {
+            return SITUATION_SUCCESS;
+        }
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Failed to write PNG image.");
 #else
         return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG export not available. Please implement stb_image_write.h.");
 #endif
-    // Use helper here
-    } else if (ext != NULL && _sit_strcasecmp(ext, ".bmp") == 0) {
-        success = _SituationSaveImageBMP(fileName, &image);
-    } else {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported image export format. Use .png or .bmp.");
     }
-    return success ? SITUATION_SUCCESS : SITUATION_ERROR_FILE_WRITE_FAILED;
+    if (ext != NULL && _sit_strcasecmp(ext, ".bmp") == 0) {
+        return _SituationSaveImageBMP(fileName, &image);
+    }
+    return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported image export format. Use .png or .bmp.");
 }
 
 /**
@@ -1222,8 +1221,11 @@ SITAPI void SituationUnloadFont(SituationFont font) {
  *
  * @see SituationExportImage(), SituationTakeScreenshot(), SituationSaveFileData()
  */
-static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* image) {
-    if (!fileName || !image || !image->data) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "_SituationSaveImageBMP: fileName, image, or image->data is NULL"); return false; }
+static SituationError _SituationSaveImageBMP(const char* fileName, const SituationImage* image) {
+    if (!fileName || !image || !image->data) {
+        return _SituationSetErrorFromCode(
+            SITUATION_ERROR_INVALID_PARAM, "_SituationSaveImageBMP: fileName, image, or image->data is NULL");
+    }
 
     int imageSize = image->width * image->height * 4;
     // BMP file format requires headers
@@ -1269,8 +1271,7 @@ static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* i
     // Create a single buffer for the entire file
     unsigned char *fileBuffer = (unsigned char *)SIT_MALLOC(fileSize);
     if (!fileBuffer) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "BMP file buffer");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "BMP file buffer");
     }
 
     memcpy(fileBuffer, fileHeader, 14);
@@ -1290,13 +1291,14 @@ static bool _SituationSaveImageBMP(const char* fileName, const SituationImage* i
     }
 
     // Save the buffer to disk using our existing library function
-    bool success = (SituationSaveFileData(fileName, fileBuffer, fileSize) == SITUATION_SUCCESS);
+    SituationError save_err = SituationSaveFileData(fileName, fileBuffer, fileSize);
     SIT_FREE(fileBuffer);
 
-    if (!success) {
-        _SituationSetFilesystemError("Failed to save BMP file data to disk", fileName, SITUATION_ERROR_FILE_WRITE_FAILED);
+    if (save_err != SITUATION_SUCCESS) {
+        return _SituationSetFilesystemError(
+            "Failed to save BMP file data to disk", fileName, SITUATION_ERROR_FILE_WRITE_FAILED);
     }
-    return success;
+    return SITUATION_SUCCESS;
 }
 
 /**

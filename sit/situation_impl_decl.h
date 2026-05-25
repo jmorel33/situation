@@ -34,6 +34,14 @@
 // Internal hash map initial capacity
 #define SIT_UNIFORM_MAP_INITIAL_CAPACITY 16
 
+// Propagate SituationError from internal helpers (internal hardening plan Phase 0).
+#ifndef SIT_RETURN_IF_ERR
+#define SIT_RETURN_IF_ERR(expr) do { \
+    SituationError _sit_err = (expr); \
+    if (_sit_err != SITUATION_SUCCESS) return _sit_err; \
+} while(0)
+#endif
+
 // =================================================================================
 // Internal Globals & Utility Helpers
 // =================================================================================
@@ -65,6 +73,7 @@ static uint64_t _SitGetMonotonicTimeNS(void) {
     return 0;
 }
 
+/* HARDENING: void by design — debug assert only; sets THREAD_VIOLATION on mismatch. */
 static void _SituationAssertMainThread(const char* file, int line) {
 #ifndef NDEBUG
 #ifdef SITUATION_ENABLE_THREADING
@@ -188,6 +197,12 @@ struct SituationRenderList_t {
     atomic_int in_flight_count;     // [FIX v2.3.27B] Track active usage to prevent reset-while-reading race
 };
 
+/** Raw SPIR-V bytes (file or memory). Used for precompiled shader load without runtime GLSL compile. */
+typedef struct SituationSpirvBinary {
+    const void* data;
+    size_t size;
+} SituationSpirvBinary;
+
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
 typedef struct _SituationSpirvBlob {
     const uint8_t* data;
@@ -229,7 +244,18 @@ typedef enum {
     SIT_OP_UPDATE_BUFFER,
     SIT_OP_SET_VERTEX_ATTRIBUTE,
     SIT_OP_SET_UNIFORM,
-    SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING // [Phase 2] Temporary
+    SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING, // [Phase 2] Temporary
+    SIT_OP_COPY_BUFFER, // [Phase 1] Async readback
+    SIT_OP_SET_CULL_MODE, // [Phase 4]
+    SIT_OP_SET_DEPTH_TEST,
+    SIT_OP_SET_DEPTH_WRITE,
+    SIT_OP_SET_BLEND_ENABLE,
+    SIT_OP_SET_BLEND_FUNC_SEPARATE,
+    SIT_OP_PUSH_RASTER_STATE,
+    SIT_OP_POP_RASTER_STATE,
+    SIT_OP_SET_PUSH_CONSTANT_DATA,
+    SIT_OP_BEGIN_DEBUG_GROUP,
+    SIT_OP_END_DEBUG_GROUP
 } SitOpCode;
 
 typedef struct {
@@ -240,11 +266,11 @@ typedef struct {
         struct { int x, y, w, h; } scissor;
         struct { uint64_t shader_id; } bind_pipeline;
         struct { SituationMesh mesh; uint64_t shader_id; } draw_mesh;
-        struct { mat4 model; Vector4 color; Vector4 uv_rect; } draw_quad;
+        struct { mat4 model; Vector4 color; Vector4 uv_rect; int use_texture; } draw_quad;
         struct { uint32_t offset; size_t size; size_t data_offset; } push_constant;
         struct { uint32_t set_index; uint64_t resource_id; int resource_type; size_t offset; size_t size; uint32_t usage_flags; } bind_desc; // [Phase 2] Added size and usage_flags for Ring Buffer
         struct { uint32_t binding; uint64_t buffer_id; size_t offset; size_t stride; } bind_vbo;
-        struct { uint64_t buffer_id; } bind_ibo;
+        struct { uint64_t buffer_id; size_t offset; } bind_ibo;
         struct { uint32_t v_count, i_count, first_v, first_i; } draw;
         struct { uint32_t idx_count, inst_count, first_idx; int32_t v_offset; uint32_t first_inst; } draw_indexed;
         struct { uint32_t src, dst; } barrier;
@@ -253,8 +279,17 @@ typedef struct {
         struct { SituationFont font; Vector2 pos; ColorRGBA color; size_t text_offset; } draw_text; // Store text in data_buffer
         struct { SituationFont font; Vector2 pos; float fontSize; float spacing; ColorRGBA color; size_t text_offset; } draw_text_ex; // [v2.3.23]
         struct { uint64_t buffer_id; size_t offset; size_t size; size_t data_offset; } update_buffer;
-        struct { uint32_t location; int size; int type; int normalized; size_t offset; } set_vertex_attr;
-        struct { uint64_t shader_id; GLint location; int type; size_t data_offset; } set_uniform;
+        struct { uint32_t location; uint32_t binding; int size; int type; int normalized; size_t offset; } set_vertex_attr;
+        struct { uint64_t shader_id; GLint location; int type; int elem_count; size_t data_offset; } set_uniform;
+        struct { uint64_t src_id; uint64_t dst_id; size_t offset; size_t size; } copy_buffer; // [Phase 1]
+        struct { SituationCullMode mode; } set_cull_mode; // [Phase 4]
+        struct { bool enable; SituationDepthCompareOp depth_op; } set_depth_test;
+        struct { bool enable; } set_depth_write;
+        struct { bool enable; } set_blend_enable;
+        struct { SituationBlendFactor src_rgb; SituationBlendFactor dst_rgb; SituationBlendFactor src_a; SituationBlendFactor dst_a; } set_blend_func;
+        struct { uint32_t scope_id; } push_pop_raster_state;
+        struct { SituationShader shader; uint32_t offset; size_t size; size_t data_offset; } set_push_constant_data;
+        struct { size_t name_offset; ColorRGBA color; } begin_debug_group;
     } args;
 } SitCommandPacket;
 
@@ -488,6 +523,7 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
     VkPipelineLayout current_pipeline_layout_for_push_constants; // Last bound graphics layout
     VkPipelineLayout current_compute_pipeline_layout;            // Last bound compute layout
     VkPipelineLayout compute_layouts[8];                         // Pre-created standard layouts
+    VkPipelineLayout graphics_spirv_layout_ubo_ssbo;             // Graphics SPIR-V: set 0 UBO, set 1 SSBO (harness)
 
     // -------------------------------------------------------------------------
     // Internal Renderers Resources
@@ -589,13 +625,15 @@ typedef struct {
     // We can add shaders/programs if needed later
 } _SituationGLGraveyard;
 
-// [Phase 4] Multi-Draw Indirect Structures
+// OpenGL-only declarations (inside SITUATION_USE_OPENGL guard above).
+// [Phase 4] Multi-Draw Indirect Structures for glMultiDraw*Indirect.
+// Vulkan uses VkDrawIndirectCommand / VkDrawIndexedIndirectCommand directly.
 typedef struct {
     uint32_t count;
     uint32_t instanceCount;
     uint32_t first;
     uint32_t baseInstance;
-} SitDrawArraysIndirectCommand;
+} _SituationGLDrawArraysIndirectCommand;
 
 typedef struct {
     uint32_t count;
@@ -603,7 +641,7 @@ typedef struct {
     uint32_t firstIndex;
     int32_t  baseVertex;
     uint32_t baseInstance;
-} SitDrawElementsIndirectCommand;
+} _SituationGLDrawElementsIndirectCommand;
 
 /**
  * @brief [INTERNAL] OpenGL backend state container.
@@ -611,24 +649,23 @@ typedef struct {
  *          This includes internal shaders (Quad, Virtual Display), global buffers (UBOs),
  *          and caching variables for optimizing state changes.
  */
-#if defined(SITUATION_USE_OPENGL)
+// [Phase 5] OpenGL virtual bindless fallback (texture-unit LRU cache).
+// Not related to SituationVirtualDisplay; it is the number of GL texture units
+// reserved for the fallback when true bindless texture handles are unavailable.
+#define SITUATION_GL_MAX_VIRTUAL_TEXTURE_UNITS 32
 
-#define SITUATION_MAX_VIRTUAL_TEXTURE_UNITS 32
-
-typedef struct _SituationVirtualTextureSlot {
+typedef struct _SituationGLVirtualTextureSlot {
     uint32_t texture_slot_index;     // The actual GL texture unit (0-31)
     GLuint gl_texture_id;            // The GL ID of the texture currently bound here
     uint64_t last_used_counter;      // For LRU eviction
     bool is_active;                  // Is this slot currently holding a valid texture?
-} _SituationVirtualTextureSlot;
+} _SituationGLVirtualTextureSlot;
 
-typedef struct _SituationVirtualBindlessStats {
+typedef struct _SituationGLVirtualBindlessStats {
     uint64_t hits;
     uint64_t misses;
     uint64_t evictions;
-} _SituationVirtualBindlessStats;
-
-#endif // SITUATION_USE_OPENGL
+} _SituationGLVirtualBindlessStats;
 
  typedef struct {
     // -------------------------------------------------------------------------
@@ -662,6 +699,7 @@ typedef struct _SituationVirtualBindlessStats {
     // -------------------------------------------------------------------------
     GLuint view_data_ubo_id;                    // Handle to the global View/Projection UBO
     GLuint global_vao_id;                       // The "Public" VAO active during user rendering commands
+    size_t bound_ibo_byte_offset;               // Byte offset from last SIT_OP_BIND_INDEX_BUFFER (added to indexed draw indices)
     GLuint mesh_vao_id;                         // [2.3.19] Shared VAO for standard meshes (PBR layout)
     GLuint current_program_id;                  // Cache of the currently bound shader program ID
 
@@ -669,6 +707,8 @@ typedef struct _SituationVirtualBindlessStats {
     GLuint current_bound_texture_id; // [v2.3.31] Track bound texture for legacy/quad draws
     GLuint current_vao_id;
     GLuint current_fbo_id;
+    int current_target_width;
+    int current_target_height;
     int    blend_enabled;
     GLenum blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha;
     GLenum blend_eq_rgb, blend_eq_alpha;
@@ -679,6 +719,7 @@ typedef struct _SituationVirtualBindlessStats {
     #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     bool arb_spirv_available;                   // True if GL_ARB_gl_spirv extension is supported
     #endif
+    bool parallel_shader_compile_available;     // GL_KHR/ARB_parallel_shader_compile
     GLenum last_error;                          // Cached result of last glGetError()
     bool shadow_state_dirty;                    // [2.3.14A] Flag to indicate external state changes
 
@@ -709,8 +750,8 @@ typedef struct _SituationVirtualBindlessStats {
     atomic_size_t mdi_ring_head;
 
     // [Phase 5] Virtual Bindless Fallback
-    _SituationVirtualTextureSlot virtual_texture_slots[SITUATION_MAX_VIRTUAL_TEXTURE_UNITS];
-    _SituationVirtualBindlessStats virtual_stats;
+    _SituationGLVirtualTextureSlot virtual_texture_slots[SITUATION_GL_MAX_VIRTUAL_TEXTURE_UNITS];
+    _SituationGLVirtualBindlessStats virtual_stats;
     uint64_t virtual_lru_counter;
     GLint current_virtual_loc; // [Phase 5] Cache for virtual bindless uniform location
 } _SituationGLState;
@@ -942,6 +983,7 @@ typedef struct {
 
     SituationWaveType wave_type;        // Needed to know if we're using noise or waveform
     double trigger_timestamp_ms;        // [LATENCY] When this tone was triggered
+    bool route_to_graph;                // Route this tone to the graph's SFX sound source instead of mixing directly to pOut
 } SituationTone;
 
 
@@ -1029,6 +1071,7 @@ typedef struct {
     SituationAudioGraph*    active_graph;    // Currently active processing graph (NULL = legacy path)
     SituationAudioGraph*    default_graph;   // Auto-created minimal graph (Sound Source + Tone Synth → Mixer)
     void*                   default_graph_voice_source; // SituationSoundSource* — default graph SITUATION_NODE_SOUND_SOURCE (Policy B voice bus)
+    void*                   sfx_graph_voice_source;     // SituationSoundSource* — target node for routed procedural SFX tones
 } _SituationAudioState;
 
 //==================================================================================
@@ -1042,11 +1085,24 @@ typedef struct _SituationShaderSlot {
     struct _SituationUniformMap* uniform_map;
     GLuint gl_pending_program_id;
     bool gl_is_linking;
+    bool gl_pending_link_spirv; /* false = GLSL hot-reload (build uniform map) */
+    /* Non-blocking GLSL load: VS compile -> FS compile -> async link (polled each frame). */
+    uint8_t gl_async_load_stage; /* 0=idle, 1=GLSL compile poll, 2=SPIR-V specialize poll */
+    GLuint gl_async_vs_shader;
+    GLuint gl_async_fs_shader;
+    uint8_t* gl_spirv_vs_copy;
+    uint8_t* gl_spirv_fs_copy;
+    size_t gl_spirv_vs_len;
+    size_t gl_spirv_fs_len;
+    uint8_t gl_spirv_substage; /* 0=specialize VS, 1=specialize FS, 2=link dispatched */
 #elif defined(SITUATION_USE_VULKAN)
     VkPipeline vk_pipeline;
     VkPipeline vk_pipeline_legacy;
     VkPipeline vk_pipeline_simple;       // Position-only vertex layout (stride = 3*float)
     VkPipelineLayout vk_pipeline_layout;
+    SituationSpirvLayoutProfile vk_spirv_layout_profile; // For descriptor bind path (Phase 2+)
+    bool vk_owns_pipeline_layout;        // false when vk_pipeline_layout is a global cache entry
+    void* vk_async_load;                 /* _SituationVkAsyncShaderLoad* while compile/pipeline build pending */
 #endif
     // Hot-Reload Metadata
     char* vs_path;
@@ -1087,7 +1143,15 @@ typedef struct _SituationBufferSlot {
     VkBufferUsageFlags vk_usage_flags;
     VkDescriptorSet descriptor_set;
     VkDescriptorPool descriptor_pool;
+    VkDescriptorSetLayout vk_cached_descriptor_layout; /* layout used for descriptor_set (VK_NULL = none) */
+    VkDescriptorType vk_cached_descriptor_type;
 #endif
+
+    // [Phase 1] Async Readback Metadata
+    bool is_readback;
+    void* mapped_ptr;
+    size_t mapped_size;
+    bool readback_is_host_coherent;
 } _SituationBufferSlot;
 
 typedef struct _SituationComputePipelineSlot {
@@ -1123,6 +1187,13 @@ typedef struct _SituationTextureSlot {
     uint32_t generation; // Increments every time this slot is recycled
     int width;
     int height;
+    int mip_levels;
+    SituationTextureFormat format_api;
+    SituationTextureUsageFlags usage_flags;
+    SituationTextureFilter min_filter;
+    SituationTextureFilter mag_filter;
+    SituationTextureWrap wrap_s;
+    SituationTextureWrap wrap_t;
     uint64_t bindless_handle;
 
     char* source_path;
@@ -1280,6 +1351,7 @@ typedef struct {
     // Core Lifecycle & Error Handling
     // -------------------------------------------------------------------------
     char last_error_msg[SITUATION_MAX_ERROR_MSG_LEN];         // Buffer for the last reported error message
+    SituationError last_error_code;                           // Enum from the most recent _SituationSetErrorFromCode call
     ma_mutex error_mutex;                                     // Mutex protecting concurrent access to the error buffer
     atomic_bool is_initialized;                               // Flag indicating if SituationInit() has completed successfully
     bool is_com_initialized;                                  // Flag indicating if Windows COM was initialized by this library
@@ -1289,12 +1361,14 @@ typedef struct {
     // Window State Management
     // -------------------------------------------------------------------------
     GLFWwindow* sit_glfw_window;                              // The primary GLFW window handle
-    int main_window_width;                                    // Current width of the window's client area
-    int main_window_height;                                   // Current height of the window's client area
+    int main_window_width;                                    // Current framebuffer/render width in pixels
+    int main_window_height;                                   // Current framebuffer/render height in pixels
     int windowed_x;                                           // Saved X position before entering fullscreen/borderless
     int windowed_y;                                           // Saved Y position before entering fullscreen/borderless
     int windowed_w;                                           // Saved width before entering fullscreen/borderless
     int windowed_h;                                           // Saved height before entering fullscreen/borderless
+    int fullscreen_w;                                         // App-selected exclusive fullscreen render width
+    int fullscreen_h;                                         // App-selected exclusive fullscreen render height
 
     bool current_window_focus_state;                          // True if the window currently has input focus
     bool was_minimized_last_frame;                            // State tracker for detecting minimize/restore transitions
@@ -1332,8 +1406,12 @@ typedef struct {
     void* resize_callback_user_data;                          // User context for resize callback
     SituationFocusCallback focus_callback_fn;                 // Callback invoked on window focus change
     void* focus_callback_user_ptr;                            // User context for focus callback
+    SituationMaximizeCallback maximize_callback_fn;           // Callback invoked on window maximize / restore
+    void* maximize_callback_user_ptr;                         // User context for maximize callback
     SituationFileDropCallback file_drop_callback;             // Callback invoked on file drop
     void* file_drop_user_data;                                // User context for file drop callback
+    void (*log_callback)(SituationLogLevel, const char*, void*); // Custom log callback
+    void* log_user_data;                                      // User context for custom log callback
 
     // -------------------------------------------------------------------------
     // Environment & Filesystem
@@ -1344,6 +1422,16 @@ typedef struct {
     int    dropped_file_count;                                // Number of paths dropped this frame
     bool   file_was_dropped_this_frame;                       // Flag indicating if a drop event occurred
 
+    // [Threading Bolstering] Optional affinity overrides (0 = built-in defaults at thread entry)
+    uint64_t thread_affinity_main;
+    uint64_t thread_affinity_render;
+    uint64_t thread_affinity_audio;
+    bool  numa_prefer_local;
+    bool  worker_numa_spread;
+    int32_t io_thread_numa_node;
+    bool thread_pool_use_physical_cores;
+    uint32_t thread_pool_reserved_threads;
+
 #if defined(SITUATION_ENABLE_THREADING)
     SituationThreadPool thread_pool;
 #endif
@@ -1353,6 +1441,7 @@ typedef struct {
 #ifdef SITUATION_ENABLE_THREADING
 // --- Forward Declarations for Threading Internal Helpers ---
 static int _SituationWorkerEntry(void* arg);                                                    // [THREAD] Internal worker thread loop
+/* HARDENING: void by design — thread-pool parallel dispatch ABI. */
 static void _SitParallelWorker(void* data, void* ctx);                                          // [THREAD] Internal helper for parallel dispatch
 #endif
 
@@ -1360,8 +1449,8 @@ static void _SitParallelWorker(void* data, void* ctx);                          
 static int _SituationRenderThreadEntry(void* arg);                                              // [THREAD] Render thread loop
 
 // [v2.3.21] Render Thread Lifecycle Helpers
-static bool _SituationInitRenderThread(const SituationInitInfo* info);
-static void _SituationDestroyRenderThread(void);
+static SituationError _SituationInitRenderThread(const SituationInitInfo* info);
+static SituationError _SituationDestroyRenderThread(void);
 #endif
 
 // --- Context Architecture (v2.3.7+) ---
@@ -1420,6 +1509,7 @@ static VkResult _SituationVulkanWaitFencePumpWindow(VkDevice device, VkFence fen
  * Bounded substitute for vkDeviceWaitIdle: wait each in-flight frame fence with short timeouts + glfwPollEvents.
  * Used on shutdown, swapchain teardown/recreate, VSync/full cleanup, and init error paths — anywhere indefinite idle would freeze the OS window.
  */
+/* HARDENING: void by design — bounded shutdown wait with window pump; warnings only. */
 static void _SituationVulkanWaitInFlightFencesPump(const char* context_label) {
     VkDevice device = sit_render.vk.device;
     if (device == VK_NULL_HANDLE) return;
@@ -1445,6 +1535,7 @@ static void _SituationVulkanWaitInFlightFencesPump(const char* context_label) {
     }
 }
 
+/* HARDENING: void by design — shutdown GPU idle pump wrapper. */
 static void _SituationVulkanShutdownWaitGpuPump(void) { _SituationVulkanWaitInFlightFencesPump("SituationShutdown"); }
 #endif
 

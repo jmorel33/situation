@@ -1164,10 +1164,7 @@ SITAPI void SituationFreeDirectoryFileList(char** file_list, int count) {
  */
 SITAPI size_t SituationGetIOQueueDepth(void) {
     if (!sit_gs.thread_pool.is_active) return 0;
-    // Queue 0 is Low Priority / IO
-    size_t head = atomic_load(&sit_gs.thread_pool.queues[0].head);
-    size_t tail = atomic_load(&sit_gs.thread_pool.queues[0].tail);
-    return head - tail;
+    return SituationGetQueueDepth(&sit_gs.thread_pool, SIT_JOB_QUEUE_LOW);
 }
 
 // [v2.3.34] Dedicated I/O Thread Entry
@@ -1175,11 +1172,17 @@ static int _SituationIOThreadEntry(void* arg) {
     SituationThreadPool* pool = (SituationThreadPool*)arg;
     atomic_store(&pool->io_active, true);
 
+    _SituationApplyIoThreadNumaPlacement(pool);
+
     // Rate Limiting for Hot-Reload
     struct timespec last_hr_time;
     timespec_get(&last_hr_time, TIME_UTC);
 
     while (!atomic_load(&pool->shutdown)) {
+        {
+            int cpu = SituationGetCurrentProcessorIndex();
+            atomic_store(&pool->io_last_logical_cpu, cpu);
+        }
         // --- 1. Process Low Priority Queue (Index 0) ---
         bool worked = false;
         mtx_lock(&pool->queues[0].lock);
@@ -1189,8 +1192,9 @@ static int _SituationIOThreadEntry(void* arg) {
         if (tail != head) {
             size_t idx = tail & pool->queues[0].mask;
             SituationJob* job = &pool->queues[0].jobs[idx];
+            int dep = atomic_load(&job->dependency_count);
 
-            if (atomic_load(&job->dependency_count) == 0) {
+            if (dep == 0) {
                 atomic_store(&pool->queues[0].tail, tail + 1);
                 mtx_unlock(&pool->queues[0].lock);
 
@@ -1215,9 +1219,12 @@ static int _SituationIOThreadEntry(void* arg) {
                 atomic_store(&job->generation, (uint16_t)((old + 1) & SIT_ID_GEN_MASK));
 
                 if (atomic_fetch_sub(&pool->active_jobs, 1) == 1) cnd_broadcast(&pool->idle_condition);
+                atomic_fetch_add(&pool->stats_jobs_completed, 1);
+                atomic_fetch_add(&pool->stats_io_jobs_run, 1);
                 worked = true;
             } else {
                 mtx_unlock(&pool->queues[0].lock);
+                thrd_yield();
             }
         } else {
             mtx_unlock(&pool->queues[0].lock);
@@ -1237,6 +1244,7 @@ static int _SituationIOThreadEntry(void* arg) {
 
         // --- 3. Sleep ---
         if (!worked) {
+            atomic_fetch_add(&pool->stats_io_idle_waits, 1);
             struct timespec ts;
             timespec_get(&ts, TIME_UTC);
             ts.tv_nsec += 33000000; // 33ms
@@ -1272,6 +1280,7 @@ typedef struct {
 /**
  * @brief [INTERNAL] Worker function for asynchronous binary file load jobs.
  */
+/* HARDENING: void by design — thread-pool job ABI; result via callback/context. */
 static void _SituationAsyncFileLoadWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncFileLoadCtx* ctx = (_SitAsyncFileLoadCtx*)data;
@@ -1328,6 +1337,7 @@ typedef struct {
 /**
  * @brief [INTERNAL] Worker function for asynchronous text file load jobs.
  */
+/* HARDENING: void by design — thread-pool job ABI; result via callback/context. */
 static void _SituationAsyncFileTextLoadWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncFileTextLoadCtx* ctx = (_SitAsyncFileTextLoadCtx*)data;
@@ -1382,6 +1392,7 @@ typedef struct {
 /**
  * @brief [INTERNAL] Worker function for asynchronous text file save jobs.
  */
+/* HARDENING: void by design — thread-pool job ABI; result via callback/context. */
 static void _SituationAsyncFileTextSaveWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncFileTextSaveCtx* ctx = (_SitAsyncFileTextSaveCtx*)data;
@@ -1445,6 +1456,7 @@ typedef struct {
 /**
  * @brief [INTERNAL] Worker function for asynchronous file save jobs.
  */
+/* HARDENING: void by design — thread-pool job ABI; result via callback/context. */
 static void _SituationAsyncFileSaveWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncFileSaveCtx* ctx = (_SitAsyncFileSaveCtx*)data;
