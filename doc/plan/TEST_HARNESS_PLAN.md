@@ -1,6 +1,7 @@
 # Test Harness Plan — Full SITAPI Coverage
 
 **Date**: 2026-05-06  
+**Last aligned with library**: 2026-05-10 (**v2.4.63**); verification snapshot below; root **`situation.h`** version macros; **`LIBRARY_BUGFIX_PLAN.md`** (Bug 6 open for Vulkan full-chain / audio lifecycle)  
 **Target Directory**: `tests/harness/`  
 **Scope**: Custom C11 test framework exercising every public `SITAPI` function.  
 **Risk Level**: Low — additive only, no changes to library code.  
@@ -17,11 +18,27 @@ framework, CLI filtering, and crash recovery. No external test framework depende
 The goal is regression detection: if a refactor breaks an API contract, the harness catches it
 immediately.
 
-**Graphics** (Phases 1–11): Framework, core modules, rendering pipeline, virtual displays, compute, data flow, descriptors, model loading. 81 tests in `test_graphics.c`.
+**Graphics** (Phases 1–11): Framework, core modules, rendering pipeline, virtual displays, compute, data flow, descriptors, model loading. **89 tests** in `test_graphics.c` (includes Phases 23–29).
+
+**Graphics upgrade** (Phases 23–29): Fragment multi-SSBO + SPIR-V regression tests — see [`doc/plan/TEST_HARNESS_GRAPHICS_UPGRADE.md`](TEST_HARNESS_GRAPHICS_UPGRADE.md). **+5 OpenGL-only tests** (`graphics_helpers_smoke`, `fragment_dual_ssbo_readback`, `fragment_combined_scene_ssbo`, `uniform_1iv_int_array`, `demon_hunt_sky_shader_link`). Motivation: Demon Hunt SSBO binding bug passed full OpenGL harness (v2.4.81–82).
 
 **Audio** (Phases 12–18): Device registry, node graph lifecycle, control parameters (dials/buttons), all 16 registered effects modules, mixer advanced features (routing, EQ, dynamics, metering), graph serialization roundtrip, MIDI integration & learn. 86 new tests in `test_audio.c`.
 
 **Coverage Gaps** (Phases 19–22): Window state/display modes, system utilities/logging, filesystem extended ops, unregistered audio node types. ~30 new tests across `test_window.c`, `test_core.c`, `test_filesystem.c`, `test_audio.c`.
+
+---
+
+## Verified on reference hardware (snapshot)
+
+Use this table so **“confirmed working”** is explicit; it is not a substitute for re-running after every change.
+
+| Scope | Command / artifact | Result | Notes |
+|-------|-------------------|--------|--------|
+| **OpenGL — full sequential harness** | `build\sit_test.exe` (no `--module`; OpenGL DLL build) | **320 / 320** pass | **v2.4.84+**, Windows reference; +5 fragment SSBO / SPIR-V tests |
+| **Vulkan — full sequential harness** | `build\sit_test_vulkan.exe` (Vulkan DLL build; see `build_tests.bat vulkan`) | **312 / 312** pass | **v2.4.84+**, Windows reference |
+| **OpenGL — chained compute (SSBO bindings)** | Covered inside full OpenGL run | pass | **v2.4.62** — `SIT_COMPUTE_LAYOUT_TWO_SSBOS` + `glShaderStorageBlockBinding` |
+| **Audio — echo dry/wet (manual)** | `examples/node_graph_piano_demo.c` via `build_examples.bat opengl node_graph_piano_demo` | listen OK | **v2.4.63** — parallel dry + linear wet; **not** an automated `sit_test` assertion yet |
+| **Vulkan — full sequential harness** | Same pattern as OpenGL, all modules | **not baseline’d green** | Track under **`LIBRARY_BUGFIX_PLAN.md`** Bug 6; re-run after audio init/shutdown/re-init work |
 
 ---
 
@@ -43,7 +60,7 @@ tests/harness/
 └── test_misc.c               ← Image CPU ops, fonts, color conversions
 ```
 
-**Build output**: `sit_test.exe` (single binary, both backends supported via compile flag)
+**Build output**: `build\sit_test.exe` (OpenGL / default) or `build\sit_test_vulkan.exe` (`build_tests.bat vulkan`) — same sources, mutually exclusive DLL link; separate names avoid overwriting a locked exe.
 
 ---
 
@@ -206,7 +223,9 @@ Requires `SituationInit()` + shader compiler for some tests.
 - [x] Verify `--list`, `--filter`, `--stop-on-fail` work correctly
 - [x] Verify no `_sit_test_*` artifacts remain after run
 - [x] Compile with `-DSITUATION_USE_VULKAN` — verify clean build
-- [ ] Run `sit_test` (full suite) — all modules execute (requires GPU context)
+- [x] **OpenGL** — full sequential `sit_test.exe` (all modules): **310/310** pass (**v2.4.62+**, reference Windows; requires GPU)
+- [x] **Vulkan** — `sit_test_vulkan.exe --module graphics`: **78/78** pass (**v2.4.61+**, reference **GTX 1070**)
+- [x] **Vulkan** — full sequential `sit_test_vulkan.exe` (all modules): **312/312** pass (**v2.4.84+**, Windows reference; graphics **81** tests on Vulkan — no OpenGL-only fragment SSBO suite)
 
 **Estimated effort**: 1 hour  
 **Dependency**: All previous phases
@@ -239,8 +258,29 @@ Requires `SituationInit()` + shader compiler for some tests.
 | 20 | System utilities & logging | 1h | Low | ☑ |
 | 21 | Filesystem extended ops | 1h | Low | ☑ (async only; path utils/watchers not in API) |
 | 22 | Audio: unregistered node types (post-DLL rebuild) | 1h | Blocked | ☐ |
+| 23 | Graphics helpers (fullscreen draw / pixel readback) | 1–2h | High | ☑ |
+| 24 | Fragment dual SSBO readback (SPIR-V) | 2–3h | **Critical** | ☑ |
+| 25 | Combined scene SSBO (map header + vec4 tail) | 2h | Medium | ☑ |
+| 26 | `SituationSetShaderUniform1iv` int arrays | 1–2h | Low | ☑ |
+| 27 | SPIR-V SSBO reflection sanity (optional) | 1–3h | Low | ☐ (optional) |
+| 28 | Library regression guard (v2.4.82) | 0.5h | High | ☑ |
+| 29 | Docs + full harness verification | 1h | High | ☑ (run full suite locally) |
 
-**Total estimated effort**: ~45–55 hours of focused work.
+**Total estimated effort**: ~45–55 hours (Phases 1–22) + ~9–14 hours (Phases 23–29). Detail: [`TEST_HARNESS_GRAPHICS_UPGRADE.md`](TEST_HARNESS_GRAPHICS_UPGRADE.md).
+
+---
+
+## Phase 23–29 — Fragment SSBO / SPIR-V graphics (planned)
+
+> **Full checklist, shaders, and acceptance criteria**: [`doc/plan/TEST_HARNESS_GRAPHICS_UPGRADE.md`](TEST_HARNESS_GRAPHICS_UPGRADE.md)
+
+- [x] **23** — Shared test helpers (fullscreen mesh, center-pixel readback, SPIR-V skip).
+- [x] **24** — `test_fragment_dual_ssbo_readback` — **required** regression for v2.4.82.
+- [x] **25** — `test_fragment_combined_scene_ssbo` — Demon Hunt `ShaderScenePack` layout.
+- [x] **26** — `test_uniform_1iv_int_array` — pass/skip when SPIR-V strips uniforms.
+- [ ] **27** — (Optional) `glGetProgramResourceiv` binding uniqueness.
+- [x] **28** — Wire regression comments + UPDATELOG when Phase 24 lands.
+- [x] **29** — Update harness snapshot table and CI notes (Vulkan graphics unchanged; +4 OpenGL-only tests).
 
 ---
 
@@ -843,14 +883,13 @@ Once the library registers GAIN, MIXER, LFO, ENVELOPE_FOLLOWER, SPECTRUM_ANALYZE
 
 ## What This Does NOT Change
 
-- [x] No modifications to `situation_api.h` or any library source
-- [x] No new public API functions
-- [x] No changes to existing examples
-- [x] No new external dependencies
-- [x] No changes to build_examples.bat or build_situation.bat
+- [x] No modifications to `situation_api.h` or any library source *(the harness itself stays additive; library and examples evolve separately.)*
+- [x] No new public API functions *required* by the harness
+- [x] No new external dependencies in the harness
+- [x] Harness build stays **`build_tests.bat`** + `tests/harness/*.c`
 - [ ] No duplication of existing 33 audio tests (Phases 12–18 cover only untested API surface)
 
-This is purely additive test infrastructure.
+Examples / `build_examples.bat` / library code may change for demos or fixes; that does not change the harness layout above.
 
 ---
 
@@ -866,5 +905,5 @@ This is purely additive test infrastructure.
 ---
 
 **Author**: Kiro  
-**Status**: Phases 1–21 complete (Phase 21 partial — async I/O only, path utils/watchers not in API). Phase 22 blocked on library-side registration.  
+**Status**: Phases 1–21 complete (Phase 21 partial — async I/O only, path utils/watchers not in API). Phase 22 blocked on library-side registration. **Harness**: OpenGL full **310/310** ✅; Vulkan graphics **78/78** ✅; Vulkan full-chain + OpenGL re-check after audio — see snapshot + Bug 6.  
 **Spec**: `.kiro/specs/situation-test-harness/`

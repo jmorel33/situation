@@ -1,9 +1,89 @@
 # Audio Node System Completion Plan
 
 **Date**: 2026-05-07  
+**Last aligned with implementation discussion**: 2026-05-10 (Policy B + master meter + graph/decoder contracts)  
 **Scope**: Complete the remaining audio node system gaps — missing device types, unconnected wrappers, unexported functions — and align the node graph with the target signal path architecture.  
 **Risk Level**: Medium — modifies library internals, requires DLL rebuild.  
 **Prerequisite**: Current state is functional for 20/26 node types. No regressions allowed.
+
+**Version gate**: **`SITUATION_VERSION_MINOR` → 5** / marketing **v2.5** is **not** tied to finishing this plan alone — see **`doc/plan/LIBRARY_BUGFIX_PLAN.md`** (*Version milestones — v2.5 is not “next patch”*). **v2.5 means the library meets the full shipping bar**, not “node graph exists.”
+
+**Related**: **`doc/plan/PHASE_H_DETAILED_PLAN.md`** (mixer removal sequence). Original Phase H Step 2 assumed the graph replaced *all* non-tone mixing and **`goto tone_mixing`** skipped **`active_voices`** — see **§ Canonical miniaudio callback pipeline** below for the corrected contract.
+
+---
+
+## Canonical miniaudio callback pipeline (library contract)
+
+This section records **how the hardware path should behave** after Phase H + integration fixes. Use it when changing `sit_miniaudio_data_callback` or adding nodes/meters.
+
+### Ordered stages (`sit_miniaudio_data_callback`)
+
+1. **`audio_ready`** — If false, fill output with silence and return (init/teardown race guard).
+2. **Optional**: pin the **miniaudio playback thread** (`SituationSetThreadAffinity`) once — performance hint only, not a synchronization primitive.
+3. **Clear** `pOut`.
+4. **Voice snapshot** — Briefly lock **`audio_queue_mutex`**, copy **`active_voices`** into **`snapshot_buffer`** (same mutex as play/stop/queue edits).
+5. **Policy B (default graph)** — If **`active_graph == default_graph`** and the graph Sound Source pointer is valid and scratch buffers exist: decode/mix **`snapshot_buffer`** into **`audio_callback_converter_temp_buffer`**, **`sound_source_feed_interleaved_frames`** into that node’s **`SituationSoundSource`**. If there are no voices, **`sound_source_stop`** that source. **Streaming `ma_decoder_*` runs under `audio_queue_mutex`** (same lock as **`SituationPlayLoadedSound`** seek-to-zero).
+6. **`SituationProcessGraph`** — If **`active_graph != NULL`**, render into **`pOut`** (mixer sums tone synth + fed Sound Source + any other patched nodes).
+7. **Latent voice mix** — **`+=` into `pOut`** only when **`_SituationShouldMixLatentVoices`** is true (no graph / empty / no mixer / **or** **`default_graph`** without voice-source pointer fallback). **Skipped** when **`active_graph`** is a **non-default** graph that **contains a mixer** (until voices are patched in-graph). **Skipped** for normal **`default_graph`** when Policy B voice-source pointer is set (avoids double-sum).
+8. **Tone pool** (`tone_mixing`) — **`SituationPlayTone` / `SituationPlayToneEx`** mix here (**fire-and-forget** path). Distinct from the graph’s **`SITUATION_NODE_TONE_SYNTH`** unless bridged.
+9. **Master bus meter + monitor** — Compute peak/RMS over **`pOut`** for the block; store **`audio_meter_peak` / `audio_meter_rms`** atomics (**`SituationGetMasterOutputMeter`** from main/UI). Then invoke **`SituationSetAudioOutputMonitor`** if registered (runs on audio thread; avoid blocking APIs inside the callback).
+
+### Phase H integration gap (what went wrong on paper)
+
+| Document | Claim | Reality |
+|----------|--------|--------|
+| Phase H Step 2 (`PHASE_H_DETAILED_PLAN.md`) | Graph path **`goto tone_mixing`** skips legacy mix — “graph handles everything” | **`active_voices`** (loaded/streamed sounds) were **not** wired into the graph Sound Source; they were **dropped** whenever `active_graph` was set. |
+| UPDATELOG v2.4.36 | “Legacy sound mixing still runs when no graph” | **`SituationInit`** enables **`default_graph`** → **`active_graph`** is usually **non-NULL**, so that fallback rarely applies. |
+
+**Product policy (shipped for zero-config):**
+
+- **Policy B** (**v2.4.48+**): **`default_graph`** primes **`SITUATION_NODE_SOUND_SOURCE`** from **`active_voices`** before **`SituationProcessGraph`** so the **mixer** is the real sum point for loaded sounds + tone synth.
+- **Policy A (fallback)** remains for graphs **without** a mixer, **empty** graphs, **no active graph**, **user graph without mixer**, or **`default_graph`** when the Sound Source **`device_data`** pointer is missing — additive latent mix after the graph.
+
+Document **A vs B** in **`situation_api.md`** when convenient; runtime behavior is as above.
+
+### Lifecycle / shutdown
+
+After **`audio_ready`** is cleared and the device is **stopped/uninit**, tear down **`default_graph`** with **`SituationDestroyGraph`**, clear **`active_graph`** if it pointed at **`default_graph`**. Avoid freeing graph memory while the audio thread can still run **`SituationProcessGraph`**.
+
+### Graph topology mutation (contract)
+
+**Goal**: **`SituationProcessGraph`** must not walk freed/changed topology mid-sort.
+
+**Rules (library contract — enforce in app/editor code today):**
+
+1. Call **`SituationCreateNode`**, **`SituationDestroyNode`**, **`SituationCreatePatch`**, **`SituationRemovePatch`**, and **`SituationTopologicalSort`** only from the **main / control thread**, never from inside a device **`process`** callback invoked by **`SituationProcessGraph`** (no re-entrant graph edits from the audio thread).
+2. Prefer applying topology changes **between** audio blocks or while the playback device is **stopped**, especially when editing **`active_graph`**.
+3. After structural edits, **`SituationTopologicalSort(active_graph)`** must run **before** the callback relies on **`sorted_nodes`** (until then **`SituationProcessGraph`** outputs silence when **`needs_resort`** / empty sort).
+4. **Future**: optional queued edit ring or RW-lock — not required for correctness if callers follow (1)–(3).
+
+### Streaming decoder (`ma_decoder`)
+
+- Main-thread **seek** for **`SituationPlayLoadedSound`** (restart) runs **inside `audio_queue_mutex`** together with queue updates.
+- Audio-thread **`ma_decoder_read_pcm_frames`** / loop **seek** runs **under the same `audio_queue_mutex`** so seeks and reads do not interleave on the same **`SituationSound`** (recursive mutex allows nested lock from the same thread only — do not call blocking APIs that acquire this mutex from inside **`SituationSetAudioOutputMonitor`**).
+- **`SituationUnloadSound`**: **`SituationStopLoadedSound`** then **`_SituationWaitUntilVoiceSnapshotIdle`** before **`ma_decoder_uninit`**.
+
+### Thread safety — snapshot unload
+
+- **`is_processing_snapshot`** (**v2.4.47**): set during **`snapshot_buffer`** decode/mix; **`SituationUnloadSound`** spins until clear before freeing **streaming** state.
+
+### Master bus metering (**v2.4.49**)
+
+- **`SituationGetMasterOutputMeter`** reads **`audio_meter_peak` / `audio_meter_rms`** (relaxed atomics) updated once per callback after tones — suitable for **VU / LED** without touching **`SituationSetAudioOutputMonitor`** (per-buffer callback remains optional for FFT/scopes).
+
+### Harness / platform
+
+- **`sit_test.exe --module audio`** (**v2.4.50–51**): harness **`stderr`** critical section (**v2.4.50**); **MIDI** **`SituationDestroyGraph`** slot sweep + **`SIT_TEST_OPEN_MIDI_HARDWARE`** gate + **`DisableMidiControl`** when hardware MIDI opens (**v2.4.51**). Prefer **`sit_test.exe … >NUL`** only if stderr hang observed (**`2>NUL`** can interact badly with some runners).
+- Full **`sit_test.exe`** without **`--module`** / **Bug 6** (exclusive **`ma_device`** / **`SituationInit`** re-init): still tracked in **`LIBRARY_BUGFIX_PLAN.md`** — orthogonal stress path.
+
+### Checklist — pipeline “complete” for your next milestone
+
+- [x] **Policy B** for **`default_graph`** (**v2.4.48**) + **`_SituationShouldMixLatentVoices`** fallback.
+- [x] Reflect Policy B / graph-edit rules in **`situation_api.md`** / examples (docs-only) (**v2.4.49–50**).
+- [x] **`is_processing_snapshot`** for unload (**v2.4.47**); streaming **`ma_decoder_*`** vs seek serialized via **`audio_queue_mutex`**.
+- [x] **Meter tap** — **`SituationGetMasterOutputMeter`** (**v2.4.49**); optional **`SituationSetAudioOutputMonitor`** now invoked after final mix.
+- [x] **`--module audio`** sequential harness stable (**v2.4.50**).
+- [ ] **Bug 6** — full sequential **`sit_test.exe`** / exclusive re-init lifecycle — **`LIBRARY_BUGFIX_PLAN.md`**.
 
 ---
 
@@ -402,7 +482,7 @@ typedef struct {
 **Effort**: 3–4 hours  
 **Risk**: Medium — breaking API change, removes exported functions  
 **Priority**: Do AFTER Phase G passes (node graph must be fully working first)  
-**Status**: ✅ COMPLETE (v2.5.0)  
+**Status**: API removed (see **`UPDATELOG.md`** v2.4.36+); **pipeline integration** ongoing — see **§ Canonical miniaudio callback pipeline** for **`active_voices`** / **`default_graph`** / conditional mix rules.  
 **Files**: `sit/situation_api.h`, `sit/situation_impl_audio.h`, `sit/situation_impl_decl.h`
 
 The miniaudio-based `SituationAudioMixer` is replaced by the node graph. miniaudio stays as the audio device backend (opening hardware, running the callback, sample rate conversion, channel mapping). We're removing its `ma_node_graph` routing layer.
@@ -445,39 +525,36 @@ The miniaudio-based `SituationAudioMixer` is replaced by the node graph. miniaud
 
 #### Audio Callback Rewiring
 
-The audio callback currently has two paths:
+The **removed** miniaudio **`ma_node_graph`** mixer path is replaced by **`SituationProcessGraph`**. The **legacy voice snapshot** path (**`active_voices`**) is **not** the same as the removed **`SituationAudioMixer`** API — it must remain until loaded sounds are fully routed into the graph (see **§ Canonical miniaudio callback pipeline**).
+
+**Current shape** (conceptual):
+
 ```c
-if (mixer && mixer->is_initialized) {
-    ma_node_graph_read_pcm_frames(&mixer->graph, pOutput, frameCount, &framesRead);
+if (!audio_ready) { silence; return; }
+memset(pOut, ...);
+if (sit_audio.active_graph)
+    SituationProcessGraph(sit_audio.active_graph, pOut, ...);
+if (_SituationShouldMixLatentVoices(...)) {
+    // snapshot active_voices under mutex, decode/mix += into pOut
 }
-// ... fallback: tone pool + direct sound playback
+// tone_mixing: SituationPlayTone* → += into pOut
 ```
 
-After removal, it becomes:
-```c
-if (sit_audio.active_graph) {
-    SituationProcessGraph(sit_audio.active_graph, pOutput, frameCount,
-                          g_device_function_table, g_device_function_table_count);
-}
-// ... fallback: tone pool + direct sound playback (kept for backward compat)
-```
-
-**Important**: The tone pool (`SituationPlayTone`) and direct sound playback (`SituationPlaySound` without a graph) must continue to work even if no graph is active. The fallback path in the audio callback stays — it runs after the graph (or instead of it if `active_graph == NULL`). This ensures `SituationInit()` → `SituationPlayTone(440, ...)` still produces audio without any graph setup.
+**Important**: **`SituationPlayTone`** uses the **tone pool** stage, not necessarily the graph’s Tone Synth node. **`SituationPlayLoadedSound`** uses **`active_voices`** unless policy **B** bridges samples into **`SITUATION_NODE_SOUND_SOURCE`**.
 
 #### Default Graph (Auto-Created)
 
-To make the node graph the primary path without breaking simple use cases, `SituationInit()` will auto-create a minimal default graph:
+To make the node graph the primary path without breaking simple use cases, `SituationInit()` auto-creates a minimal default graph:
 
 ```
 [Sound Source] ──→ [Mixer] ──→ Output (unpatched output → hardware)
 [Tone Synth]  ──→ [Mixer] ──↗
 ```
 
-- The default graph is stored in `sit_audio.default_graph` and set as `active_graph`
-- `SituationPlayTone()` routes through the Tone Synth node in the default graph
-- `SituationPlaySound()` routes through the Sound Source node in the default graph
-- Users can replace it with `SituationSetActiveGraph(their_custom_graph)` for full control
-- Users who never touch the graph API get the same behavior as before (tones and sounds just work)
+- The default graph is stored in `sit_audio.default_graph` and set as `active_graph`.
+- **`SituationPlayTone`*** — today uses the **tone pool** and **`tone_mixing`** in the callback (see **§ Canonical miniaudio callback pipeline**). It does **not** automatically drive the graph’s **`SITUATION_NODE_TONE_SYNTH`** unless bridged.
+- **`SituationPlayLoadedSound`** — today mixes via **`active_voices`** when **`_SituationShouldMixLatentVoices`** is true (includes **`default_graph`**). The graph **Sound Source** node is **not** automatically fed from loaded sounds until explicitly wired (**policy B** above).
+- Users can replace the graph with **`SituationSetActiveGraph(their_custom_graph)`** for full control.
 
 #### Master Chain Is NOT Auto-Created
 

@@ -5,6 +5,8 @@
 **Strategy**: Deprecate → Backup → Isolate → Rewire → Remove → Validate  
 **Prerequisite**: Phase G passed (all 119 audio tests green, DLL builds clean)
 
+**Revision (2026-05-10)**: Steps 2–4 assumed **`active_graph`** could replace **all** non-tone audio by **`goto tone_mixing`**, which **skipped** **`active_voices`** (loaded/streamed sounds). **`SituationInit`** sets **`default_graph`** → **`active_graph`** is normally non-NULL, so that omission broke **`SituationPlayLoadedSound`** until the **conditional latent-voice mix** and **`default_graph`** rule were added in implementation. The **canonical callback pipeline**, **policy options (graph-only vs dual-path)**, shutdown, and **remaining thread-safety / harness** items are documented in **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`** § *Canonical miniaudio callback pipeline*. Treat that section as the **target system behavior** going forward; historical Step 2 text below is kept for audit trail.
+
 ---
 
 ## Risk Mitigation Strategy

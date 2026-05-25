@@ -1,9 +1,26 @@
 # Library Bugfix Plan (Exposed by Test Harness)
 
 **Date**: 2026-05-07  
-**Updated**: 2026-05-08 (session 4 — Vulkan backend first pass, v2.4.42)  
+**Updated**: 2026-05-23 (**v2.4.106** — Windows **`SituationInit`** step 7 always uses WASAPI **shared** auto-start; **`Bug 6`** closed on reference config; full sequential harness green. Prior **v2.4.105** — Vulkan async GLSL worker queue. Prior **v2.4.65** — OpenGL uniform defer / Hi-DPI viewport.  
 **Scope**: Fix library bugs that cause test failures  
-**DLL version**: v2.4.42
+**DLL version**: Defined in **`sit/situation_base_version.h`** (`SITUATION_VERSION_*`); root **`situation.h`** includes that header only (no duplicate version macros). Narrative releases in `doc/UPDATELOG.md`.
+
+**Patch bump policy**: Bump **`SITUATION_VERSION_PATCH`** when shipping user-visible library fixes documented in **`doc/UPDATELOG.md`** (canonical **`sit/situation_base_version.h`** only). Latest narrative: **v2.4.106** (Windows **`SituationInit`** auto-start uses WASAPI **shared** mode — fixes harness/system audio mute after repeated init/shutdown). Prior: **v2.4.105** (Vulkan async GLSL worker queue). **Bug 6**: **✅ closed** (**v2.4.106** — lifecycle + sequential suite on reference Windows config; see **Bug 6** section). **Harness**: OpenGL **`sit_test.exe`** **337/337**; Vulkan **`sit_test_vulkan.exe`** **327/327** (**2026-05-23**). Re-run when touching init/teardown/audio; **`copy /Y build\dll\*.dll build\`** so the exe does not load a stale DLL.
+
+### Version milestones — **v2.5 is not “next patch”**
+
+**`SITUATION_VERSION_MINOR` → 5** (marketing **v2.5.x**) is reserved for a **library-complete** milestone — **“everything works”** in the sense of the project’s shipping bar, **not** “a big feature landed.” Do **not** bump minor or call out **v2.5** for partial wins (e.g. node graph presence, individual modules green in isolation).
+
+Before **v2.5**, at minimum align on and satisfy something like:
+
+| Gate | Meaning | Status |
+|------|--------|--------|
+| **Bug 6** | Audio device **init / shutdown / re-init** contract **proven** — hang and AV paths understood; policy for exclusive vs shared documented. | **✅ Met** (**v2.4.106**) |
+| **Harness** | Full sequential **`sit_test.exe`** (no `--module`) **green** on a reference Windows config, **or** every failure **classified** with owner (test vs library vs driver) — no silent crashes. | **✅ Met** (**337/337** OpenGL + **327/327** Vulkan, **2026-05-23**) |
+| **Vulkan graphics** | **`build\sit_test_vulkan.exe --module graphics`** → **86/86** on the **NVIDIA GTX 1070** reference machine. Optional spot-checks on **Intel / AMD** when hardware exists — document any deltas; they do **not** block **v2.5** unless failures indicate a **cross-vendor** library bug. | **✅ Met** (**v2.4.94**) |
+| **Audio pipeline** | **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`** canonical callback contract **implemented and reviewed** (routing policy A vs B, unload/thread safety addressed or explicitly constrained). | **Open** |
+
+Until those are true, stay on **v2.4.x** patches and narrative releases. Older docs that mention **“target v2.5.0”** for MIDI sub-features are **aspirational feature labels**, not permission to ship **Situation v2.5** early.
 
 ---
 
@@ -11,17 +28,66 @@
 
 **OpenGL Graphics module: 81/81 ✅** — all tests pass individually.
 
-**Vulkan Graphics module: ~55/78** — rendering works visually, remaining failures are pixel readback issues.
+**Vulkan Graphics module**: **✅ 86/86** on reference **GTX 1070** (**Windows**) as of **v2.4.94** — **86** tests on **`sit_test_vulkan.exe`** (OpenGL-only entries excluded; includes **Phase 30** SPIR-V tests). Prior milestones: readback path (**V6** / **v2.4.43–v2.4.44**), acquire timeouts, VD composite render-pass discipline, **v2.4.55–v2.4.61** descriptor / VD / screenshot / push-constant fixes; **v2.4.93–94** Vulkan user SPIR-V descriptor profiles (**`doc/UPDATELOG.md`**, [`VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md`](VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md)). **`render_virtual_displays`** no longer SIGSEGV when no main RP was begun.
 
-**Full sequential suite**: Hangs on second `SituationInit()` due to audio device exclusive mode blocking. GL state is properly cleaned up; the remaining issue is audio-only.
+**Full sequential suite (`sit_test.exe` all modules)**: **✅ 337/337** OpenGL + **327/327** Vulkan on reference Windows config (**2026-05-23**, **v2.4.106**). Prior milestones: **v2.4.53** — **`SituationShutdown`** teardown end-to-end (**Bug 11**); **v2.4.54** — Vulkan **`[VMA LEAK]`** shutdown path; **v2.4.52** — miniaudio stopped before **`vkDeviceWaitIdle`**; **v2.4.106** — Win32 auto-start always **shared** (**Bug 6**).
+
+**Audio is first-class** for this library (games / multimedia): the goal is **correct playback device lifecycle** on init / shutdown / re-init — not avoiding the problem. See **Bug 6 — Audio & full sequential suite** below for **what we know**, **what is separate**, and the **ordered fix strategy**.
+
+**Diagnostics**: Optional acquire timing on stderr — **`SITUATION_VULKAN_LOG_SLOW_ACQUIRE_MIN_MS`** in **`sit/situation_api.h`** (default **100** = log slow acquires + **`VK_TIMEOUT`**; **`0`** = log every acquire). **`build_situation.bat`** forwards **`%EXTRA_VULKAN_CFLAGS%`** (e.g. **`-DSITUATION_VERBOSE_DIAGNOSTICS`** for Vulkan init chatter during investigations).
 
 **Other modules**: All pass individually (filesystem, threading, core, window, input, timer, audio, misc).
+
+### What’s left
+
+| Priority | Track | Goal |
+|----------|--------|------|
+| **P1** | **Bug 6 — Audio & sequential suite** | **✅ Closed** (**v2.4.106**): Win32 auto-start always **shared**; full sequential harness green; audio probe confirms init + output meter. Optional follow-ups: **`ma_device_init`** timeout surfacing, **`SituationInitInfo`** output policy flag — not blocking. |
+| **P1** | **Vulkan graphics** | **✅ 86/86** on **GTX 1070** (**v2.4.94**). **Regression discipline**: after material Vulkan changes, run **`build\sit_test_vulkan.exe --module graphics`** (and **`--filter spirv`** when touching SPIR-V / descriptors); refresh **`UPDATELOG`** / this doc if the scorecard shifts. Optional **Intel / AMD** spot-checks. |
+| **P2** | **Vulkan SPIR-V user descriptors** | **✅ Complete** (**v2.4.93–94**): [`VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md`](VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md) — **`SituationLoadShaderFromSpirvMemoryEx`**, profile-aware binds, harness pixel readback **5/5** on Vulkan. |
+| **P2** | **Teardown VMA / registry warnings** | **✅ Addressed v2.4.54** — root cause was **deferred** **`vmaDestroy*`** during **`_SituationCleanupDanglingResources`** while **`vmaDestroyAllocator`** ran later. **Residual** **`SITUATION WARNING: Leaked …`** lines still print when tests leave handles active (intentional nag); after cleanup, GPU memory should be freed without **`[VMA LEAK]`**. |
+| **Gate** | **v2.5 minor** | Per table at top of this doc — **Bug 6 ✅**, **Harness ✅** (**v2.4.106**); **audio pipeline review** milestone still open (**Vulkan graphics gate ✅** as of **v2.4.61**). |
+
+### Vulkan graphics — harness status (**✅ 86/86** on **GTX 1070**)
+
+**How to reproduce the scorecard**: Run **`build_situation.bat vulkan`** then **`build_tests.bat vulkan`** (copies **`build\dll\situation_vulkan.dll`** → **`build\situation_vulkan.dll`** next to **`sit_test_vulkan.exe`**). Run **`build\sit_test_vulkan.exe --module graphics`**. Harness prints **`[graphics] (86 tests)`**; summary line **`RESULTS`** includes skipped modules — use **passed/failed** vs **86** for graphics only. SPIR-V subset: **`build\sit_test_vulkan.exe --module graphics --filter spirv`** → **5/5** (**v2.4.94**).
+
+**Reference** (2026-05-21, **NVIDIA GTX 1070**, Windows): **`sit_test_vulkan.exe --module graphics`** → **86 passed / 0 failed**. **Refresh this subsection** after material Vulkan changes (paste the harness **`RESULTS`** line if the scorecard changes).
+
+**Closure narrative** (full entries in **`doc/UPDATELOG.md`**):
+
+| Wave | Focus |
+|------|--------|
+| **v2.4.55** | User-shader pipeline layouts (**set 0** dynamic UBO, **set 1** sampled texture), per-texture **`single_sampler_descriptor_set`**, compute→graphics layout hygiene; **`compute_chained_dispatches`** harness SSBO sets (**two sets**, each **`binding = 0`**). |
+| **v2.4.56** | **`main_window_render_pass_resume`** (**color LOAD**) so the post-VD main-window restart does not **CLEAR** the composite. |
+| **v2.4.58** | Vulkan **`SituationLoadImageFromScreen`** vertical flip (parity with OpenGL); storage-only textures mirrored into bindless; **`SituationCmdDrawTexture`** fails **`RESOURCE_INVALID`** on bad handles — clears **`texture_*`** readback / storage tests. |
+| **v2.4.59** | Non-alpha VD blend modes use **`advanced_compositing_pipeline`** (**`use_advanced`** for all modes except **ALPHA**). |
+| **v2.4.60** | Three-set **`advanced_compositing_pipeline`** layout + **`composite_dest_sampler_layout`** at destination **`binding` 5** (screen copy). |
+| **v2.4.61** | Preserve caller framebuffer when entering VD (**`vd_resume_swapchain_after_caller_rp`**, Path A multi-layer **LOAD**), explicit **`vkCmdPushConstants`** sizes for Path A/B (no MSVC tail-padding mismatch), recreate **screen-copy** image after **`_SituationVulkanRecreateSwapchain`**. |
+| **v2.4.93–94** | Vulkan user SPIR-V **layout profiles** + profile-aware **`SituationCmdBindDescriptorSet`**; harness **`test_graphics_spirv.c`** pixel readback on Vulkan (no skip). |
+
+**Historical “last eight” pixel failures** (pre-**v2.4.58** … **v2.4.61** triage — all green on the reference run): **`draw_metrics_overlay`**; **`vd_blend_additive`**, **`vd_blend_multiply`**, **`vd_blend_none_overwrite`**, **`vd_offset_position`**; **`texture_cpu_gpu_cpu_roundtrip`**, **`texture_storage_write_readback`**, **`texture_format_preservation`**.
+
+#### Resolved earlier (archaeology — still accurate)
+
+- **`draw_textured_checkerboard`** — **FIXED**: **`SAMPLED|STORAGE`** textures use bindless **`SHADER_READ_ONLY`** path; storage-only when **`STORAGE && !SAMPLED`**. **`sit/situation_impl_renderer.h`**, **`sit/situation_impl_decl.h`**.
+- **`compute_chained_dispatches`** — **FIXED** (harness): two descriptor **sets**, not two bindings in one set. **`tests/harness/test_graphics.c`**.
+- **`descriptor_bind_*`** cluster — **FIXED** (**v2.4.55**): **`SituationLoadShaderFromMemory`** layout + **`SituationCmdBindTextureSet`** / **`single_sampler_descriptor_set`**. **`sit/situation_impl_decl.h`**, **`sit/situation_impl_renderer.h`**, **`tests/harness/test_graphics.c`**.
+- **Bulk `vd_*` readback after composite** — **v2.4.56** resume **LOAD**; **v2.4.59–v2.4.61** advanced compositor + caller/resume passes + push constants + screen-copy lifecycle — closes the remaining **VD blend / offset** pixel tests on reference. **`sit/situation_impl_vd.h`**, **`sit/situation_impl_renderer.h`**, **`sit/situation_impl_decl.h`**.
+
+#### Regression discipline (going forward)
+
+1. After **any** material Vulkan change: **`build\sit_test_vulkan.exe --module graphics`** on **GTX 1070** (or primary dev GPU) — target **86/86**; add **`--filter spirv`** when changing SPIR-V loads or descriptor binds.
+2. If a test regresses, **`--filter <subtest>`** + optional validation layers; file a **`UPDATELOG`** entry and bump patch per policy above.
+3. **`SITUATION WARNING: Leaked Texture`** during teardown still means a **test** left a handle live — cosmetic unless **`[VMA LEAK]`** returns (**v2.4.54** path).
+
+**Note**: **V6** (pre-present screenshot, BGRA→RGBA, **`screenshot_copy_pending`**, swapchain-recreate cache discipline, acquire timeouts, etc.) remains the foundation for pixel tests; see **`Vulkan Bug V6`** later in this doc.
 
 ---
 
 ## ✅ Bug 1: Audio Callback Race Condition [FIXED]
 
-**Fix**: `atomic_bool audio_ready` guard in callback + set after init completes.  
+**Fix**: `atomic_bool audio_ready` guard in callback + set after init completes. **`is_processing_snapshot`** (**v2.4.47**): set during voice snapshot decode/mix; **`SituationUnloadSound`** waits (**`thrd_yield`**) until clear before freeing decoder/buffers. Scratch-buffer failure **`goto tone_mixing`** (do not skip tones).  
 **Files**: `sit/situation_impl_decl.h`, `sit/situation_impl_audio.h`, `sit/situation_impl_ctrl.h`
 
 ## ✅ Bug 2: Pixel Readback Returns Stale Data [FIXED]
@@ -104,18 +170,74 @@
 
 ---
 
-## Remaining: Bug 6 — Full Suite Re-Init Crash [PARTIAL]
+## ✅ Bug 11 — `SituationShutdown` skipped full teardown (multi-module AV) [FIXED v2.4.53]
 
-**Symptom**: Running all modules sequentially hangs during the second `SituationInit()` call.
+**Symptom**: Full **`sit_test.exe`** (Vulkan) **access violation** when the **window** module ran after **core** — often right after printing **`[window]`**, before the first test line.
 
-**Root cause**: Two issues:
-1. ✅ **GL state not zeroed** (FIXED): `_SituationCleanupOpenGL` deleted GL objects but didn't zero state fields. Guard checks like `if (ring_buffer_id != 0) return;` skipped re-creation. Ring buffer and MDI buffer were never cleaned up at all. Fixed by adding proper cleanup and `memset(&sit_render.gl, 0, sizeof(sit_render.gl))`.
-2. ❌ **Audio device exclusive mode** (OPEN): `SituationSetAudioDevice(0, NULL)` in the second init blocks indefinitely. The DirectSound exclusive-mode device from the first session may not release cleanly, causing the second `ma_device_init` to block waiting for the device.
+**Root cause**: **`SituationShutdown`** used **`atomic_exchange(&sit_gs.is_initialized, false)`** and then called **`SituationIsInitialized()`**, which reads the same atomic — always **false** after the exchange — so the function **returned early** and **never** ran **`vkDeviceWaitIdle`**, **`_SituationCleanupRenderer`**, **`_SituationCleanupSubsystems`**, **`_SituationCleanupPlatform`**, or **`SIT_FREE(_sit_current_context)`**. The next **`SituationInit`** **`memset`** the context while GLFW/Vulkan were still live → **undefined behavior / AV**.
 
-**Remaining fix**: Either skip audio device auto-start on re-init, or add a timeout to the audio device initialization, or switch to shared mode for test harness.
+**Fix**: Remove the post-exchange **`SituationIsInitialized()`** guard; document that the exchange’s **return value** is the only “was initialized” signal.
 
-**Priority**: P3 — blocks full sequential suite but not individual module testing  
-**Effort**: 1 hour (audio-specific investigation)
+**File**: `sit/situation_impl_ctrl.h` (`SituationShutdown`)
+
+**Harness** (same milestone): **`test_dump_task_graph`** writes to **`nul`** / **`/dev/null`**; results banner uses ASCII **`=`** lines; optional **`SITUATION_VERBOSE_DIAGNOSTICS`** for noisy Vulkan init (see **`UPDATELOG`**).
+
+---
+
+## ✅ Bug 12 — VMA leak at `vmaDestroyAllocator` (deferred destroys during shutdown) [FIXED v2.4.54]
+
+**Symptom**: After a long **`sit_test.exe`** run, VMA printed **`[VMA LEAK] UNFREED ALLOCATION`** for many **`IMAGE_OPTIMAL`** chunks; sometimes **`SITUATION WARNING: Leaked …`** for every registry slot.
+
+**Root cause**: **`_SituationCleanupDanglingResources`** runs **`SituationDestroyTexture`** / similar while **`SituationShutdown`** is in progress. On Vulkan, destroys **deferred** to the frame graveyard (**`_SituationDeferDestroyImage`**). **`vmaDestroyAllocator`** in **`_SituationCleanupVulkan`** ran while deferred **`vmaDestroyImage`** had not yet executed → VMA’s leak checker fired.
+
+**Fix**: **`_SituationVulkanImmediateDestroyDuringShutdown()`** — when **`sit_render.init_state == SITUATION_STATE_SHUTTING_DOWN`**, perform **immediate** **`vmaDestroy*` / `vkDestroy*`** (GPU already **`vkDeviceWaitIdle`** in **`SituationShutdown`**). **`_SituationCleanupVulkan`** flushes **all** graveyards **first** (after idle), before quad/swapchain teardown.
+
+**File**: `sit/situation_impl_renderer.h`
+
+---
+
+## Bug 6 — Audio & full sequential suite [FIXED — v2.4.106]
+
+**Product stance**: Situation is intended as a **core library for games and multimedia**. Output audio must be **reliable** after **`SituationInit`**, and **re-init in one process** (editor restart, test harness, tooling) must either **work** or **fail loudly with a clear error** — never undefined hang without diagnosis.
+
+### Closure checklist (wrap up Bug 6)
+
+| Step | Action | Done when |
+|------|--------|-----------|
+| 1 | Run **`build\sit_test.exe`** (no args) with current **`build\dll\`** DLL copied beside exe — **OpenGL** reference | **✅ 337/337** (**2026-05-23**) |
+| 2 | Same with **Vulkan** DLL — **`build\sit_test_vulkan.exe`** | **✅ 327/327** (**2026-05-23**) |
+| 3 | Prove **`SituationInit`** step 7 / re-init policy on Windows (exclusive hijack vs shared auto-start) | **✅ Confirmed** — exclusive-first on session 1 caused system mute; **v2.4.106** always uses **`ma_share_mode_shared`** on Win32 auto-start |
+| 4 | Document outcome in this file (**Bug 6** row + **`Remaining verification`** paragraph) | **✅ Done** — see **`doc/UPDATELOG.md`** v2.4.106 |
+
+---
+
+### What we know vs what is still hypothesis
+
+| Topic | Status |
+|-------|--------|
+| **Playback path** | **`SituationSetAudioDevice`** configures **`ma_share_mode_exclusive`** for low latency (**`sit/situation_impl_audio.h`**). OpenGL and Vulkan builds share this path — audio is **not** Vulkan-specific. |
+| **Historical hang (Bug 6)** | Second **`SituationInit()`** in one process could **block inside `ma_device_init`** or leave WASAPI in a bad state when reopening the default device — consistent with **Windows WASAPI exclusive-mode** hijacking the endpoint. **Fixed v2.4.106**: auto-start always **shared** on Win32; explicit **`SituationSetAudioDevice`** still exclusive. |
+| **Lifecycle hardening (in tree)** | **`ma_device_stop`** before **`ma_device_uninit`** on teardown; Win32 **`SituationInit`** step 7 **always** uses **`ma_share_mode_shared`** for automatic default open (**v2.4.106** — removed session-1 exclusive-first policy); **`SituationSetAudioDevice()`** still requests **exclusive** for explicit low-latency calls. **`is_miniaudio_device_internally_paused`** reset on shutdown (**v2.4.106**). |
+| **Graphics re-init** | OpenGL / Vulkan teardown **`memset`** fixes are **separate** — they address stale handles after GPU cleanup; they do **not** replace audio correctness. |
+| **Full harness AV (Vulkan, observed)** | **Addressed for shutdown/teardown (v2.4.53 — Bug 11)**: the dominant repro was **`SituationShutdown`** skipping cleanup → second **`SituationInit`** corrupted state. Full sequential **327/327** Vulkan (**v2.4.106**). **New** AVs need a fresh **debugger stack**. |
+| **Harness stderr vs audio thread (v2.4.50)** | Concurrent **`fprintf(stderr, …)`** from the **miniaudio** callback / drivers and the harness **main thread** could corrupt CRT **`stderr`** state on Windows (truncated lines, AV). **Fixed** in **`tests/harness/sit_test_framework.h`** with a **critical section** around harness result lines. **`sit_test.exe --module audio`** is **green** (96 tests); full sequential suite **337/337** OpenGL (**v2.4.106**). |
+| **MIDI graph destroy + harness gate (v2.4.51)** | **`SituationDestroyGraph`** loop used **`node_count`** as an upper index — **sparse** **`nodes[]`** skipped **MIDI** teardown (**`Pm_Close`** leak). **Fixed**: iterate **`0 .. SITUATION_MAX_NODES-1`**. **`sit_test`** opens hardware **`Pm_OpenInput`** only when **`SIT_TEST_OPEN_MIDI_HARDWARE`** is set; otherwise **`midi_list`** / API smoke paths cover CI. **`SituationDisableMidiControl`** before **`SituationDestroyGraph`** when hardware MIDI was opened. |
+
+**Separate from Bug 6 (DSP routing)**: The node-graph vs **`active_voices`** / **`default_graph`** contract, optional graph-only policy, and shutdown ordering are tracked in **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`** § *Canonical miniaudio callback pipeline* (see also **`doc/plan/PHASE_H_DETAILED_PLAN.md`** revision note).
+
+---
+
+### No-nonsense resolution order (do not skip audio as policy)
+
+1. **Prove the fault** — Add **narrow logging** (or break under debugger) immediately **before/after** **`ma_context_get_devices`** and **`ma_device_init`** in **`_SituationSetAudioDeviceInternal`**, plus **`SituationInit`** step 7. Confirm whether failures are **hang**, **AV**, or **error return**. Run **OpenGL** full **`sit_test.exe`** vs **Vulkan** full suite on the **same machine** to see if behavior diverges (same audio code path).
+2. **Complete device lifecycle** — Treat **`ma_device_stop` → `ma_device_uninit`** as mandatory; audit **`SituationStopAudioCapture`** / capture **`ma_device`** so no parallel device holds the endpoint during playback teardown.
+3. **Re-init policy (product)** — For **automatic** default open on later **`SituationInit`**: prefer **deterministic** reopen (**shared** or **retry-after-delay** before exclusive) rather than infinite block. For **explicit** **`SituationSetAudioDevice`**, keep **exclusive** unless we add a **`SituationInitInfo`** flag for “shared output / editor safe.”
+4. **Safety net without silence** — If **`ma_device_init`** must not block the main thread forever (frozen driver), a **timeout** path should **surface **`SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED`** and stderr guidance**, not silently pretend audio works.
+5. **Escape hatch (tests only)** — Optional **defer auto-open** on re-init is acceptable **only** as a harness knob or documented opt-in — **not** the default product behavior for shipped games.
+
+**Verification (closed 2026-05-23)**: OpenGL **`sit_test.exe`** **337/337**; Vulkan **`sit_test_vulkan.exe`** **327/327**; audio probe (7× init/shutdown, 2 s tone, master meter peak ≈ **0.56**); system playback still works after full harness. Ensure **`build\dll\*.dll`** is copied beside the exe — stale **`build\situation_opengl.dll`** can silently load **v2.4.104**. See **`doc/UPDATELOG.md`** v2.4.106.
+
+**Optional follow-ups** (not blocking Bug 6 closure): **`ma_device_init`** timeout surfacing; **`SituationInitInfo`** flag for shared vs exclusive auto-start; harness test asserting non-zero **`SituationGetMasterOutputMeter`** during tone playback.
 
 ---
 
@@ -127,10 +249,14 @@
 | 8 | Uniform data flow | 4 | 1-2h | ✅ FIXED |
 | 9 | Texture format (UV rect + use_texture) | 2 | 30 min | ✅ FIXED |
 | 10 | Compute state leak (pipeline bind + SSBO flags) | 2 | 15 min | ✅ FIXED |
-| 6 | Re-init crash | (suite) | 2-4h | PARTIAL |
+| 6 | Audio lifecycle + full sequential suite | (suite) | — | **✅ FIXED** (**v2.4.106**) — Win32 shared auto-start; harness **337/337** OpenGL + **327/327** Vulkan |
+| 11 | Shutdown skipped teardown (multi-module AV) | full harness | — | ✅ **FIXED** (**v2.4.53**) — see **Bug 11** above |
+| 12 | VMA leak at allocator destroy (shutdown defer) | shutdown | — | ✅ **FIXED** (**v2.4.54**) — see **Bug 12** above |
+| — | Vulkan graphics module (86 tests) | **86/86** on **GTX 1070** | — | ✅ **Gate met** (**v2.4.94**); **regression discipline** — *Vulkan graphics — harness status* above |
 
-**Graphics module: 81/81 ✅**  
-**Full sequential suite**: Still hangs on re-init due to audio device exclusive mode blocking. GL state is now properly zeroed, but audio re-init in exclusive mode blocks indefinitely on some systems. Individual module testing works perfectly.
+**OpenGL graphics module: 81/81 ✅**  
+**Vulkan graphics module: 86/86 ✅** (reference **GTX 1070**; see *Vulkan graphics — harness status*).  
+**Full sequential suite**: **✅ 337/337** OpenGL + **327/327** Vulkan (**v2.4.106**). **Bug 11** + **Bug 12** address AV and VMA teardown; optional **`Leaked …`** warnings when tests skip explicit **`SituationDestroy*`**.
 
 ---
 
@@ -169,47 +295,39 @@
 
 **File**: `sit/situation_impl_renderer.h` (SituationUpdateBuffer)
 
-### Bug 6 — Re-Init GL State [PARTIAL]
+### Bug 6 — Re-Init GL State [Graphics portion FIXED]
 **Root cause (GL portion)**: `_SituationCleanupOpenGL` deleted GL objects but didn't zero state fields. On re-init, guard checks like `if (ring_buffer_id != 0) return;` skipped re-creation. Also, ring buffer and MDI buffer were never cleaned up at all.
 
 **Fix**: Added ring buffer/MDI buffer cleanup and `memset(&sit_render.gl, 0, sizeof(sit_render.gl))` at end of cleanup.
 
-**Remaining**: Audio device in exclusive mode blocks on second `SituationSetAudioDevice(0, NULL)` call. This is a miniaudio/driver-level issue separate from GL state.
+**Audio**: Handled under **Bug 6 — Audio & full sequential suite** (same Symptom bucket historically called “Bug 6 hang,” separate from GL IDs).
 
 **File**: `sit/situation_impl_renderer.h` (_SituationCleanupOpenGL)
 
 ---
 
 **Author**: Kiro  
-**Status**: All graphics tests pass (81/81). Full sequential suite blocked by audio re-init (not GL).
+**Status**: OpenGL graphics **81/81 ✅** (full module count may differ with SPIR-V tests — use harness printout). Vulkan **graphics**: **86/86 ✅** on **GTX 1070** (**v2.4.94**). Teardown: **v2.4.53** (**Bug 11**), **v2.4.54** (**Bug 12**). **Bug 6**: **✅ closed** (**v2.4.106**). Full sequential: **337/337** OpenGL + **327/327** Vulkan.
 
 ---
 
 ## Next Steps — Remaining Work
 
-### Bug 6 Completion: Audio Re-Init Blocking
+*(See **Remaining work (checklist)** after the Vulkan summary table for a compact prioritized list.)*
 
-**Problem**: The second `SituationInit()` call hangs at `SituationSetAudioDevice(0, NULL)` because the DirectSound exclusive-mode device from the previous session doesn't release cleanly. `ma_device_init` blocks waiting for the device.
+### Bug 6 — Supplementary tactics (after lifecycle + proof)
 
-**Proposed fixes (pick one):**
+These are **secondary levers**, not substitutes for a correct **`stop → uninit → reopen`** contract:
 
-1. **Skip auto-start on re-init** (simplest): Check if the audio context was previously initialized in the same process. If so, skip the automatic `SituationSetAudioDevice(0, NULL)` call in step 7 of `SituationInit`. Let the user call it manually if needed.
-   - File: `sit/situation_impl_ctrl.h` (SituationInit, step 7)
-   - Effort: 15 minutes
+| Tactic | Role |
+|--------|------|
+| **Shared mode on Win32 auto-start** (**v2.4.106**, **in tree**) | **`SituationInit`** step 7 **always** opens the default device in **shared** mode — avoids WASAPI exclusive hijack and system mute during harness/editor re-init. Explicit **`SituationSetAudioDevice`** remains **exclusive** for latency. |
+| **Retry + short delay before exclusive** | If driver needs milliseconds after uninit, bounded retry is preferable to infinite block. |
+| **Timeout around `ma_device_init`** | **Safety net** for hung drivers — must return **error** and log; never pretend success. |
+| **Full `sit_audio` reset after uninit** | Careful **`memset`** only after ordered teardown — avoids stale flags; validate no double-free. |
+| **Defer step-7 auto-open on re-init** | **Harness / opt-in only** — documented flag or `#ifdef` test path — **not** default for shipped titles. |
 
-2. **Use shared mode for re-init**: If the library detects it's being re-initialized (e.g., a static flag), open the audio device in shared mode instead of exclusive mode. Shared mode doesn't block.
-   - File: `sit/situation_impl_audio.h` (SituationSetAudioDevice)
-   - Effort: 30 minutes
-
-3. **Add timeout to audio device init**: Wrap the `ma_device_init` + `ma_device_start` in a thread with a timeout. If it doesn't complete within 2 seconds, skip audio and log a warning.
-   - File: `sit/situation_impl_audio.h` (SituationSetAudioDevice)
-   - Effort: 1 hour
-
-4. **Full audio state reset**: `memset(&sit_audio, 0, sizeof(sit_audio))` at the start of `_SituationCleanupSubsystems` (after device uninit), ensuring all flags and pointers are clean for re-init.
-   - File: `sit/situation_impl_ctrl.h` (_SituationCleanupSubsystems)
-   - Effort: 30 minutes, but needs careful testing to avoid double-free
-
-**Recommendation**: Option 1 is safest and matches real-world usage (games don't re-init mid-process). Option 4 is the most thorough if full re-init support is desired.
+**Scope reminder**: Failure domain for classic Bug 6 is **main playback `ma_device_init`**, not MIDI, node graph, or capture — those use different entry points.
 
 ### Additional Findings (Not Bugs — Design Notes)
 
@@ -227,7 +345,9 @@ These were discovered during investigation and are worth noting for future work:
 
 ---
 
-## Vulkan Backend — Test Results (First Run, v2.4.41)
+## Vulkan Backend — Test Results (First Run, v2.4.41) *(historical)*
+
+> **Note**: Vulkan **`sit_test_vulkan.exe --module graphics`** counts **86** tests (OpenGL-only entries excluded; includes Phase 30 SPIR-V). For the **current** scorecard (**86/86** on reference **GTX 1070**, **v2.4.94**) and closure narrative, see **Vulkan graphics — harness status** at the top of this file.
 
 **Date**: 2026-05-08  
 **Result**: ~43/81 passing (estimated — test crashed before completion)  
@@ -255,15 +375,15 @@ All OpenGL fixes are inside `#if defined(SITUATION_USE_OPENGL)` blocks. The Vulk
 
 ---
 
-### Vulkan Bug V3 — DrawQuad / DrawTexture Not Rendering (2 tests) [OPEN — readback issue]
+### Vulkan Bug V3 — DrawQuad / DrawTexture vs Harness (2 tests) [FIXED — v2.4.44 core path]
 
-**Symptom**: `draw_quad_red` and `draw_textured_checkerboard` fail — rendering IS visually correct (confirmed) but pixel readback returns black.
+**Symptom**: `draw_quad_red` and `draw_textured_checkerboard` may fail in the harness while rendering looks correct on screen.
 
-**Root cause**: Same as V6 (screenshot readback). The internal quad renderer works correctly on Vulkan. The test failure is purely a readback issue.
+**Root cause**: Same bucket as **V6**: CPU readback path. A dominant bug was **`screenshot_valid` cleared** when **`vkQueuePresentKHR`** triggered swapchain recreate in **`SituationEndFrame`** — **`_SituationVulkanCleanupSwapchain`** destroyed screenshot resources **after** resolve, so **`SituationLoadImageFromScreen`** saw an empty cache.
 
-**Affected tests**: draw_quad_red, draw_textured_checkerboard
+**Fix**: Do not destroy pre-present screenshot buffers inside **`_SituationVulkanCleanupSwapchain`**; **`_SituationVulkanEnsureScreenshotResources`** reallocates when extent/format changes.
 
-**Blocked by**: V6 (screenshot readback fix)
+**Affected tests**: draw_quad_red (verified), draw_textured_checkerboard — re-verify in full graphics module pass.
 
 ---
 
@@ -283,47 +403,85 @@ All OpenGL fixes are inside `#if defined(SITUATION_USE_OPENGL)` blocks. The Vulk
 
 ---
 
-### Vulkan Bug V5 — Draw Metrics Overlay (1 test) [OPEN — likely readback issue]
+### ✅ Vulkan Bug V5 — Draw Metrics Overlay (1 test) [FIXED — v2.4.58+ stack]
 
-**Symptom**: `draw_metrics_overlay` — no overlay pixels detected.
+**Symptom** (historical): `draw_metrics_overlay` — no overlay pixels detected in CPU readback.
 
-**Root cause**: Likely the same readback issue as V6. The text renderer may be working but the screenshot returns black. Needs verification after V6 is fixed.
+**Root cause** (cumulative with **V6**): Screenshot / readback path parity — vertical row order for **`SituationLoadImageFromScreen`** on Vulkan vs OpenGL (**`SituationImageFlip`**, **v2.4.58**), plus the broader **v2.4.55–v2.4.61** readback and compositor fixes. Metrics text uses the same post-frame capture as other pixel tests.
 
-**Effort**: Verify after V6 fix  
-**Priority**: P4
-
----
-
-### Vulkan Bug V6 — Screenshot Readback Returns Black [NEW — blocks ~20 tests]
-
-**Symptom**: All rendering tests that verify pixel values fail. The rendering is visually correct (confirmed by observation — window shows correct colors) but `SituationLoadImageFromScreen` returns all-black data.
-
-**Root cause**: After `SituationEndFrame` presents the swapchain image, the image is owned by the presentation engine. Even with `vkQueueWaitIdle` and `TRANSFER_SRC_BIT` on the swapchain, the readback from the presented image returns zeros on some drivers/configurations.
-
-**Fix needed**: Pre-present screenshot capture (same approach as OpenGL Bug 2 fix). In `SituationEndFrame`, before `vkQueuePresentKHR`, copy the swapchain image content to a persistent staging buffer. `SituationLoadImageFromScreen` reads from that buffer instead of the swapchain image directly.
-
-**Files to modify**: `sit/situation_impl_renderer.h` (SituationEndFrame Vulkan path), `sit/situation_impl_image.h` (SituationLoadImageFromScreen Vulkan path), `sit/situation_impl_decl.h` (add screenshot buffer fields to Vulkan state)
-
-**Affected tests**: draw_pipeline_basic (passes visually), draw_indexed_quad, draw_mesh_triangle, draw_quad_red, draw_textured_checkerboard, draw_metrics_overlay, all VD composite pixel verification tests (~20 total)
-
-**Effort**: 1-2 hours  
-**Priority**: P1 (blocks the most tests)
+**Retest** (**2026-05-10**, GTX 1070): **`--module graphics`** is **78/78**; **`draw_metrics_overlay`** is green on the reference run. Re-open **V5** only if a **regression** reappears on this or another GPU.
 
 ---
 
-### Vulkan Summary Table (Updated v2.4.42)
+### Vulkan Bug V6 — Screenshot Readback Returns Black / Stale [FIXED — v2.4.44 + prior bundles]
+
+**Symptom**: Rendering tests that verify pixel values may fail even when the window looks correct — historically “black” or wrong channel CPU buffers vs GPU output.
+
+#### Implemented fixes (reference — see `doc/UPDATELOG.md` v2.4.43 / v2.4.44)
+
+1. **Pre-present capture** (same idea as OpenGL Bug 2): Before `vkQueuePresentKHR`, record copy swapchain → host-visible staging; after fence, resolve into `screenshot_buffer`. `SituationLoadImageFromScreen` prefers this cache (see `situation_impl_decl.h` / `situation_impl_renderer.h` / `situation_impl_image.h`).
+
+2. **BGRA vs RGBA**: Swapchain `VK_FORMAT_B8G8R8A8_*` stores **B,G,R,A** in memory; tests expect **R,G,B,A** like `glReadPixels(..., GL_RGBA)`. `_SituationVulkanCopyMappedColorToRGBA` normalizes on resolve and in `_SituationVulkanBlitImageToHostVisibleBuffer`.
+
+3. **Render-thread race**: Replaced a single global flag with **`screenshot_copy_pending[SITUATION_MAX_FRAMES_IN_FLIGHT]`** so `EndFrame` does not clear another slot before `_SituationVulkanResolveScreenshotAfterSubmit` runs.
+
+4. **Timing**: `SituationLoadImageFromScreen` uses **`vkDeviceWaitIdle`** before trusting the cache so the main thread does not race ahead of resolve.
+
+5. **Dimension / image index**: Loader aligns dimensions with **`swapchain_extent`** for cache hits; fallback blit uses **`last_presented_image_index`** when valid.
+
+6. **Projection / clip space**: Vulkan DLL build adds **`-DCGLM_FORCE_DEPTH_ZERO_TO_ONE`** (`build_situation.bat`, `build_tests.bat`) so `glm_ortho` matches Vulkan NDC.
+
+7. **Quad push constants**: **`vkCmdPushConstants`** uses explicit **104** bytes (shader layout size); `sizeof(struct)` could be **112** with tail padding on some ABIs.
+
+8. **Swapchain recreate vs cache (v2.4.44)**: **`_SituationVulkanCleanupSwapchain`** must **not** call **`_SituationVulkanDestroyScreenshotResources`**. After present, **`vkQueuePresentKHR`** may return **SUBOPTIMAL** / **OUT_OF_DATE**, triggering recreate **in the same `SituationEndFrame`** — destroying screenshot buffers there cleared **`screenshot_valid`** before the app called **`SituationLoadImageFromScreen`**. Extent changes are handled when **`_SituationVulkanEnsureScreenshotResources`** runs with the new **`swapchain_extent`**.
+
+9. **Ring buffer alignment**: Clamp **`max_frames_in_flight`** to **`SITUATION_MAX_FRAMES_IN_FLIGHT`** so **`screenshot_copy_pending`** indices stay valid.
+
+10. **Acquire stall / black window (post‑v2.4.44 plan update)**: **`vkAcquireNextImageKHR`** no longer uses **`UINT64_MAX`** — **`SITUATION_VULKAN_ACQUIRE_TIMEOUT_NS`** (default **1 s**) — so a stuck acquire eventually returns **`VK_TIMEOUT`** and triggers recreate instead of freezing indefinitely. stderr timing lines when **`SITUATION_VULKAN_LOG_SLOW_ACQUIRE_MIN_MS`** thresholds are met.
+
+#### Residual checks (if any harness pixel test still fails on a given GPU)
+
+| Check | Idea |
+|-------|------|
+| **Fallback path** | Cache miss forces **`_SituationVulkanBlitImageToHostVisibleBuffer`** — wrong image index or layout on some drivers (see earlier Gates C–D). |
+| **Format** | Extend **`_SituationVulkanCopyMappedColorToRGBA`** if the surface is not **`B8G8R8A8`** / **`R8G8B8A8`**. |
+| **Validation** | Khronos validation around **`_SituationVulkanRecordScreenshotCopy`** (Gate B / barrier story in v2.4.43 narrative). |
+
+**Gate A resolution (observed)**: Failures with **`screenshot_valid == false`** and **`shot_wh == 0×0`** correlated with swapchain cleanup destroying buffers post-present — fixed in **v2.4.44**.
+
+**Affected tests** (historical): draw_quad_red, draw_textured_checkerboard, draw_metrics_overlay, VD composite pixel checks, etc.
+
+**Priority**: Re-measure full Vulkan graphics module; escalate only if failures persist after **v2.4.44** on the same GPU.
+
+---
+
+### Vulkan Summary Table
 
 | Bug | Category | Tests Affected | Priority | Status |
 |-----|----------|---------------|----------|--------|
-| V1 | Shader compilation check | ~20 | — | ✅ FIXED |
-| V2 | Buffer update out-of-frame | 3 | — | ✅ FIXED |
-| V3 | Quad/Texture rendering | 2 | — | Blocked by V6 |
-| V4 | VD composite crash | 3 | — | ✅ FIXED |
-| V5 | Text/overlay rendering | 1 | P4 | Blocked by V6 |
-| V6 | Screenshot readback | ~20 | P1 | OPEN |
+| V1 | Shader compilation check | ~20 | — | ✅ FIXED (v2.4.42) |
+| V2 | Buffer update out-of-frame | 3 | — | ✅ FIXED (v2.4.42) |
+| V3 | Quad/Texture rendering vs readback | 2 | — | ✅ FIXED (v2.4.44 — same cache path as V6) |
+| V4 | VD composite crash | 3 | — | ✅ FIXED (v2.4.42) |
+| V5 | Text/overlay rendering | 1 | — | ✅ **FIXED** — **`draw_metrics_overlay`** passes with **v2.4.58+** readback parity and later bundles (see **Vulkan Bug V5** above) |
+| V6 | Screenshot readback (pre-present + RGBA + threading + swapchain recreate + acquire timeout) | ~20 | — | ✅ **FIXED** (v2.4.43 + **v2.4.44** + acquire-timeout mitigation); **v2.4.58** adds Vulkan/OpenGL row parity for quadrant sampling |
+| — | **Harness stability** | full graphics / suite | P2 | **Graphics module ✅** — **86/86** Vulkan on **GTX 1070** (**v2.4.94**). **Bug 11** / **Bug 12** fixed for shutdown/VMA; **Bug 6** **✅ closed** (**v2.4.106**); full sequential **337/337** + **327/327** |
 
-**Total Vulkan failures**: ~23 (of 78, down from ~29/81)  
-**Passing**: ~55 (up from ~43)  
-**No crashes** — all SIGSEGV issues resolved.
+**Total Vulkan graphics failures (reference GPU)**: **0** / **78** as of **v2.4.61**. Historical triage list → *Vulkan graphics — harness status* (**Historical “last eight”**). **Regression**: treat any new failure as **P1** until classified.
 
-**Next session**: Fix V6 (pre-present capture) → should flip ~20 tests to passing → target ~75/78.
+**Crashes**: V4 SIGSEGV fixes remain in place. **Multi-module AV** from **`SituationShutdown`** skipping teardown — **Bug 11**, **fixed v2.4.53**. Any **new** fault needs a fresh stack trace.
+
+---
+
+## Remaining work (checklist)
+
+| Item | Owner | Notes |
+|------|-------|------|
+| **Bug 6** — audio lifecycle + sequential suite | Library | **✅ Closed v2.4.106**: stop-before-uninit; Win32 auto-start **always shared**; pause flag reset on shutdown; harness **337/337** OpenGL + **327/327** Vulkan; audio probe confirms output meter. Optional: **`ma_device_init`** timeout, **`SituationInitInfo`** output policy, harness meter assertion. |
+| **Vulkan** — graphics regression | QA / dev | After material renderer changes: **`build\sit_test_vulkan.exe --module graphics`** (**86** tests) — expect **86/86** on **GTX 1070**; **`--filter spirv`** when touching SPIR-V descriptors. Optional **Intel / AMD** spot-checks; file deltas in **`UPDATELOG`**. |
+| **Vulkan** — validation layers | Dev | On **any** new pixel failure, run with Khronos validation around screenshot/acquire/present/VD composite paths. |
+| **V5** | — | **Closed** — see **Vulkan Bug V5** (**v2.4.58+**). |
+| **Intermittent Vulkan faults** | Dev | **Shutdown-skip AV** — fixed (**Bug 11 / v2.4.53**). If new crashes appear, capture stack (present-acquire ordering, driver variance). |
+| **VMA teardown** | — | **Fixed v2.4.54** (**Bug 12**). **`Leaked Texture`** stderr still means “test didn’t destroy handle” — cosmetic unless **`[VMA LEAK]`** returns (re-open). |
+
+**Next focus**: **Audio pipeline review** (**`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`**) for **v2.5** gate; maintain **Vulkan graphics 86/86** via regression runs after renderer changes. Re-run full sequential harness when touching init/teardown/audio.

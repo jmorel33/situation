@@ -76,7 +76,7 @@ Add `_SituationSetErrorFromCode` calls to functions that already have failure pa
 | `situation_impl_ctrl.h` | `_SituationGLFWFileDropCallback` (allocation failures) | `MEMORY_ALLOCATION` |
 | `situation_impl_io.h` | `SituationGetAppSavePath`, `SituationGetBasePath` (allocation failures) | `MEMORY_ALLOCATION` |
 | `situation_impl_image.h` | `_SituationSaveImageBMP` | `FILE_WRITE_FAILED` or `MEMORY_ALLOCATION` |
-| `situation_impl_renderer.h` | `SituationCmdBindVertexBuffer`, `SituationCmdBindIndexBuffer`, `SituationGetRenderLatencyStats`, `SituationExportRenderHistogram`, `SituationDrawMetricsOverlay`, `SituationDestroyRenderList`, `SituationResetRenderList` | `NOT_INITIALIZED` or `INVALID_PARAM` |
+| `situation_impl_renderer.h` | ~~`SituationCmdBindVertexBuffer`, `SituationCmdBindIndexBuffer`~~ (v2.4.126: return `SituationError`), `SituationGetRenderLatencyStats`, `SituationExportRenderHistogram`, `SituationDrawMetricsOverlay`, `SituationDestroyRenderList`, `SituationResetRenderList` | `NOT_INITIALIZED` or `INVALID_PARAM` |
 
 **Estimated effort**: 2-3 sessions. Mechanical — add one line before each early return.
 
