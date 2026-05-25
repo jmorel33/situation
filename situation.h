@@ -1,7 +1,7 @@
 /***************************************************************************************************
 *
 *   -- The "Situation" Advanced Platform Awareness, Control, and Timing --
-*   Core API library (see version in Version Macros)
+*   Core API library (version: sit/situation_base_version.h)
 *   (c) 2025-2026 Jacques Morel
 *   MIT Licensed
 *
@@ -15,11 +15,8 @@
 *   Users should include this file (situation.h) as before - the split is transparent.
 *
 ***************************************************************************************************/
-// --- Version Macros (canonical — bump only here; policy: doc/plan/LIBRARY_BUGFIX_PLAN.md — v2.5 minor bump is gated) ---
-#define SITUATION_VERSION_MAJOR 2
-#define SITUATION_VERSION_MINOR 4
-#define SITUATION_VERSION_PATCH 62
-#define SITUATION_VERSION_REVISION ""
+#include "sit/situation_base_version.h"
+
 #ifndef SITUATION_H
 #define SITUATION_H
 

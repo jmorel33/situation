@@ -72,11 +72,22 @@ echo.
 echo [BUILD] %EXAMPLE% (OpenGL) - GCC %GCC_VER%
 echo.
 
-REM node_graph_piano_demo: GUI subsystem so no extra console window behind the app.
+REM GUI subsystem (no console window): examples that are full-window games/tools.
 set "EXTRA_LDFLAGS="
 if /i "%EXAMPLE%"=="node_graph_piano_demo" set "EXTRA_LDFLAGS=-mwindows"
+if /i "%EXAMPLE%"=="demon_hunt" set "EXTRA_LDFLAGS=-mwindows"
 
-gcc examples/%EXAMPLE%.c ext/glfw/deps/tinycthread.c ^
+if /i "%EXAMPLE%"=="demon_hunt" (
+    call compile_demon_hunt_shaders.bat
+    if errorlevel 1 (
+        echo [WARN] Demon Hunt shader precompile failed — build continues but game needs .spv at launch.
+    )
+)
+
+set "DH_EMBED_SRC="
+if /i "%EXAMPLE%"=="demon_hunt" set "DH_EMBED_SRC=examples/demon_hunt_sky_spirv_embed.c"
+
+gcc examples/%EXAMPLE%.c %DH_EMBED_SRC% ext/glfw/deps/tinycthread.c ^
     -o %BUILD_DIR%/%EXAMPLE%.exe ^
     -std=c11 -O2 ^
     -msse -msse2 -msse4.1 ^
@@ -93,6 +104,7 @@ if errorlevel 1 (
     echo [FAILED] Compilation failed!
     exit /b 1
 )
+
 echo [SUCCESS] %BUILD_DIR%\%EXAMPLE%.exe
 exit /b 0
 
@@ -100,6 +112,13 @@ REM ========================================================================
 REM BUILD: Vulkan Example
 REM ========================================================================
 :build_vulkan
+
+if /i "%EXAMPLE%"=="demon_hunt" (
+    call compile_demon_hunt_shaders.bat
+    if errorlevel 1 (
+        echo [WARN] Demon Hunt shader precompile failed — build continues but game needs .spv at launch.
+    )
+)
 
 REM --- Resolve Vulkan SDK ---
 if not defined VULKAN_SDK (
@@ -116,6 +135,10 @@ echo.
 echo [BUILD] %EXAMPLE% (Vulkan) - GCC %GCC_VER% - SDK: %VULKAN_SDK%
 echo.
 
+set "DH_EMBED_SRC="
+set "DH_EMBED_OBJ="
+if /i "%EXAMPLE%"=="demon_hunt" set "DH_EMBED_SRC=examples/demon_hunt_sky_spirv_embed.c"
+
 REM Step 1: Compile C source
 echo   [1/3] Compiling %EXAMPLE%.c...
 gcc -c examples/%EXAMPLE%.c ^
@@ -124,11 +147,24 @@ gcc -c examples/%EXAMPLE%.c ^
     -msse -msse2 -msse4.1 ^
     -I. -Iext -Iext/vulkan -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
     -I"%VULKAN_SDK%\Include" ^
-    -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER
+    -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER -DSITUATION_USE_VULKAN
 
 if errorlevel 1 (
     echo [FAILED] C compilation failed!
     exit /b 1
+)
+
+if defined DH_EMBED_SRC (
+    echo   [1b/3] Compiling SPIR-V embed...
+    gcc -c %DH_EMBED_SRC% ^
+        -o %BUILD_DIR%/demon_hunt_sky_spirv_embed.o ^
+        -std=c11 -O2 ^
+        -I. -Iext -Iext/cglm/include -Isit/k-term
+    if errorlevel 1 (
+        echo [FAILED] SPIR-V embed compilation failed!
+        exit /b 1
+    )
+    set "DH_EMBED_OBJ=%BUILD_DIR%/demon_hunt_sky_spirv_embed.o"
 )
 
 REM Step 2: Compile tinycthread
@@ -144,7 +180,7 @@ if errorlevel 1 (
 
 REM Step 3: Link with g++ (shaderc/VMA need C++ runtime)
 echo   [3/3] Linking...
-g++ %BUILD_DIR%/%EXAMPLE%.o %BUILD_DIR%/tinycthread_ex.o ext/vma_wrapper.o ^
+g++ %BUILD_DIR%/%EXAMPLE%.o %BUILD_DIR%/tinycthread_ex.o %DH_EMBED_OBJ% ext/vma_wrapper.o ^
     -o %BUILD_DIR%/%EXAMPLE%.exe ^
     -L%GLFW_LIB% -L%SHADERC_LIB% -L"%VULKAN_SDK%\Lib" ^
     -static-libgcc -static-libstdc++ ^
@@ -160,7 +196,7 @@ if errorlevel 1 (
 
 REM Cleanup .o files
 del %BUILD_DIR%\%EXAMPLE%.o 2>nul
-del %BUILD_DIR%\tinycthread_ex.o 2>nul
+del %BUILD_DIR%\demon_hunt_sky_spirv_embed.o 2>nul
 
 echo [SUCCESS] %BUILD_DIR%\%EXAMPLE%.exe
 exit /b 0

@@ -4,57 +4,13 @@
 
 # The "Situation" Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.4.62_
-
 _(c) 2025-2026 Jacques Morel_
 
 _MIT Licensed_
 
 Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](doc/C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
 
-Our immediate development roadmap is focused on expanding the library's capability:
-
-*   **OpenGL diagnostics & compute harness (v2.4.62):** 🛠️ **COMPLETE!** Default-font / text / VD init **`stdout`** lines are gated behind **`SITUATION_VERBOSE_DIAGNOSTICS`** (same knob as Vulkan extras). **`SIT_COMPUTE_LAYOUT_TWO_SSBOS`** assigns **`glShaderStorageBlockBinding`** for **`InBuffer` / `OutBuffer`** so **`compute_chained_dispatches`** matches Vulkan’s two-set SPIR-V layout — full sequential **`sit_test`** (**OpenGL DLL**) **310/310**.
-*   **Vulkan VD compositing & graphics harness (v2.4.61):** 🎉 **COMPLETE!** Virtual-display compositing preserves the caller’s framebuffer (**resume render pass / LOAD**), screen-copy targets are recreated after swapchain rebuild, and Path A/B **`vkCmdPushConstants`** ranges match SPIR-V layouts. Vulkan **`sit_test --module graphics`** reaches **78/78** on the maintained harness.
-*   **Vulkan VD advanced compositor (v2.4.60):** 🎉 **COMPLETE!** Three-set pipeline layout for Path A with correct destination sampler (**binding 5**). See **`doc/UPDATELOG.md`**.
-*   **Vulkan test harness & backend hardening (v2.4.42 era):** 🛠️ **COMPLETE!** First sustained push: shaders, buffers, VD creation/compositing, pipeline layouts, screenshot readback — toward full Vulkan graphics parity (superseded by fixes through **v2.4.61**).
-*   **Graphics regression sweep (v2.4.41 era):** 🎉 **COMPLETE!** Bulk clears for uniforms, textured draws, compute binding, buffer updates, GL re-init hygiene; per-module counts evolve — see **`doc/UPDATELOG.md`**.
-*   **Node graph takeover — mixer removed (v2.4.36):** 🛠️ **COMPLETE!** Legacy mixer API removed; **`SituationAudioGraph`** + **`SituationProcessGraph`** are the routing path. miniaudio stays the device backend.
-*   **Audio node graph — devices live (v2.4.35):** 🎉 **COMPLETE!** Device types registered and processed through the graph (**`SituationCreateNode`**).
-*   **Test harness expansion (v2.4.33):** 🎉 **COMPLETE!** Broad audio coverage: registry, graph lifecycle, effects, serialization, MIDI.
-*   **Test harness complete (v2.4.28):** 🎉 **COMPLETE!** **CTest**-based runs, reporters, leak detection.
-*   **Test harness framework (v2.4.24):** 🛠️ **COMPLETE!** DLL-linked black-box **SITAPI** harness.
-*   **Renderer robustness audit (v2.4.18–v2.4.20):** 🛠️ **COMPLETE!** GL/VK resource paths and frame lifecycle.
-*   **X-macro errno (v2.4.13):** 🛠️ **COMPLETE!** **`SituationError`** table-driven messages.
-*   **Threading manicure (v2.4.11):** 🛠️ **COMPLETE!** Thread-pool hardening.
-*   **Internal subsystem extractions (v2.4.5–v2.4.9):** 🛠️ **COMPLETE!** Modular **`sit/situation_impl_*.h`** split.
-*   **Virtual display compositing & UBO performance (v2.4.3):** 🚀 **COMPLETE!** VD compositing fixes; less main-thread UBO stall.
-*   **OpenGL deferred rendering architecture (v2.4.2):** 🛠️ **COMPLETE!** GL/Vulkan structural parity.
-*   **Complete MIDI architecture (v2.4.1):** 🎹 **COMPLETE!** Routing, transforms, recording, UD inquiry.
-*   **OpenGL graveyard flush safety (v2.4.1):** 🧹 **COMPLETE!** **`_SitGLFlushGraveyard`** waits on prior-frame **`GL_ARB_sync`** before cleanup.
-*   **Modular revolution (v2.4.0):** 🎉 **COMPLETE!** Monolithic impl split into **16** internal modules.
-
-*   **Audio modularization (v2.3.61):** 🧹 **COMPLETE!** Extracted the internal Reverb (`sit/aud/reverb.h`) and Echo (`sit/aud/echo.h`) implementations into standalone headers to improve codebase modularity.
-*   **Uniform Optimization (v2.3.60):** 🛠️ **COMPLETE!** Implemented dynamic resizing for the internal OpenGL uniform hash map. The map now doubles its capacity and rehashes entries when the load factor exceeds 0.75, ensuring stable performance for complex shaders.
-*   **Mixer Persistence (v2.3.59):** 🎉 **COMPLETE!** Implemented Phase 5 of the Audio Mixer architecture. Added full session persistence (Save/Load) with cached EQ/Dynamics state, capture device binding, and thread-safe parameter caching.
-*   **FX & Metering (v2.3.58):** 🎉 **COMPLETE!** Implemented Phase 4 of the Audio Mixer architecture. Added FX Insert slots for Aux buses and atomic peak metering for all tracks and buses.
-*   **Mixer Routing (v2.3.57):** 🎉 **COMPLETE!** Implemented Phase 3 of the Audio Mixer architecture. Added flexible routing with 8 Aux/Send buses, Pre/Post-fader sends, and standard mixer controls (Pan, Mute, Solo-In-Place).
-*   **Channel Strip (v2.3.56):** 🎉 **COMPLETE!** Implemented Phase 2 of the Audio Mixer architecture. Every track now features a professional Channel Strip with 4-Band EQ and Dynamics (Compressor/Limiter/Gate/Sidechain).
-*   **Audio Mixer Foundation (v2.3.55):** 🎉 **COMPLETE!** Implemented Phase 0 and 1 of the new Audio Mixer architecture, including device enumeration, mixer lifecycle, and routing.
-*   **Critical Stability (v2.3.54):** 🎉 **COMPLETE!** Addressed critical MDI batching and resource cleanup issues in the OpenGL backend.
-*   **Virtual Bindless (v2.3.52):** 🎉 **COMPLETE!** Implemented a "Virtual Bindless" fallback system for OpenGL hardware lacking `GL_ARB_bindless_texture`. This system emulates bindless texture access by managing a virtual pool of texture units, allowing users to write unified bindless shader code that works across a wider range of hardware (including older Intel iGPUs).
-*   **MDI Auto-Batching (v2.3.51):** 🎉 **COMPLETE!** Implemented Multi-Draw Indirect (MDI) auto-batching for the OpenGL backend. This optimization intelligently batches consecutive `SIT_OP_DRAW_MESH` commands sharing the same VAO into a single `glMultiDrawElementsIndirect` call, drastically reducing CPU overhead for repetitive geometry.
-*   **Fence-Guarded Destruction (v2.3.50):** 🎉 **COMPLETE!** Implemented robust deferred destruction for OpenGL using GL_ARB_sync fences. This eliminates CPU stalls and ensures resources are only destroyed when the GPU is finished with them, matching Vulkan's safety and performance.
-*   **Async Shader Linking (v2.3.49):** 🎉 **COMPLETE!** Implemented non-blocking shader linking for OpenGL hot-reloading using `KHR_parallel_shader_compile`.
-*   **Vulkan Bindless (v2.3.45):** 🎉 **COMPLETE!** Implemented "Bindless" texturing for Vulkan using Descriptor Indexing. Textures are now accessed via a global unbounded array (`global_textures[]`) indexed by push constants, eliminating descriptor binding overhead and solving pool fragmentation.
-*   **Vulkan Optimization (v2.3.44):** 🎉 **COMPLETE!** Added configurable staging buffer sizes and optimized I/O polling for hot-reloading to support a wider range of hardware targets.
-*   **System Unification (v2.3.43):** 🎉 **COMPLETE!** Implemented the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading. See `REGRESSION_ANALYSIS.md` for details.
-*   **Audio Capture Enhancements (v2.3.42):** 🎉 **COMPLETE!** Added `SituationStartAudioCaptureEx` for custom formats and updated the default capture to use native device settings (0, 0) for optimal performance.
-*   **Flexible Texture Formats (v2.3.41):** 🎉 **COMPLETE!** Added `SituationColorEncoding` enum for automatic format selection. Storage images now use LINEAR format (UNORM) while sampled textures use SRGB for proper gamma correction. Works identically on OpenGL and Vulkan.
-*   **Asset Pipeline (v2.3.38):** Added `SituationLoadBitmapFontFromMemory` and enhanced I/O thread controls for smoother background loading.
-*   **OpenGL Optimization (v2.3.36):** Completed the "Max Out Core" plan with MDI batching, Zero-Copy Ring Buffers, and Bindless Textures.
-*   **Texture Registry (v2.3.31):** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.
-*   **Universal Handles (v2.4):** 🎉 **COMPLETE!** All resources (Buffers, Shaders, Meshes) are now managed via the Registry System for uniform, bindless-ready access.
+Our immediate development roadmap is focused on expanding the library's capability. See **[What's New](doc/whatsnew.md)** for a full history of recent features, optimizations, and roadmap completions!
 *   **Async Compute:** Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
 *   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
 *   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
@@ -68,7 +24,7 @@ The library's philosophy is reflected in its name, granting developers complete 
 It provides deep **Awareness** of the host system through APIs for querying hardware **(GPU Name, VRAM)** and multi-monitor display information, and by handling operating system events like window focus and file drops.
 
 This foundation enables precise **Control** over the entire application stack:
-*   **Threading:** A completely new **Generational Task System** supporting fork-join parallelism (`ParallelFor`), priority scheduling (High/Low rings), backpressure handling (`RUN_IF_FULL`), and a **Dedicated I/O Thread** for non-blocking asset loading. It features Small Object Optimization (SOO) for zero-allocation jobs and O(1) dependency resolution.
+*   **Threading:** **Generational dual-queue** task system (mutex per queue, atomics for indices/job state): fork-join `SituationDispatchParallel`, high/low priority rings, backpressure (`RUN_IF_FULL` / `BLOCK_IF_FULL`), dedicated I/O thread, topology/affinity/NUMA placement, pool observability and scheduler metrics (v2.4.139+).
 *   **Windowing:** Fullscreen, borderless, and HiDPI-aware window management with explicit **State Hardening** to prevent context poisoning from external middleware (e.g., ImGui).
 *   **Input:** O(1) ring-buffered processing for Keyboard, Mouse, and Gamepad events ensures no input is ever lost during frame spikes.
 *   **Audio:** **Node graph** output (**`SituationProcessGraph`**) plus **Snapshot-and-Unlock** mixing for loaded/streamed voices, zero-stall concurrency, safe RAM preloading via background threads (Async Load), disk streaming for music, and fused-loop real-time effects (Reverb, Delay, Filter).
@@ -104,7 +60,7 @@ Unlike simple wrappers, Situation is an **opinionated micro-engine**. It enforce
 ### **Key Capabilities**
 
 *   **Unified Command Architecture:** Write your rendering code once using abstract `SituationCmd*` functions. The library compiles this into direct state changes for **OpenGL 4.6** or optimized command buffers for **Vulkan 1.4**.
-*   **Generational Task System:** A C11-native, lock-free thread pool supporting fork-join parallelism (`ParallelFor`), priority scheduling, and backpressure handling.
+*   **Generational Task System:** C11 thread pool with per-queue mutexes, generational job IDs, fork-join parallelism, priority queues, and optional CPU/NUMA pinning via `SituationInitInfo`.
 *   **"Hardened" Audio Engine:** miniaudio drives the device; the callback mixes **active graph** processing, **voice snapshots**, and the **tone pool** into the output buffer. **Thread-safe asset loading** (decode SFX to RAM to avoid stalls), background music streaming, real-time DSP effects (Reverb/Delay), and low-latency microphone capture.
 *   **Dynamic Resource Management:** No arbitrary limits. The Vulkan backend features a **Dynamic Descriptor Manager** with a linear allocation strategy that automatically grows resource pools as you load assets, supporting scenes with thousands of textures and buffers without fragmentation.
 *   **O(1) Input System:** A lock-free, ring-buffered input architecture ensures that no keypress or mouse click is ever lost, even during frame-rate spikes.
