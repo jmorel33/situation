@@ -200,7 +200,7 @@ static void _SituationRegisterToneSynth(void) {
     
     // Note: Tone synth has per-voice controls, not global controls
     // This is a special case - the controls here represent the voice template
-    meta.num_controls = 9;
+    meta.num_controls = 39;
     
     // Control 0: frequency
     strncpy(meta.controls[0].name, "frequency", SITUATION_MAX_CONTROL_NAME - 1);
@@ -220,7 +220,7 @@ static void _SituationRegisterToneSynth(void) {
     meta.controls[1].max_value = 4.0f;
     meta.controls[1].default_value = 0.0f;
     meta.controls[1].enum_count = 5;
-    static const char* waveform_labels[] = {"Sine", "Square", "Triangle", "Saw", "Noise", NULL};
+    static const char* waveform_labels[] = {"Sine", "Pulse", "Triangle", "Saw", "Noise", NULL};
     meta.controls[1].enum_labels = waveform_labels;
     
     // Control 2: volume
@@ -293,8 +293,310 @@ static void _SituationRegisterToneSynth(void) {
     meta.controls[8].units = "s";
     meta.controls[8].is_logarithmic = false;
     
+    // Control 9: filter mode (PxFilterMode 0=OFF .. 8=BP+HP)
+    strncpy(meta.controls[9].name, "filter_mode", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[9].id = 9;
+    meta.controls[9].type = SITUATION_CONTROL_ENUM;
+    meta.controls[9].min_value = 0.0f;
+    meta.controls[9].max_value = 8.0f;
+    meta.controls[9].default_value = 0.0f;
+    meta.controls[9].enum_count = 9;
+    static const char* filter_mode_labels[] = {
+        "Off", "LP", "HP", "BP", "Notch", "Allpass", "LP+BP", "LP+HP", "BP+HP", NULL
+    };
+    meta.controls[9].enum_labels = filter_mode_labels;
+    
+    // Control 10: filter cutoff
+    strncpy(meta.controls[10].name, "filter_cutoff", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[10].id = 10;
+    meta.controls[10].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[10].min_value = 20.0f;
+    meta.controls[10].max_value = 20000.0f;
+    meta.controls[10].default_value = 2000.0f;
+    meta.controls[10].units = "Hz";
+    meta.controls[10].is_logarithmic = true;
+    
+    // Control 11: filter resonance (Q)
+    strncpy(meta.controls[11].name, "filter_resonance", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[11].id = 11;
+    meta.controls[11].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[11].min_value = 0.5f;
+    meta.controls[11].max_value = 20.0f;
+    meta.controls[11].default_value = 0.707f;
+    meta.controls[11].units = NULL;
+    meta.controls[11].is_logarithmic = false;
+    
+    // Control 12: filter poles
+    strncpy(meta.controls[12].name, "filter_poles", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[12].id = 12;
+    meta.controls[12].type = SITUATION_CONTROL_INT;
+    meta.controls[12].min_value = 1.0f;
+    meta.controls[12].max_value = 4.0f;
+    meta.controls[12].default_value = 3.0f;
+    meta.controls[12].units = NULL;
+    meta.controls[12].is_logarithmic = false;
+    
+    // Control 13: filter drive
+    strncpy(meta.controls[13].name, "filter_drive", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[13].id = 13;
+    meta.controls[13].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[13].min_value = 1.0f;
+    meta.controls[13].max_value = 10.0f;
+    meta.controls[13].default_value = 1.0f;
+    meta.controls[13].units = NULL;
+    meta.controls[13].is_logarithmic = false;
+    
+    // Control 14: filter keytrack
+    strncpy(meta.controls[14].name, "filter_keytrack", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[14].id = 14;
+    meta.controls[14].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[14].min_value = 0.0f;
+    meta.controls[14].max_value = 1.0f;
+    meta.controls[14].default_value = 0.0f;
+    meta.controls[14].units = NULL;
+    meta.controls[14].is_logarithmic = false;
+    
+    // Control 15: filter oversampling (0=off, 1=2x, 2=2x forced)
+    strncpy(meta.controls[15].name, "filter_oversample", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[15].id = 15;
+    meta.controls[15].type = SITUATION_CONTROL_INT;
+    meta.controls[15].min_value = 0.0f;
+    meta.controls[15].max_value = 2.0f;
+    meta.controls[15].default_value = 1.0f;
+    meta.controls[15].units = NULL;
+    meta.controls[15].is_logarithmic = false;
+    
+    // Control 16: voice mode (0=poly, 1=mono)
+    strncpy(meta.controls[16].name, "voice_mode", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[16].id = 16;
+    meta.controls[16].type = SITUATION_CONTROL_ENUM;
+    meta.controls[16].min_value = 0.0f;
+    meta.controls[16].max_value = 1.0f;
+    meta.controls[16].default_value = 0.0f;
+    meta.controls[16].enum_count = 2;
+    static const char* voice_mode_labels[] = {"Poly", "Mono", NULL};
+    meta.controls[16].enum_labels = voice_mode_labels;
+    
+    // Control 17: pulse width (duty cycle for waveform 1)
+    strncpy(meta.controls[17].name, "pulse_width", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[17].id = 17;
+    meta.controls[17].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[17].min_value = 0.05f;
+    meta.controls[17].max_value = 0.95f;
+    meta.controls[17].default_value = 0.5f;
+    meta.controls[17].units = NULL;
+    meta.controls[17].is_logarithmic = false;
+    
+    // Control 18: LFO rate (Hz)
+    strncpy(meta.controls[18].name, "lfo_rate", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[18].id = 18;
+    meta.controls[18].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[18].min_value = 0.0f;
+    meta.controls[18].max_value = 20.0f;
+    meta.controls[18].default_value = 0.0f;
+    meta.controls[18].units = "Hz";
+    meta.controls[18].is_logarithmic = true;
+    
+    // Control 19: LFO waveform
+    strncpy(meta.controls[19].name, "lfo_waveform", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[19].id = 19;
+    meta.controls[19].type = SITUATION_CONTROL_ENUM;
+    meta.controls[19].min_value = 0.0f;
+    meta.controls[19].max_value = 2.0f;
+    meta.controls[19].default_value = 0.0f;
+    meta.controls[19].enum_count = 3;
+    static const char* lfo_waveform_labels[] = {"Triangle", "Square", "Random", NULL};
+    meta.controls[19].enum_labels = lfo_waveform_labels;
+    
+    // Control 20: LFO pitch amount
+    strncpy(meta.controls[20].name, "lfo_pitch_amount", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[20].id = 20;
+    meta.controls[20].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[20].min_value = 0.0f;
+    meta.controls[20].max_value = 1.0f;
+    meta.controls[20].default_value = 0.0f;
+    meta.controls[20].units = NULL;
+    meta.controls[20].is_logarithmic = false;
+    
+    // Control 21: LFO pitch range (semitones)
+    strncpy(meta.controls[21].name, "lfo_pitch_range", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[21].id = 21;
+    meta.controls[21].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[21].min_value = 0.0f;
+    meta.controls[21].max_value = 12.0f;
+    meta.controls[21].default_value = 2.0f;
+    meta.controls[21].units = "st";
+    meta.controls[21].is_logarithmic = false;
+    
+    // Control 22: LFO PWM amount
+    strncpy(meta.controls[22].name, "lfo_pwm_amount", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[22].id = 22;
+    meta.controls[22].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[22].min_value = 0.0f;
+    meta.controls[22].max_value = 1.0f;
+    meta.controls[22].default_value = 0.0f;
+    meta.controls[22].units = NULL;
+    meta.controls[22].is_logarithmic = false;
+    
+    // Control 23: LFO PWM range (duty excursion)
+    strncpy(meta.controls[23].name, "lfo_pwm_range", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[23].id = 23;
+    meta.controls[23].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[23].min_value = 0.0f;
+    meta.controls[23].max_value = 0.45f;
+    meta.controls[23].default_value = 0.2f;
+    meta.controls[23].units = NULL;
+    meta.controls[23].is_logarithmic = false;
+    
+    // Control 24: LFO filter amount
+    strncpy(meta.controls[24].name, "lfo_filter_amount", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[24].id = 24;
+    meta.controls[24].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[24].min_value = 0.0f;
+    meta.controls[24].max_value = 1.0f;
+    meta.controls[24].default_value = 0.0f;
+    meta.controls[24].units = NULL;
+    meta.controls[24].is_logarithmic = false;
+    
+    // Control 25: LFO filter range (Hz span)
+    strncpy(meta.controls[25].name, "lfo_filter_range", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[25].id = 25;
+    meta.controls[25].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[25].min_value = 20.0f;
+    meta.controls[25].max_value = 8000.0f;
+    meta.controls[25].default_value = 1000.0f;
+    meta.controls[25].units = "Hz";
+    meta.controls[25].is_logarithmic = true;
+    
+    // Control 26: ADSR envelope filter amount
+    strncpy(meta.controls[26].name, "filter_env_amount", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[26].id = 26;
+    meta.controls[26].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[26].min_value = 0.0f;
+    meta.controls[26].max_value = 1.0f;
+    meta.controls[26].default_value = 0.0f;
+    meta.controls[26].units = NULL;
+    meta.controls[26].is_logarithmic = false;
+    
+    // Control 27: ADSR envelope filter range (Hz span)
+    strncpy(meta.controls[27].name, "filter_env_range", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[27].id = 27;
+    meta.controls[27].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[27].min_value = 20.0f;
+    meta.controls[27].max_value = 8000.0f;
+    meta.controls[27].default_value = 4000.0f;
+    meta.controls[27].units = "Hz";
+    meta.controls[27].is_logarithmic = true;
+    
+    // Control 28: portamento time (mono RC glide tau; 0 = use speed only / instant)
+    strncpy(meta.controls[28].name, "portamento_time", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[28].id = 28;
+    meta.controls[28].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[28].min_value = 0.0f;
+    meta.controls[28].max_value = 2.0f;
+    meta.controls[28].default_value = 0.0f;
+    meta.controls[28].units = "s";
+    meta.controls[28].is_logarithmic = true;
+    
+    // Control 29: portamento speed (semitones per second; 0 = use time only / instant)
+    strncpy(meta.controls[29].name, "portamento_speed", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[29].id = 29;
+    meta.controls[29].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[29].min_value = 0.0f;
+    meta.controls[29].max_value = 48.0f;
+    meta.controls[29].default_value = 0.0f;
+    meta.controls[29].units = "st/s";
+    meta.controls[29].is_logarithmic = false;
+    
+    // Control 30: sub-oscillator mix level
+    strncpy(meta.controls[30].name, "sub_level", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[30].id = 30;
+    meta.controls[30].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[30].min_value = 0.0f;
+    meta.controls[30].max_value = 1.0f;
+    meta.controls[30].default_value = 0.0f;
+    meta.controls[30].units = NULL;
+    meta.controls[30].is_logarithmic = false;
+    
+    // Control 31: sub-oscillator waveform (same set as main)
+    strncpy(meta.controls[31].name, "sub_waveform", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[31].id = 31;
+    meta.controls[31].type = SITUATION_CONTROL_ENUM;
+    meta.controls[31].min_value = 0.0f;
+    meta.controls[31].max_value = 4.0f;
+    meta.controls[31].default_value = 0.0f;
+    meta.controls[31].enum_count = 5;
+    static const char* sub_waveform_labels[] = {"Sine", "Pulse", "Triangle", "Saw", "Noise", NULL};
+    meta.controls[31].enum_labels = sub_waveform_labels;
+    
+    // Control 32: sub-oscillator octave (0 = unison, 1 = −1 oct, 2 = −2 oct)
+    strncpy(meta.controls[32].name, "sub_octave", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[32].id = 32;
+    meta.controls[32].type = SITUATION_CONTROL_ENUM;
+    meta.controls[32].min_value = 0.0f;
+    meta.controls[32].max_value = 2.0f;
+    meta.controls[32].default_value = 1.0f;
+    meta.controls[32].enum_count = 3;
+    static const char* sub_octave_labels[] = {"Unison", "Oct -1", "Oct -2", NULL};
+    meta.controls[32].enum_labels = sub_octave_labels;
+    
+    // Control 33: sub-oscillator fine tune (semitones)
+    strncpy(meta.controls[33].name, "sub_fine", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[33].id = 33;
+    meta.controls[33].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[33].min_value = -1.0f;
+    meta.controls[33].max_value = 1.0f;
+    meta.controls[33].default_value = 0.0f;
+    meta.controls[33].units = "st";
+    meta.controls[33].is_logarithmic = false;
+    
+    strncpy(meta.controls[34].name, "sub_note", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[34].id = 34;
+    meta.controls[34].type = SITUATION_CONTROL_INT;
+    meta.controls[34].min_value = 0.0f;
+    meta.controls[34].max_value = 127.0f;
+    meta.controls[34].default_value = 0.0f;
+    meta.controls[34].units = "MIDI";
+    meta.controls[34].is_logarithmic = false;
+    
+    strncpy(meta.controls[35].name, "sub_sync", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[35].id = 35;
+    meta.controls[35].type = SITUATION_CONTROL_BOOL;
+    meta.controls[35].min_value = 0.0f;
+    meta.controls[35].max_value = 1.0f;
+    meta.controls[35].default_value = 0.0f;
+    meta.controls[35].units = NULL;
+    meta.controls[35].is_logarithmic = false;
+    
+    strncpy(meta.controls[36].name, "sub_ring_mod", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[36].id = 36;
+    meta.controls[36].type = SITUATION_CONTROL_BOOL;
+    meta.controls[36].min_value = 0.0f;
+    meta.controls[36].max_value = 1.0f;
+    meta.controls[36].default_value = 0.0f;
+    meta.controls[36].units = NULL;
+    meta.controls[36].is_logarithmic = false;
+
+    strncpy(meta.controls[37].name, "patch_slot", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[37].id = 37;
+    meta.controls[37].type = SITUATION_CONTROL_INT;
+    meta.controls[37].min_value = 0.0f;
+    meta.controls[37].max_value = 15.0f;
+    meta.controls[37].default_value = 0.0f;
+    meta.controls[37].units = NULL;
+    meta.controls[37].is_logarithmic = false;
+
+    strncpy(meta.controls[38].name, "patch_store", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[38].id = 38;
+    meta.controls[38].type = SITUATION_CONTROL_BOOL;
+    meta.controls[38].min_value = 0.0f;
+    meta.controls[38].max_value = 1.0f;
+    meta.controls[38].default_value = 0.0f;
+    meta.controls[38].units = NULL;
+    meta.controls[38].is_logarithmic = false;
+    
     meta.latency_samples = 0;
-    meta.description = "64-voice polyphonic tone synthesizer with ADSR envelopes";
+    meta.description = "Graph tone synth: ADSR, SVF, pulse, mono/poly, portamento, mod LFO, sub-osc";
     meta.author = "Situation Audio";
     meta.version = 0x00010000;
     
@@ -1854,7 +2156,7 @@ static void _SituationRegisterSoundSource(void) {
     meta.controls[2].type = SITUATION_CONTROL_BOOL;
     meta.controls[2].min_value = 0.0f;
     meta.controls[2].max_value = 1.0f;
-    meta.controls[2].default_value = 0.0f;
+    meta.controls[2].default_value = 1.0f;
     meta.controls[2].units = NULL;
     meta.controls[2].is_logarithmic = false;
     
@@ -2307,6 +2609,11 @@ static void _SituationRegisterSpectrumAnalyzer(void) {
  * @note This function is NOT thread-safe. Call during init only.
  */
 void SituationInitDeviceRegistry(void) {
+    static bool registry_populated = false;
+    if (registry_populated) {
+        return;
+    }
+
     // Effects (14 devices)
     _SituationRegisterReverb();
     _SituationRegisterEcho();
@@ -2344,6 +2651,8 @@ void SituationInitDeviceRegistry(void) {
     // Analyzers (2 devices)
     _SituationRegisterPeakMeter();
     _SituationRegisterSpectrumAnalyzer();
+
+    registry_populated = true;
     
     // Debug: Print registry contents
     #ifdef SITUATION_DEBUG_REGISTRY

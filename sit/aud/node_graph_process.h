@@ -28,7 +28,17 @@
 
 #include "node_graph.h"
 #include "node_graph_impl.h"
+#include "tone_synth_graph.h"
+#include "midi_device.h"
 #include <string.h>
+
+static inline int _SituationNodeMidiAcceptsChannel(SituationNode* node, uint8_t channel) {
+    if (!node || !node->midi_device) return 0;
+    if (node->midi_device->midi_channel < 0) return 1;
+    return node->midi_device->midi_channel == (int)channel;
+}
+
+void _SituationToneSynthOnPitchBend(SituationToneSynthMidiCtx* ctx, int16_t bend);
 
 // ================================================================================================
 // DEVICE PROCESS FUNCTION TYPES
@@ -233,11 +243,14 @@ SituationError SituationProcessGraph(
                 uint8_t status = Pm_MessageStatus(msg);
                 uint8_t data1 = Pm_MessageData1(msg);
                 uint8_t data2 = Pm_MessageData2(msg);
+                uint8_t channel = status & 0x0F;
+
+                if (!_SituationNodeMidiAcceptsChannel(node, channel)) {
+                    continue;
+                }
                 
                 // Handle Control Change messages
                 if ((status & 0xF0) == 0xB0) {
-                    uint8_t channel = status & 0x0F;
-                    
                     // NEW (v2.6.0): Check MIDI Learn first (if enabled)
                     if (node->learn_state) {
                         float learned_value;
@@ -249,14 +262,45 @@ SituationError SituationProcessGraph(
                         }
                     }
                     
-                    // Fallback to hardcoded callback
+                    // Fallback to hardcoded callback (device_ptr: control array or tone synth ctx)
+                    void* midi_dev = node->midi_device->device_ptr;
                     if (node->midi_device->callbacks.on_control_change) {
                         node->midi_device->callbacks.on_control_change(
-                            node->control_values,  // device_ptr = control array (user_data)
-                            data1,  // controller (CC number)
-                            data2,  // value (CC value)
-                            0       // sample_offset (immediate processing)
+                            midi_dev,
+                            data1,
+                            data2,
+                            0
                         );
+                    }
+                } else if ((status & 0xF0) == 0x90) {
+                    void* midi_dev = node->midi_device->device_ptr;
+                    if (data2 == 0) {
+                        if (node->midi_device->callbacks.on_note_off) {
+                            node->midi_device->callbacks.on_note_off(
+                                midi_dev, data1, 0, 0);
+                        }
+                    } else if (node->midi_device->callbacks.on_note_on) {
+                        node->midi_device->callbacks.on_note_on(
+                            midi_dev, data1, data2, 0);
+                    }
+                } else if ((status & 0xF0) == 0x80) {
+                    void* midi_dev = node->midi_device->device_ptr;
+                    if (node->midi_device->callbacks.on_note_off) {
+                        node->midi_device->callbacks.on_note_off(
+                            midi_dev, data1, data2, 0);
+                    }
+                } else if ((status & 0xF0) == 0xE0) {
+                    if (node->type == SITUATION_NODE_TONE_SYNTH) {
+                        uint16_t bend = (uint16_t)(data1 | (data2 << 7));
+                        SituationToneSynthMidiCtx* ctx =
+                            (SituationToneSynthMidiCtx*)node->midi_device->device_ptr;
+                        _SituationToneSynthOnPitchBend(ctx, (int16_t)bend);
+                    }
+                } else if ((status & 0xF0) == 0xC0) {
+                    if (node->type == SITUATION_NODE_TONE_SYNTH) {
+                        SituationToneSynthMidiCtx* ctx =
+                            (SituationToneSynthMidiCtx*)node->midi_device->device_ptr;
+                        _SituationToneSynthOnProgramChange(ctx, data1);
                     }
                 }
             }
@@ -357,7 +401,15 @@ SituationError SituationProcessGraph(
             
             // If not patched, sum to master output
             if (!is_patched && port->buffer) {
-                _SituationSumBuffers(output_buffer, port->buffer, frames, 2);
+                if (port->channels == 1) {
+                    for (int f = 0; f < frames; f++) {
+                        float s = port->buffer[f];
+                        output_buffer[f * 2]     += s;
+                        output_buffer[f * 2 + 1] += s;
+                    }
+                } else {
+                    _SituationSumBuffers(output_buffer, port->buffer, frames, port->channels);
+                }
             }
         }
     }

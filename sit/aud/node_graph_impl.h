@@ -16,6 +16,8 @@
 #define SITUATION_NODE_GRAPH_IMPL_H
 
 #include "node_graph.h"
+#include "tone_synth_graph.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -132,6 +134,14 @@ void SituationDestroyGraph(SituationAudioGraph* graph) {
                 node->learn_state = NULL;
             }
             if (node->midi_device) {
+                if (node->type == SITUATION_NODE_TONE_SYNTH &&
+                    node->midi_device->device_ptr &&
+                    node->midi_device->device_ptr != (void*)node->control_values) {
+                    _SituationToneSynthMidiSilence(
+                        (SituationToneSynthMidiCtx*)node->midi_device->device_ptr);
+                    SIT_FREE(node->midi_device->device_ptr);
+                    node->midi_device->device_ptr = NULL;
+                }
                 SIT_MidiDevice_Destroy(node->midi_device);
                 node->midi_device = NULL;
             }
@@ -362,6 +372,12 @@ SituationError SituationDestroyNode(
     }
     
     if (node->midi_device) {
+        if (node->type == SITUATION_NODE_TONE_SYNTH &&
+            node->midi_device->device_ptr &&
+            node->midi_device->device_ptr != (void*)node->control_values) {
+            SIT_FREE(node->midi_device->device_ptr);
+            node->midi_device->device_ptr = NULL;
+        }
         SIT_MidiDevice_Destroy(node->midi_device);
         node->midi_device = NULL;
     }
@@ -539,9 +555,34 @@ SituationError SituationSetControl(
     const SituationControlDesc* ctrl = &node->metadata->controls[control_id];
     if (value < ctrl->min_value) value = ctrl->min_value;
     if (value > ctrl->max_value) value = ctrl->max_value;
+
+    // Match declared control semantics before storing/readback.
+    switch (ctrl->type) {
+        case SITUATION_CONTROL_BOOL:
+            value = (value >= 0.5f) ? 1.0f : 0.0f;
+            break;
+        case SITUATION_CONTROL_INT:
+        case SITUATION_CONTROL_ENUM:
+            value = floorf(value + 0.5f);
+            break;
+        case SITUATION_CONTROL_FLOAT:
+        default:
+            break;
+    }
     
     node->control_values[control_id] = value;
     node->needs_processing = true;
+
+    if (node->type == SITUATION_NODE_TONE_SYNTH && node->device_data &&
+        (control_id == (uint32_t)SIT_TONE_CTRL_PATCH_SLOT ||
+         control_id == (uint32_t)SIT_TONE_CTRL_PATCH_STORE)) {
+        SituationToneSynthMidiCtx ctx;
+        ctx.controls = node->control_values;
+        ctx.synth = (SituationToneSynthNodeState*)node->device_data;
+        int sr = SituationGetAudioPlaybackSampleRate();
+        float sample_rate = (sr > 0) ? (float)sr : 48000.0f;
+        _SituationToneSynthPatchHandleSetControl(&ctx, control_id, value, (int)sample_rate);
+    }
     
     return SITUATION_SUCCESS;
 }

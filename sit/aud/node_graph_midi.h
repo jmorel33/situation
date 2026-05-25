@@ -29,6 +29,7 @@
 #include "midi_device.h"
 #include "midi_device_callbacks.h"
 #include "midi_learn.h"
+#include "tone_synth_graph.h"
 #include <string.h>
 
 // ================================================================================================
@@ -62,6 +63,25 @@ static inline int _SituationAutoSelectMidiInput(void) {
         }
     }
     return -1;  // PM_NO_DEVICE equivalent
+}
+
+// ================================================================================================
+// MIDI DEVICE CLEANUP (tone synth ctx vs raw control array)
+// ================================================================================================
+
+static inline void _SituationNodeDestroyMidiDevice(SituationNode* node) {
+    if (!node || !node->midi_device) return;
+
+    if (node->type == SITUATION_NODE_TONE_SYNTH &&
+        node->midi_device->device_ptr &&
+        node->midi_device->device_ptr != (void*)node->control_values) {
+        _SituationToneSynthMidiSilence((SituationToneSynthMidiCtx*)node->midi_device->device_ptr);
+        SIT_FREE(node->midi_device->device_ptr);
+        node->midi_device->device_ptr = NULL;
+    }
+
+    SIT_MidiDevice_Destroy(node->midi_device);
+    node->midi_device = NULL;
 }
 
 // ================================================================================================
@@ -108,15 +128,32 @@ SituationError SituationEnableMidiControl(
         return SITUATION_ERROR_MIDI_NOT_SUPPORTED;  // Device type doesn't support MIDI
     }
     
-    // Create MIDI device (processor + identity + callbacks; virtual input opened here — closed in Disable/Destroy)
+    // Create MIDI device (tone synth uses SituationToneSynthMidiCtx; other nodes use control_values)
+    void* midi_device_ptr = node->control_values;
+    SituationToneSynthMidiCtx* tone_midi_ctx = NULL;
+    if (node->type == SITUATION_NODE_TONE_SYNTH) {
+        tone_midi_ctx = (SituationToneSynthMidiCtx*)SIT_CALLOC(1, sizeof(SituationToneSynthMidiCtx));
+        if (!tone_midi_ctx) {
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+        tone_midi_ctx->controls = node->control_values;
+        tone_midi_ctx->synth = (SituationToneSynthNodeState*)node->device_data;
+        if (!tone_midi_ctx->synth) {
+            SIT_FREE(tone_midi_ctx);
+            return SITUATION_ERROR_INTERNAL_STATE_CORRUPTED;
+        }
+        midi_device_ptr = tone_midi_ctx;
+    }
+
     node->midi_device = SIT_MidiDevice_Create(
         callback_entry->device_name,
         SIT_MIDI_DEVICE_EFFECT,
         SIT_MIDI_CAP_INPUT,
-        node->control_values  // Pass control array as device_ptr
+        midi_device_ptr
     );
     
     if (!node->midi_device) {
+        if (tone_midi_ctx) SIT_FREE(tone_midi_ctx);
         return SITUATION_ERROR_MIDI_INIT_FAILED;
     }
     
@@ -127,6 +164,8 @@ SituationError SituationEnableMidiControl(
     // Set callbacks
     SIT_MidiCallbacks callbacks = {0};
     callbacks.on_control_change = callback_entry->on_control_change;
+    callbacks.on_note_on = callback_entry->on_note_on;
+    callbacks.on_note_off = callback_entry->on_note_off;
     SIT_MidiDevice_SetCallbacks(node->midi_device, &callbacks);
     
     // Open MIDI input stream
@@ -159,12 +198,27 @@ SituationError SituationDisableMidiControl(
     }
     
     if (node->midi_device) {
-        SIT_MidiDevice_Destroy(node->midi_device);
-        node->midi_device = NULL;
+        _SituationNodeDestroyMidiDevice(node);
     }
     
     node->midi_device_id = -1;
     
+    return SITUATION_SUCCESS;
+}
+
+SituationError SituationSetNodeMidiChannel(
+    SituationAudioGraph* graph,
+    SituationNodeHandle handle,
+    int channel
+) {
+    if (!graph) return SITUATION_ERROR_NODE_ALLOCATION_FAILED;
+    if (channel < -1 || channel > 15) return SITUATION_ERROR_INVALID_PARAM;
+
+    SituationNode* node = SituationGetNode(graph, handle);
+    if (!node) return SITUATION_ERROR_NODE_INVALID_HANDLE;
+    if (!node->midi_device) return SITUATION_ERROR_MIDI_NOT_SUPPORTED;
+
+    SIT_MidiDevice_SetChannel(node->midi_device, channel);
     return SITUATION_SUCCESS;
 }
 
@@ -185,13 +239,25 @@ int SituationListMidiDevices(
     if (_SituationInitMidi() != SITUATION_SUCCESS) return 0;
     
     int count = 0;
-    int total_devices = Pm_CountDevices();
-    
-    for (int i = 0; i < total_devices && count < max_count; i++) {
-        const PmDeviceInfo* info = Pm_GetDeviceInfo(i);
+
+    for (int id = 0; id < MAX_DEVICES && count < max_count; id++) {
+        const PmDeviceInfo* info = Pm_GetDeviceInfo(id);
         if (!info) continue;
-        
-        devices[count].device_id = i;
+
+        devices[count].device_id = id;
+        strncpy(devices[count].device_name, info->name, sizeof(devices[count].device_name) - 1);
+        devices[count].device_name[sizeof(devices[count].device_name) - 1] = '\0';
+        devices[count].is_input = info->input;
+        devices[count].is_output = info->output;
+        count++;
+    }
+
+    for (int slot = 0; slot < MAX_VIRTUAL_DEVICES && count < max_count; slot++) {
+        int id = MAX_DEVICES + slot;
+        const PmDeviceInfo* info = Pm_GetDeviceInfo(id);
+        if (!info) continue;
+
+        devices[count].device_id = id;
         strncpy(devices[count].device_name, info->name, sizeof(devices[count].device_name) - 1);
         devices[count].device_name[sizeof(devices[count].device_name) - 1] = '\0';
         devices[count].is_input = info->input;
@@ -200,6 +266,20 @@ int SituationListMidiDevices(
     }
     
     return count;
+}
+
+SituationError SituationGetMidiDeviceName(int device_id, char* out_name, size_t out_name_size) {
+    if (!out_name || out_name_size == 0) return SITUATION_ERROR_INVALID_PARAM;
+
+    out_name[0] = '\0';
+    if (_SituationInitMidi() != SITUATION_SUCCESS) return SITUATION_ERROR_MIDI_INIT_FAILED;
+
+    const PmDeviceInfo* info = Pm_GetDeviceInfo(device_id);
+    if (!info || !info->name) return SITUATION_ERROR_MIDI_DEVICE_OPEN_FAILED;
+
+    strncpy(out_name, info->name, out_name_size - 1);
+    out_name[out_name_size - 1] = '\0';
+    return SITUATION_SUCCESS;
 }
 
 int SituationIsMidiEnabled(
@@ -405,6 +485,133 @@ int SituationIsLearning(
     if (!node || !node->learn_state) return 0;
     
     return node->learn_state->learning;
+}
+
+// ================================================================================================
+// VIRTUAL MIDI LOOPBACK (harness / integration testing — no physical controller required)
+// ================================================================================================
+
+typedef struct {
+    int active;
+    PmDeviceID out_dev;
+    PmDeviceID in_dev;
+    PmStream* out_stream;
+    int in_device_id;
+} _SituationVirtualMidiLoopback;
+
+static _SituationVirtualMidiLoopback g_sit_virtual_midi = {0};
+
+SituationError SituationSetupVirtualMidiLoopback(int* out_input_device_id) {
+    if (!out_input_device_id) return SITUATION_ERROR_INVALID_PARAM;
+
+    if (g_sit_virtual_midi.active) {
+        *out_input_device_id = g_sit_virtual_midi.in_device_id;
+        return SITUATION_SUCCESS;
+    }
+
+    SituationError err = _SituationInitMidi();
+    if (err != SITUATION_SUCCESS) return err;
+
+    PmError pe = Pm_CreateVirtualDevice(SITUATION_VIRTUAL_MIDI_OUT_NAME, 0, &g_sit_virtual_midi.out_dev);
+    if (pe != pmNoError) return SITUATION_ERROR_MIDI_INIT_FAILED;
+
+    pe = Pm_CreateVirtualDevice(SITUATION_VIRTUAL_MIDI_IN_NAME, 1, &g_sit_virtual_midi.in_dev);
+    if (pe != pmNoError) {
+        Pm_DestroyVirtualDevice(g_sit_virtual_midi.out_dev);
+        return SITUATION_ERROR_MIDI_INIT_FAILED;
+    }
+
+    pe = Pm_ConnectVirtualDevices(g_sit_virtual_midi.out_dev, g_sit_virtual_midi.in_dev);
+    if (pe != pmNoError) {
+        Pm_DestroyVirtualDevice(g_sit_virtual_midi.in_dev);
+        Pm_DestroyVirtualDevice(g_sit_virtual_midi.out_dev);
+        return SITUATION_ERROR_MIDI_INIT_FAILED;
+    }
+
+    pe = Pm_OpenOutput(&g_sit_virtual_midi.out_stream, g_sit_virtual_midi.out_dev,
+                       NULL, 0, NULL, NULL, 0);
+    if (pe != pmNoError) {
+        Pm_DisconnectVirtualDevices(g_sit_virtual_midi.out_dev, g_sit_virtual_midi.in_dev);
+        Pm_DestroyVirtualDevice(g_sit_virtual_midi.in_dev);
+        Pm_DestroyVirtualDevice(g_sit_virtual_midi.out_dev);
+        return SITUATION_ERROR_MIDI_DEVICE_OPEN_FAILED;
+    }
+
+    g_sit_virtual_midi.in_device_id = (int)g_sit_virtual_midi.in_dev;
+    g_sit_virtual_midi.active = 1;
+    *out_input_device_id = g_sit_virtual_midi.in_device_id;
+    return SITUATION_SUCCESS;
+}
+
+static SituationError _SituationVirtualMidiWrite(uint32_t message) {
+    if (!g_sit_virtual_midi.active || !g_sit_virtual_midi.out_stream) {
+        return SITUATION_ERROR_MIDI_NO_DEVICES;
+    }
+    PmEvent event;
+    event.message = message;
+    event.timestamp = 0;
+    PmError pe = Pm_Write(g_sit_virtual_midi.out_stream, &event, 1);
+    return (pe == pmNoError) ? SITUATION_SUCCESS : SITUATION_ERROR_MIDI_DEVICE_OPEN_FAILED;
+}
+
+SituationError SituationVirtualMidiNoteOnEx(uint8_t channel, uint8_t note, uint8_t velocity) {
+    if (channel > 15) return SITUATION_ERROR_INVALID_PARAM;
+    if (!g_sit_virtual_midi.active || !g_sit_virtual_midi.out_stream) {
+        return SITUATION_ERROR_MIDI_NO_DEVICES;
+    }
+    if (velocity == 0) velocity = 1;
+    return _SituationVirtualMidiWrite(Pm_Message(0x90 | channel, note, velocity));
+}
+
+SituationError SituationVirtualMidiNoteOffEx(uint8_t channel, uint8_t note) {
+    if (channel > 15) return SITUATION_ERROR_INVALID_PARAM;
+    if (!g_sit_virtual_midi.active || !g_sit_virtual_midi.out_stream) {
+        return SITUATION_ERROR_MIDI_NO_DEVICES;
+    }
+    return _SituationVirtualMidiWrite(Pm_Message(0x80 | channel, note, 0));
+}
+
+SituationError SituationVirtualMidiNoteOn(uint8_t note, uint8_t velocity) {
+    return SituationVirtualMidiNoteOnEx(0, note, velocity);
+}
+
+SituationError SituationVirtualMidiNoteOff(uint8_t note) {
+    return SituationVirtualMidiNoteOffEx(0, note);
+}
+
+SituationError SituationVirtualMidiProgramChange(uint8_t channel, uint8_t program) {
+    if (channel > 15) return SITUATION_ERROR_INVALID_PARAM;
+    return _SituationVirtualMidiWrite(Pm_Message(0xC0 | channel, program, 0));
+}
+
+SituationError SituationVirtualMidiControlChange(uint8_t channel, uint8_t controller, uint8_t value) {
+    if (channel > 15) return SITUATION_ERROR_INVALID_PARAM;
+    if (value > 127) value = 127;
+    return _SituationVirtualMidiWrite(Pm_Message(0xB0 | channel, controller, value));
+}
+
+SituationError SituationVirtualMidiPitchBend(uint8_t channel, int16_t bend) {
+    if (channel > 15) return SITUATION_ERROR_INVALID_PARAM;
+    if (bend < 0) bend = 0;
+    if (bend > 16383) bend = 16383;
+    uint8_t lsb = (uint8_t)(bend & 0x7F);
+    uint8_t msb = (uint8_t)((bend >> 7) & 0x7F);
+    return _SituationVirtualMidiWrite(Pm_Message(0xE0 | channel, lsb, msb));
+}
+
+void SituationTeardownVirtualMidiLoopback(void) {
+    if (!g_sit_virtual_midi.active) return;
+
+    if (g_sit_virtual_midi.out_stream) {
+        Pm_Close(g_sit_virtual_midi.out_stream);
+        g_sit_virtual_midi.out_stream = NULL;
+    }
+
+    Pm_DisconnectVirtualDevices(g_sit_virtual_midi.out_dev, g_sit_virtual_midi.in_dev);
+    Pm_DestroyVirtualDevice(g_sit_virtual_midi.in_dev);
+    Pm_DestroyVirtualDevice(g_sit_virtual_midi.out_dev);
+
+    memset(&g_sit_virtual_midi, 0, sizeof(g_sit_virtual_midi));
 }
 
 #endif // SITUATION_NODE_GRAPH_MIDI_H

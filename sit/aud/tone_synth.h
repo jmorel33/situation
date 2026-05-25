@@ -254,6 +254,9 @@ SITAPI SituationToneHandle SituationPlayToneEx(SituationWaveType type, float fre
 
     SituationTone* t = &sit_audio.tone_pool[slot];
 
+    // Reset routing by default to avoid leaking from previous voices
+    t->route_to_graph = false;
+
     // Cleanup previous if active
     if (t->active) {
         if (t->wave_type == SIT_WAVE_NOISE) {

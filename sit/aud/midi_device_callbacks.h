@@ -51,8 +51,12 @@
 #define SITUATION_MIDI_DEVICE_CALLBACKS_H
 
 #include "midi_device.h"
+#include "../situation_base_etc.h"
+#include "tone_synth_graph.h"
 #include <math.h>
 #include <stdbool.h>
+
+extern int SituationGetAudioPlaybackSampleRate(void);
 
 // ================================================================================================
 // DEVICE IDENTITY HELPERS
@@ -115,6 +119,7 @@ enum {
     SIT_MODEL_SST282         = 0x0F,
     SIT_MODEL_MASTERING_AMP  = 0x10,
     SIT_MODEL_MAXIMIZER      = 0x11,
+    SIT_MODEL_TONE_SYNTH     = 0x12,
 };
 
 // ================================================================================================
@@ -1003,6 +1008,71 @@ static void _SituationMaximizerOnControlChange(void* device_ptr, uint8_t control
 }
 
 // ================================================================================================
+// TONE SYNTH CALLBACKS (graph node — SituationToneSynthMidiCtx in device_ptr)
+// ================================================================================================
+
+static SituationToneSynthMidiCtx* _SituationToneSynthMidiCtx(void* device_ptr) {
+    return (SituationToneSynthMidiCtx*)device_ptr;
+}
+
+/**
+ * @brief MIDI mapping for graph tone synth (16-voice poly per node, ADSR, pan, waveforms).
+ *
+ * Note on/off (poly), pitch bend, CC1 vibrato, CC7/CC11 volume, CC10 pan,
+ * CC64 sustain, CC70 waveform, CC72–77 ADSR, CC92 tremolo, CC106 pulse width, CC107–110 sub-osc,
+ * CC24–31 mod LFO (rate/wave + pitch/PWM/filter depth/range),
+ * CC5 portamento time, CC20 portamento speed, CC126 mono / CC127 poly, CC123 all-notes-off, program → waveform.
+ */
+static void _SituationToneSynthOnNoteOn(void* device_ptr, uint8_t note, uint8_t velocity,
+                                        uint32_t sample_offset) {
+    (void)sample_offset;
+    SituationToneSynthMidiCtx* ctx = _SituationToneSynthMidiCtx(device_ptr);
+    if (!ctx || !ctx->controls || !ctx->synth || note > 127) return;
+
+    int sr = SituationGetAudioPlaybackSampleRate();
+    if (sr <= 0) sr = 48000;
+
+    _SituationToneSynthTriggerNoteOn(ctx, note, velocity, sr);
+    _SituationToneSynthMidiSyncControls(ctx);
+}
+
+static void _SituationToneSynthOnNoteOff(void* device_ptr, uint8_t note, uint8_t velocity,
+                                         uint32_t sample_offset) {
+    (void)velocity;
+    (void)sample_offset;
+    SituationToneSynthMidiCtx* ctx = _SituationToneSynthMidiCtx(device_ptr);
+    if (!ctx || !ctx->synth) return;
+
+    _SituationToneSynthReleaseNote(ctx->synth, note);
+    _SituationToneSynthMidiSyncControls(ctx);
+}
+
+static void _SituationToneSynthOnControlChange(void* device_ptr, uint8_t controller, uint8_t value,
+                                               uint32_t sample_offset) {
+    (void)sample_offset;
+    SituationToneSynthMidiCtx* ctx = _SituationToneSynthMidiCtx(device_ptr);
+    if (!ctx || !ctx->controls || !ctx->synth) return;
+
+    int sr = SituationGetAudioPlaybackSampleRate();
+    if (sr <= 0) sr = 48000;
+
+    _SituationToneSynthApplyControlChange(ctx, controller, value, sr);
+    _SituationToneSynthMidiSyncControls(ctx);
+}
+
+void _SituationToneSynthOnPitchBend(SituationToneSynthMidiCtx* ctx, int16_t bend) {
+    if (!ctx || !ctx->synth) return;
+    ctx->synth->bend_semitones = (((float)bend / 8192.0f) - 1.0f) * 2.0f;
+    _SituationToneSynthMidiSyncControls(ctx);
+}
+
+void _SituationToneSynthOnProgramChange(SituationToneSynthMidiCtx* ctx, uint8_t program) {
+    if (!ctx || !ctx->controls || !ctx->synth) return;
+    _SituationToneSynthSetWaveform(ctx, (int)(program % 5));
+    _SituationToneSynthMidiSyncControls(ctx);
+}
+
+// ================================================================================================
 // CALLBACK LOOKUP TABLE
 // ================================================================================================
 
@@ -1013,6 +1083,8 @@ typedef struct {
     SituationNodeType device_type;
     void (*on_control_change)(void*, uint8_t, uint8_t, uint32_t);  // Fixed: uint32_t sample_offset
     const char* device_name;
+    void (*on_note_on)(void*, uint8_t, uint8_t, uint32_t);
+    void (*on_note_off)(void*, uint8_t, uint8_t, uint32_t);
 } SIT_MidiCallbackEntry;
 
 /**
@@ -1043,6 +1115,8 @@ static const SIT_MidiCallbackEntry g_midi_callback_table[] = {
     { SITUATION_NODE_SST282,         _SituationSST282OnControlChange,         "SST-282" },
     { SITUATION_NODE_MASTERING_AMP,  _SituationMasteringAmpOnControlChange,   "Mastering Amp" },
     { SITUATION_NODE_MAXIMIZER,      _SituationMaximizerOnControlChange,      "Maximizer" },
+    { SITUATION_NODE_TONE_SYNTH,     _SituationToneSynthOnControlChange,      "Tone Synth",
+      _SituationToneSynthOnNoteOn,   _SituationToneSynthOnNoteOff },
 };
 
 static const int g_midi_callback_table_count = sizeof(g_midi_callback_table) / sizeof(g_midi_callback_table[0]);
@@ -1094,6 +1168,7 @@ static inline SIT_MidiDeviceIdentity SIT_GetDeviceIdentity(SituationNodeType dev
         case SITUATION_NODE_SST282:         return _SituationCreateDeviceIdentity(SIT_MODEL_SST282, "SST-282");
         case SITUATION_NODE_MASTERING_AMP:  return _SituationCreateDeviceIdentity(SIT_MODEL_MASTERING_AMP, "Mastering Amp");
         case SITUATION_NODE_MAXIMIZER:      return _SituationCreateDeviceIdentity(SIT_MODEL_MAXIMIZER, "Maximizer");
+        case SITUATION_NODE_TONE_SYNTH:     return _SituationCreateDeviceIdentity(SIT_MODEL_TONE_SYNTH, "Tone Synth");
         default: {
             // Unknown device - return generic identity
             SIT_MidiDeviceIdentity identity = _SituationCreateDeviceIdentity(0xFF, "Unknown");

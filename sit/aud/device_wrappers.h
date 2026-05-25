@@ -20,6 +20,8 @@
 
 #include "node_graph_process.h"
 #include "fx/reverb.h"
+
+extern int SituationGetAudioPlaybackSampleRate(void);
 #include "fx/echo.h"
 #include "fx/chorus_4stage.h"
 #include "fx/phaseshifter.h"
@@ -62,10 +64,13 @@
  * @return Opaque pointer to SituationReverbState.
  */
 static void* _SituationCreateReverb(const SituationDeviceMetadata* metadata) {
-    (void)metadata;  // Unused for now
-    
-    // Initialize reverb at 48kHz (should get from audio context in real impl)
-    return _SituationInitReverb(48000);
+    (void)metadata;
+
+    void* state = NULL;
+    if (_SituationInitReverb(48000, &state) != SITUATION_SUCCESS) {
+        return NULL;
+    }
+    return state;
 }
 
 /**
@@ -170,9 +175,7 @@ static void _SituationProcessEchoNode(
     float delay_time = controls ? controls[0] : 0.5f;
     float feedback = controls ? controls[1] : 0.5f;
     float wet = controls ? controls[2] : 0.5f;
-    float dry = 1.0f - wet;  // Complementary dry level
-    
-    // Configure echo (lazy init on first process)
+    /* Parallel dry/wet is applied in _SituationProcessEcho; miniaudio line feed stays at 1.0f. */
     _SituationConfigEcho(
         &state->echo,
         state->sample_rate,
@@ -180,7 +183,7 @@ static void _SituationProcessEchoNode(
         delay_time,
         feedback,
         wet,
-        dry
+        1.0f
     );
     
     // Copy input to output first
@@ -207,18 +210,10 @@ static void _SituationDestroyEcho(void* device_data) {
 }
 
 // ================================================================================================
-// TONE SYNTH WRAPPER (Stub - needs full implementation)
+// TONE SYNTH WRAPPER
 // ================================================================================================
 
-/**
- * @brief Tone synth device state (stub).
- */
-typedef struct {
-    float frequency;
-    float amplitude;
-    float phase;
-    int waveform;  // 0=sine, 1=square, 2=saw, 3=triangle
-} SituationToneSynthNodeState;
+#include "tone_synth_graph.h"
 
 /**
  * @brief Create tone synth device state.
@@ -232,9 +227,17 @@ static void* _SituationCreateToneSynth(const SituationDeviceMetadata* metadata) 
     if (!state) return NULL;
     
     state->frequency = 440.0f;  // A4
-    state->amplitude = 0.3f;
+    state->amplitude = 0.0f;
     state->phase = 0.0f;
     state->waveform = 0;  // Sine
+    _SituationToneSynthMidiInitState(state);
+
+    {
+        int sr = SituationGetAudioPlaybackSampleRate();
+        float sample_rate = (sr > 0) ? (float)sr : 48000.0f;
+        _SituationToneSynthSumLimiterAlloc(&state->sum_limiter, sample_rate);
+        state->sum_limiter_sample_rate = sample_rate;
+    }
     
     return state;
 }
@@ -254,54 +257,175 @@ static void _SituationProcessToneSynthNode(
     float* controls,
     int frames
 ) {
-    (void)inputs;  // Pure source - no inputs
-    
+    (void)inputs;
+
     if (!device_data || !outputs) return;
-    
+
     SituationToneSynthNodeState* state = (SituationToneSynthNodeState*)device_data;
-    
-    // Update parameters from controls
-    // Control indices: 0=frequency, 1=amplitude, 2=waveform, ...
-    if (controls) {
-        state->frequency = controls[0];
-        state->amplitude = controls[1];
-        state->waveform = (int)controls[2];
-    }
-    
     float* buffer = outputs[0].buffer;
     int channels = outputs[0].channels;
-    float sample_rate = 48000.0f;  // Should get from audio context
-    float phase_increment = (2.0f * 3.14159265359f * state->frequency) / sample_rate;
-    
-    // Generate waveform
+    if (channels < 1) channels = 2;
+
+    int sr = SituationGetAudioPlaybackSampleRate();
+    float sample_rate = (sr > 0) ? (float)sr : 48000.0f;
+    const float lfo_inc = (2.0f * 3.14159265359f * SITUATION_TONE_SYNTH_VIBRATO_HZ) / sample_rate;
+    const float tremolo_inc = (2.0f * 3.14159265359f * SITUATION_TONE_SYNTH_TREMOLO_HZ) / sample_rate;
+    const float two_pi = 2.0f * 3.14159265359f;
+
+    const int any_voice = _SituationToneSynthAnyVoiceActive(state);
+
+    if (controls && !any_voice) {
+        state->frequency = controls[0];
+        state->waveform = (int)(controls[1] + 0.5f);
+        if (state->waveform < 0) state->waveform = 0;
+        if (state->waveform > 4) state->waveform = 4;
+        state->amplitude = controls[2];
+    } else if (controls) {
+        state->waveform = (int)(controls[1] + 0.5f);
+        if (state->waveform < 0) state->waveform = 0;
+        if (state->waveform > 4) state->waveform = 4;
+    }
+
     for (int i = 0; i < frames; i++) {
-        float sample = 0.0f;
-        
-        switch (state->waveform) {
-            case 0:  // Sine
-                sample = sinf(state->phase) * state->amplitude;
-                break;
-            case 1:  // Square
-                sample = (state->phase < 3.14159265359f ? 1.0f : -1.0f) * state->amplitude;
-                break;
-            case 2:  // Sawtooth
-                sample = ((state->phase / 3.14159265359f) - 1.0f) * state->amplitude;
-                break;
-            case 3:  // Triangle
-                sample = (2.0f * fabsf((state->phase / 3.14159265359f) - 1.0f) - 1.0f) * state->amplitude;
-                break;
+        float mix_l = 0.0f;
+        float mix_r = 0.0f;
+
+        float mod_lfo_val = 0.0f;
+        float mod_lfo_pitch = 0.0f;
+        float mod_lfo_filter_hz = 0.0f;
+        float mod_lfo_pulse_width = controls ? controls[SIT_TONE_CTRL_PULSE_WIDTH] : 0.5f;
+        if (controls) {
+            _SituationToneSynthModLfoAdvance(state, controls, sample_rate);
+            mod_lfo_val = _SituationToneSynthModLfoValue(state, controls);
+            mod_lfo_pitch = _SituationToneSynthModLfoPitchSemis(controls, mod_lfo_val);
+            mod_lfo_filter_hz = _SituationToneSynthModLfoFilterCutoffOffset(controls, mod_lfo_val);
+            mod_lfo_pulse_width =
+                _SituationToneSynthModLfoPulseWidth(controls, mod_lfo_val, mod_lfo_pulse_width);
         }
-        
-        // Write to all channels (mono source)
-        for (int c = 0; c < channels; c++) {
-            buffer[i * channels + c] = sample;
+
+        if (any_voice) {
+            state->lfo_phase += lfo_inc;
+            if (state->lfo_phase > two_pi) {
+                state->lfo_phase -= two_pi;
+            }
+            state->tremolo_phase += tremolo_inc;
+            if (state->tremolo_phase > two_pi) {
+                state->tremolo_phase -= two_pi;
+            }
+
+            float tremolo_mult = 1.0f;
+            if (state->tremolo_depth > 0.0f) {
+                tremolo_mult = 1.0f - state->tremolo_depth * (0.5f + 0.5f * sinf(state->tremolo_phase));
+            }
+
+            const float global_vol = _SituationToneSynthMidiCombinedVolume(state) * tremolo_mult;
+
+            for (int v = 0; v < SITUATION_TONE_SYNTH_MAX_VOICES; v++) {
+                SituationToneSynthVoice* voice = &state->voices[v];
+                if (!voice->active) continue;
+
+                float envelope = _SituationToneSynthEnvStep(voice);
+                if (!voice->active) continue;
+
+                if (controls && _SituationToneSynthIsMono(controls)) {
+                    float portamento_time = controls[SIT_TONE_CTRL_PORTAMENTO_TIME];
+                    float portamento_speed = controls[SIT_TONE_CTRL_PORTAMENTO_SPEED];
+                    _SituationToneSynthVoiceGlidePitch(voice, portamento_time, portamento_speed,
+                                                       sample_rate);
+                } else {
+                    voice->base_hz = voice->target_hz;
+                }
+
+                float freq = _SituationToneSynthVoiceFrequency(state, voice, state->lfo_phase,
+                                                               mod_lfo_pitch);
+                float sample = _SituationToneSynthMixMainSub(
+                    voice->waveform, voice->sub_waveform, &voice->phase, &voice->sub_phase,
+                    &voice->sub_cycle_pending, voice->note, freq, sample_rate,
+                    mod_lfo_pulse_width, controls);
+                sample *= envelope * voice->volume_peak * global_vol;
+
+                if (controls && _SituationToneSynthFilterEnabled(controls)) {
+                    float filter_cutoff_mod = mod_lfo_filter_hz +
+                        _SituationToneSynthFilterEnvCutoffOffset(controls, envelope);
+                    sample = _SituationToneSynthVoiceFilterProcess(
+                        &voice->vf, controls, voice->note, sample, sample_rate,
+                        filter_cutoff_mod);
+                }
+
+                float pan = voice->pan;
+                if (controls) {
+                    pan = controls[3];
+                }
+                if (pan < -1.0f) pan = -1.0f;
+                if (pan > 1.0f) pan = 1.0f;
+                float gain_l = (pan <= 0.0f) ? 1.0f : (1.0f - pan);
+                float gain_r = (pan >= 0.0f) ? 1.0f : (1.0f + pan);
+
+                mix_l += sample * gain_l;
+                mix_r += sample * gain_r;
+            }
+        } else {
+            float amp = state->amplitude;
+            if (amp > 0.0f) {
+                float manual_hz = state->frequency;
+                if (mod_lfo_pitch != 0.0f) {
+                    manual_hz *= powf(2.0f, mod_lfo_pitch / 12.0f);
+                }
+                const uint8_t manual_note = _SituationToneSynthFreqToMidiNote(manual_hz);
+                int sub_wf = controls ? _SituationToneSynthClampWaveform(
+                                            (int)(controls[SIT_TONE_CTRL_SUB_WAVEFORM] + 0.5f))
+                                      : 0;
+                float sample = _SituationToneSynthMixMainSub(
+                    state->waveform, sub_wf, &state->phase, &state->sub_phase,
+                    &state->sub_cycle_pending, manual_note, manual_hz, sample_rate,
+                    mod_lfo_pulse_width, controls);
+                sample *= amp;
+
+                if (controls && _SituationToneSynthFilterEnabled(controls)) {
+                    state->manual_filter_note = manual_note;
+                    float filter_cutoff_mod = mod_lfo_filter_hz +
+                        _SituationToneSynthFilterEnvCutoffOffset(controls, amp);
+                    sample = _SituationToneSynthVoiceFilterProcess(
+                        &state->manual_vf, controls, state->manual_filter_note, sample,
+                        sample_rate, filter_cutoff_mod);
+                }
+
+                float pan = controls ? controls[3] : 0.0f;
+                if (pan < -1.0f) pan = -1.0f;
+                if (pan > 1.0f) pan = 1.0f;
+                float gain_l = (pan <= 0.0f) ? 1.0f : (1.0f - pan);
+                float gain_r = (pan >= 0.0f) ? 1.0f : (1.0f + pan);
+                mix_l = sample * gain_l;
+                mix_r = sample * gain_r;
+            }
         }
-        
-        // Advance phase
-        state->phase += phase_increment;
-        if (state->phase >= 2.0f * 3.14159265359f) {
-            state->phase -= 2.0f * 3.14159265359f;
+
+        _SituationToneSynthSumLimiterEnsure(state, sample_rate);
+        {
+            float limited_l = mix_l;
+            float limited_r = mix_r;
+            _SituationToneSynthSumLimiterProcess(&state->sum_limiter, &mix_l, &mix_r, &limited_l,
+                                                 &limited_r, sample_rate);
+            mix_l = limited_l;
+            mix_r = limited_r;
         }
+
+        if (channels >= 2) {
+            buffer[i * channels + 0] = mix_l;
+            buffer[i * channels + 1] = mix_r;
+            for (int c = 2; c < channels; c++) {
+                buffer[i * channels + c] = (mix_l + mix_r) * 0.5f;
+            }
+        } else {
+            buffer[i] = (mix_l + mix_r) * 0.5f;
+        }
+    }
+
+    if (controls && any_voice) {
+        SituationToneSynthMidiCtx sync_ctx;
+        sync_ctx.controls = controls;
+        sync_ctx.synth = state;
+        _SituationToneSynthMidiSyncControls(&sync_ctx);
     }
 }
 
@@ -311,6 +435,8 @@ static void _SituationProcessToneSynthNode(
  */
 static void _SituationDestroyToneSynth(void* device_data) {
     if (device_data) {
+        SituationToneSynthNodeState* state = (SituationToneSynthNodeState*)device_data;
+        _SituationToneSynthSumLimiterFree(&state->sum_limiter);
         SIT_FREE(device_data);
     }
 }
@@ -912,17 +1038,23 @@ static void _SituationProcessFilterNode(
     
     SituationFilter* filter = (SituationFilter*)device_data;
     
-    // Update parameters from controls
-    // 0=mode, 1=frequency, 2=resonance_q, 3=poles, 4=drive, 5=oversampling
+    // Registry: 0=cutoff, 1=resonance, 2=type (0=LP, 1=HP, 2=BP)
     if (controls) {
-        PxFilterMode mode = (PxFilterMode)((int)controls[0]);
-        float frequency = controls[1];
-        float resonance_q = controls[2];
-        int poles = (int)controls[3];
-        float drive = controls[4];
-        bool oversampling = controls[5] > 0.5f;
-        
-        // Set coefficients with all parameters
+        static const PxFilterMode mode_map[] = {
+            PX_FILTER_MODE_LP,
+            PX_FILTER_MODE_HP,
+            PX_FILTER_MODE_BP
+        };
+        int type_idx = (int)(controls[2] + 0.5f);
+        if (type_idx < 0) type_idx = 0;
+        if (type_idx > 2) type_idx = 2;
+        PxFilterMode mode = mode_map[type_idx];
+        float frequency = controls[0];
+        float resonance_q = controls[1];
+        int poles = 2;
+        float drive = 1.0f;
+        bool oversampling = false;
+
         filter_set_coefficients(filter, frequency, resonance_q, mode, poles);
         filter_set_drive(filter, drive);
         filter_set_oversampling(filter, oversampling);
@@ -973,13 +1105,12 @@ static void _SituationProcessEQ4BandNode(
     
     SituationEQ4Band* eq = (SituationEQ4Band*)device_data;
     
-    // Update parameters from controls
-    // 0-2=band0 (freq, q, gain), 3-5=band1, 6-8=band2, 9-11=band3
+    // Registry: 0-1=HPF, 2-4=low shelf, 5-7=peak, 8-10=high shelf
     if (controls) {
-        eq4band_set_band(eq, 0, controls[0], controls[1], controls[2]);
-        eq4band_set_band(eq, 1, controls[3], controls[4], controls[5]);
-        eq4band_set_band(eq, 2, controls[6], controls[7], controls[8]);
-        eq4band_set_band(eq, 3, controls[9], controls[10], controls[11]);
+        eq4band_set_band(eq, 0, controls[2], controls[4], controls[3]);
+        eq4band_set_band(eq, 1, controls[5], controls[7], controls[6]);
+        eq4band_set_band(eq, 2, controls[8], controls[10], controls[9]);
+        eq4band_set_band(eq, 3, 8000.0f, 0.707f, 0.0f);
     }
     
     // Process audio
@@ -1232,15 +1363,15 @@ static void _SituationProcessSoundSourceNode(
     SituationSoundSource* src = (SituationSoundSource*)device_data;
     
     // Update parameters from controls
-    // 0=play/stop, 1=loop, 2=volume
+    // 0=volume, 1=pitch/loop, 2=play_state
     if (controls) {
-        if (controls[0] > 0.5f) {
+        if (controls[2] > 0.5f) {
             sound_source_play(src);
         } else {
             sound_source_stop(src);
         }
         sound_source_set_loop(src, controls[1] > 0.5f);
-        sound_source_set_volume(src, controls[2]);
+        sound_source_set_volume(src, controls[0]);
     }
     
     // Process audio
@@ -1336,7 +1467,7 @@ static void* _SituationCreateMaximizer(const SituationDeviceMetadata* metadata) 
     MaximizerState* max = (MaximizerState*)SIT_CALLOC(1, sizeof(MaximizerState));
     if (!max) return NULL;
     
-    init_maximizer(max, 48000, 512, 10, 20000.0f, 4);
+    init_maximizer(max, 48000, 64, 10, 20000.0f, 4);
     
     set_band_params(max, 0, 100.0f, 1.0f, 1.5f, 3);
     set_band_params(max, 1, 500.0f, 1.0f, 1.5f, 3);
