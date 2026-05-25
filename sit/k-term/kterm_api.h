@@ -57,8 +57,8 @@
 // --- Version Macros ---
 #define KTERM_VERSION_MAJOR 2
 #define KTERM_VERSION_MINOR 7
-#define KTERM_VERSION_PATCH 4
-#define KTERM_VERSION_STRING "2.7.4"
+#define KTERM_VERSION_PATCH 12
+#define KTERM_VERSION_STRING "2.7.12"
 
 // --- DLL Export/Import ---
 #if defined(_WIN32)
@@ -135,6 +135,8 @@ KTERM_API void KTerm_Free(void* ptr);
 #define DEFAULT_TERM_HEIGHT 50
 #define KTERM_MAX_COLS 2048
 #define KTERM_MAX_ROWS 2048
+// Default terminal cell size. The built-in IBM bitmap is 8x8 and is intentionally
+// centered inside this 10x10 cell to provide terminal padding/spacing.
 #define DEFAULT_CHAR_WIDTH 10
 #define DEFAULT_CHAR_HEIGHT 10
 #define DEFAULT_WINDOW_SCALE 1 // Scale factor for the window and font rendering
@@ -892,41 +894,6 @@ typedef struct {
     atomic_int dropped_events;
 } KTermInputConfig;
 
-/*
-typedef struct {
-    bool application_mode;      // General application mode for some keys (not DECCKM)
-    bool cursor_key_mode;       // DECCKM: Application Cursor Keys (ESC OA vs ESC [ A)
-    bool keypad_mode;           // DECKPAM/DECKPNM: Application/Numeric Keypad
-    bool meta_sends_escape;   // Does Alt/Meta key prefix char with ESC?
-    bool delete_sends_del;    // DEL key sends DEL (0x7F) or BS (0x08)
-    bool backarrow_sends_bs;  // Backarrow key sends BS (0x08) or DEL (0x7F)
-
-    int keyboard_dialect;        // Tracks NRCS dialect for CSI ?26 n (1=North American, 2=British, etc.)
-
-    // Function key definitions (programmable or standard)
-    char function_keys[24][32];  // F1-F24 sequences (can be overridden by DECUDK)
-
-    // Key mapping table (example, might not be fully used if KTerm_GenerateVTSequence is comprehensive)
-    // struct {
-    //     int Situation_key;
-    //     char normal[16];
-    //     char shift[16];
-    //     char ctrl[16];
-    //     char alt[16];
-    //     char app[16]; // For application modes
-    // } key_mappings[256]; // Max Situation key codes
-
-    // Buffered input for key events
-    VTKeyEvent buffer[512]; // Circular buffer for key events
-    int buffer_head, buffer_tail, buffer_count;
-
-    // Statistics
-    size_t total_events;
-    size_t dropped_events;      // If buffer overflows
-    // size_t priority_overrides; // If high priority event preempts
-} VTKeyboard;
-*/
-
 // =============================================================================
 // TITLE AND ICON MANAGEMENT
 // =============================================================================
@@ -943,7 +910,7 @@ typedef struct {
 // =============================================================================
 typedef struct {
     size_t pipeline_usage;      // Bytes currently in input_pipeline
-    size_t key_usage;           // Events currently in vt_keyboard.buffer
+    size_t key_usage;           // Events currently in session->input.buffer
     bool overflow_detected;     // Was input_pipeline overflowed recently?
     double avg_process_time;    // Average time to process one char from pipeline (diagnostics)
 } KTermStatus;
@@ -993,30 +960,27 @@ typedef struct {
     "    uint64_t font_texture_handle; uint64_t sixel_texture_handle; uint64_t vector_texture_handle;\n"
     "    uint64_t shader_config_addr; uint atlas_cols; uint vector_count;\n"
     "    int sixel_y_offset; uint grid_color; uint conceal_char_code;\n"
+    "    uint font_data_width; uint font_data_height;\n"
     "} pc;\n";
 #else
     static const char* terminal_compute_preamble =
     "#version 460\n"
-    "#extension GL_EXT_buffer_reference : require\n"
-    "#extension GL_EXT_scalar_block_layout : require\n"
-    "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n"
-    "#extension GL_ARB_bindless_texture : require\n"
-    "#extension GL_GOOGLE_include_directive : require\n"
     "layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;\n"
-    "// OpenGL: Bindless texture handles\n"
-    "#define GET_SAMPLER_2D(h) sampler2D(h)\n"
+    "// OpenGL: use ordinary bound resources instead of Vulkan buffer references.\n"
     "struct GPUCell { uint char_code; uint fg_color; uint bg_color; uint flags; uint ul_color; uint st_color; };\n"
-    "layout(buffer_reference, scalar) buffer KTermBuffer { GPUCell cells[]; };\n"
+    "layout(std430, binding = 0) readonly buffer KTermBufferBlock { GPUCell cells[]; } terminal_data;\n"
     "layout(binding = 1, rgba8) uniform image2D output_image;\n"
-    "layout(buffer_reference, scalar) buffer ConfigBuffer { float crt_curvature; float scanline_intensity; float glow_intensity; float noise_intensity; float visual_bell_intensity; float voice_energy; uint flags; uint font_cell_width; uint font_cell_height; uint font_data_width; uint font_data_height; };\n"
-    "layout(scalar, binding = 0) uniform PushConstants {\n"
+    "layout(binding = 2) uniform sampler2D u_font_texture;\n"
+    "layout(binding = 3) uniform sampler2D u_sixel_texture;\n"
+    "layout(std430, binding = 4) readonly buffer PushConstants {\n"
     "    vec2 screen_size; vec2 char_size; vec2 grid_size; float time;\n"
     "    uint cursor_index; uint cursor_blink_state; uint text_blink_state;\n"
     "    uint sel_start; uint sel_end; uint sel_active; uint mouse_cursor_index;\n"
-    "    uint64_t terminal_buffer_addr; uint64_t vector_buffer_addr;\n"
-    "    uint64_t font_texture_handle; uint64_t sixel_texture_handle; uint64_t vector_texture_handle;\n"
-    "    uint64_t shader_config_addr; uint atlas_cols; uint vector_count;\n"
+    "    uvec2 terminal_buffer_addr; uvec2 vector_buffer_addr;\n"
+    "    uvec2 font_texture_handle; uvec2 sixel_texture_handle; uvec2 vector_texture_handle;\n"
+    "    uvec2 shader_config_addr; uint atlas_cols; uint vector_count;\n"
     "    int sixel_y_offset; uint grid_color; uint conceal_char_code;\n"
+    "    uint font_data_width; uint font_data_height;\n"
     "} pc;\n";
 #endif
 
@@ -1229,10 +1193,6 @@ KTERM_API void KTerm_SetPipelineTimeBudget(KTerm* term, double pct); // Percenta
 // Mouse support (enhanced)
 KTERM_API void KTerm_SetMouseTracking(KTerm* term, MouseTrackingMode mode); // Explicitly set a mouse mode
 KTERM_API void KTerm_EnableMouseFeature(KTerm* term, const char* feature, bool enable); // e.g., "focus", "sgr"
-// void KTerm_UpdateMouse(KTerm* term); // Removed in v2.1
-// void KTerm_UpdateKeyboard(KTerm* term); // Removed in v2.1
-// void UpdateKeyboard(KTerm* term);  // Removed in v2.1
-// bool GetKeyEvent(KTerm* term, KeyEvent* event);  // Removed in v2.1
 KTERM_API void KTerm_SetKeyboardMode(KTerm* term, const char* mode, bool enable); // "application_cursor", "keypad_numeric"
 KTERM_API void KTerm_SetFocus(KTerm* term, bool focused); // Report focus state (CSI I/O)
 KTERM_API void KTerm_DefineFunctionKey(KTerm* term, int key_num, const char* sequence); // Program F1-F24

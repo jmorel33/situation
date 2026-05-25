@@ -62,6 +62,15 @@ typedef Color KTermColor;
 #define KTerm_CreateTextureEx SituationCreateTextureEx
 #define KTerm_DestroyTexture SituationDestroyTexture
 #define KTerm_GetTextureHandle SituationGetTextureHandle
+#define KTerm_GetTextureInfo SituationGetTextureInfo
+#define KTerm_SetTextureSamplerParams SituationSetTextureSamplerParams
+#define KTerm_ReadTexture SituationReadTexture
+#define KTerm_ReadTextureAlloc SituationReadTextureAlloc
+#define KTerm_ReadFramebuffer SituationReadFramebuffer
+typedef SituationTextureInfo KTermTextureInfo;
+typedef SituationTextureReadbackDesc KTermTextureReadbackDesc;
+typedef SituationReadPixelsDesc KTermReadPixelsDesc;
+#define KTERM_TEXTURE_READ_RGBA8 SIT_TEXTURE_READ_RGBA8
 
 #define KTerm_CreateComputePipeline SituationCreateComputePipelineFromMemory
 #define KTerm_DestroyPipeline SituationDestroyComputePipeline
@@ -79,8 +88,18 @@ static inline int KTerm_CmdBindPipeline(SituationCommandBuffer cmd, SituationCom
 }
 
 #define KTerm_CmdBindTexture SituationCmdBindComputeTexture
+#define KTerm_CmdBindSampledTexture SituationCmdBindSampledTexture
 #define KTerm_CmdBindBuffer SituationCmdBindComputeBuffer
 #define KTerm_CmdSetPushConstant SituationCmdSetPushConstant
+#if defined(SITUATION_USE_OPENGL)
+static inline SituationError KTerm_CmdSetTerminalConstants(SituationCommandBuffer cmd, const void* data, size_t size) {
+    return SituationCmdSetPushConstant(cmd, 4, data, size);
+}
+#else
+static inline SituationError KTerm_CmdSetTerminalConstants(SituationCommandBuffer cmd, const void* data, size_t size) {
+    return SituationCmdSetPushConstant(cmd, 0, data, size);
+}
+#endif
 #define KTerm_CmdDispatch SituationCmdDispatch
 #define KTerm_CmdPipelineBarrier SituationCmdPipelineBarrier
 #define KTerm_CmdPresent SituationCmdPresent

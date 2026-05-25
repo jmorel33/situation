@@ -126,7 +126,8 @@ KTermVoiceContext* KTerm_Voice_GetContext(KTermSession* session) {
     }
     // Bind new
     for(int i=0; i<MAX_SESSIONS; i++) {
-        if (g_voice_contexts[i].session == NULL) {
+        if (g_voice_contexts[i].session == NULL || !g_voice_contexts[i].enabled) {
+            memset(&g_voice_contexts[i], 0, sizeof(g_voice_contexts[i]));
             g_voice_contexts[i].session = session;
             return &g_voice_contexts[i];
         }
@@ -226,6 +227,8 @@ int KTerm_Voice_Enable(KTermSession* session, bool enable) {
             SituationStopAudioPlayback();
             ctx->enabled = false;
         }
+        ctx->term = NULL;
+        ctx->session = NULL;
     }
     return SITUATION_SUCCESS;
 }
