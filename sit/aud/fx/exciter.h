@@ -67,6 +67,10 @@
 #include <stddef.h>
 #include <string.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 // FMA detection
 #if defined(__FP_FAST_FMAF) || defined(__FMA__) || (defined(_MSC_VER) && defined(__AVX2__))
     #define EXCITER_HAS_FMA 1
@@ -81,7 +85,6 @@
 #endif
 
 #define MAX_CHANNELS 2
-#define PI 3.141592653589793f
 
 /**
  * @struct ExciterParams
@@ -219,7 +222,7 @@ static void default_exciter_params(ExciterParams *params) {
 
 // Compute 2nd-order Butterworth high-pass coefficients based on fc and sample_rate
 static void compute_coeffs(ExciterState *state) {
-    float w = tanf(PI * state->params.fc / state->sample_rate);
+    float w = tanf((float)M_PI * state->params.fc / state->sample_rate);
     float denom = w * w + sqrtf(2.0f) * w + 1.0f;
     state->a0 = w * w / denom;
     state->a1 = -2.0f * state->a0;

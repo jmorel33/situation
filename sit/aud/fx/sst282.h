@@ -50,6 +50,10 @@
 #include <string.h>
 #include <math.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 // FMA detection
 #if defined(__FP_FAST_FMAF) || defined(__FMA__) || (defined(_MSC_VER) && defined(__AVX2__))
     #define SST282_HAS_FMA 1
@@ -66,10 +70,6 @@
 #define SST282_MAX_DELAY_MS 255
 #define SST282_NUM_REVERB_TAPS 16
 #define SST282_INTERNAL_SAMPLE_RATE 16000.0f
-
-#ifndef PI
-#define PI 3.14159265358979323846
-#endif
 
 typedef enum {
     SST282_ROOM1, SST282_ROOM2, SST282_ROOM3, SST282_ROOM4,
@@ -168,7 +168,7 @@ static inline float sst282_hard_limit(float sample) {
 // Biquad initialization
 static void sst282_init_biquad(SST282Biquad *biquad, float freq, float gain_dB, float Q, float sample_rate) {
     float A = powf(10.0f, gain_dB / 40.0f);
-    float w0 = 2.0f * PI * freq / sample_rate;
+    float w0 = 2.0f * (float)M_PI * freq / sample_rate;
     float alpha = sinf(w0) / (2.0f * Q);
     float b0, b1, b2, a0, a1, a2;
     // Shelving filter coefficients (simplified RBJ)

@@ -17,6 +17,10 @@
 
 #include <math.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 // FMA detection
 #if defined(__FP_FAST_FMAF) || defined(__FMA__) || (defined(_MSC_VER) && defined(__AVX2__))
     #define PHASER_HAS_FMA 1
@@ -28,10 +32,6 @@
 #else
     #define PHASER_HAS_FMA 0
     #define PHASER_FMA(a, b, c) ((a) * (b) + (c))
-#endif
-
-#ifndef PI
-#define PI 3.141592653589793f
 #endif
 
 #define MAX_DELAY_SAMPLES 5000  // For feedback delay enhancement
@@ -76,7 +76,7 @@ static void initPhaseShifter(PhaseShifter *ps, float sample_rate, float initial_
     ps->sample_rate = sample_rate;
     ps->lfo_freq = initial_rate;
     ps->lfo_phase = 0.0f;
-    ps->lfo_phase_offset = PI;
+    ps->lfo_phase_offset = (float)M_PI;
     ps->a_base = 0.5f;
     ps->a_depth = 0.4f;
     ps->feedback = initial_feedback;
@@ -187,8 +187,8 @@ static void processBuffer(PhaseShifter *ps, float *buffer, int num_samples, int 
             float pan_position = (balance + 1.0f) / 2.0f;
 
             // Constant-power panning law
-            float gain_to_left = cosf(pan_position * PI / 2.0f);
-            float gain_to_right = sinf(pan_position * PI / 2.0f);
+            float gain_to_left = cosf(pan_position * (float)M_PI / 2.0f);
+            float gain_to_right = sinf(pan_position * (float)M_PI / 2.0f);
 
             // FMA-optimized cross-mix
             output_left = PHASER_FMA(x[c] * gain_to_left, ps->mix, output_left);
@@ -210,8 +210,8 @@ static void processBuffer(PhaseShifter *ps, float *buffer, int num_samples, int 
         if (num_channels > 1) buffer[i * num_channels + 1] = output_right;
 
         // Advance LFO
-        ps->lfo_phase += 2 * PI * ps->lfo_freq / ps->sample_rate;
-        if (ps->lfo_phase > 2 * PI) ps->lfo_phase -= 2 * PI;
+        ps->lfo_phase += 2.0f * (float)M_PI * ps->lfo_freq / ps->sample_rate;
+        if (ps->lfo_phase > 2.0f * (float)M_PI) ps->lfo_phase -= 2.0f * (float)M_PI;
     }
 }
 

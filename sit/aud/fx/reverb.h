@@ -171,51 +171,70 @@ static void _SituationUninitReverb(void* state_ptr) {
 /**
  * @brief [INTERNAL] Allocates and initializes the true-stereo reverb engine state.
  */
-static void* _SituationInitReverb(uint32_t sample_rate) {
+static SituationError _SituationInitReverb(uint32_t sample_rate, void** out_state) {
+    if (!out_state) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    *out_state = NULL;
+
     SituationReverbState* rev = (SituationReverbState*)SIT_CALLOC(1, sizeof(SituationReverbState));
-    if (!rev) return NULL;
+    if (!rev) {
+        return _SituationSetErrorFromCode(
+            SITUATION_ERROR_MEMORY_ALLOCATION, "Reverb state allocation failed.");
+    }
 
     rev->sample_rate = sample_rate;
     float scale = (float)sample_rate / 44100.0f;
 
-    // Tuning values 
     const int comb_tunings[] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
     const int allpass_tunings[] = {225, 341, 441, 556, 161, 719};
 
-    for(int i=0; i<SIT_REVERB_COMB_COUNT; ++i) {
+    for (int i = 0; i < SIT_REVERB_COMB_COUNT; ++i) {
         rev->combs_l[i].size = (int)(comb_tunings[i] * scale);
         rev->combs_l[i].buffer = (float*)SIT_CALLOC(rev->combs_l[i].size, sizeof(float));
-        
         rev->combs_r[i].size = (int)((comb_tunings[i] + SIT_REVERB_STEREO_SPREAD) * scale);
         rev->combs_r[i].buffer = (float*)SIT_CALLOC(rev->combs_r[i].size, sizeof(float));
+        if (!rev->combs_l[i].buffer || !rev->combs_r[i].buffer) {
+            _SituationUninitReverb(rev);
+            return _SituationSetErrorFromCode(
+                SITUATION_ERROR_MEMORY_ALLOCATION, "Reverb comb buffer allocation failed.");
+        }
     }
 
-    for(int i=0; i<SIT_REVERB_ALLPASS_COUNT; ++i) {
+    for (int i = 0; i < SIT_REVERB_ALLPASS_COUNT; ++i) {
         rev->allpasses_l[i].size = (int)(allpass_tunings[i] * scale);
         rev->allpasses_l[i].buffer = (float*)SIT_CALLOC(rev->allpasses_l[i].size, sizeof(float));
-
         rev->allpasses_r[i].size = (int)((allpass_tunings[i] + SIT_REVERB_STEREO_SPREAD) * scale);
         rev->allpasses_r[i].buffer = (float*)SIT_CALLOC(rev->allpasses_r[i].size, sizeof(float));
+        if (!rev->allpasses_l[i].buffer || !rev->allpasses_r[i].buffer) {
+            _SituationUninitReverb(rev);
+            return _SituationSetErrorFromCode(
+                SITUATION_ERROR_MEMORY_ALLOCATION, "Reverb allpass buffer allocation failed.");
+        }
     }
 
-    // 150ms History Buffer for ERs and Predelay
     rev->history_size = (int)(sample_rate * 0.15f);
-    if (rev->history_size < 1) rev->history_size = 1;
+    if (rev->history_size < 1) {
+        rev->history_size = 1;
+    }
     rev->history_l = (float*)SIT_CALLOC(rev->history_size, sizeof(float));
     rev->history_r = (float*)SIT_CALLOC(rev->history_size, sizeof(float));
+    if (!rev->history_l || !rev->history_r) {
+        _SituationUninitReverb(rev);
+        return _SituationSetErrorFromCode(
+            SITUATION_ERROR_MEMORY_ALLOCATION, "Reverb history buffer allocation failed.");
+    }
 
-    // Setup Early Reflection Taps (Asymmetric L/R for width)
     const float er_t_l[4] = { 7.4f,  17.2f, 26.5f, 41.1f };
     const float er_t_r[4] = { 9.3f,  14.8f, 31.2f, 45.7f };
     const float er_g[4]   = { 0.50f, 0.25f, 0.12f, 0.06f };
-    
-    for(int i=0; i<4; i++) {
+
+    for (int i = 0; i < 4; i++) {
         rev->er_taps_l[i] = (int)(er_t_l[i] * sample_rate / 1000.0f);
         rev->er_taps_r[i] = (int)(er_t_r[i] * sample_rate / 1000.0f);
         rev->er_gains[i]  = er_g[i];
     }
 
-    // Default Parameters
     rev->room_size = 0.6f;
     rev->damp = 0.4f;
     rev->wet = 0.3f;
@@ -228,11 +247,13 @@ static void* _SituationInitReverb(uint32_t sample_rate) {
 
     rev->lfo_phase = 0.0f;
 
-    return rev;
+    *out_state = rev;
+    return SITUATION_SUCCESS;
 }
 
 /**
  * @brief [INTERNAL] Processes a block of audio through the true-stereo reverb engine.
+ * HARDENING: void by design — real-time audio path (Phase 7 / Phase 9).
  */
 static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float* pInput, uint32_t frameCount, int channels) {
     if (!state_ptr) return;

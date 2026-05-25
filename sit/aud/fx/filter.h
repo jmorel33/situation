@@ -26,8 +26,8 @@
 #include <math.h>
 #include <string.h>
 
-#ifndef PI
-#define PI 3.14159265358979323846f
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
 #endif
 
 // FMA detection and optimization
@@ -160,14 +160,14 @@ static void filter_set_coefficients(SituationFilter* filter, float cutoff_hz, fl
     resonance_q = fmaxf(0.5f, fminf(q_for_poles, max_q_at_freq));
     
     // Coefficients for the main 2-pole SVF stage
-    float omega = 2.0f * PI * cutoff_hz / filter->sample_rate;
+    float omega = 2.0f * (float)M_PI * cutoff_hz / filter->sample_rate;
     float sin_omega = sinf(omega);
     float alpha = sin_omega / (2.0f * resonance_q);
     filter->f_coeff = 2.0f * sin_omega / (1.0f + alpha);
     filter->q_inv_coeff = 2.0f * alpha;
     
     // Coefficient for the additional 1-pole stage (3rd pole)
-    float tan_val = tanf(PI * cutoff_hz / filter->sample_rate);
+    float tan_val = tanf((float)M_PI * cutoff_hz / filter->sample_rate);
     filter->pole3_coeff = tan_val / (1.0f + tan_val);
     
     filter->current_mode = mode;

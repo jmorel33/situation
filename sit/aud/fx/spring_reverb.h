@@ -17,6 +17,10 @@
 
 #include <math.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 // FMA detection
 #if defined(__FP_FAST_FMAF) || defined(__FMA__) || (defined(_MSC_VER) && defined(__AVX2__))
     #define SPRING_HAS_FMA 1
@@ -28,10 +32,6 @@
 #else
     #define SPRING_HAS_FMA 0
     #define SPRING_FMA(a, b, c) ((a) * (b) + (c))
-#endif
-
-#ifndef PI
-#define PI 3.141592653589793f
 #endif
 
 #ifndef MAX
@@ -154,13 +154,13 @@ static void SpringReverb_set_params(SpringReverb *reverb, float input_level, flo
     // Simplified EQ: Adjust LPF cutoff based on treble (treble < 0 increases damping)
     float damping = MAX(0.0f, -reverb->treble);  // 0 to 1
     float fc = 10000.0f * (1.0f - damping);      // 10kHz down to 0
-    reverb->a_lpf = expf(-2.0f * PI * fc / reverb->sample_rate);
+    reverb->a_lpf = expf(-2.0f * (float)M_PI * fc / reverb->sample_rate);
     if (reverb->treble >= 0) reverb->a_lpf = 0.0f;  // No filtering if treble boost
 
 	// Calculate HPF coefficient
     float bass_factor = (reverb->bass < 0) ? -reverb->bass : 0.0f; // 0 to 1 when bass is negative
     float fc_hpf = 20.0f + 480.0f * bass_factor;                  // 20 Hz to 500 Hz
-    reverb->a_hpf = expf(-2.0f * PI * fc_hpf / reverb->sample_rate);
+    reverb->a_hpf = expf(-2.0f * (float)M_PI * fc_hpf / reverb->sample_rate);
 
     // Dispersion based on middle (simplified influence)
     reverb->g = 0.6f * (1.0f - fabsf(reverb->middle) * 0.5f);  // Reduce dispersion with strong mid EQ

@@ -26,8 +26,8 @@
 #include <string.h>
 #include <xmmintrin.h> // For SSE
 
-#ifndef PI
-#define PI 3.14159265358979323846
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
 #endif
 
 #ifndef MAX
@@ -106,7 +106,7 @@ static void _sit_ma_applyBiquadSIMD(const SituationBiquadCoeffSIMD* coeff, Situa
 // Compute coefficients for a low-shelf filter (SIMD-friendly)
 static void _sit_ma_computeLowShelfCoeffSIMD(SituationBiquadCoeffSIMD* coeff, float freq, float gainDB, float sampleRate) {
     float A = powf(10.0f, gainDB / 40.0f);
-    float w0 = 2.0f * PI * freq / sampleRate;
+    float w0 = 2.0f * (float)M_PI * freq / sampleRate;
     float cosw0 = cosf(w0);
     float alpha = sinf(w0) / 2.0f;
     float sqrtA = sqrtf(A);
@@ -128,7 +128,7 @@ static void _sit_ma_computeLowShelfCoeffSIMD(SituationBiquadCoeffSIMD* coeff, fl
 // Compute coefficients for a peaking filter (SIMD-friendly)
 static void _sit_ma_computePeakCoeffSIMD(SituationBiquadCoeffSIMD* coeff, float freq, float gainDB, float Q, float sampleRate) {
     float A = powf(10.0f, gainDB / 40.0f);
-    float w0 = 2.0f * PI * freq / sampleRate;
+    float w0 = 2.0f * (float)M_PI * freq / sampleRate;
     float alpha = sinf(w0) / (2.0f * Q);
 
     float b0 = 1.0f + alpha * A;
@@ -148,7 +148,7 @@ static void _sit_ma_computePeakCoeffSIMD(SituationBiquadCoeffSIMD* coeff, float 
 // Compute coefficients for a high-shelf filter (SIMD-friendly)
 static void _sit_ma_computeHighShelfCoeffSIMD(SituationBiquadCoeffSIMD* coeff, float freq, float gainDB, float sampleRate) {
     float A = powf(10.0f, gainDB / 40.0f);
-    float w0 = 2.0f * PI * freq / sampleRate;
+    float w0 = 2.0f * (float)M_PI * freq / sampleRate;
     float cosw0 = cosf(w0);
     float alpha = sinf(w0) / 2.0f;
     float sqrtA = sqrtf(A);
@@ -169,7 +169,7 @@ static void _sit_ma_computeHighShelfCoeffSIMD(SituationBiquadCoeffSIMD* coeff, f
 
 // Compute coefficients for a high-pass filter (SIMD-friendly)
 static void _sit_ma_computeHighPassCoeffSIMD(SituationBiquadCoeffSIMD* coeff, float freq, float sampleRate) {
-    float w0 = 2.0f * PI * freq / sampleRate;
+    float w0 = 2.0f * (float)M_PI * freq / sampleRate;
     float cosw0 = cosf(w0);
     float alpha = sinf(w0) / 2.0f;
 
