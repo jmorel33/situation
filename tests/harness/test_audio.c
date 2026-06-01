@@ -17,9 +17,13 @@
 
 #include "sit_api_include.h"
 #include "sit_test_framework.h"
+#include "sit_test_audio_window.h"
+#include "sit_test_stereo_scope.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define SIT_AUDIO_TEST_SLEEP_MS(ms) sit_test_harness_wait_ms((uint32_t)(ms))
 
 /** Open real PortMidi inputs in harness tests only when set (driver variance on Windows CI). */
 static bool sit_test_open_midi_hardware(void) {
@@ -106,11 +110,8 @@ static bool g_init_ok = false;
 static bool g_wav_ok = false;
 
 static void audio_setup(void) {
-    SituationInitInfo config = {0};
-    config.window_width = 320;
-    config.window_height = 240;
-    config.window_title = "SIT_TEST_AUDIO";
-    config.initial_active_window_flags = 0;
+    SituationInitInfo config;
+    sit_test_audio_window_init_info(&config, "SIT_TEST_AUDIO");
 
     SituationError err = SituationInit(0, NULL, &config);
     g_init_ok = (err == SITUATION_SUCCESS);
@@ -121,14 +122,18 @@ static void audio_setup(void) {
 
     // Generate test WAV file
     g_wav_ok = generate_test_wav(TEST_WAV_PATH);
+    sit_test_audio_monitor_install();
 }
 
 static void audio_teardown(void) {
     cleanup_test_wav();
-    // Cleanup any temp files from serialization tests
     remove("_sit_test_graph.json");
     remove("_sit_test_session.json");
     remove("_sit_test_midi.json");
+    SituationSetActiveGraph(NULL);
+    SituationStopAllTones();
+    sit_test_audio_monitor_uninstall();
+    SituationTeardownVirtualMidiLoopback();
     if (g_init_ok) {
         SituationShutdown();
         g_init_ok = false;
@@ -264,39 +269,6 @@ static void test_audio_handle_volume_pan_pitch(void) {
     SituationUnloadAudio(handle);
 }
 
-// ============================================================================
-//  Tone Synthesis Tests
-// ============================================================================
-
-static void test_play_tone_ex(void) {
-    SituationToneHandle handle = SituationPlayToneEx(
-        SIT_WAVE_SINE, 440.0f, 0.5f, 0.0f, 0.01f, 0.05f, 0.7f, 0.1f, 0.2f);
-    SIT_ASSERT(handle != 0);
-    SituationStopTone(handle);
-}
-
-static void test_play_tone_legacy(void) {
-    SituationPlayTone(SIT_WAVE_SQUARE, 880.0f, 0.3f, 0.01f, 0.05f, 0.5f, 0.1f, 0.1f);
-    SIT_ASSERT(true);
-}
-
-static void test_play_midi_note(void) {
-    SituationPlayMidiNote(69, SIT_WAVE_SINE, 0.4f, 0.01f, 0.05f, 0.6f, 0.1f, 0.15f);
-    SIT_ASSERT(true);
-}
-
-static void test_stop_all_tones(void) {
-    SituationPlayToneEx(SIT_WAVE_SINE, 440.0f, 0.3f, 0.0f, 0.01f, 0.01f, 0.5f, 0.05f, -1.0f);
-    SituationPlayToneEx(SIT_WAVE_SAW, 220.0f, 0.3f, 0.0f, 0.01f, 0.01f, 0.5f, 0.05f, -1.0f);
-    SituationStopAllTones();
-    SIT_ASSERT(true);
-}
-
-static void test_stop_tone_invalid_handle(void) {
-    SituationStopTone(0);
-    SituationStopTone(99999);
-    SIT_ASSERT(true);
-}
 
 // ============================================================================
 //  Sound Effects Tests
@@ -455,11 +427,12 @@ static void test_audio_capture_start_stop(void) {
 }
 
 static void test_audio_output_monitor(void) {
-    SituationSetAudioOutputMonitor(NULL, NULL);
+    sit_test_audio_monitor_uninstall();
     float pk = -1.f, rms = -1.f;
     SituationGetMasterOutputMeter(&pk, &rms);
     SIT_ASSERT(pk >= 0.f && rms >= 0.f);
     SituationGetMasterOutputMeter(NULL, NULL);
+    sit_test_audio_monitor_install();
 }
 
 // ============================================================================
@@ -551,15 +524,6 @@ static void test_registry_reverb_metadata(void) {
     SIT_ASSERT(err == SITUATION_SUCCESS);
     SIT_ASSERT(strlen(meta.name) > 0);
     SIT_ASSERT(meta.category == SITUATION_DEVICE_EFFECT);
-}
-
-static void test_registry_tone_synth_metadata(void) {
-    SituationInitDeviceRegistry();
-    SituationDeviceMetadata meta = {0};
-    SituationError err = SituationGetDeviceMetadata(SITUATION_NODE_TONE_SYNTH, &meta);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-    SIT_ASSERT(meta.category == SITUATION_DEVICE_SOURCE);
-    SIT_ASSERT(meta.num_audio_outs > 0);
 }
 
 static void test_registry_lfo_metadata(void) {
@@ -695,18 +659,6 @@ static void test_graph_create_node_gain(void) {
     SituationDestroyGraph(graph);
 }
 
-static void test_graph_create_node_tone_synth(void) {
-    SituationInitDeviceRegistry();
-    SituationAudioGraph* graph = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph);
-
-    SituationNodeHandle handle = SITUATION_INVALID_NODE_HANDLE;
-    SituationError err = SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &handle);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-    SIT_ASSERT(handle != SITUATION_INVALID_NODE_HANDLE);
-
-    SituationDestroyGraph(graph);
-}
 
 static void test_graph_create_16_nodes(void) {
     SituationInitDeviceRegistry();
@@ -783,7 +735,7 @@ static void test_graph_create_patch_audio(void) {
 
     SituationNodeHandle src = SITUATION_INVALID_NODE_HANDLE;
     SituationNodeHandle dst = SITUATION_INVALID_NODE_HANDLE;
-    SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &src);
+    SituationCreateNode(graph, SITUATION_NODE_PANNER, &src);
     SituationCreateNode(graph, SITUATION_NODE_PANNER, &dst);
 
     SituationError err = SituationCreatePatch(graph, src, 0, dst, 0, false);
@@ -792,79 +744,18 @@ static void test_graph_create_patch_audio(void) {
     SituationDestroyGraph(graph);
 }
 
-static void test_graph_patch_synth_to_reverb(void) {
-    SituationInitDeviceRegistry();
-    SituationAudioGraph* graph = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph);
-
-    SituationNodeHandle synth = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
-    SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &synth);
-    SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
-
-    SituationError err = SituationCreatePatch(graph, synth, 0, reverb, 0, false);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-
-    SituationDestroyGraph(graph);
-}
-
-static void test_graph_patch_chain(void) {
-    SituationInitDeviceRegistry();
-    SituationAudioGraph* graph = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph);
-
-    SituationNodeHandle synth = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle panner = SITUATION_INVALID_NODE_HANDLE;
-    SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &synth);
-    SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
-    SituationCreateNode(graph, SITUATION_NODE_PANNER, &panner);
-
-    SituationError err = SituationCreatePatch(graph, synth, 0, reverb, 0, false);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-
-    err = SituationCreatePatch(graph, reverb, 0, panner, 0, false);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-
-    SituationDestroyGraph(graph);
-}
-
-static void test_graph_destroy_patch(void) {
+static void test_graph_patch_invalid_port(void) {
     SituationInitDeviceRegistry();
     SituationAudioGraph* graph = SituationCreateGraph();
     SIT_ASSERT_NOT_NULL(graph);
 
     SituationNodeHandle src = SITUATION_INVALID_NODE_HANDLE;
     SituationNodeHandle dst = SITUATION_INVALID_NODE_HANDLE;
-    SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &src);
+    SituationCreateNode(graph, SITUATION_NODE_PANNER, &src);
     SituationCreateNode(graph, SITUATION_NODE_PANNER, &dst);
 
-    SituationError err = SituationCreatePatch(graph, src, 0, dst, 0, false);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-
-    // Note: SituationRemovePatch/DestroyPatch not yet exported from DLL
-    // Destroying the graph implicitly removes all patches
-    SituationDestroyGraph(graph);
-    SIT_ASSERT(true); // No crash on graph destruction with active patches
-}
-
-static void test_graph_patch_duplicate(void) {
-    SituationInitDeviceRegistry();
-    SituationAudioGraph* graph = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph);
-
-    SituationNodeHandle src = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle dst = SITUATION_INVALID_NODE_HANDLE;
-    SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &src);
-    SituationCreateNode(graph, SITUATION_NODE_PANNER, &dst);
-
-    SituationError err1 = SituationCreatePatch(graph, src, 0, dst, 0, false);
-    SIT_ASSERT(err1 == SITUATION_SUCCESS);
-
-    // Double-connect same ports â€” library currently allows this (no duplicate check)
-    SituationError err2 = SituationCreatePatch(graph, src, 0, dst, 0, false);
-    // Just verify no crash â€” behavior is implementation-defined
-    SIT_ASSERT(true);
+    SituationError err = SituationCreatePatch(graph, src, 99, dst, 99, false);
+    SIT_ASSERT(err != SITUATION_SUCCESS);
 
     SituationDestroyGraph(graph);
 }
@@ -877,25 +768,7 @@ static void test_graph_patch_invalid_node(void) {
     SituationNodeHandle valid = SITUATION_INVALID_NODE_HANDLE;
     SituationCreateNode(graph, SITUATION_NODE_PANNER, &valid);
 
-    // Connect to invalid node handle
     SituationError err = SituationCreatePatch(graph, valid, 0, SITUATION_INVALID_NODE_HANDLE, 0, false);
-    SIT_ASSERT(err != SITUATION_SUCCESS);
-
-    SituationDestroyGraph(graph);
-}
-
-static void test_graph_patch_invalid_port(void) {
-    SituationInitDeviceRegistry();
-    SituationAudioGraph* graph = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph);
-
-    SituationNodeHandle src = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle dst = SITUATION_INVALID_NODE_HANDLE;
-    SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &src);
-    SituationCreateNode(graph, SITUATION_NODE_PANNER, &dst);
-
-    // Out-of-range port index
-    SituationError err = SituationCreatePatch(graph, src, 99, dst, 99, false);
     SIT_ASSERT(err != SITUATION_SUCCESS);
 
     SituationDestroyGraph(graph);
@@ -1138,6 +1011,23 @@ static void test_control_metadata_reverb(void) {
 
 // --- 3C: Per-Device Control Sweep ---
 
+static float expected_control_readback(const SituationControlDesc* control, float requested) {
+    float value = requested;
+    if (value < control->min_value) value = control->min_value;
+    if (value > control->max_value) value = control->max_value;
+
+    switch (control->type) {
+        case SITUATION_CONTROL_BOOL:
+            return (value >= 0.5f) ? 1.0f : 0.0f;
+        case SITUATION_CONTROL_INT:
+        case SITUATION_CONTROL_ENUM:
+            return floorf(value + 0.5f);
+        case SITUATION_CONTROL_FLOAT:
+        default:
+            return value;
+    }
+}
+
 static void test_control_sweep_all_devices(void) {
     SituationInitDeviceRegistry();
 
@@ -1169,22 +1059,46 @@ static void test_control_sweep_all_devices(void) {
         // Set each control to its default value and verify readback
         for (int c = 0; c < meta.num_controls; c++) {
             float def_val = meta.controls[c].default_value;
-            SituationSetControl(graph, handle, (uint32_t)c, def_val);
+            float expected = expected_control_readback(&meta.controls[c], def_val);
+            SituationError set_err = SituationSetControl(graph, handle, (uint32_t)c, def_val);
 
             float readback = -999.0f;
-            SituationGetControl(graph, handle, (uint32_t)c, &readback);
+            SituationError get_err = SituationGetControl(graph, handle, (uint32_t)c, &readback);
+            if (set_err != SITUATION_SUCCESS || get_err != SITUATION_SUCCESS ||
+                readback < expected - 0.01f || readback > expected + 0.01f) {
+                fprintf(stderr,
+                    "[control_sweep] default mismatch device=%s type=%d control=%d/%s ctrl_type=%d min=%.6f max=%.6f requested=%.6f expected=%.6f readback=%.6f set_err=%d get_err=%d\n",
+                    meta.name, (int)all_types[t], c, meta.controls[c].name,
+                    (int)meta.controls[c].type,
+                    meta.controls[c].min_value, meta.controls[c].max_value,
+                    def_val, expected, readback, set_err, get_err);
+            }
+            SIT_ASSERT(set_err == SITUATION_SUCCESS);
+            SIT_ASSERT(get_err == SITUATION_SUCCESS);
             // Allow small floating point tolerance
-            SIT_ASSERT(readback >= def_val - 0.01f && readback <= def_val + 0.01f);
+            SIT_ASSERT(readback >= expected - 0.01f && readback <= expected + 0.01f);
         }
 
         // Set each control to midpoint
         for (int c = 0; c < meta.num_controls; c++) {
             float mid = (meta.controls[c].min_value + meta.controls[c].max_value) / 2.0f;
-            SituationSetControl(graph, handle, (uint32_t)c, mid);
+            float expected = expected_control_readback(&meta.controls[c], mid);
+            SituationError set_err = SituationSetControl(graph, handle, (uint32_t)c, mid);
 
             float readback = -999.0f;
-            SituationGetControl(graph, handle, (uint32_t)c, &readback);
-            SIT_ASSERT(readback >= mid - 0.01f && readback <= mid + 0.01f);
+            SituationError get_err = SituationGetControl(graph, handle, (uint32_t)c, &readback);
+            if (set_err != SITUATION_SUCCESS || get_err != SITUATION_SUCCESS ||
+                readback < expected - 0.01f || readback > expected + 0.01f) {
+                fprintf(stderr,
+                    "[control_sweep] midpoint mismatch device=%s type=%d control=%d/%s ctrl_type=%d min=%.6f max=%.6f requested=%.6f expected=%.6f readback=%.6f set_err=%d get_err=%d\n",
+                    meta.name, (int)all_types[t], c, meta.controls[c].name,
+                    (int)meta.controls[c].type,
+                    meta.controls[c].min_value, meta.controls[c].max_value,
+                    mid, expected, readback, set_err, get_err);
+            }
+            SIT_ASSERT(set_err == SITUATION_SUCCESS);
+            SIT_ASSERT(get_err == SITUATION_SUCCESS);
+            SIT_ASSERT(readback >= expected - 0.01f && readback <= expected + 0.01f);
         }
 
         SituationDestroyNode(graph, handle);
@@ -1326,133 +1240,6 @@ static void test_effect_control_roundtrip(void) {
 
 // --- 4D: Effect Chain Test ---
 
-static void test_effect_chain(void) {
-    SituationInitDeviceRegistry();
-    SituationAudioGraph* graph = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph);
-
-    SituationNodeHandle synth = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle filter = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle panner = SITUATION_INVALID_NODE_HANDLE;
-
-    SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &synth);
-    SituationCreateNode(graph, SITUATION_NODE_FILTER, &filter);
-    SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
-    SituationCreateNode(graph, SITUATION_NODE_PANNER, &panner);
-
-    // Chain: synth â†’ filter â†’ reverb â†’ panner
-    SituationError err = SituationCreatePatch(graph, synth, 0, filter, 0, false);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-    err = SituationCreatePatch(graph, filter, 0, reverb, 0, false);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-    err = SituationCreatePatch(graph, reverb, 0, panner, 0, false);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-
-    // Destroy chain â€” no crash, all resources freed
-    SituationDestroyGraph(graph);
-    SIT_ASSERT(true);
-}
-
-// ============================================================================
-//  PHASE 6 â€” Graph Serialization Roundtrip
-// ============================================================================
-
-static void test_graph_serialize_with_nodes(void) {
-    SituationInitDeviceRegistry();
-    SituationAudioGraph* graph = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph);
-
-    // Create 3 nodes and 2 patches
-    SituationNodeHandle synth = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle panner = SITUATION_INVALID_NODE_HANDLE;
-    SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &synth);
-    SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
-    SituationCreateNode(graph, SITUATION_NODE_PANNER, &panner);
-
-    SituationCreatePatch(graph, synth, 0, reverb, 0, false);
-    SituationCreatePatch(graph, reverb, 0, panner, 0, false);
-
-    // Serialize to JSON
-    char* json = SituationSerializeGraphToJSON(graph);
-    SIT_ASSERT_NOT_NULL(json);
-    SIT_ASSERT(strlen(json) > 0);
-    // Verify JSON starts with '{' and contains "nodes"
-    SIT_ASSERT(json[0] == '{');
-    SIT_ASSERT(strstr(json, "nodes") != NULL);
-
-    SituationFreeJSONString(json);
-    SituationDestroyGraph(graph);
-}
-
-static void test_graph_save_load_roundtrip(void) {
-    SituationInitDeviceRegistry();
-
-    // Create and populate a graph
-    SituationAudioGraph* graph = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph);
-
-    SituationNodeHandle synth = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle panner = SITUATION_INVALID_NODE_HANDLE;
-    SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &synth);
-    SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
-    SituationCreateNode(graph, SITUATION_NODE_PANNER, &panner);
-
-    SituationCreatePatch(graph, synth, 0, reverb, 0, false);
-    SituationCreatePatch(graph, reverb, 0, panner, 0, false);
-
-    // Save to file
-    const char* filepath = "_sit_test_graph.json";
-    SituationError err = SituationSaveGraphToFile(graph, filepath);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-
-    // Verify file exists
-    FILE* f = fopen(filepath, "r");
-    SIT_ASSERT_NOT_NULL(f);
-    if (f) fclose(f);
-
-    SituationDestroyGraph(graph);
-
-    // Load into new graph
-    SituationAudioGraph* graph2 = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph2);
-
-    err = SituationLoadGraphFromFile(graph2, filepath, NULL, 0);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-
-    SituationDestroyGraph(graph2);
-    remove(filepath);
-}
-
-static void test_graph_deserialize_from_json(void) {
-    SituationInitDeviceRegistry();
-
-    // Create a graph, serialize it
-    SituationAudioGraph* graph = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph);
-
-    SituationNodeHandle synth = SITUATION_INVALID_NODE_HANDLE;
-    SituationNodeHandle panner = SITUATION_INVALID_NODE_HANDLE;
-    SituationCreateNode(graph, SITUATION_NODE_TONE_SYNTH, &synth);
-    SituationCreateNode(graph, SITUATION_NODE_PANNER, &panner);
-    SituationCreatePatch(graph, synth, 0, panner, 0, false);
-
-    char* json = SituationSerializeGraphToJSON(graph);
-    SIT_ASSERT_NOT_NULL(json);
-    SituationDestroyGraph(graph);
-
-    // Deserialize into new graph
-    SituationAudioGraph* graph2 = SituationCreateGraph();
-    SIT_ASSERT_NOT_NULL(graph2);
-
-    SituationError err = SituationDeserializeGraphFromJSON(graph2, json, NULL, 0);
-    SIT_ASSERT(err == SITUATION_SUCCESS);
-
-    SituationFreeJSONString(json);
-    SituationDestroyGraph(graph2);
-}
 
 static void test_graph_serialization_version(void) {
     const char* version = SituationGetSerializationVersion();
@@ -1717,6 +1504,7 @@ static void test_midi_load_preset(void) {
     SituationDestroyGraph(graph);
 }
 
+
 // ============================================================================
 //  Module Definition
 // ============================================================================
@@ -1736,12 +1524,6 @@ static SitTestCase audio_tests[] = {
     // Audio handle API
     {"load_audio_handle",           test_load_audio_handle,           true},
     {"audio_handle_vol_pan_pitch",  test_audio_handle_volume_pan_pitch, true},
-    // Tones
-    {"play_tone_ex",                test_play_tone_ex,                true},
-    {"play_tone_legacy",            test_play_tone_legacy,            true},
-    {"play_midi_note",              test_play_midi_note,              true},
-    {"stop_all_tones",              test_stop_all_tones,              true},
-    {"stop_tone_invalid_handle",    test_stop_tone_invalid_handle,    true},
     // Effects
     {"sound_volume",                test_sound_volume,                true},
     {"sound_pan",                   test_sound_pan,                   true},
@@ -1767,7 +1549,6 @@ static SitTestCase audio_tests[] = {
     {"registry_reverb_registered",          test_registry_reverb_registered,          true},
     {"registry_unregistered_type",          test_registry_unregistered_type,          true},
     {"registry_reverb_metadata",            test_registry_reverb_metadata,            true},
-    {"registry_tone_synth_metadata",        test_registry_tone_synth_metadata,        true},
     {"registry_lfo_metadata",               test_registry_lfo_metadata,              true},
     {"registry_peak_meter_metadata",        test_registry_peak_meter_metadata,        true},
     {"registry_category_name_effect",       test_registry_category_name_effect,       true},
@@ -1782,17 +1563,12 @@ static SitTestCase audio_tests[] = {
     {"graph_destroy_null",                  test_graph_destroy_null,                  true},
     {"graph_create_node_reverb",            test_graph_create_node_reverb,            true},
     {"graph_create_node_gain",              test_graph_create_node_gain,              true},
-    {"graph_create_node_tone_synth",        test_graph_create_node_tone_synth,        true},
     {"graph_create_16_nodes",               test_graph_create_16_nodes,              true},
     {"graph_destroy_node_valid",            test_graph_destroy_node_valid,            true},
     {"graph_destroy_node_invalid",          test_graph_destroy_node_invalid,          true},
     {"graph_get_node_valid",                test_graph_get_node_valid,                true},
     {"graph_get_node_invalid",              test_graph_get_node_invalid,              true},
     {"graph_create_patch_audio",            test_graph_create_patch_audio,            true},
-    {"graph_patch_synth_to_reverb",         test_graph_patch_synth_to_reverb,         true},
-    {"graph_patch_chain",                   test_graph_patch_chain,                   true},
-    {"graph_destroy_patch",                 test_graph_destroy_patch,                 true},
-    {"graph_patch_duplicate",               test_graph_patch_duplicate,               true},
     {"graph_patch_invalid_node",            test_graph_patch_invalid_node,            true},
     {"graph_patch_invalid_port",            test_graph_patch_invalid_port,            true},
     {"graph_create_patch_control",          test_graph_create_patch_control,          true},
@@ -1816,12 +1592,8 @@ static SitTestCase audio_tests[] = {
     {"effect_create_all",                   test_effect_create_all,                   true},
     {"effect_metadata_validation",          test_effect_metadata_validation,          true},
     {"effect_control_roundtrip",            test_effect_control_roundtrip,            true},
-    {"effect_chain",                        test_effect_chain,                        true},
 
     // --- Phase 6: Graph Serialization Roundtrip (5) ---
-    {"graph_serialize_with_nodes",          test_graph_serialize_with_nodes,          true},
-    {"graph_save_load_roundtrip",           test_graph_save_load_roundtrip,           true},
-    {"graph_deserialize_from_json",         test_graph_deserialize_from_json,         true},
     {"graph_serialization_version",         test_graph_serialization_version,         true},
     {"graph_version_compatible",            test_graph_version_compatible,            true},
 
@@ -1848,5 +1620,6 @@ const SitTestModule g_module_audio = {
     .teardown = audio_teardown,
     .tests = audio_tests,
     .test_count = sizeof(audio_tests) / sizeof(audio_tests[0]),
-    .requires_context = true
+    .requires_context = true,
+    .harness_visual = true
 };

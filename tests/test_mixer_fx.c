@@ -28,8 +28,8 @@ ma_uint64 on_read_sine(void* pUserData, void* pBufferOut, ma_uint64 frameCount) 
 int main() {
     SituationInitInfo init = {0};
     init.window_title = "Mixer Test";
-    init.window_width = 100;
-    init.window_height = 100;
+    init.window_width = 1024;
+    init.window_height = 768;
     if (SituationInit(0, NULL, &init) != SITUATION_SUCCESS) {
         fprintf(stderr, "Failed to init\n");
         return 1;

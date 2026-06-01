@@ -16,8 +16,8 @@ int main(int argc, char** argv) {
     printf("========================================\n\n");
 
     SituationInitInfo init_info = {
-        .window_width = 640,
-        .window_height = 480,
+        .window_width = 1024,
+        .window_height = 768,
         .window_title = "Tone Test",
         .initial_active_window_flags = SITUATION_FLAG_VSYNC_HINT,
         .enable_vulkan_validation = false

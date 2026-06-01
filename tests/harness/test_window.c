@@ -9,6 +9,7 @@
 
 #include "sit_api_include.h"
 #include "sit_test_framework.h"
+#include "sit_test_window.h"
 
 // ============================================================================
 //  Module Setup/Teardown
@@ -18,10 +19,7 @@ static bool g_init_ok = false;
 
 static void window_setup(void) {
     SituationInitInfo config = {0};
-    config.window_width = 640;
-    config.window_height = 480;
-    config.window_title = "SIT_TEST_WINDOW";
-    config.initial_active_window_flags = SITUATION_FLAG_WINDOW_RESIZABLE;
+    sit_test_window_init_info_flags(&config, "SIT_TEST_WINDOW", SITUATION_FLAG_WINDOW_RESIZABLE);
 
     SituationError err = SituationInit(0, NULL, &config);
     g_init_ok = (err == SITUATION_SUCCESS);

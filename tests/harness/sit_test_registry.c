@@ -24,15 +24,24 @@ extern const SitTestModule g_module_core;
 extern const SitTestModule g_module_window;
 extern const SitTestModule g_module_input;
 extern const SitTestModule g_module_timer;
+extern const SitTestModule g_module_proj;
 
-// Phase 4 — Graphics
+// Phase 4 — Graphics / GPU (run before audio listen tests — scope overlay depends on this)
 extern const SitTestModule g_module_graphics;
+extern const SitTestModule g_module_virtual_display;
+extern const SitTestModule g_module_compute;
+extern const SitTestModule g_module_transfer;
 
-// Phase 5 — Audio
+// Phase 5 — Audio (after graphics; listen tests pump scope/spectrum on the main swapchain)
 extern const SitTestModule g_module_audio;
+extern const SitTestModule g_module_tone_synth;
+extern const SitTestModule g_module_audio_effects_heard;
 
 // Phase 6 — Miscellaneous
 extern const SitTestModule g_module_misc;
+
+// Phase 7 — Advanced (manual/visual stress; runs last)
+extern const SitTestModule g_module_advanced;
 
 // ============================================================================
 //  Registration
@@ -45,7 +54,14 @@ void sit_test_register_all(void) {
     sit_test_register_module(&g_module_window);
     sit_test_register_module(&g_module_input);
     sit_test_register_module(&g_module_timer);
-    sit_test_register_module(&g_module_audio);
+    sit_test_register_module(&g_module_proj);
     sit_test_register_module(&g_module_graphics);
+    sit_test_register_module(&g_module_virtual_display);
+    sit_test_register_module(&g_module_compute);
+    sit_test_register_module(&g_module_transfer);
+    sit_test_register_module(&g_module_audio);
+    sit_test_register_module(&g_module_tone_synth);
+    sit_test_register_module(&g_module_audio_effects_heard);
     sit_test_register_module(&g_module_misc);
+    sit_test_register_module(&g_module_advanced);
 }

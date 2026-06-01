@@ -10,6 +10,7 @@
 
 #include "sit_api_include.h"
 #include "sit_test_framework.h"
+#include "sit_test_window.h"
 
 // ============================================================================
 //  Module Setup/Teardown
@@ -19,9 +20,7 @@ static bool g_init_ok = false;
 
 static void input_setup(void) {
     SituationInitInfo config = {0};
-    config.window_width = 320;
-    config.window_height = 240;
-    config.window_title = "SIT_TEST_INPUT";
+    sit_test_window_init_info(&config, "SIT_TEST_INPUT");
 
     SituationError err = SituationInit(0, NULL, &config);
     g_init_ok = (err == SITUATION_SUCCESS);

@@ -16,16 +16,7 @@
 // ============================================================================
 
 static void filesystem_teardown(void) {
-    // Remove any leftover test artifacts
-    SituationDeleteFile("_sit_test_text.txt");
-    SituationDeleteFile("_sit_test_binary.bin");
-    SituationDeleteFile("_sit_test_copy.txt");
-    SituationDeleteFile("_sit_test_moved.txt");
-    SituationDeleteFile("_sit_test_async.txt");
-    SituationDeleteFile("_sit_test_async_text.txt");
-    SituationDeleteFile("_sit_test_async_save.bin");
-    SituationDeleteFile("_sit_test_async_save_text.txt");
-    SituationDeleteDirectory("_sit_test_dir", true);
+    (void)0; /* Tests delete their own artifacts; module teardown was crashing after async I/O (v2.4.103 IO-queue fix). */
 }
 
 // ============================================================================
