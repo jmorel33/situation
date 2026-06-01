@@ -6,7 +6,7 @@
  * @version 0.1
  *
  * @section Overview:
- *   console.h is a single-header stub for a command-line interface built on top of situation.h and terminal.h.
+ *   console.c is an example command-line interface built on top of situation.h and K-Term.
  *   It provides basic command processing, history navigation, tab completion, and integration with system queries via situation.h.
  *   This is currently a minimal implementation and will evolve into a more robust CLI with advanced features like scripting, plugins, and full system control.
  *
@@ -17,13 +17,13 @@
  *   - **Tab Completion:** Context-aware completion for commands and arguments.
  *   - **Password Mode:** Masks input for sensitive commands.
  *   - **Integration with situation.h:** Commands for hardware info (CPU/GPU/RAM), displays, audio devices, user directory.
- *   - **Terminal Diagnostics:** Commands to query terminal status, VT level, device attributes, run tests.
+ *   - **K-Term Diagnostics:** Commands to query terminal status, VT level, device attributes, run tests.
  *   - **Performance Tools:** Set FPS/budget, run output tests.
  *
  * @section Design Principles:
  *   - **Stub Status:** This is a placeholder for a full-featured CLI. Future enhancements include proper error handling, modular commands, scripting support.
- *   - **Single-Header:** Define CONSOLE_IMPLEMENTATION in one .c file for full inclusion.
- *   - **Dependency on situation.h and terminal.h:** Leverages situation.h for platform abstraction and terminal.h for VT emulation and pipeline.
+ *   - **Example-Local CLI:** Keeps command processing in this example while using K-Term for VT emulation and rendering.
+ *   - **Dependency on situation.h and K-Term:** Leverages situation.h for platform abstraction and K-Term for VT emulation and pipeline.
  *   - **Windows-Focused:** Primarily tested on Windows; POSIX fallbacks limited.
  *
  * @section Concurrency Model
@@ -33,12 +33,11 @@
  *   A) Header-Only: #define CONSOLE_IMPLEMENTATION in one .c/.cpp file before including console.h.
  *
  * @section Dependencies:
- *   - **Required:** situation.h (with SITUATION_IMPLEMENTATION), terminal.h (with TERMINAL_IMPLEMENTATION), miniaudio.h (with MA_IMPLEMENTATION)
+ *   - **Required:** situation.h (with SITUATION_IMPLEMENTATION), kterm.h (with KTERM_IMPLEMENTATION)
  *   - **Standard Libs:** <string.h>, <stdlib.h>, <stdio.h>, <math.h>, <stdint.h>
  *   - **Windows APIs:** Winsock2.h (for network info via situation.h)
 **********************************************************************************************/
 #if defined(_WIN32)
-  #define NOGDI             // Keep this to protect Situation's Rectangle struct
   #define NOMINMAX
 #endif
 
@@ -67,30 +66,22 @@
 #endif
 
 #define SITUATION_IMPLEMENTATION
+#if !defined(SITUATION_USE_OPENGL) && !defined(SITUATION_USE_VULKAN)
 #define SITUATION_USE_OPENGL
+#endif
+#define STB_TRUETYPE_IMPLEMENTATION
 #include "situation.h"
 
 
-#define TERMINAL_IMPLEMENTATION
-// terminal.h should be included when NOUSER is effectively *defined* if it calls
-// Situation functions like CloseWindow/ShowCursor that would clash.
-// This is the trickiest part. If NOUSER is undefined here, terminal.h might get Windows API versions.
-// If NOUSER is defined here, situation.h might have issues if it's not robust.
+#define KTERM_DISABLE_GATEWAY
+#define KTERM_DISABLE_NET
+#define KTERM_DISABLE_VOICE
+#define KTERM_DISABLE_VOIP
+#define KTERM_IMPLEMENTATION
+#include "sit/k-term/kterm.h"
 
-// For terminal.h, let's assume it primarily uses Situation APIs.
-// So, we need NOUSER to be active for terminal.h
-#if defined(_WIN32)
-    #define NOUSER_FOR_TERMINAL
-    #pragma push_macro("NOUSER")
-    #define NOUSER
-#endif
-
-#include "sit/terminal/terminal.h"
-
-#if defined(_WIN32) && defined(NOUSER_FOR_TERMINAL)
-    #pragma pop_macro("NOUSER")
-    #undef NOUSER_FOR_TERMINAL
-#endif
+#define KTERM_IO_SIT_IMPLEMENTATION
+#include "kt_io_sit.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -158,8 +149,8 @@ static void ShowPrompt(void);
 static void ProcessCommand(const char* command);
 static void HandleExtendedKeyInput(const char* sequence);
 static void HandleEnterKey(void);
-static void HandleKeyEvent(const char* sequence, int length);
-static void HandleTerminalResponse(const char* response, int length);
+static void HandleKeyEvent(const char* sequence, size_t length);
+static void HandleTerminalResponse(void* ctx, KTermSession* session, const char* response, size_t length);
 static void ProcessConsolePipeline(void);
 
 
@@ -171,9 +162,30 @@ void SitHelperPrintAudioDeviceInfo(SituationAudioDeviceInfo* devices, int count)
 
 // Global console instance
 Console console = {0};
+static KTerm* term = NULL;
 static CursorPositionTracker cursor_tracker = {0};
 
-static bool ParseCSIResponse(const char* response, int length) {
+#define PipelineWriteString(str) KTerm_WriteString(term, (str))
+#define PipelineWriteChar(ch) KTerm_WriteChar(term, (ch))
+#define PipelineWriteFormat(...) KTerm_WriteFormat(term, __VA_ARGS__)
+#define SetPipelineTargetFPS(fps) KTerm_SetPipelineTargetFPS(term, (fps))
+#define SetPipelineTimeBudget(pct) KTerm_SetPipelineTimeBudget(term, (pct))
+#define ShowBufferDiagnostics() KTerm_ShowDiagnostics(term)
+#define GetTerminalStatus() KTerm_GetStatus(term)
+#define GetVTLevel() KTerm_GetLevel(term)
+#define RunVTTest(name) KTerm_RunTest(term, (name))
+#define ShowTerminalInfo() KTerm_ShowInfo(term)
+#define ScrollUpRegion(top, bottom, lines) KTerm_ScrollUpRegion(term, (top), (bottom), (lines))
+#define ACTIVE_SESSION (*GET_SESSION(term))
+typedef KTermStatus TerminalStatus;
+
+static void ConsoleCopyString(char* dst, size_t dst_size, const char* src) {
+    if (!dst || dst_size == 0) return;
+    if (!src) src = "";
+    snprintf(dst, dst_size, "%s", src);
+}
+
+static bool ParseCSIResponse(const char* response, size_t length) {
     // Check for cursor position report: ESC[n;mR
     if (length > 3 && response[0] == '\x1B' && response[1] == '[') {
         int i = 2;
@@ -282,14 +294,14 @@ static void AddToHistory(const char* command) {
     if (strlen(command) == 0) return;
     if (console.history_count > 0 && strcmp(command, console.command_history[console.history_count - 1]) == 0) return;
     
-    if (console.history_count >= 32) {
-        for (int i = 0; i < 31; i++) {
-            strcpy(console.command_history[i], console.command_history[i + 1]);
+    if (console.history_count >= MAX_HISTORY) {
+        for (int i = 0; i < MAX_HISTORY - 1; i++) {
+            ConsoleCopyString(console.command_history[i], sizeof(console.command_history[i]), console.command_history[i + 1]);
         }
-        console.history_count = 31;
+        console.history_count = MAX_HISTORY - 1;
     }
     
-    strcpy(console.command_history[console.history_count], command);
+    ConsoleCopyString(console.command_history[console.history_count], sizeof(console.command_history[console.history_count]), command);
     console.history_count++;
     console.history_pos = console.history_count;
 }
@@ -311,7 +323,7 @@ static void NavigateHistory(int direction) {
         }
     }
     
-    strcpy(console.edit_buffer, console.command_history[console.history_pos]);
+    ConsoleCopyString(console.edit_buffer, sizeof(console.edit_buffer), console.command_history[console.history_pos]);
     console.edit_length = strlen(console.edit_buffer);
     console.edit_pos = console.edit_length;
     RedrawEditLine();
@@ -381,7 +393,7 @@ static bool CompleteCommand(const char* partial, int word_start) {
         }
         
         if (first_word_len > 0 && first_word_len < MAX_COMMAND_BUFFER) {
-            strncpy(first_word, console.edit_buffer, first_word_len);
+            memcpy(first_word, console.edit_buffer, (size_t)first_word_len);
             first_word[first_word_len] = '\0';
 
             if (strcmp(first_word, "set_fps") == 0) {
@@ -446,7 +458,7 @@ static void CompleteWord(const char* completion, int word_start) {
     if (console.edit_pos < console.edit_length) {
         memmove(&console.edit_buffer[console.edit_pos + chars_to_add], &console.edit_buffer[console.edit_pos], console.edit_length - console.edit_pos);
     }
-    strncpy(&console.edit_buffer[console.edit_pos], completion + current_word_len, chars_to_add);
+    memcpy(&console.edit_buffer[console.edit_pos], completion + current_word_len, (size_t)chars_to_add);
     console.edit_pos += chars_to_add;
     console.edit_length += chars_to_add;
     console.edit_buffer[console.edit_length] = '\0';
@@ -478,15 +490,17 @@ static void ShowCompletionMatches(const char* matches[], int count, const char* 
 static void CompleteCommonPrefix(const char* matches[], int count, const char* partial, int word_start) {
     if (count < 1) return;
     int common_len = strlen(matches[0]);
+    if (common_len >= MAX_COMMAND_BUFFER) common_len = MAX_COMMAND_BUFFER - 1;
     for (int i = 1; i < count; i++) {
         int j = 0;
-        while (j < common_len && j < strlen(matches[i]) && matches[0][j] == matches[i][j]) j++;
+        int match_len = strlen(matches[i]);
+        while (j < common_len && j < match_len && matches[0][j] == matches[i][j]) j++;
         common_len = j;
     }
     int current_len = strlen(partial);
     if (common_len > current_len) {
         char common_prefix[MAX_COMMAND_BUFFER];
-        strncpy(common_prefix, matches[0], common_len);
+        memcpy(common_prefix, matches[0], (size_t)common_len);
         common_prefix[common_len] = '\0';
         CompleteWord(common_prefix, word_start);
     }
@@ -497,7 +511,8 @@ static bool AttemptTabCompletion(void) {
     while (word_start > 0 && console.edit_buffer[word_start - 1] != ' ') word_start--;
     int word_len = console.edit_pos - word_start;
     char partial_word[MAX_COMMAND_BUFFER];
-    if (word_len > 0) strncpy(partial_word, console.edit_buffer + word_start, word_len);
+    if (word_len >= MAX_COMMAND_BUFFER) word_len = MAX_COMMAND_BUFFER - 1;
+    if (word_len > 0) memcpy(partial_word, console.edit_buffer + word_start, (size_t)word_len);
     partial_word[word_len] = '\0';
     return CompleteCommand(partial_word, word_start);
 }
@@ -523,7 +538,6 @@ static void ShowPrompt(void) {
     console.line_ready = false;
     cursor_tracker.waiting_for_position = true;
     cursor_tracker.position_received = false;
-    fprintf(stderr, "CLI ShowPrompt: Sent DSR. waiting_for_prompt_cursor_pos=true, input_enabled=false.\n");
     PipelineWriteString("\x1B[6n"); // DSR Request Cursor Position
     console.prompt_pending = false;
 }
@@ -533,7 +547,6 @@ static void ProcessCommand(const char* command) {
     char* buffer_to_free = NULL;
     int token_count = TokenizeCommand(command, tokens, &buffer_to_free);
 
-    fprintf(stderr, "ProcessCommand - Input to Tokenize: '%s', Token count: %d\n", command, token_count);
     if (token_count == 0) {
         console.prompt_pending = true;
         if (buffer_to_free) free(buffer_to_free);
@@ -655,9 +668,7 @@ static void ProcessCommand(const char* command) {
         if (token_count > 1) PipelineWriteString("\x1B[31mError: 'performance' takes no arguments\x1B[0m\n");
         else {
             PipelineWriteString("Performance test - sending large amount of data:\n");
-            fprintf(stderr, "CLI ProcessCommand: Starting 'performance' test output loop.\n");
             for (int i = 0; i < 1000; i++) PipelineWriteFormat("Performance test line %d with some text content\n", i);
-            fprintf(stderr, "CLI ProcessCommand: Finished 'performance' test output loop.\n");
         }
     } else if (strcmp(cmd, "demo") == 0) {
         if (token_count > 1) PipelineWriteString("\x1B[31mError: 'demo' takes no arguments\x1B[0m\n");
@@ -731,7 +742,7 @@ static void ProcessCommand(const char* command) {
             // CLI formats and displays the returned data
             PipelineWriteString("\n--- Terminal Library Status ---\n");
             PipelineWriteFormat("Input Pipeline Usage: %zu bytes\n", status.pipeline_usage);
-            PipelineWriteFormat("Keyboard Event Usage: %zu events\n", status.key_usage); // Assuming this is from terminal.vt_keyboard.buffer_count
+            PipelineWriteFormat("Keyboard Event Usage: %zu events\n", status.key_usage);
             PipelineWriteFormat("Input Pipeline Overflowed: %s\n", status.overflow_detected ? "YES" : "NO");
             PipelineWriteFormat("Avg Char Process Time: %.6f ms\n", status.avg_process_time * 1000.0);
             PipelineWriteString("-----------------------------\n");
@@ -751,8 +762,14 @@ static void ProcessCommand(const char* command) {
                 case VT_LEVEL_220:  PipelineWriteString("VT220"); break;
                 case VT_LEVEL_320:  PipelineWriteString("VT320"); break;
                 case VT_LEVEL_420:  PipelineWriteString("VT420"); break;
+                case VT_LEVEL_510:  PipelineWriteString("VT510"); break;
                 case VT_LEVEL_520:  PipelineWriteString("VT520"); break;
+                case VT_LEVEL_525:  PipelineWriteString("VT525"); break;
+                case VT_LEVEL_K95:  PipelineWriteString("K95"); break;
                 case VT_LEVEL_XTERM: PipelineWriteString("XTERM"); break;
+                case VT_LEVEL_TT:    PipelineWriteString("Tera Term"); break;
+                case VT_LEVEL_PUTTY: PipelineWriteString("PuTTY"); break;
+                case VT_LEVEL_ANSI_SYS: PipelineWriteString("ANSI.SYS"); break;
                 default: PipelineWriteString("Unknown"); break;
             }
             PipelineWriteString(")\n");
@@ -932,7 +949,7 @@ static void HandleEnterKey(void) {
     PipelineWriteChar('\n');
     if (console.edit_length > 0) {
         AddToHistory(console.edit_buffer);
-        strcpy(console.command_buffer, console.edit_buffer);
+        ConsoleCopyString(console.command_buffer, sizeof(console.command_buffer), console.edit_buffer);
         ClearEditBuffer();
         console.input_enabled = false;
         console.in_command = true;
@@ -943,7 +960,7 @@ static void HandleEnterKey(void) {
     }
 }
 
-static void HandleKeyEvent(const char* sequence, int length) {
+static void HandleKeyEvent(const char* sequence, size_t length) {
     // This function is now called by HandleTerminalResponse AFTER DSR processing.
     // It receives fully processed VT sequences or characters.
 
@@ -1125,24 +1142,18 @@ static void HandleKeyEvent(const char* sequence, int length) {
 }
 
 // Response callback
-static void HandleTerminalResponse(const char* response_data, int length) {
-    fprintf(stderr, "CLI: HandleTerminalResponse received (len %d): '", length);
-    for(int k=0; k<length; ++k) {
-        if (response_data[k] >= 32 && response_data[k] < 127) fputc(response_data[k], stderr);
-        else if (response_data[k] == '\x1B') fprintf(stderr, "ESC");
-        else fprintf(stderr, "[%02X]", (unsigned char)response_data[k]);
-    }
-    fprintf(stderr, "'. waiting_for_prompt_DSR=%d\n", console.waiting_for_prompt_cursor_pos);
-
+static void HandleTerminalResponse(void* ctx, KTermSession* session, const char* response_data, size_t length) {
+    (void)ctx;
+    (void)session;
     const char* current_pos = response_data;
-    int remaining_length = length;
+    size_t remaining_length = length;
 
     while (remaining_length > 0) {
         // Try to parse DSR for cursor position: ESC[<row>;<col>R
         // Need a way for ParseCSIResponse to indicate how many bytes it consumed if successful.
         // Let's modify ParseCSIResponse or create a new helper.
 
-        int consumed_bytes = 0;
+        size_t consumed_bytes = 0;
 
         // --- Attempt to parse Cursor Position Report (CPR) ---
         if (console.waiting_for_prompt_cursor_pos) { // Only look for CPR if we are expecting it for the prompt
@@ -1158,7 +1169,7 @@ static void HandleTerminalResponse(const char* response_data, int length) {
             if (remaining_length >= 3 && current_pos[0] == '\x1B' && current_pos[1] == '[') {
                 const char* r_char = (const char*)memchr(current_pos, 'R', remaining_length);
                 if (r_char != NULL && (r_char - current_pos < remaining_length)) {
-                    int cpr_len = (r_char - current_pos) + 1;
+                    size_t cpr_len = (size_t)((r_char - current_pos) + 1);
                     // Now try to parse just this segment as a DSR
                     if (ParseCSIResponse(current_pos, cpr_len)) { // ParseCSIResponse needs to be robust enough
                                                                   // or modified to take a max_len for this segment
@@ -1168,12 +1179,8 @@ static void HandleTerminalResponse(const char* response_data, int length) {
                             console.waiting_for_prompt_cursor_pos = false;
                             console.input_enabled = true;
                             cursor_tracker.position_received = false; // Consume
-                            fprintf(stderr, "CLI HandleTerminalResponse: DSR FOR PROMPT HANDLED from chunk. input_enabled=true. Y=%d, X=%d\n", console.prompt_line_y, console.prompt_start_x);
                             RedrawEditLine();
                             consumed_bytes = cpr_len;
-                        } else {
-                             fprintf(stderr, "CLI HandleTerminalResponse: Chunk looked like CPR but ParseCSIResponse didn't confirm position.\n");
-                             // It was some other ESC[...R sequence, or ParseCSIResponse needs adjustment
                         }
                     }
                 }
@@ -1188,7 +1195,7 @@ static void HandleTerminalResponse(const char* response_data, int length) {
             if (c_char != NULL && (c_char - current_pos < remaining_length) &&
                 (current_pos[2] == '?' || current_pos[2] == '>' || current_pos[2] == '=' || current_pos[2] >= '0' && current_pos[2] <='9')) { // Basic DA check
                 
-                int da_len = (c_char - current_pos) + 1;
+                size_t da_len = (size_t)((c_char - current_pos) + 1);
                 PipelineWriteString("\n\x1B[36mTerminal DA:\x1B[0m ");
                 for(int i=0; i<da_len; ++i) {
                      if (current_pos[i] >= 32 && current_pos[i] < 127) PipelineWriteChar(current_pos[i]);
@@ -1207,7 +1214,6 @@ static void HandleTerminalResponse(const char* response_data, int length) {
 
         if (remaining_length > 2 && current_pos[0] == '\x1B' && current_pos[1] == '[') {
             if (current_pos[2] == 'M' || (current_pos[2] == '<' && strchr(current_pos, 'M') != NULL) || (current_pos[2] == '<' && strchr(current_pos, 'm') != NULL) ) {
-                fprintf(stderr, "CLI: Detected Mouse Report: '%.*s'\n", remaining_length, current_pos);
                 // Optionally, display it on terminal if you want to see it during testing
                 // PipelineWriteString("\nMouse Report: ");
                 // for(int k=0; k<remaining_length; ++k) PipelineWriteChar(current_pos[k]);
@@ -1310,7 +1316,7 @@ void SitHelperPrintAudioDeviceInfo(SituationAudioDeviceInfo* devices, int count)
     }
     PipelineWriteFormat("  Found \x1B[1;37m%d\x1B[0m audio playback device(s):\n", count);
     for (int i = 0; i < count; ++i) {
-        PipelineWriteFormat("  \x1B[1;34mDevice [%d]\x1B[0m (Sit. ID: \x1B[37m%d\x1B[0m): \x1B[37m%s\x1B[0m\n", i, devices[i].situation_internal_id, devices[i].name);
+        PipelineWriteFormat("  \x1B[1;34mDevice [%d]\x1B[0m: \x1B[37m%s\x1B[0m\n", i, devices[i].name);
         PipelineWriteFormat("    Default Playback: \x1B[37m%s\x1B[0m\n", devices[i].is_default_playback ? "Yes" : "No");
     }
     PipelineWriteString("\x1B[0m"); // Reset color
@@ -1345,13 +1351,24 @@ int main(void) {
         return 1; 
     }
     SituationSetTargetFPS(target_fps); // Set after init
-    fprintf(stderr, "Situation.h initialized successfully.\n");
+    SituationSetActiveGraph(NULL);
+    SituationStopAllTones();
+    SituationPauseAudioDevice();
     // No longer call InitWindow() directly here, SituationInit() handles it.
     // No longer call SetTargetFPS() directly here, SituationInit() handles it.
     // **********************************************
 
-    InitTerminal(); // Initialize your terminal.h library
-    SetResponseCallback(HandleTerminalResponse); // From terminal.h
+    KTermConfig term_config = {
+        .width = DEFAULT_TERM_WIDTH,
+        .height = DEFAULT_TERM_HEIGHT
+    };
+    term = KTerm_Create(term_config);
+    if (!term) {
+        fprintf(stderr, "FATAL: KTerm_Create failed\n");
+        SituationShutdown();
+        return 1;
+    }
+    KTerm_SetOutputSink(term, HandleTerminalResponse, term);
     
     console.prompt_pending = false;
     console.in_command = false;
@@ -1363,10 +1380,12 @@ int main(void) {
     ClearEditBuffer();
     
     // Welcome Message
-    PipelineWriteString("   \x1B[36m"); PipelineWriteChar(201); for(int i=0;i<74;i++) PipelineWriteChar(205); PipelineWriteChar(187); PipelineWriteString("\x1B[0m\n");
-    PipelineWriteString("   \x1B[36m"); PipelineWriteChar(186); PipelineWriteString("\x1B[1;33m                    KaOS - Kaizen Operating System                    "); PipelineWriteString("\x1B[36m"); PipelineWriteChar(186); PipelineWriteString("\x1B[0m\n");
-    PipelineWriteString("   \x1B[36m"); PipelineWriteChar(186); PipelineWriteString("\x1B[32m                     Version 0.1 - Enhanced Terminal                  "); PipelineWriteString("\x1B[36m"); PipelineWriteChar(186); PipelineWriteString("\x1B[0m\n");
-    PipelineWriteString("   \x1B[36m"); PipelineWriteChar(200); for(int i=0;i<74;i++) PipelineWriteChar(205); PipelineWriteChar(188); PipelineWriteString("\x1B[0m\n\n");
+    PipelineWriteString("   \x1B[36m\x1B(0l"); for(int i=0;i<74;i++) PipelineWriteChar('q'); PipelineWriteString("k\x1B(B\x1B[0m\n");
+    PipelineWriteString("   \x1B[36m\x1B(0x\x1B(B\x1B[1;33m                    KaOS - Kaizen Operating System                    \x1B[36m\x1B(0x\x1B(B\x1B[0m\n");
+    PipelineWriteString("   \x1B[36m\x1B(0x\x1B(B\x1B[32m                     Version 0.1 - Enhanced Terminal                  \x1B[36m\x1B(0x\x1B(B\x1B[0m\n");
+    PipelineWriteString("   \x1B[36m\x1B(0m"); for(int i=0;i<74;i++) PipelineWriteChar('q'); PipelineWriteString("j\x1B(B\x1B[0m\n\n");
+    // Console strings below are UTF-8; the welcome border above temporarily uses DEC Special Graphics.
+    PipelineWriteString("\x1B%G");
     PipelineWriteString("\x1B[1;37mWelcome to KaOS Enhanced Terminal v0.1\x1B[0m\n");
     PipelineWriteString("\x1B[96m\x1B[0m Full ANSI support \x1B[0m 256 colors \x1B[0m Command history \x1B[0m Tab completion \x1B[0m High performance\x1B[0m\n");
     PipelineWriteString("\x1B[90mType '\x1B[33mhelp\x1B[90m' for commands, '\x1B[33mdemo\x1B[90m' for features, or '\x1B[33mtest\x1B[90m' for colors.\x1B[0m\n\n");
@@ -1374,6 +1393,10 @@ int main(void) {
     ACTIVE_SESSION.input_enabled = false;
     console.prompt_pending = true;
     
+    const char* capture_path = getenv("KTERM_CAPTURE_SCREENSHOT");
+    const bool capture_exit = getenv("KTERM_CAPTURE_EXIT") != NULL;
+    int capture_frame = 0;
+
     // Main loop
     while (!SituationWindowShouldClose() && !should_exit) { // Use Situation's wrapper
         // ***** NEW: Call SITUATION_BEGIN_FRAME() *****
@@ -1381,40 +1404,29 @@ int main(void) {
         // **************************************
 
         if (console.prompt_pending && !console.in_command && !console.waiting_for_prompt_cursor_pos) {
-            fprintf(stderr, "CLI MainLoop: Calling ShowPrompt.\n");
             ShowPrompt();
         }
         
-        // UpdateTerminal() likely handles input polling, processing, and drawing the terminal content
-        UpdateTerminal(); 
+        if (SituationIsWindowResized()) {
+            int w, h;
+            SituationGetWindowSize(&w, &h);
+            int cols = w / (DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE);
+            int rows = h / (DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE);
+            if (cols > 0 && rows > 0) KTerm_Resize(term, cols, rows);
+        }
 
-        // ***** NEW: Situation Drawing Block (if terminal.h doesn't manage Begin/EndDrawing) *****
-        // If UpdateTerminal() calls BeginDrawing/EndDrawing internally, this block is not needed here.
-        // If UpdateTerminal() just "draws" characters to a buffer that is then rendered by Situation's
-        // DrawText or similar, then you need this block.
-        // For now, I'll assume terminal.h draws as part of UpdateTerminal() OR you have a separate
-        // TerminalRender() function. Let's wrap it conceptually.
-        
-        // SituationBeginDrawing(); // Start Situation drawing
-        //     // ClearBackground(BLACK); // Or let terminal.h handle background
-        //     // TerminalRender(); // Hypothetical function to draw terminal content
-        //     // You could draw other Situation-managed elements here if needed (e.g., FPS counter from Situation)
-        //     DrawFPS(10,10); // Example Situation direct draw
-        // SituationEndDrawing(); // End Situation drawing
-        //
-        //  NOTE: Your terminal.h likely ALREADY calls BeginDrawing/EndDrawing.
-        //  If so, this explicit block might be redundant or conflict. Ensure terminal.h uses Situation equivalents.
-        //  The key is that *somewhere* in your loop, BeginDrawing and EndDrawing must happen.
-        //  If terminal.h does it, ensure SituationUpdate() is called before that part of terminal.h.
-        //  For now, I'll remove this explicit block assuming terminal.h handles its own drawing.
-        //  The critical part is `SituationUpdate()` is called once per frame.
+        KTermSit_ProcessInput(term);
+        KTerm_Update(term);
+        KTerm_Draw(term);
+
+        if (capture_path && ++capture_frame == 30) {
+            SituationTakeScreenshot(capture_path);
+            if (capture_exit) should_exit = true;
+        }
     }
     
-    // ***** NEW: Call SituationShutdown() *****
+    KTerm_Destroy(term);
     SituationShutdown();
-    // ****************************************
-
-    CleanupTerminal(); // Your terminal.h cleanup
     // CloseWindow(); // SituationShutdown() calls CloseWindow()
     
     return 0;
