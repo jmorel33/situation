@@ -1,7 +1,7 @@
 # Internal Hardening Plan — `static void` → Propagated `SituationError`
 
 **Date**: 2026-05-24  
-**Status**: IN PROGRESS — Phase 0–8 + errno 2.1 shipped (**v2.4.127–136**); head **v2.4.136**  
+**Status**: IN PROGRESS — Phase 0–15 shipped through **v2.4.182**; renderer bolster executor slices **v2.4.181–183** (not hardening phase slots) documented in **`doc/plan/renderer_bolster_plan.md`** Phase 7-ter  
 **Priority**: HIGH  
 **Depends On**: X-Macro Errno ✅ · Public error propagation Ph 1–2 ✅ · Cmd bind `SituationError` (v2.4.126) ✅  
 **Companion**: `doc/plan/ERROR_PROPAGATION_PLAN.md` (public API only)
@@ -34,9 +34,20 @@
 | **7** | v2.4.135 | Internal Audio Errors | ✅ |
 | **8** | v2.4.136 | Internal Hardening Stragglers | ✅ |
 | **9** | v2.4.137 | Internal Void By Design Docs | ⬜ |
-| **10** | v2.4.138 | Internal Caller Audit | ⬜ |
+| **10** | v2.4.138 | Internal Caller Audit | ✅ Shipped |
+| **11** | v2.4.178 | Vulkan 2D/draw hygiene internals | ✅ Shipped |
+| **12** | v2.4.179 | Vulkan quad/text draw validation | ✅ Shipped |
+| **13** | v2.4.180 | OpenGL quad/text draw validation | ✅ Shipped |
+| **15** | v2.4.182 | Audio graph RT teardown | ✅ Shipped |
 
-Formula: **`patch = 127 + phase_number`** for hardening phases; errno **2.1** uses the next patch slot (130) between phase 2 and 3.
+**Related releases (renderer bolster — not hardening phase slots):**
+
+| Version | Title | Doc |
+|---------|-------|-----|
+| **v2.4.181** | OpenGL deferred execute pass fix | **`doc/UPDATELOG.md`**, **`doc/plan/renderer_bolster_plan.md`** Phase 7-terA |
+| **v2.4.183** | OpenGL executor harness green | **`doc/UPDATELOG.md`**, **`doc/plan/renderer_bolster_plan.md`** Phase 7-ter |
+
+Formula: **`patch = 127 + phase_number`** for hardening phases; errno **2.1** uses the next patch slot (130) between phase 2 and 3. Bolster-only patches (**181**, **183**) use the general library patch line and do not consume hardening phase numbers.
 
 ### Phase completion gate (run at end of every phase)
 
@@ -807,8 +818,100 @@ Policy: **`HARDENING: void by design`** at each free helper; no `SituationError`
 - [x] **Phase 8** — v2.4.136 — Stragglers
 - [x] **Phase 9** — v2.4.137 — Bucket B docs
 - [x] **Phase 10** — v2.4.138 — Caller audit
+- [x] **Phase 11** — v2.4.178 — Vulkan 2D/draw hygiene (`_SitVulkan*` from Phase 7-bis / raster closure)
+
+---
+
+# Phase 11 — Vulkan 2D / draw-path hygiene (v2.4.178)
+
+**Goal:** Apply design-contract triage to `_SitVulkanGet2DTargetHeight`, `_SitVulkanFillOrthoProjection2D`, pipeline variant resolvers, and dynamic-state record helpers added for Phase 7-bis and raster parity.
+
+| Function | Decision | `SituationError` |
+|----------|----------|------------------|
+| `_SitVulkanGet2DTargetHeight` | float by design | — |
+| `_SitVulkanFillOrthoProjection2D` | **convert** | `INVALID_PARAM` if `out_proj` NULL |
+| `_SitVulkanBasePipelineForStride` … `_SitVulkanResolveGraphicsPipeline` | VkPipeline by design | — (null → Ensure fails) |
+| `_SitVulkanGetCurrentPrimitiveTopology` | enum by design | — |
+| `_SitVulkanGraphicsDynamicProcsReady` | bool by design | — |
+| `_SitVulkanCmdSetDepthDynamics` … `_SitVulkanApplyTrackedRasterDynamics` | void by design (9.8 record-only) | — |
+| `_SitVulkanFillGraphicsDynamicStates` | void by design | — |
+| `_SitVulkanEnsureGraphicsPipelineBound` | **convert** | `INVALID_PARAM` (null cmd), `VULKAN_PIPELINE_CREATION_FAILED` (no variant), SUCCESS if `shader_slot` NULL |
+
+**Callers updated:** `SituationCmdBeginRenderPass`, `SituationRenderVirtualDisplays`, `SituationCmdBindPipeline`, `BindVertexBuffer`, `Draw`/`DrawIndexed`/indirect, raster rebind (`SetCullMode`/`SetFrontFace`/`SetPolygonMode`), `DrawMesh`. Draw paths without bound pipeline → `INVALID_RESOURCE_HANDLE`.
+
+**Errno:** No new codes — existing Vulkan pipeline + invalid-handle codes suffice.
+
+### Phase 11 gate
+
+- [x] FWD — `situation_impl_renderer_fwd.h` HARDENING comments + signatures
+- [x] SIG + CALL — `_SitVulkanEnsureGraphicsPipelineBound`, `_SitVulkanFillOrthoProjection2D`
+- [x] Vulkan DLL build green
+- [x] **`sit/situation_base_version.h`** → **v2.4.178**
+- [x] **`doc/UPDATELOG.md`** — Phase 11 entry
 
 ---
 
 **Author**: Cursor agent (with Jacques)  
-**Status**: **Internal hardening complete at v2.4.138**
+# Phase 12 — Vulkan quad / text draw validation (v2.4.179)
+
+- [x] **`_SitVulkanValidateInternalQuadDrawReady`** — `SituationCmdDrawQuad`, `SituationCmdDrawTexture`
+- [x] **`_SitVulkanValidateInternalTextDrawReady`** — `SituationCmdDrawTextEx`
+- [x] FWD + caller `SIT_RETURN_IF_ERR`; no new errno codes
+
+---
+
+# Phase 13 — OpenGL quad / text draw validation (v2.4.180)
+
+- [x] **`_SituationGLValidateInternalQuadDrawReady`** — record + `SIT_OP_DRAW_QUAD` execute
+- [x] **`_SituationGLValidateInternalTextDrawReady`** — record + `SIT_OP_DRAW_TEXT(_EX)` execute
+- [x] Parity with Vulkan Phase 12; existing errno codes only
+
+---
+
+**Status**: **Internal hardening through Phase 15 at v2.4.182**; OpenGL executor foundation **v2.4.183** is bolster (**Phase 7-ter**), not Phase 16.
+
+---
+
+# Phase 14 — Central allocator (future; MyBuddy) ⬜
+
+**Goal:** Route all library heap traffic through `SituationAlloc` / `SituationFree` (or thin `SIT_MALLOC`/`SIT_FREE` macros) so leaks, double-free, and stomp detection can be centralized before adopting **MyBuddy**.
+
+| Task | Status |
+|------|--------|
+| Inventory direct `malloc`/`free`/`calloc`/`realloc` outside `SIT_*` macros | ⬜ |
+| Single implementation module; debug fences optional | ⬜ |
+| Harness / full suite under debug allocator | ⬜ |
+| MyBuddy integration only after allocator API is stable and MyBuddy is trusted | ⬜ |
+
+**Not in scope for Phase 14:** changing public API signatures; replacing every call site in one commit.
+
+---
+
+# Phase 15 — Audio graph RT teardown (use-after-free) ✅ v2.4.182
+
+**Observed:** Intermittent harness **ACCESS_VIOLATION** on Windows after `tone_synth.phase1_compare_a4`, often when the next test (`midi_complex_melody`) runs virtual MIDI + active graph. **Not caused by OpenGL deferred-execute work.**
+
+**Root cause:** `SituationDestroyGraph()` on the main thread while the miniaudio callback could still be inside `SituationProcessGraph(active_graph, …)` — unsynchronized `sit_audio.active_graph` pointer.
+
+| Task | Status |
+|------|--------|
+| `SituationDestroyGraph`: if `graph == sit_audio.active_graph`, clear active graph first (defensive) | ✅ |
+| `is_in_audio_callback` + `_SituationWaitUntilAudioCallbackIdle()` before freeing graph nodes | ✅ |
+| Clear `default_graph` / `default_graph_voice_source` when destroying that graph | ✅ |
+| Document harness: `sit_midi_graph_fixture_release` + module crash cleanup | ✅ (harness) |
+| Re-run `tone_synth` module in a loop until stable | ⬜ (verify after rebuild) |
+
+**Harness (shipped):** Windows `SetUnhandledExceptionFilter` + `sit_test_crash_recover` so AV becomes a **failed test** with name, not silent process exit. See `doc/plan/TEST_HARNESS_PLAN.md`.
+
+---
+
+# Related — OpenGL deferred executor (bolster, not Phase 16) ✅ v2.4.181 + v2.4.183
+
+**Not internal-hardening phase slots.** Tracked under **`doc/plan/renderer_bolster_plan.md`** **Phase 7-ter**.
+
+| Version | Scope |
+|---------|--------|
+| **v2.4.181** | Execute-time **`exec_inside_render_pass`**; quad/text/texture no longer fail with **`NO_RENDER_PASS_ACTIVE`** after record-time EndRenderPass. |
+| **v2.4.183** | Baseline raster reset; indexed/quad/texture execute hygiene; **`glFinish`** before screenshot; readback flip policy; NEAREST non-mipmap textures. OpenGL harness **428/428**. |
+
+**Hardening overlap:** **v2.4.179–180** (Phases 12–13) quad/text **`_Situation*ValidateInternal*DrawReady`** validators are prerequisites for safe execute paths documented in 7-ter.

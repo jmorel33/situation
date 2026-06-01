@@ -132,7 +132,7 @@ sit/situation_api.h          ← single-line SITAPI prototypes + EOL description
 
 - [x] **Fetch source** into `ext/ffmpeg/` — **done** (latest GitHub master; sanitized).  
 - [x] Add **`build_ffmpeg.bat`** + **`build_ffmpeg.sh`** (MSYS2 MinGW64, minimal LGPL configure).  
-- [ ] **Verify** `make install` produces static `.a` files in `ext/ffmpeg/build/lib/`.  
+- [x] **Verify** `make install` produces static `.a` files in `ext/ffmpeg/build/lib/` — done 2026-05-24 (`libavcodec.a`, `libavformat.a`, `libswscale.a`, `libavutil.a`).  
 - [ ] Document one-time build in `doc/COMPILATION_GUIDE.md` (FFmpeg only — no Situation link step).  
 - [ ] LGPL compliance note in docs (source offer + build instructions for bundled FFmpeg).
 

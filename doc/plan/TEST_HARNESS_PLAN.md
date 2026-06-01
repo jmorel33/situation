@@ -52,7 +52,8 @@ tests/harness/
 ├── test_core.c               ← Core/Lifecycle (init, shutdown, state, FPS, callbacks)
 ├── test_window.c             ← Window/Display (state, properties, monitors, clipboard)
 ├── test_input.c              ← Input (keyboard, mouse, gamepad)
-├── test_graphics.c           ← Graphics (meshes, shaders, textures, buffers, compute, VDs)
+├── test_graphics.c           ← Graphics (meshes, shaders, textures, buffers, compute interop, SPIR-V)
+├── test_virtual_display.c    ← Virtual Display (API, compositing, scaling, blend) — after graphics in registry
 ├── test_audio.c              ← Audio (device, playback, tones, effects, capture, mixer)
 ├── test_filesystem.c         ← Filesystem (paths, file I/O, directories) — NO GPU
 ├── test_threading.c          ← Threading (pool, jobs, dependencies) — NO GPU
@@ -80,9 +81,15 @@ tests/harness/
 
 - [x] Create `tests/harness/main.c`
   - CLI parsing: `--module <name>`, `--filter <substr>`, `--list`, `--stop-on-fail`, `--verbose`, `--no-color`
-  - Signal handlers: SIGSEGV, SIGABRT → record crash, attempt teardown
+  - Crash recovery: POSIX `SIGSEGV`/`SIGABRT` → `sit_test_crash_recover` + `longjmp`
+  - **Windows:** `SetUnhandledExceptionFilter` for `EXCEPTION_ACCESS_VIOLATION` (0xC0000005) — `signal(SIGSEGV)` does **not** catch miniaudio/graph UAF crashes
+  - Optional `sit_test_set_crash_cleanup()` per module (e.g. `tone_synth` releases MIDI graph fixture)
   - Timeout: 10s per test (thread-based on Windows, SIGALRM on POSIX)
   - Exit code: 0 = all pass, 1 = any failure
+
+### Known intermittent failure (tone_synth / MIDI)
+
+Full OpenGL runs may exit with **0xC0000005** after `phase1_compare_a4` when the next test drives virtual MIDI + graph tone synth. Likely **main-thread graph destroy vs RT `SituationProcessGraph`** (see `INTERNAL_HARDENING_PLAN.md` Phase 15). Not related to renderer hardening. Re-run with `--module tone_synth` or `--filter midi_complex` to isolate; with SEH trap the harness should report `CRASH: ACCESS_VIOLATION` and continue the suite when possible.
 
 - [x] Create `build_tests.bat`
   - Compiles all `tests/harness/*.c` into single binary
