@@ -9,7 +9,7 @@
  *   bend, CC1 vibrato, CC7/CC11 volume, CC64 sustain, CC92 tremolo, CC70 waveform,
  *   CC72–77 ADSR, CC16/17/18/22/71/74/102 filter, CC106 pulse width, CC24–31 mod LFO,
  *   CC5 portamento time, CC20 portamento speed (st/s), CC107–110 sub-osc level/wave/octave/fine,
- *   CC111–113 sub note (0=track) / sync / ring mod,
+ *   CC111–113 sub coarse (±12 st) / sync / ring mod,
  *   CC114 patch slot 0–15 (recall on change), CC115 patch store (≥64 saves to slot),
  *   CC126 mono / CC127 poly, CC123 all-notes-off. Post-voice sum bus uses the same
  *   enhanced lookahead limiter as Polysonix (sit/aud/polysonix/polysonix.h).
@@ -26,6 +26,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#ifndef SIT_TONE_PI
+#define SIT_TONE_PI  ((float)M_PI)
+#endif
+#ifndef SIT_TONE_TWO_PI
+#define SIT_TONE_TWO_PI (2.0f * SIT_TONE_PI)
+#endif
 
 #ifndef SITUATION_TONE_SYNTH_VIBRATO_HZ
 #define SITUATION_TONE_SYNTH_VIBRATO_HZ 5.0f
@@ -85,9 +96,13 @@
 #define SIT_TONE_CTRL_SUB_WAVEFORM      31  /* ctrl int 0-4; MIDI CC108 int 0-127 */
 #define SIT_TONE_CTRL_SUB_OCTAVE        32  /* ctrl int 0-2 unison/oct-1/oct-2; MIDI CC109 int 0-127 */
 #define SIT_TONE_CTRL_SUB_FINE          33  /* ctrl float semitones; MIDI CC110 int 0-127 */
-#define SIT_TONE_CTRL_SUB_NOTE          34  /* ctrl int 0-127; MIDI CC111 — 0=track main note, else fixed sub MIDI note */
-#define SIT_TONE_CTRL_SUB_SYNC          35  /* ctrl bool; MIDI CC112 int 0/127 — main phase reset on sub cycle */
-#define SIT_TONE_CTRL_SUB_RING_MOD      36  /* ctrl bool; MIDI CC113 int 0/127 — ring multiply vs additive */
+#ifndef SIT_TONE_SUB_COARSE_SEMITONE_MAX
+#define SIT_TONE_SUB_COARSE_SEMITONE_MAX 12.0f /* ±1 octave from main note */
+#endif
+
+#define SIT_TONE_CTRL_SUB_COARSE        34  /* ctrl float semitones ±12; MIDI CC111 — coarse offset from main */
+#define SIT_TONE_CTRL_SUB_SYNC          35  /* ctrl bool; MIDI CC112 — sub hard-synced to main (main=master) */
+#define SIT_TONE_CTRL_SUB_RING_MOD      36  /* ctrl bool; MIDI CC113 — ring: dry/wet crossfade main×(1-lvl) + (main×sub)×lvl */
 #define SIT_TONE_CTRL_PATCH_SLOT        37  /* ctrl int 0-15; MIDI CC114 int 0-127 — recall slot on change */
 #define SIT_TONE_CTRL_PATCH_STORE       38  /* ctrl bool; MIDI CC115 int ≥64 save — also SetControl ≥0.5 */
 
@@ -301,7 +316,7 @@ typedef struct SituationToneSynthVoice {
     float target_hz;     /* MIDI note target frequency */
     float phase;
     float sub_phase;
-    uint8_t sub_cycle_pending; /* set when sub phase wraps; main hard-syncs next sample if enabled */
+    uint8_t main_cycle_pending; /* set when main phase wraps; sub hard-syncs if enabled */
     float env_level;     /* last envelope output (release start level) */
     float release_start_env;
     float volume_peak;
@@ -339,7 +354,7 @@ typedef struct SituationToneSynthNodeState {
     float amplitude;
     float phase;
     float sub_phase;
-    uint8_t sub_cycle_pending;
+    uint8_t main_cycle_pending;
     int waveform;
 
     /* Manual (non-MIDI voice) filter path */
@@ -437,7 +452,7 @@ static inline float _SituationToneSynthVoiceFrequency(const SituationToneSynthNo
                                                       float mod_lfo_pitch_semitones) {
     float semis = s->bend_semitones + mod_lfo_pitch_semitones;
     if (s->mod_depth_semitones > 0.0f) {
-        semis += sinf(vibrato_phase) * s->mod_depth_semitones;
+        semis = fmaf(sinf(vibrato_phase), s->mod_depth_semitones, semis);
     }
     return v->base_hz * powf(2.0f, semis / 12.0f);
 }
@@ -451,26 +466,24 @@ static inline float _SituationToneSynthClampPulseWidth(float pulse_width) {
 static inline float _SituationToneSynthModLfoRandomSample(SituationToneSynthNodeState* s) {
     if (!s) return 0.0f;
     s->mod_lfo_cycle++;
-    float u = sinf((float)s->mod_lfo_cycle * 12.9898f + 78.233f) * 43758.5453f;
-    return (u - floorf(u)) * 2.0f - 1.0f;
+    float u = sinf(fmaf((float)s->mod_lfo_cycle, 12.9898f, 78.233f)) * 43758.5453f;
+    return fmaf(u - floorf(u), 2.0f, -1.0f);
 }
 
 static inline float _SituationToneSynthModLfoWaveform(const SituationToneSynthNodeState* s,
                                                       float phase,
                                                       int waveform) {
-    const float two_pi = 2.0f * 3.14159265359f;
-    const float pi = 3.14159265359f;
     if (waveform == SIT_TONE_LFO_SQUARE) {
-        return (phase < pi) ? 1.0f : -1.0f;
+        return (phase < SIT_TONE_PI) ? 1.0f : -1.0f;
     }
     if (waveform == SIT_TONE_LFO_RANDOM) {
         return s ? s->mod_lfo_random : 0.0f;
     }
   /* triangle */
-    if (phase < pi) {
-        return (phase / pi) * 2.0f - 1.0f;
+    if (phase < SIT_TONE_PI) {
+        return fmaf(phase / SIT_TONE_PI, 2.0f, -1.0f);
     }
-    return 3.0f - (phase / pi) * 2.0f;
+    return fmaf(-(phase / SIT_TONE_PI), 2.0f, 3.0f);
 }
 
 static inline void _SituationToneSynthModLfoAdvance(SituationToneSynthNodeState* s,
@@ -480,11 +493,10 @@ static inline void _SituationToneSynthModLfoAdvance(SituationToneSynthNodeState*
     float rate = controls[SIT_TONE_CTRL_LFO_RATE];
     if (rate <= 0.0f) return;
 
-    const float two_pi = 2.0f * 3.14159265359f;
     float prev = s->mod_lfo_phase;
-    s->mod_lfo_phase += two_pi * rate / sample_rate;
-    if (s->mod_lfo_phase >= two_pi) {
-        s->mod_lfo_phase -= two_pi;
+    s->mod_lfo_phase += SIT_TONE_TWO_PI * rate / sample_rate;
+    if (s->mod_lfo_phase >= SIT_TONE_TWO_PI) {
+        s->mod_lfo_phase -= SIT_TONE_TWO_PI;
         if ((int)(controls[SIT_TONE_CTRL_LFO_WAVEFORM] + 0.5f) == SIT_TONE_LFO_RANDOM) {
             s->mod_lfo_random = _SituationToneSynthModLfoRandomSample(s);
         }
@@ -518,7 +530,7 @@ static inline float _SituationToneSynthModLfoPulseWidth(const float* controls, f
     float amt = controls[SIT_TONE_CTRL_LFO_PWM_AMOUNT];
     float range = controls[SIT_TONE_CTRL_LFO_PWM_RANGE];
     if (amt <= 0.0f || range <= 0.0f) return base_pw;
-    return _SituationToneSynthClampPulseWidth(base_pw + lfo_val * amt * range);
+    return _SituationToneSynthClampPulseWidth(fmaf(lfo_val * amt, range, base_pw));
 }
 
 static inline float _SituationToneSynthModLfoFilterCutoffOffset(const float* controls, float lfo_val) {
@@ -548,7 +560,6 @@ static inline float _SituationToneSynthOscSampleWave(int waveform,
                                                      uint8_t note,
                                                      float freq_hz,
                                                      float pulse_width) {
-    const float two_pi = 2.0f * 3.14159265359f;
     float sample = 0.0f;
     switch (waveform) {
         case 0:
@@ -556,18 +567,18 @@ static inline float _SituationToneSynthOscSampleWave(int waveform,
             break;
         case 1: {
             float pw = _SituationToneSynthClampPulseWidth(pulse_width);
-            sample = (phase < two_pi * pw) ? 1.0f : -1.0f;
+            sample = (phase < SIT_TONE_TWO_PI * pw) ? 1.0f : -1.0f;
         } break;
         case 2:
-            sample = 2.0f * fabsf((phase / 3.14159265359f) - 1.0f) - 1.0f;
+            sample = fmaf(2.0f, fabsf((phase / SIT_TONE_PI) - 1.0f), -1.0f);
             break;
         case 3:
-            sample = (phase / 3.14159265359f) - 1.0f;
+            sample = (phase / SIT_TONE_PI) - 1.0f;
             break;
         case 4: {
-            float u = (sinf(phase * 12.9898f + freq_hz * 0.001f) + (float)note * 0.17f) *
+            float u = (sinf(fmaf(phase, 12.9898f, freq_hz * 0.001f)) + (float)note * 0.17f) *
                       43758.5453f;
-            sample = (u - floorf(u)) * 2.0f - 1.0f;
+            sample = fmaf(u - floorf(u), 2.0f, -1.0f);
         } break;
         default:
             sample = sinf(phase);
@@ -588,16 +599,44 @@ static inline int _SituationToneSynthCtrlOn(const float* controls, int idx) {
     return controls && controls[idx] > 0.5f;
 }
 
-/** Sub MIDI note: 0 = main voice note; 1–127 = fixed sub note (MIDI card integer). */
-static inline uint8_t _SituationToneSynthSubMidiNote(uint8_t main_note, const float* controls) {
-    if (!controls) return main_note;
-    int sel = (int)(controls[SIT_TONE_CTRL_SUB_NOTE] + 0.5f);
-    if (sel <= 0) return main_note;
-    if (sel > 127) sel = 127;
-    return (uint8_t)sel;
+static inline float _SituationToneSynthClampSubCoarse(float coarse) {
+    if (coarse < -SIT_TONE_SUB_COARSE_SEMITONE_MAX) return -SIT_TONE_SUB_COARSE_SEMITONE_MAX;
+    if (coarse > SIT_TONE_SUB_COARSE_SEMITONE_MAX) return SIT_TONE_SUB_COARSE_SEMITONE_MAX;
+    return coarse;
 }
 
-/** sub_octave / sub_fine interval applied to a base Hz. */
+static inline uint8_t _SituationToneSynthFreqToMidiNote(float hz) {
+    if (hz <= 0.0f) {
+        return 60;
+    }
+    float n = fmaf(12.0f, log2f(hz / 440.0f), 69.0f);
+    if (n < 0.0f) {
+        n = 0.0f;
+    }
+    if (n > 127.0f) {
+        n = 127.0f;
+    }
+    return (uint8_t)(n + 0.5f);
+}
+
+/** Sub MIDI note for waveform noise seed: main note + coarse / octave / fine displacement. */
+static inline uint8_t _SituationToneSynthSubMidiNote(uint8_t main_note, const float* controls) {
+    if (!controls) return main_note;
+    const float coarse = _SituationToneSynthClampSubCoarse(controls[SIT_TONE_CTRL_SUB_COARSE]);
+    int oct = (int)(controls[SIT_TONE_CTRL_SUB_OCTAVE] + 0.5f);
+    if (oct < 0) oct = 0;
+    if (oct > 2) oct = 2;
+    float fine = controls[SIT_TONE_CTRL_SUB_FINE];
+    if (fine < -1.0f) fine = -1.0f;
+    if (fine > 1.0f) fine = 1.0f;
+    const float total_st = coarse - (float)oct * 12.0f + fine;
+    int note = (int)main_note + (int)(total_st + (total_st >= 0.0f ? 0.5f : -0.5f));
+    if (note < 0) note = 0;
+    if (note > 127) note = 127;
+    return (uint8_t)note;
+}
+
+/** sub_coarse / sub_octave / sub_fine interval applied to main voice Hz. */
 static inline float _SituationToneSynthApplySubInterval(float base_hz, const float* controls) {
     if (!controls || base_hz <= 0.0f) return 0.0f;
     int oct = (int)(controls[SIT_TONE_CTRL_SUB_OCTAVE] + 0.5f);
@@ -606,91 +645,140 @@ static inline float _SituationToneSynthApplySubInterval(float base_hz, const flo
     float fine = controls[SIT_TONE_CTRL_SUB_FINE];
     if (fine < -1.0f) fine = -1.0f;
     if (fine > 1.0f) fine = 1.0f;
-    return base_hz * powf(2.0f, (-(float)oct * 12.0f + fine) / 12.0f);
+    const float coarse = _SituationToneSynthClampSubCoarse(controls[SIT_TONE_CTRL_SUB_COARSE]);
+    return base_hz * powf(2.0f, (coarse - (float)oct * 12.0f + fine) / 12.0f);
 }
 
-/**
- * Additive sub pitch: ctrl 34 = 0 → base = main_hz; 1–127 → fixed MIDI note table Hz.
- * Then sub_octave / sub_fine.
- */
+/** Hard-sync slave ratio: coarse+fine semitones from main (octave ignored — classic 0.5×…2× sweep). */
+static inline float _SituationToneSynthSyncSubFrequencyHz(float main_hz, const float* controls) {
+    if (!controls || main_hz <= 0.0f) {
+        return 0.0f;
+    }
+    const float coarse = _SituationToneSynthClampSubCoarse(controls[SIT_TONE_CTRL_SUB_COARSE]);
+    float fine = controls[SIT_TONE_CTRL_SUB_FINE];
+    if (fine < -1.0f) {
+        fine = -1.0f;
+    }
+    if (fine > 1.0f) {
+        fine = 1.0f;
+    }
+    return main_hz * powf(2.0f, (coarse + fine) / 12.0f);
+}
+
+/** Sub pitch: main_hz displaced by sub_coarse, sub_octave, and sub_fine (sync uses ratio-only path). */
 static inline float _SituationToneSynthSubFrequencyHz(float main_hz, uint8_t main_note,
                                                       const float* controls) {
     (void)main_note;
-    if (!controls) return 0.0f;
-    float base_hz = main_hz;
-    const int sub_note_sel = (int)(controls[SIT_TONE_CTRL_SUB_NOTE] + 0.5f);
-    if (sub_note_sel > 0) {
-        int note = sub_note_sel;
-        if (note > 127) note = 127;
-        base_hz = SITUATION_MIDI_NOTE_FREQUENCY[note];
+    if (!controls || main_hz <= 0.0f) {
+        return 0.0f;
     }
-    return _SituationToneSynthApplySubInterval(base_hz, controls);
+    const int sync_on =
+        _SituationToneSynthCtrlOn(controls, SIT_TONE_CTRL_SUB_SYNC) &&
+        !_SituationToneSynthCtrlOn(controls, SIT_TONE_CTRL_SUB_RING_MOD);
+    if (sync_on) {
+        return _SituationToneSynthSyncSubFrequencyHz(main_hz, controls);
+    }
+    return _SituationToneSynthApplySubInterval(main_hz, controls);
 }
 
 /**
  * Main + sub oscillators (pre-filter). Advances main/sub phase; optional sync / ring mod.
- * @param sub_cycle_pending In/out: set when sub completes a cycle (for sync on next sample).
+ * Sync: main = master; each main cycle resets sub phase. Slave Hz = main × 2^((coarse+fine)/12)
+ *   (octave ignored — CC111 sweeps classic 0.5×…2× ratios). Mix favors the synced sub oscillator.
+ * Ring mod (four-quadrant multiply, dry/wet crossfade):
+ *   sample = main×(1−ring_level) + (main×sub)×ring_level.
+ *   At ring_level=1 the carrier is fully suppressed — only sum/difference sidebands remain.
+ *   CC113 enables ring; CC107 = ring depth / dry-wet (defaults to 1 when ring on and level is 0).
+ *   Coarse/oct/fine retune the modulator only — not additive sub while ring is on.
+ *   (SID-style ring uses triangle MSB XOR and is not emulated here.)
+ * @param main_cycle_pending In/out: set when main completes a cycle.
  */
 static inline float _SituationToneSynthMixMainSub(
     int main_waveform,
     int sub_waveform,
     float* main_phase,
     float* sub_phase,
-    uint8_t* sub_cycle_pending,
+    uint8_t* main_cycle_pending,
     uint8_t main_note,
     float main_hz,
     float sample_rate,
     float pulse_width,
     const float* controls) {
-    const float two_pi = 2.0f * 3.14159265359f;
+    const float sub_level = controls ? controls[SIT_TONE_CTRL_SUB_LEVEL] : 0.0f;
+    const int sync_on =
+        _SituationToneSynthCtrlOn(controls, SIT_TONE_CTRL_SUB_SYNC) &&
+        !_SituationToneSynthCtrlOn(controls, SIT_TONE_CTRL_SUB_RING_MOD);
+    const int ring_mod = _SituationToneSynthCtrlOn(controls, SIT_TONE_CTRL_SUB_RING_MOD);
+    const int run_sub =
+        controls && sub_phase && (sub_level > 0.0f || sync_on || ring_mod);
+    const float main_inc = (SIT_TONE_TWO_PI * main_hz) / sample_rate;
 
-    if (sub_cycle_pending && *sub_cycle_pending &&
-        _SituationToneSynthCtrlOn(controls, SIT_TONE_CTRL_SUB_SYNC)) {
-        *main_phase = 0.0f;
-        *sub_cycle_pending = 0;
+    float sub_s = 0.0f;
+    int sub_active = 0;
+    float mod_hz = 0.0f;
+
+    if (run_sub) {
+        mod_hz = _SituationToneSynthSubFrequencyHz(main_hz, main_note, controls);
+        if (mod_hz > 0.0f) {
+            sub_active = 1;
+            if (sync_on) {
+                if (main_cycle_pending && *main_cycle_pending) {
+                    *sub_phase = 0.0f;
+                    *main_cycle_pending = 0;
+                }
+                if (*main_phase + main_inc >= SIT_TONE_TWO_PI) {
+                    *sub_phase = 0.0f;
+                }
+            }
+            const float mod_inc = (SIT_TONE_TWO_PI * mod_hz) / sample_rate;
+            const uint8_t sub_midi_note = sync_on
+                ? _SituationToneSynthFreqToMidiNote(mod_hz)
+                : _SituationToneSynthSubMidiNote(main_note, controls);
+            /* Ring mod: if sub waveform is default sine (0) and main is richer,
+             * inherit main waveform so the product has dense sidebands. */
+            const int effective_sub_wf = (ring_mod && sub_waveform == 0 && main_waveform != 0)
+                ? main_waveform : sub_waveform;
+            sub_s = _SituationToneSynthOscSampleWave(effective_sub_wf, *sub_phase, sub_midi_note, mod_hz,
+                                                     pulse_width);
+            *sub_phase += mod_inc;
+            if (*sub_phase >= SIT_TONE_TWO_PI) {
+                *sub_phase -= SIT_TONE_TWO_PI;
+            }
+        }
     }
 
     float main_s =
         _SituationToneSynthOscSampleWave(main_waveform, *main_phase, main_note, main_hz, pulse_width);
 
-    float sub_s = 0.0f;
-    float mod_hz = 0.0f;
-    int sub_active = 0;
-    const float sub_level = controls ? controls[SIT_TONE_CTRL_SUB_LEVEL] : 0.0f;
-    const int ring_mod = _SituationToneSynthCtrlOn(controls, SIT_TONE_CTRL_SUB_RING_MOD);
-
-    if (controls && sub_level > 0.0f && sub_phase) {
-        mod_hz = _SituationToneSynthSubFrequencyHz(main_hz, main_note, controls);
-        if (mod_hz > 0.0f) {
-            sub_active = 1;
-            const uint8_t sub_midi_note = _SituationToneSynthSubMidiNote(main_note, controls);
-            sub_s = _SituationToneSynthOscSampleWave(sub_waveform, *sub_phase, sub_midi_note, mod_hz,
-                                                     pulse_width);
-            const float mod_inc = (two_pi * mod_hz) / sample_rate;
-            *sub_phase += mod_inc;
-            if (*sub_phase >= two_pi) {
-                *sub_phase -= two_pi;
-                if (sub_cycle_pending) {
-                    *sub_cycle_pending = 1;
-                }
-            }
-        }
-    }
-
     float sample = main_s;
-    if (sub_level > 0.0f && sub_active) {
-        if (ring_mod) {
-            const float wet = main_s * sub_s;
-            sample = fmaf(wet - main_s, sub_level, main_s);
-        } else if (sub_s != 0.0f) {
-            sample = main_s + sub_level * sub_s;
+    if (ring_mod && sub_active) {
+        float ring_level = sub_level;
+        if (ring_level <= 0.0f) {
+            ring_level = 1.0f;
         }
+        /* True ring mod: dry/wet crossfade — at level=1 carrier suppressed, only sidebands.
+         * The 2× on the product compensates for the sin×sin → 0.5×cos identity so that
+         * ring output has the same peak amplitude as the dry carrier. */
+        sample = fmaf(2.0f * main_s * sub_s, ring_level, main_s * (1.0f - ring_level));
+    } else if (sync_on && sub_active) {
+        float main_mix = 1.0f - sub_level;
+        if (main_mix < 0.0f) {
+            main_mix = 0.0f;
+        }
+        if (main_mix > 1.0f) {
+            main_mix = 1.0f;
+        }
+        sample = fmaf(main_mix, main_s, sub_s);
+    } else if (sub_level > 0.0f && sub_active && sub_s != 0.0f) {
+        sample = fmaf(sub_level, sub_s, main_s);
     }
 
-    const float main_inc = (two_pi * main_hz) / sample_rate;
     *main_phase += main_inc;
-    if (*main_phase >= two_pi) {
-        *main_phase -= two_pi;
+    if (*main_phase >= SIT_TONE_TWO_PI) {
+        *main_phase -= SIT_TONE_TWO_PI;
+        if (main_cycle_pending) {
+            *main_cycle_pending = 1;
+        }
     }
 
     return sample;
@@ -717,7 +805,7 @@ static inline float _SituationToneSynthMidiNormLog(uint8_t value, float min_hz, 
     float norm = (float)_SituationToneSynthMidiCcClamp(value) / 127.0f;
     float log_min = logf(min_hz);
     float log_max = logf(max_hz);
-    return expf(log_min + norm * (log_max - log_min));
+    return expf(fmaf(norm, log_max - log_min, log_min));
 }
 
 static inline int _SituationToneSynthFilterEnabled(const float* controls) {
@@ -729,14 +817,6 @@ static inline int _SituationToneSynthFilterEnabled(const float* controls) {
 static inline float _SituationToneSynthFilterKeytrackFactor(uint8_t note, float keytrack) {
     if (keytrack <= 0.0001f) return 1.0f;
     return exp2f(((float)note - 60.0f) / 12.0f * keytrack);
-}
-
-static inline uint8_t _SituationToneSynthFreqToMidiNote(float hz) {
-    if (hz <= 0.0f) return 60;
-    float n = 69.0f + 12.0f * log2f(hz / 440.0f);
-    if (n < 0.0f) n = 0.0f;
-    if (n > 127.0f) n = 127.0f;
-    return (uint8_t)(n + 0.5f);
 }
 
 static inline void _SituationToneSynthVoiceFilterEnsure(SituationToneSynthVoiceFilter* vf, float sample_rate) {
@@ -843,7 +923,7 @@ static inline float _SituationToneSynthEnvStep(SituationToneSynthVoice* v) {
             break;
         case SIT_TONE_SYNTH_ENV_DECAY: {
             float progress = (v->t_decay > 0) ? (float)v->cursor_frames / (float)v->t_decay : 1.0f;
-            envelope = 1.0f - (1.0f - v->level_sustain) * progress;
+            envelope = fmaf(-(1.0f - v->level_sustain), progress, 1.0f);
             if (v->cursor_frames >= v->t_decay) {
                 v->env_state = SIT_TONE_SYNTH_ENV_SUSTAIN;
                 v->cursor_frames = 0;
@@ -860,7 +940,7 @@ static inline float _SituationToneSynthEnvStep(SituationToneSynthVoice* v) {
             break;
         case SIT_TONE_SYNTH_ENV_RELEASE: {
             float progress = (v->t_release > 0) ? (float)v->cursor_frames / (float)v->t_release : 1.0f;
-            envelope = v->release_start_env * (1.0f - progress);
+            envelope = fmaf(-v->release_start_env, progress, v->release_start_env);
             if (v->cursor_frames >= v->t_release) {
                 v->active = 0;
                 v->env_state = SIT_TONE_SYNTH_ENV_IDLE;
@@ -1267,7 +1347,7 @@ static inline void _SituationToneSynthApplyControlChange(SituationToneSynthMidiC
             s->ch_volume = norm;
             break;
         case 10:
-            ctx->controls[3] = norm * 2.0f - 1.0f;
+            ctx->controls[3] = fmaf(norm, 2.0f, -1.0f);
             break;
         case 11:
             s->expression = norm;
@@ -1309,7 +1389,7 @@ static inline void _SituationToneSynthApplyControlChange(SituationToneSynthMidiC
                 (float)_SituationToneSynthMidiCcSteps(value, 9);
             break;
         case 17:
-            ctx->controls[SIT_TONE_CTRL_FILTER_DRIVE] = norm * 9.0f + 1.0f;
+            ctx->controls[SIT_TONE_CTRL_FILTER_DRIVE] = fmaf(norm, 9.0f, 1.0f);
             break;
         case 18:
             ctx->controls[SIT_TONE_CTRL_FILTER_OVERSAMPLE] =
@@ -1319,7 +1399,7 @@ static inline void _SituationToneSynthApplyControlChange(SituationToneSynthMidiC
             ctx->controls[SIT_TONE_CTRL_FILTER_KEYTRACK] = norm;
             break;
         case 71:
-            ctx->controls[SIT_TONE_CTRL_FILTER_RESONANCE] = norm * 19.5f + 0.5f;
+            ctx->controls[SIT_TONE_CTRL_FILTER_RESONANCE] = fmaf(norm, 19.5f, 0.5f);
             break;
         case 74:
             ctx->controls[SIT_TONE_CTRL_FILTER_CUTOFF] =
@@ -1336,7 +1416,7 @@ static inline void _SituationToneSynthApplyControlChange(SituationToneSynthMidiC
             _SituationToneSynthSetVoiceMode(ctx, 0);
             break;
         case 106:
-            ctx->controls[SIT_TONE_CTRL_PULSE_WIDTH] = 0.05f + norm * 0.90f;
+            ctx->controls[SIT_TONE_CTRL_PULSE_WIDTH] = fmaf(norm, 0.90f, 0.05f);
             break;
         case 24:
             if (value == 0) {
@@ -1391,9 +1471,12 @@ static inline void _SituationToneSynthApplyControlChange(SituationToneSynthMidiC
             int fine_step = (int)value - 64;
             ctx->controls[SIT_TONE_CTRL_SUB_FINE] = (float)fine_step / 64.0f;
         } break;
-        case 111:
-            ctx->controls[SIT_TONE_CTRL_SUB_NOTE] = (float)value;
-            break;
+        case 111: {
+            /* 128 coarse steps: MIDI 64 = 0 st, 0/127 → −12 st, 127 → +12 st. */
+            int coarse_step = (int)value - 64;
+            ctx->controls[SIT_TONE_CTRL_SUB_COARSE] =
+                (float)coarse_step / 64.0f * SIT_TONE_SUB_COARSE_SEMITONE_MAX;
+        } break;
         case 112:
             ctx->controls[SIT_TONE_CTRL_SUB_SYNC] = (value >= 64) ? 1.0f : 0.0f;
             break;

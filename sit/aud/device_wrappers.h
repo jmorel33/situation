@@ -340,7 +340,7 @@ static void _SituationProcessToneSynthNode(
                                                                mod_lfo_pitch);
                 float sample = _SituationToneSynthMixMainSub(
                     voice->waveform, voice->sub_waveform, &voice->phase, &voice->sub_phase,
-                    &voice->sub_cycle_pending, voice->note, freq, sample_rate,
+                    &voice->main_cycle_pending, voice->note, freq, sample_rate,
                     mod_lfo_pulse_width, controls);
                 sample *= envelope * voice->volume_peak * global_vol;
 
@@ -377,7 +377,7 @@ static void _SituationProcessToneSynthNode(
                                       : 0;
                 float sample = _SituationToneSynthMixMainSub(
                     state->waveform, sub_wf, &state->phase, &state->sub_phase,
-                    &state->sub_cycle_pending, manual_note, manual_hz, sample_rate,
+                    &state->main_cycle_pending, manual_note, manual_hz, sample_rate,
                     mod_lfo_pulse_width, controls);
                 sample *= amp;
 

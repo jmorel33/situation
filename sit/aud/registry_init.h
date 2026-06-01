@@ -550,13 +550,13 @@ static void _SituationRegisterToneSynth(void) {
     meta.controls[33].units = "st";
     meta.controls[33].is_logarithmic = false;
     
-    strncpy(meta.controls[34].name, "sub_note", SITUATION_MAX_CONTROL_NAME - 1);
+    strncpy(meta.controls[34].name, "sub_coarse", SITUATION_MAX_CONTROL_NAME - 1);
     meta.controls[34].id = 34;
-    meta.controls[34].type = SITUATION_CONTROL_INT;
-    meta.controls[34].min_value = 0.0f;
-    meta.controls[34].max_value = 127.0f;
+    meta.controls[34].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[34].min_value = -12.0f;
+    meta.controls[34].max_value = 12.0f;
     meta.controls[34].default_value = 0.0f;
-    meta.controls[34].units = "MIDI";
+    meta.controls[34].units = "st";
     meta.controls[34].is_logarithmic = false;
     
     strncpy(meta.controls[35].name, "sub_sync", SITUATION_MAX_CONTROL_NAME - 1);

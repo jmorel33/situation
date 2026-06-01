@@ -93,7 +93,18 @@ SituationAudioGraph* SituationCreateGraph(void) {
 
 void SituationDestroyGraph(SituationAudioGraph* graph) {
     if (!graph) return;
-    
+
+    /* Phase 15: detach from RT path before free — main thread must not free graph memory
+       while sit_miniaudio_data_callback may be inside SituationProcessGraph. */
+    if (sit_audio.active_graph == graph) {
+        sit_audio.active_graph = NULL;
+    }
+    if (sit_audio.default_graph == graph) {
+        sit_audio.default_graph = NULL;
+        sit_audio.default_graph_voice_source = NULL;
+    }
+    _SituationWaitUntilAudioCallbackIdle();
+
     /* Visit every slot — node indices can be sparse (holes); node_count alone is not a valid upper bound. */
     for (int i = 0; i < SITUATION_MAX_NODES; i++) {
         if (!graph->nodes[i]) continue;
