@@ -157,19 +157,28 @@ Per-voice **sub-osc** mixed with the main oscillator **before** the SVF (same en
 | 31 | `sub_waveform` | Sine | 0–4 | **108** (`value % 5`) |
 | 32 | `sub_octave` | Oct −1 | 0 = unison, 1 = −1 oct, 2 = −2 oct | **109** |
 | 33 | `sub_fine` | 0 | ±1 semitone | **110** (`norm×2−1`) |
-| 34 | `sub_note` | 0 (track main) | 0–127 MIDI note | **111** (integer 0–127) |
+| 34 | `sub_coarse` | 0 | ±12 semitones | **111** (`(value−64)/64×12` st from main) |
 | 35 | `sub_sync` | Off | bool | **112** (≥64 on) |
 | 36 | `sub_ring_mod` | Off | bool | **113** (≥64 on) |
 
-**Pitch** — `sub_note` **0**: base = voice `main_hz` (after bend, portamento, mod LFO). **1–127**: base = `SITUATION_MIDI_NOTE_FREQUENCY[sub_note]` (fixed sub note, independent of keyboard). Then `sub_octave` / `sub_fine` apply:
+**Pitch** — base = voice `main_hz` (after bend, portamento, mod LFO). Then `sub_coarse`, `sub_octave`, and `sub_fine` apply:
 
-`sub_hz = base_hz × 2^((sub_fine − sub_octave×12) / 12)` — `sub_octave` 0/1/2 = unison / −1 oct / −2 oct
+`sub_hz = main_hz × 2^((sub_coarse − sub_octave×12 + sub_fine) / 12)` — `sub_octave` 0/1/2 = unison / −1 oct / −2 oct; `sub_coarse` ±12 st from main
 
-**Mix** (pre-filter): additive `main + sub_level×sub`, or **ring mod** (Polysonix-style wet/dry): `main + sub_level×(main×sub − main)`.
+**Mix** (pre-filter): additive `main + sub_level×sub` when **ring off** (CC113 off).
 
-**Ring mod** multiplies **main × sub** (same sub oscillator pitch as additive: `sub_note` + `sub_octave` / `sub_fine`). At full `sub_level` the output is pure product (no dry main). Sidebands move with both keyboard and `sub_note` sweep.
+**Ring mod** (CC113 on): **four-quadrant multiply with dry/wet crossfade** — `main×(1−ring_level) + (main×sub)×ring_level`.
 
-**Sync** (`sub_sync`): on each sub cycle wrap, **main phase resets to 0** (hard sync to sub). Uses the same sub Hz as the sub oscillator.
+Main is the **carrier** (played note). Sub is the **modulator** (CC109–111 set its frequency). At `ring_level = 1` the carrier is fully suppressed — only sum/difference sidebands at **f_main ± f_sub** remain (classic metallic ring mod sound). At intermediate levels you get a blend of dry carrier and ring product. Sweeping CC111 retunes sideband spacing.
+
+**CC107** = ring depth / dry-wet when ring on (defaults to **1** if ring on and level is 0).  
+**Additive sub is disabled while ring is on.**
+
+This is **analog four-quadrant multiply** routing, not **SID-style** ring (triangle MSB XOR with the previous voice’s accumulator). For metallic SID bells use **triangle** main and detuned modulator; timbre will differ from a real SID but sideband physics are the same multiply.
+
+**Sync** (CC112, ring off): main = master; sub phase resets each main cycle. Slave ratio =
+`main_hz × 2^((sub_coarse + sub_fine) / 12)` (**sub_octave ignored** — CC111 sweeps classic **0.5×…2×**
+hard-sync ratios). Output favors the synced sub (`sub + (1−sub_level)×main`).
 
 Each voice has **`sub_phase`** (advanced at `sub_hz`; preserved on mono legato like `phase`). **CC108** updates active voices’ `sub_waveform` (like **CC70** for the main osc).
 
@@ -319,6 +328,7 @@ Controls are a **voice template**: copied/used at note-on; some CCs refresh acti
 | 31 | `sub_waveform` | enum | Sine | 0–4; **CC108** |
 | 32 | `sub_octave` | enum | Oct −1 | 0 / −1 / −2 oct; **CC109** |
 | 33 | `sub_fine` | st | 0 | ±1; **CC110** |
+| 34 | `sub_coarse` | st | 0 | ±12 from main; **CC111** |
 
 Set via `SituationSetControl(graph, handle, index, value)`.
 
@@ -361,6 +371,8 @@ All MIDI traffic uses **integer bytes only** — there are no fractional CC valu
 
 Sub fine (**CC110**): **128 steps**, MIDI **64 = 0 st**, **0 → −1 st**, **127 → +1 st** (`(value − 64) / 64` semitones internally).
 
+Sub coarse (**CC111**): **128 steps**, MIDI **64 = 0 st**, **0 → −12 st**, **127 → +12 st** (`(value − 64) / 64 × 12` semitones from main note).
+
 ### Channel messages
 
 | Message | Handling |
@@ -382,6 +394,7 @@ Sub fine (**CC110**): **128 steps**, MIDI **64 = 0 st**, **0 → −1 st**, **12
 | 108 | Sub waveform | `value % 5` → control **31** |
 | 109 | Sub octave | integer **0 / 1 / 2** → control **32** |
 | 110 | Sub fine tune | integer **0–127** → **(value−64)/64** st → control **33** |
+| 111 | Sub coarse tune | integer **0–127** → **(value−64)/64×12** st from main → control **34** |
 | 10 | Pan | `norm × 2 − 1` → control 3 |
 | 11 | Expression | `norm` → `expression` |
 | 16 | Filter mode | `floor(norm × 8.99)` → 0–8 |

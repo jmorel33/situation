@@ -32,7 +32,7 @@ info.thread_affinity_audio  = 1ULL << 2;
 info.numa_prefer_local      = true;
 info.worker_numa_spread     = true;
 info.io_thread_numa_node    = 0;           // or -1 to skip I/O pin
-info.thread_pool_reserved_threads = 3;     // main + render + audio
+info.thread_pool_reserved_threads = 4;     // main + render + audio + IO
 info.thread_pool_use_physical_cores = true;
 SituationInit(argc, argv, &info);
 ```

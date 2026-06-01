@@ -20,7 +20,7 @@ The generational dual-queue pool is unchanged in spirit: **mutex per queue**, **
 | `worker_numa_spread` | `false` | Pin worker *i* to NUMA node `i % node_count` at worker entry |
 | `io_thread_numa_node` | `< 0` | Dedicated I/O thread NUMA node; `< 0` = no pin |
 | `thread_pool_use_physical_cores` | `false` | Auto worker count uses physical cores if true, else logical |
-| `thread_pool_reserved_threads` | `0` | Reserved for main/render/audio; `0` treated as **1** |
+| `thread_pool_reserved_threads` | `0` | Reserved for main/render/audio/IO; `0` treated as **4** |
 
 Affinity failures are **fail-soft** (debug warning; init continues).
 
@@ -44,6 +44,7 @@ Affinity failures are **fail-soft** (debug warning; init continues).
 | `SituationGetConfiguredMainThreadAffinity()` | Init main mask |
 | `SituationGetConfiguredRenderThreadAffinity()` | Effective render mask |
 | `SituationGetConfiguredAudioThreadAffinity()` | Effective audio mask |
+| `SituationGetConfiguredIOThreadAffinity()` | Effective I/O mask (init or default CPU 3) |
 
 ---
 

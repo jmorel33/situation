@@ -505,6 +505,9 @@ This section details the preprocessor defines that control the library's feature
 #### Feature Enablement
 - **`SITUATION_ENABLE_SHADER_COMPILER`**: Mandatory for using compute shaders with the Vulkan backend as it enables runtime compilation of GLSL to SPIR-V.
 
+#### Build-Flag Defaults
+- **`SITUATION_WORKER_NUMA_SPREAD_DEFAULT`**: Controls the default value of `SituationInitInfo.worker_numa_spread`. When `SITUATION_ENABLE_THREADING` is defined, this defaults to `1` (workers are spread across NUMA nodes at pool startup). Define as `0` before including `situation.h` to disable NUMA spreading by default. When threading is not enabled, this is always `0`.
+
 </details>
 
 ---
@@ -689,6 +692,10 @@ typedef struct {
 
     // [v2.3.34] Async I/O
     uint32_t     io_queue_capacity; // Size of the IO queue (Low Priority). Default: 1024.
+
+    // [Threading Bolstering — Epic D] Pool sizing when SituationCreateThreadPool(..., num_threads=0, ...)
+    bool     thread_pool_use_physical_cores; // false = logical CPUs - reserved; true = physical cores - reserved
+    uint32_t thread_pool_reserved_threads;   // Threads left for main/render/audio/IO (default 4 if 0)
 } SituationInitInfo;
 ```
 -   `window_width`, `window_height`: The desired initial dimensions for the main window's client area.
@@ -1951,6 +1958,22 @@ if (SituationGetInitState() != SITUATION_INIT_STATE_INITIALIZED) {
 ```
 
 ---
+#### `SituationGetGraphicsBackend`
+Returns which renderer backend this Situation DLL was built for (`SIT_GRAPHICS_BACKEND_OPENGL` or `SIT_GRAPHICS_BACKEND_VULKAN`). Valid **before** `SituationInit` — use to branch app logic without compile-time `#ifdef`.
+
+```c
+SituationGraphicsBackend SituationGetGraphicsBackend(void);
+```
+
+---
+#### `SituationGetGraphicsBackendName`
+Read-only label for `SituationGetGraphicsBackend()` (`"OpenGL"`, `"Vulkan"`, or `"Unknown"`).
+
+```c
+const char* SituationGetGraphicsBackendName(void);
+```
+
+---
 #### `SituationGetGraphicsCaps`
 Fills **`SituationGraphicsCaps`** with backend feature flags (bindless, compute, max push constant size, SPIR-V path, etc.). Examples and the test harness use this to skip or classify driver-specific tests.
 
@@ -1961,7 +1984,7 @@ void SituationGetGraphicsCaps(SituationGraphicsCaps* out_caps);
 **Parameters:**
 - `out_caps` — Output struct; must not be NULL.
 
-**Notes:** Safe after successful **`SituationInit`**. Values reflect the **active** backend (OpenGL vs Vulkan).
+**Notes:** **`backend`** and **`SituationGetGraphicsBackend()`** match the active DLL. **`api_version_packed`** is the Situation **target** API (`4.6` OpenGL, `1.4` Vulkan). **`device_api_version_packed`** is the runtime GL context or `VkPhysicalDevice` version (`major<<16|minor`). Safe after successful **`SituationInit`** for device fields.
 
 ---
 #### `SituationShowMessageBox`
@@ -4840,6 +4863,40 @@ SituationUnloadImage(desaturated);
 - Saturation factor of 0.0 produces grayscale
 - Value factor affects overall brightness
 - Mix parameter allows subtle adjustments by blending with original
+
+---
+#### `SituationImageAdjustYPQ`
+Adjusts phase (hue), chroma, and luma of every pixel in-place via float YPQ, with optional mixing. Mirrors `SituationImageAdjustHSV` but uses NTSC-style luma/chroma separation — useful for TV/retro grading and effects that should preserve perceived brightness.
+
+```c
+void SituationImageAdjustYPQ(SituationImage *image, float phase_shift_deg, float chroma_factor, float luma_factor, float mix);
+```
+
+**Parameters:**
+- `image` - Pointer to the image to adjust (modified in-place)
+- `phase_shift_deg` - Hue rotation in degrees (wraps on the phase wheel)
+- `chroma_factor` - Chroma (Q) multiplier (0.0 = grayscale, 1.0 = original, >1.0 = more saturated)
+- `luma_factor` - Luma (Y) multiplier (0.0 = black, 1.0 = original, >1.0 = brighter)
+- `mix` - Blend factor between original and adjusted (0.0 = original, 1.0 = fully adjusted)
+
+**Usage Example:**
+```c
+SituationImage photo = SituationLoadImage("frame.png");
+
+// Boost chroma without a full HSV push
+SituationImageAdjustYPQ(&photo, 0.0f, 1.5f, 1.0f, 1.0f);
+
+// Warm shift: +15° phase, slight luma lift
+SituationImageAdjustYPQ(&photo, 15.0f, 1.0f, 1.05f, 0.75f);
+
+SituationSaveImage(photo, "frame_ypq_grade.png");
+SituationUnloadImage(photo);
+```
+
+**Notes:**
+- Context-free CPU path (no `SituationInit` required)
+- Internally uses `SituationColorToYPQf` / `SituationColorFromYPQf` per pixel
+- RGB textures and framebuffers remain the GPU display encoding; YPQ is an authoring boundary
 
 ---
 #### `SituationUnloadFont`
@@ -12367,6 +12424,166 @@ bool SituationSetThreadAffinity(uint64_t core_mask);
 **Usage:** Call from the thread you want to pin (e.g. audio or render worker after pool creation).
 
 ---
+#### `SituationGetConfiguredIOThreadAffinity`
+Returns the effective affinity mask for the dedicated I/O thread. If `SituationInitInfo::io_thread_numa_node` was set, returns the NUMA node mask for that node. Otherwise defaults to logical CPU 3 (`1ULL << 3`).
+
+```c
+uint64_t SituationGetConfiguredIOThreadAffinity(void);
+```
+
+**Returns:** A 64-bit mask with bits set for the logical CPUs the I/O thread should run on. Returns `0` if the library is not initialized.
+
+**Notes:**
+- Companion to `SituationGetConfiguredMainThreadAffinity()`, `SituationGetConfiguredRenderThreadAffinity()`, and `SituationGetConfiguredAudioThreadAffinity()`.
+- The I/O thread handles hot-reload polling and background asset loading.
+- Override via `SituationInitInfo::io_thread_numa_node` at init time.
+
+**New in v2.4.197.**
+
+---
+#### `SituationGetInternalThreadPool`
+Returns a pointer to the library's internal thread pool (the one created during `SituationInit` when `SITUATION_ENABLE_THREADING` is defined). This allows user code to submit jobs to the same pool the library uses for async I/O, hot-reload polling, and background tasks — without creating a separate pool.
+
+```c
+SituationThreadPool* SituationGetInternalThreadPool(void);
+```
+
+**Returns:** Pointer to the active internal pool, or `NULL` if threading is not initialized (library not init'd, or `SITUATION_ENABLE_THREADING` not defined at build time).
+
+**Thread Safety:** Safe to call from any thread after `SituationInit()` returns.
+
+**Usage Example:**
+```c
+// Submit a job to the library's own pool
+SituationThreadPool* pool = SituationGetInternalThreadPool();
+if (pool) {
+    SituationSubmitJob(pool, MyBackgroundTask, &my_data);
+}
+```
+
+**New in v2.4.197.**
+
+---
+
+#### `SituationThreadSlotSnapshot`
+A per-thread status record returned as part of `SituationThreadPoolSnapshot`. Describes the role, placement, and identity of each tracked thread.
+
+```c
+typedef struct {
+    SituationThreadRole role;       // SIT_THREAD_ROLE_MAIN, _WORKER, _IO, _RENDER, _AUDIO
+    int index;                      // Worker index (0..N-1) or -1 for non-worker roles
+    char name[24];                  // Thread name (e.g. "Sit Worker 0", "Sit I/O")
+    int last_logical_cpu;           // Last observed logical CPU core
+    int numa_node;                  // NUMA node assignment (-1 if unknown)
+    uint64_t affinity_mask_applied; // Affinity mask set on this thread
+    bool active;                    // Whether the thread is currently running
+} SituationThreadSlotSnapshot;
+```
+
+---
+
+#### `SituationThreadPoolSnapshot`
+A point-in-time snapshot of the thread pool state, including per-thread placement and queue depths.
+
+```c
+typedef struct {
+    bool pool_active;
+    size_t worker_count;
+    bool io_thread_enabled;
+    int active_jobs;
+    size_t low_queue_depth;
+    size_t high_queue_depth;
+    uint64_t stats_jobs_submitted;
+    uint64_t stats_jobs_completed;
+    uint64_t stats_main_steal_success;
+    uint64_t stats_main_steal_fail;
+    int slot_count;
+    SituationThreadSlotSnapshot slots[SITUATION_THREAD_SNAPSHOT_MAX_SLOTS];
+} SituationThreadPoolSnapshot;
+```
+
+---
+
+#### `SituationGetThreadPoolSnapshot`
+Captures a point-in-time snapshot of the thread pool: worker roles, CPU placement, NUMA nodes, queue depths, and job counters.
+
+```c
+bool SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationThreadPoolSnapshot* out);
+```
+
+**Parameters:**
+*   `pool`: The thread pool to inspect.
+*   `out`: Pointer to a `SituationThreadPoolSnapshot` struct to fill.
+
+**Returns:** `true` on success, `false` if pool is NULL or inactive.
+
+**Usage Example:**
+```c
+SituationThreadPoolSnapshot snap;
+if (SituationGetThreadPoolSnapshot(&pool, &snap)) {
+    for (int i = 0; i < snap.slot_count; i++) {
+        printf("[%s] role=%d cpu=%d numa=%d\n",
+            snap.slots[i].name,
+            snap.slots[i].role,
+            snap.slots[i].last_logical_cpu,
+            snap.slots[i].numa_node);
+    }
+}
+```
+
+---
+
+#### `SituationThreadPoolMetrics`
+Scheduler and contention counters for performance analysis.
+
+```c
+typedef struct {
+    uint64_t jobs_submitted;
+    uint64_t jobs_completed;
+    uint64_t main_steal_success;
+    uint64_t main_steal_fail;
+    uint64_t main_steal_empty_queue;
+    uint64_t high_queue_lock_ops;
+    uint64_t high_queue_lock_ns;
+    uint64_t scan_forward_swap;
+    uint64_t scan_forward_exhausted;
+    uint64_t io_idle_waits;
+    uint64_t io_jobs_run;
+    uint64_t submit_run_inline;
+    uint64_t queue_full_spins;
+    uint64_t dispatch_parallel_calls;
+    double io_busy_ratio;
+} SituationThreadPoolMetrics;
+```
+
+---
+
+#### `SituationGetThreadPoolMetrics`
+Retrieves scheduler counters (lock contention, steal stats, queue pressure) for profiling.
+
+```c
+bool SituationGetThreadPoolMetrics(SituationThreadPool* pool, SituationThreadPoolMetrics* out_metrics);
+```
+
+**Parameters:**
+*   `pool`: The thread pool to query.
+*   `out_metrics`: Pointer to a `SituationThreadPoolMetrics` struct to fill.
+
+**Returns:** `true` on success.
+
+---
+
+#### `SituationGetThreadingStatus`
+Returns a summary of the runtime threading capabilities and pool configuration.
+
+```c
+SituationThreadingStatus SituationGetThreadingStatus(void);
+```
+
+**Returns:** A `SituationThreadingStatus` struct with platform info, capabilities, and pool state.
+
+---
+
 #### `SituationGetCPUCoreCount`
 Returns the number of **physical** CPU cores detected at init (not hyper-thread logical count on all platforms).
 
@@ -12405,15 +12622,25 @@ typedef struct ColorHSVA {
 
 ---
 #### `ColorYPQA`
-Represents a color in a custom YPQA color space (Luma, Phase, Quadrature, Alpha).
+Represents a color in NTSC-style YPQ space (luma, phase, chroma amplitude), packed as 8-bit bytes per channel.
 ```c
 typedef struct ColorYPQA {
-    float y; // Luma
-    float p; // Phase
-    float q; // Quadrature
-    float a; // Alpha
+    unsigned char y; // Luma (0–255)
+    unsigned char p; // Phase / hue wheel position (0–255 → 0–360°)
+    unsigned char q; // Chroma amplitude (0–255)
+    unsigned char a; // Alpha (0–255)
 } ColorYPQA;
 ```
+
+---
+#### `ColorYPQf`
+Normalized float edit space for YPQ grading without 8-bit quantization during manipulation. All components are in **[0, 1]**; `p` is phase (0 → full hue wheel).
+```c
+typedef struct ColorYPQf {
+    float y, p, q, a;
+} ColorYPQf;
+```
+Use `SituationYpqQuantize()` when exporting to `ColorYPQA` or GPU RGBA.
 
 ### Functions
 
@@ -12942,6 +13169,51 @@ SituationSaveImage(img, "photo_retro.png");
 - Inverse of `SituationColorToYPQ()`
 - Useful for color grading pipelines
 - Allows independent manipulation of brightness and color
+
+---
+#### YPQ pixel manipulation (HSV parity)
+Byte-space helpers for per-pixel YPQ math. Prefer these over manual channel arithmetic so phase wrap and chroma scaling stay consistent with `SituationColorToYPQ` / `FromYPQ`.
+
+```c
+ColorYPQA SituationYpqLerp(ColorYPQA a, ColorYPQA b, float t);
+ColorYPQA SituationYpqAdjustLuma(ColorYPQA color, float luma_factor);
+ColorYPQA SituationYpqAdjustPhase(ColorYPQA color, int phase_shift);
+ColorYPQA SituationYpqAdjustChroma(ColorYPQA color, float chroma_factor);
+float SituationYpqGetLuma(ColorYPQA color);
+float SituationYpqGetHueDegrees(ColorYPQA color);
+float SituationYpqGetChroma(ColorYPQA color);
+float SituationYpqDistance(ColorYPQA a, ColorYPQA b);
+bool SituationYpqEquals(ColorYPQA a, ColorYPQA b, unsigned char tolerance);
+```
+
+- **Lerp:** `P` uses shortest arc on the hue wheel (same semantics as circular HSV hue)
+- **AdjustPhase:** `phase_shift` is in byte steps (mod 256), not degrees
+- **GetHueDegrees:** maps `P` to degrees `[0, 360)`
+
+---
+#### Float YPQ path
+For grading pipelines that need sub-byte precision before export:
+
+```c
+ColorYPQf SituationColorToYPQf(ColorRGBA color);
+ColorRGBA SituationColorFromYPQf(ColorYPQf ypq);
+ColorYPQA SituationYpqQuantize(ColorYPQf ypq);
+ColorYPQf SituationYpqClampInGamut(ColorYPQf ypq);
+```
+
+- **ToYPQf / FromYPQf:** linear NTSC YIQ internally; RGB output is clamped to display gamut
+- **Quantize:** pack float YPQ to 8-bit `ColorYPQA` for storage or legacy byte APIs
+- **ClampInGamut:** binary-search chroma (`q`) down when linear RGB would clip at the current luma/phase
+
+**Usage Example:**
+```c
+ColorRGBA src = {200, 80, 40, 255};
+ColorYPQf edit = SituationColorToYPQf(src);
+edit.q = 1.0f;                              // push chroma in float space
+edit = SituationYpqClampInGamut(edit);      // avoid RGB clip before display
+ColorRGBA graded = SituationColorFromYPQf(edit);
+ColorYPQA packed = SituationYpqQuantize(edit); // optional 8-bit sidecar
+```
 
 ---
 #### `SituationRgbToYpqa` / `SituationYpqaToRgb`

@@ -356,6 +356,17 @@ typedef struct {
     // Async I/O [v2.3.34]:
     // Size of the IO queue (Low Priority). Default: 1024.
     uint32_t io_queue_capacity;
+
+    // NUMA Placement [v2.4.141+]:
+    bool  numa_prefer_local;       // Pin render/audio to local NUMA node when affinity mask is 0.
+    bool  worker_numa_spread;      // Spread pool workers across NUMA nodes (i % node_count).
+                                   // Default: true when SITUATION_ENABLE_THREADING is defined
+                                   // (controlled by SITUATION_WORKER_NUMA_SPREAD_DEFAULT build flag).
+    int32_t io_thread_numa_node;   // Dedicated I/O thread NUMA node; < 0 = no pin.
+
+    // Thread Pool Sizing [v2.4.141+]:
+    bool     thread_pool_use_physical_cores; // Auto worker count uses physical cores if true, else logical.
+    uint32_t thread_pool_reserved_threads;   // Threads left for main/render/audio/IO (default 4 if 0).
 } SituationInitInfo;
 ```
 
@@ -1998,6 +2009,21 @@ Before uploading to the GPU, you can manipulate images using a suite of CPU-side
 *   `SituationImageCrop(...)`: Trims the image.
 *   `SituationImageDraw(...)`: Blits one image onto another (Software composition).
 *   `SituationImageAdjustHSV(...)`: Modifies Hue/Saturation/Brightness.
+*   `SituationImageAdjustYPQ(...)`: Modifies phase/chroma/luma in NTSC-style YPQ (TV/retro grading).
+
+**When to use RGB vs HSV vs YPQ (CPU authoring)**
+
+| Space | Best for |
+|-------|----------|
+| **RGBA** | GPU textures, framebuffers, shaders, final display — always the rendering highway. |
+| **HSV** | Intuitive hue/sat/brightness tweaks, rainbow cycles, generic stylization. |
+| **YPQ** | Luma-stable grading, phase/chroma edits that feel like composite/YIQ TV color, retro borders and signal-style effects. |
+
+Use **HSV** when you want familiar hue sliders. Use **YPQ** when you care about separating brightness from chroma the way analog TV color did, or when matching RGL/NTSC-style looks. Both adjust APIs (`SituationImageAdjustHSV`, `SituationImageAdjustYPQ`) mutate CPU `SituationImage` buffers in-place; upload to GPU as RGBA afterward. For sub-byte edits, convert with `SituationColorToYPQf`, manipulate, optionally `SituationYpqClampInGamut`, then `SituationColorFromYPQf` or `SituationYpqQuantize`.
+
+**YPQ grading on the GPU (real-time / full frame)**
+
+For framebuffer- or texture-sized passes, use **`SituationCmdDrawTextureYpqGrade`** instead of CPU `SituationImageAdjustYPQ`. It draws a textured quad: each fragment samples RGB from the source texture, applies the same phase/chroma/luma/mix knobs as the CPU adjust API, and writes clamped RGB to the current render pass. Typical pattern: render the scene to an offscreen color attachment, then blit that texture through the grade shader into the swapchain (or a post pass) with a fullscreen `dest` rectangle. Matrices live in the library (`SIT_YPQ_GRADE_FRAGMENT_SHADER`); parity with CPU is covered by harness test `ypq_grade_pass_cpu_parity`. See `doc/plan/YPQ_COLOR_PLAN.md` — [I.5 CPU vs GPU grading](doc/plan/YPQ_COLOR_PLAN.md#i5-cpu-vs-gpu-grading-phase-4--implemented) and [Phase 4](doc/plan/YPQ_COLOR_PLAN.md#phase-4--gpu-framebuffer-grade-pass).
 
 #### Low-Level Generation
 
@@ -4063,6 +4089,72 @@ SituationEndList(my_list);
 // Main Thread:
 SituationSubmitRenderList(my_list);
 ```
+
+<a id="76-threading-observability"></a>
+### 7.6 Threading Observability
+
+The observability API provides runtime introspection into the thread pool: which threads are running, where they're placed (CPU core, NUMA node), and how the scheduler is performing.
+
+#### SituationGetThreadPoolSnapshot
+
+```c:disable-run
+bool SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationThreadPoolSnapshot* out);
+```
+
+Returns a point-in-time snapshot of all tracked threads (workers, I/O, audio, render) including their role, name, CPU placement, and NUMA node.
+
+Each slot in the snapshot is a `SituationThreadSlotSnapshot`:
+```c:disable-run
+typedef struct {
+    SituationThreadRole role;       // MAIN, WORKER, IO, RENDER, AUDIO
+    int index;                      // Worker index (0..N-1) or -1
+    char name[24];                  // Human-readable name (e.g. "Sit Worker 0")
+    int last_logical_cpu;           // Last observed logical CPU core
+    int numa_node;                  // NUMA node (-1 if unknown)
+    uint64_t affinity_mask_applied; // Affinity mask set on this thread
+    bool active;                    // Currently running
+} SituationThreadSlotSnapshot;
+```
+
+**Usage:**
+```c:disable-run
+SituationThreadPoolSnapshot snap;
+if (SituationGetThreadPoolSnapshot(&pool, &snap)) {
+    printf("Pool: %zu workers, %d active jobs\n", snap.worker_count, snap.active_jobs);
+    for (int i = 0; i < snap.slot_count; i++) {
+        if (snap.slots[i].active) {
+            printf("  [%s] cpu=%d numa=%d\n",
+                snap.slots[i].name,
+                snap.slots[i].last_logical_cpu,
+                snap.slots[i].numa_node);
+        }
+    }
+}
+```
+
+#### SituationGetThreadPoolMetrics
+
+```c:disable-run
+bool SituationGetThreadPoolMetrics(SituationThreadPool* pool, SituationThreadPoolMetrics* out);
+```
+
+Returns scheduler counters: lock contention (high queue lock ops/ns), scan-forward swaps, main-thread steal success/fail, I/O busy ratio, and queue-full spins. Use for profiling and tuning pool size.
+
+#### SituationGetThreadingStatus
+
+```c:disable-run
+SituationGetThreadingStatus(void);
+```
+
+Returns a summary of runtime threading capabilities (C11 threads, atomics, platform sleep), pool configuration, and any warnings (e.g., missing NUMA support).
+
+#### SituationGetConfiguredIOThreadAffinity
+
+```c:disable-run
+uint64_t SituationGetConfiguredIOThreadAffinity(void);
+```
+
+Returns the effective affinity mask for the dedicated I/O thread. Defaults to logical CPU 3 (`1ULL << 3`); override via `SituationInitInfo::io_thread_numa_node`. Companion to `SituationGetConfiguredMainThreadAffinity()`, `SituationGetConfiguredRenderThreadAffinity()`, and `SituationGetConfiguredAudioThreadAffinity()`.
 
 <a id="appendix-a-error-omniscience"></a>
 
