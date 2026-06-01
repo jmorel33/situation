@@ -32,6 +32,7 @@ static SituationError _SituationInitRenderer(const SituationInitInfo* init_info)
 static SituationError _SituationInitDefaultFont(void);
 static SituationError _SituationInitTextRenderer(void);
 static SituationError _SituationInitQuadRenderer(int width, int height);
+static SituationError _SituationInitYpqGradeRenderer(int width, int height);
 /* HARDENING: void by design — best-effort quad renderer teardown. */
 static void _SituationCleanupQuadRenderer(void);
 /* HARDENING: void by design — best-effort shutdown leak sweep. */
@@ -91,6 +92,8 @@ static void _SituationCheckGLError(const char* location);
 static GLenum _SituationMapDataTypeToGL(SituationDataType type);
 static SituationError _SitGLSoftCmdPush(SituationGLSoftCommandBuffer* buf, SitOpCode opcode, SitCommandPacket** out_packet);
 static SituationError _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, const void* data, size_t size, void** out_ptr);
+static SituationError _SituationGLValidateInternalQuadDrawReady(SituationGLSoftCommandBuffer* buf, const char* caller, bool require_recorded_render_pass);
+static SituationError _SituationGLValidateInternalTextDrawReady(SituationGLSoftCommandBuffer* buf, const char* caller, bool require_recorded_render_pass);
 static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* buf, int frame_index);
 static SituationError _SitGLDeferProgramUniform(SituationGLSoftCommandBuffer* buf, GLuint prog, GLint loc, SituationUniformType type, int elem_count, const void* data, size_t payload_bytes);
 /* HARDENING: void by design — presentation alpha fixup (best-effort). */
@@ -210,11 +213,37 @@ static SituationError _SituationVulkanCreateFramebuffers(void);
 static SituationError _SituationVulkanCleanupSwapchain(void);
 static SituationError _SituationVulkanRecreateSwapchain(void);
 
+// Vulkan 2D ortho + draw-path hygiene (BeginRenderPass, VD compositor, quads, text, user draws)
+/* HARDENING: float by design — active render-area height query; clamps to >= 1.0f; no failure paths. */
+static SituationError _SitVulkanFillOrthoProjection2D(float width, float height, mat4 out_proj);
+static void _SitVulkanFillViewport2DOpenGLParity(float width, float height, VkViewport* out_vp);
+static void _SitVulkanApply2DViewportScissor(VkCommandBuffer vk_cmd);
+/* HARDENING: VkPipeline by design — internal variant resolver; VK_NULL_HANDLE means no pipeline on slot. */
+static VkPipeline _SitVulkanBasePipelineForStride(_SituationShaderSlot* shader_slot, size_t stride);
+static VkPipeline _SitVulkanSelectRasterVariant(_SituationShaderSlot* shader_slot, VkPipeline base_pipeline);
+static VkPipeline _SitVulkanSelectPolygonVariant(_SituationShaderSlot* shader_slot, VkPipeline base_pipeline);
+static VkPipeline _SitVulkanResolveGraphicsPipeline(_SituationShaderSlot* shader_slot, size_t stride);
+/* HARDENING: enum by design — lazy-init tracked topology state. */
+static VkPrimitiveTopology _SitVulkanGetCurrentPrimitiveTopology(void);
+/* HARDENING: bool by design — capability query for extended dynamic state PFNs. */
+static bool _SitVulkanGraphicsDynamicProcsReady(void);
+/* HARDENING: void by design — record-only; skips when cmd/PFNs unavailable (9.8). */
+static void _SitVulkanCmdSetDepthDynamics(VkCommandBuffer vk_cmd, VkBool32 test_enable, VkBool32 write_enable, VkCompareOp compare_op);
+static void _SitVulkanApplyQuadDrawDynamicState(VkCommandBuffer vk_cmd);
+static void _SitVulkanApplyVDCompositingDynamicState(VkCommandBuffer vk_cmd, float vp_w, float vp_h);
+static void _SitVulkanApplyGraphicsViewportScissor(VkCommandBuffer vk_cmd);
+static void _SitVulkanApplyTrackedRasterDynamics(VkCommandBuffer vk_cmd);
+static SituationError _SitVulkanEnsureGraphicsPipelineBound(VkCommandBuffer vk_cmd, _SituationShaderSlot* shader_slot, size_t stride);
+static SituationError _SitVulkanValidateInternalQuadDrawReady(VkCommandBuffer vk_cmd, const char* caller);
+static SituationError _SitVulkanValidateInternalTextDrawReady(VkCommandBuffer vk_cmd, const char* caller);
+/* HARDENING: void by design — fills VkDynamicState array from caps; no alloc (pipeline create). */
+static void _SitVulkanFillGraphicsDynamicStates(VkDynamicState* states, uint32_t* out_count);
+
 // Render Pass & Pipeline
 static SituationError _SituationVulkanCreateRenderPass(void);
 static VkRenderPass _SituationVulkanGetOrCreateRenderPass(_SituationVulkanState* vk_state, const SituationRenderPassInfo* info);
 static VkFormat _SituationVulkanFindSupportedFormat(const VkFormat* candidates, uint32_t candidate_count, VkImageTiling tiling, VkFormatFeatureFlags features);
-static VkPipeline _SituationVulkanCreateGraphicsPipeline(const void* vs_code, size_t vs_size, const void* fs_code, size_t fs_size, VkPipelineLayout layout, VkPrimitiveTopology topology, uint32_t binding_count, const VkVertexInputBindingDescription* bindings, uint32_t attr_count, const VkVertexInputAttributeDescription* attrs, uint32_t pipeline_flags);
+static VkPipeline _SituationVulkanCreateGraphicsPipeline(const void* vs_code, size_t vs_size, const void* fs_code, size_t fs_size, VkPipelineLayout layout, VkPrimitiveTopology topology, uint32_t binding_count, const VkVertexInputBindingDescription* bindings, uint32_t attr_count, const VkVertexInputAttributeDescription* attrs, uint32_t pipeline_flags, VkCullModeFlags cull_mode, VkFrontFace front_face, VkPolygonMode polygon_mode);
 
 // Command Pool & Buffers
 static SituationError _SituationVulkanCreateCommandPool(void);

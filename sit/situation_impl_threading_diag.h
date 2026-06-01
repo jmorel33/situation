@@ -247,4 +247,47 @@
         (((var) == (expected)) ? ((var) = (desired), true) : false)
 #endif
 
+// ================================================================================================
+// THREAD NAMING (debugger / Task Manager visibility)
+// ================================================================================================
+
+#if defined(_WIN32)
+/**
+ * @brief Sets the name of the current thread (visible in debuggers and Task Manager).
+ * @details Uses SetThreadDescription (Windows 10 1607+). Fails silently on older Windows.
+ */
+static void _SituationSetCurrentThreadName(const char* name) {
+    if (!name) return;
+    // Convert UTF-8 to wide string for SetThreadDescription
+    int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, NULL, 0);
+    if (len <= 0 || len > 128) return;
+    wchar_t wname[128];
+    MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, 128);
+    // SetThreadDescription is Win10 1607+; loaded dynamically to avoid link failure on older SDK.
+    typedef HRESULT (WINAPI *PFN_SetThreadDescription)(HANDLE, PCWSTR);
+    static PFN_SetThreadDescription pfn = NULL;
+    static bool resolved = false;
+    if (!resolved) {
+        HMODULE k32 = GetModuleHandleA("kernel32.dll");
+        if (k32) pfn = (PFN_SetThreadDescription)GetProcAddress(k32, "SetThreadDescription");
+        resolved = true;
+    }
+    if (pfn) pfn(GetCurrentThread(), wname);
+}
+#elif defined(__linux__)
+#include <pthread.h>
+static void _SituationSetCurrentThreadName(const char* name) {
+    if (!name) return;
+    pthread_setname_np(pthread_self(), name);
+}
+#elif defined(__APPLE__)
+#include <pthread.h>
+static void _SituationSetCurrentThreadName(const char* name) {
+    if (!name) return;
+    pthread_setname_np(name);
+}
+#else
+static void _SituationSetCurrentThreadName(const char* name) { (void)name; }
+#endif
+
 #endif // SITUATION_IMPL_THREADING_DIAG_H

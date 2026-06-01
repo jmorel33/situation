@@ -822,68 +822,20 @@ SITAPI ColorRGBA SituationHsvToRgb(ColorHSV hsv) {
 }
 
 
+#include "situation_impl_ypq.h"
+
 /**
  * @brief Converts a color from the YPQA (Luma, Phase, Quadrature, Alpha) color space back to the standard RGBA color space.
- * @details This is the inverse operation of `SituationColorToYPQ`. It reconstructs the red, green, and blue components from the color's brightness (Y) and its chroma information (P and Q), and preserves the alpha channel. The conversion uses the standard NTSC YIQ-to-RGB matrix.
+ * @details This is the inverse operation of `SituationColorToYPQ`. It reconstructs the red, green, and blue components from the color's brightness (Y) and its chroma information (P and Q), and preserves the alpha channel. The conversion uses the standard NTSC YIQ-to-RGB matrix via `_SitRgbFromYpqBytes` in `situation_impl_ypq.h`.
  *
  * @param ypq_color The source `ColorYPQA` struct to convert.
  *
  * @return A `ColorRGBA` struct containing the equivalent R, G, B, and A values. The function includes clamping to ensure the resulting RGB values are within the valid [0-255] range, as certain YPQ combinations can represent out-of-gamut colors.
  *
- * @see SituationColorToYPQ()
+ * @see SituationColorToYPQ(), situation_impl_ypq.h
  */
 SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color) {
-    // 1. Map YPQ parameters to YIQ components based on 8-8-8 bit ranges
-
-    // Y (Luminance): Scale 0-255 (8 bits) to 0.0-1.0
-    double y_yiq = (double)ypq_color.y / 255.0;
-
-    // P (Phase Angle): Scale 0-255 (8 bits) to 0 - 2*PI radians
-    // P determines the direction (hue) on the I-Q plane
-    double angle = ((double)ypq_color.p / 255.0) * 2.0 * M_PI;
-
-    // Q (Amplitude/Saturation): Scale 0-255 (8 bits) to 0.0-1.0
-    // Q determines the distance from the center (grayscale) point
-    double amplitude = (double)ypq_color.q / 255.0;
-
-    // Calculate I and Q based on angle and amplitude
-    // These MAX values represent the theoretical maximum excursion of I and Q
-    // for a YIQ signal within the valid RGB gamut
-    const double MAX_I = 0.595715671472;
-    const double MAX_Q = 0.522591049541;
-    double i_yiq = amplitude * cos(angle) * MAX_I;
-    double q_yiq = amplitude * sin(angle) * MAX_Q;
-
-    // 2. Convert YIQ to linear RGB using standard NTSC matrix
-    double r_lin = y_yiq + 0.95568806036115671171 * i_yiq + 0.62082467141531188082 * q_yiq;
-    double g_lin = y_yiq - 0.27178838506206335708 * i_yiq - 0.64860590248778682744 * q_yiq;
-    double b_lin = y_yiq - 1.1081773266826619523 * i_yiq + 1.7025019884020956631 * q_yiq;
-
-    // 3. Clamp linear RGB values to the valid 0.0 - 1.0 range
-    // This is crucial as the conversion can produce out-of-gamut values
-    r_lin = fmax(0.0, fmin(1.0, r_lin));
-    g_lin = fmax(0.0, fmin(1.0, g_lin));
-    b_lin = fmax(0.0, fmin(1.0, b_lin));
-
-    // 4. Optional Gamma Correction (currently disabled)
-    /*
-    const double display_gamma = 2.2; // Typical sRGB gamma
-    const double display_gamma_inv = 1.0 / display_gamma;
-    r_lin = pow(r_lin, display_gamma_inv);
-    g_lin = pow(g_lin, display_gamma_inv);
-    b_lin = pow(b_lin, display_gamma_inv);
-    */
-
-    // 5. Scale to 0-255 for uint8_t output and create Color struct
-    // Add 0.5 before casting for proper rounding
-    ColorRGBA result;
-    result.r = (unsigned char)(r_lin * 255.0 + 0.5);
-    result.g = (unsigned char)(g_lin * 255.0 + 0.5);
-    result.b = (unsigned char)(b_lin * 255.0 + 0.5);
-    result.a = ypq_color.a;
-
-    // Preserve the original alpha value from the YPQ struct
-    return result;
+    return _SitRgbFromYpqBytes(ypq_color);
 }
 
 /**
@@ -902,42 +854,224 @@ SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color) {
  * @see SituationColorFromYPQ()
  */
 SITAPI ColorYPQA SituationColorToYPQ(ColorRGBA color) {
-    // 1. Convert source RGBA (0-255) to normalized floating point (0.0-1.0).
-    double r = (double)color.r / 255.0;
-    double g = (double)color.g / 255.0;
-    double b = (double)color.b / 255.0;
+    return _SitYpqBytesFromRgb(color);
+}
 
-    // 2. Convert linear RGB to YIQ components using the standard NTSC matrix.
-    double y_yiq = 0.299 * r + 0.587 * g + 0.114 * b;
-    double i_yiq = 0.596 * r - 0.274 * g - 0.322 * b;
-    double q_yiq = 0.211 * r - 0.523 * g + 0.312 * b;
-
-    // 3. Convert Cartesian I,Q components to polar coordinates (angle, amplitude).
-    const double MAX_I = 0.595715671472;
-    const double MAX_Q = 0.522591049541;
-
-    // Normalize I,Q by their maximum values
-    double i_norm = i_yiq / MAX_I;
-    double q_norm = q_yiq / MAX_Q;
-
-    // Calculate amplitude (chroma/saturation)
-    double amplitude = sqrt(i_norm * i_norm + q_norm * q_norm);
-    amplitude = fmin(1.0, amplitude);
-
-    // Calculate angle (phase/hue)
-    double angle = atan2(q_norm, i_norm);
-    if (angle < 0.0) {
-        angle += 2.0 * M_PI;
+/**
+ * @brief Interpolates between two YPQ colors; phase uses the shortest arc on the hue wheel.
+ */
+SITAPI ColorYPQA SituationYpqLerp(ColorYPQA color1, ColorYPQA color2, float t) {
+    if (t <= 0.0f) {
+        return color1;
+    }
+    if (t >= 1.0f) {
+        return color2;
     }
 
-    // 4. Scale the normalized Y, P, Q values back to 8-bit [0-255] ranges.
-    ColorYPQA result;
-    result.y = (unsigned char)(y_yiq * 255.0 + 0.5);
-    result.p = (unsigned char)((angle / (2.0 * M_PI)) * 255.0 + 0.5);
-    result.q = (unsigned char)(amplitude * 255.0 + 0.5);
-    result.a = color.a; // Preserve the original alpha channel.
+    float y = (float)color1.y + ((float)color2.y - (float)color1.y) * t;
+    float q = (float)color1.q + ((float)color2.q - (float)color1.q) * t;
+    float a = (float)color1.a + ((float)color2.a - (float)color1.a) * t;
 
+    float p1 = (float)_SitYpqPhaseByteToRadians(color1.p);
+    float p2 = (float)_SitYpqPhaseByteToRadians(color2.p);
+    float dp = p2 - p1;
+    if (dp > (float)M_PI) {
+        dp -= (float)(2.0 * M_PI);
+    }
+    if (dp < -(float)M_PI) {
+        dp += (float)(2.0 * M_PI);
+    }
+    float p_interp = p1 + dp * t;
+    if (p_interp < 0.0f) {
+        p_interp += (float)(2.0 * M_PI);
+    }
+    if (p_interp >= (float)(2.0 * M_PI)) {
+        p_interp -= (float)(2.0 * M_PI);
+    }
+
+    ColorYPQA result;
+    if (y < 0.0f) {
+        y = 0.0f;
+    }
+    if (y > 255.0f) {
+        y = 255.0f;
+    }
+    if (q < 0.0f) {
+        q = 0.0f;
+    }
+    if (q > 255.0f) {
+        q = 255.0f;
+    }
+    if (a < 0.0f) {
+        a = 0.0f;
+    }
+    if (a > 255.0f) {
+        a = 255.0f;
+    }
+    result.y = (unsigned char)(y + 0.5f);
+    result.p = _SitYpqPhaseRadiansToByte((double)p_interp);
+    result.q = (unsigned char)(q + 0.5f);
+    result.a = (unsigned char)(a + 0.5f);
     return result;
+}
+
+SITAPI ColorYPQA SituationYpqAdjustLuma(ColorYPQA color, float luma_factor) {
+    float new_y = (float)color.y * luma_factor;
+    if (new_y < 0.0f) {
+        new_y = 0.0f;
+    }
+    if (new_y > 255.0f) {
+        new_y = 255.0f;
+    }
+    return (ColorYPQA){(unsigned char)(new_y + 0.5f), color.p, color.q, color.a};
+}
+
+SITAPI ColorYPQA SituationYpqAdjustPhase(ColorYPQA color, int phase_shift) {
+    int new_p = (int)color.p + phase_shift;
+    while (new_p < 0) {
+        new_p += 256;
+    }
+    while (new_p >= 256) {
+        new_p -= 256;
+    }
+    return (ColorYPQA){color.y, (unsigned char)new_p, color.q, color.a};
+}
+
+SITAPI ColorYPQA SituationYpqAdjustChroma(ColorYPQA color, float chroma_factor) {
+    float new_q = (float)color.q * chroma_factor;
+    if (new_q < 0.0f) {
+        new_q = 0.0f;
+    }
+    if (new_q > 255.0f) {
+        new_q = 255.0f;
+    }
+    return (ColorYPQA){color.y, color.p, (unsigned char)(new_q + 0.5f), color.a};
+}
+
+SITAPI float SituationYpqGetLuma(ColorYPQA color) {
+    return (float)color.y / 255.0f;
+}
+
+SITAPI float SituationYpqGetHueDegrees(ColorYPQA color) {
+    return ((float)color.p / 255.0f) * 360.0f;
+}
+
+SITAPI float SituationYpqGetChroma(ColorYPQA color) {
+    return (float)color.q / 255.0f;
+}
+
+SITAPI float SituationYpqDistance(ColorYPQA a, ColorYPQA b) {
+    float dy = ((float)a.y - (float)b.y) / 255.0f;
+    float dq = ((float)a.q - (float)b.q) / 255.0f;
+
+    int dp_byte = (int)a.p - (int)b.p;
+    if (dp_byte < 0) {
+        dp_byte = -dp_byte;
+    }
+    if (dp_byte > 128) {
+        dp_byte = 256 - dp_byte;
+    }
+    float dp = (float)dp_byte / 128.0f;
+
+    return sqrtf(dy * dy + dp * dp + dq * dq);
+}
+
+SITAPI bool SituationYpqEquals(ColorYPQA a, ColorYPQA b, unsigned char tolerance) {
+    return abs((int)a.y - (int)b.y) <= (int)tolerance
+        && abs((int)a.p - (int)b.p) <= (int)tolerance
+        && abs((int)a.q - (int)b.q) <= (int)tolerance
+        && abs((int)a.a - (int)b.a) <= (int)tolerance;
+}
+
+SITAPI ColorYPQf SituationColorToYPQf(ColorRGBA color) {
+    return _SitYpqFloatFromRgb(color);
+}
+
+SITAPI ColorRGBA SituationColorFromYPQf(ColorYPQf ypq) {
+    return _SitRgbFromYpqFloat(ypq);
+}
+
+SITAPI ColorYPQA SituationYpqQuantize(ColorYPQf ypq) {
+    return _SitYpqBytesFromFloat(ypq);
+}
+
+SITAPI ColorYPQf SituationYpqClampInGamut(ColorYPQf ypq) {
+    ColorYPQf result = ypq;
+    result.y = _SitYpqClampUnitFloat(result.y);
+    result.p = _SitYpqClampUnitFloat(result.p);
+    result.q = _SitYpqClampUnitFloat(result.q);
+    result.a = _SitYpqClampUnitFloat(result.a);
+
+    double r = 0.0;
+    double g = 0.0;
+    double b = 0.0;
+    if (_SitYpqFloatRgbLinearInGamut(result, &r, &g, &b)) {
+        return result;
+    }
+
+    float q_lo = 0.0f;
+    float q_hi = result.q;
+    for (int i = 0; i < 16; i++) {
+        float q_mid = (q_lo + q_hi) * 0.5f;
+        ColorYPQf trial = result;
+        trial.q = q_mid;
+        if (_SitYpqFloatRgbLinearInGamut(trial, &r, &g, &b)) {
+            q_lo = q_mid;
+        } else {
+            q_hi = q_mid;
+        }
+    }
+    result.q = q_lo;
+    return result;
+}
+
+/**
+ * @brief Adjusts phase (hue), chroma, and luma of every pixel in-place via float YPQ.
+ * @see SituationImageAdjustHSV(), SituationColorToYPQf(), SituationColorFromYPQf()
+ */
+SITAPI void SituationImageAdjustYPQ(
+    SituationImage* image,
+    float phase_shift_deg,
+    float chroma_factor,
+    float luma_factor,
+    float mix)
+{
+    if (!SituationIsImageValid(*image)) {
+        return;
+    }
+
+    mix = fmaxf(0.0f, fminf(1.0f, mix));
+    unsigned char* pixels = (unsigned char*)image->data;
+    int pixel_count = image->width * image->height;
+    const float phase_shift = phase_shift_deg / 360.0f;
+
+    for (int i = 0; i < pixel_count; ++i) {
+        ColorRGBA original_rgb = {
+            pixels[i * 4 + 0],
+            pixels[i * 4 + 1],
+            pixels[i * 4 + 2],
+            pixels[i * 4 + 3]
+        };
+
+        ColorYPQf ypq = SituationColorToYPQf(original_rgb);
+
+        ypq.p = fmodf(ypq.p + phase_shift, 1.0f);
+        if (ypq.p < 0.0f) {
+            ypq.p += 1.0f;
+        }
+
+        ypq.q *= chroma_factor;
+        ypq.y *= luma_factor;
+        ypq.y = _SitYpqClampUnitFloat(ypq.y);
+        ypq.q = _SitYpqClampUnitFloat(ypq.q);
+
+        ColorRGBA adjusted_rgb = SituationColorFromYPQf(ypq);
+
+        pixels[i * 4 + 0] = (unsigned char)((float)original_rgb.r * (1.0f - mix) + (float)adjusted_rgb.r * mix);
+        pixels[i * 4 + 1] = (unsigned char)((float)original_rgb.g * (1.0f - mix) + (float)adjusted_rgb.g * mix);
+        pixels[i * 4 + 2] = (unsigned char)((float)original_rgb.b * (1.0f - mix) + (float)adjusted_rgb.b * mix);
+        pixels[i * 4 + 3] = original_rgb.a;
+    }
 }
 
 /**
@@ -2003,7 +2137,7 @@ SITAPI void SituationConvertColorToVector4(ColorRGBA c, Vector4* out_normalized_
  *
  * @par Backend-Specific Behavior
  * - **OpenGL:** Uses `glReadPixels` to read from the default framebuffer. The resulting image is vertically flipped, so the function automatically calls `SituationImageFlip` to correct the orientation.
- * - **Vulkan:** Copies from the swapchain (often B8G8R8A8 in memory) and normalizes to **RGBA8** byte order to match OpenGL `glReadPixels(..., GL_RGBA, ...)`. Applies the same **vertical flip** as the OpenGL path so **row 0** matches CPU-side `SituationImage` top-left convention used by tests (swapchain readback row order is normalized here).
+ * - **Vulkan:** Copies from the swapchain via pre-present staging (`vkCmdCopyImageToBuffer`). Rows are top-left origin (+Y down), matching on-screen 2D rendering (Phase 7-bis: shared ortho + shader V convention; no readback flip). **No** `SituationImageFlip` on the cached path.
  *
  * @warning This function allocates new memory for the `image.data`. The caller is **responsible** for freeing this memory by calling `SituationUnloadImage()` on the returned `SituationImage`. Failure to do so will result in a memory leak.
  * @warning This can be a slow operation, as it requires synchronization with the GPU and a potentially large data transfer from VRAM to system RAM. Avoid calling it in performance-critical loops.
@@ -2095,7 +2229,6 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
             return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, err_msg);
         }
     }
-    // Use our new, generic utility function to correct the orientation.
     SituationImageFlip(out_image, SIT_FLIP_VERTICAL);
 #elif defined(SITUATION_USE_VULKAN)
     /* Sync the last submitted frame only (prev slot after EndFrame advances current_frame_index).
@@ -2128,7 +2261,6 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
         if (sit_render.vk.screenshot_mutex_initialized) {
             mtx_unlock(&sit_render.vk.screenshot_mutex);
         }
-        SituationImageFlip(out_image, SIT_FLIP_VERTICAL);
         return SITUATION_SUCCESS;
     }
 
@@ -2154,7 +2286,7 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
     if (out_image->data == NULL) {
         return SITUATION_ERROR_TEXTURE_UPLOAD_FAILED;
     }
-    SituationImageFlip(out_image, SIT_FLIP_VERTICAL);
+    /* _SituationVulkanBlitImageToHostVisibleBuffer uses vkCmdCopyImageToBuffer (top row first). */
 #endif
 
     return SITUATION_SUCCESS;

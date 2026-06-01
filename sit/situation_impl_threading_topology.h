@@ -617,4 +617,14 @@ SITAPI uint64_t SituationGetConfiguredAudioThreadAffinity(void) {
     return (1ULL << 2);
 }
 
+SITAPI uint64_t SituationGetConfiguredIOThreadAffinity(void) {
+    // io_thread_numa_node > 0 means user explicitly chose a NUMA node (0 is ambiguous with zero-init)
+    if (_sit_current_context != NULL && sit_gs.io_thread_numa_node > 0) {
+        uint64_t mask = SituationBuildNumaNodeMask(sit_gs.io_thread_numa_node);
+        if (mask != 0) return mask;
+    }
+    // Default: logical CPU 3
+    return (1ULL << 3);
+}
+
 #endif /* SITUATION_IMPL_THREADING_TOPOLOGY_H */

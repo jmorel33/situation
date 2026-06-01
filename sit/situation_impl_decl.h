@@ -218,6 +218,15 @@ typedef struct _SituationSpirvBlob {
 #ifndef GL_COMPLETION_STATUS_KHR
 #define GL_COMPLETION_STATUS_KHR 0x91B1
 #endif
+#ifndef GL_STENCIL_BITS
+#define GL_STENCIL_BITS 0x0D57
+#endif
+#ifndef GL_STENCIL
+#define GL_STENCIL 0x1802
+#endif
+#ifndef GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE
+#define GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE 0x8217
+#endif
 
 // Soft Command Buffer Definitions
 typedef enum {
@@ -228,6 +237,7 @@ typedef enum {
     SIT_OP_BIND_PIPELINE,
     SIT_OP_DRAW_MESH,
     SIT_OP_DRAW_QUAD,
+    SIT_OP_DRAW_TEXTURE_YPQ,
     SIT_OP_SET_PUSH_CONSTANT,
     SIT_OP_BIND_DESCRIPTOR_SET,
     SIT_OP_BIND_VERTEX_BUFFER,
@@ -247,6 +257,13 @@ typedef enum {
     SIT_OP_BIND_DESCRIPTOR_SET_LEGACY_TEXTURE_HANDLING, // [Phase 2] Temporary
     SIT_OP_COPY_BUFFER, // [Phase 1] Async readback
     SIT_OP_SET_CULL_MODE, // [Phase 4]
+    SIT_OP_SET_FRONT_FACE, // [Phase 6]
+    SIT_OP_SET_PRIMITIVE_TOPOLOGY, // [Phase 6]
+    SIT_OP_SET_POLYGON_MODE, // [Phase 6B]
+    SIT_OP_SET_DEPTH_BIAS, // [Phase 6B]
+    SIT_OP_SET_LINE_WIDTH, // [Phase 6B]
+    SIT_OP_SET_COLOR_WRITE_MASK, // [Phase 6B]
+    SIT_OP_SET_STENCIL_TEST, // [Phase 6B]
     SIT_OP_SET_DEPTH_TEST,
     SIT_OP_SET_DEPTH_WRITE,
     SIT_OP_SET_BLEND_ENABLE,
@@ -255,34 +272,57 @@ typedef enum {
     SIT_OP_POP_RASTER_STATE,
     SIT_OP_SET_PUSH_CONSTANT_DATA,
     SIT_OP_BEGIN_DEBUG_GROUP,
-    SIT_OP_END_DEBUG_GROUP
+    SIT_OP_END_DEBUG_GROUP,
+    SIT_OP_CLEAR,
+    SIT_OP_DISPATCH_INDIRECT,
+    SIT_OP_DRAW_INDIRECT,
+    SIT_OP_DRAW_INDEXED_INDIRECT,
+    SIT_OP_BLIT_TEXTURE,
+    SIT_OP_COPY_TEXTURE,
+    SIT_OP_COPY_BUFFER_TO_TEXTURE,
+    SIT_OP_COPY_TEXTURE_TO_BUFFER
 } SitOpCode;
 
 typedef struct {
     SitOpCode opcode;
     union {
         struct { int display_id; int target_w; int target_h; SituationRenderPassInfo info; } begin_pass;
-        struct { float x, y, w, h; } viewport;
-        struct { int x, y, w, h; } scissor;
+        struct { uint32_t index; float x, y, w, h; } viewport;
+        struct { uint32_t index; int x, y, w, h; } scissor;
         struct { uint64_t shader_id; } bind_pipeline;
         struct { SituationMesh mesh; uint64_t shader_id; } draw_mesh;
         struct { mat4 model; Vector4 color; Vector4 uv_rect; int use_texture; } draw_quad;
+        struct { mat4 model; Vector4 uv_rect; float phase_shift_deg; float chroma_factor; float luma_factor; float mix; } draw_texture_ypq;
         struct { uint32_t offset; size_t size; size_t data_offset; } push_constant;
         struct { uint32_t set_index; uint64_t resource_id; int resource_type; size_t offset; size_t size; uint32_t usage_flags; } bind_desc; // [Phase 2] Added size and usage_flags for Ring Buffer
         struct { uint32_t binding; uint64_t buffer_id; size_t offset; size_t stride; } bind_vbo;
-        struct { uint64_t buffer_id; size_t offset; } bind_ibo;
+        struct { uint64_t buffer_id; size_t offset; SituationIndexType index_type; } bind_ibo;
         struct { uint32_t v_count, i_count, first_v, first_i; } draw;
         struct { uint32_t idx_count, inst_count, first_idx; int32_t v_offset; uint32_t first_inst; } draw_indexed;
         struct { uint32_t src, dst; } barrier;
         struct { uint32_t x, y, z; } dispatch;
+        struct { uint64_t buffer_id; size_t offset; } dispatch_indirect;
+        struct { uint64_t buffer_id; size_t offset; } draw_indirect;
+        struct { uint64_t buffer_id; size_t offset; } draw_indexed_indirect;
         struct { SituationTexture texture; int target_w; int target_h; } present;
         struct { SituationFont font; Vector2 pos; ColorRGBA color; size_t text_offset; } draw_text; // Store text in data_buffer
         struct { SituationFont font; Vector2 pos; float fontSize; float spacing; ColorRGBA color; size_t text_offset; } draw_text_ex; // [v2.3.23]
         struct { uint64_t buffer_id; size_t offset; size_t size; size_t data_offset; } update_buffer;
         struct { uint32_t location; uint32_t binding; int size; int type; int normalized; size_t offset; } set_vertex_attr;
         struct { uint64_t shader_id; GLint location; int type; int elem_count; size_t data_offset; } set_uniform;
-        struct { uint64_t src_id; uint64_t dst_id; size_t offset; size_t size; } copy_buffer; // [Phase 1]
+        struct { uint64_t src_id; uint64_t dst_id; size_t src_offset; size_t dst_offset; size_t size; } copy_buffer; // [Phase 4A]
+        struct { SituationTexture src; SituationTexture dst; SituationTextureBlitRegion region; } blit_texture;
+        struct { SituationTexture src; SituationTexture dst; SituationTextureCopyRegion region; } copy_texture;
+        struct { uint64_t buffer_id; size_t buffer_offset; SituationTexture dst; SituationTextureCopyRegion region; } copy_buffer_to_texture;
+        struct { SituationTexture src; SituationTextureCopyRegion region; uint64_t buffer_id; size_t buffer_offset; size_t buffer_row_pitch; } copy_texture_to_buffer;
         struct { SituationCullMode mode; } set_cull_mode; // [Phase 4]
+        struct { SituationFrontFace front_face; } set_front_face; // [Phase 6]
+        struct { SituationPrimitiveTopology topology; } set_primitive_topology; // [Phase 6]
+        struct { SituationPolygonMode mode; } set_polygon_mode; // [Phase 6B]
+        struct { bool enable; float constant_factor; float clamp; float slope_factor; } set_depth_bias; // [Phase 6B]
+        struct { float width; } set_line_width; // [Phase 6B]
+        struct { bool r; bool g; bool b; bool a; } set_color_write_mask; // [Phase 6B]
+        struct { bool enable; SituationStencilState front; SituationStencilState back; } set_stencil_test; // [Phase 6B]
         struct { bool enable; SituationDepthCompareOp depth_op; } set_depth_test;
         struct { bool enable; } set_depth_write;
         struct { bool enable; } set_blend_enable;
@@ -290,6 +330,7 @@ typedef struct {
         struct { uint32_t scope_id; } push_pop_raster_state;
         struct { SituationShader shader; uint32_t offset; size_t size; size_t data_offset; } set_push_constant_data;
         struct { size_t name_offset; ColorRGBA color; } begin_debug_group;
+        struct { uint32_t flags; SituationClearValue value; } clear;
     } args;
 } SitCommandPacket;
 
@@ -305,7 +346,35 @@ typedef struct {
 
     // [FIX v2.3.27B] Circuit breaker for OOM handling
     bool is_broken;
+    bool recording_render_pass_active;
+    int raster_stack_depth; // Push/pop balance during soft-buffer recording
 } SituationGLSoftCommandBuffer;
+
+typedef struct {
+    GLboolean blend;
+    GLboolean depth_test;
+    GLboolean cull_face;
+    GLboolean scissor_test;
+    GLboolean stencil_test;
+    GLboolean color_mask[4];
+    GLboolean depth_mask;
+    GLint blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha;
+    GLint blend_equ_rgb, blend_equ_alpha;
+    GLenum depth_func;
+    GLenum cull_face_mode;
+    GLenum front_face;
+    GLenum polygon_mode;
+    GLboolean polygon_offset_fill;
+    GLfloat polygon_offset_factor;
+    GLfloat polygon_offset_units;
+    GLfloat line_width;
+    GLenum primitive_mode;
+    bool primitive_mode_set;
+    GLint stencil_func_front, stencil_ref_front, stencil_value_mask_front, stencil_writemask_front;
+    GLint stencil_fail_front, stencil_depth_fail_front, stencil_pass_front;
+    GLint stencil_func_back, stencil_ref_back, stencil_value_mask_back, stencil_writemask_back;
+    GLint stencil_fail_back, stencil_depth_fail_back, stencil_pass_back;
+} _SitGLRasterStackEntry;
 
 typedef struct {
     GLint program;
@@ -412,15 +481,8 @@ typedef struct {
 } _SituationCachedRenderPass;
 
 static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo* info, bool is_main_window) {
-    _SituationRenderPassKey key = {0};
-    key.bits.target_type = is_main_window ? 0 : 1;
-    key.bits.color_load_op = info->color_attachment.loadOp;
-    key.bits.depth_load_op = info->depth_attachment.loadOp;
-    key.bits.stencil_load_op = info->stencil_attachment.loadOp;
-    key.bits.color_store_op = info->color_attachment.storeOp;
-    key.bits.depth_store_op = info->depth_attachment.storeOp;
-    key.bits.stencil_store_op = info->stencil_attachment.storeOp;
-    return key.key;
+    (void)is_main_window;
+    return SituationRenderPassConfigurationKey(info);
 }
 
 
@@ -430,6 +492,23 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
  *          It also manages the swapchain, per-frame synchronization objects (Semaphores, Fences),
  *          and the dynamic descriptor pool manager.
  */
+typedef struct {
+    VkColorComponentFlags color_write_mask;
+    VkBool32 depth_test_enable;
+    VkBool32 depth_write_enable;
+    VkCompareOp depth_compare_op;
+    VkBool32 stencil_test_enable;
+    SituationStencilState stencil_front;
+    SituationStencilState stencil_back;
+    float line_width;
+    VkCullModeFlags cull_mode;
+    VkFrontFace front_face;
+    VkBool32 depth_bias_enable;
+    float depth_bias_constant;
+    float depth_bias_clamp;
+    float depth_bias_slope;
+} _SitVulkanRasterStackEntry;
+
  typedef struct {
     // -------------------------------------------------------------------------
     // Core API Objects
@@ -438,6 +517,7 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
     VkDebugUtilsMessengerEXT debug_messenger;   // Handle for the debug callback (validation layers)
     VkSurfaceKHR surface;                       // The window surface handle
     VkPhysicalDevice physical_device;           // Handle to the selected physical GPU
+    uint32_t physical_device_api_version;       // VkPhysicalDeviceProperties::apiVersion (raw Vulkan version dword)
     VkDevice device;                            // The logical device handle
     VmaAllocator vma_allocator;                 // The VMA memory allocator instance
 
@@ -524,6 +604,13 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
     VkPipelineLayout current_compute_pipeline_layout;            // Last bound compute layout
     VkPipelineLayout compute_layouts[8];                         // Pre-created standard layouts
     VkPipelineLayout graphics_spirv_layout_ubo_ssbo;             // Graphics SPIR-V: set 0 UBO, set 1 SSBO (harness)
+    VkCullModeFlags dynamic_cull_mode;                           // Last requested dynamic cull mode
+    VkFrontFace dynamic_front_face;                              // Last requested dynamic front-face
+    bool dynamic_raster_state_initialized;                       // True after first explicit cull/front-face command
+    VkPrimitiveTopology dynamic_primitive_topology;              // Last requested dynamic primitive topology
+    bool dynamic_primitive_topology_initialized;                 // True after first explicit/implicit topology setup
+    VkIndexType current_index_type;                              // Last bound index type for indexed draws
+    size_t bound_ibo_index_element_size;                         // 2 or 4 bytes per index (Vulkan bind offset validation)
 
     // -------------------------------------------------------------------------
     // Internal Renderers Resources
@@ -538,13 +625,16 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
 
     VkPipeline quad_pipeline;                                    // Pipeline for 2D Quad renderer
     VkPipelineLayout quad_pipeline_layout;                       // Layout for 2D Quad renderer
+    VkPipeline ypq_grade_pipeline;                               // Pipeline for YPQ grade textured draws
+    VkPipelineLayout ypq_grade_pipeline_layout;                  // Layout for YPQ grade pipeline
     VkBuffer quad_vertex_buffer;                                 // Vertex buffer for unit quad
     VmaAllocation quad_vertex_buffer_memory;                     // Memory for quad vertex buffer
 
     VkPipeline text_pipeline;                                    // Pipeline for Batched Text renderer
     VkPipelineLayout text_pipeline_layout;                       // Layout for Batched Text renderer
 
-    VkPipeline vd_compositing_pipeline;                          // Pipeline for simple VD composition
+    VkPipeline vd_compositing_pipeline;                          // Alpha-blend VD pipeline (alias of blend_pipelines[ALPHA])
+    VkPipeline vd_compositing_blend_pipelines[5];                // ALPHA..NONE simple compositor variants
     VkPipelineLayout vd_compositing_pipeline_layout;             // Layout for simple VD composition
     VkPipeline advanced_compositing_pipeline;                    // Pipeline for advanced blend modes
     VkPipelineLayout advanced_compositing_pipeline_layout;       // Layout for advanced blend modes
@@ -553,6 +643,7 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
     VkPipeline current_legacy_pipeline;
     VkPipeline current_pbr_pipeline;
     struct _SituationShaderSlot* current_bound_shader_slot;      // For stride-based pipeline selection at draw time
+    size_t current_graphics_vertex_stride;                       // Last stride from SituationCmdBindVertexBuffer
 
     // Global UBOs (Per-Frame)
     VkBuffer* view_proj_ubo_buffer;                              // Array of View UBOs
@@ -602,6 +693,49 @@ static inline uint32_t _SituationHashRenderPassKey(const SituationRenderPassInfo
 
     /** Recording state: main swapchain render pass open (SituationCmdBeginRenderPass with display_id == -1). Prevents stray vkCmdEndRenderPass in VD composite. */
     bool inside_main_swapchain_render_pass;
+    bool inside_render_pass;
+    VkRect2D current_render_area;
+
+    // [Phase 6B] Raster dynamics tracked at end of struct (avoid shifting screenshot/pipeline field layout).
+    VkPolygonMode dynamic_polygon_mode;                          // Last requested polygon mode (default FILL)
+    VkBool32 dynamic_depth_bias_enable;                          // Last requested depth bias enable
+    float dynamic_depth_bias_constant;                           // Vulkan depthBiasConstantFactor / GL units
+    float dynamic_depth_bias_clamp;                              // Vulkan depthBiasClamp
+    float dynamic_depth_bias_slope;                              // Vulkan depthBiasSlopeFactor / GL factor
+    bool extended_dynamic_state_enabled;                         // VK_EXT_extended_dynamic_state (topology, depth)
+    bool extended_dynamic_state3_polygon_mode_enabled;           // VK_EXT_extended_dynamic_state3 polygon mode
+    bool extended_dynamic_state3_color_write_enabled;              // VK_EXT_extended_dynamic_state3 color write mask
+    bool depth_bias_dynamic_enabled;                             // VK_EXT_extended_dynamic_state2 depth bias dynamics
+    PFN_vkCmdSetPolygonModeEXT pfn_cmd_set_polygon_mode_ext;
+    PFN_vkCmdSetPrimitiveTopology pfn_cmd_set_primitive_topology;
+    PFN_vkCmdSetDepthTestEnable pfn_cmd_set_depth_test_enable;
+    PFN_vkCmdSetDepthWriteEnable pfn_cmd_set_depth_write_enable;
+    PFN_vkCmdSetDepthCompareOp pfn_cmd_set_depth_compare_op;
+    PFN_vkCmdSetDepthBiasEnable pfn_cmd_set_depth_bias_enable;
+    PFN_vkCmdSetDepthBias pfn_cmd_set_depth_bias;
+    PFN_vkCmdSetColorWriteMaskEXT pfn_cmd_set_color_write_mask_ext;
+    PFN_vkCmdSetStencilTestEnable pfn_cmd_set_stencil_test_enable;
+    PFN_vkCmdSetStencilOp pfn_cmd_set_stencil_op;
+
+    VkColorComponentFlags dynamic_color_write_mask;
+    VkBool32 dynamic_depth_test_enable;
+    VkBool32 dynamic_depth_write_enable;
+    VkCompareOp dynamic_depth_compare_op;
+    VkBool32 dynamic_stencil_test_enable;
+    SituationStencilState dynamic_stencil_front;
+    SituationStencilState dynamic_stencil_back;
+    float dynamic_line_width;
+
+    _SitVulkanRasterStackEntry raster_stack[SITUATION_MAX_RASTER_STACK_DEPTH];
+    int raster_stack_depth;
+
+#if !defined(NDEBUG)
+    /** [6-bisC] Debug-only pipeline variant selection counters (Vulkan raster fallback). */
+    uint64_t raster_pipeline_resolve_count;
+    uint64_t raster_polygon_variant_hits;
+    uint64_t raster_cull_front_variant_hits;
+    uint64_t raster_pipeline_rebind_count;
+#endif
 
 } _SituationVulkanState;
 
@@ -687,6 +821,7 @@ typedef struct _SituationGLVirtualBindlessStats {
     bool screenshot_valid;                      // True if screenshot_buffer has valid data
 
     GLuint quad_shader_program;                 // Shader program for the 2D Quad/Text renderer
+    GLuint ypq_grade_shader_program;            // Shader program for YPQ texture grade draws
     GLuint quad_vao;                            // Private VAO for 2D quads
     GLuint quad_vbo;                            // Private VBO for 2D quads
 
@@ -700,6 +835,8 @@ typedef struct _SituationGLVirtualBindlessStats {
     GLuint view_data_ubo_id;                    // Handle to the global View/Projection UBO
     GLuint global_vao_id;                       // The "Public" VAO active during user rendering commands
     size_t bound_ibo_byte_offset;               // Byte offset from last SIT_OP_BIND_INDEX_BUFFER (added to indexed draw indices)
+    GLenum current_index_type;                  // GL_UNSIGNED_SHORT or GL_UNSIGNED_INT from last bind
+    size_t bound_ibo_index_element_size;        // 2 or 4 bytes per index for draw offset math
     GLuint mesh_vao_id;                         // [2.3.19] Shared VAO for standard meshes (PBR layout)
     GLuint current_program_id;                  // Cache of the currently bound shader program ID
 
@@ -715,6 +852,10 @@ typedef struct _SituationGLVirtualBindlessStats {
     int    depth_test_enabled;
     int    cull_face_enabled;
     int    scissor_test_enabled;
+    GLenum current_primitive_mode;              // Draw topology mode when current_primitive_mode_set
+    bool current_primitive_mode_set;            // False => default GL_TRIANGLES (GL_POINTS is 0; do not use truthiness on mode)
+    GLenum current_polygon_mode;                // GL_FILL / GL_LINE / GL_POINT (default GL_FILL)
+    bool polygon_offset_enabled;                // GL_POLYGON_OFFSET_FILL enabled for depth bias
 
     #if defined(SITUATION_ENABLE_SHADER_COMPILER)
     bool arb_spirv_available;                   // True if GL_ARB_gl_spirv extension is supported
@@ -1050,6 +1191,9 @@ typedef struct {
     // [NEW] Safety flag for Snapshotting
     atomic_bool is_processing_snapshot;
 
+    /** True for the body of sit_miniaudio_data_callback (Phase 15 graph teardown). */
+    atomic_bool is_in_audio_callback;
+
     // [FIX v2.4.38] Audio callback race condition guard.
     // Set to true at the END of audio init, after all state (device registry, default graph) is ready.
     // The audio callback returns silence if this is false.
@@ -1060,8 +1204,8 @@ typedef struct {
     uint32_t tone_generations[SITUATION_MAX_TONES];
 
     // Audio Output Monitoring (for visualization)
-    void (*output_monitor_callback)(const float* samples, uint32_t frame_count, void* user_data);
-    void* output_monitor_user_data;
+    _Atomic(void*) output_monitor_callback;
+    _Atomic(void*) output_monitor_user_data;
 
     /* Last playback block levels (written from audio callback; read from main/UI via SituationGetMasterOutputMeter). */
     _Atomic float audio_meter_peak;
@@ -1099,6 +1243,15 @@ typedef struct _SituationShaderSlot {
     VkPipeline vk_pipeline;
     VkPipeline vk_pipeline_legacy;
     VkPipeline vk_pipeline_simple;       // Position-only vertex layout (stride = 3*float)
+    VkPipeline vk_pipeline_back_ccw;
+    VkPipeline vk_pipeline_back_cw;
+    VkPipeline vk_pipeline_legacy_back_ccw;
+    VkPipeline vk_pipeline_legacy_back_cw;
+    VkPipeline vk_pipeline_simple_back_ccw;
+    VkPipeline vk_pipeline_simple_back_cw;
+    VkPipeline vk_pipeline_line;                                 // Static wireframe (polygonMode LINE, no cull)
+    VkPipeline vk_pipeline_legacy_line;
+    VkPipeline vk_pipeline_simple_line;
     VkPipelineLayout vk_pipeline_layout;
     SituationSpirvLayoutProfile vk_spirv_layout_profile; // For descriptor bind path (Phase 2+)
     bool vk_owns_pipeline_layout;        // false when vk_pipeline_layout is a global cache entry
@@ -1637,7 +1790,7 @@ static const char* SIT_VD_VERTEX_SHADER_SRC =
     "layout(push_constant) uniform VDPushConstants { mat4 model; float opacity; } pc;\n"
     "void main() {\n"
     "    gl_Position = ubo.projection * pc.model * vec4(aPos, 0.0, 1.0);\n"
-    "    v_texCoord = aTexCoords;\n"
+    "    v_texCoord = aPos;\n"
     "}\n"
 #elif defined(SITUATION_USE_OPENGL)
     "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_PROJECTION_MATRIX) ") uniform mat4 u_projection;\n"
@@ -1817,9 +1970,6 @@ static const char* SIT_QUAD_VERTEX_SHADER =
 
 static const char* SIT_QUAD_FRAGMENT_SHADER =
     "#version 450 core\n"
-#if defined(SITUATION_USE_VULKAN)
-    "#extension GL_EXT_nonuniform_qualifier : require\n"
-#endif
 #if defined(SITUATION_USE_OPENGL)
     "#extension GL_ARB_bindless_texture : enable\n"
     "#extension GL_ARB_gpu_shader_int64 : enable\n"
@@ -1828,12 +1978,12 @@ static const char* SIT_QUAD_FRAGMENT_SHADER =
     "layout(location = 0) out vec4 outColor;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
-    "layout(set = 1, binding = 0) uniform sampler2D global_textures[];\n"
+    "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_QuadTexture;\n"
     "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; uint texture_id; int use_texture; } pc;\n"
     "void main() {\n"
     "    vec4 texColor = vec4(1.0);\n"
     "    if (pc.use_texture == 1) {\n"
-    "        texColor = texture(global_textures[nonuniformEXT(pc.texture_id)], v_TexCoord);\n"
+    "        texColor = texture(u_QuadTexture, v_TexCoord);\n"
     "    }\n"
     "    // For SDF fonts, we might need special handling, but for baked bitmap fonts, simple sampling works.\n"
     "    // If it's a 1-channel bitmap font, it comes as alpha (0,0,0,A) or (1,1,1,A). \n"
@@ -1857,9 +2007,6 @@ static const char* SIT_QUAD_FRAGMENT_SHADER =
     "    vec4 texColor = vec4(1.0);\n"
     "    if (u_use_texture == 1) {\n"
     "#if defined(GL_ARB_bindless_texture)\n"
-    // If handle is valid (non-zero), use it. We assume init sets it to 0 if unused.
-    // However, checking sampler handle validity in shader is tricky.
-    // We rely on the CPU side setting u_use_texture = 2 for bindless.
     "        if (u_use_texture == 2) texColor = texture(u_TextureHandle, v_TexCoord);\n"
     "        else texColor = texture(u_Texture, v_TexCoord);\n"
     "#else\n"
@@ -1871,6 +2018,91 @@ static const char* SIT_QUAD_FRAGMENT_SHADER =
 #endif
 ;
 
+/**
+ * @internal
+ * @shader SIT_YPQ_GRADE_SHADER
+ * @brief Internal fullscreen textured draw with NTSC YPQ grade (matches SituationImageAdjustYPQ).
+ * @details Reuses SIT_QUAD_VERTEX_SHADER. Sample source RGB, convert YIQ→YPQ, apply luma/phase/chroma/mix, clamp RGB out.
+ *          Matrix constants must stay in sync with sit/situation_impl_ypq.h (SIT_YIQ_NTSC_*).
+ */
+static const char* SIT_YPQ_GRADE_FRAGMENT_SHADER =
+    "#version 450 core\n"
+    "layout(location = 0) in vec2 v_TexCoord;\n"
+    "layout(location = 0) out vec4 outColor;\n"
+    "\n"
+#if defined(SITUATION_USE_VULKAN)
+    "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_QuadTexture;\n"
+    "layout(push_constant) uniform YpqGradePushConstants {\n"
+    "    mat4 model;\n"
+    "    vec4 color;\n"
+    "    vec4 uv_rect;\n"
+    "    uint texture_id;\n"
+    "    int use_texture;\n"
+    "    float phase_shift_deg;\n"
+    "    float chroma_factor;\n"
+    "    float luma_factor;\n"
+    "    float mix;\n"
+    "} pc;\n"
+#elif defined(SITUATION_USE_OPENGL)
+    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_OBJECT_COLOR) ") uniform vec4 u_objectColor;\n"
+    "layout(location = 6) uniform int u_use_texture;\n"
+    "uniform sampler2D u_Texture;\n"
+    "uniform float u_phase_shift_deg;\n"
+    "uniform float u_chroma_factor;\n"
+    "uniform float u_luma_factor;\n"
+    "uniform float u_mix;\n"
+#endif
+    "\n"
+    "const float SIT_YIQ_MAX_I = 0.595715671472;\n"
+    "const float SIT_YIQ_MAX_Q = 0.522591049541;\n"
+    "const float SIT_YIQ_INV_MAX_I = 1.6783189601;\n"
+    "const float SIT_YIQ_INV_MAX_Q = 1.9135436530;\n"
+    "const float SIT_YIQ_TAU = 6.28318530718;\n"
+    "const float SIT_YIQ_INV_TAU = 0.1591549431;\n"
+    "\n"
+    "vec3 sit_rgb_to_yiq(vec3 rgb) {\n"
+    "    return vec3(\n"
+    "        dot(rgb, vec3(0.299, 0.587, 0.114)),\n"
+    "        dot(rgb, vec3(0.596, -0.274, -0.322)),\n"
+    "        dot(rgb, vec3(0.211, -0.523, 0.312)));\n"
+    "}\n"
+    "vec3 sit_yiq_to_rgb_clamped(vec3 yiq) {\n"
+    "    vec3 rgb = vec3(\n"
+    "        yiq.x + 0.95568806036115671171 * yiq.y + 0.62082467141531188082 * yiq.z,\n"
+    "        yiq.x - 0.27178838506206335708 * yiq.y - 0.64860590248778682744 * yiq.z,\n"
+    "        yiq.x - 1.1081773266826619523 * yiq.y + 1.7025019884020956631 * yiq.z);\n"
+    "    return clamp(rgb, 0.0, 1.0);\n"
+    "}\n"
+    "vec3 sit_rgb_from_ypq(float y, float p, float q) {\n"
+    "    float ang = p * SIT_YIQ_TAU;\n"
+    "    vec3 yiq = vec3(y, q * cos(ang) * SIT_YIQ_MAX_I, q * sin(ang) * SIT_YIQ_MAX_Q);\n"
+    "    return sit_yiq_to_rgb_clamped(yiq);\n"
+    "}\n"
+    "vec3 sit_apply_ypq_grade(vec3 rgb, float phase_shift_deg, float chroma_factor, float luma_factor, float mix_amt) {\n"
+    "    vec3 yiq = sit_rgb_to_yiq(rgb);\n"
+    "    float i_norm = yiq.y * SIT_YIQ_INV_MAX_I;\n"
+    "    float q_norm = yiq.z * SIT_YIQ_INV_MAX_Q;\n"
+    "    float amp = min(length(vec2(i_norm, q_norm)), 1.0);\n"
+    "    float ang = atan(q_norm, i_norm);\n"
+    "    if (ang < 0.0) ang += SIT_YIQ_TAU;\n"
+    "    float y_pq = clamp(yiq.x * luma_factor, 0.0, 1.0);\n"
+    "    float p_pq = fract(ang * SIT_YIQ_INV_TAU + phase_shift_deg / 360.0);\n"
+    "    float q_pq = clamp(amp * chroma_factor, 0.0, 1.0);\n"
+    "    vec3 adjusted = sit_rgb_from_ypq(y_pq, p_pq, q_pq);\n"
+    "    return mix(rgb, adjusted, mix_amt);\n"
+    "}\n"
+    "void main() {\n"
+#if defined(SITUATION_USE_VULKAN)
+    "    vec4 src = (pc.use_texture == 1) ? texture(u_QuadTexture, v_TexCoord) : vec4(1.0);\n"
+    "    vec3 graded = sit_apply_ypq_grade(src.rgb, pc.phase_shift_deg, pc.chroma_factor, pc.luma_factor, pc.mix);\n"
+    "    outColor = vec4(graded, src.a) * pc.color;\n"
+#elif defined(SITUATION_USE_OPENGL)
+    "    vec4 src = (u_use_texture == 1) ? texture(u_Texture, v_TexCoord) : vec4(1.0);\n"
+    "    vec3 graded = sit_apply_ypq_grade(src.rgb, u_phase_shift_deg, u_chroma_factor, u_luma_factor, u_mix);\n"
+    "    outColor = vec4(graded, src.a) * u_objectColor;\n"
+#endif
+    "}\n";
+
 // Draws batched text quads.
 static const char* SIT_TEXT_VERTEX_SHADER =
     "#version 450 core\n"
@@ -1880,7 +2112,7 @@ static const char* SIT_TEXT_VERTEX_SHADER =
     "\n"
 #if defined(SITUATION_USE_VULKAN)
     "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
-    "layout(push_constant) uniform TextPushConstants { vec4 color; uint texture_id; } pc;\n"
+    "layout(push_constant) uniform TextPushConstants { vec4 color; } pc;\n"
     "void main() {\n"
     "    gl_Position = ubo.projection * vec4(aPos, 0.0, 1.0);\n"
     "    v_TexCoord = aTexCoord;\n"
@@ -1899,20 +2131,16 @@ static const char* SIT_TEXT_FRAGMENT_SHADER =
 #if defined(SITUATION_USE_OPENGL)
     "#extension GL_ARB_bindless_texture : enable\n"
     "#extension GL_ARB_gpu_shader_int64 : enable\n"
-#elif defined(SITUATION_USE_VULKAN)
-    "#extension GL_EXT_nonuniform_qualifier : require\n"
 #endif
     "layout(location = 0) in vec2 v_TexCoord;\n"
     "layout(location = 0) out vec4 outColor;\n"
     "\n"
 #if defined(SITUATION_USE_VULKAN)
-    "layout(set = 1, binding = 0) uniform sampler2D global_textures[];\n"
-    // Note: Added texture_id to Push Constants
-    "layout(push_constant) uniform TextPushConstants { vec4 color; uint texture_id; } pc;\n"
+    "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"
+    "layout(push_constant) uniform TextPushConstants { vec4 color; } pc;\n"
     "void main() {\n"
-    "    // Sample from global array using texture_id\n"
-    "    vec4 texColor = texture(global_textures[nonuniformEXT(pc.texture_id)], v_TexCoord);\n"
-    "    outColor = vec4(pc.color.rgb, pc.color.a * texColor.a);\n"
+    "    vec4 texColor = texture(u_Texture, v_TexCoord);\n"
+    "    outColor = texColor * pc.color;\n"
     "}\n"
 #elif defined(SITUATION_USE_OPENGL)
     "layout(binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"

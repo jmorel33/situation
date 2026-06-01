@@ -996,14 +996,18 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
     // These hints apply regardless of the chosen graphics backend.
     // They control the initial appearance and behavior of the window.
 
+    // New apps should appear above existing windows at startup.
+    const uint32_t active_window_flags =
+        init_info->initial_active_window_flags | SITUATION_FLAG_WINDOW_TOPMOST;
+
     // Resizable: Can the user resize the window?
-    glfwWindowHint( GLFW_RESIZABLE, (init_info->initial_active_window_flags & SITUATION_FLAG_WINDOW_RESIZABLE) ? GLFW_TRUE : GLFW_FALSE );
+    glfwWindowHint( GLFW_RESIZABLE, (active_window_flags & SITUATION_FLAG_WINDOW_RESIZABLE) ? GLFW_TRUE : GLFW_FALSE );
 
     // Decorated: Does the window have a title bar and borders?
-    glfwWindowHint( GLFW_DECORATED, (init_info->initial_active_window_flags & SITUATION_FLAG_WINDOW_UNDECORATED) ? GLFW_FALSE : GLFW_TRUE );
+    glfwWindowHint( GLFW_DECORATED, (active_window_flags & SITUATION_FLAG_WINDOW_UNDECORATED) ? GLFW_FALSE : GLFW_TRUE );
 
     // Floating/Topmost: Should the window stay on top of others?
-    glfwWindowHint( GLFW_FLOATING, (init_info->initial_active_window_flags & SITUATION_FLAG_WINDOW_TOPMOST) ? GLFW_TRUE : GLFW_FALSE );
+    glfwWindowHint( GLFW_FLOATING, (active_window_flags & SITUATION_FLAG_WINDOW_TOPMOST) ? GLFW_TRUE : GLFW_FALSE );
 
 #if defined(SITUATION_USE_OPENGL)
     // Compositor overlays should treat Situation windows as fully opaque unless an app
@@ -1012,10 +1016,10 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
     glfwWindowHint(GLFW_ALPHA_BITS, 0);
 #endif
 
-    // Visible: Should the window be initially visible? (Default is GLFW_TRUE)
-    // Hidden: Should the window be initially hidden? (Default is GLFW_FALSE)
-    // These are not directly set from SituationInitInfo flags in the snippet, but could be if such flags existed.
-    // glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); // Example of hiding initially
+    // Visible: honor SITUATION_FLAG_WINDOW_HIDDEN and reset any stale GLFW hint
+    // (OpenGL loader window sets GLFW_VISIBLE FALSE; hints persist across Init/Shutdown cycles).
+    glfwWindowHint(GLFW_VISIBLE,
+        (active_window_flags & SITUATION_FLAG_WINDOW_HIDDEN) ? GLFW_FALSE : GLFW_TRUE);
 
     // Focused: Should the window be given input focus? (Default is GLFW_TRUE)
     // glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE); // Example of not focusing initially
@@ -1048,7 +1052,7 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
     // --- 7. Store Window State Profiles ---
     // Save the initial window state flags provided in init_info.
     // These are used later by the window state management functions (e.g., SituationApplyCurrentProfileWindowState) to define the behavior when the window is active or inactive.
-    sit_gs.active_profile_window_flags = init_info->initial_active_window_flags;
+    sit_gs.active_profile_window_flags = active_window_flags;
     sit_gs.inactive_profile_window_flags = init_info->initial_inactive_window_flags;
     // Note: The actual GLFW window state (resizable, decorated, etc.) is set by the hints above and the creation process. These flags are for the library's higher-level state management system.
 
@@ -1068,6 +1072,7 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
     }
 #ifdef SITUATION_ENABLE_THREADING
     // Optional main-thread affinity after the OS window exists (fail-soft).
+    _SituationSetCurrentThreadName("Sit Main");
     (void)_SituationSetThreadAffinityForRole(SIT_THREAD_ROLE_MAIN, 0);
 #endif
     // The next step in initialization will typically be renderer setup (_SituationInitRenderer) followed by subsystem initialization (_SituationInitSubsystems).
@@ -1202,6 +1207,7 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     sit_audio.audio_callback_temp_buffer_frames_capacity = SITUATION_AUDIO_CALLBACK_TEMP_BUFFER_FRAMES;
 
     atomic_init(&sit_audio.is_processing_snapshot, false);
+    atomic_init(&sit_audio.is_in_audio_callback, false);
     atomic_init(&sit_audio.audio_meter_peak, 0.f);
     atomic_init(&sit_audio.audio_meter_rms, 0.f);
 
@@ -1345,7 +1351,7 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     sit_gs.thread_affinity_render = init_info->thread_affinity_render;
     sit_gs.thread_affinity_audio = init_info->thread_affinity_audio;
     sit_gs.numa_prefer_local = init_info->numa_prefer_local;
-    sit_gs.worker_numa_spread = init_info->worker_numa_spread;
+    sit_gs.worker_numa_spread = init_info->worker_numa_spread || SITUATION_WORKER_NUMA_SPREAD_DEFAULT;
     sit_gs.io_thread_numa_node = init_info->io_thread_numa_node;
     sit_gs.thread_pool_use_physical_cores = init_info->thread_pool_use_physical_cores;
     sit_gs.thread_pool_reserved_threads = init_info->thread_pool_reserved_threads;
@@ -1640,10 +1646,11 @@ SITAPI void SituationUpdate(void) {
 * @par Shutdown Sequence
 * 1. **User Callback:** Invokes the optional exit callback set by `SituationSetExitCallback`.
 * 2. **GPU Synchronization:** Ensures all pending GPU commands are completed (`vkDeviceWaitIdle` or `glFinish`) to prevent destroying resources that are still in use.
-* 3. **Dangling Resource Cleanup:** Calls `_SituationCleanupDanglingResources` to automatically free any resources (meshes, shaders, textures, etc.) that the user forgot to destroy, printing warnings for each leak.
-* 4. **Renderer Teardown:** Dispatches to the backend-specific cleanup function (`_SituationCleanupOpenGL` or `_SituationCleanupVulkan`) to destroy all graphics contexts, devices, and internal rendering resources.
-* 5. **Subsystem Teardown:** Shuts down all other library modules, including the audio device, input systems, and timers.
-* 6. **Platform Teardown:** Destroys the main window and terminates the underlying platform libraries (GLFW, COM).
+* 3. **Internal Resource Cleanup:** Frees library-owned default resources before leak detection.
+* 4. **Dangling Resource Cleanup:** Calls `_SituationCleanupDanglingResources` to automatically free any resources (meshes, shaders, textures, etc.) that the user forgot to destroy, printing warnings for each leak.
+* 5. **Renderer Teardown:** Dispatches to the backend-specific cleanup function (`_SituationCleanupOpenGL` or `_SituationCleanupVulkan`) to destroy all graphics contexts, devices, and internal rendering resources.
+* 6. **Subsystem Teardown:** Shuts down all other library modules, including the audio device, input systems, and timers.
+* 7. **Platform Teardown:** Destroys the main window and terminates the underlying platform libraries (GLFW, COM).
 *
 * After this function completes, the library is in an uninitialized state and can be safely re-initialized with `SituationInit` if desired.
 *
@@ -1687,7 +1694,21 @@ SITAPI void SituationShutdown(void) {
 #if defined(SITUATION_USE_VULKAN)
     _SituationVulkanShutdownWaitGpuPump();
 #elif defined(SITUATION_USE_OPENGL)
-    if (sit_gs.sit_glfw_window) glFinish();
+    // [FIX] When render thread is active, it owns the GL context — glFinish here is a no-op.
+    // Destroy the render thread first (it will glFinish internally before releasing context).
+    #if defined(SITUATION_ENABLE_RENDER_THREAD)
+    if (sit_render.enabled && atomic_load(&sit_render.thread_active)) {
+        _SituationDestroyRenderThread();
+        // Now main thread can reclaim context for cleanup
+        if (sit_gs.sit_glfw_window) {
+            glfwMakeContextCurrent(sit_gs.sit_glfw_window);
+            glFinish();
+        }
+    } else
+    #endif
+    {
+        if (sit_gs.sit_glfw_window) glFinish();
+    }
 #endif
 
     // [v2.3.24a] Safety Zenith: Refcount Leak Check
@@ -1698,6 +1719,9 @@ SITAPI void SituationShutdown(void) {
             fprintf(stderr, "[Situation] WARNING: Frame %d leaked with %d active references during shutdown!\n", i, refs);
         }
     }
+
+    // Release library-owned resources before user leak reporting.
+    _SituationCleanupInternalDefaultResources();
 
     // --- Call the auto-cleanup function ---
     _SituationCleanupDanglingResources();
@@ -2236,14 +2260,41 @@ SITAPI void SituationUnloadDroppedFiles(char** paths, int count) {
     SIT_FREE(paths);
 }
 
+SITAPI SituationGraphicsBackend SituationGetGraphicsBackend(void) {
+#if defined(SITUATION_USE_VULKAN)
+    return SIT_GRAPHICS_BACKEND_VULKAN;
+#elif defined(SITUATION_USE_OPENGL)
+    return SIT_GRAPHICS_BACKEND_OPENGL;
+#else
+    return SIT_GRAPHICS_BACKEND_UNKNOWN;
+#endif
+}
+
+SITAPI const char* SituationGetGraphicsBackendName(void) {
+    switch (SituationGetGraphicsBackend()) {
+        case SIT_GRAPHICS_BACKEND_OPENGL: return "OpenGL";
+        case SIT_GRAPHICS_BACKEND_VULKAN: return "Vulkan";
+        default: return "Unknown";
+    }
+}
+
+static uint32_t _SituationPackApiVersionMajorMinor(uint32_t major, uint32_t minor) {
+    return (major << 16) | (minor & 0xFFFFu);
+}
 
 SITAPI void SituationGetGraphicsCaps(SituationGraphicsCaps* out_caps) {
     if (!out_caps) return;
     memset(out_caps, 0, sizeof(SituationGraphicsCaps));
+    out_caps->backend = SituationGetGraphicsBackend();
     if (!SituationIsInitialized()) return;
 
 #if defined(SITUATION_USE_VULKAN)
-    out_caps->api_version_packed = (1 << 16) | 2; // Vulkan 1.2 approx
+    out_caps->api_version_packed = _SituationPackApiVersionMajorMinor(1u, 4u); /* Situation Vulkan backend target */
+    if (sit_render.vk.physical_device_api_version != 0u) {
+        out_caps->device_api_version_packed = _SituationPackApiVersionMajorMinor(
+            VK_API_VERSION_MAJOR(sit_render.vk.physical_device_api_version),
+            VK_API_VERSION_MINOR(sit_render.vk.physical_device_api_version));
+    }
     out_caps->max_msaa_samples = 1; // MSAA querying not yet implemented for Vulkan backend
     out_caps->bindless_textures = (sit_render.enabled_features_mask & SIT_FEATURE_BINDLESS_TEXTURES) ? 1 : 0;
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
@@ -2252,11 +2303,18 @@ SITAPI void SituationGetGraphicsCaps(SituationGraphicsCaps* out_caps) {
     out_caps->shader_compiler_available = 0;
 #endif
     out_caps->compute_supported = 1; // Always true for Vulkan
+    {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(sit_render.vk.physical_device, &props);
+        int max_vp = (int)props.limits.maxViewports;
+        out_caps->max_viewports = (max_vp >= 1) ? max_vp : 1;
+    }
 #elif defined(SITUATION_USE_OPENGL)
     GLint major = 0, minor = 0;
     glGetIntegerv(GL_MAJOR_VERSION, &major);
     glGetIntegerv(GL_MINOR_VERSION, &minor);
-    out_caps->api_version_packed = ((uint32_t)major << 16) | (uint32_t)minor;
+    out_caps->api_version_packed = _SituationPackApiVersionMajorMinor(4u, 6u); /* Situation OpenGL backend target */
+    out_caps->device_api_version_packed = _SituationPackApiVersionMajorMinor((uint32_t)major, (uint32_t)minor);
 
     GLint max_samples = 0;
     glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
@@ -2269,6 +2327,11 @@ SITAPI void SituationGetGraphicsCaps(SituationGraphicsCaps* out_caps) {
     out_caps->shader_compiler_available = 0;
 #endif
     out_caps->compute_supported = (major > 4 || (major == 4 && minor >= 3)) ? 1 : 0;
+    {
+        GLint max_vp = 1;
+        glGetIntegerv(GL_MAX_VIEWPORTS, &max_vp);
+        out_caps->max_viewports = (max_vp >= 1) ? (int)max_vp : 1;
+    }
 #endif
 }
 

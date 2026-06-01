@@ -1172,7 +1172,15 @@ static int _SituationIOThreadEntry(void* arg) {
     SituationThreadPool* pool = (SituationThreadPool*)arg;
     atomic_store(&pool->io_active, true);
 
-    _SituationApplyIoThreadNumaPlacement(pool);
+    _SituationSetCurrentThreadName("Sit I/O");
+
+    // Pin I/O thread: use configured affinity (default CPU 3), fall back to NUMA placement
+    if (_sit_current_context != NULL) {
+        uint64_t io_aff = SituationGetConfiguredIOThreadAffinity();
+        SituationSetThreadAffinityEx(io_aff, NULL);
+    } else {
+        _SituationApplyIoThreadNumaPlacement(pool);
+    }
 
     // Rate Limiting for Hot-Reload
     struct timespec last_hr_time;

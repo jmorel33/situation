@@ -220,9 +220,23 @@ SITAPI bool SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationT
     out->stats_main_steal_fail = atomic_load(&pool->stats_main_steal_fail);
 
     int slot = 0;
+
+    // Main thread (always present when context is active)
+    if (slot < SITUATION_THREAD_SNAPSHOT_MAX_SLOTS) {
+        SituationThreadSlotSnapshot* s = &out->slots[slot++];
+        s->role = SIT_THREAD_ROLE_MAIN;
+        s->index = -1;
+        snprintf(s->name, sizeof(s->name), "Sit Main");
+        s->active = true;
+        s->last_logical_cpu = SituationGetCurrentProcessorIndex();
+        s->affinity_mask_applied = (_sit_current_context != NULL) ? sit_gs.thread_affinity_main : 0;
+        s->numa_node = _SitNumaForLogicalCpu(s->last_logical_cpu);
+    }
     for (size_t i = 0; i < pool->thread_count && slot < SITUATION_THREAD_SNAPSHOT_MAX_SLOTS; ++i) {
         SituationThreadSlotSnapshot* s = &out->slots[slot++];
         s->role = SIT_THREAD_ROLE_WORKER;
+        s->index = (int)i;
+        snprintf(s->name, sizeof(s->name), "Sit Worker %d", (int)i);
         s->active = true;
         s->last_logical_cpu = atomic_load(&pool->worker_last_logical_cpu[i]);
         s->affinity_mask_applied = 0;
@@ -232,6 +246,8 @@ SITAPI bool SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationT
     if (pool->io_thread != 0 && slot < SITUATION_THREAD_SNAPSHOT_MAX_SLOTS) {
         SituationThreadSlotSnapshot* s = &out->slots[slot++];
         s->role = SIT_THREAD_ROLE_IO;
+        s->index = -1;
+        snprintf(s->name, sizeof(s->name), "Sit I/O");
         s->active = atomic_load(&pool->io_active);
         s->last_logical_cpu = atomic_load(&pool->io_last_logical_cpu);
         s->numa_node = _SitNumaForLogicalCpu(s->last_logical_cpu);
@@ -240,6 +256,8 @@ SITAPI bool SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationT
     if (atomic_load(&g_sit_obs_render.started) && slot < SITUATION_THREAD_SNAPSHOT_MAX_SLOTS) {
         SituationThreadSlotSnapshot* s = &out->slots[slot++];
         s->role = SIT_THREAD_ROLE_RENDER;
+        s->index = -1;
+        snprintf(s->name, sizeof(s->name), "Sit Render");
         s->active = true;
         s->last_logical_cpu = atomic_load(&g_sit_obs_render.last_logical_cpu);
         s->affinity_mask_applied = atomic_load(&g_sit_obs_render.affinity_mask_requested);
@@ -249,6 +267,8 @@ SITAPI bool SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationT
     if (atomic_load(&g_sit_obs_audio.started) && slot < SITUATION_THREAD_SNAPSHOT_MAX_SLOTS) {
         SituationThreadSlotSnapshot* s = &out->slots[slot++];
         s->role = SIT_THREAD_ROLE_AUDIO;
+        s->index = -1;
+        snprintf(s->name, sizeof(s->name), "Sit Audio");
         s->active = true;
         s->last_logical_cpu = atomic_load(&g_sit_obs_audio.last_logical_cpu);
         s->affinity_mask_applied = atomic_load(&g_sit_obs_audio.affinity_mask_requested);
@@ -292,9 +312,9 @@ SITAPI void SituationDumpThreadPoolStatus(SituationThreadPool* pool, FILE* out, 
             (unsigned long long)snap.stats_main_steal_fail);
         for (int i = 0; i < snap.slot_count; ++i) {
             const SituationThreadSlotSnapshot* s = &snap.slots[i];
-            fprintf(out, "%s{\"role\":\"%s\",\"cpu\":%d,\"numa\":%d,\"affinity\":\"0x%llx\",\"active\":%s}",
+            fprintf(out, "%s{\"name\":\"%s\",\"role\":\"%s\",\"index\":%d,\"cpu\":%d,\"numa\":%d,\"affinity\":\"0x%llx\",\"active\":%s}",
                 (i > 0) ? "," : "",
-                _SitRoleName(s->role), s->last_logical_cpu, s->numa_node,
+                s->name, _SitRoleName(s->role), s->index, s->last_logical_cpu, s->numa_node,
                 (unsigned long long)s->affinity_mask_applied,
                 s->active ? "true" : "false");
         }
@@ -311,8 +331,8 @@ SITAPI void SituationDumpThreadPoolStatus(SituationThreadPool* pool, FILE* out, 
             (unsigned long long)snap.stats_main_steal_fail);
         for (int i = 0; i < snap.slot_count; ++i) {
             const SituationThreadSlotSnapshot* s = &snap.slots[i];
-            fprintf(out, "  [%s] cpu=%d numa=%d affinity=0x%llx active=%s\n",
-                _SitRoleName(s->role), s->last_logical_cpu, s->numa_node,
+            fprintf(out, "  [%-14s] cpu=%d numa=%d affinity=0x%llx active=%s\n",
+                s->name, s->last_logical_cpu, s->numa_node,
                 (unsigned long long)s->affinity_mask_applied, s->active ? "yes" : "no");
         }
         fprintf(out, "=========================================\n\n");

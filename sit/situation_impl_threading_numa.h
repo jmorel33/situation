@@ -237,13 +237,33 @@ static void _SituationApplyWorkerNumaPlacement(SituationThreadPool* pool, size_t
         return;
     }
 
-    int node = (int)(worker_index % (size_t)numa->node_count);
-    uint64_t mask = SituationBuildNumaNodeMask(node);
-    if (mask != 0) {
-        SituationSetThreadAffinityEx(mask, NULL);
-        _SitSetPreferredNumaNode(node);
-        if (worker_index < SITUATION_MAX_THREADS) {
-            atomic_store(&pool->worker_last_logical_cpu[worker_index], SituationGetCurrentProcessorIndex());
+    if (numa->node_count > 1) {
+        // Multi-NUMA: spread workers across NUMA nodes (original behavior)
+        int node = (int)(worker_index % (size_t)numa->node_count);
+        uint64_t mask = SituationBuildNumaNodeMask(node);
+        if (mask != 0) {
+            SituationSetThreadAffinityEx(mask, NULL);
+            _SitSetPreferredNumaNode(node);
+            if (worker_index < SITUATION_MAX_THREADS) {
+                atomic_store(&pool->worker_last_logical_cpu[worker_index], SituationGetCurrentProcessorIndex());
+            }
+        }
+    } else {
+        // Single-NUMA: pin each worker to a distinct physical core for true spread.
+        // Use SituationBuildUniqueCoreMask to get one logical CPU per physical core,
+        // then assign worker i to core (i % physical_count).
+        const SituationCpuTopology* topo = NULL;
+        if (!SituationGetCpuTopology(&topo) || !topo || topo->physical_count == 0) {
+            return;
+        }
+        int core_idx = (int)(worker_index % (size_t)topo->physical_count);
+        uint64_t mask = SituationBuildPhysicalCoreMask(core_idx);
+        if (mask != 0) {
+            SituationSetThreadAffinityEx(mask, NULL);
+            _SitSetPreferredNumaNode(0);
+            if (worker_index < SITUATION_MAX_THREADS) {
+                atomic_store(&pool->worker_last_logical_cpu[worker_index], SituationGetCurrentProcessorIndex());
+            }
         }
     }
 }

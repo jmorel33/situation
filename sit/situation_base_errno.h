@@ -238,6 +238,9 @@
     X(SITUATION_ERROR_BUFFER_OVERFLOW,                  -513, "Write beyond buffer bounds") \
     X(SITUATION_ERROR_BUFFER_INVALID_USAGE,             -514, "Wrong usage flags for operation") \
     X(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED,            -520, "Texture upload to GPU failed") \
+    X(SITUATION_ERROR_TEXTURE_INVALID_USAGE,            -521, "Texture missing required usage flags for operation") \
+    X(SITUATION_ERROR_TEXTURE_REGION_INVALID,           -522, "Texture region, mip, layer, extent, or row pitch is invalid or out of bounds") \
+    X(SITUATION_ERROR_TEXTURE_FORMAT_UNSUPPORTED,       -523, "Texture format cannot be used for requested operation") \
     X(SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER,         -530, "No frame acquired") \
     X(SITUATION_ERROR_COMMAND_BUFFER_FULL,              -531, "Command limit reached") \
     X(SITUATION_ERROR_NO_RENDER_PASS_ACTIVE,            -540, "Draw call outside render pass") \
@@ -247,7 +250,8 @@
     X(SITUATION_ERROR_PIPELINE_BIND_FAIL,               -552, "Failed to bind pipeline (incompatible layout or invalid handle)") \
     X(SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS,          -553, "Shader compile or link still in progress (poll again next frame)") \
     X(SITUATION_ERROR_SPIRV_FILE_READ_FAILED,           -554, "SPIR-V file read failed (.spv missing or unreadable)") \
-    X(SITUATION_ERROR_SPIRV_INVALID_BINARY,             -555, "SPIR-V binary invalid (null, empty, or misaligned size)")
+    X(SITUATION_ERROR_SPIRV_INVALID_BINARY,             -555, "SPIR-V binary invalid (null, empty, or misaligned size)") \
+    X(SITUATION_ERROR_INDIRECT_COMMAND_INVALID,         -556, "Indirect command buffer range, alignment, or payload is invalid")
 
 // ── Fonts & Typography (-560 to -579) ───────────────────────────────────────────
 #define SITUATION_ERRORS_FONT(X) \

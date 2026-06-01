@@ -317,6 +317,12 @@ static int _SituationWorkerEntry(void* arg) {
     size_t worker_index = start->worker_index;
     int jobs_since_cpu_sample = 0;
 
+    {
+        char name[32];
+        snprintf(name, sizeof(name), "Sit Worker %zu", worker_index);
+        _SituationSetCurrentThreadName(name);
+    }
+
     _SituationApplyWorkerNumaPlacement(pool, worker_index);
 
     while (!atomic_load(&pool->shutdown)) {
@@ -1164,6 +1170,16 @@ SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
     SIT_FREE(pool->queues[1].jobs);
 
     pool->is_active = false;
+}
+
+/**
+ * @brief Returns a pointer to the library's internal thread pool.
+ * @return Pointer to the active pool, or NULL if threading is not initialized.
+ */
+SITAPI SituationThreadPool* SituationGetInternalThreadPool(void) {
+    if (_sit_current_context == NULL) return NULL;
+    if (!sit_gs.thread_pool.is_active) return NULL;
+    return &sit_gs.thread_pool;
 }
 
 #endif // SITUATION_ENABLE_THREADING

@@ -26,13 +26,13 @@ static size_t _SitWorkerScanDepthForPending(size_t pending) {
 }
 
 static size_t _SitResolveAutoWorkerCount(void) {
-    uint32_t reserved = 1;
+    uint32_t reserved = 4; // Main + Render + Audio + I/O
     bool use_physical = false;
 
     if (_sit_current_context != NULL) {
         reserved = sit_gs.thread_pool_reserved_threads;
         if (reserved == 0) {
-            reserved = 1;
+            reserved = 4; // Default: reserve for main, render, audio, I/O
         }
         use_physical = sit_gs.thread_pool_use_physical_cores;
     }
@@ -46,7 +46,7 @@ static size_t _SitResolveAutoWorkerCount(void) {
 
 SITAPI uint32_t SituationGetRecommendedWorkerCount(uint32_t reserved_threads, bool use_physical_cores) {
     if (reserved_threads == 0) {
-        reserved_threads = 1;
+        reserved_threads = 4;
     }
     uint32_t cores = use_physical_cores ? SituationGetCPUCoreCount() : SituationGetCPUThreadCount();
     if (cores <= reserved_threads) {

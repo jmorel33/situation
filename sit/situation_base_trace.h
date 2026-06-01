@@ -391,7 +391,7 @@
     X(SIT_TRACE__SituationAsyncAudioWorker,            20090018, "_SituationAsyncAudioWorker") \
     X(SIT_TRACE__SituationMixToneToBuffer,             20090019, "_SituationMixToneToBuffer")
 
-// ── situation_impl_renderer.h (API 10100001 – 10100110, internal 20100001 – 20100173) ──
+// ── situation_impl_renderer.h (API 10100001 – 10100112, internal 20100001 – 20100173) ──
 #define SITUATION_TRACE_SITUATION_IMPL_RENDERER_H(X) \
     X(SIT_TRACE__SituationLogGLError,                                 10100001, "_SituationLogGLError") \
     X(SIT_TRACE_SituationLoadBitmapFontFromMemory,                    10100002, "SituationLoadBitmapFontFromMemory") \
@@ -410,6 +410,8 @@
     X(SIT_TRACE_SituationCmdEndRender,                                10100015, "SituationCmdEndRender") \
     X(SIT_TRACE_SituationCmdSetViewport,                              10100016, "SituationCmdSetViewport") \
     X(SIT_TRACE_SituationCmdSetScissor,                               10100017, "SituationCmdSetScissor") \
+    X(SIT_TRACE_SituationCmdSetViewportIndexed,                       10100070, "SituationCmdSetViewportIndexed") \
+    X(SIT_TRACE_SituationCmdSetScissorIndexed,                        10100071, "SituationCmdSetScissorIndexed") \
     X(SIT_TRACE_SituationCmdBindVertexBuffer,                         10100018, "SituationCmdBindVertexBuffer") \
     X(SIT_TRACE_SituationCmdBindIndexBuffer,                          10100019, "SituationCmdBindIndexBuffer") \
     X(SIT_TRACE_SituationCmdBindComputeTexture,                       10100020, "SituationCmdBindComputeTexture") \
@@ -430,6 +432,10 @@
     X(SIT_TRACE_SituationCmdSetBlendFuncSeparate,                     10100035, "SituationCmdSetBlendFuncSeparate") \
     X(SIT_TRACE_SituationCmdPushRasterState,                          10100036, "SituationCmdPushRasterState") \
     X(SIT_TRACE_SituationCmdPopRasterState,                           10100037, "SituationCmdPopRasterState") \
+    X(SIT_TRACE_SituationCmdSetLineWidth,                             10100053, "SituationCmdSetLineWidth") \
+    X(SIT_TRACE_SituationCmdSetColorWriteMask,                        10100054, "SituationCmdSetColorWriteMask") \
+    X(SIT_TRACE_SituationCmdSetStencilTest,                           10100055, "SituationCmdSetStencilTest") \
+    X(SIT_TRACE_SituationCmdSetMultisampleState,                      10100056, "SituationCmdSetMultisampleState") \
     X(SIT_TRACE_SituationCmdSetPushConstantData,                      10100038, "SituationCmdSetPushConstantData") \
     X(SIT_TRACE_SituationCmdBeginDebugGroup,                          10100039, "SituationCmdBeginDebugGroup") \
     X(SIT_TRACE_SituationCmdEndDebugGroup,                            10100040, "SituationCmdEndDebugGroup") \
@@ -503,6 +509,9 @@
     X(SIT_TRACE_SituationReloadModel,                                 10100108, "SituationReloadModel") \
     X(SIT_TRACE_SituationReloadComputePipeline,                       10100109, "SituationReloadComputePipeline") \
     X(SIT_TRACE_SituationCheckHotReloads,                             10100110, "SituationCheckHotReloads") \
+    X(SIT_TRACE_SituationCmdDrawIndirect,                             10100111, "SituationCmdDrawIndirect") \
+    X(SIT_TRACE_SituationCmdDrawIndexedIndirect,                      10100112, "SituationCmdDrawIndexedIndirect") \
+    X(SIT_TRACE_SituationCmdBindIndexBufferEx,                        10100113, "SituationCmdBindIndexBufferEx") \
     X(SIT_TRACE__SituationInitGLRingBuffer,                           20100001, "_SituationInitGLRingBuffer") \
     X(SIT_TRACE__SituationInitGLMDIBuffer,                            20100002, "_SituationInitGLMDIBuffer") \
     X(SIT_TRACE__SituationInitGLRingFences,                           20100003, "_SituationInitGLRingFences") \
@@ -717,6 +726,8 @@
     X(SIT_TRACE_SituationLoadDroppedFiles,      10120023, "SituationLoadDroppedFiles") \
     X(SIT_TRACE_SituationUnloadDroppedFiles,    10120024, "SituationUnloadDroppedFiles") \
     X(SIT_TRACE_SituationGetGraphicsCaps,       10120025, "SituationGetGraphicsCaps") \
+    X(SIT_TRACE_SituationGetGraphicsBackend,      10120026, "SituationGetGraphicsBackend") \
+    X(SIT_TRACE_SituationGetGraphicsBackendName,  10120027, "SituationGetGraphicsBackendName") \
     X(SIT_TRACE__SituationSetError,             20120001, "_SituationSetError") \
     X(SIT_TRACE__SituationSetErrorFromCode,     20120002, "_SituationSetErrorFromCode") \
     X(SIT_TRACE__SituationGLFWErrorCallback,    20120003, "_SituationGLFWErrorCallback") \

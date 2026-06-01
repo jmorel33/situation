@@ -21,7 +21,13 @@
 
 #if defined(SITUATION_USE_VULKAN)
 /** Pass as pipeline_flags to _SituationVulkanCreateGraphicsPipeline for opaque color (blend off). */
-#define SIT_VK_PIPELINE_BLEND_OPAQUE 1u
+#define SIT_VK_PIPELINE_BLEND_OPAQUE   1u
+/** VD compositor Path B blend variants (match OpenGL glBlendFunc in SIT_OP_RENDER_VIRTUAL_DISPLAYS). */
+#define SIT_VK_PIPELINE_BLEND_ADDITIVE (1u << 1)
+#define SIT_VK_PIPELINE_BLEND_MULTIPLY (1u << 2)
+#define SIT_VK_PIPELINE_BLEND_SCREEN   (1u << 3)
+/** 2D compositor draws: depth test/write off (matches GL VD compositing glDisable(GL_DEPTH_TEST)). */
+#define SIT_VK_PIPELINE_NO_DEPTH       (1u << 4)
 #endif
 
 // ============================================================================
@@ -871,6 +877,161 @@ static void _SitGLRestoreState(_SitGLStateBackup* s) {
     if (s->scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
 }
 
+static bool _SitGLHasStencilBuffer(void) {
+    GLint stencil_size = 0;
+    glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_STENCIL,
+        GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &stencil_size);
+    if (stencil_size > 0) {
+        return true;
+    }
+    GLint bits = 0;
+    glGetIntegerv(GL_STENCIL_BITS, &bits);
+    return bits > 0;
+}
+
+static GLenum _SitGLMapDepthCompare(SituationDepthCompareOp op) {
+    switch (op) {
+        case SIT_DEPTH_COMPARE_ALWAYS:   return GL_ALWAYS;
+        case SIT_DEPTH_COMPARE_LESS:     return GL_LESS;
+        case SIT_DEPTH_COMPARE_LEQUAL:   return GL_LEQUAL;
+        case SIT_DEPTH_COMPARE_GREATER:  return GL_GREATER;
+        case SIT_DEPTH_COMPARE_GEQUAL:   return GL_GEQUAL;
+        case SIT_DEPTH_COMPARE_EQUAL:    return GL_EQUAL;
+        case SIT_DEPTH_COMPARE_NOTEQUAL: return GL_NOTEQUAL;
+        case SIT_DEPTH_COMPARE_NEVER:    return GL_NEVER;
+        default:                         return GL_LESS;
+    }
+}
+
+static GLenum _SitGLMapStencilOp(SituationStencilOp op) {
+    switch (op) {
+        case SIT_STENCIL_OP_ZERO:              return GL_ZERO;
+        case SIT_STENCIL_OP_REPLACE:           return GL_REPLACE;
+        case SIT_STENCIL_OP_INCREMENT_CLAMP:   return GL_INCR;
+        case SIT_STENCIL_OP_DECREMENT_CLAMP:   return GL_DECR;
+        case SIT_STENCIL_OP_INVERT:            return GL_INVERT;
+        case SIT_STENCIL_OP_INCREMENT_WRAP:    return GL_INCR_WRAP;
+        case SIT_STENCIL_OP_DECREMENT_WRAP:    return GL_DECR_WRAP;
+        case SIT_STENCIL_OP_KEEP:
+        default:                               return GL_KEEP;
+    }
+}
+
+static void _SitGLApplyStencilFace(GLenum face, const SituationStencilState* state) {
+    if (!state) return;
+    glStencilFuncSeparate(face, _SitGLMapDepthCompare(state->compare_op),
+                        (GLint)state->reference, (GLuint)state->compare_mask);
+    glStencilOpSeparate(face, _SitGLMapStencilOp(state->fail_op),
+                        _SitGLMapStencilOp(state->depth_fail_op),
+                        _SitGLMapStencilOp(state->pass_op));
+    glStencilMaskSeparate(face, (GLuint)state->write_mask);
+}
+
+static void _SitGLCaptureRasterState(_SitGLRasterStackEntry* e) {
+    if (!e) return;
+    e->blend = (sit_render.gl.blend_enabled == -1) ? glIsEnabled(GL_BLEND) : (GLboolean)sit_render.gl.blend_enabled;
+    e->depth_test = (sit_render.gl.depth_test_enabled == -1) ? glIsEnabled(GL_DEPTH_TEST) : (GLboolean)sit_render.gl.depth_test_enabled;
+    e->cull_face = (sit_render.gl.cull_face_enabled == -1) ? glIsEnabled(GL_CULL_FACE) : (GLboolean)sit_render.gl.cull_face_enabled;
+    e->scissor_test = (sit_render.gl.scissor_test_enabled == -1) ? glIsEnabled(GL_SCISSOR_TEST) : (GLboolean)sit_render.gl.scissor_test_enabled;
+    e->stencil_test = glIsEnabled(GL_STENCIL_TEST);
+    glGetBooleanv(GL_COLOR_WRITEMASK, e->color_mask);
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &e->depth_mask);
+    if (sit_render.gl.blend_src_rgb == GL_NONE) {
+        glGetIntegerv(GL_BLEND_SRC_RGB, &e->blend_src_rgb);
+        glGetIntegerv(GL_BLEND_DST_RGB, &e->blend_dst_rgb);
+        glGetIntegerv(GL_BLEND_SRC_ALPHA, &e->blend_src_alpha);
+        glGetIntegerv(GL_BLEND_DST_ALPHA, &e->blend_dst_alpha);
+        glGetIntegerv(GL_BLEND_EQUATION_RGB, &e->blend_equ_rgb);
+        glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &e->blend_equ_alpha);
+    } else {
+        e->blend_src_rgb = (GLint)sit_render.gl.blend_src_rgb;
+        e->blend_dst_rgb = (GLint)sit_render.gl.blend_dst_rgb;
+        e->blend_src_alpha = (GLint)sit_render.gl.blend_src_alpha;
+        e->blend_dst_alpha = (GLint)sit_render.gl.blend_dst_alpha;
+        e->blend_equ_rgb = (GLint)sit_render.gl.blend_eq_rgb;
+        e->blend_equ_alpha = (GLint)sit_render.gl.blend_eq_alpha;
+    }
+    glGetIntegerv(GL_DEPTH_FUNC, (GLint*)&e->depth_func);
+    glGetIntegerv(GL_CULL_FACE_MODE, (GLint*)&e->cull_face_mode);
+    glGetIntegerv(GL_FRONT_FACE, (GLint*)&e->front_face);
+    e->polygon_mode = sit_render.gl.current_polygon_mode;
+    e->polygon_offset_fill = sit_render.gl.polygon_offset_enabled ? GL_TRUE : GL_FALSE;
+    if (e->polygon_offset_fill) {
+        glGetFloatv(GL_POLYGON_OFFSET_FACTOR, &e->polygon_offset_factor);
+        glGetFloatv(GL_POLYGON_OFFSET_UNITS, &e->polygon_offset_units);
+    } else {
+        e->polygon_offset_factor = 0.0f;
+        e->polygon_offset_units = 0.0f;
+    }
+    glGetFloatv(GL_LINE_WIDTH, &e->line_width);
+    e->primitive_mode = sit_render.gl.current_primitive_mode;
+    e->primitive_mode_set = sit_render.gl.current_primitive_mode_set;
+    glGetIntegerv(GL_STENCIL_FUNC, &e->stencil_func_front);
+    glGetIntegerv(GL_STENCIL_REF, &e->stencil_ref_front);
+    glGetIntegerv(GL_STENCIL_VALUE_MASK, &e->stencil_value_mask_front);
+    glGetIntegerv(GL_STENCIL_WRITEMASK, &e->stencil_writemask_front);
+    glGetIntegerv(GL_STENCIL_FAIL, &e->stencil_fail_front);
+    glGetIntegerv(GL_STENCIL_PASS_DEPTH_FAIL, &e->stencil_depth_fail_front);
+    glGetIntegerv(GL_STENCIL_PASS_DEPTH_PASS, &e->stencil_pass_front);
+    glGetIntegerv(GL_STENCIL_BACK_FUNC, &e->stencil_func_back);
+    glGetIntegerv(GL_STENCIL_BACK_REF, &e->stencil_ref_back);
+    glGetIntegerv(GL_STENCIL_BACK_VALUE_MASK, &e->stencil_value_mask_back);
+    glGetIntegerv(GL_STENCIL_BACK_WRITEMASK, &e->stencil_writemask_back);
+    glGetIntegerv(GL_STENCIL_BACK_FAIL, &e->stencil_fail_back);
+    glGetIntegerv(GL_STENCIL_BACK_PASS_DEPTH_FAIL, &e->stencil_depth_fail_back);
+    glGetIntegerv(GL_STENCIL_BACK_PASS_DEPTH_PASS, &e->stencil_pass_back);
+}
+
+static void _SitGLApplyRasterState(const _SitGLRasterStackEntry* e) {
+    if (!e) return;
+    if (e->blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    sit_render.gl.blend_enabled = e->blend ? 1 : 0;
+
+    if (e->depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    glDepthFunc(e->depth_func);
+    sit_render.gl.depth_test_enabled = e->depth_test ? 1 : 0;
+
+    glDepthMask(e->depth_mask);
+
+    if (e->cull_face) {
+        glEnable(GL_CULL_FACE);
+        glCullFace(e->cull_face_mode);
+    } else {
+        glDisable(GL_CULL_FACE);
+    }
+    sit_render.gl.cull_face_enabled = e->cull_face ? 1 : 0;
+
+    glFrontFace(e->front_face);
+
+    if (e->scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    sit_render.gl.scissor_test_enabled = e->scissor_test ? 1 : 0;
+
+    if (e->stencil_test) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+
+    glColorMask(e->color_mask[0], e->color_mask[1], e->color_mask[2], e->color_mask[3]);
+
+    glPolygonMode(GL_FRONT_AND_BACK, e->polygon_mode);
+    sit_render.gl.current_polygon_mode = e->polygon_mode;
+
+    if (e->polygon_offset_fill) {
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(e->polygon_offset_factor, e->polygon_offset_units);
+    } else {
+        glDisable(GL_POLYGON_OFFSET_FILL);
+    }
+    sit_render.gl.polygon_offset_enabled = e->polygon_offset_fill ? 1 : 0;
+
+    glLineWidth(e->line_width);
+
+    sit_render.gl.current_primitive_mode = e->primitive_mode;
+    sit_render.gl.current_primitive_mode_set = e->primitive_mode_set;
+    if (e->primitive_mode == GL_POINTS) {
+        glEnable(GL_PROGRAM_POINT_SIZE);
+    } else {
+        glDisable(GL_PROGRAM_POINT_SIZE);
+    }
+}
+
 /**
  * @brief [INTERNAL] Helper to force a re-upload of state next time it's requested.
  * @details [2.3.14A] Invalidates the internal shadow state tracking.
@@ -1296,19 +1457,25 @@ static SituationError _SituationDestroyRenderThread(void) {
 
     SituationError result = SITUATION_SUCCESS;
 
+    // If the render thread never processed a frame, it's sitting in cnd_wait.
+    // Set shutdown flag first, then wake it — the timed wait ensures it checks
+    // the flag within 50ms even if the signal is missed.
     atomic_store(&sit_render.thread_shutdown_req, true);
 
-    // Broadcast to wake everyone
-    mtx_lock(&sit_render.render_queue_mutex);
-    cnd_broadcast(&sit_render.render_queue_cv);
-    mtx_unlock(&sit_render.render_queue_mutex);
+    // Wake the render thread repeatedly until it acknowledges shutdown
+    for (int wake = 0; wake < 3; ++wake) {
+        mtx_lock(&sit_render.render_queue_mutex);
+        cnd_broadcast(&sit_render.render_queue_cv);
+        mtx_unlock(&sit_render.render_queue_mutex);
+        if (!atomic_load(&sit_render.thread_active)) break;
+        SITUATION_SLEEP_MS(20);
+    }
 
     cnd_broadcast(&sit_render.main_wait_cv);
 
     // [v2.3.22] Timed Join (Polling thread_active for 1s before join)
     // C11 thrd_join is blocking, so we poll for the thread to mark itself inactive first.
     // If it doesn't deactivate within the timeout, we log an error but proceed to block-join.
-    struct timespec ts = {0, 100000000}; // 100ms
     int ticks = 10;
     bool timed_out = true;
 
@@ -1317,10 +1484,15 @@ static SituationError _SituationDestroyRenderThread(void) {
             timed_out = false;
             break;
         }
+        // Re-broadcast each tick in case the signal was missed
+        mtx_lock(&sit_render.render_queue_mutex);
+        cnd_broadcast(&sit_render.render_queue_cv);
+        mtx_unlock(&sit_render.render_queue_mutex);
+
         if (i % 5 == 0 && i > 0) {
             fprintf(stderr, "[WARN] Render join tick %d/10...\n", i);
         }
-        thrd_sleep(&ts, NULL);
+        SITUATION_SLEEP_MS(100);
     }
 
     if (timed_out) {
@@ -1786,6 +1958,25 @@ static SituationError _SitGLSoftDataPush(SituationGLSoftCommandBuffer* buf, cons
 } while (0)
 #endif
 
+#if defined(SITUATION_USE_OPENGL)
+static void _SituationGLApplyBaselineRasterState(void);
+static void _SituationGLFlipScreenshotRowsTopLeft(uint8_t* rgba, int width, int height) {
+    if (!rgba || width < 1 || height < 1) {
+        return;
+    }
+    const size_t row_bytes = (size_t)width * 4u;
+    for (int y = 0; y < height / 2; ++y) {
+        uint8_t* row_top = rgba + (size_t)y * row_bytes;
+        uint8_t* row_bot = rgba + (size_t)(height - 1 - y) * row_bytes;
+        for (size_t i = 0; i < row_bytes; ++i) {
+            uint8_t tmp = row_top[i];
+            row_top[i] = row_bot[i];
+            row_bot[i] = tmp;
+        }
+    }
+}
+#endif
+
 /**
  * @brief [INTERNAL] Replays the soft command buffer to the OpenGL driver.
  * @details This is the "Consumer" phase of the deferred rendering model. It iterates through the recorded packets
@@ -1829,11 +2020,14 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
         buf->packet_count = 0;
         buf->data_cursor = 0;
         buf->is_broken = false;
+        buf->recording_render_pass_active = false;
         return _SituationSetErrorFromCode(SITUATION_ERROR_RENDER_COMMAND_FAILED,
             "_SituationGLExecuteCommands: skipped broken soft buffer.");
     }
 
     sit_render.gl.bound_ibo_byte_offset = 0;
+    sit_render.gl.current_index_type = GL_UNSIGNED_INT;
+    sit_render.gl.bound_ibo_index_element_size = sizeof(uint32_t);
 
     // [v2.3.31] Optimization: Track bound texture locally to avoid glGetIntegerv stalls in draw calls
     // GLuint current_bound_texture_id = 0; // REPLACED by sit_render.gl.current_bound_texture_id
@@ -1903,13 +2097,11 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
     glDisable(GL_SCISSOR_TEST);
 
     #ifdef SITUATION_OPENGL_DEBUG
-    printf("[OpenGL Debug] _SituationGLExecuteCommands: GL state reset complete\n");
+    printf("[OpenGL Debug] _SituationGLExecuteCommands: GL capability reset complete\n");
     fflush(stdout);
     #endif
 
-    // 2. Reset Bindings
-    // We don't unbind VAO/Program here because the first command in the buffer
-    // is usually a Bind command. However, we should invalidate our shadow cache.
+    // 2. Reset shadow cache (must precede baseline so tracked state matches GL)
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] _SituationGLExecuteCommands: Resetting shadow cache\n");
     fflush(stdout);
@@ -1918,12 +2110,12 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
     sit_render.gl.current_vao_id = 0;
     sit_render.gl.current_fbo_id = 0;
     sit_render.gl.current_bound_texture_id = 0;
-
-    // 3. Reset Blend State Cache
     sit_render.gl.blend_enabled = -1; // Force re-application if command requests it
 
+    _SituationGLApplyBaselineRasterState();
+
     #ifdef SITUATION_OPENGL_DEBUG
-    printf("[OpenGL Debug] _SituationGLExecuteCommands: Shadow cache reset complete\n");
+    printf("[OpenGL Debug] _SituationGLExecuteCommands: GL baseline + shadow sync complete\n");
     fflush(stdout);
     #endif
 
@@ -1940,6 +2132,11 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
     printf("[OpenGL Debug] _SituationGLExecuteCommands: MDI offset set, entering execution loop\n");
     fflush(stdout);
     #endif
+
+    // Deferred GL: packet order defines pass boundaries at execute time (not at record time).
+    bool exec_inside_render_pass = false;
+    _SitGLRasterStackEntry exec_raster_stack[SITUATION_MAX_RASTER_STACK_DEPTH];
+    int exec_raster_stack_depth = 0;
 
     // --- Execution Loop ---
     for (size_t i = 0; i < buf->packet_count; ++i) {
@@ -1960,6 +2157,7 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
         switch (p->opcode) {
             case SIT_OP_BEGIN_RENDER_PASS:
                 {
+                    exec_inside_render_pass = true;
                     if (p->args.begin_pass.display_id < 0) {
                         glBindFramebuffer(GL_FRAMEBUFFER, 0);
                         sit_render.gl.current_fbo_id = 0;
@@ -1989,6 +2187,7 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
 
                     /* Depth clears are ignored if GL_DEPTH_WRITEMASK is false; previous passes may leave it off. */
                     glDepthMask(GL_TRUE);
+                    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
                     GLbitfield clear_mask = 0;
                     if (p->args.begin_pass.info.color_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
@@ -2000,6 +2199,9 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                         glClearDepth(p->args.begin_pass.info.depth_attachment.clear.depth);
                         clear_mask |= GL_DEPTH_BUFFER_BIT;
                     }
+                    if (p->args.begin_pass.info.stencil_attachment.loadOp == SIT_LOAD_OP_CLEAR) {
+                        /* Deferred until the renderer exposes/creates stencil attachments consistently. */
+                    }
                     if (clear_mask) glClear(clear_mask);
 
                     glEnable(GL_DEPTH_TEST);
@@ -2007,7 +2209,38 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                 }
                 break;
 
+            case SIT_OP_CLEAR:
+                {
+                    const uint32_t flags = p->args.clear.flags;
+                    const SituationClearValue* value = &p->args.clear.value;
+
+                    if (flags & SIT_CLEAR_COLOR_BIT) {
+                        const GLfloat c[4] = {
+                            value->color.r / 255.0f,
+                            value->color.g / 255.0f,
+                            value->color.b / 255.0f,
+                            value->color.a / 255.0f
+                        };
+                        glClearBufferfv(GL_COLOR, 0, c);
+                    }
+
+                    if ((flags & SIT_CLEAR_DEPTH_BIT) && (flags & SIT_CLEAR_STENCIL_BIT)) {
+                        glClearBufferfv(GL_DEPTH, 0, &value->depth);
+                        glStencilMask(0xFFFFFFFFu);
+                        glClearStencil((GLint)value->stencil);
+                        glClear(GL_STENCIL_BUFFER_BIT);
+                    } else if (flags & SIT_CLEAR_DEPTH_BIT) {
+                        glClearBufferfv(GL_DEPTH, 0, &value->depth);
+                    } else if (flags & SIT_CLEAR_STENCIL_BIT) {
+                        glStencilMask(0xFFFFFFFFu);
+                        glClearStencil((GLint)value->stencil);
+                        glClear(GL_STENCIL_BUFFER_BIT);
+                    }
+                }
+                break;
+
             case SIT_OP_END_RENDER_PASS:
+                exec_inside_render_pass = false;
                 #ifdef SITUATION_OPENGL_DEBUG
                 printf("[OpenGL Debug] _SituationGLExecuteCommands: In END_RENDER_PASS case\n");
                 fflush(stdout);
@@ -2038,6 +2271,76 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                     sit_render.gl.cull_face_enabled = 1;
                     if (p->args.set_cull_mode.mode == SIT_CULL_BACK) glCullFace(GL_BACK);
                     else if (p->args.set_cull_mode.mode == SIT_CULL_FRONT) glCullFace(GL_FRONT);
+                }
+                break;
+
+            case SIT_OP_SET_FRONT_FACE:
+                if (p->args.set_front_face.front_face == SIT_FRONT_FACE_CW) glFrontFace(GL_CW);
+                else glFrontFace(GL_CCW);
+                break;
+
+            case SIT_OP_SET_PRIMITIVE_TOPOLOGY:
+                sit_render.gl.current_primitive_mode_set = true;
+                switch (p->args.set_primitive_topology.topology) {
+                    case SIT_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:  sit_render.gl.current_primitive_mode = GL_TRIANGLES; break;
+                    case SIT_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: sit_render.gl.current_primitive_mode = GL_TRIANGLE_STRIP; break;
+                    case SIT_PRIMITIVE_TOPOLOGY_LINE_LIST:      sit_render.gl.current_primitive_mode = GL_LINES; break;
+                    case SIT_PRIMITIVE_TOPOLOGY_LINE_STRIP:     sit_render.gl.current_primitive_mode = GL_LINE_STRIP; break;
+                    case SIT_PRIMITIVE_TOPOLOGY_POINT_LIST:
+                        sit_render.gl.current_primitive_mode = GL_POINTS;
+                        glEnable(GL_PROGRAM_POINT_SIZE);
+                        break;
+                    default:                                     sit_render.gl.current_primitive_mode = GL_TRIANGLES; break;
+                }
+                break;
+
+            case SIT_OP_SET_POLYGON_MODE:
+                switch (p->args.set_polygon_mode.mode) {
+                    case SIT_POLYGON_MODE_LINE:
+                        sit_render.gl.current_polygon_mode = GL_LINE;
+                        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                        break;
+                    case SIT_POLYGON_MODE_POINT:
+                        sit_render.gl.current_polygon_mode = GL_POINT;
+                        glPolygonMode(GL_FRONT_AND_BACK, GL_POINT);
+                        break;
+                    default:
+                        sit_render.gl.current_polygon_mode = GL_FILL;
+                        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                        break;
+                }
+                break;
+
+            case SIT_OP_SET_DEPTH_BIAS:
+                if (p->args.set_depth_bias.enable) {
+                    glEnable(GL_POLYGON_OFFSET_FILL);
+                    sit_render.gl.polygon_offset_enabled = 1;
+                    glPolygonOffset(p->args.set_depth_bias.slope_factor, p->args.set_depth_bias.constant_factor);
+                } else {
+                    glDisable(GL_POLYGON_OFFSET_FILL);
+                    sit_render.gl.polygon_offset_enabled = 0;
+                }
+                break;
+
+            case SIT_OP_SET_LINE_WIDTH:
+                glLineWidth(p->args.set_line_width.width);
+                break;
+
+            case SIT_OP_SET_COLOR_WRITE_MASK:
+                glColorMask(
+                    p->args.set_color_write_mask.r ? GL_TRUE : GL_FALSE,
+                    p->args.set_color_write_mask.g ? GL_TRUE : GL_FALSE,
+                    p->args.set_color_write_mask.b ? GL_TRUE : GL_FALSE,
+                    p->args.set_color_write_mask.a ? GL_TRUE : GL_FALSE);
+                break;
+
+            case SIT_OP_SET_STENCIL_TEST:
+                if (p->args.set_stencil_test.enable) {
+                    glEnable(GL_STENCIL_TEST);
+                    _SitGLApplyStencilFace(GL_FRONT, &p->args.set_stencil_test.front);
+                    _SitGLApplyStencilFace(GL_BACK, &p->args.set_stencil_test.back);
+                } else {
+                    glDisable(GL_STENCIL_TEST);
                 }
                 break;
 
@@ -2111,12 +2414,15 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                 break;
 
             case SIT_OP_PUSH_RASTER_STATE:
-                // For Phase 4, we don't strictly manage a stack in the command buffer natively yet,
-                // but we could just do a local backup/restore or ignore if not heavily utilized.
-                // Not fully implemented as a stack here since we rely on explicit setting in Phase 4.
+                if (exec_raster_stack_depth < SITUATION_MAX_RASTER_STACK_DEPTH) {
+                    _SitGLCaptureRasterState(&exec_raster_stack[exec_raster_stack_depth++]);
+                }
                 break;
 
             case SIT_OP_POP_RASTER_STATE:
+                if (exec_raster_stack_depth > 0) {
+                    _SitGLApplyRasterState(&exec_raster_stack[--exec_raster_stack_depth]);
+                }
                 break;
                 
             case SIT_OP_BEGIN_DEBUG_GROUP:
@@ -2137,8 +2443,13 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                 break;
 
             case SIT_OP_SET_VIEWPORT:
-                glViewport((GLint)p->args.viewport.x, (GLint)p->args.viewport.y,
-                           (GLsizei)p->args.viewport.w, (GLsizei)p->args.viewport.h);
+                if (p->args.viewport.index == 0) {
+                    glViewport((GLint)p->args.viewport.x, (GLint)p->args.viewport.y,
+                               (GLsizei)p->args.viewport.w, (GLsizei)p->args.viewport.h);
+                } else {
+                    glViewportIndexedf(p->args.viewport.index, p->args.viewport.x, p->args.viewport.y,
+                                       p->args.viewport.w, p->args.viewport.h);
+                }
                 break;
 
             case SIT_OP_SET_SCISSOR:
@@ -2153,7 +2464,12 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                         th = 1;
                     }
                     GLint gl_y = (GLint)th - p->args.scissor.y - p->args.scissor.h;
-                    glScissor(p->args.scissor.x, gl_y, p->args.scissor.w, p->args.scissor.h);
+                    if (p->args.scissor.index == 0) {
+                        glScissor(p->args.scissor.x, gl_y, p->args.scissor.w, p->args.scissor.h);
+                    } else {
+                        glScissorIndexed(p->args.scissor.index, p->args.scissor.x, gl_y,
+                                         p->args.scissor.w, p->args.scissor.h);
+                    }
                 }
                 break;
 
@@ -2272,7 +2588,16 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
 
             case SIT_OP_DRAW_QUAD:
                 {
-                    if (sit_render.gl.quad_shader_program == 0) break;
+                    if (!exec_inside_render_pass) {
+                        return _SituationSetErrorFromCode(SITUATION_ERROR_NO_RENDER_PASS_ACTIVE,
+                            "SIT_OP_DRAW_QUAD: no active render pass at execute time.");
+                    }
+                    {
+                        SituationError quad_err = _SituationGLValidateInternalQuadDrawReady(buf, "SIT_OP_DRAW_QUAD", false);
+                        if (quad_err != SITUATION_SUCCESS) {
+                            return quad_err;
+                        }
+                    }
 
                     // Disable culling and depth for 2D quads, but restore them afterwards to avoid clobbering user state (Phase 4)
                     bool was_cull = sit_render.gl.cull_face_enabled > 0;
@@ -2295,11 +2620,36 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                         sit_render.gl.current_vao_id = sit_render.gl.quad_vao;
                     }
 
+                    if (sit_render.gl.quad_shader_program) {
+                        int tw = sit_render.gl.current_target_width;
+                        int th = sit_render.gl.current_target_height;
+                        if (tw < 1) {
+                            tw = sit_gs.main_window_width;
+                        }
+                        if (th < 1) {
+                            th = sit_gs.main_window_height;
+                        }
+                        if (tw < 1) {
+                            tw = 1;
+                        }
+                        if (th < 1) {
+                            th = 1;
+                        }
+                        mat4 quad_proj;
+                        glm_ortho(0.0f, (float)tw, (float)th, 0.0f, -1.0f, 1.0f, quad_proj);
+                        glProgramUniformMatrix4fv(sit_render.gl.quad_shader_program,
+                            SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)quad_proj);
+                    }
+
                     // --- Batch: process consecutive DRAW_QUAD opcodes ---
                     {
                         size_t batch_start = i;
                         while (i < buf->packet_count && buf->packets[i].opcode == SIT_OP_DRAW_QUAD) {
                             SitCommandPacket* qp = &buf->packets[i];
+                            if (qp->args.draw_quad.use_texture &&
+                                sit_render.gl.current_bound_texture_id != 0) {
+                                glBindTextureUnit(0, sit_render.gl.current_bound_texture_id);
+                            }
                             glProgramUniform1i(sit_render.gl.quad_shader_program, 6, qp->args.draw_quad.use_texture ? 1 : 0);
                             glProgramUniformMatrix4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)qp->args.draw_quad.model);
                             glProgramUniform4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat*)qp->args.draw_quad.color.raw);
@@ -2318,6 +2668,89 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                     glBlendFuncSeparate(sit_render.gl.blend_src_rgb, sit_render.gl.blend_dst_rgb, sit_render.gl.blend_src_alpha, sit_render.gl.blend_dst_alpha);
                     
                     // Restore global VAO
+                    if (sit_render.gl.global_vao_id != 0) {
+                        glBindVertexArray(sit_render.gl.global_vao_id);
+                        sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                    }
+                }
+                break;
+
+            case SIT_OP_DRAW_TEXTURE_YPQ:
+                {
+                    if (!exec_inside_render_pass) {
+                        return _SituationSetErrorFromCode(SITUATION_ERROR_NO_RENDER_PASS_ACTIVE,
+                            "SIT_OP_DRAW_TEXTURE_YPQ: no active render pass at execute time.");
+                    }
+                    {
+                        SituationError quad_err = _SituationGLValidateInternalQuadDrawReady(buf, "SIT_OP_DRAW_TEXTURE_YPQ", false);
+                        if (quad_err != SITUATION_SUCCESS) {
+                            return quad_err;
+                        }
+                    }
+                    if (sit_render.gl.ypq_grade_shader_program == 0) {
+                        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED,
+                            "SIT_OP_DRAW_TEXTURE_YPQ: YPQ grade shader is not initialized.");
+                    }
+
+                    bool was_cull = sit_render.gl.cull_face_enabled > 0;
+                    bool was_depth = sit_render.gl.depth_test_enabled > 0;
+                    bool was_blend = sit_render.gl.blend_enabled > 0;
+
+                    glDisable(GL_CULL_FACE);
+                    glDisable(GL_DEPTH_TEST);
+                    glEnable(GL_BLEND);
+                    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+
+                    if (sit_render.gl.current_program_id != sit_render.gl.ypq_grade_shader_program) {
+                        glUseProgram(sit_render.gl.ypq_grade_shader_program);
+                        sit_render.gl.current_program_id = sit_render.gl.ypq_grade_shader_program;
+                    }
+
+                    if (sit_render.gl.current_vao_id != sit_render.gl.quad_vao) {
+                        glBindVertexArray(sit_render.gl.quad_vao);
+                        sit_render.gl.current_vao_id = sit_render.gl.quad_vao;
+                    }
+
+                    {
+                        int tw = sit_render.gl.current_target_width;
+                        int th = sit_render.gl.current_target_height;
+                        if (tw < 1) tw = sit_gs.main_window_width;
+                        if (th < 1) th = sit_gs.main_window_height;
+                        if (tw < 1) tw = 1;
+                        if (th < 1) th = 1;
+                        mat4 quad_proj;
+                        glm_ortho(0.0f, (float)tw, (float)th, 0.0f, -1.0f, 1.0f, quad_proj);
+                        glProgramUniformMatrix4fv(sit_render.gl.ypq_grade_shader_program,
+                            SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)quad_proj);
+                    }
+
+                    SitCommandPacket* ypq_p = &buf->packets[i];
+                    if (sit_render.gl.current_bound_texture_id != 0) {
+                        glBindTextureUnit(0, sit_render.gl.current_bound_texture_id);
+                    }
+                    glProgramUniform1i(sit_render.gl.ypq_grade_shader_program, 6, 1);
+                    glProgramUniformMatrix4fv(sit_render.gl.ypq_grade_shader_program, SIT_UNIFORM_LOC_MODEL_MATRIX, 1, GL_FALSE, (const GLfloat*)ypq_p->args.draw_texture_ypq.model);
+                    glProgramUniform4fv(sit_render.gl.ypq_grade_shader_program, SIT_UNIFORM_LOC_OBJECT_COLOR, 1, (const GLfloat[]){1.0f, 1.0f, 1.0f, 1.0f});
+                    glProgramUniform4fv(sit_render.gl.ypq_grade_shader_program, 5, 1, (const GLfloat*)ypq_p->args.draw_texture_ypq.uv_rect.raw);
+                    glProgramUniform1f(sit_render.gl.ypq_grade_shader_program,
+                        glGetUniformLocation(sit_render.gl.ypq_grade_shader_program, "u_phase_shift_deg"),
+                        ypq_p->args.draw_texture_ypq.phase_shift_deg);
+                    glProgramUniform1f(sit_render.gl.ypq_grade_shader_program,
+                        glGetUniformLocation(sit_render.gl.ypq_grade_shader_program, "u_chroma_factor"),
+                        ypq_p->args.draw_texture_ypq.chroma_factor);
+                    glProgramUniform1f(sit_render.gl.ypq_grade_shader_program,
+                        glGetUniformLocation(sit_render.gl.ypq_grade_shader_program, "u_luma_factor"),
+                        ypq_p->args.draw_texture_ypq.luma_factor);
+                    glProgramUniform1f(sit_render.gl.ypq_grade_shader_program,
+                        glGetUniformLocation(sit_render.gl.ypq_grade_shader_program, "u_mix"),
+                        ypq_p->args.draw_texture_ypq.mix);
+                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+                    if (was_cull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+                    if (was_depth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+                    if (!was_blend) glDisable(GL_BLEND);
+                    glBlendFuncSeparate(sit_render.gl.blend_src_rgb, sit_render.gl.blend_dst_rgb, sit_render.gl.blend_src_alpha, sit_render.gl.blend_dst_alpha);
+
                     if (sit_render.gl.global_vao_id != 0) {
                         glBindVertexArray(sit_render.gl.global_vao_id);
                         sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
@@ -2408,9 +2841,11 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                         if (!SituationIsFeatureSupported(SIT_FEATURE_BINDLESS_TEXTURES)) {
                             // [Phase 5] Virtual Bindless Fallback
                             // Only use virtual system if the shader supports it (has the injected uniform)
-                            if (sit_render.gl.current_virtual_loc >= 0) {
+                            if (sit_render.gl.current_virtual_loc >= 0 &&
+                                sit_render.gl.current_program_id != 0) {
                                 int v_slot = _SituationVirtualBindlessBind((GLuint)id);
-                                glUniform1i(sit_render.gl.current_virtual_loc, v_slot);
+                                glProgramUniform1i(sit_render.gl.current_program_id,
+                                    sit_render.gl.current_virtual_loc, v_slot);
                                 // Note: We do NOT bind to 'idx' here because the shader uses the virtual array.
                             } else {
                                 // Standard Bind (Fallback for non-bindless shaders)
@@ -2451,10 +2886,19 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)p->args.bind_ibo.buffer_id);
                 }
                 sit_render.gl.bound_ibo_byte_offset = p->args.bind_ibo.offset;
+                if (p->args.bind_ibo.index_type == SIT_INDEX_UINT16) {
+                    sit_render.gl.current_index_type = GL_UNSIGNED_SHORT;
+                    sit_render.gl.bound_ibo_index_element_size = sizeof(uint16_t);
+                } else {
+                    sit_render.gl.current_index_type = GL_UNSIGNED_INT;
+                    sit_render.gl.bound_ibo_index_element_size = sizeof(uint32_t);
+                }
                 break;
 
             case SIT_OP_DRAW:
                 {
+                    GLenum draw_mode = sit_render.gl.current_primitive_mode_set
+                        ? sit_render.gl.current_primitive_mode : GL_TRIANGLES;
                     if (sit_render.gl.global_vao_id != 0 &&
                         sit_render.gl.current_vao_id != sit_render.gl.global_vao_id) {
                         glBindVertexArray(sit_render.gl.global_vao_id);
@@ -2497,24 +2941,33 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
 
                             // 3. Bind & Draw
                             glBindBuffer(GL_DRAW_INDIRECT_BUFFER, sit_render.gl.mdi_buffer_id);
-                            glMultiDrawArraysIndirect(GL_TRIANGLES, (const void*)((uintptr_t)offset), (GLsizei)batch_count, 0);
+                            glMultiDrawArraysIndirect(draw_mode, (const void*)((uintptr_t)offset), (GLsizei)batch_count, 0);
                             SIT_CHECK_GL_ERROR();
 
                             // 4. Advance
                             i += (batch_count - 1); // Loop increments i one more time
                         } else {
                             // Overflow fallback: Draw individually
-                            glDrawArraysInstanced(GL_TRIANGLES, p->args.draw.first_v, p->args.draw.v_count, p->args.draw.i_count);
+                            glDrawArraysInstanced(draw_mode, p->args.draw.first_v, p->args.draw.v_count, p->args.draw.i_count);
                         }
                     } else {
                         // Single draw fallback
-                        glDrawArraysInstanced(GL_TRIANGLES, p->args.draw.first_v, p->args.draw.v_count, p->args.draw.i_count);
+                        glDrawArraysInstanced(draw_mode, p->args.draw.first_v, p->args.draw.v_count, p->args.draw.i_count);
                     }
                 }
                 break;
 
             case SIT_OP_DRAW_INDEXED:
                 {
+                    if (sit_render.gl.global_vao_id != 0 &&
+                        sit_render.gl.current_vao_id != sit_render.gl.global_vao_id) {
+                        glBindVertexArray(sit_render.gl.global_vao_id);
+                        sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                    }
+                    GLenum draw_mode = sit_render.gl.current_primitive_mode_set
+                        ? sit_render.gl.current_primitive_mode : GL_TRIANGLES;
+                    GLenum index_type = sit_render.gl.current_index_type ? sit_render.gl.current_index_type : GL_UNSIGNED_INT;
+                    size_t index_elem_size = sit_render.gl.bound_ibo_index_element_size ? sit_render.gl.bound_ibo_index_element_size : sizeof(uint32_t);
                     // [Phase 4] Multi-Draw Indirect Optimization
                     size_t batch_count = 1;
                     size_t lookahead = i + 1;
@@ -2537,7 +2990,7 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                             _SituationGLDrawElementsIndirectCommand* cmds = (_SituationGLDrawElementsIndirectCommand*)((uint8_t*)sit_render.gl.mdi_data_ptr + offset);
 
                             {
-                                const uint32_t ibo_first_index_bias = (uint32_t)(sit_render.gl.bound_ibo_byte_offset / sizeof(uint32_t));
+                                const uint32_t ibo_first_index_bias = (uint32_t)(sit_render.gl.bound_ibo_byte_offset / index_elem_size);
                                 for (size_t k = 0; k < batch_count; ++k) {
                                     SitCommandPacket* next_p = &buf->packets[i + k];
                                     cmds[k].count = next_p->args.draw_indexed.idx_count;
@@ -2549,19 +3002,19 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                             }
 
                             glBindBuffer(GL_DRAW_INDIRECT_BUFFER, sit_render.gl.mdi_buffer_id);
-                            glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, (const void*)((uintptr_t)offset), (GLsizei)batch_count, 0);
+                            glMultiDrawElementsIndirect(draw_mode, index_type, (const void*)((uintptr_t)offset), (GLsizei)batch_count, 0);
                             SIT_CHECK_GL_ERROR();
 
                             i += (batch_count - 1);
                         } else {
                             // Overflow
-                            glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, p->args.draw_indexed.idx_count, GL_UNSIGNED_INT,
-                                (void*)((uintptr_t)(sit_render.gl.bound_ibo_byte_offset + (size_t)p->args.draw_indexed.first_idx * sizeof(uint32_t))),
+                            glDrawElementsInstancedBaseVertexBaseInstance(draw_mode, p->args.draw_indexed.idx_count, index_type,
+                                (void*)((uintptr_t)(sit_render.gl.bound_ibo_byte_offset + (size_t)p->args.draw_indexed.first_idx * index_elem_size)),
                                 p->args.draw_indexed.inst_count, p->args.draw_indexed.v_offset, p->args.draw_indexed.first_inst);
                         }
                     } else {
-                        glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES, p->args.draw_indexed.idx_count, GL_UNSIGNED_INT,
-                            (void*)((uintptr_t)(sit_render.gl.bound_ibo_byte_offset + (size_t)p->args.draw_indexed.first_idx * sizeof(uint32_t))),
+                        glDrawElementsInstancedBaseVertexBaseInstance(draw_mode, p->args.draw_indexed.idx_count, index_type,
+                            (void*)((uintptr_t)(sit_render.gl.bound_ibo_byte_offset + (size_t)p->args.draw_indexed.first_idx * index_elem_size)),
                             p->args.draw_indexed.inst_count, p->args.draw_indexed.v_offset, p->args.draw_indexed.first_inst);
                     }
                 }
@@ -2589,6 +3042,45 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
             case SIT_OP_DISPATCH:
                 glDispatchCompute(p->args.dispatch.x, p->args.dispatch.y, p->args.dispatch.z);
                 break;
+
+            case SIT_OP_DISPATCH_INDIRECT:
+                glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, (GLuint)p->args.dispatch_indirect.buffer_id);
+                glDispatchComputeIndirect((GLintptr)p->args.dispatch_indirect.offset);
+                glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
+                break;
+
+            case SIT_OP_DRAW_INDIRECT:
+                {
+                GLenum draw_mode = sit_render.gl.current_primitive_mode_set
+                    ? sit_render.gl.current_primitive_mode : GL_TRIANGLES;
+                if (sit_render.gl.global_vao_id != 0 &&
+                    sit_render.gl.current_vao_id != sit_render.gl.global_vao_id) {
+                    glBindVertexArray(sit_render.gl.global_vao_id);
+                    sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                }
+                glBindBuffer(GL_DRAW_INDIRECT_BUFFER, (GLuint)p->args.draw_indirect.buffer_id);
+                glDrawArraysIndirect(draw_mode, (const void*)(uintptr_t)p->args.draw_indirect.offset);
+                glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+                SIT_CHECK_GL_ERROR();
+                break;
+                }
+
+            case SIT_OP_DRAW_INDEXED_INDIRECT:
+                {
+                GLenum draw_mode = sit_render.gl.current_primitive_mode_set
+                    ? sit_render.gl.current_primitive_mode : GL_TRIANGLES;
+                if (sit_render.gl.global_vao_id != 0 &&
+                    sit_render.gl.current_vao_id != sit_render.gl.global_vao_id) {
+                    glBindVertexArray(sit_render.gl.global_vao_id);
+                    sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+                }
+                glBindBuffer(GL_DRAW_INDIRECT_BUFFER, (GLuint)p->args.draw_indexed_indirect.buffer_id);
+                glDrawElementsIndirect(draw_mode, GL_UNSIGNED_INT,
+                    (const void*)(uintptr_t)p->args.draw_indexed_indirect.offset);
+                glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+                SIT_CHECK_GL_ERROR();
+                break;
+                }
 
             // [Bug 10 Fix] Handle compute pipeline binding — was missing, causing compute
             // dispatches to use whatever program was previously bound (state leak from prior tests)
@@ -2720,6 +3212,17 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
             case SIT_OP_DRAW_TEXT_EX:
                 #if !defined(SITUATION_NO_STB) && !defined(SITUATION_NO_STB_TRUETYPE)
                 {
+                    if (!exec_inside_render_pass) {
+                        return _SituationSetErrorFromCode(SITUATION_ERROR_NO_RENDER_PASS_ACTIVE,
+                            "SIT_OP_DRAW_TEXT: no active render pass at execute time.");
+                    }
+                    {
+                        SituationError text_err = _SituationGLValidateInternalTextDrawReady(buf, "SIT_OP_DRAW_TEXT", false);
+                        if (text_err != SITUATION_SUCCESS) {
+                            return text_err;
+                        }
+                    }
+
                     const char* text;
                     SituationFont font;
                     Vector2 pos;
@@ -2946,7 +3449,132 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                 {
                     GLuint src_gl = (GLuint)p->args.copy_buffer.src_id;
                     GLuint dst_gl = (GLuint)p->args.copy_buffer.dst_id;
-                    glCopyNamedBufferSubData(src_gl, dst_gl, (GLintptr)p->args.copy_buffer.offset, 0, (GLsizeiptr)p->args.copy_buffer.size);
+                    glCopyNamedBufferSubData(
+                        src_gl,
+                        dst_gl,
+                        (GLintptr)p->args.copy_buffer.src_offset,
+                        (GLintptr)p->args.copy_buffer.dst_offset,
+                        (GLsizeiptr)p->args.copy_buffer.size);
+                }
+                break;
+            case SIT_OP_BLIT_TEXTURE:
+                {
+                    _SituationTextureSlot* src_slot = _SitGetTextureSlot(p->args.blit_texture.src);
+                    _SituationTextureSlot* dst_slot = _SitGetTextureSlot(p->args.blit_texture.dst);
+                    if (!src_slot || !dst_slot) break;
+
+                    const SituationTextureBlitRegion* region = &p->args.blit_texture.region;
+                    GLuint src_fbo = 0;
+                    GLuint dst_fbo = 0;
+                    glCreateFramebuffers(1, &src_fbo);
+                    glCreateFramebuffers(1, &dst_fbo);
+                    if (src_fbo == 0 || dst_fbo == 0) {
+                        if (src_fbo) glDeleteFramebuffers(1, &src_fbo);
+                        if (dst_fbo) glDeleteFramebuffers(1, &dst_fbo);
+                        break;
+                    }
+
+                    glNamedFramebufferTexture(src_fbo, GL_COLOR_ATTACHMENT0, src_slot->gl_texture_id, (GLint)region->src_mip_level);
+                    glNamedFramebufferTexture(dst_fbo, GL_COLOR_ATTACHMENT0, dst_slot->gl_texture_id, (GLint)region->dst_mip_level);
+                    glNamedFramebufferReadBuffer(src_fbo, GL_COLOR_ATTACHMENT0);
+                    glNamedFramebufferDrawBuffer(dst_fbo, GL_COLOR_ATTACHMENT0);
+
+                    GLenum src_status = glCheckNamedFramebufferStatus(src_fbo, GL_READ_FRAMEBUFFER);
+                    GLenum dst_status = glCheckNamedFramebufferStatus(dst_fbo, GL_DRAW_FRAMEBUFFER);
+                    if (src_status == GL_FRAMEBUFFER_COMPLETE && dst_status == GL_FRAMEBUFFER_COMPLETE) {
+                        GLenum filter = (region->filter == SITUATION_BLIT_FILTER_LINEAR) ? GL_LINEAR : GL_NEAREST;
+                        glBlitNamedFramebuffer(
+                            src_fbo,
+                            dst_fbo,
+                            region->src_rect.x,
+                            region->src_rect.y,
+                            region->src_rect.x + region->src_rect.width,
+                            region->src_rect.y + region->src_rect.height,
+                            region->dst_rect.x,
+                            region->dst_rect.y,
+                            region->dst_rect.x + region->dst_rect.width,
+                            region->dst_rect.y + region->dst_rect.height,
+                            GL_COLOR_BUFFER_BIT,
+                            filter);
+                    }
+
+                    glDeleteFramebuffers(1, &src_fbo);
+                    glDeleteFramebuffers(1, &dst_fbo);
+                }
+                break;
+            case SIT_OP_COPY_TEXTURE:
+                {
+                    _SituationTextureSlot* src_slot = _SitGetTextureSlot(p->args.copy_texture.src);
+                    _SituationTextureSlot* dst_slot = _SitGetTextureSlot(p->args.copy_texture.dst);
+                    if (!src_slot || !dst_slot) break;
+
+                    const SituationTextureCopyRegion* region = &p->args.copy_texture.region;
+                    glCopyImageSubData(
+                        src_slot->gl_texture_id,
+                        GL_TEXTURE_2D,
+                        (GLint)region->src_mip_level,
+                        region->src_rect.x,
+                        region->src_rect.y,
+                        (GLint)region->src_array_layer,
+                        dst_slot->gl_texture_id,
+                        GL_TEXTURE_2D,
+                        (GLint)region->dst_mip_level,
+                        region->dst_x,
+                        region->dst_y,
+                        (GLint)region->dst_array_layer,
+                        region->src_rect.width,
+                        region->src_rect.height,
+                        1);
+                }
+                break;
+            case SIT_OP_COPY_BUFFER_TO_TEXTURE:
+                {
+                    _SituationTextureSlot* dst_slot = _SitGetTextureSlot(p->args.copy_buffer_to_texture.dst);
+                    if (!dst_slot) break;
+
+                    const SituationTextureCopyRegion* region = &p->args.copy_buffer_to_texture.region;
+                    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, (GLuint)p->args.copy_buffer_to_texture.buffer_id);
+                    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+                    glTextureSubImage2D(
+                        dst_slot->gl_texture_id,
+                        (GLint)region->dst_mip_level,
+                        region->dst_x,
+                        region->dst_y,
+                        region->src_rect.width,
+                        region->src_rect.height,
+                        GL_RGBA,
+                        GL_UNSIGNED_BYTE,
+                        (const void*)p->args.copy_buffer_to_texture.buffer_offset);
+                    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+                }
+                break;
+            case SIT_OP_COPY_TEXTURE_TO_BUFFER:
+                {
+                    _SituationTextureSlot* src_slot = _SitGetTextureSlot(p->args.copy_texture_to_buffer.src);
+                    if (!src_slot) break;
+
+                    const SituationTextureCopyRegion* region = &p->args.copy_texture_to_buffer.region;
+                    GLint pack_row_length = 0;
+                    if (p->args.copy_texture_to_buffer.buffer_row_pitch != 0) {
+                        pack_row_length = (GLint)(p->args.copy_texture_to_buffer.buffer_row_pitch / 4u);
+                    }
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER, (GLuint)p->args.copy_texture_to_buffer.buffer_id);
+                    glPixelStorei(GL_PACK_ROW_LENGTH, pack_row_length);
+                    glGetTextureSubImage(
+                        src_slot->gl_texture_id,
+                        (GLint)region->src_mip_level,
+                        region->src_rect.x,
+                        region->src_rect.y,
+                        0,
+                        region->src_rect.width,
+                        region->src_rect.height,
+                        1,
+                        GL_RGBA,
+                        GL_UNSIGNED_BYTE,
+                        (GLsizei)(region->src_rect.width * region->src_rect.height * 4),
+                        (void*)p->args.copy_texture_to_buffer.buffer_offset);
+                    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
                 }
                 break;
         }
@@ -2963,6 +3591,7 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
                     (unsigned)gl_err, (int)p->opcode);
                 buf->packet_count = 0;
                 buf->data_cursor = 0;
+                buf->recording_render_pass_active = false;
                 return _SituationSetErrorFromCode(SITUATION_ERROR_OPENGL_GENERAL, gl_detail);
             }
         }
@@ -2983,6 +3612,7 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
     // Reset buffer after execution
     buf->packet_count = 0;
     buf->data_cursor = 0;
+    buf->recording_render_pass_active = false;
 
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] Buffer reset complete, about to call second SIT_DEBUG_LOG\n");
@@ -2996,6 +3626,7 @@ static SituationError _SituationGLExecuteCommands(SituationGLSoftCommandBuffer* 
     fflush(stdout);
     #endif
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    _SituationGLApplyBaselineRasterState();
 
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] glBindBuffer complete, about to call third SIT_DEBUG_LOG\n");
@@ -3214,6 +3845,14 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
             sit_render.gl.global_vao_id = 0;
             sit_render.gl.mesh_vao_id = 0;
             return quad_err;
+        }
+        SituationError ypq_err = _SituationInitYpqGradeRenderer(sit_gs.main_window_width, sit_gs.main_window_height);
+        if (ypq_err != SITUATION_SUCCESS) {
+            glDeleteVertexArrays(1, &sit_render.gl.global_vao_id);
+            glDeleteVertexArrays(1, &sit_render.gl.mesh_vao_id);
+            sit_render.gl.global_vao_id = 0;
+            sit_render.gl.mesh_vao_id = 0;
+            return ypq_err;
         }
     }
 
@@ -3467,6 +4106,7 @@ static SituationError _SituationInitOpenGL(const SituationInitInfo* init_info) {
     // This window is used by the main thread for async asset loading while the render thread uses the main window.
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     sit_render.gl.loader_window = glfwCreateWindow(640, 480, "Situation Loader", NULL, sit_gs.sit_glfw_window);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
 
     // [v2.3.21] Thread spawning logic moved to _SituationInitRenderThread in SituationInit
     // Note: Context handover logic is also moved there.
@@ -4342,7 +4982,16 @@ static SituationError _SituationVulkanBuildGraphicsPipelinesOnSlot(
 
     slot->vk_pipeline = _SituationVulkanCreateGraphicsPipeline(
         vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u);
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u,
+        VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
+    slot->vk_pipeline_back_ccw = _SituationVulkanCreateGraphicsPipeline(
+        vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u,
+        VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_POLYGON_MODE_FILL);
+    slot->vk_pipeline_back_cw = _SituationVulkanCreateGraphicsPipeline(
+        vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u,
+        VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
 
     VkVertexInputBindingDescription binding_desc_legacy = { .binding = 0, .stride = (3 + 3 + 2) * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
     VkVertexInputAttributeDescription attr_descs_legacy[3];
@@ -4352,7 +5001,16 @@ static SituationError _SituationVulkanBuildGraphicsPipelinesOnSlot(
 
     slot->vk_pipeline_legacy = _SituationVulkanCreateGraphicsPipeline(
         vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u);
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u,
+        VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
+    slot->vk_pipeline_legacy_back_ccw = _SituationVulkanCreateGraphicsPipeline(
+        vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u,
+        VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_POLYGON_MODE_FILL);
+    slot->vk_pipeline_legacy_back_cw = _SituationVulkanCreateGraphicsPipeline(
+        vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u,
+        VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
 
     VkVertexInputBindingDescription binding_desc_simple = { .binding = 0, .stride = 3 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
     VkVertexInputAttributeDescription attr_descs_simple[1];
@@ -4360,9 +5018,37 @@ static SituationError _SituationVulkanBuildGraphicsPipelinesOnSlot(
 
     slot->vk_pipeline_simple = _SituationVulkanCreateGraphicsPipeline(
         vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u);
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u,
+        VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
+    slot->vk_pipeline_simple_back_ccw = _SituationVulkanCreateGraphicsPipeline(
+        vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u,
+        VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_POLYGON_MODE_FILL);
+    slot->vk_pipeline_simple_back_cw = _SituationVulkanCreateGraphicsPipeline(
+        vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u,
+        VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
 
-    if (slot->vk_pipeline == VK_NULL_HANDLE || slot->vk_pipeline_legacy == VK_NULL_HANDLE) {
+    if ((sit_render.enabled_features_mask & SIT_FEATURE_FILL_MODE_NON_SOLID) != 0u) {
+        slot->vk_pipeline_line = _SituationVulkanCreateGraphicsPipeline(
+            vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u,
+            VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_LINE);
+        slot->vk_pipeline_legacy_line = _SituationVulkanCreateGraphicsPipeline(
+            vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u,
+            VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_LINE);
+        slot->vk_pipeline_simple_line = _SituationVulkanCreateGraphicsPipeline(
+            vs_spirv, vs_len, fs_spirv, fs_len, slot->vk_pipeline_layout,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u,
+            VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_LINE);
+    }
+
+    if (slot->vk_pipeline == VK_NULL_HANDLE || slot->vk_pipeline_legacy == VK_NULL_HANDLE ||
+        slot->vk_pipeline_back_ccw == VK_NULL_HANDLE || slot->vk_pipeline_back_cw == VK_NULL_HANDLE ||
+        slot->vk_pipeline_legacy_back_ccw == VK_NULL_HANDLE || slot->vk_pipeline_legacy_back_cw == VK_NULL_HANDLE ||
+        slot->vk_pipeline_simple == VK_NULL_HANDLE ||
+        slot->vk_pipeline_simple_back_ccw == VK_NULL_HANDLE || slot->vk_pipeline_simple_back_cw == VK_NULL_HANDLE) {
         if (slot->vk_owns_pipeline_layout && slot->vk_pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(sit_render.vk.device, slot->vk_pipeline_layout, NULL);
         }
@@ -4601,7 +5287,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
         VkPushConstantRange push_constant_range = {
             .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             .offset = 0,
-            .size = sizeof(mat4) + sizeof(float)
+            .size = (uint32_t)(sizeof(mat4) + sizeof(float))
         };
         VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.image_sampler_layout };
         VkPipelineLayoutCreateInfo pipeline_layout_info = {
@@ -4630,34 +5316,44 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
         #endif
 
         VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
-        VkVertexInputAttributeDescription attr_descs[2];
-        attr_descs[0].binding = 0;
-        attr_descs[0].location = SIT_ATTR_POSITION;
-        attr_descs[0].format = VK_FORMAT_R32G32_SFLOAT;
-        attr_descs[0].offset = 0;
-        attr_descs[1].binding = 0;
-        attr_descs[1].location = SIT_ATTR_TEXCOORD_0;
-        attr_descs[1].format = VK_FORMAT_R32G32_SFLOAT;
-        attr_descs[1].offset = 0;
+        VkVertexInputAttributeDescription attr_desc = {};
+        attr_desc.binding = 0;
+        attr_desc.location = SIT_ATTR_POSITION;
+        attr_desc.format = VK_FORMAT_R32G32_SFLOAT;
+        attr_desc.offset = 0;
 
         #ifdef SITUATION_VULKAN_DEBUG
         printf("Situation [Vulkan Debug]: Creating VD graphics pipeline...\n"); fflush(stdout);
         #endif
-        vd_compositing_pipeline = _SituationVulkanCreateGraphicsPipeline(
-            vs_spirv.data, vs_spirv.size,
-            fs_spirv.data, fs_spirv.size,
-            vd_compositing_pipeline_layout,
-            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
-            1, &binding_desc,
-            2, attr_descs,
-            0u
-        );
+        static const uint32_t vd_simple_blend_flags[5] = {
+            SIT_VK_PIPELINE_NO_DEPTH,
+            SIT_VK_PIPELINE_BLEND_ADDITIVE | SIT_VK_PIPELINE_NO_DEPTH,
+            SIT_VK_PIPELINE_BLEND_MULTIPLY | SIT_VK_PIPELINE_NO_DEPTH,
+            SIT_VK_PIPELINE_BLEND_SCREEN | SIT_VK_PIPELINE_NO_DEPTH,
+            SIT_VK_PIPELINE_BLEND_OPAQUE | SIT_VK_PIPELINE_NO_DEPTH,
+        };
+        for (int _vd_blend = 0; _vd_blend < 5; ++_vd_blend) {
+            vd_compositing_pipeline = _SituationVulkanCreateGraphicsPipeline(
+                vs_spirv.data, vs_spirv.size,
+                fs_spirv.data, fs_spirv.size,
+                vd_compositing_pipeline_layout,
+                VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+                1, &binding_desc,
+                1, &attr_desc,
+                vd_simple_blend_flags[_vd_blend],
+                VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL
+            );
+            if (vd_compositing_pipeline == VK_NULL_HANDLE) {
+                goto cleanup;
+            }
+            sit_render.vk.vd_compositing_blend_pipelines[_vd_blend] = vd_compositing_pipeline;
+        }
         #ifdef SITUATION_VULKAN_DEBUG
-        printf("Situation [Vulkan Debug]: VD graphics pipeline created, handle=%p\n", (void*)vd_compositing_pipeline); fflush(stdout);
+        printf("Situation [Vulkan Debug]: VD graphics pipelines created (5 blend variants)\n"); fflush(stdout);
         #endif
         _SituationFreeSpirvBlob(&vs_spirv);
         _SituationFreeSpirvBlob(&fs_spirv);
-        if (vd_compositing_pipeline == VK_NULL_HANDLE) {
+        if (sit_render.vk.vd_compositing_blend_pipelines[SITUATION_BLEND_ALPHA] == VK_NULL_HANDLE) {
             #ifdef SITUATION_VULKAN_DEBUG
             printf("Situation [Vulkan Debug]: VD GRAPHICS PIPELINE CREATION FAILED!\n"); fflush(stdout);
             #endif
@@ -4726,7 +5422,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
             1, &binding_desc,
             1, &attr_desc,
-            0u
+            SIT_VK_PIPELINE_NO_DEPTH,
+            VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL
         );
 
         _SituationFreeSpirvBlob(&vs_spirv);
@@ -4756,11 +5453,11 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             goto cleanup;
         }
 
-        VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.bindless_descriptor_layout };
+        VkDescriptorSetLayout layouts[] = { sit_render.vk.view_data_ubo_layout, sit_render.vk.text_sampler_layout };
         VkPushConstantRange push_constant_range = {
             .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
             .offset = 0,
-            .size = sizeof(vec4) + sizeof(uint32_t) // Color + TextureID
+            .size = sizeof(vec4)
         };
 
         VkPipelineLayoutCreateInfo layout_info = {
@@ -4803,7 +5500,8 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
             VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
             1, &binding_desc,
             2, attr_descs,
-            0u
+            SIT_VK_PIPELINE_NO_DEPTH,
+            VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL
         );
         _SituationFreeSpirvBlob(&vs_spirv);
         _SituationFreeSpirvBlob(&fs_spirv);
@@ -4819,7 +5517,7 @@ static SituationError _SituationVulkanInitInternalRenderers(void) {
     sit_render.vk.text_pipeline = text_pipeline;
     sit_render.vk.text_pipeline_layout = text_pipeline_layout;
     sit_render.vk.vd_compositing_pipeline_layout = vd_compositing_pipeline_layout;
-    sit_render.vk.vd_compositing_pipeline = vd_compositing_pipeline;
+    sit_render.vk.vd_compositing_pipeline = sit_render.vk.vd_compositing_blend_pipelines[SITUATION_BLEND_ALPHA];
     sit_render.vk.advanced_compositing_pipeline_layout = advanced_compositing_pipeline_layout;
     sit_render.vk.advanced_compositing_pipeline = advanced_compositing_pipeline;
 
@@ -4836,7 +5534,12 @@ cleanup:
     if (text_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, text_pipeline_layout, NULL);
     if (text_pipeline) vkDestroyPipeline(sit_render.vk.device, text_pipeline, NULL);
     if (vd_compositing_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, vd_compositing_pipeline_layout, NULL);
-    if (vd_compositing_pipeline) vkDestroyPipeline(sit_render.vk.device, vd_compositing_pipeline, NULL);
+    for (int _vd_blend = 0; _vd_blend < 5; ++_vd_blend) {
+        if (sit_render.vk.vd_compositing_blend_pipelines[_vd_blend]) {
+            vkDestroyPipeline(sit_render.vk.device, sit_render.vk.vd_compositing_blend_pipelines[_vd_blend], NULL);
+            sit_render.vk.vd_compositing_blend_pipelines[_vd_blend] = VK_NULL_HANDLE;
+        }
+    }
     if (advanced_compositing_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, advanced_compositing_pipeline_layout, NULL);
     if (advanced_compositing_pipeline) vkDestroyPipeline(sit_render.vk.device, advanced_compositing_pipeline, NULL);
     return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
@@ -5639,7 +6342,7 @@ static SituationShader _SituationCreateVulkanPipeline(const char* vs_path, const
     VkDynamicState dynamic_states[] = { 
         VK_DYNAMIC_STATE_VIEWPORT, 
         VK_DYNAMIC_STATE_SCISSOR,
-        VK_DYNAMIC_STATE_CULL_MODE,
+        VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY,
         VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
         VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
         VK_DYNAMIC_STATE_DEPTH_COMPARE_OP
@@ -6292,6 +6995,11 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
         _SituationCleanupVulkan();
         return quad_err;
         }
+        SituationError ypq_err = _SituationInitYpqGradeRenderer(0, 0);
+        if (ypq_err != SITUATION_SUCCESS) {
+            _SituationCleanupVulkan();
+            return ypq_err;
+        }
     }
 
     #ifdef SITUATION_VULKAN_DEBUG
@@ -6323,6 +7031,9 @@ static SituationError _SituationInitVulkan(const SituationInitInfo* init_info) {
     printf("Situation [Vulkan]: Shader compiler disabled. Internal renderers (Quad, VD) are unavailable.\n");
     // Zero out handles to be safe
     sit_render.vk.quad_pipeline = VK_NULL_HANDLE;
+    for (int _vd_blend = 0; _vd_blend < 5; ++_vd_blend) {
+        sit_render.vk.vd_compositing_blend_pipelines[_vd_blend] = VK_NULL_HANDLE;
+    }
     sit_render.vk.vd_compositing_pipeline = VK_NULL_HANDLE;
     sit_render.vk.advanced_compositing_pipeline = VK_NULL_HANDLE;
 #endif
@@ -7050,6 +7761,7 @@ static SituationError _SituationVulkanPickPhysicalDevice(void) {
 
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(best_device, &properties);
+    sit_render.vk.physical_device_api_version = properties.apiVersion;
 #if defined(SITUATION_VERBOSE_DIAGNOSTICS)
     printf("Situation [Vulkan]: Picked device '%s' with score %d\n", properties.deviceName, max_score);
 #endif
@@ -7112,7 +7824,7 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
 
     // --- Device Extensions ---
     // Use a manageable array to build the list of required extensions.
-    const char* device_extensions[8]; // Increased size for optional extensions
+    const char* device_extensions[16]; // Optional feature extensions can stack up quickly
     uint32_t extension_count = 0;
 
     // The swapchain extension is always required for rendering to a window.
@@ -7131,6 +7843,9 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
 
     bool mesh_shader_supported = false;
     bool ray_tracing_supported = false;
+    bool ext_dynamic_state_supported = false;
+    bool ext_dynamic_state2_supported = false;
+    bool ext_dynamic_state3_supported = false;
 
     for (uint32_t i = 0; i < available_ext_count; i++) {
         if (strcmp(available_exts[i].extensionName, "VK_EXT_mesh_shader") == 0) {
@@ -7138,6 +7853,15 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
         }
         if (strcmp(available_exts[i].extensionName, "VK_KHR_ray_tracing_pipeline") == 0) {
             ray_tracing_supported = true;
+        }
+        if (strcmp(available_exts[i].extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME) == 0) {
+            ext_dynamic_state_supported = true;
+        }
+        if (strcmp(available_exts[i].extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME) == 0) {
+            ext_dynamic_state2_supported = true;
+        }
+        if (strcmp(available_exts[i].extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME) == 0) {
+            ext_dynamic_state3_supported = true;
         }
     }
     SIT_FREE(available_exts);
@@ -7168,6 +7892,16 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
         accel_features.accelerationStructure = VK_TRUE;
     }
 
+    if (ext_dynamic_state_supported) {
+        device_extensions[extension_count++] = VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME;
+    }
+    if (ext_dynamic_state2_supported) {
+        device_extensions[extension_count++] = VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME;
+    }
+    if (ext_dynamic_state3_supported) {
+        device_extensions[extension_count++] = VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME;
+    }
+
     // --- Feature Query & Enablement ---
     // We need to query what is supported before blindly enabling it.
     // This uses the modern VkPhysicalDeviceFeatures2 structure chain.
@@ -7176,15 +7910,36 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     VkPhysicalDeviceVulkan12Features supported_vk12 = {};
     supported_vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT supported_ext_dyn = {};
+    supported_ext_dyn.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT;
+
+    VkPhysicalDeviceExtendedDynamicState2FeaturesEXT supported_ext_dyn2 = {};
+    supported_ext_dyn2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT;
+
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT supported_ext_dyn3 = {};
+    supported_ext_dyn3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
+
     VkPhysicalDeviceFeatures2 supported_features2 = {};
     supported_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     supported_features2.pNext = &supported_vk12;
+    supported_vk12.pNext = &supported_ext_dyn;
+    supported_ext_dyn.pNext = &supported_ext_dyn2;
+    supported_ext_dyn2.pNext = &supported_ext_dyn3;
 
     vkGetPhysicalDeviceFeatures2(sit_render.vk.physical_device, &supported_features2);
 
     // 2. Prepare the structures for creation (enable what we found)
     VkPhysicalDeviceVulkan12Features enable_vk12 = {};
     enable_vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT enable_ext_dyn = {};
+    enable_ext_dyn.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT;
+
+    VkPhysicalDeviceExtendedDynamicState2FeaturesEXT enable_ext_dyn2 = {};
+    enable_ext_dyn2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT;
+
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT enable_ext_dyn3 = {};
+    enable_ext_dyn3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
 
     // Chain extension features if enabled
     void** next_ptr = &enable_vk12.pNext;
@@ -7197,6 +7952,32 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
         next_ptr = &ray_tracing_features.pNext;
         *next_ptr = &accel_features;
         next_ptr = &accel_features.pNext;
+    }
+    if (supported_ext_dyn.extendedDynamicState) {
+        enable_ext_dyn.extendedDynamicState = VK_TRUE;
+        sit_render.vk.extended_dynamic_state_enabled = true;
+        *next_ptr = &enable_ext_dyn;
+        next_ptr = &enable_ext_dyn.pNext;
+    }
+    if (supported_ext_dyn2.extendedDynamicState2) {
+        enable_ext_dyn2.extendedDynamicState2 = VK_TRUE;
+        sit_render.vk.depth_bias_dynamic_enabled = true;
+        *next_ptr = &enable_ext_dyn2;
+        next_ptr = &enable_ext_dyn2.pNext;
+    }
+    /* Wireframe uses static vk_pipeline_*_line variants (POLYGON_MODE_LINE baked in).
+     * Do not enable extendedDynamicState3PolygonMode: VK_DYNAMIC_STATE_POLYGON_MODE_EXT
+     * in pipelines overrides static line mode and requires vkCmdSetPolygonModeEXT every draw. */
+    (void)supported_ext_dyn3.extendedDynamicState3PolygonMode;
+    bool enable_ext_dyn3_chain = false;
+    if (supported_ext_dyn3.extendedDynamicState3ColorWriteMask) {
+        enable_ext_dyn3.extendedDynamicState3ColorWriteMask = VK_TRUE;
+        sit_render.vk.extended_dynamic_state3_color_write_enabled = true;
+        enable_ext_dyn3_chain = true;
+    }
+    if (enable_ext_dyn3_chain) {
+        *next_ptr = &enable_ext_dyn3;
+        next_ptr = &enable_ext_dyn3.pNext;
     }
 
     // Enable Buffer Device Address (Critical for Bindless)
@@ -7322,6 +8103,85 @@ static SituationError _SituationVulkanCreateLogicalDevice(const SituationInitInf
     vkGetDeviceQueue(sit_render.vk.device, sit_render.vk.graphics_family_index, 0, &sit_render.vk.graphics_queue);
     vkGetDeviceQueue(sit_render.vk.device, sit_render.vk.present_family_index, 0, &sit_render.vk.present_queue);
     vkGetDeviceQueue(sit_render.vk.device, sit_render.vk.compute_family_index, 0, &sit_render.vk.compute_queue);
+
+    if (sit_render.vk.extended_dynamic_state3_polygon_mode_enabled) {
+        sit_render.vk.pfn_cmd_set_polygon_mode_ext = (PFN_vkCmdSetPolygonModeEXT)
+            vkGetDeviceProcAddr(sit_render.vk.device, "vkCmdSetPolygonModeEXT");
+        if (!sit_render.vk.pfn_cmd_set_polygon_mode_ext) {
+            sit_render.vk.pfn_cmd_set_polygon_mode_ext = (PFN_vkCmdSetPolygonModeEXT)
+                vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdSetPolygonModeEXT");
+        }
+        if (!sit_render.vk.pfn_cmd_set_polygon_mode_ext) {
+            sit_render.vk.extended_dynamic_state3_polygon_mode_enabled = false;
+            fprintf(stderr, "Situation [Vulkan]: vkCmdSetPolygonModeEXT unavailable; wireframe uses static line pipelines.\n");
+            fflush(stderr);
+        }
+    }
+    if (sit_render.vk.extended_dynamic_state_enabled) {
+        sit_render.vk.pfn_cmd_set_primitive_topology = (PFN_vkCmdSetPrimitiveTopology)
+            vkGetDeviceProcAddr(sit_render.vk.device, "vkCmdSetPrimitiveTopology");
+        if (!sit_render.vk.pfn_cmd_set_primitive_topology) {
+            sit_render.vk.pfn_cmd_set_primitive_topology = (PFN_vkCmdSetPrimitiveTopology)
+                vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdSetPrimitiveTopology");
+        }
+        sit_render.vk.pfn_cmd_set_depth_test_enable = (PFN_vkCmdSetDepthTestEnable)
+            vkGetDeviceProcAddr(sit_render.vk.device, "vkCmdSetDepthTestEnable");
+        if (!sit_render.vk.pfn_cmd_set_depth_test_enable) {
+            sit_render.vk.pfn_cmd_set_depth_test_enable = (PFN_vkCmdSetDepthTestEnable)
+                vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdSetDepthTestEnable");
+        }
+        sit_render.vk.pfn_cmd_set_depth_write_enable = (PFN_vkCmdSetDepthWriteEnable)
+            vkGetDeviceProcAddr(sit_render.vk.device, "vkCmdSetDepthWriteEnable");
+        if (!sit_render.vk.pfn_cmd_set_depth_write_enable) {
+            sit_render.vk.pfn_cmd_set_depth_write_enable = (PFN_vkCmdSetDepthWriteEnable)
+                vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdSetDepthWriteEnable");
+        }
+        sit_render.vk.pfn_cmd_set_depth_compare_op = (PFN_vkCmdSetDepthCompareOp)
+            vkGetDeviceProcAddr(sit_render.vk.device, "vkCmdSetDepthCompareOp");
+        if (!sit_render.vk.pfn_cmd_set_depth_compare_op) {
+            sit_render.vk.pfn_cmd_set_depth_compare_op = (PFN_vkCmdSetDepthCompareOp)
+                vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdSetDepthCompareOp");
+        }
+        sit_render.vk.pfn_cmd_set_stencil_test_enable = (PFN_vkCmdSetStencilTestEnable)
+            vkGetDeviceProcAddr(sit_render.vk.device, "vkCmdSetStencilTestEnable");
+        if (!sit_render.vk.pfn_cmd_set_stencil_test_enable) {
+            sit_render.vk.pfn_cmd_set_stencil_test_enable = (PFN_vkCmdSetStencilTestEnable)
+                vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdSetStencilTestEnable");
+        }
+        sit_render.vk.pfn_cmd_set_stencil_op = (PFN_vkCmdSetStencilOp)
+            vkGetDeviceProcAddr(sit_render.vk.device, "vkCmdSetStencilOp");
+        if (!sit_render.vk.pfn_cmd_set_stencil_op) {
+            sit_render.vk.pfn_cmd_set_stencil_op = (PFN_vkCmdSetStencilOp)
+                vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdSetStencilOp");
+        }
+    }
+    if (sit_render.vk.depth_bias_dynamic_enabled) {
+        sit_render.vk.pfn_cmd_set_depth_bias_enable = (PFN_vkCmdSetDepthBiasEnable)
+            vkGetDeviceProcAddr(sit_render.vk.device, "vkCmdSetDepthBiasEnable");
+        if (!sit_render.vk.pfn_cmd_set_depth_bias_enable) {
+            sit_render.vk.pfn_cmd_set_depth_bias_enable = (PFN_vkCmdSetDepthBiasEnable)
+                vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdSetDepthBiasEnable");
+        }
+        sit_render.vk.pfn_cmd_set_depth_bias = (PFN_vkCmdSetDepthBias)
+            vkGetDeviceProcAddr(sit_render.vk.device, "vkCmdSetDepthBias");
+        if (!sit_render.vk.pfn_cmd_set_depth_bias) {
+        sit_render.vk.pfn_cmd_set_depth_bias = (PFN_vkCmdSetDepthBias)
+            vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdSetDepthBias");
+        }
+    }
+    if (sit_render.vk.extended_dynamic_state3_color_write_enabled) {
+        sit_render.vk.pfn_cmd_set_color_write_mask_ext = (PFN_vkCmdSetColorWriteMaskEXT)
+            vkGetDeviceProcAddr(sit_render.vk.device, "vkCmdSetColorWriteMaskEXT");
+        if (!sit_render.vk.pfn_cmd_set_color_write_mask_ext) {
+            sit_render.vk.pfn_cmd_set_color_write_mask_ext = (PFN_vkCmdSetColorWriteMaskEXT)
+                vkGetInstanceProcAddr(sit_render.vk.instance, "vkCmdSetColorWriteMaskEXT");
+        }
+        if (!sit_render.vk.pfn_cmd_set_color_write_mask_ext) {
+            sit_render.vk.extended_dynamic_state3_color_write_enabled = false;
+            fprintf(stderr, "Situation [Vulkan]: vkCmdSetColorWriteMaskEXT unavailable; color write mask API disabled.\n");
+            fflush(stderr);
+        }
+    }
 
     return SITUATION_SUCCESS;
 }
@@ -8853,6 +9713,41 @@ static SituationError _SituationInitDefaultFont(void) {
                 bindless_write.pImageInfo = &bindless_image_info;
                 vkUpdateDescriptorSets(sit_render.vk.device, 1, &bindless_write, 0, NULL);
             }
+            if (font_slot->single_sampler_descriptor_set != VK_NULL_HANDLE) {
+                VkDescriptorImageInfo single_image_info = {};
+                single_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                single_image_info.imageView = font_slot->image_view;
+                single_image_info.sampler = font_slot->sampler;
+
+                VkWriteDescriptorSet single_write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+                single_write.dstSet = font_slot->single_sampler_descriptor_set;
+                single_write.dstBinding = SIT_SAMPLER_BINDING_ALBEDO;
+                single_write.dstArrayElement = 0;
+                single_write.descriptorCount = 1;
+                single_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                single_write.pImageInfo = &single_image_info;
+                vkUpdateDescriptorSets(sit_render.vk.device, 1, &single_write, 0, NULL);
+            } else if (sit_render.vk.text_sampler_layout != VK_NULL_HANDLE) {
+                VkDescriptorPool used_pool = VK_NULL_HANDLE;
+                font_slot->single_sampler_descriptor_set = _SituationVulkanAllocateDescriptorSet(
+                    sit_render.vk.text_sampler_layout, &used_pool);
+                font_slot->single_sampler_descriptor_pool = used_pool;
+                if (font_slot->single_sampler_descriptor_set != VK_NULL_HANDLE) {
+                    VkDescriptorImageInfo single_image_info = {};
+                    single_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    single_image_info.imageView = font_slot->image_view;
+                    single_image_info.sampler = font_slot->sampler;
+
+                    VkWriteDescriptorSet single_write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+                    single_write.dstSet = font_slot->single_sampler_descriptor_set;
+                    single_write.dstBinding = SIT_SAMPLER_BINDING_ALBEDO;
+                    single_write.dstArrayElement = 0;
+                    single_write.descriptorCount = 1;
+                    single_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    single_write.pImageInfo = &single_image_info;
+                    vkUpdateDescriptorSets(sit_render.vk.device, 1, &single_write, 0, NULL);
+                }
+            }
         }
     }
     if (font_slot && font_slot->descriptor_set != VK_NULL_HANDLE) {
@@ -9057,6 +9952,13 @@ static SituationError _SituationInitQuadRenderer(int width, int height) {
     glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, proj_quad); // Top-left is (0,0)
     glProgramUniformMatrix4fv(sit_render.gl.quad_shader_program, SIT_UNIFORM_LOC_PROJECTION_MATRIX, 1, GL_FALSE, (const GLfloat*)proj_quad);
     SIT_CHECK_GL_ERROR(); // Check for errors setting the uniform
+    {
+        GLint tex_loc = glGetUniformLocation(sit_render.gl.quad_shader_program, "u_Texture");
+        if (tex_loc >= 0) {
+            glProgramUniform1i(sit_render.gl.quad_shader_program, tex_loc, 0);
+        }
+    }
+    SIT_CHECK_GL_ERROR();
     SIT_DEBUG_LOG("[QUAD] Projection matrix set");
 
     // 9. CRITICAL: Ensure the global_vao_id is bound again before returning.
@@ -9109,12 +10011,13 @@ static SituationError _SituationInitQuadRenderer(int width, int height) {
     // Updated size: Model(64) + Color(16) + UVRect(16) + TextureID(4) + UseTex(4) = 104 bytes
     push_constant_range.size = sizeof(mat4) + sizeof(vec4) + sizeof(vec4) + sizeof(uint32_t) + sizeof(int);
 
-    // Define Layouts: Set 0 = View UBO, Set 1 = Bindless Texture Array (Binding 0)
+    // Set 0 = view/proj UBO; set 1 = per-draw sampler (text_sampler_layout, binding 0).
+    // DrawTexture binds slot->single_sampler_descriptor_set — not the global bindless array.
     VkDescriptorSetLayout set_layouts[2];
     uint32_t set_layout_count = 1;
     set_layouts[0] = sit_render.vk.view_data_ubo_layout;
-    if (sit_render.vk.bindless_descriptor_layout != VK_NULL_HANDLE) {
-        set_layouts[1] = sit_render.vk.bindless_descriptor_layout;
+    if (sit_render.vk.text_sampler_layout != VK_NULL_HANDLE) {
+        set_layouts[1] = sit_render.vk.text_sampler_layout;
         set_layout_count = 2;
     }
 
@@ -9154,7 +10057,8 @@ static SituationError _SituationInitQuadRenderer(int width, int height) {
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, // Quads are drawn as a strip
         1, &binding_desc,
         1, &attr_desc,
-        SIT_VK_PIPELINE_BLEND_OPAQUE
+        SIT_VK_PIPELINE_BLEND_OPAQUE,
+        VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL
     );
 
     _SituationFreeSpirvBlob(&vs_spirv);
@@ -9245,7 +10149,9 @@ static SituationError _SituationInitTextRenderer(void) {
 #if defined(SITUATION_USE_OPENGL)
     SituationError shader_err;
     sit_render.gl.text_shader_program = _SituationCreateGLShaderProgram(SIT_TEXT_VERTEX_SHADER, SIT_TEXT_FRAGMENT_SHADER, &shader_err);
-    if (shader_err != SITUATION_SUCCESS) return shader_err;
+    if (shader_err != SITUATION_SUCCESS || sit_render.gl.text_shader_program == 0) {
+        return (shader_err != SITUATION_SUCCESS) ? shader_err : SITUATION_ERROR_OPENGL_SHADER_LINK_FAILED;
+    }
 
     glCreateVertexArrays(1, &sit_render.gl.text_vao);
     glCreateBuffers(1, &sit_render.gl.text_vbo);
@@ -9287,6 +10193,105 @@ static SituationError _SituationInitTextRenderer(void) {
     return SITUATION_ERROR_NOT_IMPLEMENTED;
 }
 
+static const uint32_t SIT_YPQ_GRADE_PUSH_BYTES =
+    (uint32_t)(sizeof(mat4) + sizeof(vec4) + sizeof(vec4) + sizeof(uint32_t) + sizeof(int) + (sizeof(float) * 4u));
+
+/**
+ * @brief [INTERNAL] Initializes the YPQ grade textured-quad pipeline (reuses quad geometry).
+ * @see SIT_YPQ_GRADE_FRAGMENT_SHADER, SituationCmdDrawTextureYpqGrade()
+ */
+static SituationError _SituationInitYpqGradeRenderer(int width, int height) {
+#if defined(SITUATION_USE_OPENGL)
+    SituationError shader_err_code = SITUATION_SUCCESS;
+    sit_render.gl.ypq_grade_shader_program = _SituationCreateGLShaderProgram(
+        SIT_QUAD_VERTEX_SHADER,
+        SIT_YPQ_GRADE_FRAGMENT_SHADER,
+        &shader_err_code);
+    if (shader_err_code != SITUATION_SUCCESS || sit_render.gl.ypq_grade_shader_program == 0) {
+        return (shader_err_code != SITUATION_SUCCESS) ? shader_err_code : SITUATION_ERROR_OPENGL_GENERAL;
+    }
+
+    mat4 proj_quad;
+    glm_ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f, proj_quad);
+    glProgramUniformMatrix4fv(
+        sit_render.gl.ypq_grade_shader_program,
+        SIT_UNIFORM_LOC_PROJECTION_MATRIX,
+        1,
+        GL_FALSE,
+        (const GLfloat*)proj_quad);
+    SIT_CHECK_GL_ERROR();
+    {
+        GLint tex_loc = glGetUniformLocation(sit_render.gl.ypq_grade_shader_program, "u_Texture");
+        if (tex_loc >= 0) {
+            glProgramUniform1i(sit_render.gl.ypq_grade_shader_program, tex_loc, 0);
+        }
+    }
+    SIT_CHECK_GL_ERROR();
+    return SITUATION_SUCCESS;
+
+#elif defined(SITUATION_USE_VULKAN)
+    _SituationSpirvBlob vs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_QUAD_VERTEX_SHADER, "internal_ypq_grade.vert", shaderc_vertex_shader);
+    _SituationSpirvBlob fs_spirv = _SituationVulkanCompileGLSLtoSPIRV(SIT_YPQ_GRADE_FRAGMENT_SHADER, "internal_ypq_grade.frag", shaderc_fragment_shader);
+    if (!vs_spirv.data || !fs_spirv.data) {
+        _SituationFreeSpirvBlob(&vs_spirv);
+        _SituationFreeSpirvBlob(&fs_spirv);
+        return SituationGetLastErrorCode();
+    }
+
+    VkPushConstantRange push_constant_range = {};
+    push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    push_constant_range.offset = 0;
+    push_constant_range.size = SIT_YPQ_GRADE_PUSH_BYTES;
+
+    VkDescriptorSetLayout set_layouts[2];
+    uint32_t set_layout_count = 1;
+    set_layouts[0] = sit_render.vk.view_data_ubo_layout;
+    if (sit_render.vk.text_sampler_layout != VK_NULL_HANDLE) {
+        set_layouts[1] = sit_render.vk.text_sampler_layout;
+        set_layout_count = 2;
+    }
+
+    VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+    pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_info.setLayoutCount = set_layout_count;
+    pipeline_layout_info.pSetLayouts = set_layouts;
+    pipeline_layout_info.pushConstantRangeCount = 1;
+    pipeline_layout_info.pPushConstantRanges = &push_constant_range;
+
+    if (vkCreatePipelineLayout(sit_render.vk.device, &pipeline_layout_info, NULL, &sit_render.vk.ypq_grade_pipeline_layout) != VK_SUCCESS) {
+        _SituationFreeSpirvBlob(&vs_spirv);
+        _SituationFreeSpirvBlob(&fs_spirv);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, "Failed to create YPQ grade pipeline layout.");
+    }
+
+    VkVertexInputBindingDescription binding_desc = { .binding = 0, .stride = 2 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription attr_desc = {};
+    attr_desc.binding = 0;
+    attr_desc.location = SIT_ATTR_POSITION;
+    attr_desc.format = VK_FORMAT_R32G32_SFLOAT;
+    attr_desc.offset = 0;
+
+    sit_render.vk.ypq_grade_pipeline = _SituationVulkanCreateGraphicsPipeline(
+        vs_spirv.data, vs_spirv.size,
+        fs_spirv.data, fs_spirv.size,
+        sit_render.vk.ypq_grade_pipeline_layout,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+        1, &binding_desc,
+        1, &attr_desc,
+        SIT_VK_PIPELINE_BLEND_OPAQUE,
+        VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
+
+    _SituationFreeSpirvBlob(&vs_spirv);
+    _SituationFreeSpirvBlob(&fs_spirv);
+
+    if (sit_render.vk.ypq_grade_pipeline == VK_NULL_HANDLE) {
+        return SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED;
+    }
+    return SITUATION_SUCCESS;
+#endif
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+}
+
 /**
  * @brief [INTERNAL] Destroys all backend-specific resources used by the internal quad renderer.
  * @details This helper function is called during the main shutdown sequence to clean up the dedicated resources created by `_SituationInitQuadRenderer`. It ensures that the internal shaders, pipelines, and vertex buffers used for drawing simple quads are properly released.
@@ -9303,6 +10308,7 @@ static SituationError _SituationInitTextRenderer(void) {
 static void _SituationCleanupQuadRenderer(void) {
 #if defined(SITUATION_USE_OPENGL)
     if (sit_render.gl.quad_shader_program) { glDeleteProgram(sit_render.gl.quad_shader_program); sit_render.gl.quad_shader_program = 0; }
+    if (sit_render.gl.ypq_grade_shader_program) { glDeleteProgram(sit_render.gl.ypq_grade_shader_program); sit_render.gl.ypq_grade_shader_program = 0; }
     if (sit_render.gl.quad_vao) { glDeleteVertexArrays(1, &sit_render.gl.quad_vao); sit_render.gl.quad_vao = 0; }
     if (sit_render.gl.quad_vbo) { glDeleteBuffers(1, &sit_render.gl.quad_vbo); sit_render.gl.quad_vbo = 0; }
 
@@ -9320,6 +10326,8 @@ static void _SituationCleanupQuadRenderer(void) {
         #endif
         if (sit_render.vk.quad_pipeline) vkDestroyPipeline(sit_render.vk.device, sit_render.vk.quad_pipeline, NULL);
         if (sit_render.vk.quad_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, sit_render.vk.quad_pipeline_layout, NULL);
+        if (sit_render.vk.ypq_grade_pipeline) vkDestroyPipeline(sit_render.vk.device, sit_render.vk.ypq_grade_pipeline, NULL);
+        if (sit_render.vk.ypq_grade_pipeline_layout) vkDestroyPipelineLayout(sit_render.vk.device, sit_render.vk.ypq_grade_pipeline_layout, NULL);
         if (sit_render.vk.quad_vertex_buffer) {
 #ifdef SITUATION_VULKAN_DEBUG
             printf("Situation [Vulkan Debug]:   Destroying quad vertex buffer...\n"); fflush(stdout);
@@ -9469,6 +10477,18 @@ static void _SituationCleanupVulkan(void) {
             _SituationFlushGraveyard(i);
         }
     }
+
+#if !defined(NDEBUG)
+    if (sit_render.vk.raster_pipeline_resolve_count > 0u) {
+        fprintf(stderr,
+            "Situation [Vulkan Debug]: raster variant stats — resolve=%llu polygon_hit=%llu cull_front_hit=%llu rebind=%llu\n",
+            (unsigned long long)sit_render.vk.raster_pipeline_resolve_count,
+            (unsigned long long)sit_render.vk.raster_polygon_variant_hits,
+            (unsigned long long)sit_render.vk.raster_cull_front_variant_hits,
+            (unsigned long long)sit_render.vk.raster_pipeline_rebind_count);
+        fflush(stderr);
+    }
+#endif
 
     _SituationCleanupQuadRenderer();
     _SituationVulkanCleanupSwapchain();
@@ -9777,10 +10797,12 @@ static void _SituationVulkanTransitionImageLayout(VkCommandBuffer cmd, VkImage i
         source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     } else if (old_layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR && new_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-        /* After vkCmdEndRenderPass, swapchain color is in PRESENT_SRC_KHR (see main_window_render_pass finalLayout). */
-        barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        /* Post-render-pass screenshot: last writer was the color attachment (EndRenderPass -> PRESENT).
+         * MEMORY_READ/BOTTOM_OF_PIPE was too weak and read stale texels on some drivers (wireframe /
+         * text overlay looked correct on present but readback still showed prior frame or black). */
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        source_stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        source_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     } else if (old_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL && new_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
         barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -10002,6 +11024,15 @@ static SituationError _SituationVulkanEnsureScreenshotResources(uint32_t width, 
 }
 
 static void _SituationVulkanRecordScreenshotCopy(VkCommandBuffer cmd, VkImage swapchain_image, uint32_t width, uint32_t height) {
+    /* Ensure color attachment writes from the render pass just ended are visible to the transfer copy. */
+    VkMemoryBarrier mem_barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    mem_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    mem_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 1, &mem_barrier, 0, NULL, 0, NULL);
+
     _SituationVulkanTransitionImageLayout(cmd, swapchain_image, 1, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     VkBufferImageCopy region = {};
     region.bufferOffset = 0;
@@ -10216,11 +11247,89 @@ static void _SituationVulkanGenerateMipmaps(VkCommandBuffer cmd, VkImage image, 
  *
  * @warning This function is not thread-safe and must be called from the thread that initialized the library.
  */
+
+#if defined(SITUATION_USE_OPENGL)
+/** Apply deterministic GL raster defaults so harness/tests cannot leak state across frames. */
+static void _SituationGLApplyBaselineRasterState(void) {
+    glFrontFace(GL_CCW);
+    glDisable(GL_CULL_FACE);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    glDisable(GL_PROGRAM_POINT_SIZE);
+    glDisable(GL_STENCIL_TEST);
+    glDepthMask(GL_TRUE);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glLineWidth(1.0f);
+    sit_render.gl.cull_face_enabled = 0;
+    sit_render.gl.current_polygon_mode = GL_FILL;
+    sit_render.gl.polygon_offset_enabled = false;
+    sit_render.gl.current_primitive_mode_set = false;
+    sit_render.gl.current_primitive_mode = GL_TRIANGLES;
+    sit_render.gl.current_index_type = GL_UNSIGNED_INT;
+    sit_render.gl.bound_ibo_index_element_size = sizeof(uint32_t);
+    sit_render.gl.bound_ibo_byte_offset = 0;
+    sit_render.gl.current_virtual_loc = -1;
+    if (sit_render.gl.global_vao_id != 0) {
+        glBindVertexArray(sit_render.gl.global_vao_id);
+        sit_render.gl.current_vao_id = sit_render.gl.global_vao_id;
+    }
+}
+#endif
+
+/** Reset tracked raster state so harness/tests cannot leak topology/polygon/cull across frames. */
+static void _SituationResetTrackedRasterStateForNewFrame(void) {
+#if defined(SITUATION_USE_VULKAN)
+    sit_render.vk.dynamic_cull_mode = VK_CULL_MODE_NONE;
+    sit_render.vk.dynamic_front_face = VK_FRONT_FACE_CLOCKWISE;
+    sit_render.vk.dynamic_primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    sit_render.vk.dynamic_primitive_topology_initialized = true;
+    sit_render.vk.dynamic_polygon_mode = VK_POLYGON_MODE_FILL;
+    sit_render.vk.dynamic_depth_bias_enable = VK_FALSE;
+    sit_render.vk.dynamic_depth_bias_constant = 0.0f;
+    sit_render.vk.dynamic_depth_bias_clamp = 0.0f;
+    sit_render.vk.dynamic_depth_bias_slope = 0.0f;
+    sit_render.vk.dynamic_color_write_mask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    sit_render.vk.dynamic_depth_test_enable = VK_TRUE;
+    sit_render.vk.dynamic_depth_write_enable = VK_FALSE;
+    sit_render.vk.dynamic_depth_compare_op = VK_COMPARE_OP_LESS;
+    sit_render.vk.dynamic_stencil_test_enable = VK_FALSE;
+    memset(&sit_render.vk.dynamic_stencil_front, 0, sizeof(sit_render.vk.dynamic_stencil_front));
+    memset(&sit_render.vk.dynamic_stencil_back, 0, sizeof(sit_render.vk.dynamic_stencil_back));
+    sit_render.vk.dynamic_line_width = 1.0f;
+    sit_render.vk.raster_stack_depth = 0;
+    sit_render.vk.current_pbr_pipeline = VK_NULL_HANDLE;
+#endif
+#if defined(SITUATION_USE_OPENGL)
+    _SituationGLApplyBaselineRasterState();
+#endif
+}
+
 SITAPI bool SituationAcquireFrameCommandBuffer(void) {
     // --- 1. Library Initialization Check ---
     if (!SituationIsInitialized()) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot begin frame before library initialization.");
         return false;
+    }
+
+    /* Recover from callers that acquired a frame but never submitted (harness validation tests, etc.).
+     * Without this, the in-flight fence for the slot is reset on the next acquire but never signaled. */
+    if (sit_render.in_frame) {
+        fprintf(stderr,
+            "[Situation] WARNING: SituationAcquireFrameCommandBuffer called while a frame is still open; auto-ending previous frame.\n");
+        fflush(stderr);
+#if defined(SITUATION_USE_VULKAN)
+        if (sit_render.vk.inside_render_pass) {
+            VkCommandBuffer leak_cmd = (VkCommandBuffer)SituationGetMainCommandBuffer();
+            if (leak_cmd != VK_NULL_HANDLE) {
+                vkCmdEndRenderPass(leak_cmd);
+            }
+            sit_render.vk.inside_render_pass = false;
+            sit_render.vk.inside_main_swapchain_render_pass = false;
+            sit_render.vk.current_render_area = (VkRect2D){0};
+        }
+#endif
+        SituationEndFrame();
     }
 
 #if defined(SITUATION_USE_OPENGL)
@@ -10287,6 +11396,11 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         // [FIX v2.3.27B] Reset breaker
         sit_render.gl.soft_buffers[sit_render.current_frame_index].is_broken = false;
         sit_render.gl.soft_buffers[sit_render.current_frame_index].current_recording_shader_id = 0;
+        sit_render.gl.soft_buffers[sit_render.current_frame_index].recording_render_pass_active = false;
+        sit_render.gl.soft_buffers[sit_render.current_frame_index].raster_stack_depth = 0;
+
+        _SituationResetTrackedRasterStateForNewFrame();
+        sit_render.gl.screenshot_valid = false;
 
         // Mark that we're now recording a frame
         sit_render.in_frame = true;
@@ -10300,7 +11414,7 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
 #if defined(SITUATION_ENABLE_SHADER_COMPILER)
         for (int i = 0; i < SITUATION_MAX_SHADERS; i++) {
             _SituationShaderSlot* slot = &sit_render.shader_registry[i];
-            if (slot->is_active) {
+            if (slot->is_active && slot->vk_async_load) {
                 _SituationPollVkAsyncShaderLoad(slot);
             }
         }
@@ -10497,6 +11611,11 @@ SITAPI bool SituationAcquireFrameCommandBuffer(void) {
         }
 
         sit_render.vk.inside_main_swapchain_render_pass = false;
+        sit_render.vk.inside_render_pass = false;
+        sit_render.vk.current_render_area = (VkRect2D){0};
+
+        _SituationResetTrackedRasterStateForNewFrame();
+        sit_render.vk.screenshot_valid = false;
 
         // Mark that we're now recording a frame
         sit_render.in_frame = true;
@@ -10953,6 +12072,7 @@ SITAPI SituationError SituationEndFrame(void) {
                     if (sit_render.gl.screenshot_buffer) {
                         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
                         glReadBuffer(GL_BACK);
+                        glFinish();
                         glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE, sit_render.gl.screenshot_buffer);
                         sit_render.gl.screenshot_valid = true;
                     }
@@ -11011,6 +12131,7 @@ SITAPI SituationError SituationEndFrame(void) {
                 if (sit_render.gl.screenshot_buffer) {
                     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
                     glReadBuffer(GL_BACK);
+                    glFinish();
                     glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE, sit_render.gl.screenshot_buffer);
                     sit_render.gl.screenshot_valid = true;
                 }
@@ -11430,6 +12551,57 @@ SITAPI SituationCommandBuffer SituationGetComputeCommandBuffer(void) {
  *
  * @note Must be paired with `SituationCmdEndRenderPass`.
  */
+#if defined(SITUATION_USE_VULKAN)
+/** Top-left pixel ortho — identical to OpenGL internal 2D paths. */
+static SituationError _SitVulkanFillOrthoProjection2D(float width, float height, mat4 out_proj) {
+    if (!out_proj) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+            "_SitVulkanFillOrthoProjection2D: out_proj cannot be NULL.");
+    }
+    if (width < 1.0f) width = 1.0f;
+    if (height < 1.0f) height = 1.0f;
+    glm_ortho(0.0f, width, height, 0.0f, -1.0f, 1.0f, out_proj);
+    return SITUATION_SUCCESS;
+}
+
+/** Vulkan-only: negative viewport height so Situation (0,0) top-left matches OpenGL. */
+static void _SitVulkanFillViewport2DOpenGLParity(float width, float height, VkViewport* out_vp) {
+    if (!out_vp) {
+        return;
+    }
+    if (width < 1.0f) {
+        width = 1.0f;
+    }
+    if (height < 1.0f) {
+        height = 1.0f;
+    }
+    out_vp->x = 0.0f;
+    out_vp->y = height;
+    out_vp->width = width;
+    out_vp->height = -height;
+    out_vp->minDepth = 0.0f;
+    out_vp->maxDepth = 1.0f;
+}
+
+static void _SitVulkanApply2DViewportScissor(VkCommandBuffer vk_cmd) {
+    if (vk_cmd == VK_NULL_HANDLE) {
+        return;
+    }
+    VkExtent2D extent = sit_render.vk.current_render_area.extent;
+    if (extent.width == 0 || extent.height == 0) {
+        extent = sit_render.vk.swapchain_extent;
+    }
+    if (extent.width == 0 || extent.height == 0) {
+        return;
+    }
+    VkViewport vp;
+    _SitVulkanFillViewport2DOpenGLParity((float)extent.width, (float)extent.height, &vp);
+    VkRect2D sc = {{0, 0}, extent};
+    vkCmdSetViewport(vk_cmd, 0, 1, &vp);
+    vkCmdSetScissor(vk_cmd, 0, 1, &sc);
+}
+#endif
+
 SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
     if (!cmd) return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "cmd cannot be NULL in SituationCmdBeginRenderPass.");
@@ -11460,6 +12632,7 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
         p->args.begin_pass.target_h = fbh;
     }
     p->args.begin_pass.info = *info;
+    buf->recording_render_pass_active = true;
 
     return SITUATION_SUCCESS;
 
@@ -11501,7 +12674,7 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
         float target_height = (float)sit_render.vk.swapchain_extent.height;
         ViewDataUBO ubo_data;
         glm_mat4_identity(ubo_data.view);
-        glm_ortho(0.0f, target_width, target_height, 0.0f, -1.0f, 1.0f, ubo_data.projection);
+        SIT_RETURN_IF_ERR(_SitVulkanFillOrthoProjection2D(target_width, target_height, ubo_data.projection));
         memcpy(sit_render.vk.view_proj_ubo_mapped[sit_render.vk.current_frame_index], &ubo_data, sizeof(ViewDataUBO));
     } else {
         if (info->display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[info->display_id]) {
@@ -11516,19 +12689,15 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
         float target_height = vd->resolution.y;
         ViewDataUBO ubo_data;
         glm_mat4_identity(ubo_data.view);
-        glm_ortho(0.0f, target_width, target_height, 0.0f, -1.0f, 1.0f, ubo_data.projection);
+        SIT_RETURN_IF_ERR(_SitVulkanFillOrthoProjection2D(target_width, target_height, ubo_data.projection));
         memcpy(sit_render.vk.view_proj_ubo_mapped[sit_render.vk.current_frame_index], &ubo_data, sizeof(ViewDataUBO));
     }
 
     vkCmdBeginRenderPass((VkCommandBuffer)cmd, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 
-    VkViewport viewport = {0};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = (float)render_pass_info.renderArea.extent.width;
-    viewport.height = (float)render_pass_info.renderArea.extent.height;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
+    VkViewport viewport;
+    _SitVulkanFillViewport2DOpenGLParity((float)render_pass_info.renderArea.extent.width,
+                                         (float)render_pass_info.renderArea.extent.height, &viewport);
     vkCmdSetViewport((VkCommandBuffer)cmd, 0, 1, &viewport);
 
     VkRect2D scissor = {0};
@@ -11539,9 +12708,123 @@ SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, co
     if (info->display_id < 0) {
         sit_render.vk.inside_main_swapchain_render_pass = true;
     }
+    sit_render.vk.inside_render_pass = true;
+    sit_render.vk.current_render_area = render_pass_info.renderArea;
 
     return SITUATION_SUCCESS;
 #endif
+}
+
+/**
+ * @brief Clears one or more active render-pass attachments.
+ *
+ * @details The command is valid only between `SituationCmdBeginRenderPass` and
+ *          `SituationCmdEndRenderPass`. Texture/image clears are intentionally
+ *          deferred to copy/transfer phases; this API targets the current
+ *          framebuffer attachments.
+ */
+SITAPI SituationError SituationCmdClear(SituationCommandBuffer cmd, uint32_t clear_flags, const SituationClearValue* clear_value) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd || !clear_value) return SITUATION_ERROR_INVALID_PARAM;
+
+    const uint32_t valid_flags = SIT_CLEAR_COLOR_BIT | SIT_CLEAR_DEPTH_BIT | SIT_CLEAR_STENCIL_BIT;
+    if (clear_flags == 0 || (clear_flags & ~valid_flags) != 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdClear: invalid clear flags.");
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    if (!buf->recording_render_pass_active) {
+        return SITUATION_ERROR_NO_RENDER_PASS_ACTIVE;
+    }
+    if (clear_flags & SIT_CLEAR_STENCIL_BIT) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+            "SituationCmdClear: OpenGL stencil attachment clears are not implemented yet.");
+    }
+
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_CLEAR, p);
+    p->args.clear.flags = clear_flags;
+    p->args.clear.value = *clear_value;
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_VULKAN)
+    if (!sit_render.vk.inside_render_pass) {
+        return SITUATION_ERROR_NO_RENDER_PASS_ACTIVE;
+    }
+    if (clear_flags & SIT_CLEAR_STENCIL_BIT) {
+        bool has_stencil = (sit_render.vk.depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+                            sit_render.vk.depth_format == VK_FORMAT_D24_UNORM_S8_UINT);
+        if (!has_stencil) {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+                "SituationCmdClear: active render pass has no stencil attachment.");
+        }
+    }
+
+    VkClearAttachment attachments[2];
+    uint32_t attachment_count = 0;
+
+    if (clear_flags & SIT_CLEAR_COLOR_BIT) {
+        VkClearAttachment* att = &attachments[attachment_count++];
+        memset(att, 0, sizeof(*att));
+        att->aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        att->colorAttachment = 0;
+        att->clearValue.color = (VkClearColorValue){{
+            clear_value->color.r / 255.0f,
+            clear_value->color.g / 255.0f,
+            clear_value->color.b / 255.0f,
+            clear_value->color.a / 255.0f
+        }};
+    }
+
+    VkImageAspectFlags ds_aspect = 0;
+    if (clear_flags & SIT_CLEAR_DEPTH_BIT) {
+        ds_aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
+    }
+    if (clear_flags & SIT_CLEAR_STENCIL_BIT) {
+        ds_aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+    }
+    if (ds_aspect != 0) {
+        VkClearAttachment* att = &attachments[attachment_count++];
+        memset(att, 0, sizeof(*att));
+        att->aspectMask = ds_aspect;
+        att->clearValue.depthStencil.depth = clear_value->depth;
+        att->clearValue.depthStencil.stencil = clear_value->stencil;
+    }
+
+    VkClearRect rect = {0};
+    rect.rect = sit_render.vk.current_render_area;
+    rect.baseArrayLayer = 0;
+    rect.layerCount = 1;
+    vkCmdClearAttachments((VkCommandBuffer)cmd, attachment_count, attachments, 1, &rect);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+SITAPI SituationError SituationCmdClearColor(SituationCommandBuffer cmd, ColorRGBA color) {
+    SituationClearValue value = {0};
+    value.color = color;
+    return SituationCmdClear(cmd, SIT_CLEAR_COLOR_BIT, &value);
+}
+
+SITAPI SituationError SituationCmdClearDepth(SituationCommandBuffer cmd, float depth) {
+    SituationClearValue value = {0};
+    value.depth = depth;
+    return SituationCmdClear(cmd, SIT_CLEAR_DEPTH_BIT, &value);
+}
+
+SITAPI SituationError SituationCmdClearStencil(SituationCommandBuffer cmd, uint32_t stencil) {
+    SituationClearValue value = {0};
+    value.stencil = stencil;
+    return SituationCmdClear(cmd, SIT_CLEAR_STENCIL_BIT, &value);
+}
+
+SITAPI SituationError SituationCmdClearDepthStencil(SituationCommandBuffer cmd, float depth, uint32_t stencil) {
+    SituationClearValue value = {0};
+    value.depth = depth;
+    value.stencil = stencil;
+    return SituationCmdClear(cmd, SIT_CLEAR_DEPTH_BIT | SIT_CLEAR_STENCIL_BIT, &value);
 }
 
 /**
@@ -11579,6 +12862,7 @@ SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
     #endif
     
     SitCommandPacket* _sit_pkt_ = NULL; SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_END_RENDER_PASS, _sit_pkt_);
+    buf->recording_render_pass_active = false;
     
     #ifdef SITUATION_OPENGL_DEBUG
     printf("[OpenGL Debug] SituationCmdEndRenderPass: SUCCESS, returning\n");
@@ -11586,8 +12870,11 @@ SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd) {
     #endif
 #elif defined(SITUATION_USE_VULKAN)
     if (cmd == 0) return SITUATION_ERROR_INVALID_PARAM; // Basic validation
+    if (!sit_render.vk.inside_render_pass) return SITUATION_ERROR_NO_RENDER_PASS_ACTIVE;
     vkCmdEndRenderPass((VkCommandBuffer)cmd);
     sit_render.vk.inside_main_swapchain_render_pass = false;
+    sit_render.vk.inside_render_pass = false;
+    sit_render.vk.current_render_area = (VkRect2D){0};
 #endif
     return SITUATION_SUCCESS;
 }
@@ -11623,6 +12910,135 @@ SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
     return SituationCmdEndRenderPass(cmd);
 }
 
+#if defined(SITUATION_USE_OPENGL) || defined(SITUATION_USE_VULKAN)
+static int _SituationGetMaxViewports(void) {
+    if (!SituationIsInitialized()) {
+        return 0;
+    }
+#if defined(SITUATION_USE_OPENGL)
+    GLint max_vp = 1;
+    glGetIntegerv(GL_MAX_VIEWPORTS, &max_vp);
+    return (max_vp >= 1) ? (int)max_vp : 1;
+#elif defined(SITUATION_USE_VULKAN)
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(sit_render.vk.physical_device, &props);
+    int max_vp = (int)props.limits.maxViewports;
+    return (max_vp >= 1) ? max_vp : 1;
+#endif
+}
+
+static SituationError _SituationValidateViewportScissorIndex(uint32_t index, const char* caller) {
+    int max_vp = _SituationGetMaxViewports();
+    if (max_vp <= 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED,
+            "Cannot set viewport/scissor before renderer initialization.");
+    }
+    if ((int)index >= max_vp) {
+        char detail[160];
+        snprintf(detail, sizeof(detail),
+            "%s: index %u exceeds max_viewports (%d).", caller, index, max_vp);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, detail);
+    }
+    return SITUATION_SUCCESS;
+}
+#endif
+
+/**
+ * @brief Sets the viewport at a given index for subsequent drawing commands.
+ */
+SITAPI SituationError SituationCmdSetViewportIndexed(SituationCommandBuffer cmd, uint32_t index, float x, float y, float width, float height) {
+    if (!SituationIsInitialized()) {
+        return SITUATION_ERROR_NOT_INITIALIZED;
+    }
+    if (!cmd) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    if (width <= 0.0f || height <= 0.0f) {
+        char error_msg[128];
+        snprintf(error_msg, sizeof(error_msg),
+                 "Invalid viewport dimensions: width=%.2f, height=%.2f. Dimensions must be positive.", width, height);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, error_msg);
+    }
+    SIT_RETURN_IF_ERR(_SituationValidateViewportScissorIndex(index, "SituationCmdSetViewportIndexed"));
+
+#if defined(SITUATION_USE_OPENGL)
+    {
+        SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+        SitCommandPacket* p = NULL;
+        SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_VIEWPORT, p);
+        if (p) {
+            p->args.viewport.index = index;
+            p->args.viewport.x = x;
+            p->args.viewport.y = y;
+            p->args.viewport.w = width;
+            p->args.viewport.h = height;
+        } else {
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+    }
+#elif defined(SITUATION_USE_VULKAN)
+    {
+        if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+                "Invalid command buffer for SituationCmdSetViewportIndexed.");
+        }
+        VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+        VkViewport viewport = {};
+        viewport.x = x;
+        viewport.y = y;
+        viewport.width = width;
+        viewport.height = height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(vk_cmd, index, 1, &viewport);
+    }
+#endif
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Sets the scissor rectangle at a given index.
+ */
+SITAPI SituationError SituationCmdSetScissorIndexed(SituationCommandBuffer cmd, uint32_t index, int x, int y, int width, int height) {
+    if (!SituationIsInitialized()) {
+        return SITUATION_ERROR_NOT_INITIALIZED;
+    }
+    if (!cmd) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    if (width < 0 || height < 0) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    SIT_RETURN_IF_ERR(_SituationValidateViewportScissorIndex(index, "SituationCmdSetScissorIndexed"));
+
+#if defined(SITUATION_USE_OPENGL)
+    {
+        SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+        SitCommandPacket* p = NULL;
+        SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_SCISSOR, p);
+        if (p) {
+            p->args.scissor.index = index;
+            p->args.scissor.x = x;
+            p->args.scissor.y = y;
+            p->args.scissor.w = width;
+            p->args.scissor.h = height;
+        } else {
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+    }
+#elif defined(SITUATION_USE_VULKAN)
+    {
+        VkRect2D scissor = {};
+        scissor.offset.x = x;
+        scissor.offset.y = y;
+        scissor.extent.width = (uint32_t)width;
+        scissor.extent.height = (uint32_t)height;
+        vkCmdSetScissor((VkCommandBuffer)cmd, index, 1, &scissor);
+    }
+#endif
+    return SITUATION_SUCCESS;
+}
+
 /**
  * @brief Sets the viewport and scissor rectangle for subsequent drawing commands.
  *
@@ -11652,83 +13068,15 @@ SITAPI SituationError SituationCmdEndRender(SituationCommandBuffer cmd) {
  * @warning Providing a `width` or `height` of zero or negative values results in undefined behavior or errors, depending on the backend and driver.
  */
 SITAPI SituationError SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height) {
-    // --- 1. Input Validation ---
-    if (!SituationIsInitialized()) {
-        return SITUATION_ERROR_NOT_INITIALIZED;
+    SituationError err = SituationCmdSetViewportIndexed(cmd, 0, x, y, width, height);
+    if (err != SITUATION_SUCCESS) {
+        return err;
     }
-    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
-
-    // While viewport dimensions *can* technically be negative in OpenGL spec,
-    // it's highly unusual and often indicates an error.
-    // Width and Height should almost always be positive.
-    if (width <= 0.0f || height <= 0.0f) {
-        // Even though function is void, setting an error state can be useful for debugging.
-        char error_msg[128];
-        snprintf(error_msg, sizeof(error_msg),
-                 "Invalid viewport dimensions: width=%.2f, height=%.2f. Dimensions must be positive.", width, height);
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, error_msg);
-        return SITUATION_ERROR_INVALID_PARAM;
-    }
-
-#if defined(SITUATION_USE_OPENGL)
-    {
-        SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-        SitCommandPacket* p = NULL;
-    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_VIEWPORT, p);
-        if (p) {
-            p->args.viewport.x = x;
-            p->args.viewport.y = y;
-            p->args.viewport.w = width;
-            p->args.viewport.h = height;
-        } else {
-            return SITUATION_ERROR_MEMORY_ALLOCATION;
-        }
-    }
-
-#elif defined(SITUATION_USE_VULKAN)
-    {
-        // --- 2. Vulkan Input Validation ---
-        if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for setting viewport.");
-            return SITUATION_ERROR_INVALID_PARAM;
-        }
-        VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-
-        // --- 3. Vulkan Implementation ---
-        // Define the VkViewport structure.
-        VkViewport viewport = {}; // Explicitly zero-initialize padding
-        viewport.x = x;
-        viewport.y = y; // Vulkan Y=0 is top
-        viewport.width = width;
-        viewport.height = height;
-        viewport.minDepth = 0.0f; // Standard near plane depth
-        viewport.maxDepth = 1.0f; // Standard far plane depth
-
-        // Record the command to set the viewport.
-        // Assumes the pipeline has VK_DYNAMIC_STATE_VIEWPORT enabled.
-        vkCmdSetViewport(vk_cmd, 0, 1, &viewport);
-
-        // Define the VkRect2D structure for the scissor.
-        // It's common practice to set scissor to match the viewport.
-        VkRect2D scissor = {}; // Explicitly zero-initialize
-        scissor.offset.x = (int32_t)x;
-        scissor.offset.y = (int32_t)y;
-        // VkExtent2D uses uint32_t, so width/height are cast.
-        // Negative width/height were checked earlier.
-        scissor.extent.width = (uint32_t)width;
-        scissor.extent.height = (uint32_t)height;
-
-        // Record the command to set the scissor.
-        // Assumes the pipeline has VK_DYNAMIC_STATE_SCISSOR enabled.
-        vkCmdSetScissor(vk_cmd, 0, 1, &scissor);
-
-        // Note: vkCmdSetViewport/vkCmdSetScissor don't return VkResult.
-        // Errors are validation layer reports or submission issues.
-    }
-#endif
-    // --- 4. Post-Operation ---
-    // No general post-operation actions are required here.
+#if defined(SITUATION_USE_VULKAN)
+    return SituationCmdSetScissorIndexed(cmd, 0, (int)x, (int)y, (int)width, (int)height);
+#else
     return SITUATION_SUCCESS;
+#endif
 }
 
 /**
@@ -11739,42 +13087,409 @@ SITAPI SituationError SituationCmdSetViewport(SituationCommandBuffer cmd, float 
  * @param width, height The dimensions of the scissor rectangle, in pixels.
  */
 SITAPI SituationError SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height) {
-    // Basic validation: A scissor rectangle cannot have a negative size.
-    if (!SituationIsInitialized() || width < 0 || height < 0) {
-        return (width < 0 || height < 0) ? SITUATION_ERROR_INVALID_PARAM : SITUATION_ERROR_NOT_INITIALIZED;
+    return SituationCmdSetScissorIndexed(cmd, 0, x, y, width, height);
+}
+
+#if defined(SITUATION_USE_VULKAN)
+static VkPipeline _SitVulkanBasePipelineForStride(_SituationShaderSlot* shader_slot, size_t stride) {
+    if (!shader_slot) return VK_NULL_HANDLE;
+    VkPipeline base = shader_slot->vk_pipeline;
+    if (stride <= 3 * sizeof(float) && shader_slot->vk_pipeline_simple != VK_NULL_HANDLE) {
+        base = shader_slot->vk_pipeline_simple;
+    } else if (stride <= (3 + 3 + 2) * sizeof(float) && shader_slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
+        base = shader_slot->vk_pipeline_legacy;
     }
+    return base;
+}
 
-#if defined(SITUATION_USE_OPENGL)
-    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = NULL;
-    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_SCISSOR, p);
-    if (p) {
-        p->args.scissor.x = x;
-        p->args.scissor.y = y;
-        p->args.scissor.w = width;
-        p->args.scissor.h = height;
-    } else {
-        return SITUATION_ERROR_MEMORY_ALLOCATION;
+static VkPipeline _SitVulkanSelectRasterVariant(_SituationShaderSlot* shader_slot, VkPipeline base_pipeline) {
+    if (!shader_slot || base_pipeline == VK_NULL_HANDLE) return base_pipeline;
+    if (sit_render.vk.dynamic_cull_mode != VK_CULL_MODE_BACK_BIT) return base_pipeline;
+    bool ccw = (sit_render.vk.dynamic_front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+
+    VkPipeline variant = base_pipeline;
+    if (base_pipeline == shader_slot->vk_pipeline) {
+        variant = ccw ? shader_slot->vk_pipeline_back_ccw : shader_slot->vk_pipeline_back_cw;
+    } else if (base_pipeline == shader_slot->vk_pipeline_legacy) {
+        variant = ccw ? shader_slot->vk_pipeline_legacy_back_ccw : shader_slot->vk_pipeline_legacy_back_cw;
+    } else if (base_pipeline == shader_slot->vk_pipeline_simple) {
+        variant = ccw ? shader_slot->vk_pipeline_simple_back_ccw : shader_slot->vk_pipeline_simple_back_cw;
     }
+    return (variant != VK_NULL_HANDLE) ? variant : base_pipeline;
+}
 
-#elif defined(SITUATION_USE_VULKAN)
-    // In Vulkan, this is a command recorded into the command buffer.
+static VkPipeline _SitVulkanSelectPolygonVariant(_SituationShaderSlot* shader_slot, VkPipeline base_pipeline) {
+    if (!shader_slot || base_pipeline == VK_NULL_HANDLE) return base_pipeline;
+    if (sit_render.vk.dynamic_polygon_mode != VK_POLYGON_MODE_LINE) return base_pipeline;
+    if ((base_pipeline == shader_slot->vk_pipeline || base_pipeline == shader_slot->vk_pipeline_back_ccw ||
+         base_pipeline == shader_slot->vk_pipeline_back_cw) &&
+        shader_slot->vk_pipeline_line != VK_NULL_HANDLE) {
+        return shader_slot->vk_pipeline_line;
+    }
+    if ((base_pipeline == shader_slot->vk_pipeline_legacy || base_pipeline == shader_slot->vk_pipeline_legacy_back_ccw ||
+         base_pipeline == shader_slot->vk_pipeline_legacy_back_cw) &&
+        shader_slot->vk_pipeline_legacy_line != VK_NULL_HANDLE) {
+        return shader_slot->vk_pipeline_legacy_line;
+    }
+    if ((base_pipeline == shader_slot->vk_pipeline_simple || base_pipeline == shader_slot->vk_pipeline_simple_back_ccw ||
+         base_pipeline == shader_slot->vk_pipeline_simple_back_cw) &&
+        shader_slot->vk_pipeline_simple_line != VK_NULL_HANDLE) {
+        return shader_slot->vk_pipeline_simple_line;
+    }
+    return base_pipeline;
+}
 
-    // 1. Create the VkRect2D structure that Vulkan expects.
-    VkRect2D scissor = {};
-    scissor.offset.x = x;
-    scissor.offset.y = y;
-    scissor.extent.width = (uint32_t)width;
-    scissor.extent.height = (uint32_t)height;
-
-    // 2. Record the command.
-    // vkCmdSetScissor takes an array of scissor rectangles. We are only setting the
-    // first one (at index 0).
-    vkCmdSetScissor((VkCommandBuffer)cmd, 0, 1, &scissor);
-
+static VkPipeline _SitVulkanResolveGraphicsPipeline(_SituationShaderSlot* shader_slot, size_t stride) {
+    VkPipeline base = _SitVulkanBasePipelineForStride(shader_slot, stride);
+    VkPipeline after_poly = _SitVulkanSelectPolygonVariant(shader_slot, base);
+    VkPipeline resolved = after_poly;
+    if (sit_render.vk.dynamic_polygon_mode == VK_POLYGON_MODE_FILL) {
+        resolved = _SitVulkanSelectRasterVariant(shader_slot, after_poly);
+    }
+#if !defined(NDEBUG)
+    sit_render.vk.raster_pipeline_resolve_count++;
+    if (after_poly != base) {
+        sit_render.vk.raster_polygon_variant_hits++;
+    }
+    if (resolved != after_poly) {
+        sit_render.vk.raster_cull_front_variant_hits++;
+    }
 #endif
+#if !defined(NDEBUG)
+    if (shader_slot && base != VK_NULL_HANDLE) {
+        assert(resolved != VK_NULL_HANDLE);
+    }
+#endif
+    return resolved;
+}
+
+static VkPrimitiveTopology _SitVulkanGetCurrentPrimitiveTopology(void) {
+    if (!sit_render.vk.dynamic_primitive_topology_initialized) {
+        sit_render.vk.dynamic_primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        sit_render.vk.dynamic_primitive_topology_initialized = true;
+    }
+    return sit_render.vk.dynamic_primitive_topology;
+}
+
+static bool _SitVulkanGraphicsDynamicProcsReady(void) {
+    return sit_render.vk.extended_dynamic_state_enabled
+        && sit_render.vk.pfn_cmd_set_primitive_topology
+        && sit_render.vk.pfn_cmd_set_depth_test_enable
+        && sit_render.vk.pfn_cmd_set_depth_write_enable
+        && sit_render.vk.pfn_cmd_set_depth_compare_op;
+}
+
+static void _SitVulkanCmdSetDepthDynamics(
+    VkCommandBuffer vk_cmd, VkBool32 test_enable, VkBool32 write_enable, VkCompareOp compare_op) {
+    if (!_SitVulkanGraphicsDynamicProcsReady() || vk_cmd == VK_NULL_HANDLE) return;
+    sit_render.vk.pfn_cmd_set_depth_test_enable(vk_cmd, test_enable);
+    sit_render.vk.pfn_cmd_set_depth_write_enable(vk_cmd, write_enable);
+    sit_render.vk.pfn_cmd_set_depth_compare_op(vk_cmd, compare_op);
+}
+
+static void _SitVulkanApplyQuadDrawDynamicState(VkCommandBuffer vk_cmd) {
+    if (vk_cmd == VK_NULL_HANDLE) return;
+    _SitVulkanApply2DViewportScissor(vk_cmd);
+    if (_SitVulkanGraphicsDynamicProcsReady()) {
+        sit_render.vk.pfn_cmd_set_primitive_topology(vk_cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+    }
+    _SitVulkanCmdSetDepthDynamics(vk_cmd, VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL);
+}
+
+/** VD compositor draws a triangle strip; caller/user draws often leave TRIANGLE_LIST dynamic state. */
+static void _SitVulkanApplyVDCompositingDynamicState(VkCommandBuffer vk_cmd, float vp_w, float vp_h) {
+    if (vk_cmd == VK_NULL_HANDLE) return;
+    if (vp_w < 1.0f) vp_w = 1.0f;
+    if (vp_h < 1.0f) vp_h = 1.0f;
+    VkViewport vp;
+    _SitVulkanFillViewport2DOpenGLParity(vp_w, vp_h, &vp);
+    VkRect2D sc = {{0, 0}, {(uint32_t)vp_w, (uint32_t)vp_h}};
+    vkCmdSetViewport(vk_cmd, 0, 1, &vp);
+    vkCmdSetScissor(vk_cmd, 0, 1, &sc);
+    if (_SitVulkanGraphicsDynamicProcsReady()) {
+        sit_render.vk.pfn_cmd_set_primitive_topology(vk_cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+        sit_render.vk.pfn_cmd_set_depth_test_enable(vk_cmd, VK_FALSE);
+        sit_render.vk.pfn_cmd_set_depth_write_enable(vk_cmd, VK_FALSE);
+    }
+}
+
+static void _SitVulkanApplyGraphicsViewportScissor(VkCommandBuffer vk_cmd) {
+    if (vk_cmd == VK_NULL_HANDLE) return;
+    VkExtent2D extent = sit_render.vk.current_render_area.extent;
+    if (extent.width == 0 || extent.height == 0) {
+        extent = sit_render.vk.swapchain_extent;
+    }
+    if (extent.width == 0 || extent.height == 0) return;
+    VkViewport vp = {0.0f, 0.0f, (float)extent.width, (float)extent.height, 0.0f, 1.0f};
+    VkRect2D sc = {{0, 0}, extent};
+    vkCmdSetViewport(vk_cmd, 0, 1, &vp);
+    vkCmdSetScissor(vk_cmd, 0, 1, &sc);
+}
+
+static VkCompareOp _SitVulkanMapCompareOp(SituationDepthCompareOp op) {
+    switch (op) {
+        case SIT_DEPTH_COMPARE_ALWAYS:   return VK_COMPARE_OP_ALWAYS;
+        case SIT_DEPTH_COMPARE_LESS:     return VK_COMPARE_OP_LESS;
+        case SIT_DEPTH_COMPARE_LEQUAL:   return VK_COMPARE_OP_LESS_OR_EQUAL;
+        case SIT_DEPTH_COMPARE_GREATER:  return VK_COMPARE_OP_GREATER;
+        case SIT_DEPTH_COMPARE_GEQUAL:   return VK_COMPARE_OP_GREATER_OR_EQUAL;
+        case SIT_DEPTH_COMPARE_EQUAL:    return VK_COMPARE_OP_EQUAL;
+        case SIT_DEPTH_COMPARE_NOTEQUAL: return VK_COMPARE_OP_NOT_EQUAL;
+        case SIT_DEPTH_COMPARE_NEVER:    return VK_COMPARE_OP_NEVER;
+        default:                         return VK_COMPARE_OP_LESS;
+    }
+}
+
+static VkStencilOp _SitVulkanMapStencilOp(SituationStencilOp op) {
+    switch (op) {
+        case SIT_STENCIL_OP_ZERO:              return VK_STENCIL_OP_ZERO;
+        case SIT_STENCIL_OP_REPLACE:           return VK_STENCIL_OP_REPLACE;
+        case SIT_STENCIL_OP_INCREMENT_CLAMP:   return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+        case SIT_STENCIL_OP_DECREMENT_CLAMP:   return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+        case SIT_STENCIL_OP_INVERT:            return VK_STENCIL_OP_INVERT;
+        case SIT_STENCIL_OP_INCREMENT_WRAP:    return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+        case SIT_STENCIL_OP_DECREMENT_WRAP:    return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+        case SIT_STENCIL_OP_KEEP:
+        default:                               return VK_STENCIL_OP_KEEP;
+    }
+}
+
+static bool _SitVulkanHasStencilAttachment(void) {
+    return sit_render.vk.depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+           sit_render.vk.depth_format == VK_FORMAT_D24_UNORM_S8_UINT;
+}
+
+static void _SitVulkanApplyStencilFaceDynamics(VkCommandBuffer vk_cmd, VkStencilFaceFlags face,
+                                               const SituationStencilState* state) {
+    if (vk_cmd == VK_NULL_HANDLE || !state || !sit_render.vk.pfn_cmd_set_stencil_op) {
+        return;
+    }
+    vkCmdSetStencilCompareMask(vk_cmd, face, state->compare_mask);
+    vkCmdSetStencilWriteMask(vk_cmd, face, state->write_mask);
+    vkCmdSetStencilReference(vk_cmd, face, state->reference);
+    sit_render.vk.pfn_cmd_set_stencil_op(vk_cmd, face,
+        _SitVulkanMapStencilOp(state->fail_op),
+        _SitVulkanMapStencilOp(state->pass_op),
+        _SitVulkanMapStencilOp(state->depth_fail_op),
+        _SitVulkanMapCompareOp(state->compare_op));
+}
+
+static void _SitVulkanApplyTrackedExtendedRasterDynamics(VkCommandBuffer vk_cmd) {
+    if (vk_cmd == VK_NULL_HANDLE) return;
+    if (sit_render.vk.extended_dynamic_state3_color_write_enabled &&
+        sit_render.vk.pfn_cmd_set_color_write_mask_ext) {
+        VkColorComponentFlags mask = sit_render.vk.dynamic_color_write_mask;
+        sit_render.vk.pfn_cmd_set_color_write_mask_ext(vk_cmd, 0, 1, &mask);
+    }
+    vkCmdSetLineWidth(vk_cmd, sit_render.vk.dynamic_line_width);
+    if (_SitVulkanGraphicsDynamicProcsReady()) {
+        _SitVulkanCmdSetDepthDynamics(vk_cmd,
+            sit_render.vk.dynamic_depth_test_enable,
+            sit_render.vk.dynamic_depth_write_enable,
+            sit_render.vk.dynamic_depth_compare_op);
+    }
+    if (sit_render.vk.pfn_cmd_set_stencil_test_enable) {
+        sit_render.vk.pfn_cmd_set_stencil_test_enable(vk_cmd, sit_render.vk.dynamic_stencil_test_enable);
+        if (sit_render.vk.dynamic_stencil_test_enable &&
+            sit_render.vk.pfn_cmd_set_stencil_op) {
+            _SitVulkanApplyStencilFaceDynamics(vk_cmd, VK_STENCIL_FACE_FRONT_BIT, &sit_render.vk.dynamic_stencil_front);
+            _SitVulkanApplyStencilFaceDynamics(vk_cmd, VK_STENCIL_FACE_BACK_BIT, &sit_render.vk.dynamic_stencil_back);
+        }
+    }
+}
+
+static void _SitVulkanCaptureRasterState(_SitVulkanRasterStackEntry* entry) {
+    if (!entry) return;
+    entry->color_write_mask = sit_render.vk.dynamic_color_write_mask;
+    entry->depth_test_enable = sit_render.vk.dynamic_depth_test_enable;
+    entry->depth_write_enable = sit_render.vk.dynamic_depth_write_enable;
+    entry->depth_compare_op = sit_render.vk.dynamic_depth_compare_op;
+    entry->stencil_test_enable = sit_render.vk.dynamic_stencil_test_enable;
+    entry->stencil_front = sit_render.vk.dynamic_stencil_front;
+    entry->stencil_back = sit_render.vk.dynamic_stencil_back;
+    entry->line_width = sit_render.vk.dynamic_line_width;
+    entry->cull_mode = sit_render.vk.dynamic_cull_mode;
+    entry->front_face = sit_render.vk.dynamic_front_face;
+    entry->depth_bias_enable = sit_render.vk.dynamic_depth_bias_enable;
+    entry->depth_bias_constant = sit_render.vk.dynamic_depth_bias_constant;
+    entry->depth_bias_clamp = sit_render.vk.dynamic_depth_bias_clamp;
+    entry->depth_bias_slope = sit_render.vk.dynamic_depth_bias_slope;
+}
+
+static void _SitVulkanApplyTrackedRasterDynamics(VkCommandBuffer vk_cmd) {
+    if (vk_cmd == VK_NULL_HANDLE) return;
+    _SitVulkanApplyGraphicsViewportScissor(vk_cmd);
+    if (sit_render.vk.pfn_cmd_set_primitive_topology) {
+        sit_render.vk.pfn_cmd_set_primitive_topology(vk_cmd, _SitVulkanGetCurrentPrimitiveTopology());
+    }
+    /* When VK_DYNAMIC_STATE_POLYGON_MODE_EXT is in the pipeline, static POLYGON_MODE_LINE
+     * in vk_pipeline_*_line variants is ignored — must record mode every draw. */
+    if (sit_render.vk.extended_dynamic_state3_polygon_mode_enabled && sit_render.vk.pfn_cmd_set_polygon_mode_ext) {
+        sit_render.vk.pfn_cmd_set_polygon_mode_ext(vk_cmd, sit_render.vk.dynamic_polygon_mode);
+    }
+    if (sit_render.vk.depth_bias_dynamic_enabled && sit_render.vk.pfn_cmd_set_depth_bias_enable) {
+        sit_render.vk.pfn_cmd_set_depth_bias_enable(vk_cmd, sit_render.vk.dynamic_depth_bias_enable);
+        if (sit_render.vk.dynamic_depth_bias_enable && sit_render.vk.pfn_cmd_set_depth_bias) {
+            sit_render.vk.pfn_cmd_set_depth_bias(vk_cmd,
+                sit_render.vk.dynamic_depth_bias_constant,
+                sit_render.vk.dynamic_depth_bias_clamp,
+                sit_render.vk.dynamic_depth_bias_slope);
+        }
+    }
+    _SitVulkanApplyTrackedExtendedRasterDynamics(vk_cmd);
+}
+
+static SituationError _SitVulkanEnsureGraphicsPipelineBound(VkCommandBuffer vk_cmd, _SituationShaderSlot* shader_slot, size_t stride) {
+    if (vk_cmd == VK_NULL_HANDLE) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+            "_SitVulkanEnsureGraphicsPipelineBound: command buffer cannot be NULL.");
+    }
+    if (!shader_slot) {
+        return SITUATION_SUCCESS;
+    }
+    VkPipeline selected = _SitVulkanResolveGraphicsPipeline(shader_slot, stride);
+    if (selected == VK_NULL_HANDLE) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED,
+            "_SitVulkanEnsureGraphicsPipelineBound: no graphics pipeline variant for bound shader.");
+    }
+    if (selected != sit_render.vk.current_pbr_pipeline) {
+#if !defined(NDEBUG)
+        sit_render.vk.raster_pipeline_rebind_count++;
+#endif
+        vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, selected);
+        sit_render.vk.current_pbr_pipeline = selected;
+    }
+    /* Always re-apply dynamics: vkCmdBindPipeline does not preserve dynamic polygon/topology/bias. */
+    _SitVulkanApplyTrackedRasterDynamics(vk_cmd);
     return SITUATION_SUCCESS;
 }
+
+static void _SitVulkanApplyRasterState(VkCommandBuffer vk_cmd, const _SitVulkanRasterStackEntry* entry) {
+    if (!entry || vk_cmd == VK_NULL_HANDLE) return;
+    sit_render.vk.dynamic_color_write_mask = entry->color_write_mask;
+    sit_render.vk.dynamic_depth_test_enable = entry->depth_test_enable;
+    sit_render.vk.dynamic_depth_write_enable = entry->depth_write_enable;
+    sit_render.vk.dynamic_depth_compare_op = entry->depth_compare_op;
+    sit_render.vk.dynamic_stencil_test_enable = entry->stencil_test_enable;
+    sit_render.vk.dynamic_stencil_front = entry->stencil_front;
+    sit_render.vk.dynamic_stencil_back = entry->stencil_back;
+    sit_render.vk.dynamic_line_width = entry->line_width;
+    sit_render.vk.dynamic_cull_mode = entry->cull_mode;
+    sit_render.vk.dynamic_front_face = entry->front_face;
+    sit_render.vk.dynamic_depth_bias_enable = entry->depth_bias_enable;
+    sit_render.vk.dynamic_depth_bias_constant = entry->depth_bias_constant;
+    sit_render.vk.dynamic_depth_bias_clamp = entry->depth_bias_clamp;
+    sit_render.vk.dynamic_depth_bias_slope = entry->depth_bias_slope;
+    if (sit_render.vk.current_bound_shader_slot) {
+        (void)_SitVulkanEnsureGraphicsPipelineBound(vk_cmd,
+            sit_render.vk.current_bound_shader_slot, sit_render.vk.current_graphics_vertex_stride);
+    } else {
+        _SitVulkanApplyTrackedRasterDynamics(vk_cmd);
+    }
+}
+
+static SituationError _SitVulkanValidateInternalQuadDrawReady(VkCommandBuffer vk_cmd, const char* caller) {
+    char detail[192];
+    if (!caller) {
+        caller = "Internal quad draw";
+    }
+    if (vk_cmd == VK_NULL_HANDLE) {
+        snprintf(detail, sizeof(detail), "%s: command buffer cannot be NULL.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, detail);
+    }
+    if (!sit_render.vk.inside_render_pass) {
+        snprintf(detail, sizeof(detail), "%s: no active render pass.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NO_RENDER_PASS_ACTIVE, detail);
+    }
+    if (sit_render.vk.quad_pipeline == VK_NULL_HANDLE || sit_render.vk.quad_pipeline_layout == VK_NULL_HANDLE) {
+        snprintf(detail, sizeof(detail), "%s: internal quad pipeline is not initialized.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, detail);
+    }
+    if (sit_render.vk.quad_vertex_buffer == VK_NULL_HANDLE) {
+        snprintf(detail, sizeof(detail), "%s: internal quad vertex buffer is not initialized.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, detail);
+    }
+    return SITUATION_SUCCESS;
+}
+
+static SituationError _SitVulkanValidateInternalTextDrawReady(VkCommandBuffer vk_cmd, const char* caller) {
+    char detail[192];
+    if (!caller) {
+        caller = "Internal text draw";
+    }
+    if (vk_cmd == VK_NULL_HANDLE) {
+        snprintf(detail, sizeof(detail), "%s: command buffer cannot be NULL.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, detail);
+    }
+    if (!sit_render.vk.inside_render_pass) {
+        snprintf(detail, sizeof(detail), "%s: no active render pass.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NO_RENDER_PASS_ACTIVE, detail);
+    }
+    if (sit_render.vk.text_pipeline == VK_NULL_HANDLE || sit_render.vk.text_pipeline_layout == VK_NULL_HANDLE) {
+        snprintf(detail, sizeof(detail), "%s: internal text pipeline is not initialized.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_PIPELINE_CREATION_FAILED, detail);
+    }
+    return SITUATION_SUCCESS;
+}
+#endif
+
+#if defined(SITUATION_USE_OPENGL)
+static SituationError _SituationGLValidateInternalQuadDrawReady(SituationGLSoftCommandBuffer* buf, const char* caller, bool require_recorded_render_pass) {
+    char detail[192];
+    if (!caller) {
+        caller = "Internal quad draw";
+    }
+    if (!buf) {
+        snprintf(detail, sizeof(detail), "%s: command buffer cannot be NULL.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, detail);
+    }
+    if (buf->is_broken) {
+        snprintf(detail, sizeof(detail), "%s: soft command buffer is broken (prior record failure).", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_BUFFER_FULL, detail);
+    }
+    if (require_recorded_render_pass && !buf->recording_render_pass_active) {
+        snprintf(detail, sizeof(detail), "%s: no active render pass.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NO_RENDER_PASS_ACTIVE, detail);
+    }
+    if (sit_render.gl.quad_shader_program == 0) {
+        snprintf(detail, sizeof(detail), "%s: internal quad shader is not initialized.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, detail);
+    }
+    if (sit_render.gl.quad_vao == 0 || sit_render.gl.quad_vbo == 0) {
+        snprintf(detail, sizeof(detail), "%s: internal quad geometry is not initialized.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, detail);
+    }
+    return SITUATION_SUCCESS;
+}
+
+static SituationError _SituationGLValidateInternalTextDrawReady(SituationGLSoftCommandBuffer* buf, const char* caller, bool require_recorded_render_pass) {
+    char detail[192];
+    if (!caller) {
+        caller = "Internal text draw";
+    }
+    if (!buf) {
+        snprintf(detail, sizeof(detail), "%s: command buffer cannot be NULL.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, detail);
+    }
+    if (buf->is_broken) {
+        snprintf(detail, sizeof(detail), "%s: soft command buffer is broken (prior record failure).", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_COMMAND_BUFFER_FULL, detail);
+    }
+    if (require_recorded_render_pass && !buf->recording_render_pass_active) {
+        snprintf(detail, sizeof(detail), "%s: no active render pass.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NO_RENDER_PASS_ACTIVE, detail);
+    }
+    if (sit_render.gl.text_shader_program == 0) {
+        snprintf(detail, sizeof(detail), "%s: internal text shader is not initialized.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, detail);
+    }
+    if (sit_render.gl.text_vao == 0 || sit_render.gl.text_vbo == 0) {
+        snprintf(detail, sizeof(detail), "%s: internal text geometry is not initialized.", caller);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, detail);
+    }
+    return SITUATION_SUCCESS;
+}
+#endif
 
 /**
  * @brief [Core] Binds a vertex buffer for subsequent draw calls.
@@ -11816,24 +13531,97 @@ SITAPI SituationError SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, u
 
     /* Match DrawMesh: pick pipeline variant from stride after BindPipeline (default vk_pipeline has no vertex input). */
     if (sit_render.vk.current_bound_shader_slot) {
-        _SituationShaderSlot* shader_slot = sit_render.vk.current_bound_shader_slot;
-        VkPipeline target_pipeline = shader_slot->vk_pipeline;
-
-        if (stride <= 3 * sizeof(float) && shader_slot->vk_pipeline_simple != VK_NULL_HANDLE) {
-            target_pipeline = shader_slot->vk_pipeline_simple;
-        } else if (stride <= (3 + 3 + 2) * sizeof(float) && shader_slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
-            target_pipeline = shader_slot->vk_pipeline_legacy;
-        }
-
-        if (target_pipeline != shader_slot->vk_pipeline) {
-            vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, target_pipeline);
-            sit_render.vk.current_pbr_pipeline = target_pipeline;
-        }
+        SIT_RETURN_IF_ERR(_SitVulkanEnsureGraphicsPipelineBound(vk_cmd, sit_render.vk.current_bound_shader_slot, stride));
     }
 
     VkBuffer vertex_buffers[] = { slot->vk_buffer };
     VkDeviceSize offsets[] = { (VkDeviceSize)offset };
     vkCmdBindVertexBuffers(vk_cmd, binding, 1, vertex_buffers, offsets);
+    sit_render.vk.current_graphics_vertex_stride = stride;
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+static size_t _SitIndexTypeElementSize(SituationIndexType index_type) {
+    return (index_type == SIT_INDEX_UINT16) ? sizeof(uint16_t) : sizeof(uint32_t);
+}
+
+#if defined(SITUATION_USE_OPENGL)
+static GLenum _SitGLIndexType(SituationIndexType index_type) {
+    return (index_type == SIT_INDEX_UINT16) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+}
+#elif defined(SITUATION_USE_VULKAN)
+static VkIndexType _SitVkIndexType(SituationIndexType index_type) {
+    return (index_type == SIT_INDEX_UINT16) ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+}
+#endif
+
+static SituationError _SituationValidateIndexBufferBind(SituationBuffer buffer, size_t offset, SituationIndexType index_type,
+                                                        _SituationBufferSlot** out_slot) {
+    if (index_type != SIT_INDEX_UINT16 && index_type != SIT_INDEX_UINT32) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid SituationIndexType.");
+    }
+
+    size_t align = _SitIndexTypeElementSize(index_type);
+    if ((offset % align) != 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+            "Index buffer offset must be aligned to the index element size (2 for UINT16, 4 for UINT32).");
+    }
+
+    _SituationBufferSlot* slot = _SitGetBufferSlot(buffer);
+    if (!slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdBindIndexBufferEx: invalid buffer handle");
+    }
+    if ((slot->usage_flags & SITUATION_BUFFER_USAGE_INDEX_BUFFER) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_USAGE,
+            "Index buffer missing SITUATION_BUFFER_USAGE_INDEX_BUFFER.");
+    }
+    if (offset > slot->size_in_bytes) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Index buffer offset is outside the buffer.");
+    }
+
+    *out_slot = slot;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief [Core] Binds an index buffer for subsequent indexed draw calls.
+ * @details Records index buffer binding with explicit 16- or 32-bit index element type.
+ *
+ * @param cmd The command buffer to record into.
+ * @param buffer Index buffer handle (`SITUATION_BUFFER_USAGE_INDEX_BUFFER`).
+ * @param offset Byte offset into the index buffer (must be aligned to index element size).
+ * @param index_type `SIT_INDEX_UINT16` or `SIT_INDEX_UINT32`.
+ */
+SITAPI SituationError SituationCmdBindIndexBufferEx(SituationCommandBuffer cmd, SituationBuffer buffer, size_t offset,
+                                                    SituationIndexType index_type) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+
+    _SituationBufferSlot* slot = NULL;
+    SituationError err = _SituationValidateIndexBufferBind(buffer, offset, index_type, &slot);
+    if (err != SITUATION_SUCCESS) return err;
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_BIND_INDEX_BUFFER, p);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    p->args.bind_ibo.buffer_id = (uint64_t)slot->gl_buffer_id;
+    p->args.bind_ibo.offset = offset;
+    p->args.bind_ibo.index_type = index_type;
+    return SITUATION_SUCCESS;
+
+#elif defined(SITUATION_USE_VULKAN)
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
+
+    VkIndexType vk_index_type = _SitVkIndexType(index_type);
+    vkCmdBindIndexBuffer(vk_cmd, slot->vk_buffer, (VkDeviceSize)offset, vk_index_type);
+    sit_render.vk.current_index_type = vk_index_type;
+    sit_render.vk.bound_ibo_index_element_size = _SitIndexTypeElementSize(index_type);
     return SITUATION_SUCCESS;
 #else
     return SITUATION_ERROR_NOT_IMPLEMENTED;
@@ -11841,45 +13629,10 @@ SITAPI SituationError SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, u
 }
 
 /**
- * @brief [Core] Binds an index buffer for subsequent indexed draw calls.
- * @details Records a command to set the active index buffer. Subsequent `SituationCmdDrawIndexed` calls use
- *          32-bit indices (`VK_INDEX_TYPE_UINT32` / `GL_UNSIGNED_INT`), matching `SituationCreateMesh`.
- *
- * @par Backend-Specific Behavior
- * - **OpenGL 4.6:** Records `glVertexArrayElementBuffer` on the global VAO (DSA). `offset` is added to the
- *   byte pointer passed to `glDrawElements*BaseVertex*` at draw time (same as Vulkan bind offset + `first_index`).
- * - **Vulkan 1.x:** Records `vkCmdBindIndexBuffer` with `offset` and `VK_INDEX_TYPE_UINT32`.
- *
- * @param cmd The command buffer to record into.
- * @param buffer Index buffer handle (`SITUATION_BUFFER_USAGE_INDEX_BUFFER` or mesh index buffer).
- * @param offset Byte offset into the index buffer (typically 0).
+ * @brief [Core] Binds a 32-bit index buffer (compatibility wrapper).
  */
 SITAPI SituationError SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer, size_t offset) {
-    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
-    _SituationBufferSlot* slot = _SitGetBufferSlot(buffer);
-    if (!slot) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdBindIndexBuffer: invalid buffer handle");
-        return SITUATION_ERROR_INVALID_RESOURCE_HANDLE;
-    }
-
-#if defined(SITUATION_USE_OPENGL)
-    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
-    SitCommandPacket* p = NULL;
-    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_BIND_INDEX_BUFFER, p);
-    p->args.bind_ibo.buffer_id = (uint64_t)slot->gl_buffer_id;
-    p->args.bind_ibo.offset = offset;
-    return SITUATION_SUCCESS;
-
-#elif defined(SITUATION_USE_VULKAN)
-    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
-    if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
-
-    vkCmdBindIndexBuffer(vk_cmd, slot->vk_buffer, (VkDeviceSize)offset, VK_INDEX_TYPE_UINT32);
-    return SITUATION_SUCCESS;
-#else
-    return SITUATION_ERROR_NOT_IMPLEMENTED;
-#endif
+    return SituationCmdBindIndexBufferEx(cmd, buffer, offset, SIT_INDEX_UINT32);
 }
 
 /**
@@ -11969,6 +13722,12 @@ SITAPI SituationError SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vert
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
     if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
+    if (!sit_render.vk.current_bound_shader_slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE,
+            "SituationCmdDraw: bind a graphics pipeline before drawing.");
+    }
+    SIT_RETURN_IF_ERR(_SitVulkanEnsureGraphicsPipelineBound(vk_cmd, sit_render.vk.current_bound_shader_slot, sit_render.vk.current_graphics_vertex_stride));
+    _SitVulkanApplyTrackedRasterDynamics(vk_cmd);
     vkCmdDraw(vk_cmd, vertex_count, instance_count, first_vertex, first_instance);
 #endif
     return SITUATION_SUCCESS;
@@ -12012,8 +13771,123 @@ SITAPI SituationError SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
     if (vk_cmd == VK_NULL_HANDLE) return SITUATION_ERROR_INVALID_PARAM;
+    if (!sit_render.vk.current_bound_shader_slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE,
+            "SituationCmdDrawIndexed: bind a graphics pipeline before drawing.");
+    }
+    SIT_RETURN_IF_ERR(_SitVulkanEnsureGraphicsPipelineBound(vk_cmd, sit_render.vk.current_bound_shader_slot, sit_render.vk.current_graphics_vertex_stride));
+    _SitVulkanApplyTrackedRasterDynamics(vk_cmd);
     vkCmdDrawIndexed(vk_cmd, index_count, instance_count, first_index, vertex_offset, first_instance);
 #endif
+    return SITUATION_SUCCESS;
+}
+
+static SituationError _SituationValidateIndirectDrawBuffer(SituationBuffer indirect_buffer, size_t offset, size_t command_size) {
+    if ((offset & 3u) != 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INDIRECT_COMMAND_INVALID,
+            "Indirect draw offset must be 4-byte aligned.");
+    }
+
+    _SituationBufferSlot* slot = _SitGetBufferSlot(indirect_buffer);
+    if (!slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE,
+            "Indirect draw buffer handle is invalid.");
+    }
+    if ((slot->usage_flags & SITUATION_BUFFER_USAGE_INDIRECT_BUFFER) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_USAGE,
+            "Indirect draw buffer missing SITUATION_BUFFER_USAGE_INDIRECT_BUFFER.");
+    }
+    if (offset > slot->size_in_bytes || slot->size_in_bytes - offset < command_size) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INDIRECT_COMMAND_INVALID,
+            "Indirect draw command range is outside the buffer.");
+    }
+    return SITUATION_SUCCESS;
+}
+
+static SituationError _SituationCmdDrawIndirectRecord(SituationCommandBuffer cmd,
+                                                      SituationBuffer indirect_buffer,
+                                                      size_t offset,
+                                                      size_t command_size,
+                                                      bool indexed_draw) {
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Indirect draw: library not initialized.");
+    }
+    if (!cmd) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Indirect draw: cmd cannot be NULL.");
+    }
+
+    SituationError err = _SituationValidateIndirectDrawBuffer(indirect_buffer, offset, command_size);
+    if (err != SITUATION_SUCCESS) {
+        return err;
+    }
+
+    _SituationBufferSlot* slot = _SitGetBufferSlot(indirect_buffer);
+    if (!slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "Indirect draw buffer handle is invalid.");
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    if (!buf->recording_render_pass_active) {
+        return SITUATION_ERROR_NO_RENDER_PASS_ACTIVE;
+    }
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, indexed_draw ? SIT_OP_DRAW_INDEXED_INDIRECT : SIT_OP_DRAW_INDIRECT, p);
+    if (!p) {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+    if (!indexed_draw) {
+        p->args.draw_indirect.buffer_id = (uint64_t)slot->gl_buffer_id;
+        p->args.draw_indirect.offset = offset;
+    } else {
+        p->args.draw_indexed_indirect.buffer_id = (uint64_t)slot->gl_buffer_id;
+        p->args.draw_indexed_indirect.offset = offset;
+    }
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_VULKAN)
+    if (!sit_render.vk.inside_render_pass) {
+        return SITUATION_ERROR_NO_RENDER_PASS_ACTIVE;
+    }
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    if (!sit_render.vk.current_bound_shader_slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE,
+            "Indirect draw: bind a graphics pipeline before drawing.");
+    }
+    SIT_RETURN_IF_ERR(_SitVulkanEnsureGraphicsPipelineBound(vk_cmd, sit_render.vk.current_bound_shader_slot, sit_render.vk.current_graphics_vertex_stride));
+    _SitVulkanApplyTrackedRasterDynamics(vk_cmd);
+    if (!indexed_draw) {
+        vkCmdDrawIndirect(vk_cmd, slot->vk_buffer, (VkDeviceSize)offset, 1, (uint32_t)sizeof(SituationDrawIndirectCommand));
+    } else {
+        vkCmdDrawIndexedIndirect(vk_cmd, slot->vk_buffer, (VkDeviceSize)offset, 1, (uint32_t)sizeof(SituationDrawIndexedIndirectCommand));
+    }
+    return SITUATION_SUCCESS;
+#else
+    (void)indexed_draw;
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+SITAPI SituationError SituationCmdDrawIndirect(SituationCommandBuffer cmd, SituationBuffer indirect_buffer, size_t offset) {
+    SituationError err = _SituationCmdDrawIndirectRecord(cmd, indirect_buffer, offset,
+        sizeof(SituationDrawIndirectCommand), false);
+    if (err != SITUATION_SUCCESS) {
+        return err;
+    }
+
+    sit_render.debug_draw_command_issued_this_frame = true;
+    sit_render.frame_draw_calls++;
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdDrawIndexedIndirect(SituationCommandBuffer cmd, SituationBuffer indirect_buffer, size_t offset) {
+    SituationError err = _SituationCmdDrawIndirectRecord(cmd, indirect_buffer, offset,
+        sizeof(SituationDrawIndexedIndirectCommand), true);
+    if (err != SITUATION_SUCCESS) {
+        return err;
+    }
+
+    sit_render.debug_draw_command_issued_this_frame = true;
+    sit_render.frame_draw_calls++;
     return SITUATION_SUCCESS;
 }
 
@@ -12036,7 +13910,7 @@ SITAPI SituationError SituationCmdDrawText(SituationCommandBuffer cmd, Situation
 }
 
 /**
- * @brief Draws a text string using GPU-accelerated textured quads with extended styling.
+ * @brief Draws a text string using GPU-accelerated textured quads.
  * @details Records a batch of draw commands to render text using the internal text renderer pipeline.
  *          This function supports custom font sizing and character spacing adjustments at runtime.
  *
@@ -12084,6 +13958,7 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
 #if defined(SITUATION_USE_OPENGL)
     // --- OPENGL PATH (Standard Soft Buffer) ---
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SIT_RETURN_IF_ERR(_SituationGLValidateInternalTextDrawReady(buf, "SituationCmdDrawTextEx", true));
     void* text_ptr = NULL;
     SIT_GL_SOFT_DATA_PUSH(buf, text, len + 1, text_ptr);
     size_t text_offset = (size_t)((uint8_t*)text_ptr - buf->data_buffer);
@@ -12109,12 +13984,6 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
 
 #elif defined(SITUATION_USE_VULKAN)
     // --- VULKAN OPTIMIZED PATH ---
-
-    // 1. Bind the Global Bindless Set (instead of specific texture set)
-    vkCmdBindDescriptorSets((VkCommandBuffer)cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        sit_render.vk.text_pipeline_layout,
-                        1, 1, &sit_render.vk.global_bindless_set,
-                        0, NULL);
 
     // 2. Calculate Size (6 verts/char * 4 floats/vert)
     size_t data_size = len * 6 * 4 * sizeof(float);
@@ -12166,14 +14035,14 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
                 int col = c % 16;
                 int row = c / 16;
                 float u0 = col / 16.0f;
-                float v1 = row / 16.0f;  // Swapped: v1 gets row (top)
+                float v0 = row / 16.0f;
                 float u1 = (col + 1) / 16.0f;
-                float v0 = (row + 1) / 16.0f;  // Swapped: v0 gets row+1 (bottom)
+                float v1 = (row + 1) / 16.0f;
 
                 float size_px = 8.0f * scale_factor;
                 float qx0 = x;
-                float qy0 = y;
                 float qx1 = x + size_px;
+                float qy0 = y;
                 float qy1 = y + size_px;
                 x += size_px + spacing;
 
@@ -12236,35 +14105,62 @@ SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, Situati
 
     // 6. DRAW
     if (target_buffer != VK_NULL_HANDLE) {
+        uint32_t vert_count = (uint32_t)(v_idx / 4);
+        if (vert_count == 0) {
+            return SITUATION_SUCCESS;
+        }
+
+        if (target_buffer == sit_render.vk.dynamic_vbo[frame_idx] &&
+            sit_render.vk.dynamic_vbo_alloc[frame_idx] != VK_NULL_HANDLE) {
+            vmaFlushAllocation(sit_render.vk.vma_allocator, sit_render.vk.dynamic_vbo_alloc[frame_idx], target_offset, (VkDeviceSize)(v_idx * sizeof(float)));
+        }
+
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+        SIT_RETURN_IF_ERR(_SitVulkanValidateInternalTextDrawReady(vk_cmd, "SituationCmdDrawTextEx"));
 
         // CRITICAL: Update global state so descriptor set binding works
         sit_render.vk.current_pipeline_layout_for_push_constants = sit_render.vk.text_pipeline_layout;
 
         vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.text_pipeline);
 
-        // Bind descriptor sets (View UBO at set 0, Global Bindless at set 1)
         uint32_t frame_idx = sit_render.vk.current_frame_index;
         vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 sit_render.vk.text_pipeline_layout,
                                 0, 1, &sit_render.vk.view_proj_ubo_descriptor_set[frame_idx],
                                 0, NULL);
 
+        _SituationTextureSlot* font_slot = _SitGetTextureSlot(use_font.atlas_texture);
+        VkDescriptorSet font_tex_set = VK_NULL_HANDLE;
+        if (font_slot) {
+            if (font_slot->single_sampler_descriptor_set != VK_NULL_HANDLE) {
+                font_tex_set = font_slot->single_sampler_descriptor_set;
+            } else if (font_slot->descriptor_set != VK_NULL_HANDLE) {
+                font_tex_set = font_slot->descriptor_set;
+            }
+        }
+        if (font_tex_set != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    sit_render.vk.text_pipeline_layout,
+                                    1, 1, &font_tex_set,
+                                    0, NULL);
+        } else {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID,
+                "SituationCmdDrawTextEx: font atlas has no sampler descriptor set.");
+        }
+
         // Bind Vertex Buffer with OFFSET
         VkDeviceSize offsets[] = { target_offset };
         vkCmdBindVertexBuffers(vk_cmd, 0, 1, &target_buffer, offsets);
 
-        // Push Constants (Color + Texture ID)
-        struct {
-            Vector4 color;
-            uint32_t texture_id;
-        } text_pc;
+        struct { Vector4 color; } text_pc;
         text_pc.color = color_vec;
-
-        _SituationTextureSlot* font_slot = _SitGetTextureSlot(use_font.atlas_texture);
-        text_pc.texture_id = font_slot ? use_font.atlas_texture.slot_index : 0;
         vkCmdPushConstants(vk_cmd, sit_render.vk.text_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(text_pc), &text_pc);
-        vkCmdDraw(vk_cmd, (uint32_t)(len * 6), 1, 0, 0);
+        _SitVulkanApply2DViewportScissor(vk_cmd);
+        if (_SitVulkanGraphicsDynamicProcsReady()) {
+            sit_render.vk.pfn_cmd_set_primitive_topology(vk_cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+        }
+        _SitVulkanCmdSetDepthDynamics(vk_cmd, VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
+        vkCmdDraw(vk_cmd, vert_count, 1, 0, 0);
     }
 #endif
     return SITUATION_SUCCESS;
@@ -12577,12 +14473,12 @@ SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, Situa
         return SITUATION_SUCCESS;
     }
 #elif defined(SITUATION_USE_VULKAN)
-    vkCmdBindPipeline((VkCommandBuffer)cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, slot->vk_pipeline);
-    /* Descriptor binds route via current_* layout; clear compute so UBO/texture binds hit this graphics layout after compute tests. */
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
     sit_render.vk.current_compute_pipeline_layout = VK_NULL_HANDLE;
     sit_render.vk.current_pipeline_layout_for_push_constants = slot->vk_pipeline_layout;
-    sit_render.vk.current_pbr_pipeline = slot->vk_pipeline; // Track for debugging
-    sit_render.vk.current_bound_shader_slot = slot;          // For stride-based pipeline selection
+    sit_render.vk.current_bound_shader_slot = slot;
+    sit_render.vk.current_graphics_vertex_stride = 0;
+    SIT_RETURN_IF_ERR(_SitVulkanEnsureGraphicsPipelineBound(vk_cmd, slot, 0));
     return SITUATION_SUCCESS;
 #else
     return SITUATION_ERROR_NOT_IMPLEMENTED;
@@ -12631,9 +14527,254 @@ SITAPI SituationError SituationCmdSetCullMode(SituationCommandBuffer cmd, Situat
     VkCullModeFlags vk_mode = VK_CULL_MODE_NONE;
     if (mode == SIT_CULL_BACK) vk_mode = VK_CULL_MODE_BACK_BIT;
     else if (mode == SIT_CULL_FRONT) vk_mode = VK_CULL_MODE_FRONT_BIT;
-    vkCmdSetCullMode(cmd, vk_mode);
+    sit_render.vk.dynamic_cull_mode = vk_mode;
+    sit_render.vk.dynamic_raster_state_initialized = true;
+    if (sit_render.vk.current_bound_shader_slot) {
+        SIT_RETURN_IF_ERR(_SitVulkanEnsureGraphicsPipelineBound((VkCommandBuffer)cmd, sit_render.vk.current_bound_shader_slot, sit_render.vk.current_graphics_vertex_stride));
+    }
 #endif
     return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetFrontFace(SituationCommandBuffer cmd, SituationFrontFace front_face) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_FRONT_FACE, p);
+    p->args.set_front_face.front_face = front_face;
+#elif defined(SITUATION_USE_VULKAN)
+    VkFrontFace vk_front_face = (front_face == SIT_FRONT_FACE_CW) ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    sit_render.vk.dynamic_front_face = vk_front_face;
+    sit_render.vk.dynamic_raster_state_initialized = true;
+    if (sit_render.vk.current_bound_shader_slot) {
+        SIT_RETURN_IF_ERR(_SitVulkanEnsureGraphicsPipelineBound((VkCommandBuffer)cmd, sit_render.vk.current_bound_shader_slot, sit_render.vk.current_graphics_vertex_stride));
+    }
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetPrimitiveTopology(SituationCommandBuffer cmd, SituationPrimitiveTopology topology) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_PRIMITIVE_TOPOLOGY, p);
+    p->args.set_primitive_topology.topology = topology;
+#elif defined(SITUATION_USE_VULKAN)
+    VkPrimitiveTopology vk_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    switch (topology) {
+        case SIT_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:  vk_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
+        case SIT_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: vk_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
+        case SIT_PRIMITIVE_TOPOLOGY_LINE_LIST:      vk_topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; break;
+        case SIT_PRIMITIVE_TOPOLOGY_LINE_STRIP:     vk_topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; break;
+        case SIT_PRIMITIVE_TOPOLOGY_POINT_LIST:     vk_topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; break;
+        default:                                     vk_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
+    }
+    sit_render.vk.dynamic_primitive_topology = vk_topology;
+    sit_render.vk.dynamic_primitive_topology_initialized = true;
+    if (_SitVulkanGraphicsDynamicProcsReady()) {
+        sit_render.vk.pfn_cmd_set_primitive_topology((VkCommandBuffer)cmd, vk_topology);
+    }
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetPolygonMode(SituationCommandBuffer cmd, SituationPolygonMode mode) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+    if (mode != SIT_POLYGON_MODE_FILL && mode != SIT_POLYGON_MODE_LINE && mode != SIT_POLYGON_MODE_POINT) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid SituationPolygonMode.");
+    }
+#if defined(SITUATION_USE_VULKAN)
+    if (mode != SIT_POLYGON_MODE_FILL) {
+        if ((sit_render.enabled_features_mask & SIT_FEATURE_FILL_MODE_NON_SOLID) == 0u) {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+                "Polygon line/point mode requires fillModeNonSolid (wireframe) support on this device.");
+        }
+    }
+    VkPolygonMode vk_mode = VK_POLYGON_MODE_FILL;
+    if (mode == SIT_POLYGON_MODE_LINE) vk_mode = VK_POLYGON_MODE_LINE;
+    else if (mode == SIT_POLYGON_MODE_POINT) vk_mode = VK_POLYGON_MODE_POINT;
+    sit_render.vk.dynamic_polygon_mode = vk_mode;
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    if (sit_render.vk.extended_dynamic_state3_polygon_mode_enabled && sit_render.vk.pfn_cmd_set_polygon_mode_ext
+        && vk_cmd != VK_NULL_HANDLE) {
+        sit_render.vk.pfn_cmd_set_polygon_mode_ext(vk_cmd, vk_mode);
+    }
+    if (sit_render.vk.current_bound_shader_slot && vk_cmd != VK_NULL_HANDLE) {
+        sit_render.vk.current_pbr_pipeline = VK_NULL_HANDLE;
+        SIT_RETURN_IF_ERR(_SitVulkanEnsureGraphicsPipelineBound(vk_cmd,
+            sit_render.vk.current_bound_shader_slot, sit_render.vk.current_graphics_vertex_stride));
+    }
+    if (mode == SIT_POLYGON_MODE_POINT &&
+        (!sit_render.vk.extended_dynamic_state3_polygon_mode_enabled || !sit_render.vk.pfn_cmd_set_polygon_mode_ext)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+            "Dynamic polygon point mode requires VK_EXT_extended_dynamic_state3 polygon mode on this device.");
+    }
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_POLYGON_MODE, p);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    p->args.set_polygon_mode.mode = mode;
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetDepthBias(SituationCommandBuffer cmd, bool enable,
+                                               float constant_factor, float clamp, float slope_factor) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_DEPTH_BIAS, p);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    p->args.set_depth_bias.enable = enable;
+    p->args.set_depth_bias.constant_factor = constant_factor;
+    p->args.set_depth_bias.clamp = clamp;
+    p->args.set_depth_bias.slope_factor = slope_factor;
+#elif defined(SITUATION_USE_VULKAN)
+    if (enable && (!sit_render.vk.depth_bias_dynamic_enabled ||
+                   !sit_render.vk.pfn_cmd_set_depth_bias_enable || !sit_render.vk.pfn_cmd_set_depth_bias)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+            "Dynamic depth bias requires VK_EXT_extended_dynamic_state2 on this device.");
+    }
+    sit_render.vk.dynamic_depth_bias_enable = enable ? VK_TRUE : VK_FALSE;
+    sit_render.vk.dynamic_depth_bias_constant = constant_factor;
+    sit_render.vk.dynamic_depth_bias_clamp = clamp;
+    sit_render.vk.dynamic_depth_bias_slope = slope_factor;
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    if (sit_render.vk.pfn_cmd_set_depth_bias_enable) {
+        sit_render.vk.pfn_cmd_set_depth_bias_enable(vk_cmd, sit_render.vk.dynamic_depth_bias_enable);
+    }
+    if (enable && sit_render.vk.pfn_cmd_set_depth_bias) {
+        sit_render.vk.pfn_cmd_set_depth_bias(vk_cmd, constant_factor, clamp, slope_factor);
+    }
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetLineWidth(SituationCommandBuffer cmd, float width) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+    if (width <= 0.0f || width > 1024.0f) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Line width must be a positive finite value.");
+    }
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_LINE_WIDTH, p);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    p->args.set_line_width.width = width;
+#elif defined(SITUATION_USE_VULKAN)
+    if (width != 1.0f && (sit_render.enabled_features_mask & SIT_FEATURE_WIDE_LINES) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+            "Line widths other than 1.0 require wideLines support on this device.");
+    }
+    sit_render.vk.dynamic_line_width = width;
+    vkCmdSetLineWidth((VkCommandBuffer)cmd, width);
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetColorWriteMask(SituationCommandBuffer cmd, bool r, bool g, bool b, bool a) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_COLOR_WRITE_MASK, p);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    p->args.set_color_write_mask.r = r;
+    p->args.set_color_write_mask.g = g;
+    p->args.set_color_write_mask.b = b;
+    p->args.set_color_write_mask.a = a;
+#elif defined(SITUATION_USE_VULKAN)
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    VkColorComponentFlags mask = 0;
+    if (r) mask |= VK_COLOR_COMPONENT_R_BIT;
+    if (g) mask |= VK_COLOR_COMPONENT_G_BIT;
+    if (b) mask |= VK_COLOR_COMPONENT_B_BIT;
+    if (a) mask |= VK_COLOR_COMPONENT_A_BIT;
+    const VkColorComponentFlags full_mask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    if (mask != full_mask &&
+        (!sit_render.vk.extended_dynamic_state3_color_write_enabled ||
+         !sit_render.vk.pfn_cmd_set_color_write_mask_ext)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+            "SituationCmdSetColorWriteMask requires VK_EXT_extended_dynamic_state3 color write mask on this device.");
+    }
+    sit_render.vk.dynamic_color_write_mask = mask;
+    if (sit_render.vk.pfn_cmd_set_color_write_mask_ext) {
+        sit_render.vk.pfn_cmd_set_color_write_mask_ext(vk_cmd, 0, 1, &mask);
+    }
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetStencilTest(SituationCommandBuffer cmd, bool enable,
+                                                 const SituationStencilState* front,
+                                                 const SituationStencilState* back) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
+    if (enable && (!front || !back)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+            "SituationCmdSetStencilTest requires front and back state when enable is true.");
+    }
+#if defined(SITUATION_USE_OPENGL)
+    if (enable && !_SitGLHasStencilBuffer()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+            "SituationCmdSetStencilTest: active framebuffer has no stencil attachment.");
+    }
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_STENCIL_TEST, p);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
+    p->args.set_stencil_test.enable = enable;
+    if (enable) {
+        p->args.set_stencil_test.front = *front;
+        p->args.set_stencil_test.back = *back;
+    }
+#elif defined(SITUATION_USE_VULKAN)
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    if (enable) {
+        if (!_SitVulkanHasStencilAttachment()) {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+                "SituationCmdSetStencilTest: active render target has no stencil attachment.");
+        }
+        if (!sit_render.vk.pfn_cmd_set_stencil_test_enable ||
+            !sit_render.vk.pfn_cmd_set_stencil_op) {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+                "SituationCmdSetStencilTest requires VK_EXT_extended_dynamic_state stencil dynamics on this device.");
+        }
+        sit_render.vk.dynamic_stencil_front = *front;
+        sit_render.vk.dynamic_stencil_back = *back;
+        sit_render.vk.dynamic_stencil_test_enable = VK_TRUE;
+        sit_render.vk.pfn_cmd_set_stencil_test_enable(vk_cmd, VK_TRUE);
+        _SitVulkanApplyStencilFaceDynamics(vk_cmd, VK_STENCIL_FACE_FRONT_BIT, front);
+        _SitVulkanApplyStencilFaceDynamics(vk_cmd, VK_STENCIL_FACE_BACK_BIT, back);
+    } else {
+        sit_render.vk.dynamic_stencil_test_enable = VK_FALSE;
+        if (sit_render.vk.pfn_cmd_set_stencil_test_enable) {
+            sit_render.vk.pfn_cmd_set_stencil_test_enable(vk_cmd, VK_FALSE);
+        }
+    }
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdSetMultisampleState(SituationCommandBuffer cmd, const SituationMultisampleState* state) {
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (!cmd || !state) return SITUATION_ERROR_INVALID_PARAM;
+    (void)cmd;
+    (void)state;
+    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED,
+        "SituationCmdSetMultisampleState is deferred to v2.5 until MSAA render targets and resolve are exposed.");
 }
 
 SITAPI SituationError SituationCmdSetDepthTest(SituationCommandBuffer cmd, bool enable, SituationDepthCompareOp depth_op) {
@@ -12646,19 +14787,14 @@ SITAPI SituationError SituationCmdSetDepthTest(SituationCommandBuffer cmd, bool 
     p->args.set_depth_test.enable = enable;
     p->args.set_depth_test.depth_op = depth_op;
 #elif defined(SITUATION_USE_VULKAN)
-    vkCmdSetDepthTestEnable(cmd, enable ? VK_TRUE : VK_FALSE);
-    VkCompareOp vk_op = VK_COMPARE_OP_LESS; // Default
-    switch (depth_op) {
-        case SIT_DEPTH_COMPARE_ALWAYS:   vk_op = VK_COMPARE_OP_ALWAYS; break;
-        case SIT_DEPTH_COMPARE_LESS:     vk_op = VK_COMPARE_OP_LESS; break;
-        case SIT_DEPTH_COMPARE_LEQUAL:   vk_op = VK_COMPARE_OP_LESS_OR_EQUAL; break;
-        case SIT_DEPTH_COMPARE_GREATER:  vk_op = VK_COMPARE_OP_GREATER; break;
-        case SIT_DEPTH_COMPARE_GEQUAL:   vk_op = VK_COMPARE_OP_GREATER_OR_EQUAL; break;
-        case SIT_DEPTH_COMPARE_EQUAL:    vk_op = VK_COMPARE_OP_EQUAL; break;
-        case SIT_DEPTH_COMPARE_NOTEQUAL: vk_op = VK_COMPARE_OP_NOT_EQUAL; break;
-        case SIT_DEPTH_COMPARE_NEVER:    vk_op = VK_COMPARE_OP_NEVER; break;
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    VkCompareOp vk_op = _SitVulkanMapCompareOp(depth_op);
+    sit_render.vk.dynamic_depth_test_enable = enable ? VK_TRUE : VK_FALSE;
+    sit_render.vk.dynamic_depth_compare_op = vk_op;
+    if (_SitVulkanGraphicsDynamicProcsReady()) {
+        sit_render.vk.pfn_cmd_set_depth_test_enable(vk_cmd, sit_render.vk.dynamic_depth_test_enable);
+        sit_render.vk.pfn_cmd_set_depth_compare_op(vk_cmd, vk_op);
     }
-    vkCmdSetDepthCompareOp(cmd, vk_op);
 #endif
     return SITUATION_SUCCESS;
 }
@@ -12672,7 +14808,10 @@ SITAPI SituationError SituationCmdSetDepthWrite(SituationCommandBuffer cmd, bool
     SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_SET_DEPTH_WRITE, p);
     p->args.set_depth_write.enable = enable;
 #elif defined(SITUATION_USE_VULKAN)
-    vkCmdSetDepthWriteEnable(cmd, enable ? VK_TRUE : VK_FALSE);
+    sit_render.vk.dynamic_depth_write_enable = enable ? VK_TRUE : VK_FALSE;
+    if (_SitVulkanGraphicsDynamicProcsReady()) {
+        sit_render.vk.pfn_cmd_set_depth_write_enable((VkCommandBuffer)cmd, sit_render.vk.dynamic_depth_write_enable);
+    }
 #endif
     return SITUATION_SUCCESS;
 }
@@ -12713,11 +14852,22 @@ SITAPI SituationError SituationCmdPushRasterState(SituationCommandBuffer cmd, ui
     if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    if (buf->raster_stack_depth >= SITUATION_MAX_RASTER_STACK_DEPTH) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+            "SituationCmdPushRasterState: raster stack overflow.");
+    }
     SitCommandPacket* p = NULL;
     SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_PUSH_RASTER_STATE, p);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
     p->args.push_pop_raster_state.scope_id = scope_id;
+    buf->raster_stack_depth++;
 #elif defined(SITUATION_USE_VULKAN)
-    return SITUATION_ERROR_NOT_IMPLEMENTED;
+    if (sit_render.vk.raster_stack_depth >= SITUATION_MAX_RASTER_STACK_DEPTH) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+            "SituationCmdPushRasterState: raster stack overflow.");
+    }
+    _SitVulkanCaptureRasterState(&sit_render.vk.raster_stack[sit_render.vk.raster_stack_depth++]);
+    (void)scope_id;
 #endif
     return SITUATION_SUCCESS;
 }
@@ -12727,11 +14877,23 @@ SITAPI SituationError SituationCmdPopRasterState(SituationCommandBuffer cmd, uin
     if (!cmd) return SITUATION_ERROR_INVALID_PARAM;
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    if (buf->raster_stack_depth <= 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+            "SituationCmdPopRasterState: raster stack underflow.");
+    }
     SitCommandPacket* p = NULL;
     SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_POP_RASTER_STATE, p);
+    if (!p) return SITUATION_ERROR_MEMORY_ALLOCATION;
     p->args.push_pop_raster_state.scope_id = scope_id;
+    buf->raster_stack_depth--;
 #elif defined(SITUATION_USE_VULKAN)
-    return SITUATION_ERROR_NOT_IMPLEMENTED;
+    if (sit_render.vk.raster_stack_depth <= 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM,
+            "SituationCmdPopRasterState: raster stack underflow.");
+    }
+    _SitVulkanApplyRasterState((VkCommandBuffer)cmd,
+        &sit_render.vk.raster_stack[--sit_render.vk.raster_stack_depth]);
+    (void)scope_id;
 #endif
     return SITUATION_SUCCESS;
 }
@@ -12819,23 +14981,15 @@ SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, Situation
 #elif defined(SITUATION_USE_VULKAN)
     // Select the correct pipeline variant based on vertex stride
     if (sit_render.vk.current_bound_shader_slot) {
-        _SituationShaderSlot* shader_slot = sit_render.vk.current_bound_shader_slot;
-        VkPipeline target_pipeline = shader_slot->vk_pipeline; // Default: PBR
-
-        if (slot->vertex_stride <= 3 * (int)sizeof(float) && shader_slot->vk_pipeline_simple != VK_NULL_HANDLE) {
-            target_pipeline = shader_slot->vk_pipeline_simple;
-        } else if (slot->vertex_stride <= (3 + 3 + 2) * (int)sizeof(float) && shader_slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
-            target_pipeline = shader_slot->vk_pipeline_legacy;
-        }
-
-        // Rebind if different from what was initially bound
-        if (target_pipeline != shader_slot->vk_pipeline) {
-            vkCmdBindPipeline((VkCommandBuffer)cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, target_pipeline);
-        }
+        SIT_RETURN_IF_ERR(_SitVulkanEnsureGraphicsPipelineBound((VkCommandBuffer)cmd, sit_render.vk.current_bound_shader_slot, (size_t)slot->vertex_stride));
+    } else {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE,
+            "SituationCmdDrawMesh: bind a graphics pipeline before drawing.");
     }
 
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers((VkCommandBuffer)cmd, 0, 1, &slot->vertex_buffer, offsets);
+    sit_render.vk.current_graphics_vertex_stride = slot->vertex_stride;
     if (slot->index_count > 0 && slot->index_buffer) {
         vkCmdBindIndexBuffer((VkCommandBuffer)cmd, slot->index_buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed((VkCommandBuffer)cmd, (uint32_t)slot->index_count, 1, 0, 0, 0);
@@ -12927,6 +15081,7 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SIT_RETURN_IF_ERR(_SituationGLValidateInternalQuadDrawReady(buf, "SituationCmdDrawTexture", true));
 
     // The texture bind above handled the state setting. We just push the geometry.
     SitCommandPacket* p = NULL;
@@ -12941,8 +15096,8 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
     }
 
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    SIT_RETURN_IF_ERR(_SitVulkanValidateInternalQuadDrawReady(vk_cmd, "SituationCmdDrawTexture"));
 
     vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline);
 
@@ -12955,16 +15110,12 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
     vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline_layout, 0, 1,
         &sit_render.vk.view_proj_ubo_descriptor_set[sit_render.vk.current_frame_index], 0, NULL);
 
-    // [Bindless] Bind the Global Descriptor Set (Set 1)
-    vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline_layout, 1, 1, &sit_render.vk.global_bindless_set, 0, NULL);
-
-    /* Bindless array index must match vkUpdateDescriptorSets(dstArrayElement) in CreateTextureEx.
-       Never fall back to slot 0 — stale handles silently sampled the wrong texture (black/wrong harness pixels). */
     _SituationTextureSlot* tex_slot = _SitGetTextureSlot(texture);
-    if (!tex_slot || texture.slot_index >= SITUATION_MAX_TEXTURES) {
+    if (!tex_slot || tex_slot->single_sampler_descriptor_set == VK_NULL_HANDLE) {
         return SITUATION_ERROR_RESOURCE_INVALID;
     }
-    uint32_t slot_idx = texture.slot_index;
+    vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline_layout, 1, 1,
+        &tex_slot->single_sampler_descriptor_set, 0, NULL);
 
     struct {
         mat4 model;
@@ -12977,11 +15128,136 @@ SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, Situat
     glm_mat4_copy(model, push_data.model);
     glm_vec4_copy(color_vec.raw, push_data.color);
     glm_vec4_copy(uv_rect.raw, push_data.uv_rect);
-    push_data.texture_id = slot_idx;
+    push_data.texture_id = 0;
     push_data.use_texture = use_texture; // 1
 
     const uint32_t quad_push_bytes = (uint32_t)(sizeof(mat4) + sizeof(vec4) + sizeof(vec4) + sizeof(uint32_t) + sizeof(int));
     vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, quad_push_bytes, &push_data);
+    _SitVulkanApplyQuadDrawDynamicState(vk_cmd);
+    vkCmdDraw(vk_cmd, 4, 1, 0, 0);
+#endif
+    return SITUATION_SUCCESS;
+}
+
+SITAPI SituationError SituationCmdDrawTextureYpqGrade(
+    SituationCommandBuffer cmd,
+    SituationTexture texture,
+    SitRectangle source,
+    SitRectangle dest,
+    Vector2 origin,
+    float rotation,
+    float phase_shift_deg,
+    float chroma_factor,
+    float luma_factor,
+    float mix)
+{
+    if (!SituationIsInitialized()) {
+        return SITUATION_ERROR_NOT_INITIALIZED;
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationCmdBindSampledTexture(cmd, 0, texture);
+#endif
+
+    float tw = (float)texture.width;
+    float th = (float)texture.height;
+    if (tw <= 0.0f) {
+        tw = 1.0f;
+    }
+    if (th <= 0.0f) {
+        th = 1.0f;
+    }
+
+    Vector4 uv_rect;
+    uv_rect.x = source.x / tw;
+    uv_rect.y = source.y / th;
+    uv_rect.z = source.width / tw;
+    uv_rect.w = source.height / th;
+
+    mat4 model;
+    glm_mat4_identity(model);
+    glm_translate(model, (vec3){dest.x, dest.y, 0.0f});
+    if (rotation != 0.0f) {
+        glm_rotate(model, glm_rad(rotation), (vec3){0.0f, 0.0f, 1.0f});
+    }
+    if (origin.x != 0.0f || origin.y != 0.0f) {
+        glm_translate(model, (vec3){-origin.x, -origin.y, 0.0f});
+    }
+    glm_scale(model, (vec3){dest.width, dest.height, 1.0f});
+
+    mix = fmaxf(0.0f, fminf(1.0f, mix));
+
+    sit_render.debug_draw_command_issued_this_frame = true;
+    sit_render.frame_draw_calls++;
+    sit_render.frame_triangle_count += 2;
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SIT_RETURN_IF_ERR(_SituationGLValidateInternalQuadDrawReady(buf, "SituationCmdDrawTextureYpqGrade", true));
+    if (sit_render.gl.ypq_grade_shader_program == 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdDrawTextureYpqGrade: YPQ grade shader is not initialized.");
+    }
+
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_DRAW_TEXTURE_YPQ, p);
+    if (p) {
+        glm_mat4_copy(model, p->args.draw_texture_ypq.model);
+        p->args.draw_texture_ypq.uv_rect = uv_rect;
+        p->args.draw_texture_ypq.phase_shift_deg = phase_shift_deg;
+        p->args.draw_texture_ypq.chroma_factor = chroma_factor;
+        p->args.draw_texture_ypq.luma_factor = luma_factor;
+        p->args.draw_texture_ypq.mix = mix;
+    } else {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+
+#elif defined(SITUATION_USE_VULKAN)
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    SIT_RETURN_IF_ERR(_SitVulkanValidateInternalQuadDrawReady(vk_cmd, "SituationCmdDrawTextureYpqGrade"));
+    if (sit_render.vk.ypq_grade_pipeline == VK_NULL_HANDLE || sit_render.vk.ypq_grade_pipeline_layout == VK_NULL_HANDLE) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdDrawTextureYpqGrade: YPQ grade pipeline is not initialized.");
+    }
+
+    vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.ypq_grade_pipeline);
+
+    VkBuffer vertex_buffers[] = { sit_render.vk.quad_vertex_buffer };
+    VkDeviceSize offsets[] = { 0 };
+    vkCmdBindVertexBuffers(vk_cmd, 0, 1, vertex_buffers, offsets);
+
+    vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.ypq_grade_pipeline_layout, 0, 1,
+        &sit_render.vk.view_proj_ubo_descriptor_set[sit_render.vk.current_frame_index], 0, NULL);
+
+    _SituationTextureSlot* tex_slot = _SitGetTextureSlot(texture);
+    if (!tex_slot || tex_slot->single_sampler_descriptor_set == VK_NULL_HANDLE) {
+        return SITUATION_ERROR_RESOURCE_INVALID;
+    }
+    vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.ypq_grade_pipeline_layout, 1, 1,
+        &tex_slot->single_sampler_descriptor_set, 0, NULL);
+
+    struct {
+        mat4 model;
+        vec4 color;
+        vec4 uv_rect;
+        uint32_t texture_id;
+        int use_texture;
+        float phase_shift_deg;
+        float chroma_factor;
+        float luma_factor;
+        float mix;
+    } push_data;
+
+    glm_mat4_copy(model, push_data.model);
+    glm_vec4_one(push_data.color);
+    glm_vec4_copy(uv_rect.raw, push_data.uv_rect);
+    push_data.texture_id = 0;
+    push_data.use_texture = 1;
+    push_data.phase_shift_deg = phase_shift_deg;
+    push_data.chroma_factor = chroma_factor;
+    push_data.luma_factor = luma_factor;
+    push_data.mix = mix;
+
+    vkCmdPushConstants(vk_cmd, sit_render.vk.ypq_grade_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, SIT_YPQ_GRADE_PUSH_BYTES, &push_data);
+    _SitVulkanApplyQuadDrawDynamicState(vk_cmd);
     vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 #endif
     return SITUATION_SUCCESS;
@@ -13049,6 +15325,7 @@ SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 mode
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SIT_RETURN_IF_ERR(_SituationGLValidateInternalQuadDrawReady(buf, "SituationCmdDrawQuad", true));
 
     // [v2.3.30] Bindless Support
     // Logic: In OpenGL, `SituationCmdDrawQuad` relies on a previously issued `SituationCmdBindTexture(cmd, 0, tex)`
@@ -13073,8 +15350,8 @@ SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 mode
     }
 
 #elif defined(SITUATION_USE_VULKAN)
-    if (sit_render.vk.quad_pipeline == VK_NULL_HANDLE) return SITUATION_ERROR_VULKAN_PIPELINE_FAILED;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    SIT_RETURN_IF_ERR(_SitVulkanValidateInternalQuadDrawReady(vk_cmd, "SituationCmdDrawQuad"));
 
     vkCmdBindPipeline(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline);
 
@@ -13085,14 +15362,21 @@ SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 mode
     // Bind the View/Projection UBO descriptor set (Set 0)
     vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline_layout, 0, 1, &sit_render.vk.view_proj_ubo_descriptor_set[sit_render.vk.current_frame_index], 0, NULL);
 
-    // Bind the Global Bindless Texture Array (Set 1) if available
-    if (sit_render.vk.global_bindless_set != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline_layout, 1, 1, &sit_render.vk.global_bindless_set, 0, NULL);
+    if (sit_render.vk.text_sampler_layout != VK_NULL_HANDLE) {
+        VkDescriptorSet set1 = VK_NULL_HANDLE;
+        _SituationTextureSlot* fallback = _SitGetTextureSlot(sit_render.default_font_atlas);
+        if (fallback) {
+            set1 = fallback->single_sampler_descriptor_set;
+            if (set1 == VK_NULL_HANDLE) {
+                set1 = fallback->descriptor_set;
+            }
+        }
+        if (set1 != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.quad_pipeline_layout, 1, 1, &set1, 0, NULL);
+        }
     }
 
     // Single push block (must match QuadPushConstants in internal_quad shaders — 104 bytes).
-    // Always set texture_id + use_texture; leaving bytes 96–99 uninitialized caused undefined
-    // bindless indexing / black output on some drivers when set 1 is bound.
     struct {
         mat4 model;
         vec4 color;
@@ -13111,6 +15395,7 @@ SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 mode
     const uint32_t quad_push_bytes = (uint32_t)(sizeof(mat4) + sizeof(vec4) + sizeof(vec4) + sizeof(uint32_t) + sizeof(int));
     vkCmdPushConstants(vk_cmd, sit_render.vk.quad_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0, quad_push_bytes, &push_quad);
+    _SitVulkanApplyQuadDrawDynamicState(vk_cmd);
     vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 #endif
     return SITUATION_SUCCESS;
@@ -13360,7 +15645,7 @@ SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 posi
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationDrawMetricsOverlay"); return; }
 
     // Use the default font with 2x scaling for better readability
-    SituationFont font = {0};
+    SituationFont font = sit_render.default_font;
     float font_size = 16.0f;  // 2x scale (8px base * 2)
     float spacing = 1.0f;
 
@@ -15029,10 +17314,18 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
     // Set texture parameters.
     glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MIN_FILTER, generate_mipmaps ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
-    glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    slot->min_filter = SIT_TEXTURE_FILTER_LINEAR;
-    slot->mag_filter = SIT_TEXTURE_FILTER_LINEAR;
+    if (generate_mipmaps) {
+        glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        slot->min_filter = SIT_TEXTURE_FILTER_LINEAR;
+        slot->mag_filter = SIT_TEXTURE_FILTER_LINEAR;
+    } else {
+        /* No mips: NEAREST preserves texel values for UI / readback-style draws (harness parity). */
+        glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTextureParameteri(slot->gl_texture_id, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        slot->min_filter = SIT_TEXTURE_FILTER_NEAREST;
+        slot->mag_filter = SIT_TEXTURE_FILTER_NEAREST;
+    }
     SIT_CHECK_GL_ERROR();
 
     // [Phase 3] Bindless Texture: Make Resident immediately
@@ -15325,6 +17618,32 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
             vkUpdateDescriptorSets(sit_render.vk.device, 1, &bw, 0, NULL);
         }
         mtx_unlock(&sit_render.resource_registry_mutex); // [UNLOCK]
+    }
+
+    /* SituationCmdDrawTexture binds set 1 via single_sampler_descriptor_set (text_sampler_layout). */
+    if (sit_render.vk.text_sampler_layout != VK_NULL_HANDLE
+        && slot->single_sampler_descriptor_set == VK_NULL_HANDLE
+        && slot->image_view != VK_NULL_HANDLE
+        && slot->sampler != VK_NULL_HANDLE) {
+        slot->single_sampler_descriptor_set = _SituationVulkanAllocateDescriptorSet(
+            sit_render.vk.text_sampler_layout, &slot->single_sampler_descriptor_pool);
+        if (slot->single_sampler_descriptor_set != VK_NULL_HANDLE) {
+            VkDescriptorImageInfo sample_info = {};
+            sample_info.imageLayout = (usage_flags & SITUATION_TEXTURE_USAGE_STORAGE)
+                ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            sample_info.imageView = slot->image_view;
+            sample_info.sampler = slot->sampler;
+            VkWriteDescriptorSet sw = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            sw.dstSet = slot->single_sampler_descriptor_set;
+            sw.dstBinding = SIT_SAMPLER_BINDING_ALBEDO;
+            sw.dstArrayElement = 0;
+            sw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            sw.descriptorCount = 1;
+            sw.pImageInfo = &sample_info;
+            mtx_lock(&sit_render.resource_registry_mutex);
+            vkUpdateDescriptorSets(sit_render.vk.device, 1, &sw, 0, NULL);
+            mtx_unlock(&sit_render.resource_registry_mutex);
+        }
     }
 
     // --- Final: Set Output Texture Handle ---
@@ -17670,6 +19989,15 @@ SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline) 
  * @warning This is a safety mechanism, not a feature. Relying on it is bad practice; users should always
  *          explicitly destroy resources they create.
  */
+static void _SituationCleanupInternalDefaultResources(void) {
+    if (sit_render.default_font_atlas.generation != 0) {
+        SituationTexture atlas = sit_render.default_font_atlas;
+        SituationDestroyTexture(&atlas);
+        memset(&sit_render.default_font_atlas, 0, sizeof(sit_render.default_font_atlas));
+    }
+    memset(&sit_render.default_font, 0, sizeof(sit_render.default_font));
+}
+
 static void _SituationCleanupDanglingResources(void) {
     // 1. Textures
     for(int i=0; i<SITUATION_MAX_TEXTURES; i++) {
@@ -17777,32 +20105,442 @@ static void _SituationCleanupDanglingResources(void) {
  *      SITUATION_ERROR_INVALID_PARAM, SITUATION_ERROR_RESOURCE_INVALID
  */
 /**
- * @brief [Phase 1] Record an async copy between buffers.
+ * @brief [Phase 4A] Record an async copy between buffers with independent offsets.
  */
-SITAPI void SituationCmdCopyBuffer(SituationCommandBuffer cmd, SituationBuffer src, SituationBuffer dst, size_t offset, size_t size) {
-    if (!cmd) return;
+SITAPI SituationError SituationCmdCopyBufferEx(SituationCommandBuffer cmd, SituationBuffer src, SituationBuffer dst, size_t src_offset, size_t dst_offset, size_t size) {
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdCopyBufferEx: library not initialized.");
+    }
+    if (!cmd) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdCopyBufferEx: cmd cannot be NULL.");
+    }
+    if (size == 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "SituationCmdCopyBufferEx: size must be non-zero.");
+    }
 
     _SituationBufferSlot* slot_src = _SitGetBufferSlot(src);
     _SituationBufferSlot* slot_dst = _SitGetBufferSlot(dst);
-    if (!slot_src || !slot_dst) return;
+    if (!slot_src || !slot_dst) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdCopyBufferEx: invalid source or destination buffer handle.");
+    }
+    if ((slot_src->usage_flags & SITUATION_BUFFER_USAGE_TRANSFER_SRC) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_USAGE, "SituationCmdCopyBufferEx: source buffer missing SITUATION_BUFFER_USAGE_TRANSFER_SRC.");
+    }
+    if ((slot_dst->usage_flags & SITUATION_BUFFER_USAGE_TRANSFER_DST) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_USAGE, "SituationCmdCopyBufferEx: destination buffer missing SITUATION_BUFFER_USAGE_TRANSFER_DST.");
+    }
+    if (src_offset > slot_src->size_in_bytes || slot_src->size_in_bytes - src_offset < size) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "SituationCmdCopyBufferEx: source range exceeds buffer size.");
+    }
+    if (dst_offset > slot_dst->size_in_bytes || slot_dst->size_in_bytes - dst_offset < size) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "SituationCmdCopyBufferEx: destination range exceeds buffer size.");
+    }
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* s_cmd = (SituationGLSoftCommandBuffer*)cmd;
     SitCommandPacket* p = NULL;
-    SIT_GL_SOFT_CMD_PUSH_VOID(s_cmd, SIT_OP_COPY_BUFFER, p);
-    if (p) {
-        p->args.copy_buffer.src_id = slot_src->gl_buffer_id;
-        p->args.copy_buffer.dst_id = slot_dst->gl_buffer_id;
-        p->args.copy_buffer.offset = offset;
-        p->args.copy_buffer.size = size;
-    }
+    SIT_GL_SOFT_CMD_PUSH(s_cmd, SIT_OP_COPY_BUFFER, p);
+    p->args.copy_buffer.src_id = slot_src->gl_buffer_id;
+    p->args.copy_buffer.dst_id = slot_dst->gl_buffer_id;
+    p->args.copy_buffer.src_offset = src_offset;
+    p->args.copy_buffer.dst_offset = dst_offset;
+    p->args.copy_buffer.size = size;
+    return SITUATION_SUCCESS;
 #elif defined(SITUATION_USE_VULKAN)
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
     VkBufferCopy region = {0};
-    region.srcOffset = offset;
-    region.dstOffset = 0; // Readback buffer writes start at 0
+    region.srcOffset = src_offset;
+    region.dstOffset = dst_offset;
     region.size = size;
     vkCmdCopyBuffer(vk_cmd, slot_src->vk_buffer, slot_dst->vk_buffer, 1, &region);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+/**
+ * @brief Legacy void wrapper for buffer copies.
+ */
+SITAPI void SituationCmdCopyBuffer(SituationCommandBuffer cmd, SituationBuffer src, SituationBuffer dst, size_t offset, size_t size) {
+    (void)SituationCmdCopyBufferEx(cmd, src, dst, offset, 0, size);
+}
+
+static int _SituationTextureMipExtent(int base_extent, uint32_t mip_level) {
+    int extent = base_extent >> mip_level;
+    return extent > 0 ? extent : 1;
+}
+
+static bool _SituationTextureRectInBounds(SituationTextureRect rect, int width, int height) {
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (rect.x < 0 || rect.y < 0) return false;
+    if (rect.x > width || rect.y > height) return false;
+    if (rect.width > width - rect.x || rect.height > height - rect.y) return false;
+    return true;
+}
+
+/**
+ * @brief [Phase 4B] Record a strict color texture blit.
+ */
+SITAPI SituationError SituationCmdBlitTexture(SituationCommandBuffer cmd, SituationTexture src, SituationTexture dst, const SituationTextureBlitRegion* region) {
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdBlitTexture: library not initialized.");
+    }
+    if (!cmd || !region) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdBlitTexture: cmd and region are required.");
+    }
+    if (region->src_array_layer != 0u || region->dst_array_layer != 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdBlitTexture: only array layer 0 is supported in the first slice.");
+    }
+    if (region->filter != SITUATION_BLIT_FILTER_NEAREST && region->filter != SITUATION_BLIT_FILTER_LINEAR) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdBlitTexture: unsupported filter.");
+    }
+
+    _SituationTextureSlot* src_slot = _SitGetTextureSlot(src);
+    _SituationTextureSlot* dst_slot = _SitGetTextureSlot(dst);
+    if (!src_slot || !dst_slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdBlitTexture: invalid source or destination texture handle.");
+    }
+    if ((src_slot->usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_SRC) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_INVALID_USAGE, "SituationCmdBlitTexture: source texture missing SITUATION_TEXTURE_USAGE_TRANSFER_SRC.");
+    }
+    if ((dst_slot->usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_DST) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_INVALID_USAGE, "SituationCmdBlitTexture: destination texture missing SITUATION_TEXTURE_USAGE_TRANSFER_DST.");
+    }
+    if (src_slot->format_api != dst_slot->format_api ||
+        (src_slot->format_api != SIT_TEXTURE_FORMAT_RGBA8_UNORM && src_slot->format_api != SIT_TEXTURE_FORMAT_RGBA8_SRGB)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_FORMAT_UNSUPPORTED, "SituationCmdBlitTexture: first slice requires matching RGBA8 color formats.");
+    }
+    if (region->src_mip_level >= (uint32_t)src_slot->mip_levels ||
+        region->dst_mip_level >= (uint32_t)dst_slot->mip_levels) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdBlitTexture: mip level is out of range.");
+    }
+
+    int src_w = _SituationTextureMipExtent(src_slot->width, region->src_mip_level);
+    int src_h = _SituationTextureMipExtent(src_slot->height, region->src_mip_level);
+    int dst_w = _SituationTextureMipExtent(dst_slot->width, region->dst_mip_level);
+    int dst_h = _SituationTextureMipExtent(dst_slot->height, region->dst_mip_level);
+    if (!_SituationTextureRectInBounds(region->src_rect, src_w, src_h) ||
+        !_SituationTextureRectInBounds(region->dst_rect, dst_w, dst_h)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdBlitTexture: source or destination rectangle is out of bounds.");
+    }
+    if (region->filter == SITUATION_BLIT_FILTER_LINEAR &&
+        (src_slot->usage_flags & (SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_COMPUTE_SAMPLED)) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_FORMAT_UNSUPPORTED, "SituationCmdBlitTexture: linear filtering requires a sampled color source texture.");
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* s_cmd = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(s_cmd, SIT_OP_BLIT_TEXTURE, p);
+    p->args.blit_texture.src = src;
+    p->args.blit_texture.dst = dst;
+    p->args.blit_texture.region = *region;
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_VULKAN)
+    VkImageBlit blit = {0};
+    blit.srcOffsets[0] = (VkOffset3D){region->src_rect.x, region->src_rect.y, 0};
+    blit.srcOffsets[1] = (VkOffset3D){region->src_rect.x + region->src_rect.width, region->src_rect.y + region->src_rect.height, 1};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.mipLevel = region->src_mip_level;
+    blit.srcSubresource.baseArrayLayer = 0;
+    blit.srcSubresource.layerCount = 1;
+    blit.dstOffsets[0] = (VkOffset3D){region->dst_rect.x, region->dst_rect.y, 0};
+    blit.dstOffsets[1] = (VkOffset3D){region->dst_rect.x + region->dst_rect.width, region->dst_rect.y + region->dst_rect.height, 1};
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.dstSubresource.mipLevel = region->dst_mip_level;
+    blit.dstSubresource.baseArrayLayer = 0;
+    blit.dstSubresource.layerCount = 1;
+    VkFilter vk_filter = (region->filter == SITUATION_BLIT_FILTER_LINEAR) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    vkCmdBlitImage(
+        (VkCommandBuffer)cmd,
+        src_slot->image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        dst_slot->image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &blit,
+        vk_filter);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+/**
+ * @brief [Phase 4B] Record a strict color texture copy (exact size, no scaling).
+ */
+SITAPI SituationError SituationCmdCopyTexture(SituationCommandBuffer cmd, SituationTexture src, SituationTexture dst, const SituationTextureCopyRegion* region) {
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdCopyTexture: library not initialized.");
+    }
+    if (!cmd || !region) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdCopyTexture: cmd and region are required.");
+    }
+    if (region->src_array_layer != 0u || region->dst_array_layer != 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdCopyTexture: only array layer 0 is supported in the first slice.");
+    }
+
+    _SituationTextureSlot* src_slot = _SitGetTextureSlot(src);
+    _SituationTextureSlot* dst_slot = _SitGetTextureSlot(dst);
+    if (!src_slot || !dst_slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdCopyTexture: invalid source or destination texture handle.");
+    }
+    if ((src_slot->usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_SRC) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_INVALID_USAGE, "SituationCmdCopyTexture: source texture missing SITUATION_TEXTURE_USAGE_TRANSFER_SRC.");
+    }
+    if ((dst_slot->usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_DST) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_INVALID_USAGE, "SituationCmdCopyTexture: destination texture missing SITUATION_TEXTURE_USAGE_TRANSFER_DST.");
+    }
+    if (src_slot->format_api != dst_slot->format_api ||
+        (src_slot->format_api != SIT_TEXTURE_FORMAT_RGBA8_UNORM && src_slot->format_api != SIT_TEXTURE_FORMAT_RGBA8_SRGB)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_FORMAT_UNSUPPORTED, "SituationCmdCopyTexture: first slice requires matching RGBA8 color formats.");
+    }
+    if (region->src_mip_level >= (uint32_t)src_slot->mip_levels ||
+        region->dst_mip_level >= (uint32_t)dst_slot->mip_levels) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdCopyTexture: mip level is out of range.");
+    }
+
+    int src_w = _SituationTextureMipExtent(src_slot->width, region->src_mip_level);
+    int src_h = _SituationTextureMipExtent(src_slot->height, region->src_mip_level);
+    int dst_w = _SituationTextureMipExtent(dst_slot->width, region->dst_mip_level);
+    int dst_h = _SituationTextureMipExtent(dst_slot->height, region->dst_mip_level);
+    SituationTextureRect dst_rect = {
+        region->dst_x,
+        region->dst_y,
+        region->src_rect.width,
+        region->src_rect.height
+    };
+    if (!_SituationTextureRectInBounds(region->src_rect, src_w, src_h) ||
+        !_SituationTextureRectInBounds(dst_rect, dst_w, dst_h)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdCopyTexture: source or destination region is out of bounds.");
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* s_cmd = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(s_cmd, SIT_OP_COPY_TEXTURE, p);
+    p->args.copy_texture.src = src;
+    p->args.copy_texture.dst = dst;
+    p->args.copy_texture.region = *region;
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_VULKAN)
+    VkImageCopy copy = {0};
+    copy.srcOffset = (VkOffset3D){region->src_rect.x, region->src_rect.y, 0};
+    copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.srcSubresource.mipLevel = region->src_mip_level;
+    copy.srcSubresource.baseArrayLayer = 0;
+    copy.srcSubresource.layerCount = 1;
+    copy.dstOffset = (VkOffset3D){region->dst_x, region->dst_y, 0};
+    copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.dstSubresource.mipLevel = region->dst_mip_level;
+    copy.dstSubresource.baseArrayLayer = 0;
+    copy.dstSubresource.layerCount = 1;
+    copy.extent = (VkExtent3D){
+        (uint32_t)region->src_rect.width,
+        (uint32_t)region->src_rect.height,
+        1u
+    };
+    vkCmdCopyImage(
+        (VkCommandBuffer)cmd,
+        src_slot->image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        dst_slot->image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &copy);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+static size_t _SituationTextureBufferRowPitchBytes(size_t row_pitch, int width) {
+    return row_pitch ? row_pitch : (size_t)width * 4u;
+}
+
+static bool _SituationBufferRegionFits(size_t buffer_size, size_t offset, int width, int height, size_t row_pitch_bytes) {
+    if (width <= 0 || height <= 0) return false;
+    if (offset > buffer_size) return false;
+    size_t last_row = offset + row_pitch_bytes * (size_t)(height - 1);
+    size_t end = last_row + (size_t)width * 4u;
+    return end <= buffer_size;
+}
+
+/**
+ * @brief [Phase 4B] Upload tightly packed RGBA8 rows from a buffer into a texture subregion.
+ */
+SITAPI SituationError SituationCmdCopyBufferToTexture(SituationCommandBuffer cmd, SituationBuffer src, size_t src_offset, SituationTexture dst, const SituationTextureCopyRegion* dst_region) {
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdCopyBufferToTexture: library not initialized.");
+    }
+    if (!cmd || !dst_region) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdCopyBufferToTexture: cmd and dst_region are required.");
+    }
+    if (dst_region->src_array_layer != 0u || dst_region->dst_array_layer != 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdCopyBufferToTexture: only array layer 0 is supported in the first slice.");
+    }
+    if (dst_region->src_rect.x != 0 || dst_region->src_rect.y != 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdCopyBufferToTexture: src_rect x/y must be 0; use dst_x/dst_y for texture placement.");
+    }
+
+    _SituationBufferSlot* buf_slot = _SitGetBufferSlot(src);
+    _SituationTextureSlot* dst_slot = _SitGetTextureSlot(dst);
+    if (!buf_slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdCopyBufferToTexture: invalid buffer handle.");
+    }
+    if (!dst_slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdCopyBufferToTexture: invalid texture handle.");
+    }
+    if ((dst_slot->usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_DST) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_INVALID_USAGE, "SituationCmdCopyBufferToTexture: texture missing SITUATION_TEXTURE_USAGE_TRANSFER_DST.");
+    }
+    if (dst_slot->format_api != SIT_TEXTURE_FORMAT_RGBA8_UNORM && dst_slot->format_api != SIT_TEXTURE_FORMAT_RGBA8_SRGB) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_FORMAT_UNSUPPORTED, "SituationCmdCopyBufferToTexture: first slice requires RGBA8 color formats.");
+    }
+    if ((buf_slot->usage_flags & SITUATION_BUFFER_USAGE_TRANSFER_SRC) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_USAGE, "SituationCmdCopyBufferToTexture: buffer missing SITUATION_BUFFER_USAGE_TRANSFER_SRC.");
+    }
+    if (dst_region->dst_mip_level >= (uint32_t)dst_slot->mip_levels) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdCopyBufferToTexture: mip level is out of range.");
+    }
+
+    int dst_w = _SituationTextureMipExtent(dst_slot->width, dst_region->dst_mip_level);
+    int dst_h = _SituationTextureMipExtent(dst_slot->height, dst_region->dst_mip_level);
+    SituationTextureRect dst_rect = {
+        dst_region->dst_x,
+        dst_region->dst_y,
+        dst_region->src_rect.width,
+        dst_region->src_rect.height
+    };
+    if (!_SituationTextureRectInBounds(dst_rect, dst_w, dst_h)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdCopyBufferToTexture: destination region is out of bounds.");
+    }
+    if (!_SituationBufferRegionFits(buf_slot->size_in_bytes, src_offset, dst_region->src_rect.width, dst_region->src_rect.height, (size_t)dst_region->src_rect.width * 4u)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "SituationCmdCopyBufferToTexture: source range exceeds buffer size.");
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* s_cmd = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(s_cmd, SIT_OP_COPY_BUFFER_TO_TEXTURE, p);
+    p->args.copy_buffer_to_texture.buffer_id = buf_slot->gl_buffer_id;
+    p->args.copy_buffer_to_texture.buffer_offset = src_offset;
+    p->args.copy_buffer_to_texture.dst = dst;
+    p->args.copy_buffer_to_texture.region = *dst_region;
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_VULKAN)
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = src_offset;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = dst_region->dst_mip_level;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = (VkOffset3D){dst_region->dst_x, dst_region->dst_y, 0};
+    region.imageExtent = (VkExtent3D){
+        (uint32_t)dst_region->src_rect.width,
+        (uint32_t)dst_region->src_rect.height,
+        1u
+    };
+    vkCmdCopyBufferToImage(
+        (VkCommandBuffer)cmd,
+        buf_slot->vk_buffer,
+        dst_slot->image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &region);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+/**
+ * @brief [Phase 4B] Copy a texture subregion into a buffer with optional row pitch.
+ */
+SITAPI SituationError SituationCmdCopyTextureToBuffer(SituationCommandBuffer cmd, SituationTexture src, const SituationTextureCopyRegion* src_region, SituationBuffer dst, size_t dst_offset, size_t dst_row_pitch) {
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdCopyTextureToBuffer: library not initialized.");
+    }
+    if (!cmd || !src_region) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdCopyTextureToBuffer: cmd and src_region are required.");
+    }
+    if (src_region->src_array_layer != 0u || src_region->dst_array_layer != 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdCopyTextureToBuffer: only array layer 0 is supported in the first slice.");
+    }
+
+    _SituationTextureSlot* src_slot = _SitGetTextureSlot(src);
+    _SituationBufferSlot* buf_slot = _SitGetBufferSlot(dst);
+    if (!src_slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdCopyTextureToBuffer: invalid texture handle.");
+    }
+    if (!buf_slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdCopyTextureToBuffer: invalid buffer handle.");
+    }
+    if ((src_slot->usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_SRC) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_INVALID_USAGE, "SituationCmdCopyTextureToBuffer: texture missing SITUATION_TEXTURE_USAGE_TRANSFER_SRC.");
+    }
+    if (src_slot->format_api != SIT_TEXTURE_FORMAT_RGBA8_UNORM && src_slot->format_api != SIT_TEXTURE_FORMAT_RGBA8_SRGB) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_FORMAT_UNSUPPORTED, "SituationCmdCopyTextureToBuffer: first slice requires RGBA8 color formats.");
+    }
+    if ((buf_slot->usage_flags & SITUATION_BUFFER_USAGE_TRANSFER_DST) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_USAGE, "SituationCmdCopyTextureToBuffer: buffer missing SITUATION_BUFFER_USAGE_TRANSFER_DST.");
+    }
+    if (src_region->src_mip_level >= (uint32_t)src_slot->mip_levels) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdCopyTextureToBuffer: mip level is out of range.");
+    }
+
+    int src_w = _SituationTextureMipExtent(src_slot->width, src_region->src_mip_level);
+    int src_h = _SituationTextureMipExtent(src_slot->height, src_region->src_mip_level);
+    if (!_SituationTextureRectInBounds(src_region->src_rect, src_w, src_h)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdCopyTextureToBuffer: source region is out of bounds.");
+    }
+
+    size_t row_pitch_bytes = _SituationTextureBufferRowPitchBytes(dst_row_pitch, src_region->src_rect.width);
+    if (dst_row_pitch != 0 && dst_row_pitch < (size_t)src_region->src_rect.width * 4u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "SituationCmdCopyTextureToBuffer: dst_row_pitch is smaller than the row width.");
+    }
+    if (!_SituationBufferRegionFits(buf_slot->size_in_bytes, dst_offset, src_region->src_rect.width, src_region->src_rect.height, row_pitch_bytes)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "SituationCmdCopyTextureToBuffer: destination range exceeds buffer size.");
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* s_cmd = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(s_cmd, SIT_OP_COPY_TEXTURE_TO_BUFFER, p);
+    p->args.copy_texture_to_buffer.src = src;
+    p->args.copy_texture_to_buffer.region = *src_region;
+    p->args.copy_texture_to_buffer.buffer_id = buf_slot->gl_buffer_id;
+    p->args.copy_texture_to_buffer.buffer_offset = dst_offset;
+    p->args.copy_texture_to_buffer.buffer_row_pitch = dst_row_pitch;
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_VULKAN)
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = dst_offset;
+    region.bufferRowLength = dst_row_pitch ? (uint32_t)(dst_row_pitch / 4u) : 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = src_region->src_mip_level;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = (VkOffset3D){src_region->src_rect.x, src_region->src_rect.y, 0};
+    region.imageExtent = (VkExtent3D){
+        (uint32_t)src_region->src_rect.width,
+        (uint32_t)src_region->src_rect.height,
+        1u
+    };
+    vkCmdCopyImageToBuffer(
+        (VkCommandBuffer)cmd,
+        src_slot->image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        buf_slot->vk_buffer,
+        1,
+        &region);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
 #endif
 }
 
@@ -18051,6 +20789,398 @@ SITAPI SituationError SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, 
  * @param src_flags A bitmask of `SituationBarrierSrcFlags` indicating the pipeline stage(s) and type(s) of memory access that form the source of the dependency.
  * @param dst_flags A bitmask of `SituationBarrierDstFlags` indicating the pipeline stage(s) and type(s) of memory access that form the destination of the dependency.
  */
+#if defined(SITUATION_USE_VULKAN)
+static VkPipelineStageFlags _SituationVulkanMapPipelineStages(uint32_t stages) {
+    VkPipelineStageFlags mask = 0;
+    if (stages & SITUATION_PIPELINE_STAGE_TOP) mask |= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    if (stages & SITUATION_PIPELINE_STAGE_INDIRECT_COMMAND) mask |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    if (stages & SITUATION_PIPELINE_STAGE_VERTEX_INPUT) mask |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+    if (stages & SITUATION_PIPELINE_STAGE_VERTEX_SHADER) mask |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    if (stages & SITUATION_PIPELINE_STAGE_FRAGMENT_SHADER) mask |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    if (stages & SITUATION_PIPELINE_STAGE_COLOR_ATTACHMENT) mask |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    if (stages & SITUATION_PIPELINE_STAGE_DEPTH_STENCIL) mask |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    if (stages & SITUATION_PIPELINE_STAGE_COMPUTE_SHADER) mask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    if (stages & SITUATION_PIPELINE_STAGE_TRANSFER) mask |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (stages & SITUATION_PIPELINE_STAGE_HOST) mask |= VK_PIPELINE_STAGE_HOST_BIT;
+    if (stages & SITUATION_PIPELINE_STAGE_BOTTOM) mask |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    return mask;
+}
+
+static VkAccessFlags _SituationVulkanMapAccessFlags(uint32_t access) {
+    VkAccessFlags mask = 0;
+    if (access & SITUATION_ACCESS_INDIRECT_COMMAND_READ) mask |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    if (access & SITUATION_ACCESS_VERTEX_READ) mask |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    if (access & SITUATION_ACCESS_INDEX_READ) mask |= VK_ACCESS_INDEX_READ_BIT;
+    if (access & SITUATION_ACCESS_UNIFORM_READ) mask |= VK_ACCESS_UNIFORM_READ_BIT;
+    if (access & SITUATION_ACCESS_SHADER_READ) mask |= VK_ACCESS_SHADER_READ_BIT;
+    if (access & SITUATION_ACCESS_SHADER_WRITE) mask |= VK_ACCESS_SHADER_WRITE_BIT;
+    if (access & SITUATION_ACCESS_COLOR_ATTACHMENT_READ) mask |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+    if (access & SITUATION_ACCESS_COLOR_ATTACHMENT_WRITE) mask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    if (access & SITUATION_ACCESS_DEPTH_STENCIL_READ) mask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    if (access & SITUATION_ACCESS_DEPTH_STENCIL_WRITE) mask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    if (access & SITUATION_ACCESS_TRANSFER_READ) mask |= VK_ACCESS_TRANSFER_READ_BIT;
+    if (access & SITUATION_ACCESS_TRANSFER_WRITE) mask |= VK_ACCESS_TRANSFER_WRITE_BIT;
+    if (access & SITUATION_ACCESS_HOST_READ) mask |= VK_ACCESS_HOST_READ_BIT;
+    if (access & SITUATION_ACCESS_HOST_WRITE) mask |= VK_ACCESS_HOST_WRITE_BIT;
+    return mask;
+}
+
+static VkImageLayout _SituationVulkanMapTextureLayout(SituationTextureLayout layout) {
+    switch (layout) {
+        case SITUATION_TEXTURE_LAYOUT_UNDEFINED: return VK_IMAGE_LAYOUT_UNDEFINED;
+        case SITUATION_TEXTURE_LAYOUT_GENERAL: return VK_IMAGE_LAYOUT_GENERAL;
+        case SITUATION_TEXTURE_LAYOUT_SHADER_READ: return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        case SITUATION_TEXTURE_LAYOUT_TRANSFER_SRC: return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        case SITUATION_TEXTURE_LAYOUT_TRANSFER_DST: return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        case SITUATION_TEXTURE_LAYOUT_COLOR_ATTACHMENT: return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        case SITUATION_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT: return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        case SITUATION_TEXTURE_LAYOUT_PRESENT: return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        default: return VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+}
+
+static void _SituationVulkanTextureLayoutBarrierMasks(
+    SituationTextureLayout layout,
+    bool is_source,
+    VkPipelineStageFlags* stage_mask,
+    VkAccessFlags* access_mask) {
+    switch (layout) {
+        case SITUATION_TEXTURE_LAYOUT_UNDEFINED:
+            *stage_mask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            *access_mask = 0;
+            break;
+        case SITUATION_TEXTURE_LAYOUT_GENERAL:
+            *stage_mask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            *access_mask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            break;
+        case SITUATION_TEXTURE_LAYOUT_SHADER_READ:
+            *stage_mask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            *access_mask = VK_ACCESS_SHADER_READ_BIT;
+            break;
+        case SITUATION_TEXTURE_LAYOUT_TRANSFER_SRC:
+            *stage_mask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            *access_mask = VK_ACCESS_TRANSFER_READ_BIT;
+            break;
+        case SITUATION_TEXTURE_LAYOUT_TRANSFER_DST:
+            *stage_mask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            *access_mask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            break;
+        case SITUATION_TEXTURE_LAYOUT_COLOR_ATTACHMENT:
+            *stage_mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            *access_mask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            break;
+        case SITUATION_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT:
+            *stage_mask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+            *access_mask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            break;
+        case SITUATION_TEXTURE_LAYOUT_PRESENT:
+            (void)is_source;
+            *stage_mask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+            *access_mask = 0;
+            break;
+        default:
+            *stage_mask = 0;
+            *access_mask = 0;
+            break;
+    }
+}
+#endif
+
+static bool _SituationTextureLayoutIsAttachmentOrPresent(SituationTextureLayout layout) {
+    return layout == SITUATION_TEXTURE_LAYOUT_COLOR_ATTACHMENT ||
+           layout == SITUATION_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT ||
+           layout == SITUATION_TEXTURE_LAYOUT_PRESENT;
+}
+
+SITAPI SituationError SituationCmdPipelineBarrierEx(SituationCommandBuffer cmd, const SituationPipelineBarrierDesc* desc) {
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdPipelineBarrierEx: library not initialized.");
+    }
+    if (!cmd || !desc) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdPipelineBarrierEx: cmd and desc are required.");
+    }
+    if (desc->src_stages == 0 || desc->dst_stages == 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdPipelineBarrierEx: src_stages and dst_stages must be non-zero.");
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    uint32_t src_flags = 0;
+    uint32_t dst_flags = 0;
+
+    if ((desc->src_stages & SITUATION_PIPELINE_STAGE_COMPUTE_SHADER) && (desc->src_access & SITUATION_ACCESS_SHADER_WRITE)) {
+        src_flags |= SITUATION_BARRIER_COMPUTE_SHADER_WRITE;
+    }
+    if ((desc->src_stages & SITUATION_PIPELINE_STAGE_FRAGMENT_SHADER) && (desc->src_access & SITUATION_ACCESS_SHADER_WRITE)) {
+        src_flags |= SITUATION_BARRIER_FRAGMENT_SHADER_WRITE;
+    }
+    if ((desc->src_stages & SITUATION_PIPELINE_STAGE_VERTEX_SHADER) && (desc->src_access & SITUATION_ACCESS_SHADER_WRITE)) {
+        src_flags |= SITUATION_BARRIER_VERTEX_SHADER_WRITE;
+    }
+    if ((desc->src_stages & SITUATION_PIPELINE_STAGE_TRANSFER) && (desc->src_access & SITUATION_ACCESS_TRANSFER_WRITE)) {
+        src_flags |= SITUATION_BARRIER_TRANSFER_WRITE;
+    }
+
+    if (desc->dst_access & SITUATION_ACCESS_INDIRECT_COMMAND_READ) {
+        dst_flags |= SITUATION_BARRIER_INDIRECT_COMMAND_READ;
+    }
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_COMPUTE_SHADER) {
+        if (desc->dst_access & SITUATION_ACCESS_SHADER_READ) dst_flags |= SITUATION_BARRIER_COMPUTE_SHADER_READ;
+        if (desc->dst_access & SITUATION_ACCESS_SHADER_WRITE) dst_flags |= SITUATION_BARRIER_COMPUTE_SHADER_READ;
+    }
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_VERTEX_SHADER) {
+        if (desc->dst_access & (SITUATION_ACCESS_SHADER_READ | SITUATION_ACCESS_VERTEX_READ | SITUATION_ACCESS_UNIFORM_READ)) {
+            dst_flags |= SITUATION_BARRIER_VERTEX_SHADER_READ;
+        }
+    }
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_FRAGMENT_SHADER) {
+        if (desc->dst_access & (SITUATION_ACCESS_SHADER_READ | SITUATION_ACCESS_UNIFORM_READ)) {
+            dst_flags |= SITUATION_BARRIER_FRAGMENT_SHADER_READ;
+        }
+    }
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_TRANSFER) {
+        if (desc->dst_access & SITUATION_ACCESS_TRANSFER_READ) dst_flags |= SITUATION_BARRIER_TRANSFER_READ;
+        if (desc->dst_access & SITUATION_ACCESS_TRANSFER_WRITE) dst_flags |= SITUATION_BARRIER_TRANSFER_READ;
+    }
+
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_PIPELINE_BARRIER, p);
+    p->args.barrier.src = src_flags;
+    p->args.barrier.dst = dst_flags;
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_VULKAN)
+    VkPipelineStageFlags src_stage_mask = 0;
+    VkPipelineStageFlags dst_stage_mask = 0;
+    VkAccessFlags src_access_mask = 0;
+    VkAccessFlags dst_access_mask = 0;
+
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_TOP) src_stage_mask |= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_INDIRECT_COMMAND) src_stage_mask |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_VERTEX_INPUT) src_stage_mask |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_VERTEX_SHADER) src_stage_mask |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_FRAGMENT_SHADER) src_stage_mask |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_COLOR_ATTACHMENT) src_stage_mask |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_DEPTH_STENCIL) src_stage_mask |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_COMPUTE_SHADER) src_stage_mask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_TRANSFER) src_stage_mask |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_HOST) src_stage_mask |= VK_PIPELINE_STAGE_HOST_BIT;
+    if (desc->src_stages & SITUATION_PIPELINE_STAGE_BOTTOM) src_stage_mask |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_TOP) dst_stage_mask |= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_INDIRECT_COMMAND) dst_stage_mask |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_VERTEX_INPUT) dst_stage_mask |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_VERTEX_SHADER) dst_stage_mask |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_FRAGMENT_SHADER) dst_stage_mask |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_COLOR_ATTACHMENT) dst_stage_mask |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_DEPTH_STENCIL) dst_stage_mask |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_COMPUTE_SHADER) dst_stage_mask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_TRANSFER) dst_stage_mask |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_HOST) dst_stage_mask |= VK_PIPELINE_STAGE_HOST_BIT;
+    if (desc->dst_stages & SITUATION_PIPELINE_STAGE_BOTTOM) dst_stage_mask |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+
+    if (desc->src_access & SITUATION_ACCESS_INDIRECT_COMMAND_READ) src_access_mask |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    if (desc->src_access & SITUATION_ACCESS_VERTEX_READ) src_access_mask |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    if (desc->src_access & SITUATION_ACCESS_INDEX_READ) src_access_mask |= VK_ACCESS_INDEX_READ_BIT;
+    if (desc->src_access & SITUATION_ACCESS_UNIFORM_READ) src_access_mask |= VK_ACCESS_UNIFORM_READ_BIT;
+    if (desc->src_access & SITUATION_ACCESS_SHADER_READ) src_access_mask |= VK_ACCESS_SHADER_READ_BIT;
+    if (desc->src_access & SITUATION_ACCESS_SHADER_WRITE) src_access_mask |= VK_ACCESS_SHADER_WRITE_BIT;
+    if (desc->src_access & SITUATION_ACCESS_COLOR_ATTACHMENT_READ) src_access_mask |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+    if (desc->src_access & SITUATION_ACCESS_COLOR_ATTACHMENT_WRITE) src_access_mask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    if (desc->src_access & SITUATION_ACCESS_DEPTH_STENCIL_READ) src_access_mask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    if (desc->src_access & SITUATION_ACCESS_DEPTH_STENCIL_WRITE) src_access_mask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    if (desc->src_access & SITUATION_ACCESS_TRANSFER_READ) src_access_mask |= VK_ACCESS_TRANSFER_READ_BIT;
+    if (desc->src_access & SITUATION_ACCESS_TRANSFER_WRITE) src_access_mask |= VK_ACCESS_TRANSFER_WRITE_BIT;
+    if (desc->src_access & SITUATION_ACCESS_HOST_READ) src_access_mask |= VK_ACCESS_HOST_READ_BIT;
+    if (desc->src_access & SITUATION_ACCESS_HOST_WRITE) src_access_mask |= VK_ACCESS_HOST_WRITE_BIT;
+
+    if (desc->dst_access & SITUATION_ACCESS_INDIRECT_COMMAND_READ) dst_access_mask |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_VERTEX_READ) dst_access_mask |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_INDEX_READ) dst_access_mask |= VK_ACCESS_INDEX_READ_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_UNIFORM_READ) dst_access_mask |= VK_ACCESS_UNIFORM_READ_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_SHADER_READ) dst_access_mask |= VK_ACCESS_SHADER_READ_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_SHADER_WRITE) dst_access_mask |= VK_ACCESS_SHADER_WRITE_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_COLOR_ATTACHMENT_READ) dst_access_mask |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_COLOR_ATTACHMENT_WRITE) dst_access_mask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_DEPTH_STENCIL_READ) dst_access_mask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_DEPTH_STENCIL_WRITE) dst_access_mask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_TRANSFER_READ) dst_access_mask |= VK_ACCESS_TRANSFER_READ_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_TRANSFER_WRITE) dst_access_mask |= VK_ACCESS_TRANSFER_WRITE_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_HOST_READ) dst_access_mask |= VK_ACCESS_HOST_READ_BIT;
+    if (desc->dst_access & SITUATION_ACCESS_HOST_WRITE) dst_access_mask |= VK_ACCESS_HOST_WRITE_BIT;
+
+    VkMemoryBarrier barrier = {0};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = src_access_mask;
+    barrier.dstAccessMask = dst_access_mask;
+    vkCmdPipelineBarrier((VkCommandBuffer)cmd, src_stage_mask, dst_stage_mask, 0, 1, &barrier, 0, NULL, 0, NULL);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+SITAPI SituationError SituationCmdBufferBarrier(SituationCommandBuffer cmd, const SituationBufferBarrierDesc* desc) {
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdBufferBarrier: library not initialized.");
+    }
+    if (!cmd || !desc) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdBufferBarrier: cmd and desc are required.");
+    }
+    if (desc->src_stages == 0 || desc->dst_stages == 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdBufferBarrier: src_stages and dst_stages must be non-zero.");
+    }
+    if (desc->size == 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "SituationCmdBufferBarrier: size must be non-zero.");
+    }
+
+    _SituationBufferSlot* slot = _SitGetBufferSlot(desc->buffer);
+    if (!slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdBufferBarrier: invalid buffer handle.");
+    }
+    if (desc->offset > slot->size_in_bytes || slot->size_in_bytes - desc->offset < desc->size) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_SIZE, "SituationCmdBufferBarrier: range exceeds buffer size.");
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationPipelineBarrierDesc global = {0};
+    global.src_stages = desc->src_stages;
+    global.src_access = desc->src_access;
+    global.dst_stages = desc->dst_stages;
+    global.dst_access = desc->dst_access;
+    return SituationCmdPipelineBarrierEx(cmd, &global);
+#elif defined(SITUATION_USE_VULKAN)
+    VkPipelineStageFlags src_stage_mask = _SituationVulkanMapPipelineStages(desc->src_stages);
+    VkPipelineStageFlags dst_stage_mask = _SituationVulkanMapPipelineStages(desc->dst_stages);
+    if (src_stage_mask == 0 || dst_stage_mask == 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdBufferBarrier: unsupported stage mask.");
+    }
+
+    VkBufferMemoryBarrier barrier = {0};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = _SituationVulkanMapAccessFlags(desc->src_access);
+    barrier.dstAccessMask = _SituationVulkanMapAccessFlags(desc->dst_access);
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = slot->vk_buffer;
+    barrier.offset = (VkDeviceSize)desc->offset;
+    barrier.size = (VkDeviceSize)desc->size;
+
+    vkCmdPipelineBarrier(
+        (VkCommandBuffer)cmd,
+        src_stage_mask,
+        dst_stage_mask,
+        0,
+        0,
+        NULL,
+        1,
+        &barrier,
+        0,
+        NULL);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
+SITAPI SituationError SituationCmdTextureBarrier(SituationCommandBuffer cmd, SituationTexture texture, const SituationTextureBarrierDesc* desc) {
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdTextureBarrier: library not initialized.");
+    }
+    if (!cmd || !desc) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdTextureBarrier: cmd and desc are required.");
+    }
+    if (desc->old_layout > SITUATION_TEXTURE_LAYOUT_PRESENT || desc->new_layout > SITUATION_TEXTURE_LAYOUT_PRESENT) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdTextureBarrier: unsupported texture layout value.");
+    }
+    if (desc->new_layout == SITUATION_TEXTURE_LAYOUT_UNDEFINED) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdTextureBarrier: new_layout cannot be UNDEFINED.");
+    }
+
+    _SituationTextureSlot* slot = _SitGetTextureSlot(texture);
+    if (!slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdTextureBarrier: invalid texture handle.");
+    }
+
+    uint32_t mip_count = desc->mip_level_count ? desc->mip_level_count : 1u;
+    uint32_t layer_count = desc->array_layer_count ? desc->array_layer_count : 1u;
+    if (desc->base_mip_level >= (uint32_t)slot->mip_levels ||
+        mip_count == 0u ||
+        desc->base_mip_level + mip_count > (uint32_t)slot->mip_levels ||
+        desc->base_array_layer != 0u ||
+        layer_count != 1u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_REGION_INVALID, "SituationCmdTextureBarrier: mip range or array layer range is invalid for a 2D texture.");
+    }
+    if (_SituationTextureLayoutIsAttachmentOrPresent(desc->old_layout) ||
+        _SituationTextureLayoutIsAttachmentOrPresent(desc->new_layout)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationCmdTextureBarrier: attachment and present layouts are reserved until render-target ownership is exposed.");
+    }
+    if ((desc->new_layout == SITUATION_TEXTURE_LAYOUT_TRANSFER_SRC || desc->old_layout == SITUATION_TEXTURE_LAYOUT_TRANSFER_SRC) &&
+        (slot->usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_SRC) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_INVALID_USAGE, "SituationCmdTextureBarrier: texture lacks SITUATION_TEXTURE_USAGE_TRANSFER_SRC.");
+    }
+    if ((desc->new_layout == SITUATION_TEXTURE_LAYOUT_TRANSFER_DST || desc->old_layout == SITUATION_TEXTURE_LAYOUT_TRANSFER_DST) &&
+        (slot->usage_flags & SITUATION_TEXTURE_USAGE_TRANSFER_DST) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_INVALID_USAGE, "SituationCmdTextureBarrier: texture lacks SITUATION_TEXTURE_USAGE_TRANSFER_DST.");
+    }
+    if ((desc->new_layout == SITUATION_TEXTURE_LAYOUT_GENERAL || desc->old_layout == SITUATION_TEXTURE_LAYOUT_GENERAL) &&
+        (slot->usage_flags & SITUATION_TEXTURE_USAGE_STORAGE) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_INVALID_USAGE, "SituationCmdTextureBarrier: GENERAL layout requires SITUATION_TEXTURE_USAGE_STORAGE.");
+    }
+    if ((desc->new_layout == SITUATION_TEXTURE_LAYOUT_SHADER_READ || desc->old_layout == SITUATION_TEXTURE_LAYOUT_SHADER_READ) &&
+        (slot->usage_flags & (SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_COMPUTE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE)) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_INVALID_USAGE, "SituationCmdTextureBarrier: SHADER_READ layout requires sampled or storage texture usage.");
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_PIPELINE_BARRIER, p);
+    p->args.barrier.src = 0;
+    p->args.barrier.dst = 0; /* GL has no texture layouts; use the existing conservative all-barrier fallback. */
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_VULKAN)
+    VkPipelineStageFlags src_stage_mask = 0;
+    VkPipelineStageFlags dst_stage_mask = 0;
+    VkAccessFlags src_access_mask = 0;
+    VkAccessFlags dst_access_mask = 0;
+    _SituationVulkanTextureLayoutBarrierMasks(desc->old_layout, true, &src_stage_mask, &src_access_mask);
+    _SituationVulkanTextureLayoutBarrierMasks(desc->new_layout, false, &dst_stage_mask, &dst_access_mask);
+    if (src_stage_mask == 0 || dst_stage_mask == 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdTextureBarrier: unsupported layout transition.");
+    }
+
+    VkImageMemoryBarrier barrier = {0};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = src_access_mask;
+    barrier.dstAccessMask = dst_access_mask;
+    barrier.oldLayout = _SituationVulkanMapTextureLayout(desc->old_layout);
+    barrier.newLayout = _SituationVulkanMapTextureLayout(desc->new_layout);
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = slot->image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = desc->base_mip_level;
+    barrier.subresourceRange.levelCount = mip_count;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(
+        (VkCommandBuffer)cmd,
+        src_stage_mask,
+        dst_stage_mask,
+        0,
+        0,
+        NULL,
+        0,
+        NULL,
+        1,
+        &barrier);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
+}
+
 SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags) {
     if (!SituationIsInitialized()) { return; } // Silently return if the library isn't initialized.
 
@@ -18167,38 +21297,38 @@ SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src
  * @note It is the caller's responsibility to ensure that:
  *       1. A valid compute pipeline is bound before calling this function.
  *       2. All required resources (buffers, textures via descriptor sets/binds) are bound.
- *       3. Appropriate memory barriers (`SituationMemoryBarrier`) are used if synchronization is needed before or after the dispatch.
+ *       3. Appropriate memory barriers (`SituationCmdPipelineBarrierEx`, `SituationCmdBufferBarrier`, or `SituationCmdTextureBarrier`) are used if synchronization is needed before or after the dispatch.
  *
  * @warning Calling this function without a bound compute pipeline will result in undefined behavior or a Vulkan validation error.
  */
-SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
+SITAPI SituationError SituationCmdDispatchEx(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
     // --- 1. Core Library Initialization Check ---
     if (!SituationIsInitialized()) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot dispatch compute work.");
-        return;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot dispatch compute work.");
+    }
+    if (!cmd) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdDispatchEx: cmd cannot be NULL.");
+    }
+    if (group_count_x == 0 || group_count_y == 0 || group_count_z == 0) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdDispatchEx: group counts must be non-zero.");
     }
 
 #if defined(SITUATION_USE_OPENGL)
     SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
     SitCommandPacket* p = NULL;
-    SIT_GL_SOFT_CMD_PUSH_VOID(buf, SIT_OP_DISPATCH, p);
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_DISPATCH, p);
     if (p) {
         p->args.dispatch.x = group_count_x;
         p->args.dispatch.y = group_count_y;
         p->args.dispatch.z = group_count_z;
     }
+    return SITUATION_SUCCESS;
 
 #elif defined(SITUATION_USE_VULKAN)
     {
-        // --- 2. Vulkan Input Validation ---
-        // 2.1. Validate Command Buffer Handle
-        if (cmd == 0 || (VkCommandBuffer)cmd == VK_NULL_HANDLE) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid command buffer for compute dispatch.");
-            return;
-        }
         VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
-        // 2.2. (Optional but Robust) Validate that a Compute Pipeline is Bound
+        // 2. Vulkan pipeline validation is deferred until compute bind-state is tracked.
         // While Vulkan drivers will error if no pipeline is bound, checking here provides
         // clearer feedback. This requires tracking the last bound compute pipeline layout
         // or a simple boolean flag in the global state (e.g., sit_render.vk.is_compute_pipeline_bound).
@@ -18214,11 +21344,52 @@ SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_coun
         // Records the dispatch command into the command buffer.
         // Assumes the pipeline and descriptor sets are correctly bound beforehand.
         vkCmdDispatch(vk_cmd, group_count_x, group_count_y, group_count_z);
+        return SITUATION_SUCCESS;
     }
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
 #endif
-    // --- 4. Post-Dispatch (if needed) ---
-    // No general post-dispatch actions are required here.
-    // Synchronization is handled by the user via SituationMemoryBarrier.
+}
+
+SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
+    (void)SituationCmdDispatchEx(cmd, group_count_x, group_count_y, group_count_z);
+}
+
+SITAPI SituationError SituationCmdDispatchIndirect(SituationCommandBuffer cmd, SituationBuffer indirect_buffer, size_t offset) {
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationCmdDispatchIndirect: library not initialized.");
+    }
+    if (!cmd) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCmdDispatchIndirect: cmd cannot be NULL.");
+    }
+    if ((offset & 3u) != 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INDIRECT_COMMAND_INVALID, "SituationCmdDispatchIndirect: offset must be 4-byte aligned.");
+    }
+
+    _SituationBufferSlot* slot = _SitGetBufferSlot(indirect_buffer);
+    if (!slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_RESOURCE_HANDLE, "SituationCmdDispatchIndirect: invalid indirect buffer handle.");
+    }
+    if ((slot->usage_flags & SITUATION_BUFFER_USAGE_INDIRECT_BUFFER) == 0u) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_BUFFER_INVALID_USAGE, "SituationCmdDispatchIndirect: buffer missing SITUATION_BUFFER_USAGE_INDIRECT_BUFFER.");
+    }
+    if (offset > slot->size_in_bytes || slot->size_in_bytes - offset < sizeof(SituationDispatchIndirectCommand)) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INDIRECT_COMMAND_INVALID, "SituationCmdDispatchIndirect: command range is outside the buffer.");
+    }
+
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    SitCommandPacket* p = NULL;
+    SIT_GL_SOFT_CMD_PUSH(buf, SIT_OP_DISPATCH_INDIRECT, p);
+    p->args.dispatch_indirect.buffer_id = (uint64_t)slot->gl_buffer_id;
+    p->args.dispatch_indirect.offset = offset;
+    return SITUATION_SUCCESS;
+#elif defined(SITUATION_USE_VULKAN)
+    vkCmdDispatchIndirect((VkCommandBuffer)cmd, slot->vk_buffer, (VkDeviceSize)offset);
+    return SITUATION_SUCCESS;
+#else
+    return SITUATION_ERROR_NOT_IMPLEMENTED;
+#endif
 }
 
 /**
@@ -18489,6 +21660,40 @@ static VkShaderModule _SituationVulkanCreateShaderModule(const void* code, size_
  * @param pipeline_flags Bit **SIT_VK_PIPELINE_BLEND_OPAQUE** — disable color blending (opaque writes). Used by built-in quad draws so results match OpenGL solid fills under alpha blending.
  * @return A valid VkPipeline handle on success, or VK_NULL_HANDLE on failure.
  */
+static void _SitVulkanFillGraphicsDynamicStates(VkDynamicState* states, uint32_t* out_count) {
+    uint32_t n = 0;
+    states[n++] = VK_DYNAMIC_STATE_VIEWPORT;
+    states[n++] = VK_DYNAMIC_STATE_SCISSOR;
+    states[n++] = VK_DYNAMIC_STATE_LINE_WIDTH;
+    if (_SitVulkanGraphicsDynamicProcsReady()) {
+        states[n++] = VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY;
+        states[n++] = VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE;
+        states[n++] = VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE;
+        states[n++] = VK_DYNAMIC_STATE_DEPTH_COMPARE_OP;
+    }
+    if (sit_render.vk.extended_dynamic_state3_polygon_mode_enabled && sit_render.vk.pfn_cmd_set_polygon_mode_ext) {
+        states[n++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
+    }
+    if (sit_render.vk.depth_bias_dynamic_enabled) {
+        states[n++] = VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE;
+        states[n++] = VK_DYNAMIC_STATE_DEPTH_BIAS;
+    }
+    if (sit_render.vk.extended_dynamic_state3_color_write_enabled &&
+        sit_render.vk.pfn_cmd_set_color_write_mask_ext) {
+        states[n++] = VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
+    }
+    if (sit_render.vk.pfn_cmd_set_stencil_test_enable) {
+        states[n++] = VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE;
+    }
+    if (sit_render.vk.pfn_cmd_set_stencil_op) {
+        states[n++] = VK_DYNAMIC_STATE_STENCIL_OP;
+        states[n++] = VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK;
+        states[n++] = VK_DYNAMIC_STATE_STENCIL_WRITE_MASK;
+        states[n++] = VK_DYNAMIC_STATE_STENCIL_REFERENCE;
+    }
+    *out_count = n;
+}
+
 static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     const void* vs_data, size_t vs_size,
     const void* fs_data, size_t fs_size,
@@ -18498,7 +21703,10 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     const VkVertexInputBindingDescription* pVertexBindingDescriptions,
     uint32_t vertexAttributeCount,
     const VkVertexInputAttributeDescription* pVertexAttributeDescriptions,
-    uint32_t pipeline_flags)
+    uint32_t pipeline_flags,
+    VkCullModeFlags cull_mode,
+    VkFrontFace front_face,
+    VkPolygonMode polygon_mode)
 {
     VkShaderModule vs_module = _SituationVulkanCreateShaderModuleEx(
         vs_data, vs_size, "vertex", SITUATION_ERROR_VULKAN_SPIRV_VS_MODULE_FAILED);
@@ -18530,13 +21738,13 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.depthClampEnable = VK_FALSE;
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.polygonMode = polygon_mode;
     rasterizer.lineWidth = 1.0f;
     // Disable backface culling for all 2D rendering (text, quads, VD compositing)
     // The quad vertices produce counter-clockwise triangles under top-left-origin ortho projection
     // which would be culled with BACK_BIT + CLOCKWISE front face.
-    rasterizer.cullMode = VK_CULL_MODE_NONE;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.cullMode = cull_mode;
+    rasterizer.frontFace = front_face;
     rasterizer.depthBiasEnable = VK_FALSE;
     VkPipelineMultisampleStateCreateInfo multisampling = {};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -18544,11 +21752,15 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
     /* TRIANGLE_LIST: depth write off (text passes transparent fragments without occluding).
-       TRIANGLE_STRIP: 2D quad strips — depth write off; use <= so fragments at z matching cleared depth pass. */
+       TRIANGLE_STRIP: 2D quad strips — depth write off; use <= so fragments at z matching cleared depth pass.
+       SIT_VK_PIPELINE_NO_DEPTH: internal 2D compositors (VD) — depth off entirely. */
     VkBool32 depth_test_enable = VK_TRUE;
     VkBool32 enableDepthWrite = VK_TRUE;
     VkCompareOp depth_compare = VK_COMPARE_OP_LESS;
-    if (topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST) {
+    if (pipeline_flags & SIT_VK_PIPELINE_NO_DEPTH) {
+        depth_test_enable = VK_FALSE;
+        enableDepthWrite = VK_FALSE;
+    } else if (topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST) {
         enableDepthWrite = VK_FALSE;
     } else if (topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP) {
         enableDepthWrite = VK_FALSE;
@@ -18559,23 +21771,29 @@ static VkPipeline _SituationVulkanCreateGraphicsPipeline(
     VkPipelineColorBlendAttachmentState color_blend_attachment = {};
     color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     color_blend_attachment.blendEnable = (pipeline_flags & SIT_VK_PIPELINE_BLEND_OPAQUE) ? VK_FALSE : VK_TRUE;
-    color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    color_blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    if (pipeline_flags & SIT_VK_PIPELINE_BLEND_ADDITIVE) {
+        color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        color_blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    } else if (pipeline_flags & SIT_VK_PIPELINE_BLEND_MULTIPLY) {
+        color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
+        color_blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    } else if (pipeline_flags & SIT_VK_PIPELINE_BLEND_SCREEN) {
+        color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        color_blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+    } else {
+        color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        color_blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    }
     color_blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;
     color_blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     color_blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     color_blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
     VkPipelineColorBlendStateCreateInfo color_blending = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .logicOpEnable = VK_FALSE, .attachmentCount = 1, .pAttachments = &color_blend_attachment };
 
-    VkDynamicState dynamic_states[] = { 
-        VK_DYNAMIC_STATE_VIEWPORT, 
-        VK_DYNAMIC_STATE_SCISSOR,
-        VK_DYNAMIC_STATE_CULL_MODE,
-        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
-        VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
-        VK_DYNAMIC_STATE_DEPTH_COMPARE_OP
-    };
-    VkPipelineDynamicStateCreateInfo dynamic_state = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 6, .pDynamicStates = dynamic_states };
+    VkDynamicState dynamic_states[16];
+    uint32_t dynamic_state_count = 0;
+    _SitVulkanFillGraphicsDynamicStates(dynamic_states, &dynamic_state_count);
+    VkPipelineDynamicStateCreateInfo dynamic_state = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = dynamic_state_count, .pDynamicStates = dynamic_states };
 
     // 3. Assemble the pipeline create info struct.
     VkGraphicsPipelineCreateInfo pipeline_info = {};
@@ -19177,7 +22395,9 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
             attr_descs_pbr[2].binding = 0; attr_descs_pbr[2].location = SIT_ATTR_TANGENT; attr_descs_pbr[2].format = VK_FORMAT_R32G32B32A32_SFLOAT; attr_descs_pbr[2].offset = 6 * sizeof(float);
             attr_descs_pbr[3].binding = 0; attr_descs_pbr[3].location = SIT_ATTR_TEXCOORD_0; attr_descs_pbr[3].format = VK_FORMAT_R32G32_SFLOAT; attr_descs_pbr[3].offset = 10 * sizeof(float);
 
-            slot->vk_pipeline = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u);
+            slot->vk_pipeline = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
+            slot->vk_pipeline_back_ccw = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_POLYGON_MODE_FILL);
+            slot->vk_pipeline_back_cw = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
 
             // 2. Legacy Pipeline
             VkVertexInputBindingDescription binding_desc_legacy = { .binding = 0, .stride = (3 + 3 + 2) * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
@@ -19186,16 +22406,30 @@ SITAPI SituationError SituationLoadShaderFromMemory(const char* vs_code, const c
             attr_descs_legacy[1].binding = 0; attr_descs_legacy[1].location = SIT_ATTR_NORMAL; attr_descs_legacy[1].format = VK_FORMAT_R32G32B32_SFLOAT; attr_descs_legacy[1].offset = 3 * sizeof(float);
             attr_descs_legacy[2].binding = 0; attr_descs_legacy[2].location = SIT_ATTR_TEXCOORD_0; attr_descs_legacy[2].format = VK_FORMAT_R32G32_SFLOAT; attr_descs_legacy[2].offset = 6 * sizeof(float);
 
-            slot->vk_pipeline_legacy = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u);
+            slot->vk_pipeline_legacy = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
+            slot->vk_pipeline_legacy_back_ccw = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_POLYGON_MODE_FILL);
+            slot->vk_pipeline_legacy_back_cw = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
 
             // 3. Simple Pipeline (position-only, for basic shaders)
             VkVertexInputBindingDescription binding_desc_simple = { .binding = 0, .stride = 3 * sizeof(float), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
             VkVertexInputAttributeDescription attr_descs_simple[1];
             attr_descs_simple[0].binding = 0; attr_descs_simple[0].location = SIT_ATTR_POSITION; attr_descs_simple[0].format = VK_FORMAT_R32G32B32_SFLOAT; attr_descs_simple[0].offset = 0;
 
-            slot->vk_pipeline_simple = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u);
+            slot->vk_pipeline_simple = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
+            slot->vk_pipeline_simple_back_ccw = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_POLYGON_MODE_FILL);
+            slot->vk_pipeline_simple_back_cw = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_FILL);
 
-            if (slot->vk_pipeline == VK_NULL_HANDLE || slot->vk_pipeline_legacy == VK_NULL_HANDLE) {
+            if ((sit_render.enabled_features_mask & SIT_FEATURE_FILL_MODE_NON_SOLID) != 0u) {
+                slot->vk_pipeline_line = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_pbr, 4, attr_descs_pbr, 0u, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_LINE);
+                slot->vk_pipeline_legacy_line = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_legacy, 3, attr_descs_legacy, 0u, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_LINE);
+                slot->vk_pipeline_simple_line = _SituationVulkanCreateGraphicsPipeline(vs_spirv.data, vs_spirv.size, fs_spirv.data, fs_spirv.size, slot->vk_pipeline_layout, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 1, &binding_desc_simple, 1, attr_descs_simple, 0u, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE, VK_POLYGON_MODE_LINE);
+            }
+
+            if (slot->vk_pipeline == VK_NULL_HANDLE || slot->vk_pipeline_legacy == VK_NULL_HANDLE ||
+                slot->vk_pipeline_back_ccw == VK_NULL_HANDLE || slot->vk_pipeline_back_cw == VK_NULL_HANDLE ||
+                slot->vk_pipeline_legacy_back_ccw == VK_NULL_HANDLE || slot->vk_pipeline_legacy_back_cw == VK_NULL_HANDLE ||
+                slot->vk_pipeline_simple == VK_NULL_HANDLE ||
+                slot->vk_pipeline_simple_back_ccw == VK_NULL_HANDLE || slot->vk_pipeline_simple_back_cw == VK_NULL_HANDLE) {
                 _SitFreeShaderSlot(handle); // Will perform deferred cleanup if resources were created
                 _SituationFreeSpirvBlob(&vs_spirv);
                 _SituationFreeSpirvBlob(&fs_spirv);
@@ -19315,10 +22549,14 @@ SITAPI SituationError SituationBeginLoadShaderFromMemory(const char* vs_code, co
 
     if (sit_gs.thread_pool.is_active) {
         /* CPU-bound shaderc compile: high-priority worker queue (not I/O thread).
-         * POINTER_ONLY: ctx is heap-allocated; a struct copy would break atomic compile_done. */
-        SituationSubmitJobEx(
-            &sit_gs.thread_pool, _SituationVkAsyncCompileWorker, ctx, sizeof(*ctx),
-            SIT_SUBMIT_BLOCK_IF_FULL | SIT_SUBMIT_POINTER_ONLY | SIT_SUBMIT_HIGH_PRIORITY);
+         * POINTER_ONLY + data_size 0: never SOO-copy ctx; RUN_IF_FULL avoids a stuck compile_done=0. */
+        SituationJobId compile_job = SituationSubmitJobEx(
+            &sit_gs.thread_pool, _SituationVkAsyncCompileWorker, ctx, 0,
+            SIT_SUBMIT_BLOCK_IF_FULL | SIT_SUBMIT_POINTER_ONLY | SIT_SUBMIT_HIGH_PRIORITY
+                | SIT_SUBMIT_RUN_IF_FULL);
+        if (compile_job == 0 && atomic_load(&ctx->compile_done) == 0) {
+            _SituationVkAsyncCompileWorker(ctx, NULL);
+        }
     } else {
         _SituationVkAsyncCompileWorker(ctx, NULL);
     }
@@ -19534,6 +22772,42 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
                 vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_simple, NULL);
                 slot->vk_pipeline_simple = VK_NULL_HANDLE;
             }
+            if (slot->vk_pipeline_back_ccw != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_back_ccw, NULL);
+                slot->vk_pipeline_back_ccw = VK_NULL_HANDLE;
+            }
+            if (slot->vk_pipeline_back_cw != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_back_cw, NULL);
+                slot->vk_pipeline_back_cw = VK_NULL_HANDLE;
+            }
+            if (slot->vk_pipeline_legacy_back_ccw != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_legacy_back_ccw, NULL);
+                slot->vk_pipeline_legacy_back_ccw = VK_NULL_HANDLE;
+            }
+            if (slot->vk_pipeline_legacy_back_cw != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_legacy_back_cw, NULL);
+                slot->vk_pipeline_legacy_back_cw = VK_NULL_HANDLE;
+            }
+            if (slot->vk_pipeline_simple_back_ccw != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_simple_back_ccw, NULL);
+                slot->vk_pipeline_simple_back_ccw = VK_NULL_HANDLE;
+            }
+            if (slot->vk_pipeline_simple_back_cw != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_simple_back_cw, NULL);
+                slot->vk_pipeline_simple_back_cw = VK_NULL_HANDLE;
+            }
+            if (slot->vk_pipeline_line != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_line, NULL);
+                slot->vk_pipeline_line = VK_NULL_HANDLE;
+            }
+            if (slot->vk_pipeline_legacy_line != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_legacy_line, NULL);
+                slot->vk_pipeline_legacy_line = VK_NULL_HANDLE;
+            }
+            if (slot->vk_pipeline_simple_line != VK_NULL_HANDLE) {
+                vkDestroyPipeline(sit_render.vk.device, slot->vk_pipeline_simple_line, NULL);
+                slot->vk_pipeline_simple_line = VK_NULL_HANDLE;
+            }
         } else {
             _SituationDeferDestroyPipeline(slot->vk_pipeline, layout_to_destroy);
             if (slot->vk_pipeline_legacy != VK_NULL_HANDLE) {
@@ -19541,6 +22815,33 @@ SITAPI void SituationUnloadShader(SituationShader* shader) {
             }
             if (slot->vk_pipeline_simple != VK_NULL_HANDLE) {
                 _SituationDeferDestroyPipeline(slot->vk_pipeline_simple, VK_NULL_HANDLE);
+            }
+            if (slot->vk_pipeline_back_ccw != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_back_ccw, VK_NULL_HANDLE);
+            }
+            if (slot->vk_pipeline_back_cw != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_back_cw, VK_NULL_HANDLE);
+            }
+            if (slot->vk_pipeline_legacy_back_ccw != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy_back_ccw, VK_NULL_HANDLE);
+            }
+            if (slot->vk_pipeline_legacy_back_cw != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy_back_cw, VK_NULL_HANDLE);
+            }
+            if (slot->vk_pipeline_simple_back_ccw != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_simple_back_ccw, VK_NULL_HANDLE);
+            }
+            if (slot->vk_pipeline_simple_back_cw != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_simple_back_cw, VK_NULL_HANDLE);
+            }
+            if (slot->vk_pipeline_line != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_line, VK_NULL_HANDLE);
+            }
+            if (slot->vk_pipeline_legacy_line != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy_line, VK_NULL_HANDLE);
+            }
+            if (slot->vk_pipeline_simple_line != VK_NULL_HANDLE) {
+                _SituationDeferDestroyPipeline(slot->vk_pipeline_simple_line, VK_NULL_HANDLE);
             }
         }
         slot->vk_pipeline_layout = VK_NULL_HANDLE;
@@ -20082,12 +23383,12 @@ SITAPI SituationError SituationValidateShaderUniforms(SituationShader shader, co
 /**
  * @brief [DEPRECATED] Inserts a coarse-grained memory barrier.
  * @details This function provides a simple, but less optimal, way to synchronize memory.
- *          It is recommended to use the more explicit and performant `SituationCmdPipelineBarrier()` instead.
+ *          It is recommended to use `SituationCmdPipelineBarrierEx` or `SituationCmdBufferBarrier` for new synchronization code.
  *
  * @param cmd The command buffer to record the barrier into. (Ignored in OpenGL).
  * @param barrier_bits A bitmask of `SITUATION_BARRIER_*_BIT` flags specifying the types of memory access to synchronize.
  *
- * @deprecated Use SituationCmdPipelineBarrier() for more precise and optimal synchronization.
+ * @deprecated Use SituationCmdPipelineBarrierEx() or SituationCmdBufferBarrier() for more precise synchronization.
  */
 SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_bits) {
     if (!SituationIsInitialized() || barrier_bits == 0) {
@@ -20190,8 +23491,28 @@ SITAPI bool SituationReloadShader(SituationShader* shader) {
             #elif defined(SITUATION_USE_VULKAN)
             _SituationDeferDestroyPipeline(slot->vk_pipeline, slot->vk_pipeline_layout);
             if (slot->vk_pipeline_legacy) _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy, VK_NULL_HANDLE);
+            if (slot->vk_pipeline_simple) _SituationDeferDestroyPipeline(slot->vk_pipeline_simple, VK_NULL_HANDLE);
+            if (slot->vk_pipeline_back_ccw) _SituationDeferDestroyPipeline(slot->vk_pipeline_back_ccw, VK_NULL_HANDLE);
+            if (slot->vk_pipeline_back_cw) _SituationDeferDestroyPipeline(slot->vk_pipeline_back_cw, VK_NULL_HANDLE);
+            if (slot->vk_pipeline_legacy_back_ccw) _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy_back_ccw, VK_NULL_HANDLE);
+            if (slot->vk_pipeline_legacy_back_cw) _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy_back_cw, VK_NULL_HANDLE);
+            if (slot->vk_pipeline_simple_back_ccw) _SituationDeferDestroyPipeline(slot->vk_pipeline_simple_back_ccw, VK_NULL_HANDLE);
+            if (slot->vk_pipeline_simple_back_cw) _SituationDeferDestroyPipeline(slot->vk_pipeline_simple_back_cw, VK_NULL_HANDLE);
+            if (slot->vk_pipeline_line) _SituationDeferDestroyPipeline(slot->vk_pipeline_line, VK_NULL_HANDLE);
+            if (slot->vk_pipeline_legacy_line) _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy_line, VK_NULL_HANDLE);
+            if (slot->vk_pipeline_simple_line) _SituationDeferDestroyPipeline(slot->vk_pipeline_simple_line, VK_NULL_HANDLE);
             slot->vk_pipeline = new_slot->vk_pipeline;
             slot->vk_pipeline_legacy = new_slot->vk_pipeline_legacy;
+            slot->vk_pipeline_simple = new_slot->vk_pipeline_simple;
+            slot->vk_pipeline_back_ccw = new_slot->vk_pipeline_back_ccw;
+            slot->vk_pipeline_back_cw = new_slot->vk_pipeline_back_cw;
+            slot->vk_pipeline_legacy_back_ccw = new_slot->vk_pipeline_legacy_back_ccw;
+            slot->vk_pipeline_legacy_back_cw = new_slot->vk_pipeline_legacy_back_cw;
+            slot->vk_pipeline_simple_back_ccw = new_slot->vk_pipeline_simple_back_ccw;
+            slot->vk_pipeline_simple_back_cw = new_slot->vk_pipeline_simple_back_cw;
+            slot->vk_pipeline_line = new_slot->vk_pipeline_line;
+            slot->vk_pipeline_legacy_line = new_slot->vk_pipeline_legacy_line;
+            slot->vk_pipeline_simple_line = new_slot->vk_pipeline_simple_line;
             slot->vk_pipeline_layout = new_slot->vk_pipeline_layout;
             #endif
 
@@ -20468,9 +23789,30 @@ static SituationError _SituationPerformHotReloadPass(void) {
                         if (new_slot) {
                             #if defined(SITUATION_USE_VULKAN)
                             _SituationDeferDestroyPipeline(slot->vk_pipeline, slot->vk_pipeline_layout);
+                            if (slot->vk_pipeline_legacy) _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy, VK_NULL_HANDLE);
+                            if (slot->vk_pipeline_simple) _SituationDeferDestroyPipeline(slot->vk_pipeline_simple, VK_NULL_HANDLE);
+                            if (slot->vk_pipeline_back_ccw) _SituationDeferDestroyPipeline(slot->vk_pipeline_back_ccw, VK_NULL_HANDLE);
+                            if (slot->vk_pipeline_back_cw) _SituationDeferDestroyPipeline(slot->vk_pipeline_back_cw, VK_NULL_HANDLE);
+                            if (slot->vk_pipeline_legacy_back_ccw) _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy_back_ccw, VK_NULL_HANDLE);
+                            if (slot->vk_pipeline_legacy_back_cw) _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy_back_cw, VK_NULL_HANDLE);
+                            if (slot->vk_pipeline_simple_back_ccw) _SituationDeferDestroyPipeline(slot->vk_pipeline_simple_back_ccw, VK_NULL_HANDLE);
+                            if (slot->vk_pipeline_simple_back_cw) _SituationDeferDestroyPipeline(slot->vk_pipeline_simple_back_cw, VK_NULL_HANDLE);
+                            if (slot->vk_pipeline_line) _SituationDeferDestroyPipeline(slot->vk_pipeline_line, VK_NULL_HANDLE);
+                            if (slot->vk_pipeline_legacy_line) _SituationDeferDestroyPipeline(slot->vk_pipeline_legacy_line, VK_NULL_HANDLE);
+                            if (slot->vk_pipeline_simple_line) _SituationDeferDestroyPipeline(slot->vk_pipeline_simple_line, VK_NULL_HANDLE);
                             slot->vk_pipeline = new_slot->vk_pipeline;
                             slot->vk_pipeline_layout = new_slot->vk_pipeline_layout;
                             slot->vk_pipeline_legacy = new_slot->vk_pipeline_legacy;
+                            slot->vk_pipeline_simple = new_slot->vk_pipeline_simple;
+                            slot->vk_pipeline_back_ccw = new_slot->vk_pipeline_back_ccw;
+                            slot->vk_pipeline_back_cw = new_slot->vk_pipeline_back_cw;
+                            slot->vk_pipeline_legacy_back_ccw = new_slot->vk_pipeline_legacy_back_ccw;
+                            slot->vk_pipeline_legacy_back_cw = new_slot->vk_pipeline_legacy_back_cw;
+                            slot->vk_pipeline_simple_back_ccw = new_slot->vk_pipeline_simple_back_ccw;
+                            slot->vk_pipeline_simple_back_cw = new_slot->vk_pipeline_simple_back_cw;
+                            slot->vk_pipeline_line = new_slot->vk_pipeline_line;
+                            slot->vk_pipeline_legacy_line = new_slot->vk_pipeline_legacy_line;
+                            slot->vk_pipeline_simple_line = new_slot->vk_pipeline_simple_line;
                             #endif
                             new_slot->is_active = false;
                         }
@@ -20657,6 +23999,8 @@ static int _SituationRenderThreadEntry(void* arg) {
     #endif
     fprintf(stderr, "[Situation] [Thread %lu] RENDER THREAD STARTED\n", (unsigned long)tid); fflush(stderr);
 
+    _SituationSetCurrentThreadName("Sit Render");
+
     // Pin render thread (default: logical core 1; override via SituationInitInfo::thread_affinity_render)
     {
         uint64_t render_aff = SituationGetConfiguredRenderThreadAffinity();
@@ -20683,13 +24027,16 @@ static int _SituationRenderThreadEntry(void* arg) {
         fprintf(stderr, "[Situation] [Thread %lu] RENDER THREAD loop iteration\n", (unsigned long)tid); fflush(stderr);
         mtx_lock(&sit_render.render_queue_mutex);
 
-        // Wait for work or shutdown
-        // We check if the queue is empty.
-        // Note: frames_pending counts "items in queue" + "items being processed".
-        // But here we just want to know if there is an item IN THE QUEUE to pop.
-        // Queue is empty if head == tail.
+        // Wait for work or shutdown (timed wait to guarantee shutdown responsiveness)
         while (sit_render.render_queue_head == sit_render.render_queue_tail && !sit_render.thread_shutdown_req) {
-            cnd_wait(&sit_render.render_queue_cv, &sit_render.render_queue_mutex);
+            struct timespec ts;
+            timespec_get(&ts, TIME_UTC);
+            ts.tv_nsec += 50000000; // 50ms timeout
+            if (ts.tv_nsec >= 1000000000) {
+                ts.tv_sec += 1;
+                ts.tv_nsec -= 1000000000;
+            }
+            cnd_timedwait(&sit_render.render_queue_cv, &sit_render.render_queue_mutex, &ts);
         }
 
         // Shutdown Check

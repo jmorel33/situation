@@ -50,6 +50,14 @@
 #include "sit/aud/midi_device.h"               // MIDI device abstraction
 #include "sit/aud/midi_learn.h"                // MIDI Learn system
 #include "sit/aud/registry_init.h"             // Registry initialization (device registration functions)
+
+/** Spin until the RT playback callback finishes (Phase 15 — safe graph destroy). */
+static void _SituationWaitUntilAudioCallbackIdle(void) {
+    while (atomic_load(&sit_audio.is_in_audio_callback)) {
+        thrd_yield();
+    }
+}
+
 #include "sit/aud/node_graph_impl.h"           // Node graph implementation
 #include "sit/aud/node_graph_process.h"        // Node graph processing
 #include "sit/aud/node_graph_midi.h"           // Node graph MIDI integration (Phase 2)
@@ -308,8 +316,13 @@ static void _SituationPublishMasterBusLevels(_SituationAudioState* pGs, const fl
     atomic_store_explicit(&pGs->audio_meter_peak, peak, memory_order_relaxed);
     atomic_store_explicit(&pGs->audio_meter_rms, rms, memory_order_relaxed);
 
-    void (*mon)(const float*, uint32_t, void*) = pGs->output_monitor_callback;
-    if (mon) mon(pOut, frameCount, pGs->output_monitor_user_data);
+    void (*mon)(const float*, uint32_t, void*) =
+        (void (*)(const float*, uint32_t, void*))atomic_load_explicit(
+            &pGs->output_monitor_callback, memory_order_acquire);
+    if (mon) {
+        void* mon_ud = atomic_load_explicit(&pGs->output_monitor_user_data, memory_order_acquire);
+        mon(pOut, frameCount, mon_ud);
+    }
 }
 
 /* HARDENING: void by design — miniaudio RT callback ABI. */
@@ -324,6 +337,8 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
         return;
     }
 
+    atomic_store(&pGs->is_in_audio_callback, true);
+
     // ========================================================================
     // [NEW] PIN AUDIO THREAD TO SPECIFIC CORE (Executes exactly once)
     // ========================================================================
@@ -334,6 +349,8 @@ static void sit_miniaudio_data_callback(ma_device* pDevice, void* pOutput, const
     #endif
 
     if (!s_audio_thread_pinned) {
+        _SituationSetCurrentThreadName("Sit Audio");
+
         // Pin audio callback (default: logical core 2; override via SituationInitInfo::thread_affinity_audio)
         {
             uint64_t audio_aff = SituationGetConfiguredAudioThreadAffinity();
@@ -449,6 +466,8 @@ tone_mixing:
     }
 
     _SituationPublishMasterBusLevels(pGs, pOut, frameCount, pDevice->playback.channels);
+
+    atomic_store(&pGs->is_in_audio_callback, false);
 }
 
 
@@ -466,8 +485,8 @@ tone_mixing:
 SITAPI void SituationSetAudioOutputMonitor(void (*callback)(const float* samples, uint32_t frame_count, void* user_data), void* user_data) {
     if (!SituationIsInitialized()) return;
     mtx_lock(&sit_audio.audio_queue_mutex);
-    sit_audio.output_monitor_callback = callback;
-    sit_audio.output_monitor_user_data = user_data;
+    atomic_store_explicit(&sit_audio.output_monitor_callback, (void*)callback, memory_order_release);
+    atomic_store_explicit(&sit_audio.output_monitor_user_data, user_data, memory_order_release);
     mtx_unlock(&sit_audio.audio_queue_mutex);
 }
 

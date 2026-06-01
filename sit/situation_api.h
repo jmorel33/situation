@@ -299,6 +299,17 @@ static inline int timespec_get(struct timespec *ts, int base) {
 #define SITUATION_MAX_THREADS 32
 #define SITUATION_JOB_PAYLOAD_MAX 64
 
+// -- Build-Flag Defaults --
+// SITUATION_WORKER_NUMA_SPREAD_DEFAULT: When threading is enabled, workers are spread
+// across NUMA nodes by default. Define as 0 before including this header to disable.
+#ifndef SITUATION_WORKER_NUMA_SPREAD_DEFAULT
+  #if defined(SITUATION_ENABLE_THREADING)
+    #define SITUATION_WORKER_NUMA_SPREAD_DEFAULT 1
+  #else
+    #define SITUATION_WORKER_NUMA_SPREAD_DEFAULT 0
+  #endif
+#endif
+
 // -- Types --
 typedef uint32_t SituationJobId;
 
@@ -384,6 +395,8 @@ typedef enum {
 
 typedef struct {
     SituationThreadRole role;
+    int index;                      // Worker index (0..N-1) or -1 for non-worker roles
+    char name[24];                  // Thread name (e.g. "Sit Worker 0", "Sit I/O")
     int last_logical_cpu;
     int numa_node;
     uint64_t affinity_mask_applied;
@@ -570,6 +583,7 @@ typedef enum {
 #define SITUATION_MAX_BUFFERS                   4096
 #define SITUATION_MAX_MESHES                    4096
 #define SITUATION_MAX_MODELS                    1024
+#define SITUATION_MAX_RASTER_STACK_DEPTH        256  /* Max depth for SituationCmdPushRasterState / PopRasterState (GL + VK). */
 
 /* === Audio Subsystem Limits === */
 #define SITUATION_MAX_AUDIO_SOUNDS_QUEUED       32   /* Max concurrent sounds in mixing queue (e.g., SFX layers). */
@@ -592,7 +606,8 @@ typedef enum {
  * @brief Basic Math Types
  */
 typedef struct ColorHSV { float h, s, v; } ColorHSV; // Hue = 0.0f to 360.0f degrees, Saturation = 0.0f grayscale to 1.0f color, Value/Brightness = 0.0f to 1.0f
-typedef struct ColorYPQA { unsigned char y, p, q, a; } ColorYPQA; // Luminance (0-255), Phase (0-255), Quadrature (0-255), Alpha (0-255)
+typedef struct ColorYPQA { unsigned char y, p, q, a; } ColorYPQA; // NTSC-style luma/phase/chroma (see situation_impl_ypq.h internally)
+typedef struct ColorYPQf { float y, p, q, a; } ColorYPQf;         // Normalized YPQ edit space: y/p/q/a in [0, 1]; p is phase (0..1 → full hue wheel)
 typedef struct ColorRGBA { unsigned char r, g, b, a; } ColorRGBA;
 typedef ColorRGBA Color;
 
@@ -925,6 +940,64 @@ typedef struct {
 } SituationTextureRegion;
 
 /**
+ * @brief Texture blit filter mode.
+ */
+typedef enum {
+    SITUATION_BLIT_FILTER_NEAREST = 0,
+    SITUATION_BLIT_FILTER_LINEAR = 1
+} SituationBlitFilter;
+
+/**
+ * @brief 2D texture rectangle in Situation API space.
+ *
+ * @details Origin is top-left, `y` increases downward, and no backend-specific
+ *          implicit flip is applied by blit commands.
+ */
+typedef struct {
+    int x;
+    int y;
+    int width;
+    int height;
+} SituationTextureRect;
+
+/**
+ * @brief Texture-to-texture blit region.
+ *
+ * @details First implementation slice is color-only 2D textures, mip 0+,
+ *          layer 0, with explicit caller-owned texture barriers before and
+ *          after the blit.
+ */
+typedef struct {
+    SituationTextureRect src_rect;
+    SituationTextureRect dst_rect;
+    uint32_t src_mip_level;
+    uint32_t dst_mip_level;
+    uint32_t src_array_layer;
+    uint32_t dst_array_layer;
+    SituationBlitFilter filter;
+} SituationTextureBlitRegion;
+
+/**
+ * @brief Texture-to-texture copy region (exact-size transfer).
+ *
+ * @details Texture-to-texture: copies `src_rect` to `(dst_x, dst_y)` on the destination mip.
+ *          Buffer-to-texture: `src_rect` supplies width/height only (`x`/`y` must be 0); data is read
+ *          tightly packed RGBA8 rows from the source buffer offset.
+ *          Texture-to-buffer: `src_rect` selects the texture subregion; `dst_x`/`dst_y` are unused.
+ *          Copy does not scale (use blit for that). First slice: color-only 2D textures, layer 0,
+ *          explicit caller-owned barriers.
+ */
+typedef struct {
+    SituationTextureRect src_rect;
+    int dst_x;
+    int dst_y;
+    uint32_t src_mip_level;
+    uint32_t dst_mip_level;
+    uint32_t src_array_layer;
+    uint32_t dst_array_layer;
+} SituationTextureCopyRegion;
+
+/**
  * @brief Readback description for textures
  */
 typedef struct {
@@ -1058,34 +1131,102 @@ typedef enum {
 
 } SituationScalingMode;
 
-/** @brief Specifies how an attachment's contents should be treated at the start of a render pass. */
+/**
+ * @brief Specifies how an attachment's contents should be treated at the start of a render pass.
+ *
+ * Applied by `SituationCmdBeginRenderPass` through `SituationRenderPassInfo`:
+ * - **OpenGL:** `SIT_LOAD_OP_CLEAR` issues `glClear` for the attachment aspect; `LOAD` preserves
+ *   the bound framebuffer; `DONT_CARE` skips the clear (contents undefined).
+ * - **Vulkan:** maps to `VkAttachmentLoadOp` / `VkAttachmentLoadOp` (stencil aspect on the depth
+ *   attachment). Clear values come from the matching `SituationAttachmentInfo.clear` field.
+ *
+ * For mid-pass clears inside an already active pass, use `SituationCmdClear*` instead.
+ */
 typedef enum {
     SIT_LOAD_OP_LOAD,       // Preserve the existing contents of the attachment.
     SIT_LOAD_OP_CLEAR,      // Clear the attachment to a specified value.
     SIT_LOAD_OP_DONT_CARE   // The existing contents are undefined and can be discarded.
 } SituationAttachmentLoadOp;
 
-/** @brief Specifies how an attachment's contents should be treated at the end of a render pass. */
+/**
+ * @brief Specifies how an attachment's contents should be treated at the end of a render pass.
+ *
+ * `SIT_STORE_OP_STORE` keeps the attachment for sampling, present, or a later pass.
+ * `SIT_STORE_OP_DONT_CARE` allows the backend to discard the attachment after the pass
+ * (typical for transient depth on the main window).
+ */
 typedef enum {
     SIT_STORE_OP_STORE,     // The rendered contents will be stored in memory for later access.
     SIT_STORE_OP_DONT_CARE  // The rendered contents are not needed after the pass and can be discarded.
 } SituationAttachmentStoreOp;
 
-/** @brief Defines the clear values for color and depth/stencil attachments. */
+/**
+ * @brief Clear values supplied when a begin-pass load op is `SIT_LOAD_OP_CLEAR`.
+ *
+ * Each attachment reads only the fields relevant to its aspect (`color`, `depth`, `stencil`).
+ * Color components are 0–255 (`ColorRGBA`). Depth is normalized 0.0–1.0. Stencil is an integer mask
+ * value passed to the backend when stencil aspects are supported on the active target.
+ */
 typedef struct {
     ColorRGBA color;
     float     depth;
     uint32_t  stencil;
 } SituationClearValue;
 
-/** @brief Configuration for a single attachment (color or depth) in a render pass. */
+/** @brief Attachment bits used by SituationCmdClear. */
+typedef enum {
+    SIT_CLEAR_COLOR_BIT   = 0x1,
+    SIT_CLEAR_DEPTH_BIT   = 0x2,
+    SIT_CLEAR_STENCIL_BIT = 0x4
+} SituationClearFlags;
+
+/** @brief Buffer layout consumed by SituationCmdDispatchIndirect. */
+typedef struct {
+    uint32_t group_count_x;
+    uint32_t group_count_y;
+    uint32_t group_count_z;
+} SituationDispatchIndirectCommand;
+
+/** @brief Buffer layout consumed by SituationCmdDrawIndirect (matches VkDrawIndirectCommand / GL draw arrays indirect). */
+typedef struct {
+    uint32_t vertexCount;
+    uint32_t instanceCount;
+    uint32_t firstVertex;
+    uint32_t firstInstance;
+} SituationDrawIndirectCommand;
+
+/** @brief Buffer layout consumed by SituationCmdDrawIndexedIndirect (matches VkDrawIndexedIndirectCommand / GL draw elements indirect). */
+typedef struct {
+    uint32_t indexCount;
+    uint32_t instanceCount;
+    uint32_t firstIndex;
+    int32_t  vertexOffset;
+    uint32_t firstInstance;
+} SituationDrawIndexedIndirectCommand;
+
+/** @brief Load/store/clear configuration for one render-pass attachment aspect. */
 typedef struct {
     SituationAttachmentLoadOp  loadOp;
     SituationAttachmentStoreOp storeOp;
     SituationClearValue        clear;
 } SituationAttachmentInfo;
 
-/** @brief Complete configuration for beginning a render pass. */
+/**
+ * @brief Complete configuration for `SituationCmdBeginRenderPass`.
+ *
+ * **Target:** `display_id == -1` renders to the main window swapchain; `display_id >= 0` renders
+ * to a Virtual Display FBO/texture. Future `SituationRenderTarget` handles (v2.5 Phase 6) will
+ * extend this model without breaking single-target users.
+ *
+ * **Attachments:** Color, depth, and stencil are configured independently. On combined depth/stencil
+ * surfaces, depth and stencil load/store ops map to the corresponding aspects of the same backend
+ * attachment. Stencil begin-pass clears are only honored when the active target exposes stencil;
+ * otherwise backends may ignore stencil load ops or return `SITUATION_ERROR_NOT_IMPLEMENTED` for
+ * stencil-specific mid-pass clears.
+ *
+ * **Helpers:** `SituationRenderPassInfoDefault` (clear color+depth) and `SituationRenderPassInfoLoad`
+ * (preserve all attachments) cover the two most common begin-pass patterns.
+ */
 typedef struct {
     int                     display_id;     // The render target (-1 for main window, >= 0 for a Virtual Display).
     SituationAttachmentInfo color_attachment;
@@ -1093,11 +1234,60 @@ typedef struct {
     SituationAttachmentInfo stencil_attachment;
 } SituationRenderPassInfo;
 
+/** @brief Typical begin-pass: clear color and depth, store color, discard depth after the pass. */
+static inline SituationRenderPassInfo SituationRenderPassInfoDefault(int display_id, ColorRGBA clear_color) {
+    SituationRenderPassInfo info = {0};
+    info.display_id = display_id;
+    info.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+    info.color_attachment.storeOp = SIT_STORE_OP_STORE;
+    info.color_attachment.clear.color = clear_color;
+    info.depth_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+    info.depth_attachment.storeOp = SIT_STORE_OP_DONT_CARE;
+    info.depth_attachment.clear.depth = 1.0f;
+    info.stencil_attachment.loadOp = SIT_LOAD_OP_DONT_CARE;
+    info.stencil_attachment.storeOp = SIT_STORE_OP_DONT_CARE;
+    return info;
+}
+
+/** @brief Resume/composite begin-pass: preserve existing attachment contents (no begin-pass clear). */
+static inline SituationRenderPassInfo SituationRenderPassInfoLoad(int display_id) {
+    SituationRenderPassInfo info = {0};
+    info.display_id = display_id;
+    info.color_attachment.loadOp = SIT_LOAD_OP_LOAD;
+    info.color_attachment.storeOp = SIT_STORE_OP_STORE;
+    info.depth_attachment.loadOp = SIT_LOAD_OP_LOAD;
+    info.depth_attachment.storeOp = SIT_STORE_OP_DONT_CARE;
+    info.stencil_attachment.loadOp = SIT_LOAD_OP_LOAD;
+    info.stencil_attachment.storeOp = SIT_STORE_OP_DONT_CARE;
+    return info;
+}
+
+/**
+ * @brief Deterministic configuration key from load/store ops and target class (main vs offscreen).
+ *
+ * Clear values, display index (among VDs), and MSAA sample count are **not** part of the key.
+ * Used for Vulkan render-pass caching when dynamic offscreen passes ship (Phase 11+).
+ */
+static inline uint32_t SituationRenderPassConfigurationKey(const SituationRenderPassInfo* info) {
+    if (!info) {
+        return 0u;
+    }
+    uint32_t key = 0u;
+    key |= (info->display_id == -1) ? 0u : 1u;
+    key |= ((uint32_t)info->color_attachment.loadOp & 3u) << 1;
+    key |= ((uint32_t)info->depth_attachment.loadOp & 3u) << 3;
+    key |= ((uint32_t)info->stencil_attachment.loadOp & 3u) << 5;
+    key |= ((uint32_t)info->color_attachment.storeOp & 3u) << 7;
+    key |= ((uint32_t)info->depth_attachment.storeOp & 3u) << 9;
+    key |= ((uint32_t)info->stencil_attachment.storeOp & 3u) << 11;
+    return key;
+}
+
 /**
  * @brief Window State Management
  * @details These flags are now custom defines, their values are arbitrary but must be unique bits. Their functionality will be mapped to GLFW operations.
  */
-#define SITUATION_FLAG_WINDOW_TOPMOST           0x00000001  // GLFW_FLOATING
+#define SITUATION_FLAG_WINDOW_TOPMOST           0x00000001  // GLFW_FLOATING (default-on at SituationInit)
 #define SITUATION_FLAG_WINDOW_HIDDEN            0x00000002  // glfwHideWindow/ShowWindow
 #define SITUATION_FLAG_WINDOW_FROZEN            0x00000004  // Conceptual, app-defined
 #define SITUATION_FLAG_FULLSCREEN_MODE          0x00000008  // glfwSetWindowMonitor
@@ -1146,19 +1336,11 @@ typedef struct VmaAllocation_T* VmaAllocation;
  * @brief Opaque handle for a compute pipeline.
  * @details In OpenGL, this represents a linked shader program containing only a compute shader.
  */
-/**
- * @brief Opaque handle for a compute pipeline.
- */
 typedef struct {
     uint32_t slot_index;
     uint32_t generation;
 } SituationComputePipeline;
 
-
-
-/**
- * @brief Opaque handle for a generic GPU data buffer (e.g., an SSBO).
- */
 /**
  * @brief Opaque handle for a generic GPU data buffer (e.g., an SSBO).
  */
@@ -1187,10 +1369,6 @@ _Static_assert(
  * @details This is an opaque handle to the underlying graphics resources (VBO/EBO/VAO for OpenGL, VkBuffers for Vulkan).
         The library manages the creation and destruction of these resources.
  */
-/**
- * @brief Represents a mesh of vertices and indices stored on the GPU.
- * @details This is an opaque handle to the underlying graphics resources.
- */
 typedef struct {
     uint32_t slot_index;
     uint32_t generation;
@@ -1216,7 +1394,6 @@ typedef enum {
     SIT_UNIFORM_MAT4
 } SituationUniformType;
 
-// --- Shader Handle ---
 // --- Shader Handle ---
 typedef struct {
     uint32_t slot_index;
@@ -1258,11 +1435,6 @@ typedef struct SituationModelMesh {
     SituationTexture emissive_texture;        // Emissive/Glow map
 } SituationModelMesh;
 
-/**
- * @brief Represents a complete 3D model, loaded from a file.
- * @details This is a container for all the meshes and materials that make up a model.
- *          It is the result of a call to SituationLoadModel.
- */
 /**
  * @brief Represents a complete 3D model, loaded from a file.
  * @details This is a container for all the meshes and materials that make up a model.
@@ -1708,12 +1880,14 @@ typedef struct {
 
     // [Threading Bolstering — Epic C] NUMA placement (requires SituationRefreshCpuTopology at init).
     bool  numa_prefer_local;       /* If true and affinity mask is 0, pin render/audio to the NUMA node of default cores */
-    bool  worker_numa_spread;      /* Pin pool worker i to NUMA node (i % node_count) at worker entry */
+    bool  worker_numa_spread;      /* Pin pool worker i to NUMA node (i % node_count) at worker entry.
+                                      Defaults to true when SITUATION_ENABLE_THREADING is defined
+                                      (via SITUATION_WORKER_NUMA_SPREAD_DEFAULT build flag). */
     int32_t io_thread_numa_node;   /* Dedicated I/O thread NUMA node; < 0 = no pin */
 
     // [Threading Bolstering — Epic D] Pool sizing when SituationCreateThreadPool(..., num_threads=0, ...)
     bool     thread_pool_use_physical_cores; /* false = logical CPUs - reserved; true = physical cores - reserved */
-    uint32_t thread_pool_reserved_threads;     /* Threads left for main/render/audio (default 1 if 0) */
+    uint32_t thread_pool_reserved_threads;     /* Threads left for main/render/audio/IO (default 4 if 0) */
 } SituationInitInfo;
 
 // [v2.3.22] Render Queue Backpressure Policies
@@ -1770,7 +1944,7 @@ typedef enum {
 
 SITAPI bool SituationIsFeatureSupported(SituationRenderFeature feature);                 // Check if a graphics feature is supported on current hardware.
 
-// --- Deprecated Barrier Flags (for SituationMemoryBarrier) ---
+// --- Legacy OpenGL-style barrier bits (kept for low-level compatibility helpers) ---
 #define SITUATION_BARRIER_VERTEX_ATTRIB_ARRAY_BIT   		0x00000001
 #define SITUATION_BARRIER_ELEMENT_ARRAY_BIT         		0x00000002
 #define SITUATION_BARRIER_UNIFORM_BARRIER_BIT       		0x00000004
@@ -1865,6 +2039,91 @@ typedef enum {
     SITUATION_BARRIER_TRANSFER_READ           = 1 << 3,   // Copy/blit operations will read from buffer/image
     SITUATION_BARRIER_INDIRECT_COMMAND_READ   = 1 << 4,   // Indirect draw/dispatch buffer will be read by command processor
 } SituationBarrierDstFlags;
+
+typedef enum {
+    SITUATION_PIPELINE_STAGE_TOP              = 1 << 0,
+    SITUATION_PIPELINE_STAGE_INDIRECT_COMMAND = 1 << 1,
+    SITUATION_PIPELINE_STAGE_VERTEX_INPUT     = 1 << 2,
+    SITUATION_PIPELINE_STAGE_VERTEX_SHADER    = 1 << 3,
+    SITUATION_PIPELINE_STAGE_FRAGMENT_SHADER  = 1 << 4,
+    SITUATION_PIPELINE_STAGE_COLOR_ATTACHMENT = 1 << 5,
+    SITUATION_PIPELINE_STAGE_DEPTH_STENCIL    = 1 << 6,
+    SITUATION_PIPELINE_STAGE_COMPUTE_SHADER   = 1 << 7,
+    SITUATION_PIPELINE_STAGE_TRANSFER         = 1 << 8,
+    SITUATION_PIPELINE_STAGE_HOST             = 1 << 9,
+    SITUATION_PIPELINE_STAGE_BOTTOM           = 1 << 10
+} SituationPipelineStageFlags;
+
+typedef enum {
+    SITUATION_ACCESS_INDIRECT_COMMAND_READ   = 1 << 0,
+    SITUATION_ACCESS_VERTEX_READ             = 1 << 1,
+    SITUATION_ACCESS_INDEX_READ              = 1 << 2,
+    SITUATION_ACCESS_UNIFORM_READ            = 1 << 3,
+    SITUATION_ACCESS_SHADER_READ             = 1 << 4,
+    SITUATION_ACCESS_SHADER_WRITE            = 1 << 5,
+    SITUATION_ACCESS_COLOR_ATTACHMENT_READ   = 1 << 6,
+    SITUATION_ACCESS_COLOR_ATTACHMENT_WRITE  = 1 << 7,
+    SITUATION_ACCESS_DEPTH_STENCIL_READ      = 1 << 8,
+    SITUATION_ACCESS_DEPTH_STENCIL_WRITE     = 1 << 9,
+    SITUATION_ACCESS_TRANSFER_READ           = 1 << 10,
+    SITUATION_ACCESS_TRANSFER_WRITE          = 1 << 11,
+    SITUATION_ACCESS_HOST_READ               = 1 << 12,
+    SITUATION_ACCESS_HOST_WRITE              = 1 << 13
+} SituationAccessFlags;
+
+typedef struct {
+    uint32_t src_stages;
+    uint32_t src_access;
+    uint32_t dst_stages;
+    uint32_t dst_access;
+} SituationPipelineBarrierDesc;
+
+typedef struct {
+    SituationBuffer buffer;
+    size_t offset;
+    size_t size;
+    uint32_t src_stages;
+    uint32_t src_access;
+    uint32_t dst_stages;
+    uint32_t dst_access;
+} SituationBufferBarrierDesc;
+
+/**
+ * @brief Backend-neutral texture layouts for explicit image barriers.
+ *
+ * @details This is a vocabulary for commands such as `SituationCmdTextureBarrier`.
+ *          It does not imply automatic layout tracking. Callers must provide the
+ *          actual old layout and intended new layout for the texture subresource.
+ */
+typedef enum {
+    SITUATION_TEXTURE_LAYOUT_UNDEFINED = 0,
+    SITUATION_TEXTURE_LAYOUT_GENERAL,
+    SITUATION_TEXTURE_LAYOUT_SHADER_READ,
+    SITUATION_TEXTURE_LAYOUT_TRANSFER_SRC,
+    SITUATION_TEXTURE_LAYOUT_TRANSFER_DST,
+    SITUATION_TEXTURE_LAYOUT_COLOR_ATTACHMENT,
+    SITUATION_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT,
+    SITUATION_TEXTURE_LAYOUT_PRESENT
+} SituationTextureLayout;
+
+/**
+ * @brief Explicit texture memory/layout barrier for a 2D texture subresource range.
+ *
+ * @details For the first slice, public textures are treated as color-only 2D images.
+ *          `mip_level_count == 0` means one mip level. `array_layer_count == 0`
+ *          means one layer. Array layers other than layer 0 are reserved until
+ *          array/cube texture ownership is exposed. `old_layout` may be
+ *          `SITUATION_TEXTURE_LAYOUT_UNDEFINED`; `new_layout` must be a real
+ *          usage layout.
+ */
+typedef struct {
+    SituationTextureLayout old_layout;
+    SituationTextureLayout new_layout;
+    uint32_t base_mip_level;
+    uint32_t mip_level_count;
+    uint32_t base_array_layer;
+    uint32_t array_layer_count;
+} SituationTextureBarrierDesc;
 
 
 //==================================================================================================
@@ -2015,12 +2274,27 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void);                        
 SITAPI uint32_t SituationGetCPUThreadCount(void);                                       // Get the number of logical CPU cores.
 SITAPI const char* SituationGetGPUName(void);											// Get the name of the active GPU.
 
+/** Active renderer backend for this Situation DLL build (OpenGL vs Vulkan). */
+typedef enum SituationGraphicsBackend {
+    SIT_GRAPHICS_BACKEND_UNKNOWN = 0,
+    SIT_GRAPHICS_BACKEND_OPENGL  = 1,
+    SIT_GRAPHICS_BACKEND_VULKAN  = 2,
+} SituationGraphicsBackend;
+
+/** Which graphics API this DLL was built for. Valid before SituationInit. */
+SITAPI SituationGraphicsBackend SituationGetGraphicsBackend(void);
+/** Read-only label for SituationGetGraphicsBackend() ("OpenGL", "Vulkan", "Unknown"). */
+SITAPI const char* SituationGetGraphicsBackendName(void);
+
 typedef struct SituationGraphicsCaps {
-    uint32_t api_version_packed; /* e.g. 4<<16|6 for GL 4.6 */
+    uint32_t api_version_packed;        /* Situation backend target: (4<<16)|6 OpenGL, (1<<16)|4 Vulkan */
     int      max_msaa_samples;
     int      bindless_textures;
     int      shader_compiler_available;
     int      compute_supported;
+    int      max_viewports;             /* GL_MAX_VIEWPORTS / VkPhysicalDeviceLimits::maxViewports (>=1 after init) */
+    SituationGraphicsBackend backend;   /* Same as SituationGetGraphicsBackend() after init */
+    uint32_t device_api_version_packed; /* Runtime GL context / VkPhysicalDevice version (major<<16|minor) */
 } SituationGraphicsCaps;
 SITAPI void SituationGetGraphicsCaps(SituationGraphicsCaps* out_caps);                  // Get backend capabilities for examples/frameworks.
 SITAPI char* SituationGetUserDirectory(void);                                           // Get the full path to the current user's home directory (caller must free).
@@ -2136,6 +2410,7 @@ SITAPI void SituationImageCrop(SituationImage *image, SitRectangle crop);       
 SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHeight);   // Resize an image using default bicubic scaling.
 SITAPI void SituationImageFlip(SituationImage *image, SituationImageFlipMode mode);     // Flip an image.
 SITAPI void SituationImageAdjustHSV(SituationImage *image, float hue_shift, float sat_factor, float val_factor, float mix);   // Control an image by Hue Saturation and Brightness.
+SITAPI void SituationImageAdjustYPQ(SituationImage *image, float phase_shift_deg, float chroma_factor, float luma_factor, float mix); // Grade an image in YPQ (phase/chroma/luma).
 
 // --- Font Management ---
 SITAPI SituationError SituationLoadFont(const char *fileName, SituationFont* out_font);                         // Load a font from a TTF/OTF file for CPU rendering.
@@ -2188,6 +2463,30 @@ typedef enum SituationCullMode {
     SIT_CULL_FRONT
 } SituationCullMode;
 
+typedef enum SituationFrontFace {
+    SIT_FRONT_FACE_CCW = 0,
+    SIT_FRONT_FACE_CW
+} SituationFrontFace;
+
+typedef enum SituationPrimitiveTopology {
+    SIT_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST = 0,
+    SIT_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+    SIT_PRIMITIVE_TOPOLOGY_LINE_LIST,
+    SIT_PRIMITIVE_TOPOLOGY_LINE_STRIP,
+    SIT_PRIMITIVE_TOPOLOGY_POINT_LIST
+} SituationPrimitiveTopology;
+
+typedef enum SituationPolygonMode {
+    SIT_POLYGON_MODE_FILL = 0,
+    SIT_POLYGON_MODE_LINE,
+    SIT_POLYGON_MODE_POINT
+} SituationPolygonMode;
+
+typedef enum SituationIndexType {
+    SIT_INDEX_UINT32 = 0,
+    SIT_INDEX_UINT16
+} SituationIndexType;
+
 typedef enum SituationDepthCompareOp {
     SIT_DEPTH_COMPARE_ALWAYS = 0,
     SIT_DEPTH_COMPARE_LESS,
@@ -2198,6 +2497,34 @@ typedef enum SituationDepthCompareOp {
     SIT_DEPTH_COMPARE_NOTEQUAL,
     SIT_DEPTH_COMPARE_NEVER
 } SituationDepthCompareOp;
+
+typedef enum SituationStencilOp {
+    SIT_STENCIL_OP_KEEP = 0,
+    SIT_STENCIL_OP_ZERO,
+    SIT_STENCIL_OP_REPLACE,
+    SIT_STENCIL_OP_INCREMENT_CLAMP,
+    SIT_STENCIL_OP_DECREMENT_CLAMP,
+    SIT_STENCIL_OP_INVERT,
+    SIT_STENCIL_OP_INCREMENT_WRAP,
+    SIT_STENCIL_OP_DECREMENT_WRAP
+} SituationStencilOp;
+
+typedef struct SituationStencilState {
+    SituationDepthCompareOp compare_op;
+    SituationStencilOp fail_op;
+    SituationStencilOp depth_fail_op;
+    SituationStencilOp pass_op;
+    uint32_t compare_mask;
+    uint32_t write_mask;
+    uint32_t reference;
+} SituationStencilState;
+
+typedef struct SituationMultisampleState {
+    bool sample_shading_enable;
+    float min_sample_shading;
+    uint32_t sample_mask;
+    bool alpha_to_coverage_enable;
+} SituationMultisampleState;
 
 typedef enum SituationBlendFactor {
     SIT_BLEND_ZERO = 0,
@@ -2214,6 +2541,14 @@ typedef enum SituationBlendFactor {
 
 // --- Command Buffer Recording ---
 SITAPI SituationError SituationCmdSetCullMode(SituationCommandBuffer cmd, SituationCullMode mode);
+SITAPI SituationError SituationCmdSetFrontFace(SituationCommandBuffer cmd, SituationFrontFace front_face);
+SITAPI SituationError SituationCmdSetPrimitiveTopology(SituationCommandBuffer cmd, SituationPrimitiveTopology topology);
+SITAPI SituationError SituationCmdSetPolygonMode(SituationCommandBuffer cmd, SituationPolygonMode mode);
+SITAPI SituationError SituationCmdSetDepthBias(SituationCommandBuffer cmd, bool enable, float constant_factor, float clamp, float slope_factor);
+SITAPI SituationError SituationCmdSetLineWidth(SituationCommandBuffer cmd, float width);
+SITAPI SituationError SituationCmdSetColorWriteMask(SituationCommandBuffer cmd, bool r, bool g, bool b, bool a);
+SITAPI SituationError SituationCmdSetStencilTest(SituationCommandBuffer cmd, bool enable, const SituationStencilState* front, const SituationStencilState* back);
+SITAPI SituationError SituationCmdSetMultisampleState(SituationCommandBuffer cmd, const SituationMultisampleState* state);
 SITAPI SituationError SituationCmdSetDepthTest(SituationCommandBuffer cmd, bool enable, SituationDepthCompareOp depth_op);
 SITAPI SituationError SituationCmdSetDepthWrite(SituationCommandBuffer cmd, bool enable);
 SITAPI SituationError SituationCmdSetBlendEnable(SituationCommandBuffer cmd, bool enable);
@@ -2227,10 +2562,13 @@ SITAPI SituationError SituationCmdSetPushConstantData(SituationCommandBuffer cmd
 // --- Abstracted Rendering Commands ---
 SITAPI SituationError SituationCmdSetViewport(SituationCommandBuffer cmd, float x, float y, float width, float height);                           // Sets the dynamic viewport and scissor for the current render pass.
 SITAPI SituationError SituationCmdSetScissor(SituationCommandBuffer cmd, int x, int y, int width, int height);                                    // Sets the dynamic scissor rectangle to clip rendering.
+SITAPI SituationError SituationCmdSetViewportIndexed(SituationCommandBuffer cmd, uint32_t index, float x, float y, float width, float height);   // Sets viewport at index (0 = default viewport).
+SITAPI SituationError SituationCmdSetScissorIndexed(SituationCommandBuffer cmd, uint32_t index, int x, int y, int width, int height);             // Sets scissor at index (0 = default scissor).
 SITAPI SituationError SituationCmdBindPipeline(SituationCommandBuffer cmd, SituationShader shader);                                     // Binds a graphics pipeline (shader program) for subsequent draws.
 SITAPI SituationError SituationCmdDrawMesh(SituationCommandBuffer cmd, SituationMesh mesh);                                             // [High-Level] Records a command to draw a complete, pre-configured mesh.
 SITAPI SituationError SituationCmdDrawQuad(SituationCommandBuffer cmd, mat4 model, Vector4 color);                                                // [High-Level] Record a command to draw a simple, colored 2D quad.
 SITAPI SituationError SituationCmdDrawTexture(SituationCommandBuffer cmd, SituationTexture texture, SitRectangle source, SitRectangle dest, Vector2 origin, float rotation, ColorRGBA tint); // [High-Level] Draw a part of a texture defined by a rectangle.
+SITAPI SituationError SituationCmdDrawTextureYpqGrade(SituationCommandBuffer cmd, SituationTexture texture, SitRectangle source, SitRectangle dest, Vector2 origin, float rotation, float phase_shift_deg, float chroma_factor, float luma_factor, float mix); // [High-Level] Draw texture with YPQ grade (matches SituationImageAdjustYPQ).
 SITAPI SituationError SituationCmdSetPushConstant(SituationCommandBuffer cmd, uint32_t contract_id, const void* data, size_t size);               // [Core] Set a small block of per-draw uniform data (push constant).
 SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer);            // [Core] Binds a buffer's descriptor set (UBO/SSBO) to a set index.
 SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset); // [Core] Binds a dynamic buffer descriptor set with an offset.
@@ -2238,10 +2576,18 @@ SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uin
 SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture);           // [Core] Binds a texture as a storage image for compute shaders.
 SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, uint32_t binding, int size, SituationDataType type, bool normalized, size_t offset); // [OpenGL Only] Attribute format + vertex buffer binding index (must match SituationCmdBindVertexBuffer).
 SITAPI SituationError SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer, size_t offset, size_t stride); // [Core] Bind a vertex buffer for subsequent SituationCmdDraw / SituationCmdDrawIndexed.
-SITAPI SituationError SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer, size_t offset); // [Core] Bind a 32-bit index buffer (UINT32 / GL_UNSIGNED_INT) for SituationCmdDrawIndexed. Pass offset 0 when indices start at the beginning of the buffer.
+SITAPI SituationError SituationCmdBindIndexBufferEx(SituationCommandBuffer cmd, SituationBuffer buffer, size_t offset, SituationIndexType index_type); // [Core] Bind index buffer with 16- or 32-bit element type for subsequent SituationCmdDrawIndexed.
+SITAPI SituationError SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer, size_t offset); // [Core] Bind a 32-bit index buffer (SIT_INDEX_UINT32). Pass offset 0 when indices start at the beginning of the buffer.
 SITAPI SituationError SituationCmdDraw(SituationCommandBuffer cmd, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance); // [Core] Record a non-indexed draw call.
 SITAPI SituationError SituationCmdDrawIndexed(SituationCommandBuffer cmd, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance); // [Core] Record an indexed draw call.
+SITAPI SituationError SituationCmdDrawIndirect(SituationCommandBuffer cmd, SituationBuffer indirect_buffer, size_t offset); // [Core] Draw from a CPU/GPU-filled SituationDrawIndirectCommand in an indirect buffer (requires active render pass, bound pipeline, and vertex buffers).
+SITAPI SituationError SituationCmdDrawIndexedIndirect(SituationCommandBuffer cmd, SituationBuffer indirect_buffer, size_t offset); // [Core] Indexed indirect draw (32-bit indices; requires bound index buffer). firstIndex is relative to SituationCmdBindIndexBuffer offset.
 SITAPI SituationError SituationCmdBeginRenderPass(SituationCommandBuffer cmd, const SituationRenderPassInfo* info);                     // Begins a render pass with detailed configuration.
+SITAPI SituationError SituationCmdClear(SituationCommandBuffer cmd, uint32_t clear_flags, const SituationClearValue* clear_value);       // Mid-pass clear of active render-pass attachments; begin-pass clears use SituationRenderPassInfo loadOp.
+SITAPI SituationError SituationCmdClearColor(SituationCommandBuffer cmd, ColorRGBA color);                                               // Mid-pass clear of the active color attachment.
+SITAPI SituationError SituationCmdClearDepth(SituationCommandBuffer cmd, float depth);                                                    // Mid-pass clear of the active depth attachment.
+SITAPI SituationError SituationCmdClearStencil(SituationCommandBuffer cmd, uint32_t stencil);                                             // Mid-pass clear of the active stencil attachment when supported by backend/attachment state.
+SITAPI SituationError SituationCmdClearDepthStencil(SituationCommandBuffer cmd, float depth, uint32_t stencil);                          // Mid-pass clear of active depth and stencil attachments.
 SITAPI SituationError SituationCmdEndRenderPass(SituationCommandBuffer cmd);                                                                      // Ends the current render pass.
 SITAPI SituationError SituationCmdDrawText(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, ColorRGBA color);		// Draws a text string using GPU-accelerated textured quads.
 SITAPI SituationError SituationCmdDrawTextEx(SituationCommandBuffer cmd, SituationFont font, const char* text, Vector2 pos, float fontSize, float spacing, ColorRGBA color); // Advanced text drawing (scaling/spacing).
@@ -2282,7 +2628,7 @@ typedef struct SituationUniformExpectation {
 } SituationUniformExpectation;
 SITAPI SituationError SituationValidateShaderUniforms(SituationShader shader, const SituationUniformExpectation* table, int table_count, char* error_buf, size_t error_buf_size); // Returns first missing/wrong-type uniform, or SUCCESS if all resolved.
 
-SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags); // Insert a fine-grained pipeline barrier for synchronization.
+SITAPI void SituationCmdPipelineBarrier(SituationCommandBuffer cmd, uint32_t src_flags, uint32_t dst_flags); // Legacy convenience barrier; prefer SituationCmdPipelineBarrierEx, SituationCmdBufferBarrier, or SituationCmdTextureBarrier for new synchronization code.
 
 // --- Texture Management ---
 SITAPI SituationError SituationLoadTexture(const char* file_path, bool generate_mipmaps, SituationTexture* out_texture);// Loads a texture from disk and registers the path for hot-reloading.
@@ -2291,6 +2637,10 @@ SITAPI SituationError SituationCreateTextureEx(SituationImage image, bool genera
 SITAPI void SituationDestroyTexture(SituationTexture* texture);                         // Unload a texture from GPU memory.
 SITAPI SituationError SituationGetTextureInfo(SituationTexture texture, SituationTextureInfo* out_info); // [Phase 2] Query texture metadata.
 SITAPI SituationError SituationSetTextureSamplerParams(SituationTexture texture, SituationTextureFilter min_filter, SituationTextureFilter mag_filter, SituationTextureWrap wrap_s, SituationTextureWrap wrap_t); // [Phase 2] Update sampler state.
+SITAPI SituationError SituationCmdBlitTexture(SituationCommandBuffer cmd, SituationTexture src, SituationTexture dst, const SituationTextureBlitRegion* region); // Blit between color 2D textures; caller owns explicit texture barriers.
+SITAPI SituationError SituationCmdCopyTexture(SituationCommandBuffer cmd, SituationTexture src, SituationTexture dst, const SituationTextureCopyRegion* region); // Exact-size copy between color 2D textures; caller owns explicit texture barriers.
+SITAPI SituationError SituationCmdCopyBufferToTexture(SituationCommandBuffer cmd, SituationBuffer src, size_t src_offset, SituationTexture dst, const SituationTextureCopyRegion* dst_region); // Upload tightly packed RGBA8 rows from a buffer into a texture subregion; caller owns texture barriers.
+SITAPI SituationError SituationCmdCopyTextureToBuffer(SituationCommandBuffer cmd, SituationTexture src, const SituationTextureCopyRegion* src_region, SituationBuffer dst, size_t dst_offset, size_t dst_row_pitch); // Copy a texture subregion into a buffer (`dst_row_pitch` 0 = width * 4); caller owns texture barriers.
 SITAPI SituationError SituationReadTexture(SituationTexture texture, const SituationTextureReadbackDesc* desc, void* dst_pixels, size_t dst_size_bytes); // [Phase 2] Blocking readback of texture pixels.
 SITAPI SituationError SituationReadTextureAlloc(SituationTexture texture, const SituationTextureReadbackDesc* desc, SituationImage* out_image); // [Phase 2] Blocking readback into allocated SituationImage.
 SITAPI SituationError SituationReadFramebuffer(const SituationReadPixelsDesc* desc, void* dst_pixels, size_t dst_size_bytes); // [Phase 2] Blocking readback of framebuffer pixels.
@@ -2300,8 +2650,13 @@ SITAPI SituationError SituationCreateComputePipeline(const char* compute_shader_
 SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline); // Create a compute pipeline from in-memory GLSL source.
 SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline);        // Destroy a compute pipeline and free its GPU resources.
 SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline); // Bind a compute pipeline for a subsequent dispatch.
+SITAPI SituationError SituationCmdDispatchEx(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z); // Record a compute dispatch with validation and error reporting.
 SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z); // Record a command to dispatch compute shader work groups.
+SITAPI SituationError SituationCmdDispatchIndirect(SituationCommandBuffer cmd, SituationBuffer indirect_buffer, size_t offset); // Record an indirect compute dispatch.
 SITAPI void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t* z); // Query maximum compute work group count per dispatch.
+SITAPI SituationError SituationCmdPipelineBarrierEx(SituationCommandBuffer cmd, const SituationPipelineBarrierDesc* desc); // Record an explicit global memory barrier.
+SITAPI SituationError SituationCmdBufferBarrier(SituationCommandBuffer cmd, const SituationBufferBarrierDesc* desc); // Record an explicit buffer-range memory barrier.
+SITAPI SituationError SituationCmdTextureBarrier(SituationCommandBuffer cmd, SituationTexture texture, const SituationTextureBarrierDesc* desc); // Record an explicit texture layout/memory barrier.
 
 // --- GPU Buffer Management ---
 SITAPI SituationError SituationCreateBuffer(size_t size, const void* initial_data, SituationBufferUsageFlags usage_flags, SituationBuffer* out_buffer); // Create a generic GPU data buffer (e.g., SSBO).
@@ -2309,7 +2664,8 @@ SITAPI SituationError SituationCreateReadbackBuffer(size_t size, SituationBuffer
 SITAPI void SituationDestroyBuffer(SituationBuffer* buffer);                            // Destroy a GPU buffer.
 SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offset, size_t size, const void* data); // Update data in a GPU buffer.
 SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offset, size_t size, void* out_data); // Read data from a GPU buffer (blocking).
-SITAPI void SituationCmdCopyBuffer(SituationCommandBuffer cmd, SituationBuffer src, SituationBuffer dst, size_t offset, size_t size); // [Phase 1] Record an async copy between buffers.
+SITAPI SituationError SituationCmdCopyBufferEx(SituationCommandBuffer cmd, SituationBuffer src, SituationBuffer dst, size_t src_offset, size_t dst_offset, size_t size); // Error-returning buffer-copy command with independent source/destination offsets.
+SITAPI void SituationCmdCopyBuffer(SituationCommandBuffer cmd, SituationBuffer src, SituationBuffer dst, size_t offset, size_t size); // Legacy void buffer-copy command; Phase 4 tracks the error-returning copy/blit API.
 SITAPI void SituationReadBuffer(SituationBuffer readback_buf, void* dst, size_t size); // [Phase 1] Read mapped buffer data safely.
 
 // --- Virtual Displays (Render Targets) ---
@@ -2379,7 +2735,7 @@ SITAPI SituationError SituationCmdBindTexture(SituationCommandBuffer cmd, uint32
 SITAPI SituationError SituationCmdBindComputeBuffer(SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer);              // [DEPRECATED] Bind a buffer to a compute shader binding point.
 SITAPI SituationError SituationLoadComputeShader(const char* cs_path, SituationShader* out_shader);                                     // [DEPRECATED] Load a compute shader from a file. Use SituationCreateComputePipeline instead.
 SITAPI SituationError SituationLoadComputeShaderFromMemory(const char* cs_code, SituationShader* out_shader);                           // [DEPRECATED] Create a compute shader from memory. Use SituationCreateComputePipelineFromMemory instead.
-SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_bits);                                                  // [DEPRECATED] Insert a coarse-grained memory barrier. Use SituationCmdPipelineBarrier instead.
+SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_bits);                                                  // [DEPRECATED] Insert a coarse-grained memory barrier. Use SituationCmdPipelineBarrierEx, SituationCmdBufferBarrier, or SituationCmdTextureBarrier instead.
 
 //==================================================================================
 // Hot-Reloading Module (Development Tools)
@@ -2675,6 +3031,19 @@ SITAPI ColorHSV SituationRgbToHsv(ColorRGBA rgb);                               
 SITAPI ColorRGBA SituationHsvToRgb(ColorHSV hsv);                                       // Converts a Hue, Saturation, Value color back to the standard RGBA color space.
 SITAPI ColorYPQA SituationColorToYPQ(ColorRGBA color);                                  // Converts a standard RGBA color to the YPQA (Luma, Phase, Quadrature) color space.
 SITAPI ColorRGBA SituationColorFromYPQ(ColorYPQA ypq_color);                            // Converts a YPQA color back to the standard RGBA color space.
+SITAPI ColorYPQA SituationYpqLerp(ColorYPQA a, ColorYPQA b, float t);                   // Interpolate YPQ; phase uses shortest arc on the hue wheel.
+SITAPI ColorYPQA SituationYpqAdjustLuma(ColorYPQA color, float luma_factor);             // Scale Y (luma); preserve phase and chroma.
+SITAPI ColorYPQA SituationYpqAdjustPhase(ColorYPQA color, int phase_shift);             // Rotate hue; P shifts by byte steps mod 256.
+SITAPI ColorYPQA SituationYpqAdjustChroma(ColorYPQA color, float chroma_factor);          // Scale Q (chroma amplitude); preserve luma and phase.
+SITAPI float SituationYpqGetLuma(ColorYPQA color);                                      // Normalized luma [0, 1].
+SITAPI float SituationYpqGetHueDegrees(ColorYPQA color);                                // Hue in degrees [0, 360).
+SITAPI float SituationYpqGetChroma(ColorYPQA color);                                    // Normalized chroma amplitude [0, 1].
+SITAPI float SituationYpqDistance(ColorYPQA a, ColorYPQA b);                          // Weighted distance in YPQ space.
+SITAPI bool SituationYpqEquals(ColorYPQA a, ColorYPQA b, unsigned char tolerance);    // Per-channel tolerance compare.
+SITAPI ColorYPQf SituationColorToYPQf(ColorRGBA color);                                 // RGBA → normalized float YPQ (no 8-bit quantize).
+SITAPI ColorRGBA SituationColorFromYPQf(ColorYPQf ypq);                                 // Float YPQ → RGBA (linear YIQ, clamped RGB).
+SITAPI ColorYPQA SituationYpqQuantize(ColorYPQf ypq);                                   // Float YPQ → 8-bit ColorYPQA.
+SITAPI ColorYPQf SituationYpqClampInGamut(ColorYPQf ypq);                               // Reduce chroma if linear RGB would clip.
 
 //==================================================================================
 // Threading Module
@@ -2729,6 +3098,7 @@ SITAPI uint64_t SituationBuildNumaNodeMask(int numa_node_index); // All logical 
 SITAPI uint64_t SituationGetConfiguredMainThreadAffinity(void);   // Init mask for main thread (0 = no pin)
 SITAPI uint64_t SituationGetConfiguredRenderThreadAffinity(void); // Effective render mask (init or default)
 SITAPI uint64_t SituationGetConfiguredAudioThreadAffinity(void);  // Effective audio mask (init or default)
+SITAPI uint64_t SituationGetConfiguredIOThreadAffinity(void);     // Effective I/O mask (init or default CPU 3)
 SITAPI bool SituationRefreshNumaTopology(void);                   // Rebuild NUMA summary from CPU topology + OS memory
 SITAPI bool SituationGetNumaTopology(const SituationNumaTopology** out_topology); // Cached NUMA snapshot
 SITAPI int SituationGetPreferredNumaNode(void);                   // TLS: node for current thread, or -1 if unset
@@ -2757,6 +3127,7 @@ SITAPI uint32_t SituationGetRecommendedWorkerCount(uint32_t reserved_threads, bo
 SITAPI bool SituationGetThreadPoolMetrics(SituationThreadPool* pool, SituationThreadPoolMetrics* out_metrics); // Scheduler counters snapshot
 SITAPI void SituationResetThreadPoolStats(SituationThreadPool* pool);                                         // Zero scheduler counters
 SITAPI void SituationDumpThreadPoolMetrics(SituationThreadPool* pool, FILE* out_stream, bool json_mode);      // Metrics-only dump
+SITAPI SituationThreadPool* SituationGetInternalThreadPool(void);                                            // Returns pointer to the library's internal thread pool (NULL if not initialized).
 
 SITAPI SituationJobId SituationLoadSoundFromFileAsync(SituationThreadPool* pool, const char* file_path, bool looping, SituationSound* out_sound); // Asynchronously loads and decodes a sound file.
 #endif // SITUATION_ENABLE_THREADING
