@@ -323,21 +323,28 @@ static bool _SitRefreshTopologyInternal(SituationCpuTopology* topo) {
 // Public API — topology
 // ==================================================================================
 
-SITAPI bool SituationRefreshCpuTopology(void) {
+SITAPI SituationError SituationRefreshCpuTopology(void) {
     g_sit_cpu_topology_valid = _SitRefreshTopologyInternal(&g_sit_cpu_topology);
-    return g_sit_cpu_topology_valid;
+    if (!g_sit_cpu_topology_valid) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "SituationRefreshCpuTopology: failed to query CPU topology");
+        return SITUATION_ERROR_DEVICE_QUERY;
+    }
+    return SITUATION_SUCCESS;
 }
 
-SITAPI bool SituationGetCpuTopology(const SituationCpuTopology** out_topology) {
+SITAPI SituationError SituationGetCpuTopology(const SituationCpuTopology** out_topology) {
     if (!out_topology) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationGetCpuTopology: out_topology is NULL");
-        return false;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
     if (!g_sit_cpu_topology_valid) {
         SituationRefreshCpuTopology();
     }
     *out_topology = &g_sit_cpu_topology;
-    return g_sit_cpu_topology_valid;
+    if (!g_sit_cpu_topology_valid) {
+        return SITUATION_ERROR_DEVICE_QUERY;
+    }
+    return SITUATION_SUCCESS;
 }
 
 SITAPI uint32_t SituationGetCPUCoreCount(void) {
@@ -354,10 +361,10 @@ SITAPI uint32_t SituationGetCPUCoreCount(void) {
 // Affinity — query / set with optional previous mask
 // ==================================================================================
 
-SITAPI bool SituationGetThreadAffinity(uint64_t* out_mask) {
+SITAPI SituationError SituationGetThreadAffinity(uint64_t* out_mask) {
     if (!out_mask) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationGetThreadAffinity: out_mask is NULL");
-        return false;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
     *out_mask = 0;
 
@@ -377,17 +384,17 @@ SITAPI bool SituationGetThreadAffinity(uint64_t* out_mask) {
         memset(&group, 0, sizeof(group));
         if (pfn_get_group(GetCurrentThread(), &group)) {
             *out_mask = (uint64_t)group.Mask;
-            return true;
+            return SITUATION_SUCCESS;
         }
     }
     DWORD_PTR process_mask = 0;
     DWORD_PTR system_mask = 0;
     if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask)) {
         *out_mask = (uint64_t)process_mask;
-        return true;
+        return SITUATION_SUCCESS;
     }
     _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "SituationGetThreadAffinity failed.");
-    return false;
+    return SITUATION_ERROR_DEVICE_QUERY;
 
 #elif defined(__linux__)
     cpu_set_t cpuset;
@@ -395,32 +402,32 @@ SITAPI bool SituationGetThreadAffinity(uint64_t* out_mask) {
     pthread_t self = pthread_self();
     if (pthread_getaffinity_np(self, sizeof(cpuset), &cpuset) != 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "pthread_getaffinity_np failed.");
-        return false;
+        return SITUATION_ERROR_DEVICE_QUERY;
     }
     for (int i = 0; i < SITUATION_AFFINITY_MASK_BITS; ++i) {
         if (CPU_ISSET(i, &cpuset)) {
             *out_mask |= (1ULL << i);
         }
     }
-    return true;
+    return SITUATION_SUCCESS;
 
 #elif defined(__APPLE__)
     (void)out_mask;
-    return true;
+    return SITUATION_SUCCESS;
 
 #else
-    return false;
+    return SITUATION_ERROR_DEVICE_QUERY;
 #endif
 }
 
-SITAPI bool SituationSetThreadAffinityEx(uint64_t core_mask, uint64_t* out_previous) {
+SITAPI SituationError SituationSetThreadAffinityEx(uint64_t core_mask, uint64_t* out_previous) {
     if (core_mask == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationSetThreadAffinity: core_mask is zero");
-        return false;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
 
     if (out_previous) {
-        if (!SituationGetThreadAffinity(out_previous)) {
+        if (SituationGetThreadAffinity(out_previous) != SITUATION_SUCCESS) {
             *out_previous = 0;
         }
     }
@@ -430,12 +437,12 @@ SITAPI bool SituationSetThreadAffinityEx(uint64_t core_mask, uint64_t* out_previ
     DWORD_PTR result = SetThreadAffinityMask(thread, (DWORD_PTR)core_mask);
     if (result == 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "SetThreadAffinityMask failed.");
-        return false;
+        return SITUATION_ERROR_DEVICE_QUERY;
     }
     if (out_previous) {
         *out_previous = (uint64_t)result;
     }
-    return true;
+    return SITUATION_SUCCESS;
 
 #elif defined(__linux__)
     cpu_set_t cpuset;
@@ -447,20 +454,20 @@ SITAPI bool SituationSetThreadAffinityEx(uint64_t core_mask, uint64_t* out_previ
     }
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
         _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "pthread_setaffinity_np failed.");
-        return false;
+        return SITUATION_ERROR_DEVICE_QUERY;
     }
-    return true;
+    return SITUATION_SUCCESS;
 
 #elif defined(__APPLE__)
     (void)core_mask;
-    return true;
+    return SITUATION_SUCCESS;
 
 #else
-    return false;
+    return SITUATION_ERROR_DEVICE_QUERY;
 #endif
 }
 
-SITAPI bool SituationSetThreadAffinity(uint64_t core_mask) {
+SITAPI SituationError SituationSetThreadAffinity(uint64_t core_mask) {
     return SituationSetThreadAffinityEx(core_mask, NULL);
 }
 
@@ -486,7 +493,7 @@ SITAPI int SituationGetThreadNumaNode(void) {
         return -1;
     }
     const SituationCpuTopology* topo = NULL;
-    if (!SituationGetCpuTopology(&topo) || !topo) {
+    if (SituationGetCpuTopology(&topo) != SITUATION_SUCCESS || !topo) {
         return -1;
     }
     if ((uint32_t)cpu >= topo->logical_count) {
@@ -501,7 +508,7 @@ SITAPI int SituationGetThreadNumaNode(void) {
 
 static bool _SitEnsureTopology(void) {
     if (!g_sit_cpu_topology_valid) {
-        return SituationRefreshCpuTopology();
+        return SituationRefreshCpuTopology() == SITUATION_SUCCESS;
     }
     return true;
 }

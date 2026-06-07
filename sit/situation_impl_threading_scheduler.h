@@ -82,17 +82,17 @@ static void _SitPoolMetricsFromPool(SituationThreadPool* pool, SituationThreadPo
     }
 }
 
-SITAPI bool SituationGetThreadPoolMetrics(SituationThreadPool* pool, SituationThreadPoolMetrics* out_metrics) {
+SITAPI SituationError SituationGetThreadPoolMetrics(SituationThreadPool* pool, SituationThreadPoolMetrics* out_metrics) {
     if (!out_metrics) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationGetThreadPoolMetrics: out_metrics is NULL");
-        return false;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
     if (!pool || !pool->is_active) {
         _SitPoolMetricsFromPool(NULL, out_metrics);
-        return false;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
     _SitPoolMetricsFromPool(pool, out_metrics);
-    return true;
+    return SITUATION_SUCCESS;
 }
 
 SITAPI void SituationResetThreadPoolStats(SituationThreadPool* pool) {

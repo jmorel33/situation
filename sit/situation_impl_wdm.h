@@ -507,8 +507,13 @@ SITAPI SituationError SituationSetDisplayMode(int situation_monitor_id, const Si
         if (cds_result != DISP_CHANGE_SUCCESSFUL) {
             char err_detail[128];
             snprintf(err_detail, sizeof(err_detail), "Win32 ChangeDisplaySettingsExA for '%s' failed with code %ld.", target_display_info->name, cds_result);
-            _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_SET, err_detail);
-            if (!glfw_mon) return SITUATION_ERROR_DISPLAY_SET;
+            if (cds_result == DISP_CHANGE_BADMODE) {
+                _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_MODE_UNSUPPORTED, err_detail);
+                if (!glfw_mon) return SITUATION_ERROR_DISPLAY_MODE_UNSUPPORTED;
+            } else {
+                _SituationSetErrorFromCode(SITUATION_ERROR_DISPLAY_MODE_SET_FAILED, err_detail);
+                if (!glfw_mon) return SITUATION_ERROR_DISPLAY_MODE_SET_FAILED;
+            }
         } else {
              SituationRefreshDisplays();
         }
@@ -822,7 +827,12 @@ SITAPI void SituationSetWindowIcon(SituationImage image) {
  */
 SITAPI void SituationSetWindowTitle(const char *title) {
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetWindowTitle"); return; }
+    glfwGetError(NULL);
     glfwSetWindowTitle(sit_gs.sit_glfw_window, title);
+    const char* desc = NULL;
+    if (glfwGetError(&desc) != GLFW_NO_ERROR) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_WINDOW_PROPERTY_FAILED, desc ? desc : "Failed to set window title");
+    }
 }
 
 /**
@@ -833,7 +843,12 @@ SITAPI void SituationSetWindowTitle(const char *title) {
  */
 SITAPI void SituationSetWindowPosition(int x, int y) {
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetWindowPosition"); return; }
+    glfwGetError(NULL);
     glfwSetWindowPos(sit_gs.sit_glfw_window, x, y);
+    const char* desc = NULL;
+    if (glfwGetError(&desc) != GLFW_NO_ERROR) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_WINDOW_PROPERTY_FAILED, desc ? desc : "Failed to set window position");
+    }
 }
 
 /**
@@ -844,7 +859,12 @@ SITAPI void SituationSetWindowPosition(int x, int y) {
  */
 SITAPI void SituationSetWindowSize(int width, int height) {
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetWindowSize"); return; }
+    glfwGetError(NULL);
     glfwSetWindowSize(sit_gs.sit_glfw_window, width, height);
+    const char* desc = NULL;
+    if (glfwGetError(&desc) != GLFW_NO_ERROR) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_WINDOW_PROPERTY_FAILED, desc ? desc : "Failed to set window size");
+    }
 }
 
 /**
@@ -947,7 +967,12 @@ SITAPI void SituationSetWindowOpacity(float opacity) {
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetWindowOpacity"); return; }
     // Clamp opacity between 0.0 and 1.0
     float clamped_opacity = (opacity < 0.0f) ? 0.0f : (opacity > 1.0f) ? 1.0f : opacity;
+    glfwGetError(NULL);
     glfwSetWindowOpacity(sit_gs.sit_glfw_window, clamped_opacity);
+    const char* desc = NULL;
+    if (glfwGetError(&desc) != GLFW_NO_ERROR) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_WINDOW_PROPERTY_FAILED, desc ? desc : "Failed to set window opacity");
+    }
 }
 
 /**
@@ -957,7 +982,12 @@ SITAPI void SituationSetWindowOpacity(float opacity) {
  */
 SITAPI void SituationSetWindowFocused(void) {
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetWindowFocused"); return; }
+    glfwGetError(NULL);
     glfwFocusWindow(sit_gs.sit_glfw_window);
+    const char* desc = NULL;
+    if (glfwGetError(&desc) != GLFW_NO_ERROR) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_WINDOW_FOCUS_FAILED, desc ? desc : "Failed to focus window");
+    }
 }
 
 /**
@@ -1246,6 +1276,8 @@ SITAPI SituationError SituationSetWindowStateProfiles(uint32_t active_flags, uin
  */
 SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
     if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) return SITUATION_ERROR_NOT_INITIALIZED;
+    // Clear any pending GLFW error before applying state changes.
+    glfwGetError(NULL);
 
     uint32_t target_flags = sit_gs.current_window_focus_state ? sit_gs.active_profile_window_flags : sit_gs.inactive_profile_window_flags;
     bool is_currently_fullscreen = (glfwGetWindowMonitor(sit_gs.sit_glfw_window) != NULL);
@@ -1379,6 +1411,12 @@ SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
     glfwGetFramebufferSize(sit_gs.sit_glfw_window, &fb_w, &fb_h);
     _SituationGLFWFramebufferSizeCallback(sit_gs.sit_glfw_window, fb_w, fb_h);
 
+    // Check if any GLFW error occurred during the state application.
+    const char* desc = NULL;
+    if (glfwGetError(&desc) != GLFW_NO_ERROR) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_WINDOW_STATE_FAILED,
+            desc ? desc : "Window state change failed (GLFW rejected operation)");
+    }
     return SITUATION_SUCCESS;
 }
 

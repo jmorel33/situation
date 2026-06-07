@@ -259,7 +259,7 @@ SITAPI SituationError SituationCreateImage(int width, int height, int channels, 
  *      SIT_RGBA, SITUATION_PIXEL_FORMAT_RGBA8 (if defined)
  */
 SITAPI void SituationBlitRawDataToImage(SituationImage *dst, const void* data, int x, int y, int width, int height, int src_channels) {
-    if (!dst || !dst->data || !data) return;
+    if (!dst || !dst->data || !data) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationBlitRawDataToImage: dst, dst->data, or data is NULL"); return; }
 
     // Destination channels
     int dst_channels = (dst->channels > 0) ? dst->channels : 4;
@@ -404,7 +404,7 @@ SITAPI SituationError SituationImageCopy(SituationImage image, SituationImage* o
  */
 SITAPI void SituationImageDraw(SituationImage *dst, SituationImage src, SitRectangle srcRect, Vector2 dstPos) {
     // 1. --- Initial Validation ---
-    if (!SituationIsImageValid(*dst) || !SituationIsImageValid(src)) { return; }
+    if (!SituationIsImageValid(*dst) || !SituationIsImageValid(src)) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationImageDraw: invalid dst or src image"); return; }
 
     // 2. --- Calculate the Intersection SitRectangle (The core of the logic) ---
 
@@ -584,7 +584,7 @@ SITAPI SituationError SituationGenImageGradient(int width, int height, ColorRGBA
  * @see SituationImageResize(), SituationImageCopy()
  */
 SITAPI void SituationImageCrop(SituationImage *image, SitRectangle crop) {
-    if (!SituationIsImageValid(*image) || crop.width <= 0 || crop.height <= 0) return;
+    if (!SituationIsImageValid(*image) || crop.width <= 0 || crop.height <= 0) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationImageCrop: invalid image or crop dimensions <= 0"); return; }
 
     int x = (int)crop.x;
     int y = (int)crop.y;
@@ -596,10 +596,10 @@ SITAPI void SituationImageCrop(SituationImage *image, SitRectangle crop) {
     if (y < 0) { h += y; y = 0; }
     if (x + w > image->width) w = image->width - x;
     if (y + h > image->height) h = image->height - y;
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationImageCrop: crop rectangle is fully outside image bounds"); return; }
 
     void* cropped_data = SIT_MALLOC(w * h * 4);
-    if (!cropped_data) return;
+    if (!cropped_data) { _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationImageCrop"); return; }
 
     unsigned char* src = (unsigned char*)image->data;
     unsigned char* dst = (unsigned char*)cropped_data;
@@ -665,7 +665,7 @@ SITAPI void SituationImageResize(SituationImage *image, int newWidth, int newHei
         image->height = newHeight;
     } else {
         // The resize failed. Clean up and leave the original image untouched.
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "stb_image_resize failed.");
+        _SituationSetErrorFromCode(SITUATION_ERROR_IMAGE_OPERATION_FAILED, "stb_image_resize failed.");
         SIT_FREE(newData);
     }
 #else
@@ -1189,7 +1189,7 @@ SITAPI SituationError SituationLoadFont(const char *fileName, SituationFont* out
         // The font file is invalid or not a TrueType font.
         SIT_FREE(info);
         SIT_FREE(fontBuffer);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFont: Failed to parse TrueType/OpenType data.");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FONT_LOAD_FAILED, "SituationLoadFont: Failed to parse TrueType/OpenType data.");
     }
 
     out_font->fontData = fontBuffer;
@@ -1235,7 +1235,7 @@ SITAPI SituationError SituationLoadFontFromMemory(const void* data, int dataSize
     if (!stbtt_InitFont((stbtt_fontinfo*)out_font->stbFontInfo, (unsigned char*)out_font->fontData, 0)) {
         SIT_FREE(out_font->stbFontInfo);
         SIT_FREE(out_font->fontData);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FONT_LOAD_FAILED, "SituationLoadFontFromMemory: Failed to parse TrueType/OpenType data.");
     }
 
     return SITUATION_SUCCESS;
@@ -1289,7 +1289,7 @@ SITAPI SituationError SituationBakeFontAtlas(SituationFont* font, float fontSize
     if (res <= 0) {
         SIT_FREE(bitmap);
         SIT_FREE(font->glyph_info);
-        return _SituationSetErrorFromCode(SITUATION_ERROR_TEXTURE_UPLOAD_FAILED, "Font atlas bake failed (texture too small?)");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FONT_ATLAS_FULL, "Font atlas bake failed: glyphs did not fit in atlas bitmap");
     }
 
     // 4. Convert 1-channel bitmap to 4-channel RGBA for SituationCreateTexture
@@ -1317,7 +1317,8 @@ SITAPI SituationError SituationBakeFontAtlas(SituationFont* font, float fontSize
     font->atlas_height = h;
     font->font_height_pixels = fontSizePixels;
 
-    return (font->atlas_texture.generation != 0) ? SITUATION_SUCCESS : SITUATION_ERROR_UNKNOWN_ERROR;
+    return (font->atlas_texture.generation != 0) ? SITUATION_SUCCESS :
+        _SituationSetErrorFromCode(SITUATION_ERROR_FONT_LOAD_FAILED, "SituationBakeFontAtlas: GPU texture creation failed for atlas");
 #else
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "SituationBakeFontAtlas requires STB Truetype.");
     return false;
@@ -1495,7 +1496,7 @@ static inline ColorRGBA _SituationColorAlphaBlend(ColorRGBA dst, ColorRGBA src, 
 SITAPI void SituationImageDrawAlpha(SituationImage *dst, SituationImage src, SitRectangle srcRect, Vector2 dstPos, ColorRGBA tint) {
     // 1. --- Validation and Intersection Calculation ---
     // (This is the same robust boundary-checking logic from our previous `SituationImageDraw` discussion)
-    if (!SituationIsImageValid(*dst) || !SituationIsImageValid(src)) return;
+    if (!SituationIsImageValid(*dst) || !SituationIsImageValid(src)) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationImageDrawAlpha: invalid dst or src image"); return; }
 
     int srcClipX = (srcRect.x < 0) ? 0 : srcRect.x;
     int srcClipY = (srcRect.y < 0) ? 0 : srcRect.y;
@@ -1956,7 +1957,7 @@ SITAPI void SituationImageDrawTextEx(SituationImage *dst, SituationFont font, co
  * @param tint The color to apply to the text. The text will be rendered in this color.
  */
 SITAPI void SituationImageDrawText(SituationImage *dst, SituationFont font, const char *text, Vector2 position, float fontSize, float spacing, ColorRGBA tint) {
-    if (!SituationIsImageValid(*dst) || !font.stbFontInfo || !text) return;
+    if (!SituationIsImageValid(*dst) || !font.stbFontInfo || !text) { _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationImageDrawText: invalid dst image, font, or text"); return; }
 
     stbtt_fontinfo *info = (stbtt_fontinfo*)font.stbFontInfo;
     float scale = stbtt_ScaleForPixelHeight(info, fontSize);
@@ -2308,45 +2309,91 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
  * @warning This is a synchronous operation that stalls the GPU. Do not call every frame.
  */
 SITAPI SituationError SituationTakeScreenshot(const char *fileName) {
-    if (!SituationIsInitialized() || !fileName) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Cannot take screenshot: Invalid parameters.");
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot take screenshot: library not initialized.");
     }
-	char* dir = _sit_dirname(fileName);  // Internal helper to get parent dir
-	if (dir && !_sit_directory_exists(dir)) {
+
+    // 1. Get extension from the table
+    const char* ext = sit_screenshot_format_ext[sit_gs.screenshot_format];
+
+    // 2. Build final path
+    char path[512];
+    if (!fileName || fileName[0] == '\0') {
+        snprintf(path, sizeof(path), "screenshot_%llu%s", (unsigned long long)time(NULL), ext);
+    } else {
+        // Check if the filename already has a valid screenshot extension
+        const char* existing_ext = SituationGetFileExtension(fileName);
+        bool has_valid_ext = false;
+        if (existing_ext) {
+            for (int i = 0; i < SIT_SCREENSHOT_FORMAT_COUNT; i++) {
+                if (_sit_strcasecmp(existing_ext, sit_screenshot_format_ext[i]) == 0) {
+                    has_valid_ext = true;
+                    break;
+                }
+            }
+        }
+        if (has_valid_ext) {
+            snprintf(path, sizeof(path), "%s", fileName);
+        } else {
+            snprintf(path, sizeof(path), "%s%s", fileName, ext);
+        }
+    }
+
+    // 3. Validate directory exists
+    char* dir = _sit_dirname(path);
+    if (dir && dir[0] != '\0' && !_sit_directory_exists(dir)) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "Screenshot directory does not exist: %s", dir);
-		SituationFreeString(dir);
-		return _SituationSetErrorFromCode(SITUATION_ERROR_DIRECTORY_CREATION_FAILED, err_msg);
-	}
-	SituationFreeString(dir);
-
-	// 1. Validate Extension
-    const char *ext = SituationGetFileExtension(fileName);
-    if (!ext || _sit_strcasecmp(ext, ".png") != 0) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationTakeScreenshot supports only '.png' format.");
+        SituationFreeString(dir);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_DIRECTORY_CREATION_FAILED, err_msg);
     }
+    SituationFreeString(dir);
 
-    // 2. Check for STB Writer
-#if !defined(STB_IMAGE_WRITE_IMPLEMENTATION)
-    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "PNG support not available. Please implement stb_image_write.h.");
-#else
-    // 3. Capture and Save
+    // 4. Capture screen
     SituationImage image = {0};
     SituationError cap_err = SituationLoadImageFromScreen(&image);
     if (cap_err != SITUATION_SUCCESS) return cap_err;
 
-    int stride = image.width * 4;
-    // stbi_write_png returns 0 on failure
-    bool success = (stbi_write_png(fileName, image.width, image.height, 4, image.data, stride) != 0);
+    // 5. Write file in configured format
+#if !defined(STB_IMAGE_WRITE_IMPLEMENTATION)
+    SituationUnloadImage(image);
+    return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Image write support not available (stb_image_write).");
+#else
+    int ok = 0;
+    switch (sit_gs.screenshot_format) {
+        case SIT_SCREENSHOT_PNG:
+            ok = stbi_write_png(path, image.width, image.height, 4, image.data, image.width * 4);
+            break;
+        case SIT_SCREENSHOT_JPG:
+            ok = stbi_write_jpg(path, image.width, image.height, 4, image.data, 90);
+            break;
+        case SIT_SCREENSHOT_TGA:
+            ok = stbi_write_tga(path, image.width, image.height, 4, image.data);
+            break;
+        case SIT_SCREENSHOT_BMP:
+        default:
+            ok = stbi_write_bmp(path, image.width, image.height, 4, image.data);
+            break;
+    }
     SituationUnloadImage(image);
 
-	if (!success) {
+    if (!ok) {
         char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "Failed to write PNG file: %s", fileName);
-		return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, err_msg);
-	}
+        snprintf(err_msg, sizeof(err_msg), "Failed to write screenshot: %s", path);
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, err_msg);
+    }
     return SITUATION_SUCCESS;
 #endif
+}
+
+SITAPI void SituationSetScreenshotFormat(SituationScreenshotFormat format) {
+    if (!SituationIsInitialized()) return;
+    sit_gs.screenshot_format = format;
+}
+
+SITAPI SituationScreenshotFormat SituationGetScreenshotFormat(void) {
+    if (!SituationIsInitialized()) return SIT_SCREENSHOT_BMP;
+    return sit_gs.screenshot_format;
 }
 
 

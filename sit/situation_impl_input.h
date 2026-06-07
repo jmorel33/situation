@@ -1208,9 +1208,17 @@ SITAPI int SituationSetGamepadMappings(const char *mappings) {
         _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SetGamepadMappings");
         return 0;
     }
+    if (!mappings) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SetGamepadMappings: mappings is NULL");
+        return 0;
+    }
     // This is a direct wrapper around the GLFW function.
     // It returns 1 on success, 0 on failure.
-    return glfwUpdateGamepadMappings(mappings);
+    int result = glfwUpdateGamepadMappings(mappings);
+    if (!result) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INPUT_MAPPING_INVALID, "Gamepad mapping string rejected by GLFW (invalid format)");
+    }
+    return result;
 }
 
 /**
@@ -1225,7 +1233,10 @@ SITAPI int SituationSetGamepadMappings(const char *mappings) {
  * @param right_motor The intensity of the right (high-frequency) motor, from `0.0f` (off) to `1.0f` (full strength).
  */
 SITAPI bool SituationSetGamepadVibration(int jid, float left_motor, float right_motor) {
-    if (!SituationIsJoystickPresent(jid)) return false;
+    if (!SituationIsJoystickPresent(jid)) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INPUT_DEVICE_DISCONNECTED, "SituationSetGamepadVibration: device not present");
+        return false;
+    }
 
 #if defined(_WIN32)
     // On Windows, GLFW joystick IDs map directly to XInput user indices (0-3) for XInput-compatible devices. We assume this mapping holds.
@@ -1242,7 +1253,12 @@ SITAPI bool SituationSetGamepadVibration(int jid, float left_motor, float right_
     vibration.wRightMotorSpeed = (WORD)(right * 65535.0f);
 
     // XInputSetState returns ERROR_SUCCESS (0) on success
-    return (XInputSetState((DWORD)jid, &vibration) == ERROR_SUCCESS);
+    DWORD result = XInputSetState((DWORD)jid, &vibration);
+    if (result != ERROR_SUCCESS) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INPUT_HAPTIC_FAILED, "XInputSetState failed for gamepad vibration");
+        return false;
+    }
+    return true;
 #else
     // Correctly fail on non-supported platforms
     _SituationSetErrorFromCode(SITUATION_ERROR_NOT_IMPLEMENTED, "Gamepad vibration is currently only supported on Windows (XInput).");

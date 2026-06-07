@@ -83,7 +83,7 @@ static SituationError _SituationSetFilesystemError(const char* base_message, con
                 specific_error_code = SITUATION_ERROR_PATH_NOT_FOUND;
                 break;
             case ERROR_ACCESS_DENIED:
-                specific_error_code = SITUATION_ERROR_PERMISSION_DENIED;
+                specific_error_code = SITUATION_ERROR_FILE_ACCESS_DENIED;
                 break;
             case ERROR_SHARING_VIOLATION:
             case ERROR_LOCK_VIOLATION:
@@ -98,6 +98,13 @@ static SituationError _SituationSetFilesystemError(const char* base_message, con
                 break;
             case ERROR_DIR_NOT_EMPTY:
                 specific_error_code = SITUATION_ERROR_DIR_NOT_EMPTY;
+                break;
+            case ERROR_INVALID_NAME:
+            case ERROR_BAD_PATHNAME:
+                specific_error_code = SITUATION_ERROR_PATH_INVALID;
+                break;
+            case ERROR_DIRECTORY:
+                specific_error_code = SITUATION_ERROR_PATH_IS_DIRECTORY;
                 break;
             // Add other mappings as needed...
         }
@@ -124,7 +131,7 @@ static SituationError _SituationSetFilesystemError(const char* base_message, con
             break;
         case EACCES:
         case EPERM:
-            specific_error_code = SITUATION_ERROR_PERMISSION_DENIED;
+            specific_error_code = SITUATION_ERROR_FILE_ACCESS_DENIED;
             break;
         case EBUSY:
             specific_error_code = SITUATION_ERROR_FILE_LOCKED;
@@ -417,16 +424,15 @@ SITAPI char* SituationLoadFileText(const char* file_path) {
  * @param text The null-terminated string to write.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationSaveFileText(const char* file_path, const char* text) {
+SITAPI SituationError SituationSaveFileText(const char* file_path, const char* text) {
     if (!file_path || !text) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path or text cannot be NULL.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path or text cannot be NULL.");
     }
 
     // Use strlen to get the number of bytes to write, excluding the null terminator.
     unsigned int len = (unsigned int)strlen(text);
 
-    return (SituationSaveFileData(file_path, text, len) == SITUATION_SUCCESS);
+    return SituationSaveFileData(file_path, text, len);
 }
 
 
@@ -750,32 +756,28 @@ SITAPI long SituationGetFileModTime(const char* file_path) {
  * @param file_path The path to the file to be deleted.
  * @return True if the file was successfully deleted, false otherwise.
  */
-SITAPI bool SituationDeleteFile(const char* file_path) {
+SITAPI SituationError SituationDeleteFile(const char* file_path) {
     if (!file_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "file_path cannot be NULL.");
     }
 #if defined(_WIN32)
     WCHAR* wide_path = _sit_utf8_to_wide(file_path);
     if (!wide_path) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
     }
 
     BOOL result = DeleteFileW(wide_path);
     SIT_FREE(wide_path);
 
     if (result == 0) {
-        _SituationSetFilesystemError("Failed to delete file", file_path, SITUATION_ERROR_FILE_ACCESS);
-        return false;
+        return _SituationSetFilesystemError("Failed to delete file", file_path, SITUATION_ERROR_FILE_ACCESS);
     }
-    return true;
+    return SITUATION_SUCCESS;
 #else // POSIX/Standard C
     if (remove(file_path) != 0) {
-        _SituationSetFilesystemError("Failed to delete file", file_path, SITUATION_ERROR_FILE_ACCESS);
-        return false;
+        return _SituationSetFilesystemError("Failed to delete file", file_path, SITUATION_ERROR_FILE_ACCESS);
     }
-    return true;
+    return SITUATION_SUCCESS;
 #endif
 }
 
@@ -785,7 +787,7 @@ SITAPI bool SituationDeleteFile(const char* file_path) {
  * @param new_path The new path for the file or directory.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationRenameFile(const char* old_path, const char* new_path) {
+SITAPI SituationError SituationRenameFile(const char* old_path, const char* new_path) {
     return SituationMoveFile(old_path, new_path);
 }
 
@@ -795,37 +797,37 @@ SITAPI bool SituationRenameFile(const char* old_path, const char* new_path) {
  * @param new_path The new path for the file or directory.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
-    if (!old_path || !new_path) return false;
+SITAPI SituationError SituationMoveFile(const char* old_path, const char* new_path) {
+    if (!old_path || !new_path) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationMoveFile: old_path or new_path is NULL.");
+    }
 
 #if defined(_WIN32)
     WCHAR* wide_old = _sit_utf8_to_wide(old_path);
-    if (!wide_old) return false;
+    if (!wide_old) return _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "SituationMoveFile: failed to convert old_path to wide string.");
     WCHAR* wide_new = _sit_utf8_to_wide(new_path);
-    if (!wide_new) { SIT_FREE(wide_old); return false; }
+    if (!wide_new) { SIT_FREE(wide_old); return _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "SituationMoveFile: failed to convert new_path to wide string."); }
 
     BOOL result = MoveFileExW(wide_old, wide_new, MOVEFILE_REPLACE_EXISTING);
     SIT_FREE(wide_old);
     SIT_FREE(wide_new);
 
     if (result == 0) {
-        _SituationSetFilesystemError("Failed to move/rename file", old_path, SITUATION_ERROR_FILE_ACCESS);
-        return false;
+        return _SituationSetFilesystemError("Failed to move/rename file", old_path, SITUATION_ERROR_FILE_ACCESS);
     }
-    return true;
+    return SITUATION_SUCCESS;
 #else
     if (rename(old_path, new_path) == 0) {
-        return true;
+        return SITUATION_SUCCESS;
     }
     if (errno == EXDEV) {
-        if (SituationCopyFile(old_path, new_path)) {
+        SituationError copy_err = SituationCopyFile(old_path, new_path);
+        if (copy_err == SITUATION_SUCCESS) {
             return SituationDeleteFile(old_path);
         }
-        _SituationSetFilesystemError("Failed to copy file during cross-device move", old_path, SITUATION_ERROR_FILE_ACCESS);
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_ACCESS, "Failed to copy file during cross-device move");
     }
-    _SituationSetFilesystemError("Failed to move/rename file", old_path, SITUATION_ERROR_FILE_ACCESS);
-    return false;
+    return _SituationSetFilesystemError("Failed to move/rename file", old_path, SITUATION_ERROR_FILE_ACCESS);
 #endif
 }
 
@@ -836,17 +838,19 @@ SITAPI bool SituationMoveFile(const char* old_path, const char* new_path) {
  * @param dest_path The path where the file will be copied to.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
-    if (!source_path || !dest_path) return false;
+SITAPI SituationError SituationCopyFile(const char* source_path, const char* dest_path) {
+    if (!source_path || !dest_path) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCopyFile: source_path or dest_path is NULL.");
+    }
 
 #if defined(_WIN32)
     WCHAR* wide_source = _sit_utf8_to_wide(source_path);
-    if (!wide_source) return false;
+    if (!wide_source) return _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "SituationCopyFile: failed to convert source_path.");
 
     WCHAR* wide_dest = _sit_utf8_to_wide(dest_path);
     if (!wide_dest) {
         SIT_FREE(wide_source);
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "SituationCopyFile: failed to convert dest_path.");
     }
 
     BOOL result = CopyFileW(wide_source, wide_dest, FALSE);
@@ -854,10 +858,9 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
     SIT_FREE(wide_source);
     SIT_FREE(wide_dest);
     if (result == 0) {
-        _SituationSetFilesystemError("Failed to copy file", source_path, SITUATION_ERROR_FILE_ACCESS);
-        return false;
+        return _SituationSetFilesystemError("Failed to copy file", source_path, SITUATION_ERROR_FILE_ACCESS);
     }
-    return true;
+    return SITUATION_SUCCESS;
 
 #else // POSIX/Standard C manual implementation
     const int BUFFER_SIZE = 65536; // 64KB buffer for copying
@@ -866,36 +869,32 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
 
     FILE* source = fopen(source_path, "rb");
     if (!source) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Failed to open source file for copying.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Failed to open source file for copying.");
     }
 
     FILE* dest = fopen(dest_path, "wb");
     if (!dest) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Failed to open destination file for copying.");
         fclose(source);
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Failed to open destination file for copying.");
     }
 
     while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, source)) > 0) {
         if (fwrite(buffer, 1, bytes_read, dest) != bytes_read) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error writing to destination file.");
             fclose(source);
             fclose(dest);
-            return false;
+            return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Error writing to destination file.");
         }
     }
 
     if (ferror(source)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error reading from source file.");
         fclose(source);
         fclose(dest);
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_READ_FAILED, "Error reading from source file.");
     }
 
     fclose(source);
     fclose(dest);
-    return true;
+    return SITUATION_SUCCESS;
 #endif
 }
 
@@ -909,47 +908,42 @@ SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path) {
  * @param create_parents If true, create all missing parent directories.
  * @return True on success, false on failure.
  */
-SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) {
+SITAPI SituationError SituationCreateDirectory(const char* dir_path, bool create_parents) {
     if (!dir_path || dir_path[0] == '\0') {
-        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "dir_path cannot be NULL or empty.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "dir_path cannot be NULL or empty.");
     }
 
     if (SituationDirectoryExists(dir_path)) {
-        return true; // Already exists, success.
+        return SITUATION_SUCCESS; // Already exists, success.
     }
 
     if (!create_parents) {
 #if defined(_WIN32)
         WCHAR* wide_path = _sit_utf8_to_wide(dir_path);
         if (!wide_path) {
-            _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
-            return false;
+            return _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "Could not convert path to wide string.");
         }
         BOOL result = CreateDirectoryW(wide_path, NULL);
         SIT_FREE(wide_path);
         if (result == 0) {
-            _SituationSetFilesystemError("Failed to create directory", dir_path, SITUATION_ERROR_DIRECTORY_CREATION_FAILED);
-            return false;
+            return _SituationSetFilesystemError("Failed to create directory", dir_path, SITUATION_ERROR_DIRECTORY_CREATION_FAILED);
         }
-        return true;
+        return SITUATION_SUCCESS;
 #else
         if (mkdir(dir_path, 0755) != 0) {
-            _SituationSetFilesystemError("Failed to create directory", dir_path, SITUATION_ERROR_DIRECTORY_CREATION_FAILED);
-            return false;
+            return _SituationSetFilesystemError("Failed to create directory", dir_path, SITUATION_ERROR_DIRECTORY_CREATION_FAILED);
         }
-        return true;
+        return SITUATION_SUCCESS;
 #endif
     }
 
     char* path_copy = _sit_strdup(dir_path);
     if (!path_copy) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Could not duplicate path string for recursive create.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Could not duplicate path string for recursive create.");
     }
 
     char* p = path_copy;
-    bool success = true;
+    SituationError result = SITUATION_SUCCESS;
 
     // Handle drive letters or root on both platforms
     if (p[0] == '/') { p++; } // POSIX root
@@ -959,8 +953,8 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
         if (*p == '/' || *p == '\\') {
             *p = '\0';
             if (!SituationDirectoryExists(path_copy)) {
-                if (!SituationCreateDirectory(path_copy, false)) {
-                    success = false;
+                result = SituationCreateDirectory(path_copy, false);
+                if (result != SITUATION_SUCCESS) {
                     break;
                 }
             }
@@ -969,12 +963,12 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
         p++;
     }
 
-    if (success) {
-        success = SituationCreateDirectory(dir_path, false);
+    if (result == SITUATION_SUCCESS) {
+        result = SituationCreateDirectory(dir_path, false);
     }
 
     SIT_FREE(path_copy);
-    return success;
+    return result;
 }
 
 /**
@@ -983,40 +977,36 @@ SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents) 
  * @param recursive If true, perform a recursive deletion of all contents.
  * @return True if the directory was successfully deleted, false otherwise.
  */
-SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
+SITAPI SituationError SituationDeleteDirectory(const char* dir_path, bool recursive) {
     if (!dir_path || !SituationDirectoryExists(dir_path)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_PATH_NOT_FOUND, "Directory path is invalid or does not exist.");
-        return false;
+        return _SituationSetErrorFromCode(SITUATION_ERROR_PATH_NOT_FOUND, "Directory path is invalid or does not exist.");
     }
 
     if (recursive) {
         int count = 0;
         char** entries = SituationListDirectoryFiles(dir_path, &count);
         if (entries) {
-            bool all_deleted = true;
+            SituationError child_err = SITUATION_SUCCESS;
             for (int i = 0; i < count; i++) {
                 char* full_entry_path = SituationJoinPath(dir_path, entries[i]);
                 if (!full_entry_path) {
-                    all_deleted = false;
+                    child_err = SITUATION_ERROR_MEMORY_ALLOCATION;
                     continue;
                 }
 
                 if (SituationDirectoryExists(full_entry_path)) {
-                    if (!SituationDeleteDirectory(full_entry_path, true)) {
-                        all_deleted = false;
-                    }
+                    SituationError err = SituationDeleteDirectory(full_entry_path, true);
+                    if (err != SITUATION_SUCCESS) child_err = err;
                 } else {
-                    if (!SituationDeleteFile(full_entry_path)) {
-                        all_deleted = false;
-                    }
+                    SituationError err = SituationDeleteFile(full_entry_path);
+                    if (err != SITUATION_SUCCESS) child_err = err;
                 }
                 SIT_FREE(full_entry_path);
             }
             SituationFreeDirectoryFileList(entries, count);
 
-            if (!all_deleted) {
-                _SituationSetErrorFromCode(SITUATION_ERROR_DIR_NOT_EMPTY, "Failed to delete one or more items within the directory.");
-                return false;
+            if (child_err != SITUATION_SUCCESS) {
+                return _SituationSetErrorFromCode(SITUATION_ERROR_DIR_NOT_EMPTY, "Failed to delete one or more items within the directory.");
             }
         }
     }
@@ -1024,12 +1014,14 @@ SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive) {
     // At this point, the directory should be empty. Proceed with deletion.
 #if defined(_WIN32)
     WCHAR* wide_path = _sit_utf8_to_wide(dir_path);
-    if (!wide_path) return false;
+    if (!wide_path) return _SituationSetErrorFromCode(SITUATION_ERROR_PATH_INVALID, "SituationDeleteDirectory: failed to convert path.");
     BOOL result = RemoveDirectoryW(wide_path);
     SIT_FREE(wide_path);
-    return (result != 0);
+    if (result == 0) return _SituationSetFilesystemError("Failed to remove directory", dir_path, SITUATION_ERROR_FILE_ACCESS);
+    return SITUATION_SUCCESS;
 #else // POSIX
-    return (rmdir(dir_path) == 0);
+    if (rmdir(dir_path) != 0) return _SituationSetFilesystemError("Failed to remove directory", dir_path, SITUATION_ERROR_FILE_ACCESS);
+    return SITUATION_SUCCESS;
 #endif
 }
 
@@ -1405,7 +1397,7 @@ static void _SituationAsyncFileTextSaveWorker(void* data, void* unused) {
     (void)unused;
     _SitAsyncFileTextSaveCtx* ctx = (_SitAsyncFileTextSaveCtx*)data;
 
-    bool success = SituationSaveFileText(ctx->path, ctx->text_copy);
+    bool success = (SituationSaveFileText(ctx->path, ctx->text_copy) == SITUATION_SUCCESS);
 
     if (ctx->callback) {
         ctx->callback(success, ctx->user_data);
@@ -1580,154 +1572,36 @@ SITAPI uint32_t SituationGetCPUThreadCount(void) {
 #endif
 }
 
-SITUATION_DEVICE_INFO_DEPRECATED("Use the new, more specific functions like SituationGetCPUInfo(), SituationGetGPUInfo(), etc. This function will be removed in a future version.")
-SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
-    SituationDeviceInfo info = {0};
-    if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get device info"); return info; }
+SITAPI void SituationGetCPUInfo(SituationCPUInfo* out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!SituationIsInitialized()) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get CPU info");
+        return;
+    }
 
-    #if defined(_WIN32)
-    // CPU Info
-    SYSTEM_INFO sys_info_win;
-    GetSystemInfo(&sys_info_win);
-    info.cpu_cores = (int)SituationGetCPUThreadCount();
+    out->thread_count = SituationGetCPUThreadCount();
+    out->core_count = SituationGetCPUCoreCount();
+
+#if defined(_WIN32)
     HKEY hKey;
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        DWORD size_cpu_name = sizeof(info.cpu_name);
-        if (RegQueryValueExA(hKey, "ProcessorNameString", NULL, NULL, (LPBYTE)info.cpu_name, &size_cpu_name) != ERROR_SUCCESS) {
-            strncpy(info.cpu_name, "Unknown CPU", SITUATION_MAX_CPU_NAME_LEN -1);
-            info.cpu_name[SITUATION_MAX_CPU_NAME_LEN -1] = '\0';
+        DWORD size_cpu_name = sizeof(out->name);
+        if (RegQueryValueExA(hKey, "ProcessorNameString", NULL, NULL, (LPBYTE)out->name, &size_cpu_name) != ERROR_SUCCESS) {
+            strncpy(out->name, "Unknown CPU", SITUATION_MAX_CPU_NAME_LEN - 1);
+            out->name[SITUATION_MAX_CPU_NAME_LEN - 1] = '\0';
         }
         DWORD speed_mhz = 0;
         DWORD size_speed = sizeof(speed_mhz);
         if (RegQueryValueExA(hKey, "~MHz", NULL, NULL, (LPBYTE)&speed_mhz, &size_speed) == ERROR_SUCCESS) {
-            info.cpu_clock_speed_ghz = speed_mhz / 1000.0f;
+            out->clock_speed_ghz = speed_mhz / 1000.0f;
         }
         RegCloseKey(hKey);
     } else {
-        strncpy(info.cpu_name, "Unknown CPU (RegOpenKeyExA failed)", SITUATION_MAX_CPU_NAME_LEN -1);
-        info.cpu_name[SITUATION_MAX_CPU_NAME_LEN -1] = '\0';
+        strncpy(out->name, "Unknown CPU (RegOpenKeyExA failed)", SITUATION_MAX_CPU_NAME_LEN - 1);
+        out->name[SITUATION_MAX_CPU_NAME_LEN - 1] = '\0';
     }
-
-    // GPU Info
-    #ifdef SITUATION_ENABLE_DXGI
-    // DXGI needs COM to be initialized. The flag sit_gs.is_com_initialized should be true.
-    if (sit_gs.is_com_initialized) { // Check if COM is available
-        IDXGIFactory* pFactory = NULL;
-        if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)&pFactory)) && pFactory) {
-            IDXGIAdapter* pAdapter = NULL;
-            if (SUCCEEDED(pFactory->EnumAdapters(0, &pAdapter)) && pAdapter) { // Get primary adapter
-                DXGI_ADAPTER_DESC desc;
-                if (SUCCEEDED(pAdapter->GetDesc(&desc))) {
-                    WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, info.gpu_name, SITUATION_MAX_GPU_NAME_LEN-1, NULL, NULL);
-                    info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0';
-                    info.gpu_dedicated_memory_bytes = desc.DedicatedVideoMemory;
-                } else { strncpy(info.gpu_name, "Unknown GPU (DXGI desc failed)", SITUATION_MAX_GPU_NAME_LEN-1);
-                info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0';}
-                pAdapter->Release();
-            } else { strncpy(info.gpu_name, "Unknown GPU (DXGI adapter enum failed)", SITUATION_MAX_GPU_NAME_LEN-1);
-            info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0';}
-            pFactory->Release();
-        } else { /* CreateDXGIFactory failed, or pFactory is NULL */
-            strncpy(info.gpu_name, "Unknown GPU (DXGI factory failed)", SITUATION_MAX_GPU_NAME_LEN-1);
-            info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0';
-        }
-    } else
-    #endif // SITUATION_ENABLE_DXGI
-    #ifdef SITUATION_USE_OPENGL
-    if (sit_gs.sit_glfw_window && glad_glGetString) {
-        const char* gl_renderer = (const char*)glGetString(GL_RENDERER);
-#else
-    if (sit_gs.sit_glfw_window) {
-        const char* gl_renderer = "Vulkan";
-#endif
-        if (gl_renderer) { strncpy(info.gpu_name, gl_renderer, SITUATION_MAX_GPU_NAME_LEN-1);
-        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
-        else { strncpy(info.gpu_name, "Unknown GPU (OpenGL name not available)", SITUATION_MAX_GPU_NAME_LEN-1);
-        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
-    } else {
-        strncpy(info.gpu_name, "Unknown GPU (No context/DXGI/COM)", SITUATION_MAX_GPU_NAME_LEN-1);
-        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0';
-    }
-
-    // RAM Info
-    MEMORYSTATUSEX mem_status = { .dwLength = sizeof(MEMORYSTATUSEX) };
-    if (GlobalMemoryStatusEx(&mem_status)) {
-        info.total_ram_bytes = mem_status.ullTotalPhys;
-        info.available_ram_bytes = mem_status.ullAvailPhys;
-    }
-
-    // Storage Info
-    DWORD drives_mask = GetLogicalDrives();
-    info.storage_device_count = 0;
-    for (int i = 0; i < 26 && info.storage_device_count < SITUATION_MAX_STORAGE_DEVICES; ++i) {
-        if (drives_mask & (1 << i)) {
-            char drive_path[] = { (char)('A' + i), ':', '\\', '\0' };
-            ULARGE_INTEGER total_cap, free_space;
-            if (GetDiskFreeSpaceExA(drive_path, NULL, &total_cap, &free_space)) { snprintf(info.storage_device_names[info.storage_device_count], SITUATION_MAX_DEVICE_NAME_LEN, "Drive %c:", (char)('A' + i));
-                info.storage_capacity_bytes[info.storage_device_count] = total_cap.QuadPart;
-                info.storage_free_bytes[info.storage_device_count] = free_space.QuadPart;
-                info.storage_device_count++;
-            }
-        }
-    }
-
-    // Network Adapter Info
-    ULONG adapters_buffer_size = 15000; // Recommended starting size by MS docs
-    info.network_adapter_count = 0;
-    IP_ADAPTER_ADDRESSES* adapters_list = (IP_ADAPTER_ADDRESSES*)SIT_MALLOC(adapters_buffer_size);
-    if (adapters_list) {
-        DWORD ret_val = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapters_list, &adapters_buffer_size);
-        if (ret_val == ERROR_BUFFER_OVERFLOW) { // Should have been caught if initial buffer was 0 and we got size.
-                                                // But if initial guess was too small.
-            SIT_FREE(adapters_list);
-            adapters_list = (IP_ADAPTER_ADDRESSES*)SIT_MALLOC(adapters_buffer_size); // Retry with new size
-            if (adapters_list) { ret_val = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapters_list, &adapters_buffer_size);
-            }
-        }
-        if (ret_val == ERROR_SUCCESS && adapters_list) {
-            IP_ADAPTER_ADDRESSES* current_adapter = adapters_list;
-            while (current_adapter && info.network_adapter_count < SITUATION_MAX_NETWORK_ADAPTERS) {
-                // Filter for common operational adapters if desired (e.g., IfOperStatusUp) if (current_adapter->OperStatus == IfOperStatusUp) {
-                WideCharToMultiByte(CP_UTF8, 0, current_adapter->FriendlyName, -1, info.network_adapter_names[info.network_adapter_count], SITUATION_MAX_DEVICE_NAME_LEN-1, NULL, NULL);
-                info.network_adapter_names[info.network_adapter_count][SITUATION_MAX_DEVICE_NAME_LEN-1] = '\0';
-                info.network_adapter_count++;
-                // }
-                current_adapter = current_adapter->Next;
-            }
-        }
-        SIT_FREE(adapters_list); adapters_list = NULL;
-    }
-
-
-    // Input Device Info
-    info.input_device_count = 0;
-    const GUID* device_classes[] = { &GUID_DEVCLASS_KEYBOARD, &GUID_DEVCLASS_MOUSE, &GUID_DEVCLASS_HIDCLASS };
-    for (int class_idx = 0; class_idx < 3 && info.input_device_count < SITUATION_MAX_INPUT_DEVICES; ++class_idx) {
-        HDEVINFO hDevInfo = SetupDiGetClassDevsW(device_classes[class_idx], NULL, NULL, DIGCF_PRESENT);
-        if (hDevInfo == INVALID_HANDLE_VALUE) continue;
-        SP_DEVINFO_DATA dev_info_data = { .cbSize = sizeof(SP_DEVINFO_DATA) };
-        for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &dev_info_data) && info.input_device_count < SITUATION_MAX_INPUT_DEVICES; ++i) {
-            char friendly_name[SITUATION_MAX_DEVICE_NAME_LEN];
-            if (SetupDiGetDeviceRegistryPropertyW(hDevInfo, &dev_info_data, SPDRP_FRIENDLYNAME, NULL, (PBYTE)friendly_name, sizeof(friendly_name)-1, NULL) ||
-                SetupDiGetDeviceRegistryPropertyW(hDevInfo, &dev_info_data, SPDRP_DEVICEDESC, NULL, (PBYTE)friendly_name, sizeof(friendly_name)-1, NULL) ) {
-                friendly_name[sizeof(friendly_name)-1] = '\0';
-                if (device_classes[class_idx] == &GUID_DEVCLASS_HIDCLASS) { // Filter HIDCLASS for gamepads/controllers
-                    if (!strstr(friendly_name, "Controller") && !strstr(friendly_name, "Gamepad") &&
-                        !strstr(friendly_name, "Joystick") && !strstr(friendly_name, "XBOX") &&
-                        !strstr(friendly_name, "Wireless Controller") && !strstr(friendly_name, "Joy-Con") &&
-                        !strstr(friendly_name, "controller") && !strstr(friendly_name, "gamepad") ) { // Add lowercase checks
-                        continue; // Skip if not a typical gamepad name
-                    }
-                }
-                strncpy(info.input_device_names[info.input_device_count], friendly_name, SITUATION_MAX_DEVICE_NAME_LEN -1);
-                info.input_device_names[info.input_device_count][SITUATION_MAX_DEVICE_NAME_LEN-1] = '\0';
-                info.input_device_count++;
-            }
-        }
-        SetupDiDestroyDeviceInfoList(hDevInfo);
-    }
-    #elif defined(__linux__) // Linux Implementation
-    // CPU Info
+#elif defined(__linux__)
     FILE* cpuinfo = fopen("/proc/cpuinfo", "r");
     if (cpuinfo) {
         char line[256];
@@ -1736,189 +1610,354 @@ SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
             if (strncmp(line, "model name", 10) == 0) {
                 char* start = strchr(line, ':');
                 if (start) {
-                    strncpy(info.cpu_name, start + 2, SITUATION_MAX_CPU_NAME_LEN-1); // +2 to skip ": "
-                    info.cpu_name[SITUATION_MAX_CPU_NAME_LEN-1] = '\0';
-                    // Remove newline
-                    size_t len = strlen(info.cpu_name);
-                    if (len > 0 && info.cpu_name[len-1] == '\n') info.cpu_name[len-1] = '\0';
+                    strncpy(out->name, start + 2, SITUATION_MAX_CPU_NAME_LEN - 1);
+                    out->name[SITUATION_MAX_CPU_NAME_LEN - 1] = '\0';
+                    size_t len = strlen(out->name);
+                    if (len > 0 && out->name[len - 1] == '\n') out->name[len - 1] = '\0';
                     found = true;
                     break;
                 }
             }
         }
         fclose(cpuinfo);
-        if (!found) strncpy(info.cpu_name, "Linux CPU", SITUATION_MAX_CPU_NAME_LEN-1);
+        if (!found) strncpy(out->name, "Linux CPU", SITUATION_MAX_CPU_NAME_LEN - 1);
     } else {
-        strncpy(info.cpu_name, "Unknown Linux CPU", SITUATION_MAX_CPU_NAME_LEN-1);
+        strncpy(out->name, "Unknown Linux CPU", SITUATION_MAX_CPU_NAME_LEN - 1);
     }
-    info.cpu_cores = (int)SituationGetCPUThreadCount();
+#elif defined(__APPLE__)
+    size_t size = sizeof(out->name);
+    if (sysctlbyname("machdep.cpu.brand_string", out->name, &size, NULL, 0) != 0) {
+        strncpy(out->name, "Apple CPU", SITUATION_MAX_CPU_NAME_LEN - 1);
+    }
+#else
+    strncpy(out->name, "Generic CPU", SITUATION_MAX_CPU_NAME_LEN - 1);
+#endif
+    out->name[SITUATION_MAX_CPU_NAME_LEN - 1] = '\0';
+}
 
-    // RAM Info
+SITAPI void SituationGetGPUInfo(SituationGPUInfo* out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!SituationIsInitialized()) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get GPU info");
+        return;
+    }
+
+#if defined(_WIN32)
+    bool gpu_set = false;
+#ifdef SITUATION_ENABLE_DXGI
+    if (sit_gs.is_com_initialized) {
+        IDXGIFactory* pFactory = NULL;
+        if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)&pFactory)) && pFactory) {
+            IDXGIAdapter* pAdapter = NULL;
+            if (SUCCEEDED(pFactory->EnumAdapters(0, &pAdapter)) && pAdapter) {
+                DXGI_ADAPTER_DESC desc;
+                if (SUCCEEDED(pAdapter->GetDesc(&desc))) {
+                    WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, out->name, SITUATION_MAX_GPU_NAME_LEN - 1, NULL, NULL);
+                    out->name[SITUATION_MAX_GPU_NAME_LEN - 1] = '\0';
+                    out->dedicated_memory_bytes = desc.DedicatedVideoMemory;
+                    gpu_set = true;
+                }
+                pAdapter->Release();
+            }
+            pFactory->Release();
+        }
+    }
+#endif
+    if (!gpu_set) {
+#ifdef SITUATION_USE_OPENGL
+        if (sit_gs.sit_glfw_window && glad_glGetString) {
+            const char* gl_renderer = (const char*)glGetString(GL_RENDERER);
+#else
+        if (sit_gs.sit_glfw_window) {
+            const char* gl_renderer = "Vulkan";
+#endif
+            if (gl_renderer) {
+                strncpy(out->name, gl_renderer, SITUATION_MAX_GPU_NAME_LEN - 1);
+            } else {
+                strncpy(out->name, "Unknown GPU (OpenGL name not available)", SITUATION_MAX_GPU_NAME_LEN - 1);
+            }
+        } else {
+            strncpy(out->name, "Unknown GPU (No context/DXGI/COM)", SITUATION_MAX_GPU_NAME_LEN - 1);
+        }
+        out->name[SITUATION_MAX_GPU_NAME_LEN - 1] = '\0';
+    }
+#else
+    const char* gpu_name = SituationGetGPUName();
+    if (gpu_name) {
+        strncpy(out->name, gpu_name, SITUATION_MAX_GPU_NAME_LEN - 1);
+        out->name[SITUATION_MAX_GPU_NAME_LEN - 1] = '\0';
+    } else {
+        strncpy(out->name, "Generic GPU", SITUATION_MAX_GPU_NAME_LEN - 1);
+        out->name[SITUATION_MAX_GPU_NAME_LEN - 1] = '\0';
+    }
+#endif
+}
+
+SITAPI void SituationGetMemoryInfo(SituationMemoryInfo* out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!SituationIsInitialized()) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get memory info");
+        return;
+    }
+
+#if defined(_WIN32)
+    MEMORYSTATUSEX mem_status = { .dwLength = sizeof(MEMORYSTATUSEX) };
+    if (GlobalMemoryStatusEx(&mem_status)) {
+        out->total_bytes = mem_status.ullTotalPhys;
+        out->available_bytes = mem_status.ullAvailPhys;
+    }
+#elif defined(__linux__)
     struct sysinfo si;
     if (sysinfo(&si) == 0) {
-        info.total_ram_bytes = (uint64_t)si.totalram * si.mem_unit;
-        info.available_ram_bytes = (uint64_t)si.freeram * si.mem_unit;
+        out->total_bytes = (uint64_t)si.totalram * si.mem_unit;
+        out->available_bytes = (uint64_t)si.freeram * si.mem_unit;
     }
+#elif defined(__APPLE__)
+    int64_t memsize = 0;
+    size_t size = sizeof(memsize);
+    if (sysctlbyname("hw.memsize", &memsize, &size, NULL, 0) == 0) {
+        out->total_bytes = (uint64_t)memsize;
+    }
+#endif
+}
 
-    // Storage Info (Root partition)
+static int _SituationCollectStorageDevices(
+    char names[SITUATION_MAX_STORAGE_DEVICES][SITUATION_MAX_DEVICE_NAME_LEN],
+    uint64_t capacity[SITUATION_MAX_STORAGE_DEVICES],
+    uint64_t free_bytes[SITUATION_MAX_STORAGE_DEVICES]) {
+    int count = 0;
+#if defined(_WIN32)
+    DWORD drives_mask = GetLogicalDrives();
+    for (int i = 0; i < 26 && count < SITUATION_MAX_STORAGE_DEVICES; ++i) {
+        if (drives_mask & (1 << i)) {
+            char drive_path[] = { (char)('A' + i), ':', '\\', '\0' };
+            ULARGE_INTEGER total_cap, free_space;
+            if (GetDiskFreeSpaceExA(drive_path, NULL, &total_cap, &free_space)) {
+                if (names) snprintf(names[count], SITUATION_MAX_DEVICE_NAME_LEN, "Drive %c:", (char)('A' + i));
+                if (capacity) capacity[count] = total_cap.QuadPart;
+                if (free_bytes) free_bytes[count] = free_space.QuadPart;
+                count++;
+            }
+        }
+    }
+#elif defined(__linux__)
     struct statvfs stat;
-    if (statvfs("/", &stat) == 0) {
-        info.storage_device_count = 1;
-        strncpy(info.storage_device_names[0], "/", SITUATION_MAX_DEVICE_NAME_LEN-1);
-        info.storage_capacity_bytes[0] = (uint64_t)stat.f_blocks * stat.f_frsize;
-        info.storage_free_bytes[0] = (uint64_t)stat.f_bfree * stat.f_frsize;
+    if (statvfs("/", &stat) == 0 && count < SITUATION_MAX_STORAGE_DEVICES) {
+        if (names) strncpy(names[count], "/", SITUATION_MAX_DEVICE_NAME_LEN - 1);
+        if (capacity) capacity[count] = (uint64_t)stat.f_blocks * stat.f_frsize;
+        if (free_bytes) free_bytes[count] = (uint64_t)stat.f_bfree * stat.f_frsize;
+        count = 1;
     }
+#elif defined(__APPLE__)
+    struct statfs stats;
+    if (statfs("/", &stats) == 0 && count < SITUATION_MAX_STORAGE_DEVICES) {
+        if (names) strncpy(names[count], "/", SITUATION_MAX_DEVICE_NAME_LEN - 1);
+        if (capacity) capacity[count] = (uint64_t)stats.f_blocks * stats.f_bsize;
+        if (free_bytes) free_bytes[count] = (uint64_t)stats.f_bfree * stats.f_bsize;
+        count = 1;
+    }
+#endif
+    return count;
+}
 
-    // Network Adapter Info
+SITAPI int SituationGetStorageDeviceCount(void) {
+    if (!SituationIsInitialized()) return 0;
+    return _SituationCollectStorageDevices(NULL, NULL, NULL);
+}
+
+SITAPI bool SituationGetStorageDevice(int index, char* out_name, int name_len, uint64_t* out_capacity_bytes, uint64_t* out_free_bytes) {
+    if (index < 0 || !SituationIsInitialized()) return false;
+    char names[SITUATION_MAX_STORAGE_DEVICES][SITUATION_MAX_DEVICE_NAME_LEN];
+    uint64_t capacity[SITUATION_MAX_STORAGE_DEVICES];
+    uint64_t free_space[SITUATION_MAX_STORAGE_DEVICES];
+    int count = _SituationCollectStorageDevices(names, capacity, free_space);
+    if (index >= count) return false;
+    if (out_name && name_len > 0) {
+        strncpy(out_name, names[index], (size_t)name_len - 1);
+        out_name[name_len - 1] = '\0';
+    }
+    if (out_capacity_bytes) *out_capacity_bytes = capacity[index];
+    if (out_free_bytes) *out_free_bytes = free_space[index];
+    return true;
+}
+
+static int _SituationCollectNetworkAdapters(char names[SITUATION_MAX_NETWORK_ADAPTERS][SITUATION_MAX_DEVICE_NAME_LEN]) {
+    int count = 0;
+#if defined(_WIN32)
+    ULONG adapters_buffer_size = 15000;
+    IP_ADAPTER_ADDRESSES* adapters_list = (IP_ADAPTER_ADDRESSES*)SIT_MALLOC(adapters_buffer_size);
+    if (adapters_list) {
+        DWORD ret_val = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapters_list, &adapters_buffer_size);
+        if (ret_val == ERROR_BUFFER_OVERFLOW) {
+            SIT_FREE(adapters_list);
+            adapters_list = (IP_ADAPTER_ADDRESSES*)SIT_MALLOC(adapters_buffer_size);
+            if (adapters_list) {
+                ret_val = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapters_list, &adapters_buffer_size);
+            }
+        }
+        if (ret_val == ERROR_SUCCESS && adapters_list) {
+            for (IP_ADAPTER_ADDRESSES* current_adapter = adapters_list;
+                 current_adapter && count < SITUATION_MAX_NETWORK_ADAPTERS;
+                 current_adapter = current_adapter->Next) {
+                if (names) {
+                    WideCharToMultiByte(CP_UTF8, 0, current_adapter->FriendlyName, -1, names[count], SITUATION_MAX_DEVICE_NAME_LEN - 1, NULL, NULL);
+                    names[count][SITUATION_MAX_DEVICE_NAME_LEN - 1] = '\0';
+                }
+                count++;
+            }
+        }
+        SIT_FREE(adapters_list);
+    }
+#else
     struct ifaddrs *ifaddr, *ifa;
     if (getifaddrs(&ifaddr) != -1) {
-        for (ifa = ifaddr; ifa != NULL && info.network_adapter_count < SITUATION_MAX_NETWORK_ADAPTERS; ifa = ifa->ifa_next) {
+        for (ifa = ifaddr; ifa != NULL && count < SITUATION_MAX_NETWORK_ADAPTERS; ifa = ifa->ifa_next) {
             if (ifa->ifa_addr == NULL) continue;
-            // Only care about AF_INET (IPv4) or AF_INET6 (IPv6) and not loopback
             if ((ifa->ifa_addr->sa_family == AF_INET || ifa->ifa_addr->sa_family == AF_INET6) &&
                 !(ifa->ifa_flags & IFF_LOOPBACK)) {
-                // Check if we already added this interface (getifaddrs returns one entry per address per interface)
                 bool exists = false;
-                for(int i=0; i<info.network_adapter_count; ++i) {
-                    if (strcmp(info.network_adapter_names[i], ifa->ifa_name) == 0) { exists = true; break; }
+                for (int i = 0; i < count; ++i) {
+                    if (names && strcmp(names[i], ifa->ifa_name) == 0) { exists = true; break; }
                 }
                 if (!exists) {
-                    strncpy(info.network_adapter_names[info.network_adapter_count], ifa->ifa_name, SITUATION_MAX_DEVICE_NAME_LEN-1);
-                    info.network_adapter_names[info.network_adapter_count][SITUATION_MAX_DEVICE_NAME_LEN-1] = '\0';
-                    info.network_adapter_count++;
+                    if (names) {
+                        strncpy(names[count], ifa->ifa_name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
+                        names[count][SITUATION_MAX_DEVICE_NAME_LEN - 1] = '\0';
+                    }
+                    count++;
                 }
             }
         }
         freeifaddrs(ifaddr);
     }
+#endif
+    return count;
+}
 
-    // Input Device Info
+SITAPI int SituationGetNetworkAdapterCount(void) {
+    if (!SituationIsInitialized()) return 0;
+    return _SituationCollectNetworkAdapters(NULL);
+}
+
+SITAPI bool SituationGetNetworkAdapterName(int index, char* out_name, int name_len) {
+    if (index < 0 || !out_name || name_len <= 0 || !SituationIsInitialized()) return false;
+    char names[SITUATION_MAX_NETWORK_ADAPTERS][SITUATION_MAX_DEVICE_NAME_LEN];
+    int count = _SituationCollectNetworkAdapters(names);
+    if (index >= count) return false;
+    strncpy(out_name, names[index], (size_t)name_len - 1);
+    out_name[name_len - 1] = '\0';
+    return true;
+}
+
+static int _SituationCollectInputDevices(char names[SITUATION_MAX_INPUT_DEVICES][SITUATION_MAX_DEVICE_NAME_LEN]) {
+    int count = 0;
+#if defined(_WIN32)
+    const GUID* device_classes[] = { &GUID_DEVCLASS_KEYBOARD, &GUID_DEVCLASS_MOUSE, &GUID_DEVCLASS_HIDCLASS };
+    for (int class_idx = 0; class_idx < 3 && count < SITUATION_MAX_INPUT_DEVICES; ++class_idx) {
+        HDEVINFO hDevInfo = SetupDiGetClassDevsW(device_classes[class_idx], NULL, NULL, DIGCF_PRESENT);
+        if (hDevInfo == INVALID_HANDLE_VALUE) continue;
+        SP_DEVINFO_DATA dev_info_data = { .cbSize = sizeof(SP_DEVINFO_DATA) };
+        for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &dev_info_data) && count < SITUATION_MAX_INPUT_DEVICES; ++i) {
+            char friendly_name[SITUATION_MAX_DEVICE_NAME_LEN];
+            if (SetupDiGetDeviceRegistryPropertyW(hDevInfo, &dev_info_data, SPDRP_FRIENDLYNAME, NULL, (PBYTE)friendly_name, sizeof(friendly_name) - 1, NULL) ||
+                SetupDiGetDeviceRegistryPropertyW(hDevInfo, &dev_info_data, SPDRP_DEVICEDESC, NULL, (PBYTE)friendly_name, sizeof(friendly_name) - 1, NULL)) {
+                friendly_name[sizeof(friendly_name) - 1] = '\0';
+                if (device_classes[class_idx] == &GUID_DEVCLASS_HIDCLASS) {
+                    if (!strstr(friendly_name, "Controller") && !strstr(friendly_name, "Gamepad") &&
+                        !strstr(friendly_name, "Joystick") && !strstr(friendly_name, "XBOX") &&
+                        !strstr(friendly_name, "Wireless Controller") && !strstr(friendly_name, "Joy-Con") &&
+                        !strstr(friendly_name, "controller") && !strstr(friendly_name, "gamepad")) {
+                        continue;
+                    }
+                }
+                if (names) {
+                    strncpy(names[count], friendly_name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
+                    names[count][SITUATION_MAX_DEVICE_NAME_LEN - 1] = '\0';
+                }
+                count++;
+            }
+        }
+        SetupDiDestroyDeviceInfoList(hDevInfo);
+    }
+#elif defined(__linux__)
     FILE* bus_devices = fopen("/proc/bus/input/devices", "r");
     if (bus_devices) {
         char line[256];
         char current_name[SITUATION_MAX_DEVICE_NAME_LEN] = {0};
-        while (fgets(line, sizeof(line), bus_devices) && info.input_device_count < SITUATION_MAX_INPUT_DEVICES) {
+        while (fgets(line, sizeof(line), bus_devices) && count < SITUATION_MAX_INPUT_DEVICES) {
             if (strncmp(line, "N: Name=", 8) == 0) {
-                // Extract name
-                strncpy(current_name, line + 9, SITUATION_MAX_DEVICE_NAME_LEN - 1); // Skip "N: Name=\""
+                strncpy(current_name, line + 9, SITUATION_MAX_DEVICE_NAME_LEN - 1);
                 size_t len = strlen(current_name);
-                if (len > 0 && current_name[len-1] == '\n') current_name[len-1] = '\0';
-                if (len > 0 && current_name[len-2] == '"') current_name[len-2] = '\0'; // Remove trailing quote
-                if (len > 0 && current_name[len-1] == '"') current_name[len-1] = '\0'; // Or just quote
+                if (len > 0 && current_name[len - 1] == '\n') current_name[len - 1] = '\0';
+                if (len > 1 && current_name[len - 2] == '"') current_name[len - 2] = '\0';
+                if (len > 0 && current_name[len - 1] == '"') current_name[len - 1] = '\0';
             } else if (strncmp(line, "H: Handlers=", 12) == 0) {
-                // Check if it has a relevant handler like kbd, mouse, js, or event
                 if (strstr(line, "kbd") || strstr(line, "mouse") || strstr(line, "js") || strstr(line, "event")) {
                     if (strlen(current_name) > 0) {
-                        strncpy(info.input_device_names[info.input_device_count], current_name, SITUATION_MAX_DEVICE_NAME_LEN-1);
-                        info.input_device_names[info.input_device_count][SITUATION_MAX_DEVICE_NAME_LEN-1] = '\0';
-                        info.input_device_count++;
-                        current_name[0] = '\0'; // Reset
+                        if (names) {
+                            strncpy(names[count], current_name, SITUATION_MAX_DEVICE_NAME_LEN - 1);
+                            names[count][SITUATION_MAX_DEVICE_NAME_LEN - 1] = '\0';
+                        }
+                        count++;
+                        current_name[0] = '\0';
                     }
                 }
             }
         }
         fclose(bus_devices);
     }
-
-    // GPU Info
-    #ifdef SITUATION_USE_OPENGL
-    if (sit_gs.sit_glfw_window && glad_glGetString) {
-        const char* gl_renderer = (const char*)glGetString(GL_RENDERER);
-#else
-    if (sit_gs.sit_glfw_window) {
-        const char* gl_renderer = "Vulkan";
 #endif
-        if (gl_renderer) { strncpy(info.gpu_name, gl_renderer, SITUATION_MAX_GPU_NAME_LEN-1);
-        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
-        else { strncpy(info.gpu_name, "Generic GPU (OpenGL name not available)", SITUATION_MAX_GPU_NAME_LEN-1);
-        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
-    } else {
-        strncpy(info.gpu_name, "Generic GPU", SITUATION_MAX_GPU_NAME_LEN-1);
-        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0';
+    return count;
+}
+
+SITAPI int SituationGetInputDeviceCount(void) {
+    if (!SituationIsInitialized()) return 0;
+    return _SituationCollectInputDevices(NULL);
+}
+
+SITAPI bool SituationGetInputDeviceName(int index, char* out_name, int name_len) {
+    if (index < 0 || !out_name || name_len <= 0 || !SituationIsInitialized()) return false;
+    char names[SITUATION_MAX_INPUT_DEVICES][SITUATION_MAX_DEVICE_NAME_LEN];
+    int count = _SituationCollectInputDevices(names);
+    if (index >= count) return false;
+    strncpy(out_name, names[index], (size_t)name_len - 1);
+    out_name[name_len - 1] = '\0';
+    return true;
+}
+
+SITUATION_DEVICE_INFO_DEPRECATED("Use the new, more specific functions like SituationGetCPUInfo(), SituationGetGPUInfo(), etc. This function will be removed in a future version.")
+SITAPI SituationDeviceInfo SituationGetDeviceInfo(void) {
+    SituationDeviceInfo info = {0};
+    if (!SituationIsInitialized()) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get device info");
+        return info;
     }
 
-    #elif defined(__APPLE__) // macOS Implementation
-    // CPU Info
-    size_t size = sizeof(info.cpu_name);
-    if (sysctlbyname("machdep.cpu.brand_string", info.cpu_name, &size, NULL, 0) != 0) {
-        strncpy(info.cpu_name, "Apple CPU", SITUATION_MAX_CPU_NAME_LEN-1);
-    }
-    info.cpu_cores = (int)SituationGetCPUThreadCount();
+    SituationCPUInfo cpu;
+    SituationGPUInfo gpu;
+    SituationMemoryInfo mem;
+    SituationGetCPUInfo(&cpu);
+    SituationGetGPUInfo(&gpu);
+    SituationGetMemoryInfo(&mem);
 
-    // RAM Info
-    int64_t memsize = 0;
-    size = sizeof(memsize);
-    if (sysctlbyname("hw.memsize", &memsize, &size, NULL, 0) == 0) {
-        info.total_ram_bytes = (uint64_t)memsize;
-        // Available RAM is complex on macOS (vm_stat), omitting for brevity/stability
-        info.available_ram_bytes = 0;
-    }
+    strncpy(info.cpu_name, cpu.name, SITUATION_MAX_CPU_NAME_LEN - 1);
+    info.cpu_name[SITUATION_MAX_CPU_NAME_LEN - 1] = '\0';
+    info.cpu_cores = (int)cpu.thread_count;
+    info.cpu_clock_speed_ghz = cpu.clock_speed_ghz;
 
-    // Storage Info
-    struct statfs stats;
-    if (statfs("/", &stats) == 0) {
-        info.storage_device_count = 1;
-        strncpy(info.storage_device_names[0], "/", SITUATION_MAX_DEVICE_NAME_LEN-1);
-        info.storage_capacity_bytes[0] = (uint64_t)stats.f_blocks * stats.f_bsize;
-        info.storage_free_bytes[0] = (uint64_t)stats.f_bfree * stats.f_bsize;
-    }
+    strncpy(info.gpu_name, gpu.name, SITUATION_MAX_GPU_NAME_LEN - 1);
+    info.gpu_name[SITUATION_MAX_GPU_NAME_LEN - 1] = '\0';
+    info.gpu_dedicated_memory_bytes = gpu.dedicated_memory_bytes;
 
-    // Network Adapter Info (Shared with Linux via getifaddrs)
-    struct ifaddrs *ifaddr, *ifa;
-    if (getifaddrs(&ifaddr) != -1) {
-        for (ifa = ifaddr; ifa != NULL && info.network_adapter_count < SITUATION_MAX_NETWORK_ADAPTERS; ifa = ifa->ifa_next) {
-            if (ifa->ifa_addr == NULL) continue;
-            if ((ifa->ifa_addr->sa_family == AF_INET || ifa->ifa_addr->sa_family == AF_INET6) &&
-                !(ifa->ifa_flags & IFF_LOOPBACK)) {
-                bool exists = false;
-                for(int i=0; i<info.network_adapter_count; ++i) {
-                    if (strcmp(info.network_adapter_names[i], ifa->ifa_name) == 0) { exists = true; break; }
-                }
-                if (!exists) {
-                    strncpy(info.network_adapter_names[info.network_adapter_count], ifa->ifa_name, SITUATION_MAX_DEVICE_NAME_LEN-1);
-                    info.network_adapter_names[info.network_adapter_count][SITUATION_MAX_DEVICE_NAME_LEN-1] = '\0';
-                    info.network_adapter_count++;
-                }
-            }
-        }
-        freeifaddrs(ifaddr);
-    }
+    info.total_ram_bytes = mem.total_bytes;
+    info.available_ram_bytes = mem.available_bytes;
 
-    // GPU Info
-    #ifdef SITUATION_USE_OPENGL
-    if (sit_gs.sit_glfw_window && glad_glGetString) {
-        const char* gl_renderer = (const char*)glGetString(GL_RENDERER);
-#else
-    if (sit_gs.sit_glfw_window) {
-        const char* gl_renderer = "Vulkan";
-#endif
-        if (gl_renderer) { strncpy(info.gpu_name, gl_renderer, SITUATION_MAX_GPU_NAME_LEN-1);
-        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
-    } else {
-        strncpy(info.gpu_name, "Generic GPU", SITUATION_MAX_GPU_NAME_LEN-1);
-    }
-
-    #else // Fallback for other platforms
-    strncpy(info.cpu_name, "Generic CPU", SITUATION_MAX_CPU_NAME_LEN-1); info.cpu_name[SITUATION_MAX_CPU_NAME_LEN-1] = '\0';
-    long nproc = sysconf(_SC_NPROCESSORS_ONLN);
-    info.cpu_cores = (nproc > 0) ? (int)nproc : 1;
-
-    #ifdef SITUATION_USE_OPENGL
-    if (sit_gs.sit_glfw_window && glad_glGetString) {
-        const char* gl_renderer = (const char*)glGetString(GL_RENDERER);
-#else
-    if (sit_gs.sit_glfw_window) {
-        const char* gl_renderer = "Vulkan";
-#endif
-        if (gl_renderer) { strncpy(info.gpu_name, gl_renderer, SITUATION_MAX_GPU_NAME_LEN-1);
-        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
-        else { strncpy(info.gpu_name, "Generic GPU (OpenGL name not available)", SITUATION_MAX_GPU_NAME_LEN-1);
-        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0'; }
-    } else {
-        strncpy(info.gpu_name, "Generic GPU", SITUATION_MAX_GPU_NAME_LEN-1);
-        info.gpu_name[SITUATION_MAX_GPU_NAME_LEN-1] = '\0';
-    }
-    #endif
+    info.storage_device_count = _SituationCollectStorageDevices(
+        info.storage_device_names, info.storage_capacity_bytes, info.storage_free_bytes);
+    info.network_adapter_count = _SituationCollectNetworkAdapters(info.network_adapter_names);
+    info.input_device_count = _SituationCollectInputDevices(info.input_device_names);
 
     // --- Common: Display Info (via GLFW) ---
     // This runs on all platforms where GLFW is available (Windows, Linux, macOS)
@@ -2418,6 +2457,260 @@ SITAPI int SituationExecuteCommand(const char *cmd, char **output) {
     }
     return -1;
 #endif
+}
+
+//==================================================================================
+// OS Information, Process Enumeration, Active Audio Device (v2.4.199)
+//==================================================================================
+
+SITAPI SituationOSInfo SituationGetOSInfo(void) {
+    SituationOSInfo info = {0};
+
+#if defined(_WIN32)
+    // Use RtlGetVersion from ntdll — not subject to compatibility shims like GetVersionEx
+    typedef LONG (WINAPI *RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (ntdll) {
+        RtlGetVersionPtr rtl_get_version = (RtlGetVersionPtr)GetProcAddress(ntdll, "RtlGetVersion");
+        if (rtl_get_version) {
+            RTL_OSVERSIONINFOW osvi = {0};
+            osvi.dwOSVersionInfoSize = sizeof(osvi);
+            if (rtl_get_version(&osvi) == 0) { // STATUS_SUCCESS
+                // Determine product name
+                if (osvi.dwMajorVersion == 10 && osvi.dwBuildNumber >= 22000) {
+                    snprintf(info.name, sizeof(info.name), "Windows 11");
+                } else if (osvi.dwMajorVersion == 10) {
+                    snprintf(info.name, sizeof(info.name), "Windows 10");
+                } else if (osvi.dwMajorVersion == 6 && osvi.dwMinorVersion == 3) {
+                    snprintf(info.name, sizeof(info.name), "Windows 8.1");
+                } else if (osvi.dwMajorVersion == 6 && osvi.dwMinorVersion == 2) {
+                    snprintf(info.name, sizeof(info.name), "Windows 8");
+                } else if (osvi.dwMajorVersion == 6 && osvi.dwMinorVersion == 1) {
+                    snprintf(info.name, sizeof(info.name), "Windows 7");
+                } else {
+                    snprintf(info.name, sizeof(info.name), "Windows %lu.%lu", osvi.dwMajorVersion, osvi.dwMinorVersion);
+                }
+                snprintf(info.version, sizeof(info.version), "%lu.%lu.%lu",
+                    osvi.dwMajorVersion, osvi.dwMinorVersion, osvi.dwBuildNumber);
+                info.build_number = (uint32_t)osvi.dwBuildNumber;
+            }
+        }
+    }
+    if (info.name[0] == '\0') {
+        snprintf(info.name, sizeof(info.name), "Windows (version unknown)");
+    }
+
+#elif defined(__APPLE__)
+    snprintf(info.name, sizeof(info.name), "macOS");
+    // Use sysctl for kernel version
+    char buf[64] = {0};
+    size_t buf_len = sizeof(buf);
+    if (sysctlbyname("kern.osrelease", buf, &buf_len, NULL, 0) == 0) {
+        snprintf(info.version, sizeof(info.version), "%s", buf);
+    }
+
+#elif defined(__linux__)
+    // Try /etc/os-release for pretty name
+    FILE* f = fopen("/etc/os-release", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "PRETTY_NAME=", 12) == 0) {
+                char* val = line + 12;
+                // Strip quotes and newline
+                if (*val == '"') val++;
+                char* end = val + strlen(val) - 1;
+                while (end > val && (*end == '"' || *end == '\n' || *end == '\r')) *end-- = '\0';
+                snprintf(info.name, sizeof(info.name), "%s", val);
+                break;
+            }
+        }
+        fclose(f);
+    }
+    if (info.name[0] == '\0') {
+        snprintf(info.name, sizeof(info.name), "Linux");
+    }
+    // Kernel version via uname
+    struct utsname uts;
+    if (uname(&uts) == 0) {
+        snprintf(info.version, sizeof(info.version), "%s", uts.release);
+    }
+
+#else
+    snprintf(info.name, sizeof(info.name), "Unknown OS");
+#endif
+
+    return info;
+}
+
+// --- Process Enumeration ---
+
+#if defined(_WIN32)
+#include <tlhelp32.h>
+#include <psapi.h>
+#endif
+
+SITAPI SituationProcessInfo* SituationGetProcessList(int* out_count) {
+    if (!out_count) return NULL;
+    *out_count = 0;
+
+#if defined(_WIN32)
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "CreateToolhelp32Snapshot failed");
+        return NULL;
+    }
+
+    // First pass: count processes
+    PROCESSENTRY32 pe = {0};
+    pe.dwSize = sizeof(pe);
+    int count = 0;
+    if (Process32First(snap, &pe)) {
+        do { count++; } while (Process32Next(snap, &pe));
+    }
+
+    if (count == 0) {
+        CloseHandle(snap);
+        return NULL;
+    }
+
+    SituationProcessInfo* list = (SituationProcessInfo*)SIT_MALLOC(count * sizeof(SituationProcessInfo));
+    if (!list) {
+        CloseHandle(snap);
+        _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Failed to allocate process list");
+        return NULL;
+    }
+    memset(list, 0, count * sizeof(SituationProcessInfo));
+
+    // Second pass: populate
+    pe.dwSize = sizeof(pe);
+    int idx = 0;
+    if (Process32First(snap, &pe)) {
+        do {
+            if (idx >= count) break;
+            list[idx].pid = (uint32_t)pe.th32ProcessID;
+            strncpy(list[idx].name, pe.szExeFile, SITUATION_MAX_PROCESS_NAME_LEN - 1);
+            list[idx].name[SITUATION_MAX_PROCESS_NAME_LEN - 1] = '\0';
+
+            // Try to get working set size
+            HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+            if (hProc) {
+                PROCESS_MEMORY_COUNTERS pmc = {0};
+                pmc.cb = sizeof(pmc);
+                if (GetProcessMemoryInfo(hProc, &pmc, sizeof(pmc))) {
+                    list[idx].memory_bytes = (uint64_t)pmc.WorkingSetSize;
+                }
+                CloseHandle(hProc);
+            }
+            idx++;
+        } while (Process32Next(snap, &pe));
+    }
+    CloseHandle(snap);
+
+    *out_count = idx;
+    return list;
+
+#elif defined(__linux__)
+    // Read /proc entries
+    DIR* proc_dir = opendir("/proc");
+    if (!proc_dir) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_FILE_OPEN_FAILED, "Cannot open /proc");
+        return NULL;
+    }
+
+    // Count numeric directories (PIDs)
+    int capacity = 256;
+    SituationProcessInfo* list = (SituationProcessInfo*)SIT_MALLOC(capacity * sizeof(SituationProcessInfo));
+    if (!list) { closedir(proc_dir); return NULL; }
+    memset(list, 0, capacity * sizeof(SituationProcessInfo));
+    int count = 0;
+
+    struct dirent* entry;
+    while ((entry = readdir(proc_dir)) != NULL) {
+        // Only numeric directory names are PIDs
+        char* endptr;
+        long pid = strtol(entry->d_name, &endptr, 10);
+        if (*endptr != '\0' || pid <= 0) continue;
+
+        if (count >= capacity) {
+            capacity *= 2;
+            SituationProcessInfo* tmp = (SituationProcessInfo*)SIT_REALLOC(list, capacity * sizeof(SituationProcessInfo));
+            if (!tmp) break;
+            list = tmp;
+        }
+
+        list[count].pid = (uint32_t)pid;
+
+        // Read /proc/<pid>/comm for process name
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%ld/comm", pid);
+        FILE* f = fopen(path, "r");
+        if (f) {
+            if (fgets(list[count].name, SITUATION_MAX_PROCESS_NAME_LEN, f)) {
+                // Strip trailing newline
+                char* nl = strchr(list[count].name, '\n');
+                if (nl) *nl = '\0';
+            }
+            fclose(f);
+        }
+
+        // Read /proc/<pid>/statm for memory (RSS in pages)
+        snprintf(path, sizeof(path), "/proc/%ld/statm", pid);
+        f = fopen(path, "r");
+        if (f) {
+            unsigned long size_pages, rss_pages;
+            if (fscanf(f, "%lu %lu", &size_pages, &rss_pages) >= 2) {
+                list[count].memory_bytes = (uint64_t)rss_pages * (uint64_t)sysconf(_SC_PAGESIZE);
+            }
+            fclose(f);
+        }
+
+        count++;
+    }
+    closedir(proc_dir);
+
+    *out_count = count;
+    return list;
+
+#else
+    // Unsupported platform
+    return NULL;
+#endif
+}
+
+SITAPI void SituationFreeProcessList(SituationProcessInfo* list, int count) {
+    (void)count;
+    if (list) SIT_FREE(list);
+}
+
+// --- Active Audio Device Name ---
+
+SITAPI const char* SituationGetActiveAudioDeviceName(void) {
+    // miniaudio stores the device name in the ma_device struct after init.
+    // pDevice->playback.name is set during ma_device_init.
+    static char device_name_buf[256] = {0};
+
+    if (!SituationIsInitialized()) return "Not initialized";
+    if (!sit_audio.is_miniaudio_device_active) return "No audio device";
+
+    // Use ma_device_get_info for the most accurate name (handles WASAPI/PulseAudio/ALSA)
+    ma_device_info info;
+    memset(&info, 0, sizeof(info));
+    ma_result result = ma_device_get_info(&sit_audio.miniaudio_device, ma_device_type_playback, &info);
+    if (result == MA_SUCCESS && info.name[0] != '\0') {
+        strncpy(device_name_buf, info.name, sizeof(device_name_buf) - 1);
+        device_name_buf[sizeof(device_name_buf) - 1] = '\0';
+        return device_name_buf;
+    }
+
+    // Fallback: read directly from the device struct
+    if (sit_audio.miniaudio_device.playback.name[0] != '\0') {
+        strncpy(device_name_buf, sit_audio.miniaudio_device.playback.name, sizeof(device_name_buf) - 1);
+        device_name_buf[sizeof(device_name_buf) - 1] = '\0';
+        return device_name_buf;
+    }
+
+    return "Default Playback Device";
 }
 
 #endif // SITUATION_IMPL_IO_H

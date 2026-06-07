@@ -40,7 +40,7 @@ static void _SitSetPreferredNumaNode(int node) {
 static int _SitNodeForLogicalCpu(int logical_cpu) {
     if (logical_cpu < 0) return 0;
     const SituationCpuTopology* topo = NULL;
-    if (!SituationGetCpuTopology(&topo) || !topo) return 0;
+    if (SituationGetCpuTopology(&topo) != SITUATION_SUCCESS || !topo) return 0;
     if ((uint32_t)logical_cpu >= topo->logical_count) return 0;
     return (int)topo->processors[logical_cpu].numa_node;
 }
@@ -106,7 +106,7 @@ static uint16_t _SitCountLinuxNumaNodes(void) {
 
 static bool _SitRebuildNumaFromCpuTopology(SituationNumaTopology* numa) {
     const SituationCpuTopology* cpu = NULL;
-    if (!SituationGetCpuTopology(&cpu) || !cpu || cpu->logical_count == 0) {
+    if (SituationGetCpuTopology(&cpu) != SITUATION_SUCCESS || !cpu || cpu->logical_count == 0) {
         return false;
     }
 
@@ -160,24 +160,31 @@ static bool _SitRebuildNumaFromCpuTopology(SituationNumaTopology* numa) {
 // Public API — NUMA topology (C1)
 // ==================================================================================
 
-SITAPI bool SituationRefreshNumaTopology(void) {
+SITAPI SituationError SituationRefreshNumaTopology(void) {
     if (!g_sit_cpu_topology_valid) {
         SituationRefreshCpuTopology();
     }
     g_sit_numa_topology_valid = _SitRebuildNumaFromCpuTopology(&g_sit_numa_topology);
-    return g_sit_numa_topology_valid;
+    if (!g_sit_numa_topology_valid) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_DEVICE_QUERY, "SituationRefreshNumaTopology: failed to rebuild NUMA topology");
+        return SITUATION_ERROR_DEVICE_QUERY;
+    }
+    return SITUATION_SUCCESS;
 }
 
-SITAPI bool SituationGetNumaTopology(const SituationNumaTopology** out_topology) {
+SITAPI SituationError SituationGetNumaTopology(const SituationNumaTopology** out_topology) {
     if (!out_topology) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationGetNumaTopology: out_topology is NULL");
-        return false;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
     if (!g_sit_numa_topology_valid) {
         SituationRefreshNumaTopology();
     }
     *out_topology = &g_sit_numa_topology;
-    return g_sit_numa_topology_valid;
+    if (!g_sit_numa_topology_valid) {
+        return SITUATION_ERROR_DEVICE_QUERY;
+    }
+    return SITUATION_SUCCESS;
 }
 
 SITAPI int SituationGetPreferredNumaNode(void) {
@@ -211,7 +218,7 @@ static bool _SituationSetThreadAffinityForRole(SituationThreadRole role, uint64_
         return false;
     }
 
-    if (SituationSetThreadAffinityEx(mask, NULL)) {
+    if (SituationSetThreadAffinityEx(mask, NULL) == SITUATION_SUCCESS) {
         int cpu = SituationGetCurrentProcessorIndex();
         _SitSetPreferredNumaNode(_SitNodeForLogicalCpu(cpu));
         return true;
@@ -233,7 +240,7 @@ static void _SituationApplyWorkerNumaPlacement(SituationThreadPool* pool, size_t
     }
 
     const SituationNumaTopology* numa = NULL;
-    if (!SituationGetNumaTopology(&numa) || !numa || numa->node_count == 0) {
+    if (SituationGetNumaTopology(&numa) != SITUATION_SUCCESS || !numa || numa->node_count == 0) {
         return;
     }
 
@@ -253,7 +260,7 @@ static void _SituationApplyWorkerNumaPlacement(SituationThreadPool* pool, size_t
         // Use SituationBuildUniqueCoreMask to get one logical CPU per physical core,
         // then assign worker i to core (i % physical_count).
         const SituationCpuTopology* topo = NULL;
-        if (!SituationGetCpuTopology(&topo) || !topo || topo->physical_count == 0) {
+        if (SituationGetCpuTopology(&topo) != SITUATION_SUCCESS || !topo || topo->physical_count == 0) {
             return;
         }
         int core_idx = (int)(worker_index % (size_t)topo->physical_count);

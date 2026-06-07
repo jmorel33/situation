@@ -604,6 +604,7 @@ typedef struct {
     VkPipelineLayout current_compute_pipeline_layout;            // Last bound compute layout
     VkPipelineLayout compute_layouts[8];                         // Pre-created standard layouts
     VkPipelineLayout graphics_spirv_layout_ubo_ssbo;             // Graphics SPIR-V: set 0 UBO, set 1 SSBO (harness)
+    VkPipelineLayout graphics_spirv_layout_ubo_ssbo_sampler;     // Graphics SPIR-V: set 0 UBO, set 1 SSBO, set 2 sampler (demon_hunt feedback)
     VkCullModeFlags dynamic_cull_mode;                           // Last requested dynamic cull mode
     VkFrontFace dynamic_front_face;                              // Last requested dynamic front-face
     bool dynamic_raster_state_initialized;                       // True after first explicit cull/front-face command
@@ -1076,6 +1077,9 @@ typedef struct _SituationSound {
     // [Phase 1] Graph Support
     bool is_graph_managed;
     ma_data_source_node graph_node;
+
+    // [Errno Adoption Phase 8] Non-fatal status for main-thread polling
+    atomic_int last_status; // Set by audio thread (e.g., SITUATION_ERROR_AUDIO_STREAM_ENDED), polled by main thread
 } _SituationSound;
 
 
@@ -1486,6 +1490,9 @@ typedef struct {
     // [v2.3.40] Initialization state for safe multi-threaded resource creation
     atomic_int init_state;  // SituationInitState
 
+    // [v2.4.206] Cached GL limits for main-thread access (GL context may not be current)
+    int cached_max_viewports;
+
 } _SituationRenderState;
 
 /**
@@ -1565,6 +1572,7 @@ typedef struct {
     void* file_drop_user_data;                                // User context for file drop callback
     void (*log_callback)(SituationLogLevel, const char*, void*); // Custom log callback
     void* log_user_data;                                      // User context for custom log callback
+    SituationScreenshotFormat screenshot_format;              // Default screenshot format (BMP)
 
     // -------------------------------------------------------------------------
     // Environment & Filesystem
@@ -2140,7 +2148,9 @@ static const char* SIT_TEXT_FRAGMENT_SHADER =
     "layout(push_constant) uniform TextPushConstants { vec4 color; } pc;\n"
     "void main() {\n"
     "    vec4 texColor = texture(u_Texture, v_TexCoord);\n"
-    "    outColor = texColor * pc.color;\n"
+    "    float glyphAlpha = max(texColor.a, texColor.r);\n"
+    "    if (glyphAlpha < 0.01) discard;\n"
+    "    outColor = vec4(pc.color.rgb, pc.color.a * glyphAlpha);\n"
     "}\n"
 #elif defined(SITUATION_USE_OPENGL)
     "layout(binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"
@@ -2160,7 +2170,9 @@ static const char* SIT_TEXT_FRAGMENT_SHADER =
     "#else\n"
     "    texColor = texture(u_Texture, v_TexCoord);\n"
     "#endif\n"
-    "    outColor = texColor * u_color;\n"
+    "    float glyphAlpha = max(texColor.a, texColor.r);\n"
+    "    if (glyphAlpha < 0.01) discard;\n"
+    "    outColor = vec4(u_color.rgb, u_color.a * glyphAlpha);\n"
     "}\n"
 #endif
 ;

@@ -26,7 +26,7 @@
 // -200 to -299→ Display System
 // -300 to -399→ Filesystem, Assets & Plugins
 // -400 to -499→ Audio Subsystem
-// -500 to -599→ Resource Management, Rendering Core & Fonts
+// -500 to -599→ Resource Management, Rendering Core, Fonts & Image
 // -600 to -699→ OpenGL Backend
 // -700 to -799→ Vulkan Backend
 // -800 to -899→ Compute / GPGPU
@@ -80,6 +80,9 @@
     X(SITUATION_ERROR_WINDOW_FOCUS_FAILED,         -102, "Window focus/minimize/restore operation failed") \
     X(SITUATION_ERROR_CLIPBOARD_FAILED,            -103, "Clipboard operation failed") \
     X(SITUATION_ERROR_CURSOR_CREATION_FAILED,      -104, "Custom cursor creation failed") \
+    X(SITUATION_ERROR_WINDOW_STATE_FAILED,         -105, "Window state change failed (GLFW rejected the operation)") \
+    X(SITUATION_ERROR_WINDOW_PROPERTY_FAILED,      -106, "Window property set failed (title, size, position, opacity, icon)") \
+    X(SITUATION_ERROR_APP_STATE_FAILED,            -107, "Application state transition failed (pause/resume/target FPS)") \
     X(SITUATION_ERROR_COM_INITIALIZATION_FAILED,   -110, "COM initialization failed (Windows)") /* EOL: prefer SITUATION_ERROR_COM_FAILED */ \
     X(SITUATION_ERROR_DXGI_QUERY_FAILED,           -111, "DXGI GPU query failed (Windows)") /* EOL: prefer SITUATION_ERROR_DXGI_FAILED */ \
     X(SITUATION_ERROR_WINDOW_FOCUS,                -120, "An operation related to window focus failed") /* EOL: prefer SITUATION_ERROR_WINDOW_FOCUS_FAILED */ \
@@ -259,6 +262,10 @@
     X(SITUATION_ERROR_FONT_GLYPH_MISSING,               -561, "Requested glyph is not present in the font") \
     X(SITUATION_ERROR_FONT_ATLAS_FULL,                  -562, "Font texture atlas is full; cannot pack more glyphs")
 
+// ── Image Operations (-580 to -589) ─────────────────────────────────────────────
+#define SITUATION_ERRORS_IMAGE(X) \
+    X(SITUATION_ERROR_IMAGE_OPERATION_FAILED,           -580, "Image operation failed (crop, resize, flip, or save)")
+
 // ── OpenGL Backend (-600 to -699) ───────────────────────────────────────────────
 #define SITUATION_ERRORS_OPENGL(X) \
     X(SITUATION_ERROR_OPENGL_GENERAL,                   -600, "OpenGL: A general error occurred (glGetError)") \
@@ -352,6 +359,7 @@
     SITUATION_ERRORS_MIDI(X) \
     SITUATION_ERRORS_RENDERING(X) \
     SITUATION_ERRORS_FONT(X) \
+    SITUATION_ERRORS_IMAGE(X) \
     SITUATION_ERRORS_OPENGL(X) \
     SITUATION_ERRORS_VULKAN(X) \
     SITUATION_ERRORS_COMPUTE(X) \

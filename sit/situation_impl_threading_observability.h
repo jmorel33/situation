@@ -60,7 +60,7 @@ static void _SitWorkerSampleCpu(SituationThreadPool* pool, size_t worker_index) 
 static int _SitNumaForLogicalCpu(int logical_cpu) {
     if (logical_cpu < 0) return -1;
     const SituationCpuTopology* topo = NULL;
-    if (!SituationGetCpuTopology(&topo) || !topo) return -1;
+    if (SituationGetCpuTopology(&topo) != SITUATION_SUCCESS || !topo) return -1;
     if ((uint32_t)logical_cpu >= topo->logical_count) return -1;
     return (int)topo->processors[logical_cpu].numa_node;
 }
@@ -127,7 +127,7 @@ SITAPI SituationThreadingStatus SituationGetThreadingStatus(void) {
 
     {
         const SituationCpuTopology* topo = NULL;
-        status.platform_topology_ok = SituationGetCpuTopology(&topo) && topo && topo->logical_count > 0;
+        status.platform_topology_ok = (SituationGetCpuTopology(&topo) == SITUATION_SUCCESS) && topo && topo->logical_count > 0;
         status.numa_available = status.platform_topology_ok && topo->numa_node_count > 1;
     }
 
@@ -198,14 +198,14 @@ SITAPI int SituationGetActiveJobCount(SituationThreadPool* pool) {
 // B2 — Pool snapshot & dumps
 // ==================================================================================
 
-SITAPI bool SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationThreadPoolSnapshot* out) {
+SITAPI SituationError SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationThreadPoolSnapshot* out) {
     if (!out) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationGetThreadPoolSnapshot: out is NULL");
-        return false;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
     memset(out, 0, sizeof(*out));
     if (!pool || !pool->is_active) {
-        return false;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
 
     out->pool_active = true;
@@ -276,7 +276,7 @@ SITAPI bool SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationT
     }
 
     out->slot_count = slot;
-    return true;
+    return SITUATION_SUCCESS;
 }
 
 static const char* _SitRoleName(SituationThreadRole role) {
@@ -293,7 +293,7 @@ static const char* _SitRoleName(SituationThreadRole role) {
 SITAPI void SituationDumpThreadPoolStatus(SituationThreadPool* pool, FILE* out, bool json_mode) {
     if (!out) out = stderr;
     SituationThreadPoolSnapshot snap;
-    if (!SituationGetThreadPoolSnapshot(pool, &snap)) {
+    if (SituationGetThreadPoolSnapshot(pool, &snap) != SITUATION_SUCCESS) {
         if (json_mode) fprintf(out, "{\"error\":\"pool inactive or null\"}\n");
         else fprintf(out, "(thread pool snapshot unavailable)\n");
         return;

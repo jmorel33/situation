@@ -166,8 +166,8 @@ static bool _SituationDetectCycle(SituationThreadPool* pool, SituationJobId prer
  *
  * @see SituationAddJobDependencies()
  */
-SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prereq_id, SituationJobId dep_id) {
-    if (!pool) return false;
+SITAPI SituationError SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prereq_id, SituationJobId dep_id) {
+    if (!pool) return SITUATION_ERROR_INVALID_PARAM;
 
     // 1. Validate Handles
     SituationJob* prereq = _SitGetJobFromId(pool, prereq_id);
@@ -175,7 +175,7 @@ SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId 
 
     if (!prereq || !dep) {
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Invalid job IDs in AddJobDependency (jobs may have finished).");
-        return false;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
 
     // 2. Cycle Detection (Read-only traversal, safe-ish without lock if topology is stable-ish)
@@ -185,7 +185,7 @@ SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId 
         fprintf(stderr, "[Situation] ERROR: Dependency Cycle Detected! Job 0x%x -> 0x%x causes loop.\n", prereq_id, dep_id);
         #endif
         _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CYCLE, "Cycle detected or depth limit (32) exceeded.");
-        return false;
+        return SITUATION_ERROR_THREAD_CYCLE;
     }
 
     // 3. Link via CAS (Compare-And-Swap)
@@ -195,13 +195,13 @@ SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId 
         // Successfully linked prereq -> dep
         atomic_fetch_add(&dep->dependency_count, 1);
         dep->dep_depth = new_depth;
-        return true;
+        return SITUATION_SUCCESS;
     } else {
         // Prerequisite already has a continuation
         _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_QUEUE_FULL, "Prerequisite job already has a continuation (1:1 limit). Use SituationAddJobDependencies for fan-in.");
-        return false;
+        return SITUATION_ERROR_THREAD_QUEUE_FULL;
     }
-    return false;
+    return SITUATION_ERROR_THREAD_QUEUE_FULL;
 }
 
 /**
@@ -225,14 +225,15 @@ SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId 
  *
  * @see SituationAddJobDependency()
  */
-SITAPI bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job) {
+SITAPI SituationError SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job) {
     for (int i = 0; i < count; ++i) {
         // Note: The parameter order in AddJobDependency is (Prereq, Dependent)
-        if (!SituationAddJobDependency(pool, prerequisites[i], dependent_job)) {
-            return false; // Fail fast if any link fails
+        SituationError err = SituationAddJobDependency(pool, prerequisites[i], dependent_job);
+        if (err != SITUATION_SUCCESS) {
+            return err; // Fail fast if any link fails
         }
     }
-    return true;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -568,7 +569,7 @@ static int _SituationWorkerEntry(void* arg) {
  *      SituationDispatchParallel, SituationWaitForJob, SituationWaitForAllJobs,
  *      SIT_SUBMIT_HIGH_PRIORITY, SIT_SUBMIT_LOW_PRIORITY
  */
-SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size, double hot_reload_rate, bool disable_io) {
+SITAPI SituationError SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size, double hot_reload_rate, bool disable_io) {
 #ifdef SITUATION_DEBUG_THREADING
     printf("[THREADING] SituationCreateThreadPool called\n");
     fflush(stdout);
@@ -580,7 +581,7 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
         fflush(stdout);
 #endif
         _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationCreateThreadPool: pool is NULL");
-        return false;
+        return SITUATION_ERROR_INVALID_PARAM;
     }
     memset(pool, 0, sizeof(SituationThreadPool));
 
@@ -610,7 +611,7 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
             // Cleanup previous if failed
             if(i==1) SIT_FREE(pool->queues[0].jobs);
             _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "SituationCreateThreadPool: failed to allocate job queue");
-            return false;
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
 
         mtx_init(&pool->queues[i].lock, mtx_plain);
@@ -681,7 +682,7 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
             SIT_FREE(pool->queues[1].jobs);
             memset(pool, 0, sizeof(SituationThreadPool));
             _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "SituationCreateThreadPool: thrd_create failed for worker thread");
-            return false;
+            return SITUATION_ERROR_THREAD_CREATION_FAILED;
         } else {
 #ifdef SITUATION_DEBUG_THREADING
             printf("[THREADING] Worker thread %zu created successfully\n", i);
@@ -713,7 +714,7 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
             SIT_FREE(pool->queues[1].jobs);
             memset(pool, 0, sizeof(SituationThreadPool));
             _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "SituationCreateThreadPool: thrd_create failed for I/O thread");
-            return false;
+            return SITUATION_ERROR_THREAD_CREATION_FAILED;
         }
     } else {
         pool->io_thread = 0; // Explicitly null
@@ -725,7 +726,7 @@ SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_thre
     fprintf(stderr, "[THREADING] I/O thread: %s\n", disable_io ? "DISABLED" : "ENABLED");
 #endif
     pool->is_active = true;
-    return true;
+    return SITUATION_SUCCESS;
 }
 
 /**
@@ -888,9 +889,9 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
  * @param job_id The handle of the job to wait for.
  * @return `true` when the job is confirmed complete.
  */
-SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id) {
+SITAPI SituationError SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id) {
     SIT_ASSERT_MAIN_THREAD();
-    if (job_id == 0) return true; // Immediate jobs (Run-Inline) are implicitly done
+    if (job_id == 0) return SITUATION_SUCCESS; // Immediate jobs (Run-Inline) are implicitly done
 
     uint32_t q_idx = (job_id >> SIT_ID_QUEUE_SHIFT) & 1;
     uint32_t slot_idx = job_id & SIT_ID_SLOT_MASK;
@@ -906,8 +907,8 @@ SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id
         // 1. If generation has incremented, the slot was reused for a NEW job -> OLD job is definitely done.
         // 2. If generation matches, check the explicit completion flag.
 
-        if (current_gen != (uint16_t)expected_gen) return true;
-        if (atomic_load(&job->is_completed)) return true;
+        if (current_gen != (uint16_t)expected_gen) return SITUATION_SUCCESS;
+        if (atomic_load(&job->is_completed)) return SITUATION_SUCCESS;
 
         // Job not done. Yield CPU politely.
         // We don't use a condition var here to avoid N^2 condition/mutex pairs.

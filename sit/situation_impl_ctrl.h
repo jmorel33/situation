@@ -1319,6 +1319,13 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     sit_input.cursors[SIT_CURSOR_HRESIZE] = glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR);
     sit_input.cursors[SIT_CURSOR_VRESIZE] = glfwCreateStandardCursor(GLFW_VRESIZE_CURSOR);
     sit_input.cursor_count = 7;
+    // Check if any cursor creation failed
+    for (int ci = SIT_CURSOR_ARROW; ci < sit_input.cursor_count; ci++) {
+        if (!sit_input.cursors[ci]) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_CURSOR_CREATION_FAILED, "One or more standard cursors failed to create");
+            break;
+        }
+    }
 
     // Poll for existing joysticks
     for (int jid = 0; jid < SITUATION_MAX_JOYSTICKS; jid++) {
@@ -1359,9 +1366,12 @@ static SituationError _SituationInitSubsystems(const SituationInitInfo* init_inf
     SituationRefreshNumaTopology();
 
 #if defined(SITUATION_ENABLE_THREADING)
-    if (!SituationCreateThreadPool(&sit_gs.thread_pool, 0, init_info->io_queue_capacity, init_info->hot_reload_poll_rate, init_info->disable_io_thread)) {
-        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Failed to create thread pool");
-        return SITUATION_ERROR_THREAD_CREATION_FAILED;
+    {
+        SituationError pool_err = SituationCreateThreadPool(&sit_gs.thread_pool, 0, init_info->io_queue_capacity, init_info->hot_reload_poll_rate, init_info->disable_io_thread);
+        if (pool_err != SITUATION_SUCCESS) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_CREATION_FAILED, "Failed to create thread pool");
+            return SITUATION_ERROR_THREAD_CREATION_FAILED;
+        }
     }
 #endif
 
@@ -1505,6 +1515,8 @@ SITAPI void SituationPollInputEvents(void) {
                 snprintf(sit_input.joysticks.state[ev.jid].name, SITUATION_MAX_DEVICE_NAME_LEN, "Joystick %d", ev.jid);
             }
         } else if (ev.event == GLFW_DISCONNECTED) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_INPUT_DEVICE_DISCONNECTED,
+                sit_input.joysticks.state[ev.jid].name[0] ? sit_input.joysticks.state[ev.jid].name : "Input device disconnected");
             memset(&sit_input.joysticks.state[ev.jid], 0, sizeof(_SituationJoystickState));
         }
 
@@ -2117,10 +2129,21 @@ SITAPI SituationError SituationGetClipboardText(const char** out_text) {
     if (!SituationIsInitialized()) {
         return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot get clipboard text");
     }
+    // Clear any pending GLFW error before the call.
+    glfwGetError(NULL);
     // GLFW handles all the complexity and memory management.
     // Note: The string returned by glfwGetClipboardString is valid until the next call to it or when the window is closed.
     // We return a const pointer directly.
     *out_text = glfwGetClipboardString(sit_gs.sit_glfw_window);
+    if (!*out_text) {
+        const char* glfw_desc = NULL;
+        int glfw_err = glfwGetError(&glfw_desc);
+        if (glfw_err != GLFW_NO_ERROR) {
+            return _SituationSetErrorFromCode(SITUATION_ERROR_CLIPBOARD_FAILED,
+                glfw_desc ? glfw_desc : "Clipboard read failed (GLFW error)");
+        }
+        // NULL with no GLFW error means clipboard is empty or non-text — not an error
+    }
     return SITUATION_SUCCESS;
 }
 
@@ -2143,8 +2166,15 @@ SITAPI SituationError SituationSetClipboardText(const char* text) {
         // Setting an empty string is the correct way to "clear" the clipboard.
         text = "";
     }
-    // GLFW handles all the complexity.
+    // Clear any pending GLFW error before the call.
+    glfwGetError(NULL);
     glfwSetClipboardString(sit_gs.sit_glfw_window, text);
+    const char* glfw_desc = NULL;
+    int glfw_err = glfwGetError(&glfw_desc);
+    if (glfw_err != GLFW_NO_ERROR) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_CLIPBOARD_FAILED,
+            glfw_desc ? glfw_desc : "Clipboard write failed (GLFW error)");
+    }
     return SITUATION_SUCCESS;
 }
 
@@ -2328,9 +2358,8 @@ SITAPI void SituationGetGraphicsCaps(SituationGraphicsCaps* out_caps) {
 #endif
     out_caps->compute_supported = (major > 4 || (major == 4 && minor >= 3)) ? 1 : 0;
     {
-        GLint max_vp = 1;
-        glGetIntegerv(GL_MAX_VIEWPORTS, &max_vp);
-        out_caps->max_viewports = (max_vp >= 1) ? (int)max_vp : 1;
+        // Use cached value — GL context may not be current on main thread
+        out_caps->max_viewports = (sit_render.cached_max_viewports >= 1) ? sit_render.cached_max_viewports : 1;
     }
 #endif
 }

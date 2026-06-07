@@ -74,6 +74,32 @@
  *      SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT, SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID
  */
 SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode, int* out_id) {
+    return SituationCreateVirtualDisplayEx(resolution, frame_time_mult, z_order, scaling_mode, blend_mode, SITUATION_VD_FLAG_NONE, out_id);
+}
+
+/**
+ * @brief Creates a new virtual display with extended flags controlling resource creation.
+ *
+ * @details Extended version of SituationCreateVirtualDisplay that accepts creation flags.
+ *          When SITUATION_VD_FLAG_COMPUTE_TARGET is set:
+ *            - The color texture is created with STORAGE usage (compute shader writable)
+ *            - No depth buffer or render pass is created (compute-only, no rasterization)
+ *            - The texture can be retrieved via SituationGetVirtualDisplayTexture() for binding
+ *              to compute shader dispatches
+ *          When flags == SITUATION_VD_FLAG_NONE, behavior is identical to SituationCreateVirtualDisplay.
+ *
+ * @param resolution Desired internal resolution of the virtual display.
+ * @param frame_time_mult Time multiplier for this display's update rate.
+ * @param z_order Compositing order (lower = drawn first).
+ * @param scaling_mode How the VD is scaled when composited.
+ * @param blend_mode Blending mode when compositing.
+ * @param flags Creation flags (see SituationVDFlags).
+ * @param out_id Pointer that receives the VD's unique ID on success.
+ * @return SITUATION_SUCCESS on success, appropriate error code on failure.
+ *
+ * @see SituationGetVirtualDisplayTexture, SituationCreateVirtualDisplay, SituationVDFlags
+ */
+SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode, SituationVDFlags flags, int* out_id) {
     if (out_id) *out_id = -1;
     else return SITUATION_ERROR_INVALID_PARAM;
 
@@ -82,7 +108,7 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
         return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "Cannot create virtual display");
     }
     if (sit_render.active_virtual_display_count >= SITUATION_MAX_VIRTUAL_DISPLAYS) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT, "Maximum virtual displays reached");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT_REACHED, "Maximum virtual displays reached");
     }
 
     // --- 2. Find Free Slot ---
@@ -109,8 +135,11 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
     vd->opacity = 1.0f;
     vd->visible = true;
     vd->is_dirty = true;
+    vd->flags = flags;
+    vd->texture_slot_index = -1;
     vd->last_update_time_seconds = glfwGetTime();
 
+    bool is_compute_target = (flags & SITUATION_VD_FLAG_COMPUTE_TARGET) != 0;
     bool success = true; // Master success flag for the chain
 
 #if defined(SITUATION_USE_VULKAN)
@@ -123,9 +152,17 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
 
     // --- Step 1: Create Color Image ---
     if (success) {
+        VkImageUsageFlags color_usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (is_compute_target) {
+            // Compute target: writable storage image, transferable for presentation
+            color_usage |= VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        } else {
+            // Rasterization target: color attachment
+            color_usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        }
         if (_SituationVulkanCreateImage((uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y, 1, color_format,
                                         VK_IMAGE_TILING_OPTIMAL,
-                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                        color_usage,
                                         VMA_MEMORY_USAGE_GPU_ONLY,
                                         &vd->vk.image, &vd->vk.image_memory) != SITUATION_SUCCESS) {
             _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_FRAMEBUFFER_FAILED, "Failed to create VD color image");
@@ -139,8 +176,8 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
         if (vd->vk.image_view == VK_NULL_HANDLE) success = false;
     }
 
-    // --- Step 3: Create Depth Image ---
-    if (success) {
+    // --- Step 3: Create Depth Image (skip for compute targets) ---
+    if (success && !is_compute_target) {
         if (_SituationVulkanCreateImage((uint32_t)vd->resolution.x, (uint32_t)vd->resolution.y, 1, depth_format, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                                         VMA_MEMORY_USAGE_GPU_ONLY,
                                         &vd->vk.depth_image, &vd->vk.depth_image_memory) != SITUATION_SUCCESS) {
@@ -149,8 +186,8 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
         }
     }
 
-    // --- Step 4: Create Depth View ---
-    if (success) {
+    // --- Step 4: Create Depth View (skip for compute targets) ---
+    if (success && !is_compute_target) {
         vd->vk.depth_image_view = _SituationVulkanCreateImageView(vd->vk.depth_image, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
         if (vd->vk.depth_image_view == VK_NULL_HANDLE) success = false;
     }
@@ -170,8 +207,8 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
         if (vkCreateSampler(sit_render.vk.device, &sampler_info, NULL, &vd->vk.sampler) != VK_SUCCESS) success = false;
     }
 
-    // --- Step 6: Create Render Pass ---
-    if (success) {
+    // --- Step 6: Create Render Pass (skip for compute targets) ---
+    if (success && !is_compute_target) {
         VkAttachmentDescription attachments[2] = {0};
         // Color Attachment
         attachments[0].format = color_format;
@@ -211,8 +248,8 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
         if (vkCreateRenderPass(sit_render.vk.device, &render_pass_info, NULL, &vd->vk.render_pass) != VK_SUCCESS) success = false;
     }
 
-    // --- Step 7: Create Framebuffer ---
-    if (success) {
+    // --- Step 7: Create Framebuffer (skip for compute targets) ---
+    if (success && !is_compute_target) {
         VkImageView fb_attachments[] = {vd->vk.image_view, vd->vk.depth_image_view};
         VkFramebufferCreateInfo framebuffer_info = {};
         framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -283,9 +320,13 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
     // =================================================================
 
     // Step 1: Create Objects
-    glCreateFramebuffers(1, &vd->gl.fbo_id);
+    if (!is_compute_target) {
+        glCreateFramebuffers(1, &vd->gl.fbo_id);
+    }
     glCreateTextures(GL_TEXTURE_2D, 1, &vd->gl.texture_id);
-    glCreateRenderbuffers(1, &vd->gl.depth_rbo_id);
+    if (!is_compute_target) {
+        glCreateRenderbuffers(1, &vd->gl.depth_rbo_id);
+    }
 
     // Step 2: Configure Texture
     if (success) {
@@ -300,8 +341,8 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
         glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
 
-    // Step 3: Configure Renderbuffer & Attach
-    if (success) {
+    // Step 3: Configure Renderbuffer & Attach (skip for compute targets)
+    if (success && !is_compute_target) {
         glNamedRenderbufferStorage(vd->gl.depth_rbo_id, GL_DEPTH_COMPONENT24, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
         glNamedFramebufferTexture(vd->gl.fbo_id, GL_COLOR_ATTACHMENT0, vd->gl.texture_id, 0);
         glNamedFramebufferRenderbuffer(vd->gl.fbo_id, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, vd->gl.depth_rbo_id);
@@ -324,7 +365,72 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
     }
 #endif
 
-    // --- 4. Finalize ---
+    // --- 4. Register texture slot for compute targets ---
+    if (is_compute_target) {
+        mtx_lock(&sit_render.resource_registry_mutex);
+        int slot_idx = -1;
+        for (int i = 0; i < SITUATION_MAX_TEXTURES; ++i) {
+            if (!sit_render.texture_registry[i].is_active) {
+                slot_idx = i;
+                break;
+            }
+        }
+        if (slot_idx == -1) {
+            mtx_unlock(&sit_render.resource_registry_mutex);
+            // Cleanup the VD resources we just created
+#if defined(SITUATION_USE_VULKAN)
+            if (vd->vk.descriptor_set != VK_NULL_HANDLE && vd->vk.descriptor_pool != VK_NULL_HANDLE) {
+                vkFreeDescriptorSets(sit_render.vk.device, vd->vk.descriptor_pool, 1, &vd->vk.descriptor_set);
+            }
+            if (vd->vk.sampler != VK_NULL_HANDLE) vkDestroySampler(sit_render.vk.device, vd->vk.sampler, NULL);
+            if (vd->vk.image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_render.vk.device, vd->vk.image_view, NULL);
+            if (vd->vk.image != VK_NULL_HANDLE) vmaDestroyImage(sit_render.vk.vma_allocator, vd->vk.image, vd->vk.image_memory);
+#elif defined(SITUATION_USE_OPENGL)
+            if (vd->gl.texture_id != 0) glDeleteTextures(1, &vd->gl.texture_id);
+#endif
+            return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Max texture limit reached while registering VD compute texture.");
+        }
+
+        _SituationTextureSlot* slot = &sit_render.texture_registry[slot_idx];
+        slot->generation++;
+        if (slot->generation == 0) slot->generation = 1;
+        slot->is_active = true;
+        mtx_unlock(&sit_render.resource_registry_mutex);
+
+        slot->width = (int)vd->resolution.x;
+        slot->height = (int)vd->resolution.y;
+        slot->mip_levels = 1;
+        slot->format_api = SIT_TEXTURE_FORMAT_RGBA8_UNORM;
+        slot->usage_flags = (SituationTextureUsageFlags)(SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_TRANSFER_SRC);
+        slot->wrap_s = SIT_TEXTURE_WRAP_CLAMP_TO_EDGE;
+        slot->wrap_t = SIT_TEXTURE_WRAP_CLAMP_TO_EDGE;
+        slot->min_filter = SIT_TEXTURE_FILTER_NEAREST;
+        slot->mag_filter = SIT_TEXTURE_FILTER_NEAREST;
+        slot->bindless_handle = 0;
+        slot->source_path = NULL;
+        slot->mod_time = 0;
+
+#if defined(SITUATION_USE_VULKAN)
+        slot->image = vd->vk.image;
+        slot->format = VK_FORMAT_R8G8B8A8_UNORM;
+        slot->image_view = vd->vk.image_view;
+        slot->sampler = vd->vk.sampler;
+        slot->allocation = vd->vk.image_memory;
+        // Use the VD's descriptor set for compute binding
+        slot->descriptor_set = vd->vk.descriptor_set;
+        slot->descriptor_pool = vd->vk.descriptor_pool;
+        slot->single_sampler_descriptor_set = VK_NULL_HANDLE;
+        slot->single_sampler_descriptor_pool = VK_NULL_HANDLE;
+#elif defined(SITUATION_USE_OPENGL)
+        slot->gl_texture_id = vd->gl.texture_id;
+        slot->internal_format = GL_RGBA8;
+        slot->gl_bindless_handle = 0;
+#endif
+
+        vd->texture_slot_index = slot_idx;
+    }
+
+    // --- 5. Finalize ---
     sit_render.virtual_display_slots_used[new_id] = true;
     sit_render.active_virtual_display_count++;
     *out_id = new_id;
@@ -347,10 +453,23 @@ SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double f
  */
 SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
     if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
-    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
+    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS) {
         return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID;
     }
+    if (!sit_render.virtual_display_slots_used[display_id]) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_NOT_FOUND, "SituationDestroyVirtualDisplay: display ID not active");
+    }
     SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
+
+    // --- Free the texture registry slot for compute targets (view only, not resource owner) ---
+    if (vd->texture_slot_index >= 0 && vd->texture_slot_index < SITUATION_MAX_TEXTURES) {
+        mtx_lock(&sit_render.resource_registry_mutex);
+        _SituationTextureSlot* slot = &sit_render.texture_registry[vd->texture_slot_index];
+        // Zero out the slot references — VD owns the actual GPU resources, we just clear the view
+        memset(slot, 0, sizeof(_SituationTextureSlot));
+        slot->is_active = false;
+        mtx_unlock(&sit_render.resource_registry_mutex);
+    }
 
 #if defined(SITUATION_USE_VULKAN)
     // Defer all destruction to the Graveyard to avoid stalling.
@@ -365,7 +484,9 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
 
     // Defer images (includes view and sampler for color, just view for depth)
     _SituationDeferDestroyImage(vd->vk.image, vd->vk.image_memory, vd->vk.image_view, vd->vk.sampler);
-    _SituationDeferDestroyImage(vd->vk.depth_image, vd->vk.depth_image_memory, vd->vk.depth_image_view, VK_NULL_HANDLE);
+    if (vd->vk.depth_image != VK_NULL_HANDLE) {
+        _SituationDeferDestroyImage(vd->vk.depth_image, vd->vk.depth_image_memory, vd->vk.depth_image_view, VK_NULL_HANDLE);
+    }
 
 #elif defined(SITUATION_USE_OPENGL)
     if (vd->gl.texture_id != 0) glDeleteTextures(1, &vd->gl.texture_id);
@@ -376,6 +497,57 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
     memset(vd, 0, sizeof(SituationVirtualDisplay));
     sit_render.virtual_display_slots_used[display_id] = false;
     sit_render.active_virtual_display_count--;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Retrieves the VD's internal color texture as a public SituationTexture handle.
+ *
+ * @details For virtual displays created with SITUATION_VD_FLAG_COMPUTE_TARGET, this returns
+ *          a SituationTexture handle that can be used with compute shader binding functions
+ *          (e.g., SituationCmdBindComputeTexture). The returned handle references the VD's
+ *          internal GPU texture — it does not create a copy.
+ *
+ *          The returned texture handle is valid for the lifetime of the virtual display.
+ *          Destroying the VD invalidates the handle.
+ *
+ *          For non-compute-target VDs, this function also works but the returned texture
+ *          may not have STORAGE usage and thus may not be bindable to compute shaders.
+ *
+ * @param display_id The ID of the virtual display.
+ * @param out_texture Pointer that receives the SituationTexture handle on success.
+ * @return SITUATION_SUCCESS on success.
+ * @return SITUATION_ERROR_NOT_INITIALIZED if the library isn't initialized.
+ * @return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID if the ID is invalid or not in use.
+ * @return SITUATION_ERROR_INVALID_PARAM if out_texture is NULL.
+ * @return SITUATION_ERROR_RESOURCE_INVALID if no texture slot is registered (non-compute VD without slot).
+ *
+ * @see SituationCreateVirtualDisplayEx, SituationVDFlags, SituationCmdBindComputeTexture
+ */
+SITAPI SituationError SituationGetVirtualDisplayTexture(int display_id, SituationTexture* out_texture) {
+    if (!out_texture) return SITUATION_ERROR_INVALID_PARAM;
+    *out_texture = (SituationTexture){0};
+
+    if (!SituationIsInitialized()) return SITUATION_ERROR_NOT_INITIALIZED;
+    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "SituationGetVirtualDisplayTexture: invalid display ID");
+    }
+
+    SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
+
+    if (vd->texture_slot_index < 0 || vd->texture_slot_index >= SITUATION_MAX_TEXTURES) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "SituationGetVirtualDisplayTexture: VD has no registered texture slot (was it created with SITUATION_VD_FLAG_COMPUTE_TARGET?)");
+    }
+
+    _SituationTextureSlot* slot = &sit_render.texture_registry[vd->texture_slot_index];
+    if (!slot->is_active) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "SituationGetVirtualDisplayTexture: texture slot is inactive");
+    }
+
+    out_texture->slot_index = (uint32_t)vd->texture_slot_index;
+    out_texture->generation = slot->generation;
+    out_texture->width = slot->width;
+    out_texture->height = slot->height;
     return SITUATION_SUCCESS;
 }
 

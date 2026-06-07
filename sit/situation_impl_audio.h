@@ -65,6 +65,45 @@ static void _SituationWaitUntilAudioCallbackIdle(void) {
 #include "sit/aud/device_wrappers.h"           // Device wrapper functions (includes all device headers)
 #include "sit/aud/tone_synth.h"                // Tone synthesizer (audio API functions)
 
+// ================================================================================================
+// PCM INPUT NODE — PUBLIC API IMPLEMENTATIONS
+// ================================================================================================
+
+uint32_t SituationPushNodePCM(
+    SituationAudioGraph* graph,
+    SituationNodeHandle node_handle,
+    const float* samples,
+    uint32_t frame_count,
+    uint32_t channels
+) {
+    if (!graph || !samples || frame_count == 0) return 0;
+
+    SituationNode* node = SituationGetNode(graph, node_handle);
+    if (!node) return 0;
+    if (node->type != SITUATION_NODE_PCM_INPUT) return 0;
+
+    SituationPCMInputState* state = (SituationPCMInputState*)node->device_data;
+    if (!state) return 0;
+
+    return _SitPCMInputPush(state, samples, frame_count, channels);
+}
+
+uint32_t SituationGetNodePCMFreeFrames(
+    SituationAudioGraph* graph,
+    SituationNodeHandle node_handle
+) {
+    if (!graph) return 0;
+
+    SituationNode* node = SituationGetNode(graph, node_handle);
+    if (!node) return 0;
+    if (node->type != SITUATION_NODE_PCM_INPUT) return 0;
+
+    SituationPCMInputState* state = (SituationPCMInputState*)node->device_data;
+    if (!state) return 0;
+
+    return _SitPCMInputGetFreeFrames(state);
+}
+
 // Initialize the device registry on first inclusion
 /* HARDENING: void by design — intentional void internal helper (Bucket B). */
 static void _SituationEnsureRegistryInit(void) {
@@ -258,6 +297,8 @@ static void _SituationMixLoadedVoicesFromSnapshot(
                 ma_uint64 loop_read = 0;
                 ma_decoder_read_pcm_frames(&sound->decoder, decoder_buffer + (frames_read * 2), remainder, &loop_read);
                 frames_read += loop_read;
+            } else if (res == MA_AT_END && !sound->is_looping) {
+                atomic_store(&sound->last_status, SITUATION_ERROR_AUDIO_STREAM_ENDED);
             }
             mtx_unlock(&pGs->audio_queue_mutex);
         }
@@ -590,7 +631,12 @@ SITAPI SituationError SituationStartAudioCaptureEx(SituationAudioCaptureCallback
     config.dataCallback = _sit_miniaudio_capture_callback;
     config.pUserData = &sit_audio;
 
-    if (ma_device_init(&sit_audio.miniaudio_context, &config, &sit_audio.capture_device) != MA_SUCCESS) {
+    ma_result dev_result = ma_device_init(&sit_audio.miniaudio_context, &config, &sit_audio.capture_device);
+    if (dev_result != MA_SUCCESS) {
+        if (dev_result == MA_NO_DEVICE) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_CAPTURE_NOT_AVAILABLE, "No capture device (microphone) found.");
+            return SITUATION_ERROR_AUDIO_CAPTURE_NOT_AVAILABLE;
+        }
         _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED, "Failed to initialize capture device.");
         return SITUATION_ERROR_AUDIO_DEVICE_INIT_FAILED;
     }
@@ -1157,7 +1203,7 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
     }
 
     // 2. Load
-    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0); // Native channels/rate, f32 output
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 2, sit_audio.miniaudio_device.sampleRate);
     if (should_preload) {
         // Decode to RAM
         ma_uint64 framesRead;
@@ -1172,16 +1218,23 @@ SITAPI SituationError SituationLoadSoundFromFile(const char* file_path, Situatio
                 sound->is_initialized = false;
             }
             (void)_SitFreeSoundSlot(handle);
-            return SITUATION_ERROR_AUDIO_DECODING;
+            if (result == MA_NO_BACKEND || result == MA_FORMAT_NOT_SUPPORTED) {
+                return SITUATION_ERROR_AUDIO_DECODER_FORMAT_UNSUPPORTED;
+            }
+            return SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED;
         }
         sound->total_frames = framesRead;
         sound->is_preloaded = true;
         sound->is_initialized = true;
     } else {
         // Stream
-        if (ma_decoder_init_file(file_path, &config, &sound->decoder) != MA_SUCCESS) {
+        ma_result stream_res = ma_decoder_init_file(file_path, &config, &sound->decoder);
+        if (stream_res != MA_SUCCESS) {
             (void)_SitFreeSoundSlot(handle);
-            return SITUATION_ERROR_AUDIO_DECODING;
+            if (stream_res == MA_NO_BACKEND || stream_res == MA_FORMAT_NOT_SUPPORTED) {
+                return SITUATION_ERROR_AUDIO_DECODER_FORMAT_UNSUPPORTED;
+            }
+            return SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED;
         }
         sound->is_streamed = true;
         sound->is_initialized = true;
@@ -1300,7 +1353,10 @@ SITAPI SituationError SituationLoadSoundFromStream(SituationStreamReadCallback o
     ma_result res = ma_decoder_init(_situation_stream_read_thunk, _situation_stream_seek_thunk, NULL, &config, &sound->decoder);
     if (res != MA_SUCCESS) {
         (void)_SitFreeSoundSlot(handle);
-        return SITUATION_ERROR_AUDIO_DECODING;
+        if (res == MA_NO_BACKEND || res == MA_FORMAT_NOT_SUPPORTED) {
+            return SITUATION_ERROR_AUDIO_DECODER_FORMAT_UNSUPPORTED;
+        }
+        return SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED;
     }
     sound->is_initialized = true;
 
@@ -1579,22 +1635,28 @@ SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFra
  * @brief Exports the raw PCM data of a sound to a new WAV file.
  * @param sound The sound to export.
  * @param fileName The path of the .wav file to create.
- * @return True on success, false on failure.
+ * @return SITUATION_SUCCESS on success, or an error code on failure.
  */
-SITAPI bool SituationSoundExportAsWav(const SituationSound* sound, const char* fileName) {
+SITAPI SituationError SituationSoundExportAsWav(const SituationSound* sound, const char* fileName) {
     _SituationSoundSlot* slot = _SitGetSoundSlot(*sound);
-    if (!slot) return false;
+    if (!slot) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationSoundExportAsWav: invalid sound handle");
+    }
     _SituationSound* data = &slot->sound_data;
 
-    if (!data->is_preloaded || !data->preloaded_data) return false;
+    if (!data->is_preloaded || !data->preloaded_data) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_AUDIO_INVALID_OPERATION, "SituationSoundExportAsWav: sound has no preloaded PCM data");
+    }
 
     ma_encoder_config config = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 2, 48000); // Assuming engine native
     ma_encoder encoder;
-    if (ma_encoder_init_file(fileName, &config, &encoder) != MA_SUCCESS) return false;
+    if (ma_encoder_init_file(fileName, &config, &encoder) != MA_SUCCESS) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "SituationSoundExportAsWav: ma_encoder_init_file failed");
+    }
 
     ma_encoder_write_pcm_frames(&encoder, data->preloaded_data, data->total_frames, NULL);
     ma_encoder_uninit(&encoder);
-    return true;
+    return SITUATION_SUCCESS;
 }
 
 /**

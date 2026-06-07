@@ -78,6 +78,14 @@
 #ifndef SITUATION_API_H
 #define SITUATION_API_H
 
+// =================================================================================
+// Feature Auto-Enable: Render thread is always available when threading is enabled.
+// Users control it at runtime via init_info.render_thread_count (0 = disabled).
+// =================================================================================
+#if defined(SITUATION_ENABLE_THREADING) && !defined(SITUATION_ENABLE_RENDER_THREAD)
+    #define SITUATION_ENABLE_RENDER_THREAD
+#endif
+
 /*
  * Feature Test Macros (Strict C11 Support)
  * ----------------------------------------
@@ -836,6 +844,28 @@ typedef enum SituationImageFlipMode {
     SIT_FLIP_BOTH                                   // Flips both vertically and horizontally (180-degree rotation).
 } SituationImageFlipMode;
 
+/**
+ * @brief Screenshot output format.
+ * @details Controls what file format SituationTakeScreenshot uses.
+ *          Default is BMP (fastest, lossless, no compression overhead).
+ *          Extension strings: sit_screenshot_format_ext[format]
+ */
+typedef enum SituationScreenshotFormat {
+    SIT_SCREENSHOT_BMP = 0,     // Windows Bitmap (default, fastest write)
+    SIT_SCREENSHOT_PNG,         // Portable Network Graphics (lossless, compressed)
+    SIT_SCREENSHOT_JPG,         // JPEG (lossy, small files, quality 90)
+    SIT_SCREENSHOT_TGA,         // Targa (lossless, RLE compressed)
+    SIT_SCREENSHOT_FORMAT_COUNT
+} SituationScreenshotFormat;
+
+/** File extension for each SituationScreenshotFormat value (indexed by enum). */
+static const char* const sit_screenshot_format_ext[] = {
+    ".bmp",  // SIT_SCREENSHOT_BMP
+    ".png",  // SIT_SCREENSHOT_PNG
+    ".jpg",  // SIT_SCREENSHOT_JPG
+    ".tga",  // SIT_SCREENSHOT_TGA
+};
+
 
 /**
  * @brief Renderer Abstraction
@@ -870,6 +900,7 @@ typedef enum SituationSpirvLayoutProfile {
     SIT_SPIRV_LAYOUT_PROFILE_MESH = 0,       /**< Default: set 0 dynamic UBO, set 1 sampler (same as `SituationLoadShaderFromSpirvMemory`). */
     SIT_SPIRV_LAYOUT_PROFILE_DUAL_SSBO,      /**< Set 0 + set 1 storage buffers @ binding 0 each. */
     SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO,         /**< Set 0 uniform buffer + set 1 storage buffer @ binding 0. */
+    SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO_SAMPLER, /**< Set 0 UBO, set 1 SSBO, set 2 combined image sampler (fragment). */
 } SituationSpirvLayoutProfile;
 
 /**
@@ -1031,6 +1062,23 @@ typedef struct SituationCommandBuffer_t* SituationCommandBuffer;
 /**
  * @brief Device Information Structures
  */
+typedef struct SituationCPUInfo {
+    char name[SITUATION_MAX_CPU_NAME_LEN];
+    uint32_t thread_count;
+    uint32_t core_count;
+    float clock_speed_ghz;
+} SituationCPUInfo;
+
+typedef struct SituationGPUInfo {
+    char name[SITUATION_MAX_GPU_NAME_LEN];
+    uint64_t dedicated_memory_bytes;
+} SituationGPUInfo;
+
+typedef struct SituationMemoryInfo {
+    uint64_t total_bytes;
+    uint64_t available_bytes;
+} SituationMemoryInfo;
+
 typedef struct {
     char cpu_name[SITUATION_MAX_CPU_NAME_LEN];
     int cpu_cores;
@@ -1130,6 +1178,14 @@ typedef enum {
     SITUATION_SCALING_INTEGER
 
 } SituationScalingMode;
+
+/**
+ * @brief Flags for virtual display creation (used with SituationCreateVirtualDisplayEx).
+ */
+typedef enum {
+    SITUATION_VD_FLAG_NONE           = 0,
+    SITUATION_VD_FLAG_COMPUTE_TARGET = 1 << 0, // VD texture is writable by compute shaders (adds STORAGE usage, skips depth/render pass)
+} SituationVDFlags;
 
 /**
  * @brief Specifies how an attachment's contents should be treated at the start of a render pass.
@@ -1468,6 +1524,8 @@ typedef struct {
     bool                    is_dirty;       // Set to true when content changed → forces re-render of the off-screen buffer
     SituationScalingMode    scaling_mode;   // How the VD is scaled when composited (Integer, Fit, Stretch, etc.)
     SituationBlendMode      blend_mode;     // Blending style when compositing (Alpha, Additive, Overlay, Soft Light, Screen Grab, etc.)
+    SituationVDFlags        flags;          // Creation flags (e.g. COMPUTE_TARGET)
+    int                     texture_slot_index; // Index into texture_registry for compute-target VDs (-1 if not a compute target)
 
     // ── Backend-Specific GPU Resources (only compiled in the implementation file) ──
 #if defined(SITUATION_IMPLEMENTATION)
@@ -1638,6 +1696,7 @@ typedef enum {
     // Sources
     SITUATION_NODE_SOUND_SOURCE,
     SITUATION_NODE_TONE_SYNTH,
+    SITUATION_NODE_PCM_INPUT,
     // Capture
     SITUATION_NODE_MIC_CAPTURE,
     // Modulators
@@ -2269,10 +2328,45 @@ SITAPI void SituationSetFileDropCallback(SituationFileDropCallback callback, voi
 SITAPI bool SituationIsArgumentPresent(const char* arg_name);                           // Check if a command-line argument (e.g., "-server") was provided.
 SITAPI const char* SituationGetArgumentValue(const char* arg_name);                     // Get the value of an argument (e.g., "jungle" from "-level:jungle").
 
-// --- System & Hardware Information ---
-SITAPI SituationDeviceInfo SituationGetDeviceInfo(void);                                // Get detailed information about system hardware (CPU, GPU, RAM, etc.).
+// --- System & Hardware Information (split queries; v2.4.207) ---
+SITAPI SituationDeviceInfo SituationGetDeviceInfo(void);                                // [DEPRECATED] Aggregated snapshot; prefer split queries below.
+SITAPI void SituationGetCPUInfo(SituationCPUInfo* out);                                 // CPU name, core/thread counts, and clock speed.
+SITAPI void SituationGetGPUInfo(SituationGPUInfo* out);                                 // GPU name and dedicated VRAM (when available).
+SITAPI void SituationGetMemoryInfo(SituationMemoryInfo* out);                           // Total and available physical RAM.
+SITAPI int SituationGetStorageDeviceCount(void);                                        // Number of storage volumes reported by the OS.
+SITAPI bool SituationGetStorageDevice(int index, char* out_name, int name_len, uint64_t* out_capacity_bytes, uint64_t* out_free_bytes);
+SITAPI int SituationGetNetworkAdapterCount(void);                                       // Number of network adapters reported by the OS.
+SITAPI bool SituationGetNetworkAdapterName(int index, char* out_name, int name_len);
+SITAPI int SituationGetInputDeviceCount(void);                                          // Number of input devices (keyboard/mouse/gamepad).
+SITAPI bool SituationGetInputDeviceName(int index, char* out_name, int name_len);
 SITAPI uint32_t SituationGetCPUThreadCount(void);                                       // Get the number of logical CPU cores.
-SITAPI const char* SituationGetGPUName(void);											// Get the name of the active GPU.
+SITAPI const char* SituationGetGPUName(void);                                           // Get the name of the active GPU.
+
+// --- OS Information (v2.4.199) ---
+typedef struct SituationOSInfo {
+    char name[64];                  // OS product name (e.g., "Windows 11", "Ubuntu 24.04", "macOS Sequoia")
+    char version[64];               // Full version string (e.g., "10.0.22631", "6.8.0-45-generic")
+    uint32_t build_number;          // Build number (Windows) or kernel patch level (Linux); 0 if unavailable
+} SituationOSInfo;
+
+SITAPI SituationOSInfo SituationGetOSInfo(void);                                        // Get operating system name, version, and build number.
+
+// --- Process Enumeration (v2.4.199) ---
+#ifndef SITUATION_MAX_PROCESS_NAME_LEN
+#define SITUATION_MAX_PROCESS_NAME_LEN 260
+#endif
+
+typedef struct SituationProcessInfo {
+    uint32_t pid;                                       // Process ID
+    char name[SITUATION_MAX_PROCESS_NAME_LEN];          // Executable name (e.g., "explorer.exe")
+    uint64_t memory_bytes;                              // Working set / RSS in bytes
+} SituationProcessInfo;
+
+SITAPI SituationProcessInfo* SituationGetProcessList(int* out_count);                   // Get snapshot of running OS processes. Caller must free with SituationFreeProcessList().
+SITAPI void SituationFreeProcessList(SituationProcessInfo* list, int count);            // Free a process list returned by SituationGetProcessList().
+
+// --- Active Audio Device Query (v2.4.199) ---
+SITAPI const char* SituationGetActiveAudioDeviceName(void);                             // Get the name of the currently active playback device (static buffer, do not free).
 
 /** Active renderer backend for this Situation DLL build (OpenGL vs Vulkan). */
 typedef enum SituationGraphicsBackend {
@@ -2444,7 +2538,7 @@ SITAPI size_t SituationGetIOQueueDepth(void);                                   
 SITAPI void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 position, ColorRGBA color); // Draws FPS, Latency, and Memory stats
 
 // --- Frame Lifecycle & Command Buffer ---
-SITAPI bool SituationAcquireFrameCommandBuffer(void);                                   // Prepare the backend for a new frame of rendering commands.
+SITAPI SituationError SituationAcquireFrameCommandBuffer(void);                                   // Prepare the backend for a new frame of rendering commands.
 #if defined(SITUATION_ENABLE_THREADING)
 SITAPI SituationJobId SituationSubmitRenderList(SituationThreadPool* pool, SituationRenderList list, void (*func)(void*, void*), void* user_data); // Submit a render list for async recording on a worker thread.
 #else
@@ -2649,9 +2743,9 @@ SITAPI SituationError SituationReadFramebuffer(const SituationReadPixelsDesc* de
 SITAPI SituationError SituationCreateComputePipeline(const char* compute_shader_path, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline); // Create a compute pipeline from a shader file.
 SITAPI SituationError SituationCreateComputePipelineFromMemory(const char* compute_shader_source, SituationComputeLayoutType layout_type, SituationComputePipeline* out_pipeline); // Create a compute pipeline from in-memory GLSL source.
 SITAPI void SituationDestroyComputePipeline(SituationComputePipeline* pipeline);        // Destroy a compute pipeline and free its GPU resources.
-SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline); // Bind a compute pipeline for a subsequent dispatch.
+SITAPI SituationError SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline); // Bind a compute pipeline for a subsequent dispatch.
 SITAPI SituationError SituationCmdDispatchEx(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z); // Record a compute dispatch with validation and error reporting.
-SITAPI void SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z); // Record a command to dispatch compute shader work groups.
+SITAPI SituationError SituationCmdDispatch(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z); // Record a command to dispatch compute shader work groups.
 SITAPI SituationError SituationCmdDispatchIndirect(SituationCommandBuffer cmd, SituationBuffer indirect_buffer, size_t offset); // Record an indirect compute dispatch.
 SITAPI void SituationGetMaxComputeWorkGroups(uint32_t* x, uint32_t* y, uint32_t* z); // Query maximum compute work group count per dispatch.
 SITAPI SituationError SituationCmdPipelineBarrierEx(SituationCommandBuffer cmd, const SituationPipelineBarrierDesc* desc); // Record an explicit global memory barrier.
@@ -2665,11 +2759,13 @@ SITAPI void SituationDestroyBuffer(SituationBuffer* buffer);                    
 SITAPI SituationError SituationUpdateBuffer(SituationBuffer buffer, size_t offset, size_t size, const void* data); // Update data in a GPU buffer.
 SITAPI SituationError SituationGetBufferData(SituationBuffer buffer, size_t offset, size_t size, void* out_data); // Read data from a GPU buffer (blocking).
 SITAPI SituationError SituationCmdCopyBufferEx(SituationCommandBuffer cmd, SituationBuffer src, SituationBuffer dst, size_t src_offset, size_t dst_offset, size_t size); // Error-returning buffer-copy command with independent source/destination offsets.
-SITAPI void SituationCmdCopyBuffer(SituationCommandBuffer cmd, SituationBuffer src, SituationBuffer dst, size_t offset, size_t size); // Legacy void buffer-copy command; Phase 4 tracks the error-returning copy/blit API.
-SITAPI void SituationReadBuffer(SituationBuffer readback_buf, void* dst, size_t size); // [Phase 1] Read mapped buffer data safely.
+SITAPI SituationError SituationCmdCopyBuffer(SituationCommandBuffer cmd, SituationBuffer src, SituationBuffer dst, size_t offset, size_t size); // Legacy buffer-copy command (now returns error).
+SITAPI SituationError SituationReadBuffer(SituationBuffer readback_buf, void* dst, size_t size); // Read mapped buffer data safely.
 
 // --- Virtual Displays (Render Targets) ---
 SITAPI SituationError SituationCreateVirtualDisplay(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode, int* out_id); // Create an off-screen render target.
+SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode, SituationVDFlags flags, int* out_id); // Create a virtual display with extended flags (e.g. COMPUTE_TARGET for compute shader writes).
+SITAPI SituationError SituationGetVirtualDisplayTexture(int display_id, SituationTexture* out_texture); // Get the VD's internal texture as a SituationTexture handle (valid for compute-target VDs).
 SITAPI SituationError SituationDestroyVirtualDisplay(int display_id);                   // Destroy a virtual display.
 SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd);       // Composite all visible virtual displays to the current target.
 SITAPI SituationError SituationConfigureVirtualDisplay(int display_id, Vector2 offset, float opacity, int z_order, bool visible, double frame_time_mult, SituationBlendMode blend_mode); // Configure a virtual display's properties.
@@ -2709,13 +2805,15 @@ SITAPI void SituationCameraUnprojectPixel(const SituationCameraDesc* desc, const
 // --- 3D Model Utilities ---
 SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* out_model); // Loads a complete 3D model and its textures from a GLTF file.
 SITAPI void SituationUnloadModel(SituationModel* model);                                // Frees all GPU and CPU resources associated with a loaded model.
-SITAPI void SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform); // Draws all sub-meshes of a model with a single root transformation.
-SITAPI bool SituationSaveModelAsGltf(SituationModel model, const char* file_path);      // Exports a model to a human-readable .gltf and a .bin file for debugging.
+SITAPI SituationError SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform); // Draws all sub-meshes of a model with a single root transformation.
+SITAPI SituationError SituationSaveModelAsGltf(SituationModel model, const char* file_path);      // Exports a model to a human-readable .gltf and a .bin file for debugging.
 SITAPI void SituationGetMeshData(SituationMesh mesh, void** vertex_data, int* vertex_count, int* vertex_stride, void** index_data, int* index_count); // Get raw vertex/index data pointers from a mesh (read-only).
 
 // --- Image & Screenshot Utilities ---
 SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image);          // Get a copy of the current screen backbuffer as an image.
-SITAPI SituationError SituationTakeScreenshot(const char *fileName);                    // Take a screenshot and save it to a file (PNG or BMP).
+SITAPI SituationError SituationTakeScreenshot(const char *fileName);                    // Take a screenshot. fileName is the base name (no extension) or NULL for auto-name. Extension added from format setting.
+SITAPI void SituationSetScreenshotFormat(SituationScreenshotFormat format);             // Set the default screenshot file format (default: BMP).
+SITAPI SituationScreenshotFormat SituationGetScreenshotFormat(void);                    // Get the current default screenshot format.
 
 // --- Backend-Specific Accessors ---
 SITAPI SituationRendererType SituationGetRendererType(void);                            // Get the current active renderer type (OpenGL or Vulkan).
@@ -2744,10 +2842,10 @@ SITAPI void SituationMemoryBarrier(SituationCommandBuffer cmd, uint32_t barrier_
 // They handle GPU synchronization, resource destruction, and re-loading.
 // Returns true if the reload was successful. On failure, the old handle is usually invalid.
 SITAPI SituationError SituationCheckHotReloads(void);                                   // Checks all tracked resources for file changes and reloads them if necessary.
-SITAPI bool SituationReloadShader(SituationShader* shader);                             // Recompiles and links a shader from its original source files (Synchronous/Stalls GPU).
-SITAPI bool SituationReloadComputePipeline(SituationComputePipeline* pipeline);         // Recompiles a compute pipeline from its original source file (Synchronous/Stalls GPU).
-SITAPI bool SituationReloadTexture(SituationTexture* texture);                          // Re-reads image file and recreates the GPU texture resource (Synchronous/Stalls GPU).
-SITAPI bool SituationReloadModel(SituationModel* model);                                // Re-parses GLTF/GLB file and rebuilds all meshes and textures (Synchronous/Stalls GPU).
+SITAPI SituationError SituationReloadShader(SituationShader* shader);                             // Recompiles and links a shader from its original source files (Synchronous/Stalls GPU).
+SITAPI SituationError SituationReloadComputePipeline(SituationComputePipeline* pipeline);         // Recompiles a compute pipeline from its original source file (Synchronous/Stalls GPU).
+SITAPI SituationError SituationReloadTexture(SituationTexture* texture);                          // Re-reads image file and recreates the GPU texture resource (Synchronous/Stalls GPU).
+SITAPI SituationError SituationReloadModel(SituationModel* model);                                // Re-parses GLTF/GLB file and rebuilds all meshes and textures (Synchronous/Stalls GPU).
 
 //==================================================================================
 // Input Module: Keyboard, Mouse, and Gamepad
@@ -2848,7 +2946,7 @@ SITAPI void SituationStopAllTones(void);                                        
 // --- Sound Data Manipulation (Wave Utilities) ---
 SITAPI SituationError SituationSoundCopy(const SituationSound* source, SituationSound* out_destination);    // Create a new sound by copying the raw PCM data from a source.
 SITAPI SituationError SituationSoundCrop(SituationSound* sound, uint64_t initFrame, uint64_t finalFrame);   // Crop a sound's PCM data in-place to a new range.
-SITAPI bool SituationSoundExportAsWav(const SituationSound* sound, const char* fileName);                   // Export the sound's raw PCM data to a WAV file.
+SITAPI SituationError SituationSoundExportAsWav(const SituationSound* sound, const char* fileName);                   // Export the sound's raw PCM data to a WAV file.
 
 // --- Sound Parameters and Effects ---
 SITAPI SituationError SituationSetSoundVolume(SituationSound* sound, float volume);     // Set the volume for a specific sound.
@@ -2893,8 +2991,13 @@ SITAPI SituationNode* SituationGetNode(SituationAudioGraph* graph, SituationNode
 SITAPI SituationError SituationCreatePatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port, bool is_control); // Connect an output port to an input port.
 SITAPI SituationError SituationRemovePatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port, bool is_control); // Disconnect a specific patch between two ports.
 SITAPI SituationError SituationDestroyPatch(SituationAudioGraph* graph, SituationNodeHandle src, int src_port, SituationNodeHandle dst, int dst_port); // Disconnect a patch between two ports (legacy, no is_control param).
+SITAPI SituationError SituationTopologicalSort(SituationAudioGraph* graph);              // Re-sort the graph processing order after topology changes. Call from the main thread after CreateNode/DestroyNode/CreatePatch/RemovePatch.
 SITAPI SituationError SituationSetControl(SituationAudioGraph* graph, SituationNodeHandle handle, uint32_t control_id, float value); // Set a control parameter on a node.
 SITAPI SituationError SituationGetControl(SituationAudioGraph* graph, SituationNodeHandle handle, uint32_t control_id, float* out_value); // Get the current value of a node's control parameter.
+
+// --- PCM Input Node (user-fed ring buffer source) ---
+SITAPI uint32_t SituationPushNodePCM(SituationAudioGraph* graph, SituationNodeHandle node, const float* samples, uint32_t frame_count, uint32_t channels); // Push interleaved float PCM into a PCM_INPUT node's ring buffer (any thread). Returns frames written.
+SITAPI uint32_t SituationGetNodePCMFreeFrames(SituationAudioGraph* graph, SituationNodeHandle node); // Query how many frames of space are available in the PCM_INPUT node's ring buffer.
 
 // ================================================================================================
 // MIDI CONTROL INTEGRATION
@@ -2999,15 +3102,15 @@ SITAPI SituationJobId SituationLoadFileTextAsync(SituationThreadPool* pool, cons
 SITAPI SituationJobId SituationSaveFileTextAsync(SituationThreadPool* pool, const char* file_path, const char* text, SituationFileSaveCallback callback, void* user_data); // Asynchronously save a text file.
 #endif
 SITAPI char* SituationLoadFileText(const char* file_path);                              // Load a text file into a null-terminated string (caller must free).
-SITAPI bool SituationSaveFileText(const char* file_path, const char* text);             // Save a null-terminated string to a text file.
-SITAPI bool SituationCopyFile(const char* source_path, const char* dest_path);          // Copy a file.
-SITAPI bool SituationDeleteFile(const char* file_path);                                 // Delete a file.
-SITAPI bool SituationMoveFile(const char* old_path, const char* new_path);              // Move/rename a file, even across drives on Windows.
-SITAPI bool SituationRenameFile(const char* old_path, const char* new_path);            // Alias for SituationMoveFile.
+SITAPI SituationError SituationSaveFileText(const char* file_path, const char* text);   // Save a null-terminated string to a text file.
+SITAPI SituationError SituationCopyFile(const char* source_path, const char* dest_path); // Copy a file.
+SITAPI SituationError SituationDeleteFile(const char* file_path);                       // Delete a file.
+SITAPI SituationError SituationMoveFile(const char* old_path, const char* new_path);    // Move/rename a file, even across drives on Windows.
+SITAPI SituationError SituationRenameFile(const char* old_path, const char* new_path);  // Alias for SituationMoveFile.
 
 // --- Directory Operations ---
-SITAPI bool SituationCreateDirectory(const char* dir_path, bool create_parents);        // Create a directory, optionally creating parent directories.
-SITAPI bool SituationDeleteDirectory(const char* dir_path, bool recursive);             // Delete a directory, optionally deleting all its contents.
+SITAPI SituationError SituationCreateDirectory(const char* dir_path, bool create_parents); // Create a directory, optionally creating parent directories.
+SITAPI SituationError SituationDeleteDirectory(const char* dir_path, bool recursive);      // Delete a directory, optionally deleting all its contents.
 SITAPI char** SituationListDirectoryFiles(const char* dir_path, int* out_count);        // List files and subdirectories in a path (caller must free with SituationFreeDirectoryFileList).
 SITAPI void SituationFreeDirectoryFileList(char** file_list, int count);                // Free the memory allocated by SituationListDirectoryFiles.
 
@@ -3085,11 +3188,11 @@ typedef struct {
 // --- CPU & Thread Management ---
 SITAPI uint32_t SituationGetCPUThreadCount(void);           // Gets logical processors (Threads)
 SITAPI uint32_t SituationGetCPUCoreCount(void);             // Gets physical processors (Cores) from cached topology
-SITAPI bool SituationRefreshCpuTopology(void);              // Rebuilds the process-wide topology cache
-SITAPI bool SituationGetCpuTopology(const SituationCpuTopology** out_topology); // Pointer to cached topology (NULL on failure)
-SITAPI bool SituationSetThreadAffinity(uint64_t core_mask); // Pins the CURRENT thread (logical CPU bitmask, bits 0..63)
-SITAPI bool SituationSetThreadAffinityEx(uint64_t core_mask, uint64_t* out_previous); // Set affinity; optional previous mask
-SITAPI bool SituationGetThreadAffinity(uint64_t* out_mask); // Reads affinity mask for the CURRENT thread
+SITAPI SituationError SituationRefreshCpuTopology(void);              // Rebuilds the process-wide topology cache
+SITAPI SituationError SituationGetCpuTopology(const SituationCpuTopology** out_topology); // Pointer to cached topology (NULL on failure)
+SITAPI SituationError SituationSetThreadAffinity(uint64_t core_mask); // Pins the CURRENT thread (logical CPU bitmask, bits 0..63)
+SITAPI SituationError SituationSetThreadAffinityEx(uint64_t core_mask, uint64_t* out_previous); // Set affinity; optional previous mask
+SITAPI SituationError SituationGetThreadAffinity(uint64_t* out_mask); // Reads affinity mask for the CURRENT thread
 SITAPI int  SituationGetCurrentProcessorIndex(void);        // Logical CPU index for current thread, or -1 if unknown
 SITAPI int  SituationGetThreadNumaNode(void);               // NUMA node for current thread, or -1 if unknown
 SITAPI uint64_t SituationBuildPhysicalCoreMask(int physical_core_index); // All logical CPUs on one physical core
@@ -3099,32 +3202,32 @@ SITAPI uint64_t SituationGetConfiguredMainThreadAffinity(void);   // Init mask f
 SITAPI uint64_t SituationGetConfiguredRenderThreadAffinity(void); // Effective render mask (init or default)
 SITAPI uint64_t SituationGetConfiguredAudioThreadAffinity(void);  // Effective audio mask (init or default)
 SITAPI uint64_t SituationGetConfiguredIOThreadAffinity(void);     // Effective I/O mask (init or default CPU 3)
-SITAPI bool SituationRefreshNumaTopology(void);                   // Rebuild NUMA summary from CPU topology + OS memory
-SITAPI bool SituationGetNumaTopology(const SituationNumaTopology** out_topology); // Cached NUMA snapshot
+SITAPI SituationError SituationRefreshNumaTopology(void);                   // Rebuild NUMA summary from CPU topology + OS memory
+SITAPI SituationError SituationGetNumaTopology(const SituationNumaTopology** out_topology); // Cached NUMA snapshot
 SITAPI int SituationGetPreferredNumaNode(void);                   // TLS: node for current thread, or -1 if unset
 #ifdef SITUATION_ENABLE_THREADING
-SITAPI bool SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size, double hot_reload_rate, bool disable_io); // Initializes the thread pool with dual-priority queues and worker threads.
+SITAPI SituationError SituationCreateThreadPool(SituationThreadPool* pool, size_t num_threads, size_t queue_size, double hot_reload_rate, bool disable_io); // Initializes the thread pool with dual-priority queues and worker threads.
 SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool); 											// Shuts down the thread pool and releases resources.
 SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*func)(void*, void*), const void* data, size_t data_size, SituationJobFlags flags); // Submits a job with priority flags and optional data payload.
  // Legacy wrapper for simple pointer passing (Low priority, no copy).
 #define SituationSubmitJob(pool, func, user_ptr) \
     SituationSubmitJobEx(pool, (void(*)(void*, void*))func, user_ptr, 0, SIT_SUBMIT_DEFAULT)
 SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int min_batch_size, void (*func)(int index, void* user_data), void* user_data); // Executes a loop in parallel across worker threads (Fork-Join).
-SITAPI bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id); 							// Waits for a specific job to complete (O(1) check).
+SITAPI SituationError SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id); 							// Waits for a specific job to complete (O(1) check).
 SITAPI void SituationWaitForAllJobs(SituationThreadPool* pool); 											// Blocks until all queued jobs are finished.
-SITAPI bool SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prerequisite_job, SituationJobId dependent_job); // Adds a dependency between two jobs (prereq -> dependent).
-SITAPI bool SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job); // Adds multiple dependencies for a single dependent job.
+SITAPI SituationError SituationAddJobDependency(SituationThreadPool* pool, SituationJobId prerequisite_job, SituationJobId dependent_job); // Adds a dependency between two jobs (prereq -> dependent).
+SITAPI SituationError SituationAddJobDependencies(SituationThreadPool* pool, SituationJobId* prerequisites, int count, SituationJobId dependent_job); // Adds multiple dependencies for a single dependent job.
 SITAPI void SituationDumpTaskGraph(SituationThreadPool* pool, FILE* out_stream, bool json_mode); 			// Prints the current task graph state to the stream.
 SITAPI SituationThreadingStatus SituationGetThreadingStatus(void);                                          // Runtime threading capabilities + pool summary
 SITAPI void SituationPrintThreadingStatus(FILE* out_stream);                                                // Human-readable threading status (stdout if NULL)
 SITAPI size_t SituationGetQueueDepth(SituationThreadPool* pool, SituationJobQueueMask mask);                 // Pending jobs per queue mask
 SITAPI size_t SituationGetHighQueueDepth(SituationThreadPool* pool);                                          // High-priority queue depth
 SITAPI int SituationGetActiveJobCount(SituationThreadPool* pool);                                           // active_jobs counter
-SITAPI bool SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationThreadPoolSnapshot* out);    // Worker/I/O/render/audio placement snapshot
+SITAPI SituationError SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationThreadPoolSnapshot* out);    // Worker/I/O/render/audio placement snapshot
 SITAPI void SituationDumpThreadPoolStatus(SituationThreadPool* pool, FILE* out_stream, bool json_mode);      // Pool metrics + per-role CPU snapshot
 SITAPI void SituationDumpThreadingReport(SituationThreadPool* pool, FILE* out_stream, bool json_mode);       // Status + topology line + pool dump
 SITAPI uint32_t SituationGetRecommendedWorkerCount(uint32_t reserved_threads, bool use_physical_cores);     // Sizing helper (no pool required)
-SITAPI bool SituationGetThreadPoolMetrics(SituationThreadPool* pool, SituationThreadPoolMetrics* out_metrics); // Scheduler counters snapshot
+SITAPI SituationError SituationGetThreadPoolMetrics(SituationThreadPool* pool, SituationThreadPoolMetrics* out_metrics); // Scheduler counters snapshot
 SITAPI void SituationResetThreadPoolStats(SituationThreadPool* pool);                                         // Zero scheduler counters
 SITAPI void SituationDumpThreadPoolMetrics(SituationThreadPool* pool, FILE* out_stream, bool json_mode);      // Metrics-only dump
 SITAPI SituationThreadPool* SituationGetInternalThreadPool(void);                                            // Returns pointer to the library's internal thread pool (NULL if not initialized).
