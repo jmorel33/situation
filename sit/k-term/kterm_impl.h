@@ -392,6 +392,7 @@ typedef struct KTerm_T {
     KTermPipeline compute_pipeline;
     KTermPipeline texture_blit_pipeline;
     KTermBuffer terminal_buffer;
+    KTermRenderTarget render_target;
     KTermTexture output_texture;
     KTermTexture font_texture;
     KTermTexture sixel_texture;
@@ -726,6 +727,45 @@ static void KTerm_LayoutResizeCallback(void* user_data, int session_index, int c
 
 // static uint32_t charset_lut[32][128]; // Moved to struct
 
+// CP437 to Unicode Mapping Table (must precede InitCharacterSetLUT which references it)
+static const uint16_t kCp437ToUnicode[256] = {
+    // 0x00 - 0x1F
+    0x0000, 0x263A, 0x263B, 0x2665, 0x2666, 0x2663, 0x2660, 0x2022,
+    0x25D8, 0x25CB, 0x25D9, 0x2642, 0x2640, 0x266A, 0x266B, 0x263C,
+    0x25BA, 0x25C4, 0x2195, 0x203C, 0x00B6, 0x00A7, 0x25AC, 0x21A8,
+    0x2191, 0x2193, 0x2192, 0x2190, 0x221F, 0x2194, 0x25B2, 0x25BC,
+    // 0x20 - 0x7E (ASCII)
+    0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0025, 0x0026, 0x0027,
+    0x0028, 0x0029, 0x002A, 0x002B, 0x002C, 0x002D, 0x002E, 0x002F,
+    0x0030, 0x0031, 0x0032, 0x0033, 0x0034, 0x0035, 0x0036, 0x0037,
+    0x0038, 0x0039, 0x003A, 0x003B, 0x003C, 0x003D, 0x003E, 0x003F,
+    0x0040, 0x0041, 0x0042, 0x0043, 0x0044, 0x0045, 0x0046, 0x0047,
+    0x0048, 0x0049, 0x004A, 0x004B, 0x004C, 0x004D, 0x004E, 0x004F,
+    0x0050, 0x0051, 0x0052, 0x0053, 0x0054, 0x0055, 0x0056, 0x0057,
+    0x0058, 0x0059, 0x005A, 0x005B, 0x005C, 0x005D, 0x005E, 0x005F,
+    0x0060, 0x0061, 0x0062, 0x0063, 0x0064, 0x0065, 0x0066, 0x0067,
+    0x0068, 0x0069, 0x006A, 0x006B, 0x006C, 0x006D, 0x006E, 0x006F,
+    0x0070, 0x0071, 0x0072, 0x0073, 0x0074, 0x0075, 0x0076, 0x0077,
+    0x0078, 0x0079, 0x007A, 0x007B, 0x007C, 0x007D, 0x007E, 0x2302,
+    // 0x80 - 0xFF (Extended)
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7,
+    0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,
+    0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,
+    0x00FF, 0x00D6, 0x00DC, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192,
+    0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA,
+    0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
+    0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,
+    0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4,
+    0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
+    0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0
+};
+
 void InitCharacterSetLUT(KTerm* term) {
     // 1. Initialize all to ASCII identity first
     for (int s = 0; s < 32; s++) {
@@ -737,6 +777,11 @@ void InitCharacterSetLUT(KTerm* term) {
     // 2. DEC Special Graphics
     for (int c = 0; c < 128; c++) {
         term->charset_lut[CHARSET_DEC_SPECIAL][c] = KTerm_TranslateDECSpecial(term, c);
+    }
+
+    // 2b. CP437 (GR mapping: index 0-127 corresponds to CP437 bytes 0x80-0xFF)
+    for (int c = 0; c < 128; c++) {
+        term->charset_lut[CHARSET_CP437][c] = kCp437ToUnicode[0x80 + c];
     }
 
     // 3. National Replacement Character Sets (NRCS)
@@ -862,50 +907,7 @@ void InitCharacterSetLUT(KTerm* term) {
 
 void KTerm_InitFontData(KTerm* term) {
     (void)term;
-    // This function is currently empty.
-    // The font_data array is initialized statically.
-    // If font_data needed dynamic initialization or loading from a file,
-    // it would happen here.
 }
-
-// CP437 to Unicode Mapping Table
-static const uint16_t kCp437ToUnicode[256] = {
-    // 0x00 - 0x1F
-    0x0000, 0x263A, 0x263B, 0x2665, 0x2666, 0x2663, 0x2660, 0x2022,
-    0x25D8, 0x25CB, 0x25D9, 0x2642, 0x2640, 0x266A, 0x266B, 0x263C,
-    0x25BA, 0x25C4, 0x2195, 0x203C, 0x00B6, 0x00A7, 0x25AC, 0x21A8,
-    0x2191, 0x2193, 0x2192, 0x2190, 0x221F, 0x2194, 0x25B2, 0x25BC,
-    // 0x20 - 0x7E (ASCII)
-    0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0025, 0x0026, 0x0027,
-    0x0028, 0x0029, 0x002A, 0x002B, 0x002C, 0x002D, 0x002E, 0x002F,
-    0x0030, 0x0031, 0x0032, 0x0033, 0x0034, 0x0035, 0x0036, 0x0037,
-    0x0038, 0x0039, 0x003A, 0x003B, 0x003C, 0x003D, 0x003E, 0x003F,
-    0x0040, 0x0041, 0x0042, 0x0043, 0x0044, 0x0045, 0x0046, 0x0047,
-    0x0048, 0x0049, 0x004A, 0x004B, 0x004C, 0x004D, 0x004E, 0x004F,
-    0x0050, 0x0051, 0x0052, 0x0053, 0x0054, 0x0055, 0x0056, 0x0057,
-    0x0058, 0x0059, 0x005A, 0x005B, 0x005C, 0x005D, 0x005E, 0x005F,
-    0x0060, 0x0061, 0x0062, 0x0063, 0x0064, 0x0065, 0x0066, 0x0067,
-    0x0068, 0x0069, 0x006A, 0x006B, 0x006C, 0x006D, 0x006E, 0x006F,
-    0x0070, 0x0071, 0x0072, 0x0073, 0x0074, 0x0075, 0x0076, 0x0077,
-    0x0078, 0x0079, 0x007A, 0x007B, 0x007C, 0x007D, 0x007E, 0x2302,
-    // 0x80 - 0xFF (Extended)
-    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7,
-    0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,
-    0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,
-    0x00FF, 0x00D6, 0x00DC, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192,
-    0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA,
-    0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
-    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
-    0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
-    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
-    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
-    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,
-    0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
-    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4,
-    0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
-    0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
-    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0
-};
 
 static void KTerm_InitCP437Map(KTerm* term) {
     if (!term->glyph_map) return;
@@ -1397,6 +1399,21 @@ void KTerm_InitCharacterSets(KTerm* term, KTermSession* session) {
     session->charset.single_shift_3 = false;
 }
 
+void KTerm_SelectCharacterSet(KTerm* term, int gset, CharacterSet charset) {
+    KTermSession* session = GET_SESSION(term);
+    switch (gset) {
+        case 0: session->charset.g0 = charset; break;
+        case 1: session->charset.g1 = charset; break;
+        case 2: session->charset.g2 = charset; break;
+        case 3: session->charset.g3 = charset; break;
+    }
+}
+
+void KTerm_SetCharacterSet(KTerm* term, CharacterSet charset) {
+    KTermSession* session = GET_SESSION(term);
+    session->charset.g0 = charset;
+}
+
 // Initialize Input State
 void KTerm_InitInputState(KTerm* term, KTermSession* session) {
     if (!session) session = GET_SESSION(term);
@@ -1639,10 +1656,9 @@ bool KTerm_Init(KTerm* term) {
         KTERM_MUTEX_INIT(term->sessions[i].lock);
     }
 
-    // Default Font - IBM 8x8 in 10x10 cells.
-    // The 1px padding around the bitmap is intentional terminal spacing.
-    term->char_width = 10;   // IBM font cell width
-    term->char_height = 10;  // IBM font cell height
+    // Default Font - IBM 8x8
+    term->char_width = 8;    // Cell width matches font data
+    term->char_height = 8;   // Cell height matches font data
     term->font_data_width = 8;   // IBM font data width
     term->font_data_height = 8;  // IBM font data height
     term->current_font_data = ibm_font_8x8;
@@ -3407,23 +3423,17 @@ void KTerm_InitCompute(KTerm* term) {
     }
 
     KTERM_DEBUG_PRINT("[KTerm_InitCompute] Buffer created\n"); fflush(stderr);
-    // 2. Create Storage Image (Output)
-    KTermImage empty_img = {0};
-    // Use current dimensions
+    // 2. Create Render Target (Virtual Display + Storage Texture)
     int win_width = term->width * term->char_width * DEFAULT_WINDOW_SCALE;
     int win_height = term->height * term->char_height * DEFAULT_WINDOW_SCALE;
 
-    if (KTerm_CreateImage(win_width, win_height, 4, &empty_img) != KTERM_SUCCESS) { // RGBA
-        KTerm_ReportError(term, KTERM_LOG_FATAL, KTERM_SOURCE_RENDER, "Failed to create terminal output image in memory");
+    term->render_target = KTERM_RENDER_TARGET_INVALID;
+    int rt_err = KTerm_CreateRenderTarget(win_width, win_height, &term->render_target, &term->output_texture);
+    if (rt_err != KTERM_SUCCESS || term->output_texture.generation == 0) {
+        KTerm_ReportError(term, KTERM_LOG_FATAL, KTERM_SOURCE_RENDER, "Failed to create terminal render target");
     }
-    // We can init to black if we want, but compute will overwrite.
-    KTerm_CreateTextureEx(empty_img, false, KTERM_TEXTURE_USAGE_SAMPLED | KTERM_TEXTURE_USAGE_STORAGE | KTERM_TEXTURE_USAGE_TRANSFER_SRC, &term->output_texture);
-    if (term->output_texture.generation == 0) {
-        KTerm_ReportError(term, KTERM_LOG_FATAL, KTERM_SOURCE_RENDER, "Failed to create terminal output texture");
-    }
-    KTerm_UnloadImage(empty_img);
 
-    KTERM_DEBUG_PRINT("[KTerm_InitCompute] Output texture created\n"); fflush(stderr);
+    KTERM_DEBUG_PRINT("[KTerm_InitCompute] Render target created (output texture ready)\n"); fflush(stderr);
     // 3. Create Compute Pipeline
     {
         unsigned char* shader_body = NULL;
@@ -4097,6 +4107,35 @@ static void KTerm_ClearCell_Internal(KTermSession* session, EnhancedTermChar* ce
 
 void KTerm_ClearCell(KTerm* term, EnhancedTermChar* cell) {
     KTerm_ClearCell_Internal(GET_SESSION(term), cell);
+}
+
+void KTerm_ClearScreen(KTerm* term, bool clear_scrollback) {
+    if (!term) return;
+    KTermSession* session = GET_SESSION(term);
+
+    if (clear_scrollback) {
+        // Void the entire buffer (same as CSI 3J path)
+        memset(session->screen_buffer, 0, session->buffer_height * session->cols * sizeof(EnhancedTermChar));
+        session->screen_head = 0;
+        session->history_rows_populated = 0;
+        session->view_offset = 0;
+        session->saved_view_offset = 0;
+    } else {
+        // Clear visible viewport only (same as CSI 2J path)
+        for (int y = 0; y < session->rows; y++) {
+            for (int x = 0; x < session->cols; x++) {
+                EnhancedTermChar* cell = GetActiveScreenCell(session, y, x);
+                KTerm_ClearCell_Internal(session, cell);
+            }
+        }
+    }
+
+    // Home cursor
+    session->cursor.x = 0;
+    session->cursor.y = 0;
+
+    // Mark all viewport rows dirty
+    for (int r = 0; r < session->rows; r++) session->row_dirty[r] = KTERM_DIRTY_FRAMES;
 }
 
 static bool IsRegionProtected(KTermSession* session, int top, int bottom, int left, int right) {
@@ -5262,7 +5301,7 @@ void KTerm_ShowDiagnostics(KTerm* term) {
     if (term->font_texture.generation != 0) {
         KTermTextureInfo info = {0};
         if (KTerm_GetTextureInfo(term->font_texture, &info) == KTERM_SUCCESS) {
-            KTerm_WriteFormat(term, "[Atlas Texture] %dx%d (Mips: %d, Format: %d)\n", info.width, info.height, info.mip_levels, info.internal_format);
+            KTerm_WriteFormat(term, "[Atlas Texture] %dx%d (Mips: %d, Format: %d)\n", info.width, info.height, info.mip_levels, info.format);
         }
         
         uint8_t rgba[4 * 4 * 4] = {0}; // 4x4 grid, 4 bytes per pixel
@@ -6004,11 +6043,20 @@ static void ExecuteED_Internal(KTerm* term, KTermSession* session, bool private_
             }
             break;
 
-        case 3: // Clear entire screen and scrollback (xterm extension)
-            for (int i = 0; i < session->buffer_height * session->cols; i++) {
-                 if (private_mode && (session->screen_buffer[i].flags & KTERM_ATTR_PROTECTED)) continue;
-                 KTerm_ClearCell(term, &session->screen_buffer[i]);
+        case 3: // Clear entire screen and scrollback (xterm extension) — void the buffer
+            if (!private_mode) {
+                memset(session->screen_buffer, 0, session->buffer_height * session->cols * sizeof(EnhancedTermChar));
+            } else {
+                // Respect protected cells in private mode
+                for (int i = 0; i < session->buffer_height * session->cols; i++) {
+                    if (session->screen_buffer[i].flags & KTERM_ATTR_PROTECTED) continue;
+                    KTerm_ClearCell(term, &session->screen_buffer[i]);
+                }
             }
+            session->screen_head = 0;
+            session->history_rows_populated = 0;
+            session->view_offset = 0;
+            session->saved_view_offset = 0;
             // Mark all rows dirty
             for(int r=0; r<session->rows; r++) session->row_dirty[r] = KTERM_DIRTY_FRAMES;
             break;
@@ -12420,7 +12468,8 @@ void KTerm_Cleanup(KTerm* term) {
     if (term->font_atlas_pixels) { KTerm_Free(term->font_atlas_pixels); term->font_atlas_pixels = NULL; }
 
     if (term->font_texture.generation != 0) KTerm_DestroyTexture(&term->font_texture);
-    if (term->output_texture.generation != 0) KTerm_DestroyTexture(&term->output_texture);
+    KTerm_DestroyRenderTarget(term->render_target, &term->output_texture);
+    term->render_target = KTERM_RENDER_TARGET_INVALID;
     if (term->sixel_texture.generation != 0) KTerm_DestroyTexture(&term->sixel_texture);
     if (term->dummy_sixel_texture.generation != 0) KTerm_DestroyTexture(&term->dummy_sixel_texture);
     if (term->clear_texture.generation != 0) KTerm_DestroyTexture(&term->clear_texture);
@@ -13664,7 +13713,10 @@ bool KTerm_InitSession(KTerm* term, int index) {
     KTerm_InitKitty(term, session);
 
     // Initialize Input Queue
-    if (!KTerm_InputQueue_Init(&session->input_queue, KTERM_INPUT_PIPELINE_SIZE)) {
+    size_t input_queue_size = term->config.input_buffer_size > 0
+        ? term->config.input_buffer_size
+        : KTERM_INPUT_PIPELINE_SIZE;
+    if (!KTerm_InputQueue_Init(&session->input_queue, input_queue_size)) {
         KTerm_ReportError(term, KTERM_LOG_FATAL, KTERM_SOURCE_SYSTEM, "Failed to allocate input queue for session %d", index);
         return false;
     }
@@ -14069,7 +14121,8 @@ void KTerm_Resize(KTerm* term, int cols, int rows) {
         KTERM_MUTEX_LOCK(term->compositor.render_lock);
 
         if (term->terminal_buffer.generation != 0) KTerm_DestroyBuffer(&term->terminal_buffer);
-        if (term->output_texture.generation != 0) KTerm_DestroyTexture(&term->output_texture);
+        KTerm_DestroyRenderTarget(term->render_target, &term->output_texture);
+        term->render_target = KTERM_RENDER_TARGET_INVALID;
         // Don't free gpu_staging_buffer here, we will realloc it below
 
         size_t buffer_size = cols * rows * sizeof(GPUCell);
@@ -14080,10 +14133,10 @@ void KTerm_Resize(KTerm* term, int cols, int rows) {
 
         int win_width = cols * term->char_width * DEFAULT_WINDOW_SCALE;
         int win_height = rows * term->char_height * DEFAULT_WINDOW_SCALE;
-        KTermImage empty_img = {0};
-        KTerm_CreateImage(win_width, win_height, 4, &empty_img);
-        KTerm_CreateTextureEx(empty_img, false, KTERM_TEXTURE_USAGE_SAMPLED | KTERM_TEXTURE_USAGE_STORAGE | KTERM_TEXTURE_USAGE_TRANSFER_SRC, &term->output_texture);
-        KTerm_UnloadImage(empty_img);
+        int rt_err = KTerm_CreateRenderTarget(win_width, win_height, &term->render_target, &term->output_texture);
+        if (rt_err != KTERM_SUCCESS || term->output_texture.generation == 0) {
+            KTerm_ReportError(term, KTERM_LOG_ERROR, KTERM_SOURCE_RENDER, "Failed to recreate terminal render target in Resize");
+        }
 
         // Optimization: Use realloc to reuse memory if possible, avoiding frequent free/alloc
         // size_t new_size = cols * rows * sizeof(GPUCell);

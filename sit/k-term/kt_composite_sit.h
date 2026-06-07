@@ -339,7 +339,6 @@ static void KTerm_UpdatePaneRow(KTerm* term, KTermSession* source_session, KTerm
                         if (cell->bg_color.color_mode == 0) {
                              RGB_KTermColor c = term->color_palette[cell->bg_color.value.index];
                              bg = (KTermColor){c.r, c.g, c.b, 255};
-                             if (cell->bg_color.value.index == 0) bg.a = 0;
                         } else {
                             bg = (KTermColor){cell->bg_color.value.rgb.r, cell->bg_color.value.rgb.g, cell->bg_color.value.rgb.b, 255};
                         }
@@ -666,7 +665,8 @@ void KTermCompositor_Prepare(KTermCompositor* comp, KTerm* term) {
     }
     if (!focused_session) focused_session = GET_SESSION(term);
 
-    if (focused_session && focused_session->session_open && focused_session->cursor.visible) {
+    if (focused_session && focused_session->session_open && focused_session->cursor.visible
+        && focused_session->view_offset == 0) {
         int origin_x = (term->layout && term->layout->focused) ? term->layout->focused->x : 0;
         int origin_y = (term->layout && term->layout->focused) ? term->layout->focused->y : 0;
         int gx = origin_x + focused_session->cursor.x;
@@ -691,6 +691,8 @@ void KTermCompositor_Prepare(KTermCompositor* comp, KTerm* term) {
          uint32_t end_idx = GET_SESSION(term)->selection.end_y * term->width + GET_SESSION(term)->selection.end_x;
          if (start_idx > end_idx) { uint32_t t = start_idx; start_idx = end_idx; end_idx = t; }
          pc->sel_start = start_idx; pc->sel_end = end_idx; pc->sel_active = 1;
+    } else {
+         pc->sel_start = 0; pc->sel_end = 0; pc->sel_active = 0;
     }
 
     // Shader Config Buffer Update
@@ -843,15 +845,20 @@ void KTermCompositor_Render(KTermCompositor* comp, KTerm* term) {
     }
     rb->garbage_count = 0;
 
-    bool acquired = KTerm_AcquireFrameCommandBuffer();
+#ifdef KTERM_STANDALONE_MODE
+    // Standalone: kterm owns the frame lifecycle
+    bool acquired = (KTerm_AcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     if (!acquired) {
-        // Get the error from Situation
         char* err_msg = NULL;
         SituationGetLastErrorMsg(&err_msg);
         fprintf(stderr, "[KTerm] AcquireFrameCommandBuffer FAILED: %s\n", err_msg ? err_msg : "Unknown error"); 
         fflush(stderr);
         if (err_msg) free(err_msg);
     } else {
+#else
+    // VD mode: host already acquired the frame, just get the command buffer
+    {
+#endif
         KTermCommandBuffer cmd = KTerm_GetCommandBuffer();
         KTERM_DEBUG_PRINT("[KTerm] AcquireFrameCommandBuffer SUCCESS, cmd=%p\n", (void*)cmd); fflush(stderr);
 
@@ -1024,14 +1031,25 @@ void KTermCompositor_Render(KTermCompositor* comp, KTerm* term) {
         }
 
         KTerm_CmdPipelineBarrier(cmd, KTERM_BARRIER_COMPUTE_SHADER_WRITE, KTERM_BARRIER_TRANSFER_READ);
+
+#ifdef KTERM_STANDALONE_MODE
+        // Standalone mode: blit directly to swapchain
         KTERM_DEBUG_PRINT("[KTerm] About to present output_texture (slot_index=%u)\n", term->output_texture.slot_index); fflush(stderr);
         SituationError present_result = KTerm_CmdPresent(cmd, term->output_texture);
         KTERM_DEBUG_PRINT("[KTerm] Present result: %d (%s)\n", present_result, present_result == SITUATION_SUCCESS ? "SUCCESS" : "FAILED"); fflush(stderr);
         if (present_result != SITUATION_SUCCESS) {
              if (GET_SESSION(term)->options.debug_sequences) KTerm_LogUnsupportedSequence(term, "Present failed");
         }
+#else
+        // VD mode: mark render target dirty, host will composite
+        KTerm_MarkRenderTargetDirty(term->render_target);
+        KTERM_DEBUG_PRINT("[KTerm] Render target marked dirty (slot_index=%u)\n", term->output_texture.slot_index); fflush(stderr);
+#endif
     }
+
+#ifdef KTERM_STANDALONE_MODE
     KTerm_EndFrame();
+#endif
     KTERM_MUTEX_UNLOCK(comp->render_lock);
 }
 

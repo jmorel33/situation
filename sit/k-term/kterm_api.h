@@ -57,8 +57,8 @@
 // --- Version Macros ---
 #define KTERM_VERSION_MAJOR 2
 #define KTERM_VERSION_MINOR 7
-#define KTERM_VERSION_PATCH 12
-#define KTERM_VERSION_STRING "2.7.12"
+#define KTERM_VERSION_PATCH 20
+#define KTERM_VERSION_STRING "2.7.20"
 
 // --- DLL Export/Import ---
 #if defined(_WIN32)
@@ -77,6 +77,43 @@
 #ifndef KTERM_DISABLE_GATEWAY
     #define KTERM_ENABLE_GATEWAY
 #endif
+
+// =============================================================================
+// RENDER MODE CONFIGURATION
+// =============================================================================
+//
+// KTerm supports two render modes controlled by compile-time defines:
+//
+// 1. VIRTUAL DISPLAY MODE (default):
+//    KTerm renders into a Situation Virtual Display. The host application owns the
+//    frame lifecycle (Acquire/EndFrame) and calls SituationRenderVirtualDisplays()
+//    to composite the terminal alongside other content. This enables:
+//    - Embedding the terminal as a layer in larger applications
+//    - Multiple terminals in one window (each with its own VD)
+//    - Compositing with 3D scenes, debug overlays, etc.
+//    - Z-ordering, blend modes, and scaling via Situation's VD system
+//
+//    Host main loop pattern:
+//      SituationAcquireFrameCommandBuffer();
+//      KTerm_Draw(term);                       // compute dispatch only
+//      cmd = SituationGetMainCommandBuffer();
+//      SituationRenderVirtualDisplays(cmd);    // composite all VDs
+//      SituationEndFrame();
+//
+// 2. STANDALONE MODE (define KTERM_STANDALONE_MODE before including):
+//    KTerm owns the entire frame — acquires, renders, presents, and ends the frame
+//    internally. The terminal takes over the full window with zero compositing overhead.
+//    No VD is created; a plain storage texture is blitted directly to the swapchain.
+//
+//    Host main loop pattern:
+//      KTerm_Update(term);
+//      KTerm_Draw(term);  // does everything internally
+//
+// To select standalone mode, define KTERM_STANDALONE_MODE before including kterm headers:
+//   #define KTERM_STANDALONE_MODE
+//   #include "kterm_api.h"
+//
+// =============================================================================
 
 #include "kt_render_sit.h"
 #include "kt_layout.h"
@@ -135,10 +172,9 @@ KTERM_API void KTerm_Free(void* ptr);
 #define DEFAULT_TERM_HEIGHT 50
 #define KTERM_MAX_COLS 2048
 #define KTERM_MAX_ROWS 2048
-// Default terminal cell size. The built-in IBM bitmap is 8x8 and is intentionally
-// centered inside this 10x10 cell to provide terminal padding/spacing.
-#define DEFAULT_CHAR_WIDTH 10
-#define DEFAULT_CHAR_HEIGHT 10
+// Default terminal cell size — matches the built-in IBM 8x8 bitmap font.
+#define DEFAULT_CHAR_WIDTH 8
+#define DEFAULT_CHAR_HEIGHT 8
 #define DEFAULT_WINDOW_SCALE 1 // Scale factor for the window and font rendering
 #define DEFAULT_WINDOW_WIDTH (DEFAULT_TERM_WIDTH * DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE)
 #define MAX_SESSIONS 4
@@ -394,6 +430,7 @@ typedef enum {
     CHARSET_DEC_MULTINATIONAL, // DEC Multinational Character Set (MCS)
     CHARSET_ISO_LATIN_1,    // ISO 8859-1 Latin-1
     CHARSET_UTF8,           // UTF-8 (requires multi-byte processing)
+    CHARSET_CP437,          // IBM PC CP437 (DOS/ANSI art — maps 0x80-0xFF to box drawing, blocks, etc.)
     // NRCS (National Replacement Character Sets)
     CHARSET_DUTCH,
     CHARSET_FINNISH,
@@ -1147,6 +1184,9 @@ typedef struct {
     int max_kitty_image_pixels;// Default: 0 (Unlimited/Memory Limit applies)
     int max_ops_per_flush;     // Default: 0 (Unlimited)
     bool strict_mode;          // Enable strict parsing mode
+
+    // Buffer sizing
+    size_t input_buffer_size;  // Input queue capacity in bytes. Default: 0 (uses KTERM_INPUT_PIPELINE_SIZE = 1MB)
 } KTermConfig;
 
 KTERM_API KTerm* KTerm_Create(KTermConfig config);
@@ -1363,6 +1403,7 @@ KTERM_API void KTerm_ExecuteDCSAnswerback(KTerm* term, KTermSession* session);
 
 // Cell and attribute helpers
 KTERM_API void KTerm_ClearCell(KTerm* term, EnhancedTermChar* cell); // Clears a cell with current attributes
+KTERM_API void KTerm_ClearScreen(KTerm* term, bool clear_scrollback); // Clears screen (and optionally scrollback history)
 KTERM_API void KTerm_ResetAllAttributes(KTerm* term, KTermSession* session);          // Resets current text attributes to default
 
 // Character set translation helpers
