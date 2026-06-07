@@ -42,7 +42,7 @@ int main() {
 
     SituationThreadPool pool;
     // Updated signature for SituationCreateThreadPool
-    if (!SituationCreateThreadPool(&pool, 2, 1024, 0.5, false)) {
+    if (SituationCreateThreadPool(&pool, 2, 1024, 0.5, false) != SITUATION_SUCCESS) {
         printf("Thread pool creation failed.\n");
         return 1;
     }
