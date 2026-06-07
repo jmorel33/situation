@@ -510,7 +510,7 @@ Clear path guidance:
 
 **Purpose:** complete compute command ergonomics without breaking current callers.
 
-Current state: `SituationCmdDispatchEx` and `SituationCmdDispatchIndirect` exist, while legacy `SituationCmdDispatch` remains as a `void` compatibility wrapper. `SituationCmdBindComputePipeline` still returns `void`.
+Current state: `SituationCmdDispatchEx` and `SituationCmdDispatchIndirect` exist, while legacy `SituationCmdDispatch` remains as a `void` compatibility wrapper. `SituationCmdBindComputePipeline` now returns `SituationError` (v2.4.202).
 
 - [x] Add `SituationCmdDispatchEx` returning `SituationError`.
 - [x] Keep `SituationCmdDispatch` as a compatibility wrapper around `SituationCmdDispatchEx`.

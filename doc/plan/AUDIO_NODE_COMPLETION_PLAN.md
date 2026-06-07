@@ -83,7 +83,11 @@ After **`audio_ready`** is cleared and the device is **stopped/uninit**, tear do
 - [x] **`is_processing_snapshot`** for unload (**v2.4.47**); streaming **`ma_decoder_*`** vs seek serialized via **`audio_queue_mutex`**.
 - [x] **Meter tap** — **`SituationGetMasterOutputMeter`** (**v2.4.49**); optional **`SituationSetAudioOutputMonitor`** now invoked after final mix.
 - [x] **`--module audio`** sequential harness stable (**v2.4.50**).
-- [ ] **Bug 6** — full sequential **`sit_test.exe`** / exclusive re-init lifecycle — **`LIBRARY_BUGFIX_PLAN.md`**.
+- [x] **Bug 6** — full sequential **`sit_test.exe`** / exclusive re-init lifecycle — **✅ closed v2.4.106** (see **`LIBRARY_BUGFIX_PLAN.md`**).
+- [x] **Phase E0–H** — all 26 node types live, legacy mixer removed, graph is sole routing path (**v2.4.35–v2.4.36**).
+- [x] **PCM Input node** — lock-free ring buffer source for any-thread audio push (**v2.4.198**).
+
+**Status: ALL COMPLETE as of v2.4.200. Audio pipeline v2.5 gate is satisfied.**
 
 ---
 

@@ -16,9 +16,9 @@ Before **v2.5**, at minimum align on and satisfy something like:
 | Gate | Meaning | Status |
 |------|--------|--------|
 | **Bug 6** | Audio device **init / shutdown / re-init** contract **proven** — hang and AV paths understood; policy for exclusive vs shared documented. | **✅ Met** (**v2.4.106**) |
-| **Harness** | Full sequential **`sit_test.exe`** (no `--module`) **green** on a reference Windows config, **or** every failure **classified** with owner (test vs library vs driver) — no silent crashes. | **✅ Met** (**337/337** OpenGL + **327/327** Vulkan, **2026-05-23**) |
+| **Harness** | Full sequential **`sit_test.exe`** (no `--module`) **green** on a reference Windows config, **or** every failure **classified** with owner (test vs library vs driver) — no silent crashes. | **✅ Met** (**440/440** OpenGL + **430/430** Vulkan, **v2.4.191**) |
 | **Vulkan graphics** | **`build\sit_test_vulkan.exe --module graphics`** → **86/86** on the **NVIDIA GTX 1070** reference machine. Optional spot-checks on **Intel / AMD** when hardware exists — document any deltas; they do **not** block **v2.5** unless failures indicate a **cross-vendor** library bug. | **✅ Met** (**v2.4.94**) |
-| **Audio pipeline** | **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`** canonical callback contract **implemented and reviewed** (routing policy A vs B, unload/thread safety addressed or explicitly constrained). | **Open** |
+| **Audio pipeline** | **`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`** canonical callback contract **implemented and reviewed** (routing policy A vs B, unload/thread safety addressed or explicitly constrained). | **✅ Met** (**v2.4.35–v2.4.198**) |
 
 Until those are true, stay on **v2.4.x** patches and narrative releases. Older docs that mention **“target v2.5.0”** for MIDI sub-features are **aspirational feature labels**, not permission to ship **Situation v2.5** early.
 
@@ -46,7 +46,7 @@ Until those are true, stay on **v2.4.x** patches and narrative releases. Older d
 | **P1** | **Vulkan graphics** | **✅ 86/86** on **GTX 1070** (**v2.4.94**). **Regression discipline**: after material Vulkan changes, run **`build\sit_test_vulkan.exe --module graphics`** (and **`--filter spirv`** when touching SPIR-V / descriptors); refresh **`UPDATELOG`** / this doc if the scorecard shifts. Optional **Intel / AMD** spot-checks. |
 | **P2** | **Vulkan SPIR-V user descriptors** | **✅ Complete** (**v2.4.93–94**): [`VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md`](VULKAN_SPIRV_USER_DESCRIPTOR_PARITY.md) — **`SituationLoadShaderFromSpirvMemoryEx`**, profile-aware binds, harness pixel readback **5/5** on Vulkan. |
 | **P2** | **Teardown VMA / registry warnings** | **✅ Addressed v2.4.54** — root cause was **deferred** **`vmaDestroy*`** during **`_SituationCleanupDanglingResources`** while **`vmaDestroyAllocator`** ran later. **Residual** **`SITUATION WARNING: Leaked …`** lines still print when tests leave handles active (intentional nag); after cleanup, GPU memory should be freed without **`[VMA LEAK]`**. |
-| **Gate** | **v2.5 minor** | Per table at top of this doc — **Bug 6 ✅**, **Harness ✅** (**v2.4.106**); **audio pipeline review** milestone still open (**Vulkan graphics gate ✅** as of **v2.4.61**). |
+| **Gate** | **v2.5 minor** | **All gates satisfied** as of **v2.4.200**: Bug 6 ✅, Harness ✅ (440/440 GL, 430/430 VK), Vulkan graphics ✅ (86/86), Audio pipeline ✅ (Phases E0–H complete, Policy B shipped, PCM Input node shipped). **Minor version bump is a maintainer decision** — no technical blockers remain. |
 
 ### Vulkan graphics — harness status (**✅ 86/86** on **GTX 1070**)
 
@@ -484,4 +484,4 @@ All OpenGL fixes are inside `#if defined(SITUATION_USE_OPENGL)` blocks. The Vulk
 | **Intermittent Vulkan faults** | Dev | **Shutdown-skip AV** — fixed (**Bug 11 / v2.4.53**). If new crashes appear, capture stack (present-acquire ordering, driver variance). |
 | **VMA teardown** | — | **Fixed v2.4.54** (**Bug 12**). **`Leaked Texture`** stderr still means “test didn’t destroy handle” — cosmetic unless **`[VMA LEAK]`** returns (re-open). |
 
-**Next focus**: **Audio pipeline review** (**`doc/plan/AUDIO_NODE_COMPLETION_PLAN.md`**) for **v2.5** gate; maintain **Vulkan graphics 86/86** via regression runs after renderer changes. Re-run full sequential harness when touching init/teardown/audio.
+**Next focus**: All **v2.5 gates satisfied** (**v2.4.200**). Audio pipeline review complete (Phases E0–H, Policy B, PCM Input). Maintain **Vulkan graphics 86/86** via regression runs after renderer changes. Re-run full sequential harness when touching init/teardown/audio. **Minor version bump** (v2.5.0) is a maintainer decision — coordinate with `doc/plan/v2.5-api-expansion.md` phased roadmap.
