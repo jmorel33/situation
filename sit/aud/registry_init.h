@@ -2205,6 +2205,62 @@ static void _SituationRegisterMicCapture(void) {
 }
 
 /**
+ * @brief Register the PCM Input device (user-fed ring buffer source).
+ */
+static void _SituationRegisterPCMInput(void) {
+    SituationDeviceMetadata meta = {0};
+    
+    meta.type = SITUATION_NODE_PCM_INPUT;
+    strncpy(meta.name, "PCM Input", SITUATION_MAX_DEVICE_NAME - 1);
+    meta.category = SITUATION_DEVICE_SOURCE;
+    
+    meta.num_audio_ins = 0;     // Pure source (reads from ring buffer)
+    meta.num_audio_outs = 2;
+    meta.audio_channels = 2;
+    meta.num_ctrl_ins = 0;
+    meta.num_ctrl_outs = 0;
+    
+    meta.num_controls = 3;
+    
+    // gain
+    strncpy(meta.controls[0].name, "gain", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[0].id = 0;
+    meta.controls[0].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[0].min_value = 0.0f;
+    meta.controls[0].max_value = 2.0f;
+    meta.controls[0].default_value = 1.0f;
+    meta.controls[0].units = NULL;
+    meta.controls[0].is_logarithmic = false;
+    
+    // pan
+    strncpy(meta.controls[1].name, "pan", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[1].id = 1;
+    meta.controls[1].type = SITUATION_CONTROL_FLOAT;
+    meta.controls[1].min_value = -1.0f;
+    meta.controls[1].max_value = 1.0f;
+    meta.controls[1].default_value = 0.0f;
+    meta.controls[1].units = NULL;
+    meta.controls[1].is_logarithmic = false;
+    
+    // mute
+    strncpy(meta.controls[2].name, "mute", SITUATION_MAX_CONTROL_NAME - 1);
+    meta.controls[2].id = 2;
+    meta.controls[2].type = SITUATION_CONTROL_BOOL;
+    meta.controls[2].min_value = 0.0f;
+    meta.controls[2].max_value = 1.0f;
+    meta.controls[2].default_value = 0.0f;
+    meta.controls[2].units = NULL;
+    meta.controls[2].is_logarithmic = false;
+    
+    meta.latency_samples = 0;
+    meta.description = "User-fed PCM source with lock-free ring buffer (any-thread push)";
+    meta.author = "Situation Audio";
+    meta.version = 0x00010000;
+    
+    SituationRegisterDeviceType(&meta);
+}
+
+/**
  * @brief Register the Compander device (3-band multiband compander with EQ).
  */
 static void _SituationRegisterCompander(void) {
@@ -2632,9 +2688,10 @@ void SituationInitDeviceRegistry(void) {
     _SituationRegisterEQ4Band();
     _SituationRegisterFilter();
     
-    // Sources (2 devices)
+    // Sources (3 devices)
     _SituationRegisterToneSynth();
     _SituationRegisterSoundSource();
+    _SituationRegisterPCMInput();
     
     // Capture (1 device)
     _SituationRegisterMicCapture();

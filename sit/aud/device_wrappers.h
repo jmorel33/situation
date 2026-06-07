@@ -53,6 +53,7 @@ extern int SituationGetAudioPlaybackSampleRate(void);
 #include "fx/spectrum_analyzer.h"
 #include "sound_source.h"
 #include "mic_capture.h"
+#include "pcm_input.h"
 
 // ================================================================================================
 // REVERB WRAPPER
@@ -861,13 +862,26 @@ static void _SituationProcessStudioReverbNode(
         _SituationStudioReverbSetParams(reverb, params);
     }
     
-    // Process audio (stereo)
-    float* in_l = inputs[0].buffer;
-    float* in_r = inputs[0].channels == 2 ? inputs[0].buffer + 1 : inputs[0].buffer;
-    float* out_l = outputs[0].buffer;
-    float* out_r = outputs[0].buffer + 1;
-    
-    _SituationStudioReverbProcess(reverb, in_l, in_r, out_l, out_r, frames);
+    // Deinterleave → planar process → reinterleave (buffers are L,R,L,R…)
+    float* in = inputs[0].buffer;
+    float* out = outputs[0].buffer;
+    const int channels = inputs[0].channels;
+
+    for (int i = 0; i < frames; i++) {
+        float in_l = (channels > 1) ? in[i * 2] : in[i];
+        float in_r = (channels > 1) ? in[i * 2 + 1] : in_l;
+        float out_l = 0.0f;
+        float out_r = 0.0f;
+
+        _SituationStudioReverbProcess(reverb, &in_l, &in_r, &out_l, &out_r, 1);
+
+        if (channels > 1) {
+            out[i * 2] = out_l;
+            out[i * 2 + 1] = out_r;
+        } else {
+            out[i] = (out_l + out_r) * 0.5f;
+        }
+    }
 }
 
 /**
@@ -918,13 +932,26 @@ static void _SituationProcessSpringReverbNode(
                                controls[4], controls[5], controls[6], controls[7], controls[8], controls[9]);
     }
     
-    // Process audio (stereo)
-    float* in_l = inputs[0].buffer;
-    float* in_r = inputs[0].channels == 2 ? inputs[0].buffer + 1 : inputs[0].buffer;
-    float* out_l = outputs[0].buffer;
-    float* out_r = outputs[0].buffer + 1;
-    
-    SpringReverb_process(reverb, in_l, in_r, out_l, out_r, frames);
+    // Deinterleave → planar process → reinterleave (buffers are L,R,L,R…)
+    float* in = inputs[0].buffer;
+    float* out = outputs[0].buffer;
+    const int channels = inputs[0].channels;
+
+    for (int i = 0; i < frames; i++) {
+        float in_l = (channels > 1) ? in[i * 2] : in[i];
+        float in_r = (channels > 1) ? in[i * 2 + 1] : in_l;
+        float out_l = 0.0f;
+        float out_r = 0.0f;
+
+        SpringReverb_process(reverb, &in_l, &in_r, &out_l, &out_r, 1);
+
+        if (channels > 1) {
+            out[i * 2] = out_l;
+            out[i * 2 + 1] = out_r;
+        } else {
+            out[i] = (out_l + out_r) * 0.5f;
+        }
+    }
 }
 
 /**
@@ -1158,16 +1185,18 @@ static void _SituationProcessDynamicsNode(
     
     SituationDynamics* dyn = (SituationDynamics*)device_data;
     
-    // Update parameters from controls
-    // 0=mode, 1=threshold_db, 2=ratio, 3=attack_ms, 4=release_ms, 5=knee_db, 6=makeup_gain_db
+    // Registry: 0=threshold_dB, 1=ratio, 2=attack_s, 3=release_s, 4=makeup_dB,
+    //           5=is_gate, 6=sidechain_enabled
     if (controls) {
-        dynamics_set_mode(dyn, (DynamicsMode)((int)controls[0]));
-        dynamics_set_threshold(dyn, controls[1]);
-        dynamics_set_ratio(dyn, controls[2]);
-        dynamics_set_attack(dyn, controls[3]);
-        dynamics_set_release(dyn, controls[4]);
-        dynamics_set_knee(dyn, controls[5]);
-        dynamics_set_makeup_gain(dyn, controls[6]);
+        DynamicsMode mode = (controls[5] >= 0.5f) ? DYNAMICS_GATE : DYNAMICS_COMPRESSOR;
+        dynamics_set_mode(dyn, mode);
+        dynamics_set_threshold(dyn, controls[0]);
+        dynamics_set_ratio(dyn, controls[1]);
+        dynamics_set_attack(dyn, controls[2] * 1000.0f);
+        dynamics_set_release(dyn, controls[3] * 1000.0f);
+        dynamics_set_knee(dyn, 0.0f);
+        dynamics_set_makeup_gain(dyn, controls[4]);
+        (void)controls[6]; /* sidechain routing handled by graph patches */
     }
     
     // Process audio
@@ -2177,6 +2206,14 @@ const SituationDeviceFunctions g_device_function_table[] = {
         .create = _SituationCreateSpectrumAnalyzer,
         .process = _SituationProcessSpectrumAnalyzerNode,
         .destroy = _SituationDestroySpectrumAnalyzer
+    },
+    
+    // PCM Input (user-fed ring buffer source)
+    {
+        .type = SITUATION_NODE_PCM_INPUT,
+        .create = _SituationCreatePCMInput,
+        .process = _SituationProcessPCMInputNode,
+        .destroy = _SituationDestroyPCMInput
     }
 };
 

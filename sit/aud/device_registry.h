@@ -49,14 +49,24 @@ static SituationError SituationValidateDeviceMetadata(const SituationDeviceMetad
     if (meta->name[0] == '\0') return SITUATION_ERROR_DEVICE_METADATA_INVALID;
     if (meta->num_controls > SITUATION_MAX_CONTROLS_PER_DEVICE) return SITUATION_ERROR_DEVICE_METADATA_INVALID;
     
+    // Validate category
+    if ((int)meta->category > (int)SITUATION_DEVICE_CUSTOM) {
+        return SITUATION_ERROR_DEVICE_CATEGORY_INVALID;
+    }
+    
+    // Validate port definitions (audio_channels 0 means uninitialized or passthrough)
+    if (meta->audio_channels > 8) {
+        return SITUATION_ERROR_DEVICE_PORT_INVALID;
+    }
+    
     // Validate controls
     for (int i = 0; i < meta->num_controls; i++) {
         const SituationControlDesc* ctrl = &meta->controls[i];
-        if (ctrl->name[0] == '\0') return SITUATION_ERROR_DEVICE_METADATA_INVALID;
+        if (ctrl->name[0] == '\0') return SITUATION_ERROR_DEVICE_CONTROL_INVALID;
         if (ctrl->type == SITUATION_CONTROL_FLOAT || ctrl->type == SITUATION_CONTROL_INT) {
-            if (ctrl->min_value > ctrl->max_value) return SITUATION_ERROR_DEVICE_METADATA_INVALID;
+            if (ctrl->min_value > ctrl->max_value) return SITUATION_ERROR_DEVICE_CONTROL_INVALID;
             if (ctrl->default_value < ctrl->min_value || ctrl->default_value > ctrl->max_value) {
-                return SITUATION_ERROR_DEVICE_METADATA_INVALID;
+                return SITUATION_ERROR_DEVICE_CONTROL_INVALID;
             }
         }
     }
@@ -67,6 +77,9 @@ static SituationError SituationValidateDeviceMetadata(const SituationDeviceMetad
 // Register device type
 SituationError SituationRegisterDeviceType(const SituationDeviceMetadata* meta) {
     _SituationInitRegistry();
+    
+    // Validate input
+    if (!meta) return SITUATION_ERROR_DEVICE_TYPE_INVALID;
     
     // Validate metadata
     SituationError err = SituationValidateDeviceMetadata(meta);
@@ -93,7 +106,8 @@ SituationError SituationRegisterDeviceType(const SituationDeviceMetadata* meta) 
 
 // Query device metadata
 SituationError SituationGetDeviceMetadata(SituationNodeType type, SituationDeviceMetadata* out_meta) {
-    if (!out_meta) return SITUATION_ERROR_DEVICE_METADATA_INVALID;
+    if (!g_registry_initialized) return SITUATION_ERROR_DEVICE_REGISTRY_NOT_INITIALIZED;
+    if (!out_meta) return SITUATION_ERROR_INVALID_PARAM;
     
     for (int i = 0; i < g_device_registry_count; i++) {
         if (g_device_registry[i].type == type) {
@@ -117,6 +131,7 @@ static const SituationDeviceMetadata* SituationGetDeviceMetadataPtr(SituationNod
 
 // Check if device is registered
 bool SituationIsDeviceRegistered(SituationNodeType type) {
+    if (!g_registry_initialized) return false;
     for (int i = 0; i < g_device_registry_count; i++) {
         if (g_device_registry[i].type == type) {
             return true;
@@ -140,8 +155,9 @@ static void SituationIterateRegistry(void (*callback)(const SituationDeviceMetad
 
 // Get metadata by index
 static SituationError SituationGetDeviceMetadataByIndex(int index, SituationDeviceMetadata* out_meta) {
-    if (!out_meta) return SITUATION_ERROR_DEVICE_METADATA_INVALID;
-    if (index < 0 || index >= g_device_registry_count) return SITUATION_ERROR_DEVICE_TYPE_NOT_REGISTERED;
+    if (!g_registry_initialized) return SITUATION_ERROR_DEVICE_REGISTRY_NOT_INITIALIZED;
+    if (!out_meta) return SITUATION_ERROR_INVALID_PARAM;
+    if (index < 0 || index >= g_device_registry_count) return SITUATION_ERROR_DEVICE_QUERY_FAILED;
     
     *out_meta = g_device_registry[index];
     return SITUATION_SUCCESS;

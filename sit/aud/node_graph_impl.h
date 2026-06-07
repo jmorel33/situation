@@ -29,7 +29,7 @@
 
 // Forward declarations
 static bool SituationWouldCreateCycle(SituationAudioGraph* graph, SituationNodeHandle src_handle, SituationNodeHandle dst_handle);
-SituationError SituationTopologicalSort(SituationAudioGraph* graph);
+SITAPI SituationError SituationTopologicalSort(SituationAudioGraph* graph);
 
 // Device function table (defined in device_wrappers.h, included later in same TU)
 // SituationDeviceFunctions is already typedef'd in situation_api.h (included before us)
@@ -182,7 +182,8 @@ SituationError SituationCreateNode(
     SituationNodeType type,
     SituationNodeHandle* handle
 ) {
-    if (!graph || !handle) return SITUATION_ERROR_NODE_ALLOCATION_FAILED;
+    if (!graph) return SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED;
+    if (!handle) return SITUATION_ERROR_INVALID_PARAM;
     
     // Check if graph is full
     if (graph->node_count >= SITUATION_MAX_NODES) {
@@ -365,8 +366,9 @@ SituationError SituationDestroyNode(
     SituationAudioGraph* graph,
     SituationNodeHandle handle
 ) {
+    if (!graph) return SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED;
     SituationNode* node = SituationGetNode(graph, handle);
-    if (!node) return SITUATION_ERROR_NODE_INVALID_HANDLE;
+    if (!node) return SITUATION_ERROR_NODE_NOT_FOUND;
     
     uint16_t index = _SituationGetHandleIndex(handle);
     
@@ -433,13 +435,13 @@ SituationError SituationCreatePatch(
     int dst_port,
     bool is_control
 ) {
-    if (!graph) return SITUATION_ERROR_NODE_ALLOCATION_FAILED;
+    if (!graph) return SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED;
     
     // Get nodes
     SituationNode* src = SituationGetNode(graph, src_handle);
     SituationNode* dst = SituationGetNode(graph, dst_handle);
     
-    if (!src || !dst) return SITUATION_ERROR_NODE_INVALID_HANDLE;
+    if (!src || !dst) return SITUATION_ERROR_NODE_NOT_FOUND;
     
     // Validate port indices
     if (is_control) {
@@ -455,6 +457,12 @@ SituationError SituationCreatePatch(
         }
         if (dst_port < 0 || dst_port >= dst->metadata->num_audio_ins) {
             return SITUATION_ERROR_NODE_PORT_INVALID;
+        }
+        // Check channel compatibility (mono ↔ stereo mismatch)
+        int src_ch = src->audio_outputs[src_port].channels;
+        int dst_ch = dst->audio_inputs[dst_port].channels;
+        if (src_ch != 0 && dst_ch != 0 && src_ch != dst_ch) {
+            return SITUATION_ERROR_NODE_CHANNEL_MISMATCH;
         }
     }
     
@@ -521,7 +529,7 @@ SituationError SituationRemovePatch(
     int dst_port,
     bool is_control
 ) {
-    if (!graph) return SITUATION_ERROR_NODE_ALLOCATION_FAILED;
+    if (!graph) return SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED;
     
     // Find and remove patch from graph patch list
     for (int i = 0; i < graph->patch_count; i++) {
@@ -542,7 +550,18 @@ SituationError SituationRemovePatch(
         }
     }
     
-    return SITUATION_ERROR_NODE_PORT_INVALID;  // Patch not found
+    return SITUATION_ERROR_NODE_PATCH_NOT_FOUND;
+}
+
+// Legacy wrapper (audio patches only)
+SituationError SituationDestroyPatch(
+    SituationAudioGraph* graph,
+    SituationNodeHandle src_handle,
+    int src_port,
+    SituationNodeHandle dst_handle,
+    int dst_port
+) {
+    return SituationRemovePatch(graph, src_handle, src_port, dst_handle, dst_port, false);
 }
 
 // ================================================================================================
@@ -555,17 +574,20 @@ SituationError SituationSetControl(
     uint32_t control_id,
     float value
 ) {
+    if (!graph) return SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED;
+
     SituationNode* node = SituationGetNode(graph, handle);
-    if (!node) return SITUATION_ERROR_NODE_INVALID_HANDLE;
+    if (!node) return SITUATION_ERROR_NODE_NOT_FOUND;
     
     if (control_id >= (uint32_t)node->metadata->num_controls) {
         return SITUATION_ERROR_NODE_CONTROL_INVALID;
     }
     
-    // Clamp value to min/max
+    // Validate value range (reject out-of-range instead of silent clamp)
     const SituationControlDesc* ctrl = &node->metadata->controls[control_id];
-    if (value < ctrl->min_value) value = ctrl->min_value;
-    if (value > ctrl->max_value) value = ctrl->max_value;
+    if (value < ctrl->min_value || value > ctrl->max_value) {
+        return SITUATION_ERROR_NODE_CONTROL_OUT_OF_RANGE;
+    }
 
     // Match declared control semantics before storing/readback.
     switch (ctrl->type) {
@@ -604,10 +626,11 @@ SituationError SituationGetControl(
     uint32_t control_id,
     float* value
 ) {
-    if (!value) return SITUATION_ERROR_NODE_ALLOCATION_FAILED;
+    if (!graph) return SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED;
+    if (!value) return SITUATION_ERROR_INVALID_PARAM;
     
     SituationNode* node = SituationGetNode(graph, handle);
-    if (!node) return SITUATION_ERROR_NODE_INVALID_HANDLE;
+    if (!node) return SITUATION_ERROR_NODE_NOT_FOUND;
     
     if (control_id >= (uint32_t)node->metadata->num_controls) {
         return SITUATION_ERROR_NODE_CONTROL_INVALID;
@@ -702,8 +725,8 @@ bool SituationWouldCreateCycle(
  *          - If destination in-degree becomes 0, add to queue
  *       4. If sorted count != node count, graph has cycle (error)
  */
-SituationError SituationTopologicalSort(SituationAudioGraph* graph) {
-    if (!graph) return SITUATION_ERROR_NODE_ALLOCATION_FAILED;
+SITAPI SituationError SituationTopologicalSort(SituationAudioGraph* graph) {
+    if (!graph) return SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED;
     
     // Allocate temporary in-degree array
     int* in_degree = (int*)SIT_CALLOC(SITUATION_MAX_NODES, sizeof(int));

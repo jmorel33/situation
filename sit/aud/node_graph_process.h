@@ -213,8 +213,9 @@ SituationError SituationProcessGraph(
     const SituationDeviceFunctions* device_funcs,
     int num_device_funcs
 ) {
-    if (!graph || !output_buffer || !device_funcs) {
-        return SITUATION_ERROR_NODE_ALLOCATION_FAILED;
+    if (!graph) return SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED;
+    if (!output_buffer || !device_funcs) {
+        return SITUATION_ERROR_NODE_PROCESSING_FAILED;
     }
     
     // Step 1: Check if topology is valid
@@ -357,6 +358,15 @@ SituationError SituationProcessGraph(
             node->ctrl_inputs[patch->dst_port].value = src->ctrl_outputs[patch->src_port].value;
         }
         
+        // Step 2c: Clear output buffers for this block (many devices only write port 0).
+        for (int j = 0; j < node->metadata->num_audio_outs; j++) {
+            SituationAudioPort* out_port = &node->audio_outputs[j];
+            if (out_port->buffer && out_port->channels > 0) {
+                memset(out_port->buffer, 0,
+                       (size_t)frames * (size_t)out_port->channels * sizeof(float));
+            }
+        }
+
         // Step 2d: Call device process function
         const SituationDeviceFunctions* funcs = _SituationFindDeviceFunctions(
             node->type,
@@ -399,6 +409,11 @@ SituationError SituationProcessGraph(
                 }
             }
             
+            /* Most stereo FX expose two logical outs but only fill port 0. */
+            if (j > 0 && node->metadata->num_audio_outs > 1) {
+                continue;
+            }
+
             // If not patched, sum to master output
             if (!is_patched && port->buffer) {
                 if (port->channels == 1) {
@@ -460,7 +475,7 @@ static inline SituationError SituationCreateNodeWithDevice(
         if (!node->device_data) {
             // Creation failed - destroy node
             SituationDestroyNode(graph, *handle);
-            return SITUATION_ERROR_NODE_ALLOCATION_FAILED;
+            return SITUATION_ERROR_DEVICE_CREATE_FAILED;
         }
     }
     

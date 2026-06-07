@@ -828,12 +828,12 @@ SituationError SituationDeserializeGraphFromJSON(
     
     // Start parsing - get first token
     if (!_JSONNextToken(&parser)) {
-        return SITUATION_ERROR_INVALID_PARAM;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     // Parse root object
     if (!_JSONExpect(&parser, JSON_TOKEN_OBJECT_START)) {
-        return SITUATION_ERROR_INVALID_PARAM;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     // Parse version (optional)
@@ -854,11 +854,11 @@ SituationError SituationDeserializeGraphFromJSON(
     
     // Parse nodes array
     if (!_JSONFindKey(&parser, "nodes")) {
-        return SITUATION_ERROR_INVALID_PARAM;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     if (!_JSONExpect(&parser, JSON_TOKEN_ARRAY_START)) {
-        return SITUATION_ERROR_INVALID_PARAM;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     // Map from JSON node ID to handle
@@ -875,7 +875,7 @@ SituationError SituationDeserializeGraphFromJSON(
         }
         
         if (!_JSONParseNode(graph, &parser, &node_handles[num_nodes], &node_id_map[num_nodes])) {
-            return SITUATION_ERROR_INVALID_PARAM;
+            return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
         }
         num_nodes++;
         
@@ -887,16 +887,16 @@ SituationError SituationDeserializeGraphFromJSON(
     
     // Expect array end
     if (!_JSONExpect(&parser, JSON_TOKEN_ARRAY_END)) {
-        return SITUATION_ERROR_INVALID_PARAM;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     // Parse patches array
     if (!_JSONFindKey(&parser, "patches")) {
-        return SITUATION_ERROR_INVALID_PARAM;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     if (!_JSONExpect(&parser, JSON_TOKEN_ARRAY_START)) {
-        return SITUATION_ERROR_INVALID_PARAM;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     // Parse each patch
@@ -904,7 +904,7 @@ SituationError SituationDeserializeGraphFromJSON(
            parser.current.type != JSON_TOKEN_EOF) {
         
         if (!_JSONParsePatch(graph, &parser, node_handles, node_id_map, num_nodes)) {
-            return SITUATION_ERROR_INVALID_PARAM;
+            return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
         }
         
         // Check for comma or array end
@@ -915,12 +915,12 @@ SituationError SituationDeserializeGraphFromJSON(
     
     // Expect array end
     if (!_JSONExpect(&parser, JSON_TOKEN_ARRAY_END)) {
-        return SITUATION_ERROR_INVALID_PARAM;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     // Expect root object end
     if (!_JSONExpect(&parser, JSON_TOKEN_OBJECT_END)) {
-        return SITUATION_ERROR_INVALID_PARAM;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     return SITUATION_SUCCESS;
@@ -939,7 +939,7 @@ SituationError SituationLoadGraphFromFile(
     // Read file into memory
     FILE* file = fopen(filepath, "r");
     if (!file) {
-        return SITUATION_ERROR_NODE_SERIALIZATION_FAILED;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     // Get file size
@@ -949,7 +949,7 @@ SituationError SituationLoadGraphFromFile(
     
     if (size <= 0) {
         fclose(file);
-        return SITUATION_ERROR_NODE_SERIALIZATION_FAILED;
+        return SITUATION_ERROR_NODE_DESERIALIZATION_FAILED;
     }
     
     // Allocate buffer
