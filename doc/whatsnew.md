@@ -4,7 +4,19 @@
 
 # What's New in Situation API
 
-_For Core API library v2.4.197 — see **`doc/UPDATELOG.md`** for full patch notes per release._
+_For Core API library v2.4.210 — see **`doc/UPDATELOG.md`** for full patch notes per release._
+
+*   **Configurable screenshot format (v2.4.210):** `SituationSetScreenshotFormat()` sets the output format (BMP default, PNG, JPG, TGA). `SituationTakeScreenshot()` now accepts a base name (no extension) or NULL for auto-naming — the library appends the correct extension. If a recognized extension is already present, it's used as-is.
+*   **Audio preload sample rate fix (v2.4.208):** `SituationLoadSoundFromFile` with `SITUATION_AUDIO_LOAD_FULL` now resamples to the device output rate. Previously, high sample-rate files (e.g. 96kHz WAV) played at half speed on 48kHz devices.
+*   **Vulkan async shader shutdown hardening (v2.4.208):** `_SituationVulkanFreeAsyncShaderLoad` no longer hangs if the thread pool is already destroyed during `SituationShutdown`.
+*   **Split device info queries (v2.4.207):** `SituationGetCPUInfo`, `SituationGetGPUInfo`, `SituationGetMemoryInfo`, plus storage/network/input enumeration. `SituationGetDeviceInfo()` is deprecated but still composes the full aggregate for backward compatibility.
+*   **Compute Virtual Displays (v2.4.205):** `SituationCreateVirtualDisplayEx()` with `SITUATION_VD_FLAG_COMPUTE_TARGET` — VDs writable by compute shaders (no depth/render pass, STORAGE usage). `SituationGetVirtualDisplayTexture()` exposes the VD's internal texture for compute binding. Enables subsystems to render as compositable layers via the existing VD compositor.
+*   **Errno Adoption Phases 0-7 (v2.4.204):** 26 previously defined but never-produced error codes now actively returned by proper call sites across platform, filesystem, rendering, threading, and audio subsystems.
+*   **⚠️ Error propagation Phase 3 — breaking migration (v2.4.203):** 18 public API functions changed from `bool`/`void` → `SituationError`. File I/O (`SaveFileText`, `CopyFile`, `DeleteFile`, `MoveFile`, `RenameFile`, `CreateDirectory`, `DeleteDirectory`), audio (`SoundExportAsWav`), renderer (`AcquireFrameCommandBuffer`, `CmdBindComputePipeline`, `CmdDispatch`, `CmdCopyBuffer`, `ReadBuffer`, `DrawModel`), and threading topology (`RefreshCpuTopology`, `GetCpuTopology`, `SetThreadAffinity`, `SetThreadAffinityEx`, `GetThreadAffinity`). Callers checking `if (!fn())` must change to `if (fn() != SITUATION_SUCCESS)`. Fire-and-forget callers need no changes.
+*   **Error propagation Phase 1 & 2 (v2.4.202):** All 57 public API functions that can fail now call `_SituationSetErrorFromCode` before returning. `SituationGetLastErrorMsg()` / `SituationGetLastErrorCode()` are now reliable after any failure. Non-breaking — no signature changes.
+*   **Error propagation Phase 0 (v2.4.201):** 4 new errno entries in `situation_base_errno.h` — `WINDOW_STATE_FAILED` (-105), `WINDOW_PROPERTY_FAILED` (-106), `APP_STATE_FAILED` (-107), `IMAGE_OPERATION_FAILED` (-580). New `SITUATION_ERRORS_IMAGE` section.
+*   **System introspection (v2.4.199):** `SituationGetOSInfo`, `SituationGetProcessList`, `SituationGetActiveAudioDeviceName` — query OS, running processes, and audio device from any Situation app.
+*   **PCM input node (v2.4.198):** `SITUATION_NODE_PCM_INPUT` — push audio from any thread into the graph via a lock-free ring buffer.
 
 ### v2.4.197 — Threading module dispatch + thread naming
 
@@ -117,7 +129,7 @@ _For Core API library v2.4.197 — see **`doc/UPDATELOG.md`** for full patch not
 *   **Render clear commands (v2.4.148):** 🎉 **COMPLETE!** `SituationCmdClear` / color/depth/stencil clears inside an active render pass (Vulkan `vkCmdClearAttachments`).
 *   **Compute harness split pilot — Phase -1 (v2.4.147):** 🧪 **COMPLETE!** New **`compute`** module (**8** tests); pure compute retired from **`graphics`**; **`doc/plan/renderer_bolster_plan.md`** Phase -1 done.
 
-### Other recent releases
+### v2.4.1–v2.4.146 — Infrastructure, Harness & Subsystem Buildout
 
 *   **FFmpeg video subsystem groundwork (post-v2.4.146 plan work):** 🎬 **PROVEN!** The video plan now has a working MSYS2 MinGW64 FFmpeg static-library build path: `build_ffmpeg.bat` / `build_ffmpeg.sh` produce LGPL-safe **`libavcodec.a`**, **`libavformat.a`**, **`libswscale.a`**, and **`libavutil.a`** under `ext/ffmpeg/build/lib/`, with NASM enabled for optimized x86 assembly. Situation is still unchanged and does **not** link FFmpeg unless the future detachable `SITUATION_ENABLE_VIDEO` module is wired in.
 *   **Renderer/control cleanup (v2.4.146):** 🧹 **COMPLETE!** Repaired corrupted renderer punctuation in diagnostics/comments, including the metric contention log, and restored `situation_impl_ctrl.h` indentation with a formatting-only pass. OpenGL and Vulkan DLL builds were verified after the cleanup.
@@ -172,7 +184,13 @@ _For Core API library v2.4.197 — see **`doc/UPDATELOG.md`** for full patch not
 *   **OpenGL deferred rendering architecture (v2.4.2):** 🛠️ **COMPLETE!** GL/Vulkan structural parity.
 *   **Complete MIDI architecture (v2.4.1):** 🎹 **COMPLETE!** Routing, transforms, recording, UD inquiry.
 *   **OpenGL graveyard flush safety (v2.4.1):** 🧹 **COMPLETE!** **`_SitGLFlushGraveyard`** waits on prior-frame **`GL_ARB_sync`** before cleanup.
-*   **Modular revolution & universal handles (v2.4.0 milestone):** 🎉 **COMPLETE!** Monolithic impl split into **16** internal modules, with resources moving toward uniform O(1) generational registries for bindless-ready access.
+*   **Modular revolution & universal handles (v2.4.0):** 🎉 **COMPLETE!** Monolithic impl split into **16** internal modules, with resources moving toward uniform O(1) generational registries for bindless-ready access. Major architectural reorganization establishing a professional folder structure (100% backward compatible): core headers relocated to `sit/` (root retains only `situation.h` as public entry point), audio effects organized into `sit/aud/fx/` (16 effects: reverb, echo, chorus, phaser, overdrive, exciter, maximizer, dynamics, filter, eq_4band, mastering_amp, deafmax, spring_reverb, studio_reverb, sst282, lfo), Polysonix synthesizer moved to `sit/aud/polysonix/`, K-Term terminal emulation in `sit/k-term/`. See `doc/V2_4_0_FOLDER_REORGANIZATION_COMPLETE.md` for full details.
+
+---
+
+## v2.3.x — Pre-Modular Foundation
+
+These entries document the foundational work that led to the v2.4 modular architecture.
 
 *   **Audio modularization (v2.3.61):** 🧹 **COMPLETE!** Extracted the internal Reverb (`sit/aud/reverb.h`) and Echo (`sit/aud/echo.h`) implementations into standalone headers to improve codebase modularity.
 *   **Uniform Optimization (v2.3.60):** 🛠️ **COMPLETE!** Implemented dynamic resizing for the internal OpenGL uniform hash map. The map now doubles its capacity and rehashes entries when the load factor exceeds 0.75, ensuring stable performance for complex shaders.
@@ -184,13 +202,15 @@ _For Core API library v2.4.197 — see **`doc/UPDATELOG.md`** for full patch not
 *   **Critical Stability (v2.3.54):** 🎉 **COMPLETE!** Addressed critical MDI batching and resource cleanup issues in the OpenGL backend.
 *   **Virtual Bindless (v2.3.52):** 🎉 **COMPLETE!** Implemented a "Virtual Bindless" fallback system for OpenGL hardware lacking `GL_ARB_bindless_texture`. This system emulates bindless texture access by managing a virtual pool of texture units, allowing users to write unified bindless shader code that works across a wider range of hardware (including older Intel iGPUs).
 *   **MDI Auto-Batching (v2.3.51):** 🎉 **COMPLETE!** Implemented Multi-Draw Indirect (MDI) auto-batching for the OpenGL backend. This optimization intelligently batches consecutive `SIT_OP_DRAW_MESH` commands sharing the same VAO into a single `glMultiDrawElementsIndirect` call, drastically reducing CPU overhead for repetitive geometry.
-*   **Fence-Guarded Destruction (v2.3.50):** 🎉 **COMPLETE!** Implemented robust deferred destruction for OpenGL using GL_ARB_sync fences. This eliminates CPU stalls and ensures resources are only destroyed when the GPU is finished with them, matching Vulkan's safety and performance.
+*   **Fence-Guarded Destruction (v2.3.50):** 🎉 **COMPLETE!** Implemented robust deferred destruction for OpenGL using `GL_ARB_sync` fences. This eliminates CPU stalls and ensures resources are only destroyed when the GPU is finished with them, matching Vulkan's safety and performance.
 *   **Async Shader Linking (v2.3.49):** 🎉 **COMPLETE!** Implemented non-blocking shader linking for OpenGL hot-reloading using `KHR_parallel_shader_compile`.
 *   **Vulkan Bindless (v2.3.45):** 🎉 **COMPLETE!** Implemented "Bindless" texturing for Vulkan using Descriptor Indexing. Textures are now accessed via a global unbounded array (`global_textures[]`) indexed by push constants, eliminating descriptor binding overhead and solving pool fragmentation.
 *   **Vulkan Optimization (v2.3.44):** 🎉 **COMPLETE!** Added configurable staging buffer sizes and optimized I/O polling for hot-reloading to support a wider range of hardware targets.
 *   **System Unification (v2.3.43):** 🎉 **COMPLETE!** Implemented the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading. See `REGRESSION_ANALYSIS.md` for details.
 *   **Audio Capture Enhancements (v2.3.42):** 🎉 **COMPLETE!** Added `SituationStartAudioCaptureEx` for custom formats and updated the default capture to use native device settings (0, 0) for optimal performance.
 *   **Flexible Texture Formats (v2.3.41):** 🎉 **COMPLETE!** Added `SituationColorEncoding` enum for automatic format selection. Storage images now use LINEAR format (UNORM) while sampled textures use SRGB for proper gamma correction. Works identically on OpenGL and Vulkan.
-*   **Asset Pipeline (v2.3.38):** Added `SituationLoadBitmapFontFromMemory` and enhanced I/O thread controls for smoother background loading.
-*   **OpenGL Optimization (v2.3.36):** Completed the "Max Out Core" plan with MDI batching, Zero-Copy Ring Buffers, and Bindless Textures.
-*   **Texture Registry (v2.3.31):** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.
+*   **Vulkan Text Rendering (v2.3.39):** 🛠️ **COMPLETE!** Fixed 11 critical bugs in the Vulkan text rendering pipeline.
+*   **Asset Pipeline (v2.3.38):** 🛠️ **COMPLETE!** Added `SituationLoadBitmapFontFromMemory` and enhanced I/O thread controls for smoother background loading.
+*   **OpenGL Optimization (v2.3.36):** 🎉 **COMPLETE!** Completed the "Max Out Core" plan with MDI batching, Zero-Copy Ring Buffers, and Bindless Textures.
+*   **Texture Registry (v2.3.31):** 🎉 **COMPLETE!** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.
+

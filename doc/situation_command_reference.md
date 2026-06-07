@@ -1,6 +1,6 @@
 # Situation Command Buffer Reference
 
-_Authoritative catalog of every `SituationCmd*` recording function — Situation **2.4.126**._
+_Authoritative catalog of every `SituationCmd*` recording function — Situation **2.4.199**._
 
 ## How this fits the other docs (avoid triple maintenance)
 
@@ -40,7 +40,7 @@ _Authoritative catalog of every `SituationCmd*` recording function — Situation
 
 ---
 
-## Command index (35 active + 7 deprecated)
+## Command index (70 active + 7 deprecated)
 
 | Command | Tier | GL | VK | One-line use case |
 |---------|------|----|----|-------------------|
@@ -48,13 +48,23 @@ _Authoritative catalog of every `SituationCmd*` recording function — Situation
 | `SituationCmdEndRenderPass` | Core | ✓ | ✓ | Close pass, store attachments |
 | `SituationCmdSetViewport` | Core | ✓ | ✓ | Map NDC → pixel rect |
 | `SituationCmdSetScissor` | Core | ✓ | ✓ | Clip fragments (UI lists) |
+| `SituationCmdSetViewportIndexed` | Core | ✓ | ✓ | Viewport at index N |
+| `SituationCmdSetScissorIndexed` | Core | ✓ | ✓ | Scissor at index N |
 | `SituationCmdPushRasterState` | Core | ✓ | ✓ | Save blend/depth/cull block |
 | `SituationCmdPopRasterState` | Core | ✓ | ✓ | Restore raster block |
 | `SituationCmdSetCullMode` | Core | ✓ | ✓ | Front/back/none |
+| `SituationCmdSetFrontFace` | Core | ✓ | ✓ | CW/CCW winding |
 | `SituationCmdSetDepthTest` | Core | ✓ | ✓ | Depth compare on/off |
 | `SituationCmdSetDepthWrite` | Core | ✓ | ✓ | Z-write mask |
+| `SituationCmdSetDepthBias` | Core | ✓ | ✓ | Polygon offset (shadow acne) |
+| `SituationCmdSetPolygonMode` | Core | ✓ | ✓ | Fill/line/point |
+| `SituationCmdSetLineWidth` | Core | ✓ | ✓ | Line primitive width |
+| `SituationCmdSetPrimitiveTopology` | Core | ✓ | ✓ | Triangle/line/point topology |
 | `SituationCmdSetBlendEnable` | Core | ✓ | ✓ | Alpha blending on/off |
 | `SituationCmdSetBlendFuncSeparate` | Core | ✓ | ✓ | RGB/A blend factors |
+| `SituationCmdSetColorWriteMask` | Core | ✓ | ✓ | Per-channel write mask |
+| `SituationCmdSetStencilTest` | Core | ✓ | ✓ | Front/back stencil ops |
+| `SituationCmdSetMultisampleState` | Core | — | — | NOT_IMPLEMENTED (v2.5) |
 | `SituationCmdBindPipeline` | Core | ✓ | ✓ | Active graphics shader/PSO |
 | `SituationCmdSetPushConstant` | Core | ✓ | ✓ | Small per-draw data (≤128 B typical) |
 | `SituationCmdSetPushConstantData` | Core | ✓ | ✓ | Push constants by shader + byte offset |
@@ -65,18 +75,37 @@ _Authoritative catalog of every `SituationCmd*` recording function — Situation
 | `SituationCmdSetVertexAttribute` | GL-only | ✓ | ✗ | Interleaved/separate vertex layout |
 | `SituationCmdBindVertexBuffer` | Core | ✓ | ✓ | VBO + stride for manual draw |
 | `SituationCmdBindIndexBuffer` | Core | ✓ | ✓ | UINT32 index buffer + byte offset |
+| `SituationCmdBindIndexBufferEx` | Core | ✓ | ✓ | Index buffer with 16/32-bit type |
 | `SituationCmdDraw` | Core | ✓ | ✓ | `glDrawArraysInstanced` / `vkCmdDraw` |
 | `SituationCmdDrawIndexed` | Core | ✓ | ✓ | Indexed mesh strip/list |
+| `SituationCmdDrawIndirect` | Core | ✓ | ✓ | Indirect draw from buffer |
+| `SituationCmdDrawIndexedIndirect` | Core | ✓ | ✓ | Indexed indirect draw |
 | `SituationCmdDrawMesh` | High | ✓ | ✓ | Draw `SituationCreateMesh` handle |
 | `SituationCmdDrawQuad` | High | ✓ | ✓ | Internal unit quad (UI/debug) |
 | `SituationCmdDrawTexture` | High | ✓ | ✓ | Sprite blit with tint/rotation |
+| `SituationCmdDrawTextureYpqGrade` | High | ✓ | ✓ | GPU YPQ color grade at draw time |
 | `SituationCmdDrawText` | High | ✓ | ✓ | Bitmap font string |
 | `SituationCmdDrawTextEx` | High | ✓ | ✓ | Scaled/spaced text |
 | `SituationCmdBindComputePipeline` | Core | ✓ | ✓ | Compute program |
 | `SituationCmdBindComputeTexture` | Core | ✓ | ✓ | Storage image for compute |
 | `SituationCmdDispatch` | Core | ✓ | ✓ | 3D work-group grid |
+| `SituationCmdDispatchEx` | Core | ✓ | ✓ | Validated dispatch w/ error report |
+| `SituationCmdDispatchIndirect` | Core | ✓ | ✓ | Indirect compute dispatch |
 | `SituationCmdPipelineBarrier` | Core | ✓ | ✓ | Compute→graphics visibility |
-| `SituationCmdCopyBuffer` | Core | ✓ | ✓ | GPU buffer→buffer copy |
+| `SituationCmdPipelineBarrierEx` | Core | ✓ | ✓ | Explicit global memory barrier |
+| `SituationCmdBufferBarrier` | Core | ✓ | ✓ | Buffer-range memory barrier |
+| `SituationCmdTextureBarrier` | Core | ✓ | ✓ | Texture layout/memory barrier |
+| `SituationCmdClear` | Core | ✓ | ✓ | Mid-pass clear all attachments |
+| `SituationCmdClearColor` | Core | ✓ | ✓ | Mid-pass clear color only |
+| `SituationCmdClearDepth` | Core | ✓ | ✓ | Mid-pass clear depth only |
+| `SituationCmdClearDepthStencil` | Core | ✓ | ✓ | Mid-pass clear depth+stencil |
+| `SituationCmdClearStencil` | Core | ✓ | ✓ | Mid-pass clear stencil only |
+| `SituationCmdCopyBuffer` | Core | ✓ | ✓ | GPU buffer→buffer copy (legacy) |
+| `SituationCmdCopyBufferEx` | Core | ✓ | ✓ | Buffer copy w/ offsets + error |
+| `SituationCmdCopyTexture` | Core | ✓ | ✓ | Exact-size texture→texture copy |
+| `SituationCmdBlitTexture` | Core | ✓ | ✓ | Scaled texture blit w/ filter |
+| `SituationCmdCopyBufferToTexture` | Core | ✓ | ✓ | Upload buffer→texture subregion |
+| `SituationCmdCopyTextureToBuffer` | Core | ✓ | ✓ | Readback texture→buffer |
 | `SituationCmdPresent` | Core | ✓ | ✓ | Blit texture to swapchain |
 | `SituationCmdBeginDebugGroup` | Core | ✓ | ✓ | RenderDoc/NSight marker |
 | `SituationCmdEndDebugGroup` | Core | ✓ | ✓ | Close debug group |

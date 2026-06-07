@@ -250,7 +250,22 @@ SituationRestoreWindow();
 ## System Info
 
 ```c
-// Device info (deprecated but still works)
+// Split device info (preferred — v2.4.207)
+SituationCPUInfo cpu;
+SituationGPUInfo gpu;
+SituationMemoryInfo mem;
+SituationGetCPUInfo(&cpu);
+SituationGetGPUInfo(&gpu);
+SituationGetMemoryInfo(&mem);
+
+int storage_count = SituationGetStorageDeviceCount();
+for (int i = 0; i < storage_count; i++) {
+    char name[SITUATION_MAX_DEVICE_NAME_LEN];
+    uint64_t cap, free;
+    SituationGetStorageDevice(i, name, sizeof(name), &cap, &free);
+}
+
+// Legacy aggregate (deprecated)
 SituationDeviceInfo info = SituationGetDeviceInfo();
 
 // Displays
@@ -266,7 +281,7 @@ SituationFreeAudioDevices(devices, count);
 
 // Misc
 uint32_t threads = SituationGetCPUThreadCount();
-const char* gpu = SituationGetGPUName();
+const char* gpu_name = SituationGetGPUName();
 int width = SituationGetScreenWidth();
 int height = SituationGetScreenHeight();
 ```

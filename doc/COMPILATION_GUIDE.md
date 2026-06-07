@@ -1,7 +1,7 @@
 # Situation Library - Compilation Guide
 
-**Version**: 2.4.0  
-**Date**: 2026-03-03  
+**Version**: 2.4.203  
+**Date**: 2026-06-05  
 **Status**: Complete
 
 ## Overview
@@ -18,52 +18,119 @@ This guide provides comprehensive instructions for compiling applications using 
 6. [Backend Selection](#backend-selection)
 7. [Common Issues](#common-issues)
 8. [Example Build Scripts](#example-build-scripts)
+9. [KaOS Terminal Console](#kaos-terminal-console)
 
 ## Project Structure
 
 ```
 situation/                         # Project root
 ├── situation.h                    # ← Public API entry point (include this)
+├── situation_dll.c                # DLL entry point
+├── build/dll/                     # Pre-built DLLs (situation_opengl.dll, situation_vulkan.dll)
 │
 ├── sit/                          # ← Core implementation (internal)
-│   ├── situation_api.h           # Public API declarations
-│   ├── situation_impl.h          # Core implementation
+│   ├── situation_api.h           # Public API declarations (531 functions)
+│   ├── situation_base_version.h  # Canonical version macros
+│   ├── situation_base_errno.h    # Error enum (SituationError)
+│   ├── situation_base_etc.h      # Base utilities
+│   ├── situation_base_font.h     # Embedded VGA bitmap font
+│   ├── situation_base_trace.h    # Trace/profiling hooks
+│   ├── situation_impl.h          # Orchestrator (includes all impl files)
+│   ├── situation_impl_decl.h     # Internal types & structs
+│   ├── situation_impl_forward.h  # Forward declarations
+│   ├── situation_impl_renderer_fwd.h # Renderer forward declarations
+│   ├── situation_impl_deps.h     # Third-party lib includes
+│   ├── situation_impl_etc.h      # Utilities (math, strings, hashing)
+│   ├── situation_impl_timer.h    # Oscillators, high-res time
+│   ├── situation_impl_threading.h         # Thread pool, job system
+│   ├── situation_impl_threading_topology.h     # CPU topology, affinity masks
+│   ├── situation_impl_threading_numa.h         # NUMA placement
+│   ├── situation_impl_threading_scheduler.h    # Metrics, sizing
+│   ├── situation_impl_threading_observability.h # Snapshot, dump
+│   ├── situation_impl_threading_diag.h         # Thread naming, hardening
+│   ├── situation_impl_io.h       # File I/O, async, system info
+│   ├── situation_impl_input.h    # Keyboard, mouse, gamepad
+│   ├── situation_impl_wdm.h      # Window, display, monitor
+│   ├── situation_impl_image.h    # Image, font, color
+│   ├── situation_impl_ypq.h      # YPQ perceptual color math
+│   ├── situation_impl_proj.h     # Camera & projection helpers
+│   ├── situation_impl_renderer.h # GL + VK backends
+│   ├── situation_impl_vd.h       # Virtual display compositing
+│   ├── situation_impl_ctrl.h     # Lifecycle, init/shutdown
 │   ├── situation_impl_audio.h    # Audio subsystem
 │   │
 │   ├── aud/                      # Audio Subsystem
-│   │   ├── fx/                   # Effects (15 files)
-│   │   │   ├── reverb.h, echo.h, chorus_4stage.h
-│   │   │   ├── filter.h, eq_4band.h, dynamics.h
-│   │   │   └── ... (other effects)
-│   │   │
-│   │   ├── polysonix/            # Polyphonic synthesizer
-│   │   │   ├── polysonix.h
-│   │   │   ├── px_vm.h
-│   │   │   └── ... (synth components)
-│   │   │
-│   │   ├── node_graph*.h         # Node graph system (5 files)
-│   │   ├── device_*.h            # Device system (3 files)
-│   │   ├── sound_source.h        # Audio file playback
-│   │   ├── mic_capture.h         # Microphone capture
-│   │   └── tone_synth.h          # Simple tone generator
+│   │   ├── fx/                   # Effects & DSP nodes (23 files)
+│   │   │   ├── reverb.h, studio_reverb.h, spring_reverb.h, sst282.h
+│   │   │   ├── echo.h, chorus_4stage.h, phaseshifter.h, lfo.h
+│   │   │   ├── overdrive.h, exciter.h, compander.h
+│   │   │   ├── dynamics.h, filter.h, eq_4band.h, isa110.h
+│   │   │   ├── mastering_amp.h, maximizer.h, deafmax.h
+│   │   │   ├── gain.h, mixer_node.h
+│   │   │   └── envelope_follower.h, peak_meter.h, spectrum_analyzer.h
+│   │   ├── polysonix/            # Polyphonic VM synthesizer
+│   │   ├── tone_synth.h, tone_synth_graph.h  # Tone generation
+│   │   ├── sound_source.h       # Sample playback source
+│   │   ├── pcm_input.h          # Lock-free ring buffer PCM source
+│   │   ├── mic_capture.h        # Microphone capture
+│   │   ├── node_graph*.h        # Node graph system (6 files)
+│   │   ├── device_*.h           # Device registry & wrappers (3 files)
+│   │   ├── registry_init.h      # Built-in device registration
+│   │   ├── midi*.h              # MIDI integration (4 files)
+│   │   └── midi_learn.h         # MIDI Learn (dynamic CC mapping)
 │   │
-│   └── k-term/                   # Terminal Subsystem
-│       ├── kterm.h               # Main wrapper
-│       ├── kterm_api.h           # Public API
-│       └── ... (terminal components)
+│   ├── kfs/                      # Filesystem sublibrary
+│   ├── mybuddy/                  # NUMA-aware buddy allocator
+│   ├── vid/                      # Video subsystem (planned)
+│   └── k-term/                   # Terminal emulation library
+│       ├── kterm_api.h           # Public terminal API
+│       └── ...                   # VT100/VT220, ReGIS, Sixel, voice
 │
-├── examples/                     # Example programs
+├── examples/                     # Example programs (header-only model)
+├── tests/harness/                # Test harness (links against DLL)
 ├── ext/                         # External dependencies
-│   ├── glfw/                    # GLFW windowing library
-│   ├── cglm/                    # Math library
-│   ├── glad/                    # OpenGL loader (if using OpenGL)
-│   └── stb/                     # STB libraries (image, truetype)
+│   ├── glfw/                    # GLFW 3 windowing library
+│   ├── cglm/                    # Math library (header-only)
+│   ├── glad/                    # OpenGL 4.6 loader
+│   ├── stb/                     # STB libraries (image, truetype)
+│   ├── shaderc/                 # GLSL→SPIR-V compiler (Vulkan)
+│   ├── cgltf/                   # glTF 2.0 model loading
+│   └── miniaudio.h             # Audio backend (single header)
 │
 ├── doc/                         # Documentation
-└── shaders/                     # Shader files
+└── shaders/                     # Shader files (Vulkan SPIR-V, GLSL)
 ```
 
 ## Quick Start
+
+### Two Integration Models
+
+**Model 1: DLL (Recommended for applications and tests)**
+
+Build the library once, link against the DLL from any compiler:
+
+```bash
+# Build the DLL (GCC/MinGW required for this step only)
+build_situation.bat opengl       # → build/dll/situation_opengl.dll
+build_situation.bat vulkan       # → build/dll/situation_vulkan.dll
+
+# Consume the DLL (any compiler — GCC, MSVC, Clang)
+gcc -o myapp.exe main.c -I. -Iext -Iext/cglm/include -Iext/glfw/include \
+    -DSITUATION_USE_OPENGL -DSITUATION_USE_SHARED -DSITUATION_ENABLE_THREADING \
+    -Lbuild/dll -lsituation_opengl
+```
+
+**Model 2: Header-only (for self-contained single-file programs)**
+
+Compile everything into one translation unit — no DLL needed:
+
+```bash
+gcc -o myapp.exe main.c -I. -Iext -Iext/cglm/include -Iext/glfw/include \
+    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING \
+    -lglfw3 -lopengl32 -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32
+```
+
+> **Note:** The DLL is built with GCC (MinGW-w64). Once built, the DLL exports a standard C ABI — consumers can link against it from MSVC, Clang, or any C/C++ compiler. The GCC requirement is only for building the library itself.
 
 ### Minimal Example
 
@@ -98,13 +165,14 @@ int main(int argc, char** argv) {
 }
 ```
 
-### Compile Command (Windows/GCC)
+### Compile Command (Windows/GCC — Header-Only Model)
 
 ```bash
 gcc -o myapp.exe main.c \
-    -I. -Iext -Iext/glfw/include \
-    -DSITUATION_USE_OPENGL \
-    -lglfw3 -lopengl32 -lgdi32 -lwinmm -lws2_32
+    -std=c11 -I. -Iext -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps \
+    -DSITUATION_USE_OPENGL -DSITUATION_IMPLEMENTATION -DSITUATION_ENABLE_THREADING \
+    -Lext/glfw/lib-mingw-w64 \
+    -lglfw3 -lopengl32 -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32 -lm
 ```
 
 ## Dependencies
@@ -118,7 +186,7 @@ gcc -o myapp.exe main.c \
 
 2. **Graphics Backend** (choose one):
    - **OpenGL 4.6**: System OpenGL library + GLAD loader
-   - **Vulkan 1.2+**: Vulkan SDK from LunarG
+   - **Vulkan 1.4+**: Vulkan SDK from LunarG
 
 3. **cglm** - Math library
    - Headers only (no linking required)
@@ -146,7 +214,7 @@ These are included in the `ext/` folder:
 
 ```c
 #define SITUATION_USE_OPENGL    // Use OpenGL 4.6 backend
-#define SITUATION_USE_VULKAN    // Use Vulkan 1.2+ backend
+#define SITUATION_USE_VULKAN    // Use Vulkan 1.4 backend
 ```
 
 #### Implementation (Required in ONE file)
@@ -159,9 +227,12 @@ These are included in the `ext/` folder:
 
 ```c
 #define SITUATION_ENABLE_SHADER_COMPILER  // Enable runtime GLSL compilation (Vulkan)
-#define SITUATION_ENABLE_THREADING        // Enable multi-threading support
-#define SITUATION_ENABLE_DXGI            // Enable DXGI for GPU info (Windows)
+#define SITUATION_ENABLE_THREADING        // Enable thread pool API + dedicated threads (Main/Render/Audio/I/O)
+#define SITUATION_ENABLE_RENDER_THREAD    // Enable dedicated render thread (included in default DLL builds)
+#define SITUATION_ENABLE_DXGI            // Enable DXGI for GPU memory query (Windows)
 ```
+
+> **Note:** `SITUATION_ENABLE_RENDER_THREAD` is automatically defined when `SITUATION_ENABLE_THREADING` is defined. You do not need to define it separately. The render thread is controlled at runtime via `init_info.render_thread_count` (0 = disabled, 1 = enabled).
 
 #### Shared Library Build
 
@@ -245,6 +316,16 @@ Always include these directories:
 
 ## Platform-Specific Instructions
 
+### Minimum Platform Requirements
+
+| Platform | Minimum Version | Notes |
+|----------|----------------|-------|
+| **Windows** | **Windows 10** (build 1607+) | Uses `SetThreadDescription`, `RtlGetVersion`, WASAPI shared mode, DXGI 1.1. No Win7/8 compatibility. |
+| **GPU (OpenGL)** | **OpenGL 4.6** | No fallback to older GL versions. Requires DSA, compute shaders, SPIR-V, MDI. |
+| **GPU (Vulkan)** | **Vulkan 1.4** | No fallback to older VK versions. Device selection rejects < 1.4. |
+| **Linux** | In progress | Not shipping yet. Target: X11 + PulseAudio/PipeWire. |
+| **macOS** | In progress | Not shipping yet. Target: Metal via MoltenVK. |
+
 ### Windows (MinGW-w64)
 
 ```bash
@@ -270,25 +351,17 @@ gcc -o myapp.exe main.c \
 
 ### Windows (MSVC)
 
-```bash
-# OpenGL Backend
-cl /Fe:myapp.exe main.c ^
-    /I. /Iext /Iext\glfw\include ^
-    /DSITUATION_USE_OPENGL ^
-    /DSITUATION_IMPLEMENTATION ^
-    /link glfw3.lib opengl32.lib gdi32.lib winmm.lib ws2_32.lib ole32.lib shell32.lib user32.lib
+> **Note:** MSVC can consume the pre-built DLL but cannot compile the library core (GCC-only internals). Build the DLL with `build_situation.bat` first, then link from MSVC.
 
-# Vulkan Backend
+```bash
+# Link against pre-built DLL (consumer side)
 cl /Fe:myapp.exe main.c ^
-    /I. /Iext /Iext\glfw\include /I%VULKAN_SDK%\Include ^
-    /DSITUATION_USE_VULKAN ^
-    /DSITUATION_IMPLEMENTATION ^
-    /DSITUATION_ENABLE_SHADER_COMPILER ^
-    /link glfw3.lib vulkan-1.lib shaderc_shared.lib gdi32.lib winmm.lib ws2_32.lib ole32.lib shell32.lib user32.lib ^
-    /LIBPATH:%VULKAN_SDK%\Lib
+    /I. /Iext /Iext\cglm\include /Iext\glfw\include ^
+    /DSITUATION_USE_OPENGL /DSITUATION_USE_SHARED /DSITUATION_ENABLE_THREADING ^
+    /link situation_opengl.lib
 ```
 
-### Linux (GCC)
+### Linux (GCC) — _not yet shipping; planned target_
 
 ```bash
 # OpenGL Backend
@@ -309,7 +382,7 @@ gcc -o myapp main.c \
     -lX11 -lXrandr -lXi -lXxf86vm -lXcursor -lXinerama
 ```
 
-### macOS (Clang)
+### macOS (Clang) — _not yet shipping; planned target_
 
 ```bash
 # OpenGL Backend
@@ -353,7 +426,7 @@ clang -o myapp main.c \
 #include "situation.h"
 ```
 
-### Vulkan 1.2+ Backend
+### Vulkan 1.4 Backend
 
 **Pros:**
 - Explicit control over GPU
@@ -367,14 +440,14 @@ clang -o myapp main.c \
 - Larger binary size
 
 **Requirements:**
-- Vulkan 1.2+ capable GPU
+- Vulkan 1.4 capable GPU
 - Vulkan SDK installed
-- shaderc for compute shaders
+- shaderc for runtime shader compilation
 
 **Compilation:**
 ```c
 #define SITUATION_USE_VULKAN
-#define SITUATION_ENABLE_SHADER_COMPILER  // For compute shaders
+#define SITUATION_ENABLE_SHADER_COMPILER  // For runtime GLSL→SPIR-V
 #include "situation.h"
 ```
 
@@ -420,6 +493,8 @@ clang -o myapp main.c \
 **Solution:** For Vulkan compute shaders, copy `shaderc_shared.dll` from Vulkan SDK to your exe directory, or add SDK bin folder to PATH.
 
 ## Example Build Scripts
+
+See also [KaOS Terminal Console](#kaos-terminal-console) for the canonical K-Term reference app.
 
 ### Windows Batch Script (compile_example.bat)
 
@@ -521,6 +596,58 @@ elseif(APPLE)
 endif()
 ```
 
+## KaOS Terminal Console
+
+**KaOS Terminal** (`examples/kterm_console.c`) is a **K-Term core product** — the canonical terminal + shell reference app. It lives under **Situation examples** during development because K-Term is exercised through a Situation host frame (window, input, virtual-display compositor). It is **not** part of `situation.h` or Situation core releases.
+
+- **Product / changelog:** `sit/k-term/doc/updatelog.md`, `doc/plan/KTERM_CONSOLE_*`
+- **Build location (dev):** `examples/kterm_console.c` in this repo
+- **Situation role:** host platform only (`SituationInit`, VD compositing, sysinfo APIs)
+
+Legacy `console.c` was merged into `kterm_console` (see `doc/plan/CONSOLE_MERGE_DEPRECATION_PLAN.md`).
+
+### Build (Windows)
+
+```batch
+build_examples.bat opengl kterm_console
+build\examples\kterm_console.exe
+```
+
+CMake (from project root, when using the examples target):
+
+```batch
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target kterm_console
+```
+
+Quick verify script:
+
+```batch
+scripts\verify_kterm_console.bat
+```
+
+### Headless screenshot capture (testing)
+
+Set environment variables before launch:
+
+| Variable | Effect |
+|----------|--------|
+| `KTERM_CAPTURE_SCREENSHOT` | Path to PNG written on frame 30 |
+| `KTERM_CAPTURE_EXIT` | Exit after capture (optional) |
+
+```batch
+set KTERM_CAPTURE_SCREENSHOT=shot.png
+set KTERM_CAPTURE_EXIT=1
+build\examples\kterm_console.exe
+```
+
+Harness (after building the example):
+
+```batch
+build_tests.bat
+build\sit_test.exe --module kterm_console
+```
+
 ## Additional Resources
 
 - **Main Documentation**: `doc/situation_api.md`
@@ -540,5 +667,8 @@ For issues and questions:
 
 ## Version History
 
+- **v2.4.203** (2026-06-05) - Error propagation Phase 3 (bool/void → SituationError migration)
+- **v2.4.200** (2026-06-04) - API documentation refresh, full 531-function coverage
+- **v2.4.199** (2026-06-03) - System introspection APIs
 - **v2.4.0** (2026-03-03) - Folder reorganization, audio subsystem organization
 - **v2.3.x** - Previous versions (see UPDATELOG.md)

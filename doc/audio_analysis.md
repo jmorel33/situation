@@ -220,3 +220,94 @@ The system uses a **Snapshot-Mixing Strategy** to bridge the Main Thread and Aud
 
 ### 5.5 Conclusion
 The Audio Subsystem is now a distinct, parallel engine. It runs asynchronously to the game loop, utilizing lock-free reads for performance and strict locking for topology changes. This architecture ensures that **audio never glitches due to low FPS**, and **game logic never stalls due to audio processing**.
+
+## 6. PCM Input Node (v2.4.198)
+
+### Overview
+
+The `SITUATION_NODE_PCM_INPUT` node type is a lock-free source node that accepts user-pushed PCM audio from any thread and outputs it through the audio graph. It enables kterm voice playback, network audio streams, and any user-fed PCM source to participate in the graph (mixable, patchable, effects-chainable).
+
+### Architecture
+
+```
+User Thread (any)                    Audio Callback Thread
+─────────────────                    ─────────────────────
+SituationPushNodePCM()               _SituationProcessPCMInputNode()
+  │                                    │
+  ▼                                    ▼
+┌─────────────────────────────────────────────────────┐
+│  Lock-Free SPSC Ring Buffer (4096 frames × channels) │
+│  atomic write_pos ──────────► atomic read_pos        │
+└─────────────────────────────────────────────────────┘
+```
+
+- **Producer**: Any thread via `SituationPushNodePCM()` (writes to ring buffer)
+- **Consumer**: Audio callback via the node's process function (reads from ring buffer)
+- **Underrun behavior**: Outputs silence (zero-fill) — no glitch, just quiet
+- **Overflow behavior**: Partial write — returns number of frames actually written
+
+### Ring Buffer Design
+
+- Fixed-size power-of-2 buffer: `SIT_PCM_INPUT_RING_FRAMES` (default 4096)
+- SPSC (Single Producer, Single Consumer) — no locks needed
+- Atomic `write_pos` / `read_pos` with acquire/release memory ordering
+- One slot reserved (standard SPSC technique to distinguish full from empty)
+
+### Controls
+
+| ID | Name | Type  | Range       | Default | Description                    |
+|----|------|-------|-------------|---------|--------------------------------|
+| 0  | gain | float | 0.0 – 2.0  | 1.0     | Output volume                  |
+| 1  | pan  | float | -1.0 – 1.0 | 0.0     | Stereo pan (constant-power)    |
+| 2  | mute | bool  | 0 / 1       | 0       | Mute toggle                    |
+
+### Public API
+
+```c
+// Push interleaved float PCM into the node's ring buffer (any thread, lock-free)
+uint32_t SituationPushNodePCM(
+    SituationAudioGraph* graph,
+    SituationNodeHandle node,
+    const float* samples,       // Interleaved float PCM
+    uint32_t frame_count,
+    uint32_t channels           // Must match node's channel config (2 = stereo)
+);
+
+// Query available write space in frames
+uint32_t SituationGetNodePCMFreeFrames(
+    SituationAudioGraph* graph,
+    SituationNodeHandle node
+);
+```
+
+### Usage Example
+
+```c
+SituationInitDeviceRegistry();
+SituationAudioGraph* graph = SituationCreateGraph();
+
+// Create PCM input node
+SituationNodeHandle pcm;
+SituationCreateNode(graph, SITUATION_NODE_PCM_INPUT, &pcm);
+
+// Set as active graph
+SituationSetActiveGraph(graph);
+
+// Push audio from any thread (e.g., network receive callback)
+float samples[512 * 2]; // 512 frames, stereo
+// ... fill samples ...
+uint32_t written = SituationPushNodePCM(graph, pcm, samples, 512, 2);
+
+// Query remaining space
+uint32_t free = SituationGetNodePCMFreeFrames(graph, pcm);
+```
+
+### Integration with kterm Voice
+
+The kterm voice subsystem (`kt_voice.h`) uses the PCM input node for playback. When voice is enabled, a `SITUATION_NODE_PCM_INPUT` node is created on the active graph. Received network audio packets are pushed into the node via `SituationPushNodePCM()`, replacing the removed `SituationStartAudioPlayback` API.
+
+### Non-Goals
+
+- No resampling (caller must match the graph's sample rate)
+- No codec/decode (caller provides raw float PCM)
+- No automatic device routing (goes through the graph like everything else)

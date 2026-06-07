@@ -1,6 +1,6 @@
 # Situation Public API Index
 
-_Auto-generated from `sit/situation_api.h` — Situation **2.4.191 (Vulkan Async Shader Poll + Harness Multi-Monitor VD + Phase 11-bis Plan)**._
+_Auto-generated from `sit/situation_api.h` — Situation **2.4.207 (Split Device Info Queries)**._
 
 Complete alphabetical index of every **SITAPI** function. Narrative documentation:
 
@@ -9,7 +9,7 @@ Complete alphabetical index of every **SITAPI** function. Narrative documentatio
 - **[situation_command_reference.md](situation_command_reference.md)** — all `SituationCmd*` commands
 - **[situation_api_generated.md](situation_api_generated.md)** — header-sync supplement for gaps
 
-**Total public functions:** 522 (`SituationCmd*`: 69)
+**Total public functions:** 540 (`SituationCmd*`: 70)
 
 ---
 
@@ -28,66 +28,67 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 | `SituationCmdBindDescriptorSet` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | [Core] Binds a buffer's descriptor set (UBO/SSBO) to a set index. |
 | `SituationCmdBindDescriptorSetDynamic` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | [Core] Binds a dynamic buffer descriptor set with an offset. |
 | `SituationCmdBindIndexBuffer` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Bind a 32-bit index buffer (SIT_INDEX_UINT32). Pass offset 0 when indices start at the beg... |
-| `SituationCmdBindIndexBufferEx` | — | [Core] Bind index buffer with 16- or 32-bit element type for subsequent SituationCmdDrawIndexed. |
+| `SituationCmdBindIndexBufferEx` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Bind index buffer with 16- or 32-bit element type for subsequent SituationCmdDrawIndexed. |
 | `SituationCmdBindPipeline` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | Binds a graphics pipeline (shader program) for subsequent draws. |
 | `SituationCmdBindSampledTexture` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | Binds a texture as a sampled image (sampler2D) to a binding point. |
 | `SituationCmdBindTexture` | [command ref](situation_command_reference.md#11-deprecated-commands) | [DEPRECATED] [Core] Bind a texture and sampler to a shader binding point. |
 | `SituationCmdBindTextureSet` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | [Core] Binds a texture's descriptor set (sampler/storage) to a set index. |
 | `SituationCmdBindUniformBuffer` | [command ref](situation_command_reference.md#11-deprecated-commands) | [DEPRECATED] [Core] Bind a Uniform Buffer Object (UBO) to a shader binding point. |
 | `SituationCmdBindVertexBuffer` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Bind a vertex buffer for subsequent SituationCmdDraw / SituationCmdDrawIndexed. |
-| `SituationCmdBlitTexture` | — | Blit between color 2D textures; caller owns explicit texture barriers. |
-| `SituationCmdBufferBarrier` | — | Record an explicit buffer-range memory barrier. |
-| `SituationCmdClear` | — | Mid-pass clear of active render-pass attachments; begin-pass clears use SituationRenderPassInfo l... |
-| `SituationCmdClearColor` | — | Mid-pass clear of the active color attachment. |
-| `SituationCmdClearDepth` | — | Mid-pass clear of the active depth attachment. |
-| `SituationCmdClearDepthStencil` | — | Mid-pass clear of active depth and stencil attachments. |
-| `SituationCmdClearStencil` | — | Mid-pass clear of the active stencil attachment when supported by backend/attachment state. |
+| `SituationCmdBlitTexture` | [command ref](situation_command_reference.md#8-transfer--presentation) | Blit between color 2D textures; caller owns explicit texture barriers. |
+| `SituationCmdBufferBarrier` | [command ref](situation_command_reference.md#7-compute) | Record an explicit buffer-range memory barrier. |
+| `SituationCmdClear` | [command ref](situation_command_reference.md#8-transfer--presentation) | Mid-pass clear of active render-pass attachments; begin-pass clears use SituationRenderPassInfo l... |
+| `SituationCmdClearColor` | [command ref](situation_command_reference.md#8-transfer--presentation) | Mid-pass clear of the active color attachment. |
+| `SituationCmdClearDepth` | [command ref](situation_command_reference.md#8-transfer--presentation) | Mid-pass clear of the active depth attachment. |
+| `SituationCmdClearDepthStencil` | [command ref](situation_command_reference.md#8-transfer--presentation) | Mid-pass clear of active depth and stencil attachments. |
+| `SituationCmdClearStencil` | [command ref](situation_command_reference.md#8-transfer--presentation) | Mid-pass clear of the active stencil attachment when supported by backend/attachment state. |
 | `SituationCmdCopyBuffer` | [command ref](situation_command_reference.md#8-transfer--presentation) | Legacy void buffer-copy command; Phase 4 tracks the error-returning copy/blit API. |
-| `SituationCmdCopyBufferEx` | — | Error-returning buffer-copy command with independent source/destination offsets. |
-| `SituationCmdCopyBufferToTexture` | — | Upload tightly packed RGBA8 rows from a buffer into a texture subregion; caller owns texture barr... |
-| `SituationCmdCopyTexture` | — | Exact-size copy between color 2D textures; caller owns explicit texture barriers. |
-| `SituationCmdCopyTextureToBuffer` | — | Copy a texture subregion into a buffer (`dst_row_pitch` 0 = width * 4); caller owns texture barri... |
+| `SituationCmdCopyBufferEx` | [command ref](situation_command_reference.md#8-transfer--presentation) | Error-returning buffer-copy command with independent source/destination offsets. |
+| `SituationCmdCopyBufferToTexture` | [command ref](situation_command_reference.md#8-transfer--presentation) | Upload tightly packed RGBA8 rows from a buffer into a texture subregion; caller owns texture barr... |
+| `SituationCmdCopyTexture` | [command ref](situation_command_reference.md#8-transfer--presentation) | Exact-size copy between color 2D textures; caller owns explicit texture barriers. |
+| `SituationCmdCopyTextureToBuffer` | [command ref](situation_command_reference.md#8-transfer--presentation) | Copy a texture subregion into a buffer (`dst_row_pitch` 0 = width * 4); caller owns texture barri... |
 | `SituationCmdDispatch` | [command ref](situation_command_reference.md#7-compute) | Record a command to dispatch compute shader work groups. |
-| `SituationCmdDispatchEx` | — | Record a compute dispatch with validation and error reporting. |
-| `SituationCmdDispatchIndirect` | — | Record an indirect compute dispatch. |
+| `SituationCmdDispatchEx` | [command ref](situation_command_reference.md#7-compute) | Record a compute dispatch with validation and error reporting. |
+| `SituationCmdDispatchIndirect` | [command ref](situation_command_reference.md#7-compute) | Record an indirect compute dispatch. |
 | `SituationCmdDraw` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Record a non-indexed draw call. |
 | `SituationCmdDrawIndexed` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Record an indexed draw call. |
-| `SituationCmdDrawIndexedIndirect` | — | [Core] Indexed indirect draw (32-bit indices; requires bound index buffer). firstIndex is relativ... |
-| `SituationCmdDrawIndirect` | — | [Core] Draw from a CPU/GPU-filled SituationDrawIndirectCommand in an indirect buffer (requires ac... |
+| `SituationCmdDrawIndexedIndirect` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Indexed indirect draw (32-bit indices; requires bound index buffer). firstIndex is relativ... |
+| `SituationCmdDrawIndirect` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Draw from a CPU/GPU-filled SituationDrawIndirectCommand in an indirect buffer (requires ac... |
 | `SituationCmdDrawMesh` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | [High-Level] Records a command to draw a complete, pre-configured mesh. |
 | `SituationCmdDrawQuad` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | [High-Level] Record a command to draw a simple, colored 2D quad. |
 | `SituationCmdDrawText` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | Draws a text string using GPU-accelerated textured quads. |
 | `SituationCmdDrawTextEx` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | Advanced text drawing (scaling/spacing). |
 | `SituationCmdDrawTexture` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | [High-Level] Draw a part of a texture defined by a rectangle. |
+| `SituationCmdDrawTextureYpqGrade` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | [High-Level] Draw texture with YPQ grade (matches SituationImageAdjustYPQ). |
 | `SituationCmdEndDebugGroup` | [command ref](situation_command_reference.md#9-debug-markers) | — |
 | `SituationCmdEndRender` | [command ref](situation_command_reference.md#11-deprecated-commands) | [DEPRECATED] End the current render pass. |
 | `SituationCmdEndRenderPass` | [command ref](situation_command_reference.md#1-render-pass--framebuffer) | Ends the current render pass. |
 | `SituationCmdPipelineBarrier` | [command ref](situation_command_reference.md#7-compute) | Legacy convenience barrier; prefer SituationCmdPipelineBarrierEx, SituationCmdBufferBarrier, or S... |
-| `SituationCmdPipelineBarrierEx` | — | Record an explicit global memory barrier. |
+| `SituationCmdPipelineBarrierEx` | [command ref](situation_command_reference.md#7-compute) | Record an explicit global memory barrier. |
 | `SituationCmdPopRasterState` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdPresent` | [command ref](situation_command_reference.md#8-transfer--presentation) | Submits a command to copy a texture to the main window's swapchain (Compute-Only). |
 | `SituationCmdPushRasterState` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetBlendEnable` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetBlendFuncSeparate` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
-| `SituationCmdSetColorWriteMask` | — | — |
+| `SituationCmdSetColorWriteMask` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetCullMode` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
-| `SituationCmdSetDepthBias` | — | — |
+| `SituationCmdSetDepthBias` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetDepthTest` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetDepthWrite` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
-| `SituationCmdSetFrontFace` | — | — |
-| `SituationCmdSetLineWidth` | — | — |
-| `SituationCmdSetMultisampleState` | — | — |
-| `SituationCmdSetPolygonMode` | — | — |
-| `SituationCmdSetPrimitiveTopology` | — | — |
+| `SituationCmdSetFrontFace` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
+| `SituationCmdSetLineWidth` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
+| `SituationCmdSetMultisampleState` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
+| `SituationCmdSetPolygonMode` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
+| `SituationCmdSetPrimitiveTopology` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetPushConstant` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | [Core] Set a small block of per-draw uniform data (push constant). |
 | `SituationCmdSetPushConstantData` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | — |
 | `SituationCmdSetScissor` | [command ref](situation_command_reference.md#2-dynamic-viewport--scissor) | Sets the dynamic scissor rectangle to clip rendering. |
-| `SituationCmdSetScissorIndexed` | — | Sets scissor at index (0 = default scissor). |
-| `SituationCmdSetStencilTest` | — | — |
+| `SituationCmdSetScissorIndexed` | [command ref](situation_command_reference.md#2-dynamic-viewport--scissor) | Sets scissor at index (0 = default scissor). |
+| `SituationCmdSetStencilTest` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetVertexAttribute` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [OpenGL Only] Attribute format + vertex buffer binding index (must match SituationCmdBindVertexBu... |
 | `SituationCmdSetViewport` | [command ref](situation_command_reference.md#2-dynamic-viewport--scissor) | Sets the dynamic viewport and scissor for the current render pass. |
-| `SituationCmdSetViewportIndexed` | — | Sets viewport at index (0 = default viewport). |
-| `SituationCmdTextureBarrier` | — | Record an explicit texture layout/memory barrier. |
+| `SituationCmdSetViewportIndexed` | [command ref](situation_command_reference.md#2-dynamic-viewport--scissor) | Sets viewport at index (0 = default viewport). |
+| `SituationCmdTextureBarrier` | [command ref](situation_command_reference.md#7-compute) | Record an explicit texture layout/memory barrier. |
 
 ---
 
@@ -128,33 +129,48 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 | `SituationCmdBindDescriptorSet` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | [Core] Binds a buffer's descriptor set (UBO/SSBO) to a set index. |
 | `SituationCmdBindDescriptorSetDynamic` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | [Core] Binds a dynamic buffer descriptor set with an offset. |
 | `SituationCmdBindIndexBuffer` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Bind a 32-bit index buffer (SIT_INDEX_UINT32). Pass offset 0 when indices start at the beginning of the buffer. |
-| `SituationCmdBindIndexBufferEx` | — | [Core] Bind index buffer with 16- or 32-bit element type for subsequent SituationCmdDrawIndexed. |
+| `SituationCmdBindIndexBufferEx` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Bind index buffer with 16- or 32-bit element type for subsequent SituationCmdDrawIndexed. |
 | `SituationCmdBindPipeline` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | Binds a graphics pipeline (shader program) for subsequent draws. |
 | `SituationCmdBindSampledTexture` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | Binds a texture as a sampled image (sampler2D) to a binding point. |
 | `SituationCmdBindTextureSet` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | [Core] Binds a texture's descriptor set (sampler/storage) to a set index. |
 | `SituationCmdBindVertexBuffer` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Bind a vertex buffer for subsequent SituationCmdDraw / SituationCmdDrawIndexed. |
-| `SituationCmdClear` | — | Mid-pass clear of active render-pass attachments; begin-pass clears use SituationRenderPassInfo loadOp. |
-| `SituationCmdClearColor` | — | Mid-pass clear of the active color attachment. |
-| `SituationCmdClearDepth` | — | Mid-pass clear of the active depth attachment. |
-| `SituationCmdClearDepthStencil` | — | Mid-pass clear of active depth and stencil attachments. |
-| `SituationCmdClearStencil` | — | Mid-pass clear of the active stencil attachment when supported by backend/attachment state. |
+| `SituationCmdClear` | [command ref](situation_command_reference.md#8-transfer--presentation) | Mid-pass clear of active render-pass attachments; begin-pass clears use SituationRenderPassInfo loadOp. |
+| `SituationCmdClearColor` | [command ref](situation_command_reference.md#8-transfer--presentation) | Mid-pass clear of the active color attachment. |
+| `SituationCmdClearDepth` | [command ref](situation_command_reference.md#8-transfer--presentation) | Mid-pass clear of the active depth attachment. |
+| `SituationCmdClearDepthStencil` | [command ref](situation_command_reference.md#8-transfer--presentation) | Mid-pass clear of active depth and stencil attachments. |
+| `SituationCmdClearStencil` | [command ref](situation_command_reference.md#8-transfer--presentation) | Mid-pass clear of the active stencil attachment when supported by backend/attachment state. |
 | `SituationCmdDraw` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Record a non-indexed draw call. |
 | `SituationCmdDrawIndexed` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Record an indexed draw call. |
-| `SituationCmdDrawIndexedIndirect` | — | [Core] Indexed indirect draw (32-bit indices; requires bound index buffer). firstIndex is relative to SituationCmdBin... |
-| `SituationCmdDrawIndirect` | — | [Core] Draw from a CPU/GPU-filled SituationDrawIndirectCommand in an indirect buffer (requires active render pass, bo... |
+| `SituationCmdDrawIndexedIndirect` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Indexed indirect draw (32-bit indices; requires bound index buffer). firstIndex is relative to SituationCmdBin... |
+| `SituationCmdDrawIndirect` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [Core] Draw from a CPU/GPU-filled SituationDrawIndirectCommand in an indirect buffer (requires active render pass, bo... |
 | `SituationCmdDrawMesh` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | [High-Level] Records a command to draw a complete, pre-configured mesh. |
 | `SituationCmdDrawQuad` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | [High-Level] Record a command to draw a simple, colored 2D quad. |
 | `SituationCmdDrawText` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | Draws a text string using GPU-accelerated textured quads. |
 | `SituationCmdDrawTextEx` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | Advanced text drawing (scaling/spacing). |
 | `SituationCmdDrawTexture` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | [High-Level] Draw a part of a texture defined by a rectangle. |
+| `SituationCmdDrawTextureYpqGrade` | [command ref](situation_command_reference.md#6-high-level-draw-helpers) | [High-Level] Draw texture with YPQ grade (matches SituationImageAdjustYPQ). |
 | `SituationCmdEndRenderPass` | [command ref](situation_command_reference.md#1-render-pass--framebuffer) | Ends the current render pass. |
 | `SituationCmdPresent` | [command ref](situation_command_reference.md#8-transfer--presentation) | Submits a command to copy a texture to the main window's swapchain (Compute-Only). |
 | `SituationCmdSetPushConstant` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | [Core] Set a small block of per-draw uniform data (push constant). |
 | `SituationCmdSetScissor` | [command ref](situation_command_reference.md#2-dynamic-viewport--scissor) | Sets the dynamic scissor rectangle to clip rendering. |
-| `SituationCmdSetScissorIndexed` | — | Sets scissor at index (0 = default scissor). |
+| `SituationCmdSetScissorIndexed` | [command ref](situation_command_reference.md#2-dynamic-viewport--scissor) | Sets scissor at index (0 = default scissor). |
 | `SituationCmdSetVertexAttribute` | [command ref](situation_command_reference.md#5-vertex-input--manual-draw-core-path) | [OpenGL Only] Attribute format + vertex buffer binding index (must match SituationCmdBindVertexBuffer). |
 | `SituationCmdSetViewport` | [command ref](situation_command_reference.md#2-dynamic-viewport--scissor) | Sets the dynamic viewport and scissor for the current render pass. |
-| `SituationCmdSetViewportIndexed` | — | Sets viewport at index (0 = default viewport). |
+| `SituationCmdSetViewportIndexed` | [command ref](situation_command_reference.md#2-dynamic-viewport--scissor) | Sets viewport at index (0 = default viewport). |
+
+## Active Audio Device Query (v2.4.199)
+
+| Function | Summary |
+|----------|---------|
+| `SituationExecuteCommand` | Execute a shell command hidden, return exit code & combined output. |
+| `SituationGetActiveAudioDeviceName` | Get the name of the currently active playback device (static buffer, do not free). |
+| `SituationGetCurrentDriveLetter` | Get the drive letter of the running executable (Windows only). |
+| `SituationGetDriveInfo` | Get info for a specific drive (Windows only). |
+| `SituationGetGraphicsBackend` | — |
+| `SituationGetGraphicsBackendName` | — |
+| `SituationGetGraphicsCaps` | Get backend capabilities for examples/frameworks. |
+| `SituationGetUserDirectory` | Get the full path to the current user's home directory (caller must free). |
+| `SituationOpenFile` | Open a file or folder with its default application. |
 
 ## Active Graph (Audio Callback Integration)
 
@@ -306,18 +322,18 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 | `SituationCmdPushRasterState` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetBlendEnable` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetBlendFuncSeparate` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
-| `SituationCmdSetColorWriteMask` | — | — |
+| `SituationCmdSetColorWriteMask` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetCullMode` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
-| `SituationCmdSetDepthBias` | — | — |
+| `SituationCmdSetDepthBias` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetDepthTest` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetDepthWrite` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
-| `SituationCmdSetFrontFace` | — | — |
-| `SituationCmdSetLineWidth` | — | — |
-| `SituationCmdSetMultisampleState` | — | — |
-| `SituationCmdSetPolygonMode` | — | — |
-| `SituationCmdSetPrimitiveTopology` | — | — |
+| `SituationCmdSetFrontFace` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
+| `SituationCmdSetLineWidth` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
+| `SituationCmdSetMultisampleState` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
+| `SituationCmdSetPolygonMode` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
+| `SituationCmdSetPrimitiveTopology` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 | `SituationCmdSetPushConstantData` | [command ref](situation_command_reference.md#4-graphics-pipeline--shader-data) | — |
-| `SituationCmdSetStencilTest` | — | — |
+| `SituationCmdSetStencilTest` | [command ref](situation_command_reference.md#3-raster-state-fixed-function) | — |
 
 ## Command-Line Argument Queries
 
@@ -331,12 +347,12 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 | Function | Doc | Summary |
 |----------|-----|---------|
 | `SituationCmdBindComputePipeline` | [command ref](situation_command_reference.md#7-compute) | Bind a compute pipeline for a subsequent dispatch. |
-| `SituationCmdBufferBarrier` | — | Record an explicit buffer-range memory barrier. |
+| `SituationCmdBufferBarrier` | [command ref](situation_command_reference.md#7-compute) | Record an explicit buffer-range memory barrier. |
 | `SituationCmdDispatch` | [command ref](situation_command_reference.md#7-compute) | Record a command to dispatch compute shader work groups. |
-| `SituationCmdDispatchEx` | — | Record a compute dispatch with validation and error reporting. |
-| `SituationCmdDispatchIndirect` | — | Record an indirect compute dispatch. |
-| `SituationCmdPipelineBarrierEx` | — | Record an explicit global memory barrier. |
-| `SituationCmdTextureBarrier` | — | Record an explicit texture layout/memory barrier. |
+| `SituationCmdDispatchEx` | [command ref](situation_command_reference.md#7-compute) | Record a compute dispatch with validation and error reporting. |
+| `SituationCmdDispatchIndirect` | [command ref](situation_command_reference.md#7-compute) | Record an indirect compute dispatch. |
+| `SituationCmdPipelineBarrierEx` | [command ref](situation_command_reference.md#7-compute) | Record an explicit global memory barrier. |
+| `SituationCmdTextureBarrier` | [command ref](situation_command_reference.md#7-compute) | Record an explicit texture layout/memory barrier. |
 | `SituationCreateComputePipeline` | — | Create a compute pipeline from a shader file. |
 | `SituationCreateComputePipelineFromMemory` | — | Create a compute pipeline from in-memory GLSL source. |
 | `SituationDestroyComputePipeline` | — | Destroy a compute pipeline and free its GPU resources. |
@@ -368,18 +384,19 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 | `SituationGetCPUCoreCount` | Gets physical processors (Cores) from cached topology |
 | `SituationGetCPUThreadCount` | Gets logical processors (Threads) |
 | `SituationGetConfiguredAudioThreadAffinity` | Effective audio mask (init or default) |
+| `SituationGetConfiguredIOThreadAffinity` | Effective I/O mask (init or default CPU 3) |
 | `SituationGetConfiguredMainThreadAffinity` | Init mask for main thread (0 = no pin) |
 | `SituationGetConfiguredRenderThreadAffinity` | Effective render mask (init or default) |
 | `SituationGetCpuTopology` | Pointer to cached topology (NULL on failure) |
 | `SituationGetCurrentProcessorIndex` | Logical CPU index for current thread, or -1 if unknown |
 | `SituationGetHighQueueDepth` | High-priority queue depth |
+| `SituationGetInternalThreadPool` | Returns pointer to the library's internal thread pool (NULL if not initialized). |
 | `SituationGetNumaTopology` | Cached NUMA snapshot |
 | `SituationGetPreferredNumaNode` | TLS: node for current thread, or -1 if unset |
 | `SituationGetQueueDepth` | Pending jobs per queue mask |
 | `SituationGetRecommendedWorkerCount` | Sizing helper (no pool required) |
 | `SituationGetThreadAffinity` | Reads affinity mask for the CURRENT thread |
 | `SituationGetThreadNumaNode` | NUMA node for current thread, or -1 if unknown |
-| `SituationGetInternalThreadPool` | Returns pointer to the library's internal thread pool (NULL if not initialized) |
 | `SituationGetThreadPoolMetrics` | Scheduler counters snapshot |
 | `SituationGetThreadPoolSnapshot` | Worker/I/O/render/audio placement snapshot |
 | `SituationGetThreadingStatus` | Runtime threading capabilities + pool summary |
@@ -526,7 +543,7 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 | Function | Doc | Summary |
 |----------|-----|---------|
 | `SituationCmdCopyBuffer` | [command ref](situation_command_reference.md#8-transfer--presentation) | Legacy void buffer-copy command; Phase 4 tracks the error-returning copy/blit API. |
-| `SituationCmdCopyBufferEx` | — | Error-returning buffer-copy command with independent source/destination offsets. |
+| `SituationCmdCopyBufferEx` | [command ref](situation_command_reference.md#8-transfer--presentation) | Error-returning buffer-copy command with independent source/destination offsets. |
 | `SituationCreateBuffer` | — | Create a generic GPU data buffer (e.g., SSBO). |
 | `SituationCreateReadbackBuffer` | — | [Phase 1] Create an async GPU->CPU staging buffer. |
 | `SituationDestroyBuffer` | — | Destroy a GPU buffer. |
@@ -560,7 +577,9 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 | Function | Summary |
 |----------|---------|
 | `SituationLoadImageFromScreen` | Get a copy of the current screen backbuffer as an image. |
-| `SituationTakeScreenshot` | Take a screenshot and save it to a file (PNG or BMP). |
+| `SituationTakeScreenshot` | Take a screenshot and save it to a file (BMP, PNG, JPG, or TGA). |
+| `SituationSetScreenshotFormat` | Set the default screenshot file format (default: BMP). |
+| `SituationGetScreenshotFormat` | Get the current default screenshot format. |
 
 ## Image Exporting
 
@@ -712,6 +731,12 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 | `SituationSetGraphSFXSource` | Designate the Sound Source node in the active graph to receive routed SFX tones. |
 | `SituationSetToneRouting` | Route a procedural tone to the active graph's SFX sound source. |
 
+## OS Information (v2.4.199)
+
+| Function | Summary |
+|----------|---------|
+| `SituationGetOSInfo` | Get operating system name, version, and build number. |
+
 ## Path Management & Special Directories
 
 | Function | Summary |
@@ -721,6 +746,13 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 | `SituationGetFileExtension` | Extract the file extension from a path. |
 | `SituationGetFileName` | Extract the file name (including extension) from a full path. |
 | `SituationJoinPath` | Join two path components with the correct OS separator (caller must free). |
+
+## PCM Input Node (user-fed ring buffer source)
+
+| Function | Summary |
+|----------|---------|
+| `SituationGetNodePCMFreeFrames` | Query how many frames of space are available in the PCM_INPUT node's ring buffer. |
+| `SituationPushNodePCM` | Push interleaved float PCM into a PCM_INPUT node's ring buffer (any thread). Returns frames written. |
 
 ## Physical Display (Monitor) Management
 
@@ -747,6 +779,13 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 |----------|---------|
 | `SituationLoadMidiPreset` | Load MIDI Learn mappings from JSON file. |
 | `SituationSaveMidiPreset` | Save MIDI Learn mappings to JSON file. |
+
+## Process Enumeration (v2.4.199)
+
+| Function | Summary |
+|----------|---------|
+| `SituationFreeProcessList` | Free a process list returned by SituationGetProcessList(). |
+| `SituationGetProcessList` | Get snapshot of running OS processes. Caller must free with SituationFreeProcessList(). |
 
 ## Profiling & Diagnostics
 
@@ -815,17 +854,18 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 
 | Function | Summary |
 |----------|---------|
-| `SituationExecuteCommand` | Execute a shell command hidden, return exit code & combined output. |
+| `SituationGetCPUInfo` | CPU name, core/thread counts, and clock speed. |
 | `SituationGetCPUThreadCount` | Get the number of logical CPU cores. |
-| `SituationGetCurrentDriveLetter` | Get the drive letter of the running executable (Windows only). |
-| `SituationGetDeviceInfo` | Get detailed information about system hardware (CPU, GPU, RAM, etc.). |
-| `SituationGetDriveInfo` | Get info for a specific drive (Windows only). |
+| `SituationGetDeviceInfo` | [DEPRECATED] Aggregated hardware snapshot; prefer split queries. |
+| `SituationGetGPUInfo` | GPU name and dedicated VRAM (when available). |
 | `SituationGetGPUName` | Get the name of the active GPU. |
-| `SituationGetGraphicsBackend` | — |
-| `SituationGetGraphicsBackendName` | — |
-| `SituationGetGraphicsCaps` | Get backend capabilities for examples/frameworks. |
-| `SituationGetUserDirectory` | Get the full path to the current user's home directory (caller must free). |
-| `SituationOpenFile` | Open a file or folder with its default application. |
+| `SituationGetInputDeviceCount` | Number of input devices (keyboard/mouse/gamepad). |
+| `SituationGetInputDeviceName` | Input device name by index. |
+| `SituationGetMemoryInfo` | Total and available physical RAM. |
+| `SituationGetNetworkAdapterCount` | Number of network adapters reported by the OS. |
+| `SituationGetNetworkAdapterName` | Network adapter name by index. |
+| `SituationGetStorageDevice` | Storage volume name, capacity, and free space by index. |
+| `SituationGetStorageDeviceCount` | Number of storage volumes reported by the OS. |
 
 ## Temporal Oscillator System
 
@@ -845,10 +885,10 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 
 | Function | Doc | Summary |
 |----------|-----|---------|
-| `SituationCmdBlitTexture` | — | Blit between color 2D textures; caller owns explicit texture barriers. |
-| `SituationCmdCopyBufferToTexture` | — | Upload tightly packed RGBA8 rows from a buffer into a texture subregion; caller owns texture barriers. |
-| `SituationCmdCopyTexture` | — | Exact-size copy between color 2D textures; caller owns explicit texture barriers. |
-| `SituationCmdCopyTextureToBuffer` | — | Copy a texture subregion into a buffer (`dst_row_pitch` 0 = width * 4); caller owns texture barriers. |
+| `SituationCmdBlitTexture` | [command ref](situation_command_reference.md#8-transfer--presentation) | Blit between color 2D textures; caller owns explicit texture barriers. |
+| `SituationCmdCopyBufferToTexture` | [command ref](situation_command_reference.md#8-transfer--presentation) | Upload tightly packed RGBA8 rows from a buffer into a texture subregion; caller owns texture barriers. |
+| `SituationCmdCopyTexture` | [command ref](situation_command_reference.md#8-transfer--presentation) | Exact-size copy between color 2D textures; caller owns explicit texture barriers. |
+| `SituationCmdCopyTextureToBuffer` | [command ref](situation_command_reference.md#8-transfer--presentation) | Copy a texture subregion into a buffer (`dst_row_pitch` 0 = width * 4); caller owns texture barriers. |
 | `SituationCreateTexture` | — | Create a texture from a CPU-side image. |
 | `SituationCreateTextureEx` | — | Create a texture with specific usage flags. |
 | `SituationDestroyTexture` | — | Unload a texture from GPU memory. |
@@ -1007,6 +1047,7 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 - `SituationCmdDrawText` — Abstracted Rendering Commands
 - `SituationCmdDrawTextEx` — Abstracted Rendering Commands
 - `SituationCmdDrawTexture` — Abstracted Rendering Commands
+- `SituationCmdDrawTextureYpqGrade` — Abstracted Rendering Commands
 - `SituationCmdEndDebugGroup` — Command Buffer Recording
 - `SituationCmdEndRender` — [DEPRECATED] Use SituationCmdBindDescriptorSet() or SituationCmdBindTextureSet() instead.
 - `SituationCmdEndRenderPass` — Abstracted Rendering Commands
@@ -1086,7 +1127,7 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 - `SituationEndFrame` — Frame Lifecycle & Command Buffer
 - `SituationEnumerateAudioDevices` — Device Enumeration (Phase 0)
 - `SituationErrorToString` — Callbacks and Event Handling
-- `SituationExecuteCommand` — System & Hardware Information
+- `SituationExecuteCommand` — Active Audio Device Query (v2.4.199)
 - `SituationExportImage` — Image Exporting
 - `SituationExportRenderHistogram` — Profiling & Diagnostics
 - `SituationFileExists` — File & Directory Queries
@@ -1095,9 +1136,11 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 - `SituationFreeDirectoryFileList` — Directory Operations
 - `SituationFreeDisplays` — Physical Display (Monitor) Management
 - `SituationFreeJSONString` — Graph Serialization Functions
+- `SituationFreeProcessList` — Process Enumeration (v2.4.199)
 - `SituationFreeString` — Config Flags
 - `SituationGenImageColor` — Image Generation & Copying
 - `SituationGenImageGradient` — Image Generation & Copying
+- `SituationGetActiveAudioDeviceName` — Active Audio Device Query (v2.4.199)
 - `SituationGetActiveGraph` — Active Graph (Audio Callback Integration)
 - `SituationGetActiveJobCount` — CPU & Thread Management
 - `SituationGetAppSavePath` — Path Management & Special Directories
@@ -1109,6 +1152,7 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 - `SituationGetBufferData` — GPU Buffer Management
 - `SituationGetBufferDeviceAddress` — Graphics Resource Management
 - `SituationGetCPUCoreCount` — CPU & Thread Management
+- `SituationGetCPUInfo` — System & Hardware Information
 - `SituationGetCPUThreadCount` — System & Hardware Information
 - `SituationGetCPUThreadCount` — CPU & Thread Management
 - `SituationGetCategoryName` — Device Registry Functions
@@ -1117,19 +1161,20 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 - `SituationGetClipboardText` — Cursor, Clipboard and File Drops
 - `SituationGetComputeCommandBuffer` — Frame Lifecycle & Command Buffer
 - `SituationGetConfiguredAudioThreadAffinity` — CPU & Thread Management
+- `SituationGetConfiguredIOThreadAffinity` — CPU & Thread Management
 - `SituationGetConfiguredMainThreadAffinity` — CPU & Thread Management
 - `SituationGetConfiguredRenderThreadAffinity` — CPU & Thread Management
 - `SituationGetControl` — Node Graph Functions
 - `SituationGetCpuTopology` — CPU & Thread Management
 - `SituationGetCurrentActualWindowStateFlags` — Advanced Window Profile Management
-- `SituationGetCurrentDriveLetter` — System & Hardware Information
+- `SituationGetCurrentDriveLetter` — Active Audio Device Query (v2.4.199)
 - `SituationGetCurrentMonitor` — Physical Display (Monitor) Management
 - `SituationGetCurrentProcessorIndex` — CPU & Thread Management
 - `SituationGetDeviceInfo` — System & Hardware Information
 - `SituationGetDeviceMetadata` — Device Registry Functions
 - `SituationGetDisplays` — Physical Display (Monitor) Management
 - `SituationGetDrawCallCount` — Profiling & Diagnostics
-- `SituationGetDriveInfo` — System & Hardware Information
+- `SituationGetDriveInfo` — Active Audio Device Query (v2.4.199)
 - `SituationGetFPS` — Frame Timing & FPS Management
 - `SituationGetFileExtension` — Path Management & Special Directories
 - `SituationGetFileModTime` — File & Directory Queries
@@ -1140,12 +1185,13 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 - `SituationGetGamepadAxisCount` — Gamepad Input
 - `SituationGetGamepadAxisValue` — Gamepad Input
 - `SituationGetGamepadButtonPressed` — Gamepad Input
-- `SituationGetGraphicsBackend` — System & Hardware Information
-- `SituationGetGraphicsBackendName` — System & Hardware Information
-- `SituationGetGraphicsCaps` — System & Hardware Information
+- `SituationGetGraphicsBackend` — Active Audio Device Query (v2.4.199)
+- `SituationGetGraphicsBackendName` — Active Audio Device Query (v2.4.199)
+- `SituationGetGraphicsCaps` — Active Audio Device Query (v2.4.199)
 - `SituationGetHighQueueDepth` — CPU & Thread Management
 - `SituationGetIOQueueDepth` — Profiling & Diagnostics
 - `SituationGetInitState` — Application Lifecycle & State
+- `SituationGetInternalThreadPool` — CPU & Thread Management
 - `SituationGetJoystickName` — Gamepad Input
 - `SituationGetKeyPressed` — Keyboard Input
 - `SituationGetKeyPressedEx` — Keyboard Input
@@ -1172,8 +1218,11 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 - `SituationGetMouseWheelMove` — Mouse Input
 - `SituationGetMouseWheelMoveV` — Mouse Input
 - `SituationGetNode` — Node Graph Functions
+- `SituationGetNodePCMFreeFrames` — PCM Input Node (user-fed ring buffer source)
 - `SituationGetNumaTopology` — CPU & Thread Management
+- `SituationGetOSInfo` — OS Information (v2.4.199)
 - `SituationGetPreferredNumaNode` — CPU & Thread Management
+- `SituationGetProcessList` — Process Enumeration (v2.4.199)
 - `SituationGetQueueDepth` — CPU & Thread Management
 - `SituationGetRecommendedWorkerCount` — CPU & Thread Management
 - `SituationGetRegisteredDeviceCount` — Device Registry Functions
@@ -1193,10 +1242,9 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 - `SituationGetThreadAffinity` — CPU & Thread Management
 - `SituationGetThreadNumaNode` — CPU & Thread Management
 - `SituationGetThreadPoolMetrics` — CPU & Thread Management
-- `SituationGetInternalThreadPool` — CPU & Thread Management
 - `SituationGetThreadPoolSnapshot` — CPU & Thread Management
 - `SituationGetThreadingStatus` — CPU & Thread Management
-- `SituationGetUserDirectory` — System & Hardware Information
+- `SituationGetUserDirectory` — Active Audio Device Query (v2.4.199)
 - `SituationGetVRAMUsage` — Profiling & Diagnostics
 - `SituationGetVersionString` — Application Lifecycle & State
 - `SituationGetVirtualDisplay` — Virtual Displays (Render Targets)
@@ -1295,7 +1343,7 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 - `SituationMemoryBarrier` — [DEPRECATED] Use SituationCmdBindDescriptorSet() or SituationCmdBindTextureSet() instead.
 - `SituationMinimizeWindow` — Window State Management
 - `SituationMoveFile` — File Operations
-- `SituationOpenFile` — System & Hardware Information
+- `SituationOpenFile` — Active Audio Device Query (v2.4.199)
 - `SituationPauseApp` — Application Lifecycle & State
 - `SituationPauseAudioDevice` — Audio Device Management
 - `SituationPeekKeyPressed` — Keyboard Input
@@ -1307,6 +1355,7 @@ Canonical narrative: **[situation_command_reference.md](situation_command_refere
 - `SituationPollInputEvents` — Application Lifecycle & State
 - `SituationPollShaderLoad` — Shader Management
 - `SituationPrintThreadingStatus` — CPU & Thread Management
+- `SituationPushNodePCM` — PCM Input Node (user-fed ring buffer source)
 - `SituationReadBuffer` — GPU Buffer Management
 - `SituationReadFramebuffer` — Texture Management
 - `SituationReadTexture` — Texture Management

@@ -1,3 +1,700 @@
+## [v2.4.214 "Static Build System + Async Shader UAF Fix"] - 2026-06-07
+
+### Description
+
+**v2.4.214**: Overhauls the entire build model. Examples and the test harness now link against pre-built static libraries (`.a`) or DLLs instead of recompiling the full library on every build. Static builds produce self-contained exes with no external DLL dependency. Fixes a use-after-free race in the Vulkan async shader compile worker. Promotes `SituationTopologicalSort` to the public API. Reorganizes build output into `build/dll/`, `build/tests/`, `build/examples/`.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.214**.
+
+### Build output layout
+
+```
+build/
+├── dll/        ← library artifacts: situation_*.dll  situation_*.a  situation_*.lib
+├── tests/      ← test harness: sit_test_opengl.exe  sit_test_vulkan.exe
+├── examples/   ← example exes (+ DLL copies for DLL-linked builds)
+└── *.exe       ← probe/bench tools (unchanged)
+```
+
+### Build system
+
+- **`build_situation.bat`** — new `static-opengl` / `static-vulkan` targets produce `build/dll/situation_*.a` via `ar`. Static builds omit `SITUATION_BUILD_SHARED` so `SITAPI` resolves to nothing. Vulkan archive bundles `vma_wrapper.o` + `tinycthread.o`. DLL targets unchanged.
+- **`build_tests.bat`** — rewritten. No argument → shows usage (no silent default). Four modes:
+  - `static-opengl` / `static-vulkan` — link against `.a`, output `build/tests/sit_test_opengl.exe` / `sit_test_vulkan.exe`, no DLL needed at runtime. **Recommended.**
+  - `opengl` / `vulkan` — DLL-linked fast build; use `run_tests.bat` to run.
+  - Renamed from `sit_test.exe` → `sit_test_opengl.exe` / `sit_test_vulkan.exe`.
+  - Vulkan static: per-file gcc compile + g++ link (avoids C++ header contamination, pulls shaderc/VMA from archive).
+- **`run_tests.bat`** — new launcher. Requires explicit `opengl` or `vulkan` argument. Prepends `build/dll` to PATH for DLL-linked builds. Static builds can be run directly.
+- **`build_examples.bat`** — rewritten. Modes: `opengl` / `vulkan` (DLL-linked, DLL copied next to exe), `static-opengl` / `static-vulkan` (self-contained). `demon_hunt` blocked on all OpenGL modes.
+- **`examples/*.c`** — removed `#define SITUATION_IMPLEMENTATION` from ~63 files. `text_showcase.c` stale guard removed. `mt_safety_demo.c` duplicate include fixed.
+
+### API
+
+- **`sit/situation_api.h`** — `SituationTopologicalSort(SituationAudioGraph*)` added to the node graph public API. Was internal-only; explicit calls now redundant since `CreateNode`/`DestroyNode`/`CreatePatch`/`RemovePatch` all sort internally.
+- **`sit/aud/node_graph_impl.h`** — `SituationTopologicalSort` marked `SITAPI` for DLL export.
+
+### Fixes
+
+- **`sit/situation_impl_renderer.h` — Vulkan async shader compile UAF**:
+  - **Root cause**: `_SituationVulkanFreeAsyncShaderLoad` spin bailout (500k yields) freed `ctx` unconditionally even if the worker was still alive. Next `SIT_MALLOC` could reuse the address; old worker then corrupted the new ctx fields — `fs_src` read as 0x01, producing `async_fragment: error: '☺' : unexpected token`.
+  - **Fix**: Bailout now writes `-2` sentinel to `compile_done` and returns without freeing. Worker uses `atomic_compare_exchange_strong` — loses CAS → self-frees. Exactly one party frees `ctx`.
+  - **Test**: `graphics.sync_shader_after_async_cycle` passes consistently on both backends.
+
+### Verification
+
+- `build\tests\sit_test_vulkan.exe` — **481/484** (3 pre-existing: `maximizer` control IDs, `kterm` example not built, 1 audio flaky).
+- `build\tests\sit_test_opengl.exe` — **492/494** (2 pre-existing: `maximizer`, `kterm`).
+- Both exes verified self-contained via `objdump` — no `situation_*.dll` dependency.
+
+---
+
+## [v2.4.213 "SPIR-V Layout Profile UBO_SSBO_SAMPLER + Materials"] - 2026-06-06
+
+### Description
+
+**v2.4.213**: Adds `SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO_SAMPLER` — a new SPIR-V pipeline layout profile for Vulkan that extends UBO_SSBO with a combined image sampler at descriptor set 2. Also implements **Phase 2: Material System** for the Demon Hunt demo — 7 material types with per-wall shading variety.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.213**.
+
+### Library changes
+
+- **`sit/situation_api.h`**: New enum value `SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO_SAMPLER` (set 0 UBO, set 1 SSBO, set 2 combined image sampler + 128B push constants).
+- **`sit/situation_impl_decl.h`**: New field `graphics_spirv_layout_ubo_ssbo_sampler` on the Vulkan render state struct.
+- **`sit/situation_impl_renderer.h`**:
+  - `_SituationVulkanInitGraphicsSpirvLayouts()` creates the 3-set pipeline layout (reuses `text_sampler_layout` for set 2).
+  - `_SituationVulkanBuildGraphicsPipelinesOnSlot()` routes the new profile to the cached layout.
+  - Descriptor binding validation: new `case SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO_SAMPLER` allows sets 0–2.
+  - `SituationCmdBindTextureSet()` accepts set 2 via `single_sampler_descriptor_set` (same path as set 1).
+  - Range checks updated from `> UBO_SSBO` to `> UBO_SSBO_SAMPLER` in both sync and async load paths.
+  - Cleanup destroys the new pipeline layout.
+
+### Demo (examples only)
+
+- **`examples/demon_hunt.c`**:
+  - Shader load switched to `SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO_SAMPLER`; feedback texture bind at set 2 active.
+  - **Phase 2 Material System**: `SkySceneSsboHeader` extended with `material_rows[128]` (4-bit material IDs, 8 cells per int). New `g_material_map[32][32]` populated by `map_assign_materials()` after level generation. Materials: Stone (50%), Wood (20%), Metal (15%), Rusted Metal (10%), Bone (5%) on hunt levels; arena levels bias toward Metal + Rusted Metal. Exit-adjacent walls are Emissive.
+  - `sky_pack_material_rows()` packs the material map into bitfield format for SSBO upload.
+- **`examples/demon_hunt_sky.fs`**:
+  - `DH_ENABLE_FRAME_FEEDBACK` = 1; `DH_ENABLE_MATERIALS` = 1.
+  - SSBO extended with `materialRows[128]`.
+  - New `extract_material(ivec2 cell)` uses `bitfieldExtract()` for efficient 4-bit extraction.
+  - New `shade_material()` function (76 GLSL lines): Stone (hash-perturbed normals), Metal (specular + Fresnel), Flesh (wrap lighting + red shift), Emissive (pulsing green glow), Wood (anisotropic grain), Bone (hard specular + crevice darkening), Rusted Metal (patchy orange tint + rough specular).
+  - Material extraction + shading applied after DDA wall hit in `main()`.
+  - Shader instruction count: +243 SPIR-V instructions (~0.25% increase from 95,801 → 96,044).
+
+---
+
+## [v2.4.212 "Chorus Stability & Graph Output Staging"] - 2026-06-06
+
+### Description
+
+**v2.4.212**: Stops chorus/echo runaway in the node graph, hardens master-bus summing for stereo FX that only fill output port 0, and aligns the effects-heard harness level guardrails with wet FX captures.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.212**.
+
+Builds on **v2.4.209** reverb wet/dry staging; per-effect listening may still need tuning.
+
+### Fixes
+
+- **4-stage Chorus (`chorus_4stage.h`)** — four modulated taps were summed at full scale into a single delay line, so feedback near 1.0 could explode levels. Stage wet sum is now normalized (×0.25) and outputs are soft-limited to ±2.0.
+- **Echo (`echo.h`)** — parallel dry/wet mix output soft-limited to ±2.0 as a safety rail on the delay tap path.
+- **Node graph master bus (`node_graph_process.h`)** — output port buffers are cleared each block before processing; the master bus sums only **output port 0** (devices register two logical stereo outs but wrappers write port 0 only).
+
+### Test harness
+
+- **`sit_test_audio_levels`** — effect profile limits raised (peak 1.65 / RMS 1.05); non-finite and runaway (>4.0) detection.
+- **`test_audio_effects_heard.c`** — wet captures no longer use tone-only limits mid-capture; overdrive/chorus test controls and reverb wet-sweep thresholds adjusted for normalized reverb tail.
+
+---
+
+## [v2.4.211 "GLTF Model Loader Enabled"] - 2026-06-06
+
+### Description
+
+**v2.4.211**: Enables `SituationLoadModel` for both OpenGL and Vulkan backends by compiling cgltf into the DLL. Fixes two stale API calls in the loader. Adds a dedicated model loader test module exercising BoomBox.glb with a rotating render.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.211**.
+
+### Fixes
+
+- **`SituationLoadModel` was dead code** — the DLL was built without `CGLTF_IMPLEMENTATION`, so model loading always returned `SITUATION_ERROR_NOT_IMPLEMENTED`. Added cgltf to `situation_impl_deps.h` and the OpenGL include path (`-Iext\cgltf`) in `build_situation.bat`.
+- **`SituationLoadModel` API mismatches** — `SituationLoadImage()` and `SituationCreateMesh()` signatures had changed but the model loader still used the old calling conventions. Updated to current `(path, &out)` style.
+
+### New
+
+- **`test_model_loader` harness module** — 5 tests: load BoomBox.glb, draw rotating (1.5s) + pixel verify, mesh data access, double load, load/unload cycle. Works on both OpenGL and Vulkan.
+
+### Build
+
+- `build_situation.bat` OpenGL step: added `-Iext\cgltf`.
+- `build_tests.bat`: added `tests/harness/test_model_loader.c` to source list.
+
+---
+
+## [v2.4.210 "Configurable Screenshot Format"] - 2026-06-06
+
+### Description
+
+**v2.4.210**: Screenshot output format is now a library-wide setting (default: BMP). Adds enum, table-driven extension lookup, format setter/getter, and smart path handling.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.210**.
+
+### New API
+
+- `SituationScreenshotFormat` enum — `SIT_SCREENSHOT_BMP` (default), `SIT_SCREENSHOT_PNG`, `SIT_SCREENSHOT_JPG`, `SIT_SCREENSHOT_TGA`.
+- `sit_screenshot_format_ext[]` — static table mapping each format to its file extension string.
+- `SituationSetScreenshotFormat(format)` — set the default output format.
+- `SituationGetScreenshotFormat()` — query the current format setting.
+
+### Changes
+
+- `SituationTakeScreenshot(fileName)` — reworked:
+  - `NULL` or empty → auto-generates timestamped name with configured extension.
+  - Name with a recognized extension (`.bmp`, `.png`, `.jpg`, `.tga`) → used as-is.
+  - Name without extension or with unrecognized extension → configured extension appended.
+  - Supports BMP, PNG, JPG (quality 90), TGA via stb_image_write.
+  - Default format changed from PNG-only to BMP.
+
+---
+
+## [v2.4.209 "Node Graph FX Wet/Dry Gain Staging"] - 2026-06-06
+
+### Description
+
+**v2.4.209**: Corrects excessive wet-signal and effect-input levels in the audio node graph. Spring/Studio reverb wrappers now deinterleave stereo buffers correctly; the main Reverb effect normalizes comb-filter sum and aligns tank input gain with Freeverb-scale staging.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.209**.
+
+Further per-effect tuning may follow after deeper listening / analysis.
+
+### Fixes
+
+- **Spring Reverb & Studio Reverb node wrappers** — `device_wrappers.h` treated interleaved `L,R,L,R…` buffers as planar `L…` / `R…` arrays (`buffer` / `buffer+1`), corrupting input and output and making wet paths much too hot. Processing now deinterleaves → planar DSP → reinterleaves (same pattern as Chorus).
+- **Reverb (`reverb.h`)** — wet tail was ~8× hot (8 comb outputs summed without normalization) plus a 1.5× early-reflection boost; tank input gain was 0.08 vs ~0.015 in classic Freeverb-style engines. Comb sum is normalized, ER boost removed, input gain lowered, default dry aligned to registry (0.7).
+
+---
+
+## [v2.4.208 "Audio Preload Resample & Vulkan Async Shader Hardening"] - 2026-06-06
+
+### Description
+
+**v2.4.208**: Fixes preloaded audio playing at wrong speed for non-48kHz sources, hardens Vulkan async shader cleanup against shutdown hangs, and removes resize capability from Demon Hunt.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.208**.
+
+### Fixes
+
+- **Audio preload sample rate mismatch** — `SituationLoadSoundFromFile` with `SITUATION_AUDIO_LOAD_FULL` now resamples to the device output rate (was decoding at native rate, causing e.g. 96kHz WAV to play at half speed on 48kHz devices).
+- **Vulkan async shader shutdown hang** — `_SituationVulkanFreeAsyncShaderLoad` no longer spins forever if the thread pool is dead; adds a bounded spin count bailout to prevent infinite hangs during `SituationShutdown` when a leaked shader has `compile_done == 0`.
+- **`sync_shader_after_async_cycle` Vulkan test** — increased poll budget from 1200 to 3000 frames to accommodate shaderc compile latency on the worker thread.
+
+### Changes
+
+- `demon_hunt.c` — window is no longer resizable (`SITUATION_FLAG_WINDOW_RESIZABLE` removed from init flags).
+
+### Test Harness
+
+- Added 8 format-specific audio playback tests: `load_play_mp3`, `load_play_ogg`, `load_play_flac`, `load_play_wav`, `stream_mp3`, `stream_ogg`, `stream_flac`, `stream_wav`. Each plays for 1.5 seconds; OGG tests skip gracefully when Vorbis decoder is unavailable.
+
+---
+
+## [v2.4.207 "Split Device Info Queries"] - 2026-06-06
+
+### Description
+
+**v2.4.207**: Replaces the monolithic `SituationGetDeviceInfo()` platform logic with split query APIs. The deprecated aggregate function now composes its result from the new helpers (no duplicated OS queries).
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.207**.
+
+### New API
+
+- `SituationCPUInfo`, `SituationGPUInfo`, `SituationMemoryInfo` — focused structs for CPU, GPU, and RAM queries.
+- `SituationGetCPUInfo()`, `SituationGetGPUInfo()`, `SituationGetMemoryInfo()` — split device-info queries (platform logic lives here once).
+- `SituationGetStorageDeviceCount()`, `SituationGetStorageDevice()` — storage volume enumeration.
+- `SituationGetNetworkAdapterCount()`, `SituationGetNetworkAdapterName()` — network adapter enumeration.
+- `SituationGetInputDeviceCount()`, `SituationGetInputDeviceName()` — input device enumeration.
+
+### Changes
+
+- `SituationGetDeviceInfo()` — thin deprecated wrapper; copies split-query results into `SituationDeviceInfo` plus GLFW monitor summary.
+
+### Backward Compatibility
+
+- `SituationGetDeviceInfo()` remains available and returns the same aggregate struct; callers should migrate to split queries to avoid deprecation warnings.
+
+---
+
+## [v2.4.206 "Errno Adoption (Phases 8-10)"] - 2026-06-06
+
+### Description
+
+**v2.4.206**: Continues the errno adoption plan (Phases 8–10), wiring 21 previously never-produced error codes into their proper call sites across the audio subsystem, node graph, and device registry.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.206**.
+
+### Phase 8 — Audio Subsystem (4 wired, 1 deferred)
+
+- `SITUATION_ERROR_AUDIO_CAPTURE_NOT_AVAILABLE` — `SituationStartAudioCaptureEx` now returns this when `ma_device_init` reports `MA_NO_DEVICE` (no microphone found).
+- `SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED` — Replaces generic `AUDIO_DECODING` in `SituationLoadSoundFromFile` (preload + stream paths) and `SituationLoadSoundFromStream`.
+- `SITUATION_ERROR_AUDIO_DECODER_FORMAT_UNSUPPORTED` — Returned specifically when miniaudio reports `MA_NO_BACKEND` or `MA_FORMAT_NOT_SUPPORTED`.
+- `SITUATION_ERROR_AUDIO_STREAM_ENDED` — Set atomically on `_SituationSound::last_status` when a non-looping stream reaches `MA_AT_END` (non-fatal, main-thread pollable).
+- `SITUATION_ERROR_AUDIO_CONVERTER` — Deferred (no `ma_data_converter` usage in current code).
+
+### Phase 9 — Audio Node Graph (7 wired, 4 deferred)
+
+- `SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED` — NULL graph guard on all node graph API entry points.
+- `SITUATION_ERROR_NODE_NOT_FOUND` — Returned from `SituationDestroyNode`, `SituationCreatePatch`, `SituationSetControl`, `SituationGetControl` when node lookup fails.
+- `SITUATION_ERROR_NODE_CHANNEL_MISMATCH` — `SituationCreatePatch` validates source/destination port channel counts for audio patches.
+- `SITUATION_ERROR_NODE_PATCH_NOT_FOUND` — `SituationRemovePatch` returns this instead of generic error when no matching patch exists.
+- `SITUATION_ERROR_NODE_CONTROL_OUT_OF_RANGE` — `SituationSetControl` now rejects values outside `[min, max]` instead of silently clamping.
+- `SITUATION_ERROR_NODE_PROCESSING_FAILED` — `SituationProcessGraph` returns this for invalid processing state.
+- `SITUATION_ERROR_NODE_DESERIALIZATION_FAILED` — All JSON parse failures in deserialization functions.
+
+### Phase 10 — Audio Device Registry (7 wired, 3 deferred)
+
+- `SITUATION_ERROR_DEVICE_REGISTRY_NOT_INITIALIZED` — Guard on `SituationGetDeviceMetadata`, `SituationGetDeviceMetadataByIndex`, `SituationIsDeviceRegistered`.
+- `SITUATION_ERROR_DEVICE_TYPE_INVALID` — `SituationRegisterDeviceType` rejects NULL metadata.
+- `SITUATION_ERROR_DEVICE_CATEGORY_INVALID` — `SituationValidateDeviceMetadata` validates category enum range.
+- `SITUATION_ERROR_DEVICE_CONTROL_INVALID` — Validates control name/min/max/default in metadata.
+- `SITUATION_ERROR_DEVICE_PORT_INVALID` — Validates `audio_channels` ≤ 8.
+- `SITUATION_ERROR_DEVICE_QUERY_FAILED` — `SituationGetDeviceMetadataByIndex` for out-of-range index.
+- `SITUATION_ERROR_DEVICE_CREATE_FAILED` — `SituationCreateNodeWithDevice` when `funcs->create` returns NULL.
+
+### New Implementation
+
+- `SituationDestroyPatch` — Implemented as legacy wrapper calling `SituationRemovePatch(... , false)`.
+
+### Internal Changes
+
+- `_SituationSound` gains `atomic_int last_status` field for non-fatal audio thread → main thread signaling.
+
+### Backward Compatibility
+
+- `SITUATION_ERROR_AUDIO_DECODING` is still returned by the old (generic) EOL path. New callers should check for `AUDIO_DECODER_INIT_FAILED` or `AUDIO_DECODER_FORMAT_UNSUPPORTED`.
+- `SituationSetControl` now rejects out-of-range values instead of clamping. Callers that relied on silent clamping should pre-clamp values.
+- Node graph NULL graph checks now return `NODE_GRAPH_NOT_INITIALIZED` instead of `NODE_ALLOCATION_FAILED`.
+
+### Bugfixes
+
+- **OpenGL: `_SituationGetMaxViewports` thread-context fix** — `glGetIntegerv(GL_MAX_VIEWPORTS)` was being called from the main thread after the GL context had migrated to the render thread. Without a current context, the call silently returned the local init value of 1, causing `SituationCmdSetViewportIndexed(cmd, 1, ...)` to incorrectly reject index 1 as out-of-range. Fixed by caching `GL_MAX_VIEWPORTS` into `sit_render.cached_max_viewports` during `_SituationInitOpenGL` (while the context is still current) and reading from cache in both `_SituationGetMaxViewports` and `SituationGetGraphicsCaps`.
+- **Test: `render_virtual_displays` missing render pass** — The test called `SituationRenderVirtualDisplays(cmd)` without first beginning a render pass. The API requires an active main-window render pass for VD compositing (it draws quads into the current pass). Added the missing `SituationCmdBeginRenderPass` call.
+- **Test: `sync_shader_after_async_cycle` Vulkan timeout** — The 600-frame polling budget (~1s) was insufficient for Vulkan's full async path (shaderc GLSL→SPIR-V compilation + `vkCreateGraphicsPipelines`) when preceded by an aborted compile that leaves the shaderc thread pool cold. Increased to 1200 frames (~2s) to accommodate real-world pipeline creation latency on first compile.
+
+---
+
+## [v2.4.205 "Compute Virtual Displays"] - 2026-06-06
+
+### Description
+
+**v2.4.205**: Extends the Virtual Display system to support compute-shader-writable render targets. Previously, VDs could only be rendered into via rasterization (render pass + framebuffer). Now, VDs created with `SITUATION_VD_FLAG_COMPUTE_TARGET` skip depth buffer/render pass creation and expose their internal texture as a `SituationTexture` handle for direct compute shader writes. This enables subsystems like K-Term to render via compute dispatch into a compositable VD layer.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.205**.
+
+### New API
+
+- `SituationVDFlags` enum — `SITUATION_VD_FLAG_NONE`, `SITUATION_VD_FLAG_COMPUTE_TARGET`
+- `SituationCreateVirtualDisplayEx(resolution, frame_time_mult, z_order, scaling_mode, blend_mode, flags, out_id)` — Extended VD creation with flags. Compute targets get `STORAGE` + `SAMPLED` + `TRANSFER_SRC` image usage (Vulkan: `VK_IMAGE_USAGE_STORAGE_BIT`; OpenGL: bindable via `glBindImageTexture`). No depth buffer, render pass, or framebuffer created for compute-only VDs.
+- `SituationGetVirtualDisplayTexture(display_id, out_texture)` — Returns the VD's internal color texture as a `SituationTexture` handle. Valid for compute-target VDs; the returned handle is usable with `SituationCmdBindComputeTexture` and all standard texture APIs.
+
+### Changes
+
+- `SituationVirtualDisplay` struct gains `flags` (`SituationVDFlags`) and `texture_slot_index` (`int`) fields.
+- `SituationCreateVirtualDisplay` is now a thin wrapper calling `SituationCreateVirtualDisplayEx` with `SITUATION_VD_FLAG_NONE` (fully backward compatible).
+- Compute-target VDs register a `_SituationTextureSlot` view into the texture registry at creation, freed on destroy.
+- `SituationDestroyVirtualDisplay` deactivates the texture registry slot for compute VDs before destroying backend resources. Guards depth image destruction (NULL for compute VDs).
+
+### Backward Compatibility
+
+- Existing code calling `SituationCreateVirtualDisplay` is unaffected — behavior is identical.
+- No changes to `SituationRenderVirtualDisplays` compositing logic.
+- No changes to existing VD tests (20/21 pass; 1 pre-existing headless failure unrelated).
+
+---
+
+## [v2.4.204 "Errno Adoption (Phases 0-7)"] - 2026-06-06
+
+### Description
+
+**v2.4.204**: Systematic audit and wiring of unused error codes to their proper call sites. 26 error codes that were defined in `situation_base_errno.h` but never produced are now actively returned by the library when appropriate conditions occur. Audit scripts improved. Test helper aligned with `SituationError` return type.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.204**.
+
+### Changes
+
+**Errno Adoption — Platform & Windowing (Phase 1):**
+- `SITUATION_ERROR_CLIPBOARD_FAILED` — now produced by `SituationGet/SetClipboardText` on GLFW error
+- `SITUATION_ERROR_CURSOR_CREATION_FAILED` — now produced during cursor init if `glfwCreateStandardCursor` returns NULL
+- `SITUATION_ERROR_WINDOW_STATE_FAILED` — now produced by `SituationApplyCurrentProfileWindowState` on GLFW error
+- `SITUATION_ERROR_WINDOW_PROPERTY_FAILED` — now produced by title/size/position/opacity setters on GLFW error
+- `SITUATION_ERROR_WINDOW_FOCUS_FAILED` — now produced by `SituationSetWindowFocused` on GLFW error
+- `SITUATION_ERROR_DXGI_FAILED` — now produced by `SituationGetDeviceInfo` on DXGI query failures
+- `SITUATION_ERROR_INPUT_DEVICE_DISCONNECTED` — now produced on gamepad disconnect events
+- `SITUATION_ERROR_INPUT_MAPPING_INVALID` — now produced by `SituationSetGamepadMappings` on GLFW rejection
+- `SITUATION_ERROR_INPUT_HAPTIC_FAILED` — now produced by `SituationSetGamepadVibration` on XInput failure
+- `SITUATION_ERROR_DISPLAY_MODE_SET_FAILED` — replaces EOL `DISPLAY_SET` in `SituationSetDisplayMode`
+- `SITUATION_ERROR_DISPLAY_MODE_UNSUPPORTED` — now produced for `DISP_CHANGE_BADMODE` on Windows
+- `SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT_REACHED` — replaces EOL `VIRTUAL_DISPLAY_LIMIT` in `SituationCreateVirtualDisplay`
+- `SITUATION_ERROR_VIRTUAL_DISPLAY_NOT_FOUND` — now produced for valid-range but inactive slot in `SituationDestroyVirtualDisplay`
+
+**Errno Adoption — Filesystem (Phase 2):**
+- `SITUATION_ERROR_FILE_ACCESS_DENIED` — now produced (upgraded from EOL `PERMISSION_DENIED`) via platform error mapping
+- `SITUATION_ERROR_PATH_INVALID` — now mapped from `ERROR_INVALID_NAME`/`ERROR_BAD_PATHNAME` on Windows
+
+**Errno Adoption — Rendering Core (Phase 3):**
+- `SITUATION_ERROR_NO_ACTIVE_COMMAND_BUFFER` — now produced by shader uniform setters when no frame is active
+- `SITUATION_ERROR_RENDER_PASS_ALREADY_ACTIVE` — now guards `SituationCmdBeginRenderPass` against nested passes (GL + VK)
+- `SITUATION_ERROR_NO_RENDER_PASS_ACTIVE` — now guards GL path of `SituationCmdEndRenderPass`
+
+**Errno Adoption — Vulkan Backend (Phase 5):**
+- `SITUATION_ERROR_VULKAN_INSTANCE_CREATION_FAILED` — replaces EOL `VULKAN_INSTANCE_FAILED` in init
+- `SITUATION_ERROR_VULKAN_PHYSICAL_DEVICE_UNSUITABLE` — replaces EOL `VULKAN_DEVICE_FAILED` for GPU selection
+- `SITUATION_ERROR_VULKAN_DEVICE_CREATION_FAILED` — replaces EOL `VULKAN_DEVICE_FAILED` for logical device
+
+**Errno Adoption — Fonts & Image (Phase 7):**
+- `SITUATION_ERROR_FONT_LOAD_FAILED` — now produced by `SituationLoadFont`/`LoadFontFromMemory` on parse failure
+- `SITUATION_ERROR_FONT_ATLAS_FULL` — now produced by `SituationBakeFontAtlas` when glyphs don't fit
+- `SITUATION_ERROR_IMAGE_OPERATION_FAILED` — now produced by `SituationImageResize` on STB failure
+
+**Phantom Fix (Phase 0):**
+- Fixed `SITUATION_ERROR_IO` (undefined) → replaced with `SITUATION_ERROR_FILE_OPEN_FAILED` in Linux /proc path
+
+**Test Harness Fix:**
+- Fixed `graphics_test_begin_frame()` and `graphics_test_async_poll_shader_ready()` — aligned `bool`-style checks with `SituationError` return type (fixes 3 previously-broken graphics tests)
+
+**Tooling:**
+- `scripts/audit_errno.ps1` — improved strict pattern to detect error codes in variable assignments and helper function arguments; added comment stripping to prevent false phantom matches
+- `scripts/audit_errno_report.ps1` — same improvements + candidate home analysis for unused errors
+- `doc/ERRNO_USAGE_REPORT.md` — regenerated with 114 remaining (down from 140)
+- `doc/plan/ERRNO_ADOPTION_PLAN.md` — phases 0-7 marked complete
+
+---
+
+## [v2.4.203 "Error Propagation Phase 3 — Breaking Migration (Complete)"] - 2026-06-05
+
+### Description
+
+**v2.4.203**: Complete set of breaking return-type migrations — 32 public API functions changed from `bool`/`void` to `SituationError`. Callers that checked `if (!fn())` must now check `if (fn() != SITUATION_SUCCESS)`. Callers that ignored the return value (fire-and-forget) require no changes.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.203**.
+
+### ⚠️ BREAKING CHANGES
+
+**Phase 3D — Audio (1 function):**
+- `SituationSoundExportAsWav` — `bool` → `SituationError`
+
+**Phase 3A — File I/O (7 functions):**
+- `SituationSaveFileText` — `bool` → `SituationError`
+- `SituationCopyFile` — `bool` → `SituationError`
+- `SituationDeleteFile` — `bool` → `SituationError`
+- `SituationMoveFile` — `bool` → `SituationError`
+- `SituationRenameFile` — `bool` → `SituationError`
+- `SituationCreateDirectory` — `bool` → `SituationError`
+- `SituationDeleteDirectory` — `bool` → `SituationError`
+
+**Phase 3E — Renderer void promotions (5 functions):**
+- `SituationCmdBindComputePipeline` — `void` → `SituationError`
+- `SituationCmdDispatch` — `void` → `SituationError`
+- `SituationCmdCopyBuffer` — `void` → `SituationError`
+- `SituationReadBuffer` — `void` → `SituationError`
+- `SituationDrawModel` — `void` → `SituationError`
+
+**Phase 3B — Threading (13 functions):**
+- `SituationCreateThreadPool` — `bool` → `SituationError`
+- `SituationWaitForJob` — `bool` → `SituationError`
+- `SituationAddJobDependency` — `bool` → `SituationError`
+- `SituationAddJobDependencies` — `bool` → `SituationError`
+- `SituationRefreshCpuTopology` — `bool` → `SituationError`
+- `SituationGetCpuTopology` — `bool` → `SituationError`
+- `SituationSetThreadAffinity` — `bool` → `SituationError`
+- `SituationSetThreadAffinityEx` — `bool` → `SituationError`
+- `SituationGetThreadAffinity` — `bool` → `SituationError`
+- `SituationRefreshNumaTopology` — `bool` → `SituationError`
+- `SituationGetNumaTopology` — `bool` → `SituationError`
+- `SituationGetThreadPoolSnapshot` — `bool` → `SituationError`
+- `SituationGetThreadPoolMetrics` — `bool` → `SituationError`
+
+**Phase 3C — Rendering (6 functions):**
+- `SituationAcquireFrameCommandBuffer` — `bool` → `SituationError`
+- `SituationReloadShader` — `bool` → `SituationError`
+- `SituationReloadTexture` — `bool` → `SituationError`
+- `SituationReloadModel` — `bool` → `SituationError`
+- `SituationReloadComputePipeline` — `bool` → `SituationError`
+- `SituationSaveModelAsGltf` — `bool` → `SituationError`
+
+### Migration Pattern
+
+```c
+// Old (bool)
+if (!SituationDeleteFile(path)) { /* handle */ }
+bool ok = SituationCreateDirectory(dir, true);
+
+// New (SituationError)
+if (SituationDeleteFile(path) != SITUATION_SUCCESS) { /* handle */ }
+SituationError err = SituationCreateDirectory(dir, true);
+```
+
+For void-promoted functions, callers that previously ignored the return (fire-and-forget) need no changes — ignoring `SituationError` is valid C.
+
+### Library
+
+- **`sit/situation_api.h`** — 32 declarations updated (13 from 3D/3A/3E, 13 from 3B, 6 from 3C)
+- **`sit/situation_impl_io.h`** — 7 file I/O functions migrated; `_SituationAsyncFileTextSaveWorker` internal caller fixed
+- **`sit/situation_impl_audio.h`** — `SituationSoundExportAsWav` migrated with proper error codes (`INVALID_PARAM`, `AUDIO_INVALID_OPERATION`, `FILE_WRITE_FAILED`)
+- **`sit/situation_impl_renderer.h`** — 11 functions migrated; `SituationAcquireFrameCommandBuffer` (widest blast radius: ~120 call sites across examples/tests), 5 Reload/Save functions, 5 void promotions
+- **`sit/situation_impl_threading.h`** — 4 functions migrated (`CreateThreadPool`, `WaitForJob`, `AddJobDependency`, `AddJobDependencies`)
+- **`sit/situation_impl_threading_topology.h`** — 5 functions migrated + `_SitEnsureTopology` helper fixed
+- **`sit/situation_impl_threading_numa.h`** — 2 functions migrated + 4 internal callers fixed
+- **`sit/situation_impl_threading_observability.h`** — 1 function migrated + 2 internal callers fixed (`DumpThreadPoolStatus`, `GetThreadingStatus`)
+- **`sit/situation_impl_threading_scheduler.h`** — 1 function migrated
+- **`sit/situation_impl_ctrl.h`** — Internal `SituationCreateThreadPool` caller fixed
+
+### Tests & Examples
+
+- **`tests/harness/test_filesystem.c`** — ~26 call sites updated; all 23 tests pass
+- **`tests/harness/test_threading.c`** — ~25 call sites updated; all 21 tests pass
+- **`tests/harness/test_graphics.c`** — ~50 call sites updated (AcquireFrame + SaveModelAsGltf)
+- **`tests/harness/test_core.c`** — 4 call sites updated (AcquireFrame + GetThreadPoolSnapshot)
+- **`tests/harness/test_transfer.c`** — 12 call sites updated
+- **`tests/harness/test_virtual_display.c`** — 16 call sites updated
+- **`tests/harness/sit_test_stereo_scope.c`** — 5 call sites updated
+- **`tests/test_async_io.c`** — 1 call site updated
+- **~45 example `.c` files** — mechanical `if (!fn())` → `if (fn() != SITUATION_SUCCESS)` and `if (fn())` → `if (fn() == SITUATION_SUCCESS)` across all examples
+- 1 pre-existing failure (`viewport_index_zero_parity`) — headless GPU context limitation, unrelated to this change
+
+### Plan
+
+- **`doc/plan/ERROR_PROPAGATION_PLAN.md`** — All phases complete (0, 1, 2, 3D, 3A, 3E, 3B, 3C)
+
+### Additional Fixes (same session)
+
+- **`sit/k-term/kt_composite_sit.h`** — Fixed black screen: `KTerm_AcquireFrameCommandBuffer()` macro now checks `== SITUATION_SUCCESS` instead of treating 0 as truthy
+- **`sit/situation_impl_renderer.h`** — Fixed FPS limiter CPU spin: replaced `Sleep(0)` busy-wait with `Sleep(1)` when >2ms remaining (15% → 3% CPU for idle vsync apps)
+- **`sit/situation_api.h`** — `SITUATION_ENABLE_RENDER_THREAD` now auto-enables when `SITUATION_ENABLE_THREADING` is defined (compile-time; runtime still controlled by `init_info.render_thread_count`)
+- **`examples/kterm_console.c`** — Fixed 16-color palette showcase alignment (`%-2d` for fixed-width labels); fixed title frame border off-by-2 spacing
+- **`doc/situation_api.md`** / **`doc/situation_sdk.md`** — All 32 migrated function signatures updated from `bool` to `SituationError`
+
+---
+
+## [v2.4.202 "Error Propagation Phase 1 & 2"] - 2026-06-05
+
+### Description
+
+**v2.4.202**: Error propagation complete for all existing API signatures. Every public `SITAPI` function that can fail now calls `_SituationSetErrorFromCode(...)` before returning its sentinel value. Users calling `SituationGetLastErrorMsg()` or `SituationGetLastErrorCode()` after a failure will receive an accurate diagnostic. No function signatures changed — this is fully non-breaking.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.202**.
+
+### Library — Error Propagation (57 functions across 8 implementation files)
+
+- **`sit/situation_impl_wdm.h`** (30 functions)
+  - Window state setters (`SetWindowState`, `ClearWindowState`, `SetVSync`, `ToggleFullscreen`, `ToggleBorderlessWindowed`, `MaximizeWindow`, `MinimizeWindow`, `RestoreWindow`, `SetWindowFocused`): `NOT_INITIALIZED` guards; `ToggleBorderlessWindowed` also guards `DISPLAY_QUERY` on NULL video mode; `SetVSync` propagates Vulkan swapchain recreation errors.
+  - Window property setters (`SetWindowTitle`, `SetWindowIcon`, `SetWindowIcons`, `SetWindowPosition`, `SetWindowSize`, `SetWindowMinSize`, `SetWindowMaxSize`, `SetWindowOpacity`): `NOT_INITIALIZED` guards; `SetWindowIcons` additionally checks `INVALID_PARAM` + `MEMORY_ALLOCATION`.
+  - App lifecycle (`PauseApp`, `ResumeApp`, `SetTargetFPS`): `NOT_INITIALIZED` guards.
+  - Display/screen getters (`GetScreenWidth`, `GetScreenHeight`, `GetRenderWidth`, `GetRenderHeight`, `GetMonitorCount`, `GetMonitorWidth`, `GetMonitorHeight`, `GetMonitorPhysicalWidth`, `GetMonitorPhysicalHeight`, `GetMonitorRefreshRate`): `NOT_INITIALIZED` guards; monitor-indexed getters additionally validate `INVALID_PARAM` on out-of-range monitor IDs.
+
+- **`sit/situation_impl_vd.h`** (3 functions)
+  - `SetVirtualDisplayDirty`, `GetVirtualDisplaySize`, `IsVirtualDisplayDirty`: `NOT_INITIALIZED` + `VIRTUAL_DISPLAY_INVALID_ID`; `GetVirtualDisplaySize` also checks `INVALID_PARAM` on NULL out-params.
+
+- **`sit/situation_impl_threading.h`** (5 functions)
+  - `CreateThreadPool`: `INVALID_PARAM` (NULL pool), `MEMORY_ALLOCATION` (queue alloc failure), `THREAD_CREATION_FAILED` (worker/IO thread spawn).
+  - `DestroyThreadPool`, `DispatchParallel`, `WaitForAllJobs`, `DumpTaskGraph`: `INVALID_PARAM` on NULL pool.
+
+- **`sit/situation_impl_timer.h`** (5 functions)
+  - `TimerGetOscillatorState`, `TimerGetPreviousOscillatorState`, `TimerHasOscillatorUpdated`, `TimerPingOscillator`, `TimerGetOscillatorTriggerCount`: dual guards — `TIMER_SYSTEM` (not initialized) + `INVALID_PARAM` (ID out of range).
+
+- **`sit/situation_impl_ctrl.h`** (1 function)
+  - `_SituationGLFWFileDropCallback`: `MEMORY_ALLOCATION` on path array alloc failure + strdup failure.
+
+- **`sit/situation_impl_io.h`** (2 functions)
+  - `GetAppSavePath`: `INVALID_PARAM` (null/empty name), `MEMORY_ALLOCATION` (alloc paths), `DEVICE_QUERY` (HOME not set on POSIX).
+  - `GetBasePath`: `DEVICE_QUERY` on `GetModuleFileNameW` failure (Win32).
+
+- **`sit/situation_impl_image.h`** (6 functions)
+  - `_SituationSaveImageBMP`: `INVALID_PARAM` + `MEMORY_ALLOCATION`.
+  - `SituationImageCrop`: `INVALID_PARAM` (bad image/dimensions) + `MEMORY_ALLOCATION`.
+  - `SituationImageDraw`, `SituationImageDrawAlpha`: `INVALID_PARAM` (invalid images).
+  - `SituationImageDrawText`: `INVALID_PARAM` (invalid dst/font/text).
+  - `SituationBlitRawDataToImage`: `INVALID_PARAM` (NULL params).
+
+- **`sit/situation_impl_renderer.h`** (5 functions)
+  - `GetRenderLatencyStats`: `NOT_INITIALIZED` (zeroes out-params).
+  - `ExportRenderHistogram`: `INVALID_PARAM` (null buf / zero size).
+  - `DrawMetricsOverlay`: `NOT_INITIALIZED`.
+  - `DestroyRenderList`, `ResetRenderList`: `INVALID_PARAM` on NULL list.
+
+### Library — fprintf Pairing (Phase 2)
+
+- **`sit/situation_impl_threading.h`**: Worker/IO thread creation failure `fprintf(stderr)` calls now paired with `THREAD_CREATION_FAILED` error code (fprintf retained under `#ifdef SITUATION_DEBUG_THREADING` for debug builds).
+- **`sit/situation_impl_renderer.h`**: Vulkan error `fprintf(stderr)` calls paired with corresponding error codes (`VULKAN_UNSUPPORTED`, `VULKAN_VALIDATION_LAYER_ERROR`, `VULKAN_RENDERPASS_FAILED`, `VULKAN_COMMAND_FAILED`).
+
+### Plan
+
+- **`doc/plan/ERROR_PROPAGATION_PLAN.md`**
+  - Phase 1 (all 11 sub-phases 1A–1K) verified complete against source and marked `[x]`.
+  - Phase 2 verified complete and marked `[x]`.
+  - Phase 1 wrap-up section added with coverage summary, deliberate-gap rationale, and per-file accounting.
+  - Phase 3 sub-phases reformatted with per-function `[ ]` checkboxes for execution tracking.
+  - Status updated: Phase 1 & 2 complete; Phase 3 planned (next breaking change window).
+
+### Notes
+
+- **Non-breaking**: No function signatures changed. All `bool`/`void` return types preserved.
+- **No unused-code risk**: Error codes `-105`, `-106`, `-107` (Phase 0) remain defined but intentionally unused — reserved for future backends that can report window/property failures.
+- **10 distinct error codes** used across Phase 1: `NOT_INITIALIZED`, `INVALID_PARAM`, `MEMORY_ALLOCATION`, `TIMER_SYSTEM`, `DISPLAY_QUERY`, `VIRTUAL_DISPLAY_INVALID_ID`, `THREAD_CREATION_FAILED`, `THREAD_CYCLE`, `THREAD_QUEUE_FULL`, `DEVICE_QUERY`, `FILE_WRITE_FAILED`.
+
+---
+
+## [v2.4.201 "Error Propagation Phase 0"] - 2026-06-05
+
+### Description
+
+**v2.4.201**: Errno table expansion — Phase 0 of the Error Propagation Remediation Plan. Adds 4 missing error codes that are prerequisites for Phase 1 implementation work (adding `_SituationSetErrorFromCode` calls to void/bool API functions that currently fail silently).
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.201**.
+
+### Library
+
+- **`sit/situation_base_errno.h`**
+  - Added `SITUATION_ERROR_WINDOW_STATE_FAILED` (-105): window state change rejected by GLFW (toggle fullscreen, maximize, minimize, restore, vsync).
+  - Added `SITUATION_ERROR_WINDOW_PROPERTY_FAILED` (-106): window property set failed (title, size, position, opacity, icon).
+  - Added `SITUATION_ERROR_APP_STATE_FAILED` (-107): application state transition failed (pause, resume, target FPS).
+  - Added new section `SITUATION_ERRORS_IMAGE` with `SITUATION_ERROR_IMAGE_OPERATION_FAILED` (-580): image operation failed (crop, resize, flip, or save).
+  - `SITUATION_ERRORS_IMAGE` wired into master `SITUATION_ERROR_TABLE` macro between `SITUATION_ERRORS_FONT` and `SITUATION_ERRORS_OPENGL`.
+  - Range comment updated: `-500 to -599` now reads "Resource Management, Rendering Core, Fonts & Image".
+
+### Plan
+
+- **`doc/plan/ERROR_PROPAGATION_PLAN.md`**
+  - Phase 0 fully detailed with per-entry rationale and insertion slots.
+  - Phase 1 expanded with per-function checkboxes and explicit error code mapping for every failure path.
+  - Phase 3 sub-phases (3A–3E) with complete call-site inventory per function.
+  - Phase 0 marked complete.
+
+---
+
+## [v2.4.200 "API Documentation Refresh"] - 2026-06-04
+
+### Description
+
+**v2.4.200**: Full API documentation refresh — closes the 93-patch documentation gap (v2.4.106 → v2.4.199). All 531 public `SITAPI` functions are now documented in `doc/situation_api.md`. Struct definitions updated to match current header. Deprecated APIs cataloged with replacements. Command reference expanded to 70 commands. Threading model description corrected across steering and docs. Copyright years unified to 2025-2026.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.200**.
+
+### Documentation
+
+- **`doc/situation_api.md`**
+  - Version: v2.4.106 → v2.4.199.
+  - Coverage: 438 → **531/531** functions (0 missing).
+  - New sections: System Introspection, YPQ Color, MIDI Integration, Renderer Bolster Commands, CPU Topology & Affinity, Thread Pool Observability, Deprecated APIs table.
+  - Fixed `SituationDeviceInfo` struct (stale fields `os_name`, `cpu_brand` → current `cpu_name`, `gpu_name`, storage/network/input arrays).
+  - Fixed `SituationInitInfo` struct (added I/O config, thread affinity, NUMA placement, worker sizing fields).
+  - Fixed "Strictly Single-Threaded" section → accurate "Threading Model" describing Main/Render/Audio/I/O + worker pool architecture.
+  - Fixed usage examples referencing removed fields and deprecated commands.
+  - License copyright: `2025` → `2025-2026`.
+
+- **`doc/situation_command_reference.md`**
+  - Version synced to v2.4.199.
+  - Command index: 35 → **70** active commands (barriers, clears, transfers, raster state, indirect draw, YPQ grade, indexed viewport/scissor).
+
+- **`doc/situation_api_index.md`** + **`doc/situation_api_generated.md`**
+  - Regenerated — 531 functions indexed, 0 gaps.
+
+- **`scripts/generate_situation_api_docs.py`**
+  - `CMD_REF_ANCHORS`: 35 → 70 entries (all `SituationCmd*` mapped, 0 warnings).
+
+### Steering / Project Context
+
+- **`.kiro/steering/situation-project.md`**
+  - Version: 2.4.0 → 2.4.199.
+  - Rule #8: Corrected from "Library is strictly single-threaded" to accurate multi-thread architecture description (Main, Render, Audio, I/O, Worker pool; API call-site discipline from main thread).
+
+### Copyright / License
+
+- `doc/situation_api.md` license block: `Copyright (c) 2025` → `2025-2026`.
+- `sit/k-term/LICENSE`: `2025 Trente Trois` → `2025-2026 Jacques Morel`.
+- `sit/k-term/kt_shell.h`, `sit/k-term/example/situation.h`, `examples/kterm_console.c`: `(c) 2025` → `(c) 2025-2026`.
+
+### Verification
+
+- `python scripts/generate_situation_api_docs.py` → **531/531, 0 missing, 0 warnings**.
+- No stale struct fields or deprecated function calls remain in usage examples.
+
+---
+
+## [v2.4.199 "System Introspection APIs"] - 2026-06-03
+
+### Description
+
+**v2.4.199**: New platform-abstracted APIs for OS identification, process enumeration, and active audio device query. Enables kterm console `sysinfo`, `ps`, and `threads` commands to work through Situation rather than raw platform calls. Cross-platform: Windows (RtlGetVersion, Toolhelp32, WASAPI), Linux (/etc/os-release, /proc, miniaudio), macOS (sysctl, miniaudio).
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.199**.
+
+### Library
+
+- **`sit/situation_api.h`**
+  - Added `SituationOSInfo` struct: `name[64]`, `version[64]`, `build_number`.
+  - Added `SITAPI SituationOSInfo SituationGetOSInfo(void)` — OS name, version string, build number.
+  - Added `SituationProcessInfo` struct: `pid`, `name[260]`, `memory_bytes`.
+  - Added `SITUATION_MAX_PROCESS_NAME_LEN` (260).
+  - Added `SITAPI SituationProcessInfo* SituationGetProcessList(int* out_count)` — snapshot of running OS processes with PID, name, and working set.
+  - Added `SITAPI void SituationFreeProcessList(SituationProcessInfo* list, int count)` — frees returned list.
+  - Added `SITAPI const char* SituationGetActiveAudioDeviceName(void)` — name of currently bound playback device.
+
+- **`sit/situation_impl_io.h`**
+  - Implemented `SituationGetOSInfo()`:
+    - Windows: `RtlGetVersion` from ntdll (no compatibility shims). Detects Win7/8/8.1/10/11 by build number.
+    - Linux: Parses `PRETTY_NAME` from `/etc/os-release`, kernel version from `uname()`.
+    - macOS: `kern.osrelease` via `sysctlbyname`.
+  - Implemented `SituationGetProcessList()`:
+    - Windows: `CreateToolhelp32Snapshot` + `Process32First/Next` + `GetProcessMemoryInfo` for working set.
+    - Linux: `/proc` directory enumeration, reads `/proc/<pid>/comm` and `/proc/<pid>/statm`.
+  - Implemented `SituationFreeProcessList()` — calls `SIT_FREE`.
+  - Implemented `SituationGetActiveAudioDeviceName()`:
+    - Uses `ma_device_get_info()` on the active miniaudio device (WASAPI/PulseAudio/ALSA).
+    - Fallback: reads `sit_gs.audio.miniaudio_device.playback.name` directly.
+
+---
+
+## [v2.4.198 "PCM Input Node"] - 2026-06-01
+
+### Description
+
+**v2.4.198**: New `SITUATION_NODE_PCM_INPUT` source node — a lock-free ring buffer source that accepts user-pushed PCM from any thread. Enables kterm voice playback, network audio streams, and any user-fed PCM source to participate in the audio graph (mixable, patchable, effects-chainable). kterm voice updated to use the new node instead of the removed `SituationStartAudioPlayback` API.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.198**.
+
+### Library
+
+- **`sit/situation_api.h`**
+  - Added `SITUATION_NODE_PCM_INPUT` to `SituationNodeType` enum (Sources section).
+  - Added `SITAPI uint32_t SituationPushNodePCM(...)` — push interleaved float PCM into a PCM_INPUT node's ring buffer (any thread, lock-free).
+  - Added `SITAPI uint32_t SituationGetNodePCMFreeFrames(...)` — query available write space.
+
+- **`sit/aud/pcm_input.h`** (NEW)
+  - Lock-free SPSC ring buffer state (`SituationPCMInputState`).
+  - `_SitPCMInputCreate` / `_SitPCMInputDestroy` — lifecycle.
+  - `_SitPCMInputPush` — producer (any thread).
+  - `_SituationProcessPCMInputNode` — consumer (audio callback), applies gain/pan/mute controls.
+  - `_SituationCreatePCMInput` / `_SituationDestroyPCMInput` — device wrapper functions.
+  - Default ring size: 4096 frames × channels (`SIT_PCM_INPUT_RING_FRAMES`).
+
+- **`sit/aud/device_wrappers.h`**
+  - Added `#include "pcm_input.h"`.
+  - Added `SITUATION_NODE_PCM_INPUT` entry to `g_device_function_table`.
+
+- **`sit/aud/registry_init.h`**
+  - Added `_SituationRegisterPCMInput()` — registers PCM Input as a Source device with gain/pan/mute controls.
+  - Called in `SituationInitDeviceRegistry()`.
+
+- **`sit/situation_impl_audio.h`**
+  - Added `SituationPushNodePCM()` and `SituationGetNodePCMFreeFrames()` implementations.
+
+- **`sit/k-term/kt_voice.h`**
+  - `KTermVoiceContext` struct: added `playback_graph`, `pcm_node_handle`, `pcm_node_active` fields.
+  - `KTerm_Voice_Enable`: creates a `SITUATION_NODE_PCM_INPUT` node on the active graph for playback.
+  - `KTerm_Voice_ProcessPlayback`: pushes received audio into the PCM input node (falls back to local ring buffer if node unavailable).
+
+---
+
 ## [v2.4.197 "Threading Module Dispatch + Thread Naming"] - 2026-06-01
 
 ### Description

@@ -1,216 +1,32 @@
-# The "Situation" Advanced Platform Awareness, Control, and Timing
+# Situation — Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.4.106 — see [UPDATELOG.md](UPDATELOG.md) for release notes._
+_Core API library v2.4.207 · (c) 2025-2026 Jacques Morel · MIT Licensed_
 
-_(c) 2025-2026 Jacques Morel_
+**Situation** is a **[strict C11](C11_Compliance_Report.md)** single-file library providing unified access to windowing, graphics (OpenGL 4.6 / Vulkan 1.4), audio (23-effect node graph, 16-voice MIDI synth), input, filesystem, NUMA-aware threading, and high-resolution timing. One header, one DLL, one `SituationInit()` call — then build games, creative tools, simulations, or visualizations without fighting platform boilerplate.
 
-_MIT Licenced_
+Ships as header-only or pre-built DLL with auto-generated FFI bindings for **Odin** (Zig and Rust planned).
 
-Welcome to "Situation", a public API engineered for high-performance, cross-platform development. "Situation" is a single-file, cross-platform **[Strict C11 (ISO/IEC 9899:2011) Compliant](C11_Compliance_Report.md)** library providing unified, low-level access and control over essential application subsystems. Its purpose is to abstract away platform-specific complexities, offering a lean yet powerful API for building sophisticated, high-performance software. This library is designed as a foundational layer for professional applications, including but not limited to: real-time simulations, game engines, multimedia installations, and scientific visualization tools.
-
-> **See the complete changelog:** [UPDATELOG.md](UPDATELOG.md)
-
-> **Documentation coverage (v2.4.106):** **438/438** public `SITAPI` functions documented in this guide (verified by `python scripts/generate_situation_api_docs.py`).
-> - **[situation_api_index.md](situation_api_index.md)** — categorized index (auto-generated)
-> - **[situation_sdk.md](situation_sdk.md)** — SDK manual (architecture & workflows)
-
----
-
-## What's New in v2.4.0
-
-### 🎉 Folder Reorganization & Audio Subsystem Organization
-
-Version 2.4.0 is a major architectural reorganization that establishes a professional, scalable folder structure while maintaining 100% backward compatibility for users.
-
-**Key Changes:**
-
-*   **Core Headers Relocated:** All implementation files moved from root to `sit/` folder
-    - `situation_api.h` → `sit/situation_api.h`
-    - `situation_impl.h` → `sit/situation_impl.h`
-    - `situation_impl_audio.h` → `sit/situation_impl_audio.h`
-    - Root now contains only `situation.h` (public entry point)
-
-*   **Audio Effects Organized:** Created `sit/aud/fx/` subfolder for all 16 audio effects
-    - Time-based: reverb, echo, studio_reverb, spring_reverb, sst282
-    - Modulation: chorus, phaser, lfo
-    - Distortion: overdrive, exciter
-    - Dynamics: dynamics, filter, eq_4band
-    - Mastering: maximizer, mastering_amp, deafmax
-
-*   **Polysonix Relocated:** Moved synthesizer engine to audio subsystem
-    - `sit/polysonix/` → `sit/aud/polysonix/`
-    - Logical placement alongside other audio components
-
-*   **K-Term Integration:** Terminal emulation library properly organized
-    - Located in `sit/k-term/`
-    - Self-contained with examples and tests
-
-**Benefits:**
-- Clear separation: public API vs internal implementation
-- Logical grouping of related components
-- Scalable architecture for future subsystems
-- Professional single-header library pattern
-- Zero breaking changes for users
-
-**See Also:**
-- `doc/V2_4_0_FOLDER_REORGANIZATION_COMPLETE.md` - Complete reorganization details
-- `doc/COMPILATION_GUIDE.md` - Updated compilation instructions
-- `doc/CORE_HEADERS_REORGANIZATION.md` - Core headers relocation
-- `doc/FX_FOLDER_ORGANIZATION.md` - Effects organization
-- `doc/POLYSONIX_INTEGRATION_STATUS.md` - Polysonix relocation
+> **540** public `SITAPI` functions · Windows 10+ · OpenGL 4.6 or Vulkan 1.4 hardware required
+>
+> **Documentation:**
+> - **[situation_api_index.md](situation_api_index.md)** — categorized function index (auto-generated)
+> - **[situation_command_reference.md](situation_command_reference.md)** — all `SituationCmd*` rendering commands
+> - **[situation_sdk.md](situation_sdk.md)** — SDK manual (architecture, workflows, examples)
+> - **[whatsnew.md](whatsnew.md)** / **[UPDATELOG.md](UPDATELOG.md)** — release history
 
 ---
 
-## Previous Releases
-
-Our immediate development roadmap is focused on expanding the library's capability:
-*   **Critical Stability (v2.3.53):** 🎉 **COMPLETE!** Addressed critical MDI batching and resource cleanup issues in the OpenGL backend.
-*   **Virtual Bindless (v2.3.52):** 🎉 **COMPLETE!** Implemented a "Virtual Bindless" fallback system for OpenGL hardware lacking `GL_ARB_bindless_texture`. This system emulates bindless texture access by managing a virtual pool of texture units, allowing users to write unified bindless shader code that works across a wider range of hardware (including older Intel iGPUs).
-*   **MDI Auto-Batching (v2.3.51):** 🎉 **COMPLETE!** Implemented Multi-Draw Indirect (MDI) auto-batching for the OpenGL backend. This optimization intelligently batches consecutive `SIT_OP_DRAW_MESH` commands sharing the same VAO into a single `glMultiDrawElementsIndirect` call, drastically reducing CPU overhead for repetitive geometry.
-*   **Fence-Guarded Destruction (v2.3.50):** 🎉 **COMPLETE!** Implemented robust deferred destruction for OpenGL using GL_ARB_sync fences. This eliminates CPU stalls and ensures resources are only destroyed when the GPU is finished with them, matching Vulkan's safety and performance.
-*   **Async Shader Linking (v2.3.49):** 🎉 **COMPLETE!** Implemented non-blocking shader linking for OpenGL hot-reloading using `KHR_parallel_shader_compile`.
-*   **Vulkan Bindless (v2.3.46):** 🎉 **COMPLETE!** Implemented "Bindless" texturing for Vulkan using Descriptor Indexing. Textures are now accessed via a global unbounded array (`global_textures[]`) indexed by push constants, eliminating descriptor binding overhead and solving pool fragmentation.
-*   **Vulkan Optimization (v2.3.44):** 🎉 **COMPLETE!** Added configurable staging buffer sizes and optimized I/O polling for hot-reloading to support a wider range of hardware targets.
-*   **System Unification (v2.3.43):** 🎉 **COMPLETE!** Implemented the Universal Handle Architecture (v2.4 Milestone). All resources (Textures, Sounds, Shaders, Meshes) now use O(1) generational handles backed by fixed registries, eliminating legacy linked lists and enabling unified hot-reloading. See `REGRESSION_ANALYSIS.md` for details.
-*   **Audio Capture Enhancements (v2.3.42):** 🎉 **COMPLETE!** Added `SituationStartAudioCaptureEx` for custom formats and updated the default capture to use native device settings (0, 0) for optimal performance.
-*   **Flexible Texture Formats (v2.3.41):** 🎉 **COMPLETE!** Introduced `SituationColorEncoding` enum for automatic format selection. Storage images now work correctly with compute shaders, and sampled textures maintain proper gamma correction.
-*   **Vulkan Text Rendering (v2.3.39):** Fixed all 11 critical bugs in the Vulkan text rendering pipeline. Text now renders correctly with proper descriptor set layouts, UV calculations, and coordinate system handling.
-*   **Asset Pipeline (v2.3.38):** Added `SituationLoadBitmapFontFromMemory` and enhanced I/O thread controls for smoother background loading.
-*   **OpenGL Optimization (v2.3.36):** Completed the "Max Out Core" plan with MDI batching, Zero-Copy Ring Buffers, and Bindless Textures.
-*   **Texture Registry (v2.3.31):** Implemented a generational handle system for textures, enabling safe hot-reloading and O(1) validation.
-*   **Universal Handles (v2.4):** 🎉 **COMPLETE!** All resources (Buffers, Shaders, Meshes) are now managed via the Registry System for uniform, bindless-ready access.
-*   **Async Compute:** Exposing dedicated transfer and compute queues in Vulkan for non-blocking background operations.
-*   **Built-in Debug Tools**: Leveraging internal profiling counters to render an immediate-mode performance overlay.
-*   **Advanced Audio DSP**: Expanding the effects chain with user-definable graph routing.
-*   **Cross-Platform Expansion**: Formalizing support for Android and WebAssembly targets.
-*   **Web & Reach (Phase 4):** Full **Emscripten** (WASM) support and a **WebGPU (Dawn)** backend to bring Situation apps to the browser with near-native performance.
-
-"Situation" is an ambitious project that aims to become a premier, go-to solution for developers seeking a reliable and powerful platform layer. We encourage you to explore the library, challenge its capabilities, and contribute to its evolution.
-
-The library's philosophy is reflected in its name, granting developers complete situational "Awareness," precise "Control," and fine-grained "Timing."
-
-It provides deep **Awareness** of the host system through APIs for querying hardware and multi-monitor display information, and by handling operating system events like window focus and file drops.
-
-This foundation enables precise **Control** over the entire application stack, from window management (fullscreen, borderless) and input devices (keyboard, mouse, gamepad) to a comprehensive audio pipeline with playback, capture, and real-time effects. This control extends to the graphics and compute pipeline, abstracting modern OpenGL and Vulkan through a unified command-buffer model. It offers simplified management of GPU resources—such as shaders, meshes, and textures—and includes powerful utilities for high-quality text rendering and robust filesystem I/O.
-
-Finally, its **Timing** capabilities range from high-resolution performance measurement and frame rate management to an advanced **Temporal Oscillator System** for creating complex, rhythmically synchronized events. By handling the foundational boilerplate of platform interaction, "Situation" empowers developers to focus on core application logic, enabling the creation of responsive and sophisticated software—from games and creative coding projects to data visualization tools—across all major desktop platforms.
+For release history and changelogs, see **[`doc/whatsnew.md`](whatsnew.md)** and **[`doc/UPDATELOG.md`](UPDATELOG.md)**.
 
 ---
 
-# Situation v2.4.0 API Programming Guide
+# Situation v2.4 API Programming Guide
 
-"Situation" is a single-file, cross-platform C/C++ library designed for advanced platform awareness, control, and timing. It provides a comprehensive, immediate-mode API that abstracts the complexities of windowing, graphics (OpenGL/Vulkan), audio, and input. This guide serves as the primary technical manual for the library, detailing its architecture, usage patterns, and the complete Application Programming Interface (API).
+**Situation** is a single-file C11 library (MIT Licensed) that provides unified, low-level access to windowing, graphics, audio, input, filesystem, threading, and timing from a single `#include`. It targets modern hardware — OpenGL 4.6, Vulkan 1.4, Windows 10+ — and ships as a pre-built DLL or a header-only integration, with auto-generated FFI bindings for Odin (and planned Zig/Rust support).
 
----
+The library delivers a complete application foundation in one coherent API surface (540 public functions): GPU rendering through a unified command-buffer model, a 23-effect audio node graph with 16-voice polyphonic MIDI synthesis, a generational dual-queue job system with NUMA-aware scheduling, async file I/O, high-resolution temporal oscillators, and hot-reloadable assets — all orchestrated from a single `SituationInit()` call.
 
-## What's New in v2.3.53
-
-### 🎉 Critical Stability Fixes
-
-Version 2.3.53 is a stability-focused release that addresses critical issues in the OpenGL backend.
-
-*   **MDI Pipeline Consistency:** Fixed a bug where the MDI auto-batcher could batch draw calls with different shaders, leading to visual corruption. The batcher now strictly enforces pipeline consistency.
-*   **Fence Cleanup:** Implemented proper fence cleanup on shutdown to prevent driver crashes.
-*   **Safety Checks:** Added multiple safety checks for VAO restoration and ring buffer management.
-
-## What's New in v2.3.46
-
-### 🎉 Vulkan "Bindless" Architecture
-
-Version 2.3.46 (Hotfix) solidifies the transformative upgrade to the Vulkan backend: **Bindless Textures** (Descriptor Indexing).
-
-*   **Global Descriptor Array:** Instead of allocating a separate `VkDescriptorSet` for every texture (which is slow and fragments memory), the engine now maintains a single, massive descriptor array (up to 4096 textures) bound to Set 1.
-*   **Zero-Overhead Draw Calls:** Drawing a texture no longer requires re-binding descriptor sets. The shader simply indexes into the global array using a lightweight Push Constant ID (`texture_id`).
-*   **Batching Power:** This architecture enables massive draw call batching and prepares the engine for GPU-driven rendering techniques.
-*   **Stability:** Eliminates the risk of Descriptor Pool exhaustion during heavy asset streaming.
-
-> **Note:** This feature requires Vulkan 1.2+ and specific hardware support (`shaderSampledImageArrayNonUniformIndexing`). The engine automatically checks for support at startup.
-
-## What's New in v2.3.43
-
-### 🎉 System Unification - Universal Handle Architecture
-
-Version 2.3.43 introduces the **Universal Handle Architecture** (v2.4 Milestone). This is a foundational upgrade that unifies how all resources (Textures, Sounds, Shaders, Meshes, Buffers) are managed internally.
-
-**Key Features:**
-- **O(1) Generational Handles:** All resources are now tracked using high-performance 64-bit handles backed by static registries. This replaces the legacy linked-list system, eliminating O(N) traversals and improving performance as scene complexity grows.
-- **Unified Hot-Reloading:** The new architecture enables a centralized hot-reloading system. Shaders, Textures, and Models can be reloaded at runtime with guaranteed safety.
-- **Bindless Ready:** The new handle structure is designed to support direct GPU access ("Bindless") in future updates.
-
-**Migration Note:** This is a non-breaking change for the public API surface, as `SituationTexture`, `SituationSound`, etc., were already opaque structs. However, internal performance and robustness have been significantly improved.
-
----
-
-## What's New in v2.3.41
-
-### 🎉 Flexible Texture Formats - Color Encoding & Format Selection
-
-Version 2.3.41 introduces flexible texture format selection through the new `SituationColorEncoding` enum. This critical update fixes storage image compatibility issues while maintaining proper gamma correction for sampled textures.
-
-**Key Features:**
-- **`SituationColorEncoding` enum** - Specify LINEAR or SRGB color space
-- **Automatic format selection** - GPU format chosen based on color encoding
-- **Backend-neutral API** - Same enum works for both OpenGL and Vulkan
-- **Storage image fix** - Compute-writable textures now work correctly
-
-**Format Mappings:**
-
-| Color Encoding | Vulkan Format | OpenGL Format | Use Case |
-|----------------|---------------|---------------|----------|
-| `SITUATION_COLOR_LINEAR` | `VK_FORMAT_R8G8B8A8_UNORM` | `GL_RGBA8` | Storage images, compute writes |
-| `SITUATION_COLOR_SRGB` | `VK_FORMAT_R8G8B8A8_SRGB` | `GL_SRGB8_ALPHA8` | Sampled textures, photos, UI |
-
-**Usage Example:**
-```c
-// Storage image for compute shader
-SituationImage img;
-SituationCreateImage(1024, 768, 4, &img);
-img.color_encoding = SITUATION_COLOR_LINEAR;  // Required for storage!
-
-SituationTexture tex;
-SituationCreateTextureEx(img, false, SITUATION_TEXTURE_USAGE_STORAGE, &tex);
-// Result: Uses VK_FORMAT_R8G8B8A8_UNORM (Vulkan) or GL_RGBA8 (OpenGL)
-
-// Sampled texture with gamma correction
-SituationImage photo;
-SituationLoadImage("photo.png", &photo);
-photo.color_encoding = SITUATION_COLOR_SRGB;  // Gamma correction
-
-SituationTexture display_tex;
-SituationCreateTexture(photo, false, &display_tex);
-// Result: Uses VK_FORMAT_R8G8B8A8_SRGB (Vulkan) or GL_SRGB8_ALPHA8 (OpenGL)
-```
-
-**Critical Fix:** Storage images (textures writable by compute shaders) were previously hardcoded to SRGB format, which is incompatible with storage operations on most GPUs. This caused validation errors and black screens in applications using compute shaders. The new system automatically selects LINEAR format for storage images while maintaining SRGB for sampled textures.
-
----
-
-## What's New in v2.3.39
-
-### Vulkan Text Rendering - COMPLETE!
-All 11 critical bugs in the Vulkan text rendering pipeline have been fixed:
-
-1. **Internal Renderer Return Value Check** - Fixed treating SUCCESS (0) as failure
-2. **Texture Generation** - Textures now properly initialized with generation=1
-3. **Descriptor Set Binding** - UBO descriptor set now bound in text pipeline
-4. **Projection Matrix** - Matrix now updated in `SituationCmdBeginRenderPass`
-5. **UBO Memory Type** - Changed from GPU_ONLY to CPU_TO_GPU for dynamic updates
-6. **Vertex Attribute Offset** - Fixed texcoord offset from 0 to 8 bytes
-7. **Backface Culling** - Disabled culling for text quads
-8. **Viewport/Scissor** - Now properly set in render pass begin
-9. **Fragment Shader Descriptor Set** - Added `set = 1` qualifier for texture sampler
-10. **Font Atlas Descriptor Layout** - Font atlas now uses correct text_sampler_layout (binding 0)
-11. **UV Calculation Bug** - Fixed grid font UV calculation (row/16 instead of row/8, swapped v0/v1 for Vulkan Y-down)
-
-**Text rendering now works perfectly in Vulkan!** The system correctly handles descriptor set layouts, UV coordinates, and Vulkan's coordinate system.
-
-### I/O Thread Metrics (v2.3.37)
-Added `SituationGetIOQueueDepth()` to monitor pending background asset loading tasks, enabling better load balancing and progress tracking.
-
-### Enhanced Thread Pool Configuration (v2.3.37)
-`SituationCreateThreadPool()` now accepts `hot_reload_rate` and `disable_io` parameters for fine-grained control over the I/O subsystem.
-
-**For complete details, see:** [UPDATELOG.md](UPDATELOG.md)
+This guide is the primary technical reference for the public API. For architecture deep-dives, see the [SDK manual](situation_sdk.md). For changelogs, see [`whatsnew.md`](whatsnew.md).
 
 ---
 
@@ -253,6 +69,10 @@ Added `SituationGetIOQueueDepth()` to monitor pending background asset loading t
 
 #### Utilities
 - [Threading Module](#threading-module) - Thread pools, async operations
+- [System Introspection Module](#system-introspection-module-v24199) - OS info, process list, audio device
+- [YPQ Color Module](#ypq-color-module-v24192) - Perceptual color grading
+- [MIDI Integration Module](#midi-integration-module-v24150) - MIDI CC control, learn, virtual loopback
+- [Renderer Bolster Commands](#renderer-bolster-commands-v24147) - Barriers, transfers, raster state, indirect draw
 - [Miscellaneous Module](#miscellaneous-module) - Utility functions
 - [Hot-Reloading Module](#hot-reloading-module) - Live asset reloading
 - [Logging Module](#logging-module) - Debug logging and tracing
@@ -286,8 +106,13 @@ Complementing this is a philosophy of **explicit resource management**. Any reso
 - **Single-File, Header-Only Distribution:** "Situation" is distributed as a single header file (`situation.h`), making it incredibly easy to integrate into your projects. To use it, you simply `#include "situation.h"` in your source files. In exactly one C or C++ file, you must first define `SITUATION_IMPLEMENTATION` before the include to create the implementation.
 - **Backend Abstraction:** The library provides a unified API that works over different graphics backends (currently OpenGL and Vulkan). You choose the backend at compile time by defining either `SITUATION_USE_OPENGL` or `SITUATION_USE_VULKAN`.
 
-#### Strictly Single-Threaded Model
-The library is **strictly single-threaded**. All API functions must be called from the same thread that called `SituationInit()`. Asynchronous operations, such as asset loading on a worker thread, must be handled by the user with care, ensuring that no `SITAPI` calls are made from outside the main thread.
+#### Threading Model
+The library internally manages multiple dedicated threads: **Main** (lifecycle, input, frame submission), **Render** (GL/VK context owner), **Audio** (miniaudio callback), and **I/O** (async file loading, hot-reload polling), plus a configurable **worker pool** for user-submitted parallel jobs. The worker pool features dual-priority queues (high for physics/logic, low for assets/I/O), generational O(1) job tracking, fork-join parallelism, NUMA-aware thread placement, and CPU topology-driven affinity. All library threads are named at the OS level for debugger visibility.
+
+**All public SITAPI function calls must originate from the main thread** — the thread that called `SituationInit()`. This is a call-site discipline common in game engines (similar to Unity's game thread constraint), not a single-threaded limitation. The actual work is parallelized across the dedicated threads and worker pool internally.
+
+#### Error Handling
+As of v2.4.201+, all fallible public functions return `SituationError`. Check against `SITUATION_SUCCESS`, or use `SituationGetLastErrorMsg()` / `SituationGetLastErrorCode()` for diagnostics after any failure. The error enum lives in `sit/situation_base_errno.h`.
 
 ### 2. Application Structure
 #### The Application Lifecycle
@@ -333,10 +158,12 @@ The library automatically handles this scaling. You can query the scaling factor
 A "Virtual Display" is an **off-screen render target**. Instead of drawing directly to the main window, you can render a scene into a virtual display. This is incredibly powerful for post-processing effects (bloom, blur), UI layering (rendering UI at a fixed resolution), and caching parts of a scene that don't change frequently.
 
 ### 5. Other Key Systems
-#### Audio: Sounds vs. Streams
-The audio module can handle audio in two ways:
+#### Audio: Node Graph, Sounds, and Synthesis
+The audio subsystem operates at three levels:
 -   **Loaded Sounds (`SituationLoadSoundFromFile`):** Decodes the entire audio file into memory. Ideal for short, low-latency sound effects.
--   **Streamed Sounds (`SituationLoadSoundFromStream`):** Decodes the audio in small chunks as it's playing. Uses significantly less memory, making it perfect for long background music tracks.
+-   **Streamed Sounds (`SituationLoadSoundFromStream`):** Decodes audio in small chunks as it plays. Uses less memory, ideal for music.
+-   **Audio Node Graph:** A modular, graph-based processing architecture for arbitrary signal routing. Create typed nodes (tone synth, reverb, echo, chorus, filter, EQ, compressor, etc.), patch them together with `SituationCreatePatch()`, and set parameters with `SituationSetControl()`. The graph runs on the audio thread automatically once activated with `SituationSetActiveGraph()`.
+-   **MIDI Synthesis:** The `SITUATION_NODE_TONE_SYNTH` is a 16-voice polyphonic synthesizer controllable via MIDI. Use the virtual MIDI loopback (`SituationSetupVirtualMidiLoopback`) to send note-on/off and CC messages programmatically, or connect hardware controllers via PortMidi.
 
 #### Filesystem: Cross-Platform and Special Paths
 The filesystem module abstracts away OS-specific differences. All paths are UTF-8. To ensure your application is portable, use the provided helper functions instead of hardcoding paths:
@@ -566,7 +393,7 @@ The heart of your application is the main loop. This loop continues as long as t
         }
 
         // --- 3. Render ---
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationRenderPassInfo pass_info = {
                 .color_load_action = SIT_LOAD_ACTION_CLEAR,
                 .clear_color = { .r = 0, .g = 12, .b = 24, .a = 255 }, // A dark blue
@@ -618,7 +445,7 @@ int main(int argc, char** argv) {
         SituationUpdateTimers();
         if (SituationIsKeyPressed(SIT_KEY_ESCAPE)) break;
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationRenderPassInfo pass_info = {
                 .color_load_action = SIT_LOAD_ACTION_CLEAR,
                 .clear_color = {0, 12, 24, 255},
@@ -686,14 +513,27 @@ typedef struct {
     // ── Audio Configuration ──
     uint32_t     max_audio_voices; // Max concurrent audio voices. 0 = Unlimited (Dynamic).
 
-    int          render_thread_count; // Number of render threads to spawn (0 = Single Threaded)
-    // [v2.3.22] Backpressure Policy: 0: Spin (Low Latency), 1: Yield (Balanced), 2: Sleep (Low CPU)
-    int          backpressure_policy;
+    // ── Render Thread (auto-enabled when SITUATION_ENABLE_THREADING is defined) ──
+    int          render_thread_count; // Number of render threads (0 = main-thread rendering)
+    int          backpressure_policy; // 0: Spin (low latency), 1: Yield (balanced), 2: Sleep (low CPU)
 
-    // [v2.3.34] Async I/O
-    uint32_t     io_queue_capacity; // Size of the IO queue (Low Priority). Default: 1024.
+    // ── Async I/O ──
+    uint32_t     io_queue_capacity;  // Size of the IO queue. Default: 1024.
+    bool         disable_io_thread;  // If true, runs I/O tasks on main thread (fallback)
+    double       hot_reload_poll_rate; // Seconds between hot-reload checks (0 = disable, default 0.5)
+    uint64_t     staging_buffer_size;  // Override 128MB Vulkan staging buffer (0 = default)
 
-    // [Threading Bolstering — Epic D] Pool sizing when SituationCreateThreadPool(..., num_threads=0, ...)
+    // ── Thread Affinity (logical CPU bitmask, 0 = no pin) ──
+    uint64_t     thread_affinity_main;   // Main thread affinity
+    uint64_t     thread_affinity_render; // Render thread affinity (0 = default core 1)
+    uint64_t     thread_affinity_audio;  // Audio thread affinity (0 = default core 2)
+
+    // ── NUMA Placement ──
+    bool         numa_prefer_local;      // Pin render/audio to NUMA node of default cores when affinity is 0
+    bool         worker_numa_spread;     // Pin workers across NUMA nodes (default true when threading enabled)
+    int32_t      io_thread_numa_node;    // Dedicated I/O thread NUMA node; < 0 = no pin
+
+    // ── Thread Pool Sizing (when num_threads=0 in SituationCreateThreadPool) ──
     bool     thread_pool_use_physical_cores; // false = logical CPUs - reserved; true = physical cores - reserved
     uint32_t thread_pool_reserved_threads;   // Threads left for main/render/audio/IO (default 4 if 0)
 } SituationInitInfo;
@@ -1148,6 +988,105 @@ printf("GPU: %s\n", gpu_name);
 ```
 
 ---
+#### `SituationGetOSInfo`
+Returns a struct containing the operating system's product name, version string, and build number. Added in v2.4.199.
+```c
+SITAPI SituationOSInfo SituationGetOSInfo(void);
+```
+
+**Returns:** A `SituationOSInfo` struct with the following fields:
+```c
+typedef struct SituationOSInfo {
+    char name[64];          // OS product name (e.g., "Windows 11", "Ubuntu 24.04", "macOS Sequoia")
+    char version[64];       // Full version string (e.g., "10.0.22631", "6.8.0-45-generic")
+    uint32_t build_number;  // Build number (Windows) or kernel patch level (Linux); 0 if unavailable
+} SituationOSInfo;
+```
+
+**Usage Example:**
+```c
+SituationOSInfo os = SituationGetOSInfo();
+printf("OS: %s (version %s, build %u)\n", os.name, os.version, os.build_number);
+```
+
+**Notes:**
+- On Windows, uses `RtlGetVersion` for accurate build info (avoids compatibility shim issues with `GetVersionEx`)
+- On Linux/macOS, uses `uname()` for kernel version
+- Safe to call at any point after `SituationInit()`
+
+---
+#### `SituationGetProcessList`
+Returns a heap-allocated array of `SituationProcessInfo` structs representing all currently running OS-level processes. Added in v2.4.199.
+```c
+SITAPI SituationProcessInfo* SituationGetProcessList(int* out_count);
+```
+
+**Parameters:**
+- `out_count` - Pointer to an int that receives the number of processes in the returned array
+
+**Returns:** A dynamically allocated array of `SituationProcessInfo` structs. The caller must free this with `SituationFreeProcessList()`. Returns `NULL` on failure.
+
+```c
+typedef struct SituationProcessInfo {
+    uint32_t pid;                                   // Process ID
+    char name[SITUATION_MAX_PROCESS_NAME_LEN];      // Executable name (e.g., "explorer.exe")
+    uint64_t memory_bytes;                          // Working set / RSS in bytes
+} SituationProcessInfo;
+```
+
+**Usage Example:**
+```c
+int count = 0;
+SituationProcessInfo* procs = SituationGetProcessList(&count);
+if (procs) {
+    printf("Running processes: %d\n", count);
+    for (int i = 0; i < count; i++) {
+        printf("  PID %u: %s (%.1f MB)\n",
+            procs[i].pid, procs[i].name,
+            procs[i].memory_bytes / (1024.0 * 1024.0));
+    }
+    SituationFreeProcessList(procs, count);
+}
+```
+
+**Notes:**
+- On Windows, uses `CreateToolhelp32Snapshot` + `Process32First/Next`
+- On Linux, reads `/proc` filesystem
+- Memory field reports working set (Windows) or RSS (Linux)
+
+---
+#### `SituationFreeProcessList`
+Frees a process list previously returned by `SituationGetProcessList()`. Added in v2.4.199.
+```c
+SITAPI void SituationFreeProcessList(SituationProcessInfo* list, int count);
+```
+
+**Parameters:**
+- `list` - The array returned by `SituationGetProcessList()`
+- `count` - The count returned by `SituationGetProcessList()`
+
+---
+#### `SituationGetActiveAudioDeviceName`
+Returns the name of the currently active (bound) audio playback device. Added in v2.4.199.
+```c
+SITAPI const char* SituationGetActiveAudioDeviceName(void);
+```
+
+**Returns:** A pointer to a static internal buffer containing the device name. Do not free this pointer. Returns an empty string if no device is active.
+
+**Usage Example:**
+```c
+const char* audio_device = SituationGetActiveAudioDeviceName();
+printf("Active audio device: %s\n", audio_device);
+printf("Sample rate: %d Hz\n", SituationGetAudioPlaybackSampleRate());
+```
+
+**Notes:**
+- Returns the device name as reported by the audio backend (miniaudio/WASAPI)
+- The returned pointer is valid until the next call to this function or until `SituationShutdown()`
+- Useful for diagnostics and system information displays
+
+---
 #### `SituationGetVRAMUsage`
 Gets the estimated total Video RAM (VRAM) usage in bytes. This is a best-effort query and may not be perfectly accurate on all platforms.
 ```c
@@ -1306,23 +1245,207 @@ if (score > 9000) {
 ```
 
 ---
-#### `SituationGetDeviceInfo`
-Gathers and returns a comprehensive snapshot of the host system's hardware and operating system. This is useful for logging, debugging, or adjusting application settings based on the user's hardware.
+#### `SituationGetDeviceInfo` _(deprecated — v2.4.207)_
+Returns a comprehensive hardware snapshot in one struct. **Deprecated:** prefer the split queries below (`SituationGetCPUInfo`, `SituationGetGPUInfo`, `SituationGetMemoryInfo`, and the storage/network/input enumeration helpers). This function still works — it composes the aggregate from those helpers plus a GLFW monitor summary.
 ```c
 SituationDeviceInfo SituationGetDeviceInfo(void);
 ```
 **Usage Example:**
 ```c
-// Log device information at startup.
+// Prefer split queries (no deprecation warnings). Aggregate still valid for legacy code:
 SituationInit(argc, argv, NULL);
-SituationDeviceInfo device = SituationGetDeviceInfo();
+SituationCPUInfo cpu;
+SituationGPUInfo gpu;
+SituationMemoryInfo mem;
+SituationGetCPUInfo(&cpu);
+SituationGetGPUInfo(&gpu);
+SituationGetMemoryInfo(&mem);
+SituationOSInfo os = SituationGetOSInfo();
 printf("--- System Information ---\n");
-printf("OS: %s %s\n", device.os_name, device.os_version);
-printf("CPU: %s (%d cores, %d threads)\n", device.cpu_brand, device.cpu_core_count, device.cpu_thread_count);
-printf("RAM: %.2f GB\n", (double)device.system_ram_bytes / (1024.0*1024.0*1024.0));
-printf("GPU: %s\n", device.gpu_brand);
-printf("VRAM: %.2f GB\n", (double)device.gpu_vram_bytes / (1024.0*1024.0*1024.0));
+printf("OS: %s %s (build %u)\n", os.name, os.version, os.build_number);
+printf("CPU: %s (%u threads, %.1f GHz)\n", cpu.name, cpu.thread_count, cpu.clock_speed_ghz);
+printf("RAM: %.2f GB free / %.2f GB total\n",
+    (double)mem.available_bytes / (1024.0*1024.0*1024.0),
+    (double)mem.total_bytes / (1024.0*1024.0*1024.0));
+printf("GPU: %s\n", gpu.name);
+printf("VRAM: %.2f GB\n", (double)gpu.dedicated_memory_bytes / (1024.0*1024.0*1024.0));
 printf("--------------------------\n");
+```
+
+---
+#### `SituationGetCPUInfo` _(v2.4.207)_
+Returns CPU brand string, logical thread count, physical core count, and base clock (when available). Platform logic is shared with the deprecated aggregate.
+```c
+void SituationGetCPUInfo(SituationCPUInfo* out);
+```
+**Struct:**
+```c
+typedef struct SituationCPUInfo {
+    char name[SITUATION_MAX_CPU_NAME_LEN];
+    uint32_t thread_count;
+    uint32_t core_count;
+    float clock_speed_ghz;
+} SituationCPUInfo;
+```
+**Usage Example:**
+```c
+SituationCPUInfo cpu;
+SituationGetCPUInfo(&cpu);
+printf("CPU: %s — %u threads / %u cores @ %.2f GHz\n",
+    cpu.name, cpu.thread_count, cpu.core_count, cpu.clock_speed_ghz);
+```
+
+---
+#### `SituationGetGPUInfo` _(v2.4.207)_
+Returns the primary GPU name and dedicated VRAM (accurate via DXGI on Windows when available; otherwise from the active graphics backend).
+```c
+void SituationGetGPUInfo(SituationGPUInfo* out);
+```
+**Struct:**
+```c
+typedef struct SituationGPUInfo {
+    char name[SITUATION_MAX_GPU_NAME_LEN];
+    uint64_t dedicated_memory_bytes;
+} SituationGPUInfo;
+```
+**Usage Example:**
+```c
+SituationGPUInfo gpu;
+SituationGetGPUInfo(&gpu);
+printf("GPU: %s (%.1f GB VRAM)\n", gpu.name,
+    (double)gpu.dedicated_memory_bytes / (1024.0 * 1024.0 * 1024.0));
+```
+
+---
+#### `SituationGetMemoryInfo` _(v2.4.207)_
+Returns total and available physical RAM in bytes.
+```c
+void SituationGetMemoryInfo(SituationMemoryInfo* out);
+```
+**Struct:**
+```c
+typedef struct SituationMemoryInfo {
+    uint64_t total_bytes;
+    uint64_t available_bytes;
+} SituationMemoryInfo;
+```
+**Usage Example:**
+```c
+SituationMemoryInfo mem;
+SituationGetMemoryInfo(&mem);
+printf("RAM: %.1f GB free / %.1f GB total\n",
+    mem.available_bytes / (1024.0 * 1024.0 * 1024.0),
+    mem.total_bytes / (1024.0 * 1024.0 * 1024.0));
+```
+
+---
+#### `SituationGetStorageDeviceCount` / `SituationGetStorageDevice` _(v2.4.207)_
+Enumerates storage volumes reported by the OS. Use count + index loop (same pattern as monitor queries). On Windows, enumerates logical drives; on Linux/macOS, root filesystem.
+```c
+int SituationGetStorageDeviceCount(void);
+bool SituationGetStorageDevice(int index, char* out_name, int name_len,
+    uint64_t* out_capacity_bytes, uint64_t* out_free_bytes);
+```
+**Usage Example:**
+```c
+int n = SituationGetStorageDeviceCount();
+for (int i = 0; i < n; i++) {
+    char name[SITUATION_MAX_DEVICE_NAME_LEN];
+    uint64_t cap = 0, free = 0;
+    if (SituationGetStorageDevice(i, name, sizeof(name), &cap, &free)) {
+        printf("Storage[%d]: %s — %.1f GB (%.1f GB free)\n", i, name,
+            cap / (1024.0 * 1024.0 * 1024.0), free / (1024.0 * 1024.0 * 1024.0));
+    }
+}
+```
+
+---
+#### `SituationGetNetworkAdapterCount` / `SituationGetNetworkAdapterName` _(v2.4.207)_
+Enumerates network adapters (friendly name on Windows; interface name on Linux/macOS).
+```c
+int SituationGetNetworkAdapterCount(void);
+bool SituationGetNetworkAdapterName(int index, char* out_name, int name_len);
+```
+**Usage Example:**
+```c
+for (int i = 0; i < SituationGetNetworkAdapterCount(); i++) {
+    char name[SITUATION_MAX_DEVICE_NAME_LEN];
+    if (SituationGetNetworkAdapterName(i, name, sizeof(name)))
+        printf("Net[%d]: %s\n", i, name);
+}
+```
+
+---
+#### `SituationGetInputDeviceCount` / `SituationGetInputDeviceName` _(v2.4.207)_
+Enumerates keyboards, mice, and gamepad-like HID devices (platform-dependent).
+```c
+int SituationGetInputDeviceCount(void);
+bool SituationGetInputDeviceName(int index, char* out_name, int name_len);
+```
+**Usage Example:**
+```c
+for (int i = 0; i < SituationGetInputDeviceCount(); i++) {
+    char name[SITUATION_MAX_DEVICE_NAME_LEN];
+    if (SituationGetInputDeviceName(i, name, sizeof(name)))
+        printf("Input[%d]: %s\n", i, name);
+}
+```
+
+---
+#### `SituationGetOSInfo` _(v2.4.199)_
+Returns operating system name, version string, and build number. Cross-platform: Windows (RtlGetVersion), Linux (/etc/os-release + uname), macOS (sysctlbyname).
+```c
+SituationOSInfo SituationGetOSInfo(void);
+```
+**Struct:**
+```c
+typedef struct SituationOSInfo {
+    char name[64];           // e.g., "Windows 11", "Ubuntu 24.04"
+    char version[64];        // e.g., "10.0.22631", "6.8.0-45-generic"
+    uint32_t build_number;   // Windows build number; 0 on other platforms
+} SituationOSInfo;
+```
+**Usage Example:**
+```c
+SituationOSInfo os = SituationGetOSInfo();
+printf("Running on: %s (%s, build %u)\n", os.name, os.version, os.build_number);
+```
+
+---
+#### `SituationGetProcessList` _(v2.4.199)_
+Returns a snapshot of all running OS processes. Each entry contains the process ID, executable name, and working set memory. Caller must free the returned array with `SituationFreeProcessList()`.
+```c
+SituationProcessInfo* SituationGetProcessList(int* out_count);
+void SituationFreeProcessList(SituationProcessInfo* list, int count);
+```
+**Struct:**
+```c
+typedef struct SituationProcessInfo {
+    uint32_t pid;                                   // Process ID
+    char name[SITUATION_MAX_PROCESS_NAME_LEN];      // Executable name
+    uint64_t memory_bytes;                          // Working set / RSS
+} SituationProcessInfo;
+```
+**Usage Example:**
+```c
+int count = 0;
+SituationProcessInfo* procs = SituationGetProcessList(&count);
+for (int i = 0; i < count; i++) {
+    printf("PID %u: %s (%.1f MB)\n", procs[i].pid, procs[i].name,
+        procs[i].memory_bytes / (1024.0 * 1024.0));
+}
+SituationFreeProcessList(procs, count);
+```
+
+---
+#### `SituationGetActiveAudioDeviceName` _(v2.4.199)_
+Returns the name of the currently active audio playback device. Returns a pointer to a static buffer — do not free.
+```c
+const char* SituationGetActiveAudioDeviceName(void);
+```
+**Usage Example:**
+```c
+printf("Playing through: %s\n", SituationGetActiveAudioDeviceName());
 ```
 
 ---
@@ -2008,31 +2131,74 @@ void SituationShowMessageBox(const char* title, const char* message);
 
 ### Structs and Flags
 
+#### `SituationCPUInfo` _(v2.4.207)_
+Returned by `SituationGetCPUInfo()`.
+```c
+typedef struct SituationCPUInfo {
+    char name[SITUATION_MAX_CPU_NAME_LEN];
+    uint32_t thread_count;
+    uint32_t core_count;
+    float clock_speed_ghz;
+} SituationCPUInfo;
+```
+
+---
+#### `SituationGPUInfo` _(v2.4.207)_
+Returned by `SituationGetGPUInfo()`.
+```c
+typedef struct SituationGPUInfo {
+    char name[SITUATION_MAX_GPU_NAME_LEN];
+    uint64_t dedicated_memory_bytes;
+} SituationGPUInfo;
+```
+
+---
+#### `SituationMemoryInfo` _(v2.4.207)_
+Returned by `SituationGetMemoryInfo()`.
+```c
+typedef struct SituationMemoryInfo {
+    uint64_t total_bytes;
+    uint64_t available_bytes;
+} SituationMemoryInfo;
+```
+
+---
 #### `SituationDeviceInfo`
-This struct, returned by `SituationGetDeviceInfo()`, provides a snapshot of the host system's hardware.
+Aggregate hardware snapshot returned by **`SituationGetDeviceInfo()`** _(deprecated — v2.4.207; prefer split queries above)_.
 ```c
 typedef struct SituationDeviceInfo {
-    char cpu_brand[49];
-    int cpu_core_count;
-    int cpu_thread_count;
-    uint64_t system_ram_bytes;
-    char gpu_brand[128];
-    uint64_t gpu_vram_bytes;
-    int display_count;
-    char os_name[32];
-    char os_version[32];
-    uint64_t total_storage_bytes;
-    uint64_t free_storage_bytes;
+    char cpu_name[128];                     // CPU brand/model string
+    int cpu_cores;                          // Physical core count
+    float cpu_clock_speed_ghz;              // Base clock speed
+    char gpu_name[128];                     // GPU model string
+    uint64_t gpu_dedicated_memory_bytes;    // Dedicated VRAM (via DXGI on Windows)
+    uint64_t total_ram_bytes;               // Total system RAM
+    uint64_t available_ram_bytes;           // Available RAM at query time
+    int storage_device_count;               // Number of storage devices
+    char storage_device_names[8][128];      // Storage device names
+    uint64_t storage_capacity_bytes[8];     // Per-device total capacity
+    uint64_t storage_free_bytes[8];         // Per-device free space
+    int network_adapter_count;              // Number of network adapters
+    char network_adapter_names[4][128];     // Network adapter names
+    int input_device_count;                 // Number of input devices (HID)
+    char input_device_names[8][128];        // Input device names
+    int display_count;                      // Number of connected displays
+    char display_names[8][128];             // Display names
+    int display_widths[8];                  // Display widths in pixels
+    int display_heights[8];                 // Display heights in pixels
+    int display_refresh_rates[8];           // Display refresh rates in Hz
 } SituationDeviceInfo;
 ```
--   `cpu_brand`: The brand and model of the CPU.
--   `cpu_core_count`, `cpu_thread_count`: The number of physical cores and logical threads.
--   `system_ram_bytes`: Total system RAM in bytes.
--   `gpu_brand`: The brand and model of the GPU.
--   `gpu_vram_bytes`: Total dedicated video RAM in bytes.
--   `display_count`: The number of connected displays.
--   `os_name`, `os_version`: The name and version of the operating system.
--   `total_storage_bytes`, `free_storage_bytes`: The total and free space on the primary storage device.
+-   `cpu_name`: The brand and model of the CPU.
+-   `cpu_cores`: Number of physical cores.
+-   `cpu_clock_speed_ghz`: Base clock frequency.
+-   `gpu_name`: The brand and model of the GPU.
+-   `gpu_dedicated_memory_bytes`: Dedicated video RAM in bytes.
+-   `total_ram_bytes`, `available_ram_bytes`: Total and available system RAM.
+-   `storage_device_count` + arrays: Per-device storage information.
+-   `display_count` + arrays: Per-display resolution and refresh rate.
+
+> **Note (v2.4.207):** CPU, GPU, and RAM fields are available via `SituationGetCPUInfo()`, `SituationGetGPUInfo()`, and `SituationGetMemoryInfo()`. Storage, network, and input arrays can be queried with the v2.4.207 enumeration helpers. OS fields moved to `SituationGetOSInfo()` in v2.4.199.
 
 ---
 #### `SituationDisplayInfo`
@@ -5516,15 +5682,15 @@ These functions control the overall rendering loop.
 
 ---
 ---
-#### `SituationAcquireFrameCommandBuffer`
-Prepares the backend for a new frame of rendering, acquiring the next available render target from the swap chain. This is the first function to call in the render phase and it must be guarded by a conditional check. It returns `false` if the frame cannot be acquired (e.g., because the window is minimized), in which case you should skip all rendering for that frame.
+#### `SituationAcquireFrameCommandBuffer` _(v2.4.203: bool → SituationError)_
+Prepares the backend for a new frame of rendering, acquiring the next available render target from the swap chain. This is the first function to call in the render phase and it must be guarded by a conditional check. It returns `SITUATION_SUCCESS` if the frame was acquired, or an error code if the frame cannot be acquired (e.g., `SITUATION_ERROR_NOT_INITIALIZED`, `SITUATION_ERROR_VULKAN_SWAPCHAIN_FAILED`, or `SITUATION_ERROR_GENERAL` when the window is minimized), in which case you should skip all rendering for that frame.
 ```c
-bool SituationAcquireFrameCommandBuffer(void);
+SituationError SituationAcquireFrameCommandBuffer(void);
 ```
 **Usage Example:**
 ```c
 // At the start of the rendering phase
-if (SituationAcquireFrameCommandBuffer()) {
+if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
     // It's safe to record rendering commands now.
     // ...
     SituationEndFrame();
@@ -5542,7 +5708,7 @@ SituationError SituationEndFrame(void);
 **Usage Example:**
 ```c
 // At the very end of the rendering phase
-if (SituationAcquireFrameCommandBuffer()) {
+if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
     // ... record all rendering commands ...
 
     // Finally, submit and present the frame.
@@ -5601,7 +5767,7 @@ SituationCmdEndRenderPass(cmd);
 - Returns the same buffer each frame
 - All rendering commands go through this buffer
 - Automatically submitted at end of frame
-- Thread-safe for single-threaded rendering
+- Must be recorded from the main thread (render thread handles execution internally)
 
 ---
 
@@ -6180,6 +6346,8 @@ typedef struct SituationVirtualDisplay {
     double frame_time_multiplier;
     SituationScalingMode scaling_mode;
     SituationBlendMode blend_mode;
+    SituationVDFlags flags;
+    int texture_slot_index;
 
     // Backend-Specific GPU Resources
     union {
@@ -6209,7 +6377,27 @@ typedef struct SituationVirtualDisplay {
 -   `frame_time_multiplier`: Controls the update rate. `1.0` updates every frame, `0.5` every other frame, `0.0` only when marked dirty.
 -   `scaling_mode`: An enum (`SituationScalingMode`) that determines how the display's texture is scaled if its resolution differs from its target area (e.g., `SITUATION_SCALING_STRETCH`, `SITUATION_SCALING_LETTERBOX`).
 -   `blend_mode`: An enum (`SituationBlendMode`) that defines how the display is blended during compositing (e.g., `SITUATION_BLEND_ALPHA`, `SITUATION_BLEND_ADDITIVE`).
+-   `flags`: A `SituationVDFlags` bitfield controlling creation behavior (e.g., `SITUATION_VD_FLAG_COMPUTE_TARGET`).
+-   `texture_slot_index`: Index into the texture registry for compute-target VDs (`-1` if not a compute target).
 -   `gl`, `vk`: A union containing backend-specific handles to the underlying GPU resources. These are managed internally by the library.
+
+---
+
+#### `SituationVDFlags`
+Flags that modify virtual display creation behavior. Passed to `SituationCreateVirtualDisplayEx`.
+
+```c
+typedef enum {
+    SITUATION_VD_FLAG_NONE           = 0,
+    SITUATION_VD_FLAG_COMPUTE_TARGET = 1 << 0,
+} SituationVDFlags;
+```
+
+| Flag | Description |
+| :--- | :--- |
+| `SITUATION_VD_FLAG_NONE` | Default behavior — creates a standard VD with color + depth attachments and a render pass. |
+| `SITUATION_VD_FLAG_COMPUTE_TARGET` | The VD texture is writable by compute shaders. Adds `STORAGE` usage flags to the underlying image. Skips depth buffer and render pass creation (compute shaders write directly via image store). The VD texture can be retrieved with `SituationGetVirtualDisplayTexture()` and bound to compute pipelines. |
+
 ---
 
 #### `SituationCreateVirtualDisplay`
@@ -6271,6 +6459,53 @@ SituationCreateVirtualDisplay(
 - Use lower resolutions for performance-critical 3D scenes
 - Frame time multiplier affects time-based animations within that display
 - Virtual displays can be used as textures via `SituationGetVirtualDisplayTexture()`
+
+---
+#### `SituationCreateVirtualDisplayEx`
+Extended version of `SituationCreateVirtualDisplay` that accepts additional creation flags. Use this when you need a virtual display with special capabilities, such as compute shader writability.
+
+```c
+SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double frame_time_mult, int z_order, SituationScalingMode scaling_mode, SituationBlendMode blend_mode, SituationVDFlags flags, int* out_id);
+```
+
+**Parameters:**
+- `resolution` - Width and height of the virtual display in pixels
+- `frame_time_mult` - Time multiplier for animations (1.0 = normal speed, 0.5 = half speed, 2.0 = double speed)
+- `z_order` - Rendering order (lower values render first, higher values on top)
+- `scaling_mode` - How to scale when compositing: `SITUATION_SCALING_FIT`, `SITUATION_SCALING_FILL`, `SITUATION_SCALING_STRETCH`
+- `blend_mode` - Blending mode: `SITUATION_BLEND_ALPHA`, `SITUATION_BLEND_ADDITIVE`, `SITUATION_BLEND_MULTIPLY`
+- `flags` - Bitfield of `SituationVDFlags` controlling creation behavior
+- `out_id` - Pointer to receive the virtual display ID
+
+**Returns:** `SITUATION_SUCCESS` on success, error code otherwise
+
+**Usage Example:**
+```c
+// Create a compute-target VD for GPU-driven effects (e.g., particle simulation output)
+int compute_vd;
+SituationCreateVirtualDisplayEx(
+    (Vector2){1920, 1080},
+    1.0,
+    0,
+    SITUATION_SCALING_FIT,
+    SITUATION_BLEND_ALPHA,
+    SITUATION_VD_FLAG_COMPUTE_TARGET,
+    &compute_vd
+);
+
+// Get the texture handle to bind in compute shaders
+SituationTexture vd_tex;
+SituationGetVirtualDisplayTexture(compute_vd, &vd_tex);
+
+// Bind to compute pipeline and dispatch
+SituationCmdBindComputeTexture(cmd, 0, vd_tex);
+SituationCmdDispatch(cmd, 1920 / 16, 1080 / 16, 1);
+```
+
+**Notes:**
+- `SITUATION_VD_FLAG_COMPUTE_TARGET` skips depth buffer and render pass creation — the VD cannot be used as a render pass target (no `SituationCmdBeginRenderPass` with its ID). Write to it exclusively via compute shaders using `imageStore`.
+- Compute-target VDs still participate in compositing via `SituationRenderVirtualDisplays()` if visible.
+- Passing `SITUATION_VD_FLAG_NONE` is equivalent to calling `SituationCreateVirtualDisplay`.
 
 ---
 #### `SituationDestroyVirtualDisplay`
@@ -6694,13 +6929,14 @@ Selects the **Vulkan** descriptor set layout when loading user SPIR-V that uses 
 
 ```c
 typedef enum SituationSpirvLayoutProfile {
-    SIT_SPIRV_LAYOUT_PROFILE_MESH = 0,   /* Set 0: dynamic UBO; set 1: combined sampler (default) */
-    SIT_SPIRV_LAYOUT_PROFILE_DUAL_SSBO,  /* Set 0 + set 1: SSBO @ binding 0 each */
-    SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO,   /* Set 0: UBO; set 1: SSBO @ binding 0 */
+    SIT_SPIRV_LAYOUT_PROFILE_MESH = 0,          /* Set 0: dynamic UBO; set 1: combined sampler (default) */
+    SIT_SPIRV_LAYOUT_PROFILE_DUAL_SSBO,         /* Set 0 + set 1: SSBO @ binding 0 each */
+    SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO,          /* Set 0: UBO; set 1: SSBO @ binding 0 */
+    SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO_SAMPLER,  /* Set 0: UBO; set 1: SSBO; set 2: combined image sampler (fragment) */
 } SituationSpirvLayoutProfile;
 ```
 
-Use **`SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO`** for large production shaders (e.g. Demon Hunt sky) that exceed default mesh layout assumptions. Harness regression: **`sit_test_vulkan.exe --module graphics --filter spirv`**.
+Use **`SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO`** for large production shaders (e.g. Demon Hunt sky) that exceed default mesh layout assumptions. Use **`SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO_SAMPLER`** when the shader additionally needs a texture sampler at descriptor set 2 (e.g. frame feedback effects). Harness regression: **`sit_test_vulkan.exe --module graphics --filter spirv`**.
 
 ---
 #### `SituationLoadShaderFromSpirv`
@@ -7307,20 +7543,20 @@ SituationDrawModel(cmd, model, model_transform);
 Exports a model to a human-readable .gltf and a .bin file for debugging and inspection.
 
 ```c
-bool SituationSaveModelAsGltf(SituationModel model, const char* file_path);
+SituationError SituationSaveModelAsGltf(SituationModel model, const char* file_path);
 ```
 
 **Parameters:**
 - `model` - Model to export
 - `file_path` - Output path (without extension, .gltf and .bin will be added)
 
-**Returns:** `true` on success, `false` on failure
+**Returns:** `SITUATION_SUCCESS` on success, or an error code on failure
 
 **Usage Example:**
 ```c
 // Export procedurally generated model
 SituationModel terrain = GenerateTerrainModel();
-if (SituationSaveModelAsGltf(terrain, "exports/terrain")) {
+if (SituationSaveModelAsGltf(terrain, "exports/terrain") == SITUATION_SUCCESS) {
     printf("Model exported to exports/terrain.gltf and exports/terrain.bin\n");
 }
 
@@ -7350,47 +7586,124 @@ SituationSaveModelAsGltf(original, "models/modified");
 - Preserves mesh, material, and transform data
 
 ---
+#### `SituationScreenshotFormat`
+
+Controls the default file format used by `SituationTakeScreenshot`.
+
+```c
+typedef enum SituationScreenshotFormat {
+    SIT_SCREENSHOT_BMP = 0,     // Windows Bitmap (default, fastest write)
+    SIT_SCREENSHOT_PNG,         // Portable Network Graphics (lossless, compressed)
+    SIT_SCREENSHOT_JPG,         // JPEG (lossy, small files, quality 90)
+    SIT_SCREENSHOT_TGA,         // Targa (lossless, RLE compressed)
+    SIT_SCREENSHOT_FORMAT_COUNT // Sentinel (number of supported formats)
+} SituationScreenshotFormat;
+```
+
+#### `sit_screenshot_format_ext[]`
+
+Compile-time lookup table mapping each `SituationScreenshotFormat` value to its file extension string (including the leading dot). Indexed directly by the enum value.
+
+```c
+static const char* const sit_screenshot_format_ext[] = {
+    ".bmp",  // SIT_SCREENSHOT_BMP
+    ".png",  // SIT_SCREENSHOT_PNG
+    ".jpg",  // SIT_SCREENSHOT_JPG
+    ".tga",  // SIT_SCREENSHOT_TGA
+};
+```
+
+This is a header-level constant available to any translation unit that includes `situation_api.h`. Use it for format-to-extension lookups without a function call (e.g., building filenames in tight loops or compile-time dispatch).
+
+---
+
+#### `SituationSetScreenshotFormat`
+
+Sets the default screenshot file format used when the filename extension does not imply a specific format.
+
+```c
+void SituationSetScreenshotFormat(SituationScreenshotFormat format);
+```
+
+**Parameters:**
+- `format` - One of `SIT_SCREENSHOT_BMP`, `SIT_SCREENSHOT_PNG`, `SIT_SCREENSHOT_JPG`, `SIT_SCREENSHOT_TGA`
+
+---
+
+#### `SituationGetScreenshotFormat`
+
+Returns the current default screenshot format.
+
+```c
+SituationScreenshotFormat SituationGetScreenshotFormat(void);
+```
+
+**Returns:** The currently configured `SituationScreenshotFormat`.
+
+---
+
+#### `SituationGetScreenshotFormatExtension`
+
+Returns the file extension string (including the leading dot) for a given screenshot format enum value.
+
+```c
+const char* SituationGetScreenshotFormatExtension(SituationScreenshotFormat format);
+```
+
+**Parameters:**
+- `format` - The screenshot format to query (e.g., `SIT_SCREENSHOT_BMP`, `SIT_SCREENSHOT_PNG`).
+
+**Returns:** A static string such as `".bmp"`, `".png"`, `".jpg"`, or `".tga"`. Returns `".bmp"` for unknown values.
+
+---
+
 #### `SituationTakeScreenshot`
-Takes a screenshot of the current frame and saves it to a file. Supports PNG and BMP formats based on file extension.
+Takes a screenshot of the current frame and saves it to a file. The `fileName` parameter is a base name (without extension) or NULL for automatic naming. The file extension is appended automatically based on the format set via `SituationSetScreenshotFormat` (default: BMP).
 
 ```c
 SituationError SituationTakeScreenshot(const char *fileName);
 ```
 
 **Parameters:**
-- `fileName` - Output file path (extension determines format: .png or .bmp)
+- `fileName` - Base file name (no extension), or NULL for auto-generated name. The appropriate extension (`.bmp`, `.png`, etc.) is appended based on the current screenshot format setting.
 
 **Returns:** `SITUATION_SUCCESS` on success, error code otherwise
 
 **Usage Example:**
 ```c
-// Take screenshot with F12
+// Set default format to PNG for all future screenshots
+SituationSetScreenshotFormat(SIT_SCREENSHOT_PNG);
+
+// Take screenshot with F12 — saves as "screenshots/screenshot_<timestamp>.png"
 if (SituationIsKeyPressed(SIT_KEY_F12)) {
-    // Generate timestamped filename
     time_t now = time(NULL);
     char filename[256];
-    snprintf(filename, sizeof(filename), "screenshots/screenshot_%ld.png", now);
+    snprintf(filename, sizeof(filename), "screenshots/screenshot_%ld", now);
     
     if (SituationTakeScreenshot(filename) == SITUATION_SUCCESS) {
-        printf("Screenshot saved: %s\n", filename);
+        printf("Screenshot saved!\n");
     } else {
         printf("Failed to save screenshot\n");
     }
 }
 
-// Sequential screenshots
+// Sequential screenshots — extension added from format setting
 static int screenshot_count = 0;
 if (SituationIsKeyPressed(SIT_KEY_F12)) {
     char filename[256];
-    snprintf(filename, sizeof(filename), "screenshot_%04d.png", screenshot_count++);
+    snprintf(filename, sizeof(filename), "screenshot_%04d", screenshot_count++);
     SituationTakeScreenshot(filename);
 }
 
-// BMP format
-SituationTakeScreenshot("screenshot.bmp");
+// NULL for fully auto-generated filename
+SituationTakeScreenshot(NULL);
 
-// PNG format (recommended)
-SituationTakeScreenshot("screenshot.png");
+// Change format, then take screenshot — extension follows
+SituationSetScreenshotFormat(SIT_SCREENSHOT_BMP);
+SituationTakeScreenshot("capture");   // → "capture.bmp"
+
+SituationSetScreenshotFormat(SIT_SCREENSHOT_PNG);
+SituationTakeScreenshot("capture");   // → "capture.png"
 
 // Create screenshots directory if needed
 #ifdef _WIN32
@@ -7398,13 +7711,16 @@ SituationTakeScreenshot("screenshot.png");
 #else
     mkdir("screenshots", 0755);
 #endif
-SituationTakeScreenshot("screenshots/capture.png");
+SituationTakeScreenshot("screenshots/capture");
 ```
 
 **Notes:**
 - Captures the current frame buffer
-- PNG format is recommended (smaller file size)
-- BMP format is faster but larger
+- `fileName` is a base name — the extension is added automatically from `SituationSetScreenshotFormat`
+- Pass NULL to auto-generate the filename
+- Use `SituationSetScreenshotFormat` to control the output format (BMP, PNG, etc.)
+- BMP is fastest (no compression overhead), PNG recommended for distribution
+- JPEG uses quality 90 (good balance of size and fidelity)
 - Creates parent directories if they don't exist
 - Overwrites existing files without warning
 
@@ -9919,14 +10235,14 @@ void TrimSilence(SituationSound* sound, float threshold) {
 Exports a sound's raw PCM data to a WAV file. Useful for saving procedurally generated audio or processed sounds.
 
 ```c
-bool SituationSoundExportAsWav(const SituationSound* sound, const char* fileName);
+SituationError SituationSoundExportAsWav(const SituationSound* sound, const char* fileName);
 ```
 
 **Parameters:**
 - `sound` - The sound to export
 - `fileName` - Output file path (e.g., "output.wav")
 
-**Returns:** `true` on success, `false` on failure
+**Returns:** `SITUATION_SUCCESS` on success, or an error code (`SITUATION_ERROR_INVALID_PARAM`, `SITUATION_ERROR_FILE_WRITE_FAILED`, `SITUATION_ERROR_AUDIO_INVALID_OPERATION`)
 
 **Usage Example:**
 ```c
@@ -9939,7 +10255,7 @@ SituationSetSoundPitch(&voice, 0.8f);
 SituationSetSoundEcho(&voice, true, 0.3f, 0.4f, 0.3f);
 
 // Export the processed version
-if (SituationSoundExportAsWav(&voice, "voice_processed.wav")) {
+if (SituationSoundExportAsWav(&voice, "voice_processed.wav") == SITUATION_SUCCESS) {
     printf("Exported processed audio\n");
 }
 ```
@@ -10926,7 +11242,7 @@ SituationError SituationCreateNode(SituationAudioGraph* graph, SituationNodeType
 ```
 **Parameters:**
 - `graph`: The graph to add the node to.
-- `type`: The device type (e.g., `SITUATION_NODE_REVERB`, `SITUATION_NODE_GAIN`, `SITUATION_NODE_TONE_SYNTH`).
+- `type`: The device type (e.g., `SITUATION_NODE_REVERB`, `SITUATION_NODE_GAIN`, `SITUATION_NODE_TONE_SYNTH`, `SITUATION_NODE_PCM_INPUT`).
 - `handle`: Receives the handle of the newly created node.
 
 **Returns:** `SITUATION_SUCCESS` on success, or an error code.
@@ -11052,6 +11368,50 @@ SituationError SituationGetControl(SituationAudioGraph* graph, SituationNodeHand
 - `out_value`: Receives the current value.
 
 **Returns:** `SITUATION_SUCCESS` on success, or an error code.
+
+#### PCM Input Node
+---
+#### `SituationPushNodePCM`
+Pushes interleaved float PCM samples into a `SITUATION_NODE_PCM_INPUT` node's internal ring buffer. Can be called from any thread (lock-free producer). The audio callback consumes these samples during graph processing. On underrun (ring empty), the node outputs silence.
+```c
+uint32_t SituationPushNodePCM(SituationAudioGraph* graph, SituationNodeHandle node, const float* samples, uint32_t frame_count, uint32_t channels);
+```
+**Parameters:**
+- `graph`: The graph containing the PCM input node.
+- `node`: Handle to a node created with `SITUATION_NODE_PCM_INPUT`.
+- `samples`: Pointer to interleaved float PCM data.
+- `frame_count`: Number of frames to push (one frame = one sample per channel).
+- `channels`: Channel count of the provided data (must match the node's channel config).
+
+**Returns:** Number of frames actually written. May be less than `frame_count` if the ring buffer is full.
+
+---
+#### `SituationGetNodePCMFreeFrames`
+Queries how many frames of free space are available in a PCM input node's ring buffer. Useful for flow control — the caller can check before pushing to avoid partial writes.
+```c
+uint32_t SituationGetNodePCMFreeFrames(SituationAudioGraph* graph, SituationNodeHandle node);
+```
+**Parameters:**
+- `graph`: The graph containing the PCM input node.
+- `node`: Handle to a node created with `SITUATION_NODE_PCM_INPUT`.
+
+**Returns:** Number of frames that can be written without dropping data.
+
+**Usage Example:**
+```c
+// Create a PCM input node for streaming audio
+SituationNodeHandle pcm_in;
+SituationCreateNode(graph, SITUATION_NODE_PCM_INPUT, &pcm_in);
+
+// Patch into the mix bus
+SituationCreatePatch(graph, pcm_in, 0, master_bus, 0, false);
+
+// Push audio from another thread (e.g., network receive, file decode)
+uint32_t free = SituationGetNodePCMFreeFrames(graph, pcm_in);
+if (free >= my_frame_count) {
+    SituationPushNodePCM(graph, pcm_in, my_buffer, my_frame_count, 2);
+}
+```
 
 </details>
 <details>
@@ -11610,19 +11970,19 @@ for (int i = 0; i < 3; i++) {
 Moves or renames a file from one location to another. This works even across different drives on Windows.
 
 ```c
-bool SituationMoveFile(const char* old_path, const char* new_path);
+SituationError SituationMoveFile(const char* old_path, const char* new_path);
 ```
 
 **Parameters:**
 - `old_path` - Current path of the file
 - `new_path` - New path for the file
 
-**Returns:** `true` on success, `false` otherwise
+**Returns:** `SITUATION_SUCCESS` on success, or an error code otherwise
 
 **Usage Example:**
 ```c
 // Rename a file in the same directory
-if (SituationMoveFile("data/temp.dat", "data/final.dat")) {
+if (SituationMoveFile("data/temp.dat", "data/final.dat") == SITUATION_SUCCESS) {
     printf("File renamed successfully\n");
 }
 
@@ -11738,7 +12098,7 @@ typedef struct SituationThreadPool {
 Creates a thread pool with worker threads, job queues, and an optional dedicated I/O thread for background asset loading and hot-reload polling.
 
 ```c
-bool SituationCreateThreadPool(
+SituationError SituationCreateThreadPool(
     SituationThreadPool* pool, 
     size_t num_threads, 
     size_t queue_size,
@@ -11754,7 +12114,7 @@ bool SituationCreateThreadPool(
 - `hot_reload_rate`: Hot-reload polling frequency in seconds (0.0 = disable, default: 0.5)
 - `disable_io`: If true, disables the dedicated I/O thread (useful for debugging or restricted environments)
 
-**Returns:** `true` on success, `false` on failure
+**Returns:** `SITUATION_SUCCESS` on success, or an error code on failure
 
 **New in v2.3.37:** Added `hot_reload_rate` and `disable_io` parameters for fine-grained control over the I/O subsystem.
 
@@ -11915,14 +12275,14 @@ printf("All assets loaded!\n");
 Waits for a specific job to complete. Returns immediately if the job has already finished.
 
 ```c
-bool SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id);
+SituationError SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id);
 ```
 
 **Parameters:**
 - `pool` - The thread pool the job was submitted to
 - `job_id` - The job ID returned by `SituationSubmitJob()`
 
-**Returns:** `true` if job completed successfully, `false` if job ID was invalid
+**Returns:** `SITUATION_SUCCESS` if job completed successfully, or an error code if job ID was invalid
 
 **Usage Example:**
 ```c
@@ -12044,7 +12404,7 @@ void Shutdown() {
 Adds a dependency between two jobs, ensuring the prerequisite job completes before the dependent job starts. This is essential for building task graphs where jobs must execute in a specific order.
 
 ```c
-bool SituationAddJobDependency(
+SituationError SituationAddJobDependency(
     SituationThreadPool* pool,
     SituationJobId prerequisite_job,
     SituationJobId dependent_job
@@ -12056,7 +12416,7 @@ bool SituationAddJobDependency(
 - `prerequisite_job`: The job that must complete first
 - `dependent_job`: The job that depends on the prerequisite
 
-**Returns:** `true` if the dependency was added successfully, `false` if either job ID is invalid
+**Returns:** `SITUATION_SUCCESS` if the dependency was added successfully, or an error code if either job ID is invalid
 
 **Usage Example:**
 ```c
@@ -12074,7 +12434,7 @@ SituationAddJobDependency(&pool, load_tex, create_mat);
 Adds multiple prerequisite jobs for a single dependent job. This is more efficient than calling `SituationAddJobDependency` multiple times.
 
 ```c
-bool SituationAddJobDependencies(
+SituationError SituationAddJobDependencies(
     SituationThreadPool* pool,
     SituationJobId* prerequisites,
     int count,
@@ -12414,12 +12774,14 @@ void SituationDispatchParallel(SituationThreadPool* pool, int count, int min_bat
 - `func` — Called as `func(i, user_data)` for each index `i`.
 
 ---
-#### `SituationSetThreadAffinity`
-Pins the **calling thread** to logical cores selected in **`core_mask`** (bit N = core N). Returns **`false`** if the OS rejected the affinity request.
+#### `SituationSetThreadAffinity` _(signature changed v2.4.203)_
+Pins the **calling thread** to logical cores selected in **`core_mask`** (bit N = core N). Returns an error code if the OS rejected the affinity request.
 
 ```c
-bool SituationSetThreadAffinity(uint64_t core_mask);
+SituationError SituationSetThreadAffinity(uint64_t core_mask);
 ```
+
+**Returns:** `SITUATION_SUCCESS` on success, or an error code (`SITUATION_ERROR_INVALID_PARAM`, `SITUATION_ERROR_THREAD_STATE_INVALID`).
 
 **Usage:** Call from the thread you want to pin (e.g. audio or render worker after pool creation).
 
@@ -12508,19 +12870,19 @@ typedef struct {
 Captures a point-in-time snapshot of the thread pool: worker roles, CPU placement, NUMA nodes, queue depths, and job counters.
 
 ```c
-bool SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationThreadPoolSnapshot* out);
+SituationError SituationGetThreadPoolSnapshot(SituationThreadPool* pool, SituationThreadPoolSnapshot* out);
 ```
 
 **Parameters:**
 *   `pool`: The thread pool to inspect.
 *   `out`: Pointer to a `SituationThreadPoolSnapshot` struct to fill.
 
-**Returns:** `true` on success, `false` if pool is NULL or inactive.
+**Returns:** `SITUATION_SUCCESS` on success, or an error code if pool is NULL or inactive.
 
 **Usage Example:**
 ```c
 SituationThreadPoolSnapshot snap;
-if (SituationGetThreadPoolSnapshot(&pool, &snap)) {
+if (SituationGetThreadPoolSnapshot(&pool, &snap) == SITUATION_SUCCESS) {
     for (int i = 0; i < snap.slot_count; i++) {
         printf("[%s] role=%d cpu=%d numa=%d\n",
             snap.slots[i].name,
@@ -12562,14 +12924,14 @@ typedef struct {
 Retrieves scheduler counters (lock contention, steal stats, queue pressure) for profiling.
 
 ```c
-bool SituationGetThreadPoolMetrics(SituationThreadPool* pool, SituationThreadPoolMetrics* out_metrics);
+SituationError SituationGetThreadPoolMetrics(SituationThreadPool* pool, SituationThreadPoolMetrics* out_metrics);
 ```
 
 **Parameters:**
 *   `pool`: The thread pool to query.
 *   `out_metrics`: Pointer to a `SituationThreadPoolMetrics` struct to fill.
 
-**Returns:** `true` on success.
+**Returns:** `SITUATION_SUCCESS` on success.
 
 ---
 
@@ -12591,7 +12953,1106 @@ Returns the number of **physical** CPU cores detected at init (not hyper-thread 
 uint32_t SituationGetCPUCoreCount(void);
 ```
 
-<summary><h3>Miscellaneous Module</h3></summary>
+---
+
+### CPU Topology & Affinity _(v2.4.139+)_
+
+These functions provide fine-grained control over thread placement and hardware topology discovery. Use them to pin threads to specific cores, build affinity masks for NUMA-aware scheduling, and query the system's physical layout.
+
+---
+#### `SituationRefreshCpuTopology` _(v2.4.139, signature changed v2.4.203)_
+Rebuilds the process-wide CPU topology cache. Call after hot-plug events or if topology may have changed.
+
+```c
+SituationError SituationRefreshCpuTopology(void);
+```
+
+**Returns:** `SITUATION_SUCCESS` if topology was successfully queried, or an error code (`SITUATION_ERROR_DEVICE_QUERY`, `SITUATION_ERROR_NOT_INITIALIZED`).
+
+---
+#### `SituationGetCpuTopology` _(v2.4.139, signature changed v2.4.203)_
+Returns a pointer to the cached CPU topology structure. The pointer remains valid until the next `SituationRefreshCpuTopology()` call or shutdown.
+
+```c
+SituationError SituationGetCpuTopology(const SituationCpuTopology** out_topology);
+```
+
+**Parameters:**
+- `out_topology`: Receives pointer to the cached topology (physical cores, logical processors, NUMA nodes)
+
+**Returns:** `SITUATION_SUCCESS` if topology is available, or an error code (`SITUATION_ERROR_INVALID_PARAM`, `SITUATION_ERROR_NOT_INITIALIZED`).
+
+**Usage Example:**
+```c
+const SituationCpuTopology* topo = NULL;
+if (SituationGetCpuTopology(&topo) == SITUATION_SUCCESS) {
+    printf("Physical cores: %d, Logical CPUs: %d\n",
+           topo->physical_core_count, topo->logical_processor_count);
+}
+```
+
+---
+#### `SituationSetThreadAffinityEx` _(v2.4.139, signature changed v2.4.203)_
+Pins the current thread to logical CPUs specified by a bitmask. Optionally returns the previous affinity mask.
+
+```c
+SituationError SituationSetThreadAffinityEx(uint64_t core_mask, uint64_t* out_previous);
+```
+
+**Parameters:**
+- `core_mask`: Bitmask of logical CPUs (bit 0 = CPU 0, bit 1 = CPU 1, etc.)
+- `out_previous`: Optional output for the previous affinity mask (NULL to ignore)
+
+**Returns:** `SITUATION_SUCCESS` on success, or an error code (`SITUATION_ERROR_INVALID_PARAM`, `SITUATION_ERROR_THREAD_STATE_INVALID`).
+
+**Usage Example:**
+```c
+uint64_t old_mask;
+// Pin to CPUs 0 and 2
+SituationSetThreadAffinityEx(0x05, &old_mask);
+// ... do latency-sensitive work ...
+// Restore
+SituationSetThreadAffinityEx(old_mask, NULL);
+```
+
+---
+#### `SituationGetThreadAffinity` _(v2.4.139, signature changed v2.4.203)_
+Reads the affinity mask of the calling thread.
+
+```c
+SituationError SituationGetThreadAffinity(uint64_t* out_mask);
+```
+
+**Returns:** `SITUATION_SUCCESS` on success, or an error code if the OS query failed.
+
+---
+#### `SituationGetCurrentProcessorIndex` _(v2.4.139)_
+Returns the logical CPU index the calling thread is currently executing on.
+
+```c
+int SituationGetCurrentProcessorIndex(void);
+```
+
+**Returns:** Logical CPU index (0-based), or -1 if unknown.
+
+---
+#### `SituationGetThreadNumaNode` _(v2.4.139)_
+Returns the NUMA node the calling thread is running on.
+
+```c
+int SituationGetThreadNumaNode(void);
+```
+
+**Returns:** NUMA node index, or -1 if unknown or single-NUMA system.
+
+---
+#### `SituationBuildPhysicalCoreMask` _(v2.4.139)_
+Returns a bitmask of all logical CPUs that belong to a specific physical core (includes SMT siblings).
+
+```c
+uint64_t SituationBuildPhysicalCoreMask(int physical_core_index);
+```
+
+**Usage Example:**
+```c
+// Pin to all logical CPUs on physical core 2
+uint64_t mask = SituationBuildPhysicalCoreMask(2);
+SituationSetThreadAffinity(mask);
+```
+
+---
+#### `SituationBuildUniqueCoreMask` _(v2.4.139)_
+Builds a mask with one logical processor per physical core, avoiding SMT siblings for maximum throughput on compute-bound work.
+
+```c
+uint64_t SituationBuildUniqueCoreMask(int start_physical_core, int count, bool avoid_siblings);
+```
+
+**Parameters:**
+- `start_physical_core`: First physical core index
+- `count`: Number of cores to include
+- `avoid_siblings`: If true, selects one LP per core (avoids hyper-threads)
+
+---
+#### `SituationBuildNumaNodeMask` _(v2.4.139)_
+Returns a bitmask of all logical CPUs belonging to a NUMA node.
+
+```c
+uint64_t SituationBuildNumaNodeMask(int numa_node_index);
+```
+
+---
+#### `SituationRefreshNumaTopology` _(v2.4.139)_
+Rebuilds the NUMA topology summary from the CPU topology and OS memory information.
+
+```c
+SituationError SituationRefreshNumaTopology(void);
+```
+
+---
+#### `SituationGetNumaTopology` _(v2.4.139)_
+Returns a pointer to the cached NUMA topology (node count, per-node memory, per-node CPU mask).
+
+```c
+SituationError SituationGetNumaTopology(const SituationNumaTopology** out_topology);
+```
+
+---
+#### `SituationGetPreferredNumaNode` _(v2.4.139)_
+Returns the NUMA node preference for the calling thread (thread-local storage), or -1 if unset.
+
+```c
+int SituationGetPreferredNumaNode(void);
+```
+
+---
+#### `SituationGetConfiguredIOThreadAffinity` _(v2.4.197)_
+Returns the affinity mask configured for the library's dedicated I/O thread. Default: CPU 3 (`1ULL << 3`).
+
+```c
+uint64_t SituationGetConfiguredIOThreadAffinity(void);
+```
+
+---
+
+### Thread Pool Observability _(v2.4.139+)_
+
+These functions expose scheduling metrics, worker placement, and diagnostic dumps for profiling and debugging threaded applications.
+
+---
+#### `SituationGetActiveJobCount` _(v2.4.139)_
+Returns the number of jobs currently executing across all worker threads.
+
+```c
+int SituationGetActiveJobCount(SituationThreadPool* pool);
+```
+
+---
+#### `SituationGetQueueDepth` _(v2.4.139)_
+Returns the number of pending (not-yet-started) jobs matching a queue priority mask.
+
+```c
+size_t SituationGetQueueDepth(SituationThreadPool* pool, SituationJobQueueMask mask);
+```
+
+---
+#### `SituationGetHighQueueDepth` _(v2.4.139)_
+Shorthand for the high-priority queue depth.
+
+```c
+size_t SituationGetHighQueueDepth(SituationThreadPool* pool);
+```
+
+---
+#### `SituationGetRecommendedWorkerCount` _(v2.4.139)_
+Sizing helper that returns a recommended worker thread count based on hardware, without requiring a pool to exist.
+
+```c
+uint32_t SituationGetRecommendedWorkerCount(uint32_t reserved_threads, bool use_physical_cores);
+```
+
+**Parameters:**
+- `reserved_threads`: Threads to exclude from the worker pool (e.g., 4 for main/render/audio/I/O)
+- `use_physical_cores`: If true, counts only physical cores; if false, counts logical CPUs
+
+**Usage Example:**
+```c
+// Reserve 4 threads (main, render, audio, I/O), use physical core count
+uint32_t workers = SituationGetRecommendedWorkerCount(4, true);
+printf("Recommended workers: %u\n", workers);
+```
+
+---
+#### `SituationDumpThreadPoolStatus` _(v2.4.139)_
+Prints pool metrics and per-role CPU placement to a stream.
+
+```c
+void SituationDumpThreadPoolStatus(SituationThreadPool* pool, FILE* out_stream, bool json_mode);
+```
+
+**Parameters:**
+- `pool`: Thread pool to inspect
+- `out_stream`: Output stream (e.g., `stdout`)
+- `json_mode`: If true, output is JSON-formatted
+
+---
+#### `SituationDumpThreadingReport` _(v2.4.139)_
+Full diagnostic: threading status + topology summary + pool dump.
+
+```c
+void SituationDumpThreadingReport(SituationThreadPool* pool, FILE* out_stream, bool json_mode);
+```
+
+---
+#### `SituationDumpThreadPoolMetrics` _(v2.4.139)_
+Outputs only the scheduler counters (jobs submitted, completed, stolen, etc.) without placement info.
+
+```c
+void SituationDumpThreadPoolMetrics(SituationThreadPool* pool, FILE* out_stream, bool json_mode);
+```
+
+---
+#### `SituationResetThreadPoolStats` _(v2.4.139)_
+Zeros all scheduler counters for a fresh measurement window.
+
+```c
+void SituationResetThreadPoolStats(SituationThreadPool* pool);
+```
+
+---
+#### `SituationPrintThreadingStatus` _(v2.4.139)_
+Human-readable threading status output (capabilities, pool state). Pass NULL for stdout.
+
+```c
+void SituationPrintThreadingStatus(FILE* out_stream);
+```
+
+---
+#### `SituationGetInternalThreadPool` _(v2.4.197)_
+Returns a pointer to the library's internal thread pool, or NULL if threading was not initialized. Useful for diagnostics and advanced integration.
+
+```c
+SituationThreadPool* SituationGetInternalThreadPool(void);
+```
+
+**Usage Example:**
+```c
+SituationThreadPool* pool = SituationGetInternalThreadPool();
+if (pool) {
+    SituationDumpThreadingReport(pool, stdout, false);
+}
+```
+
+---
+
+</details>
+<details>
+<summary><h3>System Introspection Module _(v2.4.199)_</h3></summary>
+
+**Overview:** Platform-abstracted APIs for querying operating system identity, enumerating running processes, and identifying the active audio playback device. Cross-platform: Windows (RtlGetVersion, Toolhelp32, WASAPI), Linux (/etc/os-release, /proc, miniaudio), macOS (sysctl, miniaudio).
+
+### Structs
+
+#### `SituationOSInfo`
+```c
+typedef struct SituationOSInfo {
+    char name[64];           // OS product name (e.g., "Windows 11", "Ubuntu 24.04")
+    char version[64];        // Version string (e.g., "10.0.22631", "6.8.0-41-generic")
+    uint32_t build_number;   // Numeric build (Windows), or 0 on other platforms
+} SituationOSInfo;
+```
+
+#### `SituationProcessInfo`
+```c
+#define SITUATION_MAX_PROCESS_NAME_LEN 260
+
+typedef struct SituationProcessInfo {
+    uint32_t pid;                                   // Process ID
+    char name[SITUATION_MAX_PROCESS_NAME_LEN];      // Process executable name
+    uint64_t memory_bytes;                          // Working set size in bytes
+} SituationProcessInfo;
+```
+
+### Functions
+
+---
+#### `SituationGetOSInfo` _(v2.4.199)_
+Returns operating system name, version string, and build number.
+
+```c
+SituationOSInfo SituationGetOSInfo(void);
+```
+
+**Usage Example:**
+```c
+SituationOSInfo os = SituationGetOSInfo();
+printf("Running on %s (%s), build %u\n", os.name, os.version, os.build_number);
+```
+
+**Platform behavior:**
+- **Windows:** Uses `RtlGetVersion` (no compatibility shims). Detects Win7/8/8.1/10/11 by build number.
+- **Linux:** Parses `PRETTY_NAME` from `/etc/os-release`, kernel version from `uname()`.
+- **macOS:** `kern.osrelease` via `sysctlbyname`.
+
+---
+#### `SituationGetProcessList` _(v2.4.199)_
+Returns a snapshot of all running OS processes with PID, name, and working set memory. Caller must free with `SituationFreeProcessList()`.
+
+```c
+SituationProcessInfo* SituationGetProcessList(int* out_count);
+```
+
+**Parameters:**
+- `out_count`: Receives the number of processes in the returned array
+
+**Returns:** Heap-allocated array of `SituationProcessInfo`, or NULL on failure.
+
+**Usage Example:**
+```c
+int count = 0;
+SituationProcessInfo* procs = SituationGetProcessList(&count);
+if (procs) {
+    for (int i = 0; i < count; i++) {
+        printf("[%u] %s — %.1f MB\n", procs[i].pid, procs[i].name,
+               procs[i].memory_bytes / (1024.0 * 1024.0));
+    }
+    SituationFreeProcessList(procs, count);
+}
+```
+
+---
+#### `SituationFreeProcessList` _(v2.4.199)_
+Frees a process list returned by `SituationGetProcessList()`.
+
+```c
+void SituationFreeProcessList(SituationProcessInfo* list, int count);
+```
+
+---
+#### `SituationGetActiveAudioDeviceName` _(v2.4.199)_
+Returns the name of the currently bound audio playback device. The returned pointer is to a static internal buffer — do not free.
+
+```c
+const char* SituationGetActiveAudioDeviceName(void);
+```
+
+**Usage Example:**
+```c
+const char* dev = SituationGetActiveAudioDeviceName();
+printf("Audio device: %s\n", dev ? dev : "(none)");
+```
+
+</details>
+<details>
+<summary><h3>YPQ Color Module _(v2.4.192+)_</h3></summary>
+
+**Overview:** YPQ is a perceptual color model inspired by NTSC YIQ, designed for artistic color grading. Y = luma, P = phase angle (hue rotation), Q = chroma (saturation). The API provides pixel-level conversion, float editing, in-gamut clamping, image-wide adjustment, and GPU-accelerated grading.
+
+### Structs
+
+#### `ColorYPQf`
+```c
+typedef struct {
+    float y;  // Luma [0.0 – 1.0]
+    float p;  // Phase angle in degrees [0.0 – 360.0)
+    float q;  // Chroma [0.0 – ~0.6]
+    float a;  // Alpha [0.0 – 1.0]
+} ColorYPQf;
+```
+
+### Functions
+
+---
+#### `SituationColorToYPQf` _(v2.4.192)_
+Converts an 8-bit RGBA color to float YPQ space.
+
+```c
+ColorYPQf SituationColorToYPQf(ColorRGBA color);
+```
+
+---
+#### `SituationColorFromYPQf` _(v2.4.192)_
+Converts a float YPQ color back to 8-bit RGBA.
+
+```c
+ColorRGBA SituationColorFromYPQf(ColorYPQf ypq);
+```
+
+---
+#### `SituationYpqLerp` _(v2.4.192)_
+Linearly interpolates between two YPQ colors, wrapping phase correctly across 360°.
+
+```c
+ColorYPQf SituationYpqLerp(ColorYPQf a, ColorYPQf b, float t);
+```
+
+---
+#### `SituationYpqAdjustLuma` _(v2.4.192)_
+Adjusts the luma component by a factor (1.0 = no change, >1.0 = brighter).
+
+```c
+ColorYPQf SituationYpqAdjustLuma(ColorYPQf c, float factor);
+```
+
+---
+#### `SituationYpqAdjustPhase` _(v2.4.192)_
+Rotates the phase (hue) by a degree offset.
+
+```c
+ColorYPQf SituationYpqAdjustPhase(ColorYPQf c, float degrees);
+```
+
+---
+#### `SituationYpqAdjustChroma` _(v2.4.192)_
+Scales chroma by a factor (0 = desaturate, >1 = oversaturate).
+
+```c
+ColorYPQf SituationYpqAdjustChroma(ColorYPQf c, float factor);
+```
+
+---
+#### `SituationYpqQuantize` _(v2.4.192)_
+Quantizes YPQ to reduced precision (posterization effect).
+
+```c
+ColorYPQf SituationYpqQuantize(ColorYPQf c, int luma_levels, int phase_levels, int chroma_levels);
+```
+
+---
+#### `SituationYpqClampInGamut` _(v2.4.192)_
+Clamps chroma so the color converts back to valid RGB without clipping.
+
+```c
+ColorYPQf SituationYpqClampInGamut(ColorYPQf c);
+```
+
+---
+#### `SituationYpqDistance` _(v2.4.192)_
+Perceptual distance metric between two YPQ colors.
+
+```c
+float SituationYpqDistance(ColorYPQf a, ColorYPQf b);
+```
+
+---
+#### `SituationYpqEquals` _(v2.4.192)_
+Approximate equality check within a tolerance.
+
+```c
+bool SituationYpqEquals(ColorYPQf a, ColorYPQf b, float epsilon);
+```
+
+---
+#### `SituationImageAdjustYPQ` _(v2.4.192)_
+Applies YPQ color grading to an entire CPU-side image.
+
+```c
+SituationError SituationImageAdjustYPQ(SituationImage* image,
+    float phase_shift_deg, float chroma_factor, float luma_factor, float mix);
+```
+
+**Parameters:**
+- `image`: Target image (modified in-place)
+- `phase_shift_deg`: Hue rotation in degrees
+- `chroma_factor`: Chroma multiplier (0 = desaturate, 1 = no change)
+- `luma_factor`: Luma multiplier
+- `mix`: Blend factor [0.0 = original, 1.0 = fully graded]
+
+**Usage Example:**
+```c
+// Apply a warm tint: rotate hue +15°, boost chroma 20%, full mix
+SituationImageAdjustYPQ(&my_image, 15.0f, 1.2f, 1.0f, 1.0f);
+SituationTexture graded = SituationUploadImageToTexture(&my_image);
+```
+
+---
+#### `SituationCmdDrawTextureYpqGrade` _(v2.4.193)_
+GPU-accelerated YPQ grade — same parameters as `SituationImageAdjustYPQ` but executed per-fragment in the shader pipeline. Matches CPU output for parity.
+
+```c
+SituationError SituationCmdDrawTextureYpqGrade(
+    SituationCommandBuffer cmd,
+    SituationTexture texture,
+    SitRectangle source, SitRectangle dest,
+    Vector2 origin, float rotation,
+    float phase_shift_deg, float chroma_factor, float luma_factor, float mix);
+```
+
+**Usage Example:**
+```c
+SituationAcquireFrameCommandBuffer(); // returns SituationError; check in production
+SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+// Apply GPU YPQ grade at draw time (no CPU image copy needed)
+SituationCmdDrawTextureYpqGrade(cmd, my_texture,
+    (SitRectangle){0, 0, tex_w, tex_h},
+    (SitRectangle){100, 100, 512, 512},
+    (Vector2){0, 0}, 0.0f,
+    15.0f, 1.2f, 1.0f, 1.0f);
+```
+
+</details>
+<details>
+<summary><h3>MIDI Integration Module _(v2.4.150+)_</h3></summary>
+
+**Overview:** MIDI CC (Continuous Controller) integration for the audio node graph. Enables hardware MIDI controllers to drive node parameters in real-time, virtual loopback for testing without hardware, per-channel filtering, and MIDI Learn for dynamic mapping at runtime.
+
+### Structs
+
+#### `SituationMidiDeviceInfo`
+```c
+typedef struct {
+    int device_id;              // Device ID for SituationEnableMidiControl
+    char device_name[128];      // Human-readable device name
+    int is_input;               // 1 if input device
+    int is_output;              // 1 if output device
+} SituationMidiDeviceInfo;
+```
+
+### Functions — MIDI Device Control
+
+---
+#### `SituationEnableMidiControl` _(v2.4.150)_
+Enables MIDI CC control for an audio graph node. Pass `device_id=-1` for auto-select (first available input).
+
+```c
+SituationError SituationEnableMidiControl(SituationAudioGraph* graph, SituationNodeHandle handle, int device_id);
+```
+
+---
+#### `SituationDisableMidiControl` _(v2.4.150)_
+Disables MIDI control for a node.
+
+```c
+SituationError SituationDisableMidiControl(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+
+---
+#### `SituationAutoConnectMidi` _(v2.4.150)_
+Convenience: auto-selects the first available MIDI input device. Equivalent to `SituationEnableMidiControl(graph, handle, -1)`.
+
+```c
+SituationError SituationAutoConnectMidi(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+
+---
+#### `SituationListMidiDevices` _(v2.4.150)_
+Lists available MIDI input devices.
+
+```c
+int SituationListMidiDevices(SituationMidiDeviceInfo* devices, int max_count);
+```
+
+**Returns:** Number of devices found.
+
+---
+#### `SituationGetMidiDeviceName` _(v2.4.150)_
+Gets the PortMidi device name for a device ID.
+
+```c
+SituationError SituationGetMidiDeviceName(int device_id, char* out_name, size_t out_name_size);
+```
+
+---
+#### `SituationIsMidiEnabled` _(v2.4.150)_
+Checks if a node has MIDI control enabled. Returns 1 or 0.
+
+```c
+int SituationIsMidiEnabled(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+
+---
+#### `SituationSetNodeMidiChannel` _(v2.4.150)_
+Filters MIDI input to a specific channel (0–15), or -1 for omni (all channels).
+
+```c
+SituationError SituationSetNodeMidiChannel(SituationAudioGraph* graph, SituationNodeHandle handle, int channel);
+```
+
+### Functions — Virtual MIDI Loopback (Testing)
+
+These functions create a virtual MIDI loopback pair for integration testing without hardware. Messages sent via `SituationVirtualMidi*` arrive at the node's MIDI input.
+
+---
+#### `SituationSetupVirtualMidiLoopback` _(v2.4.150)_
+Creates a connected virtual output→input pair. Returns the input device_id for use with `SituationEnableMidiControl()`.
+
+```c
+SituationError SituationSetupVirtualMidiLoopback(int* out_input_device_id);
+```
+
+**Usage Example:**
+```c
+int midi_in = -1;
+SituationSetupVirtualMidiLoopback(&midi_in);
+SituationEnableMidiControl(graph, synth_node, midi_in);
+
+// Now inject MIDI programmatically
+SituationVirtualMidiNoteOn(60, 100);   // Middle C, velocity 100
+SituationSleep(500);
+SituationVirtualMidiNoteOff(60);
+
+SituationTeardownVirtualMidiLoopback();
+```
+
+---
+#### `SituationVirtualMidiNoteOn` _(v2.4.150)_
+Inject a note-on message on channel 0 (legacy convenience wrapper).
+
+```c
+SituationError SituationVirtualMidiNoteOn(uint8_t note, uint8_t velocity);
+```
+
+---
+#### `SituationVirtualMidiNoteOff` _(v2.4.150)_
+Inject a note-off message on channel 0.
+
+```c
+SituationError SituationVirtualMidiNoteOff(uint8_t note);
+```
+
+---
+#### `SituationVirtualMidiNoteOnEx` _(v2.4.150)_
+Channel-aware note-on (channel 0–15).
+
+```c
+SituationError SituationVirtualMidiNoteOnEx(uint8_t channel, uint8_t note, uint8_t velocity);
+```
+
+---
+#### `SituationVirtualMidiNoteOffEx` _(v2.4.150)_
+Channel-aware note-off (channel 0–15).
+
+```c
+SituationError SituationVirtualMidiNoteOffEx(uint8_t channel, uint8_t note);
+```
+
+---
+#### `SituationVirtualMidiControlChange` _(v2.4.150)_
+Inject a CC message (mod wheel, expression, etc.).
+
+```c
+SituationError SituationVirtualMidiControlChange(uint8_t channel, uint8_t controller, uint8_t value);
+```
+
+---
+#### `SituationVirtualMidiPitchBend` _(v2.4.150)_
+Inject a pitch bend message. Range: 0–16383, center = 8192.
+
+```c
+SituationError SituationVirtualMidiPitchBend(uint8_t channel, int16_t bend);
+```
+
+---
+#### `SituationVirtualMidiProgramChange` _(v2.4.150)_
+Inject a program change message on a channel.
+
+```c
+SituationError SituationVirtualMidiProgramChange(uint8_t channel, uint8_t program);
+```
+
+---
+#### `SituationTeardownVirtualMidiLoopback` _(v2.4.150)_
+Closes and destroys the virtual loopback devices.
+
+```c
+void SituationTeardownVirtualMidiLoopback(void);
+```
+
+### Functions — MIDI Learn
+
+---
+#### `SituationEnableMidiLearn` _(v2.4.160)_
+Enables MIDI Learn capability for a node. MIDI must already be enabled via `SituationEnableMidiControl()`.
+
+```c
+SituationError SituationEnableMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+
+---
+#### `SituationStartMidiLearn` _(v2.4.160)_
+Starts learning: the next CC received maps to the specified parameter. Times out after 5 seconds.
+
+```c
+SituationError SituationStartMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle,
+    int control_index, const char* param_name,
+    float min_value, float max_value, int scaling);
+```
+
+**Parameters:**
+- `control_index`: Index of the node's control parameter to map
+- `param_name`: Display name for the mapping
+- `min_value` / `max_value`: Output value range
+- `scaling`: 0=linear, 1=log, 2=dB, 3=discrete
+
+---
+#### `SituationCancelMidiLearn` _(v2.4.160)_
+Cancels an active learn operation.
+
+```c
+SituationError SituationCancelMidiLearn(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+
+---
+#### `SituationClearMidiMapping` _(v2.4.160)_
+Clears a specific learned CC mapping by control index.
+
+```c
+SituationError SituationClearMidiMapping(SituationAudioGraph* graph, SituationNodeHandle handle, int control_index);
+```
+
+---
+#### `SituationClearAllMidiMappings` _(v2.4.160)_
+Clears all learned mappings for a node.
+
+```c
+SituationError SituationClearAllMidiMappings(SituationAudioGraph* graph, SituationNodeHandle handle);
+```
+
+---
+#### `SituationSaveMidiPreset` / `SituationLoadMidiPreset` _(v2.4.160)_
+Persist/restore MIDI Learn mappings to/from a JSON file.
+
+```c
+SituationError SituationSaveMidiPreset(SituationAudioGraph* graph, SituationNodeHandle handle, const char* filename);
+SituationError SituationLoadMidiPreset(SituationAudioGraph* graph, SituationNodeHandle handle, const char* filename);
+```
+
+</details>
+<details>
+<summary><h3>Renderer Bolster Commands _(v2.4.147+)_</h3></summary>
+
+**Overview:** These command-buffer commands extend the renderer with explicit barriers, mid-pass clears, transfer operations (copy/blit), indirect draw/dispatch, and fixed-function raster state. All are recorded into a `SituationCommandBuffer` and executed at `SituationEndFrame()`.
+
+### Barriers & Synchronization
+
+---
+#### `SituationCmdPipelineBarrierEx` _(v2.4.147)_
+Records an explicit global memory barrier (all resources). Use between dependent passes or compute→graphics transitions.
+
+```c
+SituationError SituationCmdPipelineBarrierEx(SituationCommandBuffer cmd, const SituationPipelineBarrierDesc* desc);
+```
+
+---
+#### `SituationCmdBufferBarrier` _(v2.4.147)_
+Records a buffer-range memory barrier. Use after compute writes to a buffer before reading in a draw.
+
+```c
+SituationError SituationCmdBufferBarrier(SituationCommandBuffer cmd, const SituationBufferBarrierDesc* desc);
+```
+
+---
+#### `SituationCmdTextureBarrier` _(v2.4.147)_
+Records an explicit texture layout/memory barrier. Required before/after transfer operations on textures.
+
+```c
+SituationError SituationCmdTextureBarrier(SituationCommandBuffer cmd, SituationTexture texture, const SituationTextureBarrierDesc* desc);
+```
+
+### Mid-Pass Clears
+
+---
+#### `SituationCmdClear` _(v2.4.147)_
+Mid-pass clear of active render-pass attachments. For begin-pass clears, use `SituationRenderPassInfo.loadOp` instead.
+
+```c
+SituationError SituationCmdClear(SituationCommandBuffer cmd, uint32_t clear_flags, const SituationClearValue* clear_value);
+```
+
+---
+#### `SituationCmdClearColor` _(v2.4.147)_
+Mid-pass clear of the active color attachment.
+
+```c
+SituationError SituationCmdClearColor(SituationCommandBuffer cmd, ColorRGBA color);
+```
+
+---
+#### `SituationCmdClearDepth` _(v2.4.147)_
+Mid-pass clear of the active depth attachment.
+
+```c
+SituationError SituationCmdClearDepth(SituationCommandBuffer cmd, float depth);
+```
+
+---
+#### `SituationCmdClearDepthStencil` _(v2.4.147)_
+Mid-pass clear of both depth and stencil attachments.
+
+```c
+SituationError SituationCmdClearDepthStencil(SituationCommandBuffer cmd, float depth, uint32_t stencil);
+```
+
+---
+#### `SituationCmdClearStencil` _(v2.4.147)_
+Mid-pass clear of the stencil attachment (when supported by backend/attachment).
+
+```c
+SituationError SituationCmdClearStencil(SituationCommandBuffer cmd, uint32_t stencil);
+```
+
+### Transfer Operations
+
+---
+#### `SituationCmdCopyBufferEx` _(v2.4.147)_
+Error-returning buffer copy with independent source/destination offsets.
+
+```c
+SituationError SituationCmdCopyBufferEx(SituationCommandBuffer cmd,
+    SituationBuffer src, SituationBuffer dst,
+    size_t src_offset, size_t dst_offset, size_t size);
+```
+
+---
+#### `SituationCmdCopyTexture` _(v2.4.147)_
+Exact-size copy between two color 2D textures. Caller owns explicit texture barriers.
+
+```c
+SituationError SituationCmdCopyTexture(SituationCommandBuffer cmd,
+    SituationTexture src, SituationTexture dst,
+    const SituationTextureCopyRegion* region);
+```
+
+---
+#### `SituationCmdBlitTexture` _(v2.4.147)_
+Blit (scaled copy with filtering) between color 2D textures. Caller owns barriers.
+
+```c
+SituationError SituationCmdBlitTexture(SituationCommandBuffer cmd,
+    SituationTexture src, SituationTexture dst,
+    const SituationTextureBlitRegion* region);
+```
+
+---
+#### `SituationCmdCopyBufferToTexture` _(v2.4.147)_
+Uploads tightly-packed RGBA8 rows from a buffer into a texture subregion.
+
+```c
+SituationError SituationCmdCopyBufferToTexture(SituationCommandBuffer cmd,
+    SituationBuffer src, size_t src_offset,
+    SituationTexture dst, const SituationTextureCopyRegion* dst_region);
+```
+
+---
+#### `SituationCmdCopyTextureToBuffer` _(v2.4.147)_
+Reads back a texture subregion into a buffer. `dst_row_pitch` 0 = width × 4.
+
+```c
+SituationError SituationCmdCopyTextureToBuffer(SituationCommandBuffer cmd,
+    SituationTexture src, const SituationTextureCopyRegion* src_region,
+    SituationBuffer dst, size_t dst_offset, size_t dst_row_pitch);
+```
+
+### Indirect Draw & Dispatch
+
+---
+#### `SituationCmdDrawIndirect` _(v2.4.147)_
+Draw from a GPU/CPU-filled `SituationDrawIndirectCommand` in an indirect buffer. Requires active render pass, bound pipeline, and vertex buffers.
+
+```c
+SituationError SituationCmdDrawIndirect(SituationCommandBuffer cmd, SituationBuffer indirect_buffer, size_t offset);
+```
+
+---
+#### `SituationCmdDrawIndexedIndirect` _(v2.4.147)_
+Indexed indirect draw (32-bit indices). Requires bound index buffer.
+
+```c
+SituationError SituationCmdDrawIndexedIndirect(SituationCommandBuffer cmd, SituationBuffer indirect_buffer, size_t offset);
+```
+
+---
+#### `SituationCmdDispatchEx` _(v2.4.147)_
+Compute dispatch with validation and error reporting (stricter than `SituationCmdDispatch`).
+
+```c
+SituationError SituationCmdDispatchEx(SituationCommandBuffer cmd, uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z);
+```
+
+---
+#### `SituationCmdDispatchIndirect` _(v2.4.147)_
+Indirect compute dispatch from a buffer.
+
+```c
+SituationError SituationCmdDispatchIndirect(SituationCommandBuffer cmd, SituationBuffer indirect_buffer, size_t offset);
+```
+
+### Fixed-Function Raster State _(v2.4.170+)_
+
+These commands modify GPU raster state within a render pass. Changes are scoped via push/pop.
+
+---
+#### `SituationCmdPushRasterState` / `SituationCmdPopRasterState` _(v2.4.170)_
+Saves/restores the full raster state stack. Scope ID is user-defined for debug tracking. Stack depth: 256.
+
+```c
+SituationError SituationCmdPushRasterState(SituationCommandBuffer cmd, uint32_t scope_id);
+SituationError SituationCmdPopRasterState(SituationCommandBuffer cmd, uint32_t scope_id);
+```
+
+---
+#### `SituationCmdSetCullMode` _(v2.4.170)_
+```c
+SituationError SituationCmdSetCullMode(SituationCommandBuffer cmd, SituationCullMode mode);
+```
+
+---
+#### `SituationCmdSetFrontFace` _(v2.4.170)_
+```c
+SituationError SituationCmdSetFrontFace(SituationCommandBuffer cmd, SituationFrontFace front_face);
+```
+
+---
+#### `SituationCmdSetDepthTest` _(v2.4.170)_
+```c
+SituationError SituationCmdSetDepthTest(SituationCommandBuffer cmd, bool enable, SituationDepthCompareOp depth_op);
+```
+
+---
+#### `SituationCmdSetDepthWrite` _(v2.4.170)_
+```c
+SituationError SituationCmdSetDepthWrite(SituationCommandBuffer cmd, bool enable);
+```
+
+---
+#### `SituationCmdSetDepthBias` _(v2.4.170)_
+```c
+SituationError SituationCmdSetDepthBias(SituationCommandBuffer cmd, bool enable, float constant_factor, float clamp, float slope_factor);
+```
+
+---
+#### `SituationCmdSetPolygonMode` _(v2.4.170)_
+```c
+SituationError SituationCmdSetPolygonMode(SituationCommandBuffer cmd, SituationPolygonMode mode);
+```
+
+---
+#### `SituationCmdSetLineWidth` _(v2.4.170)_
+```c
+SituationError SituationCmdSetLineWidth(SituationCommandBuffer cmd, float width);
+```
+
+---
+#### `SituationCmdSetPrimitiveTopology` _(v2.4.170)_
+```c
+SituationError SituationCmdSetPrimitiveTopology(SituationCommandBuffer cmd, SituationPrimitiveTopology topology);
+```
+
+---
+#### `SituationCmdSetBlendEnable` _(v2.4.170)_
+```c
+SituationError SituationCmdSetBlendEnable(SituationCommandBuffer cmd, bool enable);
+```
+
+---
+#### `SituationCmdSetBlendFuncSeparate` _(v2.4.170)_
+```c
+SituationError SituationCmdSetBlendFuncSeparate(SituationCommandBuffer cmd,
+    SituationBlendFactor src_rgb, SituationBlendFactor dst_rgb,
+    SituationBlendFactor src_a, SituationBlendFactor dst_a);
+```
+
+---
+#### `SituationCmdSetColorWriteMask` _(v2.4.170)_
+```c
+SituationError SituationCmdSetColorWriteMask(SituationCommandBuffer cmd, bool r, bool g, bool b, bool a);
+```
+
+---
+#### `SituationCmdSetStencilTest` _(v2.4.170)_
+```c
+SituationError SituationCmdSetStencilTest(SituationCommandBuffer cmd, bool enable,
+    const SituationStencilState* front, const SituationStencilState* back);
+```
+
+---
+#### `SituationCmdSetMultisampleState` _(v2.4.170)_
+**Status: NOT_IMPLEMENTED.** The type exists but the command returns `SITUATION_ERROR_NOT_IMPLEMENTED`. Blocked on render-target MSAA resolve (planned for v2.5).
+
+```c
+SituationError SituationCmdSetMultisampleState(SituationCommandBuffer cmd, const SituationMultisampleState* state);
+```
+
+### Viewport & Scissor Extensions
+
+---
+#### `SituationCmdSetViewportIndexed` _(v2.4.170)_
+Sets a viewport at a specific index (index 0 = default viewport).
+
+```c
+SituationError SituationCmdSetViewportIndexed(SituationCommandBuffer cmd, uint32_t index, float x, float y, float width, float height);
+```
+
+---
+#### `SituationCmdSetScissorIndexed` _(v2.4.170)_
+Sets a scissor rect at a specific index (index 0 = default scissor).
+
+```c
+SituationError SituationCmdSetScissorIndexed(SituationCommandBuffer cmd, uint32_t index, int x, int y, int width, int height);
+```
+
+### Additional Rendering Commands
+
+---
+#### `SituationCmdBindIndexBufferEx` _(v2.4.147)_
+Bind an index buffer with explicit 16-bit or 32-bit element type.
+
+```c
+SituationError SituationCmdBindIndexBufferEx(SituationCommandBuffer cmd,
+    SituationBuffer buffer, size_t offset, SituationIndexType index_type);
+```
+
+---
+#### `SituationCmdBindSampledTexture` _(v2.4.147)_
+Binds a texture as a sampled image (sampler2D) to a shader binding point.
+
+```c
+SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd, int binding, SituationTexture texture);
+```
+
+---
+#### `SituationCmdBindDescriptorSetDynamic` _(v2.4.147)_
+Binds a dynamic buffer descriptor set (UBO/SSBO) with a byte offset.
+
+```c
+SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd,
+    uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset);
+```
+
+---
+#### `SituationCmdSetPushConstantData` _(v2.4.147)_
+Uploads arbitrary data to a shader's push constant range at a byte offset.
+
+```c
+SituationError SituationCmdSetPushConstantData(SituationCommandBuffer cmd,
+    SituationShader shader, uint32_t offset, const void* data, size_t size);
+```
+
+---
+#### `SituationCmdSetVertexAttribute` _(v2.4.147)_
+[OpenGL Only] Configures vertex attribute format and binding index. Must match `SituationCmdBindVertexBuffer` binding.
+
+```c
+SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd,
+    uint32_t location, uint32_t binding, int size,
+    SituationDataType type, bool normalized, size_t offset);
+```
+
+---
+#### `SituationCmdBeginDebugGroup` / `SituationCmdEndDebugGroup` _(v2.4.147)_
+Debug marker regions visible in GPU debuggers (RenderDoc, Nsight).
+
+```c
+SituationError SituationCmdBeginDebugGroup(SituationCommandBuffer cmd, const char* name, ColorRGBA color);
+SituationError SituationCmdEndDebugGroup(SituationCommandBuffer cmd);
+```
+
+---
+#### `SituationGetComputeCommandBuffer` _(v2.3.23)_
+Returns the compute-specific command buffer (Vulkan only). For OpenGL, use the main command buffer.
+
+```c
+SituationCommandBuffer SituationGetComputeCommandBuffer(void);
+```
+
+</details>
+<details>
+<summary><h3>Deprecated APIs</h3></summary>
+
+The following APIs have been removed or deprecated since v2.4.106. Code using them should migrate to the listed replacements.
+
+| Removed/Deprecated | Version | Replacement |
+|--------------------|---------|-------------|
+| `SituationStartAudioPlayback` | Removed v2.4.198 | `SITUATION_NODE_PCM_INPUT` + `SituationPushNodePCM()` |
+| `SituationCmdBeginRenderToDisplay` | Deprecated v2.4.147 | `SituationCmdBeginRenderPass()` with `SituationRenderPassInfo` |
+| `SituationCmdBindUniformBuffer` | Deprecated v2.4.147 | `SituationCmdBindDescriptorSet()` |
+| `SituationCmdBindTexture` | Deprecated v2.4.147 | `SituationCmdBindTextureSet()` or `SituationCmdBindSampledTexture()` |
+| `SituationCmdBindComputeBuffer` | Deprecated v2.4.147 | `SituationCmdBindDescriptorSet()` with compute pipeline |
+| `SituationLoadComputeShader` | Deprecated | `SituationCreateComputePipeline()` |
+| `SituationLoadComputeShaderFromMemory` | Deprecated | `SituationCreateComputePipelineFromMemory()` |
+
+</details>
+<details>
 
 **Overview:** This module includes powerful utilities like the Temporal Oscillator System for rhythmic timing, a suite of color space conversion functions (RGBA, HSV, YPQA), and essential memory management helpers for data allocated by the library.
 
@@ -13251,7 +14712,7 @@ void SituationDrawMetricsOverlay(SituationCommandBuffer cmd, Vector2 position, C
 **Usage Example:**
 ```c
 // Draw performance metrics in the top-left corner
-if (SituationAcquireFrameCommandBuffer()) {
+if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
     SituationRenderPassInfo pass = {/* ... */};
     SituationCmdBeginRenderPass(cmd, &pass);
     
@@ -13634,7 +15095,8 @@ This is the primary function for creating a compute pipeline.
 Once a `SituationComputePipeline` is created, it can be used within a command buffer to perform computations.
 
 #### Binding a Compute Pipeline (SituationCmdBindComputePipeline)
-- **Signature:** `SITAPI void SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline);`
+- **Signature:** `SITAPI SituationError SituationCmdBindComputePipeline(SituationCommandBuffer cmd, SituationComputePipeline pipeline);`
+- **Returns:** `SITUATION_SUCCESS` on success, or a `SituationError` code on failure (e.g., invalid command buffer or pipeline handle).
 - **Parameters:**
     - `cmd`: The command buffer obtained from `SituationAcquireFrameCommandBuffer` or `SituationBeginVirtualDisplayFrame`.
     - `pipeline`: The `SituationComputePipeline` handle returned by `SituationCreateComputePipelineFromMemory`.
@@ -13644,6 +15106,7 @@ Once a `SituationComputePipeline` is created, it can be used within a command bu
     3.  Backend-Specific:
         - **OpenGL**: Calls `glUseProgram(pipeline.gl_program_id)`.
         - **Vulkan**: Calls `vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.vk_pipeline)`.
+- **Note:** Changed from `void` to `SituationError` return in v2.4.202 (Error Propagation Phase 3E). Previous callers that discarded the return value remain valid.
 
 #### Binding Resources (Buffers, Images)
 Compute shaders often read from and write to GPU resources like Shader Storage Buffer Objects (SSBOs) or Images.
@@ -13925,19 +15388,19 @@ This example concept highlights the interaction between several situation.h APIs
 
 - **SituationCreateBuffer / SituationDestroyBuffer:** Used to create the GPU buffer(s) that will store the particle simulation data (positions, velocities).
 These buffers must be created with appropriate usage flags (e.g., SITUATION_BUFFER_USAGE_STORAGE_BUFFER for compute read/write, potentially
-SITUATION_BUFFER_USAGE_VERTEX_BUFFER if used as such in the graphics pipeline, or bound via SituationCmdBindUniformBuffer if accessed as an SSBO).
+SITUATION_BUFFER_USAGE_VERTEX_BUFFER if used as such in the graphics pipeline, or bound via SituationCmdBindDescriptorSet for SSBO access).
 - **SituationCreateComputePipelineFromMemory / SituationDestroyComputePipeline:**
 Used to create the compute pipeline that will execute the particle update logic.
 - **SituationCmdBindComputePipeline:** Binds the compute pipeline for subsequent dispatch commands.
-- **SituationCmdBindComputeBuffer:** Binds the particle data buffer to a specific binding point within the compute shader's descriptor set.
+- **SituationCmdBindComputeTexture:** Binds the particle data buffer to a specific binding point within the compute shader's descriptor set.
 - **SituationCmdDispatch:** Launches the compute shader work groups to perform the particle simulation update.
-- **SituationMemoryBarrier:** Crucially, this function is used after the compute dispatch and before the graphics draw call. It inserts a memory and execution
-barrier to ensure all compute shader invocations have completed their writes (SITUATION_BARRIER_COMPUTE_SHADER_STORAGE_WRITE) and that these writes are
-visible to the subsequent graphics pipeline stages that will read the data (SITUATION_BARRIER_VERTEX_SHADER_STORAGE_READ or similar). Without this
+- **SituationCmdPipelineBarrierEx:** Crucially, this function is used after the compute dispatch and before the graphics draw call. It inserts a memory and execution
+barrier to ensure all compute shader invocations have completed their writes and that these writes are
+visible to the subsequent graphics pipeline stages that will read the data. Without this
 barrier, the graphics pipeline might read stale or partially updated data.
 - **SituationCmdBindPipeline (Graphics):** Binds the graphics pipeline used for rendering the particles.
 - **SituationCmdBindVertexBuffer / SituationCmdBindIndexBuffer:** Binds the mesh data (e.g., a simple quad) used for instanced rendering of particles.
-- **SituationCmdBindUniformBuffer / SituationCmdBindTexture:** Binds resources needed by the graphics shaders (e.g., the particle data buffer if accessed as an SSBO, textures for particle appearance).
+- **SituationCmdBindDescriptorSet / SituationCmdBindSampledTexture:** Binds resources needed by the graphics shaders (e.g., the particle data buffer as an SSBO, textures for particle appearance).
 - **SituationCmdDrawIndexedInstanced / SituationCmdDrawInstanced:** Renders the particle geometry, typically using instancing where the instance count equals
 the number of particles, and the instance ID is used in the vertex shader to fetch data from the particle buffer.
 
@@ -13984,9 +15447,9 @@ This bridges the gap between the existing separate compute and graphics examples
 
 ## Complete API Index (generated)
 
-Every public **`SITAPI`** function is documented in **this file** (**438/438**). The categorized index is **[situation_api_index.md](situation_api_index.md)** (auto-generated from `sit/situation_api.h`).
+Every public **`SITAPI`** function is indexed in **[situation_api_index.md](situation_api_index.md)** (auto-generated from `sit/situation_api.h`). Total: **531** functions as of v2.4.199.
 
-After header changes, verify parity:
+After header changes, regenerate:
 
 ```bat
 python scripts\generate_situation_api_docs.py
@@ -14000,7 +15463,7 @@ python scripts\generate_situation_api_docs.py
 
 ---
 
-Copyright (c) 2025 Jacques Morel
+Copyright (c) 2025-2026 Jacques Morel
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
