@@ -1,11 +1,11 @@
-﻿/**
+/**
  * @file test_virtual_display.c
- * @brief Virtual Display harness module — API, compositing, scaling, blend, timing.
+ * @brief Virtual Display harness module � API, compositing, scaling, blend, timing.
  *
  * Split from test_graphics.c so VD failures are isolated from the main graphics suite.
  * Runs as its own module immediately after [graphics] in the harness registry.
  *
- * (c) 2025-2026 Jacques Morel — MIT Licensed
+ * (c) 2025-2026 Jacques Morel � MIT Licensed
  */
 
 #include "sit_api_include.h"
@@ -162,10 +162,20 @@ static void test_render_virtual_displays(void) {
     // Do a frame with VD compositing
     SituationPollInputEvents();
     SituationUpdateTimers();
-    bool acquired = SituationAcquireFrameCommandBuffer();
+    bool acquired = (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SIT_ASSERT(acquired);
 
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+
+    // Begin main-window render pass (required before compositing VDs)
+    SituationRenderPassInfo rp = {0};
+    rp.display_id = -1;
+    rp.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
+    rp.color_attachment.storeOp = SIT_STORE_OP_STORE;
+    rp.color_attachment.clear.color = (ColorRGBA){0, 0, 0, 255};
+    err = SituationCmdBeginRenderPass(cmd, &rp);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
     err = SituationRenderVirtualDisplays(cmd);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
@@ -217,7 +227,7 @@ static void test_vd_render_into_pipeline(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -318,7 +328,7 @@ static void test_vd_z_ordering(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -352,7 +362,7 @@ static void test_vd_z_ordering(void) {
     err = SituationCmdEndRenderPass(cmd);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Composite to main ΓÇö VD2 (z=1) should be on top
+    // Composite to main G�� VD2 (z=1) should be on top
     SituationRenderPassInfo main_rp = {0};
     main_rp.display_id = -1;
     main_rp.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
@@ -418,7 +428,7 @@ static void test_vd_visibility_toggle(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     // Render red into VD
@@ -472,7 +482,7 @@ static void test_vd_visibility_toggle(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     cmd = SituationGetMainCommandBuffer();
 
     err = SituationCmdBeginRenderPass(cmd, &rp_vd);
@@ -530,7 +540,7 @@ static void test_vd_opacity_blending(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp_vd = {0};
@@ -614,7 +624,7 @@ static void test_vd_scaling_stretch(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp_vd = {0};
@@ -670,7 +680,7 @@ static void test_vd_scaling_stretch(void) {
  * SITUATION_SCALING_FIT: non-square VD in square region -> verify aspect ratio preserved
  */
 static void test_vd_scaling_fit(void) {
-    // Wide VD (128x32) in the default harness window — should letterbox (black top/bottom)
+    // Wide VD (128x32) in the default harness window � should letterbox (black top/bottom)
     int vd_id = -1;
     Vector2 resolution = {128.0f, 32.0f};
     SituationError err = SituationCreateVirtualDisplay(
@@ -693,7 +703,7 @@ static void test_vd_scaling_fit(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp_vd = {0};
@@ -772,7 +782,7 @@ static void test_vd_scaling_integer(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp_vd = {0};
@@ -883,7 +893,7 @@ static void test_vd_blend_alpha(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp_vd = {0};
@@ -966,7 +976,7 @@ static void test_vd_blend_additive(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp_vd = {0};
@@ -1048,7 +1058,7 @@ static void test_vd_blend_multiply(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp_vd = {0};
@@ -1124,7 +1134,7 @@ static void test_vd_blend_none_overwrite(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp_vd = {0};
@@ -1141,7 +1151,7 @@ static void test_vd_blend_none_overwrite(void) {
     err = SituationCmdEndRenderPass(cmd);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Composite over bright green ΓÇö BLEND_NONE should fully overwrite
+    // Composite over bright green G�� BLEND_NONE should fully overwrite
     SituationRenderPassInfo main_rp = {0};
     main_rp.display_id = -1;
     main_rp.color_attachment.loadOp = SIT_LOAD_OP_CLEAR;
@@ -1200,7 +1210,7 @@ static void test_vd_composite_time(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo main_rp = {0};
@@ -1254,7 +1264,7 @@ static void test_vd_frame_time_multiplier(void) {
     // Run a frame to advance timing
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationEndFrame();
 
     vd = SituationGetVirtualDisplay(vd_id);
@@ -1290,7 +1300,7 @@ static void test_vd_offset_position(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp_vd = {0};
@@ -1329,13 +1339,13 @@ static void test_vd_offset_position(void) {
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     uint8_t* pixels = (uint8_t*)screen.data;
 
-    // (5,5) should be black ΓÇö before the VD offset
+    // (5,5) should be black G�� before the VD offset
     int tl_idx = (5 * screen.width + 5) * 4;
     SIT_ASSERT(pixels[tl_idx] < 30);
     SIT_ASSERT(pixels[tl_idx+1] < 30);
     SIT_ASSERT(pixels[tl_idx+2] < 30);
 
-    // (65, 65) should be red ΓÇö inside the VD area (offset 50 + within 32px)
+    // (65, 65) should be red G�� inside the VD area (offset 50 + within 32px)
     int inside_x = 65;
     int inside_y = 65;
     if (inside_x < screen.width && inside_y < screen.height) {

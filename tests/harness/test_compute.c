@@ -123,7 +123,7 @@ static void compute_teardown(void) {
 static bool compute_begin_frame(SituationCommandBuffer* out_cmd) {
     SituationPollInputEvents();
     SituationUpdateTimers();
-    if (!SituationAcquireFrameCommandBuffer()) {
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
         return false;
     }
     *out_cmd = SituationGetMainCommandBuffer();

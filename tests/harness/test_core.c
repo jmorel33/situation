@@ -216,7 +216,7 @@ static void test_viewport_index_zero_parity(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -253,7 +253,7 @@ static void test_viewport_index_out_of_range(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -336,7 +336,7 @@ static void test_render_pass_configuration_key_stencil_ops(void) {
 static void test_render_pass_info_default_begin_pass(void) {
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -493,7 +493,7 @@ static void test_module_core_assignment(void) {
 
     // Snapshot for assertions
     SituationThreadPoolSnapshot snap;
-    SIT_ASSERT(SituationGetThreadPoolSnapshot(pool, &snap));
+    SIT_ASSERT(SituationGetThreadPoolSnapshot(pool, &snap) == SITUATION_SUCCESS);
     SIT_ASSERT(snap.pool_active);
     SIT_ASSERT(snap.worker_count >= 1);
     SIT_ASSERT(snap.io_thread_enabled);

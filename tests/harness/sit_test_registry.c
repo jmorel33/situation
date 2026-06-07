@@ -37,8 +37,13 @@ extern const SitTestModule g_module_audio;
 extern const SitTestModule g_module_tone_synth;
 extern const SitTestModule g_module_audio_effects_heard;
 
+// Phase 5.5 — Model Loader (after graphics, real GLB assets)
+extern const SitTestModule g_module_model_loader;
+
 // Phase 6 — Miscellaneous
 extern const SitTestModule g_module_misc;
+extern const SitTestModule g_module_system_info;
+extern const SitTestModule g_module_kterm_console;
 
 // Phase 7 — Advanced (manual/visual stress; runs last)
 extern const SitTestModule g_module_advanced;
@@ -59,9 +64,12 @@ void sit_test_register_all(void) {
     sit_test_register_module(&g_module_virtual_display);
     sit_test_register_module(&g_module_compute);
     sit_test_register_module(&g_module_transfer);
+    sit_test_register_module(&g_module_model_loader);
     sit_test_register_module(&g_module_audio);
     sit_test_register_module(&g_module_tone_synth);
     sit_test_register_module(&g_module_audio_effects_heard);
     sit_test_register_module(&g_module_misc);
+    sit_test_register_module(&g_module_system_info);
+    sit_test_register_module(&g_module_kterm_console);
     sit_test_register_module(&g_module_advanced);
 }

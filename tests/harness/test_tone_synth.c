@@ -10,6 +10,7 @@
 #include "sit_test_audio_window.h"
 #include "sit_test_stereo_scope.h"
 #include "sit_test_listen_overlay.h"
+#include "sit_test_audio_levels.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,28 @@
 #endif
 #define SIT_TONE_TEST_SLEEP_MS(ms) sit_test_listen_overlay_pump_ms((uint32_t)(ms))
 #define SIT_TONE_CAPTURE_SLEEP_MS(ms) sit_test_listen_overlay_pump_ms((uint32_t)(ms))
+
+#define SIT_TONE_CAPTURE_FINISH(cap) \
+    sit_test_audio_monitor_finish_tone_capture( \
+        (cap), g_sit_current_test_name ? g_sit_current_test_name : "tone_synth")
+
+/** After PlayTone* / MIDI note without a capture buffer — master meter guard only. */
+static void sit_tone_smoke_assert_meter_levels(void) {
+    SIT_TONE_CAPTURE_SLEEP_MS(120);
+    float peak = 0.f;
+    float rms = 0.f;
+    SituationGetMasterOutputMeter(&peak, &rms);
+    if (peak < 0.005f && rms < 0.003f) {
+        fprintf(stderr, "[audio_levels] %s: silent master bus (peak=%.4f rms=%.4f)\n",
+                g_sit_current_test_name ? g_sit_current_test_name : "tone_smoke", peak, rms);
+        SIT_ASSERT(false);
+    }
+    if (peak > 1.05f || rms > 0.92f) {
+        fprintf(stderr, "[audio_levels] %s: hot master bus (peak=%.4f rms=%.4f)\n",
+                g_sit_current_test_name ? g_sit_current_test_name : "tone_smoke", peak, rms);
+        SIT_ASSERT(false);
+    }
+}
 
 static bool g_tone_synth_init_ok = false;
 
@@ -66,17 +89,22 @@ static void test_play_tone_ex(void) {
     SituationToneHandle handle = SituationPlayToneEx(
         SIT_WAVE_SINE, 440.0f, 0.5f, 0.0f, 0.01f, 0.05f, 0.7f, 0.1f, 0.2f);
     SIT_ASSERT(handle != 0);
+    sit_tone_smoke_assert_meter_levels();
     SituationStopTone(handle);
 }
 
 static void test_play_tone_legacy(void) {
     SituationPlayTone(SIT_WAVE_SQUARE, 880.0f, 0.3f, 0.01f, 0.05f, 0.5f, 0.1f, 0.1f);
+    sit_tone_smoke_assert_meter_levels();
     SIT_ASSERT(true);
+    SituationStopAllTones();
 }
 
 static void test_play_midi_note(void) {
     SituationPlayMidiNote(69, SIT_WAVE_SINE, 0.4f, 0.01f, 0.05f, 0.6f, 0.1f, 0.15f);
+    sit_tone_smoke_assert_meter_levels();
     SIT_ASSERT(true);
+    SituationStopAllTones();
 }
 
 static void test_stop_all_tones(void) {
@@ -447,7 +475,23 @@ static bool sit_audio_freq_verify_tone(SitAudioFreqCapture* cap, int midi_note, 
     if (!sit_audio_freq_test_ready(&sr)) return false;
 
     float expected = sit_midi_note_to_hz(midi_note);
-    return sit_audio_freq_verify(cap, (float)sr, expected, 0.04f, 0.005f, out_measured_hz);
+    const bool freq_ok =
+        sit_audio_freq_verify(cap, (float)sr, expected, 0.04f, 0.005f, out_measured_hz);
+    if (!freq_ok || !cap || cap->count == 0) {
+        return freq_ok;
+    }
+
+    float meter_peak = -1.0f;
+    float meter_rms = -1.0f;
+    SituationGetMasterOutputMeter(&meter_peak, &meter_rms);
+    char msg[320];
+    SitTestAudioLevelLimits limits;
+    sit_test_audio_level_limits_tone_defaults(&limits);
+    if (!sit_test_audio_levels_check(cap, meter_peak, meter_rms, &limits, msg, sizeof(msg))) {
+        fprintf(stderr, "[tone_synth] note %d levels: %s\n", midi_note, msg);
+        return false;
+    }
+    return true;
 }
 
 /** Legacy tone pool: SituationPlayMidiNote → master bus → monitor captures ~440 Hz for A4. */
@@ -473,7 +517,7 @@ static void test_legacy_midi_note_emits_frequency(void) {
     SituationSetAudioMasterVolume(0.8f);
     SituationPlayMidiNote(69, SIT_WAVE_SINE, 0.8f, 0.01f, 0.05f, 0.75f, 0.1f, 1.0f);
     SIT_TONE_CAPTURE_SLEEP_MS(700);
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     SIT_TONE_CAPTURE_SLEEP_MS(20);
 
     float peak = 0.f, rms = 0.f;
@@ -562,7 +606,7 @@ static void test_graph_midi_note_emits_frequency(void) {
     SIT_ASSERT(fabsf(measured - 440.0f) < 440.0f * 0.04f);
 
     SituationVirtualMidiNoteOffEx(SITUATION_TEST_MIDI_CHANNEL, 69);
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }
@@ -607,7 +651,7 @@ static void test_tone_synth_phase1_compare_a4(void) {
     SIT_ASSERT(sit_audio_freq_verify_tone(&cap_legacy, note, &legacy_hz));
 
     SituationStopAllTones();
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap_legacy);
     sit_audio_freq_capture_free(&cap_legacy);
     SIT_TONE_TEST_SLEEP_MS(120);
 
@@ -637,7 +681,7 @@ static void test_tone_synth_phase1_compare_a4(void) {
     SIT_ASSERT(graph_peak > 0.01f);
     SIT_ASSERT(sit_audio_freq_verify_tone(&cap_graph, note, &graph_hz));
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap_graph);
     sit_audio_freq_capture_free(&cap_graph);
 
     sit_midi_log_phase1_compare("A4 side-by-side (exclusive paths)", legacy_hz, legacy_peak, legacy_rms,
@@ -820,7 +864,7 @@ static void test_midi_complex_melody_expression(void) {
         SituationVirtualMidiNoteOffEx(SITUATION_TEST_MIDI_CHANNEL,current_note);
     }
     SIT_TONE_CAPTURE_SLEEP_MS(120);
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     SIT_TONE_CAPTURE_SLEEP_MS(20);
 
     SIT_ASSERT(cap.count >= 256);
@@ -1022,7 +1066,7 @@ static void test_midi_velocity_volume_levels(void) {
     SIT_ASSERT(increases >= step_count - 5);
     SIT_ASSERT(decreases <= 4);
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }
@@ -1134,7 +1178,7 @@ static void test_graph_tone_synth_cc_mod_vibrato_pitch(void) {
     /* Full mod wheel: LFO pulls energy away from 440 Hz in some windows */
     SIT_ASSERT(mod_max > mod_min * 1.2f);
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }
@@ -1188,7 +1232,7 @@ static void test_graph_tone_synth_cc92_tremolo(void) {
     SIT_ASSERT(rms_min < rms_max);
     SIT_ASSERT(rms_max > rms_min * 1.5f);
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }
@@ -1286,7 +1330,7 @@ static void test_graph_tone_synth_filter_modes_attenuate_a4(void) {
     SIT_ASSERT(powers[1] < powers[0] * 0.45f);
     SIT_ASSERT(powers[2] < powers[0] * 0.45f);
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }
@@ -1350,7 +1394,7 @@ static void test_graph_tone_synth_pulse_width_fundamental(void) {
     SIT_ASSERT(wide_power > 1e-8f);
     SIT_ASSERT(narrow_power < wide_power * 0.55f);
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }
@@ -1432,7 +1476,7 @@ static void test_graph_tone_synth_waveforms_all(void) {
     SIT_ASSERT(noise_rms > 0.002f);
     SIT_ASSERT(noise_tone_power < tonal_powers[0] * 0.55f);
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }
@@ -1545,7 +1589,7 @@ static void test_graph_tone_synth_lfo_pitch_pwm_mod(void) {
     SIT_ASSERT(pwm_static_h2_max < pwm_static_h2_min * 1.15f);
     SIT_ASSERT(pwm_mod_h2_max > pwm_mod_h2_min * 1.2f);
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }
@@ -1608,7 +1652,7 @@ static void test_graph_tone_synth_filter_env_adsr(void) {
     SIT_ASSERT(power_early > 1e-10f);
     SIT_ASSERT(power_late > power_early * 1.8f);
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }
@@ -1984,7 +2028,7 @@ static void test_graph_tone_synth_sub_sync(void) {
         measure_offset_ms + measure_ms - 450u, 400u, hz_sync_coarse_max);
     sit_test_stereo_scope_service_ui();
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
 
     SIT_ASSERT(rms_sync_track > SIT_TONE_SUB_EFFECT_MIN_RMS);
@@ -2065,7 +2109,7 @@ static void test_graph_tone_synth_sub_ring_mod(void) {
         measure_offset_ms + measure_ms - 450u, 400u, hz_a4);
     sit_test_stereo_scope_service_ui();
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
 
     SIT_ASSERT(rms_ring_track > SIT_TONE_SUB_EFFECT_MIN_RMS);
@@ -2295,7 +2339,7 @@ static void test_graph_tone_synth_sub_oscillator(void) {
     const float p_ring_220_e4 =
         sit_capture_ms_goertzel(&cap, sr, measure_offset_ms, measure_ms, 220.0f);
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
 
     SIT_ASSERT(p440_level_off > 1e-8f);
@@ -2500,7 +2544,7 @@ static void test_graph_tone_synth_mono_portamento_linked(void) {
     sit_test_stereo_scope_service_ui();
     sit_tone_portamento_assert_linked_glide(&cap, sr, step_ms, 1, 12, 55);
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }
@@ -2567,7 +2611,7 @@ static void test_graph_tone_synth_mono_portamento_unlinked(void) {
                                                  snap_measure_ms, i);
     }
 
-    sit_test_audio_monitor_set_capture(NULL);
+    SIT_TONE_CAPTURE_FINISH(&cap);
     sit_audio_freq_capture_free(&cap);
     sit_midi_tone_graph_teardown(graph, tone);
 }

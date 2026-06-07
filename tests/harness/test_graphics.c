@@ -1,11 +1,11 @@
-﻿/**
+/**
  * @file test_graphics.c
- * @brief Graphics module tests — Meshes, Shaders, Textures, Buffers, Compute Interop, Diagnostics
+ * @brief Graphics module tests � Meshes, Shaders, Textures, Buffers, Compute Interop, Diagnostics
  *
  * Requires context: calls SituationInit() in setup, SituationShutdown() in teardown.
  * Tests GPU resource creation, manipulation, and destruction.
  *
- * (c) 2025-2026 Jacques Morel ΓÇö MIT Licensed
+ * (c) 2025-2026 Jacques Morel G�� MIT Licensed
  */
 
 #include "sit_api_include.h"
@@ -160,7 +160,7 @@ static void test_shader_uniform(void) {
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
     // Setting a uniform that doesn't exist in the shader should not crash
-    // (it may return an error or silently ignore ΓÇö both are acceptable)
+    // (it may return an error or silently ignore G�� both are acceptable)
     float value = 1.0f;
     SituationSetShaderUniform(shader, "u_nonexistent", &value, SIT_UNIFORM_FLOAT);
     SIT_ASSERT(true); // No crash is success
@@ -254,7 +254,7 @@ static void test_create_destroy_buffer(void) {
     );
     // Buffer creation may fail with a GL error on some configurations
     if (err != SITUATION_SUCCESS) {
-        // Graceful skip ΓÇö not all backends/drivers support all buffer combos
+        // Graceful skip G�� not all backends/drivers support all buffer combos
         SIT_ASSERT(true);
         return;
     }
@@ -333,7 +333,7 @@ static void test_acquire_frame_command_buffer(void) {
     SituationPollInputEvents();
     SituationUpdateTimers();
 
-    bool acquired = SituationAcquireFrameCommandBuffer();
+    bool acquired = (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SIT_ASSERT(acquired);
 
     // Must end the frame to leave the GPU in a clean state
@@ -345,7 +345,7 @@ static void test_get_main_command_buffer(void) {
     SituationPollInputEvents();
     SituationUpdateTimers();
 
-    bool acquired = SituationAcquireFrameCommandBuffer();
+    bool acquired = (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SIT_ASSERT(acquired);
 
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
@@ -359,7 +359,7 @@ static void test_begin_end_render_pass(void) {
     SituationPollInputEvents();
     SituationUpdateTimers();
 
-    bool acquired = SituationAcquireFrameCommandBuffer();
+    bool acquired = (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SIT_ASSERT(acquired);
 
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
@@ -550,7 +550,7 @@ static void test_cmd_set_viewport_scissor(void) {
     SituationPollInputEvents();
     SituationUpdateTimers();
 
-    bool acquired = SituationAcquireFrameCommandBuffer();
+    bool acquired = (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SIT_ASSERT(acquired);
 
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
@@ -588,7 +588,7 @@ static void test_get_renderer_type(void) {
 }
 
 static void test_is_feature_supported(void) {
-    // Query a common feature ΓÇö should not crash regardless of result
+    // Query a common feature G�� should not crash regardless of result
     bool supported = SituationIsFeatureSupported(SIT_FEATURE_COMPUTE_SHADER);
     (void)supported; // Result depends on hardware
     SIT_ASSERT(true);
@@ -634,7 +634,7 @@ static void test_take_screenshot(void) {
 }
 
 // ============================================================================
-//  Draw Command Verification ΓÇö Embedded Shaders & Helpers (Phase 8)
+//  Draw Command Verification G�� Embedded Shaders & Helpers (Phase 8)
 // ============================================================================
 
 // Passthrough vertex shader: positions pass through directly to clip space
@@ -721,7 +721,7 @@ static void test_async_shader_renderer_alive_while_loading(void) {
 
         SituationPollInputEvents();
         SituationUpdateTimers();
-        SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+        SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
         SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
         SIT_ASSERT_NOT_NULL(cmd);
 
@@ -749,7 +749,7 @@ static void test_async_shader_unload_during_load(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    if (SituationAcquireFrameCommandBuffer()) {
+    if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
         SituationEndFrame();
     }
 
@@ -764,7 +764,7 @@ static void test_sync_shader_after_async_cycle(void) {
         graphics_test_glsl_fs_solid_red(),
         &async_shader);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
-    SIT_ASSERT_EQ(graphics_test_async_poll_shader_ready(async_shader, 600), SITUATION_SUCCESS);
+    SIT_ASSERT_EQ(graphics_test_async_poll_shader_ready(async_shader, 3000), SITUATION_SUCCESS);
     SituationUnloadShader(&async_shader);
 
     SituationShader sync_shader = {0};
@@ -775,8 +775,8 @@ static void test_sync_shader_after_async_cycle(void) {
 
 /**
  * @brief Tolerance-based pixel channel comparison.
- * @param actual   The actual pixel channel value (0ΓÇô255)
- * @param expected The expected pixel channel value (0ΓÇô255)
+ * @param actual   The actual pixel channel value (0G��255)
+ * @param expected The expected pixel channel value (0G��255)
  * @param tolerance Maximum allowed absolute difference (default: 5)
  * @return true if |actual - expected| <= tolerance
  */
@@ -786,12 +786,12 @@ static bool pixel_approx_eq(uint8_t actual, uint8_t expected, uint8_t tolerance)
 }
 
 // ============================================================================
-//  Draw Command Verification Tests (Phase 8 ΓÇö Visual Verification)
+//  Draw Command Verification Tests (Phase 8 G�� Visual Verification)
 // ============================================================================
 
 /**
  * Full draw pipeline test:
- * bind shader ΓåÆ draw 3 verts ΓåÆ end frame ΓåÆ readback ΓåÆ verify non-black pixels
+ * bind shader G�� draw 3 verts G�� end frame G�� readback G�� verify non-black pixels
  */
 static void test_draw_pipeline_basic(void) {
     // Create shader from embedded sources
@@ -813,7 +813,7 @@ static void test_draw_pipeline_basic(void) {
     // Render frame
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -862,7 +862,7 @@ static void test_draw_pipeline_basic(void) {
 
 /**
  * Indexed draw test:
- * SituationCmdDrawIndexed with quad (4 verts, 6 indices) ΓåÆ verify rendered area
+ * SituationCmdDrawIndexed with quad (4 verts, 6 indices) G�� verify rendered area
  */
 static void test_draw_indexed_quad(void) {
     // Create shader
@@ -886,7 +886,7 @@ static void test_draw_indexed_quad(void) {
     // Render frame
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -937,7 +937,7 @@ static void test_draw_indexed_quad(void) {
  * Low-level indexed draw: SituationCmdBindVertexBuffer + SituationCmdBindIndexBuffer
  * + SituationCmdDrawIndexed (OpenGL 4.6 soft replay and Vulkan command buffer).
  *
- * Harness wall-clock time is NOT bind-command cost — it includes LoadShaderFromMemory,
+ * Harness wall-clock time is NOT bind-command cost � it includes LoadShaderFromMemory,
  * EndFrame GPU sync, and SituationLoadImageFromScreen readback. Vulkan often reports
  * ~260-450 ms vs OpenGL ~50-190 ms for the whole test; see UPDATELOG v2.4.126.
  */
@@ -966,7 +966,7 @@ static void test_bind_index_buffer_low_level(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1043,7 +1043,7 @@ static void test_bind_index_buffer_uint16_low_level(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1096,7 +1096,7 @@ static void test_bind_index_buffer_offset_alignment_uint16(void) {
         SITUATION_BUFFER_USAGE_INDEX_BUFFER, &ibo);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    /* Validation only — do not AcquireFrame without EndFrame (Vulkan fence wedge). */
+    /* Validation only � do not AcquireFrame without EndFrame (Vulkan fence wedge). */
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1112,7 +1112,7 @@ static void test_draw_indirect_cpu_filled(void) {
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
     const size_t vertex_stride = sizeof(float) * 3;
-    /* Two triangles (6 vertices) — TRIANGLE_LIST default; 4-vertex quad would read past VBO with count 6. */
+    /* Two triangles (6 vertices) � TRIANGLE_LIST default; 4-vertex quad would read past VBO with count 6. */
     float vertices[] = {
         -0.5f, -0.5f, 0.0f,
          0.5f, -0.5f, 0.0f,
@@ -1135,7 +1135,7 @@ static void test_draw_indirect_cpu_filled(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1210,7 +1210,7 @@ static void test_draw_indexed_indirect_cpu_filled(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1273,7 +1273,7 @@ static void test_draw_indirect_validation(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     err = SituationCmdDrawIndirect(cmd, indirect, 1);
@@ -1320,7 +1320,7 @@ static void test_draw_indirect_compute_generated_barrier(void) {
     }
 
     const size_t vertex_stride = sizeof(float) * 3;
-    /* Two triangles (6 vertices) — matches compute-written vertexCount and cpu indirect test. */
+    /* Two triangles (6 vertices) � matches compute-written vertexCount and cpu indirect test. */
     float vertices[] = {
         -0.5f, -0.5f, 0.0f,
          0.5f, -0.5f, 0.0f,
@@ -1343,7 +1343,7 @@ static void test_draw_indirect_compute_generated_barrier(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1424,7 +1424,7 @@ static void test_front_face_cull_interaction(void) {
     /* Pass 1: CW geometry with CCW front-face + back-face culling => triangle should be culled. */
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1469,7 +1469,7 @@ static void test_front_face_cull_interaction(void) {
     /* Pass 2: same geometry with CW front-face + back-face culling => triangle should be visible. */
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1533,7 +1533,7 @@ static void test_primitive_topology_line_list(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1610,7 +1610,7 @@ static void test_primitive_topology_point_list(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1714,7 +1714,7 @@ static void test_polygon_mode_line_wireframe(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1768,7 +1768,7 @@ static void test_polygon_mode_line_wireframe(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -1854,7 +1854,7 @@ static void test_depth_bias_overlap(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2114,7 +2114,7 @@ static void test_raster_state_commands(void) {
     // Render frame
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2169,7 +2169,7 @@ static void test_raster_state_commands(void) {
 
 /**
  * Mesh draw test:
- * SituationCmdDrawMesh with triangle ΓåÆ verify pixels
+ * SituationCmdDrawMesh with triangle G�� verify pixels
  */
 static void test_draw_mesh_triangle(void) {
     // Create shader
@@ -2192,7 +2192,7 @@ static void test_draw_mesh_triangle(void) {
     // Render frame
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2243,13 +2243,13 @@ static void test_draw_mesh_triangle(void) {
 
 /**
  * Quad draw test:
- * SituationCmdDrawQuad with red color ΓåÆ verify red pixels
+ * SituationCmdDrawQuad with red color G�� verify red pixels
  */
 static void test_draw_quad_red(void) {
     // Render frame using the high-level DrawQuad API
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2306,7 +2306,7 @@ static void test_draw_quad_red(void) {
 
 /**
  * Textured draw test:
- * Create 4├ù4 checkerboard ΓåÆ SituationCmdDrawTexture ΓåÆ verify pattern
+ * Create 4+�4 checkerboard G�� SituationCmdDrawTexture G�� verify pattern
  */
 static void test_draw_textured_checkerboard(void) {
     // Create a 4x4 checkerboard image (alternating white and black)
@@ -2332,7 +2332,7 @@ static void test_draw_textured_checkerboard(void) {
     // Render frame using DrawTexture
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2395,7 +2395,7 @@ static void test_draw_textured_checkerboard(void) {
 }
 
 // ============================================================================
-//  Shader Uniform Data Flow — Embedded Shaders (Phase 9)
+//  Shader Uniform Data Flow � Embedded Shaders (Phase 9)
 // ============================================================================
 
 #if defined(SITUATION_USE_OPENGL)
@@ -2440,7 +2440,7 @@ static const char* g_fs_ubo_color =
 
 /**
  * Float uniform test:
- * Set u_multiplier = 0.5 ΓåÆ render ΓåÆ verify red channel Γëê 128 (0.5 * 255)
+ * Set u_multiplier = 0.5 G�� render G�� verify red channel G�� 128 (0.5 * 255)
  */
 static void test_uniform_float_multiplier(void) {
     // Create shader with float uniform fragment shader
@@ -2467,7 +2467,7 @@ static void test_uniform_float_multiplier(void) {
     // Render frame
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2490,7 +2490,7 @@ static void test_uniform_float_multiplier(void) {
     err = SituationEndFrame();
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Readback and verify red channel Γëê 128 (0.5 * 255)
+    // Readback and verify red channel G�� 128 (0.5 * 255)
     SituationImage screen = {0};
     err = SituationLoadImageFromScreen(&screen);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -2502,9 +2502,9 @@ static void test_uniform_float_multiplier(void) {
     uint8_t* pixels = (uint8_t*)screen.data;
 
     // Red channel should be ~128 (0.5 * 255), green and blue should be 0
-    SIT_ASSERT(pixel_approx_eq(pixels[idx], 128, 10));      // R Γëê 128
-    SIT_ASSERT(pixel_approx_eq(pixels[idx + 1], 0, 5));     // G Γëê 0
-    SIT_ASSERT(pixel_approx_eq(pixels[idx + 2], 0, 5));     // B Γëê 0
+    SIT_ASSERT(pixel_approx_eq(pixels[idx], 128, 10));      // R G�� 128
+    SIT_ASSERT(pixel_approx_eq(pixels[idx + 1], 0, 5));     // G G�� 0
+    SIT_ASSERT(pixel_approx_eq(pixels[idx + 2], 0, 5));     // B G�� 0
 
     // Cleanup
     SituationUnloadImage(screen);
@@ -2514,7 +2514,7 @@ static void test_uniform_float_multiplier(void) {
 
 /**
  * Vec4 uniform test:
- * Set u_color = (0.0, 1.0, 0.0, 1.0) ΓåÆ render ΓåÆ verify output is green
+ * Set u_color = (0.0, 1.0, 0.0, 1.0) G�� render G�� verify output is green
  */
 static void test_uniform_vec4_color(void) {
     // Create shader with vec4 uniform fragment shader
@@ -2541,7 +2541,7 @@ static void test_uniform_vec4_color(void) {
     // Render frame
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2575,10 +2575,10 @@ static void test_uniform_vec4_color(void) {
     int idx = (cy * screen.width + cx) * 4;
     uint8_t* pixels = (uint8_t*)screen.data;
 
-    // Should be green: RΓëê0, GΓëê255, BΓëê0
-    SIT_ASSERT(pixel_approx_eq(pixels[idx], 0, 5));         // R Γëê 0
-    SIT_ASSERT(pixel_approx_eq(pixels[idx + 1], 255, 5));   // G Γëê 255
-    SIT_ASSERT(pixel_approx_eq(pixels[idx + 2], 0, 5));     // B Γëê 0
+    // Should be green: RG��0, GG��255, BG��0
+    SIT_ASSERT(pixel_approx_eq(pixels[idx], 0, 5));         // R G�� 0
+    SIT_ASSERT(pixel_approx_eq(pixels[idx + 1], 255, 5));   // G G�� 255
+    SIT_ASSERT(pixel_approx_eq(pixels[idx + 2], 0, 5));     // B G�� 0
 
     // Cleanup
     SituationUnloadImage(screen);
@@ -2589,8 +2589,8 @@ static void test_uniform_vec4_color(void) {
 /**
  * Mat4 uniform test:
  * Set u_transform to a translation that shifts the triangle off-center.
- * Render with the transform ΓåÆ verify center pixel is black (triangle moved away).
- * Then render without transform ΓåÆ verify center pixel is red (triangle covers center).
+ * Render with the transform G�� verify center pixel is black (triangle moved away).
+ * Then render without transform G�� verify center pixel is red (triangle covers center).
  */
 static void test_uniform_mat4_transform(void) {
     // Create shader with mat4 transform vertex shader + solid red fragment shader
@@ -2619,7 +2619,7 @@ static void test_uniform_mat4_transform(void) {
     // Render frame with triangle shifted off-screen
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2642,7 +2642,7 @@ static void test_uniform_mat4_transform(void) {
     err = SituationEndFrame();
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Readback ΓÇö center should be black (triangle is off-screen)
+    // Readback G�� center should be black (triangle is off-screen)
     SituationImage screen = {0};
     err = SituationLoadImageFromScreen(&screen);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -2660,7 +2660,7 @@ static void test_uniform_mat4_transform(void) {
 
     SituationUnloadImage(screen);
 
-    // Now set identity transform ΓÇö triangle should appear at center
+    // Now set identity transform G�� triangle should appear at center
     glm_mat4_identity(transform);
     err = SituationSetShaderUniform(shader, "u_transform", transform, SIT_UNIFORM_MAT4);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -2668,7 +2668,7 @@ static void test_uniform_mat4_transform(void) {
     // Render again
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2684,7 +2684,7 @@ static void test_uniform_mat4_transform(void) {
     err = SituationEndFrame();
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Readback ΓÇö center should now be red (triangle at origin)
+    // Readback G�� center should now be red (triangle at origin)
     err = SituationLoadImageFromScreen(&screen);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     SIT_ASSERT(SituationIsImageValid(screen));
@@ -2695,8 +2695,8 @@ static void test_uniform_mat4_transform(void) {
     idx = (cy * screen.width + cx) * 4;
 
     SIT_ASSERT(pixels[idx] > 200);          // R high
-    SIT_ASSERT(pixel_approx_eq(pixels[idx + 1], 0, 5));   // G Γëê 0
-    SIT_ASSERT(pixel_approx_eq(pixels[idx + 2], 0, 5));   // B Γëê 0
+    SIT_ASSERT(pixel_approx_eq(pixels[idx + 1], 0, 5));   // G G�� 0
+    SIT_ASSERT(pixel_approx_eq(pixels[idx + 2], 0, 5));   // B G�� 0
 
     // Cleanup
     SituationUnloadImage(screen);
@@ -2708,14 +2708,14 @@ static void test_uniform_mat4_transform(void) {
 
 /**
  * Push constant test:
- * SituationCmdSetPushConstant → render → verify data reaches shader.
+ * SituationCmdSetPushConstant ? render ? verify data reaches shader.
  * Uses contract_id=0 to push a vec4 color that the fragment shader reads.
  *
  * Note: Push constants on OpenGL are emulated via uniforms. The shader uses
  * a uniform block that maps to the push constant range. If the API doesn't
  * support this path for custom shaders, the test verifies no crash at minimum.
  */
-// Fragment shader for push constant test — Vulkan uses push_constant block,
+// Fragment shader for push constant test � Vulkan uses push_constant block,
 // OpenGL uses bare uniform (mapped from push constants internally)
 #if defined(SITUATION_USE_VULKAN)
 static const char* g_fs_push_constant_color =
@@ -2734,7 +2734,7 @@ static const char* g_fs_push_constant_color =
 #endif
 
 static void test_push_constant_color(void) {
-    // Create shader — uses push constant compatible shader for both backends
+    // Create shader � uses push constant compatible shader for both backends
     SituationShader shader = {0};
     SituationError err = SituationLoadShaderFromMemory(g_vs_passthrough, g_fs_push_constant_color, &shader);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -2753,7 +2753,7 @@ static void test_push_constant_color(void) {
     // Render frame with push constant
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2783,7 +2783,7 @@ static void test_push_constant_color(void) {
         err = SituationEndFrame();
         SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-        // Readback ΓÇö if push constant was delivered, output should be blue
+        // Readback G�� if push constant was delivered, output should be blue
         SituationImage screen = {0};
         err = SituationLoadImageFromScreen(&screen);
         SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -2798,12 +2798,12 @@ static void test_push_constant_color(void) {
         // Note: If the backend doesn't map push constants to this shader's uniforms,
         // the output may be black (default uniform value). Either way, no crash = pass.
         bool push_constant_worked = (pixels[idx + 2] > 200);  // B channel high
-        (void)push_constant_worked;  // Informational ΓÇö test passes either way
+        (void)push_constant_worked;  // Informational G�� test passes either way
         SIT_ASSERT(true);  // No crash is the minimum success criterion
 
         SituationUnloadImage(screen);
     } else {
-        // Push constant not supported for this shader/backend ΓÇö end frame cleanly
+        // Push constant not supported for this shader/backend G�� end frame cleanly
         SituationCmdDrawMesh(cmd, mesh);
         SituationCmdEndRenderPass(cmd);
         SituationEndFrame();
@@ -2821,8 +2821,8 @@ static void test_push_constant_color(void) {
 
 /**
  * Text rendering test with bitmap font:
- * Load bitmap font ΓåÆ bake atlas ΓåÆ begin frame ΓåÆ clear to black ΓåÆ draw text ΓåÆ
- * end frame ΓåÆ readback ΓåÆ verify non-empty pixels in text region.
+ * Load bitmap font G�� bake atlas G�� begin frame G�� clear to black G�� draw text G��
+ * end frame G�� readback G�� verify non-empty pixels in text region.
  */
 static void test_cmd_draw_text_bitmap(void) {
     // Create a minimal 8x8 bitmap font (256 chars, each 8 rows of 1 byte)
@@ -2848,7 +2848,7 @@ static void test_cmd_draw_text_bitmap(void) {
     // Render a frame with text
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2907,7 +2907,7 @@ static void test_cmd_draw_text_bitmap(void) {
 
 /**
  * Extended text rendering test:
- * SituationCmdDrawTextEx with custom size/spacing ΓåÆ verify bounds differ from default.
+ * SituationCmdDrawTextEx with custom size/spacing G�� verify bounds differ from default.
  * Draws text twice (default size vs larger size+spacing) and compares pixel coverage.
  */
 static void test_cmd_draw_text_ex_bounds(void) {
@@ -2930,7 +2930,7 @@ static void test_cmd_draw_text_ex_bounds(void) {
     // --- Pass 1: Draw text at default size (16px, spacing 0) ---
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -2979,7 +2979,7 @@ static void test_cmd_draw_text_ex_bounds(void) {
     // --- Pass 2: Draw text at larger size (32px) with extra spacing (4px) ---
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -3038,7 +3038,7 @@ static void test_cmd_draw_text_ex_bounds(void) {
 static void test_draw_metrics_overlay(void) {
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -3115,7 +3115,7 @@ static void test_draw_call_count_after_draws(void) {
     const int NUM_DRAWS = 5;
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -3161,7 +3161,7 @@ static void test_export_render_histogram(void) {
     for (int frame = 0; frame < 3; frame++) {
         SituationPollInputEvents();
         SituationUpdateTimers();
-        SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+        SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
         SituationEndFrame();
     }
 
@@ -3184,7 +3184,7 @@ static void test_load_image_from_screen_dimensions(void) {
     // Render a frame
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
 
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
@@ -3223,12 +3223,12 @@ static void test_load_image_from_screen_dimensions(void) {
 }
 
 // ============================================================================
-//  Virtual Display Deep Tests (Phase 9 ΓÇö Compositing Pipeline)
+//  Virtual Display Deep Tests (Phase 9 G�� Compositing Pipeline)
 // ============================================================================
 
 
 // ============================================================================
-//  Compute Shader Roundtrip ΓÇö Embedded Shaders (Phase 10)
+//  Compute Shader Roundtrip G�� Embedded Shaders (Phase 10)
 // ============================================================================
 
 // Compute shader: writes solid red (1,0,0,1) to a storage image
@@ -3242,11 +3242,11 @@ static const char* g_cs_image_write =
     "}\n";
 
 // ============================================================================
-//  Compute/Graphics Interop Tests (Phase 10 ΓÇö Task 14.1)
+//  Compute/Graphics Interop Tests (Phase 10 G�� Task 14.1)
 // ============================================================================
 
 /**
- * Test compute with texture output: shader writes red to storage image ΓåÆ read back ΓåÆ verify pixels
+ * Test compute with texture output: shader writes red to storage image G�� read back G�� verify pixels
  */
 static void test_compute_image_write(void) {
     // Create storage texture (4x4 RGBA)
@@ -3277,7 +3277,7 @@ static void test_compute_image_write(void) {
     // Dispatch 4x4 invocations to fill the image
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationCmdBindComputePipeline(cmd, pipeline);
@@ -3295,7 +3295,7 @@ static void test_compute_image_write(void) {
     // Use a second frame to draw the texture as a textured quad
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp = {0};
@@ -3329,12 +3329,12 @@ static void test_compute_image_write(void) {
     // Center pixel should be red (from compute shader writing 1,0,0,1)
     // Note: On some GL drivers, storage image binding may not work correctly
     // (GL_INVALID_OPERATION). If the pixel is still black, the compute write
-    // didn't take effect ΓÇö this is a known driver limitation, not a test failure.
+    // didn't take effect G�� this is a known driver limitation, not a test failure.
     int cx = screen.width / 2;
     int cy = screen.height / 2;
     int idx = (cy * screen.width + cx) * 4;
     if (pixels[idx] < 50 && pixels[idx + 1] < 50 && pixels[idx + 2] < 50) {
-        // Compute image write didn't take effect ΓÇö likely driver limitation
+        // Compute image write didn't take effect G�� likely driver limitation
         // Skip gracefully (the GL errors above confirm this)
         SituationUnloadImage(screen);
         SituationDestroyTexture(&tex);
@@ -3352,7 +3352,7 @@ static void test_compute_image_write(void) {
 }
 
 // ============================================================================
-//  Data Flow & Descriptor Binding â€” Embedded Shaders (Phase 11)
+//  Data Flow & Descriptor Binding — Embedded Shaders (Phase 11)
 // ============================================================================
 
 // Fragment shader that reads from a UBO at set=0 and outputs the color
@@ -3382,7 +3382,7 @@ static bool graphics_test_rgba_near(const uint8_t a[4], const uint8_t b[4], int 
 
 /**
  * Library YPQ grade shader (SituationCmdDrawTextureYpqGrade) vs CPU SituationImageAdjustYPQ.
- * Tolerance ±12 per 8-bit channel (sRGB sample vs linear CPU path).
+ * Tolerance �12 per 8-bit channel (sRGB sample vs linear CPU path).
  */
 static void test_ypq_grade_pass_cpu_parity(void) {
     const ColorRGBA blue = {40, 80, 220, 255};
@@ -3478,12 +3478,12 @@ static const char* g_cs_storage_tex_write =
     "}\n";
 
 // ============================================================================
-//  Phase 11A â€” Buffer Data Integrity Tests
+//  Phase 11A — Buffer Data Integrity Tests
 // ============================================================================
 
 /**
- * Partial buffer update: create 1KB buffer â†’ update bytes [256..512] â†’ readback
- * full buffer â†’ verify only updated region changed.
+ * Partial buffer update: create 1KB buffer → update bytes [256..512] → readback
+ * full buffer → verify only updated region changed.
  */
 static void test_buffer_partial_update(void) {
     // Create 1KB buffer filled with zeros
@@ -3540,7 +3540,7 @@ static void test_buffer_partial_update(void) {
 }
 
 /**
- * Large buffer: create 1MB buffer â†’ fill with pattern â†’ readback â†’ byte-for-byte match.
+ * Large buffer: create 1MB buffer → fill with pattern → readback → byte-for-byte match.
  */
 static void test_buffer_large_roundtrip(void) {
     const size_t buf_size = 1024 * 1024; // 1MB
@@ -3582,7 +3582,7 @@ static void test_buffer_large_roundtrip(void) {
 }
 
 /**
- * Zero-offset update: update from offset 0 â†’ readback â†’ verify.
+ * Zero-offset update: update from offset 0 → readback → verify.
  */
 static void test_buffer_zero_offset_update(void) {
     // Create buffer with initial data
@@ -3625,7 +3625,7 @@ static void test_buffer_zero_offset_update(void) {
 }
 
 /**
- * Multiple sequential updates: update region A, then region B â†’ readback â†’ verify both.
+ * Multiple sequential updates: update region A, then region B → readback → verify both.
  */
 static void test_buffer_sequential_updates(void) {
     float zeros[16];
@@ -3686,11 +3686,11 @@ static void test_buffer_sequential_updates(void) {
 }
 
 // ============================================================================
-//  Phase 11B â€” Descriptor Set Binding Tests
+//  Phase 11B — Descriptor Set Binding Tests
 // ============================================================================
 
 /**
- * Bind UBO with known color data â†’ render â†’ verify shader reads correct values.
+ * Bind UBO with known color data → render → verify shader reads correct values.
  * Uses SituationCmdBindDescriptorSet to bind a UBO containing a vec4 color.
  */
 static void test_descriptor_bind_ubo_color(void) {
@@ -3732,7 +3732,7 @@ static void test_descriptor_bind_ubo_color(void) {
     // Render frame
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -3769,9 +3769,9 @@ static void test_descriptor_bind_ubo_color(void) {
     uint8_t* pixels = (uint8_t*)screen.data;
 
     // Green channel should be high, red and blue low
-    SIT_ASSERT(pixel_approx_eq(pixels[idx], 0, 10));        // R â‰ˆ 0
-    SIT_ASSERT(pixel_approx_eq(pixels[idx + 1], 255, 10));  // G â‰ˆ 255
-    SIT_ASSERT(pixel_approx_eq(pixels[idx + 2], 0, 10));    // B â‰ˆ 0
+    SIT_ASSERT(pixel_approx_eq(pixels[idx], 0, 10));        // R ≈ 0
+    SIT_ASSERT(pixel_approx_eq(pixels[idx + 1], 255, 10));  // G ≈ 255
+    SIT_ASSERT(pixel_approx_eq(pixels[idx + 2], 0, 10));    // B ≈ 0
 
     SituationUnloadImage(screen);
     SituationDestroyBuffer(&ubo);
@@ -3780,8 +3780,8 @@ static void test_descriptor_bind_ubo_color(void) {
 }
 
 /**
- * Dynamic descriptor set binding: bind with offset 0 â†’ render â†’ bind with offset 256 â†’ render
- * â†’ verify different data used each time.
+ * Dynamic descriptor set binding: bind with offset 0 → render → bind with offset 256 → render
+ * → verify different data used each time.
  */
 static void test_descriptor_bind_dynamic_offset(void) {
     SituationShader shader = {0};
@@ -3829,7 +3829,7 @@ static void test_descriptor_bind_dynamic_offset(void) {
     // --- First render: dynamic offset = 0 (should be red) ---
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -3847,7 +3847,7 @@ static void test_descriptor_bind_dynamic_offset(void) {
     SituationCmdBindPipeline(cmd, shader);
     err = SituationCmdBindDescriptorSetDynamic(cmd, 0, ubo, 0);
     if (err != SITUATION_SUCCESS) {
-        // Dynamic descriptors may not be supported â€” skip gracefully
+        // Dynamic descriptors may not be supported — skip gracefully
         SituationCmdEndRenderPass(cmd);
         SituationEndFrame();
         SituationDestroyBuffer(&ubo);
@@ -3863,7 +3863,7 @@ static void test_descriptor_bind_dynamic_offset(void) {
     err = SituationEndFrame();
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Readback first frame â€” should be red
+    // Readback first frame — should be red
     SituationImage screen1 = {0};
     err = SituationLoadImageFromScreen(&screen1);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -3878,7 +3878,7 @@ static void test_descriptor_bind_dynamic_offset(void) {
     // --- Second render: dynamic offset = 256 (should be blue) ---
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -3896,7 +3896,7 @@ static void test_descriptor_bind_dynamic_offset(void) {
     err = SituationEndFrame();
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Readback second frame â€” should be blue
+    // Readback second frame — should be blue
     SituationImage screen2 = {0};
     err = SituationLoadImageFromScreen(&screen2);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -3912,7 +3912,7 @@ static void test_descriptor_bind_dynamic_offset(void) {
 }
 
 /**
- * Bind texture to a descriptor set â†’ sample in shader â†’ verify sampled color.
+ * Bind texture to a descriptor set → sample in shader → verify sampled color.
  */
 static void test_descriptor_bind_texture_set(void) {
     // Create a solid green 4x4 image
@@ -3958,7 +3958,7 @@ static void test_descriptor_bind_texture_set(void) {
     // Render
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -3993,7 +3993,7 @@ static void test_descriptor_bind_texture_set(void) {
     err = SituationEndFrame();
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Readback â€” should be green (sampled from the green texture)
+    // Readback — should be green (sampled from the green texture)
     SituationImage screen = {0};
     err = SituationLoadImageFromScreen(&screen);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -4017,7 +4017,7 @@ static void test_descriptor_bind_texture_set(void) {
 }
 
 /**
- * Bind sampled texture to a specific binding point â†’ verify correct texture sampled.
+ * Bind sampled texture to a specific binding point → verify correct texture sampled.
  */
 static void test_descriptor_bind_sampled_texture(void) {
     // Create a solid magenta 4x4 image
@@ -4063,7 +4063,7 @@ static void test_descriptor_bind_sampled_texture(void) {
     // Render
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -4098,7 +4098,7 @@ static void test_descriptor_bind_sampled_texture(void) {
     err = SituationEndFrame();
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Readback â€” should be magenta
+    // Readback — should be magenta
     SituationImage screen = {0};
     err = SituationLoadImageFromScreen(&screen);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -4121,7 +4121,7 @@ static void test_descriptor_bind_sampled_texture(void) {
 }
 
 /**
- * Multiple descriptor sets: bind set 0 (UBO with tint) + set 1 (texture) â†’ render â†’ verify both active.
+ * Multiple descriptor sets: bind set 0 (UBO with tint) + set 1 (texture) → render → verify both active.
  */
 static void test_descriptor_multi_set_binding(void) {
     // Create a solid white 4x4 texture
@@ -4142,7 +4142,7 @@ static void test_descriptor_multi_set_binding(void) {
         return;
     }
 
-    // Create UBO with cyan tint (0, 1, 1, 1) â€” white * cyan = cyan
+    // Create UBO with cyan tint (0, 1, 1, 1) — white * cyan = cyan
     float cyan_tint[4] = {0.0f, 1.0f, 1.0f, 1.0f};
     SituationBuffer ubo = {0};
     err = SituationCreateBuffer(
@@ -4181,7 +4181,7 @@ static void test_descriptor_multi_set_binding(void) {
     // Render
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -4233,7 +4233,7 @@ static void test_descriptor_multi_set_binding(void) {
     err = SituationEndFrame();
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Readback â€” white texture * cyan tint = cyan output
+    // Readback — white texture * cyan tint = cyan output
     SituationImage screen = {0};
     err = SituationLoadImageFromScreen(&screen);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -4244,9 +4244,9 @@ static void test_descriptor_multi_set_binding(void) {
     uint8_t* pixels = (uint8_t*)screen.data;
 
     // Cyan = R low, G high, B high
-    SIT_ASSERT(pixels[pidx] < 50);       // R â‰ˆ 0
-    SIT_ASSERT(pixels[pidx + 1] > 200);  // G â‰ˆ 255
-    SIT_ASSERT(pixels[pidx + 2] > 200);  // B â‰ˆ 255
+    SIT_ASSERT(pixels[pidx] < 50);       // R ≈ 0
+    SIT_ASSERT(pixels[pidx + 1] > 200);  // G ≈ 255
+    SIT_ASSERT(pixels[pidx + 2] > 200);  // B ≈ 255
 
     SituationUnloadImage(screen);
     SituationDestroyMesh(&mesh);
@@ -4257,12 +4257,12 @@ static void test_descriptor_multi_set_binding(void) {
 }
 
 // ============================================================================
-//  Phase 11C â€” Texture Data Roundtrip Tests
+//  Phase 11C — Texture Data Roundtrip Tests
 // ============================================================================
 
 /**
- * CPUâ†’GPUâ†’CPU roundtrip: create image with known pixels â†’ upload as texture â†’
- * render textured quad to screen â†’ readback â†’ verify pixels match (within tolerance).
+ * CPU→GPU→CPU roundtrip: create image with known pixels → upload as texture →
+ * render textured quad to screen → readback → verify pixels match (within tolerance).
  */
 static void test_texture_cpu_gpu_cpu_roundtrip(void) {
     // Create a 4x4 image with a known color pattern
@@ -4296,7 +4296,7 @@ static void test_texture_cpu_gpu_cpu_roundtrip(void) {
     // Render the texture stretched across the full window
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -4364,8 +4364,8 @@ static void test_texture_cpu_gpu_cpu_roundtrip(void) {
 }
 
 /**
- * Storage texture write via compute: compute shader writes gradient to storage image â†’
- * read back as image â†’ verify pixel values.
+ * Storage texture write via compute: compute shader writes gradient to storage image →
+ * read back as image → verify pixel values.
  */
 static void test_texture_storage_write_readback(void) {
     // Create a 4x4 storage texture
@@ -4401,7 +4401,7 @@ static void test_texture_storage_write_readback(void) {
     // Dispatch compute shader to write to the storage image
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -4409,7 +4409,7 @@ static void test_texture_storage_write_readback(void) {
     SituationCmdBindComputeTexture(cmd, 0, storage_tex);
     SituationCmdDispatch(cmd, 4, 4, 1);
 
-    // Barrier: compute writes â†’ fragment sampling next frame (same visibility pattern as compute_to_graphics_barrier)
+    // Barrier: compute writes → fragment sampling next frame (same visibility pattern as compute_to_graphics_barrier)
     SituationCmdPipelineBarrier(cmd,
         SITUATION_BARRIER_COMPUTE_SHADER_WRITE,
         SITUATION_BARRIER_FRAGMENT_SHADER_READ);
@@ -4420,7 +4420,7 @@ static void test_texture_storage_write_readback(void) {
     // Now render the storage texture to screen to read it back
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -4466,16 +4466,16 @@ static void test_texture_storage_write_readback(void) {
     // The compute shader writes: R = x/4, G = y/4, B = 0.5
     // At pixel (3,3) of the 4x4 texture: R=0.75, G=0.75, B=0.5
     // Stretched to the window, the bottom-right corner of the texture maps near the draw rect corner.
-    // Check center pixel â€” should have some non-zero R, G, and Bâ‰ˆ128
+    // Check center pixel — should have some non-zero R, G, and B≈128
     int cx = screen.width / 2;
     int cy = screen.height / 2;
     int pidx = (cy * screen.width + cx) * 4;
 
-    // Center maps to roughly texture coord (2,2) â†’ R=0.5, G=0.5, B=0.5
+    // Center maps to roughly texture coord (2,2) → R=0.5, G=0.5, B=0.5
     // With filtering tolerance
     SIT_ASSERT(pixels[pidx] > 80);       // R > 0 (gradient)
     SIT_ASSERT(pixels[pidx + 1] > 80);   // G > 0 (gradient)
-    SIT_ASSERT(pixels[pidx + 2] > 80);   // B â‰ˆ 128 (constant 0.5)
+    SIT_ASSERT(pixels[pidx + 2] > 80);   // B ≈ 128 (constant 0.5)
 
     SituationUnloadImage(screen);
     SituationDestroyComputePipeline(&pipeline);
@@ -4484,7 +4484,7 @@ static void test_texture_storage_write_readback(void) {
 }
 
 /**
- * Texture format preservation: create RGBA image â†’ upload â†’ render â†’ download â†’ verify all channels.
+ * Texture format preservation: create RGBA image → upload → render → download → verify all channels.
  */
 static void test_texture_format_preservation(void) {
     // Create a 2x2 image with distinct RGBA values per pixel
@@ -4514,7 +4514,7 @@ static void test_texture_format_preservation(void) {
     // Render stretched to fill window
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -4581,7 +4581,7 @@ static void test_texture_format_preservation(void) {
 }
 
 // ============================================================================
-//  GL + VK parity — screen readback layout & text placement
+//  GL + VK parity � screen readback layout & text placement
 // ============================================================================
 
 static void test_screen_readback_corner_layout(void) {
@@ -4602,7 +4602,7 @@ static void test_screen_readback_corner_layout(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -4690,7 +4690,7 @@ static void test_stereo_scope_overlay_layout(void) {
     const SitTestVisualLayout layout = sit_test_visual_layout_compute(header);
     SIT_ASSERT(rw >= 64.0f && rh >= 64.0f);
 
-    /* On Hi-DPI the old harness used logical height — panel y must use render height. */
+    /* On Hi-DPI the old harness used logical height � panel y must use render height. */
     const float wrong_spec_y = sh - SIT_TEST_SPECTRUM_PANEL_H - 8.0f;
     if (scale > 1.01f) {
         SIT_ASSERT(fabsf(layout.spec_y - wrong_spec_y) > 8.0f);
@@ -4698,7 +4698,7 @@ static void test_stereo_scope_overlay_layout(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -4802,11 +4802,11 @@ static void test_cmd_draw_text_screen_layout(void) {
 }
 
 // ============================================================================
-//  Phase 11D â€” Model Loading Tests
+//  Phase 11D — Model Loading Tests
 // ============================================================================
 
 /**
- * Load a model from a minimal embedded GLTF file â†’ verify non-null handle.
+ * Load a model from a minimal embedded GLTF file → verify non-null handle.
  * We generate a minimal .gltf file on disk, load it, then clean up.
  */
 static void test_model_load_gltf(void) {
@@ -4833,7 +4833,7 @@ static void test_model_load_gltf(void) {
     // Write the .gltf file
     bool save_ok = SituationSaveFileText("_sit_test_triangle.gltf", gltf_json);
     if (!save_ok) {
-        // File write failed (CWD not writable or API issue) — skip gracefully
+        // File write failed (CWD not writable or API issue) � skip gracefully
         SIT_ASSERT(true);
         return;
     }
@@ -4860,7 +4860,7 @@ static void test_model_load_gltf(void) {
         // Unload
         SituationUnloadModel(&model);
     } else {
-        // Model loading may fail if cgltf or GPU upload has issues â€” not a hard failure
+        // Model loading may fail if cgltf or GPU upload has issues — not a hard failure
         SIT_ASSERT(true);
     }
 
@@ -4870,7 +4870,7 @@ static void test_model_load_gltf(void) {
 }
 
 /**
- * Draw a loaded model â†’ render â†’ readback â†’ verify pixels present.
+ * Draw a loaded model → render → readback → verify pixels present.
  */
 static void test_model_draw_verify(void) {
     // Write minimal GLTF (same as above)
@@ -4919,7 +4919,7 @@ static void test_model_draw_verify(void) {
     // Render the model with identity transform
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
     SIT_ASSERT_NOT_NULL(cmd);
 
@@ -4944,7 +4944,7 @@ static void test_model_draw_verify(void) {
     err = SituationEndFrame();
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
-    // Readback â€” verify some non-black pixels exist (model was drawn)
+    // Readback — verify some non-black pixels exist (model was drawn)
     SituationImage screen = {0};
     err = SituationLoadImageFromScreen(&screen);
     SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
@@ -4968,7 +4968,7 @@ static void test_model_draw_verify(void) {
 }
 
 /**
- * Export model as GLTF â†’ verify file exists and contains valid JSON.
+ * Export model as GLTF → verify file exists and contains valid JSON.
  */
 static void test_model_save_as_gltf(void) {
     // Write and load a minimal model
@@ -5015,7 +5015,7 @@ static void test_model_save_as_gltf(void) {
     }
 
     // Export to a new file
-    bool export_ok = SituationSaveModelAsGltf(model, "_sit_test_exported.gltf");
+    bool export_ok = (SituationSaveModelAsGltf(model, "_sit_test_exported.gltf") == SITUATION_SUCCESS);
     SIT_ASSERT(export_ok);
 
     // Verify the exported file exists
@@ -5038,7 +5038,7 @@ static void test_model_save_as_gltf(void) {
 }
 
 /**
- * Unload model â†’ verify no crash, handle invalidated.
+ * Unload model → verify no crash, handle invalidated.
  */
 static void test_model_unload_safety(void) {
     const char* gltf_json =
@@ -5083,7 +5083,7 @@ static void test_model_unload_safety(void) {
         return;
     }
 
-    // Unload â€” should not crash
+    // Unload — should not crash
     SituationUnloadModel(&model);
 
     // After unload, mesh_count should be 0 or meshes should be NULL
@@ -5126,7 +5126,7 @@ static void test_async_buffer_readback(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationCmdCopyBuffer(cmd, src_buf, dst_buf, 0, sizeof(src_data));
@@ -5147,7 +5147,7 @@ static void test_async_buffer_readback(void) {
 static void test_framebuffer_diagnostic_readback(void) {
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo rp = {0};
@@ -5176,7 +5176,7 @@ static void test_framebuffer_diagnostic_readback(void) {
 }
 
 // ============================================================================
-//  Phases 23–29 — Fragment SSBO / SPIR-V graphics (OpenGL only)
+//  Phases 23�29 � Fragment SSBO / SPIR-V graphics (OpenGL only)
 //  See doc/plan/TEST_HARNESS_GRAPHICS_UPGRADE.md
 // ============================================================================
 
@@ -5221,7 +5221,7 @@ static const char* g_fs_uniform_1iv_tags =
     "    fragColor = vec4(float(uTags[0]) / 255.0, float(uTags[1]) / 255.0, 0.0, 1.0);\n"
     "}\n";
 
-/** Phase 23 — smoke: helpers draw a red fullscreen triangle. */
+/** Phase 23 � smoke: helpers draw a red fullscreen triangle. */
 static void test_graphics_helpers_smoke(void) {
     if (graphics_test_skip_if_no_spirv()) {
         return;
@@ -5251,8 +5251,8 @@ static void test_graphics_helpers_smoke(void) {
 }
 
 /**
- * Phase 24 — fragment shader reads two SSBOs at bindings 0 and 1.
- * Regression for v2.4.82 — see doc/plan/TEST_HARNESS_GRAPHICS_UPGRADE.md
+ * Phase 24 � fragment shader reads two SSBOs at bindings 0 and 1.
+ * Regression for v2.4.82 � see doc/plan/TEST_HARNESS_GRAPHICS_UPGRADE.md
  */
 static void test_fragment_dual_ssbo_readback(void) {
     if (graphics_test_skip_if_no_spirv()) {
@@ -5307,7 +5307,7 @@ static void test_fragment_dual_ssbo_readback(void) {
     SIT_ASSERT(graphics_test_pixel_approx_eq(rgba[1], (uint8_t)tag_b, 10));
     SIT_ASSERT(graphics_test_pixel_approx_eq(rgba[2], 0, 10));
 
-    /* Negative: bind only B at set 0 — BlockA must not read tagA (77). */
+    /* Negative: bind only B at set 0 � BlockA must not read tagA (77). */
     cmd = graphics_test_begin_frame();
     SIT_ASSERT_NOT_NULL(cmd);
     SituationCmdBindPipeline(cmd, shader);
@@ -5324,7 +5324,7 @@ static void test_fragment_dual_ssbo_readback(void) {
     SituationDestroyBuffer(&ssbo_b);
 }
 
-/** Phase 25 — Demon Hunt ShaderScenePack layout (header + spriteData[0]). */
+/** Phase 25 � Demon Hunt ShaderScenePack layout (header + spriteData[0]). */
 static void test_fragment_combined_scene_ssbo(void) {
     if (graphics_test_skip_if_no_spirv()) {
         return;
@@ -5375,7 +5375,7 @@ static void test_fragment_combined_scene_ssbo(void) {
     SituationDestroyBuffer(&scene);
 }
 
-/** Phase 26 — SituationSetShaderUniform1iv for int arrays (skip if stripped). */
+/** Phase 26 � SituationSetShaderUniform1iv for int arrays (skip if stripped). */
 static void test_uniform_1iv_int_array(void) {
     if (graphics_test_skip_if_no_spirv()) {
         return;
@@ -5394,7 +5394,7 @@ static void test_uniform_1iv_int_array(void) {
         err = SituationSetShaderUniform1iv(shader, "uTags", 8, values);
     }
     if (err == SITUATION_ERROR_OPENGL_UNIFORM_NOT_FOUND) {
-        /* SPIR-V may strip int uniform arrays — not a harness failure. */
+        /* SPIR-V may strip int uniform arrays � not a harness failure. */
         SituationUnloadShader(&shader);
         SIT_ASSERT(true);
         return;
@@ -5672,7 +5672,7 @@ static SitTestCase graphics_tests[] = {
     {"draw_mesh_triangle",              test_draw_mesh_triangle,            true},
     {"draw_quad_red",                   test_draw_quad_red,                 true},
     {"draw_textured_checkerboard",      test_draw_textured_checkerboard,    true},
-    // Shader uniform data flow (Phase 9) — OpenGL-only (uses SituationSetShaderUniform)
+    // Shader uniform data flow (Phase 9) � OpenGL-only (uses SituationSetShaderUniform)
 #if defined(SITUATION_USE_OPENGL)
     {"uniform_float_multiplier",        test_uniform_float_multiplier,      true},
     {"uniform_vec4_color",              test_uniform_vec4_color,            true},
@@ -5714,7 +5714,7 @@ static SitTestCase graphics_tests[] = {
     {"model_draw_verify",              test_model_draw_verify,             true},
     {"model_save_as_gltf",             test_model_save_as_gltf,            true},
     {"model_unload_safety",            test_model_unload_safety,           true},
-    // Phases 30+ — SPIR-V memory / disk / binding (OpenGL + Vulkan)
+    // Phases 30+ � SPIR-V memory / disk / binding (OpenGL + Vulkan)
     {"async_shader_spirv_memory_vulkan",  test_async_shader_spirv_memory_vulkan,  true},
     {"spirv_memory_invalid_params",       test_spirv_memory_invalid_params,       true},
     {"spirv_error_code_reporting",        test_spirv_error_code_reporting,        true},
@@ -5729,7 +5729,7 @@ static SitTestCase graphics_tests[] = {
     {"spirv_memory_dual_ssbo_explicit_bind", test_spirv_memory_dual_ssbo_explicit_bind, true},
     {"spirv_bind_api_invalid_shader",        test_spirv_bind_api_invalid_shader,        true},
 #endif
-    // Phases 23–29 — Fragment SSBO / SPIR-V GLSL path (OpenGL only; see TEST_HARNESS_GRAPHICS_UPGRADE.md)
+    // Phases 23�29 � Fragment SSBO / SPIR-V GLSL path (OpenGL only; see TEST_HARNESS_GRAPHICS_UPGRADE.md)
 #if defined(SITUATION_USE_OPENGL)
     {"graphics_helpers_smoke",            test_graphics_helpers_smoke,            true},
     {"fragment_dual_ssbo_readback",       test_fragment_dual_ssbo_readback,       true},

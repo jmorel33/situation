@@ -36,8 +36,8 @@ static bool g_pool_created = false;
 static void threading_setup(void) {
     memset(&g_test_pool, 0, sizeof(g_test_pool));
     // Create pool with 4 threads, queue size 256, no hot-reload, no IO thread
-    bool ok = SituationCreateThreadPool(&g_test_pool, 4, 256, 0.0, true);
-    g_pool_created = ok;
+    SituationError err = SituationCreateThreadPool(&g_test_pool, 4, 256, 0.0, true);
+    g_pool_created = (err == SITUATION_SUCCESS);
 }
 
 static void threading_teardown(void) {
@@ -77,7 +77,7 @@ static void test_submit_and_wait(void) {
     );
     SIT_ASSERT_NEQ(job, 0);
 
-    bool done = SituationWaitForJob(&g_test_pool, job);
+    bool done = (SituationWaitForJob(&g_test_pool, job) == SITUATION_SUCCESS);
     SIT_ASSERT(done);
     // Note: The job receives a COPY of the pointer data via SOO,
     // so we need to use a different approach for verification.
@@ -164,7 +164,7 @@ static void test_job_dependency(void) {
        (see situation_impl_threading.h — graph edges must exist before dependents run). */
     SituationThreadPool pool;
     memset(&pool, 0, sizeof(pool));
-    SIT_ASSERT(SituationCreateThreadPool(&pool, 1, 256, 0.0, true));
+    SIT_ASSERT(SituationCreateThreadPool(&pool, 1, 256, 0.0, true) == SITUATION_SUCCESS);
 
     g_dep_order_idx = 0;
     g_dep_order[0] = 0;
@@ -182,8 +182,8 @@ static void test_job_dependency(void) {
     );
     SIT_ASSERT_NEQ(job_b, 0);
 
-    bool ok = SituationAddJobDependency(&pool, job_a, job_b);
-    SIT_ASSERT(ok);
+    SituationError ok = SituationAddJobDependency(&pool, job_a, job_b);
+    SIT_ASSERT(ok == SITUATION_SUCCESS);
 
     SituationWaitForAllJobs(&pool);
     SituationDestroyThreadPool(&pool);
@@ -197,9 +197,9 @@ static void test_job_dependency(void) {
 // ============================================================================
 
 static void test_cpu_topology_refresh(void) {
-    SIT_ASSERT(SituationRefreshCpuTopology());
+    SIT_ASSERT(SituationRefreshCpuTopology() == SITUATION_SUCCESS);
     const SituationCpuTopology* topo = NULL;
-    SIT_ASSERT(SituationGetCpuTopology(&topo));
+    SIT_ASSERT(SituationGetCpuTopology(&topo) == SITUATION_SUCCESS);
     SIT_ASSERT(topo != NULL);
     SIT_ASSERT(topo->logical_count > 0);
     SIT_ASSERT(topo->physical_count > 0);
@@ -213,15 +213,15 @@ static void test_affinity_roundtrip(void) {
     uint64_t current = 0;
     uint64_t pin = 1ULL;
 
-    if (!SituationGetThreadAffinity(&current)) {
+    if (SituationGetThreadAffinity(&current) != SITUATION_SUCCESS) {
         return;
     }
 
-    if (!SituationSetThreadAffinityEx(pin, &previous)) {
+    if (SituationSetThreadAffinityEx(pin, &previous) != SITUATION_SUCCESS) {
         return;
     }
 
-    SIT_ASSERT(SituationGetThreadAffinity(&current));
+    SIT_ASSERT(SituationGetThreadAffinity(&current) == SITUATION_SUCCESS);
     SIT_ASSERT((current & pin) != 0);
 
     if (previous != 0) {
@@ -230,7 +230,7 @@ static void test_affinity_roundtrip(void) {
 }
 
 static void test_mask_builders(void) {
-    SIT_ASSERT(SituationRefreshCpuTopology());
+    SIT_ASSERT(SituationRefreshCpuTopology() == SITUATION_SUCCESS);
     uint64_t core0 = SituationBuildPhysicalCoreMask(0);
     SIT_ASSERT(core0 != 0);
 
@@ -265,23 +265,23 @@ static void test_queue_depth_metrics(void) {
 }
 
 static void test_numa_topology_refresh(void) {
-    SIT_ASSERT(SituationRefreshCpuTopology());
-    SIT_ASSERT(SituationRefreshNumaTopology());
+    SIT_ASSERT(SituationRefreshCpuTopology() == SITUATION_SUCCESS);
+    SIT_ASSERT(SituationRefreshNumaTopology() == SITUATION_SUCCESS);
     const SituationNumaTopology* numa = NULL;
-    SIT_ASSERT(SituationGetNumaTopology(&numa));
+    SIT_ASSERT(SituationGetNumaTopology(&numa) == SITUATION_SUCCESS);
     SIT_ASSERT(numa != NULL);
     SIT_ASSERT(numa->node_count >= 1);
     SIT_ASSERT(numa->nodes[0].processor_count > 0);
 
     const SituationCpuTopology* cpu = NULL;
-    SIT_ASSERT(SituationGetCpuTopology(&cpu));
+    SIT_ASSERT(SituationGetCpuTopology(&cpu) == SITUATION_SUCCESS);
     if (numa->node_count > 1) {
         SIT_ASSERT(numa->nodes[1].processor_count > 0 || numa->nodes[1].memory_bytes > 0);
     }
 }
 
 static void test_numa_node_mask(void) {
-    SIT_ASSERT(SituationRefreshNumaTopology());
+    SIT_ASSERT(SituationRefreshNumaTopology() == SITUATION_SUCCESS);
     uint64_t mask0 = SituationBuildNumaNodeMask(0);
     SIT_ASSERT(mask0 != 0);
 
@@ -297,7 +297,7 @@ static void test_pool_snapshot_after_parallel(void) {
     SituationDispatchParallel(&g_test_pool, 64, 4, parallel_set_index, NULL);
 
     SituationThreadPoolSnapshot snap;
-    SIT_ASSERT(SituationGetThreadPoolSnapshot(&g_test_pool, &snap));
+    SIT_ASSERT(SituationGetThreadPoolSnapshot(&g_test_pool, &snap) == SITUATION_SUCCESS);
     SIT_ASSERT(snap.pool_active);
     SIT_ASSERT_EQ((int)snap.worker_count, 4);
     SIT_ASSERT(snap.stats_jobs_completed > 0);
@@ -312,7 +312,7 @@ static void test_pool_snapshot_after_parallel(void) {
 }
 
 static void test_recommended_worker_count(void) {
-    SIT_ASSERT(SituationRefreshCpuTopology());
+    SIT_ASSERT(SituationRefreshCpuTopology() == SITUATION_SUCCESS);
     uint32_t logical = SituationGetCPUThreadCount();
     uint32_t physical = SituationGetCPUCoreCount();
     SIT_ASSERT(logical > 0);
@@ -340,7 +340,7 @@ static void test_metrics_reset_and_dump(void) {
     SituationDispatchParallel(&g_test_pool, 32, 4, parallel_set_index, NULL);
 
     SituationThreadPoolMetrics metrics;
-    SIT_ASSERT(SituationGetThreadPoolMetrics(&g_test_pool, &metrics));
+    SIT_ASSERT(SituationGetThreadPoolMetrics(&g_test_pool, &metrics) == SITUATION_SUCCESS);
     SIT_ASSERT(metrics.jobs_completed > 0);
 
 #if defined(_WIN32)
@@ -355,7 +355,7 @@ static void test_metrics_reset_and_dump(void) {
     }
 
     SituationResetThreadPoolStats(&g_test_pool);
-    SIT_ASSERT(SituationGetThreadPoolMetrics(&g_test_pool, &metrics));
+    SIT_ASSERT(SituationGetThreadPoolMetrics(&g_test_pool, &metrics) == SITUATION_SUCCESS);
     SIT_ASSERT_EQ((int)metrics.dispatch_parallel_calls, 0);
 }
 
@@ -365,7 +365,7 @@ static void test_scheduler_metrics_after_parallel(void) {
     SituationDispatchParallel(&g_test_pool, 64, 4, parallel_set_index, NULL);
 
     SituationThreadPoolMetrics metrics;
-    SIT_ASSERT(SituationGetThreadPoolMetrics(&g_test_pool, &metrics));
+    SIT_ASSERT(SituationGetThreadPoolMetrics(&g_test_pool, &metrics) == SITUATION_SUCCESS);
     SIT_ASSERT(metrics.dispatch_parallel_calls >= 1);
     SIT_ASSERT(metrics.jobs_completed > 0);
     SIT_ASSERT(metrics.jobs_submitted >= metrics.jobs_completed);
@@ -461,7 +461,7 @@ static void sit_print_cpu_stress_report(
     fprintf(stderr, "Distinct logical CPUs with load samples: %d\n", distinct);
 
     SituationThreadPoolSnapshot snap;
-    if (SituationGetThreadPoolSnapshot(pool, &snap)) {
+    if (SituationGetThreadPoolSnapshot(pool, &snap) == SITUATION_SUCCESS) {
         fprintf(stderr, "\nWorker last-seen logical CPU (library snapshot):\n");
         for (int s = 0; s < snap.slot_count; ++s) {
             const SituationThreadSlotSnapshot* slot = &snap.slots[s];
@@ -476,7 +476,7 @@ static void sit_print_cpu_stress_report(
     }
 
     SituationThreadPoolMetrics metrics;
-    if (SituationGetThreadPoolMetrics(pool, &metrics)) {
+    if (SituationGetThreadPoolMetrics(pool, &metrics) == SITUATION_SUCCESS) {
         fprintf(stderr, "DispatchParallel calls: %llu | main steal ok: %llu\n",
             (unsigned long long)metrics.dispatch_parallel_calls,
             (unsigned long long)metrics.main_steal_success);
@@ -490,7 +490,7 @@ static void test_cpu_stress_10s_taskmgr_report(void) {
         return;
     }
 
-    SIT_ASSERT(SituationRefreshCpuTopology());
+    SIT_ASSERT(SituationRefreshCpuTopology() == SITUATION_SUCCESS);
     uint32_t logical = SituationGetCPUThreadCount();
     uint32_t physical = SituationGetCPUCoreCount();
     SIT_ASSERT(logical > 0);
@@ -506,7 +506,7 @@ static void test_cpu_stress_10s_taskmgr_report(void) {
 
     SituationThreadPool stress_pool;
     memset(&stress_pool, 0, sizeof(stress_pool));
-    SIT_ASSERT(SituationCreateThreadPool(&stress_pool, workers, 2048, 0.0, true));
+    SIT_ASSERT(SituationCreateThreadPool(&stress_pool, workers, 2048, 0.0, true) == SITUATION_SUCCESS);
 
     SitCpuStressCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -574,7 +574,7 @@ static void test_cpu_stress_10s_taskmgr_report(void) {
     SIT_ASSERT(distinct >= (int)min_distinct);
 
     SituationThreadPoolMetrics metrics;
-    SIT_ASSERT(SituationGetThreadPoolMetrics(&stress_pool, &metrics));
+    SIT_ASSERT(SituationGetThreadPoolMetrics(&stress_pool, &metrics) == SITUATION_SUCCESS);
     SIT_ASSERT(metrics.jobs_completed > (uint64_t)workers);
     SIT_ASSERT(metrics.dispatch_parallel_calls >= 1);
 

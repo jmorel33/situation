@@ -48,6 +48,9 @@ bool sit_audio_freq_verify(const SitAudioFreqCapture* cap, float sample_rate, fl
 /** RMS of mono-mixed interleaved capture. */
 float sit_audio_capture_rms(const SitAudioFreqCapture* cap);
 
+/** Peak absolute sample (mono-mixed) in capture. */
+float sit_audio_capture_peak(const SitAudioFreqCapture* cap);
+
 /** Pearson correlation of mono-mixed samples (uses min length of a/b). */
 float sit_audio_capture_correlation(const SitAudioFreqCapture* a, const SitAudioFreqCapture* b);
 

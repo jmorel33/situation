@@ -155,6 +155,18 @@ float sit_audio_capture_rms(const SitAudioFreqCapture* cap) {
     return sit_capture_rms(cap);
 }
 
+float sit_audio_capture_peak(const SitAudioFreqCapture* cap) {
+    if (!cap || !cap->samples || cap->count == 0) return 0.0f;
+
+    float peak = 0.0f;
+    uint32_t ch = cap->channels;
+    for (uint32_t i = 0; i < cap->count; i++) {
+        float x = fabsf(sit_mix_to_mono(cap->samples, i, ch));
+        if (x > peak) peak = x;
+    }
+    return peak;
+}
+
 float sit_audio_capture_correlation(const SitAudioFreqCapture* a, const SitAudioFreqCapture* b) {
     if (!a || !b || !a->samples || !b->samples || a->count == 0 || b->count == 0) return 0.0f;
 
@@ -192,6 +204,8 @@ bool sit_audio_effect_heard(const SitAudioFreqCapture* dry, const SitAudioFreqCa
 
     float wet_rms = sit_audio_capture_rms(wet);
     float dry_rms = sit_audio_capture_rms(dry);
+    float wet_peak = sit_audio_capture_peak(wet);
+    float dry_peak = sit_audio_capture_peak(dry);
     if (dry_rms < min_wet_rms * 0.5f) return false;
 
     /* Strong attenuation (e.g. high-pass on a tone) still proves the effect ran. */
@@ -200,12 +214,15 @@ bool sit_audio_effect_heard(const SitAudioFreqCapture* dry, const SitAudioFreqCa
     /* Boost (e.g. EQ band gain) also proves processing. */
     if (dry_rms > min_wet_rms && wet_rms > dry_rms * 1.08f) return true;
 
+    if (dry_peak > min_wet_rms && wet_peak > dry_peak * 1.04f) return true;
+    if (dry_peak > min_wet_rms && wet_peak < dry_peak * 0.94f) return true;
+
     if (wet_rms < min_wet_rms) return false;
 
     float corr = sit_audio_capture_correlation(dry, wet);
     float rms_delta = fabsf(wet_rms - dry_rms) / fmaxf(dry_rms, 1e-6f);
 
-    return corr < 0.995f || rms_delta > 0.06f;
+    return corr < 0.995f || rms_delta > 0.03f;
 }
 
 float sit_audio_capture_window_rms(const SitAudioFreqCapture* cap, uint32_t start_frame,

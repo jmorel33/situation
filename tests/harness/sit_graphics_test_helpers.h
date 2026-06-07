@@ -29,7 +29,7 @@ static SituationError graphics_test_async_poll_shader_ready(SituationShader shad
 
         SituationPollInputEvents();
         SituationUpdateTimers();
-        if (!SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
             return SITUATION_ERROR_RENDER_COMMAND_FAILED;
         }
         SituationEndFrame();
@@ -189,7 +189,7 @@ static SituationError graphics_test_create_ssbo(
 static SituationCommandBuffer graphics_test_begin_frame(void) {
     SituationPollInputEvents();
     SituationUpdateTimers();
-    if (!SituationAcquireFrameCommandBuffer()) {
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
         return NULL;
     }
     return SituationGetMainCommandBuffer();

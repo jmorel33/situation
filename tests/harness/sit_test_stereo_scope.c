@@ -828,7 +828,7 @@ static bool sit_test_harness_minimal_frame_pump_once(void) {
     }
     SituationPollInputEvents();
     SituationUpdateTimers();
-    if (!SituationAcquireFrameCommandBuffer()) {
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
         return false;
     }
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
@@ -921,10 +921,10 @@ static bool sit_test_audio_visual_render_once(void) {
     }
     SituationPollInputEvents();
     SituationUpdateTimers();
-    if (!SituationAcquireFrameCommandBuffer()) {
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
         SituationPollInputEvents();
         SituationUpdateTimers();
-        if (!SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
             return false;
         }
     }
@@ -1116,10 +1116,10 @@ bool sit_test_listen_overlay_render_once(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    if (!SituationAcquireFrameCommandBuffer()) {
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
         SituationPollInputEvents();
         SituationUpdateTimers();
-        if (!SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
             return false;
         }
     }

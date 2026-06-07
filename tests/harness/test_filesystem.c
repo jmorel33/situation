@@ -80,8 +80,8 @@ static void test_get_app_save_path(void) {
 
 static void test_file_exists_positive(void) {
     // Create a temp file first
-    bool ok = SituationSaveFileText("_sit_test_text.txt", "hello");
-    SIT_ASSERT(ok);
+    SituationError err = SituationSaveFileText("_sit_test_text.txt", "hello");
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     SIT_ASSERT(SituationFileExists("_sit_test_text.txt"));
     SituationDeleteFile("_sit_test_text.txt");
 }
@@ -91,8 +91,8 @@ static void test_file_exists_negative(void) {
 }
 
 static void test_directory_exists(void) {
-    bool ok = SituationCreateDirectory("_sit_test_dir", false);
-    SIT_ASSERT(ok);
+    SituationError err = SituationCreateDirectory("_sit_test_dir", false);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     SIT_ASSERT(SituationDirectoryExists("_sit_test_dir"));
     SituationDeleteDirectory("_sit_test_dir", false);
     SIT_ASSERT(!SituationDirectoryExists("_sit_test_dir"));
@@ -111,8 +111,8 @@ static void test_get_file_mod_time(void) {
 
 static void test_save_load_text_roundtrip(void) {
     const char* content = "Hello, Situation Test Harness!\nLine 2.";
-    bool ok = SituationSaveFileText("_sit_test_text.txt", content);
-    SIT_ASSERT(ok);
+    SituationError err = SituationSaveFileText("_sit_test_text.txt", content);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
     char* loaded = SituationLoadFileText("_sit_test_text.txt");
     SIT_ASSERT_NOT_NULL(loaded);
@@ -143,8 +143,8 @@ static void test_save_load_binary_roundtrip(void) {
 
 static void test_copy_file(void) {
     SituationSaveFileText("_sit_test_text.txt", "copy me");
-    bool ok = SituationCopyFile("_sit_test_text.txt", "_sit_test_copy.txt");
-    SIT_ASSERT(ok);
+    SituationError err = SituationCopyFile("_sit_test_text.txt", "_sit_test_copy.txt");
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     SIT_ASSERT(SituationFileExists("_sit_test_copy.txt"));
 
     char* content = SituationLoadFileText("_sit_test_copy.txt");
@@ -158,8 +158,8 @@ static void test_copy_file(void) {
 
 static void test_move_file(void) {
     SituationSaveFileText("_sit_test_text.txt", "move me");
-    bool ok = SituationMoveFile("_sit_test_text.txt", "_sit_test_moved.txt");
-    SIT_ASSERT(ok);
+    SituationError err = SituationMoveFile("_sit_test_text.txt", "_sit_test_moved.txt");
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     SIT_ASSERT(!SituationFileExists("_sit_test_text.txt"));
     SIT_ASSERT(SituationFileExists("_sit_test_moved.txt"));
 
@@ -174,8 +174,8 @@ static void test_move_file(void) {
 static void test_delete_file(void) {
     SituationSaveFileText("_sit_test_text.txt", "delete me");
     SIT_ASSERT(SituationFileExists("_sit_test_text.txt"));
-    bool ok = SituationDeleteFile("_sit_test_text.txt");
-    SIT_ASSERT(ok);
+    SituationError err = SituationDeleteFile("_sit_test_text.txt");
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     SIT_ASSERT(!SituationFileExists("_sit_test_text.txt"));
 }
 
@@ -184,23 +184,23 @@ static void test_delete_file(void) {
 // ============================================================================
 
 static void test_create_delete_directory(void) {
-    bool ok = SituationCreateDirectory("_sit_test_dir", false);
-    SIT_ASSERT(ok);
+    SituationError err = SituationCreateDirectory("_sit_test_dir", false);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     SIT_ASSERT(SituationDirectoryExists("_sit_test_dir"));
 
-    ok = SituationDeleteDirectory("_sit_test_dir", false);
-    SIT_ASSERT(ok);
+    err = SituationDeleteDirectory("_sit_test_dir", false);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     SIT_ASSERT(!SituationDirectoryExists("_sit_test_dir"));
 }
 
 static void test_create_directory_with_parents(void) {
-    bool ok = SituationCreateDirectory("_sit_test_dir/sub/deep", true);
-    SIT_ASSERT(ok);
+    SituationError err = SituationCreateDirectory("_sit_test_dir/sub/deep", true);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     SIT_ASSERT(SituationDirectoryExists("_sit_test_dir/sub/deep"));
 
     // Recursive delete
-    ok = SituationDeleteDirectory("_sit_test_dir", true);
-    SIT_ASSERT(ok);
+    err = SituationDeleteDirectory("_sit_test_dir", true);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
     SIT_ASSERT(!SituationDirectoryExists("_sit_test_dir"));
 }
 
@@ -239,14 +239,14 @@ static void async_load_callback(void* data, size_t size, void* user_data) {
 static void test_load_file_async(void) {
     // Create a test file first
     const char* content = "async load test content 12345";
-    bool ok = SituationSaveFileText("_sit_test_async.txt", content);
-    SIT_ASSERT(ok);
+    SituationError err = SituationSaveFileText("_sit_test_async.txt", content);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
     // Create a thread pool for async ops
     SituationThreadPool pool;
     memset(&pool, 0, sizeof(pool));
-    ok = SituationCreateThreadPool(&pool, 2, 64, 0.0, false);
-    SIT_ASSERT(ok);
+    SituationError pool_err = SituationCreateThreadPool(&pool, 2, 64, 0.0, false);
+    SIT_ASSERT(pool_err == SITUATION_SUCCESS);
 
     g_async_load_done = false;
     g_async_load_success = false;
@@ -281,13 +281,13 @@ static void async_text_load_callback(char* text, void* user_data) {
 
 static void test_load_file_text_async(void) {
     const char* content = "async text load test";
-    bool ok = SituationSaveFileText("_sit_test_async_text.txt", content);
-    SIT_ASSERT(ok);
+    SituationError err = SituationSaveFileText("_sit_test_async_text.txt", content);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
 
     SituationThreadPool pool;
     memset(&pool, 0, sizeof(pool));
-    ok = SituationCreateThreadPool(&pool, 2, 64, 0.0, false);
-    SIT_ASSERT(ok);
+    SituationError pool_err = SituationCreateThreadPool(&pool, 2, 64, 0.0, false);
+    SIT_ASSERT(pool_err == SITUATION_SUCCESS);
 
     g_async_text_load_done = false;
     g_async_text_load_success = false;
@@ -317,8 +317,8 @@ static void async_save_callback(bool success, void* user_data) {
 static void test_save_file_async(void) {
     SituationThreadPool pool;
     memset(&pool, 0, sizeof(pool));
-    bool ok = SituationCreateThreadPool(&pool, 2, 64, 0.0, false);
-    SIT_ASSERT(ok);
+    SituationError pool_err = SituationCreateThreadPool(&pool, 2, 64, 0.0, false);
+    SIT_ASSERT(pool_err == SITUATION_SUCCESS);
 
     const char data[] = "async save binary data 0xDEAD";
     g_async_save_done = false;
@@ -341,8 +341,8 @@ static void test_save_file_async(void) {
 static void test_save_file_text_async(void) {
     SituationThreadPool pool;
     memset(&pool, 0, sizeof(pool));
-    bool ok = SituationCreateThreadPool(&pool, 2, 64, 0.0, false);
-    SIT_ASSERT(ok);
+    SituationError pool_err = SituationCreateThreadPool(&pool, 2, 64, 0.0, false);
+    SIT_ASSERT(pool_err == SITUATION_SUCCESS);
 
     g_async_save_done = false;
     g_async_save_success = false;

@@ -251,7 +251,7 @@ static bool advanced_draw_frame(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    if (!SituationAcquireFrameCommandBuffer()) {
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
         return false;
     }
 

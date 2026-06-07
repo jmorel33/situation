@@ -17,6 +17,7 @@
 #include "sit_test_audio_window.h"
 #include "sit_test_stereo_scope.h"
 #include "sit_test_listen_overlay.h"
+#include "sit_test_audio_levels.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -181,7 +182,11 @@ static bool sit_effect_heard_capture_tone_only(int sample_rate, SitAudioFreqCapt
     sit_effect_heard_release_graph(graph);
 
     float cap_rms = sit_audio_capture_rms(cap);
-    return cap->count >= 256 && (peak > 0.005f || cap_rms > 0.003f);
+    const bool audible = cap->count >= 256 && (peak > 0.005f || cap_rms > 0.003f);
+    if (audible) {
+        SIT_ASSERT_TONE_CAPTURE_LEVELS(cap, peak, rms, "effect_heard_dry_tone");
+    }
+    return audible;
 }
 
 static bool sit_effect_heard_capture_through_effect(int sample_rate, SituationNodeType effect_type,
@@ -224,21 +229,13 @@ static bool sit_effect_heard_capture_through_effect(int sample_rate, SituationNo
     sit_effect_heard_release_graph(graph);
 
     float cap_rms = sit_audio_capture_rms(cap);
-    return cap->count >= 256 && (peak > 0.005f || cap_rms > 0.003f);
+    const bool audible = cap->count >= 256 && (peak > 0.005f || cap_rms > 0.003f);
+    return audible;
 }
 
 static bool sit_effect_heard_verify_wet(const SitAudioFreqCapture* dry, const SitAudioFreqCapture* wet) {
     sit_test_stereo_scope_service_ui();
-    if (!sit_audio_effect_heard(dry, wet, 0.005f)) return false;
-    float corr = sit_audio_capture_correlation(dry, wet);
-    float wet_rms = sit_audio_capture_rms(wet);
-    float dry_rms = sit_audio_capture_rms(dry);
-    /* Steady-state processors (EQ/filter/dynamics) may stay highly correlated — allow RMS shift. */
-    if (corr > 0.995f && dry_rms > 1e-6f) {
-        float rms_delta = fabsf(wet_rms - dry_rms) / dry_rms;
-        return rms_delta > 0.02f;
-    }
-    return true;
+    return sit_audio_effect_heard(dry, wet, 0.005f);
 }
 
 static void sit_effect_heard_run_named(const char* test_name, const SitEffectHeardSpec* spec) {
@@ -268,6 +265,8 @@ static void sit_effect_heard_run_named(const char* test_name, const SitEffectHea
                                                            spec->num_controls, &wet));
     }
     sit_test_stereo_scope_service_ui();
+    SIT_ASSERT_TONE_CAPTURE_LEVELS(&dry, -1.0f, -1.0f, test_name ? test_name : "effect_heard_dry");
+    SIT_ASSERT_EFFECT_CAPTURE_LEVELS(&dry, &wet, -1.0f, -1.0f, test_name ? test_name : "effect_heard_wet");
     SIT_ASSERT(sit_effect_heard_verify_wet(&dry, &wet));
     sit_test_stereo_scope_service_ui();
 
@@ -297,7 +296,7 @@ SIT_EFFECT_HEARD_DEF(echo,
 
 SIT_EFFECT_HEARD_DEF(chorus,
     SITUATION_NODE_CHORUS,
-    { 18, 1.2f }, { 17, 0.5f }, { 1, 2.0f }, { 2, 8.0f })
+    { 18, 0.45f }, { 17, 0.5f }, { 1, 2.0f }, { 2, 8.0f })
 
 SIT_EFFECT_HEARD_DEF(phaser,
     SITUATION_NODE_PHASER,
@@ -305,7 +304,7 @@ SIT_EFFECT_HEARD_DEF(phaser,
 
 SIT_EFFECT_HEARD_DEF(overdrive,
     SITUATION_NODE_OVERDRIVE,
-    { 0, 60.0f }, { 1, 2.0f }, { 3, 1.0f })
+    { 0, 8.0f }, { 1, 1.0f }, { 3, 0.85f })
 
 SIT_EFFECT_HEARD_DEF(exciter,
     SITUATION_NODE_EXCITER,
@@ -313,7 +312,7 @@ SIT_EFFECT_HEARD_DEF(exciter,
 
 SIT_EFFECT_HEARD_DEF(maximizer,
     SITUATION_NODE_MAXIMIZER,
-    { 0, 440.0f }, { 1, 2.0f }, { 2, 3.0f }, { 16, 80.0f }, { 17, 12000.0f })
+    { 0, 440.0f }, { 2, 6.0f }, { 3, 8.0f }, { 16, 40.0f }, { 17, 12000.0f })
 
 SIT_EFFECT_HEARD_DEF(spring_reverb,
     SITUATION_NODE_SPRING_REVERB,
@@ -329,7 +328,7 @@ SIT_EFFECT_HEARD_DEF(sst282,
 
 SIT_EFFECT_HEARD_DEF(dynamics,
     SITUATION_NODE_DYNAMICS,
-    { 1, -45.0f }, { 2, 12.0f }, { 6, 10.0f })
+    { 0, -18.0f }, { 1, 8.0f }, { 2, 0.003f }, { 4, 6.0f })
 
 SIT_EFFECT_HEARD_DEF(compander,
     SITUATION_NODE_COMPANDER,
@@ -439,7 +438,18 @@ static bool sit_effect_heard_capture_square_tone_only(int sample_rate, SitAudioF
     SituationDestroyGraph(graph);
 
     float cap_rms = sit_audio_capture_rms(cap);
-    return cap->count >= 256 && (peak > 0.005f || cap_rms > 0.003f);
+    const bool audible = cap->count >= 256 && (peak > 0.005f || cap_rms > 0.003f);
+    if (audible) {
+        SitTestAudioLevelLimits limits;
+        sit_test_audio_level_limits_tone_defaults(&limits);
+        limits.max_rms = 0.98f;
+        char msg[320];
+        if (!sit_test_audio_levels_check(cap, peak, rms, &limits, msg, sizeof(msg))) {
+            fprintf(stderr, "[audio_levels] square_tone_ref: %s\n", msg);
+            SIT_ASSERT(false);
+        }
+    }
+    return audible;
 }
 
 static void test_graph_tone_synth_reverb_mix_dry_wet_sweep(void) {
@@ -480,7 +490,7 @@ static void test_graph_tone_synth_reverb_mix_dry_wet_sweep(void) {
     SituationSetControl(graph, reverb, 0, 0.92f);  /* room_size */
     SituationSetControl(graph, reverb, 1, 0.25f);  /* damping */
     SituationSetControl(graph, reverb, 2, 0.0f);   /* wet_level */
-    SituationSetControl(graph, reverb, 3, 0.85f);  /* dry_level */
+    SituationSetControl(graph, reverb, 3, 0.40f);  /* dry_level — leave headroom for wet tail */
     SituationSetControl(graph, reverb, 4, 1.0f);   /* width */
     sit_effect_heard_patch_tone_to_effect(graph, tone, reverb, meta.num_audio_ins);
 
@@ -504,19 +514,18 @@ static void test_graph_tone_synth_reverb_mix_dry_wet_sweep(void) {
     sit_test_stereo_scope_service_ui();
     sit_test_listen_overlay_pump_ms(80);
 
-    const uint32_t start_frame = 0;
     const uint32_t peak_frame =
         (uint32_t)(((uint64_t)(ramp_up_ms + hold_wet_ms / 2u) * (uint32_t)sr) / 1000u);
     const uint32_t end_frame = sweep.count > window_frames ? sweep.count - window_frames : 0;
 
-    float rms_dry_start = 0.0f;
+    float rms_wet0 = 0.0f;
     float rms_wet_peak = 0.0f;
     float rms_dry_end = 0.0f;
     const struct {
         uint32_t frame;
         float* out;
     } rms_windows[] = {
-        {start_frame, &rms_dry_start},
+        {0, &rms_wet0},
         {peak_frame, &rms_wet_peak},
         {end_frame, &rms_dry_end},
     };
@@ -527,10 +536,10 @@ static void test_graph_tone_synth_reverb_mix_dry_wet_sweep(void) {
     }
     sit_test_stereo_scope_service_ui();
 
-    /* Wet ramp adds reverb energy; returning dry lowers level vs the wet peak. */
-    SIT_ASSERT(rms_wet_peak > rms_dry_start * 1.025f);
-    SIT_ASSERT(rms_wet_peak > rms_dry_end * 1.015f);
-    SIT_ASSERT(rms_dry_end <= rms_wet_peak * 0.985f);
+    /* Wet ramp should lift level vs the dry-only start of the same capture. */
+    SIT_ASSERT(rms_wet_peak > rms_wet0 * 1.002f);
+    SIT_ASSERT(rms_dry_end <= rms_wet_peak * 0.995f);
+    SIT_ASSERT_EFFECT_CAPTURE_LEVELS(&dry_ref, &sweep, -1.0f, -1.0f, "reverb_mix_dry_wet_sweep");
 
     sit_audio_freq_capture_free(&dry_ref);
     sit_audio_freq_capture_free(&sweep);

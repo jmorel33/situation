@@ -1,6 +1,6 @@
-﻿/**
+/**
  * @file test_audio.c
- * @brief Audio module tests â€” Device, Playback, Tones, Effects, Capture, Mixer, Graph,
+ * @brief Audio module tests — Device, Playback, Tones, Effects, Capture, Mixer, Graph,
  *        Device Registry, Node Graph, Controls, Effects Modules, MIDI Integration
  *
  * Requires context: calls SituationInit() in setup, SituationShutdown() in teardown.
@@ -12,7 +12,7 @@
  * NOTE: A test WAV file is generated programmatically (1-second 440Hz sine, 16-bit mono 44100Hz)
  * to avoid requiring external assets.
  *
- * (c) 2025-2026 Jacques Morel â€” MIT Licensed
+ * (c) 2025-2026 Jacques Morel — MIT Licensed
  */
 
 #include "sit_api_include.h"
@@ -31,7 +31,7 @@ static bool sit_test_open_midi_hardware(void) {
     return e != NULL && e[0] != '\0' && e[0] != '0';
 }
 
-// Forward declaration for SituationRemovePatch â€” not currently exported from DLL
+// Forward declaration for SituationRemovePatch — not currently exported from DLL
 // Tests that need disconnect will skip that verification
 
 // ============================================================================
@@ -170,7 +170,7 @@ static void test_audio_master_volume(void) {
     // Volume should be in a reasonable range
     SIT_ASSERT(vol >= 0.0f && vol <= 2.0f);
 
-    // Set volume â€” verify no crash
+    // Set volume — verify no crash
     SituationError err = SituationSetAudioMasterVolume(0.5f);
     SIT_ASSERT(err == SITUATION_SUCCESS);
 
@@ -181,7 +181,7 @@ static void test_audio_master_volume(void) {
 static void test_audio_device_playing(void) {
     // After init, audio device should be playing (auto-started)
     bool playing = SituationIsAudioDevicePlaying();
-    // This is system-dependent â€” just verify no crash
+    // This is system-dependent — just verify no crash
     SIT_ASSERT(playing || !playing); // Always true, but exercises the function
 }
 
@@ -231,6 +231,223 @@ static void test_play_and_stop_loaded_sound(void) {
 static void test_stop_all_loaded_sounds(void) {
     SituationError err = SituationStopAllLoadedSounds();
     SIT_ASSERT(err == SITUATION_SUCCESS);
+}
+
+// ============================================================================
+//  Format-Specific Playback Tests (MP3, OGG, FLAC)
+// ============================================================================
+
+#define TEST_ASSET_MP3 "tests/harness/assets/sample.mp3"
+#define TEST_ASSET_OGG "tests/harness/assets/sample.ogg"
+#define TEST_ASSET_FLAC "tests/harness/assets/sample.flac"
+#define TEST_ASSET_WAV "tests/harness/assets/sample.wav"
+
+static bool audio_asset_exists(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f) { fclose(f); return true; }
+    return false;
+}
+
+static void test_load_play_mp3(void) {
+    if (!audio_asset_exists(TEST_ASSET_MP3)) {
+        fprintf(stderr, "[test] Skip load_play_mp3: %s not found\n", TEST_ASSET_MP3);
+        SIT_ASSERT(true);
+        return;
+    }
+
+    SituationSound sound = SITUATION_NULL_HANDLE;
+    SituationError err = SituationLoadSoundFromFile(
+        TEST_ASSET_MP3, SITUATION_AUDIO_LOAD_FULL, false, &sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+    SIT_ASSERT(sound.slot_index != 0 || sound.generation != 0);
+
+    err = SituationPlayLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SIT_AUDIO_TEST_SLEEP_MS(1500);
+
+    err = SituationStopLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SituationUnloadSound(&sound);
+}
+
+static void test_load_play_ogg(void) {
+    if (!audio_asset_exists(TEST_ASSET_OGG)) {
+        fprintf(stderr, "[test] Skip load_play_ogg: %s not found\n", TEST_ASSET_OGG);
+        SIT_ASSERT(true);
+        return;
+    }
+
+    SituationSound sound = SITUATION_NULL_HANDLE;
+    SituationError err = SituationLoadSoundFromFile(
+        TEST_ASSET_OGG, SITUATION_AUDIO_LOAD_FULL, false, &sound);
+    /* OGG Vorbis requires stb_vorbis linked into miniaudio; skip gracefully if unsupported. */
+    if (err == SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED ||
+        err == SITUATION_ERROR_AUDIO_DECODER_FORMAT_UNSUPPORTED) {
+        fprintf(stderr, "[test] Skip load_play_ogg: OGG/Vorbis decoder not available\n");
+        SIT_ASSERT(true);
+        return;
+    }
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+    SIT_ASSERT(sound.slot_index != 0 || sound.generation != 0);
+
+    err = SituationPlayLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SIT_AUDIO_TEST_SLEEP_MS(1500);
+
+    err = SituationStopLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SituationUnloadSound(&sound);
+}
+
+static void test_load_play_flac(void) {
+    if (!audio_asset_exists(TEST_ASSET_FLAC)) {
+        fprintf(stderr, "[test] Skip load_play_flac: %s not found\n", TEST_ASSET_FLAC);
+        SIT_ASSERT(true);
+        return;
+    }
+
+    SituationSound sound = SITUATION_NULL_HANDLE;
+    SituationError err = SituationLoadSoundFromFile(
+        TEST_ASSET_FLAC, SITUATION_AUDIO_LOAD_FULL, false, &sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+    SIT_ASSERT(sound.slot_index != 0 || sound.generation != 0);
+
+    err = SituationPlayLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SIT_AUDIO_TEST_SLEEP_MS(1500);
+
+    err = SituationStopLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SituationUnloadSound(&sound);
+}
+
+static void test_stream_mp3(void) {
+    if (!audio_asset_exists(TEST_ASSET_MP3)) {
+        fprintf(stderr, "[test] Skip stream_mp3: %s not found\n", TEST_ASSET_MP3);
+        SIT_ASSERT(true);
+        return;
+    }
+
+    SituationSound sound = SITUATION_NULL_HANDLE;
+    SituationError err = SituationLoadSoundFromFile(
+        TEST_ASSET_MP3, SITUATION_AUDIO_LOAD_STREAM, false, &sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    err = SituationPlayLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SIT_AUDIO_TEST_SLEEP_MS(1500);
+
+    err = SituationStopLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SituationUnloadSound(&sound);
+}
+
+static void test_stream_ogg(void) {
+    if (!audio_asset_exists(TEST_ASSET_OGG)) {
+        fprintf(stderr, "[test] Skip stream_ogg: %s not found\n", TEST_ASSET_OGG);
+        SIT_ASSERT(true);
+        return;
+    }
+
+    SituationSound sound = SITUATION_NULL_HANDLE;
+    SituationError err = SituationLoadSoundFromFile(
+        TEST_ASSET_OGG, SITUATION_AUDIO_LOAD_STREAM, false, &sound);
+    /* OGG Vorbis requires stb_vorbis linked into miniaudio; skip gracefully if unsupported. */
+    if (err == SITUATION_ERROR_AUDIO_DECODER_INIT_FAILED ||
+        err == SITUATION_ERROR_AUDIO_DECODER_FORMAT_UNSUPPORTED) {
+        fprintf(stderr, "[test] Skip stream_ogg: OGG/Vorbis decoder not available\n");
+        SIT_ASSERT(true);
+        return;
+    }
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    err = SituationPlayLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SIT_AUDIO_TEST_SLEEP_MS(1500);
+
+    err = SituationStopLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SituationUnloadSound(&sound);
+}
+
+static void test_stream_flac(void) {
+    if (!audio_asset_exists(TEST_ASSET_FLAC)) {
+        fprintf(stderr, "[test] Skip stream_flac: %s not found\n", TEST_ASSET_FLAC);
+        SIT_ASSERT(true);
+        return;
+    }
+
+    SituationSound sound = SITUATION_NULL_HANDLE;
+    SituationError err = SituationLoadSoundFromFile(
+        TEST_ASSET_FLAC, SITUATION_AUDIO_LOAD_STREAM, false, &sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    err = SituationPlayLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SIT_AUDIO_TEST_SLEEP_MS(1500);
+
+    err = SituationStopLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SituationUnloadSound(&sound);
+}
+
+static void test_load_play_wav(void) {
+    if (!audio_asset_exists(TEST_ASSET_WAV)) {
+        fprintf(stderr, "[test] Skip load_play_wav: %s not found\n", TEST_ASSET_WAV);
+        SIT_ASSERT(true);
+        return;
+    }
+
+    SituationSound sound = SITUATION_NULL_HANDLE;
+    SituationError err = SituationLoadSoundFromFile(
+        TEST_ASSET_WAV, SITUATION_AUDIO_LOAD_FULL, false, &sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+    SIT_ASSERT(sound.slot_index != 0 || sound.generation != 0);
+
+    err = SituationPlayLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SIT_AUDIO_TEST_SLEEP_MS(1500);
+
+    err = SituationStopLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SituationUnloadSound(&sound);
+}
+
+static void test_stream_wav(void) {
+    if (!audio_asset_exists(TEST_ASSET_WAV)) {
+        fprintf(stderr, "[test] Skip stream_wav: %s not found\n", TEST_ASSET_WAV);
+        SIT_ASSERT(true);
+        return;
+    }
+
+    SituationSound sound = SITUATION_NULL_HANDLE;
+    SituationError err = SituationLoadSoundFromFile(
+        TEST_ASSET_WAV, SITUATION_AUDIO_LOAD_STREAM, false, &sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    err = SituationPlayLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SIT_AUDIO_TEST_SLEEP_MS(1500);
+
+    err = SituationStopLoadedSound(&sound);
+    SIT_ASSERT_EQ(err, SITUATION_SUCCESS);
+
+    SituationUnloadSound(&sound);
 }
 
 // ============================================================================
@@ -450,7 +667,7 @@ static void test_enumerate_audio_devices(void) {
 }
 
 // ============================================================================
-//  Graph Serialization Tests (Original â€” Basic)
+//  Graph Serialization Tests (Original — Basic)
 // ============================================================================
 
 static void test_graph_serialize_to_json(void) {
@@ -487,11 +704,11 @@ static void test_free_json_string_null(void) {
 }
 
 // ============================================================================
-//  PHASE 1 â€” Device Registry & Metadata
+//  PHASE 1 — Device Registry & Metadata
 // ============================================================================
 
 static void test_registry_init(void) {
-    // SituationInitDeviceRegistry is idempotent â€” calling it again should not crash
+    // SituationInitDeviceRegistry is idempotent — calling it again should not crash
     SituationInitDeviceRegistry();
     SIT_ASSERT(true);
 }
@@ -534,7 +751,7 @@ static void test_registry_lfo_metadata(void) {
     if (err == SITUATION_SUCCESS) {
         SIT_ASSERT(meta.category == SITUATION_DEVICE_MODULATOR);
     }
-    SIT_ASSERT(true); // Graceful â€” no crash
+    SIT_ASSERT(true); // Graceful — no crash
 }
 
 static void test_registry_peak_meter_metadata(void) {
@@ -545,7 +762,7 @@ static void test_registry_peak_meter_metadata(void) {
     if (err == SITUATION_SUCCESS) {
         SIT_ASSERT(meta.category == SITUATION_DEVICE_ANALYZER);
     }
-    SIT_ASSERT(true); // Graceful â€” no crash
+    SIT_ASSERT(true); // Graceful — no crash
 }
 
 static void test_registry_category_name_effect(void) {
@@ -587,7 +804,7 @@ static void test_registry_register_custom_device(void) {
 static void test_registry_all_builtin_types_registered(void) {
     SituationInitDeviceRegistry();
 
-    // Currently registered built-in types (20 of 26 â€” some utilities/modulators/analyzers pending)
+    // Currently registered built-in types (20 of 26 — some utilities/modulators/analyzers pending)
     SituationNodeType registered_types[] = {
         SITUATION_NODE_REVERB, SITUATION_NODE_ECHO, SITUATION_NODE_CHORUS,
         SITUATION_NODE_PHASER, SITUATION_NODE_OVERDRIVE, SITUATION_NODE_EXCITER,
@@ -607,7 +824,7 @@ static void test_registry_all_builtin_types_registered(void) {
 }
 
 // ============================================================================
-//  PHASE 2 â€” Node Graph Lifecycle & Patching
+//  PHASE 2 — Node Graph Lifecycle & Patching
 // ============================================================================
 
 // --- 2A: Graph & Node Lifecycle ---
@@ -651,7 +868,7 @@ static void test_graph_create_node_gain(void) {
     SIT_ASSERT_NOT_NULL(graph);
 
     SituationNodeHandle handle = SITUATION_INVALID_NODE_HANDLE;
-    // GAIN not yet registered â€” use PANNER (utility) instead
+    // GAIN not yet registered — use PANNER (utility) instead
     SituationError err = SituationCreateNode(graph, SITUATION_NODE_PANNER, &handle);
     SIT_ASSERT(err == SITUATION_SUCCESS);
     SIT_ASSERT(handle != SITUATION_INVALID_NODE_HANDLE);
@@ -788,7 +1005,7 @@ static void test_graph_create_patch_control(void) {
 
     // Control patches may require specific node types with ctrl outputs
     SituationError err = SituationCreatePatch(graph, exciter, 0, reverb, 0, true);
-    // Graceful â€” may succeed or fail depending on node ctrl port availability
+    // Graceful — may succeed or fail depending on node ctrl port availability
     SIT_ASSERT(err == SITUATION_SUCCESS || err != SITUATION_SUCCESS);
     SIT_ASSERT(true); // No crash
 
@@ -805,7 +1022,7 @@ static void test_graph_destroy_patch_control(void) {
     SituationCreateNode(graph, SITUATION_NODE_EXCITER, &exciter);
     SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
 
-    // Attempt control patch â€” may or may not succeed
+    // Attempt control patch — may or may not succeed
     SituationCreatePatch(graph, exciter, 0, reverb, 0, true);
 
     // Destroying the graph implicitly removes all patches
@@ -827,13 +1044,13 @@ static void test_graph_cycle_detection_chain(void) {
     SituationCreateNode(graph, SITUATION_NODE_PANNER, &b);
     SituationCreateNode(graph, SITUATION_NODE_PANNER, &c);
 
-    // Aâ†’Bâ†’C chain succeeds
+    // A→B→C chain succeeds
     SituationError err = SituationCreatePatch(graph, a, 0, b, 0, false);
     SIT_ASSERT(err == SITUATION_SUCCESS);
     err = SituationCreatePatch(graph, b, 0, c, 0, false);
     SIT_ASSERT(err == SITUATION_SUCCESS);
 
-    // Câ†’A creates cycle â€” should be rejected
+    // C→A creates cycle — should be rejected
     err = SituationCreatePatch(graph, c, 0, a, 0, false);
     SIT_ASSERT(err != SITUATION_SUCCESS);
 
@@ -853,7 +1070,7 @@ static void test_graph_cycle_detection_simple(void) {
     SituationError err = SituationCreatePatch(graph, a, 0, b, 0, false);
     SIT_ASSERT(err == SITUATION_SUCCESS);
 
-    // Bâ†’A creates cycle
+    // B→A creates cycle
     err = SituationCreatePatch(graph, b, 0, a, 0, false);
     SIT_ASSERT(err != SITUATION_SUCCESS);
 
@@ -868,16 +1085,16 @@ static void test_graph_cycle_detection_self_loop(void) {
     SituationNodeHandle a = SITUATION_INVALID_NODE_HANDLE;
     SituationCreateNode(graph, SITUATION_NODE_PANNER, &a);
 
-    // Self-loop Aâ†’A â€” library may or may not reject this
+    // Self-loop A→A — library may or may not reject this
     SituationError err = SituationCreatePatch(graph, a, 0, a, 0, false);
-    // Just verify no crash â€” cycle detection behavior is implementation-defined for self-loops
+    // Just verify no crash — cycle detection behavior is implementation-defined for self-loops
     SIT_ASSERT(true);
 
     SituationDestroyGraph(graph);
 }
 
 // ============================================================================
-//  PHASE 3 â€” Control Parameters (Dials & Buttons)
+//  PHASE 3 — Control Parameters (Dials & Buttons)
 // ============================================================================
 
 // --- 3A: Basic Control Get/Set ---
@@ -1108,7 +1325,7 @@ static void test_control_sweep_all_devices(void) {
 }
 
 // ============================================================================
-//  PHASE 4 â€” Effects Module Instantiation & Verification
+//  PHASE 4 — Effects Module Instantiation & Verification
 // ============================================================================
 
 // --- 4A: Effect Node Creation (all 18 effects) ---
@@ -1222,7 +1439,7 @@ static void test_effect_control_roundtrip(void) {
             SIT_ASSERT(readback >= max_val - 0.01f && readback <= max_val + 0.01f);
         }
 
-        // Sweep all controls from min to max â€” verify no crash
+        // Sweep all controls from min to max — verify no crash
         for (int c = 0; c < meta.num_controls; c++) {
             float min_v = meta.controls[c].min_value;
             float max_v = meta.controls[c].max_value;
@@ -1256,7 +1473,7 @@ static void test_graph_version_compatible(void) {
 }
 
 // ============================================================================
-//  PHASE 7 â€” MIDI Integration & Learn
+//  PHASE 7 — MIDI Integration & Learn
 // ============================================================================
 
 // --- 7A: MIDI Device Control ---
@@ -1314,7 +1531,7 @@ static void test_midi_disable_control(void) {
     SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
     SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
 
-    // Disable on a node that was never enabled â€” should be graceful
+    // Disable on a node that was never enabled — should be graceful
     SituationError err = SituationDisableMidiControl(graph, reverb);
     SIT_ASSERT(err == SITUATION_SUCCESS);
 
@@ -1336,7 +1553,7 @@ static void test_midi_auto_connect(void) {
     if (midi_count > 0 && sit_test_open_midi_hardware()) {
         SituationError err = SituationAutoConnectMidi(graph, reverb);
         SIT_ASSERT(err == SITUATION_SUCCESS || err != SITUATION_SUCCESS);
-        /* Explicit MIDI teardown before graph free — matches DestroyNode ordering and avoids
+        /* Explicit MIDI teardown before graph free � matches DestroyNode ordering and avoids
          * PortMidi / device wrapper interaction during bulk graph destruction on Windows. */
         SituationDisableMidiControl(graph, reverb);
     }
@@ -1357,9 +1574,9 @@ static void test_midi_learn_enable(void) {
     SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
     SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
 
-    // EnableMidiLearn without MIDI enabled first â€” should return error gracefully
+    // EnableMidiLearn without MIDI enabled first — should return error gracefully
     SituationError err = SituationEnableMidiLearn(graph, reverb);
-    // Expected to fail (MIDI not enabled) â€” just verify no crash
+    // Expected to fail (MIDI not enabled) — just verify no crash
     SIT_ASSERT(true);
 
     SituationDestroyGraph(graph);
@@ -1388,9 +1605,9 @@ static void test_midi_learn_start(void) {
     SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
     SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
 
-    // StartMidiLearn without MIDI enabled â€” should return error gracefully
+    // StartMidiLearn without MIDI enabled — should return error gracefully
     SituationError err = SituationStartMidiLearn(graph, reverb, 0, "Volume", 0.0f, 1.0f, 0);
-    // Expected to fail â€” just verify no crash
+    // Expected to fail — just verify no crash
     SIT_ASSERT(true);
 
     SituationDestroyGraph(graph);
@@ -1404,7 +1621,7 @@ static void test_midi_learn_cancel(void) {
     SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
     SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
 
-    // CancelMidiLearn when not learning â€” should be graceful
+    // CancelMidiLearn when not learning — should be graceful
     SituationError err = SituationCancelMidiLearn(graph, reverb);
     SIT_ASSERT(true); // No crash
 
@@ -1419,7 +1636,7 @@ static void test_midi_learn_disable(void) {
     SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
     SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
 
-    // DisableMidiLearn when not enabled â€” should be graceful
+    // DisableMidiLearn when not enabled — should be graceful
     SituationError err = SituationDisableMidiLearn(graph, reverb);
     SIT_ASSERT(true); // No crash
 
@@ -1436,9 +1653,9 @@ static void test_midi_clear_mapping(void) {
     SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
     SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
 
-    // Clear mapping without MIDI enabled â€” may return error (requires MIDI active)
+    // Clear mapping without MIDI enabled — may return error (requires MIDI active)
     SituationError err = SituationClearMidiMapping(graph, reverb, 0);
-    // Graceful â€” no crash regardless of return code
+    // Graceful — no crash regardless of return code
     SIT_ASSERT(true);
 
     SituationDestroyGraph(graph);
@@ -1452,9 +1669,9 @@ static void test_midi_clear_all_mappings(void) {
     SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
     SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
 
-    // Clear all mappings without MIDI enabled â€” may return error
+    // Clear all mappings without MIDI enabled — may return error
     SituationError err = SituationClearAllMidiMappings(graph, reverb);
-    // Graceful â€” no crash regardless of return code
+    // Graceful — no crash regardless of return code
     SIT_ASSERT(true);
 
     SituationDestroyGraph(graph);
@@ -1470,9 +1687,9 @@ static void test_midi_save_preset(void) {
     SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
     SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
 
-    // Save preset without MIDI enabled â€” may return error (requires MIDI active)
+    // Save preset without MIDI enabled — may return error (requires MIDI active)
     SituationError err = SituationSaveMidiPreset(graph, reverb, "_sit_test_midi.json");
-    // Graceful â€” no crash regardless of return code
+    // Graceful — no crash regardless of return code
     SIT_ASSERT(true);
 
     // Cleanup if file was created
@@ -1495,12 +1712,199 @@ static void test_midi_load_preset(void) {
         fclose(f);
     }
 
-    // Load preset without MIDI enabled â€” may return error
+    // Load preset without MIDI enabled — may return error
     SituationError err = SituationLoadMidiPreset(graph, reverb, "_sit_test_midi.json");
-    // Graceful â€” no crash regardless of return code
+    // Graceful — no crash regardless of return code
     SIT_ASSERT(true);
 
     remove("_sit_test_midi.json");
+    SituationDestroyGraph(graph);
+}
+
+// ============================================================================
+//  PCM Input Node Tests
+// ============================================================================
+
+static void test_pcm_input_create_node(void) {
+    SituationInitDeviceRegistry();
+    SituationAudioGraph* graph = SituationCreateGraph();
+    SIT_ASSERT_NOT_NULL(graph);
+
+    SituationNodeHandle handle = SITUATION_INVALID_NODE_HANDLE;
+    SituationError err = SituationCreateNode(graph, SITUATION_NODE_PCM_INPUT, &handle);
+    SIT_ASSERT(err == SITUATION_SUCCESS);
+    SIT_ASSERT(handle != SITUATION_INVALID_NODE_HANDLE);
+
+    SituationDestroyGraph(graph);
+}
+
+static void test_pcm_input_push_and_query(void) {
+    SituationInitDeviceRegistry();
+    SituationAudioGraph* graph = SituationCreateGraph();
+    SIT_ASSERT_NOT_NULL(graph);
+
+    SituationNodeHandle handle = SITUATION_INVALID_NODE_HANDLE;
+    SituationError err = SituationCreateNode(graph, SITUATION_NODE_PCM_INPUT, &handle);
+    SIT_ASSERT(err == SITUATION_SUCCESS);
+
+    // Query free frames - should be close to ring buffer capacity (4096 - 1)
+    uint32_t free_before = SituationGetNodePCMFreeFrames(graph, handle);
+    SIT_ASSERT(free_before > 0);
+    SIT_ASSERT(free_before >= 4000);  // At least 4000 of 4095 available
+
+    // Generate a short sine wave (256 frames, stereo)
+    const uint32_t test_frames = 256;
+    const uint32_t channels = 2;
+    float test_pcm[256 * 2];
+    for (uint32_t i = 0; i < test_frames; i++) {
+        float t = (float)i / 48000.0f;
+        float sample = sinf(2.0f * 3.14159265f * 440.0f * t);
+        test_pcm[i * 2]     = sample;  // L
+        test_pcm[i * 2 + 1] = sample;  // R
+    }
+
+    // Push PCM data
+    uint32_t written = SituationPushNodePCM(graph, handle, test_pcm, test_frames, channels);
+    SIT_ASSERT_EQ((long long)written, (long long)test_frames);
+
+    // Free frames should have decreased
+    uint32_t free_after = SituationGetNodePCMFreeFrames(graph, handle);
+    SIT_ASSERT(free_after < free_before);
+    SIT_ASSERT_EQ((long long)(free_before - free_after), (long long)test_frames);
+
+    SituationDestroyGraph(graph);
+}
+
+static void test_pcm_input_push_overflow(void) {
+    SituationInitDeviceRegistry();
+    SituationAudioGraph* graph = SituationCreateGraph();
+    SIT_ASSERT_NOT_NULL(graph);
+
+    SituationNodeHandle handle = SITUATION_INVALID_NODE_HANDLE;
+    SituationCreateNode(graph, SITUATION_NODE_PCM_INPUT, &handle);
+
+    // Try to push more than the ring buffer can hold
+    // Ring is 4096 frames, usable = 4095 (SPSC leaves one slot empty)
+    const uint32_t channels = 2;
+    const uint32_t big_frames = 5000;
+    float* big_pcm = (float*)calloc(big_frames * channels, sizeof(float));
+    SIT_ASSERT_NOT_NULL(big_pcm);
+
+    uint32_t written = SituationPushNodePCM(graph, handle, big_pcm, big_frames, channels);
+    // Should write less than requested (capped at available space)
+    SIT_ASSERT(written < big_frames);
+    SIT_ASSERT(written > 0);
+
+    // Buffer should now be nearly full
+    uint32_t free_after = SituationGetNodePCMFreeFrames(graph, handle);
+    SIT_ASSERT(free_after < 10);  // Very little space left
+
+    free(big_pcm);
+    SituationDestroyGraph(graph);
+}
+
+static void test_pcm_input_wrong_type(void) {
+    SituationInitDeviceRegistry();
+    SituationAudioGraph* graph = SituationCreateGraph();
+    SIT_ASSERT_NOT_NULL(graph);
+
+    // Create a reverb node (not PCM input)
+    SituationNodeHandle reverb = SITUATION_INVALID_NODE_HANDLE;
+    SituationCreateNode(graph, SITUATION_NODE_REVERB, &reverb);
+
+    // Push should return 0 for wrong node type
+    float dummy[64] = {0};
+    uint32_t written = SituationPushNodePCM(graph, reverb, dummy, 32, 2);
+    SIT_ASSERT_EQ((long long)written, 0);
+
+    // Query should return 0 for wrong node type
+    uint32_t free_frames = SituationGetNodePCMFreeFrames(graph, reverb);
+    SIT_ASSERT_EQ((long long)free_frames, 0);
+
+    SituationDestroyGraph(graph);
+}
+
+static void test_pcm_input_channel_mismatch(void) {
+    SituationInitDeviceRegistry();
+    SituationAudioGraph* graph = SituationCreateGraph();
+    SIT_ASSERT_NOT_NULL(graph);
+
+    SituationNodeHandle handle = SITUATION_INVALID_NODE_HANDLE;
+    SituationCreateNode(graph, SITUATION_NODE_PCM_INPUT, &handle);
+
+    // Node is stereo (2 channels) - push with wrong channel count should fail
+    float mono_pcm[128] = {0};
+    uint32_t written = SituationPushNodePCM(graph, handle, mono_pcm, 128, 1);
+    SIT_ASSERT_EQ((long long)written, 0);  // Channel mismatch - rejected
+
+    SituationDestroyGraph(graph);
+}
+
+static void test_pcm_input_controls(void) {
+    SituationInitDeviceRegistry();
+    SituationAudioGraph* graph = SituationCreateGraph();
+    SIT_ASSERT_NOT_NULL(graph);
+
+    SituationNodeHandle handle = SITUATION_INVALID_NODE_HANDLE;
+    SituationCreateNode(graph, SITUATION_NODE_PCM_INPUT, &handle);
+
+    // Set gain
+    SituationError err = SituationSetControl(graph, handle, 0, 0.5f);
+    SIT_ASSERT(err == SITUATION_SUCCESS);
+    float val = 0.0f;
+    SituationGetControl(graph, handle, 0, &val);
+    SIT_ASSERT(fabsf(val - 0.5f) < 0.001f);
+
+    // Set pan
+    err = SituationSetControl(graph, handle, 1, -0.75f);
+    SIT_ASSERT(err == SITUATION_SUCCESS);
+    SituationGetControl(graph, handle, 1, &val);
+    SIT_ASSERT(fabsf(val - (-0.75f)) < 0.001f);
+
+    // Set mute
+    err = SituationSetControl(graph, handle, 2, 1.0f);
+    SIT_ASSERT(err == SITUATION_SUCCESS);
+    SituationGetControl(graph, handle, 2, &val);
+    SIT_ASSERT(fabsf(val - 1.0f) < 0.001f);
+
+    SituationDestroyGraph(graph);
+}
+
+static void test_pcm_input_graph_processing(void) {
+    SituationInitDeviceRegistry();
+    SituationAudioGraph* graph = SituationCreateGraph();
+    SIT_ASSERT_NOT_NULL(graph);
+
+    SituationNodeHandle pcm_handle = SITUATION_INVALID_NODE_HANDLE;
+    SituationError err = SituationCreateNode(graph, SITUATION_NODE_PCM_INPUT, &pcm_handle);
+    SIT_ASSERT(err == SITUATION_SUCCESS);
+
+    // Push a 440Hz sine wave (1024 frames, stereo)
+    const uint32_t test_frames = 1024;
+    float test_pcm[1024 * 2];
+    for (uint32_t i = 0; i < test_frames; i++) {
+        float t = (float)i / 48000.0f;
+        float sample = sinf(2.0f * 3.14159265f * 440.0f * t);
+        test_pcm[i * 2]     = sample;
+        test_pcm[i * 2 + 1] = sample;
+    }
+
+    uint32_t written = SituationPushNodePCM(graph, pcm_handle, test_pcm, test_frames, 2);
+    SIT_ASSERT_EQ((long long)written, (long long)test_frames);
+
+    // Set as active graph, let audio callback process it briefly
+    SituationSetActiveGraph(graph);
+    SIT_AUDIO_TEST_SLEEP_MS(50);  // Let audio callback run a few cycles
+
+    // After processing, some data should have been consumed
+    uint32_t free_after = SituationGetNodePCMFreeFrames(graph, pcm_handle);
+    // Free space should have increased (data was consumed by audio callback)
+    SIT_ASSERT(free_after > (4095 - test_frames));
+
+    // Detach graph from audio callback before destroying
+    SituationSetActiveGraph(NULL);
+    SIT_AUDIO_TEST_SLEEP_MS(10);
+
     SituationDestroyGraph(graph);
 }
 
@@ -1521,6 +1925,15 @@ static SitTestCase audio_tests[] = {
     {"load_sound_from_file",        test_load_sound_from_file,        true},
     {"play_stop_loaded_sound",      test_play_and_stop_loaded_sound,  true},
     {"stop_all_loaded_sounds",      test_stop_all_loaded_sounds,      true},
+    // Format-specific playback (MP3, OGG, FLAC, WAV)
+    {"load_play_mp3",               test_load_play_mp3,               true},
+    {"load_play_ogg",               test_load_play_ogg,               true},
+    {"load_play_flac",              test_load_play_flac,              true},
+    {"load_play_wav",               test_load_play_wav,               true},
+    {"stream_mp3",                  test_stream_mp3,                  true},
+    {"stream_ogg",                  test_stream_ogg,                  true},
+    {"stream_flac",                 test_stream_flac,                 true},
+    {"stream_wav",                  test_stream_wav,                  true},
     // Audio handle API
     {"load_audio_handle",           test_load_audio_handle,           true},
     {"audio_handle_vol_pan_pitch",  test_audio_handle_volume_pan_pitch, true},
@@ -1612,6 +2025,15 @@ static SitTestCase audio_tests[] = {
     {"midi_clear_all_mappings",             test_midi_clear_all_mappings,             true},
     {"midi_save_preset",                    test_midi_save_preset,                    true},
     {"midi_load_preset",                    test_midi_load_preset,                    true},
+
+    // --- Phase 8: PCM Input Node (7) ---
+    {"pcm_input_create_node",               test_pcm_input_create_node,               true},
+    {"pcm_input_push_and_query",            test_pcm_input_push_and_query,            true},
+    {"pcm_input_push_overflow",             test_pcm_input_push_overflow,             true},
+    {"pcm_input_wrong_type",                test_pcm_input_wrong_type,                true},
+    {"pcm_input_channel_mismatch",          test_pcm_input_channel_mismatch,          true},
+    {"pcm_input_controls",                  test_pcm_input_controls,                  true},
+    {"pcm_input_graph_processing",          test_pcm_input_graph_processing,          true},
 };
 
 const SitTestModule g_module_audio = {

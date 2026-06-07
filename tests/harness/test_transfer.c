@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file test_transfer.c
  * @brief Transfer command tests - texture barriers, copy, blit, buffer/texture.
  *
@@ -88,7 +88,7 @@ static void test_texture_barrier_validation(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     err = SituationCmdTextureBarrier(cmd, tex, NULL);
@@ -158,7 +158,7 @@ static void test_blit_texture_validation(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     err = SituationCmdBlitTexture(cmd, src, dst, NULL);
@@ -230,7 +230,7 @@ static void test_blit_texture_same_size_asymmetric(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SIT_ASSERT_EQ(transfer_texture_barrier(cmd, src, SITUATION_TEXTURE_LAYOUT_SHADER_READ, SITUATION_TEXTURE_LAYOUT_TRANSFER_SRC), SITUATION_SUCCESS);
@@ -287,7 +287,7 @@ static void test_blit_texture_scaled_nearest_asymmetric(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SIT_ASSERT_EQ(transfer_texture_barrier(cmd, src, SITUATION_TEXTURE_LAYOUT_SHADER_READ, SITUATION_TEXTURE_LAYOUT_TRANSFER_SRC), SITUATION_SUCCESS);
@@ -348,7 +348,7 @@ static void test_copy_texture_validation(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     err = SituationCmdCopyTexture(cmd, src, dst, NULL);
@@ -421,7 +421,7 @@ static void test_copy_texture_same_size_asymmetric(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SIT_ASSERT_EQ(transfer_texture_barrier(cmd, src, SITUATION_TEXTURE_LAYOUT_SHADER_READ, SITUATION_TEXTURE_LAYOUT_TRANSFER_SRC), SITUATION_SUCCESS);
@@ -482,7 +482,7 @@ static void test_copy_buffer_to_texture_validation(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     err = SituationCmdCopyBufferToTexture(cmd, src_buf, 0, dst, NULL);
@@ -541,7 +541,7 @@ static void test_copy_buffer_to_texture_subrect(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SIT_ASSERT_EQ(transfer_texture_barrier(cmd, dst, SITUATION_TEXTURE_LAYOUT_SHADER_READ, SITUATION_TEXTURE_LAYOUT_TRANSFER_DST), SITUATION_SUCCESS);
@@ -595,7 +595,7 @@ static void test_copy_texture_to_buffer_validation(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     err = SituationCmdCopyTextureToBuffer(cmd, src, NULL, dst_buf, 0, 0);
@@ -652,7 +652,7 @@ static void test_copy_texture_to_buffer_subrect(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SIT_ASSERT_EQ(transfer_texture_barrier(cmd, src, SITUATION_TEXTURE_LAYOUT_SHADER_READ, SITUATION_TEXTURE_LAYOUT_TRANSFER_SRC), SITUATION_SUCCESS);
@@ -709,7 +709,7 @@ static void test_copy_buffer_ex_offsets(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     err = SituationCmdCopyBufferEx(
@@ -774,7 +774,7 @@ static void test_copy_buffer_ex_validation(void) {
 
     SituationPollInputEvents();
     SituationUpdateTimers();
-    SIT_ASSERT(SituationAcquireFrameCommandBuffer());
+    SIT_ASSERT(SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     err = SituationCmdCopyBufferEx(cmd, src_buf, dst_buf, 0, 0, 0);
@@ -803,7 +803,7 @@ static void test_copy_buffer_ex_validation(void) {
 
 static SitTestCase transfer_tests[] = {
     {"texture_barrier_validation",      test_texture_barrier_validation,      true},
-    /* Buffer copies before PBO texture paths — avoids stale GL errors on OpenGL EndFrame. */
+    /* Buffer copies before PBO texture paths � avoids stale GL errors on OpenGL EndFrame. */
     {"copy_buffer_ex_offsets",          test_copy_buffer_ex_offsets,          true},
     {"copy_buffer_ex_validation",       test_copy_buffer_ex_validation,       true},
     {"blit_texture_validation",         test_blit_texture_validation,         true},

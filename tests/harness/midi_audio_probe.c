@@ -1,6 +1,7 @@
 /* Standalone MIDI→audio frequency probe (virtual MIDI + graph tone synth). */
 #include "sit_api_include.h"
 #include "audio_freq_detect.h"
+#include "sit_test_audio_levels.h"
 #include "sit_test_audio_window.h"
 #include "sit_test_stereo_scope.h"
 #include <stdio.h>
@@ -71,6 +72,18 @@ int main(void) {
 
     float measured = 0.f;
     int ok = sit_audio_freq_verify(&cap, (float)sr, expected_hz, 0.04f, 0.005f, &measured);
+    {
+        char msg[320];
+        SitTestAudioLevelLimits limits;
+        sit_test_audio_level_limits_tone_defaults(&limits);
+        if (!sit_test_audio_levels_check(&cap, peak, rms, &limits, msg, sizeof(msg))) {
+            printf("Level guard FAIL: %s\n", msg);
+            ok = 0;
+        } else {
+            printf("Level guard: PASS (cap peak=%.4f rms=%.4f)\n", sit_audio_capture_peak(&cap),
+                   sit_audio_capture_rms(&cap));
+        }
+    }
     printf("Frequency verify: %s (measured %.2f Hz, captured %u frames)\n",
            ok ? "PASS" : "FAIL", measured, cap.count);
 

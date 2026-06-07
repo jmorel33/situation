@@ -580,7 +580,7 @@ static SituationError misc_ypq_present_image(
 {
     SituationPollInputEvents();
     SituationUpdateTimers();
-    if (!SituationAcquireFrameCommandBuffer()) {
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
         return SITUATION_ERROR_RENDER_COMMAND_FAILED;
     }
 
