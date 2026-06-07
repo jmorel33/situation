@@ -76,7 +76,7 @@ if not exist "%GLFW_LIB%\libglfw3.a" (
     echo         GLFW needs to be built first. Run:
     echo           cd ext\glfw
     echo           mkdir build ^&^& cd build
-    echo           cmake .. -G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc
+    echo           cmake .. -G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc -DCMAKE_MAKE_PROGRAM=mingw32-make -DGLFW_BUILD_DOCS=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_EXAMPLES=OFF
     echo           mingw32-make
     echo.
     exit /b 1
