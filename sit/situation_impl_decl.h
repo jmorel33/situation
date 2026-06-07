@@ -1538,6 +1538,7 @@ typedef struct {
 
     uint32_t active_profile_window_flags;                     // Target window flags to apply when focused
     uint32_t inactive_profile_window_flags;                   // Target window flags to apply when unfocused
+    uint32_t cached_window_state_flags;                       // Result of last GetCurrentActualWindowStateFlags — refreshed by SituationPollInputEvents
 
     // -------------------------------------------------------------------------
     // Display & Virtual Display Subsystems

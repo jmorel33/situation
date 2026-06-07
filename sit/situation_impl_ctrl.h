@@ -1493,6 +1493,12 @@ SITAPI void SituationPollInputEvents(void) {
     // This call triggers all the GLFW callbacks (_SituationGLFWKeyCallback, etc.), which will populate our `current_state` and event queue buffers for this frame.
     glfwPollEvents();
 
+    // Refresh the cached window state flags now that GLFW has processed all events.
+    // SituationGetCurrentActualWindowStateFlags() queries multiple GLFW attributes and
+    // is called by user code every frame (e.g. for VSync HUD display). Caching here
+    // means callers get an O(1) read instead of N GLFW attribute queries per call.
+    sit_gs.cached_window_state_flags = SituationGetCurrentActualWindowStateFlags();
+
     // ========================================================================
     // [FIX v2.3.27B] MOVED JOYSTICK LOGIC HERE FOR ATOMIC INPUT UPDATES
     // ========================================================================

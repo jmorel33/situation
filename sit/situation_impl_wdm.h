@@ -633,11 +633,15 @@ SITAPI bool SituationIsWindowState(uint32_t flag) {
  * @param flags A bitmask of `SITUATION_FLAG_*` defines (e.g., `SITUATION_FLAG_WINDOW_TOPMOST | SITUATION_FLAG_WINDOW_UNDECORATED`).
  * @see SituationClearWindowState(), SituationApplyCurrentProfileWindowState()
  */
+/* Forward declaration — defined later in this file alongside SituationGetCurrentActualWindowStateFlags. */
+static uint32_t _SituationComputeWindowStateFlags(void);
+
 SITAPI void SituationSetWindowState(uint32_t flags) {
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetWindowState"); return; }
     uint32_t* profile = sit_gs.current_window_focus_state ? &sit_gs.active_profile_window_flags : &sit_gs.inactive_profile_window_flags;
     *profile |= flags;
     SituationApplyCurrentProfileWindowState();
+    sit_gs.cached_window_state_flags = _SituationComputeWindowStateFlags();
 }
 
 /**
@@ -652,6 +656,7 @@ SITAPI void SituationClearWindowState(uint32_t flags) {
     uint32_t* profile = sit_gs.current_window_focus_state ? &sit_gs.active_profile_window_flags : &sit_gs.inactive_profile_window_flags;
     *profile &= ~flags;
     SituationApplyCurrentProfileWindowState();
+    sit_gs.cached_window_state_flags = _SituationComputeWindowStateFlags();
 }
 
 /**
@@ -1458,7 +1463,10 @@ SITAPI SituationError SituationToggleWindowStateFlags(SituationWindowStateFlags 
  * @return A `uint32_t` bitmask composed of `SITUATION_FLAG_*` defines that reflect the current window state. Returns 0 if the library is not initialized.
  * @see SituationIsWindowState()
  */
-SITAPI uint32_t SituationGetCurrentActualWindowStateFlags(void) {
+/* Internal: compute the live window state by querying GLFW attributes.
+ * Called by SituationPollInputEvents to refresh the cache, and on-demand
+ * when the cache hasn't been populated yet (e.g. before the first Poll). */
+static uint32_t _SituationComputeWindowStateFlags(void) {
     if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) return 0;
     uint32_t flags = 0;
     if (glfwGetWindowAttrib(sit_gs.sit_glfw_window, GLFW_FLOATING)) flags |= SITUATION_FLAG_WINDOW_TOPMOST;
@@ -1497,6 +1505,19 @@ SITAPI uint32_t SituationGetCurrentActualWindowStateFlags(void) {
         }
     }
     return flags;
+}
+
+/* Public API: returns the cached window state flags refreshed by SituationPollInputEvents.
+ * O(1) in the normal frame loop. Falls back to a live query only before the first poll
+ * (cache is zero) so early calls (e.g. right after SituationInit) still work correctly. */
+SITAPI uint32_t SituationGetCurrentActualWindowStateFlags(void) {
+    if (!SituationIsInitialized() || !sit_gs.sit_glfw_window) return 0;
+    if (sit_gs.cached_window_state_flags == 0) {
+        /* Cache not yet populated (before first SituationPollInputEvents call).
+         * Compute and store so subsequent calls in the same pre-poll window are also fast. */
+        sit_gs.cached_window_state_flags = _SituationComputeWindowStateFlags();
+    }
+    return sit_gs.cached_window_state_flags;
 }
 
 // --- Application Pause/Resume Implementation ---
