@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
   <img src="doc/situation_blackMetal_logo.jpg" alt="Situation logo">
 </div>
 
@@ -210,7 +210,7 @@ graph TD
             AU_G["Node graph<br/>SituationProcessGraph"]
             AU_V["Loaded voices<br/>(snapshot mix + FX)"]
             AU_T["Tone pool"]
-            AU_OUT["Mixed stereo → device"]
+            AU_OUT["Mixed stereo -> device"]
             AU1 --> AU_G
             AU1 --> AU_V
             AU1 --> AU_T
@@ -382,20 +382,20 @@ Conceptual **signal-flow** diagram (channel strip → bus → master → device)
 
 ```mermaid
 graph TD
-    %% ─── Sources ───
+    %% --- Sources ---
     subgraph Sources
         TS[Tone Synth]
         SS[Sound Source]
         MC[Mic Capture]
     end
 
-    %% ─── Modulators ───
+    %% --- Modulators ---
     subgraph Modulators
         LFO[LFO]
         EF[Envelope Follower]
     end
 
-    %% ─── Insert Effects Chain ───
+    %% --- Insert Effects Chain ---
     subgraph "Insert Effects (per-channel)"
         GAIN_PRE[Gain - Pre]
         FX1[Effect Slot 1\nReverb / Echo / Chorus / etc.]
@@ -407,12 +407,12 @@ graph TD
         GAIN_POST[Gain - Post]
     end
 
-    %% ─── Bus / Mixer ───
+    %% --- Bus / Mixer ---
     subgraph "Mix Bus"
-        MIX[Mixer Node\nSum N inputs → stereo]
+        MIX[Mixer Node\nSum N inputs -> stereo]
     end
 
-    %% ─── Master Chain ───
+    %% --- Master Chain ---
     subgraph "Master Chain"
         MAMP[Mastering Amp]
         MAX[Maximizer / DeafMax]
@@ -420,10 +420,10 @@ graph TD
         SPEC[Spectrum Analyzer]
     end
 
-    %% ─── Output ───
+    %% --- Output ---
     OUT[Audio Device Output\nminiaudio callback]
 
-    %% ─── Signal Flow ───
+    %% --- Signal Flow ---
     TS -->|audio| GAIN_PRE
     SS -->|audio| GAIN_PRE
     MC -->|audio| GAIN_PRE
@@ -433,12 +433,12 @@ graph TD
 
     MIX --> MAMP --> MAX --> PEAK --> SPEC --> OUT
 
-    %% ─── Modulation (control signals) ───
+    %% --- Modulation (control signals) ---
     LFO -.->|ctrl: rate/depth| PAN
     LFO -.->|ctrl: mod| FX1
     EF -.->|ctrl: envelope| DYN
 
-    %% ─── Analyzers (tap, no audio modification) ───
+    %% --- Analyzers (tap, no audio modification) ---
     PEAK -.->|read-only levels| OUT
     SPEC -.->|read-only FFT bins| OUT
 ```
