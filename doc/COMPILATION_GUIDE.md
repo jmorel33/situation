@@ -1,6 +1,6 @@
 # Situation Library - Compilation Guide
 
-**Version**: 2.4.214  
+**Version**: 2.4.217  
 **Date**: 2026-06-07  
 **Status**: Complete
 
@@ -167,14 +167,15 @@ int main(int argc, char** argv) {
 }
 ```
 
-### Compile Command (Windows/GCC — Header-Only Model)
+### Quick Compile (Windows/GCC — links against static library)
 
 ```bash
 gcc -o myapp.exe main.c \
     -std=c11 -I. -Iext -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps \
-    -DSITUATION_USE_OPENGL -DSITUATION_IMPLEMENTATION -DSITUATION_ENABLE_THREADING \
-    -Lext/glfw/lib-mingw-w64 \
-    -lglfw3 -lopengl32 -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32 -lm
+    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING \
+    -Lext/glfw/build/src build/dll/situation_opengl.a \
+    -lglfw3 -lopengl32 -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32 \
+    -liphlpapi -lsetupapi -ldxgi -lshlwapi -luuid -lxinput -lpsapi -lm
 ```
 
 ## Dependencies
@@ -220,10 +221,14 @@ These are included in the `ext/` folder:
 #define SITUATION_USE_VULKAN    // Use Vulkan 1.4 backend
 ```
 
-#### Implementation (Required in ONE file)
+#### Implementation (Deprecated — do not use in new code)
 
 ```c
-#define SITUATION_IMPLEMENTATION  // Include implementation code
+// ⚠️ DEPRECATED: Do not define SITUATION_IMPLEMENTATION in new projects.
+// Use the static library (.a) or DLL instead — see Quick Start above.
+// This define still works for legacy single-file builds but recompiles
+// the entire ~200k line library on every build.
+#define SITUATION_IMPLEMENTATION
 ```
 
 #### Optional Features
@@ -332,23 +337,25 @@ Always include these directories:
 ### Windows (MinGW-w64)
 
 ```bash
-# OpenGL Backend
+# OpenGL Backend — static library (self-contained exe)
 gcc -o myapp.exe main.c \
-    -I. -Iext -Iext/glfw/include \
-    -DSITUATION_USE_OPENGL \
-    -DSITUATION_IMPLEMENTATION \
-    -Lext/glfw/lib-mingw-w64 \
+    -I. -Iext -Iext/cglm/include -Iext/glfw/include \
+    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING \
+    -Lext/glfw/build/src \
+    build/dll/situation_opengl.a \
     -lglfw3 -lopengl32 -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32 \
-    -static-libgcc -static-libstdc++
+    -liphlpapi -lsetupapi -ldxgi -lshlwapi -luuid -lxinput -lpsapi -lm \
+    -static-libgcc
 
-# Vulkan Backend
+# Vulkan Backend — static library (self-contained exe)
 gcc -o myapp.exe main.c \
-    -I. -Iext -Iext/glfw/include \
-    -DSITUATION_USE_VULKAN \
-    -DSITUATION_IMPLEMENTATION \
-    -DSITUATION_ENABLE_SHADER_COMPILER \
-    -Lext/glfw/lib-mingw-w64 -L%VULKAN_SDK%/Lib \
-    -lglfw3 -lvulkan-1 -lshaderc_shared -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32 \
+    -I. -Iext -Iext/glfw/include -I%VULKAN_SDK%/Include \
+    -DSITUATION_USE_VULKAN -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER \
+    -Lext/glfw/build/src -L%VULKAN_SDK%/Lib \
+    build/dll/situation_vulkan.a \
+    -lglfw3 -lvulkan-1 -lshaderc_combined \
+    -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32 \
+    -liphlpapi -lsetupapi -ldxgi -lshlwapi -luuid -lxinput -lpsapi -lm \
     -static-libgcc -static-libstdc++
 ```
 
@@ -370,39 +377,37 @@ cl /Fe:myapp.exe main.c ^
 # OpenGL Backend
 gcc -o myapp main.c \
     -I. -Iext -Iext/glfw/include \
-    -DSITUATION_USE_OPENGL \
-    -DSITUATION_IMPLEMENTATION \
+    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING \
+    build/dll/situation_opengl.a \
     -lglfw -lGL -lm -lpthread -ldl \
     -lX11 -lXrandr -lXi -lXxf86vm -lXcursor -lXinerama
 
 # Vulkan Backend
 gcc -o myapp main.c \
     -I. -Iext -Iext/glfw/include \
-    -DSITUATION_USE_VULKAN \
-    -DSITUATION_IMPLEMENTATION \
-    -DSITUATION_ENABLE_SHADER_COMPILER \
-    -lglfw -lvulkan -lshaderc_shared -lm -lpthread -ldl \
+    -DSITUATION_USE_VULKAN -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER \
+    build/dll/situation_vulkan.a \
+    -lglfw -lvulkan -lshaderc -lm -lpthread -ldl \
     -lX11 -lXrandr -lXi -lXxf86vm -lXcursor -lXinerama
 ```
 
 ### macOS (Clang) — _not yet shipping; planned target_
 
 ```bash
-# OpenGL Backend
+# OpenGL Backend (via MoltenVK / native)
 clang -o myapp main.c \
     -I. -Iext -Iext/glfw/include \
-    -DSITUATION_USE_OPENGL \
-    -DSITUATION_IMPLEMENTATION \
+    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING \
+    build/dll/situation_opengl.a \
     -lglfw \
     -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo
 
 # Vulkan Backend (via MoltenVK)
 clang -o myapp main.c \
     -I. -Iext -Iext/glfw/include -I$VULKAN_SDK/include \
-    -DSITUATION_USE_VULKAN \
-    -DSITUATION_IMPLEMENTATION \
-    -DSITUATION_ENABLE_SHADER_COMPILER \
-    -L$VULKAN_SDK/lib -lglfw -lvulkan -lshaderc_shared \
+    -DSITUATION_USE_VULKAN -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER \
+    build/dll/situation_vulkan.a \
+    -L$VULKAN_SDK/lib -lglfw -lvulkan \
     -framework Cocoa -framework IOKit -framework CoreVideo
 ```
 
@@ -480,7 +485,7 @@ clang -o myapp main.c \
 
 ### Issue: "Multiple definition of `SituationInit`"
 
-**Solution:** Only define `SITUATION_IMPLEMENTATION` in ONE source file.
+**Solution:** Do not define `SITUATION_IMPLEMENTATION`. Link against `build/dll/situation_opengl.a` (static) or `build/dll/situation_opengl.dll` (DLL) instead. See Quick Start above.
 
 ### Issue: Linker errors about OpenGL functions
 
@@ -503,15 +508,19 @@ See also [KaOS Terminal Console](#kaos-terminal-console) for the canonical K-Ter
 
 ```batch
 @echo off
-echo Compiling with OpenGL backend...
+REM Build with static library — self-contained exe, no DLL needed at runtime.
+REM Prerequisites: build_situation.bat static-opengl
+
+echo Compiling with OpenGL static library...
 
 gcc -o example.exe examples/example.c ^
-    -I. -Iext -Iext/glfw/include ^
-    -DSITUATION_USE_OPENGL ^
-    -DSITUATION_IMPLEMENTATION ^
-    -Lext/glfw/lib-mingw-w64 ^
+    -I. -Iext -Iext/cglm/include -Iext/glfw/include ^
+    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING ^
+    -Lext/glfw/build/src ^
+    build/dll/situation_opengl.a ^
     -lglfw3 -lopengl32 -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32 ^
-    -static-libgcc -static-libstdc++
+    -liphlpapi -lsetupapi -ldxgi -lshlwapi -luuid -lxinput -lpsapi -lm ^
+    -static-libgcc
 
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Build failed
@@ -519,20 +528,28 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [SUCCESS] example.exe built!
-echo Running...
 example.exe
+```
+
+Or use the project's build script directly:
+
+```batch
+build_examples.bat static-opengl my_example
+build\examples\my_example.exe
 ```
 
 ### Linux Shell Script (compile_example.sh)
 
 ```bash
 #!/bin/bash
-echo "Compiling with OpenGL backend..."
+# Build with static library — self-contained exe, no DLL needed at runtime.
+# Prerequisites: build_situation.bat static-opengl (or equivalent on Linux)
+echo "Compiling with OpenGL static library..."
 
 gcc -o example examples/example.c \
     -I. -Iext -Iext/glfw/include \
-    -DSITUATION_USE_OPENGL \
-    -DSITUATION_IMPLEMENTATION \
+    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING \
+    build/dll/situation_opengl.a \
     -lglfw -lGL -lm -lpthread -ldl \
     -lX11 -lXrandr -lXi -lXxf86vm -lXcursor -lXinerama
 
@@ -542,7 +559,6 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "[SUCCESS] example built!"
-echo "Running..."
 ./example
 ```
 
@@ -554,47 +570,43 @@ project(SituationApp)
 
 set(CMAKE_C_STANDARD 11)
 
-# Add source files
 add_executable(myapp main.c)
 
-# Include directories
 target_include_directories(myapp PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/ext
     ${CMAKE_SOURCE_DIR}/ext/glfw/include
+    ${CMAKE_SOURCE_DIR}/ext/cglm/include
 )
 
-# Compile definitions
 target_compile_definitions(myapp PRIVATE
     SITUATION_USE_OPENGL
-    SITUATION_IMPLEMENTATION
+    SITUATION_ENABLE_THREADING
+    # Do NOT define SITUATION_IMPLEMENTATION — link against the static lib instead
 )
 
-# Find packages
-find_package(OpenGL REQUIRED)
-find_package(glfw3 REQUIRED)
-
-# Link libraries
+# Link against the pre-built static library
 target_link_libraries(myapp PRIVATE
-    OpenGL::GL
-    glfw
+    ${CMAKE_SOURCE_DIR}/build/dll/situation_opengl.a
 )
 
-# Platform-specific libraries
+# GLFW and system libs (Windows)
 if(WIN32)
     target_link_libraries(myapp PRIVATE
-        gdi32 winmm ws2_32 ole32 shell32 user32
+        ${CMAKE_SOURCE_DIR}/ext/glfw/build/src/libglfw3.a
+        opengl32 gdi32 winmm ws2_32 ole32 shell32 user32
+        iphlpapi setupapi dxgi shlwapi uuid xinput psapi
     )
 elseif(UNIX AND NOT APPLE)
     target_link_libraries(myapp PRIVATE
-        m pthread dl
+        glfw GL m pthread dl
         X11 Xrandr Xi Xxf86vm Xcursor Xinerama
     )
 elseif(APPLE)
     target_link_libraries(myapp PRIVATE
-        "-framework Cocoa"
-        "-framework IOKit"
-        "-framework CoreVideo"
+        glfw
+        "-framework OpenGL" "-framework Cocoa"
+        "-framework IOKit" "-framework CoreVideo"
     )
 endif()
 ```
@@ -670,13 +682,14 @@ For issues and questions:
 
 ## Version History
 
+- **v2.4.217** (2026-06-07) - Odin echo+delay demo, test results log, window state flag cache fix
+- **v2.4.216** (2026-06-07) - `SituationGetCurrentActualWindowStateFlags` O(1) cache
+- **v2.4.215** (2026-06-07) - `SituationDestroyGraph` audio race fix (double-wait)
 - **v2.4.214** (2026-06-07) - Static build system, self-contained exes, async shader UAF fix, build output reorganization
 - **v2.4.213** (2026-06-06) - SPIR-V UBO+SSBO+Sampler layout, Demon Hunt Phase 2 materials
 - **v2.4.212** (2026-06-06) - Chorus/echo stability, graph output staging
 - **v2.4.211** (2026-06-06) - glTF model loader
 - **v2.4.210** (2026-06-05) - Configurable screenshot format
 - **v2.4.203** (2026-06-05) - Error propagation Phase 3 (bool/void → SituationError migration)
-- **v2.4.200** (2026-06-04) - API documentation refresh, full 531-function coverage
-- **v2.4.199** (2026-06-03) - System introspection APIs
 - **v2.4.0** (2026-03-03) - Folder reorganization, audio subsystem organization
 - **v2.3.x** - Previous versions (see UPDATELOG.md)

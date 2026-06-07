@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | **2.4.207** — canonical macros in **`sit/situation_base_version.h`**. Narrative releases: **`doc/UPDATELOG.md`**. |
+| **Version** | **2.4.217** — canonical macros in **`sit/situation_base_version.h`**. Narrative releases: **`doc/UPDATELOG.md`**. |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core (MDI) / Vulkan 1.4 — hardware minimum, no fallback to older versions |
 | **Platform** | Windows 10+ (Linux and macOS in progress) |
@@ -17,7 +17,7 @@
 
 Unlike simple windowing wrappers, Situation is an opinionated System Abstraction Layer (SAL). It isolates the developer from the fragmentation of OS APIs (Windows/Linux/macOS) and Graphics Drivers (OpenGL/Vulkan), providing a stable, "Titanium-grade" foundation for building sophisticated interactive software—from real-time simulations and game engines to scientific visualization tools and multimedia installations.
 
-### What's New (v2.4.207)
+### What's New (v2.4.217)
 
 See **[whatsnew.md](whatsnew.md)** for recent highlights and **[UPDATELOG.md](UPDATELOG.md)** for full patch notes.
 
@@ -30,6 +30,7 @@ See **[whatsnew.md](whatsnew.md)** for recent highlights and **[UPDATELOG.md](UP
 | **[situation_command_reference.md](situation_command_reference.md)** | **All `SituationCmd*` commands** — signatures, GL/VK, ordering, use cases |
 | **[situation_api_index.md](situation_api_index.md)** | **Complete index** of every public `SITAPI` function (auto-generated) |
 | **[situation_api_generated.md](situation_api_generated.md)** | Header-sync supplement for symbols not yet expanded in situation_api.md |
+| **[COMPILATION_GUIDE.md](COMPILATION_GUIDE.md)** | **Build system reference** — static/DLL builds, GLFW setup, linker flags, all platforms |
 | **[SITUATION_QUICK_REFERENCE.md](SITUATION_QUICK_REFERENCE.md)** | Cheat sheet |
 
 Regenerate index/supplement and verify migration-doc links after API changes:
@@ -4484,7 +4485,7 @@ Major API areas and where to read more:
 
 ## Compatibility & Portability
 
-The Situation SDK is designed to be cross-platform, targeting Windows, Linux, and macOS. However, due to the header-only nature and bundled dependencies, there are specific considerations for each platform.
+The Situation SDK targets Windows, Linux, and macOS. For full build instructions, linker flags, GLFW setup, and platform-specific commands see **[COMPILATION_GUIDE.md](COMPILATION_GUIDE.md)**.
 
 ### Linux Support
 *   **Compilation:** The library compiles cleanly on Linux with GCC/Clang.

@@ -1,3 +1,47 @@
+## [v2.4.217 "Odin Echo+Delay Demo, Test Results Log"] - 2026-06-07
+
+### Description
+
+**v2.4.217**: Upgrades the Odin `hello_situation` example with a full delay (Echo) node in the signal chain plus interactive controls for delay wet and feedback. Adds timestamped test results files to `run_tests.bat` so every run is persisted for later consultation.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.217**.
+
+### Tooling
+
+- **`run_tests.bat`** — test output is now teed to `build/tests/results/YYYYMMDD_HHMM_backend.txt` via PowerShell `Tee-Object`. Every run produces a new timestamped file; the folder accumulates all runs. Output still prints to the console simultaneously. Results folder is created automatically.
+
+### Odin bindings / examples
+
+- **`wrappers/odin/examples/hello_situation/hello.odin`** — upgraded example:
+  - Signal chain extended: `ToneSynth -> Echo -> Reverb`. Echo node uses `SITUATION_NODE_ECHO` with controls `0=delay_time`, `1=feedback`, `2=wet_level`.
+  - New key bindings: `]`/`[` — delay wet up/down; `P`/`O` — delay feedback up/down (capped at 0.95 to prevent runaway).
+  - HUD now shows two lines: system status (FPS, VSync, Audio) and FX levels (Reverb %, Delay %, Delay FB %).
+  - `SituationGetCurrentActualWindowStateFlags()` comment updated to reflect the library-level O(1) cache added in v2.4.216; per-frame workaround removed.
+  - Window title updated to include new key hints.
+  - All comments restored and expanded (control ID documentation, signal chain explanation, shader section descriptions).
+
+---
+
+## [v2.4.216 "Window State Flag Cache"] - 2026-06-07
+
+### Description
+
+**v2.4.216**: `SituationGetCurrentActualWindowStateFlags` was querying multiple GLFW attributes on every call, causing per-frame stalls when called more than once per frame (e.g. for HUD display + VSync toggle check). The function is now O(1) — it returns a cached value that is refreshed exactly once per frame by `SituationPollInputEvents` and immediately invalidated by `SituationSetWindowState` / `SituationClearWindowState`.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.216**.
+
+### Changes
+
+- **`sit/situation_impl_decl.h`** — new field `cached_window_state_flags` (u32) on the global state struct.
+- **`sit/situation_impl_wdm.h`**:
+  - `_SituationComputeWindowStateFlags()` — internal static function containing the original GLFW multi-attribute query logic.
+  - `SituationGetCurrentActualWindowStateFlags()` — now returns `sit_gs.cached_window_state_flags` (O(1)). Falls back to a live compute on first call before `SituationPollInputEvents` has run (cache is zero).
+  - `SituationSetWindowState()` / `SituationClearWindowState()` — recompute and store the cache after applying the new profile, so callers see the updated state immediately without waiting for the next poll.
+- **`sit/situation_impl_ctrl.h`** — `SituationPollInputEvents` calls `_SituationComputeWindowStateFlags()` immediately after `glfwPollEvents()` to refresh the cache once per frame.
+- **`wrappers/odin/examples/hello_situation/hello.odin`** — comment updated to reflect the library-level fix; per-frame workaround comments removed.
+
+---
+
 ## [v2.4.215 "DestroyGraph Audio Race Fix"] - 2026-06-07
 
 ### Description
