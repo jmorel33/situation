@@ -277,9 +277,10 @@ static void SituationChorus4Stage_Process(SituationChorus4Stage *effect, float *
             sum_right += sample_right * right_gain;
         }
 
-        // Mix dry and wet signals using FMA
-        float wet_left = sum_left;
-        float wet_right = sum_right;
+        /* Four stages share one delay line; normalize so feedback stays bounded. */
+        const float stage_norm = 0.25f;
+        float wet_left = sum_left * stage_norm;
+        float wet_right = sum_right * stage_norm;
         output_left[i] = CHORUS_FMA(effect->wet_gain, wet_left, effect->dry_gain * input_left[i]);
         output_right[i] = CHORUS_FMA(effect->wet_gain, wet_right, effect->dry_gain * input_right[i]);
 
@@ -289,6 +290,11 @@ static void SituationChorus4Stage_Process(SituationChorus4Stage *effect, float *
         side *= effect->stereo_enhance;
         output_left[i] = CHORUS_FMA(1.0f, side, mid);
         output_right[i] = CHORUS_FMA(-1.0f, side, mid);
+
+        if (output_left[i] > 2.0f) output_left[i] = 2.0f;
+        else if (output_left[i] < -2.0f) output_left[i] = -2.0f;
+        if (output_right[i] > 2.0f) output_right[i] = 2.0f;
+        else if (output_right[i] < -2.0f) output_right[i] = -2.0f;
 
         // Update delay lines with feedback using FMA
         effect->delay_line_left[effect->write_pos] = CHORUS_FMA(effect->feedback, wet_left, input_left[i]);

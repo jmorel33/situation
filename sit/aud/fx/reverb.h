@@ -34,7 +34,8 @@
 #define SIT_REVERB_COMB_COUNT 8
 #define SIT_REVERB_ALLPASS_COUNT 6
 #define SIT_REVERB_STEREO_SPREAD 23
-#define SIT_REVERB_INPUT_GAIN 0.08f
+#define SIT_REVERB_INPUT_GAIN 0.015f
+#define SIT_REVERB_COMB_NORM (1.0f / (float)SIT_REVERB_COMB_COUNT)
 
 typedef struct {
     float* buffer;
@@ -238,7 +239,7 @@ static SituationError _SituationInitReverb(uint32_t sample_rate, void** out_stat
     rev->room_size = 0.6f;
     rev->damp = 0.4f;
     rev->wet = 0.3f;
-    rev->dry = 1.0f;
+    rev->dry = 0.7f;
     rev->width = 1.0f;
     rev->predelay_ms = 15.0f; 
     rev->diffusion = 0.7f;
@@ -338,6 +339,8 @@ static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float
             late_l += _sit_reverb_comb_process(&rev->combs_l[j], pd_out_l, lfo_l);
             late_r += _sit_reverb_comb_process(&rev->combs_r[j], pd_out_r, lfo_r);
         }
+        late_l *= SIT_REVERB_COMB_NORM;
+        late_r *= SIT_REVERB_COMB_NORM;
 
         // Process True Stereo All-Passes (also modulated for maximum smoothness)
         for(int j=0; j<SIT_REVERB_ALLPASS_COUNT; ++j) {
@@ -349,9 +352,9 @@ static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float
             late_r = _sit_reverb_allpass_process(&rev->allpasses_r[j], late_r, lfo_r);
         }
 
-        // Combine ER and Late Reverb
-        float out_l = (er_out_l * 1.5f) + late_l;
-        float out_r = (er_out_r * 1.5f) + late_r;
+        // Combine ER and Late Reverb (ER gains already scaled in er_gains[])
+        float out_l = er_out_l + late_l;
+        float out_r = er_out_r + late_r;
 
         // M/S Width processing (prevents phase cancellation at extreme widths)
         float mid  = (out_l + out_r) * 0.5f;

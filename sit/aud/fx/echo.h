@@ -164,7 +164,10 @@ static void _SituationProcessEcho(sit_echo_t* echo, float* frames, uint32_t fram
             const float dry_mix = 1.0f - w;
             const uint32_t samp = chunk * ch;
             for (uint32_t s = 0; s < samp; s++) {
-                wet_out[s] = dry_mix * dry_in[s] + w * wet_out[s];
+                float out = dry_mix * dry_in[s] + w * wet_out[s];
+                if (out > 2.0f) out = 2.0f;
+                else if (out < -2.0f) out = -2.0f;
+                wet_out[s] = out;
             }
             
             wet_out += samp;
@@ -189,7 +192,10 @@ static void _SituationProcessEcho(sit_echo_t* echo, float* frames, uint32_t fram
         const float dry_mix = 1.0f - w;
         const uint32_t samp = frame_count * ch;
         for (uint32_t s = 0; s < samp; s++) {
-            frames[s] = dry_mix * echo->dry_scratch[s] + w * frames[s];
+            float out = dry_mix * echo->dry_scratch[s] + w * frames[s];
+            if (out > 2.0f) out = 2.0f;
+            else if (out < -2.0f) out = -2.0f;
+            frames[s] = out;
         }
     }
 }
