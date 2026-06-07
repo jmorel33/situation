@@ -23,7 +23,6 @@
  *  (saturated horizontal stripes, per-scanline phase — demo scene vibe).
  ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <cglm/cglm.h>
@@ -530,7 +529,7 @@ int main(int argc, char** argv) {
 
         float t = (float)SituationTimerGetTime();
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
             SituationRenderPassInfo pass = {

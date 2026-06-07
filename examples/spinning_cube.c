@@ -1,5 +1,4 @@
 // Spinning 3D Cube Demo - No external assets needed
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <cglm/cglm.h>
@@ -56,7 +55,7 @@ int main(int argc, char** argv) {
         
         printf("  Acquiring frame buffer\n");
         fflush(stdout);
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             printf("  Frame buffer acquired\n");
             fflush(stdout);
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();

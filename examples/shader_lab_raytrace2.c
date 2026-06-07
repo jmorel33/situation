@@ -19,7 +19,6 @@
  *  One draw call per frame (fullscreen triangle). Matrices via cglm; shading in GLSL 450.
  ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <cglm/cglm.h>
@@ -657,7 +656,7 @@ int main(int argc, char** argv) {
         mat4 inv_vp;
         glm_mat4_inv(vp, inv_vp);
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
             SituationRenderPassInfo pass = {

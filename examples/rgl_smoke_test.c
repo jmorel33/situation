@@ -4,7 +4,6 @@
  *   Expected: dark gray window with a red rectangle centered on screen.
  ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 
@@ -36,7 +35,7 @@ int main(int argc, char** argv) {
     while (!SituationWindowShouldClose()) {
         SITUATION_BEGIN_FRAME();
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             RGL_Begin(-1);
             RGL_DrawRectangle((SitRectangle){200.0f, 150.0f, 400.0f, 300.0f}, 0.0f, RED);
             RGL_End();

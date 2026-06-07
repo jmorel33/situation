@@ -6,7 +6,6 @@
     #define NOMINMAX
 #endif
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_VULKAN
 #define SITUATION_VULKAN_DEBUG
 
@@ -36,7 +35,7 @@ int main(int argc, char** argv) {
         
         if (SituationIsKeyPressed(SIT_KEY_ESCAPE)) break;
         
-        if (!SituationAcquireFrameCommandBuffer()) break;
+        if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) break;
         
         SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
         

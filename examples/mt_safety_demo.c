@@ -1,11 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include "situation.h"
 
-// Define implementation only in one file
-#define SITUATION_IMPLEMENTATION
-#define SITUATION_USE_OPENGL // Use OpenGL for this demo
+#define SITUATION_USE_OPENGL
 #include "situation.h"
 
 // Dummy main loop for demonstration
@@ -33,7 +30,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 10000; i++) {
         SITUATION_BEGIN_FRAME();
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             // In a real app, we'd record commands here
             // SituationCmdDrawQuad(cmd, GLM_MAT4_IDENTITY, (Vector4){{1,0,1,1}});

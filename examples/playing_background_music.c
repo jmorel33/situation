@@ -18,7 +18,6 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 
@@ -119,7 +118,7 @@ int main(int argc, char** argv) {
         update_audio_controls();
 
         // Minimal Render to keep window alive
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             SituationRenderPassInfo pass = {
                 .display_id = -1,

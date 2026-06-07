@@ -1,5 +1,4 @@
 // Simple quad test - just one colored quad
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <cglm/cglm.h>
@@ -24,7 +23,7 @@ int main(int argc, char** argv) {
     while (!SituationWindowShouldClose() && frame_count < 60) {
         SITUATION_BEGIN_FRAME();
         
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             
             SituationRenderPassInfo pass = {

@@ -12,7 +12,6 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL // Required backend selection
 #include "situation.h"
 
@@ -399,7 +398,7 @@ int main(int argc, char** argv) {
         }
 
         // --- Render Window (Minimal) ---
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             SituationRenderPassInfo pass = {
                 .display_id = -1,

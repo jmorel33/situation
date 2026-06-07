@@ -13,7 +13,6 @@
 *   
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_VULKAN
 // Enable debug logging for this test
 #define SITUATION_DEBUG_THREADING

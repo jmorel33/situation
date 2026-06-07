@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
 
     // Create thread pool
     SituationThreadPool pool;
-    if (!SituationCreateThreadPool(&pool, NUM_THREADS, 256, 0.0, true)) {
+    if (SituationCreateThreadPool(&pool, NUM_THREADS, 256, 0.0, true) != SITUATION_SUCCESS) {
         printf("Failed to create thread pool!\n");
         return -1;
     }
@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < NUM_THREADS; i++) {
             if (threads[i].active && active_jobs[i] != 0) {
                 // Non-blocking check if job is done
-                if (SituationWaitForJob(&pool, active_jobs[i])) {
+                if (SituationWaitForJob(&pool, active_jobs[i]) == SITUATION_SUCCESS) {
                     // Job completed! Submit new one immediately
                     active_jobs[i] = SituationSubmitJob(&pool, compute_worker_batch, &threads[i]);
                     jobs_submitted++;

@@ -1,5 +1,4 @@
 // Minimal test - just init and one frame
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "../situation.h"
 
@@ -30,7 +29,7 @@ int main(int argc, char** argv) {
         printf("Frame %d: Acquiring...\n", frame_count);
         fflush(stdout);
         
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             printf("Frame %d: Acquired, ending...\n", frame_count);
             fflush(stdout);
             

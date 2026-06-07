@@ -5,13 +5,7 @@
  * with multiple colors, positions, and dynamic effects.
  */
 
-// When using the DLL, only define these feature flags
-// DO NOT define SITUATION_IMPLEMENTATION
-#ifndef SITUATION_USE_SHARED
-    // For static/inline builds
-    #define SITUATION_IMPLEMENTATION
-#endif
-
+// DLL-linked build — do NOT define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_VULKAN
 #define SITUATION_ENABLE_THREADING
 #define SITUATION_ENABLE_SHADER_COMPILER
@@ -53,7 +47,7 @@ int main(int argc, char** argv) {
             break;
         }
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
             // Begin render pass with dark background

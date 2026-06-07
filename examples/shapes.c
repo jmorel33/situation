@@ -5,7 +5,6 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <cglm/cglm.h>
@@ -21,7 +20,7 @@ int main(int argc, char** argv) {
         SITUATION_BEGIN_FRAME();
         float time = (float)SituationTimerGetTime();
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             SituationRenderPassInfo pass = {
                 .display_id = -1,

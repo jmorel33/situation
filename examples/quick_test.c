@@ -6,7 +6,6 @@
     #define NOMINMAX
 #endif
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_VULKAN
 // Disable threading to simplify
 // #define SITUATION_ENABLE_THREADING

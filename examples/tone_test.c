@@ -9,7 +9,6 @@
  *   ESC       - Exit
  ******************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <stdio.h>
@@ -74,7 +73,7 @@ int main(int argc, char** argv) {
         }
 
         // Minimal render to keep window alive
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             SituationRenderPassInfo pass = {
                 .display_id = -1,

@@ -7,7 +7,6 @@
     #define NOMINMAX
 #endif
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_VULKAN
 #define SITUATION_ENABLE_THREADING
 // NOTE: Commenting out shader compiler to skip quad renderer init
@@ -54,7 +53,7 @@ int main(int argc, char** argv) {
         }
         
         // Just clear the screen - no rendering
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             ColorRGBA clearColor = {30, 30, 40, 255};
             SituationCmdBeginRenderToDisplay(cmd, -1, clearColor);

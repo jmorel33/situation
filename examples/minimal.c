@@ -9,7 +9,6 @@
     #define NOMINMAX   // Prevent min/max macro conflicts
 #endif
 
-#define SITUATION_IMPLEMENTATION
 
 // Backend selection (define one via compiler flag)
 #if !defined(SITUATION_USE_OPENGL) && !defined(SITUATION_USE_VULKAN)
@@ -42,7 +41,7 @@ int main(int argc, char** argv) {
         SituationUpdateTimers();
         
         // Acquire frame
-        if (!SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
             break;
         }
         

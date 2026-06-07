@@ -1,5 +1,4 @@
 // Window debug test - check why window closes immediately
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 
@@ -48,7 +47,7 @@ int main(int argc, char** argv) {
         printf("Frame %d: About to call SituationAcquireFrameCommandBuffer\n", frame_count);
         fflush(stdout);
         
-        bool acquired = SituationAcquireFrameCommandBuffer();
+        bool acquired = (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS);
         printf("Frame %d: SituationAcquireFrameCommandBuffer returned %d\n", frame_count, acquired);
         fflush(stdout);
         

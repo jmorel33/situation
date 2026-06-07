@@ -7,7 +7,6 @@
  *   ESC - Exit
  ******************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <stdio.h>
@@ -40,7 +39,7 @@ int main(int argc, char** argv) {
 
         if (SituationIsKeyPressed(SIT_KEY_ESCAPE)) break;
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
             SituationRenderPassInfo pass = {

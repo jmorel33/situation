@@ -13,7 +13,6 @@
  * Window title shows: quad count, FPS, frame time
  ******************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <cglm/cglm.h>
@@ -119,7 +118,7 @@ int main(int argc, char** argv) {
         }
 
         // --- Render ---
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
             SituationRenderPassInfo pass = {

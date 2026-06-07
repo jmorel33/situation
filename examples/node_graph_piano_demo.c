@@ -16,7 +16,6 @@
  *  Reverb   K L      Room size    O P      Wet level
  ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <math.h>
@@ -238,7 +237,7 @@ int main(int argc, char** argv) {
             SituationSetControl(demo_graph, nodes.tone, 2, 0.0f);
         }
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             SituationRenderPassInfo pass = {
                 .display_id = -1,

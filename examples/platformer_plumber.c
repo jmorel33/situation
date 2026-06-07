@@ -13,7 +13,6 @@
     #define NOMINMAX
 #endif
 
-#define SITUATION_IMPLEMENTATION
 #if !defined(SITUATION_USE_OPENGL) && !defined(SITUATION_USE_VULKAN)
     #define SITUATION_USE_OPENGL
 #endif
@@ -885,7 +884,7 @@ static void draw_title_text_outlined(SituationCommandBuffer cmd, const char* tex
 }
 
 static void render_frame(void) {
-    if (!SituationAcquireFrameCommandBuffer()) {
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
         return;
     }
 
