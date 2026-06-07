@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
         }
 
         // --- RENDER LOGIC ---
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
             // Setup Render Pass (Clear to Dark Gray)

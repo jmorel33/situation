@@ -12,7 +12,6 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL // Or SITUATION_USE_VULKAN
 #define SITUATION_ENABLE_SHADER_COMPILER
 #include "situation.h"
@@ -139,7 +138,7 @@ int init_resources() {
 
 // --- Render Loop ---
 void render_frame() {
-    if (!SituationAcquireFrameCommandBuffer()) return;
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) return;
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     // --- STEP 1: PHYSICS (Compute) ---

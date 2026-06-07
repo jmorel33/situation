@@ -1,5 +1,4 @@
 // Simple K-Term test - based on working kterm_console pattern
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #define KTERM_IMPLEMENTATION
 #include "../situation.h"

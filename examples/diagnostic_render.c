@@ -3,7 +3,6 @@
  * Tests if basic OpenGL rendering works at all.
  * Bypasses the soft command buffer to isolate the issue.
  */
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <cglm/cglm.h>
@@ -33,7 +32,7 @@ int main(int argc, char** argv) {
         
         if (SituationIsKeyPressed(SIT_KEY_ESCAPE)) break;
         
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             
             // Clear to dark blue

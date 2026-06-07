@@ -13,7 +13,6 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL // Or SITUATION_USE_VULKAN
 #define SITUATION_ENABLE_SHADER_COMPILER // Mandatory for runtime GLSL compilation
 #include "situation.h"
@@ -121,7 +120,7 @@ int init_compute_resources() {
 // --- Execution ---
 void run_compute_pass() {
     // Even though we aren't drawing to the screen, we need a command buffer context.
-    if (!SituationAcquireFrameCommandBuffer()) return;
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) return;
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     // 1. Bind Pipeline

@@ -23,7 +23,7 @@ typedef struct DemonHuntSkyFrameUbo {
     int32_t u_sprite_count;
     int32_t u_sprite_debug_mode;
     int32_t u_shader_sprites_enabled;
-    int32_t _pad_int;
+    float u_pain_flash;
     float _pad_before_mat4[2]; /* std140: mat4 aligns to 112 */
     float u_flat_inv_vp[16];
 } DemonHuntSkyFrameUbo;

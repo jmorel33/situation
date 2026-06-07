@@ -16,7 +16,6 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL // Or SITUATION_USE_VULKAN
 #include "situation.h"
 #include <cglm/cglm.h>
@@ -80,7 +79,7 @@ void update_game() {
 
 // --- Rendering ---
 void render_frame() {
-    if (!SituationAcquireFrameCommandBuffer()) return;
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) return;
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo pass = {

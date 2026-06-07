@@ -6,7 +6,6 @@
     #define NOMINMAX
 #endif
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_VULKAN
 #define SITUATION_ENABLE_THREADING
 #define SITUATION_ENABLE_SHADER_COMPILER
@@ -42,7 +41,7 @@ int main(int argc, char** argv) {
         
         if (SituationIsKeyPressed(SIT_KEY_ESCAPE)) break;
         
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             
             // Phase 1: Just clear with cycling color

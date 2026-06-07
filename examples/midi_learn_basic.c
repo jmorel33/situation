@@ -15,7 +15,6 @@
  *   5. Move the same control to see the parameter update
  */
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "../situation.h"
 

@@ -8,7 +8,6 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_VULKAN  // Required for compilation
 #include "../situation.h"
 #include <stdio.h>

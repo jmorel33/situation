@@ -6,7 +6,6 @@
     #define NOMINMAX
 #endif
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_VULKAN
 #define SITUATION_ENABLE_THREADING
 #define SITUATION_ENABLE_SHADER_COMPILER
@@ -55,7 +54,7 @@ int main(int argc, char** argv) {
         SituationUpdateTimers();
         
         LOGF("Frame %d: Acquiring frame buffer...", frame_count);
-        if (!SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
             LOG("[ERROR] Failed to acquire frame buffer");
             break;
         }

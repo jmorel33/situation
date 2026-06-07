@@ -82,7 +82,7 @@ int main(int argc, char** argv) {
             printf("Debug Overlay: %s\n", show_debug_overlay ? "ON" : "OFF");
         }
         
-        if (!SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) {
             break;
         }
         

@@ -15,7 +15,6 @@
  *   6. Enjoy 16384 steps of resolution!
  */
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "../situation.h"
 

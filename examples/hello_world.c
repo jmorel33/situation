@@ -12,7 +12,6 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 #include <cglm/cglm.h>
@@ -74,7 +73,7 @@ int main(int argc, char** argv) {
     while (!SituationWindowShouldClose()) {
         SITUATION_BEGIN_FRAME();
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
             SituationRenderPassInfo pass = { .display_id = -1, .color_attachment = { .loadOp = SIT_LOAD_OP_DONT_CARE } }; // We draw full screen texture, no clear needed
 

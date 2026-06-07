@@ -14,7 +14,6 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL // Or SITUATION_USE_VULKAN
 #include "situation.h"
 #include <cglm/cglm.h>
@@ -89,7 +88,7 @@ int init_resources() {
 
 // --- Render Loop ---
 void render_frame() {
-    if (!SituationAcquireFrameCommandBuffer()) return;
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) return;
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     // 1. Begin Pass

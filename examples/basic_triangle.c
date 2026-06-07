@@ -14,7 +14,6 @@
 *
 ***************************************************************************************************/
 
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
 #include "situation.h"
 
@@ -87,7 +86,7 @@ int init_resources() {
 
 // --- Render Loop ---
 void render_frame() {
-    if (!SituationAcquireFrameCommandBuffer()) return;
+    if (SituationAcquireFrameCommandBuffer() != SITUATION_SUCCESS) return;
     SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
     SituationRenderPassInfo pass = {

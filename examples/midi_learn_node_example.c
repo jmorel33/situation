@@ -15,7 +15,6 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "../ext/miniaudio.h"
 
-#define SITUATION_IMPLEMENTATION
 #include "../situation.h"
 
 #include <stdio.h>

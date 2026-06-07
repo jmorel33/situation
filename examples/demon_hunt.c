@@ -10,15 +10,36 @@
  *        Left click / Ctrl — shoot    R — restart after win
  *
  *  BGM: two-voice macabre phrases (triangle + square) on an 8-note Phrygian grid, stepped by timer oscillator.
+ *
+ *  ──────────────────────────────────────────────────────────────────────────────
+ *  OPENGL SHADER LIMITATION (NVIDIA)
+ *  ──────────────────────────────────────────────────────────────────────────────
+ *  The demon_hunt_sky.fs fragment shader exceeds the NVIDIA OpenGL SPIR-V driver
+ *  instruction limit on GTX 10xx/16xx/20xx series. When loaded via the SPIR-V path
+ *  (glSpecializeShader), the driver returns error -641 (OPENGL_SPIRV_FS_SPECIALIZE_FAILED)
+ *  with the message "too many instructions". The GLSL text path (glShaderSource) may
+ *  succeed on some drivers but is not guaranteed.
+ *
+ *  This is NOT a bug in the shader or the library — it's a hard driver limit on the
+ *  number of native GPU instructions the NVIDIA GL frontend will accept for a single
+ *  shader stage. The same SPIR-V compiles and runs without issue on Vulkan (where
+ *  pipeline compilation has no such frontend limit).
+ *
+ *  If you're debugging why the sky shader fails on OpenGL:
+ *    - Check SituationGetLastErrorCode() — expect -641
+ *    - Check SituationGetLastErrorMessage() — expect "too many instructions"
+ *    - The game handles this gracefully: falls back to flat color bands for the sky
+ *    - Build and run with Vulkan for the full sky shader experience:
+ *        build_examples.bat vulkan demon_hunt
+ *  ──────────────────────────────────────────────────────────────────────────────
  ***************************************************************************************************/
 
 #if defined(_WIN32)
     #define NOMINMAX
 #endif
 
-#define SITUATION_IMPLEMENTATION
 #if !defined(SITUATION_USE_OPENGL) && !defined(SITUATION_USE_VULKAN)
-    #define SITUATION_USE_OPENGL
+    #define SITUATION_USE_VULKAN
 #endif
 
 #include "situation.h"
@@ -39,9 +60,20 @@
 #define MAP_MAX_H 32
 #define MAP_DEFAULT_W 24
 #define MAP_DEFAULT_H 24
+
+/* Material IDs (4 bits, 0–15) for wall cells. Packed into materialRows[] SSBO. */
+#define MAT_STONE        0
+#define MAT_METAL        1
+#define MAT_FLESH        2
+#define MAT_EMISSIVE     3
+#define MAT_WOOD         4
+#define MAT_WATER        5
+#define MAT_BONE         6
+#define MAT_RUSTED_METAL 7
+
 #define LEVEL_MAX_GRID 6
-#define MM_CELL 3
-#define MM_PAD 2
+#define MM_CELL 6
+#define MM_PAD 3
 #define MM_MARGIN 14
 #define PLAYER_RADIUS 0.22f
 #define WALK_SPEED 2.0f
@@ -63,13 +95,15 @@
 #define SHADER_SPRITE_RESOLVER_AVAILABLE 1
 /* Phase 3: portal, exit pillar, player shots, particles — CPU draw skipped when shader path on. */
 #define SHADER_SPRITE_PHASE3_AVAILABLE 1
-#define SHADER_SPRITE_DEMON 1
-#define SHADER_SPRITE_HELLRAISER 2
-#define SHADER_SPRITE_AMMO 3
-#define SHADER_SPRITE_PARTICLE 4
-#define SHADER_SPRITE_PLAYER_SHOT 5
-#define SHADER_SPRITE_PORTAL 6
-#define SHADER_SPRITE_EXIT_PILLAR 7
+#define SHADER_SPRITE_DEMON        1
+#define SHADER_SPRITE_HELLRAISER   2
+#define SHADER_SPRITE_AMMO         3
+#define SHADER_SPRITE_PARTICLE     4
+#define SHADER_SPRITE_PLAYER_SHOT  5
+#define SHADER_SPRITE_PORTAL       6
+#define SHADER_SPRITE_EXIT_PILLAR  7
+#define SHADER_SPRITE_DRONE_SHOT   8  /* white plasma bolt */
+#define SHADER_SPRITE_HUNTER_DRONE 9  /* blue-gray hull, cyan glow, orange eye */
 
 typedef struct {
     int width;
@@ -122,6 +156,7 @@ static LevelDef current_level_def(void);
 
 /* Empty/passable cells plus shader-rendered world geometry. */
 static uint8_t g_map[MAP_MAX_H][MAP_MAX_W];
+static uint8_t g_material_map[MAP_MAX_H][MAP_MAX_W]; /* 4-bit material ID per wall cell (Phase 2) */
 static int g_exit_mx = -1;
 static int g_exit_mz = -1;
 
@@ -237,7 +272,6 @@ typedef struct {
 static ShaderSpriteCandidate g_sprite_candidates[SHADER_SPRITE_PACK_MAX];
 static int g_sprite_candidate_count;
 static int g_shader_sprite_debug_mode;
-static int g_shader_sprites_enabled = 1;
 
 typedef struct {
     float origin_x, origin_y, origin_z;
@@ -365,23 +399,26 @@ static void audio_init(void) {
         return;
     }
 
-    SituationSetControl(g_sfx_graph, g_sfx_echo, 0, 0.28f);
-    SituationSetControl(g_sfx_graph, g_sfx_echo, 1, 0.45f);
-    SituationSetControl(g_sfx_graph, g_sfx_echo, 2, 1.00f);
+    SituationSetControl(g_sfx_graph, g_sfx_echo, 0, 0.50f); // delay time
+    SituationSetControl(g_sfx_graph, g_sfx_echo, 1, 0.50f); // feedback
+    SituationSetControl(g_sfx_graph, g_sfx_echo, 2, 1.00f); // wet mix
 
-    SituationSetControl(g_sfx_graph, g_sfx_verb, 0, 0.82f);
-    SituationSetControl(g_sfx_graph, g_sfx_verb, 1, 0.40f);
-    SituationSetControl(g_sfx_graph, g_sfx_verb, 2, 0.25f);
-    SituationSetControl(g_sfx_graph, g_sfx_verb, 3, 0.00f);
-    SituationSetControl(g_sfx_graph, g_sfx_verb, 4, 1.00f);
+    SituationSetControl(g_sfx_graph, g_sfx_verb, 0, 0.75f); // room size
+    SituationSetControl(g_sfx_graph, g_sfx_verb, 1, 0.50f); // hf damping
+    SituationSetControl(g_sfx_graph, g_sfx_verb, 2, 0.50f); // wet mix
+    SituationSetControl(g_sfx_graph, g_sfx_verb, 3, 0.00f); // dry mix
+    SituationSetControl(g_sfx_graph, g_sfx_verb, 4, 1.00f); // stereo width
 
-    SituationSetControl(g_sfx_graph, g_sfx_phaser, 0, 2.4f);
-    SituationSetControl(g_sfx_graph, g_sfx_phaser, 2, 0.72f);
-    SituationSetControl(g_sfx_graph, g_sfx_phaser, 5, 0.92f);
+    SituationSetControl(g_sfx_graph, g_sfx_phaser, 0, 1.2f); // lfo frequency
+    SituationSetControl(g_sfx_graph, g_sfx_phaser, 1, 0.45f); // feedback
+    SituationSetControl(g_sfx_graph, g_sfx_phaser, 2, 0.20f); // mix
+    SituationSetControl(g_sfx_graph, g_sfx_phaser, 3, 0.15f); // pan depth
+    SituationSetControl(g_sfx_graph, g_sfx_phaser, 4, 0.80f); // stereo width
+    SituationSetControl(g_sfx_graph, g_sfx_phaser, 5, 2.00f); // feedback delay
 
-    SituationSetControl(g_sfx_graph, g_sfx_mixer, 0, 1.00f);
+    SituationSetControl(g_sfx_graph, g_sfx_mixer, 0, 1.00f); // master gain
 
-    SituationTopologicalSort(g_sfx_graph);
+    //SituationTopologicalSort(g_sfx_graph); // *** not needed, Situation takes care of this
     SituationSetActiveGraph(g_sfx_graph);
     SituationSetGraphSFXSource(g_sfx_source);
     g_sfx_bus_ok = 1;
@@ -562,7 +599,7 @@ static void melo_emit_step(void) {
     uint8_t md = g_melo_vd[g_melo_step];
     if (md == 0) {
         /* Kick drum */
-        play_sfx_tone(SIT_WAVE_SINE, 60.0f, 0.6f, 0.0f, 0.001f, 0.05f, 0.0f, 0.08f, 0.02f);
+        play_sfx_tone(SIT_WAVE_TRIANGLE, 60.0f, 0.6f, 0.0f, 0.001f, 0.05f, 0.0f, 0.08f, 0.02f);
         play_sfx_tone(SIT_WAVE_SQUARE, 40.0f, 0.45f, 0.0f, 0.001f, 0.04f, 0.0f, 0.08f, 0.02f);
     } else if (md == 1) {
         /* Snare drum */
@@ -601,15 +638,15 @@ static const uint8_t g_ml_death_b[] = {0, 0, 0, 0, 0, 0, 2, 1, 0, 0, 1, 2, MELO_
 static const uint8_t g_ml_death_c[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, MELO_REST, 0, 0, MELO_REST, 0, 0};
 static const uint8_t g_ml_death_d[] = {0, MELO_REST, 0, MELO_REST, 0, MELO_REST, 0, MELO_REST, 0, MELO_REST, 0, MELO_REST, MELO_REST, 1, 0, MELO_REST, 1, 0};
 #define ML_DEATH_LEN 18
-#define ML_DEATH_BPM 70.0f
+#define ML_DEATH_BPM 85.0f
 
-/* Win — sour fanfare */
-static const uint8_t g_ml_win_a[] = {4, 5, 7, 6, 5, 4, 3, 2, 1, 2, 4, 7, 6, 5, 3, 2};
-static const uint8_t g_ml_win_b[] = {0, 0, 1, 2, 1, 0, 0, 1, 0, MELO_REST, 0, 1, 2, 1, 0, 0};
-static const uint8_t g_ml_win_c[] = {0, MELO_REST, 0, MELO_REST, 0, MELO_REST, 0, MELO_REST, 1, MELO_REST, 1, MELO_REST, 0, MELO_REST, 0, MELO_REST};
-static const uint8_t g_ml_win_d[] = {0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 1, 0, 1};
+/* Win — victory fanfare (ascending i–IV–v–i8, octave hold, root cadence) */
+static const uint8_t g_ml_win_a[] = {0, 3, 5, 7, 7, 7, 6, 5, 4, 5, 6, 7, 7, 5, 3, 0};
+static const uint8_t g_ml_win_b[] = {0, 1, 3, 5, 5, 5, 4, 3, 2, 3, 4, 5, 5, 3, 2, 0};
+static const uint8_t g_ml_win_c[] = {0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+static const uint8_t g_ml_win_d[] = {0, 2, 0, 2, 0, 2, 1, 2, 0, 2, 0, 2, 0, 1, 0, 0};
 #define ML_WIN_LEN 16
-#define ML_WIN_BPM 110.0f
+#define ML_WIN_BPM 152.0f
 
 /* Esc to title — curt */
 static const uint8_t g_ml_abort_a[] = {3, 2, 1, 0, MELO_REST, 2, 1, 0};
@@ -1457,7 +1494,7 @@ static void take_queued_screenshot(void) {
     g_screenshot_pending = 0;
 
     char filename[96];
-    snprintf(filename, sizeof(filename), "demon_hunt_shot_%08u.png", (unsigned int)(SituationTimerGetTime() * 1000.0));
+    snprintf(filename, sizeof(filename), "demon_hunt_shot_%08u", (unsigned int)(SituationTimerGetTime() * 1000.0));
     SituationError err = SituationTakeScreenshot(filename);
     if (err == SITUATION_SUCCESS) {
         snprintf(g_screenshot_msg, sizeof(g_screenshot_msg), "Saved %s", filename);
@@ -1536,6 +1573,57 @@ static void generate_long_walk_map(void) {
     set_exit_cell(g_map_w - 3, mid);
 }
 
+/* Phase 2: Assign material IDs to wall cells based on position and level type. */
+static void map_assign_materials(LevelKind kind) {
+    memset(g_material_map, MAT_STONE, sizeof(g_material_map));
+    int is_arena = (kind == LEVEL_KIND_ARENA);
+
+    for (int z = 0; z < g_map_h && z < MAP_MAX_H; z++) {
+        for (int x = 0; x < g_map_w && x < MAP_MAX_W; x++) {
+            if (g_map[z][x] != CELL_WALL) continue; /* only walls get materials */
+
+            /* Outer border is always stone */
+            if (x == 0 || z == 0 || x == g_map_w - 1 || z == g_map_h - 1) {
+                g_material_map[z][x] = MAT_STONE;
+                continue;
+            }
+
+            /* Exit cell neighbors get emissive — only direct wall-adjacent cells */
+            if (g_exit_mx >= 0 && g_exit_mz >= 0) {
+                int dx = x - g_exit_mx;
+                int dz = z - g_exit_mz;
+                if (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1 && (dx != 0 || dz != 0)) {
+                    g_material_map[z][x] = MAT_EMISSIVE;
+                    continue;
+                }
+            }
+
+            /* Interior walls: weighted random per cell (seeded by position for stability) */
+            unsigned int seed = (unsigned int)(z * 997 + x * 131 + g_current_level * 7919);
+            seed ^= seed >> 16;
+            seed *= 0x45d9f3b;
+            seed ^= seed >> 16;
+            int roll = (int)(seed % 100);
+
+            if (is_arena) {
+                /* Arena bias: more metal + rusted metal */
+                if (roll < 40)      g_material_map[z][x] = MAT_STONE;
+                else if (roll < 60) g_material_map[z][x] = MAT_METAL;
+                else if (roll < 80) g_material_map[z][x] = MAT_RUSTED_METAL;
+                else if (roll < 90) g_material_map[z][x] = MAT_BONE;
+                else                g_material_map[z][x] = MAT_WOOD;
+            } else {
+                /* Standard hunt levels — stone dominant, others rare accents */
+                if (roll < 70)      g_material_map[z][x] = MAT_STONE;
+                else if (roll < 82) g_material_map[z][x] = MAT_WOOD;
+                else if (roll < 90) g_material_map[z][x] = MAT_METAL;
+                else if (roll < 96) g_material_map[z][x] = MAT_RUSTED_METAL;
+                else                g_material_map[z][x] = MAT_BONE;
+            }
+        }
+    }
+}
+
 static void map_generate(void) {
     LevelDef def = current_level_def();
     g_level_config = def.config;
@@ -1563,11 +1651,13 @@ static void map_generate(void) {
         g_pz = (float)(g_map_h / 2) + 0.5f;
         gauntlet_place_pillars();
         set_exit_cell(g_map_w - 3, g_map_h / 2);
+        map_assign_materials(def.kind);
         return;
     }
 
     if (def.kind == LEVEL_KIND_LONG_WALK) {
         generate_long_walk_map();
+        map_assign_materials(def.kind);
         return;
     }
     
@@ -1656,6 +1746,7 @@ static void map_generate(void) {
 
     map_place_arches();
     set_exit_cell(g_exit_mx, g_exit_mz);
+    map_assign_materials(def.kind);
 }
 
 static void score_save_high(void) {
@@ -2203,23 +2294,6 @@ static void sun_direction(float* lx, float* ly, float* lz) {
     *lz = szv * invl;
 }
 
-/* Billboard: ambient always; directional term only when sun_ray_lit != 0. */
-static float sprite_light_mul(float dx, float dz, float dist, float lit_x, float lit_y, float lit_z, int sun_ray_lit) {
-    float invd = 1.0f / (dist + 0.08f);
-    float tcx = -dx * invd;
-    float tcz = -dz * invd;
-    float ndotl = tcx * lit_x + tcz * lit_z;
-    if (ndotl < 0.0f) ndotl = 0.0f;
-
-    float atten = 1.0f / (1.0f + dist * 0.1f);
-    float diffuse = 0.8f * ndotl * atten * (sun_ray_lit ? 1.0f : 0.0f);
-    float lum = 0.2f * atten + diffuse;
-    if (lum < 0.045f) lum = 0.045f;
-    if (lum > 1.25f) lum = 1.25f;
-    (void)lit_y;
-    return lum;
-}
-
 static void draw_rect_px(SituationCommandBuffer cmd, float x, float y, float w, float h, Vector4 color) {
     mat4 m;
     glm_mat4_identity(m);
@@ -2264,7 +2338,7 @@ static float ui_text_width(const char* text, float size, float spacing) {
 }
 
 static void draw_text_ui(SituationCommandBuffer cmd, UiLayout ui, const char* text, float x, float y, float size, float spacing, ColorRGBA color) {
-    SituationCmdDrawTextEx(cmd, g_font, text, ui_pos(ui, x, y), size * ui.scale, spacing * ui.scale, color);
+    SituationCmdDrawTextEx(cmd, g_font, text, ui_pos(ui, x, y), size * ui.scale, 0.0f, color);
 }
 
 static void draw_text_fit_ui(SituationCommandBuffer cmd, UiLayout ui, const char* text, float x, float y, float size, float spacing, float max_w, ColorRGBA color) {
@@ -2646,6 +2720,7 @@ typedef struct {
     int wall_rows[MAP_MAX_H];
     int arch_ns_rows[MAP_MAX_H];
     int arch_ew_rows[MAP_MAX_H];
+    int material_rows[128];  /* 4-bit material ID per cell, packed 8 cells per int, 4 ints per row */
     int align_pad[2];
     float teleporters[TELEPORTER_MAX_COUNT][4];
     float hellraisers[HELLRAISER_COUNT][4];
@@ -2665,6 +2740,50 @@ static int g_sky_frame_ubo_ok;
 static SituationBuffer g_scene_ssbo;
 static uint8_t g_scene_ssbo_cpu[SKY_SCENE_SSBO_BYTES];
 static int g_scene_ssbo_ok;
+
+/* Phase 1.5: Previous-frame feedback texture */
+static SituationTexture g_feedback_tex;
+static int g_feedback_tex_ok;
+static int g_feedback_tex_w;
+static int g_feedback_tex_h;
+
+/* Phase 1.5 step 1.5.7: Recreate feedback texture if render size changed.
+ * In practice GAME_RENDER_W/H are compile-time constants so this is a safety net. */
+static void feedback_tex_ensure_size(int sw, int sh) {
+    if (!g_feedback_tex_ok) return;
+    if (g_feedback_tex_w == sw && g_feedback_tex_h == sh) return;
+
+    /* Size mismatch — destroy and recreate */
+    SituationDestroyTexture(&g_feedback_tex);
+    memset(&g_feedback_tex, 0, sizeof(g_feedback_tex));
+    g_feedback_tex_ok = 0;
+
+    size_t fb_bytes = (size_t)sw * (size_t)sh * 4;
+    uint8_t* fb_pixels = (uint8_t*)malloc(fb_bytes);
+    if (fb_pixels) {
+        for (size_t i = 0; i < fb_bytes; i += 4) {
+            fb_pixels[i + 0] = 20;
+            fb_pixels[i + 1] = 18;
+            fb_pixels[i + 2] = 26;
+            fb_pixels[i + 3] = 255;
+        }
+    }
+
+    SituationImage feedback_img = {0};
+    feedback_img.width = sw;
+    feedback_img.height = sh;
+    feedback_img.channels = 4;
+    feedback_img.data = fb_pixels;
+    SituationTextureUsageFlags fb_flags =
+        SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_TRANSFER_DST;
+    SituationError fb_err = SituationCreateTextureEx(feedback_img, false, fb_flags, &g_feedback_tex);
+    free(fb_pixels);
+    if (fb_err == SITUATION_SUCCESS) {
+        g_feedback_tex_ok = 1;
+        g_feedback_tex_w = sw;
+        g_feedback_tex_h = sh;
+    }
+}
 
 /* When linked with -mwindows, stderr is invisible; append errors here and show status on HUD. */
 static void sky_append_log(const char* line) {
@@ -2815,7 +2934,7 @@ static int sky_try_embedded_spirv_load(void) {
     }
 #if defined(SITUATION_USE_VULKAN)
     SituationError err = SituationBeginLoadShaderFromSpirvMemoryEx(
-        vs_spv, vs_len, fs_spv, fs_len, SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO, &g_sky_shader);
+        vs_spv, vs_len, fs_spv, fs_len, SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO_SAMPLER, &g_sky_shader);
 #else
     SituationError err = SituationBeginLoadShaderFromSpirvMemory(
         vs_spv, vs_len, fs_spv, fs_len, &g_sky_shader);
@@ -2946,8 +3065,19 @@ static void sky_pack_arch_rows(int ns_rows[MAP_MAX_H], int ew_rows[MAP_MAX_H]) {
     }
 }
 
+static void sky_pack_material_rows(int mat_rows[128]) {
+    memset(mat_rows, 0, 128 * sizeof(int));
+    for (int z = 0; z < g_map_h && z < MAP_MAX_H; z++) {
+        for (int x = 0; x < g_map_w && x < 32; x++) {
+            int idx = z * 4 + x / 8;
+            int shift = (x % 8) * 4;
+            mat_rows[idx] |= ((int)g_material_map[z][x] & 0xF) << shift;
+        }
+    }
+}
+
 static int shader_sprite_runtime_enabled(void) {
-    return SHADER_SPRITE_RESOLVER_AVAILABLE && g_shader_sprites_enabled && g_sky_ok && g_scene_ssbo_ok;
+    return g_sky_ok && g_scene_ssbo_ok;
 }
 
 static int shader_sprite_phase3_runtime_enabled(void) {
@@ -3083,6 +3213,45 @@ static int init_sky_gpu(void) {
     }
     g_sky_ok = 1;
     sky_append_log("[demon_hunt] skydome GPU path OK (SkyFrame UBO + scene SSBO + mesh).");
+
+    /* Phase 1.5: Create previous-frame feedback texture (SAMPLED + TRANSFER_DST) */
+    {
+        int fb_w = GAME_RENDER_W;
+        int fb_h = GAME_RENDER_H;
+
+        /* Allocate a CPU image filled with fog color so frame 0 reads sane data (step 1.5.6) */
+        size_t fb_bytes = (size_t)fb_w * (size_t)fb_h * 4;
+        uint8_t* fb_pixels = (uint8_t*)malloc(fb_bytes);
+        if (fb_pixels) {
+            /* FOG_COLOR = vec3(0.08, 0.07, 0.10) → RGBA8 (20, 18, 26, 255) */
+            for (size_t i = 0; i < fb_bytes; i += 4) {
+                fb_pixels[i + 0] = 20;
+                fb_pixels[i + 1] = 18;
+                fb_pixels[i + 2] = 26;
+                fb_pixels[i + 3] = 255;
+            }
+        }
+
+        SituationImage feedback_img = {0};
+        feedback_img.width = fb_w;
+        feedback_img.height = fb_h;
+        feedback_img.channels = 4;
+        feedback_img.data = fb_pixels; /* NULL-safe: CreateTextureEx accepts NULL for undefined */
+        SituationTextureUsageFlags fb_flags =
+            SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_TRANSFER_DST;
+        SituationError fb_err = SituationCreateTextureEx(feedback_img, false, fb_flags, &g_feedback_tex);
+        free(fb_pixels);
+        if (fb_err == SITUATION_SUCCESS) {
+            g_feedback_tex_ok = 1;
+            g_feedback_tex_w = fb_w;
+            g_feedback_tex_h = fb_h;
+            sky_append_log("[demon_hunt] feedback texture created OK (filled with fog color).");
+        } else {
+            g_feedback_tex_ok = 0;
+            sky_append_log("[demon_hunt] feedback texture creation failed (non-fatal).");
+        }
+    }
+
     return 1;
 }
 
@@ -3093,6 +3262,13 @@ static int sky_shader_has_core_uniforms(void) {
 }
 
 static void shutdown_sky_gpu(void) {
+    /* Phase 1.5: feedback texture cleanup */
+    if (g_feedback_tex_ok) {
+        SituationDestroyTexture(&g_feedback_tex);
+        memset(&g_feedback_tex, 0, sizeof(g_feedback_tex));
+        g_feedback_tex_ok = 0;
+    }
+
     if (g_scene_ssbo_ok) {
         SituationDestroyBuffer(&g_scene_ssbo);
         memset(&g_scene_ssbo, 0, sizeof(g_scene_ssbo));
@@ -3127,6 +3303,7 @@ static void upload_scene_ssbo(const int rows[MAP_MAX_H], const int arch_ns_rows[
     memcpy(hdr->wall_rows, rows, sizeof(hdr->wall_rows));
     memcpy(hdr->arch_ns_rows, arch_ns_rows, sizeof(hdr->arch_ns_rows));
     memcpy(hdr->arch_ew_rows, arch_ew_rows, sizeof(hdr->arch_ew_rows));
+    sky_pack_material_rows(hdr->material_rows);
 
     for (int i = 0; i < TELEPORTER_MAX_COUNT; i++) {
         hdr->teleporters[i][0] = g_teleporters[i].x;
@@ -3201,6 +3378,7 @@ static void upload_sky_frame_ubo(int sw, int sh, float h_line, float lit_x, floa
     ubo.u_sprite_count = g_shader_sprite_count;
     ubo.u_sprite_debug_mode = g_shader_sprite_debug_mode;
     ubo.u_shader_sprites_enabled = shader_sprite_runtime_enabled();
+    ubo.u_pain_flash = g_pain_flash;
 
     {
         SituationCameraDesc flat_desc;
@@ -3303,6 +3481,10 @@ static void sky_draw_fullscreen(SituationCommandBuffer cmd, int sw, int sh, floa
     if (g_scene_ssbo_ok) {
         upload_scene_ssbo(rows, arch_ns_rows, arch_ew_rows);
         SituationCmdBindDescriptorSet(cmd, 1, g_scene_ssbo);
+    }
+    /* Phase 1.5: Bind previous-frame feedback texture at set 2 (UBO_SSBO_SAMPLER profile). */
+    if (g_feedback_tex_ok) {
+        SituationCmdBindTextureSet(cmd, 2, g_feedback_tex);
     }
     SituationCmdDrawMesh(cmd, g_sky_mesh);
 }
@@ -4581,6 +4763,39 @@ static void pack_shader_sprites(int sw, int sh) {
             alpha_life, p->r, p->g, p->b);
     }
 
+    /* Hunter drones — added to shader sprite path (type 9). */
+    for (int i = 0; i < HUNTER_DRONE_COUNT; i++) {
+        HunterDrone* drone = &g_hunter_drones[i];
+        if (!drone->active) continue;
+        float dx = drone->x - g_px;
+        float dz = drone->z - g_pz;
+        float dist = sqrtf(dx * dx + dz * dz);
+        float hw, ht;
+        shader_sprite_screen_size(sw, sh, dist, 0.28f, 0.40f, &hw, &ht);
+        shader_sprite_candidate_add(
+            SHADER_SPRITE_HUNTER_DRONE, 2.5f, drone->x, HUNTER_DRONE_HOVER_Y, drone->z,
+            hw, ht, HUNTER_DRONE_HOVER_Y - ht,
+            drone->hurt_flash,
+            tt * 3.8f + (float)i,
+            0.0f,
+            drone->ang);
+    }
+
+    /* Drone shots — added to shader sprite path (type 8). */
+    for (int i = 0; i < DRONE_SHOT_COUNT; i++) {
+        DroneShot* bolt = &g_drone_shots[i];
+        if (!bolt->active) continue;
+        float dx = bolt->x - g_px;
+        float dz = bolt->z - g_pz;
+        float dist = sqrtf(dx * dx + dz * dz);
+        float hw, ht;
+        shader_sprite_screen_size(sw, sh, dist, 0.055f, 0.055f, &hw, &ht);
+        shader_sprite_candidate_add(
+            SHADER_SPRITE_DRONE_SHOT, 6.5f, bolt->x, bolt->y, bolt->z,
+            hw, ht, bolt->y - ht * 0.5f,
+            bolt->travel, 0.0f, 0.0f, 0.0f);
+    }
+
     if (g_sprite_candidate_count > 1) {
         qsort(g_sprite_candidates, (size_t)g_sprite_candidate_count, sizeof(g_sprite_candidates[0]), shader_sprite_candidate_compare);
     }
@@ -4595,133 +4810,6 @@ static void pack_shader_sprites(int sw, int sh) {
     }
 }
 
-static void add_teleporter_light(float x, float z, float* r, float* g, float* b) {
-    for (int i = 0; i < TELEPORTER_MAX_COUNT; i++) {
-        if (!g_teleporters[i].active) continue;
-        float dx = g_teleporters[i].x - x;
-        float dz = g_teleporters[i].z - z;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (dist < 4.5f) {
-            float atten = fmaxf(0.0f, 1.0f - dist / 4.5f);
-            atten *= atten; // non-linear falloff
-            float pulse = sinf((float)SituationTimerGetTime() * 8.0f + (float)i) * 0.2f + 0.8f;
-            float energy = atten * pulse * 1.5f; // bright orange
-            *r += 1.0f * energy;
-            *g += 0.4f * energy;
-            *b += 0.05f * energy;
-        }
-    }
-}
-
-static void add_hellraiser_light(float x, float z, float* r, float* g, float* b) {
-    for (int i = 0; i < HELLRAISER_COUNT; i++) {
-        Hellraiser* h = &g_hellraisers[i];
-        if (!h->active) continue;
-        float dx = h->x - x;
-        float dz = h->z - z;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (dist < 4.8f) {
-            float atten = fmaxf(0.0f, 1.0f - dist / 4.8f);
-            atten *= atten;
-            float pulse = sinf((float)SituationTimerGetTime() * 11.0f + (float)i * 1.7f) * 0.28f + 0.72f;
-            float energy = atten * pulse * 1.25f;
-            *r += 1.0f * energy;
-            *g += 0.14f * energy;
-            *b += 0.03f * energy;
-        }
-    }
-}
-
-static void add_drone_shot_light(float x, float z, float* r, float* g, float* b) {
-    for (int i = 0; i < DRONE_SHOT_COUNT; i++) {
-        DroneShot* shot = &g_drone_shots[i];
-        if (!shot->active) {
-            continue;
-        }
-        float dx = shot->x - x;
-        float dz = shot->z - z;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (dist < DRONE_SHOT_LIGHT_RADIUS) {
-            float atten = fmaxf(0.0f, 1.0f - dist / DRONE_SHOT_LIGHT_RADIUS);
-            atten *= atten;
-            float pulse = sinf((float)SituationTimerGetTime() * 24.0f + shot->travel * 10.0f + (float)i) * 0.15f + 0.85f;
-            float energy = atten * pulse * 0.62f;
-            *r += 1.0f * energy;
-            *g += 0.98f * energy;
-            *b += 0.94f * energy;
-        }
-    }
-}
-
-static void add_player_shot_light(float x, float z, float* r, float* g, float* b) {
-    for (int i = 0; i < PLAYER_SHOT_COUNT; i++) {
-        PlayerShot* shot = &g_player_shots[i];
-        if (!shot->active) continue;
-        float dx = shot->x - x;
-        float dz = shot->z - z;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (dist < 3.2f) {
-            float atten = fmaxf(0.0f, 1.0f - dist / 3.2f);
-            atten *= atten;
-            float fade = 1.0f - fminf(1.0f, shot->travel / fmaxf(0.01f, shot->max_travel));
-            float pulse = sinf((float)SituationTimerGetTime() * 18.0f + (float)i * 1.3f) * 0.18f + 0.82f;
-            float energy = atten * pulse * (0.45f + fade * 0.18f);
-            *r += 1.0f * energy;
-            *g += 0.72f * energy;
-            *b += 0.08f * energy;
-        }
-    }
-}
-
-typedef enum {
-    SPR_DEMON,
-    SPR_HUNTER_DRONE,
-    SPR_HELLRAISER,
-    SPR_AMMO,
-    SPR_PARTICLE,
-    SPR_PLAYER_SHOT,
-    SPR_DRONE_SHOT,
-    SPR_PORTAL,
-    SPR_TELEPORTER
-} SprType;
-
-typedef struct {
-    SprType type;
-    int idx;
-    float dist;
-} SprSort;
-
-static int sprite_sort_compare_desc(const void* a, const void* b) {
-    float da = ((const SprSort*)a)->dist;
-    float db = ((const SprSort*)b)->dist;
-    if (da < db) return 1;
-    if (da > db) return -1;
-    return 0;
-}
-
-static void drone_explosions_draw(SituationCommandBuffer cmd, int sw, int sh, mat4 flat_vp) {
-    for (int i = 0; i < DRONE_EXPLOSION_COUNT; i++) {
-        DroneExplosionFlash* ex = &g_drone_explosions[i];
-        if (ex->life <= 0.0f) {
-            continue;
-        }
-        float sx = 0.0f;
-        float sy = 0.0f;
-        float perp = 0.0f;
-        if (!project_point((Vector3){{ex->x, ex->y, ex->z}}, sw, sh, flat_vp, &sx, &sy, &perp)) {
-            continue;
-        }
-        float fade = ex->life / fmaxf(0.01f, ex->max_life);
-        float grow = 1.0f - fade * 0.55f;
-        float r = fmaxf(22.0f, ((float)sh * 0.16f / fmaxf(perp, 0.08f)) * grow);
-        Vector4 outer = {{1.0f, 0.38f, 0.05f, 0.62f * fade}};
-        Vector4 mid = {{1.0f, 0.68f, 0.14f, 0.82f * fade}};
-        Vector4 hot = {{1.0f, 0.95f, 0.72f, 0.96f * fade}};
-        draw_rect_px(cmd, sx - r, sy - r, r * 2.0f, r * 2.0f, outer);
-        draw_rect_px(cmd, sx - r * 0.62f, sy - r * 0.62f, r * 1.24f, r * 1.24f, mid);
-        draw_rect_px(cmd, sx - r * 0.30f, sy - r * 0.30f, r * 0.60f, r * 0.60f, hot);
-    }
-}
 
 static void render_world(SituationCommandBuffer cmd, int sw, int sh) {
     float lit_x, lit_y, lit_z;
@@ -4739,440 +4827,6 @@ static void render_world(SituationCommandBuffer cmd, int sw, int sh) {
     sky_draw_fullscreen(cmd, sw, sh, h_line, lit_x, lit_y, lit_z);
 
     float h0 = compute_horizon_shift_px((float)sh);
-    float rx_cam = cosf(g_yaw);
-    float rz_cam = -sinf(g_yaw);
-
-    /* Exit pillar follows the generated map's exit cell. */
-    if (!shader_sprite_phase3_runtime_enabled()) {
-        float ex, ez;
-        if (get_exit_position(&ex, &ez) && los_to_point(ex, ez)) {
-            float edx = ex - g_px;
-            float edz = ez - g_pz;
-            float ed = sqrtf(edx * edx + edz * edz);
-            float esx, esy, perp_e;
-            if (project_point((Vector3){{ex, 0.0f, ez}}, sw, sh, flat_vp, &esx, &esy, &perp_e)) {
-                float eh = (float)sh * 0.96f / perp_e;
-                float ew = eh * 0.36f;
-                float shx_e = (-lit_x * rx_cam + -lit_z * rz_cam) * (44.0f / (ed + 0.35f));
-                Vector4 eshad = {{0.02f, 0.015f, 0.05f, 0.36f}};
-                draw_rect_px(cmd, esx - ew * 0.62f + shx_e, esy, ew * 1.28f, eh * 0.2f, eshad);
-
-                float elum = sprite_light_mul(edx, edz, ed, lit_x, lit_y, lit_z, sun_ray_lit(ex, 0.5f, ez, lit_x, lit_y, lit_z));
-                double et = SituationTimerGetTime();
-                int gate_open = exit_gate_open();
-                float pulse = 0.52f + 0.48f * sinf((float)et * (gate_open ? 5.4f : 2.65f));
-                float pulse2 = 0.88f + 0.12f * sinf((float)et * (gate_open ? 7.1f : 3.4f) + 1.3f);
-                Vector4 ecol;
-                Vector4 glow;
-                if (gate_open) {
-                    /* Open — sick cyan / green */
-                    ecol = (Vector4){{(0.12f + 0.35f * pulse) * elum, (0.55f + 0.35f * pulse2) * elum, (0.58f + 0.32f * pulse) * elum, 1.0f}};
-                    glow = (Vector4){{0.15f * elum, 0.75f * pulse * elum, 0.85f * pulse * elum, 0.48f}};
-                } else {
-                    /* Sealed — hot amber / blood */
-                    ecol = (Vector4){{(0.82f + 0.14f * pulse) * elum, (0.22f + 0.12f * pulse2) * elum, (0.06f + 0.06f * pulse) * elum, 1.0f}};
-                    glow = (Vector4){{1.0f * pulse * elum, 0.38f * pulse * elum, 0.08f * pulse * elum, 0.42f}};
-                }
-                draw_rect_px(cmd, esx - ew * 0.5f, esy - eh * 0.96f, ew, eh * 0.96f, ecol);
-                draw_rect_px(cmd, esx - ew * 0.58f, esy - eh * 0.98f, ew * 1.16f, eh * 0.92f, glow);
-            }
-        }
-    }
-
-    /* Sprites back-to-front */
-    SprSort order[DEMON_COUNT + HUNTER_DRONE_COUNT + HELLRAISER_COUNT + AMMO_COUNT + MAX_PARTICLES + PLAYER_SHOT_COUNT + DRONE_SHOT_COUNT + PORTAL_COUNT + TELEPORTER_MAX_COUNT];
-    int n = 0;
-    
-    for (int i = 0; i < DEMON_COUNT; i++) {
-        if (shader_sprite_runtime_enabled()) continue;
-        if (!g_demon[i].alive) continue;
-        float dx = g_demon[i].x - g_px;
-        float dz = g_demon[i].z - g_pz;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (!los_to_point(g_demon[i].x, g_demon[i].z)) continue;
-        order[n].type = SPR_DEMON;
-        order[n].idx = i;
-        order[n].dist = dist;
-        n++;
-    }
-
-    for (int hix = 0; hix < HELLRAISER_COUNT; hix++) {
-        if (shader_sprite_runtime_enabled()) continue;
-        Hellraiser* h = &g_hellraisers[hix];
-        if (!h->active) continue;
-        float dx = h->x - g_px;
-        float dz = h->z - g_pz;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (los_to_point(h->x, h->z)) {
-            order[n].type = SPR_HELLRAISER;
-            order[n].idx = hix;
-            order[n].dist = dist;
-            n++;
-        }
-    }
-
-    for (int i = 0; i < HUNTER_DRONE_COUNT; i++) {
-        HunterDrone* drone = &g_hunter_drones[i];
-        if (!drone->active) continue;
-        float dx = drone->x - g_px;
-        float dz = drone->z - g_pz;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (!los_to_point(drone->x, drone->z)) continue;
-        order[n].type = SPR_HUNTER_DRONE;
-        order[n].idx = i;
-        order[n].dist = dist;
-        n++;
-    }
-    
-    for (int i = 0; i < PORTAL_COUNT; i++) {
-        if (shader_sprite_phase3_runtime_enabled()) continue;
-        if (!g_portals[i].alive) continue;
-        float dx = g_portals[i].x - g_px;
-        float dz = g_portals[i].z - g_pz;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (!los_to_point(g_portals[i].x, g_portals[i].z)) continue;
-        order[n].type = SPR_PORTAL;
-        order[n].idx = i;
-        order[n].dist = dist;
-        n++;
-    }
-    
-    for (int i = 0; i < AMMO_COUNT; i++) {
-        if (shader_sprite_runtime_enabled()) continue;
-        if (!g_ammo_box[i].active) continue;
-        float dx = g_ammo_box[i].x - g_px;
-        float dz = g_ammo_box[i].z - g_pz;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (!los_to_point(g_ammo_box[i].x, g_ammo_box[i].z)) continue;
-        order[n].type = SPR_AMMO;
-        order[n].idx = i;
-        order[n].dist = dist;
-        n++;
-    }
-    
-    for (int i = 0; i < TELEPORTER_MAX_COUNT; i++) {
-        if (!g_teleporters[i].active) continue;
-        float dx = g_teleporters[i].x - g_px;
-        float dz = g_teleporters[i].z - g_pz;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (!los_to_point(g_teleporters[i].x, g_teleporters[i].z)) continue;
-        order[n].type = SPR_TELEPORTER;
-        order[n].idx = i;
-        order[n].dist = dist;
-        n++;
-    }
-    
-    for (int i = 0; i < MAX_PARTICLES; i++) {
-        if (shader_sprite_phase3_runtime_enabled()) continue;
-        if (g_particles[i].life <= 0.0f) continue;
-        float dx = g_particles[i].x - g_px;
-        float dz = g_particles[i].z - g_pz;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (!los_to_point(g_particles[i].x, g_particles[i].z)) continue;
-        order[n].type = SPR_PARTICLE;
-        order[n].idx = i;
-        order[n].dist = dist;
-        n++;
-    }
-
-    for (int i = 0; i < PLAYER_SHOT_COUNT; i++) {
-        if (shader_sprite_phase3_runtime_enabled()) continue;
-        if (!g_player_shots[i].active) continue;
-        float dx = g_player_shots[i].x - g_px;
-        float dz = g_player_shots[i].z - g_pz;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (!los_to_point(g_player_shots[i].x, g_player_shots[i].z)) continue;
-        order[n].type = SPR_PLAYER_SHOT;
-        order[n].idx = i;
-        order[n].dist = dist;
-        n++;
-    }
-
-    for (int i = 0; i < DRONE_SHOT_COUNT; i++) {
-        if (!g_drone_shots[i].active) continue;
-        float dx = g_drone_shots[i].x - g_px;
-        float dz = g_drone_shots[i].z - g_pz;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (!los_to_point(g_drone_shots[i].x, g_drone_shots[i].z)) continue;
-        order[n].type = SPR_DRONE_SHOT;
-        order[n].idx = i;
-        order[n].dist = dist;
-        n++;
-    }
-
-    if (n > 1) {
-        qsort(order, (size_t)n, sizeof(order[0]), sprite_sort_compare_desc);
-    }
-    
-    for (int s = 0; s < n; s++) {
-        SprType type = order[s].type;
-        int i = order[s].idx;
-        float dist = order[s].dist;
-        
-        float obj_x = 0.0f, obj_y = 0.5f, obj_z = 0.0f;
-        if (type == SPR_DEMON) { obj_x = g_demon[i].x; obj_y = 0.5f; obj_z = g_demon[i].z; }
-        else if (type == SPR_HUNTER_DRONE) { obj_x = g_hunter_drones[i].x; obj_y = HUNTER_DRONE_HOVER_Y; obj_z = g_hunter_drones[i].z; }
-        else if (type == SPR_HELLRAISER) { obj_x = g_hellraisers[i].x; obj_y = 0.58f; obj_z = g_hellraisers[i].z; }
-        else if (type == SPR_AMMO) { obj_x = g_ammo_box[i].x; obj_y = 0.0f; obj_z = g_ammo_box[i].z; }
-        else if (type == SPR_PARTICLE) { obj_x = g_particles[i].x; obj_y = g_particles[i].y; obj_z = g_particles[i].z; }
-        else if (type == SPR_PLAYER_SHOT) { obj_x = g_player_shots[i].x; obj_y = g_player_shots[i].y; obj_z = g_player_shots[i].z; }
-        else if (type == SPR_DRONE_SHOT) { obj_x = g_drone_shots[i].x; obj_y = g_drone_shots[i].y; obj_z = g_drone_shots[i].z; }
-        else if (type == SPR_PORTAL) { obj_x = g_portals[i].x; obj_y = 0.0f; obj_z = g_portals[i].z; }
-        else if (type == SPR_TELEPORTER) { obj_x = g_teleporters[i].x; obj_y = 0.0f; obj_z = g_teleporters[i].z; }
-        
-        float sx, sy, perp;
-        if (!project_point((Vector3){{obj_x, obj_y, obj_z}}, sw, sh, flat_vp, &sx, &sy, &perp)) {
-            continue;
-        }
-        
-        float dx = obj_x - g_px;
-        float dz = obj_z - g_pz;
-        
-        float h = (float)sh * 0.92f / perp;
-        float w = h * 0.62f;
-        float bob_off = sinf(g_bob) * 4.0f;
-        if (type != SPR_AMMO && type != SPR_PORTAL && type != SPR_TELEPORTER) {
-            sy += bob_off * 0.15f;
-        }
-
-        float hover = 0.0f;
-        
-        if (type == SPR_DEMON) {
-            hover = sinf((float)SituationTimerGetTime() * 3.5f + (float)i * 2.0f) * 0.08f * h;
-            sy += hover;
-
-            float shx = (-lit_x * rx_cam + -lit_z * rz_cam) * (52.0f / (dist + 0.35f));
-            Vector4 shad = {{0.025f, 0.018f, 0.05f, 0.42f}};
-            draw_rect_px(cmd, sx - w * 0.58f + shx, sy + h * 0.36f - hover, w * 1.16f, h * 0.19f, shad);
-
-            float lum_sp = sprite_light_mul(dx, dz, dist, lit_x, lit_y, lit_z, sun_ray_lit(g_demon[i].x, 0.5f, g_demon[i].z, lit_x, lit_y, lit_z));
-            float r_sp = lum_sp, g_sp = lum_sp, b_sp = lum_sp;
-            add_teleporter_light(g_demon[i].x, g_demon[i].z, &r_sp, &g_sp, &b_sp);
-            add_hellraiser_light(g_demon[i].x, g_demon[i].z, &r_sp, &g_sp, &b_sp);
-            add_player_shot_light(g_demon[i].x, g_demon[i].z, &r_sp, &g_sp, &b_sp);
-            add_drone_shot_light(g_demon[i].x, g_demon[i].z, &r_sp, &g_sp, &b_sp);
-            float hurt = g_demon[i].hurt_flash;
-            float hurt_glow = hurt * hurt;
-            r_sp = fminf(1.8f, r_sp + hurt_glow * 1.05f);
-            g_sp = fminf(1.3f, g_sp + hurt_glow * 0.32f);
-            b_sp = fminf(1.5f, b_sp + hurt_glow * 0.48f);
-            
-            // Glowing aura
-            Vector4 aura = {{(0.3f + hurt_glow * 0.45f) * r_sp, (0.05f + hurt_glow * 0.12f) * g_sp, (0.4f + hurt_glow * 0.2f) * b_sp, 0.4f + hurt_glow * 0.3f}};
-            draw_rect_px(cmd, sx - w * (0.7f + hurt_glow * 0.12f), sy - h * (0.6f + hurt_glow * 0.08f), w * (1.4f + hurt_glow * 0.24f), h * (0.9f + hurt_glow * 0.18f), aura);
-
-            Vector4 body = {{0.68f * r_sp, 0.12f * g_sp, 0.25f * b_sp, 1.0f}};
-            Vector4 dark = {{0.22f * r_sp, 0.05f * g_sp, 0.15f * b_sp, 1.0f}};
-            float pulse_t = (float)SituationTimerGetTime() * 8.0f + (float)i;
-            float eye_boost = fminf(1.15f, lum_sp + 0.18f) + hurt_glow * 1.15f + 0.3f * sinf(pulse_t);
-            Vector4 eye = {{1.0f * eye_boost, 0.2f * eye_boost, 0.1f * eye_boost, 1.0f}};
-            Vector4 core = {{1.0f * eye_boost, 0.8f * eye_boost, 0.2f * eye_boost, 0.8f}};
-            
-            draw_rect_px(cmd, sx - w * 0.35f, sy - h * 0.55f, w * 0.7f, h * 0.35f, body);
-            draw_rect_px(cmd, sx - w * 0.25f, sy - h * 0.45f, w * 0.15f, h * 0.1f, eye);
-            draw_rect_px(cmd, sx + w * 0.10f, sy - h * 0.45f, w * 0.15f, h * 0.1f, eye);
-            draw_rect_px(cmd, sx - w * 0.15f, sy - h * 0.15f, w * 0.3f, h * 0.35f, dark);
-            draw_rect_px(cmd, sx - w * 0.05f, sy - h * 0.05f, w * 0.1f, h * 0.15f, core);
-            
-            float hand_bob = cosf((float)SituationTimerGetTime() * 4.0f + (float)i * 2.0f) * 0.05f * h;
-            draw_rect_px(cmd, sx - w * 0.65f, sy - h * 0.2f + hand_bob, w * 0.2f, h * 0.25f, body);
-            draw_rect_px(cmd, sx + w * 0.45f, sy - h * 0.2f - hand_bob, w * 0.2f, h * 0.25f, body);
-        } else if (type == SPR_HUNTER_DRONE) {
-            HunterDrone* drone = &g_hunter_drones[i];
-            float pulse = sinf((float)SituationTimerGetTime() * 9.0f + drone->ang) * 0.5f + 0.5f;
-            float hover_px = sinf((float)SituationTimerGetTime() * 3.8f + drone->ang) * 0.04f * h;
-            sy += hover_px;
-
-            float lum_sp = sprite_light_mul(dx, dz, dist, lit_x, lit_y, lit_z, sun_ray_lit(drone->x, HUNTER_DRONE_HOVER_Y, drone->z, lit_x, lit_y, lit_z));
-            float r_sp = fmaxf(lum_sp, 0.30f);
-            float g_sp = fmaxf(lum_sp, 0.34f);
-            float b_sp = fmaxf(lum_sp, 0.42f);
-            add_teleporter_light(drone->x, drone->z, &r_sp, &g_sp, &b_sp);
-            add_hellraiser_light(drone->x, drone->z, &r_sp, &g_sp, &b_sp);
-            add_player_shot_light(drone->x, drone->z, &r_sp, &g_sp, &b_sp);
-            if (drone->hurt_flash > 0.0f) {
-                r_sp = fminf(1.8f, r_sp + drone->hurt_flash * 0.9f);
-                g_sp = fminf(1.5f, g_sp + drone->hurt_flash * 0.35f);
-            }
-
-            Vector4 glow = {{0.10f * r_sp, (0.42f + pulse * 0.20f) * g_sp, 0.95f * b_sp, 0.38f}};
-            Vector4 hull = {{0.18f * r_sp, 0.32f * g_sp, 0.42f * b_sp, 1.0f}};
-            Vector4 eye = {{1.0f, 0.56f + pulse * 0.32f, 0.12f, 1.0f}};
-            Vector4 wing = {{0.08f * r_sp, 0.18f * g_sp, 0.24f * b_sp, 1.0f}};
-            Vector4 shad = {{0.0f, 0.0f, 0.0f, 0.28f}};
-
-            draw_rect_px(cmd, sx - w * 0.34f, sy + h * 0.20f, w * 0.68f, h * 0.08f, shad);
-            draw_rect_px(cmd, sx - w * 0.46f, sy - h * 0.44f, w * 0.92f, h * 0.40f, glow);
-            draw_rect_px(cmd, sx - w * 0.28f, sy - h * 0.34f, w * 0.56f, h * 0.30f, hull);
-            draw_rect_px(cmd, sx - w * 0.52f, sy - h * 0.26f, w * 0.20f, h * 0.16f, wing);
-            draw_rect_px(cmd, sx + w * 0.32f, sy - h * 0.26f, w * 0.20f, h * 0.16f, wing);
-            draw_rect_px(cmd, sx - w * 0.08f, sy - h * 0.25f, w * 0.16f, h * 0.12f, eye);
-        } else if (type == SPR_HELLRAISER) {
-            float pulse = sinf((float)SituationTimerGetTime() * 12.0f) * 0.5f + 0.5f;
-            h *= 1.35f;
-            w *= 1.15f;
-            sy += sinf((float)SituationTimerGetTime() * 4.4f) * 0.04f * h;
-
-            float lum_sp = sprite_light_mul(dx, dz, dist, lit_x, lit_y, lit_z, sun_ray_lit(g_hellraisers[i].x, 0.5f, g_hellraisers[i].z, lit_x, lit_y, lit_z));
-            float r_sp = fmaxf(lum_sp, 0.32f);
-            float g_sp = fmaxf(lum_sp, 0.18f);
-            float b_sp = fmaxf(lum_sp, 0.22f);
-            add_teleporter_light(g_hellraisers[i].x, g_hellraisers[i].z, &r_sp, &g_sp, &b_sp);
-            add_hellraiser_light(g_hellraisers[i].x, g_hellraisers[i].z, &r_sp, &g_sp, &b_sp);
-            add_player_shot_light(g_hellraisers[i].x, g_hellraisers[i].z, &r_sp, &g_sp, &b_sp);
-
-            Vector4 shad = {{0.03f, 0.0f, 0.0f, 0.58f}};
-            draw_rect_px(cmd, sx - w * 0.7f, sy + h * 0.34f, w * 1.4f, h * 0.22f, shad);
-
-            Vector4 aura = {{0.95f * r_sp, 0.06f * g_sp, 0.02f * b_sp, 0.38f + pulse * 0.32f}};
-            Vector4 body = {{0.12f * r_sp, 0.015f * g_sp, 0.02f * b_sp, 1.0f}};
-            Vector4 horns = {{0.85f * r_sp, 0.12f * g_sp, 0.04f * b_sp, 1.0f}};
-            Vector4 eye = {{1.0f, 0.15f + pulse * 0.35f, 0.02f, 1.0f}};
-
-            draw_rect_px(cmd, sx - w * 0.82f, sy - h * 0.72f, w * 1.64f, h * 1.08f, aura);
-            draw_rect_px(cmd, sx - w * 0.32f, sy - h * 0.62f, w * 0.64f, h * 0.82f, body);
-            draw_rect_px(cmd, sx - w * 0.58f, sy - h * 0.82f, w * 0.28f, h * 0.32f, horns);
-            draw_rect_px(cmd, sx + w * 0.30f, sy - h * 0.82f, w * 0.28f, h * 0.32f, horns);
-            draw_rect_px(cmd, sx - w * 0.22f, sy - h * 0.45f, w * 0.13f, h * 0.09f, eye);
-            draw_rect_px(cmd, sx + w * 0.09f, sy - h * 0.45f, w * 0.13f, h * 0.09f, eye);
-            draw_rect_px(cmd, sx - w * 0.12f, sy - h * 0.12f, w * 0.24f, h * 0.34f, horns);
-        } else if (type == SPR_AMMO) {
-            hover = sinf((float)SituationTimerGetTime() * 2.5f + (float)i * 1.2f) * 0.04f * h;
-
-            float shx = (-lit_x * rx_cam + -lit_z * rz_cam) * (20.0f / (dist + 0.35f));
-            Vector4 shad = {{0.0f, 0.0f, 0.0f, 0.35f}};
-            draw_rect_px(cmd, sx - w * 0.2f + shx, sy, w * 0.4f, h * 0.08f, shad);
-
-            float lum_sp = sprite_light_mul(dx, dz, dist, lit_x, lit_y, lit_z, sun_ray_lit(g_ammo_box[i].x, 0.5f, g_ammo_box[i].z, lit_x, lit_y, lit_z));
-            float r_sp = lum_sp, g_sp = lum_sp, b_sp = lum_sp;
-            add_teleporter_light(g_ammo_box[i].x, g_ammo_box[i].z, &r_sp, &g_sp, &b_sp);
-            add_hellraiser_light(g_ammo_box[i].x, g_ammo_box[i].z, &r_sp, &g_sp, &b_sp);
-            add_player_shot_light(g_ammo_box[i].x, g_ammo_box[i].z, &r_sp, &g_sp, &b_sp);
-            Vector4 am_col = {{0.88f * r_sp, 0.88f * g_sp, 0.22f * b_sp, 1.0f}};
-            Vector4 core = {{0.95f * r_sp, 0.95f * g_sp, 0.95f * b_sp, 1.0f}};
-            draw_rect_px(cmd, sx - w * 0.15f, sy - h * 0.2f - hover, w * 0.3f, h * 0.2f, am_col);
-            draw_rect_px(cmd, sx - w * 0.05f, sy - h * 0.15f - hover, w * 0.1f, h * 0.1f, core);
-        } else if (type == SPR_PARTICLE) {
-            float scale = fminf(g_particles[i].life, 1.25f);
-            float bright = g_particles[i].bright > 0.0f ? g_particles[i].bright : 1.0f;
-            int bolt_trail = particle_is_bolt_trail(&g_particles[i]);
-            int explosion = particle_is_explosion(&g_particles[i]);
-            int drip = particle_is_demon_drip(&g_particles[i]);
-            float size_mul = bolt_trail ? 0.30f : (explosion ? 0.38f : (drip ? 0.08f : 0.10f));
-            float pw = w * size_mul * scale;
-            float ph = h * size_mul * scale;
-            if (bolt_trail) {
-                pw = fmaxf(pw, 7.0f);
-                ph = fmaxf(ph, 7.0f);
-            } else if (explosion) {
-                pw = fmaxf(pw, 18.0f);
-                ph = fmaxf(ph, 18.0f);
-            }
-            Vector4 p_col = {{
-                fminf(1.0f, g_particles[i].r * bright),
-                fminf(1.0f, g_particles[i].g * bright),
-                fminf(1.0f, g_particles[i].b * bright),
-                fminf(1.0f, (bolt_trail ? g_particles[i].life * 1.45f : g_particles[i].life) * bright)
-            }};
-            if (bolt_trail) {
-                Vector4 glow = {{
-                    p_col.x,
-                    p_col.y,
-                    p_col.z,
-                    fminf(1.0f, p_col.w * 0.42f)
-                }};
-                draw_rect_px(cmd, sx - pw * 0.85f, sy - ph * 0.85f, pw * 1.7f, ph * 1.7f, glow);
-            }
-            draw_rect_px(cmd, sx - pw * 0.5f, sy - ph * 0.5f, pw, ph, p_col);
-        } else if (type == SPR_PLAYER_SHOT) {
-            float fade = 1.0f - fminf(1.0f, g_player_shots[i].travel / fmaxf(0.01f, g_player_shots[i].max_travel));
-            float pulse = 0.75f + 0.25f * sinf((float)SituationTimerGetTime() * 42.0f + (float)i);
-            Vector4 glow = {{1.0f * pulse, 0.72f * pulse, 0.10f * pulse, 0.34f + 0.30f * fade}};
-            Vector4 core = {{1.0f, 0.92f, 0.18f, 0.94f}};
-            float shot_w = fmaxf(3.0f, w * 0.045f);
-            float shot_h = fmaxf(3.0f, h * 0.045f);
-            draw_rect_px(cmd, sx - shot_w * 1.8f, sy - shot_h * 1.8f, shot_w * 3.6f, shot_h * 3.6f, glow);
-            draw_rect_px(cmd, sx - shot_w * 0.5f, sy - shot_h * 0.5f, shot_w, shot_h, core);
-        } else if (type == SPR_DRONE_SHOT) {
-            DroneShot* bolt = &g_drone_shots[i];
-            float pulse = 0.82f + 0.18f * sinf((float)SituationTimerGetTime() * 32.0f + bolt->travel * 9.0f);
-            float lum_sp = sprite_light_mul(dx, dz, dist, lit_x, lit_y, lit_z, sun_ray_lit(bolt->x, bolt->y, bolt->z, lit_x, lit_y, lit_z));
-            float r_sp = fmaxf(lum_sp, 0.55f);
-            float g_sp = fmaxf(lum_sp, 0.55f);
-            float b_sp = fmaxf(lum_sp, 0.58f);
-            add_drone_shot_light(bolt->x, bolt->z, &r_sp, &g_sp, &b_sp);
-            add_player_shot_light(bolt->x, bolt->z, &r_sp, &g_sp, &b_sp);
-
-            /* CPU comet tail — no extra GLSL uniforms (driver link is near the limit). */
-            for (int tp = 1; tp <= 6; tp++) {
-                float back = 0.10f * (float)tp;
-                float tx = bolt->x - bolt->dir_x * back;
-                float ty = bolt->y - bolt->dir_y * back;
-                float tz = bolt->z - bolt->dir_z * back;
-                float tsx, tsy, tperp;
-                if (!project_point((Vector3){{tx, ty, tz}}, sw, sh, flat_vp, &tsx, &tsy, &tperp)) {
-                    continue;
-                }
-                float fade = 1.0f - (float)tp * 0.14f;
-                float tr = fmaxf(3.0f, h * 0.055f * fade);
-                Vector4 puff = {{
-                    1.0f * r_sp * pulse,
-                    1.0f * g_sp * pulse,
-                    1.0f * b_sp * pulse,
-                    (0.28f + 0.10f * pulse) * fade
-                }};
-                draw_rect_px(cmd, tsx - tr, tsy - tr, tr * 2.0f, tr * 2.0f, puff);
-            }
-
-            float sphere_r = fmaxf(5.0f, h * 0.10f);
-            Vector4 halo = {{1.0f * r_sp * pulse, 1.0f * g_sp * pulse, 1.0f * b_sp * pulse, 0.34f}};
-            Vector4 mid = {{1.0f * r_sp, 1.0f * g_sp, 1.0f * b_sp, 0.78f}};
-            Vector4 core = {{1.0f, 1.0f, 1.0f, 1.0f}};
-            draw_rect_px(cmd, sx - sphere_r * 1.35f, sy - sphere_r * 1.35f, sphere_r * 2.7f, sphere_r * 2.7f, halo);
-            draw_rect_px(cmd, sx - sphere_r * 0.82f, sy - sphere_r * 0.82f, sphere_r * 1.64f, sphere_r * 1.64f, mid);
-            draw_rect_px(cmd, sx - sphere_r * 0.48f, sy - sphere_r * 0.48f, sphere_r * 0.96f, sphere_r * 0.96f, core);
-        } else if (type == SPR_PORTAL) {
-            float lum_sp = sprite_light_mul(dx, dz, dist, lit_x, lit_y, lit_z, sun_ray_lit(g_portals[i].x, 0.5f, g_portals[i].z, lit_x, lit_y, lit_z));
-            float r_sp = lum_sp, g_sp = lum_sp, b_sp = lum_sp;
-            add_teleporter_light(g_portals[i].x, g_portals[i].z, &r_sp, &g_sp, &b_sp);
-            add_hellraiser_light(g_portals[i].x, g_portals[i].z, &r_sp, &g_sp, &b_sp);
-            add_player_shot_light(g_portals[i].x, g_portals[i].z, &r_sp, &g_sp, &b_sp);
-            
-            // Draw a tall, glowing purple monolith
-            Vector4 glow = {{0.4f * r_sp, 0.05f * g_sp, 0.5f * b_sp, 0.6f}};
-            Vector4 core = {{0.7f * r_sp, 0.1f * g_sp, 0.9f * b_sp, 1.0f}};
-            Vector4 trim = {{0.9f * r_sp, 0.6f * g_sp, 1.0f * b_sp, 1.0f}};
-            
-            // Aura
-            draw_rect_px(cmd, sx - w * 0.8f, sy - h * 1.6f, w * 1.6f, h * 1.6f, glow);
-            
-            // Monolith Base/Core
-            draw_rect_px(cmd, sx - w * 0.4f, sy - h * 1.3f, w * 0.8f, h * 1.3f, core);
-            
-            // Monolith Trim / Highlights
-            draw_rect_px(cmd, sx - w * 0.1f, sy - h * 1.2f, w * 0.2f, h * 1.1f, trim);
-            
-            // Portal Energy effect (pulsing)
-            float pulse = sinf((float)SituationTimerGetTime() * 8.0f + (float)i) * 0.5f + 0.5f;
-            Vector4 energy = {{1.0f, 0.4f + 0.6f * pulse, 1.0f, 0.8f}};
-            draw_rect_px(cmd, sx - w * 0.2f, sy - h * 0.9f, w * 0.4f, h * 0.4f, energy);
-            
-            // Ground shadow
-            Vector4 shad = {{0.01f, 0.01f, 0.03f, 0.5f}};
-            draw_rect_px(cmd, sx - w * 0.6f, sy, w * 1.2f, h * 0.1f, shad);
-        } else if (type == SPR_TELEPORTER) {
-            // Teleporter pads are rendered by the shader floor pass.
-        }
-    }
-
-    drone_explosions_draw(cmd, sw, sh, flat_vp);
-
-    /* Muzzle flash only; the placeholder weapon block was too visually intrusive. */
-    float boby = sinf(g_bob * 1.7f) * 10.0f;
-    if (g_muzzle > 0) {
-        Vector4 flash = {{1.0f, 0.92f, 0.5f, 0.75f}};
-        draw_rect_px(cmd, (float)sw * 0.5f - 120.0f, (float)sh - 220.0f + boby - h0 * 0.06f, 240.0f, 180.0f, flash);
-    }
 
     /* Crosshair */
     Vector4 ch = {{0.9f, 0.9f, 0.95f, 0.85f}};
@@ -5282,7 +4936,7 @@ static void draw_minimap_overlay(SituationCommandBuffer cmd, UiLayout ui) {
 static double g_frame_acquire_fail_log_time;
 
 static int demon_hunt_acquire_frame(void) {
-    if (SituationAcquireFrameCommandBuffer()) {
+    if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
         return 1;
     }
     double now = SituationTimerGetTime();
@@ -5443,19 +5097,15 @@ static void render_frame(void) {
                     sprite_hud = "GPU world compiling… playable on CPU (see demon_hunt_sky.log)";
                     sprite_col = (ColorRGBA){200, 220, 255, 240};
                 } else {
-                    sprite_hud = g_shader_sprites_enabled
-                        ? "World shader off — CPU fallback (F9)   see demon_hunt_sky.log"
-                        : "World shader off — see demon_hunt_sky.log";
+                    sprite_hud = "World shader off — CPU fallback   see demon_hunt_sky.log";
                     sprite_col = (ColorRGBA){255, 170, 120, 240};
                 }
             } else if (shader_sprite_runtime_enabled()) {
                 sprite_hud = shader_sprite_phase3_runtime_enabled()
-                    ? "Shader world: OK   Sprites: shader (F9)"
-                    : "Shader world: OK   Enemies/ammo: shader (F9)";
+                    ? "Shader world: OK   Sprites: shader (all types)"
+                    : "Shader world: OK   Sprites: shader (base)";
             } else {
-                sprite_hud = g_shader_sprites_enabled
-                    ? "Shader world: OK   Resolver gated off; CPU sprites (F9)"
-                    : "Shader world: OK   Enemies/ammo: CPU (F9)";
+                sprite_hud = "Shader world: OK   Sprite resolver gated off";
             }
             draw_text_ui(cmd, ui, sprite_hud, 12.0f, 76.0f, 11.0f, 1.0f, sprite_col);
         }
@@ -5511,6 +5161,32 @@ static void render_frame(void) {
 
     SituationCmdEndRenderPass(cmd);
     if (render_to_game_display) {
+        /* Phase 1.5: Copy VD world texture → feedback texture (outside render pass) */
+        if (g_feedback_tex_ok && g_sky_ok) {
+            feedback_tex_ensure_size(sw, sh);  /* step 1.5.7: defensive resize check */
+            SituationTexture vd_tex = {0};
+            if (SituationGetVirtualDisplayTexture(g_game_display, &vd_tex) == SITUATION_SUCCESS) {
+                SituationTextureBarrierDesc barrier_to_dst = {0};
+                barrier_to_dst.old_layout = SITUATION_TEXTURE_LAYOUT_SHADER_READ;
+                barrier_to_dst.new_layout = SITUATION_TEXTURE_LAYOUT_TRANSFER_DST;
+                SituationCmdTextureBarrier(cmd, g_feedback_tex, &barrier_to_dst);
+
+                SituationTextureCopyRegion copy_region = {0};
+                copy_region.src_rect.x = 0;
+                copy_region.src_rect.y = 0;
+                copy_region.src_rect.width = g_feedback_tex_w;
+                copy_region.src_rect.height = g_feedback_tex_h;
+                copy_region.dst_x = 0;
+                copy_region.dst_y = 0;
+                SituationCmdCopyTexture(cmd, vd_tex, g_feedback_tex, &copy_region);
+
+                SituationTextureBarrierDesc barrier_to_read = {0};
+                barrier_to_read.old_layout = SITUATION_TEXTURE_LAYOUT_TRANSFER_DST;
+                barrier_to_read.new_layout = SITUATION_TEXTURE_LAYOUT_SHADER_READ;
+                SituationCmdTextureBarrier(cmd, g_feedback_tex, &barrier_to_read);
+            }
+        }
+
         SituationRenderPassInfo screen_pass = SituationRenderPassInfoDefault(-1, (ColorRGBA){0, 0, 0, 255});
         SituationCmdBeginRenderPass(cmd, &screen_pass);
         SituationCmdEndRenderPass(cmd);
@@ -5551,7 +5227,7 @@ int main(int argc, char** argv) {
         .window_title = "Demon Hunt",
         .window_width = 960,
         .window_height = 600,
-        .initial_active_window_flags = SITUATION_FLAG_WINDOW_RESIZABLE,
+        .initial_active_window_flags = 0,
     };
 
     {
@@ -5615,9 +5291,6 @@ int main(int argc, char** argv) {
 
         if (SituationIsKeyPressed(SIT_KEY_F10)) {
             g_show_fps = !g_show_fps;
-        }
-        if (SituationIsKeyPressed(SIT_KEY_F9)) {
-            g_shader_sprites_enabled = !g_shader_sprites_enabled;
         }
         if (SituationIsKeyPressed(SIT_KEY_F8)) {
             g_shader_sprite_debug_mode = (g_shader_sprite_debug_mode + 1) % 3;

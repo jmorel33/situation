@@ -335,7 +335,7 @@ int main(int argc, char** argv) {
         }
         */
 
-        if (SituationAcquireFrameCommandBuffer()) {
+        if (SituationAcquireFrameCommandBuffer() == SITUATION_SUCCESS) {
             SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
 
             // Begin render pass with black background

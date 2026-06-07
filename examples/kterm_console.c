@@ -1,9 +1,9 @@
 /**********************************************************************************************
  *
- * @file console.h
- *   (c) 2025 Jacques Morel
- * @brief Stub Command-Line Interface (CLI) for KaOS Terminal
- * @version 0.1
+ * @file kterm_console.c
+ *   (c) 2025-2026 Jacques Morel
+ * @brief Command-Line Interface (CLI) for KaOS Terminal
+ * @version 0.2
  *
  * @section Overview:
  *   console.h is a single-header stub for a command-line interface built on top of situation.h and kterm.h.
@@ -39,33 +39,21 @@
 **********************************************************************************************/
 #if defined(_WIN32)
   #define NOMINMAX
-  // Note: NOGDI removed - Situation needs GDI types for display enumeration
 #endif
 
-#if defined(_WIN32)
-    #include <winsock2.h> // Include before windows.h
-#endif
-
-#define MA_IMPLEMENTATION
-#include "miniaudio.h" // Path to miniaudio.h
-
-// --- situation.h Configuration ---
-#if defined(_WIN32) && !defined(_MSC_VER) && defined(SITUATION_ENABLE_DXGI)
-    #define INITGUID
-#endif
-
-#define SITUATION_IMPLEMENTATION
 #define SITUATION_USE_OPENGL
-#define STB_TRUETYPE_IMPLEMENTATION  // Define before situation.h to prevent double inclusion
 #include "situation.h"
 
-
+// --- KTerm: Header-only (not part of situation.h) ---
 #define KTERM_IMPLEMENTATION
-// STB_TRUETYPE_IMPLEMENTATION already defined - kterm.h will skip its stb_truetype
+#define STB_TRUETYPE_IMPLEMENTATION
 #include "sit/k-term/kterm.h"
 
 #define KTERM_IO_SIT_IMPLEMENTATION
 #include "kt_io_sit.h"
+
+#define KT_SHELL_IMPLEMENTATION
+#include "sit/k-term/kt_shell.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -80,7 +68,7 @@
 
 // Debug output control
 #ifndef CONSOLE_DEBUG
-#define CONSOLE_DEBUG 1  // Enable debug output by default
+#define CONSOLE_DEBUG 0  // Disabled by default; set to 1 for debug builds
 #endif
 
 #if CONSOLE_DEBUG
@@ -141,11 +129,10 @@ static void HandleExtendedKeyInput(const char* sequence);
 static void HandleEnterKey(void);
 static void HandleKeyEvent(const char* sequence, size_t length);
 static void HandleKTermResponse(void* ctx, KTermSession* session, const char* response, size_t length);
-static void ProcessConsolePipeline(void);
 
 
 // ***** NEW: Forward declarations for situation.h helper print functions *****
-void SitHelperPrintDeviceInfo(const SituationDeviceInfo* info);
+void SitHelperPrintDeviceInfo(void);
 void SitHelperPrintDisplayInfo(SituationDisplayInfo* displays, int count);
 void SitHelperPrintAudioDeviceInfo(SituationAudioDeviceInfo* devices, int count);
 // *************************************************************************
@@ -154,6 +141,14 @@ void SitHelperPrintAudioDeviceInfo(SituationAudioDeviceInfo* devices, int count)
 Console console = {0};
 static KTerm* term = NULL;
 static CursorPositionTracker cursor_tracker = {0};
+static KTShell shell_proc = {0};
+static bool shell_mode = false;  // true = pass-through to shell subprocess
+
+static void ConsoleCopyString(char* dst, size_t dst_size, const char* src) {
+    if (!dst || dst_size == 0) return;
+    if (!src) src = "";
+    snprintf(dst, dst_size, "%s", src);
+}
 
 static bool ParseCSIResponse(const char* response, size_t length) {
     // Check for cursor position report: ESC[n;mR
@@ -204,10 +199,11 @@ static void RedrawEditLine(void) {
         return;
     }
 
-    fprintf(stderr, "[RedrawEditLine] Redrawing: length=%d, buffer='%.*s'\n", 
-            console.edit_length, console.edit_length, console.edit_buffer);
-
     char move_cmd[32];
+    
+    // Hide cursor during redraw to prevent ghost cursor artifacts
+    KTerm_WriteString(term, "\x1B[?25l");
+    
     snprintf(move_cmd, sizeof(move_cmd), "\x1B[%d;%dH", console.prompt_line_y, console.prompt_start_x);
     KTerm_WriteString(term, move_cmd);
     
@@ -218,14 +214,15 @@ static void RedrawEditLine(void) {
         for (int i = 0; i < console.edit_length; i++) KTerm_WriteChar(term, '*');
     } else {
         for (int i = 0; i < console.edit_length; i++) {
-            fprintf(stderr, "[RedrawEditLine] Writing char[%d]=0x%02X ('%c')\n", 
-                    i, (unsigned char)console.edit_buffer[i], console.edit_buffer[i]);
             KTerm_WriteChar(term, console.edit_buffer[i]);
         }
     }
     
     snprintf(move_cmd, sizeof(move_cmd), "\x1B[%d;%dH", console.prompt_line_y, console.prompt_start_x + console.edit_pos);
     KTerm_WriteString(term, move_cmd);
+    
+    // Show cursor again
+    KTerm_WriteString(term, "\x1B[?25h");
 }
 
 static void HandlePrintableKey(int key_code) {
@@ -272,12 +269,12 @@ static void AddToHistory(const char* command) {
     
     if (console.history_count >= 32) {
         for (int i = 0; i < 31; i++) {
-            strcpy(console.command_history[i], console.command_history[i + 1]);
+            ConsoleCopyString(console.command_history[i], sizeof(console.command_history[i]), console.command_history[i + 1]);
         }
         console.history_count = 31;
     }
     
-    strcpy(console.command_history[console.history_count], command);
+    ConsoleCopyString(console.command_history[console.history_count], sizeof(console.command_history[console.history_count]), command);
     console.history_count++;
     console.history_pos = console.history_count;
 }
@@ -299,7 +296,7 @@ static void NavigateHistory(int direction) {
         }
     }
     
-    strcpy(console.edit_buffer, console.command_history[console.history_pos]);
+    ConsoleCopyString(console.edit_buffer, sizeof(console.edit_buffer), console.command_history[console.history_pos]);
     console.edit_length = strlen(console.edit_buffer);
     console.edit_pos = console.edit_length;
     RedrawEditLine();
@@ -331,12 +328,82 @@ static int TokenizeCommand(const char* command, char* tokens[], char** buffer_to
     return token_count;
 }
 
+static bool CompleteFromStringList(const char* partial, int word_start, const char* const* items, int item_count) {
+    const char* matches[32];
+    int match_count = 0;
+    int partial_len = (int)strlen(partial);
+
+    for (int j = 0; j < item_count && match_count < 32; j++) {
+        if (strncmp(items[j], partial, partial_len) == 0) {
+            matches[match_count++] = items[j];
+        }
+    }
+
+    if (match_count == 0) return false;
+    if (match_count == 1) {
+        CompleteWord(matches[0], word_start);
+        return true;
+    }
+    ShowCompletionMatches(matches, match_count, partial);
+    CompleteCommonPrefix(matches, match_count, partial, word_start);
+    return true;
+}
+
+#if defined(_WIN32)
+static bool CompletePathWord(const char* partial, int word_start) {
+    char search[MAX_PATH + 2];
+    if (!partial || partial[0] == '\0') {
+        ConsoleCopyString(search, sizeof(search), "*");
+    } else {
+        snprintf(search, sizeof(search), "%s*", partial);
+    }
+
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = FindFirstFileA(search, &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return false;
+
+    const char* matches[32];
+    char match_storage[32][MAX_PATH];
+    int match_count = 0;
+
+    do {
+        if (fd.cFileName[0] == '.' &&
+            (fd.cFileName[1] == '\0' || (fd.cFileName[1] == '.' && fd.cFileName[2] == '\0'))) {
+            continue;
+        }
+        if (match_count >= 32) continue;
+
+        ConsoleCopyString(match_storage[match_count], sizeof(match_storage[match_count]), fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            size_t len = strlen(match_storage[match_count]);
+            if (len + 1 < sizeof(match_storage[match_count])) {
+                match_storage[match_count][len] = '\\';
+                match_storage[match_count][len + 1] = '\0';
+            }
+        }
+        matches[match_count] = match_storage[match_count];
+        match_count++;
+    } while (FindNextFileA(hFind, &fd));
+
+    FindClose(hFind);
+    if (match_count == 0) return false;
+    if (match_count == 1) {
+        CompleteWord(matches[0], word_start);
+        return true;
+    }
+    ShowCompletionMatches(matches, match_count, partial);
+    CompleteCommonPrefix(matches, match_count, partial, word_start);
+    return true;
+}
+#endif
+
 // Tab completion system
 static bool CompleteCommand(const char* partial, int word_start) {
     static const char* commands[] = {
-        "clear", "cls", "echo", "test", "help", "graphics", "blink", "echo_on", "noecho", "password", "normal", "history", "exit", "quit",
+        "clear", "cls", "echo", "test", "help", "graphics", "blink", "echo_on", "noecho", "mouse_on", "mouse_off", "password", "normal", "history", "exit", "quit",
         "pipeline_stats", "set_fps", "set_budget", "color_test", "cursor_test", "scroll_test", "performance", "demo", "rainbow",
-        "term_status", "term_vtlevel", "term_da", "term_runtest", "term_showinfo", "term_diagbuffers", "sys_info", "sys_displays", "sys_audio", "sys_userdir"
+        "type", "shell", "font", "pwd", "cd", "ls", "dir", "sysinfo", "ps", "processes", "threads", "workers",
+        "term_status", "term_vtlevel", "term_da", "term_runtest", "term_showinfo", "term_diagbuffers", "term_size", "sys_info", "sys_displays", "sys_audio", "sys_userdir"
     };
     static const int num_commands = sizeof(commands) / sizeof(commands[0]);
 
@@ -374,53 +441,27 @@ static bool CompleteCommand(const char* partial, int word_start) {
 
             if (strcmp(first_word, "set_fps") == 0) {
                 static const char* fps_values[] = {"30", "60", "120"};
-                const int num_fps = sizeof(fps_values) / sizeof(fps_values[0]);
-                const char* matches[32];
-                int match_count = 0;
-                int partial_len = strlen(partial);
-
-                for (int j = 0; j < num_fps && match_count < 32; j++) {
-                    if (strncmp(fps_values[j], partial, partial_len) == 0) {
-                        matches[match_count++] = fps_values[j];
-                    }
-                }
-
-                if (match_count == 0) return false;
-                if (match_count == 1) {
-                    CompleteWord(matches[0], word_start);
-                    return true;
-                } else {
-                    ShowCompletionMatches(matches, match_count, partial);
-                    CompleteCommonPrefix(matches, match_count, partial, word_start);
-                    return true;
-                }
+                return CompleteFromStringList(partial, word_start, fps_values, 3);
             } else if (strcmp(first_word, "set_budget") == 0) {
                 static const char* budget_values[] = {"0.1", "0.5", "1.0"};
-                const int num_budgets = sizeof(budget_values) / sizeof(budget_values[0]);
-                const char* matches[32];
-                int match_count = 0;
-                int partial_len = strlen(partial);
-
-                for (int j = 0; j < num_budgets && match_count < 32; j++) {
-                    if (strncmp(budget_values[j], partial, partial_len) == 0) {
-                        matches[match_count++] = budget_values[j];
-                    }
-                }
-
-                if (match_count == 0) return false;
-                if (match_count == 1) {
-                    CompleteWord(matches[0], word_start);
-                    return true;
-                } else {
-                    ShowCompletionMatches(matches, match_count, partial);
-                    CompleteCommonPrefix(matches, match_count, partial, word_start);
-                    return true;
-                }
+                return CompleteFromStringList(partial, word_start, budget_values, 3);
+            } else if (strcmp(first_word, "font") == 0) {
+                static const char* font_names[] = {
+                    "VT220", "IBM", "VGA", "ULTIMATE", "CP437_16", "NEC", "TOSHIBA", "TRIDENT",
+                    "COMPAQ", "OLYMPIAD", "MC6847", "NEOGEO", "ATASCII", "PETSCII", "PETSCII_SHIFT",
+                    "TOPAZ", "PREPPIE", "VCR"
+                };
+                return CompleteFromStringList(partial, word_start, font_names,
+                    (int)(sizeof(font_names) / sizeof(font_names[0])));
+#if defined(_WIN32)
+            } else if (strcmp(first_word, "cd") == 0 || strcmp(first_word, "type") == 0) {
+                return CompletePathWord(partial, word_start);
+#endif
             }
         }
         return false;
     }
-    return false; // Fallback
+    return false;
 }
 
 static void CompleteWord(const char* completion, int word_start) {
@@ -511,7 +552,6 @@ static void ShowPrompt(void) {
     console.line_ready = false;
     cursor_tracker.waiting_for_position = true;
     cursor_tracker.position_received = false;
-    fprintf(stderr, "CLI ShowPrompt: Sent DSR. waiting_for_prompt_cursor_pos=true, input_enabled=false.\n");
     KTerm_WriteString(term, "\x1B[6n"); // DSR Request Cursor Position
     console.prompt_pending = false;
 }
@@ -521,7 +561,6 @@ static void ProcessCommand(const char* command) {
     char* buffer_to_free = NULL;
     int token_count = TokenizeCommand(command, tokens, &buffer_to_free);
 
-    fprintf(stderr, "ProcessCommand - Input to Tokenize: '%s', Token count: %d\n", command, token_count);
     if (token_count == 0) {
         console.prompt_pending = true;
         if (buffer_to_free) free(buffer_to_free);
@@ -529,11 +568,17 @@ static void ProcessCommand(const char* command) {
     }
     const char* cmd = tokens[0];
 
-    if (strcmp(cmd, "cls") == 0 || strcmp(cmd, "clear") == 0) {
+    if (strcmp(cmd, "cls") == 0) {
+        if (token_count > 1) {
+            KTerm_WriteString(term, "\x1B[31mError: 'cls' takes no arguments\x1B[0m\n");
+        } else {
+            KTerm_WriteString(term, "\x1B[3J\x1B[2J\x1B[H"); // Void scrollback + erase display + home
+        }
+    } else if (strcmp(cmd, "clear") == 0) {
         if (token_count > 1) {
             KTerm_WriteString(term, "\x1B[31mError: 'clear' takes no arguments\x1B[0m\n");
         } else {
-            KTerm_WriteString(term, "\x1B[2J\x1B[H");
+            KTerm_WriteString(term, "\x1B[2J\x1B[H"); // Erase display + home (scrollback preserved)
         }
     } else if (strcmp(cmd, "echo") == 0) {
         if (token_count == 1) {
@@ -560,6 +605,22 @@ static void ProcessCommand(const char* command) {
             console.echo_enabled = true;  // Update console's state
             KTerm_WriteString(term, "\x1B[?12h");  // Send DEC private mode set for local echo
             KTerm_WriteString(term, "Echo enabled\n");
+        }
+    } else if (strcmp(cmd, "mouse_on") == 0) {
+        if (token_count > 1) {
+            KTerm_WriteString(term, "\x1B[31mError: 'mouse_on' takes no arguments\x1B[0m\n");
+        } else {
+            KTerm_SetMouseTracking(term, MOUSE_TRACKING_SGR);
+            KTerm_EnableMouseFeature(term, "sgr", true);
+            KTerm_WriteString(term, "Mouse reporting enabled (SGR).\n");
+        }
+    } else if (strcmp(cmd, "mouse_off") == 0) {
+        if (token_count > 1) {
+            KTerm_WriteString(term, "\x1B[31mError: 'mouse_off' takes no arguments\x1B[0m\n");
+        } else {
+            KTerm_EnableMouseFeature(term, "sgr", false);
+            KTerm_SetMouseTracking(term, MOUSE_TRACKING_OFF);
+            KTerm_WriteString(term, "Mouse reporting disabled.\n");
         }
     } else if (strcmp(cmd, "password") == 0) {
         if (token_count > 1) {
@@ -643,35 +704,168 @@ static void ProcessCommand(const char* command) {
         if (token_count > 1) KTerm_WriteString(term, "\x1B[31mError: 'performance' takes no arguments\x1B[0m\n");
         else {
             KTerm_WriteString(term, "Performance test - sending large amount of data:\n");
-            fprintf(stderr, "CLI ProcessCommand: Starting 'performance' test output loop.\n");
             for (int i = 0; i < 1000; i++) KTerm_WriteFormat(term, "Performance test line %d with some text content\n", i);
-            fprintf(stderr, "CLI ProcessCommand: Finished 'performance' test output loop.\n");
         }
     } else if (strcmp(cmd, "demo") == 0) {
         if (token_count > 1) KTerm_WriteString(term, "\x1B[31mError: 'demo' takes no arguments\x1B[0m\n");
         else {
             KTerm_WriteString(term, "\x1B[2J\x1B[H");
-            KTerm_WriteString(term, "\x1B[1;36m╔══════════════════════════════════════╗\x1B[0m\n");
-            KTerm_WriteString(term, "\x1B[1;36m║\x1B[1;33m          KaOS KTerm Demo          \x1B[1;36m║\x1B[0m\n");
-            KTerm_WriteString(term, "\x1B[1;36m╚══════════════════════════════════════╝\x1B[0m\n\n");
-            KTerm_WriteString(term, "\x1B[1;32mFeatures demonstrated:\x1B[0m\n");
-            KTerm_WriteString(term, "• \x1B[33mFull ANSI color support\x1B[0m\n");
-            KTerm_WriteString(term, "• \x1B[1mBold\x1B[0m, \x1B[4munderline\x1B[0m, \x1B[7minverse\x1B[0m text\n");
-            KTerm_WriteString(term, "• \x1B[5mBlinking text\x1B[0m (if supported)\n");
-            KTerm_WriteString(term, "• Box drawing: ┌─┬─┐ │ ├─┼─┤ │ └─┴─┘\n");
-            KTerm_WriteString(term, "• Command history (↑/↓ arrows)\n");
-            KTerm_WriteString(term, "• Tab completion\n");
-            KTerm_WriteString(term, "• High-performance pipeline processing\n\n");
+            // Title with CP437 double-line box
+            KTerm_WriteString(term, "   \x1B[36m");
+            KTerm_WriteChar(term, 0xC9);
+            for (int i = 0; i < 74; i++) KTerm_WriteChar(term, 0xCD);
+            KTerm_WriteChar(term, 0xBB);
+            KTerm_WriteString(term, "\x1B[0m\n   \x1B[36m");
+            KTerm_WriteChar(term, 0xBA);
+            KTerm_WriteString(term, "\x1B[0m  \x1B[1;37mK-Term Capability Showcase\x1B[0m");
+            KTerm_WriteString(term, "                                              \x1B[36m");
+            KTerm_WriteChar(term, 0xBA);
+            KTerm_WriteString(term, "\x1B[0m\n   \x1B[36m");
+            KTerm_WriteChar(term, 0xC8);
+            for (int i = 0; i < 74; i++) KTerm_WriteChar(term, 0xCD);
+            KTerm_WriteChar(term, 0xBC);
+            KTerm_WriteString(term, "\x1B[0m\n\n");
+
+            // Text attributes
+            KTerm_WriteString(term, "   \x1B[1;33mText Attributes:\x1B[0m\n");
+            KTerm_WriteString(term, "   \x1B[1mBold\x1B[0m  \x1B[2mDim\x1B[0m  \x1B[3mItalic\x1B[0m  \x1B[4mUnderline\x1B[0m  \x1B[5mBlink\x1B[0m  \x1B[7mInverse\x1B[0m  \x1B[9mStrike\x1B[0m  \x1B[1;4;33mCombined\x1B[0m\n\n");
+
+            // 16 standard colors (fg + bg)
+            KTerm_WriteString(term, "   \x1B[1;33m16-Color Palette:\x1B[0m\n   ");
+            for (int i = 0; i < 8; i++) KTerm_WriteFormat(term, "\x1B[%dm \x1B[1m%-2d\x1B[0m", 40 + i, i);
+            KTerm_WriteString(term, "\n   ");
+            for (int i = 0; i < 8; i++) KTerm_WriteFormat(term, "\x1B[%dm \x1B[1m%-2d\x1B[0m", 100 + i, i + 8);
+            KTerm_WriteString(term, "\n\n");
+
+            // 256-color cube (6x6x6 section)
+            KTerm_WriteString(term, "   \x1B[1;33m256-Color Cube (216 colors):\x1B[0m\n   ");
+            for (int g = 0; g < 6; g++) {
+                for (int r = 0; r < 6; r++) {
+                    for (int b = 0; b < 6; b++) {
+                        int idx = 16 + r * 36 + g * 6 + b;
+                        KTerm_WriteFormat(term, "\x1B[48;5;%dm ", idx);
+                    }
+                }
+                KTerm_WriteString(term, "\x1B[0m\n   ");
+            }
+            KTerm_WriteString(term, "\n");
+
+            // Truecolor gradient
+            KTerm_WriteString(term, "   \x1B[1;33mTruecolor Gradient (24-bit):\x1B[0m\n   ");
+            for (int i = 0; i < 72; i++) {
+                int r = (int)(127.5 * (1.0 + sin(i * 0.09)));
+                int g = (int)(127.5 * (1.0 + sin(i * 0.09 + 2.094)));
+                int b = (int)(127.5 * (1.0 + sin(i * 0.09 + 4.189)));
+                KTerm_WriteFormat(term, "\x1B[48;2;%d;%d;%dm ", r, g, b);
+            }
+            KTerm_WriteString(term, "\x1B[0m\n   ");
+            for (int i = 0; i < 72; i++) {
+                int v = (int)(i * 255.0 / 72);
+                KTerm_WriteFormat(term, "\x1B[48;2;%d;%d;%dm ", v, v, v);
+            }
+            KTerm_WriteString(term, "\x1B[0m\n\n");
+
+            // CP437 block art
+            KTerm_WriteString(term, "   \x1B[1;33mCP437 Block Elements:\x1B[0m\n");
+            KTerm_WriteString(term, "   \x1B[37m");
+            // Shading gradient
+            const unsigned char shades[] = { 0xB0, 0xB1, 0xB2, 0xDB, 0xDB, 0xB2, 0xB1, 0xB0 };
+            for (int row = 0; row < 3; row++) {
+                KTerm_WriteString(term, "   ");
+                for (int rep = 0; rep < 4; rep++) {
+                    for (int i = 0; i < 8; i++) {
+                        int c = 31 + rep * 2;
+                        KTerm_WriteFormat(term, "\x1B[%dm", c);
+                        KTerm_WriteChar(term, shades[i]);
+                    }
+                    KTerm_WriteChar(term, ' ');
+                }
+                KTerm_WriteString(term, "\x1B[0m\n");
+            }
+            KTerm_WriteString(term, "\n");
+
+            // Single/double line box drawing comparison
+            KTerm_WriteString(term, "   \x1B[1;33mBox Drawing (single/double/mixed):\x1B[0m\n");
+            KTerm_WriteString(term, "   \x1B[32m");
+            KTerm_WriteChar(term, 0xDA); for (int i=0;i<8;i++) KTerm_WriteChar(term, 0xC4);
+            KTerm_WriteChar(term, 0xBF);
+            KTerm_WriteString(term, "  ");
+            KTerm_WriteChar(term, 0xC9); for (int i=0;i<8;i++) KTerm_WriteChar(term, 0xCD);
+            KTerm_WriteChar(term, 0xBB);
+            KTerm_WriteString(term, "  ");
+            KTerm_WriteChar(term, 0xD6); for (int i=0;i<8;i++) KTerm_WriteChar(term, 0xC4);
+            KTerm_WriteChar(term, 0xB7);
+            KTerm_WriteString(term, "\x1B[0m\n");
+            KTerm_WriteString(term, "   \x1B[32m");
+            KTerm_WriteChar(term, 0xB3); KTerm_WriteString(term, " Single "); KTerm_WriteChar(term, 0xB3);
+            KTerm_WriteString(term, "  ");
+            KTerm_WriteChar(term, 0xBA); KTerm_WriteString(term, " Double "); KTerm_WriteChar(term, 0xBA);
+            KTerm_WriteString(term, "  ");
+            KTerm_WriteChar(term, 0xBA); KTerm_WriteString(term, " Mixed  "); KTerm_WriteChar(term, 0xB3);
+            KTerm_WriteString(term, "\x1B[0m\n");
+            KTerm_WriteString(term, "   \x1B[32m");
+            KTerm_WriteChar(term, 0xC0); for (int i=0;i<8;i++) KTerm_WriteChar(term, 0xC4);
+            KTerm_WriteChar(term, 0xD9);
+            KTerm_WriteString(term, "  ");
+            KTerm_WriteChar(term, 0xC8); for (int i=0;i<8;i++) KTerm_WriteChar(term, 0xCD);
+            KTerm_WriteChar(term, 0xBC);
+            KTerm_WriteString(term, "  ");
+            KTerm_WriteChar(term, 0xD3); for (int i=0;i<8;i++) KTerm_WriteChar(term, 0xC4);
+            KTerm_WriteChar(term, 0xBD);
+            KTerm_WriteString(term, "\x1B[0m\n\n");
+
+            KTerm_WriteString(term, "   \x1B[90mType 'color_test', 'graphics', or 'rainbow <text>' for more.\x1B[0m\n\n");
         }
     } else if (strcmp(cmd, "graphics") == 0) {
         if (token_count > 1) KTerm_WriteString(term, "\x1B[31mError: 'graphics' takes no arguments\x1B[0m\n");
         else {
-            KTerm_WriteString(term, "Box drawing characters:\n");
-            KTerm_WriteString(term, "┌─┬─┬─┐  ╔═╦═╦═╗  ╭─┬─┬─╮\n");
-            KTerm_WriteString(term, "├─┼─┼─┤  ╠═╬═╬═╣  ├─┼─┼─┤\n");
-            KTerm_WriteString(term, "└─┴─┴─┘  ╚═╩═╩═╝  ╰─┴─┴─╯\n");
-            KTerm_WriteString(term, "Shades: ░░░ ▒▒▒ ▓▓▓ ███\n");
-            KTerm_WriteString(term, "Blocks: ▀▀▀ ▄▄▄ █▌▐ ◄►▲▼\n");
+            KTerm_WriteString(term, "\n\x1B[1;33m   CP437 Character Set Showcase:\x1B[0m\n\n");
+            // Full CP437 high bytes in rows of 16
+            KTerm_WriteString(term, "   \x1B[90m     0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F\x1B[0m\n");
+            for (int row = 8; row < 16; row++) {
+                KTerm_WriteFormat(term, "   \x1B[90m%X0:\x1B[0m ", row);
+                for (int col = 0; col < 16; col++) {
+                    unsigned char ch = (unsigned char)(row * 16 + col);
+                    KTerm_WriteFormat(term, " \x1B[36m%c\x1B[0m ", ch);
+                }
+                KTerm_WriteString(term, "\n");
+            }
+            KTerm_WriteString(term, "\n");
+
+            // Decorative separator using various line chars
+            KTerm_WriteString(term, "   \x1B[33m");
+            for (int i = 0; i < 72; i++) {
+                unsigned char sep_chars[] = { 0xC4, 0xC4, 0xC4, 0xFE, 0xC4, 0xC4, 0xC4, 0xF9 };
+                KTerm_WriteChar(term, sep_chars[i % 8]);
+            }
+            KTerm_WriteString(term, "\x1B[0m\n\n");
+
+            // Block art mini scene
+            KTerm_WriteString(term, "   \x1B[1;33mBlock Art:\x1B[0m\n");
+            KTerm_WriteString(term, "   \x1B[34m");
+            KTerm_WriteChar(term, 0xDB); KTerm_WriteChar(term, 0xDB);
+            KTerm_WriteString(term, "\x1B[44m  \x1B[0m\x1B[33m");
+            KTerm_WriteChar(term, 0xDB);
+            KTerm_WriteString(term, "\x1B[0m\x1B[34m");
+            KTerm_WriteChar(term, 0xDB); KTerm_WriteChar(term, 0xDB);
+            KTerm_WriteString(term, "\x1B[0m   \x1B[32m");
+            // Tree
+            KTerm_WriteString(term, "    "); KTerm_WriteChar(term, 0x1E); KTerm_WriteString(term, "\n");
+            KTerm_WriteString(term, "   \x1B[34m");
+            KTerm_WriteChar(term, 0xDB); KTerm_WriteChar(term, 0xDB); KTerm_WriteChar(term, 0xDB);
+            KTerm_WriteChar(term, 0xDB); KTerm_WriteChar(term, 0xDB); KTerm_WriteChar(term, 0xDB);
+            KTerm_WriteChar(term, 0xDB);
+            KTerm_WriteString(term, "\x1B[0m   \x1B[32m");
+            KTerm_WriteString(term, "   "); KTerm_WriteChar(term, 0xB2); KTerm_WriteChar(term, 0xDB); KTerm_WriteChar(term, 0xB2);
+            KTerm_WriteString(term, "\x1B[0m\n");
+            KTerm_WriteString(term, "   \x1B[34m");
+            for (int i = 0; i < 7; i++) KTerm_WriteChar(term, 0xDB);
+            KTerm_WriteString(term, "\x1B[0m\x1B[32m   ");
+            KTerm_WriteString(term, "  "); KTerm_WriteChar(term, 0xB1); KTerm_WriteChar(term, 0xDB); KTerm_WriteChar(term, 0xDB); KTerm_WriteChar(term, 0xDB); KTerm_WriteChar(term, 0xB1);
+            KTerm_WriteString(term, "\x1B[0m\n");
+            KTerm_WriteString(term, "   \x1B[33m");
+            for (int i = 0; i < 30; i++) KTerm_WriteChar(term, 0xB0);
+            KTerm_WriteString(term, "\x1B[0m\n\n");
         }
     } else if (strcmp(cmd, "blink") == 0) {
         if (token_count > 1) KTerm_WriteString(term, "\x1B[31mError: 'blink' takes no arguments\x1B[0m\n");
@@ -739,7 +933,14 @@ static void ProcessCommand(const char* command) {
                 case VT_LEVEL_220:  KTerm_WriteString(term, "VT220"); break;
                 case VT_LEVEL_320:  KTerm_WriteString(term, "VT320"); break;
                 case VT_LEVEL_420:  KTerm_WriteString(term, "VT420"); break;
+                case VT_LEVEL_510:  KTerm_WriteString(term, "VT510"); break;
+                case VT_LEVEL_520:  KTerm_WriteString(term, "VT520"); break;
+                case VT_LEVEL_525:  KTerm_WriteString(term, "VT525"); break;
+                case VT_LEVEL_K95:  KTerm_WriteString(term, "K95"); break;
                 case VT_LEVEL_XTERM: KTerm_WriteString(term, "XTERM"); break;
+                case VT_LEVEL_TT:    KTerm_WriteString(term, "Tera Term"); break;
+                case VT_LEVEL_PUTTY: KTerm_WriteString(term, "PuTTY"); break;
+                case VT_LEVEL_ANSI_SYS: KTerm_WriteString(term, "ANSI.SYS"); break;
                 default: KTerm_WriteString(term, "Unknown"); break;
             }
             KTerm_WriteString(term, ")\n");
@@ -781,17 +982,24 @@ static void ProcessCommand(const char* command) {
             KTerm_WriteString(term, "\nRequesting terminal to show buffer diagnostics:\n");
             KTerm_ShowDiagnostics(term);
         }
+    } else if (strcmp(cmd, "term_size") == 0) {
+        if (token_count > 1) {
+            KTerm_WriteString(term, "\x1B[31mError: 'term_size' takes no arguments\x1B[0m\n");
+        } else {
+            KTermSession* session = GET_SESSION(term);
+            KTerm_WriteString(term, "\n\x1B[1;33m--- Terminal Dimensions ---\x1B[0m\n");
+            KTerm_WriteFormat(term, "  Columns: %d\n", session->cols);
+            KTerm_WriteFormat(term, "  Rows:    %d\n", session->rows);
+            KTerm_WriteFormat(term, "  (CSI 18t response: \\e[8;%d;%dt)\n", session->rows, session->cols);
+            KTerm_WriteString(term, "----------------------------\n");
+        }
     } else if (strcmp(cmd, "pipeline_stats") == 0) { // This CLI-specific alias can stay as is
         if (token_count > 1) KTerm_WriteString(term, "\x1B[31mError: 'pipeline_stats' takes no arguments\x1B[0m\n");
         else KTerm_ShowDiagnostics(term); // Or call the 'term_diagbuffers' logic if you prefer consistency
 
     }  else if (strcmp(cmd, "sys_info") == 0) {
         KTerm_WriteString(term, "\n\x1B[1;33m--- System Device Information ---\x1B[0m\n");
-        uint32_t cpu_threads = SituationGetCPUThreadCount();
-        const char* gpu_name = SituationGetGPUName();
-        char buf[256];
-        snprintf(buf, sizeof(buf), "CPU Threads: %u\nGPU: %s\n", cpu_threads, gpu_name);
-        KTerm_WriteString(term, buf);
+        SitHelperPrintDeviceInfo();
     } else if (strcmp(cmd, "sys_displays") == 0) {
         KTerm_WriteString(term, "\n\x1B[1;33m--- Physical Display Information ---\x1B[0m\n");
         int display_count = 0;
@@ -799,15 +1007,14 @@ static void ProcessCommand(const char* command) {
         SituationGetDisplays(&displays, &display_count);
         if (displays) {
             SitHelperPrintDisplayInfo(displays, display_count);
-            for (int i = 0; i < display_count; ++i) free(displays[i].available_modes);
-            free(displays);
+            SituationFreeDisplays(displays, display_count);
+            KTerm_WriteFormat(term, "  Current Situation Mon Index: %d\n", SituationGetCurrentMonitor());
         } else {
             char* err_msg = NULL;
         SituationGetLastErrorMsg(&err_msg);
             KTerm_WriteFormat(term, "\x1B[31mError getting display info: %s\x1B[0m\n", err_msg ? err_msg : "Unknown");
             if (err_msg) free(err_msg);
         }
-        // KTerm_WriteFormat(term, "  Current Raylib Mon Index (from Situation): %d\n", 0); // Removed - API doesn't exist
     } else if (strcmp(cmd, "sys_audio") == 0) {
         KTerm_WriteString(term, "\n\x1B[1;33m--- Audio Playback Device Information ---\x1B[0m\n");
         int audio_device_count = 0;
@@ -833,19 +1040,390 @@ static void ProcessCommand(const char* command) {
             KTerm_WriteFormat(term, "\x1B[31mError getting user directory: %s\x1B[0m\n", err_msg ? err_msg : "Unknown");
             if (err_msg) free(err_msg);
         }
+    } else if (strcmp(cmd, "type") == 0) {
+        if (token_count < 2) {
+            KTerm_WriteString(term, "\x1B[31mUsage: type <filepath>\x1B[0m\n");
+        } else {
+            // Reconstruct path from remaining tokens (handles spaces in paths)
+            char filepath[MAX_COMMAND_BUFFER];
+            filepath[0] = '\0';
+            for (int i = 1; i < token_count; i++) {
+                if (i > 1) strcat(filepath, " ");
+                strcat(filepath, tokens[i]);
+            }
+            FILE* f = fopen(filepath, "rb");
+            if (!f) {
+                KTerm_WriteFormat(term, "\x1B[31mError: Cannot open '%s'\x1B[0m\n", filepath);
+            } else {
+                // Get file size
+                fseek(f, 0, SEEK_END);
+                long file_size = ftell(f);
+                fseek(f, 0, SEEK_SET);
+
+                if (file_size <= 0) {
+                    KTerm_WriteString(term, "\x1B[90m(empty file)\x1B[0m\n");
+                } else {
+                    // Pipe raw bytes — CP437 high bytes are handled natively via GR charset
+                    char chunk[4096];
+                    size_t bytes_read;
+                    while ((bytes_read = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+                        KTerm_PushInput(term, chunk, bytes_read);
+                    }
+                }
+                fclose(f);
+            }
+        }
+    } else if (strcmp(cmd, "pwd") == 0) {
+        char cwd[MAX_PATH];
+        if (GetCurrentDirectoryA(MAX_PATH, cwd)) {
+            KTerm_WriteFormat(term, "%s\n", cwd);
+        } else {
+            KTerm_WriteString(term, "\x1B[31mError: Could not get current directory\x1B[0m\n");
+        }
+    } else if (strcmp(cmd, "cd") == 0) {
+        if (token_count < 2) {
+            char cwd[MAX_PATH];
+            if (GetCurrentDirectoryA(MAX_PATH, cwd))
+                KTerm_WriteFormat(term, "%s\n", cwd);
+        } else {
+            char path[MAX_PATH];
+            path[0] = '\0';
+            for (int i = 1; i < token_count; i++) {
+                if (i > 1) strcat(path, " ");
+                strcat(path, tokens[i]);
+            }
+            if (!SetCurrentDirectoryA(path)) {
+                KTerm_WriteFormat(term, "\x1B[31mcd: no such directory: %s\x1B[0m\n", path);
+            }
+        }
+    } else if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "dir") == 0) {
+        const char* target = (token_count > 1) ? tokens[1] : ".";
+        char search_path[MAX_PATH];
+        snprintf(search_path, sizeof(search_path), "%s\\*", target);
+        WIN32_FIND_DATAA fd;
+        HANDLE hFind = FindFirstFileA(search_path, &fd);
+        if (hFind == INVALID_HANDLE_VALUE) {
+            KTerm_WriteFormat(term, "\x1B[31mls: cannot access '%s'\x1B[0m\n", target);
+        } else {
+            do {
+                if (strcmp(fd.cFileName, ".") == 0) continue;
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    KTerm_WriteFormat(term, "\x1B[1;34m%s/\x1B[0m\n", fd.cFileName);
+                } else {
+                    LARGE_INTEGER filesize;
+                    filesize.LowPart = fd.nFileSizeLow;
+                    filesize.HighPart = fd.nFileSizeHigh;
+                    if (filesize.QuadPart < 1024)
+                        KTerm_WriteFormat(term, "  %s  (%lld B)\n", fd.cFileName, filesize.QuadPart);
+                    else if (filesize.QuadPart < 1024*1024)
+                        KTerm_WriteFormat(term, "  %s  (%.1f KB)\n", fd.cFileName, filesize.QuadPart / 1024.0);
+                    else
+                        KTerm_WriteFormat(term, "  %s  (%.1f MB)\n", fd.cFileName, filesize.QuadPart / (1024.0*1024.0));
+                }
+            } while (FindNextFileA(hFind, &fd));
+            FindClose(hFind);
+        }
+    } else if (strcmp(cmd, "sysinfo") == 0) {
+        SituationCPUInfo cpu;
+        SituationGPUInfo gpu;
+        SituationMemoryInfo mem;
+        SituationGetCPUInfo(&cpu);
+        SituationGetGPUInfo(&gpu);
+        SituationGetMemoryInfo(&mem);
+        SituationOSInfo os = SituationGetOSInfo();
+
+        const char* state_str = "READY";
+        switch (SituationGetInitState()) {
+            case SITUATION_STATE_UNINITIALIZED: state_str = "UNINITIALIZED"; break;
+            case SITUATION_STATE_INITIALIZING:  state_str = "INITIALIZING"; break;
+            case SITUATION_STATE_READY:         state_str = "READY"; break;
+            case SITUATION_STATE_SHUTTING_DOWN: state_str = "SHUTTING DOWN"; break;
+        }
+
+        // Box header
+        KTerm_WriteString(term, "\n   \x1B[36m");
+        KTerm_WriteChar(term, 0xC9);
+        for (int i = 0; i < 64; i++) KTerm_WriteChar(term, 0xCD);
+        KTerm_WriteChar(term, 0xBB);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteString(term, "\x1B[0m \x1B[1;37mKaOS System Information\x1B[0m                                        \x1B[36m");
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        // Separator
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xCC);
+        for (int i = 0; i < 64; i++) KTerm_WriteChar(term, 0xCD);
+        KTerm_WriteChar(term, 0xB9);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        // Content rows (padded to 64 chars inside the box)
+        char line[128];
+
+        snprintf(line, sizeof(line), " Situation : v%-12s  KTerm : v%-12s  [%s]",
+            SituationGetVersionString(), KTERM_VERSION_STRING, state_str);
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteFormat(term, "\x1B[0m%-64s\x1B[36m", line);
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        snprintf(line, sizeof(line), " OS        : %s (%s)", os.name, os.version);
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteFormat(term, "\x1B[0m%-64s\x1B[36m", line);
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        snprintf(line, sizeof(line), " Backend   : %s", SituationGetGraphicsBackendName());
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteFormat(term, "\x1B[0m%-64s\x1B[36m", line);
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        // Separator
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xCC);
+        for (int i = 0; i < 64; i++) KTerm_WriteChar(term, 0xCD);
+        KTerm_WriteChar(term, 0xB9);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        snprintf(line, sizeof(line), " CPU       : %s (%u cores @ %.2f GHz)",
+            cpu.name, cpu.thread_count, cpu.clock_speed_ghz);
+        line[64] = '\0'; // truncate if too long
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteFormat(term, "\x1B[0m%-64s\x1B[36m", line);
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        snprintf(line, sizeof(line), " RAM       : %.1f GB free / %.1f GB total",
+            mem.available_bytes / (1024.0*1024*1024),
+            mem.total_bytes / (1024.0*1024*1024));
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteFormat(term, "\x1B[0m%-64s\x1B[36m", line);
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        if (gpu.dedicated_memory_bytes > 0)
+            snprintf(line, sizeof(line), " GPU       : %s (%llu MB VRAM)",
+                gpu.name, (unsigned long long)(gpu.dedicated_memory_bytes / (1024*1024)));
+        else
+            snprintf(line, sizeof(line), " GPU       : %s", gpu.name);
+        line[64] = '\0';
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteFormat(term, "\x1B[0m%-64s\x1B[36m", line);
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        snprintf(line, sizeof(line), " VRAM Used : %llu MB  |  Draw Calls: %u  |  FPS: %d",
+            (unsigned long long)(SituationGetVRAMUsage() / (1024*1024)),
+            SituationGetDrawCallCount(), SituationGetFPS());
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteFormat(term, "\x1B[0m%-64s\x1B[36m", line);
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        // Separator
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xCC);
+        for (int i = 0; i < 64; i++) KTerm_WriteChar(term, 0xCD);
+        KTerm_WriteChar(term, 0xB9);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        snprintf(line, sizeof(line), " Audio     : %s (%d Hz, Vol: %.0f%%)",
+            SituationGetActiveAudioDeviceName(),
+            SituationGetAudioPlaybackSampleRate(),
+            SituationGetAudioMasterVolume() * 100.0f);
+        line[64] = '\0';
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteFormat(term, "\x1B[0m%-64s\x1B[36m", line);
+        KTerm_WriteChar(term, 0xBA);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        int display_count = SituationGetMonitorCount();
+        for (int i = 0; i < display_count && i < 4; i++) {
+            snprintf(line, sizeof(line), " Display[%d]: %s %dx%d @ %d Hz",
+                i, SituationGetMonitorName(i), SituationGetMonitorWidth(i),
+                SituationGetMonitorHeight(i), SituationGetMonitorRefreshRate(i));
+            line[64] = '\0';
+            KTerm_WriteString(term, "   \x1B[36m");
+            KTerm_WriteChar(term, 0xBA);
+            KTerm_WriteFormat(term, "\x1B[0m%-64s\x1B[36m", line);
+            KTerm_WriteChar(term, 0xBA);
+            KTerm_WriteString(term, "\x1B[0m\n");
+        }
+
+        // Separator
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xCC);
+        for (int i = 0; i < 64; i++) KTerm_WriteChar(term, 0xCD);
+        KTerm_WriteChar(term, 0xB9);
+        KTerm_WriteString(term, "\x1B[0m\n");
+
+        int storage_count = SituationGetStorageDeviceCount();
+        for (int i = 0; i < storage_count && i < 4; i++) {
+            char storage_name[SITUATION_MAX_DEVICE_NAME_LEN];
+            uint64_t capacity_bytes = 0;
+            uint64_t free_bytes = 0;
+            if (!SituationGetStorageDevice(i, storage_name, sizeof(storage_name), &capacity_bytes, &free_bytes)) {
+                continue;
+            }
+            snprintf(line, sizeof(line), " Disk[%d]   : %s  %.1f GB (%.1f free)",
+                i, storage_name,
+                capacity_bytes / (1024.0*1024*1024),
+                free_bytes / (1024.0*1024*1024));
+            line[64] = '\0';
+            KTerm_WriteString(term, "   \x1B[36m");
+            KTerm_WriteChar(term, 0xBA);
+            KTerm_WriteFormat(term, "\x1B[0m%-64s\x1B[36m", line);
+            KTerm_WriteChar(term, 0xBA);
+            KTerm_WriteString(term, "\x1B[0m\n");
+        }
+
+        // Box footer
+        KTerm_WriteString(term, "   \x1B[36m");
+        KTerm_WriteChar(term, 0xC8);
+        for (int i = 0; i < 64; i++) KTerm_WriteChar(term, 0xCD);
+        KTerm_WriteChar(term, 0xBC);
+        KTerm_WriteString(term, "\x1B[0m\n\n");
+    } else if (strcmp(cmd, "ps") == 0 || strcmp(cmd, "processes") == 0) {
+        int count = 0;
+        SituationProcessInfo* procs = SituationGetProcessList(&count);
+        if (!procs || count == 0) {
+            KTerm_WriteString(term, "\x1B[31mError: Could not enumerate processes\x1B[0m\n");
+        } else {
+            KTerm_WriteFormat(term, "\x1B[1;33m  %-8s %-10s %s\x1B[0m\n", "PID", "Memory", "Name");
+            for (int i = 0; i < count; i++) {
+                if (procs[i].memory_bytes == 0 && procs[i].name[0] == '\0') continue;
+                if (procs[i].memory_bytes < 1024*1024)
+                    KTerm_WriteFormat(term, "  %-8u %6.0f KB  %s\n",
+                        procs[i].pid, procs[i].memory_bytes / 1024.0, procs[i].name);
+                else
+                    KTerm_WriteFormat(term, "  %-8u %6.1f MB  %s\n",
+                        procs[i].pid, procs[i].memory_bytes / (1024.0*1024), procs[i].name);
+            }
+            KTerm_WriteFormat(term, "\n  \x1B[90m(%d processes)\x1B[0m\n", count);
+            SituationFreeProcessList(procs, count);
+        }
+    } else if (strcmp(cmd, "threads") == 0 || strcmp(cmd, "workers") == 0) {
+#ifdef SITUATION_ENABLE_THREADING
+        SituationThreadPool* pool = SituationGetInternalThreadPool();
+        if (!pool) {
+            KTerm_WriteString(term, "\x1B[31mThread pool not active\x1B[0m\n");
+        } else {
+            SituationThreadPoolSnapshot snap;
+            SituationGetThreadPoolSnapshot(pool, &snap);
+
+            KTerm_WriteString(term, "\n\x1B[1;36m--- Situation Thread Pool ---\x1B[0m\n");
+            KTerm_WriteFormat(term, "  State: %s  |  Workers: %zu  |  Active Jobs: %d\n",
+                snap.pool_active ? "\x1B[32mACTIVE\x1B[0m" : "\x1B[31mINACTIVE\x1B[0m",
+                snap.worker_count, snap.active_jobs);
+            KTerm_WriteFormat(term, "  Queues: Low=%zu  High=%zu  |  Jobs: %llu submitted, %llu completed\n",
+                snap.low_queue_depth, snap.high_queue_depth,
+                (unsigned long long)snap.stats_jobs_submitted, (unsigned long long)snap.stats_jobs_completed);
+            KTerm_WriteString(term, "\n\x1B[1;33m  Role            Name                  CPU  Active\x1B[0m\n");
+            for (int i = 0; i < snap.slot_count; i++) {
+                const char* role_str = "???";
+                switch (snap.slots[i].role) {
+                    case SIT_THREAD_ROLE_WORKER: role_str = "Worker"; break;
+                    case SIT_THREAD_ROLE_IO:     role_str = "I/O"; break;
+                    case SIT_THREAD_ROLE_RENDER: role_str = "Render"; break;
+                    case SIT_THREAD_ROLE_AUDIO:  role_str = "Audio"; break;
+                    case SIT_THREAD_ROLE_MAIN:   role_str = "Main"; break;
+                    default: break;
+                }
+                KTerm_WriteFormat(term, "  %-14s  %-20s  %3d  %s\n",
+                    role_str, snap.slots[i].name,
+                    snap.slots[i].last_logical_cpu,
+                    snap.slots[i].active ? "\x1B[32mYES\x1B[0m" : "\x1B[90mno\x1B[0m");
+            }
+            KTerm_WriteFormat(term, "\n  \x1B[33mAudio\x1B[0m: %s  |  Rate: %d Hz  |  Vol: %.0f%%\n",
+                SituationIsAudioDevicePlaying() ? "\x1B[32mPlaying\x1B[0m" : "\x1B[90mStopped\x1B[0m",
+                SituationGetAudioPlaybackSampleRate(),
+                SituationGetAudioMasterVolume() * 100.0f);
+
+            const char* init_str = "Unknown";
+            switch (SituationGetInitState()) {
+                case SITUATION_STATE_UNINITIALIZED: init_str = "UNINITIALIZED"; break;
+                case SITUATION_STATE_INITIALIZING:  init_str = "INITIALIZING"; break;
+                case SITUATION_STATE_READY:         init_str = "\x1B[32mREADY\x1B[0m"; break;
+                case SITUATION_STATE_SHUTTING_DOWN: init_str = "SHUTTING DOWN"; break;
+            }
+            KTerm_WriteFormat(term, "  \x1B[33mInit State\x1B[0m: %s\n\n", init_str);
+        }
+#else
+        KTerm_WriteString(term, "\x1B[31mThreading not enabled in this build\x1B[0m\n");
+#endif
+    } else if (strcmp(cmd, "font") == 0) {
+        if (token_count < 2) {
+            KTerm_WriteString(term, "\x1B[1;33mAvailable fonts:\x1B[0m\n");
+            KTerm_WriteString(term, "  \x1B[36mVT220\x1B[0m          8x10\n");
+            KTerm_WriteString(term, "  \x1B[36mIBM\x1B[0m           10x10\n");
+            KTerm_WriteString(term, "  \x1B[36mVGA\x1B[0m            8x8\n");
+            KTerm_WriteString(term, "  \x1B[36mULTIMATE\x1B[0m       8x16\n");
+            KTerm_WriteString(term, "  \x1B[36mCP437_16\x1B[0m       8x16\n");
+            KTerm_WriteString(term, "  \x1B[36mNEC\x1B[0m            8x16\n");
+            KTerm_WriteString(term, "  \x1B[36mTOSHIBA\x1B[0m        8x16\n");
+            KTerm_WriteString(term, "  \x1B[36mTRIDENT\x1B[0m        8x16\n");
+            KTerm_WriteString(term, "  \x1B[36mCOMPAQ\x1B[0m         8x16\n");
+            KTerm_WriteString(term, "  \x1B[36mOLYMPIAD\x1B[0m       8x16\n");
+            KTerm_WriteString(term, "  \x1B[36mMC6847\x1B[0m         8x8\n");
+            KTerm_WriteString(term, "  \x1B[36mNEOGEO\x1B[0m         8x8\n");
+            KTerm_WriteString(term, "  \x1B[36mATASCII\x1B[0m        8x8\n");
+            KTerm_WriteString(term, "  \x1B[36mPETSCII\x1B[0m        8x8\n");
+            KTerm_WriteString(term, "  \x1B[36mPETSCII_SHIFT\x1B[0m  8x8\n");
+            KTerm_WriteString(term, "  \x1B[36mTOPAZ\x1B[0m          8x8\n");
+            KTerm_WriteString(term, "  \x1B[36mPREPPIE\x1B[0m        8x8\n");
+            KTerm_WriteString(term, "  \x1B[36mVCR\x1B[0m           12x14\n");
+            KTerm_WriteString(term, "\nUsage: \x1B[33mfont <name>\x1B[0m\n");
+        } else {
+            KTerm_SetFont(term, tokens[1]);
+            KTerm_WriteFormat(term, "Font set to: %s\n", tokens[1]);
+        }
+    } else if (strcmp(cmd, "shell") == 0) {
+        if (shell_mode) {
+            KTerm_WriteString(term, "\x1B[33mAlready in shell mode.\x1B[0m\n");
+        } else {
+            const char* shell_cmd = (token_count > 1) ? tokens[1] : NULL;
+            KTerm_WriteString(term, "\x1B[32mStarting shell...\x1B[0m\n");
+            if (KTShell_Start(&shell_proc, shell_cmd, term->width, term->height)) {
+                shell_mode = true;
+                console.input_enabled = false;
+                console.prompt_pending = false;
+                SituationSetWindowTitle("KaOS - Shell");
+                // Don't show prompt — shell provides its own
+                if (buffer_to_free) free(buffer_to_free);
+                return;
+            } else {
+                KTerm_WriteString(term, "\x1B[31mError: Failed to start shell.\x1B[0m\n");
+            }
+        }
     } else if (strcmp(cmd, "help") == 0) {
         const char* help_text_page1 =
             "\x1B[1;36mKaOS KTerm Help - Page 1\x1B[0m\n"
             "\x1B[1;32mBasic Commands:\x1B[0m\n"
-            "  \x1B[33mhelp\x1B[0m             - Show this help (use 'help 2' for more)\n"
-            "  \x1B[33mcls/clear\x1B[0m        - Clear screen\n"
+            "  \x1B[33mhelp\x1B[0m             - Show this help (help 2, help 3 for more)\n"
+            "  \x1B[33mcls\x1B[0m              - Clear screen and void scrollback\n"
+            "  \x1B[33mclear\x1B[0m            - Clear screen (scrollback preserved)\n"
             "  \x1B[33mecho [text...]\x1B[0m   - Echo text (or newline)\n"
+            "  \x1B[33mtype <filepath>\x1B[0m  - Pipe file contents to terminal (supports ANSI art)\n"
+            "  \x1B[33mshell [cmd]\x1B[0m     - Start system shell (default: cmd.exe / /bin/sh)\n"
+            "  \x1B[33mfont [name]\x1B[0m     - List fonts or switch font (e.g. font VGA)\n"
             "  \x1B[33mhistory\x1B[0m          - Show command history\n"
             "  \x1B[33mexit/quit\x1B[0m        - Exit console\n"
             "\x1B[1;32mKTerm Control:\x1B[0m\n"
             "  \x1B[33mecho_on/noecho\x1B[0m    - Toggle terminal's local echo (ESC[?12h/l)\n"
+            "  \x1B[33mmouse_on/mouse_off\x1B[0m - Enable/disable mouse click reporting (SGR)\n"
             "  \x1B[33mpassword/normal\x1B[0m  - Toggle CLI's password input display mode (*)\n"
-            "  \x1B[33mmouse_on/mouse_off\x1B[0m - Toggle SGR mouse tracking (ESC[?1006h/l)\n"
             "\x1B[1;32mDemo Commands:\x1B[0m\n"
             "  \x1B[33mdemo\x1B[0m             - General features demo\n"
             "  \x1B[33mtest\x1B[0m             - Basic color test (old)\n"
@@ -862,6 +1440,7 @@ static void ProcessCommand(const char* command) {
             "  \x1B[33mterm_vtlevel\x1B[0m     - Display current VT compatibility level\n"
             "  \x1B[33mterm_da\x1B[0m          - Request Primary & Secondary Device Attributes\n"
             "  \x1B[33mterm_diagbuffers\x1B[0m - Show terminal's internal buffer diagnostics\n"
+            "  \x1B[33mterm_size\x1B[0m        - Show terminal grid dimensions (cols x rows)\n"
             "  \x1B[33mterm_showinfo\x1B[0m    - Display terminal's full internal info screen\n"
             "  \x1B[33mterm_runtest \x1B[36m<name>\x1B[0m - Run internal terminal test suite\n"
             "     \x1B[36m<name>\x1B[0m: \x1B[90mcursor, colors, charset, mouse, modes, all\x1B[0m\n"
@@ -876,12 +1455,31 @@ static void ProcessCommand(const char* command) {
             "  \x1B[33msys_audio\x1B[0m        - List available audio playback devices\n"
             "  \x1B[33msys_userdir\x1B[0m      - Show current user's profile directory\n"
             "\x1B[90mNote: KTerm diagnostic commands query/use the terminal library's features.\x1B[0m\n";
+        const char* help_text_page3 =
+            "\x1B[1;36mKaOS KTerm Help - Page 3\x1B[0m\n"
+            "\x1B[1;32mFilesystem:\x1B[0m\n"
+            "  \x1B[33mpwd\x1B[0m              - Print current working directory\n"
+            "  \x1B[33mcd <path>\x1B[0m        - Change directory\n"
+            "  \x1B[33mls [path]\x1B[0m        - List directory contents\n"
+            "  \x1B[33mdir [path]\x1B[0m       - Alias for ls\n"
+            "\x1B[1;32mSystem Introspection:\x1B[0m\n"
+            "  \x1B[33msysinfo\x1B[0m          - Full system snapshot (OS, CPU, GPU, RAM, audio, displays)\n"
+            "  \x1B[33mps\x1B[0m               - List running OS processes (PID, memory, name)\n"
+            "  \x1B[33mprocesses\x1B[0m        - Alias for ps\n"
+            "  \x1B[33mthreads\x1B[0m          - Show Situation internal thread pool status\n"
+            "  \x1B[33mworkers\x1B[0m          - Alias for threads\n"
+            "\x1B[1;32mAppearance:\x1B[0m\n"
+            "  \x1B[33mfont\x1B[0m             - List available built-in fonts\n"
+            "  \x1B[33mfont <name>\x1B[0m      - Switch font (e.g. font VGA, font NEC)\n"
+            "\x1B[90mTip: help 1 = basics, help 2 = diagnostics, help 3 = this page\x1B[0m\n";
         if (token_count == 1 || (token_count == 2 && strcmp(tokens[1], "1") == 0)) {
             KTerm_WriteString(term, help_text_page1);
         } else if (token_count == 2 && strcmp(tokens[1], "2") == 0) {
             KTerm_WriteString(term, help_text_page2);
+        } else if (token_count == 2 && strcmp(tokens[1], "3") == 0) {
+            KTerm_WriteString(term, help_text_page3);
         } else {
-            KTerm_WriteString(term, "\x1B[31mUsage: help [1|2]\x1B[0m\n");
+            KTerm_WriteString(term, "\x1B[31mUsage: help [1|2|3]\x1B[0m\n");
         }
 
     } else {
@@ -923,7 +1521,7 @@ static void HandleEnterKey(void) {
     KTerm_WriteChar(term, '\n');
     if (console.edit_length > 0) {
         AddToHistory(console.edit_buffer);
-        strcpy(console.command_buffer, console.edit_buffer);
+        ConsoleCopyString(console.command_buffer, sizeof(console.command_buffer), console.edit_buffer);
         ClearEditBuffer();
         console.input_enabled = false;
         console.in_command = true;
@@ -1115,17 +1713,25 @@ static void HandleKeyEvent(const char* sequence, size_t length) {
     // }
 }
 
+// Title callback — updates the OS window title when shell programs emit OSC 2
+static void HandleTitleChange(KTerm* t, const char* title, bool is_icon) {
+    (void)t;
+    if (!is_icon && title && title[0]) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "KaOS - %s", title);
+        SituationSetWindowTitle(buf);
+    }
+}
+
 // Response callback (Sink)
 static void HandleKTermResponse(void* ctx, KTermSession* session, const char* response_data, size_t length) {
     KTerm* term = (KTerm*)ctx;
 
-    fprintf(stderr, "[HandleKTermResponse] ENTRY: length=%zu, data[0..min(16,length)]=", length);
-    for (size_t i = 0; i < length && i < 16; i++) {
-        unsigned char c = (unsigned char)response_data[i];
-        if (c >= 32 && c < 127) fprintf(stderr, "%c", c);
-        else fprintf(stderr, "[%02X]", c);
+    // Shell mode: forward all terminal responses to the shell's stdin
+    if (shell_mode) {
+        KTShell_Write(&shell_proc, response_data, length);
+        return;
     }
-    fprintf(stderr, "\n");
 
     const char* current_pos = response_data;
     int remaining_length = length;
@@ -1161,11 +1767,9 @@ static void HandleKTermResponse(void* ctx, KTermSession* session, const char* re
                             console.waiting_for_prompt_cursor_pos = false;
                             console.input_enabled = true;
                             cursor_tracker.position_received = false; // Consume
-                            fprintf(stderr, "CLI HandleKTermResponse: DSR FOR PROMPT HANDLED from chunk. input_enabled=true. Y=%d, X=%d\n", console.prompt_line_y, console.prompt_start_x);
                             RedrawEditLine();
                             consumed_bytes = cpr_len;
                         } else {
-                             fprintf(stderr, "CLI HandleKTermResponse: Chunk looked like CPR but ParseCSIResponse didn't confirm position.\n");
                              // It was some other ESC[...R sequence, or ParseCSIResponse needs adjustment
                         }
                     }
@@ -1200,25 +1804,62 @@ static void HandleKTermResponse(void* ctx, KTermSession* session, const char* re
 
         if (remaining_length > 2 && current_pos[0] == '\x1B' && current_pos[1] == '[') {
             if (current_pos[2] == 'M' || (current_pos[2] == '<' && strchr(current_pos, 'M') != NULL) || (current_pos[2] == '<' && strchr(current_pos, 'm') != NULL) ) {
-                fprintf(stderr, "CLI: Detected Mouse Report: '%.*s'\n", remaining_length, current_pos);
-                // Optionally, display it on terminal if you want to see it during testing
-                // KTerm_WriteString(term, "\nMouse Report: ");
-                // for(int k=0; k<remaining_length; ++k) KTerm_WriteChar(term, current_pos[k]);
-                // KTerm_WriteString(term, "\n");
-                // console.prompt_pending = true; // Need new prompt after this
-                // console.input_enabled = false;
-
                 consumed_bytes = remaining_length; // Consume the whole mouse report
-                                                // so it doesn't go to HandleKeyEvent
             }
         }
 
         if (consumed_bytes == 0) {
-            // Process unrecognized bytes as keyboard input
-            // But skip if this looks like it's coming from RedrawEditLine
-            // (we don't want to double-process our own output)
-            HandleKeyEvent(current_pos, 1);
-            consumed_bytes = 1;
+            // Check if this looks like the start of an unrecognized escape sequence
+            if ((unsigned char)*current_pos == 0x1B) {
+                int skip = 1;
+                if (skip < remaining_length && current_pos[skip] == '[') {
+                    // CSI sequence: ESC [ <params> <final>
+                    skip++; // skip '['
+                    // Skip parameter bytes (0x30-0x3F: digits, semicolons, etc.)
+                    while (skip < remaining_length && (unsigned char)current_pos[skip] >= 0x30 && (unsigned char)current_pos[skip] <= 0x3F) {
+                        skip++;
+                    }
+                    // Skip intermediate bytes (0x20-0x2F)
+                    while (skip < remaining_length && (unsigned char)current_pos[skip] >= 0x20 && (unsigned char)current_pos[skip] <= 0x2F) {
+                        skip++;
+                    }
+                    // Skip final byte (0x40-0x7E)
+                    if (skip < remaining_length && (unsigned char)current_pos[skip] >= 0x40 && (unsigned char)current_pos[skip] <= 0x7E) {
+                        skip++;
+                    }
+                } else if (skip < remaining_length && current_pos[skip] == 'O') {
+                    // SS3 sequence: ESC O <char>
+                    skip++; // skip 'O'
+                    if (skip < remaining_length) skip++; // skip final char
+                } else if (skip < remaining_length) {
+                    // Other ESC sequence: ESC <char>
+                    skip++;
+                }
+                consumed_bytes = skip;
+            } else if ((unsigned char)*current_pos == 0x0D || (unsigned char)*current_pos == 0x0A) {
+                // CR or LF — treat as Enter key
+                HandleKeyEvent("\r", 1);
+                consumed_bytes = 1;
+            } else if ((unsigned char)*current_pos == 0x08 || (unsigned char)*current_pos == 0x7F) {
+                // BS or DEL — treat as backspace
+                HandleKeyEvent("\x08", 1);
+                consumed_bytes = 1;
+            } else if ((unsigned char)*current_pos == 0x09) {
+                // Tab
+                HandleKeyEvent("\t", 1);
+                consumed_bytes = 1;
+            } else if ((unsigned char)*current_pos < 0x20) {
+                // Other control characters — pass through (Ctrl+C, Ctrl+U, etc.)
+                HandleKeyEvent(current_pos, 1);
+                consumed_bytes = 1;
+            } else if ((unsigned char)*current_pos > 0x7E) {
+                // High bytes — discard
+                consumed_bytes = 1;
+            } else {
+                // Printable ASCII — treat as keyboard input
+                HandleKeyEvent(current_pos, 1);
+                consumed_bytes = 1;
+            }
         }
 
         current_pos += consumed_bytes;
@@ -1226,51 +1867,62 @@ static void HandleKTermResponse(void* ctx, KTermSession* session, const char* re
     }
 }
 
-// Pipeline management
-static void ProcessConsolePipeline(void) {
-    // Process any pending output
-    if (console.prompt_pending && !cursor_tracker.waiting_for_position) {
-        ShowPrompt();
-    }
-}
-
-// ***** NEW: Helper functions to print Situation.h info via PipelineWrite... *****
-void SitHelperPrintDeviceInfo(const SituationDeviceInfo* info) {
-    if (!info) {
-        KTerm_WriteString(term, "  \x1B[31mError: Device info pointer is NULL.\x1B[0m\n");
-        return;
-    }
+// Helper functions to print Situation.h info via KTerm_Write*
+void SitHelperPrintDeviceInfo(void) {
+    SituationCPUInfo cpu;
+    SituationGPUInfo gpu;
+    SituationMemoryInfo mem;
+    SituationGetCPUInfo(&cpu);
+    SituationGetGPUInfo(&gpu);
+    SituationGetMemoryInfo(&mem);
 
     KTerm_WriteString(term, "  \x1B[1;34mCPU:\x1B[0m\n");
-    KTerm_WriteFormat(term, "    Name: \x1B[37m%s\x1B[0m\n", info->cpu_name);
-    KTerm_WriteFormat(term, "    Cores: \x1B[37m%d\x1B[0m\n", info->cpu_cores);
-    KTerm_WriteFormat(term, "    Clock Speed: \x1B[37m%.2f GHz\x1B[0m\n", info->cpu_clock_speed_ghz);
+    KTerm_WriteFormat(term, "    Name: \x1B[37m%s\x1B[0m\n", cpu.name);
+    KTerm_WriteFormat(term, "    Threads: \x1B[37m%u\x1B[0m  Cores: \x1B[37m%u\x1B[0m\n", cpu.thread_count, cpu.core_count);
+    KTerm_WriteFormat(term, "    Clock Speed: \x1B[37m%.2f GHz\x1B[0m\n", cpu.clock_speed_ghz);
 
     KTerm_WriteString(term, "  \x1B[1;34mGPU:\x1B[0m\n");
-    KTerm_WriteFormat(term, "    Name: \x1B[37m%s\x1B[0m\n", info->gpu_name);
-    KTerm_WriteFormat(term, "    Dedicated VRAM: \x1B[37m%llu MB\x1B[0m\n", info->gpu_dedicated_memory_bytes / (1024 * 1024));
+    KTerm_WriteFormat(term, "    Name: \x1B[37m%s\x1B[0m\n", gpu.name);
+    KTerm_WriteFormat(term, "    Dedicated VRAM: \x1B[37m%llu MB\x1B[0m\n", gpu.dedicated_memory_bytes / (1024 * 1024));
 
     KTerm_WriteString(term, "  \x1B[1;34mRAM:\x1B[0m\n");
-    KTerm_WriteFormat(term, "    Total: \x1B[37m%llu MB\x1B[0m\n", info->total_ram_bytes / (1024 * 1024));
-    KTerm_WriteFormat(term, "    Available: \x1B[37m%llu MB\x1B[0m\n", info->available_ram_bytes / (1024 * 1024));
+    KTerm_WriteFormat(term, "    Total: \x1B[37m%llu MB\x1B[0m\n", mem.total_bytes / (1024 * 1024));
+    KTerm_WriteFormat(term, "    Available: \x1B[37m%llu MB\x1B[0m\n", mem.available_bytes / (1024 * 1024));
 
-    KTerm_WriteFormat(term, "  \x1B[1;34mStorage Devices (%d found):\x1B[0m\n", info->storage_device_count);
-    for (int i = 0; i < info->storage_device_count; ++i) {
-        KTerm_WriteFormat(term, "    [%d] Name: \x1B[37m%s\x1B[0m\n", i, info->storage_device_names[i]);
-        KTerm_WriteFormat(term, "        Capacity: \x1B[37m%llu GB\x1B[0m\n", info->storage_capacity_bytes[i] / (1024 * 1024 * 1024));
-        KTerm_WriteFormat(term, "        Free Space: \x1B[37m%llu GB\x1B[0m\n", info->storage_free_bytes[i] / (1024 * 1024 * 1024));
+    int storage_count = SituationGetStorageDeviceCount();
+    KTerm_WriteFormat(term, "  \x1B[1;34mStorage Devices (%d found):\x1B[0m\n", storage_count);
+    for (int i = 0; i < storage_count; ++i) {
+        char storage_name[SITUATION_MAX_DEVICE_NAME_LEN];
+        uint64_t capacity_bytes = 0;
+        uint64_t free_bytes = 0;
+        if (!SituationGetStorageDevice(i, storage_name, sizeof(storage_name), &capacity_bytes, &free_bytes)) {
+            continue;
+        }
+        KTerm_WriteFormat(term, "    [%d] Name: \x1B[37m%s\x1B[0m\n", i, storage_name);
+        KTerm_WriteFormat(term, "        Capacity: \x1B[37m%llu GB\x1B[0m\n", capacity_bytes / (1024 * 1024 * 1024));
+        KTerm_WriteFormat(term, "        Free Space: \x1B[37m%llu GB\x1B[0m\n", free_bytes / (1024 * 1024 * 1024));
     }
 
-    KTerm_WriteFormat(term, "  \x1B[1;34mNetwork Adapters (%d found):\x1B[0m\n", info->network_adapter_count);
-    for (int i = 0; i < info->network_adapter_count; ++i) {
-        KTerm_WriteFormat(term, "    [%d] Name: \x1B[37m%s\x1B[0m\n", i, info->network_adapter_names[i]);
+    int network_count = SituationGetNetworkAdapterCount();
+    KTerm_WriteFormat(term, "  \x1B[1;34mNetwork Adapters (%d found):\x1B[0m\n", network_count);
+    for (int i = 0; i < network_count; ++i) {
+        char adapter_name[SITUATION_MAX_DEVICE_NAME_LEN];
+        if (!SituationGetNetworkAdapterName(i, adapter_name, sizeof(adapter_name))) {
+            continue;
+        }
+        KTerm_WriteFormat(term, "    [%d] Name: \x1B[37m%s\x1B[0m\n", i, adapter_name);
     }
 
-    KTerm_WriteFormat(term, "  \x1B[1;34mInput Devices (%d found):\x1B[0m\n", info->input_device_count);
-    for (int i = 0; i < info->input_device_count; ++i) {
-        KTerm_WriteFormat(term, "    [%d] Name: \x1B[37m%s\x1B[0m\n", i, info->input_device_names[i]);
+    int input_count = SituationGetInputDeviceCount();
+    KTerm_WriteFormat(term, "  \x1B[1;34mInput Devices (%d found):\x1B[0m\n", input_count);
+    for (int i = 0; i < input_count; ++i) {
+        char input_name[SITUATION_MAX_DEVICE_NAME_LEN];
+        if (!SituationGetInputDeviceName(i, input_name, sizeof(input_name))) {
+            continue;
+        }
+        KTerm_WriteFormat(term, "    [%d] Name: \x1B[37m%s\x1B[0m\n", i, input_name);
     }
-    KTerm_WriteString(term, "\x1B[0m"); // Reset color
+    KTerm_WriteString(term, "\x1B[0m");
 }
 
 void SitHelperPrintDisplayInfo(SituationDisplayInfo* displays, int count) {
@@ -1306,7 +1958,7 @@ void SitHelperPrintAudioDeviceInfo(SituationAudioDeviceInfo* devices, int count)
     }
     KTerm_WriteFormat(term, "  Found \x1B[1;37m%d\x1B[0m audio playback device(s):\n", count);
     for (int i = 0; i < count; ++i) {
-        KTerm_WriteFormat(term, "  \x1B[1;34mDevice [%d]\x1B[0m (Sit. ID: \x1B[37m%d\x1B[0m): \x1B[37m%s\x1B[0m\n", i, devices[i].situation_internal_id, devices[i].name);
+        KTerm_WriteFormat(term, "  \x1B[1;34mDevice [%d]\x1B[0m (ID: \x1B[37m%s\x1B[0m): \x1B[37m%s\x1B[0m\n", i, devices[i].id, devices[i].name);
         KTerm_WriteFormat(term, "    Default Playback: \x1B[37m%s\x1B[0m\n", devices[i].is_default_playback ? "Yes" : "No");
     }
     KTerm_WriteString(term, "\x1B[0m"); // Reset color
@@ -1321,8 +1973,8 @@ int main(void) {
 
     SituationInitInfo init_info = {0};
     init_info.enable_vulkan_validation = true;
-    init_info.window_width = DEFAULT_WINDOW_WIDTH; // Use your define
-    init_info.window_height = DEFAULT_WINDOW_HEIGHT;
+    init_info.window_width = 80 * 8 * 2;   // 80 cols × 8px × 2x scale = 1280
+    init_info.window_height = 50 * 8 * 2;  // 50 rows × 8px × 2x scale = 800
     init_info.window_title = window_title;
     init_info.initial_active_window_flags = SITUATION_WINDOW_STATE_RESIZABLE | SITUATION_WINDOW_STATE_VSYNC_HINT | SITUATION_WINDOW_STATE_ALWAYS_RUN;
     init_info.initial_inactive_window_flags = SITUATION_WINDOW_STATE_ALWAYS_RUN;
@@ -1371,8 +2023,9 @@ int main(void) {
     CONSOLE_LOG("Creating K-Term...");
     
     KTermConfig term_config = {
-        .width = DEFAULT_TERM_WIDTH,
-        .height = DEFAULT_TERM_HEIGHT
+        .width = 80,
+        .height = 50,
+        .input_buffer_size = 4 * 1024 * 1024  // 4 MB for file piping
     };
     
     term = KTerm_Create(term_config);
@@ -1389,17 +2042,32 @@ int main(void) {
     // Use modern Sink Output for zero-copy performance
     KTerm_SetOutputSink(term, HandleKTermResponse, term);
     
-    // Welcome Message
-    KTerm_WriteString(term, "   \x1B[36m"); 
-    KTerm_WriteChar(term, 201); 
-    for(int i=0;i<74;i++) KTerm_WriteChar(term, 205); 
-    KTerm_WriteChar(term, 187); 
+    // Window title updates from shell programs (OSC 2)
+    KTerm_SetTitleCallback(term, HandleTitleChange);
+    
+    // Set CP437 as the GR charset (bytes 0x80-0xFF → CP437 box drawing, blocks, etc.)
+    KTerm_SelectCharacterSet(term, 1, CHARSET_CP437); // G1 = CP437
+    KTerm_WriteString(term, "\x1B~");                 // LS1R: GR = G1
+    
+    // Enable any-event mouse tracking + SGR encoding so the mouse highlight always follows
+    KTerm_WriteString(term, "\x1B[?1003h");           // Any-event tracking (motion without buttons)
+    KTerm_WriteString(term, "\x1B[?1006h");           // SGR extended mouse format
+    
+    // Welcome Message (raw CP437 box drawing: C9=╔ CD=═ BB=╗ BA=║ C8=╚ BC=╝)
+    KTerm_WriteString(term, "   \x1B[36m");
+    KTerm_WriteChar(term, 0xC9); // ╔
+    for(int i=0;i<74;i++) KTerm_WriteChar(term, 0xCD); // ═
+    KTerm_WriteChar(term, 0xBB); // ╗
     KTerm_WriteString(term, "\x1B[0m\n");
-    KTerm_WriteString(term, "   \x1B[36m\xBA\x1B[0m \x1B[1;37mKaizen Operating System\x1B[0m - \x1B[33mK-Term v2.4.27\x1B[0m Console                       \x1B[36m\xBA\x1B[0m\n");
-    KTerm_WriteString(term, "   \x1B[36m"); 
-    KTerm_WriteChar(term, 200); 
-    for(int i=0;i<74;i++) KTerm_WriteChar(term, 205); 
-    KTerm_WriteChar(term, 188); 
+    KTerm_WriteString(term, "   \x1B[36m");
+    KTerm_WriteChar(term, 0xBA); // ║
+    KTerm_WriteString(term, "\x1B[0m \x1B[1;37mKaizen Operating System\x1B[0m - \x1B[33mK-Term v2.7.14\x1B[0m Console                       \x1B[36m");
+    KTerm_WriteChar(term, 0xBA); // ║
+    KTerm_WriteString(term, "\x1B[0m\n");
+    KTerm_WriteString(term, "   \x1B[36m");
+    KTerm_WriteChar(term, 0xC8); // ╚
+    for(int i=0;i<74;i++) KTerm_WriteChar(term, 0xCD); // ═
+    KTerm_WriteChar(term, 0xBC); // ╝
     KTerm_WriteString(term, "\x1B[0m\n\n");
     KTerm_WriteString(term, "   \x1B[32mWelcome to KaOS!\x1B[0m Type \x1B[1;33mhelp\x1B[0m for available commands.\n\n");
     
@@ -1423,7 +2091,10 @@ int main(void) {
     CONSOLE_LOG("Window should close: %d", should_close);
     
     int frame_count = 0;
-    
+    const char* capture_path = getenv("KTERM_CAPTURE_SCREENSHOT");
+    const bool capture_exit = getenv("KTERM_CAPTURE_EXIT") != NULL;
+    int capture_frame = 0;
+
     // Main loop
     while (!SituationWindowShouldClose() && !should_exit) {
         frame_count++;
@@ -1435,30 +2106,132 @@ int main(void) {
         if (term && SituationIsWindowResized()) {
             int w, h;
             SituationGetWindowSize(&w, &h);
-            int cols = w / (DEFAULT_CHAR_WIDTH * DEFAULT_WINDOW_SCALE);
-            int rows = h / (DEFAULT_CHAR_HEIGHT * DEFAULT_WINDOW_SCALE);
+            int cols = w / (DEFAULT_CHAR_WIDTH * 2);
+            int rows = h / (DEFAULT_CHAR_HEIGHT * 2);
             KTerm_Resize(term, cols, rows);
+            if (shell_mode) {
+                KTShell_Resize(&shell_proc, cols, rows);
+            }
         }
 
-        if (term && console.prompt_pending && !console.in_command && !console.waiting_for_prompt_cursor_pos) {
+        // Shell mode: poll shell output and pipe to terminal
+        if (shell_mode) {
+            char shell_buf[4096];
+            size_t n = KTShell_Read(&shell_proc, shell_buf, sizeof(shell_buf));
+            if (n > 0) {
+                KTerm_PushInput(term, shell_buf, n);
+            }
+            // Check if shell exited
+            if (!KTShell_IsRunning(&shell_proc)) {
+                shell_mode = false;
+                KTShell_Stop(&shell_proc);
+                KTerm_WriteString(term, "\n\x1B[33mShell exited.\x1B[0m\n");
+                SituationSetWindowTitle("KaOS - Kaizen Operating System v0.1");
+                // Re-enable built-in mode immediately
+                console.prompt_pending = true;
+                console.input_enabled = false;
+                console.in_command = false;
+                console.waiting_for_prompt_cursor_pos = false;
+            }
+        }
+
+        if (!shell_mode && term && console.prompt_pending && !console.in_command && !console.waiting_for_prompt_cursor_pos) {
             CONSOLE_LOG("CLI MainLoop: Calling ShowPrompt.");
             ShowPrompt();
         }
         
         // Process input via K-Term's adapter
         if (term) {
-            KTermSit_ProcessInput(term);
+            // In shell mode: capture keys directly and send to shell's stdin
+            // (bypass kterm's input event pipeline for keyboard)
+            if (shell_mode) {
+                int rk;
+                while ((rk = SituationGetKeyPressed()) != 0) {
+                    char seq[8] = {0};
+                    bool ctrl = SituationIsKeyDown(SIT_KEY_LEFT_CONTROL) || SituationIsKeyDown(SIT_KEY_RIGHT_CONTROL);
+                    // Handle special keys
+                    if (rk == SIT_KEY_ENTER)       { seq[0] = '\r'; }
+                    else if (rk == SIT_KEY_BACKSPACE) { seq[0] = '\x08'; }
+                    else if (rk == SIT_KEY_TAB)      { seq[0] = '\t'; }
+                    else if (rk == SIT_KEY_ESCAPE)   { seq[0] = '\x1B'; }
+                    else if (rk == SIT_KEY_UP)       { seq[0] = '\x1B'; seq[1] = '['; seq[2] = 'A'; }
+                    else if (rk == SIT_KEY_DOWN)     { seq[0] = '\x1B'; seq[1] = '['; seq[2] = 'B'; }
+                    else if (rk == SIT_KEY_RIGHT)    { seq[0] = '\x1B'; seq[1] = '['; seq[2] = 'C'; }
+                    else if (rk == SIT_KEY_LEFT)     { seq[0] = '\x1B'; seq[1] = '['; seq[2] = 'D'; }
+                    else if (rk == SIT_KEY_HOME)     { seq[0] = '\x1B'; seq[1] = '['; seq[2] = 'H'; }
+                    else if (rk == SIT_KEY_END)      { seq[0] = '\x1B'; seq[1] = '['; seq[2] = 'F'; }
+                    else if (rk == SIT_KEY_DELETE)    { seq[0] = '\x1B'; seq[1] = '['; seq[2] = '3'; seq[3] = '~'; }
+                    else if (ctrl && rk >= 'A' && rk <= 'Z') { seq[0] = (char)(rk - 'A' + 1); }
+                    else if (ctrl && rk >= 'a' && rk <= 'z') { seq[0] = (char)(rk - 'a' + 1); }
+                    if (seq[0]) {
+                        KTShell_Write(&shell_proc, seq, strlen(seq));
+                    }
+                }
+                // Printable characters (with correct case from OS)
+                int ch;
+                while ((ch = SituationGetCharPressed()) != 0) {
+                    char buf[4];
+                    if (ch < 0x80) {
+                        buf[0] = (char)ch;
+                        KTShell_Write(&shell_proc, buf, 1);
+                    }
+                }
+            } else {
+                KTermSit_ProcessInput(term);
+            }
+            // Always update mouse tracking (even in shell mode)
+            if (shell_mode) {
+                KTermSit_UpdateMouse(term);
+            }
+
+            // Hide OS cursor when mouse is over our window, show when it leaves
+            {
+                Vector2 mpos = SituationGetMousePosition();
+                int ww, wh;
+                SituationGetWindowSize(&ww, &wh);
+                bool mouse_in_window = (mpos.x >= 0 && mpos.y >= 0 && mpos.x < ww && mpos.y < wh);
+                static bool cursor_hidden = false;
+                if (mouse_in_window && !cursor_hidden) {
+                    SituationHideCursor();
+                    cursor_hidden = true;
+                } else if (!mouse_in_window && cursor_hidden) {
+                    SituationShowCursor();
+                    cursor_hidden = false;
+                }
+            }
+
             KTerm_Update(term);
-            KTerm_Draw(term);  // Render the terminal - calls AcquireFrame/EndFrame internally
+
+#ifdef KTERM_STANDALONE_MODE
+            // Standalone: KTerm_Draw handles the full frame lifecycle internally
+            KTerm_Draw(term);
+            if (capture_path && ++capture_frame == 30) {
+                SituationTakeScreenshot(capture_path);
+                if (capture_exit) should_exit = true;
+            }
+#else
+            // VD mode: host owns frame lifecycle, kterm is a compositable layer
+            SituationAcquireFrameCommandBuffer();
+            KTerm_Draw(term);
+            SituationCommandBuffer cmd = SituationGetMainCommandBuffer();
+            SituationRenderVirtualDisplays(cmd);
+            SituationEndFrame();
+#endif
+            if (capture_path && ++capture_frame == 30) {
+                SituationTakeScreenshot(capture_path);
+                if (capture_exit) should_exit = true;
+            }
         }
     }
     
-    // ***** NEW: Call SituationShutdown() *****
+    // Clean up shell if still running
+    if (shell_mode) {
+        KTShell_Stop(&shell_proc);
+    }
+
     SituationShutdown();
-    // ****************************************
 
     KTerm_Destroy(term);
-    // CloseWindow(); // SituationShutdown() calls CloseWindow()
     
     return 0;
 }
