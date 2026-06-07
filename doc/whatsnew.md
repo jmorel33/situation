@@ -4,7 +4,23 @@
 
 # What's New in Situation API
 
-_For Core API library v2.4.214 — see **`doc/UPDATELOG.md`** for full patch notes per release._
+_For Core API library v2.4.217 — see **`doc/UPDATELOG.md`** for full patch notes per release._
+
+### v2.4.217 — Odin echo+delay demo, test results log
+
+*   **Odin example upgraded (v2.4.217):** `hello_situation` now chains `ToneSynth -> Echo -> Reverb`. New controls: `]`/`[` for delay wet, `P`/`O` for delay feedback (capped at 0.95). HUD shows reverb %, delay %, and feedback % on a second line.
+*   **Test results log (v2.4.217):** `run_tests.bat` now tees output to `build/tests/results/YYYYMMDD_HHMM_backend.txt` via PowerShell `Tee-Object`. Every run is persisted for later consultation. Results folder created automatically.
+*   **Language bindings relocated (v2.4.217):** Odin compiler (`dist/`) moved to `_languages/odin/dist/`. Generated bindings remain in `wrappers/Odin/`. `build_odin_example.bat` updated accordingly.
+
+### v2.4.216 — Window state flag cache (O(1) VSync query)
+
+*   **`SituationGetCurrentActualWindowStateFlags` cached (v2.4.216):** Was querying 7+ GLFW attributes on every call — caused per-frame stalls when called more than once per frame (e.g. HUD + toggle). Now O(1): refreshed once per frame inside `SituationPollInputEvents` after `glfwPollEvents()`, and immediately recomputed by `SituationSetWindowState`/`SituationClearWindowState`. New internal `_SituationComputeWindowStateFlags()` holds the actual GLFW query logic.
+*   **Cache field (v2.4.216):** `sit_gs.cached_window_state_flags` added to the global state struct in `situation_impl_decl.h`.
+
+### v2.4.215 — DestroyGraph audio race fix
+
+*   **`SituationDestroyGraph` double-wait (v2.4.215):** The previous single-wait pattern had a TOCTOU window — the audio thread could start a new callback tick between the null store and the wait, reading the graph pointer one last time while DestroyGraph was already freeing it (crash: `W32/0xC0000005` null dereference). Fix: idle-wait *before* nulling `active_graph`, null it, idle-wait *again*. Exactly two waits, no race window.
+*   **Odin example hardened (v2.4.215):** `SituationSetupVirtualMidiLoopback` return value now checked. If PortMidi is unavailable the example continues without MIDI rather than crashing on `SituationDestroyGraph`.
 
 ### v2.4.214 — Static build system, self-contained exes, async shader UAF fix
 
