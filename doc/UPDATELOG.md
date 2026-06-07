@@ -1,3 +1,24 @@
+## [v2.4.215 "DestroyGraph Audio Race Fix"] - 2026-06-07
+
+### Description
+
+**v2.4.215**: Fixes a use-after-free race in `SituationDestroyGraph` that caused access violations (null dereference at `0x0000000000000000`) when destroying a graph immediately after `SituationSetActiveGraph(nil)`. Also hardens the Odin `hello_situation` example against machines where PortMidi / virtual MIDI loopback is unavailable.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.215**.
+
+### Fixes
+
+- **`sit/aud/node_graph_impl.h` — `SituationDestroyGraph` TOCTOU race**:
+  - **Root cause**: The previous sequence was: null `active_graph`, then `_SituationWaitUntilAudioCallbackIdle()`. This had a window where the audio thread could start a *new* callback tick between the null store and the wait — if the audio thread read the old cached graph pointer in that window, it entered `SituationProcessGraph` one final time while DestroyGraph was already freeing the graph's node buffers, causing a null dereference on freed memory.
+  - **Fix**: Double-wait pattern — wait for idle *before* detaching the graph (ensures no in-progress callback holds a reference), then null `active_graph` / `default_graph`, then wait for idle again (ensures no new callback started with this graph). Free proceeds only after both waits.
+  - **Observed crash**: `W32/0xC0000005` access violation reading `0x0000000000000000` in `SituationDestroyGraph` — null dereference on a freed node's port buffer while audio thread was mid-processing.
+
+- **`wrappers/odin/examples/hello_situation/hello.odin`**:
+  - `SituationSetupVirtualMidiLoopback` return value is now checked. If PortMidi is unavailable (no virtual MIDI support on the machine), MIDI is silently skipped and the example runs without it. Previously the unchecked failure left `midi_device_id = -1` and the code still called `SituationEnableMidiControl` with auto-select, which could fail on systems with no MIDI devices.
+  - `defer` teardown guards `SituationTeardownVirtualMidiLoopback` behind `audio_ok` to match the setup path.
+
+---
+
 ## [v2.4.214 "Static Build System + Async Shader UAF Fix"] - 2026-06-07
 
 ### Description
