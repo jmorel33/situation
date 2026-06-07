@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate Odin FFI bindings from Situation public C headers.
 
-Outputs (under wrappers/odin/):
+Outputs (under wrappers/Odin/):
   situation_types.odin      — enums, records, opaque handles
   situation_callbacks.odin  — proc \"c\" callback aliases
   situation_foreign.odin    — foreign situation {{ ... }} imports
@@ -14,6 +14,9 @@ Usage:
   python tools/generate_odin_bindings.py
   python tools/generate_odin_bindings.py --jam
   python tools/generate_odin_bindings.py --dll build/dll/situation_opengl.dll
+
+Odin compiler: _languages/odin/dist/odin.exe
+Build example: build_odin_example.bat hello_situation
 """
 
 from __future__ import annotations
