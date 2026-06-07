@@ -4,19 +4,51 @@
 
 # What's New in Situation API
 
-_For Core API library v2.4.210 — see **`doc/UPDATELOG.md`** for full patch notes per release._
+_For Core API library v2.4.214 — see **`doc/UPDATELOG.md`** for full patch notes per release._
 
-*   **Configurable screenshot format (v2.4.210):** `SituationSetScreenshotFormat()` sets the output format (BMP default, PNG, JPG, TGA). `SituationTakeScreenshot()` now accepts a base name (no extension) or NULL for auto-naming — the library appends the correct extension. If a recognized extension is already present, it's used as-is.
-*   **Audio preload sample rate fix (v2.4.208):** `SituationLoadSoundFromFile` with `SITUATION_AUDIO_LOAD_FULL` now resamples to the device output rate. Previously, high sample-rate files (e.g. 96kHz WAV) played at half speed on 48kHz devices.
-*   **Vulkan async shader shutdown hardening (v2.4.208):** `_SituationVulkanFreeAsyncShaderLoad` no longer hangs if the thread pool is already destroyed during `SituationShutdown`.
-*   **Split device info queries (v2.4.207):** `SituationGetCPUInfo`, `SituationGetGPUInfo`, `SituationGetMemoryInfo`, plus storage/network/input enumeration. `SituationGetDeviceInfo()` is deprecated but still composes the full aggregate for backward compatibility.
-*   **Compute Virtual Displays (v2.4.205):** `SituationCreateVirtualDisplayEx()` with `SITUATION_VD_FLAG_COMPUTE_TARGET` — VDs writable by compute shaders (no depth/render pass, STORAGE usage). `SituationGetVirtualDisplayTexture()` exposes the VD's internal texture for compute binding. Enables subsystems to render as compositable layers via the existing VD compositor.
-*   **Errno Adoption Phases 0-7 (v2.4.204):** 26 previously defined but never-produced error codes now actively returned by proper call sites across platform, filesystem, rendering, threading, and audio subsystems.
-*   **⚠️ Error propagation Phase 3 — breaking migration (v2.4.203):** 18 public API functions changed from `bool`/`void` → `SituationError`. File I/O (`SaveFileText`, `CopyFile`, `DeleteFile`, `MoveFile`, `RenameFile`, `CreateDirectory`, `DeleteDirectory`), audio (`SoundExportAsWav`), renderer (`AcquireFrameCommandBuffer`, `CmdBindComputePipeline`, `CmdDispatch`, `CmdCopyBuffer`, `ReadBuffer`, `DrawModel`), and threading topology (`RefreshCpuTopology`, `GetCpuTopology`, `SetThreadAffinity`, `SetThreadAffinityEx`, `GetThreadAffinity`). Callers checking `if (!fn())` must change to `if (fn() != SITUATION_SUCCESS)`. Fire-and-forget callers need no changes.
-*   **Error propagation Phase 1 & 2 (v2.4.202):** All 57 public API functions that can fail now call `_SituationSetErrorFromCode` before returning. `SituationGetLastErrorMsg()` / `SituationGetLastErrorCode()` are now reliable after any failure. Non-breaking — no signature changes.
-*   **Error propagation Phase 0 (v2.4.201):** 4 new errno entries in `situation_base_errno.h` — `WINDOW_STATE_FAILED` (-105), `WINDOW_PROPERTY_FAILED` (-106), `APP_STATE_FAILED` (-107), `IMAGE_OPERATION_FAILED` (-580). New `SITUATION_ERRORS_IMAGE` section.
-*   **System introspection (v2.4.199):** `SituationGetOSInfo`, `SituationGetProcessList`, `SituationGetActiveAudioDeviceName` — query OS, running processes, and audio device from any Situation app.
-*   **PCM input node (v2.4.198):** `SITUATION_NODE_PCM_INPUT` — push audio from any thread into the graph via a lock-free ring buffer.
+### v2.4.214 — Static build system, self-contained exes, async shader UAF fix
+
+*   **Static library builds (v2.4.214):** `build_situation.bat static-opengl` / `static-vulkan` produces `build/dll/situation_*.a`. Link examples or the test harness against it for a self-contained exe with no DLL dependency at runtime — run from anywhere without copies or PATH tricks.
+*   **Overhauled build model (v2.4.214):** Examples and the test harness no longer recompile the full library. All `#define SITUATION_IMPLEMENTATION` removed from ~63 example files. Build modes: `opengl`/`vulkan` (DLL-linked, fast) and `static-opengl`/`static-vulkan` (self-contained). `build_tests.bat` with no args now shows usage instead of silently defaulting.
+*   **Test harness reorganized (v2.4.214):** Exes renamed `sit_test_opengl.exe` / `sit_test_vulkan.exe`, output to `build/tests/`. `run_tests.bat` is the DLL-mode launcher. Static builds run directly.
+*   **Build output layout (v2.4.214):** `build/dll/` — library artifacts, `build/tests/` — harness exes, `build/examples/` — example exes.
+*   **Async shader UAF fix (v2.4.214):** `_SituationVulkanFreeAsyncShaderLoad` spin-bailout no longer frees `ctx` while the worker may still be alive. Abandoned sentinel (`compile_done = -2`) transfers ownership to the worker, which self-frees via `atomic_compare_exchange_strong`. Fixes `graphics.sync_shader_after_async_cycle` corruption (observed as `async_fragment: error: '☺' : unexpected token`).
+*   **`SituationTopologicalSort` now public (v2.4.214):** Added to `situation_api.h`. Was internal-only; explicit calls are redundant since `CreateNode`/`DestroyNode`/`CreatePatch`/`RemovePatch` all sort on the main thread, but the function is now exported for advanced use cases.
+
+### v2.4.213 — SPIR-V UBO+SSBO+Sampler layout + Demon Hunt materials
+
+*   **`SIT_SPIRV_LAYOUT_PROFILE_UBO_SSBO_SAMPLER` (v2.4.213):** New Vulkan pipeline layout — UBO at set 0, SSBO at set 1, combined image sampler at set 2, 128B push constants. Enables shaders that need both structured data and a texture in a single pass.
+*   **Demon Hunt Phase 2 materials (v2.4.213):** 7 material types (Stone, Wood, Metal, Rusted Metal, Bone, Flesh, Emissive) with per-wall shading variety. Material map packed as 4-bit bitfields in the SSBO. Sky shader uses `DH_ENABLE_MATERIALS = 1`.
+
+### v2.4.212 — Chorus/echo stability, graph output staging
+
+*   **Chorus runaway fix (v2.4.212):** 4-stage chorus stage sums normalized (×0.25), outputs soft-limited to ±2.0. Echo delay tap also soft-limited.
+*   **Node graph master bus (v2.4.212):** Output port buffers cleared each block; master bus sums only port 0 (matches device wrapper convention).
+
+### v2.4.211 — GLTF model loader
+
+*   **`SituationLoadModel` / `SituationDrawModel` (v2.4.211):** glTF 2.0 load, draw, save, and unload. `test_model_loader` harness module (5 tests, BoomBox reference asset).
+
+### v2.4.210 — Configurable screenshot format
+
+*   **`SituationSetScreenshotFormat()` (v2.4.210):** BMP (default), PNG, JPG, TGA. `SituationTakeScreenshot()` accepts a base name or NULL for auto-naming.
+
+### v2.4.208 — Audio preload sample rate fix, async shader shutdown
+
+*   **Audio preload sample rate fix (v2.4.208):** `SituationLoadSoundFromFile` with `SITUATION_AUDIO_LOAD_FULL` now resamples to the device output rate. High sample-rate files (e.g. 96kHz WAV) no longer play at half speed on 48kHz devices.
+*   **Async shader shutdown hardening (v2.4.208):** `_SituationVulkanFreeAsyncShaderLoad` no longer hangs if the thread pool is already destroyed during `SituationShutdown`.
+
+### v2.4.207 — Split device info queries
+
+*   **Split queries (v2.4.207):** `SituationGetCPUInfo`, `SituationGetGPUInfo`, `SituationGetMemoryInfo`, plus storage/network/input enumeration. `SituationGetDeviceInfo()` deprecated but still works.
+
+### v2.4.205 — Compute Virtual Displays
+
+*   **`SITUATION_VD_FLAG_COMPUTE_TARGET` (v2.4.205):** VDs writable by compute shaders. `SituationGetVirtualDisplayTexture()` exposes the internal texture for compute binding.
+
+### v2.4.203 — Error propagation Phase 3 (breaking)
+
+*   **⚠️ Breaking migration (v2.4.203):** 18 public API functions changed from `bool`/`void` to `SituationError`. Callers checking `if (!fn())` must change to `if (fn() != SITUATION_SUCCESS)`.
 
 ### v2.4.197 — Threading module dispatch + thread naming
 
