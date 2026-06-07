@@ -663,7 +663,7 @@ This library does not use garbage collection.
 *   **Cause:** If you are on an older version (< v2.3.3C), you hit the fixed descriptor pool limit. **Upgrade to v2.3.15**, which introduces the Dynamic Descriptor Manager to automatically grow the pool as needed.
 
 **Q: `SituationTakeScreenshot` returns false?**
-*   **Cause:** Screenshots **must** use the `.png` extension. Check that your filename ends in `.png` and that you haven't disabled STB support without providing an alternative writer.
+*   **Cause:** Screenshots require a supported file extension (`.png` or `.bmp`). Check that your filename ends in one of these and that you haven't disabled STB support without providing an alternative writer.
 
 **Q: Audio crackles or pops when loading a level?**
 *   **Cause:** You might be streaming too many sounds from disk at once. Switch your SFX loading mode to SITUATION_AUDIO_LOAD_FULL to decode them to RAM, removing the disk I/O bottleneck from the audio thread.

@@ -9,6 +9,9 @@ SRC="${ROOT}/ext/ffmpeg"
 BUILD="${SRC}/build"
 JOBS="${FFMPEG_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 
+# Ensure MSYS2 MinGW tools are visible when invoked from PowerShell/batch.
+export PATH="/mingw64/bin:/usr/bin:${PATH}"
+
 if [[ ! -f "${SRC}/configure" ]]; then
     echo "[ERROR] FFmpeg source not found at ${SRC}/configure"
     exit 1
@@ -75,6 +78,13 @@ make -j"${JOBS}"
 
 echo "[INSTALL] make install ..."
 make install
+
+for lib in libavcodec.a libavformat.a libswscale.a libavutil.a; do
+    if [[ ! -f "${PREFIX}/lib/${lib}" ]]; then
+        echo "[ERROR] Expected archive missing: ${PREFIX}/lib/${lib}"
+        exit 1
+    fi
+done
 
 echo ""
 echo "[SUCCESS] FFmpeg libraries installed to:"

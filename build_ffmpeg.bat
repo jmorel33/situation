@@ -58,7 +58,7 @@ echo.
 cd /d "%~dp0"
 
 set "REPO=%CD:\=/%"
-"%MSYS2_ROOT%\usr\bin\bash.exe" -lc "cd '$REPO' && bash build_ffmpeg.sh"
+"%MSYS2_ROOT%\usr\bin\bash.exe" -lc "cd '%REPO%' && bash build_ffmpeg.sh"
 if errorlevel 1 (
     echo.
     echo [FAILED] FFmpeg build failed.
