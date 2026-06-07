@@ -1,7 +1,7 @@
 # Situation Library - Compilation Guide
 
-**Version**: 2.4.203  
-**Date**: 2026-06-05  
+**Version**: 2.4.214  
+**Date**: 2026-06-07  
 **Status**: Complete
 
 ## Overview
@@ -105,29 +105,32 @@ situation/                         # Project root
 
 ### Two Integration Models
 
-**Model 1: DLL (Recommended for applications and tests)**
+**Model 1: Static library (Recommended — self-contained, no DLL)**
 
-Build the library once, link against the DLL from any compiler:
+Build the static library once, link against it for a portable exe:
 
 ```bash
-# Build the DLL (GCC/MinGW required for this step only)
+build_situation.bat static-opengl   # → build/dll/situation_opengl.a
+build_situation.bat static-vulkan   # → build/dll/situation_vulkan.a
+
+gcc -o myapp.exe main.c -I. -Iext -Iext/cglm/include -Iext/glfw/include \
+    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING \
+    -Lext/glfw/build/src build/dll/situation_opengl.a \
+    -lglfw3 -lopengl32 -lgdi32 -lwinmm -luser32 -lshell32 -lole32 \
+    -liphlpapi -lsetupapi -ldxgi -lshlwapi -luuid -lxinput -lws2_32 -lpsapi -lm
+```
+
+**Model 2: DLL (faster build iteration)**
+
+Build the DLL once, link against it from any compiler — DLL must be next to the exe at runtime:
+
+```bash
 build_situation.bat opengl       # → build/dll/situation_opengl.dll
 build_situation.bat vulkan       # → build/dll/situation_vulkan.dll
 
-# Consume the DLL (any compiler — GCC, MSVC, Clang)
 gcc -o myapp.exe main.c -I. -Iext -Iext/cglm/include -Iext/glfw/include \
     -DSITUATION_USE_OPENGL -DSITUATION_USE_SHARED -DSITUATION_ENABLE_THREADING \
-    -Lbuild/dll -lsituation_opengl
-```
-
-**Model 2: Header-only (for self-contained single-file programs)**
-
-Compile everything into one translation unit — no DLL needed:
-
-```bash
-gcc -o myapp.exe main.c -I. -Iext -Iext/cglm/include -Iext/glfw/include \
-    -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING \
-    -lglfw3 -lopengl32 -lgdi32 -lwinmm -lws2_32 -lole32 -lshell32 -luser32
+    -Lbuild/dll -lsituation_opengl -lm
 ```
 
 > **Note:** The DLL is built with GCC (MinGW-w64). Once built, the DLL exports a standard C ABI — consumers can link against it from MSVC, Clang, or any C/C++ compiler. The GCC requirement is only for building the library itself.
@@ -135,8 +138,7 @@ gcc -o myapp.exe main.c -I. -Iext -Iext/cglm/include -Iext/glfw/include \
 ### Minimal Example
 
 ```c
-// main.c
-#define SITUATION_IMPLEMENTATION
+// main.c — links against situation_opengl.a or situation_opengl.dll
 #define SITUATION_USE_OPENGL  // or SITUATION_USE_VULKAN
 #include "situation.h"
 
@@ -182,6 +184,7 @@ gcc -o myapp.exe main.c \
 1. **GLFW3** - Windowing and input
    - Headers: `GLFW/glfw3.h`
    - Library: `glfw3.lib` (Windows), `libglfw3.a` (Linux/Mac)
+   - Build: `cd ext\glfw && mkdir build && cd build && cmake .. -G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc -DGLFW_BUILD_DOCS=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_EXAMPLES=OFF && mingw32-make`
    - Website: https://www.glfw.org/
 
 2. **Graphics Backend** (choose one):
@@ -609,7 +612,7 @@ Legacy `console.c` was merged into `kterm_console` (see `doc/plan/CONSOLE_MERGE_
 ### Build (Windows)
 
 ```batch
-build_examples.bat opengl kterm_console
+build_examples.bat vulkan kterm_console
 build\examples\kterm_console.exe
 ```
 
@@ -644,8 +647,8 @@ build\examples\kterm_console.exe
 Harness (after building the example):
 
 ```batch
-build_tests.bat
-build\sit_test.exe --module kterm_console
+build_tests.bat static-vulkan
+build\tests\sit_test_vulkan.exe --module kterm_console
 ```
 
 ## Additional Resources
@@ -667,6 +670,11 @@ For issues and questions:
 
 ## Version History
 
+- **v2.4.214** (2026-06-07) - Static build system, self-contained exes, async shader UAF fix, build output reorganization
+- **v2.4.213** (2026-06-06) - SPIR-V UBO+SSBO+Sampler layout, Demon Hunt Phase 2 materials
+- **v2.4.212** (2026-06-06) - Chorus/echo stability, graph output staging
+- **v2.4.211** (2026-06-06) - glTF model loader
+- **v2.4.210** (2026-06-05) - Configurable screenshot format
 - **v2.4.203** (2026-06-05) - Error propagation Phase 3 (bool/void → SituationError migration)
 - **v2.4.200** (2026-06-04) - API documentation refresh, full 531-function coverage
 - **v2.4.199** (2026-06-03) - System introspection APIs
