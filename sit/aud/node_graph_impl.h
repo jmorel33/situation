@@ -94,8 +94,21 @@ SituationAudioGraph* SituationCreateGraph(void) {
 void SituationDestroyGraph(SituationAudioGraph* graph) {
     if (!graph) return;
 
-    /* Phase 15: detach from RT path before free — main thread must not free graph memory
-       while sit_miniaudio_data_callback may be inside SituationProcessGraph. */
+    /* Phase 15 hardened: two-phase detach.
+     *
+     * The naive approach (null active_graph then wait) has a TOCTOU window:
+     * the audio thread may start a new callback tick between the null store
+     * and the wait, reading a stale cached pointer or entering ProcessGraph
+     * on this graph one final time before the null is visible.
+     *
+     * Correct sequence:
+     *   1. Wait for any in-progress callback to finish (graph may still be active).
+     *   2. Atomically detach graph from all RT paths.
+     *   3. Wait again — ensures no new callback can have started with this graph.
+     *   4. Now free safely.
+     */
+    _SituationWaitUntilAudioCallbackIdle();
+
     if (sit_audio.active_graph == graph) {
         sit_audio.active_graph = NULL;
     }
@@ -103,6 +116,7 @@ void SituationDestroyGraph(SituationAudioGraph* graph) {
         sit_audio.default_graph = NULL;
         sit_audio.default_graph_voice_source = NULL;
     }
+
     _SituationWaitUntilAudioCallbackIdle();
 
     /* Visit every slot — node indices can be sparse (holes); node_count alone is not a valid upper bound. */
