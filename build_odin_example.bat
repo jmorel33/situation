@@ -5,15 +5,15 @@ REM   Example: build_odin_example.bat hello_situation
 REM
 REM Prerequisites:
 REM   - Pre-built DLL: build\dll\situation_opengl.dll (run: build_situation.bat opengl)
-REM   - Generated bindings: wrappers\odin\situation_foreign.odin (run: python tools\generate_odin_bindings.py)
-REM   - Odin compiler: wrappers\odin\dist\odin.exe
+REM   - Generated bindings: wrappers\Odin\situation_foreign.odin (run: python tools\generate_odin_bindings.py)
+REM   - Odin compiler: _languages\odin\dist\odin.exe
 REM   - MinGW tools: gendef, dlltool (for import lib generation)
 REM   - VS Build Tools with MSVC C++ x64 (for linking)
 
 setlocal enabledelayedexpansion
 
-set ODIN_EXE=wrappers\odin\dist\odin.exe
-set ODIN_ROOT=wrappers\odin\dist
+set ODIN_EXE=_languages\odin\dist\odin.exe
+set ODIN_ROOT=_languages\odin\dist
 set EXAMPLE_NAME=%~1
 set DLL_SRC=build\dll\situation_opengl.dll
 set LIB_SRC=build\dll\situation_opengl.lib
@@ -23,12 +23,12 @@ if "%EXAMPLE_NAME%"=="" (
     set EXAMPLE_NAME=hello_situation
 )
 
-set EXAMPLE_DIR=wrappers\odin\examples\%EXAMPLE_NAME%
+set EXAMPLE_DIR=wrappers\Odin\examples\%EXAMPLE_NAME%
 
 REM --- Check prerequisites ---
 if not exist "%ODIN_EXE%" (
     echo ERROR: Odin compiler not found at %ODIN_EXE%
-    echo   Place the Odin distribution in wrappers\odin\dist\
+    echo   Place the Odin distribution in _languages\odin\dist\
     exit /b 1
 )
 
