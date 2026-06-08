@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
   <img src="doc/situation_blackMetal_logo.jpg" alt="Situation logo">
 </div>
 
@@ -44,6 +44,7 @@ Finally, its **Timing** capabilities range from high-resolution performance meas
     - [Threading architecture](#threading-architecture)
     - [Audio node graph (conceptual)](#audio-node-graph-architecture)
 - [4. Building & Configuration](#4-building--configuration)
+    - [Language Wrappers (Odin, Zig, Rust)](#language-wrappers-odin-zig-rust)
 - [5. Examples & Tutorials](#5-examples--tutorials)
 - [6. Frequently Asked Questions (FAQ) & Troubleshooting](#6-frequently-asked-questions-faq--troubleshooting)
 - [7. API Reference](#7-api-reference)
@@ -592,7 +593,40 @@ Depending on your configuration, you must link against specific system libraries
 
 > **Note:** If using `SITUATION_ENABLE_SHADER_COMPILER`, ensure the `shaderc` includes and libraries are in your compiler's search path.
 
+---
 
+### **Language Wrappers (Odin, Zig, Rust)**
+
+Situation provides official FFI bindings and fully featured interactive examples for **Odin**, **Zig**, and **Rust** inside the `wrappers/` folder. The binding generators parse the C public headers automatically.
+
+#### **Odin Wrapper**
+- **Source Files**: [wrappers/Odin/](file:///c:/Users/User/Desktop/hobby/_kiro/situation/wrappers/Odin/)
+- **Binding Generator**: `python tools/generate_odin_bindings.py`
+- **Build Command**:
+  ```bat
+  build_odin_example.bat hello_situation
+  ```
+- **Output Directory**: `build/examples/odin/`
+
+#### **Zig Wrapper**
+- **Source Files**: [wrappers/Zig/](file:///c:/Users/User/Desktop/hobby/_kiro/situation/wrappers/Zig/)
+- **Binding Generator**: `python tools/generate_zig_bindings.py`
+- **Build Command**:
+  ```bat
+  build_zig_example.bat hello_situation
+  ```
+- **Output Directory**: `build/examples/zig/`
+
+#### **Rust Wrapper**
+- **Source Files**: [wrappers/Rust/](file:///c:/Users/User/Desktop/hobby/_kiro/situation/wrappers/Rust/)
+- **Binding Generator**: `python tools/generate_rust_bindings.py`
+- **Build Command**:
+  ```bat
+  build_rust_example.bat hello_situation
+  ```
+- **Output Directory**: `build/examples/rust/`
+
+All build commands automatically compile the wrapper example and copy the compiled binary and the dependent `situation_opengl.dll` to their corresponding output folder.
 
 ---
 
