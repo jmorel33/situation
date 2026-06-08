@@ -103,6 +103,7 @@ CTYPE_MAP: dict[str, str] = {
     "SituationTimerSystem": "SituationTimerSystem",
     "ma_result": "c_int",
     "ma_uint64": "u64",
+    "mat4": "Mat4",
 }
 
 
@@ -131,8 +132,8 @@ def c_type_to_zig(ctype: str) -> str:
         if ptr_depth == 1:
             return "[*:0]const u8"
         if ptr_depth == 2:
-            return "[*][*:0]const u8"
-        return "?*" * (ptr_depth - 1) + "[*:0]const u8"
+            return "?[*][*:0]const u8"
+        return "?[*][*:0]const u8"
 
     if base in CTYPE_MAP:
         zig = CTYPE_MAP[base]
@@ -246,6 +247,8 @@ pub const SituationTextureBlitRegion = extern struct {
 
 // cglm mat4 equivalent
 pub const Mat4 = [4][4]f32;
+/// C-naming alias (cglm uses mat4, so FFI uses this name).
+pub const mat4 = Mat4;
 
 pub const SituationInitInfo = extern struct {
     window_width: c_int,
@@ -277,13 +280,40 @@ pub const SituationInitInfo = extern struct {
 
 
 def render_enum(e_name: str, members: list[tuple[str, str | None]], define_map: dict[str, str]) -> str:
+    # First pass: build a map of member name → resolved integer value for compound resolution.
+    member_values: dict[str, int] = {}
+    for name, value in members:
+        if value is None:
+            # Sequentially assigned; we don't need to track these for compound resolution
+            # since Zig handles plain sequential members fine.
+            pass
+        else:
+            try:
+                resolved = resolve_enum_value(value, define_map)
+                # Try to evaluate arithmetic/bitwise expressions using already-resolved members
+                expr = resolved
+                for mname, mval in member_values.items():
+                    expr = re.sub(r'\b' + re.escape(mname) + r'\b', str(mval), expr)
+                member_values[name] = eval(expr)  # noqa: S307 — controlled input
+            except Exception:
+                pass
+
     lines = [f"pub const {e_name} = enum(c_int) {{"]
     for name, value in members:
         if value is None:
             lines.append(f"    {name},")
         else:
             resolved = resolve_enum_value(value, define_map)
-            lines.append(f"    {name} = {resolved},")
+            # Replace any enum member references with their integer values
+            expanded = resolved
+            for mname, mval in member_values.items():
+                expanded = re.sub(r'\b' + re.escape(mname) + r'\b', str(mval), expanded)
+            # Evaluate if it's a pure arithmetic/bitwise expression
+            try:
+                numeric = eval(expanded)  # noqa: S307 — controlled input
+                lines.append(f"    {name} = {numeric},")
+            except Exception:
+                lines.append(f"    {name} = {expanded},")
     lines.append("};")
     return "\n".join(lines)
 
@@ -306,14 +336,41 @@ def render_enums() -> str:
 
 def render_callbacks() -> str:
     text = (ROOT / "sit" / "situation_api.h").read_text(encoding="utf-8", errors="replace")
-    lines = [
-        'const types = @import("situation_types.zig");',
-        "pub usingnamespace types;",
-        "",
-        "// Callback typedefs from sit/situation_api.h — register with SituationSet* APIs.",
-        "",
-    ]
-    for cb in parse_callbacks(text):
+    cbs = parse_callbacks(text)
+
+    # Collect all non-primitive types referenced by callbacks.
+    type_pattern_cb = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\b")
+    primitive_names = {
+        "void", "bool", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
+        "f32", "f64", "usize", "anyopaque", "c_int", "c_uint", "c_long",
+        "c_ulong", "c_char", "c_short", "c_ushort",
+    }
+    referenced: set[str] = set()
+    for cb in cbs:
+        m = re.match(r"(.+?)\s*\(\*\s*\w+\s*\)\s*\((.*)\)", cb.signature)
+        if m:
+            ret_str = m.group(1).strip()
+            if ret_str != "void":
+                for tm in type_pattern_cb.finditer(c_type_to_zig(ret_str)):
+                    referenced.add(tm.group(1))
+            for p in split_params(m.group(2)):
+                parsed = parse_param(p, c_type_to_zig)
+                if parsed:
+                    for tm in type_pattern_cb.finditer(parsed[1]):
+                        referenced.add(tm.group(1))
+    # Always import lowercase alias types that live in situation_types.zig but
+    # won't be caught by the uppercase [A-Z] regex scanner.
+    always_import_cb = {"ma_int64", "ma_seek_origin"}
+    type_imports = sorted((referenced - primitive_names - {""}) | always_import_cb)
+
+    lines = ['const types = @import("situation_types.zig");', ""]
+    for t in type_imports:
+        lines.append(f"const {t} = types.{t};")
+    if type_imports:
+        lines.append("")
+    lines.append("// Callback typedefs from sit/situation_api.h — register with SituationSet* APIs.")
+    lines.append("")
+    for cb in cbs:
         zig_name = cb.name if cb.name.endswith("Callback") else cb.name + "Callback"
         m = re.match(r"(.+?)\s*\(\*\s*\w+\s*\)\s*\((.*)\)", cb.signature)
         params: list[str] = []
@@ -335,12 +392,44 @@ def render_callbacks() -> str:
 
 
 def render_foreign(entries: list[ApiEntry]) -> str:
-    lines = [
-        'const types = @import("situation_types.zig");',
-        "pub usingnamespace types;",
-        "",
-    ]
+    # Collect all types referenced by the foreign functions and import them explicitly.
+    type_pattern = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\b")
+    referenced: set[str] = set()
     seen_names: set[str] = set()
+    for e in sorted(entries, key=lambda x: x.name):
+        if e.manual_only or e.name in MANUAL_FUNCTIONS:
+            continue
+        if e.name in seen_names:
+            continue
+        seen_names.add(e.name)
+        parsed = parse_function_signature(e.signature, c_type_to_zig)
+        if not parsed:
+            continue
+        ret, name, params = parsed
+        for m in type_pattern.finditer(ret):
+            referenced.add(m.group(1))
+        for _pn, pt in params:
+            for m in type_pattern.finditer(pt):
+                referenced.add(m.group(1))
+
+    # Only import types that live in situation_types.zig
+    primitive_names = {
+        "void", "bool", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
+        "f32", "f64", "usize", "anyopaque", "c_int", "c_uint", "c_long",
+        "c_ulong", "c_char", "c_short", "c_ushort",
+    }
+    # Always import these lowercase aliases that live in situation_types but won't
+    # be caught by the uppercase regex.
+    always_import = {"mat4", "ma_int64", "ma_seek_origin", "FILE"}
+    type_imports = sorted((referenced - primitive_names - {""}) | always_import)
+
+    lines = ['const types = @import("situation_types.zig");', ""]
+    for t in type_imports:
+        lines.append(f"const {t} = types.{t};")
+    if type_imports:
+        lines.append("")
+
+    seen_names = set()
     for e in sorted(entries, key=lambda x: x.name):
         if e.manual_only or e.name in MANUAL_FUNCTIONS:
             continue
@@ -370,6 +459,9 @@ def render_constants() -> str:
         val = d.value
         if val.endswith("f"):
             val = val[:-1]
+        # Strip any trailing C-style block or line comment from the value
+        val = re.sub(r"\s*/\*.*?\*/\s*$", "", val).strip()
+        val = re.sub(r"\s*//.*$", "", val).strip()
         lines.append(f"pub const {d.name} = {val};")
     return "\n".join(lines) + "\n"
 
@@ -464,7 +556,7 @@ def render_opaque_stubs(entries: list[ApiEntry]) -> str:
         "SituationCameraDesc", "SituationRenderPassInfo",
         "SituationTextureBlitRegion",
         "SituationInitInfo", "SituationError",
-        "ma_int64", "ma_seek_origin", "Mat4",
+        "ma_int64", "ma_seek_origin", "Mat4", "mat4",
         "SituationLogLevel", "SituationInitState",
     }
     for e in parse_enums():
@@ -497,6 +589,12 @@ def render_opaque_stubs(entries: list[ApiEntry]) -> str:
 
 
 def render_package_root(version: str) -> str:
+    # usingnamespace was removed as a top-level pub declaration in Zig 0.17-dev.
+    # We expose each sub-module as a named namespace so callers can do either:
+    #   const situation = @import("situation");
+    #   situation.foreign.SituationInit(...)           -- namespaced
+    #   const sit = situation; sit.SituationInit(...)  -- via the flat re-export const below
+    # The flat re-export consts mirror every sub-module so the hello example keeps working.
     return f'''//! Zig FFI for the Situation C library (auto-generated bindings).
 //! Situation {version}
 //!
@@ -505,18 +603,47 @@ def render_package_root(version: str) -> str:
 //!
 //! Requires a pre-built import library:
 //!   build_situation.bat opengl  →  build/dll/situation_opengl.lib
+//!
+//! Usage (namespaced — recommended):
+//!   const sit = @import("situation");
+//!   sit.foreign.SituationInit(0, null, &config);
+//!
+//! Usage (flat — mirrors Odin / C style):
+//!   const sit = @import("situation");
+//!   sit.SituationInit(0, null, &config);   // via flat re-exports below
 
-pub const types = @import("situation_types.zig");
+pub const types     = @import("situation_types.zig");
 pub const callbacks = @import("situation_callbacks.zig");
-pub const foreign = @import("situation_foreign.zig");
+pub const foreign   = @import("situation_foreign.zig");
 pub const constants = @import("situation_constants.zig");
-pub const helpers = @import("situation_helpers.zig");
+pub const helpers   = @import("situation_helpers.zig");
 
-pub usingnamespace types;
-pub usingnamespace callbacks;
-pub usingnamespace foreign;
-pub usingnamespace constants;
-pub usingnamespace helpers;
+// --- Flat re-exports (types) ---
+pub const ColorRGBA              = types.ColorRGBA;
+pub const SitRectangle           = types.SitRectangle;
+pub const Vector2                = types.Vector2;
+pub const Vector3                = types.Vector3;
+pub const Vector4                = types.Vector4;
+pub const SituationTexture       = types.SituationTexture;
+pub const SituationShader        = types.SituationShader;
+pub const SituationFont          = types.SituationFont;
+pub const SituationCommandBuffer = types.SituationCommandBuffer;
+pub const SituationThreadPool    = types.SituationThreadPool;
+pub const SituationAudioGraph    = types.SituationAudioGraph;
+pub const SituationNode          = types.SituationNode;
+pub const SituationJobId         = types.SituationJobId;
+pub const SituationNodeHandle    = types.SituationNodeHandle;
+pub const SituationSound         = types.SituationSound;
+pub const SituationBuffer        = types.SituationBuffer;
+pub const SituationComputePipeline = types.SituationComputePipeline;
+pub const SituationInitInfo      = types.SituationInitInfo;
+pub const SituationError         = types.SituationError;
+pub const Mat4                   = types.Mat4;
+pub const mat4                   = types.mat4;
+
+// --- Flat re-exports (helpers) ---
+pub const situationBeginFrame = helpers.situationBeginFrame;
+pub const situationSuccess    = helpers.situationSuccess;
 '''
 
 
@@ -538,15 +665,10 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (ROOT / "wrappers" / "zig").mkdir(parents=True, exist_ok=True)
 
+    # Zig 0.14 used c_int as a local alias from std.c; Zig 0.17-dev made c_int etc. language primitives.
+    # We no longer alias them — they're available globally as primitives.
     gen_header = (
         gen_banner("generate_zig_bindings.py", version, "//")
-        + "const std = @import(\"std\");\n"
-        + "const c = std.c;\n\n"
-        + "const c_int = c.c_int;\n"
-        + "const c_uint = c.c_uint;\n"
-        + "const c_long = c.c_long;\n"
-        + "const c_ulong = c.c_ulong;\n"
-        + "const c_char = c.c_char;\n\n"
     )
 
     (OUT_DIR / "situation_types.zig").write_text(
@@ -591,18 +713,21 @@ pub fn build(b: *std.Build) void {{
         .optimize = optimize,
     }});
 
+    // In Zig 0.17-dev, linkLibC / addLibraryPath / linkSystemLibrary moved to Module.
+    const exe_mod = b.createModule(.{{
+        .root_source_file = b.path("examples/hello_situation/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{{.{{ .name = "situation", .module = situation_mod }}}},
+    }});
+    exe_mod.addLibraryPath(b.path("../../build/dll"));
+    exe_mod.linkSystemLibrary("{args.lib}", .{{}});
+
     const exe = b.addExecutable(.{{
         .name = "hello_situation",
-        .root_module = b.createModule(.{{
-            .root_source_file = b.path("examples/hello_situation/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{{ .{{ .name = "situation", .module = situation_mod }} }},
-        }}),
+        .root_module = exe_mod,
     }});
-    exe.linkLibC();
-    exe.addLibraryPath(b.path("../../build/dll"));
-    exe.linkSystemLibrary("{args.lib}");
     b.installArtifact(exe);
 }}
 ''',
