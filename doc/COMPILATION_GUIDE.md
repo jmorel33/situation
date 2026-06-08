@@ -538,6 +538,28 @@ build_examples.bat static-opengl my_example
 build\examples\my_example.exe
 ```
 
+### Language Wrapper Examples (Odin, Zig, Rust)
+
+Dedicated batch build scripts are provided for compilation of the wrapper examples:
+
+**Odin Examples**:
+```batch
+build_odin_example.bat hello_situation
+```
+Outputs to `build\examples\odin\hello_situation.exe`.
+
+**Zig Examples**:
+```batch
+build_zig_example.bat hello_situation
+```
+Outputs to `build\examples\zig\hello_situation.exe`.
+
+**Rust Examples**:
+```batch
+build_rust_example.bat hello_situation
+```
+Outputs to `build\examples\rust\hello_situation.exe`.
+
 ### Linux Shell Script (compile_example.sh)
 
 ```bash
