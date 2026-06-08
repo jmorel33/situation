@@ -3,12 +3,13 @@ REM Precompile Demon Hunt skydome GLSL to SPIR-V at build time (avoids ~20s runt
 setlocal
 
 set "GLSLC=ext\shaderc\build\glslc\glslc.exe"
-set "VS=examples\demon_hunt_sky.vs"
-set "FS=examples\demon_hunt_sky.fs"
-set "VS_SPV=examples\demon_hunt_sky.vs.spv"
-set "FS_SPV=examples\demon_hunt_sky.fs.spv"
-set "VS_SPV_VK=examples\demon_hunt_sky.vk.vs.spv"
-set "FS_SPV_VK=examples\demon_hunt_sky.vk.fs.spv"
+set "SRC_DIR=examples\demon_hunt"
+set "VS=%SRC_DIR%\demon_hunt_sky.vs"
+set "FS=%SRC_DIR%\demon_hunt_sky.fs"
+set "VS_SPV=%SRC_DIR%\demon_hunt_sky.vs.spv"
+set "FS_SPV=%SRC_DIR%\demon_hunt_sky.fs.spv"
+set "VS_SPV_VK=%SRC_DIR%\demon_hunt_sky.vk.vs.spv"
+set "FS_SPV_VK=%SRC_DIR%\demon_hunt_sky.vk.fs.spv"
 set "OUT_DIR=build\examples"
 set "GLSLC_FLAGS_GL=--target-env=opengl -fauto-map-locations -fauto-bind-uniforms -std=450 -O"
 set "GLSLC_FLAGS_VK=--target-env=vulkan -std=450 -O"
@@ -72,7 +73,7 @@ set "GLSLC_DEVEL_FLAGS=--target-env=opengl -fauto-map-locations -fauto-bind-unif
 if errorlevel 1 (
     echo [WARN] Devel fragment SPIR-V compile failed — demon_hunt_sky_spirv_begin_poll may skip.
 ) else (
-    copy /Y "%FS_DEVEL%" "examples\demon_hunt_sky.fs.devel.spv" >nul
+    copy /Y "%FS_DEVEL%" "%SRC_DIR%\demon_hunt_sky.fs.devel.spv" >nul
     copy /Y "%FS_DEVEL%" "%OUT_DIR%\demon_hunt_sky.fs.devel.spv" >nul
     echo [SHADER] OK: %FS_DEVEL% (devel, no -O)
 )
@@ -88,8 +89,21 @@ echo [SHADER] OK: %VS_SPV_VK% (Vulkan)
 echo [SHADER] OK: %FS_SPV_VK% (Vulkan)
 echo [SHADER] Copied to %OUT_DIR%\
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\gen_demon_hunt_spirv_embed.ps1" -VsSpvGl "%VS_SPV%" -FsSpvGl "%FS_SPV%" -VsSpvVk "%VS_SPV_VK%" -FsSpvVk "%FS_SPV_VK%" -OutC "examples\demon_hunt_sky_spirv_embed.c"
+REM Sync compiled SPV files to test harness assets — tests load from here independently of example folder layout.
+set "ASSETS_DIR=tests\harness\assets"
+if exist "%ASSETS_DIR%" (
+    copy /Y "%VS_SPV%"     "%ASSETS_DIR%\" >nul
+    copy /Y "%FS_SPV%"     "%ASSETS_DIR%\" >nul
+    copy /Y "%VS_SPV_VK%"  "%ASSETS_DIR%\" >nul
+    copy /Y "%FS_SPV_VK%"  "%ASSETS_DIR%\" >nul
+    copy /Y "%VS%"         "%ASSETS_DIR%\" >nul
+    copy /Y "%FS%"         "%ASSETS_DIR%\" >nul
+    if exist "%FS_DEVEL%" copy /Y "%FS_DEVEL%" "%ASSETS_DIR%\" >nul
+    echo [SHADER] Synced to %ASSETS_DIR%\
+)
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\gen_demon_hunt_spirv_embed.ps1" -VsSpvGl "%VS_SPV%" -FsSpvGl "%FS_SPV%" -VsSpvVk "%VS_SPV_VK%" -FsSpvVk "%FS_SPV_VK%" -OutC "%SRC_DIR%\demon_hunt_sky_spirv_embed.c"
 if errorlevel 1 (
-    echo [WARN] Could not regenerate examples\demon_hunt_sky_spirv_embed.c - embed may be stale or stub.
+    echo [WARN] Could not regenerate %SRC_DIR%\demon_hunt_sky_spirv_embed.c - embed may be stale or stub.
 )
 exit /b 0

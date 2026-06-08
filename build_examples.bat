@@ -74,9 +74,14 @@ for /f "tokens=*" %%i in ('gcc -dumpversion') do set GCC_VER=%%i
 REM --- Create output directory ---
 if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
 
+REM --- Resolve source file path (examples with their own subfolder use subfolder/name.c) ---
+set "EXAMPLE_SRC=examples\%EXAMPLE%.c"
+if /i "%EXAMPLE%"=="demon_hunt" set "EXAMPLE_SRC=examples\demon_hunt\demon_hunt.c"
+if /i "%EXAMPLE%"=="kterm_console" set "EXAMPLE_SRC=examples\console\console_host_app.c"
+
 REM --- Check source file exists ---
-if not exist "examples\%EXAMPLE%.c" (
-    echo [ERROR] Source file not found: examples\%EXAMPLE%.c
+if not exist "%EXAMPLE_SRC%" (
+    echo [ERROR] Source file not found: %EXAMPLE_SRC%
     exit /b 1
 )
 
@@ -108,10 +113,10 @@ if /i "%EXAMPLE%"=="node_graph_piano_demo" set "EXTRA_LDFLAGS=-mwindows"
 if /i "%EXAMPLE%"=="kterm_console"         set "EXTRA_LDFLAGS=-mwindows"
 if /i "%EXAMPLE%"=="platformer_plumber"    set "EXTRA_LDFLAGS=-mwindows"
 
-gcc examples/%EXAMPLE%.c ^
+gcc %EXAMPLE_SRC% ^
     -o %BUILD_DIR%/%EXAMPLE%.exe ^
     -std=c11 -O2 -msse -msse2 -msse4.1 ^
-    -I. -Iext -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
+    -I. -Iexamples/console -Iext -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
     -DSITUATION_USE_OPENGL -DSITUATION_USE_SHARED -DSITUATION_ENABLE_THREADING ^
     -L%DLL_DIR% -lsituation_opengl ^
     -static-libgcc %EXTRA_LDFLAGS% -lm
@@ -156,13 +161,13 @@ set "DH_EMBED_SRC="
 if /i "%EXAMPLE%"=="demon_hunt" (
     call compile_demon_hunt_shaders.bat
     if errorlevel 1 echo [WARN] Shader precompile failed — game needs .spv at launch.
-    set "DH_EMBED_SRC=examples/demon_hunt_sky_spirv_embed.c"
+    set "DH_EMBED_SRC=examples/demon_hunt/demon_hunt_sky_spirv_embed.c"
 )
 
-gcc examples/%EXAMPLE%.c %DH_EMBED_SRC% ^
+gcc %EXAMPLE_SRC% %DH_EMBED_SRC% ^
     -o %BUILD_DIR%/%EXAMPLE%.exe ^
     -std=c11 -O2 -msse -msse2 -msse4.1 ^
-    -I. -Iext -Iext/vulkan -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
+    -I. -Iexamples/console -Iext -Iext/vulkan -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
     -I"%VULKAN_SDK%\Include" ^
     -DSITUATION_USE_VULKAN -DSITUATION_USE_SHARED -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER ^
     -L%DLL_DIR% -lsituation_vulkan ^
@@ -196,10 +201,10 @@ if /i "%EXAMPLE%"=="node_graph_piano_demo" set "EXTRA_LDFLAGS=-mwindows"
 if /i "%EXAMPLE%"=="kterm_console"         set "EXTRA_LDFLAGS=-mwindows"
 if /i "%EXAMPLE%"=="platformer_plumber"    set "EXTRA_LDFLAGS=-mwindows"
 
-gcc examples/%EXAMPLE%.c ^
+gcc %EXAMPLE_SRC% ^
     -o %BUILD_DIR%/%EXAMPLE%.exe ^
     -std=c11 -O2 -msse -msse2 -msse4.1 ^
-    -I. -Iext -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
+    -I. -Iexamples/console -Iext -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
     -DSITUATION_USE_OPENGL -DSITUATION_ENABLE_THREADING ^
     -L%GLFW_LIB% -static-libgcc %EXTRA_LDFLAGS% ^
     -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive ^
@@ -246,15 +251,15 @@ set "DH_EMBED_SRC="
 if /i "%EXAMPLE%"=="demon_hunt" (
     call compile_demon_hunt_shaders.bat
     if errorlevel 1 echo [WARN] Shader precompile failed.
-    set "DH_EMBED_SRC=examples/demon_hunt_sky_spirv_embed.c"
+    set "DH_EMBED_SRC=examples/demon_hunt/demon_hunt_sky_spirv_embed.c"
 )
 
 REM g++ needed for shaderc/VMA C++ runtime in the static archive
 REM Step 1: compile the C source with gcc
-gcc -c examples/%EXAMPLE%.c ^
+gcc -c %EXAMPLE_SRC% ^
     -o %BUILD_DIR%\%EXAMPLE%_main.o ^
     -std=c11 -O2 -msse -msse2 -msse4.1 ^
-    -I. -Iext -Iext/vulkan -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
+    -I. -Iexamples/console -Iext -Iext/vulkan -Iext/cgltf -Iext/cglm/include -Iext/glfw/include -Iext/glfw/deps -Isit/k-term ^
     -I"%VULKAN_SDK%\Include" ^
     -DSITUATION_USE_VULKAN -DSITUATION_ENABLE_THREADING -DSITUATION_ENABLE_SHADER_COMPILER
 
@@ -266,7 +271,7 @@ if defined DH_EMBED_SRC (
     gcc -c %DH_EMBED_SRC% ^
         -o %BUILD_DIR%\%EXAMPLE%_embed.o ^
         -std=c11 -O2 ^
-        -I. -Iext -Iext/cglm/include -Isit/k-term ^
+        -I. -Iexamples/console -Iext -Iext/cglm/include -Isit/k-term ^
         -DSITUATION_USE_VULKAN
     if errorlevel 1 ( echo [FAILED] SPIR-V embed compilation failed! & exit /b 1 )
     set "DH_EMBED_OBJ=%BUILD_DIR%\%EXAMPLE%_embed.o"
