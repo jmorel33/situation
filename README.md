@@ -600,6 +600,7 @@ Depending on your configuration, you must link against specific system libraries
 Situation provides official FFI bindings and fully featured interactive examples for **Odin**, **Zig**, and **Rust** inside the `wrappers/` folder. The binding generators parse the C public headers automatically.
 
 #### **Odin Wrapper**
+- **Odin Language**: [Odin Official Website](https://odin-lang.org/)
 - **Source Files**: [wrappers/Odin/](file:///c:/Users/User/Desktop/hobby/_kiro/situation/wrappers/Odin/)
 - **Binding Generator**: `python tools/generate_odin_bindings.py`
 - **Build Command**:
@@ -609,6 +610,7 @@ Situation provides official FFI bindings and fully featured interactive examples
 - **Output Directory**: `build/examples/odin/`
 
 #### **Zig Wrapper**
+- **Zig Language**: [Zig Official Website](https://ziglang.org/)
 - **Source Files**: [wrappers/Zig/](file:///c:/Users/User/Desktop/hobby/_kiro/situation/wrappers/Zig/)
 - **Binding Generator**: `python tools/generate_zig_bindings.py`
 - **Build Command**:
@@ -618,6 +620,7 @@ Situation provides official FFI bindings and fully featured interactive examples
 - **Output Directory**: `build/examples/zig/`
 
 #### **Rust Wrapper**
+- **Rust Language**: [Rust Standalone Installers](https://forge.rust-lang.org/infra/other-installation-methods.html#standalone-installers) | [Rustup Installer](https://rustup.rs/)
 - **Source Files**: [wrappers/Rust/](file:///c:/Users/User/Desktop/hobby/_kiro/situation/wrappers/Rust/)
 - **Binding Generator**: `python tools/generate_rust_bindings.py`
 - **Build Command**:
