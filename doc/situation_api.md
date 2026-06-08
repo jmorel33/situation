@@ -1,6 +1,6 @@
 # Situation — Advanced Platform Awareness, Control, and Timing
 
-_Core API library v2.4.207 · (c) 2025-2026 Jacques Morel · MIT Licensed_
+_Core API library v2.4.218 · (c) 2025-2026 Jacques Morel · MIT Licensed_
 
 **Situation** is a **[strict C11](C11_Compliance_Report.md)** single-file library providing unified access to windowing, graphics (OpenGL 4.6 / Vulkan 1.4), audio (23-effect node graph, 16-voice MIDI synth), input, filesystem, NUMA-aware threading, and high-resolution timing. One header, one DLL, one `SituationInit()` call — then build games, creative tools, simulations, or visualizations without fighting platform boilerplate.
 

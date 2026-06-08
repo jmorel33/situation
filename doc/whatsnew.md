@@ -4,7 +4,13 @@
 
 # What's New in Situation API
 
-_For Core API library v2.4.217 — see **`doc/UPDATELOG.md`** for full patch notes per release._
+_For Core API library v2.4.218 — see **`doc/UPDATELOG.md`** for full patch notes per release._
+
+### v2.4.218 — STL model loader, Demon Hunt visual bolster fixes
+
+*   **`SituationLoadModelFromSTL` (v2.4.218):** Load binary or ASCII `.stl` files with no external dependency. Auto-detects format. Flat shading (default) uses per-face normals directly; smooth shading (`smooth_normals = true`) merges coincident vertices and averages normals. Produces stride-32 `SituationModel` — works with `SituationDrawModel`, `SituationUnloadModel`, and `SituationReloadModel` unchanged.
+*   **Demon Hunt material system enabled (v2.4.218):** `DH_ENABLE_MATERIALS` flipped to 1. Per-wall shading (Stone, Metal, Flesh, Emissive, Wood, Bone, Rusted Metal) now active.
+*   **Demon Hunt bloom corrected (v2.4.218):** Replaced current-frame brightness stub with proper 2-iteration Kawase blur from the feedback texture (8 diagonal samples, luminance-thresholded). Film grain and shadow dithering added. Shadow dither scope fixed — was inside `pristine_shadow()` corrupting sprite/floor shadow lookups and breaking projectile trajectory visuals; moved to wall call site only.
 
 ### v2.4.217 — Odin echo+delay demo, test results log
 

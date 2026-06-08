@@ -1,4 +1,33 @@
-## [v2.4.217 "Odin Echo+Delay Demo, Test Results Log"] - 2026-06-07
+## [v2.4.218 "STL Model Loader, Demon Hunt Visual Bolster Fixes"] - 2026-06-07
+
+### Description
+
+**v2.4.218**: Adds `SituationLoadModelFromSTL()` for loading binary and ASCII STL mesh files without any external dependency. Fixes incomplete and incorrect Phase 2/6 implementations in the Demon Hunt visual bolster work: enables the per-wall material system, replaces the stub bloom with proper Kawase feedback bloom, adds film grain and shadow dithering, and fixes a shadow dithering regression that broke projectile trajectory visuals.
+
+**Canonical version**: `sit/situation_base_version.h` → **2.4.218**.
+
+### New API
+
+- **`SituationLoadModelFromSTL(file_path, smooth_normals, out_model)`** — loads a 3D model from a `.stl` file:
+  - Auto-detects binary vs ASCII STL (handles the binary-files-starting-with-"solid" edge case).
+  - Produces a single-mesh `SituationModel` in stride-32 layout `[Px Py Pz Nx Ny Nz U V]` — compatible with all existing draw paths; no new pipeline variants required.
+  - `smooth_normals = false` (default): flat shading, one vertex per triangle corner, face normal from file. O(1) per vertex.
+  - `smooth_normals = true`: coincident vertices (ε = 1e-5) merged and normals averaged — smooth appearance. O(n²) merge, suitable for < ~100k triangles.
+  - UVs are zeroed (STL carries no UV data). `base_color_factor` defaults to white, `roughness_factor` to 0.8.
+  - `SituationUnloadModel`, `SituationDrawModel`, and `SituationReloadModel` all work on the result unchanged.
+  - No new external dependency — STL parsing is ~200 lines of C inline in `situation_impl_renderer.h`.
+
+### Demon Hunt visual bolster fixes (`examples/demon_hunt_sky.fs`, `examples/demon_hunt.c`)
+
+- **Phase 2 — Material system enabled**: `DH_ENABLE_MATERIALS` flipped from `0` to `1`. Per-wall material shading (Stone, Metal, Flesh, Emissive, Wood, Bone, Rusted Metal) is now active at runtime; all material packing code was already running but contributing nothing visually.
+- **Phase 6 — Bloom rewritten to spec**: replaced the placeholder current-frame brightness boost with the specified 2-iteration Kawase blur from the feedback texture (8 diagonal samples: 4 at 1.5px + 4 at 3.5px at half weight, luminance-thresholded). The feedback texture is now actually used for bloom. `#else` fallback retained for `DH_ENABLE_FRAME_FEEDBACK 0` builds.
+- **Phase 6 — Film grain added**: `(hash12(gl_FragCoord.xy + fract(frame.uTime) * 137.0) - 0.5) * 0.025` applied after vignette. Multiplier 137 is coprime with typical hash periods to prevent temporal repetition.
+- **Phase 6 — Shadow dithering added and placed correctly**: screen-space jitter (`±0.015` units) applied to the wall shadow ray origin at the wall call site only — not inside `pristine_shadow()`. This was the source of a projectile trajectory regression: the dither was previously applied inside `pristine_shadow()` which is called for sprite, portal, and floor shading as well, corrupting their world-space position lookups.
+- **Phase 1 cleanup**: removed dead `sprite_light_mul()` function (18 lines, zero call sites post-CPU-sprite retirement).
+
+---
+
+
 
 ### Description
 

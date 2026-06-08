@@ -3,7 +3,7 @@
 
 | Metadata | Details |
 | :--- | :--- |
-| **Version** | **2.4.217** — canonical macros in **`sit/situation_base_version.h`**. Narrative releases: **`doc/UPDATELOG.md`**. |
+| **Version** | **2.4.218** — canonical macros in **`sit/situation_base_version.h`**. Narrative releases: **`doc/UPDATELOG.md`**. |
 | **Language** | Strict C11 (ISO/IEC 9899:2011) / C++ Compatible |
 | **Backends** | OpenGL 4.6 Core (MDI) / Vulkan 1.4 — hardware minimum, no fallback to older versions |
 | **Platform** | Windows 10+ (Linux and macOS in progress) |
@@ -17,7 +17,7 @@
 
 Unlike simple windowing wrappers, Situation is an opinionated System Abstraction Layer (SAL). It isolates the developer from the fragmentation of OS APIs (Windows/Linux/macOS) and Graphics Drivers (OpenGL/Vulkan), providing a stable, "Titanium-grade" foundation for building sophisticated interactive software—from real-time simulations and game engines to scientific visualization tools and multimedia installations.
 
-### What's New (v2.4.217)
+### What's New (v2.4.218)
 
 See **[whatsnew.md](whatsnew.md)** for recent highlights and **[UPDATELOG.md](UPDATELOG.md)** for full patch notes.
 
