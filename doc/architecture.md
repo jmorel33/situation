@@ -606,8 +606,12 @@ graph TD
         M2["SituationUpdateTimers<br/>VD timers, hot-reload"]
         M3["User Logic"]
         M4["SituationAcquireFrameCommandBuffer<br/>① vkWaitForFences (frame_index fence)<br/>② Swapchain resize check (recreate if needed)<br/>③ vkAcquireNextImageKHR → acquired_image_indices<br/>④ vkResetFences<br/>⑤ vkResetCommandBuffer<br/>⑥ vkBeginCommandBuffer (graphics + compute)"]
-        M5["Record into VkCommandBuffer<br/>SituationCmdBeginRenderPass<br/>→ O(1) render pass cache<br/>→ VD FBO or swapchain framebuffer<br/>SituationCmdDraw* (bindless texture IDs in push consts)<br/>SituationCmdDispatchCompute<br/>SituationRenderVirtualDisplays"]
-        M6["SituationEndFrame<br/>vkEndCommandBuffer (graphics + compute)<br/>Update dynamic VBO + UBO for frame<br/>Enqueue frame_index → render_queue<br/>signal render_queue_cv"]
+        M5A["SituationCmdBeginRenderPass<br/>→ O(1) render pass cache lookup<br/>→ vkCmdBeginRenderPass (inline, no queue)"]
+        M5B["SituationCmdDraw* / CmdDrawMesh<br/>→ vkCmdBindPipeline<br/>→ vkCmdPushConstants (texture slot IDs)<br/>→ vkCmdBindVertexBuffers / vkCmdBindIndexBuffer<br/>→ vkCmdDrawIndexed / vkCmdDrawIndirect"]
+        M5C["SituationCmdDispatchCompute<br/>→ vkCmdBindPipeline (compute)<br/>→ vkCmdDispatch<br/>sets needs_compute_wait[frame_index]"]
+        M5D["SituationRenderVirtualDisplays<br/>→ vkCmdBeginRenderPass (VD framebuffer)<br/>→ vkCmdBindPipeline (VD compositor)<br/>→ vkCmdDraw (fullscreen quad)"]
+        M5E["SituationCmdEndRenderPass<br/>→ vkCmdEndRenderPass<br/>VD content-update hook fires"]
+        M6["SituationEndFrame<br/>vkEndCommandBuffer (graphics + compute)<br/>Update dynamic VBO + UBO<br/>Enqueue frame_index → render_queue<br/>signal render_queue_cv"]
     end
 
     subgraph RenderThread ["Render Thread (dedicated)"]
@@ -651,12 +655,12 @@ graph TD
     I1 --> I2 --> I3 --> I4 --> I5 --> I6 --> I7 --> I8 --> I9 --> I10 --> I11 --> I12 --> I13
     I13 --> RT1
     I12 --> M1
-    M1 --> M2 --> M3 --> M4 --> M5 --> M6
+    M1 --> M2 --> M3 --> M4 --> M5A --> M5B --> M5C --> M5D --> M5E --> M6
     M6 -- "Next frame" --> M1
     M6 -- "Quit" --> E1
     E1 --> E2 --> E3 --> E4 --> E5
     M4 -. "resize detected" .-> Swapchain
-    M5 -. "texture bind" .-> Bindless
+    M5B -. "texture bind" .-> Bindless
 ```
 
 Key implementation details:
