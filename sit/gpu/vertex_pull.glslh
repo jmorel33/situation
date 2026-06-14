@@ -1,0 +1,122 @@
+/**
+ * @file vertex_pull.glslh
+ * @brief Canonical buffer_reference structs for Situation vertex-pull shaders.
+ *
+ * @details Defines three vertex layouts that match exactly what SituationCreateMesh
+ * uploads to the GPU. Use the appropriate struct based on the stride you passed
+ * at mesh creation time:
+ *
+ *   stride = 12  →  SitVertex_Simple   (position only)
+ *   stride = 32  →  SitVertex_Legacy   (position + normal + uv)
+ *   stride = 48  →  SitVertex_PBR      (position + normal + tangent + uv)
+ *
+ * The vertex buffer device address is obtained via:
+ *   uint64_t addr = SituationGetMeshVertexBufferAddress(mesh);
+ *
+ * Pass it to the shader via a push constant or UBO, then cast it here:
+ *   SitVertexBuffer_PBR verts = SitVertexBuffer_PBR(push.vertex_address);
+ *   SitVertex_PBR v = verts.data[gl_VertexIndex];
+ *
+ * @note Requires Vulkan backend with bufferDeviceAddress (Vulkan 1.2+ core).
+ *       On OpenGL, SituationGetMeshVertexBufferAddress returns 0 on non-NVIDIA
+ *       hardware — vertex pulling is Vulkan-only in practice.
+ *
+ * @note This header uses #extension directives. Include it after #version and
+ *       after any other extensions your shader requires.
+ *
+ * @see SituationCreateMesh
+ * @see SituationGetMeshVertexBufferAddress
+ * @see SituationGetMeshIndexBufferAddress
+ *
+ * SIT_ATTR_* locations (from situation_impl_decl.h):
+ *   location 0 = position
+ *   location 1 = normal
+ *   location 2 = texcoord_0
+ *   location 3 = color
+ *   location 4 = tangent
+ *   location 5 = texcoord_1
+ */
+
+#ifndef SIT_VERTEX_PULL_GLSLH
+#define SIT_VERTEX_PULL_GLSLH
+
+#extension GL_EXT_buffer_reference        : require
+#extension GL_EXT_buffer_reference2       : require
+#extension GL_EXT_scalar_block_layout     : require
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layout 1 — Simple   (stride 12, 3 floats)
+//   SituationCreateMesh( ..., vertex_stride = 12, ... )
+//   Offset 0: position (vec3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+layout(buffer_reference, scalar) readonly buffer SitVertexBuffer_Simple {
+    vec3 data[];
+};
+
+// Convenience alias when the buffer only holds positions
+#define SitVertex_Simple vec3
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layout 2 — Legacy   (stride 32, 8 floats)
+//   SituationCreateMesh( ..., vertex_stride = 32, ... )
+//   Offset  0: position  (vec3)   — location 0
+//   Offset 12: normal    (vec3)   — location 1
+//   Offset 24: texcoord  (vec2)   — location 2
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct SitVertex_Legacy {
+    vec3  position;   // offset  0  (bytes)
+    vec3  normal;     // offset 12
+    vec2  texcoord;   // offset 24
+};
+
+layout(buffer_reference, scalar) readonly buffer SitVertexBuffer_Legacy {
+    SitVertex_Legacy data[];
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layout 3 — PBR Full   (stride 48, 12 floats)
+//   SituationCreateMesh( ..., vertex_stride = 48, ... )
+//   Offset  0: position  (vec3)   — location 0
+//   Offset 12: normal    (vec3)   — location 1
+//   Offset 24: tangent   (vec4)   — location 4  (xyz = tangent dir, w = handedness ±1)
+//   Offset 40: texcoord  (vec2)   — location 2
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct SitVertex_PBR {
+    vec3  position;   // offset  0  (bytes)
+    vec3  normal;     // offset 12
+    vec4  tangent;    // offset 24  (w = handedness: +1 or -1)
+    vec2  texcoord;   // offset 40
+};
+
+layout(buffer_reference, scalar) readonly buffer SitVertexBuffer_PBR {
+    SitVertex_PBR data[];
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Index buffer reference  (uint32_t indices from SituationCreateMesh)
+//
+//   uint64_t idx_addr = SituationGetMeshIndexBufferAddress(mesh);
+//   SitIndexBuffer indices = SitIndexBuffer(idx_addr);
+//   uint i = indices.data[gl_VertexIndex];
+//   SitVertex_PBR v = verts.data[i];
+// ─────────────────────────────────────────────────────────────────────────────
+
+layout(buffer_reference, scalar) readonly buffer SitIndexBuffer {
+    uint data[];
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bitangent reconstruction helper
+//
+// Reconstruct the bitangent from normal + tangent (avoids storing it):
+//   vec3 B = sit_bitangent(v.normal, v.tangent);
+// ─────────────────────────────────────────────────────────────────────────────
+
+vec3 sit_bitangent(vec3 normal, vec4 tangent) {
+    return cross(normal, tangent.xyz) * tangent.w;
+}
+
+#endif // SIT_VERTEX_PULL_GLSLH
