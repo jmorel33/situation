@@ -566,60 +566,102 @@ graph TD
 
 ## Vulkan 1.4 Backend Lifecycle
 
-The Vulkan backend is built for high-performance deferred rendering. It uses **Dynamic Descriptor Management** and a **Bindless Architecture** where all textures reside in a global unbound array (`global_textures[]`), indexed via Push Constants. Frame synchronization is handled via fences and semaphores, with a per-frame **Graveyard** for safe resource destruction.
+The Vulkan 1.4 backend requires bindless texture support (`VK_EXT_descriptor_indexing` / `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT`) — devices that don't support it are rejected at init. Like the GL backend, it runs a dedicated render thread that dequeues frames from a ring buffer. Unlike GL, command recording happens on the **main thread** directly into `VkCommandBuffer`s, with the render thread only responsible for `vkQueueSubmit` + `vkQueuePresentKHR` + Graveyard flush.
+
+Key features:
+- **True Bindless** — a global `VkDescriptorSet` backed by a `SITUATION_MAX_TEXTURES`-element `COMBINED_IMAGE_SAMPLER` array with `UPDATE_AFTER_BIND`. Texture IDs are passed via Push Constants and indexed with `nonuniformEXT` in shaders
+- **VMA** — all GPU memory (images, buffers, staging) allocated through Vulkan Memory Allocator
+- **Dynamic Descriptor Manager** — growing pool chain (`VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT`), no fixed descriptor limits
+- **Per-frame Graveyards** — deferred resource destruction (buffers, images, pipelines, descriptor sets, framebuffers, render passes); flushed by the render thread after the frame fence signals
+- **Dynamic frame count** — `max_frames_in_flight` is negotiated against swapchain `minImageCount` at init; capped to `SITUATION_MAX_FRAMES_IN_FLIGHT`
+- **Dual command buffers per frame** — one graphics `VkCommandBuffer`, one compute `VkCommandBuffer`; both begun at acquire time
+- **Compute/graphics sync semaphore** — if compute writes data consumed by draw (indirect draw, vertex input), a `compute_finished_semaphore` is added to the submit wait list via `needs_compute_wait[frame_index]`
+- **O(1) Render Pass Cache** — `_SituationVulkanGetOrCreateRenderPass` hashes `SituationRenderPassInfo` to avoid recreating render passes each frame
+- **Swapchain recovery** — `VK_ERROR_OUT_OF_DATE_KHR` / `VK_SUBOPTIMAL_KHR` on present triggers `recreate_swapchain_request` (atomic); recreation runs at the top of the next acquire
+- **Persistent staging ring** — mapped CPU→GPU buffer for texture uploads, avoids `vkDeviceWaitIdle` during streaming
+- **Per-frame dynamic VBO** — 512 KB persistently-mapped `CPU_TO_GPU` vertex buffer per frame for text/quad/UI geometry
+- **Per-frame UBO** — persistently-mapped `ViewDataUBO` (view/projection matrices) updated by the main thread before submit
+- **Screenshot pipeline** — staging buffer allocated on-demand; copy recorded into the command buffer; CPU readback resolved after the frame fence on the main thread
 
 ```mermaid
 graph TD
-    subgraph Init ["Initialization"]
+    subgraph Init ["Initialization (Main Thread)"]
         I1["SituationInit"]
-        I2["Create Instance & Device"]
-        I3["Init VMA Allocator"]
-        I4["Create Swapchain"]
-        I5["Init Pipelines & Descriptors"]
+        I2["CreateInstance + Debug Messenger<br/>CreateSurface (GLFW KHR)"]
+        I3["PickPhysicalDevice<br/>Require bindless + VK 1.4<br/>FindQueueFamilies (graphics / compute / present)"]
+        I4["CreateLogicalDevice<br/>Enable: descriptor_indexing, dynamic_rendering,<br/>synchronization2, maintenance4, etc."]
+        I5["CreateAllocator (VMA)"]
+        I6["Negotiate frame count<br/>min(desired, swapchain.minImageCount)<br/>Alloc per-frame arrays (graveyards, fences,<br/>semaphores, cmd buffers, UBOs, VBOs)"]
+        I7["CreateSwapchain + ImageViews<br/>CreateRenderPass + DepthResources<br/>CreateFramebuffers"]
+        I8["Descriptor infrastructure<br/>Persistent pool + dynamic manager<br/>Layouts: UBO, SSBO, bindless, sampler,<br/>storage image, dynamic UBO, VD composite<br/>Global bindless set (UPDATE_AFTER_BIND)"]
+        I9["Per-frame UBOs + dynamic VBOs<br/>(persistently mapped CPU_TO_GPU)"]
+        I10["Pipeline layouts<br/>_SituationVulkanInitComputeLayouts<br/>_SituationVulkanInitGraphicsSpirvLayouts"]
+        I11["Internal renderers<br/>(quad, text, YPQ grade, VD compositor)<br/>(requires SITUATION_ENABLE_SHADER_COMPILER)"]
+        I12["Staging ring buffers<br/>Screenshot mutex + resources"]
+        I13["Render Thread starts<br/>pins to logical core 1 (configurable)"]
     end
 
-    subgraph Loop ["Frame Cycle"]
-        L1["SituationPollInputEvents"]
-        L2["SituationUpdateTimers"]
-        L3["User Update Logic"]
-        L4["SituationAcquireFrameCommandBuffer"]
-        L4a["Wait for Fence"]
-        L4b["Acquire Next Image"]
-        L4c["vkBeginCommandBuffer"]
-        L5["SituationCmdBeginRenderPass<br/>(O(1) Render Pass Cache)"]
+    subgraph MainThread ["Main Thread (per frame)"]
+        M1["SituationPollInputEvents<br/>Vulkan async shader poll<br/>framebuffer_resized check"]
+        M2["SituationUpdateTimers<br/>VD timers, hot-reload"]
+        M3["User Logic"]
+        M4["SituationAcquireFrameCommandBuffer<br/>① vkWaitForFences (frame_index fence)<br/>② Swapchain resize check (recreate if needed)<br/>③ vkAcquireNextImageKHR → acquired_image_indices<br/>④ vkResetFences<br/>⑤ vkResetCommandBuffer<br/>⑥ vkBeginCommandBuffer (graphics + compute)"]
+        M5["Record into VkCommandBuffer<br/>SituationCmdBeginRenderPass<br/>→ O(1) render pass cache<br/>→ VD FBO or swapchain framebuffer<br/>SituationCmdDraw* (bindless texture IDs in push consts)<br/>SituationCmdDispatchCompute<br/>SituationRenderVirtualDisplays"]
+        M6["SituationEndFrame<br/>vkEndCommandBuffer (graphics + compute)<br/>Update dynamic VBO + UBO for frame<br/>Enqueue frame_index → render_queue<br/>signal render_queue_cv"]
+    end
 
-        subgraph Bindless ["Bindless Tech"]
-            B1["Push Constants"]
-            B2["Texture ID -> global_textures"]
-            B3["nonuniformEXT Indexing"]
-        end
+    subgraph RenderThread ["Render Thread (dedicated)"]
+        RT1["cnd_timedwait 50ms<br/>on render_queue_cv"]
+        RT2["Dequeue frame_index"]
+        RT3["vkQueueSubmit<br/>Wait: image_available_semaphore<br/>+ compute_finished_semaphore (if needs_compute_wait)<br/>Signal: render_finished_semaphore<br/>Fence: in_flight_fences[frame_index]"]
+        RT4["_SituationVulkanWaitFencePumpWindow<br/>(pump window events while waiting)"]
+        RT5["vkQueuePresentKHR<br/>Wait: render_finished_semaphore<br/>On OUT_OF_DATE → set recreate_swapchain_request"]
+        RT6["Graveyard flush<br/>_SitFlushFrameResources(frame_index)<br/>via frame_refcount reaching 0<br/>(destroy deferred: images, buffers,<br/>pipelines, descriptor sets, render passes)"]
+        RT7["Record metrics<br/>submit → present latency histogram"]
+        RT8["Signal main_wait_cv<br/>(unblock SituationEndFrame backpressure)"]
 
-        L6["vkCmdDraw* / Dispatch"]
-        L7["vkEndCommandBuffer"]
-        L8["SituationEndFrame"]
+        RT1 --> RT2 --> RT3 --> RT4 --> RT5 --> RT6 --> RT7 --> RT8 --> RT1
+    end
 
-        subgraph Render ["Render Execution (Main or Thread)"]
-            S1["vkQueueSubmit"]
-            S2["vkQueuePresentKHR"]
-            S3["Flush Graveyard<br/>(Cleanup Deferred Resources)"]
-        end
+    subgraph Bindless ["Bindless Texture System"]
+        BL1["Texture registered in texture_registry<br/>slot_index = handle"]
+        BL2["vkUpdateDescriptorSets → global_bindless_set<br/>(binding 0, array element = slot_index)"]
+        BL3["Draw: Push Constants carry texture slot IDs"]
+        BL4["GLSL: layout(set=N) sampler2D textures[]<br/>texture(textures[nonuniformEXT(id)], uv)"]
+
+        BL1 --> BL2 --> BL3 --> BL4
+    end
+
+    subgraph Swapchain ["Swapchain Recovery"]
+        SC1["framebuffer_resized flag set<br/>(GLFW callback or acquire result)"]
+        SC2["_SituationVulkanRecreateSwapchain<br/>at top of next AcquireFrameCommandBuffer"]
+        SC3["Destroy old swapchain resources<br/>Recreate: swapchain, image views,<br/>depth, framebuffers"]
+
+        SC1 --> SC2 --> SC3
     end
 
     subgraph Exit ["Shutdown"]
         E1["SituationShutdown"]
-        E2["Wait Idle"]
-        E3["Destroy Swapchain & Resources"]
-        E4["Destroy Device & Instance"]
+        E2["Signal render thread shutdown<br/>drain render_queue"]
+        E3["vkDeviceWaitIdle"]
+        E4["_SituationCleanupVulkan<br/>Flush all graveyards<br/>Destroy: swapchain, pipelines,<br/>descriptor pools, images, buffers,<br/>sync objects, command pool, VMA, device, instance"]
+        E5["Destroy window + GLFW"]
     end
 
-    %% Flow
-    I1 --> I2 --> I3 --> I4 --> I5 --> L1
-    L1 --> L2 --> L3 --> L4
-    L4 --> L4a --> L4b --> L4c --> L5
-    L5 --> B1 --> B2 --> B3 --> L6
-    L6 --> L7 --> L8
-    L8 --> S1 --> S2 --> S3
-    S3 --> L1
-    L8 -- "Quit" --> E1
-    E1 --> E2 --> E3 --> E4
+    I1 --> I2 --> I3 --> I4 --> I5 --> I6 --> I7 --> I8 --> I9 --> I10 --> I11 --> I12 --> I13
+    I13 --> RT1
+    I12 --> M1
+    M1 --> M2 --> M3 --> M4 --> M5 --> M6
+    M6 -- "Next frame" --> M1
+    M6 -- "Quit" --> E1
+    E1 --> E2 --> E3 --> E4 --> E5
+    M4 -. "resize detected" .-> Swapchain
+    M5 -. "texture bind" .-> Bindless
 ```
+
+Key implementation details:
+- The render thread does **not** record commands — it only submits and presents. All `vkCmd*` calls happen on the main thread inside `SituationCmdBeginRenderPass` / `SituationCmdDraw*` / `SituationEndFrame`.
+- `vkWaitForFences` is called at `SituationAcquireFrameCommandBuffer` on the **main thread**, not the render thread. The render thread separately calls `_SituationVulkanWaitFencePumpWindow` after submit to pump window events while waiting for GPU completion before present.
+- Swapchain recreation is deferred — the `framebuffer_resized` atomic flag is set in the GLFW resize callback or on `VK_SUBOPTIMAL_KHR` present result, and the actual recreation happens at the top of the next `SituationAcquireFrameCommandBuffer` call.
+- The compute semaphore path (`needs_compute_wait`) is per-frame: set when `SituationCmdDispatchCompute` writes results that will be consumed by a subsequent draw (indirect draw buffer, vertex input). Cleared after submit.
+- Frame refcounts gate Graveyard flush — the count starts at 1 when a frame is enqueued and is decremented by the render thread after present. When it reaches 0, `_SitFlushFrameResources` runs, destroying all deferred resources for that frame slot.
