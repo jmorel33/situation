@@ -21,45 +21,42 @@ const situation = @import("situation");
 //    ESC        Quit
 // =============================================================================
 
-// Minimal vertex shader — generates a full-screen triangle from gl_VertexID alone.
-// No vertex buffer needed; call SituationCmdDraw(cmd, 3, 1, 0, 0).
-const VERT_SRC =
+// Vertex shaders — Vulkan uses gl_VertexIndex, OpenGL uses gl_VertexID.
+const VERT_SRC_VK =
     \\#version 460
     \\void main() {
-    \\    vec2 pos = vec2((gl_VertexID & 1) * 4.0 - 1.0, (gl_VertexID & 2) * 2.0 - 1.0);
+    \\    int vid = gl_VertexIndex;
+    \\    vec2 pos = vec2(float(vid & 1) * 4.0 - 1.0, float(vid & 2) * 2.0 - 1.0);
     \\    gl_Position = vec4(pos, 0.0, 1.0);
     \\}
 ;
 
-// Fragment shader: animated raster bars as background + raymarched spinning torus.
-// Uniforms: uTime (float, seconds), uResolution (vec2, pixels).
-const FRAG_SRC =
+const VERT_SRC_GL =
     \\#version 460
+    \\void main() {
+    \\    vec2 pos = vec2(float(gl_VertexID & 1) * 4.0 - 1.0, float(gl_VertexID & 2) * 2.0 - 1.0);
+    \\    gl_Position = vec4(pos, 0.0, 1.0);
+    \\}
+;
+
+// Fragment shaders — Vulkan uses push_constant block, OpenGL uses bare uniforms.
+// Both contain the full self-contained shader (no runtime concatenation).
+const FRAG_SRC_VK =
+    \\#version 460
+    \\layout(push_constant) uniform PC { float uTime; vec2 uResolution; } pc;
+    \\#define uTime       pc.uTime
+    \\#define uResolution pc.uResolution
     \\layout(location = 0) out vec4 fragColor;
-    \\layout(location = 0) uniform float uTime;
-    \\layout(location = 1) uniform vec2 uResolution;
-    \\
-    \\// Convert HSV to RGB — used for iridescent torus and bar colours.
     \\vec3 hsv2rgb(vec3 c) {
     \\    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
     \\    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
     \\    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
     \\}
-    \\
-    \\// Signed-distance field for a torus at the origin.
-    \\// t.x = major radius, t.y = tube radius.
-    \\float sdTorus(vec3 p, vec2 t) {
-    \\    vec2 q = vec2(length(p.xz) - t.x, p.y);
-    \\    return length(q) - t.y;
-    \\}
-    \\
+    \\float sdTorus(vec3 p, vec2 t) { vec2 q = vec2(length(p.xz) - t.x, p.y); return length(q) - t.y; }
     \\mat3 rotY(float a) { float c=cos(a),s=sin(a); return mat3(c,0,s, 0,1,0, -s,0,c); }
     \\mat3 rotX(float a) { float c=cos(a),s=sin(a); return mat3(1,0,0, 0,c,-s, 0,s,c); }
-    \\
     \\void main() {
     \\    vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / min(uResolution.x, uResolution.y);
-    \\
-    \\    // --- Background: six animated Gaussian glowing bars ---
     \\    float x_norm = gl_FragCoord.x / uResolution.x;
     \\    vec3 bg = vec3(0.02, 0.02, 0.05);
     \\    for (int i = 0; i < 6; i++) {
@@ -70,57 +67,88 @@ const FRAG_SRC =
     \\        float hue    = float(i) / 6.0 + uTime * 0.02;
     \\        bg += hsv2rgb(vec3(hue, 0.9, 1.0)) * glow * 0.6;
     \\    }
-    \\
-    \\    // --- Foreground: sphere-march the torus ---
-    \\    vec3 ro = vec3(0.0, 0.0, -3.5);                 // ray origin (camera)
-    \\    vec3 rd = normalize(vec3(uv, 1.2));              // ray direction
-    \\
-    \\    // Slowly wobble the torus orientation over time
+    \\    vec3 ro = vec3(0.0, 0.0, -3.5);
+    \\    vec3 rd = normalize(vec3(uv, 1.2));
     \\    mat3 rot = rotX(sin(uTime * 0.2) * 0.4) * rotY(uTime * 0.35);
-    \\
-    \\    float t = 0.0;
-    \\    float d = 0.0;
+    \\    float t = 0.0; float d = 0.0;
     \\    for (int i = 0; i < 64; i++) {
-    \\        vec3 p = ro + rd * t;
-    \\        p = rot * p;
+    \\        vec3 p = ro + rd * t; p = rot * p;
     \\        d = sdTorus(p, vec2(1.0, 0.38));
-    \\        if (d < 0.001 || t > 10.0) break;
-    \\        t += d;
+    \\        if (d < 0.001 || t > 10.0) break; t += d;
     \\    }
-    \\
     \\    vec3 col = bg;
     \\    if (d < 0.001) {
-    \\        // We hit the torus — shade it
     \\        vec3 p = rot * (ro + rd * t);
-    \\
-    \\        // Approximate surface normal via central differences
-    \\        vec2 tt = vec2(1.0, 0.38);
-    \\        vec2 e  = vec2(0.001, 0.0);
-    \\        vec3 n  = normalize(vec3(
+    \\        vec2 tt = vec2(1.0, 0.38); vec2 e = vec2(0.001, 0.0);
+    \\        vec3 n = normalize(vec3(
     \\            sdTorus(p + e.xyy, tt) - sdTorus(p - e.xyy, tt),
     \\            sdTorus(p + e.yxy, tt) - sdTorus(p - e.yxy, tt),
-    \\            sdTorus(p + e.yyx, tt) - sdTorus(p - e.yyx, tt)
-    \\        ));
-    \\
-    \\        // Blinn-Phong + rim lighting
-    \\        vec3  light   = normalize(vec3(0.4, 0.8, -0.5));
-    \\        float diff    = max(dot(n, light), 0.0);
-    \\        float spec    = pow(max(dot(reflect(-light, n), normalize(-rd)), 0.0), 32.0);
-    \\        float rim     = pow(1.0 - max(dot(n, normalize(-rd)), 0.0), 3.0);
-    \\
-    \\        // Iridescent hue driven by polar angle + time
-    \\        float angle  = atan(p.z, p.x);
-    \\        float hue    = fract(angle * 0.5 + uTime * 0.08);
+    \\            sdTorus(p + e.yyx, tt) - sdTorus(p - e.yyx, tt)));
+    \\        vec3 light = normalize(vec3(0.4, 0.8, -0.5));
+    \\        float diff = max(dot(n, light), 0.0);
+    \\        float spec = pow(max(dot(reflect(-light, n), normalize(-rd)), 0.0), 32.0);
+    \\        float rim  = pow(1.0 - max(dot(n, normalize(-rd)), 0.0), 3.0);
+    \\        float hue  = fract(atan(p.z, p.x) * 0.5 + uTime * 0.08);
     \\        vec3 baseCol = hsv2rgb(vec3(hue, 0.7, 0.9));
-    \\
-    \\        col = baseCol * (0.15 + diff * 0.7)
-    \\            + vec3(1.0)  * spec * 0.5
+    \\        col = baseCol * (0.15 + diff * 0.7) + vec3(1.0) * spec * 0.5
     \\            + hsv2rgb(vec3(hue + 0.3, 0.8, 1.0)) * rim * 0.6;
     \\    }
-    \\
-    \\    // Subtle scanline effect
-    \\    float scanline = 0.93 + 0.07 * sin(gl_FragCoord.x * 3.14159);
-    \\    fragColor = vec4(col * scanline, 1.0);
+    \\    fragColor = vec4(col * (0.93 + 0.07 * sin(gl_FragCoord.x * 3.14159)), 1.0);
+    \\}
+;
+
+const FRAG_SRC_GL =
+    \\#version 460
+    \\layout(location = 0) uniform float uTime;
+    \\layout(location = 1) uniform vec2  uResolution;
+    \\layout(location = 0) out vec4 fragColor;
+    \\vec3 hsv2rgb(vec3 c) {
+    \\    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    \\    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    \\    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+    \\}
+    \\float sdTorus(vec3 p, vec2 t) { vec2 q = vec2(length(p.xz) - t.x, p.y); return length(q) - t.y; }
+    \\mat3 rotY(float a) { float c=cos(a),s=sin(a); return mat3(c,0,s, 0,1,0, -s,0,c); }
+    \\mat3 rotX(float a) { float c=cos(a),s=sin(a); return mat3(1,0,0, 0,c,-s, 0,s,c); }
+    \\void main() {
+    \\    vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / min(uResolution.x, uResolution.y);
+    \\    float x_norm = gl_FragCoord.x / uResolution.x;
+    \\    vec3 bg = vec3(0.02, 0.02, 0.05);
+    \\    for (int i = 0; i < 6; i++) {
+    \\        float phase  = uTime * 0.3 + float(i) * 1.05;
+    \\        float center = 0.5 + 0.35 * sin(phase);
+    \\        float dist   = abs(x_norm - center);
+    \\        float glow   = exp(-dist * dist * 200.0);
+    \\        float hue    = float(i) / 6.0 + uTime * 0.02;
+    \\        bg += hsv2rgb(vec3(hue, 0.9, 1.0)) * glow * 0.6;
+    \\    }
+    \\    vec3 ro = vec3(0.0, 0.0, -3.5);
+    \\    vec3 rd = normalize(vec3(uv, 1.2));
+    \\    mat3 rot = rotX(sin(uTime * 0.2) * 0.4) * rotY(uTime * 0.35);
+    \\    float t = 0.0; float d = 0.0;
+    \\    for (int i = 0; i < 64; i++) {
+    \\        vec3 p = ro + rd * t; p = rot * p;
+    \\        d = sdTorus(p, vec2(1.0, 0.38));
+    \\        if (d < 0.001 || t > 10.0) break; t += d;
+    \\    }
+    \\    vec3 col = bg;
+    \\    if (d < 0.001) {
+    \\        vec3 p = rot * (ro + rd * t);
+    \\        vec2 tt = vec2(1.0, 0.38); vec2 e = vec2(0.001, 0.0);
+    \\        vec3 n = normalize(vec3(
+    \\            sdTorus(p + e.xyy, tt) - sdTorus(p - e.xyy, tt),
+    \\            sdTorus(p + e.yxy, tt) - sdTorus(p - e.yxy, tt),
+    \\            sdTorus(p + e.yyx, tt) - sdTorus(p - e.yyx, tt)));
+    \\        vec3 light = normalize(vec3(0.4, 0.8, -0.5));
+    \\        float diff = max(dot(n, light), 0.0);
+    \\        float spec = pow(max(dot(reflect(-light, n), normalize(-rd)), 0.0), 32.0);
+    \\        float rim  = pow(1.0 - max(dot(n, normalize(-rd)), 0.0), 3.0);
+    \\        float hue  = fract(atan(p.z, p.x) * 0.5 + uTime * 0.08);
+    \\        vec3 baseCol = hsv2rgb(vec3(hue, 0.7, 0.9));
+    \\        col = baseCol * (0.15 + diff * 0.7) + vec3(1.0) * spec * 0.5
+    \\            + hsv2rgb(vec3(hue + 0.3, 0.8, 1.0)) * rim * 0.6;
+    \\    }
+    \\    fragColor = vec4(col * (0.93 + 0.07 * sin(gl_FragCoord.x * 3.14159)), 1.0);
     \\}
 ;
 
@@ -233,8 +261,7 @@ pub fn main() !void {
 
     defer {
         if (@intFromPtr(graph) != 0) {
-            const setActiveGraph: *const fn (?*situation.types.SituationAudioGraph) callconv(.c) situation.types.SituationError = @ptrCast(&situation.foreign.SituationSetActiveGraph);
-            _ = setActiveGraph(null);
+            _ = situation.foreign.SituationSetActiveGraph(null);
             if (audio_ok) {
                 _ = situation.foreign.SituationTeardownVirtualMidiLoopback();
             }
@@ -243,10 +270,14 @@ pub fn main() !void {
     }
 
     // -------------------------------------------------------------------------
-    //  Compile the raster-bars + torus shader
+    //  Compile the raster-bars + torus shader — select variant based on backend.
     // -------------------------------------------------------------------------
+    const is_vulkan = situation.foreign.SituationGetGraphicsBackend() == .SIT_GRAPHICS_BACKEND_VULKAN;
     var shader = std.mem.zeroes(situation.SituationShader);
-    const shader_err = situation.foreign.SituationLoadShaderFromMemory(VERT_SRC, FRAG_SRC, &shader);
+    const shader_err = situation.foreign.SituationLoadShaderFromMemory(
+        @ptrCast(if (is_vulkan) VERT_SRC_VK.ptr else VERT_SRC_GL.ptr),
+        @ptrCast(if (is_vulkan) FRAG_SRC_VK.ptr else FRAG_SRC_GL.ptr),
+        &shader);
     if (shader_err != .SITUATION_SUCCESS) {
         std.debug.print("Shader compile failed: {s}\n", .{situation.foreign.SituationErrorToString(shader_err)});
         return;
@@ -360,9 +391,15 @@ pub fn main() !void {
                 _ = situation.foreign.SituationCmdBindPipeline(cmd, shader);
                 const w = @as(f32, @floatFromInt(situation.foreign.SituationGetRenderWidth()));
                 const h = @as(f32, @floatFromInt(situation.foreign.SituationGetRenderHeight()));
-                var resolution = [2]f32{ w, h };
-                _ = situation.foreign.SituationSetShaderUniform(shader, "uTime", &sim_time, .SIT_UNIFORM_FLOAT);
-                _ = situation.foreign.SituationSetShaderUniform(shader, "uResolution", &resolution, .SIT_UNIFORM_VEC2);
+                if (is_vulkan) {
+                    const ShaderPc = extern struct { time: f32, _pad: f32, res_x: f32, res_y: f32 };
+                    var pc = ShaderPc{ .time = sim_time, ._pad = 0, .res_x = w, .res_y = h };
+                    _ = situation.foreign.SituationCmdSetPushConstant(cmd, 0, &pc, @sizeOf(ShaderPc));
+                } else {
+                    _ = situation.foreign.SituationSetShaderUniform(shader, "uTime", &sim_time, .SIT_UNIFORM_FLOAT);
+                    var res = [2]f32{ w, h };
+                    _ = situation.foreign.SituationSetShaderUniform(shader, "uResolution", &res, .SIT_UNIFORM_VEC2);
+                }
                 _ = situation.foreign.SituationCmdDraw(cmd, 3, 1, 0, 0);
 
                 const sc = h / 600.0;
