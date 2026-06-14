@@ -104,7 +104,7 @@ static inline float isa110_apply_biquad(ISA110Biquad* bq, float x) {
     double y = ISA110_FMA(bq->b0, x,
                ISA110_FMA(bq->b1, bq->x1,
                ISA110_FMA(bq->b2, bq->x2,
-               -ISA110_FMA(bq->a1, bq->y1, bq->a2 * bq->y2)))));
+               -ISA110_FMA(bq->a1, bq->y1, bq->a2 * bq->y2))));
 
     bq->x2 = bq->x1; bq->x1 = x;
     bq->y2 = bq->y1; bq->y1 = y;
