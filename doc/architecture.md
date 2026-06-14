@@ -562,6 +562,16 @@ graph TD
     E1 --> E2 --> E3 --> E4 --> E5
 ```
 
+Key implementation details:
+- The Soft Command Buffer is the fundamental difference from Vulkan — `SituationCmd*` calls on the main thread push packets into `SoftBuffer[frame_index]`; the render thread drains and executes them via `_SituationGLExecuteCommands`. There is no direct GL call on the main thread during recording.
+- Context ownership is enforced via an atomic `gl_context_released` flag. The main thread calls `glfwMakeContextCurrent(NULL)` and sets the flag before the render thread starts; the render thread spins on the flag before calling `glfwMakeContextCurrent`. This prevents the race where both threads hold the context.
+- State hardening runs unconditionally at the top of every `_SituationGLExecuteCommands` call — depth test, cull face, blend, stencil, and VAO state are all reset to known values. This is what makes the backend resilient to ImGui and other middleware that leave GL state dirty.
+- Virtual Bindless (`_SituationVirtualBindlessInit`) is a software LRU that maps up to 32 texture units. When more textures than units are needed in a frame, the least-recently-used slot is evicted. This gives GLSL shaders a stable unit index without requiring `ARB_bindless_texture`.
+- VAO caching (`_SitGLGetCachedVAO`) keys on `SituationMesh` handle — the VAO is created once and reused every frame. Mesh VBOs are shared; the mesh VAO binds them at draw time via DSA (`glVertexArrayVertexBuffer`).
+- MDI batching accumulates draw calls into an indirect buffer and flushes with a single `glMultiDrawElementsIndirect` when the batch limit is hit or a state change forces a flush. This mirrors the draw-call reduction strategy of the Vulkan backend.
+- The per-frame Graveyard (`_SitGLFlushGraveyard`) runs before executing that frame's commands, not after present. This means resources from 2 frames ago are freed, matching the in-flight frame count fence semantics.
+- Canvas mode (`_SituationGLEnsureCanvasResources` / `_SituationGLBlitCanvasToDisplay`) renders to a fixed-resolution FBO and stretches to the window at frame end. When inactive, rendering goes directly to the default framebuffer.
+
 ---
 
 ## Vulkan 1.4 Backend Lifecycle
