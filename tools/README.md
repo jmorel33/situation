@@ -101,8 +101,6 @@ All three generators share the same patterns (from the Odin generator):
 
 - Variadic symbols → `MANUAL_BINDINGS.md` (not exported)
 
-- `--jam` filter via `jam_api_slice.txt`
-
 
 
 ## When to re-run
