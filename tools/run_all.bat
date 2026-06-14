@@ -12,10 +12,6 @@ python tools\generate_odin_bindings.py
 
 if errorlevel 1 exit /b 1
 
-python tools\generate_odin_bindings.py --jam
-
-if errorlevel 1 exit /b 1
-
 python tools\generate_zig_bindings.py
 
 if errorlevel 1 exit /b 1

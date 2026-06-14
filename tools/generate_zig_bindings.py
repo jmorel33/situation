@@ -392,6 +392,11 @@ def render_callbacks() -> str:
 
 
 def render_foreign(entries: list[ApiEntry]) -> str:
+    # Per-function parameter type overrides for cases where the C API accepts NULL
+    # but the parser emits a non-nullable pointer.  key = "FuncName.param_index" (0-based).
+    NULLABLE_OVERRIDES: dict[str, str] = {
+        "SituationSetActiveGraph.0": "?*SituationAudioGraph",
+    }
     # Collect all types referenced by the foreign functions and import them explicitly.
     type_pattern = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\b")
     referenced: set[str] = set()
@@ -441,7 +446,13 @@ def render_foreign(entries: list[ApiEntry]) -> str:
             lines.append(f"// SKIP (unparsed): {e.name}")
             continue
         ret, name, params = parsed
-        param_str = ", ".join(f"{n}: {t}" for n, t in params)
+        param_parts = []
+        for idx, (pn, pt) in enumerate(params):
+            override_key = f"{name}.{idx}"
+            if override_key in NULLABLE_OVERRIDES:
+                pt = NULLABLE_OVERRIDES[override_key]
+            param_parts.append(f"{pn}: {pt}")
+        param_str = ", ".join(param_parts)
         if e.comment:
             lines.append(f"/// {e.comment}")
         if ret == "void":
@@ -701,35 +712,86 @@ def main() -> None:
 
     build_zig = ROOT / "wrappers" / "zig" / "build.zig"
     build_zig.write_text(
-        f'''const std = @import("std");
+        '''const std = @import("std");
 
-pub fn build(b: *std.Build) void {{
-    const target = b.standardTargetOptions(.{{}});
-    const optimize = b.standardOptimizeOption(.{{}});
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
-    const situation_mod = b.createModule(.{{
+    // -Dexample=<name>  — which example subfolder to build (default: hello_situation)
+    const example_name = b.option([]const u8, "example", "Example to build") orelse "hello_situation";
+
+    // -Dlink=<opengl|vulkan|static-opengl|static-vulkan>  — backend/link mode
+    const link_mode = b.option([]const u8, "link", "Link mode: opengl, vulkan, static-opengl, static-vulkan") orelse "opengl";
+
+    // -Dmingw_lib=<path>  — MinGW lib dir (for static builds)
+    const mingw_lib = b.option([]const u8, "mingw_lib", "Path to MinGW lib directory");
+
+    // -Dmingw_gcc_lib=<path>  — MinGW GCC lib dir (for static builds)
+    const mingw_gcc_lib = b.option([]const u8, "mingw_gcc_lib", "Path to MinGW GCC lib directory");
+
+    // -Dvk_sdk=<path>  — Vulkan SDK root (for static Vulkan builds)
+    const vk_sdk = b.option([]const u8, "vk_sdk", "Path to Vulkan SDK root");
+
+    const is_vulkan = std.mem.startsWith(u8, link_mode, "vulkan") or
+                      std.mem.eql(u8, link_mode, "static-vulkan");
+    const is_static = std.mem.startsWith(u8, link_mode, "static");
+
+    const src_path = b.fmt("examples/{s}/main.zig", .{example_name});
+
+    const situation_mod = b.createModule(.{
         .root_source_file = b.path("src/situation.zig"),
         .target = target,
         .optimize = optimize,
-    }});
+    });
 
-    // In Zig 0.17-dev, linkLibC / addLibraryPath / linkSystemLibrary moved to Module.
-    const exe_mod = b.createModule(.{{
-        .root_source_file = b.path("examples/hello_situation/main.zig"),
+    const exe_mod = b.createModule(.{
+        .root_source_file = b.path(src_path),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{{.{{ .name = "situation", .module = situation_mod }}}},
-    }});
-    exe_mod.addLibraryPath(b.path("../../build/dll"));
-    exe_mod.linkSystemLibrary("{args.lib}", .{{}});
+        .imports = &.{.{ .name = "situation", .module = situation_mod }},
+    });
 
-    const exe = b.addExecutable(.{{
-        .name = "hello_situation",
+    exe_mod.addLibraryPath(b.path("../../build/dll"));
+
+    if (is_static) {
+        const lib_name = if (is_vulkan) "situation_vulkan" else "situation_opengl";
+        exe_mod.linkSystemLibrary(lib_name, .{});
+        if (mingw_lib) |ml| exe_mod.addLibraryPath(.{ .cwd_relative = ml });
+        if (mingw_gcc_lib) |gl| exe_mod.addLibraryPath(.{ .cwd_relative = gl });
+        exe_mod.linkSystemLibrary("gdi32", .{});
+        exe_mod.linkSystemLibrary("winmm", .{});
+        exe_mod.linkSystemLibrary("user32", .{});
+        exe_mod.linkSystemLibrary("shell32", .{});
+        exe_mod.linkSystemLibrary("ole32", .{});
+        exe_mod.linkSystemLibrary("iphlpapi", .{});
+        exe_mod.linkSystemLibrary("setupapi", .{});
+        exe_mod.linkSystemLibrary("dxgi", .{});
+        exe_mod.linkSystemLibrary("propsys", .{});
+        exe_mod.linkSystemLibrary("shlwapi", .{});
+        exe_mod.linkSystemLibrary("uuid", .{});
+        exe_mod.linkSystemLibrary("xinput", .{});
+        exe_mod.linkSystemLibrary("ws2_32", .{});
+        exe_mod.linkSystemLibrary("psapi", .{});
+        if (is_vulkan) {
+            if (vk_sdk) |sdk| exe_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/Lib", .{sdk}) });
+            exe_mod.linkSystemLibrary("vulkan-1", .{});
+            exe_mod.linkSystemLibrary("shaderc_combined", .{});
+        } else {
+            exe_mod.linkSystemLibrary("opengl32", .{});
+        }
+    } else {
+        const lib_name = if (is_vulkan) "situation_vulkan" else "situation_opengl";
+        exe_mod.linkSystemLibrary(lib_name, .{});
+    }
+
+    const exe = b.addExecutable(.{
+        .name = example_name,
         .root_module = exe_mod,
-    }});
+    });
     b.installArtifact(exe);
-}}
+}
 ''',
         encoding="utf-8",
     )

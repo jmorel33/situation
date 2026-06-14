@@ -3,8 +3,8 @@
 
 Outputs (under wrappers/Odin/):
   situation_types.odin      — enums, records, opaque handles
-  situation_callbacks.odin  — proc \"c\" callback aliases
-  situation_foreign.odin    — foreign situation {{ ... }} imports
+  situation_callbacks.odin  — proc "c" callback aliases
+  situation_foreign.odin    — foreign situation { ... } imports
   situation_constants.odin  — selected SIT_* #defines
   situation_helpers.odin    — frame macro helpers
   API_INDEX.md              — categorized binding index
@@ -12,7 +12,6 @@ Outputs (under wrappers/Odin/):
 
 Usage:
   python tools/generate_odin_bindings.py
-  python tools/generate_odin_bindings.py --jam
   python tools/generate_odin_bindings.py --dll build/dll/situation_opengl.dll
 
 Odin compiler: _languages/odin/dist/odin.exe
@@ -35,12 +34,10 @@ from situation_api_parser import (
     parse_enums,
     parse_errno_enum,
     parse_structs,
-    load_jam_slice,
     read_version,
 )
 
 OUT_DIR = ROOT / "wrappers" / "odin"
-JAM_SLICE_FILE = ROOT / "tools" / "jam_api_slice.txt"
 PACKAGE_ROOT = ROOT / "wrappers" / "odin" / "situation.odin"
 
 MANUAL_FUNCTIONS = {
@@ -466,12 +463,11 @@ def render_manual_md(entries: list[ApiEntry]) -> str:
     return "\n".join(lines)
 
 
-def render_api_index(entries: list[ApiEntry], version: str, jam: bool) -> str:
-    mode = "jam slice" if jam else "full"
+def render_api_index(entries: list[ApiEntry], version: str) -> str:
     lines = [
         "# Situation Odin bindings — API index",
         "",
-        f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} from `sit/situation_api.h` — Situation **{version}** ({mode})._",
+        f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} from `sit/situation_api.h` — Situation **{version}**._",
         "",
         f"**Foreign imports:** {sum(1 for e in entries if not e.manual_only and e.name not in MANUAL_FUNCTIONS)}",
         "",
@@ -508,13 +504,6 @@ import "core:c"
 // situation_types.odin, situation_foreign.odin, situation_callbacks.odin,
 // situation_constants.odin, situation_helpers.odin live in generated/
 '''
-
-
-def filter_jam(entries: list[ApiEntry], jam_names: set[str]) -> list[ApiEntry]:
-    if not jam_names:
-        return entries
-    return [e for e in entries if e.name in jam_names]
-
 
 def collect_referenced_types(entries: list[ApiEntry]) -> set[str]:
     """Collect all Odin type names referenced in foreign proc signatures."""
@@ -596,7 +585,6 @@ def render_opaque_stubs(entries: list[ApiEntry]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate Odin FFI bindings for Situation")
-    parser.add_argument("--jam", action="store_true", help="Emit jam API slice only")
     parser.add_argument(
         "--dll",
         default="../../build/dll/situation_opengl.lib",
@@ -605,9 +593,7 @@ def main() -> None:
     args = parser.parse_args()
 
     version = read_version()
-    all_entries = parse_api_header()
-    jam_names = load_jam_slice(JAM_SLICE_FILE)
-    entries = filter_jam(all_entries, jam_names) if args.jam else all_entries
+    entries = parse_api_header()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -618,6 +604,7 @@ def main() -> None:
         f'import "core:c"\n\n'
     )
 
+    # Full bindings
     (OUT_DIR / "situation_types.odin").write_text(
         gen_header + render_manual_types() + "\n" + render_enums() + render_opaque_stubs(entries),
         encoding="utf-8",
@@ -625,8 +612,7 @@ def main() -> None:
     (OUT_DIR / "situation_callbacks.odin").write_text(
         gen_header + render_callbacks(), encoding="utf-8"
     )
-    foreign_name = "situation_foreign_jam.odin" if args.jam else "situation_foreign.odin"
-    (OUT_DIR / foreign_name).write_text(
+    (OUT_DIR / "situation_foreign.odin").write_text(
         gen_header + render_foreign(entries, args.dll.replace("\\", "/")),
         encoding="utf-8",
     )
@@ -636,12 +622,11 @@ def main() -> None:
     (OUT_DIR / "situation_helpers.odin").write_text(
         gen_header + render_helpers(), encoding="utf-8"
     )
-    index_name = "API_INDEX_JAM.md" if args.jam else "API_INDEX.md"
-    (OUT_DIR / index_name).write_text(
-        render_api_index(entries, version, args.jam), encoding="utf-8"
+    (OUT_DIR / "API_INDEX.md").write_text(
+        render_api_index(entries, version), encoding="utf-8"
     )
     (OUT_DIR / "MANUAL_BINDINGS.md").write_text(
-        render_manual_md(all_entries), encoding="utf-8"
+        render_manual_md(entries), encoding="utf-8"
     )
 
     # situation.odin is the hand-editable package entry (not overwritten if present)
@@ -650,9 +635,9 @@ def main() -> None:
 
     auto = sum(1 for e in entries if not e.manual_only and e.name not in MANUAL_FUNCTIONS)
     print(f"Situation {version}")
-    print(f"Odin bindings: {auto} foreign procs ({'jam' if args.jam else 'full'}), {len(all_entries)} total SITAPI")
-    print(f"Wrote {OUT_DIR.relative_to(ROOT)}/{foreign_name}")
-    print(f"Wrote {OUT_DIR.relative_to(ROOT)}/{index_name}")
+    print(f"Odin bindings: {auto} foreign procs, {len(entries)} total SITAPI")
+    print(f"Wrote {OUT_DIR.relative_to(ROOT)}/situation_foreign.odin")
+    print(f"Wrote {OUT_DIR.relative_to(ROOT)}/API_INDEX.md")
     print(f"Wrote {PACKAGE_ROOT.relative_to(ROOT)}")
 
 

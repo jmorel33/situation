@@ -92,7 +92,32 @@ def parse_api_header(path: Path = API_H) -> list[ApiEntry]:
     entries: list[ApiEntry] = []
     pending_comment: list[str] = []
 
-    for raw in lines:
+    # Join multi-line SITAPI declarations into a single logical line before processing.
+    # A multi-line declaration starts with SITAPI and has no ';' until a later line.
+    joined_lines: list[str] = []
+    i = 0
+    while i < len(lines):
+        raw = lines[i].rstrip()
+        stripped = raw.strip()
+        if stripped.startswith("SITAPI") and ";" not in stripped:
+            # Consume continuation lines until we hit the closing ');'
+            parts = [stripped]
+            i += 1
+            while i < len(lines):
+                cont = lines[i].rstrip().strip()
+                parts.append(cont)
+                i += 1
+                if ";" in cont:
+                    break
+            # Collapse to single line, normalise whitespace in param list
+            joined = " ".join(parts)
+            joined = re.sub(r"\s+", " ", joined)
+            joined_lines.append(joined)
+        else:
+            joined_lines.append(raw)
+            i += 1
+
+    for raw in joined_lines:
         line = raw.rstrip()
         sm = SECTION_RE.match(line.strip())
         if sm:
