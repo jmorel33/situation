@@ -12,7 +12,6 @@ Outputs (under wrappers/rust/src/):
 
 Usage:
   python tools/generate_rust_bindings.py
-  python tools/generate_rust_bindings.py --jam
   python tools/generate_rust_bindings.py --lib situation_opengl
 """
 
@@ -26,7 +25,6 @@ from pathlib import Path
 from binding_common import (
     MANUAL_FUNCTIONS,
     build_define_map,
-    filter_jam,
     foreign_entries,
     gen_banner,
     normalize_c_type,
@@ -43,12 +41,10 @@ from situation_api_parser import (
     parse_defines,
     parse_enums,
     parse_errno_enum,
-    load_jam_slice,
     read_version,
 )
 
 OUT_DIR = ROOT / "wrappers" / "rust" / "src"
-JAM_SLICE_FILE = ROOT / "tools" / "jam_api_slice.txt"
 LIB_RS = ROOT / "wrappers" / "rust" / "src" / "lib.rs"
 
 CTYPE_MAP: dict[str, str] = {
@@ -821,12 +817,11 @@ def render_manual_md(entries: list[ApiEntry]) -> str:
     return "\n".join(lines)
 
 
-def render_api_index(entries: list[ApiEntry], version: str, jam: bool) -> str:
-    mode = "jam slice" if jam else "full"
+def render_api_index(entries: list[ApiEntry], version: str) -> str:
     lines = [
         "# Situation Rust bindings — API index",
         "",
-        f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} from `sit/situation_api.h` — Situation **{version}** ({mode})._",
+        f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} from `sit/situation_api.h` — Situation **{version}**._",
         "",
         f"**Foreign imports:** {len(foreign_entries(entries))}",
         "",
@@ -959,8 +954,7 @@ def write_generated(path: Path, version: str, body: str) -> None:
     path.write_text(render_file_header(version, body) + body, encoding="utf-8")
 
 
-def render_lib_rs(version: str, jam: bool) -> str:
-    ffi_mod = "situation_ffi_jam" if jam else "situation_ffi"
+def render_lib_rs(version: str) -> str:
     return f'''//! Rust FFI for the Situation C library (auto-generated bindings).
 //! Situation {version}
 //!
@@ -976,13 +970,13 @@ def render_lib_rs(version: str, jam: bool) -> str:
 
 pub mod situation_types;
 pub mod situation_callbacks;
-pub mod {ffi_mod};
+pub mod situation_ffi;
 pub mod situation_constants;
 pub mod situation_helpers;
 
 pub use situation_types::*;
 pub use situation_callbacks::*;
-pub use {ffi_mod}::*;
+pub use situation_ffi::*;
 pub use situation_constants::*;
 pub use situation_helpers::*;
 '''
@@ -990,7 +984,6 @@ pub use situation_helpers::*;
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate Rust FFI bindings for Situation")
-    parser.add_argument("--jam", action="store_true", help="Emit jam API slice only")
     parser.add_argument(
         "--lib",
         default="situation_opengl",
@@ -999,34 +992,25 @@ def main() -> None:
     args = parser.parse_args()
 
     version = read_version()
-    all_entries = parse_api_header()
-    jam_names = load_jam_slice(JAM_SLICE_FILE)
-    entries = filter_jam(all_entries, jam_names) if args.jam else all_entries
+    entries = parse_api_header()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (ROOT / "wrappers" / "rust").mkdir(parents=True, exist_ok=True)
 
     types_body = render_manual_types() + "\n" + render_enums() + render_opaque_stubs(entries)
-    if not args.jam:
-        write_generated(OUT_DIR / "situation_types.rs", version, types_body)
-        write_generated(OUT_DIR / "situation_callbacks.rs", version, render_callbacks())
-        write_generated(OUT_DIR / "situation_constants.rs", version, render_constants())
-    ffi_name = "situation_ffi_jam.rs" if args.jam else "situation_ffi.rs"
-    ffi_content = render_ffi(entries, args.lib)
-    write_generated(OUT_DIR / ffi_name, version, ffi_content)
-    helpers_name = "situation_helpers_jam.rs" if args.jam else "situation_helpers.rs"
-    write_generated(OUT_DIR / helpers_name, version, render_helpers(entries))
-    index_name = "API_INDEX_JAM.md" if args.jam else "API_INDEX.md"
-    (OUT_DIR.parent / index_name).write_text(
-        render_api_index(entries, version, args.jam), encoding="utf-8"
+    write_generated(OUT_DIR / "situation_types.rs", version, types_body)
+    write_generated(OUT_DIR / "situation_callbacks.rs", version, render_callbacks())
+    write_generated(OUT_DIR / "situation_constants.rs", version, render_constants())
+    write_generated(OUT_DIR / "situation_ffi.rs", version, render_ffi(entries, args.lib))
+    write_generated(OUT_DIR / "situation_helpers.rs", version, render_helpers(entries))
+    (OUT_DIR.parent / "API_INDEX.md").write_text(
+        render_api_index(entries, version), encoding="utf-8"
     )
     (OUT_DIR.parent / "MANUAL_BINDINGS.md").write_text(
-        render_manual_md(all_entries), encoding="utf-8"
+        render_manual_md(entries), encoding="utf-8"
     )
 
-    # lib.rs is regenerated to point at the correct ffi module (full vs jam overwrites mod name)
-    if not args.jam:
-        LIB_RS.write_text(render_lib_rs(version, jam=False), encoding="utf-8")
+    LIB_RS.write_text(render_lib_rs(version), encoding="utf-8")
 
     cargo_toml = ROOT / "wrappers" / "rust" / "Cargo.toml"
     if not cargo_toml.exists():
@@ -1053,9 +1037,9 @@ path = "examples/hello_situation.rs"
 
     auto = len(foreign_entries(entries))
     print(f"Situation {version}")
-    print(f"Rust bindings: {auto} extern fn ({'jam' if args.jam else 'full'}), {len(all_entries)} total SITAPI")
-    print(f"Wrote {OUT_DIR.relative_to(ROOT)}/{ffi_name}")
-    print(f"Wrote wrappers/rust/{index_name}")
+    print(f"Rust bindings: {auto} extern fn, {len(entries)} total SITAPI")
+    print(f"Wrote {OUT_DIR.relative_to(ROOT)}/situation_ffi.rs")
+    print(f"Wrote wrappers/rust/API_INDEX.md")
 
 
 if __name__ == "__main__":

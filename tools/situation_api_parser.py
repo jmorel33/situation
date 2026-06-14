@@ -347,17 +347,6 @@ def parse_structs(path: Path = API_H) -> list[StructEntry]:
     return list(by_name.values())
 
 
-def load_jam_slice(path: Path) -> set[str]:
-    if not path.exists():
-        return set()
-    names: set[str] = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            names.add(line)
-    return names
-
-
 def categorize_entries(entries: list[ApiEntry]) -> dict[str, list[ApiEntry]]:
     out: dict[str, list[ApiEntry]] = {}
     for e in entries:

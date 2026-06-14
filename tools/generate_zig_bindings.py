@@ -12,7 +12,6 @@ Outputs (under wrappers/zig/src/):
 
 Usage:
   python tools/generate_zig_bindings.py
-  python tools/generate_zig_bindings.py --jam
   python tools/generate_zig_bindings.py --lib situation_opengl
 """
 
@@ -26,7 +25,6 @@ from pathlib import Path
 from binding_common import (
     MANUAL_FUNCTIONS,
     build_define_map,
-    filter_jam,
     foreign_entries,
     gen_banner,
     normalize_c_type,
@@ -43,12 +41,10 @@ from situation_api_parser import (
     parse_defines,
     parse_enums,
     parse_errno_enum,
-    load_jam_slice,
     read_version,
 )
 
 OUT_DIR = ROOT / "wrappers" / "zig" / "src"
-JAM_SLICE_FILE = ROOT / "tools" / "jam_api_slice.txt"
 PACKAGE_ROOT = ROOT / "wrappers" / "zig" / "src" / "situation.zig"
 
 CTYPE_MAP: dict[str, str] = {
@@ -511,12 +507,11 @@ def render_manual_md(entries: list[ApiEntry]) -> str:
     return "\n".join(lines)
 
 
-def render_api_index(entries: list[ApiEntry], version: str, jam: bool) -> str:
-    mode = "jam slice" if jam else "full"
+def render_api_index(entries: list[ApiEntry], version: str) -> str:
     lines = [
         "# Situation Zig bindings — API index",
         "",
-        f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} from `sit/situation_api.h` — Situation **{version}** ({mode})._",
+        f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} from `sit/situation_api.h` — Situation **{version}**._",
         "",
         f"**Foreign imports:** {len(foreign_entries(entries))}",
         "",
@@ -660,7 +655,6 @@ pub const situationSuccess    = helpers.situationSuccess;
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate Zig FFI bindings for Situation")
-    parser.add_argument("--jam", action="store_true", help="Emit jam API slice only")
     parser.add_argument(
         "--lib",
         default="situation_opengl",
@@ -669,9 +663,7 @@ def main() -> None:
     args = parser.parse_args()
 
     version = read_version()
-    all_entries = parse_api_header()
-    jam_names = load_jam_slice(JAM_SLICE_FILE)
-    entries = filter_jam(all_entries, jam_names) if args.jam else all_entries
+    entries = parse_api_header()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (ROOT / "wrappers" / "zig").mkdir(parents=True, exist_ok=True)
@@ -689,8 +681,7 @@ def main() -> None:
     (OUT_DIR / "situation_callbacks.zig").write_text(
         gen_header + render_callbacks(), encoding="utf-8"
     )
-    foreign_name = "situation_foreign_jam.zig" if args.jam else "situation_foreign.zig"
-    (OUT_DIR / foreign_name).write_text(
+    (OUT_DIR / "situation_foreign.zig").write_text(
         gen_header + render_foreign(entries), encoding="utf-8"
     )
     (OUT_DIR / "situation_constants.zig").write_text(
@@ -699,12 +690,11 @@ def main() -> None:
     (OUT_DIR / "situation_helpers.zig").write_text(
         gen_header + render_helpers(), encoding="utf-8"
     )
-    index_name = "API_INDEX_JAM.md" if args.jam else "API_INDEX.md"
-    (OUT_DIR.parent / index_name).write_text(
-        render_api_index(entries, version, args.jam), encoding="utf-8"
+    (OUT_DIR.parent / "API_INDEX.md").write_text(
+        render_api_index(entries, version), encoding="utf-8"
     )
     (OUT_DIR.parent / "MANUAL_BINDINGS.md").write_text(
-        render_manual_md(all_entries), encoding="utf-8"
+        render_manual_md(entries), encoding="utf-8"
     )
 
     if not PACKAGE_ROOT.exists():
@@ -798,9 +788,9 @@ pub fn build(b: *std.Build) void {
 
     auto = len(foreign_entries(entries))
     print(f"Situation {version}")
-    print(f"Zig bindings: {auto} extern fn ({'jam' if args.jam else 'full'}), {len(all_entries)} total SITAPI")
-    print(f"Wrote {OUT_DIR.relative_to(ROOT)}/{foreign_name}")
-    print(f"Wrote wrappers/zig/{index_name}")
+    print(f"Zig bindings: {auto} extern fn, {len(entries)} total SITAPI")
+    print(f"Wrote {OUT_DIR.relative_to(ROOT)}/situation_foreign.zig")
+    print(f"Wrote wrappers/zig/API_INDEX.md")
 
 
 if __name__ == "__main__":

@@ -97,12 +97,6 @@ def resolve_enum_value(value: str, define_map: dict[str, str]) -> str:
     return resolved
 
 
-def filter_jam(entries: list[ApiEntry], jam_names: set[str]) -> list[ApiEntry]:
-    if not jam_names:
-        return entries
-    return [e for e in entries if e.name in jam_names]
-
-
 def foreign_entries(entries: list[ApiEntry]) -> list[ApiEntry]:
     return [e for e in entries if not e.manual_only and e.name not in MANUAL_FUNCTIONS]
 
