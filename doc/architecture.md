@@ -482,58 +482,84 @@ graph TD
 
 ---
 
-The OpenGL backend is designed to be "stateless" from the user's perspective while managing complex state caching internally. It features a "Soft Command Buffer" that records commands for execution either immediately or on a dedicated render thread. Key features include **MDI Auto-Batching** for geometry and **Virtual Bindless** (LRU Slot Management) for texture compatibility.
+## OpenGL 4.6 Backend Lifecycle
+
+The OpenGL 4.6 backend requires `GL_ARB_direct_state_access` and enforces a strict version check at init — anything below 4.6 is rejected. It is built around a **Soft Command Buffer** (`SituationGLSoftCommandBuffer`) that records all draw commands on the main thread and dispatches them for execution on the dedicated render thread. The render thread owns the GL context exclusively after init; the main thread releases it via a `gl_context_released` atomic handoff before the render thread acquires it.
+
+Key features:
+- **State hardening** — critical GL state is reset at the top of every `_SituationGLExecuteCommands` call, preventing context poisoning from external middleware (ImGui, etc.)
+- **Virtual Bindless** — LRU slot management wrapping `glBindTextureUnit` for texture binding within GLSL without true bindless handles
+- **MDI Auto-Batching** — `glMultiDrawElementsIndirect` for geometry, reducing draw call overhead
+- **Per-frame fences** — `glFenceSync` / `glClientWaitSync` for GPU/CPU synchronization, mirroring Vulkan's fence semantics
+- **Shadow state + dirty flag** — viewport and ortho projection rebuild on resize is deferred to the render thread via `gl.shadow_state_dirty`
+- **Per-frame Graveyard** — deferred buffer/texture/VAO deletion after fence signals, flushed by `_SitGLFlushGraveyard`
+- **SPIR-V support** — `GL_ARB_gl_spirv` checked at init; available if present, GLSL fallback otherwise. Async compile via `KHR_parallel_shader_compile` / `ARB_parallel_shader_compile`
+- **Canvas** — optional fixed-resolution render target that blits to the window at frame end (`_SituationGLBlitCanvasToDisplay`), enabling integer-scaled retro rendering
 
 ```mermaid
 graph TD
-    %% Nodes
-    subgraph Init ["Initialization"]
+    subgraph Init ["Initialization (Main Thread)"]
         I1["SituationInit"]
-        I2["Init OpenGL Context"]
-        I3["Init Subsystems<br/>(Quad, Text, RingBuffer)"]
-        I4["Init Virtual Bindless"]
+        I2["glfwMakeContextCurrent<br/>gladLoadGLLoader"]
+        I3["Version check: GL 4.6+<br/>GL_ARB_direct_state_access required<br/>GL_ARB_gl_spirv optional<br/>KHR/ARB_parallel_shader_compile optional"]
+        I4["_SituationVirtualBindlessInit<br/>LRU slot table, texture unit map"]
+        I5["Global VAO + Mesh VAO<br/>(Pos3, Norm3, Tan4, UV2 layout)"]
+        I6["Ring buffer + MDI buffer<br/>Persistent staging, frame fences"]
+        I7["Init internal renderers<br/>(quad, text, YPQ grade, VD compositor)"]
+        I8["glfwMakeContextCurrent(NULL)<br/>atomic gl_context_released = true"]
+        I9["Render Thread acquires context<br/>glfwMakeContextCurrent"]
     end
 
-    subgraph Loop ["Frame Cycle"]
-        L1["SituationPollInputEvents"]
-        L2["SituationUpdateTimers"]
-        L3["User Update Logic"]
-        L4["SituationAcquireFrameCommandBuffer<br/>(Get SoftBuffer)"]
-        L5["Record Commands<br/>(SoftBuffer)"]
-        L6["SituationEndFrame"]
+    subgraph MainThread ["Main Thread (per frame)"]
+        M1["SituationPollInputEvents<br/>shadow_state_dirty on resize"]
+        M2["SituationUpdateTimers"]
+        M3["User Logic"]
+        M4["SituationAcquireFrameCommandBuffer<br/>get SoftBuffer[frame_index]"]
+        M5["Record commands into SoftBuffer<br/>SituationCmdBeginRenderPass<br/>SituationCmdDraw* / Dispatch<br/>VD content-update hooks fire here"]
+        M6["SituationEndFrame<br/>enqueue frame_index to render_queue<br/>signal render_queue_cv"]
+    end
 
-        subgraph Render ["Render Execution (Main or Thread)"]
-            R1["Execute SoftBuffer"]
-            R2{"Command Type?"}
-            R2 -- "Draw Mesh" --> R3["MDI Auto-Batching"]
-            R2 -- "Bind Texture" --> R4["Virtual Bindless LRU"]
-            R2 -- "Other" --> R5["Direct GL Calls"]
-            R3 --> R6["glMultiDrawElementsIndirect"]
-            R4 --> R7["glBindTextureUnit"]
-            R5 --> R8["Draw/Dispatch"]
-            R6 --> R9{"More Commands?"}
-            R7 --> R9
-            R8 --> R9
-            R9 -- "Yes" --> R2
-            R9 -- "No" --> S1["glfwSwapBuffers"]
-            S1 --> S2["glFenceSync"]
-            S2 --> S3["Flush Graveyard<br/>(Deferred Cleanup)"]
-        end
+    subgraph RenderThread ["Render Thread (dedicated, owns GL context)"]
+        RT1["cnd_timedwait on render_queue_cv<br/>(50ms timeout)"]
+        RT2["Dequeue frame_index"]
+        RT3["glClientWaitSync on frame_fence<br/>(wait for GPU to finish prior frame)"]
+        RT4["_SitGLFlushGraveyard(frame_index)<br/>delete deferred buffers / textures / VAOs"]
+        RT5["_SituationGLExecuteCommands(SoftBuffer)<br/>State hardening reset<br/>Resize: rebuild ortho + canvas FBO<br/>Dispatch each packet in order"]
+        RT6{"Packet type?"}
+        RT7["BeginRenderPass<br/>glBindFramebuffer (VD FBO or default)<br/>glViewport / glClear"]
+        RT8["Draw Mesh<br/>Cached VAO bind<br/>MDI → glMultiDrawElementsIndirect"]
+        RT9["Bind Texture<br/>Virtual Bindless LRU<br/>glBindTextureUnit"]
+        RT10["Compute Dispatch<br/>glUseProgram (compute)<br/>glDispatchCompute + glMemoryBarrier"]
+        RT11["Other<br/>(uniforms, barriers, push constants)"]
+        RT12["_SituationGLBlitCanvasToDisplay<br/>(canvas mode only)"]
+        RT13["glfwSwapBuffers"]
+        RT14["glFenceSync → frame_fences[frame_index]<br/>glFlush"]
+
+        RT1 --> RT2 --> RT3 --> RT4 --> RT5 --> RT6
+        RT6 -- "BeginRenderPass" --> RT7 --> RT6
+        RT6 -- "Draw" --> RT8 --> RT6
+        RT6 -- "Texture" --> RT9 --> RT6
+        RT6 -- "Compute" --> RT10 --> RT6
+        RT6 -- "Other" --> RT11 --> RT6
+        RT6 -- "Done" --> RT12 --> RT13 --> RT14
+        RT14 --> RT1
     end
 
     subgraph Exit ["Shutdown"]
         E1["SituationShutdown"]
-        E2["Cleanup Subsystems"]
-        E3["Destroy Context"]
+        E2["Signal render thread shutdown<br/>drain queue"]
+        E3["glFinish + release context"]
+        E4["_SituationCleanupOpenGL<br/>VAOs, shaders, pipelines<br/>flush remaining graveyard"]
+        E5["Destroy window + GLFW"]
     end
 
-    %% Flow
-    I1 --> I2 --> I3 --> I4 --> L1
-    L1 --> L2 --> L3 --> L4 --> L5 --> L6
-    L6 --> R1
-    S3 --> L1
-    L6 -- "Quit" --> E1
-    E1 --> E2 --> E3
+    I1 --> I2 --> I3 --> I4 --> I5 --> I6 --> I7 --> I8 --> I9
+    I9 --> RT1
+    I8 --> M1
+    M1 --> M2 --> M3 --> M4 --> M5 --> M6
+    M6 -- "Next frame" --> M1
+    M6 -- "Quit" --> E1
+    E1 --> E2 --> E3 --> E4 --> E5
 ```
 
 ---
