@@ -1,0 +1,10 @@
+﻿cargo.exe : error: could not execute process `rustc -vV` (never executed)
+At C:\Users\User\AppData\Local\Temp\ps-script-4e7cb2f4-bf03-4a1a-a37f-cba7ab1c13b1.ps1:113 char:228
++ ... inker=gcc"; & ".\_languages\Rust\cargo\bin\cargo.exe" build --example ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (error: could no...never executed):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+Caused by:
+  program not found
