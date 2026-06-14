@@ -1,0 +1,11 @@
+[demon_hunt] loading embedded Vulkan SPIR-V (vs=632 fs=3297456 bytes, no runtime GLSL).
+[demon_hunt] embedded SPIR-V kickoff OK (specialize/link polled per frame).
+[demon_hunt] SPIR-V world shader linked; finishing GPU init.
+[demon_hunt] init_sky_gpu: finish GPU resources.
+[demon_hunt] init_sky_gpu: validating loose uniforms.
+[demon_hunt] init_sky_gpu: Vulkan UBO_SSBO profile (sets 0/1 via CmdBindDescriptorSet).
+[demon_hunt] init_sky_gpu: SkyFrame UBO OK.
+[demon_hunt] init_sky_gpu: scene SSBO OK.
+[demon_hunt] init_sky_gpu: creating fullscreen mesh.
+[demon_hunt] skydome GPU path OK (SkyFrame UBO + scene SSBO + mesh).
+[demon_hunt] feedback texture created OK (filled with fog color).
