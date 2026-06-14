@@ -1,18 +1,12 @@
 # Situation — Rust bindings
 
-Auto-generated FFI for the Situation C library (`situation_opengl.dll` / `situation_vulkan.dll`).
+Auto-generated FFI for the Situation C library (`situation_opengl.dll` / `situation_vulkan.dll`, or static `.a` archives).
 
 ## Generate
 
 ```bat
 build_situation.bat opengl
 python tools\generate_rust_bindings.py
-```
-
-Jam-tier only:
-
-```bat
-python tools\generate_rust_bindings.py --jam
 ```
 
 Vulkan import lib:
@@ -23,20 +17,39 @@ python tools\generate_rust_bindings.py --lib situation_vulkan
 
 ## Output
 
-Generated files live in `wrappers/rust/src/`:
+Generated files live in `wrappers/Rust/src/`:
 
 | File | Role |
 |------|------|
 | `lib.rs` | Crate root (re-exports; regenerated on full build) |
 | `situation_types.rs` | `#[repr(C)]` structs and enums |
-| `situation_ffi.rs` | `extern "C" { ... }` block (~531 fns) |
-| `situation_ffi_jam.rs` | Jam-tier imports (`--jam`) |
+| `situation_ffi.rs` | `extern "C" { ... }` block |
 | `situation_callbacks.rs` | `Option<unsafe extern "C" fn(...)>` aliases |
 | `situation_constants.rs` | `SIT_KEY_*`, etc. |
 | `situation_helpers.rs` | `situation_begin_frame()`, etc. |
-| `build.rs` | Links `../../build/dll/situation_opengl.lib` |
+| `build.rs` | Link logic via `SITUATION_LINK` env var |
 | `API_INDEX.md` | Per-symbol index |
 | `MANUAL_BINDINGS.md` | Variadic / hand-wrap symbols |
+
+## Build example
+
+From the repo root (recommended):
+
+```bat
+build_rust_example.bat opengl
+build_rust_example.bat static-opengl hello_situation
+```
+
+Backends: `opengl`, `vulkan`, `static-opengl`, `static-vulkan` — same as `build_examples.bat`. Output: `build/examples/rust/`.
+
+DLL modes copy `situation_*.dll` next to the exe. Static modes link `build/dll/situation_*.a` (no DLL at runtime). See `doc/COMPILATION_GUIDE.md`.
+
+Manual Cargo build (advanced):
+
+```bat
+set SITUATION_LINK=opengl
+cargo build --example hello_situation
+```
 
 ## Use from Rust
 
@@ -56,14 +69,6 @@ fn main() {
     // ...
 }
 ```
-
-Build from `wrappers/rust/`:
-
-```bat
-cargo build --example hello_situation
-```
-
-Copy `situation_opengl.dll` next to the built executable.
 
 ## Maintenance
 

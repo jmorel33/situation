@@ -7,81 +7,101 @@
 //!   .\build\examples\rust\hello_situation.exe
 
 use situation::*;
-use std::os::raw::{c_char, c_int, c_void};
+use std::ffi::CStr;
+use std::os::raw::{c_int, c_void};
 
-const VERT_SRC: &str = "#version 460\n\
-void main() {\n\
-    vec2 pos = vec2((gl_VertexID & 1) * 4.0 - 1.0, (gl_VertexID & 2) * 2.0 - 1.0);\n\
-    gl_Position = vec4(pos, 0.0, 1.0);\n\
-}\n\0";
+// Vertex shaders — Vulkan uses gl_VertexIndex, OpenGL uses gl_VertexID.
+const VERT_SRC_VK: &CStr = c"#version 460
+void main() {
+    int vid = gl_VertexIndex;
+    vec2 pos = vec2(float(vid & 1) * 4.0 - 1.0, float(vid & 2) * 2.0 - 1.0);
+    gl_Position = vec4(pos, 0.0, 1.0);
+}";
 
-const FRAG_SRC: &str = "#version 460\n\
-layout(location = 0) out vec4 fragColor;\n\
-layout(location = 0) uniform float uTime;\n\
-layout(location = 1) uniform vec2 uResolution;\n\
-\n\
-vec3 hsv2rgb(vec3 c) {\n\
-    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);\n\
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);\n\
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);\n\
-}\n\
-\n\
-float sdTorus(vec3 p, vec2 t) {\n\
-    vec2 q = vec2(length(p.xz) - t.x, p.y);\n\
-    return length(q) - t.y;\n\
-}\n\
-\n\
-mat3 rotY(float a) { float c=cos(a),s=sin(a); return mat3(c,0,s, 0,1,0, -s,0,c); }\n\
-mat3 rotX(float a) { float c=cos(a),s=sin(a); return mat3(1,0,0, 0,c,-s, 0,s,c); }\n\
-\n\
-void main() {\n\
-    vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / min(uResolution.x, uResolution.y);\n\
-    float x_norm = gl_FragCoord.x / uResolution.x;\n\
-    vec3 bg = vec3(0.02, 0.02, 0.05);\n\
-    for (int i = 0; i < 6; i++) {\n\
-        float phase  = uTime * 0.3 + float(i) * 1.05;\n\
-        float center = 0.5 + 0.35 * sin(phase);\n\
-        float dist   = abs(x_norm - center);\n\
-        float glow   = exp(-dist * dist * 200.0);\n\
-        float hue    = float(i) / 6.0 + uTime * 0.02;\n\
-        bg += hsv2rgb(vec3(hue, 0.9, 1.0)) * glow * 0.6;\n\
-    }\n\
-    vec3 ro = vec3(0.0, 0.0, -3.5);\n\
-    vec3 rd = normalize(vec3(uv, 1.2));\n\
-    mat3 rot = rotX(sin(uTime * 0.2) * 0.4) * rotY(uTime * 0.35);\n\
-    float t = 0.0;\n\
-    float d = 0.0;\n\
-    for (int i = 0; i < 64; i++) {\n\
-        vec3 p = ro + rd * t;\n\
-        p = rot * p;\n\
-        d = sdTorus(p, vec2(1.0, 0.38));\n\
-        if (d < 0.001 || t > 10.0) break;\n\
-        t += d;\n\
-    }\n\
-    vec3 col = bg;\n\
-    if (d < 0.001) {\n\
-        vec3 p = rot * (ro + rd * t);\n\
-        vec2 tt = vec2(1.0, 0.38);\n\
-        vec2 e  = vec2(0.001, 0.0);\n\
-        vec3 n  = normalize(vec3(\n\
-            sdTorus(p + e.xyy, tt) - sdTorus(p - e.xyy, tt),\n\
-            sdTorus(p + e.yxy, tt) - sdTorus(p - e.yxy, tt),\n\
-            sdTorus(p + e.yyx, tt) - sdTorus(p - e.yyx, tt)\n\
-        ));\n\
-        vec3  light   = normalize(vec3(0.4, 0.8, -0.5));\n\
-        float diff    = max(dot(n, light), 0.0);\n\
-        float spec    = pow(max(dot(reflect(-light, n), normalize(-rd)), 0.0), 32.0);\n\
-        float rim     = pow(1.0 - max(dot(n, normalize(-rd)), 0.0), 3.0);\n\
-        float angle  = atan(p.z, p.x);\n\
-        float hue    = fract(angle * 0.5 + uTime * 0.08);\n\
-        vec3 baseCol = hsv2rgb(vec3(hue, 0.7, 0.9));\n\
-        col = baseCol * (0.15 + diff * 0.7)\n\
-            + vec3(1.0)  * spec * 0.5\n\
-            + hsv2rgb(vec3(hue + 0.3, 0.8, 1.0)) * rim * 0.6;\n\
-    }\n\
-    float scanline = 0.93 + 0.07 * sin(gl_FragCoord.x * 3.14159);\n\
-    fragColor = vec4(col * scanline, 1.0);\n\
-}\n\0";
+const VERT_SRC_GL: &CStr = c"#version 460
+void main() {
+    vec2 pos = vec2(float(gl_VertexID & 1) * 4.0 - 1.0, float(gl_VertexID & 2) * 2.0 - 1.0);
+    gl_Position = vec4(pos, 0.0, 1.0);
+}";
+
+// Vulkan fragment shader: uniforms via push_constant block.
+const FRAG_SRC_VK: &CStr = c"#version 460
+layout(push_constant) uniform PC { float uTime; vec2 uResolution; } pc;
+#define uTime       pc.uTime
+#define uResolution pc.uResolution
+layout(location = 0) out vec4 fragColor;
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+float sdTorus(vec3 p, vec2 t) { vec2 q = vec2(length(p.xz) - t.x, p.y); return length(q) - t.y; }
+mat3 rotY(float a) { float c=cos(a),s=sin(a); return mat3(c,0,s, 0,1,0, -s,0,c); }
+mat3 rotX(float a) { float c=cos(a),s=sin(a); return mat3(1,0,0, 0,c,-s, 0,s,c); }
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / min(uResolution.x, uResolution.y);
+    float x_norm = gl_FragCoord.x / uResolution.x;
+    vec3 bg = vec3(0.02, 0.02, 0.05);
+    for (int i = 0; i < 6; i++) {
+        float phase = uTime * 0.3 + float(i) * 1.05;
+        float center = 0.5 + 0.35 * sin(phase);
+        float glow = exp(-pow(x_norm - center, 2.0) * 200.0);
+        bg += hsv2rgb(vec3(float(i) / 6.0 + uTime * 0.02, 0.9, 1.0)) * glow * 0.6;
+    }
+    vec3 ro = vec3(0.0, 0.0, -3.5); vec3 rd = normalize(vec3(uv, 1.2));
+    mat3 rot = rotX(sin(uTime * 0.2) * 0.4) * rotY(uTime * 0.35);
+    float t = 0.0; float d = 0.0;
+    for (int i = 0; i < 64; i++) { vec3 p = rot * (ro + rd * t); d = sdTorus(p, vec2(1.0, 0.38)); if (d < 0.001 || t > 10.0) break; t += d; }
+    vec3 col = bg;
+    if (d < 0.001) {
+        vec3 p = rot * (ro + rd * t); vec2 e = vec2(0.001, 0.0);
+        vec3 n = normalize(vec3(sdTorus(p+e.xyy,vec2(1.0,0.38))-sdTorus(p-e.xyy,vec2(1.0,0.38)), sdTorus(p+e.yxy,vec2(1.0,0.38))-sdTorus(p-e.yxy,vec2(1.0,0.38)), sdTorus(p+e.yyx,vec2(1.0,0.38))-sdTorus(p-e.yyx,vec2(1.0,0.38))));
+        vec3 light = normalize(vec3(0.4, 0.8, -0.5));
+        float diff = max(dot(n, light), 0.0); float spec = pow(max(dot(reflect(-light,n),normalize(-rd)),0.0),32.0); float rim = pow(1.0-max(dot(n,normalize(-rd)),0.0),3.0);
+        float hue = fract(atan(p.z,p.x)*0.5 + uTime*0.08);
+        col = hsv2rgb(vec3(hue,0.7,0.9))*(0.15+diff*0.7) + vec3(1.0)*spec*0.5 + hsv2rgb(vec3(hue+0.3,0.8,1.0))*rim*0.6;
+    }
+    fragColor = vec4(col * (0.93 + 0.07 * sin(gl_FragCoord.x * 3.14159)), 1.0);
+}";
+
+// OpenGL fragment shader: bare uniforms at explicit locations.
+const FRAG_SRC_GL: &CStr = c"#version 460
+layout(location = 0) uniform float uTime;
+layout(location = 1) uniform vec2  uResolution;
+layout(location = 0) out vec4 fragColor;
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+float sdTorus(vec3 p, vec2 t) { vec2 q = vec2(length(p.xz) - t.x, p.y); return length(q) - t.y; }
+mat3 rotY(float a) { float c=cos(a),s=sin(a); return mat3(c,0,s, 0,1,0, -s,0,c); }
+mat3 rotX(float a) { float c=cos(a),s=sin(a); return mat3(1,0,0, 0,c,-s, 0,s,c); }
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / min(uResolution.x, uResolution.y);
+    float x_norm = gl_FragCoord.x / uResolution.x;
+    vec3 bg = vec3(0.02, 0.02, 0.05);
+    for (int i = 0; i < 6; i++) {
+        float phase = uTime * 0.3 + float(i) * 1.05;
+        float center = 0.5 + 0.35 * sin(phase);
+        float glow = exp(-pow(x_norm - center, 2.0) * 200.0);
+        bg += hsv2rgb(vec3(float(i) / 6.0 + uTime * 0.02, 0.9, 1.0)) * glow * 0.6;
+    }
+    vec3 ro = vec3(0.0, 0.0, -3.5); vec3 rd = normalize(vec3(uv, 1.2));
+    mat3 rot = rotX(sin(uTime * 0.2) * 0.4) * rotY(uTime * 0.35);
+    float t = 0.0; float d = 0.0;
+    for (int i = 0; i < 64; i++) { vec3 p = rot * (ro + rd * t); d = sdTorus(p, vec2(1.0, 0.38)); if (d < 0.001 || t > 10.0) break; t += d; }
+    vec3 col = bg;
+    if (d < 0.001) {
+        vec3 p = rot * (ro + rd * t); vec2 e = vec2(0.001, 0.0);
+        vec3 n = normalize(vec3(sdTorus(p+e.xyy,vec2(1.0,0.38))-sdTorus(p-e.xyy,vec2(1.0,0.38)), sdTorus(p+e.yxy,vec2(1.0,0.38))-sdTorus(p-e.yxy,vec2(1.0,0.38)), sdTorus(p+e.yyx,vec2(1.0,0.38))-sdTorus(p-e.yyx,vec2(1.0,0.38))));
+        vec3 light = normalize(vec3(0.4, 0.8, -0.5));
+        float diff = max(dot(n, light), 0.0); float spec = pow(max(dot(reflect(-light,n),normalize(-rd)),0.0),32.0); float rim = pow(1.0-max(dot(n,normalize(-rd)),0.0),3.0);
+        float hue = fract(atan(p.z,p.x)*0.5 + uTime*0.08);
+        col = hsv2rgb(vec3(hue,0.7,0.9))*(0.15+diff*0.7) + vec3(1.0)*spec*0.5 + hsv2rgb(vec3(hue+0.3,0.8,1.0))*rim*0.6;
+    }
+    fragColor = vec4(col * (0.93 + 0.07 * sin(gl_FragCoord.x * 3.14159)), 1.0);
+}";
 
 const PENTATONIC: [u8; 10] = [48, 52, 55, 60, 64, 67, 72, 76, 79, 84];
 
@@ -103,7 +123,31 @@ impl SimpleRng {
     }
 }
 
-fn main() {
+// RAII cleanup guard to automatically unload resources and shutdown Situation on exit or error.
+struct CleanupGuard {
+    graph: Option<*mut SituationAudioGraph>,
+    audio_ok: bool,
+    shader: Option<SituationShader>,
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if let Some(mut shader) = self.shader {
+            let _ = situation_unload_shader(&mut shader);
+        }
+        if let Some(graph) = self.graph {
+            let _ = situation_set_active_graph(std::ptr::null_mut());
+            if self.audio_ok {
+                let _ = situation_teardown_virtual_midi_loopback();
+            }
+            let _ = situation_destroy_graph(graph);
+        }
+        let _ = situation_shutdown();
+        println!("Situation cleanup complete.");
+    }
+}
+
+fn main() -> Result<(), SituationError> {
     println!("=== Situation Rust — Raster Bars + Ambient Synth ===");
     println!("  V      Toggle VSync");
     println!("  F      Toggle borderless windowed");
@@ -115,268 +159,254 @@ fn main() {
 
     let mut rng = SimpleRng::new(1337);
 
-    unsafe {
-        let mut config = SituationInitInfo {
-            window_width: 900,
-            window_height: 600,
-            window_title: c"Situation+Rust  [V]Sync [F]ull [Spc]Note  [+/-]Rev  []/[]Dly  [P/O]DlyFB  [Esc]".as_ptr(),
-            ..std::mem::zeroed()
-        };
+    let mut config = SituationInitInfo {
+        window_width: 900,
+        window_height: 600,
+        window_title: c"Situation+Rust  [V]Sync [F]ull [Spc]Note  [+/-]Rev  []/[]Dly  [P/O]DlyFB  [Esc]".as_ptr(),
+        ..SituationInitInfo::default()
+    };
 
-        let err = SituationInit(0, std::ptr::null(), &mut config);
-        if err != SituationError::SITUATION_SUCCESS {
-            println!("SituationInit failed: {:?}", err);
-            return;
-        }
+    situation_init(0, std::ptr::null_mut(), &mut config)?;
 
-        SituationSetVSync(true);
+    let mut guard = CleanupGuard {
+        graph: None,
+        audio_ok: false,
+        shader: None,
+    };
 
-        SituationInitDeviceRegistry();
+    situation_set_vsync(true);
+    situation_init_device_registry();
 
-        let graph = SituationCreateGraph();
-        if graph.is_null() {
-            println!("WARNING: Could not create audio graph — audio disabled");
-        }
+    let graph = situation_create_graph();
+    let mut synth_handle: SituationNodeHandle = 0;
+    let mut echo_handle: SituationNodeHandle = 0;
+    let mut reverb_handle: SituationNodeHandle = 0;
+    let mut midi_device_id: c_int = -1;
 
-        let mut synth_handle: SituationNodeHandle = 0;
-        let mut echo_handle: SituationNodeHandle = 0;
-        let mut reverb_handle: SituationNodeHandle = 0;
-        let mut midi_device_id: c_int = -1;
-        let mut audio_ok = false;
+    let mut delay_wet: f32 = 0.25;
+    let mut delay_feedback: f32 = 0.40;
+    let delay_time: f32 = 0.35;
+    let mut reverb_wet: f32 = 0.20;
 
-        let mut delay_wet: f32 = 0.25;
-        let mut delay_feedback: f32 = 0.40;
-        let delay_time: f32 = 0.35;
-        let mut reverb_wet: f32 = 0.20;
+    if let Some(g) = graph {
+        guard.graph = Some(g);
 
-        if !graph.is_null() {
-            let e1 = SituationCreateNode(graph, SituationNodeType::SITUATION_NODE_TONE_SYNTH, &mut synth_handle);
-            let e2 = SituationCreateNode(graph, SituationNodeType::SITUATION_NODE_ECHO, &mut echo_handle);
-            let e3 = SituationCreateNode(graph, SituationNodeType::SITUATION_NODE_REVERB, &mut reverb_handle);
+        let e1 = situation_create_node(g, SituationNodeType::SITUATION_NODE_TONE_SYNTH, &mut synth_handle);
+        let e2 = situation_create_node(g, SituationNodeType::SITUATION_NODE_ECHO, &mut echo_handle);
+        let e3 = situation_create_node(g, SituationNodeType::SITUATION_NODE_REVERB, &mut reverb_handle);
 
-            if e1 == SituationError::SITUATION_SUCCESS && e2 == SituationError::SITUATION_SUCCESS && e3 == SituationError::SITUATION_SUCCESS {
-                SituationCreatePatch(graph, synth_handle, 0, echo_handle, 0, false);
-                SituationCreatePatch(graph, echo_handle, 0, reverb_handle, 0, false);
+        if e1.is_ok() && e2.is_ok() && e3.is_ok() {
+            situation_create_patch(g, synth_handle, 0, echo_handle, 0, false)?;
+            situation_create_patch(g, echo_handle, 0, reverb_handle, 0, false)?;
 
-                SituationSetControl(graph, echo_handle, 0, delay_time);
-                SituationSetControl(graph, echo_handle, 1, delay_feedback);
-                SituationSetControl(graph, echo_handle, 2, delay_wet);
+            situation_set_control(g, echo_handle, 0, delay_time)?;
+            situation_set_control(g, echo_handle, 1, delay_feedback)?;
+            situation_set_control(g, echo_handle, 2, delay_wet)?;
 
-                SituationSetControl(graph, reverb_handle, 0, 0.65);
-                SituationSetControl(graph, reverb_handle, 1, 0.55);
-                SituationSetControl(graph, reverb_handle, 2, reverb_wet);
-                SituationSetControl(graph, reverb_handle, 3, 0.30);
-                SituationSetControl(graph, reverb_handle, 4, 0.85);
+            situation_set_control(g, reverb_handle, 0, 0.65)?;
+            situation_set_control(g, reverb_handle, 1, 0.55)?;
+            situation_set_control(g, reverb_handle, 2, reverb_wet)?;
+            situation_set_control(g, reverb_handle, 3, 0.30)?;
+            situation_set_control(g, reverb_handle, 4, 0.85)?;
 
-                let midi_ok = SituationSetupVirtualMidiLoopback(&mut midi_device_id) == SituationError::SITUATION_SUCCESS;
-                if midi_ok {
-                    SituationEnableMidiControl(graph, synth_handle, midi_device_id);
-                } else {
-                    println!("WARNING: Virtual MIDI loopback unavailable — auto-notes only, Space key disabled");
-                    midi_device_id = -1;
-                }
+            let midi_ok = situation_setup_virtual_midi_loopback(&mut midi_device_id).is_ok();
 
-                SituationSetActiveGraph(graph);
-                audio_ok = true;
-
-                SituationVirtualMidiControlChange(0, 70, 0);
-                SituationVirtualMidiControlChange(0, 73, 90);
-                SituationVirtualMidiControlChange(0, 75, 40);
-                SituationVirtualMidiControlChange(0, 76, 80);
-                SituationVirtualMidiControlChange(0, 72, 110);
-
-                println!("Audio graph active: ToneSynth -> Echo -> Reverb");
+            if midi_ok {
+                situation_enable_midi_control(g, synth_handle, midi_device_id)?;
             } else {
-                println!("Node creation failed: synth={:?} echo={:?} reverb={:?}", e1, e2, e3);
+                println!("WARNING: Virtual MIDI loopback unavailable — auto-notes only, Space key disabled");
             }
+
+            situation_set_active_graph(g)?;
+            guard.audio_ok = true;
+
+            situation_virtual_midi_control_change(0, 70, 0)?;
+            situation_virtual_midi_control_change(0, 73, 90)?;
+            situation_virtual_midi_control_change(0, 75, 40)?;
+            situation_virtual_midi_control_change(0, 76, 80)?;
+            situation_virtual_midi_control_change(0, 72, 110)?;
+
+            println!("Audio graph active: ToneSynth -> Echo -> Reverb");
+        } else {
+            println!("Node creation failed: synth={:?} echo={:?} reverb={:?}", e1, e2, e3);
         }
-
-        let mut shader = std::mem::zeroed();
-        let shader_err = SituationLoadShaderFromMemory(VERT_SRC.as_ptr() as *const c_char, FRAG_SRC.as_ptr() as *const c_char, &mut shader);
-        if shader_err != SituationError::SITUATION_SUCCESS {
-            println!("Shader compile failed: {:?}", shader_err);
-            if !graph.is_null() {
-                SituationSetActiveGraph(std::ptr::null_mut());
-                if audio_ok {
-                    SituationTeardownVirtualMidiLoopback();
-                }
-                SituationDestroyGraph(graph);
-            }
-            SituationShutdown();
-            return;
-        }
-
-        let default_font = std::mem::zeroed();
-        let mut sim_time: f32 = 0.0;
-        let mut note_timer: f32 = 0.0;
-        let mut last_note: u8 = 0;
-
-        while !SituationWindowShouldClose() {
-            SituationPollInputEvents();
-            SituationUpdateTimers();
-
-            if SituationIsKeyPressed(256) { // ESC
-                break;
-            }
-
-            let mut window_flags = SituationGetCurrentActualWindowStateFlags();
-            if SituationIsKeyPressed(86) { // V
-                let vsync_on = (window_flags & SituationWindowStateFlags::SITUATION_WINDOW_STATE_VSYNC_HINT as u32) != 0;
-                SituationSetVSync(!vsync_on);
-                window_flags = SituationGetCurrentActualWindowStateFlags();
-            }
-
-            if SituationIsKeyPressed(70) { // F
-                SituationToggleBorderlessWindowed();
-            }
-
-            if SituationIsKeyPressed(32) && audio_ok { // Space
-                if last_note > 0 {
-                    SituationVirtualMidiNoteOff(last_note);
-                }
-                let note_idx = rng.gen_range(0, PENTATONIC.len());
-                last_note = PENTATONIC[note_idx];
-                let velocity = (50 + rng.gen_range(0, 30)) as u8;
-                SituationVirtualMidiNoteOn(last_note, velocity);
-                note_timer = 0.0;
-            }
-
-            if SituationIsKeyPressed(61) && audio_ok { // +
-                reverb_wet = (reverb_wet + 0.05).min(1.0);
-                SituationSetControl(graph, reverb_handle, 2, reverb_wet);
-            }
-            if SituationIsKeyPressed(45) && audio_ok { // -
-                reverb_wet = (reverb_wet - 0.05).max(0.0);
-                SituationSetControl(graph, reverb_handle, 2, reverb_wet);
-            }
-
-            if SituationIsKeyPressed(93) && audio_ok { // ]
-                delay_wet = (delay_wet + 0.05).min(1.0);
-                SituationSetControl(graph, echo_handle, 2, delay_wet);
-            }
-            if SituationIsKeyPressed(91) && audio_ok { // [
-                delay_wet = (delay_wet - 0.05).max(0.0);
-                SituationSetControl(graph, echo_handle, 2, delay_wet);
-            }
-
-            if SituationIsKeyPressed(80) && audio_ok { // P
-                delay_feedback = (delay_feedback + 0.05).min(0.95);
-                SituationSetControl(graph, echo_handle, 1, delay_feedback);
-            }
-            if SituationIsKeyPressed(79) && audio_ok { // O
-                delay_feedback = (delay_feedback - 0.05).max(0.0);
-                SituationSetControl(graph, echo_handle, 1, delay_feedback);
-            }
-
-            let dt = SituationGetFrameTime();
-            sim_time += dt;
-            note_timer += dt;
-
-            if audio_ok && note_timer > 4.0 {
-                note_timer = 0.0;
-                if last_note > 0 {
-                    SituationVirtualMidiNoteOff(last_note);
-                }
-
-                let waveform = rng.gen_range(0, 4) as u8;
-                SituationVirtualMidiControlChange(0, 70, waveform * 32);
-                let cutoff = (40 + rng.gen_range(0, 80)) as u8;
-                SituationVirtualMidiControlChange(0, 74, cutoff);
-                let resonance = (20 + rng.gen_range(0, 60)) as u8;
-                SituationVirtualMidiControlChange(0, 71, resonance);
-                let lfo_rate = rng.gen_range(0, 40) as u8;
-                SituationVirtualMidiControlChange(0, 24, lfo_rate);
-                let lfo_depth = rng.gen_range(0, 50) as u8;
-                SituationVirtualMidiControlChange(0, 26, lfo_depth);
-
-                let note_idx = rng.gen_range(0, PENTATONIC.len());
-                last_note = PENTATONIC[note_idx];
-                let velocity = (30 + rng.gen_range(0, 30)) as u8;
-                SituationVirtualMidiNoteOn(last_note, velocity);
-            }
-
-            if SituationAcquireFrameCommandBuffer() == SituationError::SITUATION_SUCCESS {
-                let cmd = SituationGetMainCommandBuffer();
-                if !cmd.is_null() {
-                    SituationCmdBeginRenderToDisplay(cmd, -1, ColorRGBA { r: 0, g: 0, b: 0, a: 255 });
-                    SituationCmdBindPipeline(cmd, shader);
-
-                    let w = SituationGetRenderWidth() as f32;
-                    let h = SituationGetRenderHeight() as f32;
-                    let mut resolution = [w, h];
-
-                    SituationSetShaderUniform(shader, c"uTime".as_ptr(), &mut sim_time as *mut f32 as *mut c_void, SituationUniformType::SIT_UNIFORM_FLOAT);
-                    SituationSetShaderUniform(shader, c"uResolution".as_ptr(), &mut resolution as *mut [f32; 2] as *mut c_void, SituationUniformType::SIT_UNIFORM_VEC2);
-
-                    SituationCmdDraw(cmd, 3, 1, 0, 0);
-
-                    let sc = h / 600.0;
-
-                    SituationCmdDrawTextEx(
-                        cmd,
-                        default_font,
-                        c"S I T U A T I O N".as_ptr(),
-                        Vector2 { x: w * 0.27, y: 18.0 * sc },
-                        24.0 * sc,
-                        2.0 * sc,
-                        ColorRGBA { r: 255, g: 255, b: 255, a: 220 },
-                    );
-
-                    let vsync_on = (window_flags & SituationWindowStateFlags::SITUATION_WINDOW_STATE_VSYNC_HINT as u32) != 0;
-                    let fps = SituationGetFPS();
-                    let vsync_str = if vsync_on { "ON" } else { "OFF" };
-                    let audio_str = if audio_ok { "active" } else { "off" };
-
-                    let line1 = format!("{} FPS  VSync:{}  Audio:{}", fps, vsync_str, audio_str);
-                    let line1_c = std::ffi::CString::new(line1).unwrap();
-                    SituationCmdDrawTextEx(
-                        cmd,
-                        default_font,
-                        line1_c.as_ptr(),
-                        Vector2 { x: 10.0, y: h - 36.0 * sc },
-                        8.0 * sc,
-                        0.0,
-                        ColorRGBA { r: 180, g: 180, b: 180, a: 255 },
-                    );
-
-                    let line2 = format!("Reverb: {}%   Delay: {}%   Delay FB: {}%",
-                        (reverb_wet * 100.0) as i32,
-                        (delay_wet * 100.0) as i32,
-                        (delay_feedback * 100.0) as i32
-                    );
-                    let line2_c = std::ffi::CString::new(line2).unwrap();
-                    SituationCmdDrawTextEx(
-                        cmd,
-                        default_font,
-                        line2_c.as_ptr(),
-                        Vector2 { x: 10.0, y: h - 20.0 * sc },
-                        8.0 * sc,
-                        0.0,
-                        ColorRGBA { r: 140, g: 210, b: 255, a: 255 },
-                    );
-
-                    SituationCmdEndRenderPass(cmd);
-                }
-                SituationEndFrame();
-            }
-        }
-
-        if last_note > 0 {
-            SituationVirtualMidiNoteOff(last_note);
-        }
-
-        SituationUnloadShader(&mut shader);
-
-        if !graph.is_null() {
-            SituationSetActiveGraph(std::ptr::null_mut());
-            if audio_ok {
-                SituationTeardownVirtualMidiLoopback();
-            }
-            SituationDestroyGraph(graph);
-        }
-
-        SituationShutdown();
+    } else {
+        println!("WARNING: Could not create audio graph — audio disabled");
     }
 
-    println!("Done.");
+    let is_vulkan = unsafe { SituationGetGraphicsBackend() } == SituationGraphicsBackend::SIT_GRAPHICS_BACKEND_VULKAN;
+    let mut shader = SituationShader::default();
+    situation_load_shader_from_memory(
+        if is_vulkan { VERT_SRC_VK } else { VERT_SRC_GL },
+        if is_vulkan { FRAG_SRC_VK } else { FRAG_SRC_GL },
+        &mut shader)?;
+    guard.shader = Some(shader);
+
+    let default_font = SituationFont::default();
+    let mut sim_time: f32 = 0.0;
+    let mut note_timer: f32 = 0.0;
+    let mut last_note: u8 = 0;
+
+    while !situation_window_should_close() {
+        situation_poll_input_events();
+        situation_update_timers();
+
+        if situation_is_key_pressed(256) { // ESC
+            break;
+        }
+
+        let mut window_flags = situation_get_current_actual_window_state_flags();
+        if situation_is_key_pressed(86) { // V
+            let vsync_on = (window_flags & SituationWindowStateFlags::SITUATION_WINDOW_STATE_VSYNC_HINT as u32) != 0;
+            situation_set_vsync(!vsync_on);
+            window_flags = situation_get_current_actual_window_state_flags();
+        }
+
+        if situation_is_key_pressed(70) { // F
+            let _ = situation_toggle_borderless_windowed();
+        }
+
+        if situation_is_key_pressed(32) && guard.audio_ok { // Space
+            if last_note > 0 {
+                let _ = situation_virtual_midi_note_off(last_note);
+            }
+            let note_idx = rng.gen_range(0, PENTATONIC.len());
+            last_note = PENTATONIC[note_idx];
+            let velocity = (50 + rng.gen_range(0, 30)) as u8;
+            let _ = situation_virtual_midi_note_on(last_note, velocity);
+            note_timer = 0.0;
+        }
+
+        if let Some(g) = graph {
+            if situation_is_key_pressed(61) && guard.audio_ok { // +
+                reverb_wet = (reverb_wet + 0.05).min(1.0);
+                let _ = situation_set_control(g, reverb_handle, 2, reverb_wet);
+            }
+            if situation_is_key_pressed(45) && guard.audio_ok { // -
+                reverb_wet = (reverb_wet - 0.05).max(0.0);
+                let _ = situation_set_control(g, reverb_handle, 2, reverb_wet);
+            }
+
+            if situation_is_key_pressed(93) && guard.audio_ok { // ]
+                delay_wet = (delay_wet + 0.05).min(1.0);
+                let _ = situation_set_control(g, echo_handle, 2, delay_wet);
+            }
+            if situation_is_key_pressed(91) && guard.audio_ok { // [
+                delay_wet = (delay_wet - 0.05).max(0.0);
+                let _ = situation_set_control(g, echo_handle, 2, delay_wet);
+            }
+
+            if situation_is_key_pressed(80) && guard.audio_ok { // P
+                delay_feedback = (delay_feedback + 0.05).min(0.95);
+                let _ = situation_set_control(g, echo_handle, 1, delay_feedback);
+            }
+            if situation_is_key_pressed(79) && guard.audio_ok { // O
+                delay_feedback = (delay_feedback - 0.05).max(0.0);
+                let _ = situation_set_control(g, echo_handle, 1, delay_feedback);
+            }
+        }
+
+        let dt = situation_get_frame_time();
+        sim_time += dt;
+        note_timer += dt;
+
+        if guard.audio_ok && note_timer > 4.0 {
+            note_timer = 0.0;
+            if last_note > 0 {
+                let _ = situation_virtual_midi_note_off(last_note);
+            }
+
+            let waveform = rng.gen_range(0, 4) as u8;
+            let _ = situation_virtual_midi_control_change(0, 70, waveform * 32);
+            let cutoff = (40 + rng.gen_range(0, 80)) as u8;
+            let _ = situation_virtual_midi_control_change(0, 74, cutoff);
+            let resonance = (20 + rng.gen_range(0, 60)) as u8;
+            let _ = situation_virtual_midi_control_change(0, 71, resonance);
+            let lfo_rate = rng.gen_range(0, 40) as u8;
+            let _ = situation_virtual_midi_control_change(0, 24, lfo_rate);
+            let lfo_depth = rng.gen_range(0, 50) as u8;
+            let _ = situation_virtual_midi_control_change(0, 26, lfo_depth);
+
+            let note_idx = rng.gen_range(0, PENTATONIC.len());
+            last_note = PENTATONIC[note_idx];
+            let velocity = (30 + rng.gen_range(0, 30)) as u8;
+            let _ = situation_virtual_midi_note_on(last_note, velocity);
+        }
+
+        if situation_acquire_frame_command_buffer().is_ok() {
+            if let Some(cmd) = situation_get_main_command_buffer() {
+                let _ = situation_cmd_begin_render_to_display(cmd, -1, ColorRGBA { r: 0, g: 0, b: 0, a: 255 });
+                let _ = situation_cmd_bind_pipeline(cmd, shader);
+
+                let w = situation_get_render_width() as f32;
+                let h = situation_get_render_height() as f32;
+                if is_vulkan {
+                    #[repr(C)]
+                    struct ShaderPc { time: f32, _pad: f32, res_x: f32, res_y: f32 }
+                    let mut pc = ShaderPc { time: sim_time, _pad: 0.0, res_x: w, res_y: h };
+                    let _ = situation_cmd_set_push_constant(cmd, 0, &mut pc as *mut ShaderPc as *mut c_void, std::mem::size_of::<ShaderPc>());
+                } else {
+                    let _ = situation_set_shader_uniform(shader, c"uTime", &mut sim_time as *mut f32 as *mut c_void, SituationUniformType::SIT_UNIFORM_FLOAT);
+                    let mut res = [w, h];
+                    let _ = situation_set_shader_uniform(shader, c"uResolution", &mut res as *mut [f32; 2] as *mut c_void, SituationUniformType::SIT_UNIFORM_VEC2);
+                }
+
+                let _ = situation_cmd_draw(cmd, 3, 1, 0, 0);
+
+                let sc = h / 600.0;
+
+                let _ = situation_cmd_draw_text_ex(
+                    cmd,
+                    default_font,
+                    c"S I T U A T I O N",
+                    Vector2 { x: w * 0.27, y: 18.0 * sc },
+                    24.0 * sc,
+                    2.0 * sc,
+                    ColorRGBA { r: 255, g: 255, b: 255, a: 220 },
+                );
+
+                let vsync_on = (window_flags & SituationWindowStateFlags::SITUATION_WINDOW_STATE_VSYNC_HINT as u32) != 0;
+                let fps = situation_get_fps();
+                let vsync_str = if vsync_on { "ON" } else { "OFF" };
+                let audio_str = if guard.audio_ok { "active" } else { "off" };
+
+                let line1 = format!("{} FPS  VSync:{}  Audio:{}", fps, vsync_str, audio_str);
+                let line1_c = std::ffi::CString::new(line1).unwrap();
+                let _ = situation_cmd_draw_text_ex(
+                    cmd,
+                    default_font,
+                    &line1_c,
+                    Vector2 { x: 10.0, y: h - 36.0 * sc },
+                    8.0 * sc,
+                    0.0,
+                    ColorRGBA { r: 180, g: 180, b: 180, a: 255 },
+                );
+
+                let line2 = format!("Reverb: {}%   Delay: {}%   Delay FB: {}%",
+                    (reverb_wet * 100.0) as i32,
+                    (delay_wet * 100.0) as i32,
+                    (delay_feedback * 100.0) as i32
+                );
+                let line2_c = std::ffi::CString::new(line2).unwrap();
+                let _ = situation_cmd_draw_text_ex(
+                    cmd,
+                    default_font,
+                    &line2_c,
+                    Vector2 { x: 10.0, y: h - 20.0 * sc },
+                    8.0 * sc,
+                    0.0,
+                    ColorRGBA { r: 140, g: 210, b: 255, a: 255 },
+                );
+
+                let _ = situation_cmd_end_render_pass(cmd);
+            }
+            let _ = situation_end_frame();
+        }
+    }
+
+    if last_note > 0 {
+        let _ = situation_virtual_midi_note_off(last_note);
+    }
+
+    Ok(())
 }

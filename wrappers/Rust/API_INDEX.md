@@ -1,8 +1,8 @@
 # Situation Rust bindings — API index
 
-_Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.218 (STL Model Loader, Demon Hunt Visual Bolster Fixes)** (full)._
+_Generated 2026-06-14 04:52 UTC from `sit/situation_api.h` — Situation **2.4.265 (YPQ Phase 3: public mapping diagnostics API, test_misc cleanup)** (full)._
 
-**Foreign imports:** 542
+**Foreign imports:** 555
 
 | Function | Section | Rust | Notes |
 |----------|---------|------|-------|
@@ -98,7 +98,7 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationCmdSetScissor` | Abstracted Rendering Commands | auto | Sets the dynamic scissor rectangle to clip rendering. |
 | `SituationCmdSetScissorIndexed` | Abstracted Rendering Commands | auto | Sets scissor at index (0 = default scissor). |
 | `SituationCmdSetStencilTest` | Command Buffer Recording | auto | — |
-| `SituationCmdSetVertexAttribute` | Abstracted Rendering Commands | auto | [OpenGL Only] Attribute format + vertex buffer binding index (must match Situati... |
+| `SituationCmdSetVertexAttribute` | Abstracted Rendering Commands | auto | [OpenGL Only, Deprecated v2.4] Attribute format + vertex buffer binding index. P... |
 | `SituationCmdSetViewport` | Abstracted Rendering Commands | auto | Sets the dynamic viewport and scissor for the current render pass. |
 | `SituationCmdSetViewportIndexed` | Abstracted Rendering Commands | auto | Sets viewport at index (0 = default viewport). |
 | `SituationCmdTextureBarrier` | Compute Shader Pipeline | auto | Record an explicit texture layout/memory barrier. |
@@ -154,7 +154,7 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationEnumerateAudioDevices` | Device Enumeration (Phase 0) | auto | Enumerate available audio devices. Caller must free with SituationFreeDeviceList... |
 | `SituationErrorToString` | Callbacks and Event Handling | auto | Human-readable base label for an error code (from the errno table). |
 | `SituationExecuteCommand` | Active Audio Device Query (v2.4.199) | auto | Execute a shell command hidden, return exit code & combined output. |
-| `SituationExportImage` | Image Exporting | auto | Export image data to a file (PNG, BMP supported). |
+| `SituationExportImage` | Image Exporting | auto | Export image data (.png, .bmp, .jpg, .tga, .hdr). |
 | `SituationExportRenderHistogram` | Profiling & Diagnostics | auto | Write a text-based frame time histogram into buf. |
 | `SituationFileExists` | File & Directory Queries | auto | Check if a file exists at the given path. |
 | `SituationFindBestDevice` | Device Enumeration (Phase 0) | auto | Find the best matching device by type and channel requirements. |
@@ -234,6 +234,8 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationGetMaxComputeWorkGroups` | Compute Shader Pipeline | auto | Query maximum compute work group count per dispatch. |
 | `SituationGetMemoryInfo` | System & Hardware Information (split queries; v2.4.207) | auto | Total and available physical RAM. |
 | `SituationGetMeshData` | 3D Model Utilities | auto | Get raw vertex/index data pointers from a mesh (read-only). |
+| `SituationGetMeshIndexBufferAddress` | Graphics Resource Management | auto | Retrieves the GPU device address of the mesh index buffer. [VK] requires SIT_FEA... |
+| `SituationGetMeshVertexBufferAddress` | Graphics Resource Management | auto | Retrieves the GPU device address of the mesh vertex buffer. [VK] requires SIT_FE... |
 | `SituationGetMidiDeviceName` | MIDI Device Control | auto | PortMidi device name for device_id (hardware or virtual). |
 | `SituationGetMonitorCount` | Physical Display (Monitor) Management | auto | Get the number of connected monitors. |
 | `SituationGetMonitorHeight` | Physical Display (Monitor) Management | auto | Get the height of a monitor's current video mode. |
@@ -285,6 +287,7 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationGetVirtualDisplay` | Virtual Displays (Render Targets) | auto | Get a pointer to a virtual display's state. |
 | `SituationGetVirtualDisplaySize` | Virtual Displays (Render Targets) | auto | Get the internal resolution of a virtual display. |
 | `SituationGetVirtualDisplayTexture` | Virtual Displays (Render Targets) | auto | Get the VD's internal texture as a SituationTexture handle (valid for compute-ta... |
+| `SituationGetVirtualDisplayUpdateInfo` | Virtual Displays (Render Targets) | auto | Query last VD content write (not the frame clock). |
 | `SituationGetVulkanDevice` | Backend-Specific Accessors | auto | Get the raw Vulkan logical device handle. |
 | `SituationGetVulkanInstance` | Backend-Specific Accessors | auto | Get the raw Vulkan instance handle. |
 | `SituationGetVulkanPhysicalDevice` | Backend-Specific Accessors | auto | Get the raw Vulkan physical device handle. |
@@ -335,6 +338,7 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationIsMouseButtonReleased` | Mouse Input | auto | Check if a mouse button was released this frame. |
 | `SituationIsScancodeDown` | Keyboard Input | auto | Check if a physical key (scancode) is currently held down. |
 | `SituationIsScrollLockOn` | Keyboard Input | auto | Check if Scroll Lock is currently toggled on. |
+| `SituationIsStbImageLoadExtension` | Image Loading and Unloading | auto | True for stb_image decode extensions (.jpg, .png, .bmp, .tga, .psd, .gif, .hdr, ... |
 | `SituationIsVersionCompatible` | Graph Serialization Functions | auto | Check if a serialized version is compatible with this library. |
 | `SituationIsVirtualDisplayDirty` | Virtual Displays (Render Targets) | auto | Check if a virtual display is marked as dirty. |
 | `SituationIsWindowFullscreen` | Window State Queries | auto | Check if the window is currently in fullscreen mode. |
@@ -358,11 +362,12 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationLoadFont` | Font Management | auto | Load a font from a TTF/OTF file for CPU rendering. |
 | `SituationLoadFontFromMemory` | Font Management | auto | Loads a font directly from a memory buffer (e.g., embedded resource). |
 | `SituationLoadGraphFromFile` | Graph Serialization Functions | auto | Load a graph from a JSON file, re-creating nodes via device_funcs. |
-| `SituationLoadImage` | Image Loading and Unloading | auto | Load an image from a file into CPU memory (RAM). |
+| `SituationLoadImage` | Image Loading and Unloading | auto | Load an image via stb_image (JPEG, PNG, BMP, TGA, PSD, GIF, HDR, PIC, PNM). |
 | `SituationLoadImageFromMemory` | Image Loading and Unloading | auto | Load an image from a memory buffer. |
 | `SituationLoadImageFromScreen` | Image & Screenshot Utilities | auto | Get a copy of the current screen backbuffer as an image. |
 | `SituationLoadMidiPreset` | Preset Persistence | auto | Load MIDI Learn mappings from JSON file. |
 | `SituationLoadModel` | 3D Model Utilities | auto | Loads a complete 3D model and its textures from a GLTF file. |
+| `SituationLoadModelFromOBJ` | 3D Model Utilities | auto | Wavefront OBJ: triangulated meshes, MTL/textures; missing/degenerate normals fil... |
 | `SituationLoadModelFromSTL` | 3D Model Utilities | auto | Loads a 3D model from a binary or ASCII STL file. UVs are zeroed; normals are fl... |
 | `SituationLoadShader` | Shader Management | auto | Load a graphics shader pipeline from vertex and fragment files. |
 | `SituationLoadShaderFromMemory` | Shader Management | auto | Create a graphics shader pipeline from in-memory GLSL source. |
@@ -389,10 +394,12 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationPlayLoadedSound` | Audio Handle API | auto | Play a loaded sound (restarts if already playing). |
 | `SituationPlayMidiNote` | Audio Handle API | auto | Legacy: play a tone by MIDI note number (0-127). |
 | `SituationPlayTone` | Audio Handle API | auto | Legacy: play a simple ADSR tone (backward compat / quick UI sounds). |
+| `SituationPlayToneEx` | Resonance (Procedural Synthesis) | auto | @brief Plays an extended procedural tone with full control. @param type         ... |
 | `SituationPollInputEvents` | Application Lifecycle & State | auto | Poll for all input events (keyboard, mouse, joystick). Call once per frame. |
 | `SituationPollShaderLoad` | Shader Management | auto | SITUATION_SUCCESS when ready, SITUATION_ERROR_SHADER_LOAD_IN_PROGRESS while comp... |
 | `SituationPrintThreadingStatus` | CPU & Thread Management | auto | Human-readable threading status (stdout if NULL) |
 | `SituationPushNodePCM` | PCM Input Node (user-fed ring buffer source) | auto | Push interleaved float PCM into a PCM_INPUT node's ring buffer (any thread). Ret... |
+| `SituationQueryShaderStorageBlocks` | Shader Interaction & Synchronization | auto | [OpenGL] Enumerate all active SSBO blocks and their assigned binding points. out... |
 | `SituationReadBuffer` | GPU Buffer Management | auto | Read mapped buffer data safely. |
 | `SituationReadFramebuffer` | Texture Management | auto | [Phase 2] Blocking readback of framebuffer pixels. |
 | `SituationReadTexture` | Texture Management | auto | [Phase 2] Blocking readback of texture pixels. |
@@ -433,6 +440,7 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationSetAudioVolume` | Audio Handle API | auto | Set volume for a handle-based sound [0.0 to 1.0+]. |
 | `SituationSetClipboardText` | Cursor, Clipboard and File Drops | auto | Set text in the system clipboard. |
 | `SituationSetControl` | Node Graph Functions | auto | Set a control parameter on a node. |
+| `SituationSetCurrentThreadName` | CPU & Thread Management | auto | OS-visible name for the calling thread (UTF-8); no-op if NULL/empty |
 | `SituationSetCursor` | Cursor, Clipboard and File Drops | auto | Set the mouse cursor to a standard shape. |
 | `SituationSetCursorPosCallback` | Mouse Input | auto | Set a callback for mouse movement events. |
 | `SituationSetDisplayMode` | Physical Display (Monitor) Management | auto | Set the display mode for a monitor. |
@@ -475,6 +483,9 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationSetTraceLogLevel` | Initialization State Management (v2.3.40) | auto | Set the minimum log level for output filtering. |
 | `SituationSetVSync` | Window State Management | auto | Enable or disable VSync (vertical synchronization). |
 | `SituationSetVirtualDisplayDirty` | Virtual Displays (Render Targets) | auto | Mark a virtual display as needing to be re-rendered. |
+| `SituationSetVirtualDisplayFallbackColor` | Virtual Displays (Render Targets) | auto | SOLID idle tint (normalized by compositor). |
+| `SituationSetVirtualDisplayFallbackMode` | Virtual Displays (Render Targets) | auto | SOLID or COLORBURST when idle. |
+| `SituationSetVirtualDisplayIdleThreshold` | Virtual Displays (Render Targets) | auto | Set idle threshold for compositor fallback (Phase 2a). |
 | `SituationSetVirtualDisplayScalingMode` | Virtual Displays (Render Targets) | auto | Set the scaling/filtering mode for a virtual display. |
 | `SituationSetWindowFocused` | Window State Management | auto | Set the window to be focused. |
 | `SituationSetWindowIcon` | Window Property Management | auto | Set the icon for the window (single image). |
@@ -544,6 +555,7 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationYpqAdjustChroma` | Color Space Conversions | auto | Scale Q (chroma amplitude); preserve luma and phase. |
 | `SituationYpqAdjustLuma` | Color Space Conversions | auto | Scale Y (luma); preserve phase and chroma. |
 | `SituationYpqAdjustPhase` | Color Space Conversions | auto | Rotate hue; P shifts by byte steps mod 256. |
+| `SituationYpqAnalyzeRgbMapping` | Color Space Conversions | auto | — |
 | `SituationYpqClampInGamut` | Color Space Conversions | auto | Reduce chroma if linear RGB would clip. |
 | `SituationYpqDistance` | Color Space Conversions | auto | Weighted distance in YPQ space. |
 | `SituationYpqEquals` | Color Space Conversions | auto | Per-channel tolerance compare. |
@@ -552,3 +564,4 @@ _Generated 2026-06-08 03:07 UTC from `sit/situation_api.h` — Situation **2.4.2
 | `SituationYpqGetLuma` | Color Space Conversions | auto | Normalized luma [0, 1]. |
 | `SituationYpqLerp` | Color Space Conversions | auto | Interpolate YPQ; phase uses shortest arc on the hue wheel. |
 | `SituationYpqQuantize` | Color Space Conversions | auto | Float YPQ → 8-bit ColorYPQA. |
+| `SituationYpqSliceDuplicateCount` | Color Space Conversions | auto | — |

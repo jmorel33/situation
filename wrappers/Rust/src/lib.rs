@@ -1,5 +1,5 @@
 //! Rust FFI for the Situation C library (auto-generated bindings).
-//! Situation 2.4.218 (STL Model Loader, Demon Hunt Visual Bolster Fixes)
+//! Situation 2.4.265 (YPQ Phase 3: public mapping diagnostics API, test_misc cleanup)
 //!
 //! Re-generate:
 //!   python tools/generate_rust_bindings.py
