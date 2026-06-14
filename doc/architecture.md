@@ -11,6 +11,7 @@ This document covers the internal design principles, threading model, audio pipe
 - [Threading Architecture](#threading-architecture)
 - [Async Vulkan Shader Compilation](#async-vulkan-shader-compilation-glsl--spir-v)
 - [Audio Node Graph Architecture](#audio-node-graph-architecture)
+- [Virtual Display Compositing](#virtual-display-compositing)
 - [OpenGL 4.6 Backend Lifecycle](#opengl-46-backend-lifecycle)
 - [Vulkan 1.4 Backend Lifecycle](#vulkan-14-backend-lifecycle)
 
@@ -392,7 +393,94 @@ graph TD
 
 ---
 
-## OpenGL 4.6 Backend Lifecycle
+## Virtual Display Compositing
+
+A virtual display is an independent offscreen render target — its own framebuffer, color texture, optional depth buffer, and per-display timing state. Up to `SITUATION_MAX_VIRTUAL_DISPLAYS` (32) can coexist. Each is registered in the shared texture registry so its output can be sampled by user shaders or bound to compute dispatches.
+
+**Two creation modes:**
+- `SITUATION_VD_FLAG_NONE` — standard rasterisation target. Gets FBO + color texture + depth renderbuffer (GL) or render pass + framebuffer + depth image (VK). Full `SituationCmdBeginRenderPass` / draw / `SituationCmdEndRenderPass` workflow.
+- `SITUATION_VD_FLAG_COMPUTE_TARGET` — compute-only target. Color texture has `STORAGE` usage; no depth buffer or render pass is created. Written by compute dispatches, sampled for compositing.
+
+```mermaid
+graph TD
+    subgraph Creation ["SituationCreateVirtualDisplayEx"]
+        C1["Allocate slot<br/>sit_render.virtual_display_slots[id]"]
+        C2{"Compute target?"}
+        C3["Color image + depth image<br/>Render pass (CLEAR + LOAD variants)<br/>Framebuffer"]
+        C4["Color image only<br/>STORAGE usage<br/>No render pass / depth"]
+        C5["Sampler"]
+        C6["Register in texture_registry<br/>slot_index stored in VD"]
+        C7["VD ready (id returned)"]
+
+        C1 --> C2
+        C2 -- "No (raster)" --> C3
+        C2 -- "Yes (compute)" --> C4
+        C3 --> C5
+        C4 --> C5
+        C5 --> C6 --> C7
+    end
+
+    subgraph PerFrame ["Per-Frame Lifecycle"]
+        F1["SituationUpdateTimers<br/>tick VD elapsed_time, frame_count<br/>last_update_time_seconds"]
+        F2["User renders into VD<br/>SituationCmdBeginRenderPass(display_id)<br/>  or compute dispatch"]
+        F3["Content-update hooks<br/>_SitVDMarkContentUpdated<br/>(called on EndRenderPass / compute dispatch)"]
+        F4["Idle detection<br/>elapsed since last_content_update_time<br/>&gt; idle_threshold_seconds → is_idle"]
+        F5["SituationRenderVirtualDisplays<br/>Sort by z_order → composite to main FB"]
+
+        F1 --> F2 --> F3 --> F4 --> F5
+    end
+
+    subgraph Compositor ["Compositing (per VD, sorted by z_order)"]
+        K1{"Visible?"}
+        K2["Skip"]
+        K3{"is_idle?"}
+        K4["Fallback path<br/>SOLID color / last-frame freeze<br/>(configurable per VD)"]
+        K5["Normal path<br/>Sample color texture<br/>Apply scaling mode<br/>Apply blend mode + opacity"]
+        K6["Output to main framebuffer"]
+
+        K1 -- "No" --> K2
+        K1 -- "Yes" --> K3
+        K3 -- "Yes" --> K4
+        K3 -- "No" --> K5
+        K4 --> K6
+        K5 --> K6
+    end
+
+    subgraph ScalingModes ["Scaling Modes"]
+        S1["SITUATION_SCALING_FIT<br/>letterbox / pillarbox"]
+        S2["SITUATION_SCALING_FILL<br/>crop to fill"]
+        S3["SITUATION_SCALING_STRETCH<br/>ignore aspect ratio"]
+        S4["SITUATION_SCALING_INTEGER<br/>nearest integer multiple"]
+    end
+
+    subgraph BlendModes ["Blend Modes"]
+        B1["SITUATION_BLEND_NONE<br/>opaque overwrite"]
+        B2["SITUATION_BLEND_ALPHA<br/>standard alpha"]
+        B3["SITUATION_BLEND_ADDITIVE<br/>add src to dst"]
+    end
+
+    subgraph Destruction ["SituationDestroyVirtualDisplay"]
+        D1["Deregister texture slot"]
+        D2["GL: delete FBO, texture, RBO<br/>VK: defer to Graveyard<br/>(framebuffer, render pass, images, sampler, descriptor set)"]
+        D3["Decrement active_virtual_display_count"]
+    end
+
+    %% Cross-subgraph links
+    C7 --> F1
+    F5 --> Compositor
+    Compositor --> ScalingModes
+    Compositor --> BlendModes
+    C7 --> Destruction
+```
+
+**Key details:**
+- VD timers (`elapsed_time`, `frame_count`, `last_update_time_seconds`) are ticked in `SituationUpdateTimers`, not in the render path.
+- Content-update tracking is automatic — `_SitVDMarkContentUpdated` fires on `SituationCmdEndRenderPass` (when a draw was recorded) and on compute dispatches that write to the VD's texture slot. The `is_dirty` flag and `last_content_update_time` are set by this hook.
+- Idle fallback is per-VD configurable: `SituationSetVirtualDisplayIdleThreshold` (default 1s), `SituationSetVirtualDisplayFallbackMode` (`SOLID` color or last-frame freeze), `SituationSetVirtualDisplayFallbackColor`.
+- On Vulkan, destruction defers all GPU resource destruction to the per-frame **Graveyard** to avoid stalling — no `vkDeviceWaitIdle` needed on normal destroy. The Graveyard flushes after `vkQueuePresentKHR`.
+- At shutdown, `_SituationCleanupRenderer` iterates all slots and calls `SituationDestroyVirtualDisplay` for any still-active VDs.
+
+---
 
 The OpenGL backend is designed to be "stateless" from the user's perspective while managing complex state caching internally. It features a "Soft Command Buffer" that records commands for execution either immediately or on a dedicated render thread. Key features include **MDI Auto-Batching** for geometry and **Virtual Bindless** (LRU Slot Management) for texture compatibility.
 
