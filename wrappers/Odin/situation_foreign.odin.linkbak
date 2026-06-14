@@ -1103,9 +1103,6 @@ foreign situation {
     // Legacy: play a simple ADSR tone (backward compat / quick UI sounds).
     SituationPlayTone :: proc(type: Situation_Wave_Type, frequency: f32, volume: f32, attack_sec: f32, decay_sec: f32, sustain_level: f32, release_sec: f32, hold_sec: f32) ---
 
-    // @brief Plays an extended procedural tone with full control. @param type          Waveform type (Sine, Square, Triangle, Saw, Noise) @param frequency     Frequency in Hz (e.g., 440.0f). For noise: ignored (use 0.0f) @param volume        Peak volume (0.0 to 1.0) @param pan           Stereo panning (-1.0 left, 0.0 center, +1.0 right) @param attack_sec    Attack time in seconds @param decay_sec     Decay time in seconds @param sustain_level Sustain volume level (0.0 to 1.0) @param release_sec   Release time in seconds @param hold_sec      Hold duration in seconds. Use -1.0f for infinite sustain (key down) @return Handle to the playing tone, or 0 if no voice available (polyphony limit)
-    SituationPlayToneEx :: proc(type: Situation_Wave_Type, frequency: f32, volume: f32, pan: f32, attack_sec: f32, decay_sec: f32, sustain_level: f32, release_sec: f32, hold_sec: f32) -> Situation_Tone_Handle ---
-
     // Poll for all input events (keyboard, mouse, joystick). Call once per frame.
     SituationPollInputEvents :: proc() ---
 

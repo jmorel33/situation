@@ -14,6 +14,8 @@ import "core:math/rand"
 //    • Interactive FX control: reverb wet, delay wet, delay feedback
 //    • Virtual MIDI loopback for programmatic note triggering
 //    • VSync state read directly from Situation (no stale local bool)
+//    • Backend-agnostic shader pattern: runtime backend detection selects
+//      Vulkan (push constants) or OpenGL (uniforms) shader variant
 //
 //  Controls:
 //    V          Toggle VSync
@@ -26,45 +28,42 @@ import "core:math/rand"
 //
 //  Audio signal chain:
 //    ToneSynth  ->  Echo (delay 350 ms)  ->  Reverb  ->  device output
-//
-//  Echo control IDs (SituationSetControl):
-//    0 = delay_time   (seconds)
-//    1 = feedback     (0..0.95)
-//    2 = wet_level    (0..1)
-//
-//  Reverb control IDs:
-//    0 = room_size    (0..1)
-//    1 = damping      (0..1)
-//    2 = wet_level    (0..1)
-//    3 = dry_level    (0..1)
-//    4 = width        (0..1)
 // =============================================================================
 
-// Minimal vertex shader — generates a full-screen triangle from gl_VertexID alone.
-// No vertex buffer needed; call SituationCmdDraw(cmd, 3, 1, 0, 0).
-VERT_SRC :: `#version 460
+// ---------------------------------------------------------------------------
+//  Vertex shaders
+//  Vulkan: gl_VertexIndex (Vulkan built-in), explicit int→float cast for &
+//  OpenGL: gl_VertexID (GL built-in), implicit cast is fine
+// ---------------------------------------------------------------------------
+VERT_SRC_VK :: `#version 460
 void main() {
-    vec2 pos = vec2((gl_VertexID & 1) * 4.0 - 1.0, (gl_VertexID & 2) * 2.0 - 1.0);
+    int vid = gl_VertexIndex;
+    vec2 pos = vec2(float(vid & 1) * 4.0 - 1.0, float(vid & 2) * 2.0 - 1.0);
     gl_Position = vec4(pos, 0.0, 1.0);
 }
 `
 
-// Fragment shader: animated raster bars as background + raymarched spinning torus.
-// Uniforms: uTime (float, seconds), uResolution (vec2, pixels).
-FRAG_SRC :: `#version 460
-layout(location = 0) out vec4 fragColor;
-layout(location = 0) uniform float uTime;
-layout(location = 1) uniform vec2 uResolution;
+VERT_SRC_GL :: `#version 460
+void main() {
+    vec2 pos = vec2(float(gl_VertexID & 1) * 4.0 - 1.0, float(gl_VertexID & 2) * 2.0 - 1.0);
+    gl_Position = vec4(pos, 0.0, 1.0);
+}
+`
 
-// Convert HSV to RGB — used for iridescent torus and bar colours.
+// ---------------------------------------------------------------------------
+//  Fragment shader body — identical logic, different uniform declaration.
+//  Vulkan uses a push_constant block; OpenGL uses bare location uniforms.
+//  Both expose uTime and uResolution to the shader body unchanged.
+// ---------------------------------------------------------------------------
+FRAG_BODY :: `
+layout(location = 0) out vec4 fragColor;
+
 vec3 hsv2rgb(vec3 c) {
     vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
     vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
     return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
-// Signed-distance field for a torus at the origin.
-// t.x = major radius, t.y = tube radius.
 float sdTorus(vec3 p, vec2 t) {
     vec2 q = vec2(length(p.xz) - t.x, p.y);
     return length(q) - t.y;
@@ -75,8 +74,6 @@ mat3 rotX(float a) { float c=cos(a),s=sin(a); return mat3(1,0,0, 0,c,-s, 0,s,c);
 
 void main() {
     vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / min(uResolution.x, uResolution.y);
-
-    // --- Background: six animated Gaussian glowing bars ---
     float x_norm = gl_FragCoord.x / uResolution.x;
     vec3 bg = vec3(0.02, 0.02, 0.05);
     for (int i = 0; i < 6; i++) {
@@ -87,14 +84,9 @@ void main() {
         float hue    = float(i) / 6.0 + uTime * 0.02;
         bg += hsv2rgb(vec3(hue, 0.9, 1.0)) * glow * 0.6;
     }
-
-    // --- Foreground: sphere-march the torus ---
-    vec3 ro = vec3(0.0, 0.0, -3.5);                 // ray origin (camera)
-    vec3 rd = normalize(vec3(uv, 1.2));              // ray direction
-
-    // Slowly wobble the torus orientation over time
+    vec3 ro = vec3(0.0, 0.0, -3.5);
+    vec3 rd = normalize(vec3(uv, 1.2));
     mat3 rot = rotX(sin(uTime * 0.2) * 0.4) * rotY(uTime * 0.35);
-
     float t = 0.0;
     float d;
     for (int i = 0; i < 64; i++) {
@@ -104,13 +96,9 @@ void main() {
         if (d < 0.001 || t > 10.0) break;
         t += d;
     }
-
     vec3 col = bg;
     if (d < 0.001) {
-        // We hit the torus — shade it
         vec3 p = rot * (ro + rd * t);
-
-        // Approximate surface normal via central differences
         vec2 tt = vec2(1.0, 0.38);
         vec2 e  = vec2(0.001, 0.0);
         vec3 n  = normalize(vec3(
@@ -118,28 +106,43 @@ void main() {
             sdTorus(p + e.yxy, tt) - sdTorus(p - e.yxy, tt),
             sdTorus(p + e.yyx, tt) - sdTorus(p - e.yyx, tt)
         ));
-
-        // Blinn-Phong + rim lighting
         vec3  light   = normalize(vec3(0.4, 0.8, -0.5));
         float diff    = max(dot(n, light), 0.0);
         float spec    = pow(max(dot(reflect(-light, n), normalize(-rd)), 0.0), 32.0);
         float rim     = pow(1.0 - max(dot(n, normalize(-rd)), 0.0), 3.0);
-
-        // Iridescent hue driven by polar angle + time
         float angle  = atan(p.z, p.x);
         float hue    = fract(angle * 0.5 + uTime * 0.08);
         vec3 baseCol = hsv2rgb(vec3(hue, 0.7, 0.9));
-
         col = baseCol * (0.15 + diff * 0.7)
             + vec3(1.0)  * spec * 0.5
             + hsv2rgb(vec3(hue + 0.3, 0.8, 1.0)) * rim * 0.6;
     }
-
-    // Subtle scanline effect
     float scanline = 0.93 + 0.07 * sin(gl_FragCoord.x * 3.14159);
     fragColor = vec4(col * scanline, 1.0);
 }
 `
+
+// Vulkan fragment shader: uniforms via push_constant block.
+// Layout: float uTime (offset 0) + 4 bytes padding + vec2 uResolution (offset 8).
+FRAG_SRC_VK :: `#version 460
+layout(push_constant) uniform PC { float uTime; vec2 uResolution; } pc;
+#define uTime       pc.uTime
+#define uResolution pc.uResolution
+` + FRAG_BODY
+
+// OpenGL fragment shader: bare uniforms at explicit locations.
+FRAG_SRC_GL :: `#version 460
+layout(location = 0) uniform float uTime;
+layout(location = 1) uniform vec2  uResolution;
+` + FRAG_BODY
+
+// Push constant struct for the Vulkan path.
+// Matches GLSL push_constant alignment: float at 0, vec2 at 8 (8-byte aligned).
+Shader_Push_Constants :: struct #packed {
+    uTime:       f32,
+    _pad:        f32,
+    uResolution: [2]f32,
+}
 
 // Pentatonic scale — MIDI note numbers across three octaves.
 // Used for both Space-triggered notes and the auto-note timer.
@@ -267,9 +270,16 @@ main :: proc() {
 
     // -------------------------------------------------------------------------
     //  Compile the raster-bars + torus shader
+    //  Select Vulkan or OpenGL variant based on the active backend.
     // -------------------------------------------------------------------------
+    is_vulkan := sit.SituationGetGraphicsBackend() == .SIT_GRAPHICS_BACKEND_VULKAN
+    vert_str  : string = is_vulkan ? VERT_SRC_VK : VERT_SRC_GL
+    frag_str  : string = is_vulkan ? FRAG_SRC_VK : FRAG_SRC_GL
+    vert_src  := cstring(raw_data(vert_str))
+    frag_src  := cstring(raw_data(frag_str))
+
     shader := sit.Situation_Shader{}
-    err = sit.SituationLoadShaderFromMemory(VERT_SRC, FRAG_SRC, &shader)
+    err = sit.SituationLoadShaderFromMemory(vert_src, frag_src, &shader)
     if err != .SITUATION_SUCCESS {
         fmt.printf("Shader compile failed: %v\n", err)
         return
@@ -381,9 +391,14 @@ main :: proc() {
                 sit.SituationCmdBindPipeline(cmd, shader)
                 w := f32(sit.SituationGetRenderWidth())
                 h := f32(sit.SituationGetRenderHeight())
-                resolution := [2]f32{w, h}
-                sit.SituationSetShaderUniform(shader, "uTime",       &sim_time,   .SIT_UNIFORM_FLOAT)
-                sit.SituationSetShaderUniform(shader, "uResolution", &resolution, .SIT_UNIFORM_VEC2)
+                if is_vulkan {
+                    pc := Shader_Push_Constants{uTime = sim_time, _pad = 0, uResolution = {w, h}}
+                    sit.SituationCmdSetPushConstant(cmd, 0, &pc, size_of(pc))
+                } else {
+                    resolution := [2]f32{w, h}
+                    sit.SituationSetShaderUniform(shader, "uTime",       &sim_time,   .SIT_UNIFORM_FLOAT)
+                    sit.SituationSetShaderUniform(shader, "uResolution", &resolution, .SIT_UNIFORM_VEC2)
+                }
                 sit.SituationCmdDraw(cmd, 3, 1, 0, 0)  // 3 verts = full-screen triangle
 
                 // Scale UI elements relative to render height so they look consistent
