@@ -126,10 +126,10 @@ Situation's threading layer is a C11 generational job system with two priority q
 graph TD
     subgraph Init ["Initialization and Placement Policy"]
         INIT["SituationInitInfo"]
-        TOPO["CPU topology cache<br/>logical CPUs, physical cores"]
-        NUMA["NUMA topology cache<br/>node masks and preferred node"]
+        TOPO["CPU topology cache<br/>logical CPUs, physical cores<br/>HT sibling detection"]
+        NUMA["NUMA topology cache<br/>node masks, memory sizes<br/>preferred node per thread (TLS)"]
         POLICY["Placement policy<br/>main_thread_name, thread_affinity_*<br/>worker_numa_spread, io_thread_numa_node"]
-        SIZE["Auto worker sizing<br/>SituationGetRecommendedWorkerCount<br/>logical or physical cores minus reserved"]
+        SIZE["Auto worker sizing<br/>SituationGetRecommendedWorkerCount<br/>logical or physical cores minus 4 reserved<br/>(Main + Render + Audio + I/O)"]
         POOL["SituationCreateThreadPool<br/>workers, queues, generations, counters"]
 
         INIT --> TOPO
@@ -146,11 +146,11 @@ graph TD
         CALLER["Main thread or user thread"]
         DISPATCH["SituationDispatchParallel<br/>fork-join batches"]
         SUBMIT["SituationSubmitJobEx"]
-        JOBID["Generational job ID<br/>slot + generation"]
-        DEP["Optional dependency check"]
+        JOBID["Generational job ID<br/>1-bit queue | 15-bit gen | 16-bit slot"]
+        CYCLE["Cycle detection<br/>depth-limited DFS, max depth 32<br/>SituationAddJobDependency"]
         ROUTE{"Queue mask / priority"}
         BACKPRESSURE{"Queue full?"}
-        INLINE["RUN_IF_FULL<br/>execute inline"]
+        INLINE["RUN_IF_FULL<br/>execute inline on caller"]
         BLOCK["BLOCK_IF_FULL<br/>spin/yield until room"]
         FAIL["Return queue-full error"]
 
@@ -158,8 +158,8 @@ graph TD
         CALLER --> SUBMIT
         DISPATCH --> SUBMIT
         SUBMIT --> JOBID
-        JOBID --> DEP
-        DEP --> ROUTE
+        JOBID --> CYCLE
+        CYCLE --> ROUTE
         ROUTE -->|"High priority"| HQ
         ROUTE -->|"Low priority / I/O"| LQ
         HQ --> BACKPRESSURE
@@ -181,29 +181,33 @@ graph TD
     end
 
     subgraph Workers ["Execution Lanes"]
-        WORKERS["Worker threads"]
-        WPLACED["Worker placement<br/>optional affinity / NUMA spread"]
-        SCAN["Full-queue in-place claim<br/>head→tail scan, CLAIM_BIT CAS<br/>v2.4.232–233 HOL fix"]
-        STEAL["Main-thread helping<br/>DispatchParallel drains high queue while waiting"]
-        IO["Dedicated I/O thread<br/>low queue lane"]
+        WORKERS["Worker threads<br/>high queue first; low queue<br/>only when no I/O thread"]
+        WPLACED["Worker placement<br/>multi-NUMA: spread by node<br/>single-NUMA: pin to distinct physical core"]
+        SCAN["Full-queue in-place claim<br/>head→tail scan, CLAIM_BIT CAS<br/>HOL starvation fix (v2.4.232-233)"]
+        IDLE["Idle wait<br/>cnd_timedwait 1ms<br/>self-wakes even on missed signals"]
+        STEAL["Main-thread helping<br/>DispatchParallel drains high queue<br/>while waiting for batch"]
+        IO["Dedicated I/O thread<br/>owns low queue exclusively"]
         RUN["Run callback"]
-        COMPLETE["Mark job complete<br/>atomic state + counters"]
+        COMPLETE["Mark job complete<br/>atomic state + counters<br/>wake continuations"]
+        ORPHAN["Orphan retirement<br/>_SitThreadPoolRetireOrphanedJobMain<br/>used by async shader compile path"]
 
         POOL --> WPLACED --> WORKERS
         HQM --> SCAN --> WORKERS
+        WORKERS --> IDLE
+        IDLE --> WORKERS
         HQM --> STEAL
-        LQM --> WORKERS
         LQM --> IO
         WORKERS --> RUN
         IO --> RUN
         STEAL --> RUN
         RUN --> COMPLETE
+        COMPLETE --> ORPHAN
     end
 
     subgraph Wait ["Synchronization"]
         WAITJOB["SituationWaitForJob"]
         WAITALL["SituationWaitForAllJobs"]
-        DEPWAKE["Dependent jobs become runnable"]
+        DEPWAKE["Dependent jobs become runnable<br/>continuation_id CAS chain"]
         JOIN["DispatchParallel returns<br/>batch complete"]
 
         COMPLETE --> DEPWAKE
@@ -220,9 +224,9 @@ graph TD
         SNAP["SituationGetThreadPoolSnapshot<br/>worker/I/O/render/audio CPU + NUMA"]
         STATUS["SituationGetThreadingStatus<br/>capabilities and pool summary"]
         DEPTH["Queue depth APIs<br/>high, low, active jobs"]
-        METRICS["Scheduler metrics<br/>lock ops/ns, scans, inline runs,<br/>queue-full spins, I/O idle/jobs"]
-        DUMP["Dump helpers<br/>threading report, pool status, metrics"]
-        STRESS["Harness CPU stress<br/>10 s all-core Task Manager correlation"]
+        METRICS["Scheduler metrics<br/>lock ops/ns, scans, steal ok/fail,<br/>inline runs, queue-full spins,<br/>I/O idle/jobs, dispatch parallel calls"]
+        GRAPH["SituationDumpTaskGraph<br/>active jobs, dep counts,<br/>continuation links (text or JSON)"]
+        DUMP["Dump helpers<br/>SituationDumpThreadingReport<br/>SituationDumpThreadPoolStatus<br/>SituationDumpThreadPoolMetrics"]
 
         POOL --> SNAP
         POOL --> STATUS
@@ -232,15 +236,23 @@ graph TD
         BACKPRESSURE --> METRICS
         SCAN --> METRICS
         IO --> METRICS
+        STEAL --> METRICS
+        COMPLETE --> GRAPH
         SNAP --> DUMP
         STATUS --> DUMP
         DEPTH --> DUMP
         METRICS --> DUMP
-        DISPATCH --> STRESS
+        GRAPH --> DUMP
     end
 ```
 
 In practice, use **high priority** for frame-critical jobs that the main thread may help drain during `SituationDispatchParallel`, and **low priority** for background work that can tolerate latency. Use `SituationInitInfo` affinity and NUMA fields only when you need predictable placement; the default path auto-sizes the pool and keeps affinity fail-soft so initialization does not break on restricted systems.
+
+Key implementation details:
+- Workers idle via `cnd_timedwait` (1ms cap) rather than an indefinite wait, ensuring they self-wake even if a signal is missed.
+- Worker NUMA placement is context-sensitive: on multi-NUMA systems workers spread across NUMA nodes; on single-NUMA systems they pin to distinct physical cores instead.
+- Dependency edges are validated with a depth-limited cycle detection DFS (max depth 32) before being committed — jobs exceeding the depth limit are rejected with `SITUATION_ERROR_THREAD_CYCLE`.
+- The orphan retirement path (`_SitThreadPoolRetireOrphanedJobMain`) allows the main thread to cleanly retire pool jobs whose work was satisfied out-of-band, used primarily by the async shader compile path.
 
 ---
 
