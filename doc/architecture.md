@@ -494,7 +494,7 @@ Key features:
 - **Shadow state + dirty flag** — viewport and ortho projection rebuild on resize is deferred to the render thread via `gl.shadow_state_dirty`
 - **Per-frame Graveyard** — deferred buffer/texture/VAO deletion after fence signals, flushed by `_SitGLFlushGraveyard`
 - **SPIR-V support** — `GL_ARB_gl_spirv` checked at init; available if present, GLSL fallback otherwise. Async compile via `KHR_parallel_shader_compile` / `ARB_parallel_shader_compile`
-- **Canvas** — optional fixed-resolution render target that blits to the window at frame end (`_SituationGLBlitCanvasToDisplay`), enabling integer-scaled retro rendering
+- **Canvas** — optional fixed-resolution render target that blits to the window at frame end (`_SituationGLBlitCanvasToDisplay`), enabling integer-scaled retro rendering. The same canvas concept exists on Vulkan (`_SituationVulkanRecordCanvasStretchBlit`, `_SituationVulkanEnsureCanvasResources`) where the blit is recorded into the command buffer via `vkCmdBlitImage` with layout transitions.
 
 ```mermaid
 graph TD
@@ -592,6 +592,7 @@ Key features:
 - **Per-frame dynamic VBO** — 512 KB persistently-mapped `CPU_TO_GPU` vertex buffer per frame for text/quad/UI geometry
 - **Per-frame UBO** — persistently-mapped `ViewDataUBO` (view/projection matrices) updated by the main thread before submit
 - **Screenshot pipeline** — staging buffer allocated on-demand; copy recorded into the command buffer; CPU readback resolved after the frame fence on the main thread
+- **Canvas mode** — optional fixed-resolution offscreen target (`canvas_color_image` + `canvas_depth_image` + `canvas_framebuffer`). When active, `SituationCmdBeginRenderPass` targets the canvas framebuffer instead of the swapchain; `_SituationVulkanRecordCanvasStretchBlit` is recorded into the command buffer at `EndFrame` to blit the canvas to the swapchain image via `vkCmdBlitImage` with the necessary layout transitions. Same API and intent as the GL canvas, different implementation.
 
 ```mermaid
 graph TD
@@ -621,7 +622,7 @@ graph TD
         M5C["SituationCmdDispatchCompute<br/>→ vkCmdBindPipeline (compute)<br/>→ vkCmdDispatch<br/>sets needs_compute_wait[frame_index]"]
         M5D["SituationRenderVirtualDisplays<br/>→ vkCmdBeginRenderPass (VD framebuffer)<br/>→ vkCmdBindPipeline (VD compositor)<br/>→ vkCmdDraw (fullscreen quad)"]
         M5E["SituationCmdEndRenderPass<br/>→ vkCmdEndRenderPass<br/>VD content-update hook fires"]
-        M6["SituationEndFrame<br/>vkEndCommandBuffer (graphics + compute)<br/>Update dynamic VBO + UBO<br/>Enqueue frame_index → render_queue<br/>signal render_queue_cv"]
+        M6["SituationEndFrame<br/>vkEndCommandBuffer (graphics + compute)<br/>Record canvas stretch blit if canvas active<br/>(_SituationVulkanRecordCanvasStretchBlit)<br/>Update dynamic VBO + UBO<br/>Enqueue frame_index → render_queue<br/>signal render_queue_cv"]
     end
 
     subgraph RenderThread ["Render Thread (dedicated)"]
