@@ -59,16 +59,6 @@ python tools\generate_rust_bindings.py
 
 
 
-REM Jam slice (~35 procs) per language
-
-python tools\generate_odin_bindings.py --jam
-
-python tools\generate_zig_bindings.py --jam
-
-python tools\generate_rust_bindings.py --jam
-
-
-
 REM Or run everything:
 
 tools\run_all.bat
