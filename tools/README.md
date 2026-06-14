@@ -26,7 +26,6 @@ Generators for API documentation and language bindings. All tools read **`sit/si
 
 | [`binding_common.py`](binding_common.py) | Shared type/signature utilities |
 
-| [`jam_api_slice.txt`](jam_api_slice.txt) | Jam-tier symbol list for `--jam` exports |
 
 
 
