@@ -52,7 +52,7 @@ function Write-SpirvArray {
 }
 
 $sw.WriteLine('/* Auto-generated from demon_hunt_sky SPIR-V - do not edit; regenerate via compile_demon_hunt_shaders.bat */')
-$sw.WriteLine('#include "examples/demon_hunt_sky_spirv_embed.h"')
+$sw.WriteLine('#include "examples/demon_hunt/demon_hunt_sky_spirv_embed.h"')
 $sw.WriteLine('')
 Write-SpirvArray 'demon_hunt_sky_vs_spv' $vsGl
 $sw.WriteLine('')
