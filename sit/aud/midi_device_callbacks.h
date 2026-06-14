@@ -120,6 +120,7 @@ enum {
     SIT_MODEL_MASTERING_AMP  = 0x10,
     SIT_MODEL_MAXIMIZER      = 0x11,
     SIT_MODEL_TONE_SYNTH     = 0x12,
+    SIT_MODEL_ISA110         = 0x13,
 };
 
 // ================================================================================================
@@ -912,6 +913,72 @@ static void _SituationMasteringAmpOnControlChange(void* device_ptr, uint8_t cont
 }
 
 // ================================================================================================
+// ISA 110 CALLBACKS
+// ================================================================================================
+
+/**
+ * @brief MIDI CC mapping for ISA 110 (Focusrite ISA 110 preamp + 4-band inductor EQ).
+ *
+ * DEVICE: ISA 110 (SITUATION_NODE_ISA110)
+ * CONTROLS: 14 total
+ *
+ * Control layout (matches registry_init.h _SituationRegisterISA110 order):
+ *   0  → drive          (0.0 – 10.0)     preamp saturation
+ *   1  → hpf_cutoff     (20 – 400 Hz)    high-pass filter frequency
+ *   2  → hpf_enabled    (0/1 bool)       high-pass filter on/off
+ *   3  → band0_freq     (20 – 500 Hz)    low shelf frequency
+ *   4  → band0_gain     (-24 – +24 dB)   low shelf gain
+ *   5  → band1_freq     (100 – 2000 Hz)  low-mid bell frequency
+ *   6  → band1_gain     (-24 – +24 dB)   low-mid bell gain
+ *   7  → band1_q        (0.1 – 20.0)     low-mid bell Q
+ *   8  → band2_freq     (500 – 10000 Hz) high-mid bell frequency
+ *   9  → band2_gain     (-24 – +24 dB)   high-mid bell gain
+ *   10 → band2_q        (0.1 – 20.0)     high-mid bell Q
+ *   11 → band3_freq     (2000 – 20000 Hz) high shelf frequency
+ *   12 → band3_gain     (-24 – +24 dB)   high shelf gain
+ *   13 → output_gain    (0.0 – 2.0)      post-EQ output level
+ *
+ * MIDI CC MAPPING (STANDARDIZED):
+ *   CC 17 → Control 0  (drive, linear)
+ *   CC 80 → Control 1  (hpf_cutoff, log)
+ *   CC 64 → Control 2  (hpf_enabled, bool)
+ *   CC 18 → Control 3  (band0_freq, log)
+ *   CC 19 → Control 4  (band0_gain, dB)
+ *   CC 20 → Control 5  (band1_freq, log)
+ *   CC 21 → Control 6  (band1_gain, dB)
+ *   CC 22 → Control 7  (band1_q, linear)
+ *   CC 23 → Control 8  (band2_freq, log)
+ *   CC 24 → Control 9  (band2_gain, dB)
+ *   CC 25 → Control 10 (band2_q, linear)
+ *   CC 26 → Control 11 (band3_freq, log)
+ *   CC 27 → Control 12 (band3_gain, dB)
+ *   CC 7  → Control 13 (output_gain, linear) [Standard MIDI Volume]
+ */
+static void _SituationISA110OnControlChange(void* device_ptr, uint8_t controller,
+                                             uint8_t value, uint32_t sample_offset) {
+    (void)sample_offset;
+    float* controls = (float*)device_ptr;
+    if (!controls) return;
+
+    switch (controller) {
+        case 17: controls[0]  = _SituationNormalizeMidiCC(value, 0.0f, 10.0f); break;           // drive
+        case 80: controls[1]  = _SituationNormalizeMidiCCLog(value, 20.0f, 400.0f); break;      // hpf_cutoff
+        case 64: controls[2]  = (value > 63) ? 1.0f : 0.0f; break;                              // hpf_enabled
+        case 18: controls[3]  = _SituationNormalizeMidiCCLog(value, 20.0f, 500.0f); break;      // band0_freq
+        case 19: controls[4]  = _SituationNormalizeMidiCCDb(value, -24.0f, 24.0f); break;       // band0_gain
+        case 20: controls[5]  = _SituationNormalizeMidiCCLog(value, 100.0f, 2000.0f); break;    // band1_freq
+        case 21: controls[6]  = _SituationNormalizeMidiCCDb(value, -24.0f, 24.0f); break;       // band1_gain
+        case 22: controls[7]  = _SituationNormalizeMidiCC(value, 0.1f, 20.0f); break;           // band1_q
+        case 23: controls[8]  = _SituationNormalizeMidiCCLog(value, 500.0f, 10000.0f); break;   // band2_freq
+        case 24: controls[9]  = _SituationNormalizeMidiCCDb(value, -24.0f, 24.0f); break;       // band2_gain
+        case 25: controls[10] = _SituationNormalizeMidiCC(value, 0.1f, 20.0f); break;           // band2_q
+        case 26: controls[11] = _SituationNormalizeMidiCCLog(value, 2000.0f, 20000.0f); break;  // band3_freq
+        case 27: controls[12] = _SituationNormalizeMidiCCDb(value, -24.0f, 24.0f); break;       // band3_gain
+        case 7:  controls[13] = _SituationNormalizeMidiCC(value, 0.0f, 2.0f); break;            // output_gain
+    }
+}
+
+// ================================================================================================
 // MAXIMIZER CALLBACKS
 // ================================================================================================
 
@@ -1115,6 +1182,7 @@ static const SIT_MidiCallbackEntry g_midi_callback_table[] = {
     { SITUATION_NODE_SST282,         _SituationSST282OnControlChange,         "SST-282" },
     { SITUATION_NODE_MASTERING_AMP,  _SituationMasteringAmpOnControlChange,   "Mastering Amp" },
     { SITUATION_NODE_MAXIMIZER,      _SituationMaximizerOnControlChange,      "Maximizer" },
+    { SITUATION_NODE_ISA110,         _SituationISA110OnControlChange,         "ISA 110" },
     { SITUATION_NODE_TONE_SYNTH,     _SituationToneSynthOnControlChange,      "Tone Synth",
       _SituationToneSynthOnNoteOn,   _SituationToneSynthOnNoteOff },
 };
@@ -1168,6 +1236,7 @@ static inline SIT_MidiDeviceIdentity SIT_GetDeviceIdentity(SituationNodeType dev
         case SITUATION_NODE_SST282:         return _SituationCreateDeviceIdentity(SIT_MODEL_SST282, "SST-282");
         case SITUATION_NODE_MASTERING_AMP:  return _SituationCreateDeviceIdentity(SIT_MODEL_MASTERING_AMP, "Mastering Amp");
         case SITUATION_NODE_MAXIMIZER:      return _SituationCreateDeviceIdentity(SIT_MODEL_MAXIMIZER, "Maximizer");
+        case SITUATION_NODE_ISA110:         return _SituationCreateDeviceIdentity(SIT_MODEL_ISA110, "ISA 110");
         case SITUATION_NODE_TONE_SYNTH:     return _SituationCreateDeviceIdentity(SIT_MODEL_TONE_SYNTH, "Tone Synth");
         default: {
             // Unknown device - return generic identity

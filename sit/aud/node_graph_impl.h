@@ -30,6 +30,7 @@
 // Forward declarations
 static bool SituationWouldCreateCycle(SituationAudioGraph* graph, SituationNodeHandle src_handle, SituationNodeHandle dst_handle);
 SITAPI SituationError SituationTopologicalSort(SituationAudioGraph* graph);
+static bool _SituationRemovePatchFromArray(SituationPatch* arr, int* count, SituationNodeHandle src_handle, int src_port, SituationNodeHandle dst_handle, int dst_port, bool is_control);
 
 // Device function table (defined in device_wrappers.h, included later in same TU)
 // SituationDeviceFunctions is already typedef'd in situation_api.h (included before us)
@@ -409,31 +410,94 @@ SituationError SituationDestroyNode(
         node->midi_device = NULL;
     }
     
-    // Remove all patches involving this node
-    // (Implementation would iterate through patches and remove matching ones)
-    // TODO: Implement patch removal
-    
+    /* Remove all patches that reference this node from both the graph patch list
+     * and the per-node patch lists of every connected peer.
+     *
+     * We walk graph->patches[] in reverse so we can remove by swap-with-tail
+     * without invalidating the loop index. */
+    for (int i = graph->patch_count - 1; i >= 0; i--) {
+        SituationPatch* p = &graph->patches[i];
+        if (p->src_node != handle && p->dst_node != handle) continue;
+
+        SituationNodeHandle ph_src   = p->src_node;
+        int                ph_sport  = p->src_port;
+        SituationNodeHandle ph_dst   = p->dst_node;
+        int                ph_dport  = p->dst_port;
+        bool               ph_ctrl   = p->is_control;
+
+        /* Remove from graph list (swap-with-tail). */
+        graph->patches[i] = graph->patches[graph->patch_count - 1];
+        graph->patch_count--;
+
+        /* Remove from peer node's patch arrays.
+         * The dying node's own arrays will be freed below; skip them. */
+        if (ph_src != handle) {
+            SituationNode* peer = SituationGetNode(graph, ph_src);
+            if (peer) {
+                _SituationRemovePatchFromArray(
+                    peer->output_patches, &peer->num_output_patches,
+                    ph_src, ph_sport, ph_dst, ph_dport, ph_ctrl);
+            }
+        }
+        if (ph_dst != handle) {
+            SituationNode* peer = SituationGetNode(graph, ph_dst);
+            if (peer) {
+                _SituationRemovePatchFromArray(
+                    peer->input_patches, &peer->num_input_patches,
+                    ph_src, ph_sport, ph_dst, ph_dport, ph_ctrl);
+                /* Clear modulated flag if no control patches remain on that port. */
+                if (ph_ctrl && ph_dport >= 0 && ph_dport < peer->metadata->num_ctrl_ins) {
+                    bool still_modulated = false;
+                    for (int j = 0; j < peer->num_input_patches; j++) {
+                        if (peer->input_patches[j].is_control &&
+                            peer->input_patches[j].dst_port == ph_dport) {
+                            still_modulated = true;
+                            break;
+                        }
+                    }
+                    if (!still_modulated)
+                        peer->ctrl_inputs[ph_dport].is_modulated = false;
+                }
+            }
+        }
+    }
+
     // Phase 4: Call device-specific destroy function
     const SituationDeviceFunctions* funcs = _SituationLookupDeviceFuncs(node->type);
     if (funcs && funcs->destroy && node->device_data) {
         funcs->destroy(node->device_data);
         node->device_data = NULL;
     }
-    
-    // Free resources (same as in DestroyGraph)
-    // ... (omitted for brevity)
-    
-    // Increment generation to invalidate handle
+
+    // Free all port buffers and auxiliary allocations.
+    if (node->audio_inputs) {
+        for (int i = 0; i < node->metadata->num_audio_ins; i++) {
+            if (node->audio_inputs[i].buffer) SIT_FREE(node->audio_inputs[i].buffer);
+        }
+        SIT_FREE(node->audio_inputs);
+    }
+    if (node->audio_outputs) {
+        for (int i = 0; i < node->metadata->num_audio_outs; i++) {
+            if (node->audio_outputs[i].buffer) SIT_FREE(node->audio_outputs[i].buffer);
+        }
+        SIT_FREE(node->audio_outputs);
+    }
+    if (node->ctrl_inputs)    SIT_FREE(node->ctrl_inputs);
+    if (node->ctrl_outputs)   SIT_FREE(node->ctrl_outputs);
+    if (node->control_values) SIT_FREE(node->control_values);
+    if (node->input_patches)  SIT_FREE(node->input_patches);
+    if (node->output_patches) SIT_FREE(node->output_patches);
+
+    // Increment generation to invalidate any remaining handles held by callers.
     node->generation++;
-    
+
     // Remove from graph
     graph->nodes[index] = NULL;
     graph->node_count--;
     graph->needs_resort = true;
-    
+
     SIT_FREE(node);
-    SituationTopologicalSort(graph);  // Re-sort immediately on main thread
-    
+    SituationTopologicalSort(graph);
     return SITUATION_SUCCESS;
 }
 
@@ -535,6 +599,30 @@ SituationError SituationCreatePatch(
     return SITUATION_SUCCESS;
 }
 
+/* Helper: remove a patch entry from a node's flat patch array by compacting.
+ * Works for both input_patches and output_patches since they share the same layout.
+ * Returns true if an entry was removed. */
+static bool _SituationRemovePatchFromArray(
+    SituationPatch* arr, int* count,
+    SituationNodeHandle src_handle, int src_port,
+    SituationNodeHandle dst_handle, int dst_port,
+    bool is_control
+) {
+    for (int i = 0; i < *count; i++) {
+        if (arr[i].src_node  == src_handle && arr[i].src_port == src_port &&
+            arr[i].dst_node  == dst_handle && arr[i].dst_port == dst_port &&
+            arr[i].is_control == is_control) {
+            /* Compact: shift tail left over the removed slot. */
+            for (int j = i; j < *count - 1; j++) {
+                arr[j] = arr[j + 1];
+            }
+            (*count)--;
+            return true;
+        }
+    }
+    return false;
+}
+
 SituationError SituationRemovePatch(
     SituationAudioGraph* graph,
     SituationNodeHandle src_handle,
@@ -544,27 +632,61 @@ SituationError SituationRemovePatch(
     bool is_control
 ) {
     if (!graph) return SITUATION_ERROR_NODE_GRAPH_NOT_INITIALIZED;
-    
-    // Find and remove patch from graph patch list
+
+    /* Step 1: find and remove from the graph-level patch list. */
+    bool found = false;
     for (int i = 0; i < graph->patch_count; i++) {
         SituationPatch* p = &graph->patches[i];
-        if (p->src_node == src_handle && p->src_port == src_port &&
-            p->dst_node == dst_handle && p->dst_port == dst_port &&
+        if (p->src_node  == src_handle && p->src_port == src_port &&
+            p->dst_node  == dst_handle && p->dst_port == dst_port &&
             p->is_control == is_control) {
-            
-            // Remove by swapping with last patch
+            /* Remove by swapping with the last entry (O(1)). */
             graph->patches[i] = graph->patches[graph->patch_count - 1];
             graph->patch_count--;
-            
-            // TODO: Remove from node patch lists as well
-            
-            graph->needs_resort = true;
-            SituationTopologicalSort(graph);  // Re-sort immediately on main thread
-            return SITUATION_SUCCESS;
+            found = true;
+            break;
         }
     }
-    
-    return SITUATION_ERROR_NODE_PATCH_NOT_FOUND;
+
+    if (!found) return SITUATION_ERROR_NODE_PATCH_NOT_FOUND;
+
+    /* Step 2: remove from src node's output_patches list. */
+    SituationNode* src = SituationGetNode(graph, src_handle);
+    if (src) {
+        _SituationRemovePatchFromArray(
+            src->output_patches, &src->num_output_patches,
+            src_handle, src_port, dst_handle, dst_port, is_control);
+    }
+
+    /* Step 3: remove from dst node's input_patches list.
+     * Also clear the modulated flag on the control port if this was the last
+     * control patch targeting that port. */
+    SituationNode* dst = SituationGetNode(graph, dst_handle);
+    if (dst) {
+        _SituationRemovePatchFromArray(
+            dst->input_patches, &dst->num_input_patches,
+            src_handle, src_port, dst_handle, dst_port, is_control);
+
+        /* If it was a control patch, check whether any remaining control patches
+         * still target the same dst_port before clearing is_modulated. */
+        if (is_control && dst_port >= 0 && dst_port < dst->metadata->num_ctrl_ins) {
+            bool still_modulated = false;
+            for (int i = 0; i < dst->num_input_patches; i++) {
+                if (dst->input_patches[i].is_control &&
+                    dst->input_patches[i].dst_port == dst_port) {
+                    still_modulated = true;
+                    break;
+                }
+            }
+            if (!still_modulated) {
+                dst->ctrl_inputs[dst_port].is_modulated = false;
+            }
+        }
+    }
+
+    graph->needs_resort = true;
+    SituationTopologicalSort(graph);
+    return SITUATION_SUCCESS;
 }
 
 // Legacy wrapper (audio patches only)

@@ -1576,6 +1576,10 @@ static inline void _SituationToneSynthTriggerNoteOn(SituationToneSynthMidiCtx* c
         _SituationToneSynthVoiceLegatoFromControls(v, ctx->controls, sample_rate, note, velocity);
     } else {
         _SituationToneSynthVoiceInitFromControls(v, ctx->controls, sample_rate, note, velocity);
+        /* Detached mono retrigger: snap pitch immediately (no glide from prior phrase). */
+        if (_SituationToneSynthIsMono(ctx->controls)) {
+            v->base_hz = v->target_hz;
+        }
     }
 }
 

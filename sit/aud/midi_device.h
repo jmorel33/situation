@@ -309,7 +309,10 @@ SIT_MidiDevice* SIT_MidiDevice_Create(
     device->device_ptr = device_ptr;
     device->midi_channel = -1;  // Omni by default
     device->active = 1;
-    device->sample_rate = 48000.0;  // Default, can be changed
+    {
+        int sr = SituationGetAudioPlaybackSampleRate();
+        device->sample_rate = (sr > 0) ? (double)sr : 48000.0;
+    }
     
     // Create MIDI processor
     device->processor = SIT_MidiProcessor_Create(device->sample_rate);

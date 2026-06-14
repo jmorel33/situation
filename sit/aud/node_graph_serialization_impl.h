@@ -241,7 +241,10 @@ char* SituationSerializeGraphToJSON(const SituationAudioGraph* graph) {
     // Start JSON object
     if (!_SituationAppendToBuffer(buf, "{\n")) goto error;
     if (!_SituationAppendFormatted(buf, "  \"version\": \"%s\",\n", SITUATION_SERIALIZATION_VERSION)) goto error;
-    if (!_SituationAppendFormatted(buf, "  \"sample_rate\": %d,\n", 48000)) goto error;  // TODO: Get from audio context
+    {
+        int sr = SituationGetAudioPlaybackSampleRate();
+        if (!_SituationAppendFormatted(buf, "  \"sample_rate\": %d,\n", (sr > 0) ? sr : 48000)) goto error;
+    }
     
     // Serialize nodes
     if (!_SituationAppendToBuffer(buf, "  \"nodes\": [\n")) goto error;
@@ -660,7 +663,13 @@ static bool _JSONParseNode(
     
     if (!found) {
         snprintf(parser->error_message, sizeof(parser->error_message),
-                "Unknown device type: %s", type_name);
+                "Unknown device type: \"%s\" — ensure custom types are registered before loading",
+                type_name);
+        /* Log via Situation logging so the caller sees which type name failed. */
+        SituationLog(SIT_LOG_ERROR,
+                "[Audio Graph] Deserialize failed: unknown node type \"%s\". "
+                "If this is a custom type, call SituationRegisterDeviceType() before loading.",
+                type_name);
         return false;
     }
     
@@ -983,10 +992,18 @@ const char* SituationGetSerializationVersion(void) {
 
 bool SituationIsVersionCompatible(const char* json_version) {
     if (!json_version) return false;
-    
-    // For now, only accept exact version match
-    // TODO: Implement semantic versioning comparison
-    return strcmp(json_version, SITUATION_SERIALIZATION_VERSION) == 0;
+
+    /* Semantic compatibility: same major version is sufficient.
+     * Format: "MAJOR.MINOR.PATCH" — minor and patch changes are always backwards compatible.
+     * Example: library is "2.4.0", file has "2.3.0" → compatible (same major).
+     *          library is "2.4.0", file has "3.0.0" → incompatible (different major). */
+    int lib_major = 0, lib_minor = 0, lib_patch = 0;
+    int file_major = 0, file_minor = 0, file_patch = 0;
+
+    sscanf(SITUATION_SERIALIZATION_VERSION, "%d.%d.%d", &lib_major, &lib_minor, &lib_patch);
+    sscanf(json_version, "%d.%d.%d", &file_major, &file_minor, &file_patch);
+
+    return file_major == lib_major;
 }
 
 #endif // SITUATION_NODE_GRAPH_SERIALIZATION_IMPL_H

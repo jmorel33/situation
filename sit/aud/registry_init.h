@@ -1722,6 +1722,78 @@ static void _SituationRegisterDeafMax(void) {
 }
 
 /**
+ * @brief Register the ISA 110 device (Focusrite ISA 110 preamp + 4-band inductor EQ).
+ *
+ * Controls (14 total):
+ *   0  drive          0.0 – 10.0      transformer saturation
+ *   1  hpf_cutoff     20 – 400 Hz     high-pass filter frequency
+ *   2  hpf_enabled    0/1             high-pass filter on/off
+ *   3  band0_freq     20 – 500 Hz     low shelf frequency
+ *   4  band0_gain    -24 – +24 dB     low shelf gain
+ *   5  band1_freq    100 – 2000 Hz    low-mid bell frequency
+ *   6  band1_gain    -24 – +24 dB     low-mid bell gain
+ *   7  band1_q        0.1 – 20.0      low-mid bell Q
+ *   8  band2_freq    500 – 10000 Hz   high-mid bell frequency
+ *   9  band2_gain    -24 – +24 dB     high-mid bell gain
+ *   10 band2_q        0.1 – 20.0      high-mid bell Q
+ *   11 band3_freq   2000 – 20000 Hz   high shelf frequency
+ *   12 band3_gain   -24 – +24 dB      high shelf gain
+ *   13 output_gain   0.0 – 2.0        post-EQ output level
+ */
+static void _SituationRegisterISA110(void) {
+    SituationDeviceMetadata meta = {0};
+
+    meta.type = SITUATION_NODE_ISA110;
+    strncpy(meta.name, "ISA 110", SITUATION_MAX_DEVICE_NAME - 1);
+    meta.category = SITUATION_DEVICE_EFFECT;
+
+    meta.num_audio_ins  = 2;
+    meta.num_audio_outs = 2;
+    meta.audio_channels = 2;
+    meta.num_ctrl_ins   = 0;
+    meta.num_ctrl_outs  = 0;
+    meta.num_controls   = 14;
+
+#define _ISA110_CTRL(idx, cname, ctype, lo, hi, def, cunit, clog) \
+    do { \
+        strncpy(meta.controls[(idx)].name, (cname), SITUATION_MAX_CONTROL_NAME - 1); \
+        meta.controls[(idx)].id              = (idx); \
+        meta.controls[(idx)].type            = (ctype); \
+        meta.controls[(idx)].min_value       = (lo); \
+        meta.controls[(idx)].max_value       = (hi); \
+        meta.controls[(idx)].default_value   = (def); \
+        meta.controls[(idx)].units           = (cunit); \
+        meta.controls[(idx)].is_logarithmic  = (clog); \
+    } while (0)
+
+    _ISA110_CTRL( 0, "drive",        SITUATION_CONTROL_FLOAT, 0.0f,    10.0f,    1.0f,  NULL,  false);
+    _ISA110_CTRL( 1, "hpf_cutoff",   SITUATION_CONTROL_FLOAT, 20.0f,  400.0f,   75.0f, "Hz",  true);
+    _ISA110_CTRL( 2, "hpf_enabled",  SITUATION_CONTROL_BOOL,  0.0f,    1.0f,    1.0f,  NULL,  false);
+    _ISA110_CTRL( 3, "band0_freq",   SITUATION_CONTROL_FLOAT, 20.0f,  500.0f,   80.0f, "Hz",  true);
+    _ISA110_CTRL( 4, "band0_gain",   SITUATION_CONTROL_FLOAT, -24.0f,  24.0f,    0.0f, "dB",  false);
+    _ISA110_CTRL( 5, "band1_freq",   SITUATION_CONTROL_FLOAT, 100.0f, 2000.0f, 220.0f, "Hz",  true);
+    _ISA110_CTRL( 6, "band1_gain",   SITUATION_CONTROL_FLOAT, -24.0f,  24.0f,    0.0f, "dB",  false);
+    _ISA110_CTRL( 7, "band1_q",      SITUATION_CONTROL_FLOAT, 0.1f,   20.0f,    1.4f,  NULL,  false);
+    _ISA110_CTRL( 8, "band2_freq",   SITUATION_CONTROL_FLOAT, 500.0f, 10000.0f,2200.0f,"Hz",  true);
+    _ISA110_CTRL( 9, "band2_gain",   SITUATION_CONTROL_FLOAT, -24.0f,  24.0f,    0.0f, "dB",  false);
+    _ISA110_CTRL(10, "band2_q",      SITUATION_CONTROL_FLOAT, 0.1f,   20.0f,    1.4f,  NULL,  false);
+    _ISA110_CTRL(11, "band3_freq",   SITUATION_CONTROL_FLOAT, 2000.0f,20000.0f,12000.0f,"Hz", true);
+    _ISA110_CTRL(12, "band3_gain",   SITUATION_CONTROL_FLOAT, -24.0f,  24.0f,    0.0f, "dB",  false);
+    _ISA110_CTRL(13, "output_gain",  SITUATION_CONTROL_FLOAT, 0.0f,    2.0f,    1.0f,  NULL,  false);
+
+#undef _ISA110_CTRL
+
+    meta.latency_samples = 0;
+    meta.description = "Focusrite ISA 110 preamp + 4-band inductor EQ emulation. "
+                       "Transformer saturation, switchable 18dB/oct HPF, "
+                       "2 shelves + 2 bells with FMA-optimised coefficient smoothing.";
+    meta.author = "Situation Audio";
+    meta.version = 0x00010000;
+
+    SituationRegisterDeviceType(&meta);
+}
+
+/**
  * @brief Register the Exciter device.
  */
 static void _SituationRegisterExciter(void) {
@@ -2670,7 +2742,7 @@ void SituationInitDeviceRegistry(void) {
         return;
     }
 
-    // Effects (14 devices)
+    // Effects (16 devices)
     _SituationRegisterReverb();
     _SituationRegisterEcho();
     _SituationRegisterChorus();
@@ -2683,6 +2755,7 @@ void SituationInitDeviceRegistry(void) {
     _SituationRegisterSST282();
     _SituationRegisterMasteringAmp();
     _SituationRegisterDeafMax();
+    _SituationRegisterISA110();
     _SituationRegisterDynamics();
     _SituationRegisterCompander();
     _SituationRegisterEQ4Band();

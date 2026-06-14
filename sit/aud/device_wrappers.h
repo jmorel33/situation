@@ -40,6 +40,8 @@ extern int SituationGetAudioPlaybackSampleRate(void);
 #define SIT_DEAFMAX_IMPLEMENTATION
 #include "fx/deafmax.h"        // Zero-alloc surgical peak maximizer
 
+#include "fx/isa110.h"         // Focusrite ISA 110 preamp + 4-band inductor EQ
+
 // New simple implementations
 #include "fx/filter.h"
 #include "fx/eq_4band.h"
@@ -66,9 +68,10 @@ extern int SituationGetAudioPlaybackSampleRate(void);
  */
 static void* _SituationCreateReverb(const SituationDeviceMetadata* metadata) {
     (void)metadata;
-
+    int sr = SituationGetAudioPlaybackSampleRate();
+    uint32_t sample_rate = (sr > 0) ? (uint32_t)sr : 48000u;
     void* state = NULL;
-    if (_SituationInitReverb(48000, &state) != SITUATION_SUCCESS) {
+    if (_SituationInitReverb(sample_rate, &state) != SITUATION_SUCCESS) {
         return NULL;
     }
     return state;
@@ -145,8 +148,9 @@ static void* _SituationCreateEcho(const SituationDeviceMetadata* metadata) {
     SituationEchoNodeState* state = (SituationEchoNodeState*)SIT_CALLOC(1, sizeof(SituationEchoNodeState));
     if (!state) return NULL;
     
-    state->sample_rate = 48000;  // Should get from audio context
-    state->channels = 2;         // Stereo
+    int sr = SituationGetAudioPlaybackSampleRate();
+    state->sample_rate = (sr > 0) ? (uint32_t)sr : 48000u;
+    state->channels = 2;
     state->echo.is_initialized = false;
     
     return state;
@@ -483,9 +487,10 @@ static void* _SituationCreateChorus(const SituationDeviceMetadata* metadata) {
     SituationChorus4Stage* chorus = (SituationChorus4Stage*)SIT_CALLOC(1, sizeof(SituationChorus4Stage));
     if (!chorus) return NULL;
     
-    // Initialize with 48kHz sample rate and 100ms max delay
-    int max_delay_samples = (int)(48000 * 0.1f);  // 100ms at 48kHz
-    SituationChorus4Stage_Init(chorus, 48000, max_delay_samples);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    int sample_rate = (sr > 0) ? sr : 48000;
+    int max_delay_samples = (int)(sample_rate * 0.1f);  // 100ms max delay
+    SituationChorus4Stage_Init(chorus, sample_rate, max_delay_samples);
     
     return chorus;
 }
@@ -565,8 +570,9 @@ static void* _SituationCreatePhaser(const SituationDeviceMetadata* metadata) {
     PhaseShifter* phaser = (PhaseShifter*)SIT_CALLOC(1, sizeof(PhaseShifter));
     if (!phaser) return NULL;
     
-    // Initialize with default parameters
-    initPhaseShifter(phaser, 48000, 0.5f, 0.7f, 0.5f, 0.0f, 1.0f, 5.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    float sample_rate = (sr > 0) ? (float)sr : 48000.0f;
+    initPhaseShifter(phaser, sample_rate, 0.5f, 0.7f, 0.5f, 0.0f, 1.0f, 5.0f);
     
     return phaser;
 }
@@ -623,7 +629,8 @@ static void* _SituationCreateOverdrive(const SituationDeviceMetadata* metadata) 
     sit_overdrive* overdrive = (sit_overdrive*)SIT_CALLOC(1, sizeof(sit_overdrive));
     if (!overdrive) return NULL;
     
-    sit_overdrive_init(overdrive, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    sit_overdrive_init(overdrive, (sr > 0) ? (float)sr : 48000.0f);
     
     return overdrive;
 }
@@ -686,7 +693,8 @@ static void* _SituationCreateExciter(const SituationDeviceMetadata* metadata) {
     ExciterState* exciter = (ExciterState*)SIT_CALLOC(1, sizeof(ExciterState));
     if (!exciter) return NULL;
     
-    init_exciter(exciter, NULL, 48000.0f);  // NULL = use default params
+    int sr = SituationGetAudioPlaybackSampleRate();
+    init_exciter(exciter, NULL, (sr > 0) ? (float)sr : 48000.0f);
     
     return exciter;
 }
@@ -826,8 +834,8 @@ static void _SituationDestroyPanner(void* device_data) {
  */
 static void* _SituationCreateStudioReverb(const SituationDeviceMetadata* metadata) {
     (void)metadata;
-    
-    SituationStudioReverb* reverb = _SituationStudioReverbCreate(48000);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    SituationStudioReverb* reverb = _SituationStudioReverbCreate((sr > 0) ? sr : 48000);
     return reverb;
 }
 
@@ -906,7 +914,8 @@ static void* _SituationCreateSpringReverb(const SituationDeviceMetadata* metadat
     SpringReverb* reverb = (SpringReverb*)SIT_CALLOC(1, sizeof(SpringReverb));
     if (!reverb) return NULL;
     
-    SpringReverb_init(reverb, 48000);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    SpringReverb_init(reverb, (sr > 0) ? sr : 48000);
     
     return reverb;
 }
@@ -978,7 +987,8 @@ static void* _SituationCreateSST282(const SituationDeviceMetadata* metadata) {
     SST282State* sst = (SST282State*)SIT_CALLOC(1, sizeof(SST282State));
     if (!sst) return NULL;
     
-    sst282_init(sst, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    sst282_init(sst, (sr > 0) ? (float)sr : 48000.0f);
     
     return sst;
 }
@@ -1046,7 +1056,8 @@ static void* _SituationCreateFilter(const SituationDeviceMetadata* metadata) {
     SituationFilter* filter = (SituationFilter*)SIT_CALLOC(1, sizeof(SituationFilter));
     if (!filter) return NULL;
     
-    filter_init(filter, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    filter_init(filter, (sr > 0) ? (float)sr : 48000.0f);
     
     return filter;
 }
@@ -1113,7 +1124,8 @@ static void* _SituationCreateEQ4Band(const SituationDeviceMetadata* metadata) {
     SituationEQ4Band* eq = (SituationEQ4Band*)SIT_CALLOC(1, sizeof(SituationEQ4Band));
     if (!eq) return NULL;
     
-    eq4band_init(eq, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    eq4band_init(eq, (sr > 0) ? (float)sr : 48000.0f);
     
     return eq;
 }
@@ -1166,7 +1178,8 @@ static void* _SituationCreateDynamics(const SituationDeviceMetadata* metadata) {
     SituationDynamics* dyn = (SituationDynamics*)SIT_CALLOC(1, sizeof(SituationDynamics));
     if (!dyn) return NULL;
     
-    dynamics_init(dyn, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    dynamics_init(dyn, (sr > 0) ? (float)sr : 48000.0f);
     
     return dyn;
 }
@@ -1227,7 +1240,8 @@ static void* _SituationCreateCompander(const SituationDeviceMetadata* metadata) 
     CompanderProcessor* comp = (CompanderProcessor*)SIT_CALLOC(1, sizeof(CompanderProcessor));
     if (!comp) return NULL;
     
-    compander_init(comp, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    compander_init(comp, (sr > 0) ? (float)sr : 48000.0f);
     
     return comp;
 }
@@ -1301,7 +1315,8 @@ static void* _SituationCreateLFO(const SituationDeviceMetadata* metadata) {
     SituationLFO* lfo = (SituationLFO*)SIT_CALLOC(1, sizeof(SituationLFO));
     if (!lfo) return NULL;
     
-    lfo_init(lfo, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    lfo_init(lfo, (sr > 0) ? (float)sr : 48000.0f);
     
     return lfo;
 }
@@ -1362,7 +1377,8 @@ static void* _SituationCreateSoundSource(const SituationDeviceMetadata* metadata
     SituationSoundSource* src = (SituationSoundSource*)SIT_CALLOC(1, sizeof(SituationSoundSource));
     if (!src) return NULL;
     
-    sound_source_init(src, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    sound_source_init(src, (sr > 0) ? (float)sr : 48000.0f);
 
     /* Pre-size for Policy B live feed from the audio callback (no heap growth on RT thread). */
     {
@@ -1496,7 +1512,8 @@ static void* _SituationCreateMaximizer(const SituationDeviceMetadata* metadata) 
     MaximizerState* max = (MaximizerState*)SIT_CALLOC(1, sizeof(MaximizerState));
     if (!max) return NULL;
     
-    init_maximizer(max, 48000, 64, 10, 20000.0f, 4);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    init_maximizer(max, (sr > 0) ? sr : 48000, 64, 10, 20000.0f, 4);
     
     set_band_params(max, 0, 100.0f, 1.0f, 1.5f, 3);
     set_band_params(max, 1, 500.0f, 1.0f, 1.5f, 3);
@@ -1576,7 +1593,8 @@ static void* _SituationCreateMasteringAmp(const SituationDeviceMetadata* metadat
     SituationMasteringAmp* amp = (SituationMasteringAmp*)SIT_CALLOC(1, sizeof(SituationMasteringAmp));
     if (!amp) return NULL;
     
-    _SituationMasteringAmpInit(amp, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    _SituationMasteringAmpInit(amp, (sr > 0) ? (float)sr : 48000.0f);
     
     return amp;
 }
@@ -1645,7 +1663,8 @@ static void* _SituationCreateMicCapture(const SituationDeviceMetadata* metadata)
     SituationMicCapture* mic = (SituationMicCapture*)SIT_CALLOC(1, sizeof(SituationMicCapture));
     if (!mic) return NULL;
     
-    mic_capture_init(mic, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    mic_capture_init(mic, (sr > 0) ? (float)sr : 48000.0f);
     
     return mic;
 }
@@ -1704,7 +1723,8 @@ static void* _SituationCreateGain(const SituationDeviceMetadata* metadata) {
     SituationGainState* state = (SituationGainState*)SIT_CALLOC(1, sizeof(SituationGainState));
     if (!state) return NULL;
     
-    situation_gain_init(state, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    situation_gain_init(state, (sr > 0) ? (float)sr : 48000.0f);
     return state;
 }
 
@@ -1785,7 +1805,7 @@ static void _SituationProcessMixerNodeNode(
     
     // Sum all input ports (up to 16)
     for (int inp = 0; inp < SITUATION_MIXER_MAX_INPUTS; inp++) {
-        if (!inputs[inp].buffer) break;
+        if (!inputs[inp].buffer) continue;  // skip sparse/unallocated ports, do not stop
         
         for (int i = 0; i < total_samples; i++) {
             out[i] += inputs[inp].buffer[i];
@@ -1824,7 +1844,8 @@ static void* _SituationCreateEnvelopeFollower(const SituationDeviceMetadata* met
     SituationEnvelopeFollowerState* state = (SituationEnvelopeFollowerState*)SIT_CALLOC(1, sizeof(SituationEnvelopeFollowerState));
     if (!state) return NULL;
     
-    situation_envf_init(state, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    situation_envf_init(state, (sr > 0) ? (float)sr : 48000.0f);
     return state;
 }
 
@@ -1883,7 +1904,8 @@ static void* _SituationCreatePeakMeter(const SituationDeviceMetadata* metadata) 
     SituationPeakMeterState* state = (SituationPeakMeterState*)SIT_CALLOC(1, sizeof(SituationPeakMeterState));
     if (!state) return NULL;
     
-    situation_peak_meter_init(state, 48000.0f);
+    int sr = SituationGetAudioPlaybackSampleRate();
+    situation_peak_meter_init(state, (sr > 0) ? (float)sr : 48000.0f);
     return state;
 }
 
@@ -1965,6 +1987,80 @@ static void _SituationDestroySpectrumAnalyzer(void* device_data) {
     if (device_data) {
         SituationSpectrumAnalyzerState* state = (SituationSpectrumAnalyzerState*)device_data;
         situation_spectrum_cleanup(state);
+        SIT_FREE(device_data);
+    }
+}
+
+// ================================================================================================
+// ISA 110 WRAPPER
+// ================================================================================================
+
+/**
+ * @brief Create ISA 110 processor state.
+ */
+static void* _SituationCreateISA110(const SituationDeviceMetadata* metadata) {
+    (void)metadata;
+    ISA110Processor* proc = (ISA110Processor*)SIT_CALLOC(1, sizeof(ISA110Processor));
+    if (!proc) return NULL;
+    int sr = SituationGetAudioPlaybackSampleRate();
+    isa110_init(proc, (sr > 0) ? (float)sr : 48000.0f);
+    return proc;
+}
+
+/**
+ * @brief Process audio through ISA 110.
+ *
+ * Control layout (14 controls — matches registry_init.h and MIDI CC map):
+ *   0  drive          0.0 – 10.0
+ *   1  hpf_cutoff     20 – 400 Hz
+ *   2  hpf_enabled    0/1
+ *   3  band0_freq     20 – 500 Hz    (low shelf)
+ *   4  band0_gain    -24 – +24 dB
+ *   5  band1_freq    100 – 2000 Hz   (low-mid bell)
+ *   6  band1_gain    -24 – +24 dB
+ *   7  band1_q       0.1 – 20.0
+ *   8  band2_freq    500 – 10000 Hz  (high-mid bell)
+ *   9  band2_gain    -24 – +24 dB
+ *   10 band2_q       0.1 – 20.0
+ *   11 band3_freq   2000 – 20000 Hz  (high shelf)
+ *   12 band3_gain   -24 – +24 dB
+ *   13 output_gain   0.0 – 2.0
+ */
+static void _SituationProcessISA110Node(
+    void* device_data,
+    SituationAudioPort* inputs,
+    SituationAudioPort* outputs,
+    float* controls,
+    int frames
+) {
+    if (!device_data || !inputs || !outputs) return;
+    ISA110Processor* proc = (ISA110Processor*)device_data;
+
+    if (controls) {
+        isa110_update_preamp(proc, controls[0], controls[1], controls[2] >= 0.5f);
+        isa110_update_eq_band(proc, 0, controls[3],  controls[4],  proc->params.q[0]);
+        isa110_update_eq_band(proc, 1, controls[5],  controls[6],  controls[7]);
+        isa110_update_eq_band(proc, 2, controls[8],  controls[9],  controls[10]);
+        isa110_update_eq_band(proc, 3, controls[11], controls[12], proc->params.q[3]);
+    }
+
+    isa110_process(proc, inputs[0].buffer, outputs[0].buffer, (unsigned long)frames);
+
+    /* Apply output gain post-EQ. */
+    if (controls) {
+        float gain = controls[13];
+        int samples = frames * outputs[0].channels;
+        float* out = outputs[0].buffer;
+        for (int i = 0; i < samples; i++) out[i] *= gain;
+    }
+}
+
+/**
+ * @brief Destroy ISA 110 processor state.
+ */
+static void _SituationDestroyISA110(void* device_data) {
+    if (device_data) {
+        isa110_reset((ISA110Processor*)device_data);
         SIT_FREE(device_data);
     }
 }
@@ -2214,6 +2310,14 @@ const SituationDeviceFunctions g_device_function_table[] = {
         .create = _SituationCreatePCMInput,
         .process = _SituationProcessPCMInputNode,
         .destroy = _SituationDestroyPCMInput
+    },
+
+    // ISA 110 (Focusrite ISA 110 preamp + 4-band inductor EQ)
+    {
+        .type = SITUATION_NODE_ISA110,
+        .create = _SituationCreateISA110,
+        .process = _SituationProcessISA110Node,
+        .destroy = _SituationDestroyISA110
     }
 };
 
