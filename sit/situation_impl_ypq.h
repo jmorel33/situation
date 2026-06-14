@@ -1,16 +1,19 @@
 /***************************************************************************************************
  *
- *   situation_impl_ypq.h — Internal YPQ / NTSC YIQ conversion core
+ *   situation_impl_ypq.h — YPQ / NTSC YIQ conversion core + diagnostics
  *   (c) 2025-2026 Jacques Morel — MIT Licensed
  *
- *   Single source of truth for YIQ matrix constants and Y↔P↔Q ↔ RGB linear math.
- *   Included only from situation_impl_image.h — not a public header.
+ *   Single source of truth for YIQ matrix constants, Y↔P↔Q↔RGB linear math,
+ *   and public YPQ mapping-quality diagnostics (SituationYpqAnalyzeRgbMapping,
+ *   SituationYpqSliceDuplicateCount). Included only from situation_impl_image.h.
  *
  ***************************************************************************************************/
 #ifndef SITUATION_IMPL_YPQ_H
 #define SITUATION_IMPL_YPQ_H
 
 #include <math.h>
+#include <stdint.h>
+#include <string.h>
 
 /** Linear Y, I, Q before 8-bit YPQ packing or RGB clamp. */
 typedef struct SitYpqYiqLinear {
@@ -274,6 +277,195 @@ static inline ColorYPQA _SitYpqBytesFromFloat(ColorYPQf ypq) {
     result.q = _SitYpqUnitToByte((double)_SitYpqClampUnitFloat(ypq.q));
     result.a = _SitYpqUnitToByte((double)_SitYpqClampUnitFloat(ypq.a));
     return result;
+}
+
+/**
+ * @brief Full 256³ YPQ→RGB mapping quality analysis.
+ * @details Iterates every (Y,P,Q) byte triple (16 777 216 total) and counts
+ *          unique 8-bit RGB outputs, duplicate mappings, unreachable RGB triples
+ *          (holes), and the worst fixed-Q slice duplicate count.
+ *
+ * This is an O(n³) scan — expect a few seconds on a modern CPU. Use the
+ * SIT_SKIP_YPQ_RGB_STATS environment variable to guard against it in CI.
+ *
+ * @param[out] out  Pointer to a SituationYpqRgbMappingStats struct to fill.
+ *                  Must not be NULL.
+ *
+ * @return SITUATION_SUCCESS on success.
+ * @return SITUATION_ERROR_INVALID_PARAM if out is NULL.
+ * @return SITUATION_ERROR_MEMORY_ALLOCATION if the 16 MB hit bitmap cannot be allocated.
+ */
+SITAPI SituationError SituationYpqAnalyzeRgbMapping(SituationYpqRgbMappingStats* out) {
+    if (!out) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+    memset(out, 0, sizeof(*out));
+
+    /* 16 MB flat bitmap: hit[key]=1 once we have seen RGB key=(r<<16)|(g<<8)|b */
+    uint8_t* hit = (uint8_t*)SIT_CALLOC(1 << 24, 1);
+    if (!hit) {
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+
+    int64_t unique_rgb = 0;
+
+    /* Pass 1: global unique count */
+    for (int y = 0; y < 256; y++) {
+        for (int p = 0; p < 256; p++) {
+            for (int q = 0; q < 256; q++) {
+                ColorRGBA rgb = _SitRgbFromYpqBytes(
+                    (ColorYPQA){(unsigned char)y, (unsigned char)p, (unsigned char)q, 255});
+                uint32_t key = ((uint32_t)rgb.r << 16)
+                             | ((uint32_t)rgb.g << 8)
+                             | (uint32_t)rgb.b;
+                if (!hit[key]) {
+                    hit[key] = 1;
+                    unique_rgb++;
+                }
+            }
+        }
+    }
+
+    out->ypq_mappings       = 256LL * 256LL * 256LL;
+    out->unique_rgb         = unique_rgb;
+    out->duplicate_mappings = out->ypq_mappings - unique_rgb;
+    out->rgb_holes          = (1LL << 24) - unique_rgb;
+
+    /* Pass 2: worst fixed-Q slice duplicate count.
+     * Reuse hit bitmap, resetting per slice.
+     * For each Q slice (65536 entries), count unique RGB — duplicates = 65536 - unique. */
+    int worst_dup = 0;
+    int worst_at  = 0;
+
+    for (int q = 0; q < 256; q++) {
+        memset(hit, 0, (size_t)(1 << 24));
+        int slice_unique = 0;
+
+        for (int y = 0; y < 256; y++) {
+            for (int p = 0; p < 256; p++) {
+                ColorRGBA rgb = _SitRgbFromYpqBytes(
+                    (ColorYPQA){(unsigned char)y, (unsigned char)p, (unsigned char)q, 255});
+                uint32_t key = ((uint32_t)rgb.r << 16)
+                             | ((uint32_t)rgb.g << 8)
+                             | (uint32_t)rgb.b;
+                if (!hit[key]) {
+                    hit[key] = 1;
+                    slice_unique++;
+                }
+            }
+        }
+
+        int slice_dup = 65536 - slice_unique;
+        if (slice_dup > worst_dup) {
+            worst_dup = slice_dup;
+            worst_at  = q;
+        }
+    }
+
+    SIT_FREE(hit);
+
+    out->worst_axis_dup = worst_dup;
+    out->worst_axis_at  = worst_at;
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Count duplicate RGB outputs in one 65 536-entry fixed-axis YPQ slice.
+ * @details Iterates all 256×256 (Y,P,Q) combinations with the named axis held
+ *          at `value`, radix-sorts the resulting RGB keys, and counts adjacent
+ *          duplicates.
+ *
+ * Notable results:
+ *   axis='Q', value=0  →  all 65 536 entries map to gray  →  ≥65 000 duplicates
+ *
+ * @param axis     Which axis to hold fixed: 'Y', 'P', or 'Q'.
+ * @param value    The fixed byte value [0, 255].
+ * @param[out] out_dup  Receives the duplicate count on SITUATION_SUCCESS.
+ *
+ * @return SITUATION_SUCCESS on success.
+ * @return SITUATION_ERROR_INVALID_PARAM if axis is invalid, value is out of range, or out_dup is NULL.
+ * @return SITUATION_ERROR_MEMORY_ALLOCATION if temporary sort buffers cannot be allocated.
+ */
+SITAPI SituationError SituationYpqSliceDuplicateCount(char axis, int value, int* out_dup) {
+    if ((axis != 'Y' && axis != 'P' && axis != 'Q')
+            || value < 0 || value > 255
+            || !out_dup) {
+        return SITUATION_ERROR_INVALID_PARAM;
+    }
+
+    uint32_t* keys = (uint32_t*)SIT_MALLOC(65536u * sizeof(uint32_t));
+    uint32_t* temp = (uint32_t*)SIT_MALLOC(65536u * sizeof(uint32_t));
+    if (!keys || !temp) {
+        SIT_FREE(keys);
+        SIT_FREE(temp);
+        return SITUATION_ERROR_MEMORY_ALLOCATION;
+    }
+
+    /* Fill the 65 536 RGB keys for this slice */
+    int idx = 0;
+    for (int a = 0; a < 256; a++) {
+        for (int b = 0; b < 256; b++) {
+            unsigned char cy, cp, cq;
+            if (axis == 'Y') {
+                cy = (unsigned char)value;
+                cp = (unsigned char)a;
+                cq = (unsigned char)b;
+            } else if (axis == 'P') {
+                cy = (unsigned char)a;
+                cp = (unsigned char)value;
+                cq = (unsigned char)b;
+            } else { /* axis == 'Q' */
+                cy = (unsigned char)a;
+                cp = (unsigned char)b;
+                cq = (unsigned char)value;
+            }
+
+            ColorRGBA rgb = _SitRgbFromYpqBytes((ColorYPQA){cy, cp, cq, 255});
+            keys[idx++] = ((uint32_t)rgb.r << 16) | ((uint32_t)rgb.g << 8) | (uint32_t)rgb.b;
+        }
+    }
+
+    /* 4-pass byte radix sort (LSB first) */
+    uint32_t count[256];
+    uint32_t* src = keys;
+    uint32_t* dst = temp;
+    for (int pass = 0; pass < 4; pass++) {
+        memset(count, 0, sizeof(count));
+        const int shift = pass * 8;
+        for (int i = 0; i < 65536; i++) {
+            count[(src[i] >> shift) & 0xffu]++;
+        }
+        int pos = 0;
+        for (int bi = 0; bi < 256; bi++) {
+            const int c = count[bi];
+            count[bi] = pos;
+            pos += c;
+        }
+        for (int i = 0; i < 65536; i++) {
+            const int bi = (src[i] >> shift) & 0xffu;
+            dst[count[bi]++] = src[i];
+        }
+        uint32_t* swap = src;
+        src = dst;
+        dst = swap;
+    }
+    if (src != keys) {
+        memcpy(keys, src, 65536u * sizeof(uint32_t));
+    }
+
+    /* Count adjacent duplicates in the sorted array */
+    int dup = 0;
+    for (int i = 1; i < 65536; i++) {
+        if (keys[i] == keys[i - 1]) {
+            dup++;
+        }
+    }
+
+    SIT_FREE(temp);
+    SIT_FREE(keys);
+
+    *out_dup = dup;
+    return SITUATION_SUCCESS;
 }
 
 #endif /* SITUATION_IMPL_YPQ_H */

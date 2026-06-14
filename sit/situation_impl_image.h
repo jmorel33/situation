@@ -23,11 +23,49 @@
 // Forward declarations for internal helpers defined later in this file
 static SituationError _SituationSaveImageBMP(const char* fileName, const SituationImage* image);
 
+/** 8-bit sRGB unit [0,1] → linear light for HDR export (pairs with stbi hdr_to_ldr gamma on load). */
+static float _SitSrgbUnitToLinear(float s) {
+    if (s <= 0.04045f) {
+        return s / 12.92f;
+    }
+    return powf((s + 0.055f) / 1.055f, 2.4f);
+}
+
 // Image Module Implementation
 //==================================================================================
+
+/** stb_image decode extensions accepted by SituationLoadImage / SituationLoadTexture. */
+static bool _SituationIsStbImageLoadExtensionImpl(const char* extension) {
+    if (!extension || extension[0] == '\0') {
+        return false;
+    }
+    if (extension[0] == '.') {
+        extension++;
+    }
+    static const char* const k_stb_load_exts[] = {
+        "jpg", "jpeg", "png", "bmp", "tga", "psd", "gif", "hdr", "pic", "ppm", "pgm", "pnm", NULL
+    };
+    for (int i = 0; k_stb_load_exts[i] != NULL; ++i) {
+        if (_sit_strcasecmp(extension, k_stb_load_exts[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief Returns true when `extension` is decoded by SituationLoadImage via stb_image.
+ * @param extension File extension with or without a leading dot (e.g. ".png" or "png").
+ */
+SITAPI bool SituationIsStbImageLoadExtension(const char* extension) {
+    return _SituationIsStbImageLoadExtensionImpl(extension);
+}
+
 /**
  * @brief Loads an image from a file into a CPU-side memory buffer.
- * @details This function uses the stb_image library to load a wide variety of common image formats (PNG, JPG, BMP, etc.) from the file system. The image is always converted to a 32-bit RGBA format for consistency across the library.
+ * @details This function uses the stb_image library to load common image formats from disk.
+ *          Supported extensions: JPEG (.jpg, .jpeg), PNG, BMP, TGA, PSD, GIF, HDR, PIC, PNM (.ppm, .pgm, .pnm).
+ *          Output is always converted to 32-bit RGBA for consistency across the library.
  *
  * @warning This function requires the `stb_image.h` implementation to be included in the project. If not available, the function will fail and set an error.
  * @warning This function allocates new memory for the `image.data`. The caller is **responsible** for freeing this memory by calling `SituationUnloadImage()` on the returned `SituationImage`. Failure to do so will result in a memory leak.
@@ -60,7 +98,7 @@ SITAPI SituationError SituationLoadImage(const char *fileName, SituationImage* o
 
 /**
  * @brief Loads an image from a memory buffer into a `SituationImage`.
- * @details This function is useful for loading image data that is already in memory, such as data embedded in the executable or loaded from a custom archive file. It uses stb_image to auto-detect the format (PNG, JPG, etc.) from the buffer and decodes it. The image is always converted to a 32-bit RGBA format.
+ * @details This function is useful for loading image data that is already in memory, such as data embedded in the executable or loaded from a custom archive file. It uses stb_image to auto-detect the format from the buffer (same set as SituationLoadImage) and decodes it. The image is always converted to a 32-bit RGBA format.
  *
  * @warning This function requires the `stb_image.h` implementation to be included in the project.
  * @warning This function allocates new memory for the `image.data`. The caller is **responsible** for freeing this memory by calling `SituationUnloadImage()`.
@@ -127,8 +165,11 @@ SITAPI bool SituationIsImageValid(SituationImage image) {
  * @details This function determines the output format based on the file extension of `fileName`.
  *
  * @par Supported Formats
- *   - **`.png`:** Provides high-quality, compressed output. Requires the `stb_image_write.h` implementation to be included in the project.
- *   - **`.bmp`:** Provides uncompressed output. This is supported natively by the library as a fallback.
+ *   - **`.png`:** Compressed PNG via stb_image_write.
+ *   - **`.bmp`:** Uncompressed BMP (native encoder fallback).
+ *   - **`.jpg` / `.jpeg`:** JPEG via stb_image_write (quality 90).
+ *   - **`.tga`:** TGA via stb_image_write.
+ *   - **`.hdr`:** Radiance RGBE HDR via stb_image_write (8-bit RGBA source is normalized to float).
  *
  * @param image The `SituationImage` to save. The image must be valid.
  * @param fileName The destination file path, including the desired extension (e.g., "output/my_image.png").
@@ -155,7 +196,44 @@ SITAPI SituationError SituationExportImage(SituationImage image, const char *fil
     if (ext != NULL && _sit_strcasecmp(ext, ".bmp") == 0) {
         return _SituationSaveImageBMP(fileName, &image);
     }
-    return _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "Unsupported image export format. Use .png or .bmp.");
+#if defined(STB_IMAGE_WRITE_IMPLEMENTATION)
+    if (ext != NULL && (_sit_strcasecmp(ext, ".jpg") == 0 || _sit_strcasecmp(ext, ".jpeg") == 0)) {
+        if (stbi_write_jpg(fileName, image.width, image.height, 4, image.data, 90) != 0) {
+            return SITUATION_SUCCESS;
+        }
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Failed to write JPEG image.");
+    }
+    if (ext != NULL && _sit_strcasecmp(ext, ".tga") == 0) {
+        if (stbi_write_tga(fileName, image.width, image.height, 4, image.data) != 0) {
+            return SITUATION_SUCCESS;
+        }
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Failed to write TGA image.");
+    }
+    if (ext != NULL && _sit_strcasecmp(ext, ".hdr") == 0) {
+        const int pixel_count = image.width * image.height;
+        float* float_data = (float*)SIT_MALLOC((size_t)pixel_count * 3u * sizeof(float));
+        if (!float_data) {
+            return SITUATION_ERROR_MEMORY_ALLOCATION;
+        }
+        const unsigned char* src = (const unsigned char*)image.data;
+        for (int i = 0; i < pixel_count; ++i) {
+            const int si = i * 4;
+            const int di = i * 3;
+            float_data[di + 0] = _SitSrgbUnitToLinear((float)src[si + 0] / 255.0f);
+            float_data[di + 1] = _SitSrgbUnitToLinear((float)src[si + 1] / 255.0f);
+            float_data[di + 2] = _SitSrgbUnitToLinear((float)src[si + 2] / 255.0f);
+        }
+        const int wrote = stbi_write_hdr(fileName, image.width, image.height, 3, float_data);
+        SIT_FREE(float_data);
+        if (wrote != 0) {
+            return SITUATION_SUCCESS;
+        }
+        return _SituationSetErrorFromCode(SITUATION_ERROR_FILE_WRITE_FAILED, "Failed to write HDR image.");
+    }
+#endif
+    return _SituationSetErrorFromCode(
+        SITUATION_ERROR_INVALID_PARAM,
+        "Unsupported image export format. Use .png, .bmp, .jpg, .tga, or .hdr.");
 }
 
 /**
@@ -2237,6 +2315,16 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
     if (sit_render.vk.device != VK_NULL_HANDLE && sit_render.vk.in_flight_fences && sit_render.vk.max_frames_in_flight > 0) {
         uint32_t mf = sit_render.vk.max_frames_in_flight;
         uint32_t prev = (sit_render.vk.current_frame_index + mf - 1u) % mf;
+#if !defined(__STDC_NO_THREADS__) && defined(SITUATION_ENABLE_RENDER_THREAD)
+        if (sit_render.enabled) {
+            for (int spin = 0; spin < 2000 && sit_render.frames_pending > 0; ++spin) {
+                if (sit_gs.sit_glfw_window) {
+                    glfwPollEvents();
+                }
+                thrd_yield();
+            }
+        }
+#endif
         VkResult wr = _SituationVulkanWaitFencePumpWindow(sit_render.vk.device, sit_render.vk.in_flight_fences[prev]);
         if (wr == VK_TIMEOUT) {
             return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED,
@@ -2245,8 +2333,18 @@ SITAPI SituationError SituationLoadImageFromScreen(SituationImage* out_image) {
         if (wr != VK_SUCCESS) {
             return _SituationSetErrorFromCode(SITUATION_ERROR_VULKAN_SYNC_OBJECT_FAILED, "Fence wait failed before Vulkan screenshot readback");
         }
+        _SituationVulkanEnsureScreenshotResolvedForFrame(prev);
     }
     // Prefer pre-present capture from SituationEndFrame (same role as OpenGL screenshot_buffer; reliable on all drivers).
+    if (sit_render.vk.screenshot_valid && sit_render.vk.screenshot_buffer &&
+        sit_render.vk.screenshot_width == width && sit_render.vk.screenshot_height == height &&
+        sit_render.vk.max_frames_in_flight > 0u) {
+        uint32_t mf = sit_render.vk.max_frames_in_flight;
+        uint32_t prev_slot = (sit_render.vk.current_frame_index + mf - 1u) % mf;
+        if (sit_render.vk.screenshot_resolved_frame_index != prev_slot) {
+            sit_render.vk.screenshot_valid = false;
+        }
+    }
     if (sit_render.vk.screenshot_valid && sit_render.vk.screenshot_buffer &&
         sit_render.vk.screenshot_width == width && sit_render.vk.screenshot_height == height) {
         out_image->data = SIT_MALLOC((size_t)width * height * 4);

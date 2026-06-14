@@ -100,6 +100,21 @@
 #endif
 
 // ==================================================================================
+// tinyobj (OBJ Model Loading)
+// ==================================================================================
+
+#if !defined(SITUATION_NO_TINYOBJ)
+    #ifndef TINYOBJ_LOADER_C_IMPLEMENTATION
+        #define TINYOBJ_LOADER_C_IMPLEMENTATION
+    #endif
+    #define TINYOBJ_MALLOC SIT_MALLOC
+    #define TINYOBJ_CALLOC SIT_CALLOC
+    #define TINYOBJ_FREE SIT_FREE
+    #define TINYOBJ_REALLOC SIT_REALLOC
+    #include "tinyobj_loader_c.h"
+#endif
+
+// ==================================================================================
 // Platform & Backend
 // ==================================================================================
 

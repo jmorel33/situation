@@ -1189,43 +1189,51 @@ static int _SituationIOThreadEntry(void* arg) {
         size_t head = atomic_load(&pool->queues[0].head);
         size_t tail = atomic_load(&pool->queues[0].tail);
 
-        if (tail != head) {
-            size_t idx = tail & pool->queues[0].mask;
-            SituationJob* job = &pool->queues[0].jobs[idx];
-            int dep = atomic_load(&job->dependency_count);
+        SituationJob* job = NULL;
+        if (tail != head && _SitWorkerTryClaimReadyJob(pool, 0, &job) && job) {
+            mtx_unlock(&pool->queues[0].lock);
 
-            if (dep == 0) {
-                atomic_store(&pool->queues[0].tail, tail + 1);
-                mtx_unlock(&pool->queues[0].lock);
-
-                // Execute
-                void* d = job->uses_large_data ? job->large_data_ptr : job->storage;
-                if (job->func) {
-                    SituationError dummy = SITUATION_SUCCESS;
-                    job->func(d, (void*)&dummy);
-                }
-
-                // Continuation
-                uint32_t cont_id = atomic_load(&job->continuation_id);
-                if (cont_id != 0) {
-                    SituationJob* next_job = _SitGetJobFromId(pool, cont_id);
-                    if (next_job) {
-                        if (atomic_fetch_sub(&next_job->dependency_count, 1) == 1) cnd_signal(&pool->wake_condition);
-                    }
-                }
-
-                atomic_store(&job->is_completed, true);
-                uint16_t old = atomic_load(&job->generation);
-                atomic_store(&job->generation, (uint16_t)((old + 1) & SIT_ID_GEN_MASK));
-
-                if (atomic_fetch_sub(&pool->active_jobs, 1) == 1) cnd_broadcast(&pool->idle_condition);
-                atomic_fetch_add(&pool->stats_jobs_completed, 1);
-                atomic_fetch_add(&pool->stats_io_jobs_run, 1);
-                worked = true;
-            } else {
-                mtx_unlock(&pool->queues[0].lock);
+            while (_SitJobDepCount(atomic_load(&job->dependency_count)) != 0) {
+                if (atomic_load(&pool->shutdown)) break;
                 thrd_yield();
             }
+
+            // Execute
+            void* d = job->uses_large_data ? job->large_data_ptr : job->storage;
+            if (job->func) {
+                SituationError dummy = SITUATION_SUCCESS;
+                job->func(d, (void*)&dummy);
+            }
+
+            // Continuation
+            uint32_t cont_id = atomic_load(&job->continuation_id);
+            if (cont_id != 0) {
+                SituationJob* next_job = _SitGetJobFromId(pool, cont_id);
+                if (next_job) {
+                    if (_SitJobDecrementDependency(next_job)) cnd_signal(&pool->wake_condition);
+                }
+            }
+
+            // [Safety] Free copied data if owned (parity with worker path)
+            if (job->owns_memory && job->large_data_ptr) {
+                SIT_FREE(job->large_data_ptr);
+                job->large_data_ptr = NULL;
+                job->owns_memory = false;
+            }
+
+            // [FIX] Generation before is_completed: is_completed=true releases the
+            // slot for reuse (submit checks it), so it must be the LAST write.
+            uint16_t old = atomic_load(&job->generation);
+            atomic_store(&job->generation, (uint16_t)((old + 1) & SIT_ID_GEN_MASK));
+            atomic_store(&job->is_completed, true);
+
+            if (atomic_fetch_sub(&pool->active_jobs, 1) == 1) cnd_broadcast(&pool->idle_condition);
+            atomic_fetch_add(&pool->stats_jobs_completed, 1);
+            atomic_fetch_add(&pool->stats_io_jobs_run, 1);
+            worked = true;
+        } else if (tail != head) {
+            mtx_unlock(&pool->queues[0].lock);
+            thrd_yield();
         } else {
             mtx_unlock(&pool->queues[0].lock);
         }

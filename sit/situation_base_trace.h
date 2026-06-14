@@ -283,7 +283,7 @@
     X(SIT_TRACE__SituationCachePhysicalDisplays,           20070002, "_SituationCachePhysicalDisplays") \
     X(SIT_TRACE__SituationGetWindowGLFWMonitor,            20070003, "_SituationGetWindowGLFWMonitor")
 
-// ── situation_impl_image.h (API 10080001 – 10080033, internal 20080001 – 20080003) ──
+// ── situation_impl_image.h (API 10080001 – 10080034, internal 20080001 – 20080003) ──
 #define SITUATION_TRACE_SITUATION_IMPL_IMAGE_H(X) \
     X(SIT_TRACE_SituationLoadImage,              10080001, "SituationLoadImage") \
     X(SIT_TRACE_SituationLoadImageFromMemory,    10080002, "SituationLoadImageFromMemory") \
@@ -318,6 +318,7 @@
     X(SIT_TRACE_SituationConvertColorToVector4,  10080031, "SituationConvertColorToVector4") \
     X(SIT_TRACE_SituationLoadImageFromScreen,    10080032, "SituationLoadImageFromScreen") \
     X(SIT_TRACE_SituationTakeScreenshot,         10080033, "SituationTakeScreenshot") \
+    X(SIT_TRACE_SituationIsStbImageLoadExtension, 10080034, "SituationIsStbImageLoadExtension") \
     X(SIT_TRACE__SituationSaveImageBMP,          20080001, "_SituationSaveImageBMP") \
     X(SIT_TRACE__SituationColorAlphaBlend,       20080002, "_SituationColorAlphaBlend") \
     X(SIT_TRACE__SituationBilinearSample,        20080003, "_SituationBilinearSample")
@@ -422,13 +423,15 @@
     X(SIT_TRACE_SituationCmdPresent,                                  10100025, "SituationCmdPresent") \
     X(SIT_TRACE_SituationGetBufferDeviceAddress,                      10100026, "SituationGetBufferDeviceAddress") \
     X(SIT_TRACE_SituationGetTextureHandle,                            10100027, "SituationGetTextureHandle") \
-    X(SIT_TRACE_SituationCmdBindSampledTexture,                       10100028, "SituationCmdBindSampledTexture") \
-    X(SIT_TRACE_SituationCmdSetVertexAttribute,                       10100029, "SituationCmdSetVertexAttribute") \
-    X(SIT_TRACE_SituationCmdBindPipeline,                             10100030, "SituationCmdBindPipeline") \
-    X(SIT_TRACE_SituationCmdSetCullMode,                              10100031, "SituationCmdSetCullMode") \
-    X(SIT_TRACE_SituationCmdSetDepthTest,                             10100032, "SituationCmdSetDepthTest") \
-    X(SIT_TRACE_SituationCmdSetDepthWrite,                            10100033, "SituationCmdSetDepthWrite") \
-    X(SIT_TRACE_SituationCmdSetBlendEnable,                           10100034, "SituationCmdSetBlendEnable") \
+    X(SIT_TRACE_SituationGetMeshVertexBufferAddress,                  10100028, "SituationGetMeshVertexBufferAddress") \
+    X(SIT_TRACE_SituationGetMeshIndexBufferAddress,                   10100029, "SituationGetMeshIndexBufferAddress") \
+    X(SIT_TRACE_SituationCmdBindSampledTexture,                       10100030, "SituationCmdBindSampledTexture") \
+    X(SIT_TRACE_SituationCmdSetVertexAttribute,                       10100031, "SituationCmdSetVertexAttribute") \
+    X(SIT_TRACE_SituationCmdBindPipeline,                             10100032, "SituationCmdBindPipeline") \
+    X(SIT_TRACE_SituationCmdSetCullMode,                              10100033, "SituationCmdSetCullMode") \
+    X(SIT_TRACE_SituationCmdSetDepthTest,                             10100034, "SituationCmdSetDepthTest") \
+    X(SIT_TRACE_SituationCmdSetDepthWrite,                            10100035, "SituationCmdSetDepthWrite") \
+    X(SIT_TRACE_SituationCmdSetBlendEnable,                           10100036, "SituationCmdSetBlendEnable") \
     X(SIT_TRACE_SituationCmdSetBlendFuncSeparate,                     10100035, "SituationCmdSetBlendFuncSeparate") \
     X(SIT_TRACE_SituationCmdPushRasterState,                          10100036, "SituationCmdPushRasterState") \
     X(SIT_TRACE_SituationCmdPopRasterState,                           10100037, "SituationCmdPopRasterState") \
@@ -696,6 +699,10 @@
     X(SIT_TRACE_SituationSetVirtualDisplayDirty,       10110006, "SituationSetVirtualDisplayDirty") \
     X(SIT_TRACE_SituationIsVirtualDisplayDirty,        10110007, "SituationIsVirtualDisplayDirty") \
     X(SIT_TRACE_SituationGetLastVDCompositeTimeMS,     10110008, "SituationGetLastVDCompositeTimeMS") \
+    X(SIT_TRACE_SituationGetVirtualDisplayUpdateInfo,  10110010, "SituationGetVirtualDisplayUpdateInfo") \
+    X(SIT_TRACE_SituationSetVirtualDisplayIdleThreshold, 10110011, "SituationSetVirtualDisplayIdleThreshold") \
+    X(SIT_TRACE_SituationSetVirtualDisplayFallbackMode, 10110012, "SituationSetVirtualDisplayFallbackMode") \
+    X(SIT_TRACE_SituationSetVirtualDisplayFallbackColor, 10110013, "SituationSetVirtualDisplayFallbackColor") \
     X(SIT_TRACE_SituationGetVirtualDisplaySize,        10110009, "SituationGetVirtualDisplaySize") \
     X(SIT_TRACE__SituationSortVirtualDisplaysCallback,  20110001, "_SituationSortVirtualDisplaysCallback")
 

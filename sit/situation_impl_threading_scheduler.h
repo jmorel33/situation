@@ -12,17 +12,91 @@
 #include <stdio.h>
 #include <string.h>
 
-#define SIT_WORKER_SCAN_DEPTH_MIN 4
-#define SIT_WORKER_SCAN_DEPTH_MAX 32
+/* Epic D in-place claim: SituationJobId encodes physical slot_idx. Never swap job structs
+ * in the ring — swap breaks handles (WaitForJob, async compile_job, continuation_id).
+ * Claim a ready slot with dependency_count 0 via CAS to SIT_JOB_DEP_CLAIM_BIT; real
+ * dependency counts live in the low bits (SituationAddJobDependency fetch_add). */
+#define SIT_JOB_DEP_CLAIM_BIT  0x40000000
+#define SIT_JOB_DEP_COUNT_MASK 0x3FFFFFFF
 
-static size_t _SitWorkerScanDepthForPending(size_t pending) {
-    if (pending <= SIT_WORKER_SCAN_DEPTH_MIN) {
-        return pending > 0 ? pending : 1;
+static inline int _SitJobDepCount(int dep_raw) {
+    return dep_raw & SIT_JOB_DEP_COUNT_MASK;
+}
+
+/* Continuation / fan-in must decrement only the low dependency bits and preserve
+ * SIT_JOB_DEP_CLAIM_BIT. A blind fetch_sub(..., 1) on a claimed slot (0x40000000)
+ * produces 0x3FFFFFFF in the low bits and wedges the worker in the pre-run dep wait
+ * forever — compile_done never set, SituationPollShaderLoad hits -557 after 5s. */
+static inline bool _SitJobDecrementDependency(SituationJob* job) {
+    if (!job) return false;
+    for (;;) {
+        int old = atomic_load(&job->dependency_count);
+        int claim = old & SIT_JOB_DEP_CLAIM_BIT;
+        int low = _SitJobDepCount(old);
+        if (low == 0) {
+            return false;
+        }
+        int new_val = claim | (low - 1);
+        if (atomic_compare_exchange_weak(&job->dependency_count, &old, new_val)) {
+            return (low - 1) == 0 && claim == 0;
+        }
     }
-    if (pending >= 64) {
-        return SIT_WORKER_SCAN_DEPTH_MAX;
+}
+
+static inline void _SitQueueCompactTailLocked(SituationThreadPool* pool, int q_idx) {
+    size_t head = atomic_load(&pool->queues[q_idx].head);
+    size_t tail = atomic_load(&pool->queues[q_idx].tail);
+    while (tail != head) {
+        SituationJob* front = &pool->queues[q_idx].jobs[tail & pool->queues[q_idx].mask];
+        if (!atomic_load(&front->is_completed)) {
+            break;
+        }
+        tail++;
     }
-    return pending / 2;
+    atomic_store(&pool->queues[q_idx].tail, tail);
+}
+
+/* Caller must hold queues[q_idx].lock. Returns true and sets *out_job when a job is claimed. */
+static bool _SitWorkerTryClaimReadyJob(SituationThreadPool* pool, int q_idx, SituationJob** out_job) {
+    *out_job = NULL;
+    _SitQueueCompactTailLocked(pool, q_idx);
+
+    size_t head = atomic_load(&pool->queues[q_idx].head);
+    size_t tail = atomic_load(&pool->queues[q_idx].tail);
+    if (tail == head) {
+        return false;
+    }
+
+    /* Scan the entire pending window. An artificial scan cap (Epic D sizing) hid ready jobs
+     * behind a long-running or blocked tail — classic HOL starvation: tail cannot compact
+     * until the front slot completes, head keeps advancing, and anything beyond scan_limit
+     * sat unclaimed until the blocker finished (async shader compile timeouts at 5s). */
+    size_t pending = head - tail;
+
+    for (size_t scan = 0; scan < pending; ++scan) {
+        size_t idx = (tail + scan) & pool->queues[q_idx].mask;
+        SituationJob* candidate = &pool->queues[q_idx].jobs[idx];
+
+        if (atomic_load(&candidate->is_completed)) {
+            continue;
+        }
+        int dep_raw = atomic_load(&candidate->dependency_count);
+        if (dep_raw != 0) {
+            continue; /* blocked or already claimed */
+        }
+
+        int expected = 0;
+        if (!atomic_compare_exchange_strong(&candidate->dependency_count, &expected, SIT_JOB_DEP_CLAIM_BIT)) {
+            continue;
+        }
+
+        if (scan > 0) {
+            atomic_fetch_add(&pool->stats_scan_forward_swap, 1);
+        }
+        *out_job = candidate;
+        return true;
+    }
+    return false;
 }
 
 static size_t _SitResolveAutoWorkerCount(void) {

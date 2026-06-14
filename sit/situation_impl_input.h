@@ -203,6 +203,12 @@ static void _SituationGLFWFramebufferSizeCallback(GLFWwindow* window, int width,
     sit_gs.main_window_height = height;
     sit_gs.was_window_resized_last_frame = true;
 
+    /* Canvas tracks render coordinates; only grow/shrink with the window in windowed mode. */
+    if (glfwGetWindowMonitor(sit_gs.sit_glfw_window) == NULL) {
+        sit_gs.render_canvas_width = width;
+        sit_gs.render_canvas_height = height;
+    }
+
 #if defined(SITUATION_USE_OPENGL)
     // Mark shadow state as dirty so the Render Thread knows it needs to rebuild
     // internal textures and projections on its next loop.
@@ -375,7 +381,7 @@ static void _SituationGLFWScrollCallback(GLFWwindow* window, double xoffset, dou
  * @note Requires `SITUATION_ENABLE_INPUT_LAYOUT_MAPPER` macro for full cross-platform support.
  *       On Linux without xkbcommon, falls back to approximate mapping via GLFW proxiesÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Âenable via deps for precision.
  */
-SITAPI int SituationGetCharFromScancode(int window, int scancode, int mods, uint32_t* out_char) {
+SITAPI int SituationGetCharFromScancode(int window, int scancode, SituationModifiers mods, uint32_t* out_char) {
     if (!out_char) return SITUATION_ERROR_INVALID_PARAM;
     *out_char = 0;
 
@@ -648,7 +654,7 @@ SITAPI unsigned int SituationGetCharPressed(void) {
  *
  * @see SituationIsScrollLockOn(), SituationIsModifierPressed()
  */
-SITAPI bool SituationIsLockKeyPressed(int lock_key_mod) {
+SITAPI bool SituationIsLockKeyPressed(SituationModifiers lock_key_mod) {
     if (!SituationIsInitialized()) return false;
     return (sit_input.keyboard.lock_key_state & lock_key_mod) != 0;
 }
@@ -678,7 +684,7 @@ SITAPI bool SituationIsScrollLockOn(void) {
  *
  * @see SituationIsKeyDown()
  */
-SITAPI bool SituationIsModifierPressed(int modifier) {
+SITAPI bool SituationIsModifierPressed(SituationModifiers modifier) {
     if (!SituationIsInitialized()) return false;
     return (sit_input.keyboard.modifier_state & modifier) != 0;
 }

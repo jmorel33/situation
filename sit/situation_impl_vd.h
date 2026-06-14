@@ -10,15 +10,170 @@
 *   Contains:
 *     - Virtual display creation, destruction, configuration
 *     - Virtual display compositing (GL + Vulkan backends)
-*     - Virtual display state queries (dirty, size, composite time)
-*     - GL VD renderer initialization
-*
-*   This is an implementation-internal file. Do not include directly.
-*
-***************************************************************************************************/
+ *     - Virtual display state queries (dirty, size, composite time, content-update info)
+ *     - Content-update tracking hooks (called from renderer command recording)
+ *     - GL VD renderer initialization
+ *
+ *   This is an implementation-internal file. Do not include directly.
+ *
+ ***************************************************************************************************/
 #ifndef SITUATION_IMPL_VD_H
 #define SITUATION_IMPL_VD_H
 
+//----------------------------------------------------------------------------------
+// Content-update tracking (Phase 1) — hooks invoked from situation_impl_renderer.h
+//----------------------------------------------------------------------------------
+
+/** Monotonic clock aligned with SituationUpdateTimers / VD frame clock. */
+static double _SitVDGetTimeSeconds(void) {
+    if (sit_gs.timer_system_instance.is_initialized) {
+        return sit_gs.timer_system_instance.current_system_time_seconds;
+    }
+    return sit_gs.current_time;
+}
+
+static void _SitVDGetCompositorIdleState(const SituationVirtualDisplay* vd, int* out_is_idle, double* out_elapsed_idle) {
+    double now = _SitVDGetTimeSeconds();
+    double since = now - vd->last_content_update_time;
+    bool idle = since > vd->idle_threshold_seconds;
+    if (out_is_idle) *out_is_idle = idle ? 1 : 0;
+    if (out_elapsed_idle) *out_elapsed_idle = idle ? since : 0.0;
+}
+
+static void _SitVDFallbackColorNormalized(const SituationVirtualDisplay* vd, float out_rgba[4]) {
+    out_rgba[0] = vd->fallback_color.r / 255.0f;
+    out_rgba[1] = vd->fallback_color.g / 255.0f;
+    out_rgba[2] = vd->fallback_color.b / 255.0f;
+    out_rgba[3] = vd->fallback_color.a / 255.0f;
+}
+
+#if defined(SITUATION_USE_OPENGL)
+static void _SitVDApplyCompositorIdleUniformsGL(GLuint program, const SituationVirtualDisplay* vd, int is_idle, double elapsed_idle) {
+    float color[4];
+    _SitVDFallbackColorNormalized(vd, color);
+    glProgramUniform1i(program, SIT_UNIFORM_LOC_VD_IS_IDLE, is_idle);
+    glProgramUniform1i(program, SIT_UNIFORM_LOC_VD_FALLBACK_MODE, (int)vd->fallback_mode);
+    glProgramUniform1f(program, SIT_UNIFORM_LOC_VD_ELAPSED_IDLE, (float)elapsed_idle);
+    glProgramUniform4fv(program, SIT_UNIFORM_LOC_VD_FALLBACK_COLOR, 1, color);
+}
+#endif
+
+#if defined(SITUATION_USE_VULKAN)
+static void _SitVDFillPathBPushConstants(uint8_t* out, const mat4 model_matrix, const SituationVirtualDisplay* vd, int is_idle, double elapsed_idle) {
+    float color[4];
+    _SitVDFallbackColorNormalized(vd, color);
+    int fallback_mode = (int)vd->fallback_mode;
+    float elapsed = (float)elapsed_idle;
+    memcpy(out, model_matrix, sizeof(mat4));
+    memcpy(out + 64, &vd->opacity, sizeof(float));
+    memcpy(out + 68, &is_idle, sizeof(int));
+    memcpy(out + 72, &fallback_mode, sizeof(int));
+    memcpy(out + 76, &elapsed, sizeof(float));
+    memcpy(out + 80, color, sizeof(float) * 4);
+}
+
+static void _SitVDFillPathAPushConstants(uint8_t* out, const mat4 model_matrix, const SituationVirtualDisplay* vd, int is_idle, double elapsed_idle) {
+    float color[4];
+    _SitVDFallbackColorNormalized(vd, color);
+    int blend_mode = (int)vd->blend_mode;
+    int fallback_mode = (int)vd->fallback_mode;
+    float elapsed = (float)elapsed_idle;
+    memset(out, 0, SIT_VD_PATH_A_PUSH_CONSTANT_SIZE);
+    memcpy(out, model_matrix, sizeof(mat4));
+    memcpy(out + 64, &blend_mode, sizeof(int));
+    memcpy(out + 68, &vd->opacity, sizeof(float));
+    memcpy(out + 72, &is_idle, sizeof(int));
+    memcpy(out + 76, &fallback_mode, sizeof(int));
+    memcpy(out + 80, &elapsed, sizeof(float));
+    memcpy(out + 96, color, sizeof(float) * 4);
+}
+#endif
+
+static void _SitVDMarkContentUpdated(SituationVirtualDisplay* vd) {
+    if (!vd) return;
+    vd->last_content_update_time = _SitVDGetTimeSeconds();
+    vd->last_content_update_frame = vd->frame_count;
+    vd->is_dirty = true;
+}
+
+static void _SitVDMarkContentUpdatedFromTextureSlot(int slot_index) {
+    if (slot_index < 0) return;
+    for (int i = 0; i < SITUATION_MAX_VIRTUAL_DISPLAYS; ++i) {
+        if (!sit_render.virtual_display_slots_used[i]) continue;
+        SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[i];
+        if (vd->texture_slot_index == slot_index) {
+            _SitVDMarkContentUpdated(vd);
+            return;
+        }
+    }
+}
+
+static void _SitVDMarkComputeBindingsWritten(const int* slots, int slot_count) {
+    if (!slots || slot_count <= 0) return;
+    for (int b = 0; b < slot_count; ++b) {
+        if (slots[b] >= 0) {
+            _SitVDMarkContentUpdatedFromTextureSlot(slots[b]);
+        }
+    }
+}
+
+static void _SitVDEndRenderPassCheck(int display_id, bool had_draw) {
+    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !had_draw) return;
+    if (!sit_render.virtual_display_slots_used[display_id]) return;
+    _SitVDMarkContentUpdated(&sit_render.virtual_display_slots[display_id]);
+}
+
+#if defined(SITUATION_USE_OPENGL)
+static void _SitVDResetGLRecordingState(SituationGLSoftCommandBuffer* buf) {
+    if (!buf) return;
+    buf->recording_pass_display_id = -1;
+    buf->recording_pass_had_draw = false;
+    for (int i = 0; i < SIT_VD_MAX_COMPUTE_TEXTURE_BINDS; ++i) {
+        buf->compute_bound_texture_slots[i] = -1;
+    }
+}
+#endif
+
+static void _SitVDRecordingNoteDrawCmd(SituationCommandBuffer cmd) {
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    if (buf && buf->recording_render_pass_active && buf->recording_pass_display_id >= 0) {
+        buf->recording_pass_had_draw = true;
+    }
+#elif defined(SITUATION_USE_VULKAN)
+    (void)cmd;
+    if (sit_render.vk.inside_render_pass && sit_render.vk.recording_pass_display_id >= 0) {
+        sit_render.vk.recording_pass_had_draw = true;
+    }
+#endif
+}
+
+static void _SitVDNoteComputeTextureBind(SituationCommandBuffer cmd, uint32_t binding, int texture_slot_index) {
+    if (binding >= SIT_VD_MAX_COMPUTE_TEXTURE_BINDS) return;
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    if (buf) buf->compute_bound_texture_slots[binding] = texture_slot_index;
+#elif defined(SITUATION_USE_VULKAN)
+    (void)cmd;
+    sit_render.vk.compute_bound_texture_slots[binding] = texture_slot_index;
+#endif
+}
+
+static void _SitVDNoteComputeDispatch(SituationCommandBuffer cmd) {
+#if defined(SITUATION_USE_OPENGL)
+    SituationGLSoftCommandBuffer* buf = (SituationGLSoftCommandBuffer*)cmd;
+    if (buf) {
+        _SitVDMarkComputeBindingsWritten(buf->compute_bound_texture_slots, SIT_VD_MAX_COMPUTE_TEXTURE_BINDS);
+    }
+#elif defined(SITUATION_USE_VULKAN)
+    (void)cmd;
+    _SitVDMarkComputeBindingsWritten(sit_render.vk.compute_bound_texture_slots, SIT_VD_MAX_COMPUTE_TEXTURE_BINDS);
+#endif
+}
+
+//----------------------------------------------------------------------------------
+// Virtual Display lifecycle & compositing
+//----------------------------------------------------------------------------------
 
 /**
  * @brief Creates a new virtual/offscreen display (render target) for multi-pass or composited rendering.
@@ -26,7 +181,7 @@
  * @details Allocates and initializes a new virtual display that can be rendered to independently
  *          of the main window/swapchain. Virtual displays are useful for:
  *            - Multi-view rendering (e.g. editor viewports, minimaps, VR eyes, security cameras)
- *            - Post-processing pipelines (render scene ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ apply effects ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ composite)
+ *            - Post-processing pipelines (render scene apply effects composite)
  *            - Render-to-texture techniques
  *            - Layered UI or debug overlays with independent resolution/scaling
  *
@@ -36,19 +191,19 @@
  *
  *          Parameters control rendering behavior, timing, and composition:
  *            - resolution: Internal render resolution (can differ from window size)
- *            - frame_time_mult: Time scaling factor applied to this displayÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢s update loop
+ *            - frame_time_mult: Time scaling factor applied to this displays update loop
  *            - z_order: Compositing order when using `SituationRenderVirtualDisplays` (lower = drawn first)
  *            - scaling_mode: How the virtual display output is scaled when composited (fit, fill, stretch, etc.)
  *            - blend_mode: Blending operation used when compositing this display onto others or the main target
  *
  * @param resolution Desired internal resolution of the virtual display (width, height in pixels).
  *                   Both components must be > 0. Fractional values are truncated.
- * @param frame_time_mult Multiplier applied to delta-time for this displayÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢s update callbacks.
+ * @param frame_time_mult Multiplier applied to delta-time for this displays update callbacks.
  *                        1.0 = real-time, 0.5 = half-speed, 2.0 = double-speed, etc.
  *                        Useful for slow-motion effects or independent simulation rates.
  * @param z_order Z-order / layer index for automatic compositing (higher values drawn later/on top).
  *                Use 0 for background, positive for foreground. Negative values are allowed.
- * @param scaling_mode Scaling policy when the displayÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢s aspect ratio differs from the target
+ * @param scaling_mode Scaling policy when the displays aspect ratio differs from the target
  *                     (e.g. `SITUATION_SCALING_FIT`, `SITUATION_SCALING_FILL`, `SITUATION_SCALING_STRETCH`).
  * @param blend_mode Blending mode used when this display is composited onto another target
  *                   (e.g. `SITUATION_BLEND_ALPHA`, `SITUATION_BLEND_ADDITIVE`, `SITUATION_BLEND_NONE`).
@@ -56,17 +211,17 @@
  *               On failure, the value is set to -1.
  *
  * @return SITUATION_SUCCESS on successful creation,
- *         SITUATION_ERROR_INVALID_PARAM if resolution ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ 0 or invalid enum values,
+ *         SITUATION_ERROR_INVALID_PARAM if resolution or invalid enum values,
  *         SITUATION_ERROR_MEMORY_ALLOCATION if framebuffer/texture allocation failed,
  *         SITUATION_ERROR_VIRTUAL_DISPLAY_LIMIT if maximum number of virtual displays reached
- *         (implementation-defined, typically 32ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ64),
+ *         (implementation-defined, typically 32),
  *         or other appropriate error codes.
  *
  * @note The returned ID is valid until the display is destroyed with `SituationDestroyVirtualDisplay`.
  *       Virtual displays are automatically rendered when calling `SituationRenderVirtualDisplays`
  *       (unless paused or hidden via separate flags).
  *       Resource cleanup (framebuffer, color/depth textures) is handled on destroy or shutdown.
- *       High-resolution virtual displays consume significant GPU memory ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â monitor allocation failures.
+ *       High-resolution virtual displays consume significant GPU memory monitor allocation failures.
  *
  * @see SituationRenderVirtualDisplays, SituationDestroyVirtualDisplay,
  *      SituationPauseVirtualDisplay, SituationSetVirtualDisplayZOrder,
@@ -138,6 +293,11 @@ SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double
     vd->flags = flags;
     vd->texture_slot_index = -1;
     vd->last_update_time_seconds = glfwGetTime();
+    vd->last_content_update_time = _SitVDGetTimeSeconds();
+    vd->last_content_update_frame = 0;
+    vd->idle_threshold_seconds = 1.0;
+    vd->fallback_mode = SITUATION_VD_FALLBACK_SOLID;
+    vd->fallback_color = (ColorRGBA){13, 38, 102, 255};
 
     bool is_compute_target = (flags & SITUATION_VD_FLAG_COMPUTE_TARGET) != 0;
     bool success = true; // Master success flag for the chain
@@ -196,8 +356,8 @@ SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double
     if (success) {
         VkSamplerCreateInfo sampler_info = {};
         sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        sampler_info.magFilter = (scaling_mode == SITUATION_SCALING_STRETCH) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
-        sampler_info.minFilter = sampler_info.magFilter;
+        sampler_info.magFilter = VK_FILTER_NEAREST;
+        sampler_info.minFilter = VK_FILTER_NEAREST;
         sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -246,6 +406,20 @@ SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double
         render_pass_info.pSubpasses = &subpass;
 
         if (vkCreateRenderPass(sit_render.vk.device, &render_pass_info, NULL, &vd->vk.render_pass) != VK_SUCCESS) success = false;
+
+        // --- LOAD variant: same as above but color LOAD (preserves prior content for multi-pass) ---
+        if (success) {
+            attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            attachments[0].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            if (vkCreateRenderPass(sit_render.vk.device, &render_pass_info, NULL, &vd->vk.render_pass_load) != VK_SUCCESS) {
+                // Non-fatal: LOAD variant unavailable, fall back to CLEAR pass and log
+                vd->vk.render_pass_load = VK_NULL_HANDLE;
+                fprintf(stderr, "Situation [VD]: failed to create LOAD render pass variant for VD %d; LOAD_OP will fall back to CLEAR.\n", new_id);
+                fflush(stderr);
+            }
+        }
     }
 
     // --- Step 7: Create Framebuffer (skip for compute targets) ---
@@ -300,6 +474,7 @@ SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double
     if (!success) {
         // Check non-null before destroying. VD is zeroed at start, so this is safe.
         if (vd->vk.framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_render.vk.device, vd->vk.framebuffer, NULL);
+        if (vd->vk.render_pass_load != VK_NULL_HANDLE) vkDestroyRenderPass(sit_render.vk.device, vd->vk.render_pass_load, NULL);
         if (vd->vk.render_pass != VK_NULL_HANDLE) vkDestroyRenderPass(sit_render.vk.device, vd->vk.render_pass, NULL);
         if (vd->vk.sampler != VK_NULL_HANDLE) vkDestroySampler(sit_render.vk.device, vd->vk.sampler, NULL);
         if (vd->vk.depth_image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_render.vk.device, vd->vk.depth_image_view, NULL);
@@ -332,7 +507,7 @@ SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double
     if (success) {
         glTextureStorage2D(vd->gl.texture_id, 1, GL_RGBA8, (GLsizei)vd->resolution.x, (GLsizei)vd->resolution.y);
 
-        GLenum filter_mode = (scaling_mode == SITUATION_SCALING_STRETCH) ? GL_LINEAR : GL_NEAREST;
+        GLenum filter_mode = GL_NEAREST;
         glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_MIN_FILTER, filter_mode);
         glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_MAG_FILTER, filter_mode);
         glTextureParameteri(vd->gl.texture_id, GL_TEXTURE_BASE_LEVEL, 0);
@@ -365,8 +540,8 @@ SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double
     }
 #endif
 
-    // --- 4. Register texture slot for compute targets ---
-    if (is_compute_target) {
+    // --- 4. Register texture slot for all VDs (compute targets get STORAGE; raster targets get SAMPLED) ---
+    {
         mtx_lock(&sit_render.resource_registry_mutex);
         int slot_idx = -1;
         for (int i = 0; i < SITUATION_MAX_TEXTURES; ++i) {
@@ -382,13 +557,20 @@ SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double
             if (vd->vk.descriptor_set != VK_NULL_HANDLE && vd->vk.descriptor_pool != VK_NULL_HANDLE) {
                 vkFreeDescriptorSets(sit_render.vk.device, vd->vk.descriptor_pool, 1, &vd->vk.descriptor_set);
             }
+            if (vd->vk.render_pass_load != VK_NULL_HANDLE) vkDestroyRenderPass(sit_render.vk.device, vd->vk.render_pass_load, NULL);
+            if (vd->vk.render_pass != VK_NULL_HANDLE) vkDestroyRenderPass(sit_render.vk.device, vd->vk.render_pass, NULL);
+            if (vd->vk.framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(sit_render.vk.device, vd->vk.framebuffer, NULL);
             if (vd->vk.sampler != VK_NULL_HANDLE) vkDestroySampler(sit_render.vk.device, vd->vk.sampler, NULL);
+            if (vd->vk.depth_image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_render.vk.device, vd->vk.depth_image_view, NULL);
+            if (vd->vk.depth_image != VK_NULL_HANDLE) vmaDestroyImage(sit_render.vk.vma_allocator, vd->vk.depth_image, vd->vk.depth_image_memory);
             if (vd->vk.image_view != VK_NULL_HANDLE) vkDestroyImageView(sit_render.vk.device, vd->vk.image_view, NULL);
             if (vd->vk.image != VK_NULL_HANDLE) vmaDestroyImage(sit_render.vk.vma_allocator, vd->vk.image, vd->vk.image_memory);
 #elif defined(SITUATION_USE_OPENGL)
             if (vd->gl.texture_id != 0) glDeleteTextures(1, &vd->gl.texture_id);
+            if (vd->gl.depth_rbo_id != 0) glDeleteRenderbuffers(1, &vd->gl.depth_rbo_id);
+            if (vd->gl.fbo_id != 0) glDeleteFramebuffers(1, &vd->gl.fbo_id);
 #endif
-            return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Max texture limit reached while registering VD compute texture.");
+            return _SituationSetErrorFromCode(SITUATION_ERROR_MEMORY_ALLOCATION, "Max texture limit reached while registering VD texture.");
         }
 
         _SituationTextureSlot* slot = &sit_render.texture_registry[slot_idx];
@@ -401,7 +583,10 @@ SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double
         slot->height = (int)vd->resolution.y;
         slot->mip_levels = 1;
         slot->format_api = SIT_TEXTURE_FORMAT_RGBA8_UNORM;
-        slot->usage_flags = (SituationTextureUsageFlags)(SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_STORAGE | SITUATION_TEXTURE_USAGE_TRANSFER_SRC);
+        // Compute targets are storage-writable; raster targets are sampled only
+        SituationTextureUsageFlags tex_usage = SITUATION_TEXTURE_USAGE_SAMPLED | SITUATION_TEXTURE_USAGE_TRANSFER_SRC;
+        if (is_compute_target) tex_usage |= SITUATION_TEXTURE_USAGE_STORAGE;
+        slot->usage_flags = tex_usage;
         slot->wrap_s = SIT_TEXTURE_WRAP_CLAMP_TO_EDGE;
         slot->wrap_t = SIT_TEXTURE_WRAP_CLAMP_TO_EDGE;
         slot->min_filter = SIT_TEXTURE_FILTER_NEAREST;
@@ -416,7 +601,6 @@ SITAPI SituationError SituationCreateVirtualDisplayEx(Vector2 resolution, double
         slot->image_view = vd->vk.image_view;
         slot->sampler = vd->vk.sampler;
         slot->allocation = vd->vk.image_memory;
-        // Use the VD's descriptor set for compute binding
         slot->descriptor_set = vd->vk.descriptor_set;
         slot->descriptor_pool = vd->vk.descriptor_pool;
         slot->single_sampler_descriptor_set = VK_NULL_HANDLE;
@@ -481,6 +665,7 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
 
     if (vd->vk.framebuffer != VK_NULL_HANDLE) _SituationDeferDestroyFramebuffer(vd->vk.framebuffer);
     if (vd->vk.render_pass != VK_NULL_HANDLE) _SituationDeferDestroyRenderPass(vd->vk.render_pass);
+    if (vd->vk.render_pass_load != VK_NULL_HANDLE) _SituationDeferDestroyRenderPass(vd->vk.render_pass_load);
 
     // Defer images (includes view and sampler for color, just view for depth)
     _SituationDeferDestroyImage(vd->vk.image, vd->vk.image_memory, vd->vk.image_view, vd->vk.sampler);
@@ -503,16 +688,15 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
 /**
  * @brief Retrieves the VD's internal color texture as a public SituationTexture handle.
  *
- * @details For virtual displays created with SITUATION_VD_FLAG_COMPUTE_TARGET, this returns
- *          a SituationTexture handle that can be used with compute shader binding functions
- *          (e.g., SituationCmdBindComputeTexture). The returned handle references the VD's
- *          internal GPU texture — it does not create a copy.
+ * @details Returns a SituationTexture handle that can be used to sample the VD's color output
+ *          in user shaders (e.g. SituationCmdBindDescriptorSet, bindless reads). Works for all
+ *          virtual displays — both raster (SITUATION_VD_FLAG_NONE) and compute targets
+ *          (SITUATION_VD_FLAG_COMPUTE_TARGET). Compute targets also have STORAGE usage and
+ *          can be written by compute dispatches.
  *
- *          The returned texture handle is valid for the lifetime of the virtual display.
- *          Destroying the VD invalidates the handle.
- *
- *          For non-compute-target VDs, this function also works but the returned texture
- *          may not have STORAGE usage and thus may not be bindable to compute shaders.
+ *          The returned handle references the VD's internal GPU texture — it does not create a
+ *          copy. The handle is valid for the lifetime of the virtual display. Destroying the VD
+ *          invalidates the handle.
  *
  * @param display_id The ID of the virtual display.
  * @param out_texture Pointer that receives the SituationTexture handle on success.
@@ -520,9 +704,9 @@ SITAPI SituationError SituationDestroyVirtualDisplay(int display_id) {
  * @return SITUATION_ERROR_NOT_INITIALIZED if the library isn't initialized.
  * @return SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID if the ID is invalid or not in use.
  * @return SITUATION_ERROR_INVALID_PARAM if out_texture is NULL.
- * @return SITUATION_ERROR_RESOURCE_INVALID if no texture slot is registered (non-compute VD without slot).
+ * @return SITUATION_ERROR_RESOURCE_INVALID if the texture slot is inactive (should not happen after v2.4.257).
  *
- * @see SituationCreateVirtualDisplayEx, SituationVDFlags, SituationCmdBindComputeTexture
+ * @see SituationCreateVirtualDisplay, SituationCreateVirtualDisplayEx, SituationVDFlags
  */
 SITAPI SituationError SituationGetVirtualDisplayTexture(int display_id, SituationTexture* out_texture) {
     if (!out_texture) return SITUATION_ERROR_INVALID_PARAM;
@@ -536,7 +720,7 @@ SITAPI SituationError SituationGetVirtualDisplayTexture(int display_id, Situatio
     SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
 
     if (vd->texture_slot_index < 0 || vd->texture_slot_index >= SITUATION_MAX_TEXTURES) {
-        return _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "SituationGetVirtualDisplayTexture: VD has no registered texture slot (was it created with SITUATION_VD_FLAG_COMPUTE_TARGET?)");
+        return _SituationSetErrorFromCode(SITUATION_ERROR_RESOURCE_INVALID, "SituationGetVirtualDisplayTexture: VD has no registered texture slot");
     }
 
     _SituationTextureSlot* slot = &sit_render.texture_registry[vd->texture_slot_index];
@@ -590,7 +774,7 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     // =================================================================
 
     // For OpenGL, we can simply change the texture parameters on the existing texture object.
-    GLenum filter_mode = (scaling_mode == SITUATION_SCALING_STRETCH) ? GL_LINEAR : GL_NEAREST;
+    GLenum filter_mode = GL_NEAREST;
 
     // Bind the texture, change its parameters, and unbind it.
     glBindTexture(GL_TEXTURE_2D, vd->gl.texture_id);
@@ -613,7 +797,8 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
     // 2. Create a new sampler with the correct filter mode.
     VkSamplerCreateInfo sampler_info = {};
     sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sampler_info.magFilter = sampler_info.minFilter = (scaling_mode == SITUATION_SCALING_STRETCH) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    sampler_info.magFilter = VK_FILTER_NEAREST;
+    sampler_info.minFilter = VK_FILTER_NEAREST;
     sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -688,12 +873,12 @@ static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
  *          Behavior:
  *            - Iterates over all currently active virtual displays (in creation order or z-order)
  *            - For each display:
- *              - Binds the displayÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢s framebuffer / render target
- *              - Records the displayÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢s internal command list (scene, shaders, meshes, etc.)
+ *              - Binds the displays framebuffer / render target
+ *              - Records the displays internal command list (scene, shaders, meshes, etc.)
  *              - Applies display-specific viewport, scissor, and clear settings
  *              - Handles layer/compositing order if z-sorting is enabled
  *            - Restores the original render state (viewport, framebuffer, etc.) after all displays
- *            - Records only ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â no actual GPU submission occurs in this function
+ *            - Records only no actual GPU submission occurs in this function
  *
  *          Thread safety invariants:
  *            - Safe to call from the **main thread** or any thread that owns the command buffer
@@ -707,17 +892,17 @@ static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b) {
  *
  * @return SITUATION_SUCCESS if all virtual displays were successfully recorded,
  *         SITUATION_ERROR_INVALID_PARAM if cmd is invalid or not recording,
- *         SITUATION_ERROR_RENDER_LIST_INCOMPLETE if any displayÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢s internal command list failed to record,
+ *         SITUATION_ERROR_RENDER_LIST_INCOMPLETE if any displays internal command list failed to record,
  *         SITUATION_ERROR_RESOURCE_INVALID if a virtual display is in an inconsistent state,
  *         SITUATION_ERROR_VIRTUAL_DISPLAY_NOT_FOUND for orphaned display IDs (rare),
  *         or other appropriate error codes.
- *         Partial failures may still record some displays ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â caller should check return value.
+ *         Partial failures may still record some displays caller should check return value.
  *
- * @note This function does **not** present or submit ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â it only records commands.
+ * @note This function does **not** present or submit it only records commands.
  *       After calling, the caller must end the command buffer, submit it (render thread),
  *       and wait for completion if synchronization is needed.
  *       Virtual displays that are paused, hidden, or have zero size are skipped automatically.
- *       Performance scales with number of active displays and complexity of each displayÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢s scene.
+ *       Performance scales with number of active displays and complexity of each displays scene.
  *
  * @see SituationCreateVirtualDisplay, SituationBeginCommandBuffer,
  *      SituationSubmitCommandBuffer (or equivalent), SituationRenderFrame,
@@ -769,11 +954,19 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
     if (sit_render.vk.vd_compositing_blend_pipelines[SITUATION_BLEND_ALPHA] == VK_NULL_HANDLE) return SITUATION_ERROR_NOT_INITIALIZED;
     VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
 
-    /* Composite target is the swapchain framebuffer — match SituationCmdBeginRenderPass extent/UBO. */
-    int composite_fb_w = (int)sit_render.vk.swapchain_extent.width;
-    int composite_fb_h = (int)sit_render.vk.swapchain_extent.height;
+    /* Composite target matches SituationCmdBeginRenderPass (canvas when fullscreen stretch). */
+    bool canvas_stretch = _SituationRenderCanvasStretchActive();
+    int composite_fb_w = canvas_stretch
+        ? (int)sit_render.vk.canvas_resource_width
+        : (int)sit_render.vk.swapchain_extent.width;
+    int composite_fb_h = canvas_stretch
+        ? (int)sit_render.vk.canvas_resource_height
+        : (int)sit_render.vk.swapchain_extent.height;
     if (composite_fb_w < 1) composite_fb_w = 1;
     if (composite_fb_h < 1) composite_fb_h = 1;
+    VkFramebuffer composite_target_fb = canvas_stretch
+        ? sit_render.vk.canvas_framebuffer
+        : sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
 
     /* Path A needs vkCmdCopyImage outside a render pass. Path B can draw inside the caller's
      * active main-window pass (OpenGL never ends the pass for SIT_OP_RENDER_VIRTUAL_DISPLAYS). */
@@ -821,7 +1014,7 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
     vd_main_rp_clear_values[1].depthStencil.depth = 1.0f;
     VkRenderPassBeginInfo rp_info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     rp_info.renderPass = sit_render.vk.main_window_render_pass;
-    rp_info.framebuffer = sit_render.vk.main_window_framebuffers[sit_render.vk.current_image_index];
+    rp_info.framebuffer = composite_target_fb;
     rp_info.renderArea.extent = (VkExtent2D){(uint32_t)composite_fb_w, (uint32_t)composite_fb_h};
     rp_info.clearValueCount = 2;
     rp_info.pClearValues = vd_main_rp_clear_values;
@@ -979,14 +1172,14 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
             vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.advanced_compositing_pipeline_layout, 2, 1, &sit_render.vk.screen_copy_descriptor_set, 0, NULL);
 
 			// Define a layout-compatible byte buffer to avoid anonymous struct issues
-            struct { mat4 m; int b; float o; } pc;
-            glm_mat4_copy(model_matrix, pc.m);
-            pc.b = vd->blend_mode;
-            pc.o = vd->opacity;
+            int path_a_is_idle = 0;
+            double path_a_elapsed_idle = 0.0;
+            _SitVDGetCompositorIdleState(vd, &path_a_is_idle, &path_a_elapsed_idle);
+            uint8_t pc[SIT_VD_PATH_A_PUSH_CONSTANT_SIZE];
+            _SitVDFillPathAPushConstants(pc, model_matrix, vd, path_a_is_idle, path_a_elapsed_idle);
 
-            /* SPIR-V CompositePushConstants size is mat4+int+float (72); MSVC may pad sizeof(pc). */
             vkCmdPushConstants(vk_cmd, sit_render.vk.advanced_compositing_pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0,
-                               (uint32_t)(sizeof(mat4) + sizeof(int) + sizeof(float)), &pc);
+                               SIT_VD_PATH_A_PUSH_CONSTANT_SIZE, pc);
             _SitVulkanApplyVDCompositingDynamicState(vk_cmd, target_width, target_height);
             vkCmdDraw(vk_cmd, 4, 1, 0, 0);
 
@@ -1043,11 +1236,13 @@ SITAPI SituationError SituationRenderVirtualDisplays(SituationCommandBuffer cmd)
             vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.vd_compositing_pipeline_layout, 0, 1, &sit_render.vk.view_proj_ubo_descriptor_set[sit_render.vk.current_frame_index], 0, NULL);
             vkCmdBindDescriptorSets(vk_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sit_render.vk.vd_compositing_pipeline_layout, 1, 1, &vd->vk.descriptor_set, 0, NULL);
 
-            struct { mat4 m; float o; float pad[3]; } vd_pc;
-            glm_mat4_copy(model_matrix, vd_pc.m);
-            vd_pc.o = vd->opacity;
+            int path_b_is_idle = 0;
+            double path_b_elapsed_idle = 0.0;
+            _SitVDGetCompositorIdleState(vd, &path_b_is_idle, &path_b_elapsed_idle);
+            uint8_t vd_pc[SIT_VD_PATH_B_PUSH_CONSTANT_SIZE];
+            _SitVDFillPathBPushConstants(vd_pc, model_matrix, vd, path_b_is_idle, path_b_elapsed_idle);
             vkCmdPushConstants(vk_cmd, sit_render.vk.vd_compositing_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                               (uint32_t)(sizeof(mat4) + sizeof(float)), &vd_pc);
+                               SIT_VD_PATH_B_PUSH_CONSTANT_SIZE, vd_pc);
             _SitVulkanApplyVDCompositingDynamicState(vk_cmd, target_width, target_height);
             vkCmdDraw(vk_cmd, 4, 1, 0, 0);
         }
@@ -1214,6 +1409,81 @@ SITAPI bool SituationIsVirtualDisplayDirty(int display_id) {
 SITAPI double SituationGetLastVDCompositeTimeMS(void) {
     if (!SituationIsInitialized()) return 0.0;
     return sit_render.last_vd_composite_time_ms;
+}
+
+/**
+ * @brief Query when a virtual display last received new pixel content.
+ *
+ * Distinct from `last_update_time_seconds` (VD frame clock) and from compositor timing.
+ * Optional output pointers may be NULL.
+ */
+SITAPI SituationError SituationGetVirtualDisplayUpdateInfo(
+    int display_id,
+    double* out_last_content_update_time,
+    uint64_t* out_last_content_update_frame,
+    uint64_t* out_frames_since_update,
+    double* out_seconds_since_update)
+{
+    if (!SituationIsInitialized()) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationGetVirtualDisplayUpdateInfo");
+    }
+    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
+        return _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "SituationGetVirtualDisplayUpdateInfo: invalid display_id");
+    }
+
+    SituationVirtualDisplay* vd = &sit_render.virtual_display_slots[display_id];
+    double now = _SitVDGetTimeSeconds();
+
+    if (out_last_content_update_time) *out_last_content_update_time = vd->last_content_update_time;
+    if (out_last_content_update_frame) *out_last_content_update_frame = vd->last_content_update_frame;
+    if (out_frames_since_update) *out_frames_since_update = vd->frame_count - vd->last_content_update_frame;
+    if (out_seconds_since_update) *out_seconds_since_update = now - vd->last_content_update_time;
+
+    return SITUATION_SUCCESS;
+}
+
+/**
+ * @brief Sets how long without a content write before a VD is treated as idle (Phase 2 compositor).
+ */
+SITAPI void SituationSetVirtualDisplayIdleThreshold(int display_id, double threshold_seconds) {
+    if (!SituationIsInitialized()) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetVirtualDisplayIdleThreshold");
+        return;
+    }
+    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "SituationSetVirtualDisplayIdleThreshold: invalid display_id");
+        return;
+    }
+    if (threshold_seconds < 0.0) threshold_seconds = 0.0;
+    sit_render.virtual_display_slots[display_id].idle_threshold_seconds = threshold_seconds;
+}
+
+SITAPI void SituationSetVirtualDisplayFallbackMode(int display_id, SituationVDFallbackMode mode) {
+    if (!SituationIsInitialized()) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetVirtualDisplayFallbackMode");
+        return;
+    }
+    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "SituationSetVirtualDisplayFallbackMode: invalid display_id");
+        return;
+    }
+    if (mode != SITUATION_VD_FALLBACK_SOLID && mode != SITUATION_VD_FALLBACK_COLORBURST) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_INVALID_PARAM, "SituationSetVirtualDisplayFallbackMode: invalid mode");
+        return;
+    }
+    sit_render.virtual_display_slots[display_id].fallback_mode = mode;
+}
+
+SITAPI void SituationSetVirtualDisplayFallbackColor(int display_id, ColorRGBA color) {
+    if (!SituationIsInitialized()) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationSetVirtualDisplayFallbackColor");
+        return;
+    }
+    if (display_id < 0 || display_id >= SITUATION_MAX_VIRTUAL_DISPLAYS || !sit_render.virtual_display_slots_used[display_id]) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_VIRTUAL_DISPLAY_INVALID_ID, "SituationSetVirtualDisplayFallbackColor: invalid display_id");
+        return;
+    }
+    sit_render.virtual_display_slots[display_id].fallback_color = color;
 }
 
 /**

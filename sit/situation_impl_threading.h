@@ -70,6 +70,43 @@ static SituationJob* _SitGetJobFromId(SituationThreadPool* pool, SituationJobId 
     return job;
 }
 
+/* Main thread: retire a pool job that was never claimed/executed but whose side effects
+ * were satisfied elsewhere (v2.4.234–235 inline compile pump bug). No-op if completed or
+ * claimed/in-flight — those paths must finish via the worker completion protocol. */
+static void _SitThreadPoolRetireOrphanedJobMain(SituationThreadPool* pool, SituationJobId job_id) {
+    if (job_id == 0 || !pool || !pool->is_active) return;
+
+    uint32_t q_idx = (job_id >> SIT_ID_QUEUE_SHIFT) & 1;
+    uint32_t slot_idx = job_id & SIT_ID_SLOT_MASK;
+    if (slot_idx >= pool->queues[q_idx].capacity) return;
+
+    mtx_lock(&pool->queues[q_idx].lock);
+    SituationJob* job = &pool->queues[q_idx].jobs[slot_idx & pool->queues[q_idx].mask];
+    uint32_t expected_gen = (job_id >> SIT_ID_GEN_SHIFT) & SIT_ID_GEN_MASK;
+    if (atomic_load(&job->generation) != (uint16_t)expected_gen ||
+        atomic_load(&job->is_completed)) {
+        mtx_unlock(&pool->queues[q_idx].lock);
+        return;
+    }
+    if (atomic_load(&job->dependency_count) != 0) {
+        mtx_unlock(&pool->queues[q_idx].lock);
+        return;
+    }
+
+    job->large_data_ptr = NULL;
+    job->owns_memory = false;
+    uint16_t g = atomic_load(&job->generation);
+    atomic_store(&job->generation, (uint16_t)((g + 1) & SIT_ID_GEN_MASK));
+    atomic_store(&job->dependency_count, 0);
+    atomic_store(&job->is_completed, true);
+    if (atomic_fetch_sub(&pool->active_jobs, 1) == 1) {
+        cnd_broadcast(&pool->idle_condition);
+    }
+    atomic_fetch_add(&pool->stats_jobs_completed, 1);
+    mtx_unlock(&pool->queues[q_idx].lock);
+    cnd_signal(&pool->wake_condition);
+}
+
 /**
  * @brief [INTERNAL] Detects dependency cycles by walking the continuation chain.
  *
@@ -345,34 +382,14 @@ static int _SituationWorkerEntry(void* arg) {
             size_t tail = atomic_load(&pool->queues[q].tail);
 
             if (tail != head) {
-                // [Epic D] Dynamic scan-forward past blocked tail jobs (HOL mitigation).
-                size_t pending = head - tail;
-                size_t scan_limit = _SitWorkerScanDepthForPending(pending);
-                if (scan_limit > pending) {
-                    scan_limit = pending;
-                }
-                bool found_ready = false;
+                /* [Epic D] Scan-forward past blocked tail jobs — claim in-place (never swap;
+                 * handles encode slot_idx). Tail compacts lazily past completed front slots. */
+                SituationJob* claimed = NULL;
+                bool found_ready = _SitWorkerTryClaimReadyJob(pool, q, &claimed);
 
-                for (size_t scan = 0; scan < scan_limit; ++scan) {
-                    size_t idx = (tail + scan) & pool->queues[q].mask;
-                    SituationJob* candidate = &pool->queues[q].jobs[idx];
-
-                    if (atomic_load(&candidate->dependency_count) == 0 &&
-                        !atomic_load(&candidate->is_completed)) {
-                        // Found a ready job. If it's not at the tail, swap it there.
-                        if (scan > 0) {
-                            atomic_fetch_add(&pool->stats_scan_forward_swap, 1);
-                            size_t tail_idx = tail & pool->queues[q].mask;
-                            SituationJob tmp = pool->queues[q].jobs[tail_idx];
-                            pool->queues[q].jobs[tail_idx] = *candidate;
-                            *candidate = tmp;
-                        }
-                        job_ptr = &pool->queues[q].jobs[tail & pool->queues[q].mask];
-                        atomic_store(&pool->queues[q].tail, tail + 1);
-                        queue_idx = q;
-                        found_ready = true;
-                        break;
-                    }
+                if (found_ready) {
+                    job_ptr = claimed;
+                    queue_idx = q;
                 }
 
                 if (!found_ready) {
@@ -436,7 +453,7 @@ static int _SituationWorkerEntry(void* arg) {
         if (job_ptr) {
             // Dependency edge may be added on the main thread after dequeue but before we run
             // (submit job B, submit A, SituationAddJobDependency(A,B)). Wait until prereqs fire.
-            while (atomic_load(&job_ptr->dependency_count) != 0) {
+            while (_SitJobDepCount(atomic_load(&job_ptr->dependency_count)) != 0) {
                 if (atomic_load(&pool->shutdown)) break;
                 thrd_yield();
             }
@@ -457,9 +474,7 @@ static int _SituationWorkerEntry(void* arg) {
             if (cont_id != 0) {
                 SituationJob* next_job = _SitGetJobFromId(pool, cont_id);
                 if (next_job) {
-                    // Decrement dependency count
-                    int remaining = atomic_fetch_sub(&next_job->dependency_count, 1);
-                    if (remaining == 1) {
+                    if (_SitJobDecrementDependency(next_job)) {
                         // Job became ready (count went 1 -> 0).
                         // [Patch 6] Signal outside lock is acceptable here: the atomic
                         // store of dependency_count provides happens-before visibility.
@@ -477,11 +492,15 @@ static int _SituationWorkerEntry(void* arg) {
                 job_ptr->owns_memory = false;
             }
 
-            atomic_store(&job_ptr->is_completed, true);
-
-            // Increment generation to invalidate handle
+            // [FIX] Bump generation BEFORE is_completed. is_completed=true releases the
+            // slot for reuse (submit checks it); if generation were bumped after, a
+            // submitter could capture the stale generation and the new job's handle
+            // would falsely report complete via the gen-mismatch path in WaitForJob.
+            // After is_completed=true this thread must not touch the slot again.
             uint16_t old_gen = atomic_load(&job_ptr->generation);
             atomic_store(&job_ptr->generation, (uint16_t)((old_gen + 1) & SIT_ID_GEN_MASK));
+
+            atomic_store(&job_ptr->is_completed, true);
 
             // Decrement global active count
             if (atomic_fetch_sub(&pool->active_jobs, 1) == 1) {
@@ -614,7 +633,14 @@ SITAPI SituationError SituationCreateThreadPool(SituationThreadPool* pool, size_
             return SITUATION_ERROR_MEMORY_ALLOCATION;
         }
 
-        mtx_init(&pool->queues[i].lock, mtx_plain);
+        if (mtx_init(&pool->queues[i].lock, mtx_plain) != thrd_success) {
+            // Cleanup allocated job arrays
+            SIT_FREE(pool->queues[i].jobs);
+            if (i == 1) SIT_FREE(pool->queues[0].jobs);
+            _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_MUTEX_INIT_FAILED,
+                "SituationCreateThreadPool: mtx_init failed for queue lock");
+            return SITUATION_ERROR_THREAD_MUTEX_INIT_FAILED;
+        }
         atomic_init(&pool->queues[i].head, 0);
         atomic_init(&pool->queues[i].tail, 0);
 
@@ -756,7 +782,13 @@ SITAPI SituationError SituationCreateThreadPool(SituationThreadPool* pool, size_
  *         - Returns `0` if the job could not be submitted (e.g., queue full and no backpressure strategy specified).
  */
 SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*func)(void*, void*), const void* data, size_t data_size, SituationJobFlags flags) {
-    if (!pool || !pool->is_active) return 0;
+    if (!pool || !pool->is_active) {
+        if (pool && !pool->is_active) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_STATE_INVALID,
+                "SituationSubmitJobEx: pool is not active (destroyed or not initialized)");
+        }
+        return 0;
+    }
 
     int q_idx = (flags & SIT_SUBMIT_HIGH_PRIORITY) ? 1 : 0;
 
@@ -783,7 +815,16 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
         head = atomic_load(&pool->queues[q_idx].head);
         size_t tail = atomic_load(&pool->queues[q_idx].tail);
 
-        if (head - tail >= pool->queues[q_idx].capacity) {
+        /* [FIX] A slot may still be IN FLIGHT after tail passes it: workers/stealers
+         * advance tail before executing out of the slot and stamp is_completed/generation
+         * into it afterwards. Reusing such a slot loses the in-flight job's fields
+         * (lost job / double-run) and lets the late completion stamp corrupt the new
+         * job. Treat "target slot not completed" exactly like a full queue so the
+         * existing backpressure paths (RUN_IF_FULL / BLOCK_IF_FULL / fail) apply. */
+        bool slot_in_flight =
+            !atomic_load(&pool->queues[q_idx].jobs[head & pool->queues[q_idx].mask].is_completed);
+
+        if (head - tail >= pool->queues[q_idx].capacity || slot_in_flight) {
             mtx_unlock(&pool->queues[q_idx].lock);
 
             // Handle Backpressure
@@ -889,6 +930,28 @@ SITAPI SituationJobId SituationSubmitJobEx(SituationThreadPool* pool, void (*fun
  * @param job_id The handle of the job to wait for.
  * @return `true` when the job is confirmed complete.
  */
+/**
+ * @brief [INTERNAL] Non-blocking check: has a job handle settled (completed or slot moved on)?
+ * @details Same O(1) generation/flag logic as SituationWaitForJob, without waiting.
+ *          Used by async consumers (e.g. the Vulkan async shader poll) to distinguish
+ *          "job still pending/running" from "the queue retired this handle". If this
+ *          returns true but the job's side effects are absent, the job was lost —
+ *          a scheduler defect that callers must surface as SITUATION_ERROR_THREAD_JOB_LOST
+ *          instead of reporting in-progress forever.
+ */
+static bool _SitJobHandleSettled(SituationThreadPool* pool, SituationJobId job_id) {
+    if (job_id == 0) return true; // Ran inline at submit time
+    if (!pool || !pool->is_active) return true;
+
+    uint32_t q_idx = (job_id >> SIT_ID_QUEUE_SHIFT) & 1;
+    uint32_t slot_idx = job_id & SIT_ID_SLOT_MASK;
+    uint32_t expected_gen = (job_id >> SIT_ID_GEN_SHIFT) & SIT_ID_GEN_MASK;
+
+    SituationJob* job = &pool->queues[q_idx].jobs[slot_idx];
+    if (atomic_load(&job->generation) != (uint16_t)expected_gen) return true;
+    return atomic_load(&job->is_completed);
+}
+
 SITAPI SituationError SituationWaitForJob(SituationThreadPool* pool, SituationJobId job_id) {
     SIT_ASSERT_MAIN_THREAD();
     if (job_id == 0) return SITUATION_SUCCESS; // Immediate jobs (Run-Inline) are implicitly done
@@ -1059,26 +1122,11 @@ SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int 
         // Peek into High Priority Queue (Non-blocking try)
         int try_result = mtx_trylock(&pool->queues[1].lock);
         if (try_result == thrd_success) {
-            size_t head = atomic_load(&pool->queues[1].head);
-            size_t tail = atomic_load(&pool->queues[1].tail);
-
-            if (tail != head) {
-                size_t idx = tail & pool->queues[1].mask;
-                SituationJob* job_ptr = &pool->queues[1].jobs[idx];
-
-                // [Patch 2] Check dependencies before stealing -- prevents premature
-                // execution of jobs that have unmet prerequisites in the high queue.
-                if (atomic_load(&job_ptr->dependency_count) > 0) {
-                    mtx_unlock(&pool->queues[1].lock);
-                    thrd_yield();
-                    continue;
-                }
-
-                // Steal it!
-                atomic_store(&pool->queues[1].tail, tail + 1);
+            SituationJob* job_ptr = NULL;
+            if (_SitWorkerTryClaimReadyJob(pool, 1, &job_ptr) && job_ptr) {
                 mtx_unlock(&pool->queues[1].lock);
 
-                while (atomic_load(&job_ptr->dependency_count) != 0) {
+                while (_SitJobDepCount(atomic_load(&job_ptr->dependency_count)) != 0) {
                     if (atomic_load(&pool->shutdown)) break;
                     thrd_yield();
                 }
@@ -1086,16 +1134,38 @@ SITAPI void SituationDispatchParallel(SituationThreadPool* pool, int count, int 
                 void* d = job_ptr->uses_large_data ? job_ptr->large_data_ptr : job_ptr->storage;
                 if (job_ptr->func) job_ptr->func(d, NULL);
 
-                atomic_store(&job_ptr->is_completed, true);
+                uint32_t cont_id = atomic_load(&job_ptr->continuation_id);
+                if (cont_id != 0) {
+                    SituationJob* next_job = _SitGetJobFromId(pool, cont_id);
+                    if (next_job) {
+                        if (_SitJobDecrementDependency(next_job)) {
+                            cnd_signal(&pool->wake_condition);
+                        }
+                    }
+                }
+
+                // [Safety] Free copied data if owned (parity with worker path)
+                if (job_ptr->owns_memory && job_ptr->large_data_ptr) {
+                    SIT_FREE(job_ptr->large_data_ptr);
+                    job_ptr->large_data_ptr = NULL;
+                    job_ptr->owns_memory = false;
+                }
+
+                // [FIX] Generation before is_completed — see worker completion comment.
                 uint16_t g = atomic_load(&job_ptr->generation);
                 atomic_store(&job_ptr->generation, (uint16_t)((g + 1) & SIT_ID_GEN_MASK));
+                atomic_store(&job_ptr->is_completed, true);
                 atomic_fetch_sub(&pool->active_jobs, 1);
 
                 atomic_fetch_add(&pool->stats_jobs_completed, 1);
                 atomic_fetch_add(&pool->stats_main_steal_success, 1);
                 stole_work = true;
             } else {
-                atomic_fetch_add(&pool->stats_main_steal_empty_queue, 1);
+                size_t head = atomic_load(&pool->queues[1].head);
+                size_t tail = atomic_load(&pool->queues[1].tail);
+                if (tail == head) {
+                    atomic_fetch_add(&pool->stats_main_steal_empty_queue, 1);
+                }
                 mtx_unlock(&pool->queues[1].lock);
             }
         } else {
@@ -1154,11 +1224,19 @@ SITAPI void SituationDestroyThreadPool(SituationThreadPool* pool) {
     cnd_broadcast(&pool->wake_condition);
 
     for (size_t i = 0; i < pool->thread_count; ++i) {
-        thrd_join(pool->threads[i], NULL);
+        if (thrd_join(pool->threads[i], NULL) != thrd_success) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_JOIN_FAILED,
+                "SituationDestroyThreadPool: thrd_join failed for worker thread");
+            /* Non-fatal: continue cleanup regardless */
+        }
     }
 
     if (pool->io_thread) {
-        thrd_join(pool->io_thread, NULL);
+        if (thrd_join(pool->io_thread, NULL) != thrd_success) {
+            _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_JOIN_FAILED,
+                "SituationDestroyThreadPool: thrd_join failed for I/O thread");
+            /* Non-fatal: continue cleanup regardless */
+        }
         pool->io_thread = 0;
     }
 

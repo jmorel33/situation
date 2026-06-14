@@ -21,6 +21,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 
 // Threading status API: SituationGetThreadingStatus / SituationPrintThreadingStatus
 // (situation_impl_threading_observability.h). See doc/THREADING_TROUBLESHOOTING_GUIDE.md.
@@ -64,6 +65,8 @@
         do { \
             if ((result) != thrd_success) { \
                 SITUATION_THREAD_LOG_ERROR("Mutex lock failed"); \
+                _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_MUTEX_LOCK_FAILED, \
+                    "Mutex lock failed (mtx_lock returned non-success)"); \
                 return (error_code); \
             } \
         } while(0)
@@ -75,6 +78,8 @@
         do { \
             if ((result) != thrd_success) { \
                 SITUATION_THREAD_LOG_ERROR("Mutex unlock failed"); \
+                _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_MUTEX_UNLOCK_FAILED, \
+                    "Mutex unlock failed (mtx_unlock returned non-success)"); \
                 return (error_code); \
             } \
         } while(0)
@@ -163,6 +168,8 @@
         }
         
         SITUATION_THREAD_LOG_ERROR("Mutex lock timeout after %d ms", timeout_ms);
+        _SituationSetErrorFromCode(SITUATION_ERROR_THREAD_MUTEX_TIMEOUT,
+            "Mutex lock timeout -- possible deadlock or contention");
         return false;
     }
     
@@ -252,42 +259,113 @@
 // ================================================================================================
 
 #if defined(_WIN32)
+#if !defined(__STDC_NO_THREADS__)
+#include <pthread.h>
+#endif
+
 /**
- * @brief Sets the name of the current thread (visible in debuggers and Task Manager).
- * @details Uses SetThreadDescription (Windows 10 1607+). Fails silently on older Windows.
+ * @brief OS-level thread description (Task Manager / debugger) via SetThreadDescription.
+ * @details Pseudo-handles (GetCurrentThread) often lack THREAD_SET_LIMITED_INFORMATION and
+ *          fail silently. Prefer OpenThread on the current TID; fall back to DuplicateHandle
+ *          (same approach winpthreads uses for the main thread).
  */
-static void _SituationSetCurrentThreadName(const char* name) {
-    if (!name) return;
-    // Convert UTF-8 to wide string for SetThreadDescription
-    int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, NULL, 0);
-    if (len <= 0 || len > 128) return;
-    wchar_t wname[128];
-    MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, 128);
-    // SetThreadDescription is Win10 1607+; loaded dynamically to avoid link failure on older SDK.
+static void _SituationWin32SetThreadDescriptionUtf8(const char* name) {
+    if (!name || !name[0]) return;
+
     typedef HRESULT (WINAPI *PFN_SetThreadDescription)(HANDLE, PCWSTR);
     static PFN_SetThreadDescription pfn = NULL;
     static bool resolved = false;
     if (!resolved) {
-        HMODULE k32 = GetModuleHandleA("kernel32.dll");
-        if (k32) pfn = (PFN_SetThreadDescription)GetProcAddress(k32, "SetThreadDescription");
+        HMODULE mod = GetModuleHandleA("kernel32.dll");
+        if (mod) pfn = (PFN_SetThreadDescription)GetProcAddress(mod, "SetThreadDescription");
+        if (!pfn) {
+            mod = GetModuleHandleA("kernelbase.dll");
+            if (mod) pfn = (PFN_SetThreadDescription)GetProcAddress(mod, "SetThreadDescription");
+        }
         resolved = true;
     }
-    if (pfn) pfn(GetCurrentThread(), wname);
+    if (!pfn) return;
+
+    int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, NULL, 0);
+    if (len <= 0 || len > 128) return;
+    wchar_t wname[128];
+    if (MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, 128) == 0) return;
+
+    HANDLE hThread = OpenThread(THREAD_SET_LIMITED_INFORMATION, FALSE, GetCurrentThreadId());
+    if (hThread) {
+        pfn(hThread, wname);
+        CloseHandle(hThread);
+        return;
+    }
+
+    hThread = NULL;
+    if (DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
+                          GetCurrentProcess(), &hThread, 0, FALSE,
+                          DUPLICATE_SAME_ACCESS) && hThread) {
+        pfn(hThread, wname);
+        CloseHandle(hThread);
+    }
+}
+
+/**
+ * @brief Sets the name of the current thread (visible in debuggers and Task Manager).
+ * @details MinGW winpthreads names threads "POSIX WinThreads for Windows" at CRT startup.
+ *          Order: pthread cache → OS description → pthread again (winpthreads may touch both).
+ */
+static void _SituationSetCurrentThreadName(const char* name) {
+    if (!name || !name[0]) return;
+
+#if !defined(__STDC_NO_THREADS__)
+    pthread_setname_np(pthread_self(), name);
+#endif
+
+    _SituationWin32SetThreadDescriptionUtf8(name);
+
+#if !defined(__STDC_NO_THREADS__)
+    pthread_setname_np(pthread_self(), name);
+#endif
 }
 #elif defined(__linux__)
 #include <pthread.h>
 static void _SituationSetCurrentThreadName(const char* name) {
-    if (!name) return;
+    if (!name || !name[0]) return;
     pthread_setname_np(pthread_self(), name);
 }
 #elif defined(__APPLE__)
 #include <pthread.h>
 static void _SituationSetCurrentThreadName(const char* name) {
-    if (!name) return;
+    if (!name || !name[0]) return;
     pthread_setname_np(name);
 }
 #else
 static void _SituationSetCurrentThreadName(const char* name) { (void)name; }
 #endif
+
+/* main_thread_name → window_title → SITUATION_MAIN_THREAD_NAME_DEFAULT */
+static const char* _SituationResolveMainThreadOsName(const char* main_thread_name, const char* window_title) {
+    if (main_thread_name && main_thread_name[0]) return main_thread_name;
+    if (window_title && window_title[0]) return window_title;
+    return SITUATION_MAIN_THREAD_NAME_DEFAULT;
+}
+
+/* Copy name into dest; NULL/empty uses SITUATION_MAIN_THREAD_NAME_DEFAULT. */
+static void _SituationCopyThreadName(char* dest, size_t dest_sz, const char* name) {
+    if (!dest || dest_sz == 0) return;
+    const char* src = (name && name[0]) ? name : SITUATION_MAIN_THREAD_NAME_DEFAULT;
+    strncpy(dest, src, dest_sz - 1);
+    dest[dest_sz - 1] = '\0';
+}
+
+SITAPI void SituationSetCurrentThreadName(const char* name) {
+    if (!name || !name[0]) return;
+    _SituationSetCurrentThreadName(name);
+    if (_sit_current_context != NULL) {
+#if defined(SITUATION_ENABLE_THREADING)
+        if (sit_gs_thread_id_set && thrd_equal(thrd_current(), sit_gs_main_thread_id)) {
+            _SituationCopyThreadName(sit_gs.main_thread_name, sizeof(sit_gs.main_thread_name), name);
+        }
+#endif
+    }
+}
 
 #endif // SITUATION_IMPL_THREADING_DIAG_H

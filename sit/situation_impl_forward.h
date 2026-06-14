@@ -82,6 +82,10 @@ static int _SituationRenderThreadEntry(void* arg);
 #if defined(SITUATION_ENABLE_THREADING)
 /* HARDENING: void by design — thread-pool job ABI; enqueue failures use _SituationSetErrorFromCode. */
 static void _SituationRenderJobWorker(void* data, void* unused);
+static void _SitQueueCompactTailLocked(SituationThreadPool* pool, int q_idx);
+static bool _SitWorkerTryClaimReadyJob(SituationThreadPool* pool, int q_idx, SituationJob** out_job);
+static void _SitThreadPoolRetireOrphanedJobMain(SituationThreadPool* pool, SituationJobId job_id);
+static bool _SitJobHandleSettled(SituationThreadPool* pool, SituationJobId job_id);
 #endif // SITUATION_ENABLE_THREADING
 
 //----------------------------------------------------------------------------------
@@ -105,7 +109,22 @@ static void _SituationProcessReverb(void* state_ptr, float* pOutput, const float
 //----------------------------------------------------------------------------------
 // Virtual Display (defined in situation_impl_vd.h; used from renderer before VD include)
 //----------------------------------------------------------------------------------
+static double _SitVDGetTimeSeconds(void);
+static void _SitVDMarkContentUpdated(SituationVirtualDisplay* vd);
+static void _SitVDMarkContentUpdatedFromTextureSlot(int slot_index);
+static void _SitVDMarkComputeBindingsWritten(const int* slots, int slot_count);
+static void _SitVDEndRenderPassCheck(int display_id, bool had_draw);
+#if defined(SITUATION_USE_OPENGL)
+static void _SitVDResetGLRecordingState(SituationGLSoftCommandBuffer* buf);
+#endif
+static void _SitVDRecordingNoteDrawCmd(SituationCommandBuffer cmd);
+static void _SitVDNoteComputeTextureBind(SituationCommandBuffer cmd, uint32_t binding, int texture_slot_index);
+static void _SitVDNoteComputeDispatch(SituationCommandBuffer cmd);
 static int _SituationSortVirtualDisplaysCallback(const void* a, const void* b);
+static void _SitVDGetCompositorIdleState(const SituationVirtualDisplay* vd, int* out_is_idle, double* out_elapsed_idle);
+#if defined(SITUATION_USE_OPENGL)
+static void _SitVDApplyCompositorIdleUniformsGL(GLuint program, const SituationVirtualDisplay* vd, int is_idle, double elapsed_idle);
+#endif
 
 //----------------------------------------------------------------------------------
 // Renderer Forward Declarations

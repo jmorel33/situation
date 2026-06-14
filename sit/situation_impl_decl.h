@@ -5,7 +5,7 @@
 *   MIT Licensed
 *
 *   This file contains all internal type definitions, struct declarations, static globals,
-*   macros, forward declarations, and embedded data (shaders) for the Situation library.
+*   macros, forward declarations, and embedded data for the Situation library.
 *   It is included by situation_impl.h after miniaudio and backend (glad/vulkan) are available.
 *
 *   This is an implementation-internal file. Do not include directly.
@@ -264,6 +264,7 @@ typedef enum {
     SIT_OP_SET_LINE_WIDTH, // [Phase 6B]
     SIT_OP_SET_COLOR_WRITE_MASK, // [Phase 6B]
     SIT_OP_SET_STENCIL_TEST, // [Phase 6B]
+    SIT_OP_SET_MULTISAMPLE_STATE, // [Phase 4 / v2.5] GL: sample shading, mask, alpha-to-coverage. VK: pipeline-bake only (see notes).
     SIT_OP_SET_DEPTH_TEST,
     SIT_OP_SET_DEPTH_WRITE,
     SIT_OP_SET_BLEND_ENABLE,
@@ -323,6 +324,7 @@ typedef struct {
         struct { float width; } set_line_width; // [Phase 6B]
         struct { bool r; bool g; bool b; bool a; } set_color_write_mask; // [Phase 6B]
         struct { bool enable; SituationStencilState front; SituationStencilState back; } set_stencil_test; // [Phase 6B]
+        struct { SituationMultisampleState ms; } set_multisample_state; // [Phase 4 / v2.5]
         struct { bool enable; SituationDepthCompareOp depth_op; } set_depth_test;
         struct { bool enable; } set_depth_write;
         struct { bool enable; } set_blend_enable;
@@ -348,6 +350,9 @@ typedef struct {
     bool is_broken;
     bool recording_render_pass_active;
     int raster_stack_depth; // Push/pop balance during soft-buffer recording
+    int recording_pass_display_id;   // -1 main window, >= 0 VD target while pass open
+    bool recording_pass_had_draw;    // true after a draw recorded in the current pass
+    int compute_bound_texture_slots[SIT_VD_MAX_COMPUTE_TEXTURE_BINDS]; // registry slot indices, -1 unset
 } SituationGLSoftCommandBuffer;
 
 typedef struct {
@@ -374,8 +379,12 @@ typedef struct {
     GLint stencil_fail_front, stencil_depth_fail_front, stencil_pass_front;
     GLint stencil_func_back, stencil_ref_back, stencil_value_mask_back, stencil_writemask_back;
     GLint stencil_fail_back, stencil_depth_fail_back, stencil_pass_back;
+    // Multisample state (GL 3.3+ core, no-ops on single-sample FBOs)
+    GLboolean multisample_sample_shading;   // GL_SAMPLE_SHADING
+    GLfloat   multisample_min_shading;      // glMinSampleShading value
+    GLuint    multisample_sample_mask;      // glSampleMaski(0, mask) — only index 0 tracked
+    GLboolean multisample_alpha_to_coverage; // GL_SAMPLE_ALPHA_TO_COVERAGE
 } _SitGLRasterStackEntry;
-
 typedef struct {
     GLint program;
     GLint vao;
@@ -507,6 +516,11 @@ typedef struct {
     float depth_bias_constant;
     float depth_bias_clamp;
     float depth_bias_slope;
+    // Multisample state — stored for push/pop completeness; apply requires pipeline rebuild
+    bool ms_sample_shading_enable;
+    float ms_min_sample_shading;
+    uint32_t ms_sample_mask;
+    bool ms_alpha_to_coverage_enable;
 } _SitVulkanRasterStackEntry;
 
  typedef struct {
@@ -569,7 +583,7 @@ typedef struct {
     uint32_t current_image_index;               // Index of the swapchain image currently acquired
     uint32_t last_presented_image_index;        // Index of the last presented image
     bool framebuffer_resized;                   // Flag indicating window resize occurred
-    bool needs_compute_wait;                    // [v2.3.24b] Sync flag: Graphics must wait for Compute
+    bool needs_compute_wait[SITUATION_MAX_FRAMES_IN_FLIGHT]; // [v2.3.24b] Per-slot: graphics must wait for compute
 
     // -------------------------------------------------------------------------
     // Descriptor Management
@@ -658,6 +672,17 @@ typedef struct {
     VkImageView screen_copy_view;                                // View for screen copy
     VkDescriptorSet screen_copy_descriptor_set;                  // Descriptor set for reading screen copy
 
+    /* Offscreen canvas for exclusive fullscreen (render at windowed res, stretch to swapchain). */
+    VkImage canvas_color_image;
+    VmaAllocation canvas_color_memory;
+    VkImageView canvas_color_view;
+    VkImage canvas_depth_image;
+    VmaAllocation canvas_depth_memory;
+    VkImageView canvas_depth_view;
+    VkFramebuffer canvas_framebuffer;
+    uint32_t canvas_resource_width;
+    uint32_t canvas_resource_height;
+
     VkDescriptorPool screen_copy_descriptor_pool;                // [FIX v2.3.27B] Track the pool that owns the screen copy set
 
     // [Bindless] Global Descriptor Set
@@ -687,6 +712,8 @@ typedef struct {
     int screenshot_width;
     int screenshot_height;
     bool screenshot_valid;
+    /** Frame slot whose pixels are in screenshot_buffer (UINT32_MAX when stale). */
+    uint32_t screenshot_resolved_frame_index;
     /** Per frame-in-flight slot: copy command recorded for that slot's submission (required when render thread may lag main). */
     bool screenshot_copy_pending[SITUATION_MAX_FRAMES_IN_FLIGHT];
     mtx_t screenshot_mutex;
@@ -696,6 +723,9 @@ typedef struct {
     bool inside_main_swapchain_render_pass;
     bool inside_render_pass;
     VkRect2D current_render_area;
+    int recording_pass_display_id;   // -1 main window, >= 0 VD while render pass recording
+    bool recording_pass_had_draw;
+    int compute_bound_texture_slots[SIT_VD_MAX_COMPUTE_TEXTURE_BINDS]; // -1 unset
 
     // [Phase 6B] Raster dynamics tracked at end of struct (avoid shifting screenshot/pipeline field layout).
     VkPolygonMode dynamic_polygon_mode;                          // Last requested polygon mode (default FILL)
@@ -726,6 +756,11 @@ typedef struct {
     SituationStencilState dynamic_stencil_front;
     SituationStencilState dynamic_stencil_back;
     float dynamic_line_width;
+    // Multisample shadow state (tracking only; no dynamic VK path without ext_dynamic_state3)
+    bool dynamic_ms_sample_shading_enable;
+    float dynamic_ms_min_sample_shading;
+    uint32_t dynamic_ms_sample_mask;
+    bool dynamic_ms_alpha_to_coverage_enable;
 
     _SitVulkanRasterStackEntry raster_stack[SITUATION_MAX_RASTER_STACK_DEPTH];
     int raster_stack_depth;
@@ -813,6 +848,13 @@ typedef struct _SituationGLVirtualBindlessStats {
 
     GLuint composite_shader_program_id;         // Shader program for advanced blending modes
     GLuint composite_copy_texture_id;           // Texture used to copy the framebuffer for advanced blending
+
+    /* Offscreen canvas for exclusive fullscreen (render at windowed res, stretch to backbuffer). */
+    GLuint canvas_fbo;
+    GLuint canvas_color_tex;
+    GLuint canvas_depth_rbo;
+    int canvas_resource_width;
+    int canvas_resource_height;
 
     // Screenshot capture (pre-swap readback for reliable pixel capture)
     GLuint screenshot_pbo;                      // PBO for async readback before swap
@@ -1274,6 +1316,11 @@ typedef struct _SituationMeshSlot {
     int index_count;
     int vertex_count;
     size_t vertex_stride;
+    /** CPU copy of upload data (CreateMesh); GetMeshData prefers this over GPU readback. */
+    uint8_t* cpu_vertices;
+    size_t cpu_vertices_size;
+    uint8_t* cpu_indices;
+    size_t cpu_indices_size;
 #if defined(SITUATION_USE_OPENGL)
     GLuint vbo_id;
     GLuint ebo_id;
@@ -1336,6 +1383,9 @@ typedef struct _SituationModelSlot {
     SituationTexture* all_model_textures;
     char* source_path;
     long mod_time;
+    bool is_stl;
+    bool is_obj;
+    bool stl_smooth_normals;
 } _SituationModelSlot;
 
 // --- Internal Texture Slot Definition ---
@@ -1433,6 +1483,10 @@ typedef struct {
     int render_queue[SITUATION_MAX_FRAMES_IN_FLIGHT]; // Ring buffer of frame indices to render
     int render_queue_head;
     int render_queue_tail;
+    /* Occupancy count (guarded by render_queue_mutex). Required because the ring may be
+     * completely full (head == tail with MAX_FRAMES_IN_FLIGHT queued), which is otherwise
+     * indistinguishable from empty — relying on head == tail alone wedges the render thread. */
+    int render_queue_count;
     int frames_pending;
 
     atomic_bool thread_active;
@@ -1527,8 +1581,10 @@ typedef struct {
     int windowed_y;                                           // Saved Y position before entering fullscreen/borderless
     int windowed_w;                                           // Saved width before entering fullscreen/borderless
     int windowed_h;                                           // Saved height before entering fullscreen/borderless
-    int fullscreen_w;                                         // App-selected exclusive fullscreen render width
-    int fullscreen_h;                                         // App-selected exclusive fullscreen render height
+    int render_canvas_width;                                  // Fixed render coordinate width (windowed size; preserved in FS)
+    int render_canvas_height;                                 // Fixed render coordinate height (windowed size; preserved in FS)
+    int fullscreen_w;                                         // Native monitor width when in exclusive fullscreen
+    int fullscreen_h;                                         // Native monitor height when in exclusive fullscreen
 
     bool current_window_focus_state;                          // True if the window currently has input focus
     bool was_minimized_last_frame;                            // State tracker for detecting minimize/restore transitions
@@ -1583,6 +1639,9 @@ typedef struct {
     char** dropped_file_paths;                                // Array of paths dropped this frame (polling API)
     int    dropped_file_count;                                // Number of paths dropped this frame
     bool   file_was_dropped_this_frame;                       // Flag indicating if a drop event occurred
+
+    // [Threading Bolstering] OS-visible main thread name (copied from SituationInitInfo; default "Sit Main")
+    char main_thread_name[SITUATION_MAX_THREAD_NAME_LEN];
 
     // [Threading Bolstering] Optional affinity overrides (0 = built-in defaults at thread entry)
     uint64_t thread_affinity_main;
@@ -1699,13 +1758,48 @@ static void _SituationVulkanWaitInFlightFencesPump(const char* context_label) {
 
 /* HARDENING: void by design — shutdown GPU idle pump wrapper. */
 static void _SituationVulkanShutdownWaitGpuPump(void) { _SituationVulkanWaitInFlightFencesPump("SituationShutdown"); }
+
+/** Recreate a frame fence in the signaled state (used after failed submit / orphaned acquire). */
+static void _SituationVulkanResignalFrameFence(uint32_t frame_index) {
+    VkDevice device = sit_render.vk.device;
+    if (device == VK_NULL_HANDLE || sit_render.vk.in_flight_fences == NULL) {
+        return;
+    }
+    if (frame_index >= sit_render.vk.max_frames_in_flight) {
+        return;
+    }
+
+    VkFence* slot = &sit_render.vk.in_flight_fences[frame_index];
+    if (*slot != VK_NULL_HANDLE) {
+        vkDestroyFence(device, *slot, NULL);
+        *slot = VK_NULL_HANDLE;
+    }
+
+    VkFenceCreateInfo fence_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT
+    };
+    if (vkCreateFence(device, &fence_info, NULL, slot) != VK_SUCCESS) {
+        *slot = VK_NULL_HANDLE;
+    }
+}
+
+/** Undo an acquired-but-not-submitted frame so the next acquire does not hang on a dead fence. */
+static void _SituationVulkanRecoverOrphanedFrameFence(void) {
+    if (!sit_render.in_frame) {
+        return;
+    }
+    sit_render.in_frame = false;
+    sit_render.vk.inside_render_pass = false;
+    sit_render.vk.inside_main_swapchain_render_pass = false;
+    sit_render.vk.current_render_area = (VkRect2D){0};
+    _SituationVulkanResignalFrameFence(sit_render.vk.current_frame_index);
+}
 #endif
 
 // =================================================================================
-// Shader Contract & Embedded Shader Sources
-// =================================================================================
 // Shader Contract
-//==================================================================================
+// =================================================================================
 #define SIT_STRINGIFY_HELPER(x) #x
 #define SIT_STRINGIFY(x) SIT_STRINGIFY_HELPER(x)
 /**
@@ -1763,420 +1857,26 @@ static void _SituationVulkanShutdownWaitGpuPump(void) { _SituationVulkanWaitInFl
 #define SIT_UNIFORM_LOC_OPACITY             2 // float: A general-purpose opacity/alpha multiplier.
 #define SIT_UNIFORM_LOC_BLEND_MODE          3 // int: An integer representing a blend mode for shader-based blending.
 #define SIT_UNIFORM_LOC_PROJECTION_MATRIX   4 // mat4: A projection matrix, for simple shaders not using the View UBO.
+#define SIT_UNIFORM_LOC_VD_IS_IDLE          9 // int: 1 when compositor idle fallback is active (Phase 2a).
+#define SIT_UNIFORM_LOC_VD_FALLBACK_MODE   10 // int: SituationVDFallbackMode when idle.
+#define SIT_UNIFORM_LOC_VD_ELAPSED_IDLE    11 // float: seconds since last content write when idle.
+#define SIT_UNIFORM_LOC_VD_FALLBACK_COLOR  12 // vec4: normalized SOLID idle RGBA.
 
-// =================================================================================
-// --- Agnostic Internal Shader Sources ---
-// =================================================================================
-// The following GLSL shaders are embedded directly into the library. They use C preprocessor directives to compile into different, highly optimized versions for the OpenGL and Vulkan
-// backends, allowing the core logic to be shared while respecting the unique data-passing conventions of each API. All resource locations are defined by the library's Shader Contract.
+/** Vulkan push-constant byte sizes (std430 layout, must match GLSL compositor shaders). */
+#define SIT_VD_PATH_B_PUSH_CONSTANT_SIZE   96u
+#define SIT_VD_PATH_A_PUSH_CONSTANT_SIZE  112u
 
-/**
- * @internal
- * @shader SIT_VD_SHADER
- * @brief The standard shader for compositing Virtual Displays.
- * @details This is the primary, high-performance shader used for drawing virtual displays with simple blend modes (Alpha, Additive, Multiply, etc.). It draws a simple textured quad.
- *
- * @var aPos (in) The 2D vertex position of the quad's corners.
- * @var aTexCoords (in) The UV coordinates for sampling the virtual display's texture.
- * @var v_texCoord (out) The interpolated texture coordinates passed to the fragment shader.
- *
- * @var ubo (uniform, Vulkan) The per-frame Uniform Buffer Object containing projection and view matrices.
- * @var pc (uniform, Vulkan) The Push Constant block containing the per-draw model matrix and opacity.
- * @var u_projection (uniform, OpenGL) The orthographic projection matrix.
- * @var u_model (uniform, OpenGL) The per-draw model matrix.
- * @var u_screenTexture (uniform) The sampler for the virtual display's texture content.
- * @var u_opacity (uniform, OpenGL) The per-draw opacity value.
- */
-// --- Shader for simple Virtual Display compositing (Alpha, Add, Multiply, etc.) ---
-static const char* SIT_VD_VERTEX_SHADER_SRC =
-    "#version 450 core\n"
-    "layout(location = " SIT_STRINGIFY(SIT_ATTR_POSITION) ") in vec2 aPos;\n"
-    "layout(location = " SIT_STRINGIFY(SIT_ATTR_TEXCOORD_0) ") in vec2 aTexCoords;\n"
-    "layout(location = 0) out vec2 v_texCoord;\n"
-    "\n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
-    "layout(push_constant) uniform VDPushConstants { mat4 model; float opacity; } pc;\n"
-    "void main() {\n"
-    "    gl_Position = ubo.projection * pc.model * vec4(aPos, 0.0, 1.0);\n"
-    "    v_texCoord = aPos;\n"
-    "}\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_PROJECTION_MATRIX) ") uniform mat4 u_projection;\n"
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_MODEL_MATRIX) ") uniform mat4 u_model;\n"
-    "void main() {\n"
-    "    gl_Position = u_projection * u_model * vec4(aPos, 0.0, 1.0);\n"
-    "    v_texCoord = aTexCoords;\n"
-    "}\n"
-#endif
-;
+/** Core internal GPU shader paths (authoritative sources under sit/gpu/). */
+#define SIT_GPU_PATH_COMPOSITOR_VERT   "sit/gpu/compositor.vert"
+#define SIT_GPU_PATH_VD_FRAG           "sit/gpu/vd.frag"
+#define SIT_GPU_PATH_COMPOSITE_FRAG    "sit/gpu/composite.frag"
+#define SIT_GPU_PATH_QUAD_VERT         "sit/gpu/quad.vert"
+#define SIT_GPU_PATH_QUAD_FRAG         "sit/gpu/quad.frag"
+#define SIT_GPU_PATH_YPQ_GRADE_FRAG    "sit/gpu/ypq_grade.frag"
+#define SIT_GPU_PATH_TEXT_VERT         "sit/gpu/text.vert"
+#define SIT_GPU_PATH_TEXT_FRAG         "sit/gpu/text.frag"
 
-static const char* SIT_VD_FRAGMENT_SHADER_SRC =
-    "#version 450 core\n"
-    "layout(location = 0) in vec2 v_texCoord;\n"
-    "layout(location = 0) out vec4 outColor;\n"
-    "\n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_VD_SOURCE) ") uniform sampler2D u_screenTexture;\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "uniform sampler2D u_screenTexture;\n"
-#endif
-    "\n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(push_constant) uniform VDPushConstants { mat4 model; float opacity; } pc;\n"
-    "void main() {\n"
-    "    vec4 texColor = texture(u_screenTexture, v_texCoord);\n"
-    "    outColor = vec4(texColor.rgb, texColor.a * pc.opacity);\n"
-    "}\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_OPACITY) ") uniform float u_opacity;\n"
-    "void main() {\n"
-    "    vec4 texColor = texture(u_screenTexture, v_texCoord);\n"
-    "    outColor = vec4(texColor.rgb, texColor.a * u_opacity);\n"
-    "}\n"
-#endif
-;
-
-/**
- * @internal
- * @shader SIT_COMPOSITE_SHADER
- * @brief An advanced shader for compositing with Photoshop-style blend modes.
- * @details This shader is used when a Virtual Display is configured with a blend mode that requires knowledge of the destination color (e.g., Overlay, Soft Light).
- *          It reads from both the source texture (the VD) and the destination framebuffer (copied to a texture) to calculate the final blended color.
- *
- * @var u_sourceTexture (uniform) The sampler for the source Virtual Display's texture.
- * @var u_destinationTexture (uniform) A sampler containing a copy of the framebuffer content that is *behind* the current virtual display.
- * @var pc.blendMode (uniform, Vulkan) An integer representing the blend mode to apply.
- * @var u_blendMode (uniform, OpenGL) An integer representing the blend mode to apply.
- */
-// --- Shader for Advanced Photoshop-style compositing ---
-static const char* SIT_COMPOSITE_VERTEX_SHADER_SRC =
-    "#version 450 core\n"
-    "layout(location = " SIT_STRINGIFY(SIT_ATTR_POSITION) ") in vec2 aPos;\n"
-#if defined(SITUATION_USE_OPENGL)
-    "layout(location = " SIT_STRINGIFY(SIT_ATTR_TEXCOORD_0) ") in vec2 aTexCoords;\n"
-#endif
-    "layout(location = 0) out vec2 v_texCoord;\n"
-    "\n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
-    "layout(push_constant) uniform CompositePushConstants { mat4 model; int blendMode; float opacity; } pc;\n"
-    "void main() {\n"
-    "    gl_Position = ubo.projection * pc.model * vec4(aPos, 0.0, 1.0);\n"
-    "    v_texCoord = aPos;\n"
-    "}\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_PROJECTION_MATRIX) ") uniform mat4 u_projection;\n"
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_MODEL_MATRIX) ") uniform mat4 u_model;\n"
-    "void main() {\n"
-    "    gl_Position = u_projection * u_model * vec4(aPos, 0.0, 1.0);\n"
-    "    v_texCoord = aTexCoords;\n"
-    "}\n"
-#endif
-;
-
-static const char* SIT_COMPOSITE_FRAGMENT_SHADER_SRC =
-    "#version 450 core\n"
-    "layout(location = 0) in vec2 v_texCoord;\n"
-    "layout(location = 0) out vec4 outColor;\n"
-    "\n"
-#if defined(SITUATION_USE_VULKAN)
-    // Sampler bindings: Set 1 = VD source (binding 4), Set 2 = screen copy (binding 5)\n"
-    "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_VD_SOURCE) ") uniform sampler2D u_sourceTexture;\n"
-    "layout(set = 2, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_VD_DEST) ") uniform sampler2D u_destinationTexture;\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "uniform sampler2D u_sourceTexture;\n"
-    "uniform sampler2D u_destinationTexture;\n"
-#endif
-    "\n"
-    // --- Blend Mode Helpers ---\n"
-    "float overlay(float b, float l) { return (b < 0.5) ? (2.0*b*l) : (1.0 - 2.0*(1.0-b)*(1.0-l)); }\n"
-    "float softlight(float b, float l) { return (l < 0.5) ? (b - (1.0 - 2.0 * l) * b * (1.0 - b)) : (b + (2.0 * l - 1.0) * (((b <= 0.25) ? (((16.0 * b - 12.0) * b + 4.0) * b) : sqrt(b)) - b)); }\n"
-    "\n"
-    // --- Backend-Specific Uniform/Push Constant Declarations ---\n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(push_constant) uniform CompositePushConstants { mat4 model; int blendMode; float opacity; } pc;\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_BLEND_MODE) ") uniform int u_blendMode;\n"
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_OPACITY) ") uniform float u_opacity;\n"
-#endif
-    "\n"
-    "void main() {\n"
-    "    // --- Select correct uniform source based on backend ---\n"
-    "    int blendMode;\n"
-    "    float opacity;\n"
-#if defined(SITUATION_USE_VULKAN)
-    "    blendMode = pc.blendMode;\n"
-    "    opacity = pc.opacity;\n"
-#else // OpenGL
-    "    blendMode = u_blendMode;\n"
-    "    opacity = u_opacity;\n"
-#endif
-    "\n"
-    "    // Fetch source (VD) and destination (framebuffer) colors\n"
-    "    vec4 src = texture(u_sourceTexture, v_texCoord);\n"
-    "    vec3 dst = texture(u_destinationTexture, gl_FragCoord.xy / textureSize(u_destinationTexture, 0)).rgb;\n"
-    "    vec3 res;\n"
-    "\n"
-    "    // --- FULL BLEND MODE IMPLEMENTATION ---\n"
-    "    switch (blendMode) {\n"
-    "        // These modes are handled by the simple shader, but included as fallbacks.\n"
-    "        case 0:  /* ALPHA */ res = src.rgb; break;\n"
-    "        case 1:  /* ADDITIVE */ res = src.rgb + dst; break;\n"
-    "        case 2:  /* MULTIPLY */ res = src.rgb * dst; break;\n"
-    "        // --- Advanced Photoshop-style modes ---\n"
-    "        case 3:  /* SCREEN */ res = 1.0 - (1.0 - src.rgb) * (1.0 - dst); break;\n"
-    "        case 5:  /* OVERLAY */ res = vec3(overlay(dst.r, src.r), overlay(dst.g, src.g), overlay(dst.b, src.b)); break;\n"
-    "        case 6:  /* SOFT_LIGHT */ res = vec3(softlight(dst.r, src.r), softlight(dst.g, src.g), softlight(dst.b, src.b)); break;\n"
-    "        case 7:  /* HARD_LIGHT */ res = vec3(overlay(src.r, dst.r), overlay(src.g, dst.g), overlay(src.b, dst.b)); break;\n"
-    "        case 8:  /* COLOR_DODGE */ res = dst / (1.0 - min(vec3(0.9999), src.rgb)); break;\n"
-    "        case 9:  /* COLOR_BURN */ res = 1.0 - (1.0 - dst) / max(vec3(0.0001), src.rgb); break;\n"
-    "        case 10: /* DARKEN */ res = min(dst, src.rgb); break;\n"
-    "        case 11: /* LIGHTEN */ res = max(dst, src.rgb); break;\n"
-    "        case 12: /* DIFFERENCE */ res = abs(dst - src.rgb); break;\n"
-    "        case 13: /* EXCLUSION */ res = dst + src.rgb - 2.0 * dst * src.rgb; break;\n"
-    "        default: res = src.rgb; break;\n"
-    "    }\n"
-    "\n"
-    "    // --- Final Composition ---\n"
-    "    // Linearly interpolate (mix) between the original destination color (dst)\n"
-    "    // and the blended result (res) based on the source's alpha and overall opacity.\n"
-    "    float finalAlpha = src.a * opacity;\n"
-    "    outColor = vec4(mix(dst.rgb, res, finalAlpha), 1.0);\n"
-    "}\n";
-
-// Draws a simple, colored, transformed quad with dynamic UV support.
-static const char* SIT_QUAD_VERTEX_SHADER =
-    "#version 450 core\n"
-    // Shader Contract: Vertex Position Attribute (Standard Quad is 0..1)
-    "layout(location = " SIT_STRINGIFY(SIT_ATTR_POSITION) ") in vec2 aPos;\n"
-    // Output UVs to fragment shader
-    "layout(location = 0) out vec2 v_TexCoord;\n"
-    "\n"
-    // --- Backend-Agnostic Uniform Block --- \n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
-    // Added uv_rect to push constants
-    "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; uint texture_id; int use_texture; } pc;\n"
-    "\n"
-    "void main() {\n"
-    "    gl_Position = ubo.projection * pc.model * vec4(aPos, 0.0, 1.0);\n"
-    "    // Calculate UV: aPos is 0..1. uv_rect is (u_off, v_off, u_scale, v_scale)\n"
-    "    v_TexCoord = pc.uv_rect.xy + (aPos * pc.uv_rect.zw);\n"
-    "}\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_PROJECTION_MATRIX) ") uniform mat4 u_projection;\n"
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_MODEL_MATRIX) ") uniform mat4 u_model;\n"
-    // Add a standalone uniform location for UV rect (Location 5)
-    "layout(location = 5) uniform vec4 u_uv_rect;\n"
-    "\n"
-    "void main() {\n"
-    "    gl_Position = u_projection * u_model * vec4(aPos, 0.0, 1.0);\n"
-    "    v_TexCoord = u_uv_rect.xy + (aPos * u_uv_rect.zw);\n"
-    "}\n"
-#endif
-;
-
-static const char* SIT_QUAD_FRAGMENT_SHADER =
-    "#version 450 core\n"
-#if defined(SITUATION_USE_OPENGL)
-    "#extension GL_ARB_bindless_texture : enable\n"
-    "#extension GL_ARB_gpu_shader_int64 : enable\n"
-#endif
-    "layout(location = 0) in vec2 v_TexCoord;\n"
-    "layout(location = 0) out vec4 outColor;\n"
-    "\n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_QuadTexture;\n"
-    "layout(push_constant) uniform QuadPushConstants { mat4 model; vec4 color; vec4 uv_rect; uint texture_id; int use_texture; } pc;\n"
-    "void main() {\n"
-    "    vec4 texColor = vec4(1.0);\n"
-    "    if (pc.use_texture == 1) {\n"
-    "        texColor = texture(u_QuadTexture, v_TexCoord);\n"
-    "    }\n"
-    "    // For SDF fonts, we might need special handling, but for baked bitmap fonts, simple sampling works.\n"
-    "    // If it's a 1-channel bitmap font, it comes as alpha (0,0,0,A) or (1,1,1,A). \n"
-    "    // Our baker creates RGBA white with alpha.\n"
-    "    outColor = texColor * pc.color;\n"
-    "}\n"
-#elif defined(SITUATION_USE_OPENGL)
-    // OpenGL uniforms
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_OBJECT_COLOR) ") uniform vec4 u_objectColor;\n"
-    "layout(location = 6) uniform int u_use_texture;\n"
-    // Standard texture sampler (binding 0 by default)
-    "uniform sampler2D u_Texture;\n"
-    // [v2.3.30] Bindless Handle Uniform (Location 7)
-    // Using uvec2 to pass 64-bit handle safely as 2x32-bit ints if int64 support is flaky,
-    // but here we use GL_ARB_gpu_shader_int64 for simplicity with extension check.
-    "#if defined(GL_ARB_bindless_texture)\n"
-    "layout(bindless_sampler, location = 7) uniform sampler2D u_TextureHandle;\n"
-    "#endif\n"
-    "\n"
-    "void main() {\n"
-    "    vec4 texColor = vec4(1.0);\n"
-    "    if (u_use_texture == 1) {\n"
-    "#if defined(GL_ARB_bindless_texture)\n"
-    "        if (u_use_texture == 2) texColor = texture(u_TextureHandle, v_TexCoord);\n"
-    "        else texColor = texture(u_Texture, v_TexCoord);\n"
-    "#else\n"
-    "        texColor = texture(u_Texture, v_TexCoord);\n"
-    "#endif\n"
-    "    }\n"
-    "    outColor = texColor * u_objectColor;\n"
-    "}\n"
-#endif
-;
-
-/**
- * @internal
- * @shader SIT_YPQ_GRADE_SHADER
- * @brief Internal fullscreen textured draw with NTSC YPQ grade (matches SituationImageAdjustYPQ).
- * @details Reuses SIT_QUAD_VERTEX_SHADER. Sample source RGB, convert YIQ→YPQ, apply luma/phase/chroma/mix, clamp RGB out.
- *          Matrix constants must stay in sync with sit/situation_impl_ypq.h (SIT_YIQ_NTSC_*).
- */
-static const char* SIT_YPQ_GRADE_FRAGMENT_SHADER =
-    "#version 450 core\n"
-    "layout(location = 0) in vec2 v_TexCoord;\n"
-    "layout(location = 0) out vec4 outColor;\n"
-    "\n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_QuadTexture;\n"
-    "layout(push_constant) uniform YpqGradePushConstants {\n"
-    "    mat4 model;\n"
-    "    vec4 color;\n"
-    "    vec4 uv_rect;\n"
-    "    uint texture_id;\n"
-    "    int use_texture;\n"
-    "    float phase_shift_deg;\n"
-    "    float chroma_factor;\n"
-    "    float luma_factor;\n"
-    "    float mix;\n"
-    "} pc;\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_OBJECT_COLOR) ") uniform vec4 u_objectColor;\n"
-    "layout(location = 6) uniform int u_use_texture;\n"
-    "uniform sampler2D u_Texture;\n"
-    "uniform float u_phase_shift_deg;\n"
-    "uniform float u_chroma_factor;\n"
-    "uniform float u_luma_factor;\n"
-    "uniform float u_mix;\n"
-#endif
-    "\n"
-    "const float SIT_YIQ_MAX_I = 0.595715671472;\n"
-    "const float SIT_YIQ_MAX_Q = 0.522591049541;\n"
-    "const float SIT_YIQ_INV_MAX_I = 1.6783189601;\n"
-    "const float SIT_YIQ_INV_MAX_Q = 1.9135436530;\n"
-    "const float SIT_YIQ_TAU = 6.28318530718;\n"
-    "const float SIT_YIQ_INV_TAU = 0.1591549431;\n"
-    "\n"
-    "vec3 sit_rgb_to_yiq(vec3 rgb) {\n"
-    "    return vec3(\n"
-    "        dot(rgb, vec3(0.299, 0.587, 0.114)),\n"
-    "        dot(rgb, vec3(0.596, -0.274, -0.322)),\n"
-    "        dot(rgb, vec3(0.211, -0.523, 0.312)));\n"
-    "}\n"
-    "vec3 sit_yiq_to_rgb_clamped(vec3 yiq) {\n"
-    "    vec3 rgb = vec3(\n"
-    "        yiq.x + 0.95568806036115671171 * yiq.y + 0.62082467141531188082 * yiq.z,\n"
-    "        yiq.x - 0.27178838506206335708 * yiq.y - 0.64860590248778682744 * yiq.z,\n"
-    "        yiq.x - 1.1081773266826619523 * yiq.y + 1.7025019884020956631 * yiq.z);\n"
-    "    return clamp(rgb, 0.0, 1.0);\n"
-    "}\n"
-    "vec3 sit_rgb_from_ypq(float y, float p, float q) {\n"
-    "    float ang = p * SIT_YIQ_TAU;\n"
-    "    vec3 yiq = vec3(y, q * cos(ang) * SIT_YIQ_MAX_I, q * sin(ang) * SIT_YIQ_MAX_Q);\n"
-    "    return sit_yiq_to_rgb_clamped(yiq);\n"
-    "}\n"
-    "vec3 sit_apply_ypq_grade(vec3 rgb, float phase_shift_deg, float chroma_factor, float luma_factor, float mix_amt) {\n"
-    "    vec3 yiq = sit_rgb_to_yiq(rgb);\n"
-    "    float i_norm = yiq.y * SIT_YIQ_INV_MAX_I;\n"
-    "    float q_norm = yiq.z * SIT_YIQ_INV_MAX_Q;\n"
-    "    float amp = min(length(vec2(i_norm, q_norm)), 1.0);\n"
-    "    float ang = atan(q_norm, i_norm);\n"
-    "    if (ang < 0.0) ang += SIT_YIQ_TAU;\n"
-    "    float y_pq = clamp(yiq.x * luma_factor, 0.0, 1.0);\n"
-    "    float p_pq = fract(ang * SIT_YIQ_INV_TAU + phase_shift_deg / 360.0);\n"
-    "    float q_pq = clamp(amp * chroma_factor, 0.0, 1.0);\n"
-    "    vec3 adjusted = sit_rgb_from_ypq(y_pq, p_pq, q_pq);\n"
-    "    return mix(rgb, adjusted, mix_amt);\n"
-    "}\n"
-    "void main() {\n"
-#if defined(SITUATION_USE_VULKAN)
-    "    vec4 src = (pc.use_texture == 1) ? texture(u_QuadTexture, v_TexCoord) : vec4(1.0);\n"
-    "    vec3 graded = sit_apply_ypq_grade(src.rgb, pc.phase_shift_deg, pc.chroma_factor, pc.luma_factor, pc.mix);\n"
-    "    outColor = vec4(graded, src.a) * pc.color;\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "    vec4 src = (u_use_texture == 1) ? texture(u_Texture, v_TexCoord) : vec4(1.0);\n"
-    "    vec3 graded = sit_apply_ypq_grade(src.rgb, u_phase_shift_deg, u_chroma_factor, u_luma_factor, u_mix);\n"
-    "    outColor = vec4(graded, src.a) * u_objectColor;\n"
-#endif
-    "}\n";
-
-// Draws batched text quads.
-static const char* SIT_TEXT_VERTEX_SHADER =
-    "#version 450 core\n"
-    "layout(location = " SIT_STRINGIFY(SIT_ATTR_POSITION) ") in vec2 aPos;\n"
-    "layout(location = " SIT_STRINGIFY(SIT_ATTR_TEXCOORD_0) ") in vec2 aTexCoord;\n"
-    "layout(location = 0) out vec2 v_TexCoord;\n"
-    "\n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(set = 0, binding = " SIT_STRINGIFY(SIT_UBO_BINDING_VIEW_DATA) ") uniform UboView { mat4 view; mat4 projection; } ubo;\n"
-    "layout(push_constant) uniform TextPushConstants { vec4 color; } pc;\n"
-    "void main() {\n"
-    "    gl_Position = ubo.projection * vec4(aPos, 0.0, 1.0);\n"
-    "    v_TexCoord = aTexCoord;\n"
-    "}\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_PROJECTION_MATRIX) ") uniform mat4 u_projection;\n"
-    "void main() {\n"
-    "    gl_Position = u_projection * vec4(aPos, 0.0, 1.0);\n"
-    "    v_TexCoord = aTexCoord;\n"
-    "}\n"
-#endif
-;
-
-static const char* SIT_TEXT_FRAGMENT_SHADER =
-    "#version 450 core\n"
-#if defined(SITUATION_USE_OPENGL)
-    "#extension GL_ARB_bindless_texture : enable\n"
-    "#extension GL_ARB_gpu_shader_int64 : enable\n"
-#endif
-    "layout(location = 0) in vec2 v_TexCoord;\n"
-    "layout(location = 0) out vec4 outColor;\n"
-    "\n"
-#if defined(SITUATION_USE_VULKAN)
-    "layout(set = 1, binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"
-    "layout(push_constant) uniform TextPushConstants { vec4 color; } pc;\n"
-    "void main() {\n"
-    "    vec4 texColor = texture(u_Texture, v_TexCoord);\n"
-    "    float glyphAlpha = max(texColor.a, texColor.r);\n"
-    "    if (glyphAlpha < 0.01) discard;\n"
-    "    outColor = vec4(pc.color.rgb, pc.color.a * glyphAlpha);\n"
-    "}\n"
-#elif defined(SITUATION_USE_OPENGL)
-    "layout(binding = " SIT_STRINGIFY(SIT_SAMPLER_BINDING_ALBEDO) ") uniform sampler2D u_Texture;\n"
-    "\n"
-    "layout(location = " SIT_STRINGIFY(SIT_UNIFORM_LOC_OBJECT_COLOR) ") uniform vec4 u_color;\n"
-    // Bindless Handle support
-    "layout(location = 6) uniform int u_use_bindless;\n"
-    "#if defined(GL_ARB_bindless_texture)\n"
-    "layout(bindless_sampler, location = 7) uniform sampler2D u_TextureHandle;\n"
-    "#endif\n"
-    "\n"
-    "void main() {\n"
-    "    vec4 texColor;\n"
-    "#if defined(GL_ARB_bindless_texture)\n"
-    "    if (u_use_bindless == 1) texColor = texture(u_TextureHandle, v_TexCoord);\n"
-    "    else texColor = texture(u_Texture, v_TexCoord);\n"
-    "#else\n"
-    "    texColor = texture(u_Texture, v_TexCoord);\n"
-    "#endif\n"
-    "    float glyphAlpha = max(texColor.a, texColor.r);\n"
-    "    if (glyphAlpha < 0.01) discard;\n"
-    "    outColor = vec4(u_color.rgb, u_color.a * glyphAlpha);\n"
-    "}\n"
-#endif
-;
+// Canonical GLSL for internal renderer pipelines: sit/gpu/ (see SIT_GPU_PATH_* and doc/plan/EXTERNALIZE_GPU_COMPUTE_PLAN.md).
 
 
 #endif // SITUATION_IMPL_DECL_H

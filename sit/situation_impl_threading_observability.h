@@ -226,7 +226,10 @@ SITAPI SituationError SituationGetThreadPoolSnapshot(SituationThreadPool* pool, 
         SituationThreadSlotSnapshot* s = &out->slots[slot++];
         s->role = SIT_THREAD_ROLE_MAIN;
         s->index = -1;
-        snprintf(s->name, sizeof(s->name), "Sit Main");
+        snprintf(s->name, sizeof(s->name), "%s",
+            (_sit_current_context != NULL && sit_gs.main_thread_name[0])
+                ? sit_gs.main_thread_name
+                : SITUATION_MAIN_THREAD_NAME_DEFAULT);
         s->active = true;
         s->last_logical_cpu = SituationGetCurrentProcessorIndex();
         s->affinity_mask_applied = (_sit_current_context != NULL) ? sit_gs.thread_affinity_main : 0;

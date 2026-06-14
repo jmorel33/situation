@@ -167,12 +167,8 @@
 #define SIT_KEY_MENU               348
 
 // --- Modifier Bitmasks ---
-#define SIT_MOD_SHIFT              0x0001
-#define SIT_MOD_CONTROL            0x0002
-#define SIT_MOD_ALT                0x0004
-#define SIT_MOD_SUPER              0x0008
-#define SIT_MOD_CAPS_LOCK          0x0010
-#define SIT_MOD_NUM_LOCK           0x0020
+// SituationModifiers and SIT_MOD_* constants have moved to situation_base_types.h.
+// They remain fully accessible — situation_base_types.h is included before situation_base_etc.h.
 
 // ================================================================================================
 // MIDI note to Frequency hz table

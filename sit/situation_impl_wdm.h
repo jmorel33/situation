@@ -172,10 +172,10 @@ static BOOL CALLBACK _SituationMonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor
  *
  * Thread safety invariants:
  *   - Should be called only from the **main thread** during init or on monitor change events
- *   - GLFW monitor functions are not thread-safe ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â must not be called concurrently
+ *   - GLFW monitor functions are not thread-safe must not be called concurrently
  *   - Cache write is protected by internal mutex if multi-thread access is possible
  *     (though in typical usage, queries are read-only after init)
- *   - Safe to call multiple times ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â refreshes the cache atomically
+ *   - Safe to call multiple times refreshes the cache atomically
  *
  * @note Called automatically on:
  *       - `SituationInit`
@@ -704,7 +704,8 @@ SITAPI void SituationSetVSync(bool enable) {
 /**
  * @brief Toggles the window between exclusive fullscreen and windowed mode.
  * @details This is a high-level convenience function that toggles the `SITUATION_FLAG_FULLSCREEN_MODE` in the current window profile and applies the change.
- *          When entering fullscreen, it uses the current monitor's native resolution. When returning to windowed mode, it restores the window's previous size and position.
+ *          When entering fullscreen, the monitor keeps its native resolution while the render canvas stays at the current windowed backbuffer size; the frame is stretched to fill the display (OpenGL/Vulkan parity).
+ *          When returning to windowed mode, it restores the window's previous size and position.
  * @see SituationToggleBorderlessWindowed(), SituationIsWindowFullscreen()
  */
 SITAPI void SituationToggleFullscreen(void) {
@@ -889,7 +890,7 @@ SITAPI void SituationSetWindowSize(int width, int height) {
  *          queried via functions such as `SituationGetMonitorName()`, `SituationGetMonitorBounds()`,
  *          etc.
  *
- *          Passing an invalid monitor ID (negative or ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¥ monitor count) is a no-op ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the window
+ *          Passing an invalid monitor ID (negative or monitor count) is a no-op the window
  *          remains on its current monitor.
  *
  * @param monitor_id Zero-based index of the target monitor (0 = primary, 1 = first secondary, etc.).
@@ -898,7 +899,7 @@ SITAPI void SituationSetWindowSize(int width, int height) {
  * @note This function is synchronous and may cause a brief window reposition or mode change.
  *       - In fullscreen mode, the display mode (resolution/refresh rate) is reapplied on the new monitor
  *         if the current mode is supported; otherwise, it falls back to the monitor's preferred mode.
- *       - No automatic DPI scaling or scaling policy change is applied ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â use `SituationSetWindowScale`
+ *       - No automatic DPI scaling or scaling policy change is applied use `SituationSetWindowScale`
  *         or related functions if needed after moving monitors.
  *       - Safe to call before window creation (sets initial monitor preference), but most useful after
  *         `SituationCreateWindow`.
@@ -1036,14 +1037,88 @@ SITAPI int SituationGetScreenHeight(void) {
 }
 
 /**
- * @brief Gets the current width of the rendering framebuffer in pixels (HiDPI-aware).
- * @details This is the actual pixel dimension you should use for setting viewports, creating render targets, and calculating projection matrices. On a 200% scaled display, this value may be twice `SituationGetScreenWidth()`.
- * @return The current backbuffer width in pixels.
+ * @brief Gets the current width of the render coordinate space in pixels.
+ * @details In exclusive fullscreen, returns the fixed canvas width (same as windowed backbuffer);
+ *          the finished frame is stretched to the native display. Otherwise returns swapchain
+ *          extent (Vulkan) or `glfwGetFramebufferSize` (OpenGL).
+ * @return Render-space width in pixels.
  * @see SituationGetScreenWidth()
  */
+static bool _SituationIsExclusiveFullscreen(void) {
+    return sit_gs.sit_glfw_window && (glfwGetWindowMonitor(sit_gs.sit_glfw_window) != NULL);
+}
+
+static void _SituationGetDisplayPresentSize(int* out_w, int* out_h) {
+    if (out_w) {
+        *out_w = 0;
+    }
+    if (out_h) {
+        *out_h = 0;
+    }
+    if (!sit_gs.sit_glfw_window) {
+        return;
+    }
+#if defined(SITUATION_USE_VULKAN)
+    if (sit_render.vk.swapchain_valid && sit_render.vk.swapchain_extent.width > 0 &&
+        sit_render.vk.swapchain_extent.height > 0) {
+        if (out_w) {
+            *out_w = (int)sit_render.vk.swapchain_extent.width;
+        }
+        if (out_h) {
+            *out_h = (int)sit_render.vk.swapchain_extent.height;
+        }
+        return;
+    }
+#endif
+    int fb_w = 0;
+    int fb_h = 0;
+    glfwGetFramebufferSize(sit_gs.sit_glfw_window, &fb_w, &fb_h);
+    if (out_w) {
+        *out_w = fb_w;
+    }
+    if (out_h) {
+        *out_h = fb_h;
+    }
+}
+
+static void _SituationGetRenderCanvasSize(int* out_w, int* out_h) {
+    if (sit_gs.render_canvas_width > 0 && sit_gs.render_canvas_height > 0) {
+        if (out_w) {
+            *out_w = sit_gs.render_canvas_width;
+        }
+        if (out_h) {
+            *out_h = sit_gs.render_canvas_height;
+        }
+        return;
+    }
+    _SituationGetDisplayPresentSize(out_w, out_h);
+}
+
+/** True when exclusive fullscreen keeps a fixed canvas and upscales to the display. */
+static bool _SituationRenderCanvasStretchActive(void) {
+    if (!_SituationIsExclusiveFullscreen()) {
+        return false;
+    }
+    int canvas_w = 0;
+    int canvas_h = 0;
+    int display_w = 0;
+    int display_h = 0;
+    _SituationGetRenderCanvasSize(&canvas_w, &canvas_h);
+    _SituationGetDisplayPresentSize(&display_w, &display_h);
+    return canvas_w > 0 && canvas_h > 0 && display_w > 0 && display_h > 0 &&
+           (canvas_w != display_w || canvas_h != display_h);
+}
+
 SITAPI int SituationGetRenderWidth(void) {
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationGetRenderWidth"); return 0; }
-    // This is the framebuffer size, which correctly handles DPI scaling.
+    if (_SituationRenderCanvasStretchActive()) {
+        return sit_gs.render_canvas_width;
+    }
+#if defined(SITUATION_USE_VULKAN)
+    if (sit_render.vk.swapchain_valid && sit_render.vk.swapchain_extent.width > 0) {
+        return (int)sit_render.vk.swapchain_extent.width;
+    }
+#endif
     int width, height;
     glfwGetFramebufferSize(sit_gs.sit_glfw_window, &width, &height);
     return width;
@@ -1051,13 +1126,22 @@ SITAPI int SituationGetRenderWidth(void) {
 
 /**
  * @brief Gets the current height of the rendering framebuffer in pixels (HiDPI-aware).
- * @details This is the actual pixel dimension you should use for setting viewports, creating
- *          render targets, and calculating projection matrices.
- * @return The current backbuffer height in pixels.
+ * @details In exclusive fullscreen, returns the fixed render canvas height (same as windowed
+ *          backbuffer); the compositor stretches to the native display. Otherwise uses swapchain
+ *          extent (Vulkan) or `glfwGetFramebufferSize` (OpenGL).
+ * @return The current render-space height in pixels.
  * @see SituationGetScreenHeight()
  */
 SITAPI int SituationGetRenderHeight(void) {
     if (!SituationIsInitialized()) { _SituationSetErrorFromCode(SITUATION_ERROR_NOT_INITIALIZED, "SituationGetRenderHeight"); return 0; }
+    if (_SituationRenderCanvasStretchActive()) {
+        return sit_gs.render_canvas_height;
+    }
+#if defined(SITUATION_USE_VULKAN)
+    if (sit_render.vk.swapchain_valid && sit_render.vk.swapchain_extent.height > 0) {
+        return (int)sit_render.vk.swapchain_extent.height;
+    }
+#endif
     int width, height;
     glfwGetFramebufferSize(sit_gs.sit_glfw_window, &width, &height);
     return height;
@@ -1290,14 +1374,20 @@ SITAPI SituationError SituationApplyCurrentProfileWindowState(void) {
     // Handle fullscreen/windowed transition first, as it can affect other attributes or require specific order.
     if (target_flags & SITUATION_FLAG_FULLSCREEN_MODE) {
         if (!is_currently_fullscreen) {
-            // Save logical window coordinates before exclusive fullscreen replaces
-            // the window size with the monitor/video-mode resolution.
+            // Save window/backbuffer size before exclusive fullscreen. The render canvas stays at
+            // this size; the display uses the monitor's native mode and the frame is stretched up.
             glfwGetWindowPos(sit_gs.sit_glfw_window, &sit_gs.windowed_x, &sit_gs.windowed_y);
-            glfwGetWindowSize(sit_gs.sit_glfw_window, &sit_gs.windowed_w, &sit_gs.windowed_h);
+            glfwGetFramebufferSize(sit_gs.sit_glfw_window, &sit_gs.windowed_w, &sit_gs.windowed_h);
+            if (sit_gs.windowed_w <= 0 || sit_gs.windowed_h <= 0) {
+                glfwGetWindowSize(sit_gs.sit_glfw_window, &sit_gs.windowed_w, &sit_gs.windowed_h);
+            }
             if (sit_gs.windowed_w <= 0 || sit_gs.windowed_h <= 0) {
                 sit_gs.windowed_w = sit_gs.main_window_width;
                 sit_gs.windowed_h = sit_gs.main_window_height;
             }
+            sit_gs.render_canvas_width = sit_gs.windowed_w;
+            sit_gs.render_canvas_height = sit_gs.windowed_h;
+
             int monitor_id = _SituationGetCurrentDisplayIdentifier();
             if (monitor_id == -1) { // If no specific monitor, try primary
                 if (sit_gs.cached_physical_display_count > 0) {

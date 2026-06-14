@@ -161,7 +161,8 @@ SITAPI void _SituationLogGLError(const char* file, int line);
 // ================================================================================================
 
 #include "situation_base_errno.h"
-
+#include "situation_base_types.h"
+#include "situation_base_callbacks.h"
 #include "situation_base_etc.h"
 
 // --- Initialization State Management (v2.3.40) ---
@@ -205,6 +206,22 @@ SITAPI void SituationLogWarning(SituationError code, const char* fmt, ...);     
     #define SIT_ASSERT_MAIN_THREAD() _SituationAssertMainThread(__FILE__, __LINE__)
 #else
     #define SIT_ASSERT_MAIN_THREAD() do {} while(0)
+#endif
+
+// General debug assertion macro — fires SITUATION_ERROR_ASSERTION_FAILED and logs the failed expression.
+// Active in debug builds (NDEBUG not defined); no-op in release.
+// Named SITUATION_ASSERT (not SIT_ASSERT) to avoid collision with the test harness's SIT_ASSERT macro.
+#ifndef NDEBUG
+    #define SITUATION_ASSERT(cond) \
+        do { \
+            if (!(cond)) { \
+                _SituationSetErrorFromCode(SITUATION_ERROR_ASSERTION_FAILED, \
+                    "Assertion failed: " #cond " (" __FILE__ ")"); \
+                fprintf(stderr, "[Situation] ASSERTION FAILED: %s  (%s:%d)\n", #cond, __FILE__, __LINE__); \
+            } \
+        } while(0)
+#else
+    #define SITUATION_ASSERT(cond) do {} while(0)
 #endif
 
 // --- Threading Support Configuration ---
@@ -567,8 +584,29 @@ typedef enum {
 #ifndef SITUATION_VULKAN_SHUTDOWN_FENCE_WAIT_NS
 #define SITUATION_VULKAN_SHUTDOWN_FENCE_WAIT_NS 3000000000ULL /* Per in-flight fence: chunked vkWaitForFences + glfwPollEvents anywhere we would have used vkDeviceWaitIdle (shutdown, swapchain teardown/recreate, VSync/full cleanup, init error path). vkDeviceWaitIdle blocks the main thread with no event pump and never returns if the GPU is wedged → frozen pale window. */
 #endif
+#ifndef SITUATION_VULKAN_ASYNC_COMPILE_DEADLINE_NS
+#define SITUATION_VULKAN_ASYNC_COMPILE_DEADLINE_NS 5000000000ULL /* Wall-clock deadline for an async shaderc compile, enforced by SituationPollShaderLoad. A compile that exceeds it is abandoned and reported as SITUATION_ERROR_SHADER_COMPILE_TIMEOUT instead of returning SHADER_LOAD_IN_PROGRESS forever. Typical compiles are ~300ms; 5s is a wide margin for slow machines. */
+#endif
+#ifndef SITUATION_VULKAN_ASYNC_UNLOAD_COOPERATIVE_NS
+#define SITUATION_VULKAN_ASYNC_UNLOAD_COOPERATIVE_NS 500000000ULL /* Unload: cooperative wait for a normal in-flight shaderc compile (~300ms typical) before escalating to abandon. */
+#endif
+#ifndef SITUATION_VULKAN_ASYNC_UNLOAD_ABANDON_NS
+#define SITUATION_VULKAN_ASYNC_UNLOAD_ABANDON_NS 2000000000ULL /* Unload: abandon wedged {0,-3} compiles and retire the pool job slot. Normal unload must not reach UNLOAD_WAIT_NS. */
+#endif
+#ifndef SITUATION_VULKAN_ASYNC_UNCLAIMED_FAST_NS
+#define SITUATION_VULKAN_ASYNC_UNCLAIMED_FAST_NS 100000000ULL /* Job submitted but never claimed: fast-path threshold for retire+inline (Phase B). */
+#endif
+#ifndef SITUATION_VULKAN_ASYNC_SHUTDOWN_NS
+#define SITUATION_VULKAN_ASYNC_SHUTDOWN_NS 500000000ULL /* Destroy/shutdown: short budget before abandoning in-flight async compiles. */
+#endif
+#ifndef SITUATION_VULKAN_ASYNC_UNLOAD_WAIT_NS
+#define SITUATION_VULKAN_ASYNC_UNLOAD_WAIT_NS 10000000000ULL /* Last-resort shutdown-only wall-clock cap. Normal SituationUnloadShader abandon uses UNLOAD_ABANDON_NS (2s). */
+#endif
 #ifndef SITUATION_VULKAN_LOG_SLOW_ACQUIRE_MIN_MS
 #define SITUATION_VULKAN_LOG_SLOW_ACQUIRE_MIN_MS 100 /* Log vkAcquire timing to stderr if acquire >= this many ms, or on TIMEOUT. Use 0 to log every acquire (verbose). */
+#endif
+#ifndef SITUATION_VULKAN_ACQUIRE_SWAPCHAIN_RETRIES
+#define SITUATION_VULKAN_ACQUIRE_SWAPCHAIN_RETRIES 4 /* Internal retries after successful swapchain recreation (resize/sync/out-of-date). */
 #endif
 #define SITUATION_MAX_STORAGE_DEVICES           8    /* Max detected storage volumes (e.g., drives, mounts). */
 #define SITUATION_MAX_NETWORK_ADAPTERS          8    /* Max network interfaces (e.g., Ethernet/Wi-Fi). */
@@ -576,6 +614,12 @@ typedef enum {
 #define SITUATION_MAX_CPU_NAME_LEN              64   /* Max CPU model string length (e.g., "Intel i9-13900K"). */
 #define SITUATION_MAX_LOGICAL_PROCESSORS        256  /* Max entries in SituationCpuTopology::processors */
 #define SITUATION_AFFINITY_MASK_BITS            64   /* Bit width for SituationSetThreadAffinity / mask builders (low logical IDs) */
+#ifndef SITUATION_MAX_THREAD_NAME_LEN
+#define SITUATION_MAX_THREAD_NAME_LEN           24   /* Max UTF-8 chars stored for OS-visible thread names (Linux truncates to 15 at the kernel). */
+#endif
+#ifndef SITUATION_MAIN_THREAD_NAME_DEFAULT
+#define SITUATION_MAIN_THREAD_NAME_DEFAULT      "Sit Main" /* Default OS-visible name for the main thread when SituationInitInfo::main_thread_name is NULL. */
+#endif
 #define SITUATION_MAX_NUMA_NODES                64   /* Max NUMA nodes in SituationNumaTopology */
 #define SITUATION_MAX_GPU_NAME_LEN              128  /* Max GPU model string length (e.g., "NVIDIA RTX 4090"). */
 #define SITUATION_MAX_MONITORS                  8    /* Max physical displays to track in device snapshot. */
@@ -585,6 +629,7 @@ typedef enum {
 
 /* === Graphics & Rendering Limits === */
 #define SITUATION_MAX_VIRTUAL_DISPLAYS          16   /* Max offscreen render targets (e.g., for UI/post-fx). */
+#define SIT_VD_MAX_COMPUTE_TEXTURE_BINDS         8    /* Tracked compute storage-image bindings for VD content hooks. */
 #define SITUATION_MAX_TEXTURES                  4096
 #define SITUATION_MAX_SHADERS                   1024
 #define SITUATION_MAX_COMPUTE_PIPELINES         512
@@ -610,156 +655,14 @@ typedef enum {
 #define SITUATION_JOYSTICK_DEADZONE_L           0.10f /* Default deadzone for left analog (anti-drift). */
 #define SITUATION_JOYSTICK_DEADZONE_R           0.10f /* Default deadzone for right analog (anti-drift). */
 
-/**
- * @brief Basic Math Types
- */
-typedef struct ColorHSV { float h, s, v; } ColorHSV; // Hue = 0.0f to 360.0f degrees, Saturation = 0.0f grayscale to 1.0f color, Value/Brightness = 0.0f to 1.0f
-typedef struct ColorYPQA { unsigned char y, p, q, a; } ColorYPQA; // NTSC-style luma/phase/chroma (see situation_impl_ypq.h internally)
-typedef struct ColorYPQf { float y, p, q, a; } ColorYPQf;         // Normalized YPQ edit space: y/p/q/a in [0, 1]; p is phase (0..1 → full hue wheel)
-typedef struct ColorRGBA { unsigned char r, g, b, a; } ColorRGBA;
-typedef ColorRGBA Color;
-
-typedef union Vector2 {
-    struct { float x, y; };
-    float raw[2];
-} Vector2;
-
-typedef union Vector3 {
-    struct { float x, y, z; };
-    struct { float r, g, b; };
-    float raw[3];
-} Vector3;
-
-typedef union Vector4 {
-    struct { float x, y, z, w; };
-    struct { float r, g, b, a; };
-    float raw[4];
-} Vector4;
-
-typedef struct SitRectangle { float x, y, width, height; } SitRectangle;
+// (SitRectangle is defined in situation_base_types.h — included above)
 
 //==================================================================================
-//  Callback Type Definitions - v2.3.4 "Velocity" Standard
+//  Callback Type Definitions
+//  All callback typedef signatures have moved to situation_base_callbacks.h,
+//  which is included above via situation_base_types.h chain.
+//  They remain fully accessible here — nothing changes for callers.
 //==================================================================================
-//
-//  All Situation callbacks are designed to be:
-//   • Invoked exclusively from the main thread (except audio capture when the SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD flag is NOT set — then it runs on the audio thread)
-//   • Real-time safe where applicable (especially audio-related callbacks)
-//   • Zero-overhead (no virtual calls, no hidden allocations)
-//   • Fully user-data driven (last parameter is always the pointer you supplied)
-//
-//  Never call other SITAPI functions from inside a callback unless the documentation for that specific callback explicitly declares it safe.
-//
-//  These signatures are frozen — they will never change in any future version.
-//
-
-// ── Window / OS Events ─────────────────────────────────────────────────────
-typedef void (*SituationFileDropCallback)(
-    int          count,       // Number of files dropped
-    const char** paths,       // Array of UTF-8 file paths (valid only for duration of callback)
-    void*        user_data
-); // Files/folders dragged from OS onto the window
-
-typedef void (*SituationFileLoadCallback)(
-    void*        data,        // The loaded file data (or NULL on failure). OWNED BY CALLER (must free).
-    size_t       size,        // Size of the loaded data in bytes.
-    void*        user_data    // User data passed to the async function.
-); // Callback for asynchronous file loading
-
-typedef void (*SituationFileSaveCallback)(
-    bool         success,     // true if the file was written successfully.
-    void*        user_data    // User data passed to the async function.
-); // Callback for asynchronous file saving
-
-typedef void (*SituationFileTextLoadCallback)(
-    char*        text,        // The loaded null-terminated string (or NULL on failure). OWNED BY CALLER (must free).
-    void*        user_data    // User data passed to the async function.
-); // Callback for asynchronous text file loading
-
-typedef void (*SituationFocusCallback)(
-    bool   gained_focus,      // true = window gained focus, false = lost focus
-    void*  user_data
-); // Window focus change (alt-tab, click, etc.)
-
-typedef void (*SituationMaximizeCallback)(
-    bool   maximized,         // true = window maximized, false = restored from maximized
-    void*  user_data
-); // Title-bar maximize / restore (requires SITUATION_FLAG_WINDOW_RESIZABLE at init)
-
-typedef void (*SituationWindowCloseCallback)(
-    void* user_data
-); // User clicked the OS close button. Rarely used — most code just polls SituationWindowShouldClose()
-
-// ── Input Events (Optional Event-Driven API — polling API is always available) ──
-typedef void (*SituationKeyCallback)(
-    int   key,       		// SIT_KEY_xxx code
-    int   scancode,  		// Platform-specific scancode (useful for non-QWERTY layouts)
-    int   action,    		// SIT_PRESS, SIT_RELEASE, or SIT_REPEAT
-    int   mods,      		// Bitfield of SIT_MOD_xxx
-    void* user_data
-); // Exact GLFW key callback signature
-
-typedef void (*SituationCharCallback)(
-    unsigned int codepoint,   // UTF-32 codepoint (valid Unicode character)
-    void*        user_data
-); // Text input (separate from key events — handles IME, dead keys, etc.)
-
-typedef void (*SituationMouseButtonCallback)(
-    int   button,    // SIT_MOUSE_BUTTON_1 to 8
-    int   action,    // SIT_PRESS or SIT_RELEASE
-    int   mods,      // Modifier bitfield
-    void* user_data
-); // Mouse button events
-
-typedef void (*SituationCursorPosCallback)(
-    Vector2 position, // Cursor position in screen coordinates (HiDPI-aware, sub-pixel precision)
-    void*   user_data
-); // Called every time the mouse moves (can be very frequent)
-
-typedef void (*SituationScrollCallback)(
-    Vector2 offset,   // x/y scroll amount (y is usually ±1.0 per notch)
-    void*   user_data
-); // Mouse wheel / trackpad scroll
-
-typedef void (*SituationJoystickCallback)(
-    int  jid,        // Joystick ID (0 to SITUATION_MAX_JOYSTICKS-1)
-    int  event,      // GLFW_CONNECTED or GLFW_DISCONNECTED
-    void* user_data
-); // Gamepad/controller hotplug events
-
-// ── Custom Audio Streaming (Exact MiniAudio vtable signatures — required for perfect compatibility) ──
-typedef ma_uint64 (*SituationStreamReadCallback)(
-    void*      pUserData,    // Your custom stream context pointer
-    void*      pBufferOut,   // Buffer to fill with PCM data
-    ma_uint64  bytesToRead   // Maximum bytes to write
-); // Return number of bytes actually written
-
-typedef ma_result (*SituationStreamSeekCallback)(
-    void*       pUserData,   // Your custom stream context pointer
-    ma_int64    byteOffset,  // Offset in bytes
-    ma_seek_origin origin    // MA_SEEK_WHENCE_SOF/COF/EOF
-); // Return MA_SUCCESS on success
-
-// ── Audio Capture (Microphone / Line-In) ─────────────────────────────────────
-typedef void (*SituationAudioCaptureCallback)(
-    const float* input_buffer,   // Interleaved 32-bit float samples (read-only!)
-    uint32_t     frame_count,    // Number of frames in this block (typically 256–1024)
-    void*        user_data
-); // Called from audio thread unless SITUATION_INIT_AUDIO_CAPTURE_MAIN_THREAD is set
-   // Format is always engine native: 48 kHz (or custom, stereo (or mono), interleaved floats
-
-// ── Custom DSP Processor Chain (Per-Sound Post-Effects) ─────────────────────
-typedef void (*SituationAudioProcessorCallback)(
-    float*       buffer,         // Interleaved float samples — read/write in-place
-    uint32_t     frames,         // Number of frames in this block
-    uint32_t     channels,       // 1 (mono) or 2 (stereo)
-    uint32_t     sampleRate,     // Current engine sample rate in Hz
-    void*        user_data 		 // Pointer supplied when the processor was added
-); // Applied after built-in effects (filter → echo → reverb) but before final volume/pan
-   // Must be real-time safe — no SIT_MALLOC, no locking, no system calls
-
-// ── Internal GLFW Error Callback (Exposed only for extremely advanced users) ──
-typedef void (*GLFWerrorfun)(int error_code, const char* description);
 
 SITAPI void SituationFreeString(char* str);                                             // Free a string allocated by the library (e.g., from path helpers).
 
@@ -1187,6 +1090,12 @@ typedef enum {
     SITUATION_VD_FLAG_COMPUTE_TARGET = 1 << 0, // VD texture is writable by compute shaders (adds STORAGE usage, skips depth/render pass)
 } SituationVDFlags;
 
+/** Compositor idle fallback when no content writes exceed idle_threshold_seconds (Phase 2a). */
+typedef enum SituationVDFallbackMode {
+    SITUATION_VD_FALLBACK_SOLID = 0,       /**< Flat fallback_color */
+    SITUATION_VD_FALLBACK_COLORBURST = 1   /**< SMPTE EG 1-1990 bars (2/3 main + castellation + PLUGE/I/Q) */
+} SituationVDFallbackMode;
+
 /**
  * @brief Specifies how an attachment's contents should be treated at the start of a render pass.
  *
@@ -1391,47 +1300,26 @@ typedef struct VmaAllocation_T* VmaAllocation;
 /**
  * @brief Opaque handle for a compute pipeline.
  * @details In OpenGL, this represents a linked shader program containing only a compute shader.
+ * @note Defined in situation_base_types.h — available here via the include chain.
  */
-typedef struct {
-    uint32_t slot_index;
-    uint32_t generation;
-} SituationComputePipeline;
+// typedef struct { uint32_t slot_index; uint32_t generation; } SituationComputePipeline;
 
 /**
  * @brief Opaque handle for a generic GPU data buffer (e.g., an SSBO).
+ * @note Defined in situation_base_types.h — available here via the include chain.
  */
-typedef struct {
-    uint32_t slot_index;
-    uint32_t generation;
-    size_t size_in_bytes; // Cached metadata
-    SituationBufferUsageFlags usage_flags; // Cached metadata
-} SituationBuffer;
+// typedef struct { uint32_t slot_index; uint32_t generation; size_t size_in_bytes; ... } SituationBuffer;
+
+
+// Cross-Platform Resource Validation Helpers — handles defined in situation_base_types.h
 
 // SAFETY: SituationBuffer handle identity is packed into a uint64_t (slot_index + generation = 8 bytes).
-// If you add fields, they will NOT be transmitted through the command buffer. Only slot_index and
-// generation are used for handle lookup. This assert ensures the packable portion stays at offset 0.
+// Only slot_index and generation are used for handle lookup — size_in_bytes/usage_flags are metadata.
 #define SIT_BUFFER_HANDLE_PACK_SIZE 8  // bytes: slot_index(4) + generation(4)
 _Static_assert(
     offsetof(SituationBuffer, generation) + sizeof(uint32_t) == SIT_BUFFER_HANDLE_PACK_SIZE,
     "SituationBuffer handle fields (slot_index + generation) must be the first 8 bytes for command buffer packing"
 );
-
-
-// --- Cross-Platform Resource Validation Helpers ---
-
-
-/**
- * @brief Represents a mesh of vertices and indices stored on the GPU.
- * @details This is an opaque handle to the underlying graphics resources (VBO/EBO/VAO for OpenGL, VkBuffers for Vulkan).
-        The library manages the creation and destruction of these resources.
- */
-typedef struct {
-    uint32_t slot_index;
-    uint32_t generation;
-    int index_count;        // Cached metadata
-    int vertex_count;       // Cached metadata
-    size_t vertex_stride;   // Cached metadata
-} SituationMesh;
 
 // Forward-declaration for the internal uniform map implementation struct.
 // The full definition is hidden inside the SITUATION_IMPLEMENTATION block.
@@ -1450,22 +1338,8 @@ typedef enum {
     SIT_UNIFORM_MAT4
 } SituationUniformType;
 
-// --- Shader Handle ---
-typedef struct {
-    uint32_t slot_index;
-    uint32_t generation;
-} SituationShader;
-
-/**
- * @brief Opaque handle for a generic GPU texture resource.
- * @details Uses an Indirect Handle system (Index + Generation) to allow safe hot-reloading.
- */
-typedef struct {
-    uint32_t slot_index;    // Index into the internal texture registry
-    uint32_t generation;    // Validation ID to detect use-after-free
-    int width;              // Cached metadata
-    int height;             // Cached metadata
-} SituationTexture;
+// --- Shader Handle --- (defined in situation_base_types.h)
+// --- Texture Handle --- (defined in situation_base_types.h)
 
 /**
  * @brief Represents a single drawable part of a larger 3D model.
@@ -1520,6 +1394,13 @@ typedef struct {
     double   last_update_time_seconds;   // Timestamp of the last frame advance (used for delta calculation)
     double   frame_delta_time_seconds;   // Delta time for this virtual display's last frame (affected by multiplier)
 
+    // ── Content update tracking (distinct from frame clock above) ──
+    double   last_content_update_time;    // Monotonic time at last pixel write (draw/copy/dispatch)
+    uint64_t last_content_update_frame;   // vd->frame_count at last content write
+    double   idle_threshold_seconds;      // Seconds without content write before compositor idle fallback (default 1.0)
+    SituationVDFallbackMode fallback_mode; // SOLID or COLORBURST when idle (default SOLID)
+    ColorRGBA fallback_color;             // SOLID idle RGBA (default deep blue)
+
     // ── Optimization & Compositing Controls ──
     bool                    is_dirty;       // Set to true when content changed → forces re-render of the off-screen buffer
     SituationScalingMode    scaling_mode;   // How the VD is scaled when composited (Integer, Fit, Stretch, etc.)
@@ -1539,7 +1420,8 @@ typedef struct {
         VkImageView     depth_image_view;    // Depth attachment view
         VkFramebuffer   framebuffer;         // Framebuffer that references the above images
         VkSampler       sampler;             // Sampler used when sampling this VD as a texture
-        VkRenderPass    render_pass;         // Dedicated render pass (one per VD for maximum compatibility/flexibility)
+        VkRenderPass    render_pass;         // Dedicated render pass — color LOAD_OP_CLEAR (baked at creation)
+        VkRenderPass    render_pass_load;    // Load variant — color LOAD_OP_LOAD / depth LOAD (for multi-pass into same VD)
         VkDescriptorSet descriptor_set;      // Pre-allocated descriptor set for ultra-fast compositing (Velocity era)
         VkDescriptorPool descriptor_pool;    // [FIX v2.3.27B]
     } vk;
@@ -1585,17 +1467,9 @@ typedef struct SituationFont {
 
 // --- Audio Control Structures ---
 
-// --- Audio Handle System ---
-// --- Audio Handle System ---
-// SituationSoundHandle is deprecated/aliased to the new handle struct
-typedef struct {
-    uint32_t slot_index;
-    uint32_t generation;
-} SituationSound;
-
-typedef SituationSound SituationSoundHandle;
-#define SITUATION_NULL_HANDLE ((SituationSound){0, 0})
-#define SITUATION_MAX_LOADED_SOUNDS 1024
+// --- Audio Handle System --- (SituationSound, SituationSoundHandle, SITUATION_NULL_HANDLE defined in situation_base_types.h)
+// --- Tone Handle --- (SituationToneHandle defined in situation_base_types.h)
+// --- Node Handle --- (SituationNodeHandle, SITUATION_INVALID_NODE_HANDLE defined in situation_base_types.h)
 
 typedef struct {
     int sample_rate;
@@ -1689,6 +1563,7 @@ typedef enum {
     SITUATION_NODE_FILTER,
     SITUATION_NODE_MASTERING_AMP,
     SITUATION_NODE_DEAFMAX,
+    SITUATION_NODE_ISA110,          // Focusrite ISA 110 preamp + 4-band inductor EQ emulation
     // Utilities
     SITUATION_NODE_PANNER,
     SITUATION_NODE_GAIN,
@@ -1746,9 +1621,8 @@ typedef struct {
     float (*get_control_func)(void*, uint32_t);
 } SituationDeviceMetadata;
 
-// --- Node Handle ---
-typedef uint32_t SituationNodeHandle;
-#define SITUATION_INVALID_NODE_HANDLE 0xFFFFFFFF
+// --- Node Handle --- (defined in situation_base_types.h)
+// SituationNodeHandle = uint32_t, SITUATION_INVALID_NODE_HANDLE = 0xFFFFFFFF
 
 // --- Audio Port ---
 typedef struct {
@@ -1817,14 +1691,8 @@ typedef enum {
     SITUATION_FILTER_HIGHPASS
 } SituationFilterType;
 
-// SituationSound struct definition has moved to internal implementation (Generational Handle used in API)
-
 // --- Resonance (Procedural Synthesis) ---
-/**
- * @brief Handle for an actively playing procedural tone.
- *        Invalid/expired handle is 0.
- */
-typedef uint32_t SituationToneHandle;  // 0 = invalid
+// SituationToneHandle is defined in situation_base_types.h
 
 /**
  * @brief Plays an extended procedural tone with full control.
@@ -1929,6 +1797,9 @@ typedef struct {
     bool disable_io_thread;         // If true, runs I/O tasks on main thread (fallback)
     double hot_reload_poll_rate;    // Seconds between checks (default 0.5). 0 = disable.
     uint64_t staging_buffer_size;   // Override default 128MB staging buffer size (Vulkan only). 0 = Default.
+
+    // OS-visible main thread name (debugger / Task Manager). NULL = SITUATION_MAIN_THREAD_NAME_DEFAULT.
+    const char* main_thread_name;
 
     // [Threading Bolstering] Optional thread affinity masks (logical CPU bit N = 1ULL << N).
     // thread_affinity_main: 0 = no pin. render/audio: 0 = default cores 1/2 (or NUMA-local when numa_prefer_local).
@@ -2479,13 +2350,14 @@ SITAPI uint32_t SituationGetCurrentActualWindowStateFlags(void);                
 // Image Module: CPU-side Image and Font Loading and Manipulation
 //==================================================================================
 // --- Image Loading and Unloading ---
-SITAPI SituationError SituationLoadImage(const char *fileName, SituationImage* out_image);                         // Load an image from a file into CPU memory (RAM).
+SITAPI SituationError SituationLoadImage(const char *fileName, SituationImage* out_image);                         // Load an image via stb_image (JPEG, PNG, BMP, TGA, PSD, GIF, HDR, PIC, PNM).
 SITAPI SituationError SituationLoadImageFromMemory(const char *fileType, const unsigned char *fileData, int dataSize, SituationImage* out_image); // Load an image from a memory buffer.
 SITAPI void SituationUnloadImage(SituationImage image);                                 // Unload an image's pixel data from memory.
 SITAPI bool SituationIsImageValid(SituationImage image);                                // Check if an image has been loaded successfully.
+SITAPI bool SituationIsStbImageLoadExtension(const char* extension);                     // True for stb_image decode extensions (.jpg, .png, .bmp, .tga, .psd, .gif, .hdr, .pic, .ppm, .pgm, .pnm).
 
 // --- Image Exporting ---
-SITAPI SituationError SituationExportImage(SituationImage image, const char *fileName);           // Export image data to a file (PNG, BMP supported).
+SITAPI SituationError SituationExportImage(SituationImage image, const char *fileName);           // Export image data (.png, .bmp, .jpg, .tga, .hdr).
 
 // --- Image Generation & Copying ---
 SITAPI SituationError SituationImageCopy(SituationImage image, SituationImage* out_image);                         // Create a new image by copying another.
@@ -2668,7 +2540,7 @@ SITAPI SituationError SituationCmdBindDescriptorSet(SituationCommandBuffer cmd, 
 SITAPI SituationError SituationCmdBindDescriptorSetDynamic(SituationCommandBuffer cmd, uint32_t set_index, SituationBuffer buffer, uint32_t dynamic_offset); // [Core] Binds a dynamic buffer descriptor set with an offset.
 SITAPI SituationError SituationCmdBindTextureSet(SituationCommandBuffer cmd, uint32_t set_index, SituationTexture texture);             // [Core] Binds a texture's descriptor set (sampler/storage) to a set index.
 SITAPI SituationError SituationCmdBindComputeTexture(SituationCommandBuffer cmd, uint32_t binding, SituationTexture texture);           // [Core] Binds a texture as a storage image for compute shaders.
-SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, uint32_t binding, int size, SituationDataType type, bool normalized, size_t offset); // [OpenGL Only] Attribute format + vertex buffer binding index (must match SituationCmdBindVertexBuffer).
+SITAPI SituationError SituationCmdSetVertexAttribute(SituationCommandBuffer cmd, uint32_t location, uint32_t binding, int size, SituationDataType type, bool normalized, size_t offset); // [OpenGL Only, Deprecated v2.4] Attribute format + vertex buffer binding index. Prefer vertex pulling via SituationGetMeshVertexBufferAddress + sit/gpu/vertex_pull.glslh on Vulkan.
 SITAPI SituationError SituationCmdBindVertexBuffer(SituationCommandBuffer cmd, uint32_t binding, SituationBuffer buffer, size_t offset, size_t stride); // [Core] Bind a vertex buffer for subsequent SituationCmdDraw / SituationCmdDrawIndexed.
 SITAPI SituationError SituationCmdBindIndexBufferEx(SituationCommandBuffer cmd, SituationBuffer buffer, size_t offset, SituationIndexType index_type); // [Core] Bind index buffer with 16- or 32-bit element type for subsequent SituationCmdDrawIndexed.
 SITAPI SituationError SituationCmdBindIndexBuffer(SituationCommandBuffer cmd, SituationBuffer buffer, size_t offset); // [Core] Bind a 32-bit index buffer (SIT_INDEX_UINT32). Pass offset 0 when indices start at the beginning of the buffer.
@@ -2691,6 +2563,8 @@ SITAPI SituationError SituationCmdBindSampledTexture(SituationCommandBuffer cmd,
 // --- Graphics Resource Management ---
 SITAPI SituationError SituationCreateMesh(const void* vertex_data, int vertex_count, size_t vertex_stride, const uint32_t* index_data, int index_count, SituationMesh* out_mesh); // Create a mesh from vertex and index data.
 SITAPI void SituationDestroyMesh(SituationMesh* mesh);                                  // Unload a mesh from GPU memory.
+SITAPI uint64_t SituationGetMeshVertexBufferAddress(SituationMesh mesh);                // Retrieves the GPU device address of the mesh vertex buffer. [VK] requires SIT_FEATURE_BINDLESS_BUFFERS; [GL] NVIDIA-only via NV_shader_buffer_load. Returns 0 if unsupported.
+SITAPI uint64_t SituationGetMeshIndexBufferAddress(SituationMesh mesh);                 // Retrieves the GPU device address of the mesh index buffer. [VK] requires SIT_FEATURE_BINDLESS_BUFFERS; [GL] NVIDIA-only via NV_shader_buffer_load. Returns 0 if unsupported.
 SITAPI uint64_t SituationGetBufferDeviceAddress(SituationBuffer buffer);                // Retrieves the GPU device address of a buffer for bindless access.
 SITAPI uint64_t SituationGetTextureHandle(SituationTexture texture);                    // Retrieves the bindless texture handle (OpenGL Only).
 
@@ -2711,6 +2585,15 @@ SITAPI SituationError SituationSetShaderUniform(SituationShader shader, const ch
 SITAPI SituationError SituationSetShaderUniformLocation(SituationShader shader, int location, const void* data, SituationUniformType type); // [OpenGL] Set uniform by explicit location (SPIR-V layout(location=)); defers during frames like SituationSetShaderUniform.
 SITAPI SituationError SituationBindShaderStorageBlock(SituationShader shader, const char* block_name, uint32_t binding_point); // [OpenGL] glShaderStorageBlockBinding for SPIR-V when reflection reports binding 0 for layout(binding=N).
 SITAPI SituationError SituationBindUniformBlock(SituationShader shader, const char* block_name, uint32_t binding_point); // [OpenGL] glUniformBlockBinding for std140 UBO blocks (layout(binding=N)).
+
+/** Single SSBO block descriptor returned by SituationQueryShaderStorageBlocks. */
+typedef struct SituationShaderStorageBlockInfo {
+    char name[128];         /**< Block name as reported by GL (may be empty on SPIR-V). */
+    uint32_t binding_point; /**< Active binding point assigned after link (post _SituationBindGLProgramStorageBlocks). */
+    uint32_t block_index;   /**< GL resource index (0-based). */
+} SituationShaderStorageBlockInfo;
+
+SITAPI SituationError SituationQueryShaderStorageBlocks(SituationShader shader, SituationShaderStorageBlockInfo* out_blocks, int capacity, int* out_count); // [OpenGL] Enumerate all active SSBO blocks and their assigned binding points. out_count receives actual block count (may exceed capacity). Returns NOT_IMPLEMENTED on Vulkan.
 SITAPI SituationError SituationSetShaderUniform1fv(SituationShader shader, const char* uniform_name, int count, const float* values); // [OpenGL] Set float uniform array.
 SITAPI SituationError SituationSetShaderUniform1iv(SituationShader shader, const char* uniform_name, int count, const int* values); // [OpenGL] Set int uniform array in one call (e.g. name "uWallRows[0]", count=24). While a frame is active, records SIT_OP_SET_UNIFORM (same as render-thread mode).
 SITAPI SituationError SituationSetShaderUniformMatrix4fv(SituationShader shader, const char* uniform_name, int count, const mat4* matrices); // [OpenGL] Set mat4 uniform array.
@@ -2774,6 +2657,10 @@ SITAPI SituationError SituationSetVirtualDisplayScalingMode(int display_id, Situ
 SITAPI void SituationSetVirtualDisplayDirty(int display_id, bool is_dirty);             // Mark a virtual display as needing to be re-rendered.
 SITAPI bool SituationIsVirtualDisplayDirty(int display_id);                             // Check if a virtual display is marked as dirty.
 SITAPI double SituationGetLastVDCompositeTimeMS(void);                                  // Get the time taken for the last virtual display composite pass.
+SITAPI SituationError SituationGetVirtualDisplayUpdateInfo(int display_id, double* out_last_content_update_time, uint64_t* out_last_content_update_frame, uint64_t* out_frames_since_update, double* out_seconds_since_update); // Query last VD content write (not the frame clock).
+SITAPI void SituationSetVirtualDisplayIdleThreshold(int display_id, double threshold_seconds); // Set idle threshold for compositor fallback (Phase 2a).
+SITAPI void SituationSetVirtualDisplayFallbackMode(int display_id, SituationVDFallbackMode mode); // SOLID or COLORBURST when idle.
+SITAPI void SituationSetVirtualDisplayFallbackColor(int display_id, ColorRGBA color); // SOLID idle tint (normalized by compositor).
 SITAPI void SituationGetVirtualDisplaySize(int display_id, int* width, int* height);    // Get the internal resolution of a virtual display.
 
 // --- Camera & Projection Math ---
@@ -2804,6 +2691,8 @@ SITAPI void SituationCameraUnprojectPixel(const SituationCameraDesc* desc, const
 
 // --- 3D Model Utilities ---
 SITAPI SituationError SituationLoadModel(const char* file_path, SituationModel* out_model); // Loads a complete 3D model and its textures from a GLTF file.
+SITAPI SituationError SituationLoadModelFromSTL(const char* file_path, bool smooth_normals, SituationModel* out_model); // Loads a 3D model from a binary or ASCII STL file. UVs are zeroed; normals are flat (per-face) by default, or smooth (averaged per shared vertex) when smooth_normals is true.
+SITAPI SituationError SituationLoadModelFromOBJ(const char* file_path, SituationModel* out_model); // Wavefront OBJ: triangulated meshes, MTL/textures; missing/degenerate normals filled from face geometry, authored normals preserved.
 SITAPI void SituationUnloadModel(SituationModel* model);                                // Frees all GPU and CPU resources associated with a loaded model.
 SITAPI SituationError SituationDrawModel(SituationCommandBuffer cmd, SituationModel model, mat4 transform); // Draws all sub-meshes of a model with a single root transformation.
 SITAPI SituationError SituationSaveModelAsGltf(SituationModel model, const char* file_path);      // Exports a model to a human-readable .gltf and a .bin file for debugging.
@@ -3148,6 +3037,36 @@ SITAPI ColorRGBA SituationColorFromYPQf(ColorYPQf ypq);                         
 SITAPI ColorYPQA SituationYpqQuantize(ColorYPQf ypq);                                   // Float YPQ → 8-bit ColorYPQA.
 SITAPI ColorYPQf SituationYpqClampInGamut(ColorYPQf ypq);                               // Reduce chroma if linear RGB would clip.
 
+/**
+ * @brief Mapping-quality statistics for the 256³ YPQ → 8-bit RGB function.
+ *
+ * Populated by SituationYpqAnalyzeRgbMapping(). All fields are filled on
+ * SITUATION_SUCCESS; callers should treat partial results as invalid on error.
+ *
+ * The full scan iterates all 16 777 216 (Y,P,Q) byte triples and records how
+ * many map to distinct 8-bit RGB values. Typical results:
+ *   unique_rgb        ≈ 5 600 000   (about 33% of the 2²⁴ RGB cube)
+ *   duplicate_mappings ≈ 11 177 216
+ *   rgb_holes          ≈ 10 576 000
+ */
+typedef struct SituationYpqRgbMappingStats {
+    int64_t ypq_mappings;         /* always 256³ = 16 777 216 */
+    int64_t unique_rgb;           /* distinct 8-bit RGB triples reachable from YPQ */
+    int64_t duplicate_mappings;   /* ypq_mappings - unique_rgb */
+    int64_t rgb_holes;            /* 2²⁴ - unique_rgb — RGB triples never produced */
+    int     worst_axis_dup;       /* max duplicates in any single fixed-Q slice */
+    int     worst_axis_at;        /* Q value where worst_axis_dup occurs */
+} SituationYpqRgbMappingStats;
+
+SITAPI SituationError SituationYpqAnalyzeRgbMapping(SituationYpqRgbMappingStats* out);
+                                                              // Full 256³ scan: count unique RGB outputs, duplicates,
+                                                              // holes, and worst fixed-Q slice. O(n³) — ~16 M calls to
+                                                              // SituationColorFromYPQ; may take several seconds.
+SITAPI SituationError SituationYpqSliceDuplicateCount(char axis, int value, int* out_dup);
+                                                              // Count duplicate RGB outputs in one 65 536-entry axis
+                                                              // slice. axis ∈ {'Y','P','Q'}, value ∈ [0,255].
+                                                              // Q=0 slice always yields ≥65 000 duplicates (all gray).
+
 //==================================================================================
 // Threading Module
 //==================================================================================
@@ -3190,6 +3109,7 @@ SITAPI uint32_t SituationGetCPUThreadCount(void);           // Gets logical proc
 SITAPI uint32_t SituationGetCPUCoreCount(void);             // Gets physical processors (Cores) from cached topology
 SITAPI SituationError SituationRefreshCpuTopology(void);              // Rebuilds the process-wide topology cache
 SITAPI SituationError SituationGetCpuTopology(const SituationCpuTopology** out_topology); // Pointer to cached topology (NULL on failure)
+SITAPI void SituationSetCurrentThreadName(const char* name);            // OS-visible name for the calling thread (UTF-8); no-op if NULL/empty
 SITAPI SituationError SituationSetThreadAffinity(uint64_t core_mask); // Pins the CURRENT thread (logical CPU bitmask, bits 0..63)
 SITAPI SituationError SituationSetThreadAffinityEx(uint64_t core_mask, uint64_t* out_previous); // Set affinity; optional previous mask
 SITAPI SituationError SituationGetThreadAffinity(uint64_t* out_mask); // Reads affinity mask for the CURRENT thread

@@ -414,10 +414,12 @@ static void _SituationFullCleanupOnError(void) {
     // This should be the final step.
     _SituationCleanupPlatform();
 
-    // --- 3. Post-Cleanup State (Implicit) ---
-    // The individual cleanup functions (_SituationCleanupPlatform in particular) should set `sit_gs.is_initialized = false;` and potentially clear the error state.
-    // This function itself doesn't need to modify `sit_gs` further.
-    // The library is now in an uninitialized state, ready (hopefully) for a fresh `SituationInit` attempt or safe shutdown.
+    // --- 3. Release init-time context so a later SituationInit can calloc fresh (harness misc GPU tests, etc.) ---
+    if (_sit_current_context) {
+        ma_mutex_uninit(&sit_gs.error_mutex);
+        SIT_FREE(_sit_current_context);
+        _sit_current_context = NULL;
+    }
 }
 
 /**
@@ -618,6 +620,11 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     }
 
     SIT_DEBUG_LOG("[OK] init_info is valid");
+
+    /* Name main thread before pthread/thrd bookkeeping or context alloc. */
+    _SituationSetCurrentThreadName(
+        _SituationResolveMainThreadOsName(init_info->main_thread_name, init_info->window_title));
+
     SIT_DEBUG_LOG("[STEP 1.5] Allocating context");
 
     // --- 1.5. CONTEXT ALLOCATION ---
@@ -643,6 +650,11 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
         _sit_current_context = NULL;
         return SITUATION_ERROR_INIT_FAILED;
     }
+
+    /* Name the main thread early so Task Manager shows the resolved label before GLFW/platform work. */
+    _SituationCopyThreadName(sit_gs.main_thread_name, sizeof(sit_gs.main_thread_name),
+        _SituationResolveMainThreadOsName(init_info->main_thread_name, init_info->window_title));
+    _SituationSetCurrentThreadName(sit_gs.main_thread_name);
 
     // --- 2. INITIALIZE CORE PLATFORM & WINDOW ---
     // These steps are prerequisites for renderer and subsystem initialization.
@@ -694,8 +706,12 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
     if (err != SITUATION_SUCCESS) {
         SIT_DEBUG_LOG("[FATAL] Renderer init failed with error: %d", err);
         char* error_msg = NULL;
-        if (SituationGetLastErrorMsg(&error_msg) == SITUATION_SUCCESS && error_msg) {
+        if (SituationGetLastErrorMsg(&error_msg) == SITUATION_SUCCESS && error_msg && error_msg[0]) {
             SIT_DEBUG_LOG("[ERROR_MSG] %s", error_msg);
+            fprintf(stderr, "[Situation] Init failed (%d): %s\n", (int)err, error_msg);
+            SituationFreeString(error_msg);
+        } else {
+            fprintf(stderr, "[Situation] Init failed (%d)\n", (int)err);
         }
         // Renderer initialization failed. Platform and Window were initialized.
         _SituationFullCleanupOnError(); // Clean up platform, window, and any partial renderer state
@@ -764,6 +780,9 @@ SITAPI SituationError SituationInit(int argc, char** argv, const SituationInitIn
 
     // --- 6. Mark as Successfully Initialized ---
     // All steps completed successfully. Set the global initialized flag.
+    if (sit_gs.main_thread_name[0]) {
+        _SituationSetCurrentThreadName(sit_gs.main_thread_name);
+    }
     atomic_store(&sit_gs.is_initialized, true);
 
     // Clear any lingering error message and set a success indicator.
@@ -1068,11 +1087,14 @@ static SituationError _SituationInitWindow(const SituationInitInfo* init_info) {
         if (fbw > 0 && fbh > 0) {
             sit_gs.main_window_width = fbw;
             sit_gs.main_window_height = fbh;
+            sit_gs.render_canvas_width = fbw;
+            sit_gs.render_canvas_height = fbh;
         }
     }
+    _SituationCopyThreadName(sit_gs.main_thread_name, sizeof(sit_gs.main_thread_name),
+        _SituationResolveMainThreadOsName(init_info->main_thread_name, init_info->window_title));
+    _SituationSetCurrentThreadName(sit_gs.main_thread_name);
 #ifdef SITUATION_ENABLE_THREADING
-    // Optional main-thread affinity after the OS window exists (fail-soft).
-    _SituationSetCurrentThreadName("Sit Main");
     (void)_SituationSetThreadAffinityForRole(SIT_THREAD_ROLE_MAIN, 0);
 #endif
     // The next step in initialization will typically be renderer setup (_SituationInitRenderer) followed by subsystem initialization (_SituationInitSubsystems).
@@ -1395,6 +1417,15 @@ SITAPI void SituationPollInputEvents(void) {
         return;
     }
 
+    // Detect UPDATE_AFTER_DRAW violation: poll called while a frame is still open
+    if (sit_render.in_frame) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION,
+            "SituationPollInputEvents called while a frame is active (missing SituationEndFrame before next poll)");
+#ifndef NDEBUG
+        fprintf(stderr, "[Situation] UPDATE_AFTER_DRAW_VIOLATION: SituationPollInputEvents called with in_frame=true\n");
+#endif
+    }
+
     // [NEW] Reset Profiler Counters
     sit_render.frame_draw_calls = 0;
     sit_render.frame_triangle_count = 0;
@@ -1581,6 +1612,15 @@ SITAPI void SituationPollInputEvents(void) {
 */
 SITAPI void SituationUpdateTimers(void) {
     if (!SituationIsInitialized()) return;
+
+    // Detect UPDATE_AFTER_DRAW violation: timers updated while a frame is still open
+    if (sit_render.in_frame) {
+        _SituationSetErrorFromCode(SITUATION_ERROR_UPDATE_AFTER_DRAW_VIOLATION,
+            "SituationUpdateTimers called while a frame is active (missing SituationEndFrame before next update)");
+#ifndef NDEBUG
+        fprintf(stderr, "[Situation] UPDATE_AFTER_DRAW_VIOLATION: SituationUpdateTimers called with in_frame=true\n");
+#endif
+    }
 
     // --- 1. Global Frame Time Calculation ---
     sit_gs.current_time = glfwGetTime();
@@ -2342,6 +2382,17 @@ SITAPI void SituationGetGraphicsCaps(SituationGraphicsCaps* out_caps) {
     {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(sit_render.vk.physical_device, &props);
+        // Derive max MSAA sample count from the intersection of color + depth framebuffer limits
+        VkSampleCountFlags color_depth = props.limits.framebufferColorSampleCounts
+                                       & props.limits.framebufferDepthSampleCounts;
+        int max_s = 1;
+        if (color_depth & VK_SAMPLE_COUNT_64_BIT) max_s = 64;
+        else if (color_depth & VK_SAMPLE_COUNT_32_BIT) max_s = 32;
+        else if (color_depth & VK_SAMPLE_COUNT_16_BIT) max_s = 16;
+        else if (color_depth & VK_SAMPLE_COUNT_8_BIT)  max_s = 8;
+        else if (color_depth & VK_SAMPLE_COUNT_4_BIT)  max_s = 4;
+        else if (color_depth & VK_SAMPLE_COUNT_2_BIT)  max_s = 2;
+        out_caps->max_msaa_samples = max_s;
         int max_vp = (int)props.limits.maxViewports;
         out_caps->max_viewports = (max_vp >= 1) ? max_vp : 1;
     }
