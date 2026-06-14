@@ -39,29 +39,41 @@ The library is built on several core principles to ensure a simple, predictable,
 
 ## Global System Architecture
 
-This diagram illustrates the high-level flow of the Situation Engine, showing how the main thread coordinates with the parallel task system, audio engine, and I/O subsystems.
+This diagram illustrates the high-level flow of the Situation Engine, showing how the main thread coordinates with the renderer, parallel task system, audio engine, I/O, and hot-reload subsystems.
 
 ```mermaid
 graph TD
     %% Main Lifecycle
     subgraph Init ["Initialization (Main Thread)"]
         I1["SituationInit"]
-        I2["Init Platform & Window"]
-        I3["Init Renderer (GL/VK)"]
-        I4["Init Audio Engine<br/>(miniaudio)"]
-        I5["Init Input System<br/>(Ring Buffers)"]
-        I6["SituationCreateThreadPool"]
+        I2["Init Platform & Window<br/>GLFW + display cache<br/>CoInitialize on Win32"]
+        I3["Init Renderer (GL/VK)<br/>context, swapchain, pipelines<br/>text renderer, bindless"]
+        I4["Init Audio Engine<br/>miniaudio device + node graph"]
+        I5["Init Input System<br/>GLFW callbacks → ring buffers"]
+        I6["Init Timers & Oscillators"]
+        I7["Init Thread Pool<br/>workers + I/O thread<br/>(SITUATION_ENABLE_THREADING)"]
+        I8["Init Render Thread<br/>(SITUATION_ENABLE_RENDER_THREAD)"]
     end
 
     subgraph Loop ["Main Loop"]
-        subgraph Input ["Input Processing"]
-            IN1["SituationPollInputEvents<br/>(GLFW pump)"]
-            IN2["O(1) ring buffers"]
+        subgraph Poll ["SituationPollInputEvents"]
+            IN1["GLFW event pump"]
+            IN2["Key/mouse/gamepad ring buffers"]
+            IN3["File-drop event dispatch"]
+            IN4["UPDATE_AFTER_DRAW guard<br/>detects missing EndFrame"]
+            IN5["Vulkan async shader poll<br/>PollShaderLoad progress"]
+        end
+
+        subgraph Update ["SituationUpdateTimers"]
+            UP1["High-res timer + FPS"]
+            UP2["Oscillator tick"]
+            UP3["Virtual display timer update<br/>(all active VD slots)"]
+            UP4["Hot-reload debounce poll<br/>SituationCheckHotReloads"]
         end
 
         subgraph TaskSystem ["Generational Task System (Parallel)"]
-            TS1["High Priority Queue<br/>(Physics / AI)"]
-            TS2["Low Priority Queue<br/>(Asset Loading / IO)"]
+            TS1["High Priority Queue<br/>(Physics / AI / shaders)"]
+            TS2["Low Priority Queue<br/>(Asset Loading / file I/O)"]
             TS_W["Worker Threads"]
             TS_IO["Dedicated I/O Thread"]
 
@@ -81,40 +93,77 @@ graph TD
             AU_G --> AU_OUT
             AU_V --> AU_OUT
             AU_T --> AU_OUT
-            TS_IO -. "Async preload / streaming feeds voices" .-> AU_V
+            TS_IO -. "Async preload / streaming" .-> AU_V
         end
 
-        L2["Update Timers & Logic"]
-        L3["User Game Code"]
-        L4["Record Render Commands"]
+        subgraph RenderThread ["Render Thread (optional)"]
+            RT1["Soft command buffer drain"]
+            RT2["GL/VK draw execution"]
+            RT3["Swap / present"]
+            RT1 --> RT2 --> RT3
+        end
+
+        L2["User Update Logic<br/>(physics, AI, audio triggers)"]
+        L3["SituationAcquireFrameCommandBuffer"]
+        L4["Record Render Commands<br/>SituationCmdBeginRenderPass<br/>SituationCmdDraw* / Dispatch<br/>Virtual Display compositing"]
         L5["SituationEndFrame"]
     end
 
     subgraph Exit ["Termination"]
         E1["SituationShutdown"]
-        E2["Destroy ThreadPool"]
-        E3["Shutdown Audio"]
-        E4["Cleanup Renderer"]
-        E5["Destroy Window"]
+        E2["Destroy Render Thread"]
+        E3["Destroy Thread Pool"]
+        E4["Shutdown Audio"]
+        E5["Cleanup Renderer<br/>(destroy all VD slots)"]
+        E6["Destroy Window & GLFW"]
     end
 
-    %% Flow Connections
-    I1 --> I2 --> I3 --> I4 --> I5 --> I6 --> IN1
-    IN1 --> IN2 --> L2
-    L2 --> L3
-    L3 -- "Dispatch Jobs" --> TS1
-    L3 -- "Load Asset" --> TS2
-    L3 --> L4 --> L5
-    L5 -- "Next Frame" --> IN1
-    L5 -- "Quit" --> E1
-    E1 --> E2 --> E3 --> E4 --> E5
+    %% Init flow
+    I1 --> I2 --> I3 --> I4 --> I5 --> I6 --> I7 --> I8
 
-    %% Data Dependencies
-    IN2 -. "Read Input" .-> L3
-    TS_W -. "Results" .-> L3
+    %% Main loop entry
+    I8 --> IN1
+
+    %% Poll phase
+    IN1 --> IN2
+    IN1 --> IN3
+    IN1 --> IN4
+    IN1 --> IN5
+
+    %% Update phase
+    IN2 --> UP1
+    IN3 --> UP1
+    UP1 --> UP2 --> UP3 --> UP4
+
+    %% User logic
+    UP4 --> L2
+
+    %% Task dispatches
+    L2 -- "Dispatch Jobs" --> TS1
+    L2 -- "Load Asset / file I/O" --> TS2
+
+    %% Render phase
+    L2 --> L3 --> L4 --> L5
+
+    %% Render thread execution
+    L5 --> RT1
+    RT3 -- "Next Frame" --> IN1
+
+    %% Quit path
+    L5 -- "Quit" --> E1
+    E1 --> E2 --> E3 --> E4 --> E5 --> E6
+
+    %% Data flows
+    TS_W -. "Job results" .-> L2
+    IN2 -. "Read input" .-> L2
+    UP3 -. "VD timers" .-> L4
 ```
 
-**Audio pipeline (Phase H+):** The hardware callback sums **three paths** into one buffer when enabled: **`SituationProcessGraph`** (`active_graph`, optional default graph at init), **`SituationPlayLoadedSound`** / streaming (**`active_voices`** snapshot + per-voice DSP), and **`SituationPlayTone`** (**tone pool**). The legacy console **`SituationAudioMixer`** has been removed in favor of **node graphs**. Details: `doc/plan/AUDIO_NODE_COMPLETION_PLAN.md` § *Canonical miniaudio callback pipeline*.
+**Audio pipeline (Phase H+):** The hardware callback sums **three paths** into one buffer: **`SituationProcessGraph`** (active graph), **`SituationPlayLoadedSound`** / streaming (voice snapshots + per-voice DSP), and **`SituationPlayTone`** (tone pool). Details: `doc/plan/AUDIO_NODE_COMPLETION_PLAN.md` § *Canonical miniaudio callback pipeline*.
+
+**Hot-reload** (`SituationCheckHotReloads`) runs in `SituationUpdateTimers` via debounced I/O polling — file modification timestamps are checked on the I/O thread and reloads are dispatched to the render thread for safe GPU synchronization.
+
+**Virtual displays** (`sit_render.virtual_display_slots`) have their timers ticked inside `SituationUpdateTimers` and are composited to the main framebuffer during the render phase. All active VD slots are destroyed during `_SituationCleanupRenderer`.
 
 ---
 
