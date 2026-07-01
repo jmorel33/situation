@@ -1,0 +1,126 @@
+/**********************************************************************************************
+ *
+ * @file console.h
+ *   (c) 2025-2026 Jacques Morel
+ * @brief KaOS Terminal CLI — single-header module (no main)
+ *
+ * Host usage (see console_host_app.c):
+ *   #define SITUATION_IMPLEMENTATION
+ *   #include "situation.h"
+ *   #define CONSOLE_IMPLEMENTATION
+ *   #include "console.h"
+ *
+ * API: Console_Init / Console_Update / Console_Shutdown / Console_ShouldExit
+ * Host owns SituationInit, the event loop, and SituationShutdown.
+ **********************************************************************************************/
+#ifndef CONSOLE_H
+#define CONSOLE_H
+
+#include <stdbool.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct ConsoleConfig {
+    int term_cols;
+    int term_rows;
+    int settle_delay_ms;
+} ConsoleConfig;
+
+#define CONSOLE_CONFIG_DEFAULT { .term_cols = 80, .term_rows = 50, .settle_delay_ms = 100 }
+
+bool Console_Init(const ConsoleConfig* config);
+void Console_Update(void);
+void Console_Shutdown(void);
+bool Console_ShouldExit(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef CONSOLE_IMPLEMENTATION
+
+#if defined(_WIN32)
+  #define NOMINMAX
+#endif
+
+/* Host must #include "situation.h" (with SITUATION_IMPLEMENTATION) before CONSOLE_IMPLEMENTATION. */
+
+#define KTERM_IMPLEMENTATION
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "sit/k-term/kterm.h"
+
+#define KTERM_IO_SIT_IMPLEMENTATION
+#include "kt_io_sit.h"
+
+#define KT_SHELL_IMPLEMENTATION
+#include "sit/k-term/kt_shell.h"
+
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <math.h>
+
+// #define MAX_COMMAND_BUFFER 1024  // Removed - K-Term defines this as 262144
+#define MAX_TOKENS 64
+#define MAX_HISTORY 32
+
+#ifndef CONSOLE_DEBUG
+#define CONSOLE_DEBUG 0
+#endif
+
+#if CONSOLE_DEBUG
+#define CONSOLE_LOG(...) do { fprintf(stderr, "[Console] "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); } while(0)
+#else
+#define CONSOLE_LOG(...) do {} while(0)
+#endif
+
+typedef struct {
+    bool waiting_for_position;
+    bool position_received;
+    int row;
+    int col;
+} CursorPositionTracker;
+
+typedef struct {
+    char edit_buffer[MAX_COMMAND_BUFFER];
+    int edit_pos;
+    int edit_length;
+    int edit_display_start;
+    char command_buffer[MAX_COMMAND_BUFFER];
+    bool line_ready;
+    bool in_command;
+    char command_history[MAX_HISTORY][MAX_COMMAND_BUFFER];
+    int history_count;
+    int history_pos;
+    bool prompt_pending;
+    bool waiting_for_pipeline;
+    int prompt_start_x;
+    int prompt_line_y;
+    bool echo_enabled;
+    bool input_enabled;
+    bool password_mode;
+    bool waiting_for_prompt_cursor_pos;
+} Console;
+
+static bool should_exit = false;
+static bool console_initialized = false;
+static int capture_frame = 0;
+static const char* capture_path = NULL;
+static bool capture_exit = false;
+
+static void ProcessCommand(const char* command);
+Console console = {0};
+static KTerm* term = NULL;
+static CursorPositionTracker cursor_tracker = {0};
+static KTShell shell_proc = {0};
+static bool shell_mode = false;
+
+/* REBUILD_BODY */
+
+#endif /* CONSOLE_IMPLEMENTATION */
+
+#endif /* CONSOLE_H */
