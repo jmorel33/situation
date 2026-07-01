@@ -1,0 +1,15 @@
+(* C glue for ABI-sensitive SituationInitInfo setup — see wrappers/Modula2/glue/ *)
+DEFINITION MODULE FOR "C" SituationGlue;
+
+FROM SYSTEM IMPORT ADDRESS;
+FROM SituationTypes IMPORT SituationInitInfoPtr;
+
+EXPORT UNQUALIFIED
+  SituationM2InitInfoZero,
+  SituationM2InitInfoWindow;
+
+PROCEDURE SituationM2InitInfoZero (out: SituationInitInfoPtr);
+
+PROCEDURE SituationM2InitInfoWindow (out: SituationInitInfoPtr; width, height: INTEGER; title: ADDRESS);
+
+END SituationGlue.

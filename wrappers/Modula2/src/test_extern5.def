@@ -1,0 +1,5 @@
+DEFINITION MODULE testextern5;
+
+PROCEDURE foo <* EXTERN *> (): INTEGER;
+
+END testextern5.

@@ -1,0 +1,5 @@
+DEFINITION MODULE testextern6;
+
+PROCEDURE bar <* EXTERN *> (x: INTEGER): INTEGER;
+
+END testextern6.
