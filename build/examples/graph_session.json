@@ -1,0 +1,113 @@
+{
+  "version": "2.4.0",
+  "sample_rate": 48000,
+  "nodes": [
+    {
+      "id": 0,
+      "type": "Tone Synth",
+      "active": true,
+      "controls": {
+        "frequency": 440.000000,
+        "waveform": 3.000000,
+        "volume": 0.400000,
+        "pan": 0.000000,
+        "attack": 0.010000,
+        "decay": 0.100000,
+        "sustain": 0.700000,
+        "release": 0.200000,
+        "hold": -1.000000,
+        "filter_mode": 0.000000,
+        "filter_cutoff": 2000.000000,
+        "filter_resonance": 0.707000,
+        "filter_poles": 3.000000,
+        "filter_drive": 1.000000,
+        "filter_keytrack": 0.000000,
+        "filter_oversample": 1.000000,
+        "voice_mode": 0.000000,
+        "pulse_width": 0.500000,
+        "lfo_rate": 0.000000,
+        "lfo_waveform": 0.000000,
+        "lfo_pitch_amount": 0.000000,
+        "lfo_pitch_range": 2.000000,
+        "lfo_pwm_amount": 0.000000,
+        "lfo_pwm_range": 0.200000,
+        "lfo_filter_amount": 0.000000,
+        "lfo_filter_range": 1000.000000,
+        "filter_env_amount": 0.000000,
+        "filter_env_range": 4000.000000,
+        "portamento_time": 0.000000,
+        "portamento_speed": 0.000000,
+        "sub_level": 0.000000,
+        "sub_waveform": 0.000000,
+        "sub_octave": 1.000000,
+        "sub_fine": 0.000000,
+        "sub_coarse": 0.000000,
+        "sub_sync": 0.000000,
+        "sub_ring_mod": 0.000000,
+        "patch_slot": 0.000000,
+        "patch_store": 0.000000
+      }
+    },
+    {
+      "id": 1,
+      "type": "EQ 4-Band",
+      "active": true,
+      "controls": {
+        "hpf_freq": 20.000000,
+        "hpf_enabled": 0.000000,
+        "low_freq": 100.000000,
+        "low_gain": 0.000000,
+        "low_Q": 0.707000,
+        "peak_freq": 1200.000000,
+        "peak_gain": 2.000000,
+        "peak_Q": 1.000000,
+        "high_freq": 10000.000000,
+        "high_gain": 0.000000,
+        "high_Q": 0.707000
+      }
+    },
+    {
+      "id": 2,
+      "type": "Reverb",
+      "active": true,
+      "controls": {
+        "room_size": 0.894863,
+        "damping": 0.500000,
+        "wet_level": 0.400000,
+        "dry_level": 0.600000,
+        "width": 1.000000
+      }
+    },
+    {
+      "id": 3,
+      "type": "Mixer",
+      "active": true,
+      "controls": {
+        "master_gain": 0.850000
+      }
+    }
+  ],
+  "patches": [
+    {
+      "src_node": 0,
+      "src_port": 0,
+      "dst_node": 1,
+      "dst_port": 0,
+      "type": "audio"
+    },
+    {
+      "src_node": 1,
+      "src_port": 0,
+      "dst_node": 2,
+      "dst_port": 0,
+      "type": "audio"
+    },
+    {
+      "src_node": 2,
+      "src_port": 0,
+      "dst_node": 3,
+      "dst_port": 0,
+      "type": "audio"
+    }
+  ]
+}
