@@ -11,7 +11,7 @@ For the full reference including compiler flags, include paths, and define table
 - **Compiler:** GCC via MSYS2/MinGW-w64 (`C:\msys64\mingw64\bin` or set `MINGW_PATH`)
 - **GLFW:** must be built first — `ext\glfw\build\src\libglfw3.a`
 - **Vulkan SDK:** auto-detected from `C:\VulkanSDK\*`, or set `VULKAN_SDK`
-- **shaderc:** required for Vulkan — `ext\shaderc\build\libshaderc\libshaderc_combined.a`
+- **shaderc:** required for Vulkan DLL — run `build\build_shaderc.bat` once (see [COMPILATION_GUIDE.md](../doc/COMPILATION_GUIDE.md))
 
 ---
 
@@ -88,12 +88,18 @@ Output goes to `build\examples\`. DLL builds copy the matching `.dll` next to th
 ## Language Wrapper Examples
 
 ```bat
-build\build_odin_example.bat  [backend] [example_name]
-build\build_zig_example.bat   [backend] [example_name]
-build\build_rust_example.bat  [backend] [example_name]
+build\build_odin_example.bat    [backend] [example_name]
+build\build_zig_example.bat     [backend] [example_name]
+build\build_rust_example.bat    [backend] [example_name]
+build\build_fortran_example.bat [backend] [example_name]
+build\build_modula2_example.bat [backend] [example_name]
+build\build_python_example.bat  [backend] [example_name]
+build\build_lua_example.bat     [backend] [example_name]
 ```
 
 `example_name` defaults to `hello_situation`. Same backend tokens as above.
+
+**Lua** produces a single self-contained `.exe` (embedded Situation + lua51 DLLs). Only `opengl` / `vulkan` — see `wrappers/lua/README.md`. Dev iteration: `build\run_lua_dev.bat`.
 
 ---
 
@@ -103,4 +109,15 @@ build\build_rust_example.bat  [backend] [example_name]
 | :--- | :--- |
 | `build/dll/` | Library artifacts (`.dll`, `.a`, `.lib`, `.def`) |
 | `build/tests/` | Test harness executables and `results/` |
-| `build/examples/` | Example executables |
+| `build/examples/` | C example executables (from `examples/`) |
+| `build/examples/odin/` | Odin wrapper executables |
+| `build/examples/zig/` | Zig wrapper executables |
+| `build/examples/rust/` | Rust wrapper executables |
+| `build/examples/fortran/` | Fortran wrapper executables |
+| `build/examples/modula2/` | Modula-2 wrapper executables |
+| `build/examples/python/` | Python wrapper executables (PyInstaller) |
+| `build/examples/lua/` | Lua wrapper executables (embedded — one `.exe` per demo) |
+| `build/obj/fortran/` | Fortran intermediate `.o` / `.mod` (not shipped) |
+| `build/obj/modula2/` | Modula-2 intermediate `.o` (not shipped) |
+| `build/obj/python/` | Python PyInstaller stage + work dirs (not shipped) |
+| `build/obj/lua/` | Lua embed blobs + host `.o` (not shipped) |

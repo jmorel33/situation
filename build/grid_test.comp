@@ -1,0 +1,304 @@
+// sit/gpu/grid_preamble.glslh — Grid compute preamble (Siamese GL/VK)
+// Same descriptor / push-constant layout as K-Term terminal.comp (SIT_COMPUTE_LAYOUT_GRID).
+// Runtime: loader prepends this file + sit/gpu/grid.comp (see situation_impl_grid.h).
+// K-Term grid path still uses terminal_compute_preamble from kterm_api.h (same bindings).
+
+#if defined(VULKAN_BACKEND)
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;
+layout(set = 2, binding = 0) uniform sampler2D u_font_texture;
+layout(set = 3, binding = 0) uniform sampler2D u_sixel_texture;
+#define KTERM_FONT_TEXTURE u_font_texture
+#define KTERM_SIXEL_TEXTURE u_sixel_texture
+struct GPUCell { uint char_code; uint fg_color; uint bg_color; uint flags; uint ul_color; uint st_color; };
+layout(buffer_reference, scalar) buffer KTermBuffer { GPUCell cells[]; };
+layout(set = 1, binding = 0, rgba8) uniform image2D output_image;
+layout(push_constant) uniform PushConstants {
+    vec2 screen_size; vec2 char_size; vec2 grid_size; float time;
+    uint cursor_index; uint cursor_blink_state; uint text_blink_state;
+    uint sel_start; uint sel_end; uint sel_active; uint mouse_cursor_index;
+    uint64_t terminal_buffer_addr; uint64_t vector_buffer_addr;
+    uint64_t font_texture_handle; uint64_t sixel_texture_handle; uint64_t vector_texture_handle;
+    uint64_t shader_config_addr; uint atlas_cols; uint vector_count;
+    int sixel_y_offset; uint grid_color; uint conceal_char_code;
+    uint font_data_width; uint font_data_height;
+} pc;
+#else
+#version 460
+layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;
+struct GPUCell { uint char_code; uint fg_color; uint bg_color; uint flags; uint ul_color; uint st_color; };
+layout(std430, binding = 0) readonly buffer KTermBufferBlock { GPUCell cells[]; } terminal_data;
+layout(binding = 1, rgba8) uniform image2D output_image;
+layout(binding = 2) uniform sampler2D u_font_texture;
+layout(binding = 3) uniform sampler2D u_sixel_texture;
+#define KTERM_FONT_TEXTURE u_font_texture
+#define KTERM_SIXEL_TEXTURE u_sixel_texture
+layout(std430, binding = 4) readonly buffer PushConstantsBlock {
+    vec2 screen_size; vec2 char_size; vec2 grid_size; float time;
+    uint cursor_index; uint cursor_blink_state; uint text_blink_state;
+    uint sel_start; uint sel_end; uint sel_active; uint mouse_cursor_index;
+    uvec2 terminal_buffer_addr; uvec2 vector_buffer_addr;
+    uvec2 font_texture_handle; uvec2 sixel_texture_handle; uvec2 vector_texture_handle;
+    uvec2 shader_config_addr; uint atlas_cols; uint vector_count;
+    int sixel_y_offset; uint grid_color; uint conceal_char_code;
+    uint font_data_width; uint font_data_height;
+} pc;
+#endif
+// sit/gpu/grid.comp — Situation grid compute shader
+// Phase A: GRID_PASS_CELL_ONLY | Phase C: GRID_PASS_BLEND (stack composite)
+// Layers = stacked grids (bottom→top), not multi-plane SSBOs in one surface
+// pc.sel_start/sel_end = scroll_x/y in 8.8 fixed-point (int bits); pc.vector_count = pass mode
+
+vec4 UnpackColor(uint c) {
+    return vec4(float(c & 0xFF), float((c >> 8) & 0xFF), float((c >> 16) & 0xFF), float((c >> 24) & 0xFF)) / 255.0;
+}
+
+void main() {
+#ifdef VULKAN_BACKEND
+    KTermBuffer terminal_data = KTermBuffer(pc.terminal_buffer_addr);
+#endif
+#define KTERM_FONT_TEXTURE u_font_texture
+#define KTERM_SIXEL_TEXTURE u_sixel_texture
+
+    uvec2 pixel_coords = gl_GlobalInvocationID.xy;
+    if (pixel_coords.x >= uint(pc.screen_size.x) || pixel_coords.y >= uint(pc.screen_size.y)) return;
+
+    vec4 existing_color = imageLoad(output_image, ivec2(pixel_coords));
+
+    uvec2 sample_coords = uvec2(pixel_coords.x, uint(pc.screen_size.y) - 1u - pixel_coords.y);
+
+    float scroll_x = float(int(pc.sel_start)) / 256.0;
+    float scroll_y = float(int(pc.sel_end)) / 256.0;
+    float grid_px_w = pc.grid_size.x * pc.char_size.x;
+    float grid_px_h = pc.grid_size.y * pc.char_size.y;
+    if (grid_px_w > 0.0 && grid_px_h > 0.0) {
+        float fx = float(sample_coords.x) + scroll_x * pc.char_size.x;
+        float fy = float(sample_coords.y) + scroll_y * pc.char_size.y;
+        fx = fx - floor(fx / grid_px_w) * grid_px_w;
+        fy = fy - floor(fy / grid_px_h) * grid_px_h;
+        sample_coords = uvec2(uint(fx), uint(fy));
+    }
+
+    uint cell_x = sample_coords.x / uint(pc.char_size.x);
+    uint cell_y = sample_coords.y / uint(pc.char_size.y);
+    uint row_start = cell_y * uint(pc.grid_size.x);
+
+    if (row_start >= uint(pc.grid_size.x * pc.grid_size.y)) return;
+
+    uint line_flags = terminal_data.cells[row_start].flags;
+    bool is_dw = (line_flags & (1u << 7)) != 0u;
+    bool is_dh_top = (line_flags & (1u << 8)) != 0u;
+    bool is_dh_bot = (line_flags & (1u << 9)) != 0u;
+
+    uint eff_cell_x = cell_x;
+    uint in_char_x = sample_coords.x % uint(pc.char_size.x);
+    if (is_dw) {
+        eff_cell_x = cell_x / 2u;
+        in_char_x = (sample_coords.x % (uint(pc.char_size.x) * 2u)) / 2u;
+    }
+
+    uint cell_index = row_start + eff_cell_x;
+    if (cell_index >= uint(pc.grid_size.x * pc.grid_size.y)) return;
+
+    GPUCell cell = terminal_data.cells[cell_index];
+    vec4 fg = UnpackColor(cell.fg_color);
+    vec4 bg = UnpackColor(cell.bg_color);
+    uint flags = cell.flags;
+
+    /* GRID_PASS_BLEND: transparent empty cell passes through to layers below */
+    if (pc.vector_count == 1u && cell.char_code == 0u && (cell.bg_color >> 24) == 0u) {
+        imageStore(output_image, ivec2(pixel_coords), existing_color);
+        return;
+    }
+
+    if ((flags & (1u << 1)) != 0u) { fg.rgb *= 0.5; }    if ((flags & (1u << 15)) != 0u) { bg.rgb *= 0.5; }
+    if ((flags & (1u << 5)) != 0u) { vec4 t = fg; fg = bg; bg = t; }
+
+    uint char_code = cell.char_code;
+    if ((flags & (1u << 10)) != 0u && pc.conceal_char_code > 0u) {
+        char_code = pc.conceal_char_code;
+    }
+    uint glyph_col = char_code % pc.atlas_cols;
+    uint glyph_row = char_code / pc.atlas_cols;
+
+    uint in_char_y = sample_coords.y % uint(pc.char_size.y);
+    float u_pixel = float(in_char_x);
+    float v_pixel = float(in_char_y);
+
+    bool is_super = (flags & (1u << 19)) != 0u;
+    bool is_sub = (flags & (1u << 23)) != 0u;
+    bool in_glyph_bounds = true;
+
+    if (is_super || is_sub) {
+        float scale = 0.6;
+        float center_offset_x = (float(pc.char_size.x) * (1.0 - scale)) * 0.5;
+        float offset_y = is_super ? 0.0 : (float(pc.char_size.y) * (1.0 - scale));
+
+        float new_u = (u_pixel - center_offset_x) / scale;
+        float new_v = (v_pixel - offset_y) / scale;
+
+        if (new_u >= 0.0 && new_u < float(pc.char_size.x) &&
+            new_v >= 0.0 && new_v < float(pc.char_size.y)) {
+            u_pixel = new_u;
+            v_pixel = new_v;
+        } else {
+            in_glyph_bounds = false;
+        }
+    }
+
+    if (is_dh_top || is_dh_bot) {
+        v_pixel = (v_pixel * 0.5) + (is_dh_bot ? (pc.char_size.y * 0.5) : 0.0);
+    }
+
+    if ((flags & (1u << 2)) != 0u) {
+        float slant = 0.25;
+        float factor = (1.0 - v_pixel / float(pc.char_size.y));
+        u_pixel -= factor * float(pc.char_size.x) * slant;
+    }
+
+    if (u_pixel < 0.0 || u_pixel >= float(pc.char_size.x) || v_pixel < 0.0 || v_pixel >= float(pc.char_size.y)) {
+        in_glyph_bounds = false;
+    }
+
+    float font_val = 0.0;
+    if (in_glyph_bounds) {
+        ivec2 tex_size = textureSize(KTERM_FONT_TEXTURE, 0);
+        float glyph_w = pc.font_data_width > 0u ? float(pc.font_data_width) : float(tex_size.x) / float(pc.atlas_cols);
+        float glyph_h = pc.font_data_height > 0u ? float(pc.font_data_height) : glyph_w;
+        float pad_x = floor(max(pc.char_size.x - glyph_w, 0.0) * 0.5);
+        float pad_y = floor(max(pc.char_size.y - glyph_h, 0.0) * 0.5);
+        if (u_pixel < pad_x || u_pixel >= pad_x + glyph_w || v_pixel < pad_y || v_pixel >= pad_y + glyph_h) {
+            in_glyph_bounds = false;
+        }
+        float glyph_u = clamp(u_pixel - pad_x, 0.0, max(glyph_w - 1.0, 0.0));
+        float glyph_v = clamp(v_pixel - pad_y, 0.0, max(glyph_h - 1.0, 0.0));
+        ivec2 glyph_texel = ivec2(int(float(glyph_col) * glyph_w + floor(glyph_u)),
+                                  int(float(glyph_row) * glyph_h + floor(glyph_v)));
+
+        if (in_glyph_bounds) {
+            font_val = texelFetch(KTERM_FONT_TEXTURE, glyph_texel, 0).a;
+        }
+
+        if (in_glyph_bounds && (flags & (1u << 0)) != 0u) {
+            float font_val_right = 0.0;
+            if (u_pixel >= 1.0) {
+                font_val_right = texelFetch(KTERM_FONT_TEXTURE, glyph_texel - ivec2(1, 0), 0).a;
+            }
+            font_val = max(font_val, font_val_right);
+        }
+    }
+
+    bool fast_blink_on = (pc.text_blink_state & 1u) != 0u;
+    bool slow_blink_on = (pc.text_blink_state & 2u) != 0u;
+    bool bg_blink_on = (pc.text_blink_state & 4u) != 0u;
+
+    bool blink_visible = true;
+    if ((flags & (1u << 4)) != 0u) {
+        if (!fast_blink_on) blink_visible = false;
+    }
+    if ((flags & (1u << 14)) != 0u) {
+        if (!slow_blink_on) blink_visible = false;
+    }
+
+    bool bg_visible = true;
+    if ((flags & (1u << 13)) != 0u) {
+        if (!bg_blink_on) bg_visible = false;
+    }
+
+    if (!bg_visible) {
+        bg = vec4(0.0);
+    }
+
+    vec4 text_layer_color = mix(bg, fg, font_val);
+
+    uint ul_style = (flags >> 20) & 7u;
+    if (ul_style == 0u) {
+        if ((flags & (1u << 12)) != 0u) ul_style = 2u;
+        else if ((flags & (1u << 3)) != 0u) ul_style = 1u;
+    }
+
+    if (ul_style > 0u) {
+        vec4 ul = UnpackColor(cell.ul_color);
+        bool draw_ul = false;
+
+        if (ul_style == 1u) {
+            if (in_char_y == uint(pc.char_size.y) - 1u) draw_ul = true;
+        } else if (ul_style == 2u) {
+            if (in_char_y == uint(pc.char_size.y) - 1u || in_char_y == uint(pc.char_size.y) - 3u) draw_ul = true;
+        } else if (ul_style == 3u) {
+            float w = sin(float(sample_coords.x) * 1.5);
+            int base_y = int(pc.char_size.y) - 2;
+            int offset = int(round(w));
+            if (int(in_char_y) == base_y + offset) draw_ul = true;
+        } else if (ul_style == 4u) {
+            if (in_char_y == uint(pc.char_size.y) - 1u) {
+                if (sample_coords.x % 3u == 0u) draw_ul = true;
+            }
+        } else if (ul_style == 5u) {
+            if (in_char_y == uint(pc.char_size.y) - 1u) {
+                if ((sample_coords.x % 6u) < 4u) draw_ul = true;
+            }
+        }
+
+        if (draw_ul) {
+            text_layer_color = mix(text_layer_color, ul, ul.a);
+        }
+    }
+
+    if ((flags & (1u << 11)) != 0u) {
+        if (in_char_y == 0u) text_layer_color = mix(text_layer_color, fg, fg.a);
+    }
+
+    if ((flags & (1u << 16)) != 0u) {
+        if (in_char_x == 0u || in_char_x == uint(pc.char_size.x) - 1u ||
+            in_char_y == 0u || in_char_y == uint(pc.char_size.y) - 1u) {
+            text_layer_color = mix(text_layer_color, fg, fg.a);
+        }
+    }
+
+    if ((flags & (1u << 17)) != 0u) {
+        float cx = float(pc.char_size.x) * 0.5;
+        float cy = float(pc.char_size.y) * 0.5;
+        float rx = cx - 0.5;
+        float ry = cy - 0.5;
+        float dx = float(in_char_x) - cx + 0.5;
+        float dy = float(in_char_y) - cy + 0.5;
+        float dist_sq = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
+        if (dist_sq >= 0.8 && dist_sq <= 1.2) {
+            text_layer_color = mix(text_layer_color, fg, fg.a);
+        }
+    }
+
+    if ((flags & (1u << 6)) != 0u && in_char_y == uint(pc.char_size.y) / 2u) {
+        vec4 st = UnpackColor(cell.st_color);
+        text_layer_color = mix(text_layer_color, st, st.a);
+    }
+
+    if (!blink_visible) {
+        text_layer_color = bg;
+    }
+
+    if ((flags & (1u << 10)) != 0u) {
+        if (pc.conceal_char_code == 0u) {
+            text_layer_color = bg;
+        }
+    }
+
+    vec4 pixel_color;
+    pixel_color.rgb = text_layer_color.rgb * text_layer_color.a + existing_color.rgb * (1.0 - text_layer_color.a);
+    pixel_color.a = text_layer_color.a + existing_color.a * (1.0 - text_layer_color.a);
+
+    if ((flags & (1u << 18)) != 0u) {
+        if (in_char_x == 0u || in_char_x == uint(pc.char_size.x) - 1u ||
+            in_char_y == 0u || in_char_y == uint(pc.char_size.y) - 1u) {
+            vec4 grid_c = UnpackColor(pc.grid_color);
+            pixel_color.rgb = grid_c.rgb * grid_c.a + pixel_color.rgb * (1.0 - grid_c.a);
+            pixel_color.a = grid_c.a + pixel_color.a * (1.0 - grid_c.a);
+        }
+    }
+
+    imageStore(output_image, ivec2(pixel_coords), pixel_color);
+}

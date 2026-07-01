@@ -1,0 +1,11 @@
+DEFINITION MODULE testdefs;
+
+TYPE
+  Foo = RECORD
+    x: INTEGER;
+  END;
+  FooPtr = POINTER TO Foo;
+
+PROCEDURE bar (q: FooPtr): INTEGER;
+
+END testdefs.

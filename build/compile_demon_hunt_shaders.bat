@@ -19,7 +19,7 @@ set "GLSLC_FLAGS_VK=--target-env=vulkan -std=450 -O"
 
 if not exist "%GLSLC%" (
     echo [WARN] glslc not found at %GLSLC% — skip SPIR-V precompile.
-    echo        Build shaderc in ext\shaderc or run from a machine with glslc on PATH.
+    echo        Build shaderc: build\build_shaderc.bat
     exit /b 0
 )
 

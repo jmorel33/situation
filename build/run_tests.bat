@@ -29,7 +29,9 @@ cd /d "%~dp0.."
 
 if "%~1"=="" goto :usage
 
-REM Add build\dll to PATH so DLL-linked builds also work
+REM MinGW runtime first (avoids stale libwinpthread from Git/Inkscape on PATH)
+if exist "C:\msys64\mingw64\bin" set "PATH=C:\msys64\mingw64\bin;%PATH%"
+REM Add build\dll so DLL-linked harness builds resolve situation_*.dll
 set "PATH=%CD%\build\dll;%PATH%"
 
 REM Determine backend and exe
@@ -80,6 +82,16 @@ powershell -NoProfile -Command ^
 
 REM Preserve the harness exit code
 set HARNESS_EXIT=%ERRORLEVEL%
+
+REM Vacuous-green gate: model_loader must actually load BoomBox (not [SKIP])
+echo %* | findstr /I /C:"model_loader" >nul
+if %ERRORLEVEL%==0 if exist "%RESULTS_FILE%" (
+    findstr /I /C:"[SKIP]" "%RESULTS_FILE%" | findstr /I /C:"BoomBox" >nul
+    if %ERRORLEVEL%==0 (
+        echo [GATE FAIL] model_loader skipped BoomBox.glb — asset path or loader regression.
+        set HARNESS_EXIT=1
+    )
+)
 
 echo.
 echo [SAVED] %RESULTS_FILE%
