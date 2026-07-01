@@ -1,0 +1,22 @@
+Situation harness — bundled assets (tests/harness/assets/)
+============================================================
+
+Paths are resolved via sit_test_assets.h (repo root, build/tests/, etc.).
+
+Text / font certification (text_rendering module)
+-------------------------------------------------
+  static/Roboto-Regular.ttf   — TTF bake + GPU draw tests (optional; [SKIP] if missing)
+  Roboto-Regular.ttf          — alternate location for Roboto
+
+Synthetic / inline fixtures (no files required)
+  bitmap_memory_bake_gpu_draw — 8×8 bitmap built in test code
+  load_bitmap_font_from_texture — 128×128 RGBA sheet built in test code
+
+Other common assets
+-------------------
+  BoomBox.glb, stanford-bunny.obj, utah_teapot.obj, teapot.stl
+  rosewood_veneer1.png, prairie.jpg
+  sample.mp3, sample.ogg, sample.flac, sample.wav — audio format tests
+  demon_hunt_sky.vs / .fs — SPIR-V harness shaders
+
+See doc/plan/TEST_HARNESS_TEXT_FONT_PLAN.md for the full text/font test matrix.
