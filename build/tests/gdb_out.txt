@@ -1,0 +1,174 @@
+﻿Breakpoint 1 at 0x140264728
+[New Thread 7980.0x58d4]
+[New Thread 7980.0x7480]
+[New Thread 7980.0x6b08]
+gdb.exe : [1m[HARNESS][0m Situation Test Harness v1.0
+At C:\Users\User\AppData\Local\Temp\ps-script-6ffd9a3b-6d2f-4941-aab1-ad663f94ffe5.ps1:106 char:174
++ ... $env:PATH"; & "C:\msys64\mingw64\bin\gdb.exe" -batch -x gdb_vk_shutdo ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([1m[HARNESS][...st Harness v1.0:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[1m[HARNESS][0m Backend: Vulkan
+[1m[HARNESS][0m Mode: headless (hidden window, no listen overlay)
+[1m[HARNESS][0m Running 24 modules
+
+[36m[core][0m (46 tests)
+[New Thread 7980.0x4c18]
+[New Thread 7980.0x2084]
+[New Thread 7980.0x7588]
+[New Thread 7980.0x56b8]
+[New Thread 7980.0x6f10]
+[Thread 7980.0x56b8 exited with code 0]
+[New Thread 7980.0x12c8]
+[New Thread 7980.0x5068]
+[New Thread 7980.0x3688]
+warning: [OBS] 
+warning: graphics-hook.dll loaded against process: sit_test_vulkan.exe
+warning: 
+warning: [OBS] 
+warning: (half life scientist) everything..  seems to be in order
+warning: 
+[New Thread 7980.0x38b4]
+[New Thread 7980.0x3cfc]
+[New Thread 7980.0x75dc]
+[New Thread 7980.0x61e8]
+[New Thread 7980.0x531c]
+[New Thread 7980.0xf4c]
+[New Thread 7980.0x5250]
+[New Thread 7980.0x2654]
+[New Thread 7980.0x6b68]
+[New Thread 7980.0x7418]
+[New Thread 7980.0x5a94]
+[New Thread 7980.0x672c]
+[New Thread 7980.0x667c]
+[Situation] [MAIN] About to create render thread...
+[Situation] [MAIN] Render thread created successfully
+[New Thread 7980.0x471c]
+[Situation] [Thread 18204] RENDER THREAD STARTED
+[Situation] [Thread 18204] RENDER THREAD entering main loop
+[New Thread 7980.0x634c]
+[New Thread 7980.0x6e98]
+[New Thread 7980.0x1fec]
+  [32m[ OK ] version_string[0m [2m(0.0ms)[0m
+  [32m[ OK ] is_initialized[0m [2m(0.0ms)[0m
+  [32m[ OK ] init_state_ready[0m [2m(0.0ms)[0m
+  [32m[ OK ] init_double_init_error[0m [2m(0.0ms)[0m
+  [32m[ OK ] errno_table_phase_2_1[0m [2m(0.0ms)[0m
+  [32m[ OK ] poll_and_update[0m [2m(0.1ms)[0m
+  [32m[ OK ] get_frame_time[0m [2m(0.0ms)[0m
+  [32m[ OK ] get_fps[0m [2m(0.0ms)[0m
+  [32m[ OK ] set_target_fps[0m [2m(0.0ms)[0m
+  [32m[ OK ] window_should_close[0m [2m(0.0ms)[0m
+[New Thread 7980.0x14f0]
+  [32m[ OK ] pause_resume[0m [2m(224.3ms)[0m
+  [32m[ OK ] set_exit_callback[0m [2m(0.0ms)[0m
+  [32m[ OK ] set_resize_callback[0m [2m(0.0ms)[0m
+  [32m[ OK ] set_focus_callback[0m [2m(0.0ms)[0m
+  [32m[ OK ] set_file_drop_callback[0m [2m(0.0ms)[0m
+  [32m[ OK ] get_cpu_thread_count[0m [2m(0.0ms)[0m
+  [32m[ OK ] get_gpu_name[0m [2m(0.0ms)[0m
+  [32m[ OK ] get_user_directory[0m [2m(1.1ms)[0m
+  [32m[ OK ] get_device_info[0m [2m(0.3ms)[0m
+  [32m[ OK ] get_graphics_backend[0m [2m(0.0ms)[0m
+  [32m[ OK ] get_graphics_caps[0m [2m(0.0ms)[0m
+  [32m[ OK ] rgb10_packed_readback[0m [2m(0.0ms)[0m
+  [32m[ OK ] st2084_pq_roundtrip[0m [2m(0.0ms)[0m
+  [32m[ OK ] pq_half_rgb10_patch[0m [2m(0.0ms)[0m
+  [32m[ OK ] ypq_to_rgba10_roundtrip[0m [2m(0.0ms)[0m
+  [32m[ OK ] viewport_index_zero_parity[0m [2m(37.7ms)[0m
+[STUTTER] dt=828.6ms  core[poll=6100(2000 glfw 1000 reset 2300 joy) upd=800]  render[bp=0 fw=0 ex=0 pr=0]  fps=0
+  [32m[ OK ] viewport_index_out_of_range[0m [2m(0.3ms)[0m
+  [32m[ OK ] render_pass_info_default_helper[0m [2m(0.0ms)[0m
+  [32m[ OK ] render_pass_info_load_helper[0m [2m(0.0ms)[0m
+  [32m[ OK ] init_info_default_helper[0m [2m(0.0ms)[0m
+  [32m[ OK ] clear_value_helpers[0m [2m(0.0ms)[0m
+  [32m[ OK ] render_pass_configuration_key_stencil_ops[0m [2m(0.0ms)[0m
+  [32m[ OK ] render_pass_info_default_begin_pass[0m [2m(16.7ms)[0m
+  [32m[ OK ] get_last_error_msg[0m [2m(0.0ms)[0m
+  [32m[ OK ] argument_queries[0m [2m(0.0ms)[0m
+  [32m[ OK ] log_info[0m [2m(0.0ms)[0m
+[Situation WARN] sit_test: Phase 20 warning test
+  [32m[ OK ] log_warning[0m [2m(0.0ms)[0m
+  [32m[ OK ] set_trace_log_level_error[0m [2m(0.0ms)[0m
+  [32m[ OK ] set_trace_log_level_none[0m [2m(0.0ms)[0m
+  [32m[ OK ] free_string_null[0m [2m(0.0ms)[0m
+  [32m[ OK ] free_string_valid[0m [2m(0.0ms)[0m
+  [32m[ OK ] get_current_drive_letter[0m [2m(0.0ms)[0m
+  [32m[ OK ] get_drive_info[0m [2m(0.2ms)[0m
+  [32m[ OK ] execute_command[0m [2m(34.1ms)[0m
+  [32m[ OK ] error_msg_after_init[0m [2m(0.0ms)[0m
+
+=== Situation Module-to-Core Assignment ===
+Build flags:
+  SITUATION_ENABLE_THREADING:           YES
+  SITUATION_WORKER_NUMA_SPREAD_DEFAULT: 1
+  SITUATION_ENABLE_RENDER_THREAD:       YES
+
+========================================
+Threading Status
+========================================
+Available:            YES
+Platform:             Windows
+Sleep Impl:           Windows Sleep (recommended)
+Sleep Reliable:       YES
+Max Threads:          32
+Topology OK:          YES
+NUMA Detected:        NO
+Pool Workers:         4
+Dedicated I/O Thread: YES
+
+Capabilities:
+  C11 Threads:    YES
+  C11 Atomics:    YES
+  Mutex:          YES
+  Platform Sleep: YES
+
+Warnings:
+  - Using tinycthread on Windows - recommend SITUATION_USE_PLATFORM_SLEEP
+========================================
+
+=== Situation Thread Pool ===
+Workers: 4 | I/O thread: yes | Active jobs: 0
+Queues: low=0 high=0
+Stats: submitted=0 completed=0 steal_ok=0 steal_fail=0
+  [SIT_TEST_CORE ] cpu=6 numa=0 affinity=0x0 active=yes
+  [Sit Worker 0  ] cpu=1 numa=0 affinity=0x0 active=yes
+  [Sit Worker 1  ] cpu=2 numa=0 affinity=0x0 active=yes
+  [Sit Worker 2  ] cpu=5 numa=0 affinity=0x0 active=yes
+  [Sit Worker 3  ] cpu=7 numa=0 affinity=0x0 active=yes
+  [Sit I/O       ] cpu=3 numa=0 affinity=0x0 active=yes
+  [Sit Render    ] cpu=1 numa=0 affinity=0x2 active=yes
+  [Sit Audio     ] cpu=2 numa=0 affinity=0x4 active=yes
+=========================================
+
+  Distinct CPUs across all roles: 6
+  Audio thread visible: YES
+=== End ===
+
+  [32m[ OK ] module_core_assignment[0m [2m(208.0ms)[0m
+[Thread 7980.0x5a94 exited with code 0]
+[Thread 7980.0x6b68 exited with code 0]
+[Thread 7980.0x667c exited with code 0]
+[Thread 7980.0x7418 exited with code 0]
+[Thread 7980.0x672c exited with code 0]
+[Thread 7980.0x1fec exited with code 0]
+[Thread 7980.0x14f0 exited with code 0]
+[Thread 7980.0x634c exited with code 0]
+[Thread 7980.0x6e98 exited with code 0]
+[Thread 7980.0x471c exited with code 0]
+destroy #1 pipeline=0xc9aa8d0
+destroy #2 pipeline=0xc9f5e50
+destroy #3 pipeline=0xca1da10
+
+Thread 1 "SIT_TEST_CORE" received signal SIGSEGV, Segmentation fault.
+0x00007ffaaed585e9 in vkGetInstanceProcAddr () from C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_fcb8b2221bca6b43\nvoglv64.dll
+total destroys before crash: 3
+#0  0x00007ffaaed585e9 in vkGetInstanceProcAddr () from C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_fcb8b2221bca6b43\nvoglv64.dll
+#1  0x00007ffaaed272fc in vkGetInstanceProcAddr () from C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_fcb8b2221bca6b43\nvoglv64.dll
+#2  0x00007ff6cb46ba0e in _SituationCleanupVulkan ()
+#3  0x00007ff6cb547a70 in _SituationCleanupRenderer ()
+#4  0x00007ff6cb55c77c in SituationShutdown ()
+#5  0x00007ff6cb3602b2 in core_teardown () at tests/harness/test_core.c:46
+#6  0x00007ff6cb343ac4 in sit_test_run_all () at tests/harness/sit_test_framework.h:661
+#7  0x00007ff6cb3444b9 in main (argc=4, argv=0x687c80) at tests/harness/main.c:194

@@ -1,0 +1,3 @@
+[SITUATION] [GLFW ERROR] _SituationGLFWErrorCallback: GLFW Error (65539): Invalid window attribute 0x00021001
+[SITUATION] [GLFW ERROR] _SituationGLFWErrorCallback: GLFW Error (65539): Invalid window attribute 0x00021002
+[SITUATION] [GLFW ERROR] _SituationGLFWErrorCallback: GLFW Error (65539): Invalid window attribute 0x00021003
