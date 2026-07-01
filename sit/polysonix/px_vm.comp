@@ -1,0 +1,757 @@
+// Polysonix Wave Bytecode Compute Shader
+// Author: Jacques Morel
+// (c) 2025-2026 Jacques Morel. All rights reserved.
+// Licensed under the MIT license. See LICENSE for details.
+
+#version 450 core
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+// GLSL compute shader for executing Polysonix waveform bytecode.
+// Updated to run in parallel threads (one per sample) for full wave generation.
+// Updated to use Bindless SSBOs via Buffer Device Address (BDA) for Situation SDK compatibility.
+
+// --- Workgroup Layout ---
+layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// --- Constants (must match px_vm.h) ---
+#define MAX_VM_STACK 512
+#define MAX_CALL_STACK 8 // For OP_SIGMA_EXEC sub-calls
+#define MAX_CONSTANTS 256
+#define MAX_SIGMA_CHUNKS 16
+#define NUM_LFSR_TYPES 16
+#define MAX_MARKOV_CHAINS 4
+#define EPSILON 1e-6
+const float LOG2_10_INV = 0.30102999566398119521;
+const float INV_PI = 0.31830988618379067154;
+const float INV_TWO_PI = 0.1591549430918953;
+const float INV_PI_OVER_2 = 0.63661977236758134308;
+const int MAX_VM_LOOP_ITERATIONS = 100000;
+
+// --- Opcodes (must match px_vm.h OpCode enum) ---
+#define OP_PUSH_CONST     0x00
+#define OP_PUSH_VAR_X     0x01
+#define OP_PUSH_VAR_FREQ  0x02
+#define OP_PUSH_VAR_RAND  0x03
+#define OP_PUSH_VAR_MOD_A 0x04
+#define OP_PUSH_VAR_MOD_B 0x05
+#define OP_PUSH_VAR_MOD_C 0x06
+#define OP_POP            0x07
+#define OP_ADD            0x08
+#define OP_SUB            0x09
+#define OP_MUL            0x0A
+#define OP_DIV            0x0B
+#define OP_MOD            0x0C
+#define OP_NEGATE         0x0D
+#define OP_NOT            0x0E
+#define OP_CMP_EQ         0x0F
+#define OP_CMP_NE         0x10
+#define OP_CMP_GT         0x11
+#define OP_CMP_GE         0x12
+#define OP_CMP_LT         0x13
+#define OP_CMP_LE         0x14
+#define OP_JUMP           0x15
+#define OP_JUMP_IF_FALSE  0x16
+#define OP_CALL_DEPRECATED 0x17
+#define OP_SIGMA_SETUP    0x18
+#define OP_PUSH_LOOP_VAR  0x19
+#define OP_SIGMA_EXEC     0x1A
+#define OP_SIGMA_INIT     0x1B
+#define OP_SIGMA_CHECK    0x1C
+#define OP_SIGMA_INC      0x1D
+#define OP_SIN            0x1E
+#define OP_COS            0x1F
+#define OP_TAN            0x20
+#define OP_ASIN           0x21
+#define OP_ACOS           0x22
+#define OP_ATAN           0x23
+#define OP_ABS            0x24
+#define OP_TANH           0x25
+#define OP_EXP            0x26
+#define OP_LOG            0x27
+#define OP_LOG10          0x28
+#define OP_FLOOR          0x29
+#define OP_CEIL           0x2A
+#define OP_MIN            0x2B
+#define OP_MAX            0x2C
+#define OP_SQRT           0x2D
+#define OP_POW            0x2E
+#define OP_RAND           0x2F
+#define OP_LFSR_VAL       0x30
+#define OP_LFSR_NOISE     0x31
+#define OP_LFSR_CLOCK     0x32
+#define OP_FMA            0x33
+#define OP_FMS            0x34
+#define OP_FNMADD         0x35
+#define OP_FNMSUB         0x36
+// --- Advanced Math Opcodes ---
+#define OP_EXP2           0x37
+#define OP_LOG2           0x38
+#define OP_EXPM1          0x39
+#define OP_LOG1P          0x3A
+#define OP_HYPOT          0x3B
+#define OP_COPYSIGN       0x3C
+#define OP_SCALBN         0x3D
+#define OP_REMQUO         0x3E
+#define OP_NEXTAFTER      0x3F
+#define OP_FDIM           0x40
+#define OP_NAN            0x41
+#define OP_INF            0x42
+#define OP_LGAMMA         0x43
+#define OP_TGAMMA         0x44
+#define OP_PROB           0x45
+#define OP_SELECT         0x46
+#define OP_SMOOTH_SELECT  0x47
+#define OP_CLAMP          0x48
+#define OP_MIX            0x49
+#define OP_RAMP           0x4A
+#define OP_MARKOV         0x4B
+#define OP_STEP           0x4C
+#define OP_SIGN           0x4D
+#define OP_INVERSESQRT    0x4E
+#define OP_HALT           0x4F
+
+// --- Bindless Buffer Layouts ---
+
+// Input: Bytecode (main chunk and all sub-chunks concatenated)
+layout(buffer_reference, scalar) buffer BytecodeBuffer {
+    uint bytes[];
+};
+
+// Input: Constant pool for all chunks
+layout(buffer_reference, scalar) buffer ConstantsBuffer {
+    float data[];
+};
+
+// Input: Pre-computed LFSR tables
+layout(buffer_reference, scalar) buffer LfsrTablesBuffer {
+    uint data[];
+};
+
+// Output: Resulting audio sample array
+layout(buffer_reference, scalar) buffer OutputBuffer {
+    float result[];
+};
+
+// Input/Output: Persistent state for the free-running LFSR
+layout(buffer_reference, scalar) buffer LfsrStateBuffer {
+    uint state;
+    uint position;
+    float accum_phase;
+};
+
+// Input: Runtime parameters for the VM
+layout(buffer_reference, scalar) buffer VmParamsBuffer {
+    float x;
+    float frequency;
+    float rand_offset;
+    float modA;
+    float modB;
+    float modC;
+    // Free-running LFSR configuration
+    int lfsr_type;         // The type ID of the currently active free-running LFSR
+    uint lfsr_seed;        // The seed to use if the state becomes zero
+    uint wave_length;      // Total length of the wave to generate
+
+    // --- Markov Chain State ---
+    uint markov_state[MAX_MARKOV_CHAINS];      // Current state (0, 1, 2...)
+    uint markov_prev_trigger[MAX_MARKOV_CHAINS]; // For rising-edge detection
+};
+
+// Input: Metadata for buffer access
+layout(buffer_reference, scalar) buffer VmMetadataBuffer {
+    // Offset in the bytecode buffer where the main chunk starts
+    uint main_chunk_offset;
+    uint bytecode_length;
+    // Offsets for each of the 16 possible sigma sub-chunks
+    uvec4 sigma_offsets_0_3;   // .x=0, .y=1, .z=2, .w=3
+    uvec4 sigma_offsets_4_7;
+    uvec4 sigma_offsets_8_11;
+    uvec4 sigma_offsets_12_15;
+    // Metadata for each of the 16 LFSR types
+    uvec4 lfsr_periods[4];      // [0].x = type 0, [0].y = type 1, etc.
+    uvec4 lfsr_offsets[4];      // Offsets into the lfsr_tables buffer
+    uvec4 lfsr_tap_masks[4];    // Tap masks for free-running mode
+    uvec4 lfsr_bit_lengths[4];  // Bit lengths for free-running mode
+};
+
+// --- Push Constants ---
+// Contains 64-bit addresses (pointers) to the buffers.
+layout(push_constant) uniform Registers {
+    VmParamsBuffer vm_params;
+    VmMetadataBuffer vm_metadata;
+    BytecodeBuffer bytecode;
+    ConstantsBuffer constants;
+    LfsrTablesBuffer lfsr_tables;
+    OutputBuffer output_buffer;
+    LfsrStateBuffer lfsr_state;
+} regs;
+
+// --- VM State (Shader Globals) ---
+float vm_stack[MAX_VM_STACK];
+int stack_top = 0;
+int ip = 0; // Instruction Pointer
+float rand_seed = 0.0;
+float local_x = 0.0; // Per-thread phase value
+
+bool sigma_is_active = false;
+float sigma_step_val = 0.0;
+float sigma_end_boundary = 0.0; // C VM uses a boundary for robust float comparison
+float loop_var_value = 0.0; // Value of 'k' during sigma body execution
+
+// --- Helper Functions ---
+
+// Simple hash-based pseudo-random number generator
+float pseudo_rand() {
+    rand_seed += 0.1; // Increment seed to ensure different results on subsequent calls
+    return fract(sin(rand_seed) * 43758.5453123);
+}
+
+void push(float value) {
+    if (stack_top < MAX_VM_STACK) {
+        vm_stack[stack_top++] = value;
+    }
+}
+
+float pop() {
+    if (stack_top > 0) {
+        return vm_stack[--stack_top];
+    }
+    return 0.0; // Stack underflow
+}
+
+// --- Bytecode Reader Functions ---
+
+// Reads a byte from the bytecode buffer, correctly handling uint packing.
+uint read_byte(BytecodeBuffer bytecode) {
+    uint uint_idx = ip / 4;
+    uint byte_shift = (ip % 4) * 8;
+    ip++; // Advance the byte-based instruction pointer
+    return (bytecode.bytes[uint_idx] >> byte_shift) & 0xFF;
+}
+
+uint read_short(BytecodeBuffer bytecode) {
+    uint b1 = read_byte(bytecode);
+    uint b2 = read_byte(bytecode);
+    return (b1 << 8) | b2;
+}
+
+// --- LFSR Helpers ---
+
+// Advances the persistent free-running LFSR state
+void advance_lfsr_state(VmParamsBuffer vm_params, VmMetadataBuffer vm_metadata, LfsrStateBuffer lfsr_state) {
+    int type_id = vm_params.lfsr_type;
+    if (type_id < 0 || type_id >= NUM_LFSR_TYPES) return;
+
+    uint bit_length = vm_metadata.lfsr_bit_lengths[type_id / 4][type_id % 4];
+    uint tap_mask   = vm_metadata.lfsr_tap_masks[type_id / 4][type_id % 4];
+    uint period     = vm_metadata.lfsr_periods[type_id / 4][type_id % 4];
+
+    if (period == 0 || bit_length == 0) return;
+
+    uint current_state = lfsr_state.state;
+    uint feedback_bit = 0;
+
+    // Calculate feedback bit using popcount on tapped bits (Fibonacci LFSR)
+    // This is equivalent to XORing all the tapped bits together.
+    feedback_bit = uint(popcount(current_state & tap_mask) % 2);
+
+    // Shift and insert feedback bit
+    current_state = (current_state >> 1) | (feedback_bit << (bit_length - 1));
+
+    // Ensure state is not zero
+    if (current_state == 0) {
+        current_state = vm_params.lfsr_seed != 0 ? vm_params.lfsr_seed : 1;
+    }
+
+    lfsr_state.state = current_state;
+    // Advance position (mirrors CPU)
+    lfsr_state.position = (lfsr_state.position + 1) % period;
+}
+
+// Retrieves a single bit from the packed LFSR SSBO (for table mode)
+float lfsr_get_bit(VmMetadataBuffer vm_metadata, LfsrTablesBuffer lfsr_tables, int type_id, uint position) {
+    if (type_id < 0 || type_id >= NUM_LFSR_TYPES) return 0.0;
+
+    uint period = vm_metadata.lfsr_periods[type_id / 4][type_id % 4];
+    if (period == 0) return 0.0;
+
+    uint offset = vm_metadata.lfsr_offsets[type_id / 4][type_id % 4];
+    position = position % period;
+
+    uint bit_offset = offset * 8u + position;
+    uint uint_idx = bit_offset / 32u;
+    uint bit_idx_in_uint = bit_offset % 32u;
+
+    uint word = lfsr_tables.data[uint_idx];
+    return ((word >> bit_idx_in_uint) & 1u) != 0u ? 1.0 : 0.0;
+}
+
+
+// Helper to get the correct offset from the uvec4 arrays
+uint get_sigma_offset(VmMetadataBuffer vm_metadata, uint index) {
+    uint vec_idx = index / 4;
+    uint comp_idx = index % 4;
+    if (vec_idx == 0) return vm_metadata.sigma_offsets_0_3[comp_idx];
+    if (vec_idx == 1) return vm_metadata.sigma_offsets_4_7[comp_idx];
+    if (vec_idx == 2) return vm_metadata.sigma_offsets_8_11[comp_idx];
+    return vm_metadata.sigma_offsets_12_15[comp_idx];
+}
+
+
+void main() {
+    uint wave_idx = gl_GlobalInvocationID.x; // This thread handles ONE ENTIRE WAVE
+
+    // --- Resolve Buffer Pointers from Push Constants ---
+    VmParamsBuffer vm_params = regs.vm_params;
+    VmMetadataBuffer vm_metadata = regs.vm_metadata;
+    BytecodeBuffer bytecode = regs.bytecode;
+    ConstantsBuffer constants = regs.constants;
+    LfsrTablesBuffer lfsr_tables = regs.lfsr_tables;
+    OutputBuffer output_buffer = regs.output_buffer;
+    LfsrStateBuffer lfsr_state = regs.lfsr_state;
+
+    // Loop through every sample of the wave sequentially
+    for (uint sample = 0; sample < vm_params.wave_length; sample++) {
+
+        // Calculate phase 'x' for this sample
+        local_x = (float(sample) / float(vm_params.wave_length)) * 6.28318530718;
+
+        // Initialize the random seed using wave index and sample to ensure variation
+        rand_seed = vm_params.rand_offset + float(wave_idx * vm_params.wave_length + sample) * 0.12345;
+
+        // Reset VM state for this specific sample
+        stack_top = 0;
+        sigma_is_active = false;
+        ip = int(vm_metadata.main_chunk_offset);
+
+        // --- Main VM Loop ---
+        for(int i = 0; i < MAX_VM_LOOP_ITERATIONS; ++i) {
+            uint instruction = read_byte(bytecode);
+
+            switch (instruction) {
+
+            case OP_CLAMP: {
+                float max_val = pop();
+                float min_val = pop();
+                float val = pop();
+                push(max(min_val, min(max_val, val)));
+                break;
+            }
+            case OP_MIX: {
+                float v2 = pop();
+                float v1 = pop();
+                float param = pop();
+                param = max(0.0, min(1.0, param));
+                push(fma(param, (v2 - v1), v1));
+                break;
+            }
+            case OP_RAMP: {
+                float time = pop();
+                float end = pop();
+                float start = pop();
+                time = max(0.0, min(1.0, time));
+                push(fma(time, (end - start), start));
+                break;
+            }
+            case OP_MARKOV: {
+                uint n_states = read_byte(bytecode);
+                uint matrix_size = n_states * n_states;
+
+                if (stack_top < int(matrix_size + 2)) {
+                    i = 999999; // Stack underflow, halt
+                    break;
+                }
+
+                float id_val = pop();
+                float trig_val = pop();
+                int id = int(max(0.0, min(float(MAX_MARKOV_CHAINS - 1), id_val)));
+                bool is_triggered = abs(trig_val) > EPSILON;
+
+                uint current_state = vm_params.markov_state[id];
+                if (current_state >= n_states) current_state = 0;
+
+                bool prev_trig = vm_params.markov_prev_trigger[id] != 0;
+
+                float probs[64];
+                for (int j = 0; j < int(matrix_size); j++) {
+                    probs[int(matrix_size) - 1 - j] = pop();
+                }
+
+                if (is_triggered && !prev_trig) {
+                    int row_start = int(current_state * n_states);
+                    float r = pseudo_rand();
+                    float accumulator = 0.0;
+                    uint next_state = current_state;
+
+                    for (int j = 0; j < int(n_states); j++) {
+                        float p = probs[row_start + j];
+                        accumulator += p;
+                        next_state = uint(mix(float(next_state), float(j), step(r, accumulator)));
+                    }
+                    current_state = next_state;
+                    vm_params.markov_state[id] = current_state;
+                }
+
+                vm_params.markov_prev_trigger[id] = is_triggered ? 1 : 0;
+                push(float(current_state));
+
+                break;
+            }
+            case OP_HALT: {
+                i = 999999; // Break the VM loop
+                break;
+            }
+
+            // --- Stack Ops ---
+            case OP_PUSH_CONST: {
+                uint const_idx = read_short(bytecode);
+                push(constants.data[const_idx]);
+                break;
+            }
+            case OP_PUSH_VAR_X:     push(local_x); break; // Use per-thread calculated x
+            case OP_PUSH_VAR_FREQ:  push(vm_params.frequency); break;
+            case OP_PUSH_VAR_RAND:  push(vm_params.rand_offset); break;
+            case OP_PUSH_VAR_MOD_A: push(vm_params.modA); break;
+            case OP_PUSH_VAR_MOD_B: push(vm_params.modB); break;
+            case OP_PUSH_VAR_MOD_C: push(vm_params.modC); break;
+            case OP_POP:            pop(); break;
+
+            // --- Arithmetic ---
+            case OP_ADD: { float b = pop(); float a = pop(); push(a + b); break; }
+            case OP_SUB: { float b = pop(); float a = pop(); push(a - b); break; }
+            case OP_MUL: { float b = pop(); float a = pop(); push(a * b); break; }
+            case OP_DIV: {
+                float b = pop(); float a = pop();
+                push(a / b);
+                break;
+            }
+            case OP_MOD: {
+                float b = pop(); float a = pop();
+                // Match C fmodf: sign of result is same as dividend (a)
+                // GLSL mod(a, b) returns a - b * floor(a/b)
+                // We want a - b * trunc(a/b)
+                push(abs(b) < EPSILON ? 0.0 : (a - b * trunc(a / b)));
+                break;
+            }
+            case OP_NEGATE: push(-pop()); break;
+
+            // --- Logical / Comparison ---
+            case OP_NOT:    push(1.0 - step(EPSILON, abs(pop()))); break;
+            case OP_CMP_EQ: { float b = pop(); float a = pop(); push(1.0 - step(EPSILON, abs(a - b))); break; }
+            case OP_CMP_NE: { float b = pop(); float a = pop(); push(step(EPSILON, abs(a - b))); break; }
+            case OP_CMP_GT: { float b = pop(); float a = pop(); push(1.0 - step(a, b)); break; }
+            case OP_CMP_GE: { float b = pop(); float a = pop(); push(step(b, a)); break; }
+            case OP_CMP_LT: { float b = pop(); float a = pop(); push(1.0 - step(b, a)); break; }
+            case OP_CMP_LE: { float b = pop(); float a = pop(); push(step(a, b)); break; }
+
+            // --- Control Flow ---
+            case OP_JUMP: {
+                uint hi = read_byte(bytecode);
+                uint lo = read_byte(bytecode);
+                uint combined = (hi << 8) | lo;
+                // Manual sign extension for 16-bit to 32-bit integer
+                int offset = ((combined & 0x8000) > 0) ? int(combined | 0xFFFF0000) : int(combined);
+                int new_ip = ip + offset;
+                if (new_ip < 0 || new_ip >= int(vm_metadata.bytecode_length)) {
+                    i = 999999; // Halt
+                } else {
+                    ip = new_ip;
+                }
+                break;
+            }
+            case OP_JUMP_IF_FALSE: {
+                uint hi = read_byte(bytecode);
+                uint lo = read_byte(bytecode);
+                uint combined = (hi << 8) | lo;
+                // Manual sign extension for 16-bit to 32-bit integer
+                int offset = ((combined & 0x8000) > 0) ? int(combined | 0xFFFF0000) : int(combined);
+                if (abs(pop()) < EPSILON) {
+                    int new_ip = ip + offset;
+                    if (new_ip < 0 || new_ip >= int(vm_metadata.bytecode_length)) {
+                        i = 999999; // Halt
+                    } else {
+                        ip = new_ip;
+                    }
+                }
+                break;
+            }
+
+            // --- Functions ---
+            case OP_CALL_DEPRECATED: {
+                // Deprecated instruction. Error out.
+                i = 999999;
+                break;
+            }
+
+            case OP_SIN:  push(sin(pop())); break;
+            case OP_COS:  push(cos(pop())); break;
+            case OP_TAN:  push(tan(pop())); break;
+            case OP_ASIN: push(asin(clamp(pop(), -1.0, 1.0))); break;
+            case OP_ACOS: push(acos(clamp(pop(), -1.0, 1.0))); break;
+            case OP_ATAN: push(atan(pop())); break;
+            case OP_ABS:  push(abs(pop())); break;
+            case OP_TANH: push(tanh(pop())); break;
+            case OP_EXP:  push(exp(pop())); break;
+            case OP_LOG:  { float v = pop(); push(v > 0.0 ? log(v) : 0.0); break; }
+            case OP_LOG10:{ float v = pop(); push(v > 0.0 ? log2(v) * LOG2_10_INV : 0.0); break; }
+            case OP_FLOOR:push(floor(pop())); break;
+            case OP_CEIL: push(ceil(pop())); break;
+            case OP_MIN:  { float b = pop(); float a = pop(); push(min(a, b)); break; }
+            case OP_MAX:  { float b = pop(); float a = pop(); push(max(a, b)); break; }
+            case OP_SQRT: { float v = pop(); push(v >= 0.0 ? sqrt(v) : 0.0); break; }
+            case OP_POW:  { float b = pop(); float a = pop(); push(a == 2.0 ? exp2(b) : pow(a, b)); break; }
+            case OP_RAND: push(pseudo_rand()); break;
+
+            case OP_FMA: { float c = pop(); float b = pop(); float a = pop(); push(fma(a, b, c)); break; }
+            case OP_FMS: { float c = pop(); float b = pop(); float a = pop(); push(fma(a, b, -c)); break; }
+            case OP_FNMADD: { float c = pop(); float b = pop(); float a = pop(); push(fma(-a, b, c)); break; }
+            case OP_FNMSUB: { float c = pop(); float b = pop(); float a = pop(); push(fma(-a, b, -c)); break; }
+            case OP_EXP2:  { push(exp2(pop())); break; }
+            case OP_LOG2:  { float v = pop(); push(v > 0.0 ? log2(v) : 0.0); break; }
+            case OP_EXPM1: { push(exp(pop()) - 1.0); break; }
+            case OP_LOG1P: { float v = pop(); push(v > -1.0 ? log(1.0 + v) : 0.0); break; }
+            case OP_HYPOT: { float b = pop(); float a = pop(); float sq = fma(a, a, b * b); push(sq > 0.0 ? sq * inversesqrt(sq) : 0.0); break; }
+            case OP_COPYSIGN:{ float b = pop(); float a = pop(); uint ua = floatBitsToUint(a); uint ub = floatBitsToUint(b); push(uintBitsToFloat((ua & 0x7FFFFFFFu) | (ub & 0x80000000u))); break; }
+            case OP_SCALBN:{ float exp_val = pop(); float v = pop(); push(v * exp2(floor(exp_val))); break; }
+            case OP_REMQUO:{
+                float y = pop(); float x = pop();
+                if (y == 0.0) { push(uintBitsToFloat(0x7FC00000u)); } // NaN
+                else {
+                    float q = round(x / y);
+                    push(x - q * y); // The C wrapper px_remquof_wrapper only returns the remainder, the quotient is discarded
+                }
+                break;
+            }
+            case OP_NEXTAFTER:{
+                float y = pop(); float x = pop();
+                if (x == y) { push(y); }
+                else {
+                    int ix = floatBitsToInt(x);
+                    if (x == 0.0) {
+                        push(intBitsToFloat((y > 0.0) ? 1 : -2147483647)); // Approximation of smallest denorm
+                    } else if ((x > 0.0) == (y > x)) {
+                        push(intBitsToFloat(ix + 1));
+                    } else {
+                        push(intBitsToFloat(ix - 1));
+                    }
+                }
+                break;
+            }
+            case OP_FDIM: { float y = pop(); float x = pop(); push(x > y ? x - y : 0.0); break; }
+            case OP_NAN:  { push(uintBitsToFloat(0x7FC00000u)); break; }
+            case OP_INF:  { push(uintBitsToFloat(0x7F800000u)); break; }
+            case OP_LGAMMA:{
+                float x = pop();
+                if (x <= 0.0 && floor(x) == x) { push(uintBitsToFloat(0x7F800000u)); } // Infinity for non-positive integers
+                else if (x > 0.0) {
+                    float tmp = x + 5.5;
+                    tmp = (x + 0.5) * log(tmp) - tmp;
+                    float ser = 1.000000000190015 + (76.18009172947146 / (x + 1.0)) - (86.50532032941677 / (x + 2.0)) + (24.01409824083091 / (x + 3.0)) - (1.231739572450155 / (x + 4.0)) + (0.1208650973866179e-2 / (x + 5.0)) - (0.5395239384953e-5 / (x + 6.0));
+                    push(tmp + log(2.5066282746310005 * ser / x));
+                } else {
+                    float nx = 1.0 - x;
+                    float tmp_n = nx + 5.5;
+                    tmp_n = (nx + 0.5) * log(tmp_n) - tmp_n;
+                    float ser_n = 1.000000000190015 + (76.18009172947146 / (nx + 1.0)) - (86.50532032941677 / (nx + 2.0)) + (24.01409824083091 / (nx + 3.0)) - (1.231739572450155 / (nx + 4.0)) + (0.1208650973866179e-2 / (nx + 5.0)) - (0.5395239384953e-5 / (nx + 6.0));
+                    float pi = 3.14159265358979323846;
+                    push(log(pi / abs(sin(pi * x))) - (tmp_n + log(2.5066282746310005 * ser_n / nx)));
+                }
+                break;
+            }
+            case OP_TGAMMA:{
+                float x = pop();
+                if (x <= 0.0 && floor(x) == x) { push(uintBitsToFloat(0x7FC00000u)); } // NaN/Inf for non-positive integers
+                else if (x > 0.0) {
+                    float tmp = x + 5.5;
+                    float log_tgamma_approx = (x + 0.5) * log(tmp) - tmp;
+                    float ser = 1.000000000190015 + (76.18009172947146 / (x + 1.0)) - (86.50532032941677 / (x + 2.0)) + (24.01409824083091 / (x + 3.0)) - (1.231739572450155 / (x + 4.0)) + (0.1208650973866179e-2 / (x + 5.0)) - (0.5395239384953e-5 / (x + 6.0));
+                    push(exp(log_tgamma_approx + log(2.5066282746310005 * ser / x)));
+                } else {
+                    float pi = 3.14159265358979323846;
+                    float nx = 1.0 - x;
+                    float tmp_n = nx + 5.5;
+                    float log_tg_nx = (nx + 0.5) * log(tmp_n) - tmp_n;
+                    float ser_n = 1.000000000190015 + (76.18009172947146 / (nx + 1.0)) - (86.50532032941677 / (nx + 2.0)) + (24.01409824083091 / (nx + 3.0)) - (1.231739572450155 / (nx + 4.0)) + (0.1208650973866179e-2 / (nx + 5.0)) - (0.5395239384953e-5 / (nx + 6.0));
+                    float tg_nx = exp(log_tg_nx + log(2.5066282746310005 * ser_n / nx));
+                    push(pi / (sin(pi * x) * tg_nx));
+                }
+                break;
+            }
+
+            case OP_PROB: { float f = pop(); float t = pop(); float c = pop(); float rand_val = vm_params.rand_offset; push(mix(t, f, step(c, rand_val))); break; }
+            case OP_SELECT: {
+                uint n = read_byte(bytecode);
+                float param = pop();
+                float values[16];
+                for (int j = 0; j < int(n); j++) {
+                    values[j] = pop();
+                }
+                float f_index = fma(param, float(n), 0.0);
+                f_index = clamp(f_index, 0.0, float(n - 1));
+                int index = int(f_index);
+                push(values[index]);
+                break;
+            }
+            case OP_SMOOTH_SELECT: {
+                uint n = read_byte(bytecode);
+                float param = pop();
+                float values[16];
+                for (int j = 0; j < int(n); j++) {
+                    values[j] = pop();
+                }
+                param = max(0.0, min(float(n - 1), param));
+                int low = int(param);
+                float frac = param - float(low);
+                float high_val = (low + 1 < int(n)) ? values[low + 1] : values[low];
+                push(mix(values[low], high_val, frac));
+                break;
+            }
+
+            case OP_STEP: {
+                float x = pop();
+                float edge = pop();
+                push(step(edge, x));
+                break;
+            }
+
+            case OP_SIGN: {
+                push(sign(pop()));
+                break;
+            }
+
+            case OP_INVERSESQRT: {
+                push(inversesqrt(pop()));
+                break;
+            }
+
+            case OP_LFSR_VAL: {
+                float seed_norm = pop();
+                float pos_norm = pop();
+                int type_id = int(round(pop()));
+                float res = 0.0;
+
+                if (type_id == vm_params.lfsr_type) {
+                    // Free-running mode
+                    advance_lfsr_state(vm_params, vm_metadata, lfsr_state);
+                    res = (lfsr_state.state & 1) == 1 ? 1.0 : 0.0;
+                } else {
+                    // Table mode
+                    uint period = vm_metadata.lfsr_periods[type_id / 4][type_id % 4];
+                    float total_norm_pos = fract(pos_norm + seed_norm);
+                    uint table_pos = uint(total_norm_pos * period);
+                    res = lfsr_get_bit(vm_metadata, lfsr_tables, type_id, table_pos);
+                }
+                push(res);
+                break;
+            }
+            case OP_LFSR_NOISE: {
+                float rate = pop();
+                int type_id = int(round(pop()));
+                float res = 0.0;
+
+                if (type_id == vm_params.lfsr_type) {
+                    // Free-running mode
+                    advance_lfsr_state(vm_params, vm_metadata, lfsr_state);
+                    res = sign(float(lfsr_state.state & 1u) - 0.5);
+                } else {
+                    // Table mode
+                    uint period = vm_metadata.lfsr_periods[type_id / 4][type_id % 4];
+                    float lfsr_phase = fract(local_x * INV_TWO_PI * rate); // Use local_x
+                    uint table_pos = uint(lfsr_phase * period);
+                    res = sign(float(lfsr_get_bit(vm_metadata, lfsr_tables, type_id, table_pos)) - 0.5);
+                }
+                push(res);
+                break;
+            }
+            case OP_LFSR_CLOCK: {
+                float density = pop();
+                int type_id = int(round(pop()));
+                float res = 0.0;
+
+                if (type_id == vm_params.lfsr_type) {
+                    // Free-running mode
+                    advance_lfsr_state(vm_params, vm_metadata, lfsr_state);
+                    float bit_val = (lfsr_state.state & 1) == 1 ? 1.0 : 0.0;
+                    res = bit_val >= density ? 1.0 : 0.0;
+                } else {
+                    // Table mode
+                    uint period = vm_metadata.lfsr_periods[type_id / 4][type_id % 4];
+                    float lfsr_phase = fract(local_x * INV_TWO_PI); // Use local_x
+                    uint table_pos = uint(lfsr_phase * period);
+                    res = lfsr_get_bit(vm_metadata, lfsr_tables, type_id, table_pos) >= density ? 1.0 : 0.0;
+                }
+                push(res);
+                break;
+            }
+
+            // --- Sigma ---
+            case OP_SIGMA_INIT: {
+                uint name_index = read_byte(bytecode); // Consume name string index
+                if (stack_top < 3) { i = 999999; break; } // Underflow
+
+                float step_val = pop();
+                float end_val = pop();
+                float start_val = pop();
+
+                loop_var_value = start_val;
+                sigma_step_val = step_val;
+                // Precompute boundary for robust float comparison
+                sigma_end_boundary = (step_val > 0.0) ? (end_val + abs(step_val) * 0.5) : (end_val - abs(step_val) * 0.5);
+                sigma_is_active = true;
+
+                push(0.0); // Push the initial accumulator (sum = 0)
+                break;
+            }
+            case OP_SIGMA_CHECK: {
+                uint hi = read_byte(bytecode);
+                uint lo = read_byte(bytecode);
+                uint combined = (hi << 8) | lo;
+                int offset = ((combined & 0x8000) > 0) ? int(combined | 0xFFFF0000) : int(combined);
+
+                // Check condition: (step > 0) ? (k <= boundary) : (k >= boundary)
+                bool condition = (sigma_step_val > 0.0) ? (loop_var_value <= sigma_end_boundary) : (loop_var_value >= sigma_end_boundary);
+
+                if (!condition) {
+                    // Loop finished, jump to the end
+                    int new_ip = ip + offset;
+                    if (new_ip < 0 || new_ip >= int(vm_metadata.bytecode_length)) {
+                        i = 999999; // Halt
+                    } else {
+                        ip = new_ip;
+                    }
+                    sigma_is_active = false;
+                }
+                // Else fall through to the loop body
+                break;
+            }
+            case OP_SIGMA_INC: {
+                loop_var_value += sigma_step_val;
+                break;
+            }
+            case OP_PUSH_LOOP_VAR: {
+                read_byte(bytecode); // Consume name_index
+                push(sigma_is_active ? loop_var_value : 0.0);
+                break;
+            }
+
+            default:
+                // Unknown opcode, treat as halt
+                i = 999999;
+                break;
+        }
+
+        } // End VM Loop
+
+        // Clamp and write the final result for this sample
+        float final_result = 0.0;
+        if (stack_top > 0) {
+            final_result = pop();
+        }
+
+        // Write to the output buffer (offset by which wave this thread is generating)
+        output_buffer.result[wave_idx * vm_params.wave_length + sample] = clamp(final_result, -1.0, 1.0);
+
+    } // End Sample Loop
+}
