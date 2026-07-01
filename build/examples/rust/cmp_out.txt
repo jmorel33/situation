@@ -1,0 +1,10 @@
+=== Situation Rust — Raster Bars + Ambient Synth ===
+  V      Toggle VSync
+  F      Toggle borderless windowed
+  Space  Trigger note immediately
+  + / -  Reverb wet up / down
+  ] / [  Delay wet up / down
+  P / O  Delay feedback up / down
+  ESC    Quit
+Audio graph active: ToneSynth -> Echo -> Reverb
+[STUTTER] dt=278.9ms  core[poll=84500(80700 glfw 800 reset 1800 joy) upd=1200]  render[bp=100 fw=0 ex=0 pr=0]  fps=0

@@ -1,0 +1,7 @@
+[SITUATION] [GLFW ERROR] _SituationGLFWErrorCallback: GLFW Error (65539): Invalid window attribute 0x00021001
+[SITUATION] [GLFW ERROR] _SituationGLFWErrorCallback: GLFW Error (65539): Invalid window attribute 0x00021002
+[SITUATION] [GLFW ERROR] _SituationGLFWErrorCallback: GLFW Error (65539): Invalid window attribute 0x00021003
+[Situation] [MAIN] About to create render thread...
+[Situation] [MAIN] Render thread created successfully
+[Situation] [Thread 12568] RENDER THREAD STARTED
+[Situation] [Thread 12568] RENDER THREAD entering main loop
