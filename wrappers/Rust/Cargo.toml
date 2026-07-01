@@ -1,0 +1,14 @@
+[package]
+name = "situation"
+version = "0.1.0"
+edition = "2021"
+description = "Rust FFI bindings for the Situation library"
+license = "MIT"
+
+[lib]
+name = "situation"
+path = "src/lib.rs"
+
+[[example]]
+name = "hello_situation"
+path = "examples/hello_situation.rs"

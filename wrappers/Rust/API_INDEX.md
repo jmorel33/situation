@@ -1,10 +1,10 @@
-# Situation Odin bindings — API index
+# Situation Rust bindings — API index
 
 _Generated 2026-06-25 18:33 UTC from `sit/situation_api.h` — Situation **2.4.357 (Consolidate color-space math into situation_impl_color.h; trace table regenerated.)**._
 
 **Foreign imports:** 598
 
-| Function | Section | Odin | Notes |
+| Function | Section | Rust | Notes |
 |----------|---------|------|-------|
 | `SituationAcquireFrameCommandBuffer` | Frame Lifecycle & Command Buffer | auto | [GL+VK] Prepare the backend for a new frame of rendering commands. |
 | `SituationAddJobDependencies` | CPU & Thread Management | auto | Adds multiple dependencies for a single dependent job. |
