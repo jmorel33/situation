@@ -1,0 +1,3 @@
+mkdir -p ../build/obj ../build/bin
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c kfs_test_main.c -o ../build/obj/kfs_test_main.o
+mingw32-make: *** [Makefile:85: ../build/obj/kfs_test_main.o] Error 1

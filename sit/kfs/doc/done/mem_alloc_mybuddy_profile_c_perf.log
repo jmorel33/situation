@@ -1,0 +1,146 @@
+mkdir -p ../build/obj
+C:/msys64/mingw64/bin/mingw32-make.exe -C ../kfs lib-mybuddy-c
+mingw32-make[1]: Entering directory 'C:/Users/User/Desktop/hobby/_kiro/situation/sit/kfs/kfs'
+python ../scripts/check_kfs_mem.py
+[check_kfs_mem] OK — no raw CRT allocators in kfs_impl_*.h (enforce)
+mkdir -p ../build/obj
+cc -std=c11 -Wall -Wextra -O2 -I../.. -I.. -I. -I../../../ext -DKFS_MEM_USE_MYBUDDY -pthread -DKFS_MEM_MYBUDDY_PROFILE_C -c ./kfs.c -o ../build/obj/kfs_mybuddy_c.o
+In file included from ./kfs_impl.h:16,
+                 from ./kfs.h:42,
+                 from ./kfs.c:16:
+./kfs_impl_auth.h: In function 'kfs_delete_user':
+./kfs_impl_auth.h:891:9: warning: variable 'is_target_admin_member' set but not used [-Wunused-but-set-variable]
+  891 |     int is_target_admin_member = 0;
+      |         ^~~~~~~~~~~~~~~~~~~~~~
+./kfs_impl_auth.h: In function 'kfs_create_user_file':
+./kfs_impl_auth.h:1198:9: warning: variable 'target_user_actor_id' set but not used [-Wunused-but-set-variable]
+ 1198 |     int target_user_actor_id = -1;
+      |         ^~~~~~~~~~~~~~~~~~~~
+./kfs_impl_auth.h: In function 'kfs_get_actor':
+./kfs_impl_auth.h:1894:9: warning: variable 'is_admin' set but not used [-Wunused-but-set-variable]
+ 1894 |     int is_admin = 0;
+      |         ^~~~~~~~
+./kfs_impl_auth.h: In function 'kfs_set_actor_active':
+./kfs_impl_auth.h:2473:9: warning: variable 'is_admin' set but not used [-Wunused-but-set-variable]
+ 2473 |     int is_admin = 0;
+      |         ^~~~~~~~
+In file included from ./kfs_impl.h:17:
+./kfs_impl_lc.h: In function 'kfs_get_epic':
+./kfs_impl_lc.h:327:30: warning: unused variable 'epic_updated' [-Wunused-variable]
+  327 |         const unsigned char* epic_updated = sqlite3_column_text(stmt, 6); // updated_at added
+      |                              ^~~~~~~~~~~~
+./kfs_impl_lc.h:326:30: warning: unused variable 'epic_created' [-Wunused-variable]
+  326 |         const unsigned char* epic_created = sqlite3_column_text(stmt, 5); // created_at added
+      |                              ^~~~~~~~~~~~
+./kfs_impl_lc.h: In function 'kfs_update_note':
+./kfs_impl_lc.h:2933:9: warning: variable 'needs_update' set but not used [-Wunused-but-set-variable]
+ 2933 |     int needs_update = 0;
+      |         ^~~~~~~~~~~~
+./kfs_impl_lc.h: In function 'kfs_load_artifact':
+./kfs_impl_lc.h:5079:5: warning: this 'for' clause does not guard... [-Wmisleading-indentation]
+ 5079 |     for (int i = 0; i < *topic_count; i++) kfs_mem_free((*topics)[i]); kfs_mem_free(*topics);
+      |     ^~~
+./kfs_impl_lc.h:5079:72: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the 'for'
+ 5079 |     for (int i = 0; i < *topic_count; i++) kfs_mem_free((*topics)[i]); kfs_mem_free(*topics);
+      |                                                                        ^~~~~~~~~~~~
+./kfs_impl_lc.h:5080:5: warning: this 'for' clause does not guard... [-Wmisleading-indentation]
+ 5080 |     for (int i = 0; i < *note_count; i++) kfs_note_free((*notes)[i]); kfs_mem_free(*notes);
+      |     ^~~
+./kfs_impl_lc.h:5080:71: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the 'for'
+ 5080 |     for (int i = 0; i < *note_count; i++) kfs_note_free((*notes)[i]); kfs_mem_free(*notes);
+      |                                                                       ^~~~~~~~~~~~
+./kfs_impl_lc.h: In function 'kfs_load_asset_list':
+./kfs_impl_lc.h:6035:14: warning: this 'for' clause does not guard... [-Wmisleading-indentation]
+ 6035 |              for (int i = 0; i < topic_count; i++) kfs_mem_free(topics[i]); kfs_mem_free(topics);
+      |              ^~~
+./kfs_impl_lc.h:6035:77: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the 'for'
+ 6035 |              for (int i = 0; i < topic_count; i++) kfs_mem_free(topics[i]); kfs_mem_free(topics);
+      |                                                                             ^~~~~~~~~~~~
+./kfs_impl_lc.h:6036:14: warning: this 'for' clause does not guard... [-Wmisleading-indentation]
+ 6036 |              for (int i = 0; i < note_count; i++) kfs_note_free(notes[i]); kfs_mem_free(notes);
+      |              ^~~
+./kfs_impl_lc.h:6036:76: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the 'for'
+ 6036 |              for (int i = 0; i < note_count; i++) kfs_note_free(notes[i]); kfs_mem_free(notes);
+      |                                                                            ^~~~~~~~~~~~
+./kfs_impl_lc.h: At top level:
+./kfs_impl_lc.h:2517:12: warning: 'kfs_list_entities' defined but not used [-Wunused-function]
+ 2517 | static int kfs_list_entities(GameDB* db, const char* table_name, void** results, int* result_count, size_t struct_size, kfs_get_entity_func get_func) {
+      |            ^~~~~~~~~~~~~~~~~
+./kfs_impl_auth.h:5941:12: warning: 'kfs_update_user_field' defined but not used [-Wunused-function]
+ 5941 | static int kfs_update_user_field(GameDB* db, int user_id, const char* field_name, const char* text_value, int int_value) {
+      |            ^~~~~~~~~~~~~~~~~~~~~
+./kfs_impl_auth.h:5416:12: warning: 'kfs_modify_scheme_user' defined but not used [-Wunused-function]
+ 5416 | static int kfs_modify_scheme_user(GameDB* db, int scheme_id, const char* username, const char* operation_sql) {
+      |            ^~~~~~~~~~~~~~~~~~~~~~
+In file included from ./kfs_impl.h:15:
+./kfs_impl_core.h:624:12: warning: 'get_user_id' defined but not used [-Wunused-function]
+  624 | static int get_user_id(GameDB* db, const char* username, int* user_id) {
+      |            ^~~~~~~~~~~
+ar rcs ../build/libkfs_mybuddy_c.a ../build/obj/kfs_mybuddy_c.o ../build/obj/sqlite3.o
+KFS MyBuddy profile-C library OK (BUDDY_LARGE + 256 MiB pool)
+mingw32-make[1]: Leaving directory 'C:/Users/User/Desktop/hobby/_kiro/situation/sit/kfs/kfs'
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c kfs_test_main.c -o ../build/obj/kfs_test_main.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c kfs_test_registry.c -o ../build/obj/kfs_test_registry.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c kfs_test_fixture.c -o ../build/obj/kfs_test_fixture.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c kfs_test_props.c -o ../build/obj/kfs_test_props.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c kfs_test_perf.c -o ../build/obj/kfs_test_perf.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c kfs_test_timing.c -o ../build/obj/kfs_test_timing.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c test_actors.c -o ../build/obj/test_actors.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c test_content.c -o ../build/obj/test_content.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c test_domains.c -o ../build/obj/test_domains.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c test_lifecycle.c -o ../build/obj/test_lifecycle.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c test_perf.c -o ../build/obj/test_perf.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c test_permissions.c -o ../build/obj/test_permissions.o
+gcc -std=c11 -Wall -Wextra -Werror -I../.. -I.. -I../kfs -I../../../ext -I. -c test_security_schemes.c -o ../build/obj/test_security_schemes.o
+gcc -std=c11 -Wall -Wextra -Werror -o ../build/kfs_test_mybuddy_c ../build/obj/kfs_test_main.o ../build/obj/kfs_test_registry.o ../build/obj/kfs_test_fixture.o ../build/obj/kfs_test_props.o ../build/obj/kfs_test_perf.o ../build/obj/kfs_test_timing.o ../build/obj/test_actors.o ../build/obj/test_content.o ../build/obj/test_domains.o ../build/obj/test_lifecycle.o ../build/obj/test_perf.o ../build/obj/test_permissions.o ../build/obj/test_security_schemes.o -L../build -lkfs_mybuddy_c -lbcrypt -pthread
+KFS MyBuddy profile-C harness build OK
+Running KFS H7 perf on MyBuddy profile C...
+../build/kfs_test_mybuddy_c --perf --perf-iters 100
+== H7 perf: Performance baselines ==
+  [PASS] permission_check (159.144 ms)
+         perf: p50=0 ns p95=0 ns mean=635.181 us 1574 ops/s (100 samples)
+         ops: kfs_check_permission=63.518 ms(x100) kfs_add_actor=14.822 ms(x3) kfs_create_artifact=8.526 ms kfs_add_domain=4.566 ms kfs_create_security_scheme=4.405 ms kfs_add_actor_to_domain=4.206 ms kfs_add_actor_to_scheme=4.095 ms kfs_add_member_to_group=3.948 ms
+         fixture: kfs_init=255.543 ms kfs_close=358.100 us
+  [PASS] blob_read_small (640.092 ms)
+         perf: p50=694.500 us p95=1.135 ms mean=746.361 us 444.7 MB/s (348047 bytes/op)
+         ops: kfs_create_artifact=307.586 ms(x11) kfs_get_asset_data=145.190 ms(x200) kfs_assign_topic_to_artifact_by_name=62.697 ms(x11) kfs_add_actor=32.008 ms(x2) kfs_add_member_to_group=4.590 ms kfs_add_domain=4.550 ms
+         fixture: kfs_init=320.575 ms kfs_close=436.200 us
+  [PASS] blob_read_medium (683.269 ms)
+         perf: p50=2.009 ms p95=3.282 ms mean=2.330 ms 886.1 MB/s (2164989 bytes/op)
+         ops: kfs_create_artifact=260.440 ms(x11) kfs_get_asset_data=259.319 ms(x110) kfs_assign_topic_to_artifact_by_name=57.473 ms(x11) kfs_add_actor=8.966 ms(x2) kfs_add_member_to_group=7.482 ms kfs_add_domain=4.717 ms
+         fixture: kfs_init=291.820 ms kfs_close=576.900 us
+  [PASS] blob_read_large_glb (628.514 ms)
+         perf: p50=8.568 ms p95=13.903 ms mean=9.279 ms 1090.9 MB/s (10614184 bytes/op)
+         ops: kfs_create_artifact=254.987 ms(x11) kfs_get_asset_data=215.561 ms(x23) kfs_assign_topic_to_artifact_by_name=60.465 ms(x11) kfs_add_actor=11.518 ms(x2) kfs_add_member_to_group=4.564 ms kfs_add_domain=4.547 ms
+         fixture: kfs_init=289.407 ms kfs_close=523.900 us
+  [PASS] blob_read_large_wav (632.241 ms)
+         perf: p50=9.087 ms p95=13.858 ms mean=9.940 ms 1038.3 MB/s (10822048 bytes/op)
+         ops: kfs_create_artifact=262.586 ms(x11) kfs_get_asset_data=225.200 ms(x23) kfs_assign_topic_to_artifact_by_name=53.721 ms(x11) kfs_add_actor=8.569 ms(x2) kfs_add_domain=6.992 ms kfs_add_member_to_group=3.959 ms
+         fixture: kfs_init=250.130 ms kfs_close=538.200 us
+  [PASS] blob_ingest_large (145.881 ms)
+         perf: p50=0 ns p95=0 ns mean=56.573 ms 18 ops/s (1 samples)
+         ops: kfs_create_artifact=48.227 ms kfs_add_actor=8.375 ms(x2) kfs_add_domain=4.615 ms kfs_assign_topic_to_artifact_by_name=4.501 ms kfs_add_member_to_group=4.121 ms
+         fixture: kfs_init=272.928 ms kfs_close=363.400 us
+  [PASS] blob_roundtrip_checksum (105.692 ms)
+         ops: kfs_add_actor=10.041 ms(x2) kfs_create_artifact=10.040 ms kfs_assign_topic_to_artifact_by_name=7.277 ms kfs_add_domain=4.763 ms kfs_add_member_to_group=4.618 ms kfs_get_asset_data=1.193 ms
+         fixture: kfs_init=256.173 ms kfs_close=336.600 us
+  [PASS] load_by_topic_textures (508.561 ms)
+         perf: p50=3.528 ms p95=5.026 ms mean=3.666 ms 751.0 MB/s (2887314 bytes/op)
+         ops: kfs_create_artifact=260.678 ms(x11) kfs_get_asset_data=84.011 ms(x23) kfs_assign_topic_to_artifact_by_name=62.977 ms(x11) kfs_add_actor=11.102 ms(x2) kfs_add_member_to_group=4.461 ms kfs_add_domain=4.300 ms
+         fixture: kfs_init=253.147 ms kfs_close=451.500 us
+  [PASS] load_by_topic_models (897.137 ms)
+         perf: p50=17.791 ms p95=21.680 ms mean=18.282 ms 1043.3 MB/s (19999197 bytes/op)
+         ops: kfs_get_asset_data=432.833 ms(x23) kfs_create_artifact=297.085 ms(x11) kfs_assign_topic_to_artifact_by_name=65.983 ms(x11) kfs_add_actor=12.291 ms(x2) kfs_add_domain=4.679 ms kfs_add_member_to_group=4.263 ms
+         fixture: kfs_init=266.249 ms kfs_close=494.300 us
+  [PASS] load_by_epic_geometry (866.584 ms)
+         perf: p50=18.051 ms p95=26.754 ms mean=19.314 ms 987.5 MB/s (19999197 bytes/op)
+         ops: kfs_get_asset_data=438.251 ms(x23) kfs_create_artifact=272.520 ms(x11) kfs_assign_topic_to_artifact_by_name=59.066 ms(x11) kfs_add_actor=8.101 ms(x2) kfs_add_domain=4.513 ms kfs_add_member_to_group=3.975 ms
+         fixture: kfs_init=240.627 ms kfs_close=492.000 us
+  [PASS] bulk_ingest_all_props (382.329 ms)
+         perf: p50=0 ns p95=0 ns mean=364.616 ms 88.8 MB/s (33944979 bytes/op)
+         ops: kfs_create_artifact=231.552 ms(x11) kfs_assign_topic_to_artifact_by_name=59.336 ms(x11) kfs_add_actor=8.590 ms(x2) kfs_add_domain=4.745 ms kfs_add_member_to_group=4.342 ms
+         fixture: kfs_init=259.879 ms kfs_close=393.300 us
+  (11/11 passed)
+
+[SUMMARY] 11 passed, 0 failed (11 total)
+KFS MyBuddy profile-C perf OK

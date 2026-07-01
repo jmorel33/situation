@@ -1,0 +1,47 @@
+== H7 perf: Performance baselines ==
+  [PASS] permission_check (150.926 ms)
+         perf: p50=0 ns p95=0 ns mean=500.928 us 1996 ops/s (100 samples)
+         ops: kfs_check_permission=50.093 ms(x100) kfs_add_actor=14.103 ms(x3) kfs_create_artifact=12.270 ms kfs_create_security_scheme=5.151 ms kfs_add_actor_to_scheme=5.100 ms kfs_add_domain=4.721 ms kfs_add_member_to_group=4.708 ms kfs_add_actor_to_domain=4.457 ms
+         fixture: kfs_init=269.872 ms kfs_close=405.500 us
+  [PASS] blob_read_small (707.614 ms)
+         perf: p50=892.300 us p95=1.575 ms mean=1.115 ms 297.6 MB/s (348047 bytes/op)
+         ops: kfs_create_artifact=299.909 ms(x11) kfs_get_asset_data=227.028 ms(x200) kfs_assign_topic_to_artifact_by_name=64.888 ms(x11) kfs_add_actor=9.543 ms(x2) kfs_add_domain=7.205 ms kfs_add_member_to_group=4.675 ms
+         fixture: kfs_init=274.860 ms kfs_close=720.600 us
+  [PASS] blob_read_medium (737.702 ms)
+         perf: p50=2.541 ms p95=4.289 ms mean=2.688 ms 768.0 MB/s (2164989 bytes/op)
+         ops: kfs_get_asset_data=293.796 ms(x110) kfs_create_artifact=282.611 ms(x11) kfs_assign_topic_to_artifact_by_name=56.075 ms(x11) kfs_add_actor=8.459 ms(x2) kfs_add_domain=4.576 ms kfs_add_member_to_group=3.902 ms
+         fixture: kfs_init=249.222 ms kfs_close=786.600 us
+  [PASS] blob_read_large_glb (709.570 ms)
+         perf: p50=11.776 ms p95=17.661 ms mean=12.554 ms 806.3 MB/s (10614184 bytes/op)
+         ops: kfs_get_asset_data=284.366 ms(x23) kfs_create_artifact=257.746 ms(x11) kfs_assign_topic_to_artifact_by_name=51.505 ms(x11) kfs_add_actor=11.253 ms(x2) kfs_add_member_to_group=4.491 ms kfs_add_domain=4.249 ms
+         fixture: kfs_init=257.090 ms kfs_close=775.500 us
+  [PASS] blob_read_large_wav (777.534 ms)
+         perf: p50=12.381 ms p95=18.004 ms mean=13.563 ms 761.0 MB/s (10822048 bytes/op)
+         ops: kfs_get_asset_data=304.892 ms(x23) kfs_create_artifact=275.011 ms(x11) kfs_assign_topic_to_artifact_by_name=56.886 ms(x11) kfs_add_actor=8.212 ms(x2) kfs_add_domain=7.143 ms kfs_add_member_to_group=3.724 ms
+         fixture: kfs_init=247.101 ms kfs_close=1.079 ms
+  [PASS] blob_ingest_large (145.416 ms)
+         perf: p50=0 ns p95=0 ns mean=58.340 ms 17 ops/s (1 samples)
+         ops: kfs_create_artifact=49.882 ms kfs_add_actor=8.588 ms(x2) kfs_add_domain=4.836 ms kfs_assign_topic_to_artifact_by_name=4.725 ms kfs_add_member_to_group=4.079 ms
+         fixture: kfs_init=263.398 ms kfs_close=617.000 us
+  [PASS] blob_roundtrip_checksum (98.415 ms)
+         ops: kfs_create_artifact=13.066 ms kfs_add_actor=8.133 ms(x2) kfs_assign_topic_to_artifact_by_name=5.323 ms kfs_add_domain=4.508 ms kfs_add_member_to_group=3.935 ms kfs_get_asset_data=948.400 us
+         fixture: kfs_init=249.501 ms kfs_close=384.400 us
+  [PASS] load_by_topic_textures (547.701 ms)
+         perf: p50=4.642 ms p95=7.215 ms mean=4.996 ms 551.1 MB/s (2887314 bytes/op)
+         ops: kfs_create_artifact=266.650 ms(x11) kfs_get_asset_data=114.055 ms(x23) kfs_assign_topic_to_artifact_by_name=58.095 ms(x11) kfs_add_actor=10.198 ms(x2) kfs_add_domain=4.590 ms kfs_add_member_to_group=4.317 ms
+         fixture: kfs_init=265.700 ms kfs_close=701.800 us
+  [PASS] load_by_topic_models (1.13 s)
+         perf: p50=25.447 ms p95=36.905 ms mean=27.029 ms 705.6 MB/s (19999197 bytes/op)
+         ops: kfs_get_asset_data=612.715 ms(x23) kfs_create_artifact=321.438 ms(x11) kfs_assign_topic_to_artifact_by_name=61.106 ms(x11) kfs_add_actor=8.259 ms(x2) kfs_add_domain=4.742 ms kfs_add_member_to_group=4.385 ms
+         fixture: kfs_init=257.194 ms kfs_close=800.300 us
+  [PASS] load_by_epic_geometry (1.10 s)
+         perf: p50=29.202 ms p95=49.529 ms mean=30.595 ms 623.4 MB/s (19999197 bytes/op)
+         ops: kfs_get_asset_data=681.218 ms(x23) kfs_create_artifact=255.120 ms(x11) kfs_assign_topic_to_artifact_by_name=57.491 ms(x11) kfs_add_actor=12.520 ms(x2) kfs_add_domain=6.827 ms kfs_add_member_to_group=5.575 ms
+         fixture: kfs_init=295.873 ms kfs_close=819.400 us
+  [PASS] bulk_ingest_all_props (391.650 ms)
+         perf: p50=0 ns p95=0 ns mean=374.675 ms 86.4 MB/s (33944979 bytes/op)
+         ops: kfs_create_artifact=245.511 ms(x11) kfs_assign_topic_to_artifact_by_name=56.511 ms(x11) kfs_add_actor=8.215 ms(x2) kfs_add_domain=4.616 ms kfs_add_member_to_group=4.109 ms
+         fixture: kfs_init=255.122 ms kfs_close=670.800 us
+  (11/11 passed)
+
+[SUMMARY] 11 passed, 0 failed (11 total)

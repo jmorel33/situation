@@ -1,0 +1,19 @@
+# KFS H7 performance baseline — memory alloc plan M0
+# Captured: 2026-06-30 (post-M1/M2 timestamp migration)
+# Command: mingw32-make test  (perf: --perf --perf-iters 100)
+# Machine: Windows 10, MSYS2 mingw64 gcc
+
+== H7 perf: Performance baselines ==
+permission_check:     p50=0 ns       p95=0 ns       mean=817.375 us  (100 samples)
+blob_read_small:      p50=1.187 ms   p95=1.757 ms   mean=1.219 ms    272.3 MB/s (348047 bytes/op)
+blob_read_medium:     p50=3.960 ms   p95=5.508 ms   mean=3.854 ms    535.7 MB/s (2164989 bytes/op)
+blob_read_large_glb:  p50=14.906 ms  p95=19.612 ms  mean=15.075 ms   671.5 MB/s (10614184 bytes/op)
+blob_read_large_wav:  p50=15.021 ms  p95=21.886 ms  mean=15.783 ms   653.9 MB/s (10822048 bytes/op)
+blob_ingest_large:    p50=0 ns       p95=0 ns       mean=64.366 ms   (single-shot)
+blob_roundtrip_checksum: (single-shot, no p50/p95)
+load_by_topic_textures: p50=6.682 ms  p95=13.240 ms  mean=6.857 ms    401.6 MB/s (2887314 bytes/op)
+load_by_topic_models:   p50=29.230 ms p95=38.652 ms  mean=29.960 ms   636.6 MB/s (19999197 bytes/op)
+load_by_epic_geometry:  p50=36.284 ms p95=45.610 ms  mean=35.190 ms   542.0 MB/s (19999197 bytes/op)
+bulk_ingest_all_props:  p50=0 ns      p95=0 ns       mean=455.488 ms  71.1 MB/s (33944979 bytes/op)
+
+Gate: M4 H7 p95 within 10% of this log.
