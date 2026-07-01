@@ -1,0 +1,388 @@
+/***************************************************************************************************
+*
+*   chorus_4stage.h - 4-Stage Chorus Effect
+*   (c) 2025-2026 Jacques Morel
+*   MIT Licensed
+*
+*   ================================================================================================
+*   DESCRIPTION
+*   ================================================================================================
+*   Implementation of a 4-stage chorus effect with oversampling support.
+*
+***************************************************************************************************/
+
+#ifndef SIT_AUX_CHORUS_4STAGE_H
+#define SIT_AUX_CHORUS_4STAGE_H
+
+#include <stddef.h>
+#include <stdlib.h>
+#include <math.h>
+#include <string.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+// FMA detection and optimization
+#if defined(__FP_FAST_FMAF) || defined(__FMA__) || (defined(_MSC_VER) && defined(__AVX2__))
+    #define CHORUS_FMA(a, b, c) __builtin_fmaf((a), (b), (c))
+#else
+    #define CHORUS_FMA(a, b, c) ((a) * (b) + (c))
+#endif
+
+#ifndef SIT_MALLOC
+    #define SIT_MALLOC(sz) malloc(sz)
+#endif
+#ifndef SIT_FREE
+    #define SIT_FREE(p) free(p)
+#endif
+
+// LFO waveform options
+typedef enum {
+    LFO_SINE,
+    LFO_TRIANGLE,
+    LFO_SAWTOOTH,
+    LFO_SQUARE
+} LFOShape;
+
+// Chorus effect structure
+typedef struct {
+    float *delay_line_left;
+    float *delay_line_right;
+    int delay_line_size;
+    int write_pos;
+    float sample_rate;
+    float base_delay[4];
+    float lfo_freq[4];
+    float lfo_depth[4];
+    float lfo_phase_left[4];
+    float lfo_phase_right[4];
+    float pan[4];
+    float width;           // LFO phase offset for stereo width
+    float dry_gain;        // Dry signal gain
+    float wet_gain;        // Wet signal gain
+    float feedback;        // Feedback amount for delay lines
+    LFOShape lfo_shape[4]; // LFO waveform per stage
+    float stereo_enhance;  // Stereo width enhancement factor
+    float delay_smooth_l[4]; // Smoothed delay (samples) per stage — tames zipper/alias
+    float delay_smooth_r[4];
+    float wet_lp_l;        // One-pole LP on wet bus before mix
+    float wet_lp_r;
+} SituationChorus4Stage;
+
+// Upsampling state for 4x oversampling
+#define SIT_CHORUS_FILTER_LENGTH 16
+typedef struct {
+    float h[SIT_CHORUS_FILTER_LENGTH];   // Low-pass filter coefficients
+    float dl[4];              // Delay line for input samples
+} SituationChorusUpsampleState;
+
+// Downsampling state for 4x oversampling
+typedef struct {
+    float h[SIT_CHORUS_FILTER_LENGTH];   // Low-pass filter coefficients
+    float dl[SIT_CHORUS_FILTER_LENGTH];  // Delay line for oversampled samples
+    int counter;              // Counts oversampled samples (0 to 3)
+} SituationChorusDownsampleState;
+
+// Compute LFO value based on waveform shape and phase
+static float _sit_chorus_lfo_value(LFOShape shape, float phase) {
+    float t = phase / (2.0f * (float)M_PI); // Normalize phase to [0,1)
+    switch (shape) {
+        case LFO_SINE:
+            return sinf(phase);
+        case LFO_TRIANGLE:
+            if (t < 0.25f) return 4.0f * t;
+            else if (t < 0.75f) return 2.0f - 4.0f * t;
+            else return 4.0f * t - 4.0f;
+        case LFO_SAWTOOTH:
+            return 2.0f * t - 1.0f;
+        case LFO_SQUARE:
+            return (t < 0.5f) ? 1.0f : -1.0f;
+        default:
+            return 0.0f;
+    }
+}
+
+// Compute windowed sinc filter coefficients for oversampling
+static void _sit_chorus_compute_filter_coeffs(float h[SIT_CHORUS_FILTER_LENGTH]) {
+    const int N = SIT_CHORUS_FILTER_LENGTH;
+    const float omega_c = (float)M_PI / 4.0f; // Cutoff at pi/4 for 4x oversampling
+    const float delay = (N - 1.0f) / 2.0f; // Center of filter
+    float sum = 0.0f;
+    for (int n = 0; n < N; n++) {
+        float x = n - delay;
+        if (fabsf(x) < 1e-6f) {
+            h[n] = omega_c / (float)M_PI; // Sinc limit at zero
+        } else {
+            h[n] = (sinf(omega_c * x)) / ((float)M_PI * x);
+        }
+        // Apply Hamming window
+        float w = 0.54f - 0.46f * cosf(2.0f * (float)M_PI * n / (N - 1));
+        h[n] *= w;
+        sum += h[n];
+    }
+    // Normalize for 4x oversampling gain
+    for (int n = 0; n < N; n++) {
+        h[n] *= 4.0f / sum;
+    }
+}
+
+// Initialize chorus effect
+static void SituationChorus4Stage_Init(SituationChorus4Stage *effect, float sample_rate, int max_delay_samples) {
+    effect->delay_line_size = max_delay_samples;
+    effect->delay_line_left = (float *)SIT_MALLOC(max_delay_samples * sizeof(float));
+    effect->delay_line_right = (float *)SIT_MALLOC(max_delay_samples * sizeof(float));
+    effect->write_pos = 0;
+    effect->sample_rate = sample_rate;
+
+    for (int i = 0; i < max_delay_samples; i++) {
+        effect->delay_line_left[i] = 0.0f;
+        effect->delay_line_right[i] = 0.0f;
+    }
+
+    for (int stage = 0; stage < 4; stage++) {
+        effect->base_delay[stage] = 0.0f;
+        effect->lfo_freq[stage] = 0.0f;
+        effect->lfo_depth[stage] = 0.0f;
+        effect->lfo_phase_left[stage] = 0.0f;
+        effect->lfo_phase_right[stage] = (stage + 1) * 0.25f;
+        effect->pan[stage] = 0.0f;
+        effect->lfo_shape[stage] = LFO_SINE;
+    }
+
+    effect->width = 0.0f;
+    effect->dry_gain = 1.0f;
+    effect->wet_gain = 0.5f;
+    effect->feedback = 0.0f;
+    effect->stereo_enhance = 1.0f;
+    effect->wet_lp_l = 0.0f;
+    effect->wet_lp_r = 0.0f;
+    for (int stage = 0; stage < 4; stage++) {
+        effect->delay_smooth_l[stage] = 0.0f;
+        effect->delay_smooth_r[stage] = 0.0f;
+    }
+}
+
+// Set stage parameters
+static void SituationChorus4Stage_SetStageParams(SituationChorus4Stage *effect, int stage, float base_delay_ms, float lfo_freq, float lfo_depth_ms, float pan) {
+    if (stage < 0 || stage >= 4) return;
+
+    if (base_delay_ms < 1.0f) base_delay_ms = 1.0f;
+    if (lfo_depth_ms < 0.0f) lfo_depth_ms = 0.0f;
+
+    /* Unipolar LFO adds 0..depth on top of base — keep total tap inside the line. */
+    const float max_delay_ms = effect->delay_line_size * 1000.0f / effect->sample_rate;
+    if (base_delay_ms + lfo_depth_ms > max_delay_ms * 0.90f) {
+        lfo_depth_ms = max_delay_ms * 0.90f - base_delay_ms;
+        if (lfo_depth_ms < 0.0f) lfo_depth_ms = 0.0f;
+    }
+
+    effect->base_delay[stage] = base_delay_ms * effect->sample_rate / 1000.0f;
+    effect->lfo_freq[stage] = lfo_freq;
+    effect->lfo_depth[stage] = lfo_depth_ms * effect->sample_rate / 1000.0f;
+    effect->pan[stage] = pan;
+}
+
+// Set stereo width (LFO phase offset)
+static void SituationChorus4Stage_SetWidth(SituationChorus4Stage *effect, float width) {
+    if (width < 0.0f) width = 0.0f;
+    if (width > 1.0f) width = 1.0f;
+    effect->width = width;
+    float phase_offset = width * ((float)M_PI / 2.0f);
+    for (int stage = 0; stage < 4; stage++) {
+        effect->lfo_phase_right[stage] = fmodf(effect->lfo_phase_left[stage] + phase_offset, 2.0f * (float)M_PI);
+    }
+}
+
+// Set dry gain
+static void SituationChorus4Stage_SetDryGain(SituationChorus4Stage *effect, float dry_gain) {
+    effect->dry_gain = dry_gain;
+}
+
+// Set wet gain
+static void SituationChorus4Stage_SetWetGain(SituationChorus4Stage *effect, float wet_gain) {
+    effect->wet_gain = wet_gain;
+}
+
+// Set feedback amount
+static void SituationChorus4Stage_SetFeedback(SituationChorus4Stage *effect, float feedback) {
+    if (feedback < 0.0f) feedback = 0.0f;
+    if (feedback > 0.99f) feedback = 0.99f;
+    effect->feedback = feedback;
+}
+
+// Set LFO waveform for a stage
+static void SituationChorus4Stage_SetLfoShape(SituationChorus4Stage *effect, int stage, LFOShape shape) {
+    if (stage >= 0 && stage < 4) {
+        effect->lfo_shape[stage] = shape;
+    }
+}
+
+// Set stereo enhancement factor
+static void SituationChorus4Stage_SetStereoEnhance(SituationChorus4Stage *effect, float enhance) {
+    if (enhance < 0.0f) enhance = 0.0f;
+    effect->stereo_enhance = enhance;
+}
+
+// Hermite read at a fractional delay into the past (write_pos is next write index).
+static float _sit_chorus_read_delay_hermite(const float* line, int size, int write_pos,
+                                            float delay_samples) {
+    const float min_delay = 4.0f;
+    const float max_delay = (float)(size - 4);
+    if (delay_samples < min_delay) delay_samples = min_delay;
+    if (delay_samples > max_delay) delay_samples = max_delay;
+
+    float read_pos = (float)write_pos - delay_samples;
+    while (read_pos < 0.0f) read_pos += (float)size;
+    while (read_pos >= (float)size) read_pos -= (float)size;
+
+    int idx_int = (int)read_pos;
+    float frac = read_pos - (float)idx_int;
+
+    int i0 = idx_int - 1; if (i0 < 0) i0 += size;
+    int i1 = idx_int;
+    int i2 = idx_int + 1; if (i2 >= size) i2 -= size;
+    int i3 = idx_int + 2; if (i3 >= size) i3 -= size;
+
+    float y0 = line[i0];
+    float y1 = line[i1];
+    float y2 = line[i2];
+    float y3 = line[i3];
+
+    float c1 = 0.5f * (y2 - y0);
+    float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+    float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+
+    return y1 + frac * (c1 + frac * (c2 + frac * c3));
+}
+
+// Process audio with all improvements
+static void SituationChorus4Stage_Process(SituationChorus4Stage *effect, float *input_left, float *input_right, float *output_left, float *output_right, int num_samples) {
+    /* ~9 kHz one-pole on wet bus — tames modulated-delay alias before mix. */
+    const float wet_lp_coef = 0.22f;
+    /* Per-sample delay slew — avoids zipper when LFO crosses integer boundaries. */
+    const float delay_slew = 0.08f;
+
+    for (int i = 0; i < num_samples; i++) {
+        float sum_left = 0.0f;
+        float sum_right = 0.0f;
+
+        for (int stage = 0; stage < 4; stage++) {
+            // Update LFO phases
+            effect->lfo_phase_left[stage] += 2.0f * (float)M_PI * effect->lfo_freq[stage] / effect->sample_rate;
+            effect->lfo_phase_right[stage] += 2.0f * (float)M_PI * effect->lfo_freq[stage] / effect->sample_rate;
+            if (effect->lfo_phase_left[stage] > 2.0f * (float)M_PI) effect->lfo_phase_left[stage] -= 2.0f * (float)M_PI;
+            if (effect->lfo_phase_right[stage] > 2.0f * (float)M_PI) effect->lfo_phase_right[stage] -= 2.0f * (float)M_PI;
+
+            /* Unipolar LFO: delay sweeps base .. base+depth (never below base). */
+            float lfo_l = _sit_chorus_lfo_value(effect->lfo_shape[stage], effect->lfo_phase_left[stage]);
+            float lfo_r = _sit_chorus_lfo_value(effect->lfo_shape[stage], effect->lfo_phase_right[stage]);
+            float mod_left = (lfo_l * 0.5f + 0.5f) * effect->lfo_depth[stage];
+            float mod_right = (lfo_r * 0.5f + 0.5f) * effect->lfo_depth[stage];
+            float target_delay_l = effect->base_delay[stage] + mod_left;
+            float target_delay_r = effect->base_delay[stage] + mod_right;
+
+            effect->delay_smooth_l[stage] += (target_delay_l - effect->delay_smooth_l[stage]) * delay_slew;
+            effect->delay_smooth_r[stage] += (target_delay_r - effect->delay_smooth_r[stage]) * delay_slew;
+
+            float sample_left = _sit_chorus_read_delay_hermite(
+                effect->delay_line_left, effect->delay_line_size, effect->write_pos,
+                effect->delay_smooth_l[stage]);
+            float sample_right = _sit_chorus_read_delay_hermite(
+                effect->delay_line_right, effect->delay_line_size, effect->write_pos,
+                effect->delay_smooth_r[stage]);
+
+            // Apply constant power panning
+            float pan = effect->pan[stage];
+            float theta = (pan + 1.0f) * (float)M_PI / 4.0f; // Map [-1,1] to [0,pi/2]
+            float left_gain = cosf(theta);
+            float right_gain = sinf(theta);
+            sum_left += sample_left * left_gain;
+            sum_right += sample_right * right_gain;
+        }
+
+        /* Four stages share one delay line; normalize so feedback stays bounded. */
+        const float stage_norm = 0.25f;
+        float wet_left = sum_left * stage_norm;
+        float wet_right = sum_right * stage_norm;
+
+        effect->wet_lp_l += (wet_left - effect->wet_lp_l) * wet_lp_coef;
+        effect->wet_lp_r += (wet_right - effect->wet_lp_r) * wet_lp_coef;
+        wet_left = effect->wet_lp_l;
+        wet_right = effect->wet_lp_r;
+
+        output_left[i] = CHORUS_FMA(effect->wet_gain, wet_left, effect->dry_gain * input_left[i]);
+        output_right[i] = CHORUS_FMA(effect->wet_gain, wet_right, effect->dry_gain * input_right[i]);
+
+        // Apply stereo enhancement via mid-side processing using FMA
+        float mid = (output_left[i] + output_right[i]) / 2.0f;
+        float side = (output_left[i] - output_right[i]) / 2.0f;
+        side *= effect->stereo_enhance;
+        output_left[i] = CHORUS_FMA(1.0f, side, mid);
+        output_right[i] = CHORUS_FMA(-1.0f, side, mid);
+
+        // Update delay lines with feedback using FMA (dry input only into the line)
+        effect->delay_line_left[effect->write_pos] = CHORUS_FMA(effect->feedback, wet_left, input_left[i]);
+        effect->delay_line_right[effect->write_pos] = CHORUS_FMA(effect->feedback, wet_right, input_right[i]);
+
+        // Advance write position
+        effect->write_pos = (effect->write_pos + 1) % effect->delay_line_size;
+    }
+}
+
+// Free memory
+static void SituationChorus4Stage_Free(SituationChorus4Stage *effect) {
+    if (effect->delay_line_left) SIT_FREE(effect->delay_line_left);
+    if (effect->delay_line_right) SIT_FREE(effect->delay_line_right);
+}
+
+// Initialize upsampling state
+static void SituationChorus4Stage_UpsampleInit(SituationChorusUpsampleState *state) {
+    _sit_chorus_compute_filter_coeffs(state->h);
+    memset(state->dl, 0, sizeof(state->dl));
+}
+
+// Upsample one input to four outputs using FMA
+static void SituationChorus4Stage_Upsample(float input, float output[4], SituationChorusUpsampleState *state) {
+    state->dl[3] = state->dl[2];
+    state->dl[2] = state->dl[1];
+    state->dl[1] = state->dl[0];
+    state->dl[0] = input;
+    output[0] = CHORUS_FMA(state->h[12], state->dl[3], CHORUS_FMA(state->h[8], state->dl[2], CHORUS_FMA(state->h[4], state->dl[1], state->h[0] * state->dl[0])));
+    output[1] = CHORUS_FMA(state->h[13], state->dl[3], CHORUS_FMA(state->h[9], state->dl[2], CHORUS_FMA(state->h[5], state->dl[1], state->h[1] * state->dl[0])));
+    output[2] = CHORUS_FMA(state->h[14], state->dl[3], CHORUS_FMA(state->h[10], state->dl[2], CHORUS_FMA(state->h[6], state->dl[1], state->h[2] * state->dl[0])));
+    output[3] = CHORUS_FMA(state->h[15], state->dl[3], CHORUS_FMA(state->h[11], state->dl[2], CHORUS_FMA(state->h[7], state->dl[1], state->h[3] * state->dl[0])));
+}
+
+// Initialize downsampling state
+static void SituationChorus4Stage_DownsampleInit(SituationChorusDownsampleState *state) {
+    _sit_chorus_compute_filter_coeffs(state->h);
+    memset(state->dl, 0, sizeof(state->dl));
+    state->counter = 0;
+}
+
+// Downsample one oversampled input
+static float SituationChorus4Stage_Downsample(float input, SituationChorusDownsampleState *state, int *ready) {
+    for (int k = SIT_CHORUS_FILTER_LENGTH - 1; k > 0; k--) {
+        state->dl[k] = state->dl[k - 1];
+    }
+    state->dl[0] = input;
+    state->counter = (state->counter + 1) % 4;
+    if (state->counter == 0) {
+        *ready = 1;
+        float sum = 0.0f;
+        for (int k = 0; k < SIT_CHORUS_FILTER_LENGTH; k++) {
+            sum += state->h[k] * state->dl[k];
+        }
+        return sum;
+    }
+    *ready = 0;
+    return 0.0f;
+}
+
+static int SituationChorus4Stage_GetLatencySamples(SituationChorus4Stage *effect) {
+    (void)effect;
+    return 0; // Sample-by-sample processing with dry signal included
+}
+
+#endif // SIT_AUX_CHORUS_4STAGE_H
