@@ -1,0 +1,38 @@
+#ifndef SIT_TP_LAYER_PARAMS_SSBO_GLSLH
+#define SIT_TP_LAYER_PARAMS_SSBO_GLSLH
+
+#include "sit/gpu/test_patterns/sit_tp_layer_params.glslh"
+
+#ifndef SIT_TP_LAYER_PARAMS_SSBO_BINDING
+#define SIT_TP_LAYER_PARAMS_SSBO_BINDING 0
+#endif
+
+#ifndef SIT_TP_LAYER_PARAMS_SSBO_SET
+#define SIT_TP_LAYER_PARAMS_SSBO_SET 0
+#endif
+
+/* Offsets must match SIT_VD_STANDBY_PARAMS_SSBO_OFF_* in situation_api_types_gpu.h. */
+
+layout(std430
+#if defined(SITUATION_USE_VULKAN)
+    , set = SIT_TP_LAYER_PARAMS_SSBO_SET
+#endif
+    , binding = SIT_TP_LAYER_PARAMS_SSBO_BINDING) readonly buffer SitTpLayerParamsBlock {
+    SitTpParamsSmpte       smpte;
+    SitTpParamsChecker     checker;
+    SitTpParamsConvergence convergence;
+    SitTpParamsGradients   gradients;
+    SitTpParamsGrid        grid;
+    SitTpParamsPluge       pluge;
+    SitTpParamsCrosshatch  crosshatch;
+    SitTpParamsMultiburst  multiburst;
+    SitTpParamsCube        cube;
+    SitTpParamsSnow        snow;
+    SitTpParamsPalette     palette;
+} u_sit_tp_layers;
+
+SitTpPalette sit_tp_palette_from_ssbo(void) {
+    return sit_tp_palette_from_params(u_sit_tp_layers.palette);
+}
+
+#endif /* SIT_TP_LAYER_PARAMS_SSBO_GLSLH */

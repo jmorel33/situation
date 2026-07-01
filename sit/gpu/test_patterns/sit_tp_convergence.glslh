@@ -1,0 +1,42 @@
+#ifndef SIT_TP_CONVERGENCE_GLSLH
+#define SIT_TP_CONVERGENCE_GLSLH
+
+#include "sit/gpu/test_patterns/sit_tp_config.glslh"
+#include "sit/gpu/test_patterns/sit_tp_colors.glslh"
+#include "sit/gpu/test_patterns/sit_tp_primitives.glslh"
+#include "sit/gpu/test_patterns/sit_tp_layer_params.glslh"
+
+vec3 sit_tp_convergence_ex(vec2 uv, SitTpConfig cfg, SitTpPalette pal, SitTpParamsConvergence p) {
+    vec2 res = vec2(cfg.width, cfg.height);
+    vec2 px = sit_tp_px(uv, res);
+    vec4 screen = vec4(0.0, 0.0, res.x, res.y);
+    vec4 central = vec4(res.x * p.central_inset_x, res.y * p.central_inset_y,
+        res.x * p.central_size_w, res.y * p.central_size_h);
+    float stripe_w = max(p.stripe_width, 1.0);
+    vec3 ca = sit_tp_vec3_from_rgba(p.color_a);
+    vec3 cb = sit_tp_vec3_from_rgba(p.color_b);
+
+    vec3 col = sit_tp_stripes(uv, res, screen, stripe_w, true, ca, cb);
+    if (sit_tp_rect_mask(px, central) > 0.5) {
+        col = sit_tp_stripes(uv, res, central, stripe_w, false, ca, cb);
+    }
+    return col;
+}
+
+vec3 sit_tp_convergence(vec2 uv, SitTpConfig cfg, SitTpPalette pal) {
+#if defined(SIT_TP_USE_LAYER_SSBO)
+    return sit_tp_convergence_ex(uv, cfg, pal, u_sit_tp_layers.convergence);
+#else
+    SitTpParamsConvergence p;
+    p.stripe_width = cfg.stripe_width;
+    p.central_inset_x = 0.25;
+    p.central_inset_y = 0.25;
+    p.central_size_w = 0.5;
+    p.central_size_h = 0.5;
+    p.color_a = vec4(pal.bar_white, 1.0);
+    p.color_b = vec4(pal.bar_black, 1.0);
+    return sit_tp_convergence_ex(uv, cfg, pal, p);
+#endif
+}
+
+#endif /* SIT_TP_CONVERGENCE_GLSLH */

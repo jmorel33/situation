@@ -1,0 +1,28 @@
+#ifndef SIT_TP_NOISE_GLSLH
+#define SIT_TP_NOISE_GLSLH
+
+#include "sit/gpu/test_patterns/sit_tp_config.glslh"
+
+/* Per-pixel noise standby. noise_frame_seed is milliseconds; bit 16 = chroma snow. */
+
+float sit_tp_hash31(vec3 p) {
+    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
+vec3 sit_tp_noise_rgb(vec2 uv, SitTpConfig cfg, uint layers) {
+    vec2 res = max(vec2(cfg.width, cfg.height), vec2(1.0));
+    vec2 px = floor(sit_tp_px(uv, res));
+    float seed = cfg.noise_frame_seed;
+    if (sit_tp_chroma_snow_on(layers)) {
+        float nr = sit_tp_hash31(vec3(px, seed + 0.0));
+        float ng = sit_tp_hash31(vec3(px, seed + 17.0));
+        float nb = sit_tp_hash31(vec3(px, seed + 31.0));
+        return vec3(nr, ng, nb);
+    }
+    float n = sit_tp_hash31(vec3(px, seed));
+    return vec3(n);
+}
+
+#endif /* SIT_TP_NOISE_GLSLH */

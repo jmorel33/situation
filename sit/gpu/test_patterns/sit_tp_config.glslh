@@ -1,0 +1,152 @@
+#ifndef SIT_TP_CONFIG_GLSLH
+
+#define SIT_TP_CONFIG_GLSLH
+
+
+
+/* Layer index 0–8 (keys / RGL preset order). Each is a toggle bit, not an exclusive choice. */
+
+#define SIT_TP_LAYER_SMPTE        (1u << 0)
+
+#define SIT_TP_LAYER_CHECKERBOARD (1u << 1)
+
+#define SIT_TP_LAYER_CONVERGENCE  (1u << 2)
+
+#define SIT_TP_LAYER_GRADIENTS    (1u << 3)
+
+#define SIT_TP_LAYER_GRID         (1u << 4)
+
+#define SIT_TP_LAYER_PLUGE        (1u << 5)
+
+#define SIT_TP_LAYER_CROSSHATCH   (1u << 6)
+
+#define SIT_TP_LAYER_MULTIBURST   (1u << 7)
+
+#define SIT_TP_LAYER_3D_GRID      (1u << 8) /* alias: layer 8 = one lit cube (SIT_TP_CUBE) */
+
+/* Standby flags (not calibration layers 0–8). OR into pattern_layers with PATTERN mode. */
+#define SIT_TP_LAYER_CALIBRATION_MASK 0x1FFu
+#define SIT_TP_LAYER_CHROMA_SNOW       (1u << 16) /* zero-layer snow: per-channel noise (default off = B&W) */
+
+#define SIT_TP_SMPTE_BARS      0
+
+#define SIT_TP_CHECKERBOARD    1
+
+#define SIT_TP_CONVERGENCE     2
+
+#define SIT_TP_GRADIENTS       3
+
+#define SIT_TP_GRID_ONLY       4
+
+#define SIT_TP_PLUGE           5
+
+#define SIT_TP_CROSSHATCH      6
+
+#define SIT_TP_MULTIBURST      7
+
+#define SIT_TP_3D_GRID         8
+
+
+
+#ifndef SIT_TP_FLIP_Y
+
+#if defined(SITUATION_USE_OPENGL)
+
+#define SIT_TP_FLIP_Y 1
+
+#else
+
+#define SIT_TP_FLIP_Y 0
+
+#endif
+
+#endif
+
+
+
+bool sit_tp_layer_on(uint layers, uint layer_index) {
+
+    return bitfieldExtract(layers, int(layer_index), 1) != 0;
+
+}
+
+uint sit_tp_calibration_layers(uint layers) {
+
+    return layers & SIT_TP_LAYER_CALIBRATION_MASK;
+
+}
+
+bool sit_tp_chroma_snow_on(uint layers) {
+
+    return (layers & SIT_TP_LAYER_CHROMA_SNOW) != 0u;
+
+}
+
+bool sit_tp_is_snow_standby(uint layers) {
+
+    return sit_tp_calibration_layers(layers) == 0u;
+
+}
+
+
+
+vec2 sit_tp_uv(vec2 raw_uv) {
+
+#if SIT_TP_FLIP_Y
+
+    return vec2(raw_uv.x, fma(raw_uv.y, -1.0, 1.0));
+
+#else
+
+    return raw_uv;
+
+#endif
+
+}
+
+
+
+vec2 sit_tp_px(vec2 uv, vec2 resolution) {
+
+    return fma(uv, resolution, vec2(0.0));
+
+}
+
+
+
+struct SitTpConfig {
+
+    int   pattern_layers; /* calibration bits 0–8 + flags (e.g. SIT_TP_LAYER_CHROMA_SNOW) */
+
+    float width;
+
+    float height;
+
+    int   show_overlay_circle;
+
+    vec2  checker_size;
+
+    float stripe_width;
+
+    float frequencies[6];
+
+    int   num_frequencies;
+
+    int   grid_size;        /* layer 8 cube: edge length (world units); legacy name */
+
+    float noise_frame_seed; /* zero-layer snow: milliseconds (see SitVdStandbyConfig) */
+
+};
+
+
+
+bool sit_tp_single_layer(SitTpConfig cfg) {
+
+    return bitCount(sit_tp_calibration_layers(uint(cfg.pattern_layers))) == 1u;
+
+}
+
+
+
+#endif /* SIT_TP_CONFIG_GLSLH */
+

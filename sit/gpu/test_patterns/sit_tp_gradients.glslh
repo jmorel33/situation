@@ -1,0 +1,65 @@
+#ifndef SIT_TP_GRADIENTS_GLSLH
+#define SIT_TP_GRADIENTS_GLSLH
+
+#include "sit/gpu/test_patterns/sit_tp_config.glslh"
+#include "sit/gpu/test_patterns/sit_tp_colors.glslh"
+#include "sit/gpu/test_patterns/sit_tp_primitives.glslh"
+#include "sit/gpu/test_patterns/sit_tp_layer_params.glslh"
+
+vec3 sit_tp_gradients_ex(vec2 uv, SitTpConfig cfg, SitTpPalette pal, SitTpParamsGradients g) {
+    vec2 res = vec2(cfg.width, cfg.height);
+    vec2 half_res = res * 0.5;
+    vec3 col = pal.bar_black;
+
+    vec4 r1 = vec4(0.0, 0.0, half_res.x, half_res.y);
+    vec4 r2 = vec4(half_res.x, 0.0, half_res.x, half_res.y);
+    vec4 r3 = vec4(0.0, half_res.y, half_res.x, half_res.y);
+    vec4 r4 = vec4(half_res.x, half_res.y, half_res.x, half_res.y);
+
+    vec3 q1 = sit_tp_bilinear_gradient(uv, res, r1,
+        sit_tp_vec3_from_rgba(g.quad[0][0]), sit_tp_vec3_from_rgba(g.quad[0][1]),
+        sit_tp_vec3_from_rgba(g.quad[0][2]), sit_tp_vec3_from_rgba(g.quad[0][3]));
+    vec3 q2 = sit_tp_bilinear_gradient(uv, res, r2,
+        sit_tp_vec3_from_rgba(g.quad[1][0]), sit_tp_vec3_from_rgba(g.quad[1][1]),
+        sit_tp_vec3_from_rgba(g.quad[1][2]), sit_tp_vec3_from_rgba(g.quad[1][3]));
+    vec3 q3 = sit_tp_bilinear_gradient(uv, res, r3,
+        sit_tp_vec3_from_rgba(g.quad[2][0]), sit_tp_vec3_from_rgba(g.quad[2][1]),
+        sit_tp_vec3_from_rgba(g.quad[2][2]), sit_tp_vec3_from_rgba(g.quad[2][3]));
+    vec3 q4 = sit_tp_bilinear_gradient(uv, res, r4,
+        sit_tp_vec3_from_rgba(g.quad[3][0]), sit_tp_vec3_from_rgba(g.quad[3][1]),
+        sit_tp_vec3_from_rgba(g.quad[3][2]), sit_tp_vec3_from_rgba(g.quad[3][3]));
+
+    vec2 px = sit_tp_px(uv, res);
+    if (sit_tp_rect_mask(px, r1) > 0.5) col = q1;
+    if (sit_tp_rect_mask(px, r2) > 0.5) col = q2;
+    if (sit_tp_rect_mask(px, r3) > 0.5) col = q3;
+    if (sit_tp_rect_mask(px, r4) > 0.5) col = q4;
+    return col;
+}
+
+vec3 sit_tp_gradients(vec2 uv, SitTpConfig cfg, SitTpPalette pal) {
+#if defined(SIT_TP_USE_LAYER_SSBO)
+    return sit_tp_gradients_ex(uv, cfg, pal, u_sit_tp_layers.gradients);
+#else
+    SitTpParamsGradients g;
+    g.quad[0][0] = vec4(pal.bar_red, 1.0);
+    g.quad[0][1] = vec4(pal.bar_green, 1.0);
+    g.quad[0][2] = vec4(pal.bar_black, 1.0);
+    g.quad[0][3] = vec4(pal.bar_black, 1.0);
+    g.quad[1][0] = vec4(pal.bar_cyan, 1.0);
+    g.quad[1][1] = vec4(pal.bar_magenta, 1.0);
+    g.quad[1][2] = vec4(pal.bar_black, 1.0);
+    g.quad[1][3] = vec4(pal.bar_black, 1.0);
+    g.quad[2][0] = vec4(pal.bar_yellow, 1.0);
+    g.quad[2][1] = vec4(pal.bar_blue, 1.0);
+    g.quad[2][2] = vec4(pal.bar_black, 1.0);
+    g.quad[2][3] = vec4(pal.bar_black, 1.0);
+    g.quad[3][0] = vec4(pal.bar_white, 1.0);
+    g.quad[3][1] = vec4(pal.bar_mid_gray, 1.0);
+    g.quad[3][2] = vec4(pal.bar_black, 1.0);
+    g.quad[3][3] = vec4(pal.bar_black, 1.0);
+    return sit_tp_gradients_ex(uv, cfg, pal, g);
+#endif
+}
+
+#endif /* SIT_TP_GRADIENTS_GLSLH */

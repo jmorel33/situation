@@ -1,0 +1,12 @@
+#ifndef SIT_TP_SMPTE_VD_UBO_GLSLH
+#define SIT_TP_SMPTE_VD_UBO_GLSLH
+
+/* std140 UBO for VD SMPTE subset harness / lab wrappers. */
+#define SIT_TP_SMPTE_VD_UBO_BLOCK_NAME SitTpSmpteVdBlock
+
+layout(std140, set = 0, binding = 0) uniform SitTpSmpteVdBlock {
+    float width;
+    float height;
+} u_sit_tp_smpte_vd;
+
+#endif /* SIT_TP_SMPTE_VD_UBO_GLSLH */

@@ -1,0 +1,89 @@
+#ifndef SIT_TP_MULTIBURST_GLSLH
+#define SIT_TP_MULTIBURST_GLSLH
+
+#include "sit/gpu/test_patterns/sit_tp_config.glslh"
+#include "sit/gpu/test_patterns/sit_tp_colors.glslh"
+#include "sit/gpu/test_patterns/sit_tp_primitives.glslh"
+#include "sit/gpu/test_patterns/sit_tp_layer_params.glslh"
+
+float sit_tp_multiburst_freq_ex(SitTpParamsMultiburst p, int band) {
+    if (p.num_frequencies > 0 && band < p.num_frequencies) {
+        return p.frequencies[band];
+    }
+    const float defaults[6] = float[6](0.5, 1.0, 2.0, 3.0, 4.0, 5.0);
+    return defaults[band];
+}
+
+float sit_tp_multiburst_freq(SitTpConfig cfg, int band) {
+#if defined(SIT_TP_USE_LAYER_SSBO)
+    return sit_tp_multiburst_freq_ex(u_sit_tp_layers.multiburst, band);
+#else
+    if (cfg.num_frequencies > 0 && band < cfg.num_frequencies) {
+        return cfg.frequencies[band];
+    }
+    const float defaults[6] = float[6](0.5, 1.0, 2.0, 3.0, 4.0, 5.0);
+    return defaults[band];
+#endif
+}
+
+vec3 sit_tp_multiburst_on_ex(vec3 base, vec2 uv, SitTpConfig cfg, SitTpPalette pal, SitTpParamsMultiburst p) {
+    vec2 res = vec2(cfg.width, cfg.height);
+    vec2 px = sit_tp_px(uv, res);
+    const int NUM_BANDS = 6;
+    vec3 col = base;
+    float margin = p.safe_margin;
+    vec4 content = vec4(res.x * margin, res.y * margin, res.x * (1.0 - 2.0 * margin), res.y * (1.0 - 2.0 * margin));
+    float bar_h = content.w * 0.7;
+    float bar_y = content.y + (content.w - bar_h) * 0.5;
+    float band_w = content.z / float(NUM_BANDS);
+
+    for (int i = 0; i < NUM_BANDS; ++i) {
+        float band_x = content.x + float(i) * band_w;
+        float freq = sit_tp_multiburst_freq_ex(p, i);
+        float stripe_w = 10.0 / (freq + 0.5);
+        float pair_w = stripe_w * 2.0;
+        int num_stripes = int(floor(band_w / pair_w));
+
+        for (int j = 0; j < num_stripes; ++j) {
+            float stripe_x = band_x + float(j) * pair_w;
+            vec3 stripe_col = (j & 1) == 0 ? pal.bar_white : pal.bar_black;
+            col = sit_tp_blend_rect(col, px, vec4(stripe_x, bar_y, stripe_w, bar_h), stripe_col);
+        }
+
+        float filled = float(num_stripes) * pair_w;
+        if (filled < band_w) {
+            col = sit_tp_blend_rect(col, px, vec4(band_x + filled, bar_y, band_w - filled, bar_h), pal.bar_black);
+        }
+    }
+    return col;
+}
+
+vec3 sit_tp_multiburst_on(vec3 base, vec2 uv, SitTpConfig cfg, SitTpPalette pal) {
+#if defined(SIT_TP_USE_LAYER_SSBO)
+    return sit_tp_multiburst_on_ex(base, uv, cfg, pal, u_sit_tp_layers.multiburst);
+#else
+    SitTpParamsMultiburst p;
+    p.num_frequencies = cfg.num_frequencies;
+    p.safe_margin = 0.1;
+    for (int i = 0; i < 6; ++i) {
+        p.frequencies[i] = cfg.frequencies[i];
+    }
+    return sit_tp_multiburst_on_ex(base, uv, cfg, pal, p);
+#endif
+}
+
+vec3 sit_tp_multiburst(vec2 uv, SitTpConfig cfg, SitTpPalette pal) {
+    vec2 res = vec2(cfg.width, cfg.height);
+    const float GRID_A = 100.0 / 255.0;
+    vec3 col = sit_tp_multiburst_on(pal.bg_dark_gray, uv, cfg, pal);
+#if defined(SIT_TP_USE_LAYER_SSBO)
+    float safe = u_sit_tp_layers.multiburst.safe_margin;
+#else
+    float safe = 0.1;
+#endif
+    col = sit_tp_lerp3(col, pal.bar_white, sit_tp_safe_area_border(uv, res, safe, 1.0));
+    col = sit_tp_blend_grid(col, uv, res, pal.grid_white, GRID_A);
+    return col;
+}
+
+#endif /* SIT_TP_MULTIBURST_GLSLH */

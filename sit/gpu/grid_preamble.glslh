@@ -1,0 +1,52 @@
+// sit/gpu/grid_preamble.glslh — Grid compute preamble (Siamese GL/VK)
+// Same descriptor / push-constant layout as K-Term terminal.comp (SIT_COMPUTE_LAYOUT_GRID).
+// Runtime: loader prepends #define VULKAN_BACKEND (VK only) after #version, then appends sit/gpu/grid.comp.
+// K-Term grid path still uses terminal_compute_preamble from kterm_api.h (same bindings).
+
+#version 460
+
+#if defined(VULKAN_BACKEND)
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#endif
+
+layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;
+
+struct GPUCell { uint char_code; uint fg_color; uint bg_color; uint flags; uint ul_color; uint st_color; };
+
+#if defined(VULKAN_BACKEND)
+layout(set = 2, binding = 0) uniform sampler2D u_font_texture;
+layout(set = 3, binding = 0) uniform sampler2D u_sixel_texture;
+#define KTERM_FONT_TEXTURE u_font_texture
+#define KTERM_SIXEL_TEXTURE u_sixel_texture
+layout(buffer_reference, scalar) buffer KTermBuffer { GPUCell cells[]; };
+layout(set = 1, binding = 0, rgba8) uniform image2D output_image;
+layout(push_constant) uniform PushConstants {
+    vec2 screen_size; vec2 char_size; vec2 grid_size; float time;
+    uint cursor_index; uint cursor_blink_state; uint text_blink_state;
+    uint sel_start; uint sel_end; uint sel_active; uint mouse_cursor_index;
+    uint64_t terminal_buffer_addr; uint64_t vector_buffer_addr;
+    uint64_t font_texture_handle; uint64_t sixel_texture_handle; uint64_t vector_texture_handle;
+    uint64_t shader_config_addr; uint atlas_cols; uint vector_count;
+    int sixel_y_offset; uint grid_color; uint conceal_char_code;
+    uint font_data_width; uint font_data_height;
+} pc;
+#else
+layout(std430, binding = 0) readonly buffer KTermBufferBlock { GPUCell cells[]; } terminal_data;
+layout(binding = 1, rgba8) uniform image2D output_image;
+layout(binding = 2) uniform sampler2D u_font_texture;
+layout(binding = 3) uniform sampler2D u_sixel_texture;
+#define KTERM_FONT_TEXTURE u_font_texture
+#define KTERM_SIXEL_TEXTURE u_sixel_texture
+layout(std430, binding = 4) readonly buffer PushConstantsBlock {
+    vec2 screen_size; vec2 char_size; vec2 grid_size; float time;
+    uint cursor_index; uint cursor_blink_state; uint text_blink_state;
+    uint sel_start; uint sel_end; uint sel_active; uint mouse_cursor_index;
+    uvec2 terminal_buffer_addr; uvec2 vector_buffer_addr;
+    uvec2 font_texture_handle; uvec2 sixel_texture_handle; uvec2 vector_texture_handle;
+    uvec2 shader_config_addr; uint atlas_cols; uint vector_count;
+    int sixel_y_offset; uint grid_color; uint conceal_char_code;
+    uint font_data_width; uint font_data_height;
+} pc;
+#endif

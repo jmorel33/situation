@@ -1,0 +1,123 @@
+#ifndef SIT_TP_LAYER_PARAMS_GLSLH
+#define SIT_TP_LAYER_PARAMS_GLSLH
+
+#include "sit/gpu/test_patterns/sit_tp_colors.glslh"
+
+/* std430 mirrors of SitVdStandby*Params / SitVdStandbyPalette (CPU: situation_api_types_gpu.h). */
+
+struct SitTpParamsSmpte {
+    float content_margin_x;
+    float content_margin_y;
+    int   show_overlay_circle;
+    float overlay_circle_radius;
+};
+
+struct SitTpParamsChecker {
+    float tile_size_x;
+    float tile_size_y;
+    vec4  color_a;
+    vec4  color_b;
+};
+
+struct SitTpParamsConvergence {
+    float stripe_width;
+    float central_inset_x;
+    float central_inset_y;
+    float central_size_w;
+    float central_size_h;
+    vec4  color_a;
+    vec4  color_b;
+};
+
+struct SitTpParamsGradients {
+    vec4 quad[4][4];
+};
+
+struct SitTpParamsGrid {
+    float spacing_px;
+    float line_alpha;
+    vec4  line_color;
+};
+
+struct SitTpParamsPluge {
+    float safe_margin;
+    int   bar_count;
+    float bar_height_frac;
+};
+
+struct SitTpParamsCrosshatch {
+    int   grid_nx;
+    int   grid_ny;
+    float crosshair_size;
+    float crosshair_thickness;
+    float safe_margin;
+};
+
+struct SitTpParamsMultiburst {
+    float frequencies[6];
+    int   num_frequencies;
+    float safe_margin;
+};
+
+struct SitTpParamsCube {
+    float size;
+    vec4  diffuse;
+    float ambient;
+    float _pad_cube;
+};
+
+struct SitTpParamsSnow {
+    float noise_frame_seed;
+    int   chroma;
+    int   _pad_snow[2];
+};
+
+struct SitTpParamsPalette {
+    vec4 bg_dark_gray;
+    vec4 grid_white;
+    vec4 bar_light_gray;
+    vec4 bar_yellow;
+    vec4 bar_cyan;
+    vec4 bar_green;
+    vec4 bar_magenta;
+    vec4 bar_red;
+    vec4 bar_blue;
+    vec4 bar_black;
+    vec4 bar_white;
+    vec4 bar_mid_gray;
+    vec4 bar_dark_gray;
+    vec4 bar_orange;
+    vec4 pluge_minus4;
+    vec4 pluge_zero;
+    vec4 pluge_plus4;
+    vec4 pluge_plus75;
+};
+
+vec3 sit_tp_vec3_from_rgba(vec4 c) {
+    return c.rgb;
+}
+
+SitTpPalette sit_tp_palette_from_params(SitTpParamsPalette p) {
+    SitTpPalette pal;
+    pal.bg_dark_gray   = sit_tp_vec3_from_rgba(p.bg_dark_gray);
+    pal.grid_white     = sit_tp_vec3_from_rgba(p.grid_white);
+    pal.bar_light_gray = sit_tp_vec3_from_rgba(p.bar_light_gray);
+    pal.bar_yellow     = sit_tp_vec3_from_rgba(p.bar_yellow);
+    pal.bar_cyan       = sit_tp_vec3_from_rgba(p.bar_cyan);
+    pal.bar_green      = sit_tp_vec3_from_rgba(p.bar_green);
+    pal.bar_magenta    = sit_tp_vec3_from_rgba(p.bar_magenta);
+    pal.bar_red        = sit_tp_vec3_from_rgba(p.bar_red);
+    pal.bar_blue       = sit_tp_vec3_from_rgba(p.bar_blue);
+    pal.bar_black      = sit_tp_vec3_from_rgba(p.bar_black);
+    pal.bar_white      = sit_tp_vec3_from_rgba(p.bar_white);
+    pal.bar_mid_gray   = sit_tp_vec3_from_rgba(p.bar_mid_gray);
+    pal.bar_dark_gray  = sit_tp_vec3_from_rgba(p.bar_dark_gray);
+    pal.bar_orange     = sit_tp_vec3_from_rgba(p.bar_orange);
+    pal.pluge_minus4   = sit_tp_vec3_from_rgba(p.pluge_minus4);
+    pal.pluge_zero     = sit_tp_vec3_from_rgba(p.pluge_zero);
+    pal.pluge_plus4    = sit_tp_vec3_from_rgba(p.pluge_plus4);
+    pal.pluge_plus75   = sit_tp_vec3_from_rgba(p.pluge_plus75);
+    return pal;
+}
+
+#endif /* SIT_TP_LAYER_PARAMS_GLSLH */

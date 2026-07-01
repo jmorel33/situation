@@ -1,0 +1,11 @@
+#ifndef SIT_TP_CONFIG_UBO_GLSLH
+#define SIT_TP_CONFIG_UBO_GLSLH
+
+/* P10: 160 B header UBO + layer-params SSBO (binding 1). */
+#ifndef SIT_TP_USE_LAYER_SSBO
+#define SIT_TP_USE_LAYER_SSBO 1
+#endif
+
+#include "sit/gpu/test_patterns/sit_tp_config_header_ubo.glslh"
+
+#endif /* SIT_TP_CONFIG_UBO_GLSLH */

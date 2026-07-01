@@ -1,0 +1,80 @@
+#ifndef SIT_TP_CUBE_GLSLH
+#define SIT_TP_CUBE_GLSLH
+
+#include "sit/gpu/test_patterns/sit_tp_config.glslh"
+#include "sit/gpu/test_patterns/sit_tp_colors.glslh"
+#include "sit/gpu/test_patterns/sit_tp_layer_params.glslh"
+
+float _sit_tp_cube_sd_box(vec3 p, vec3 half_extent) {
+    vec3 q = abs(p) - half_extent;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+vec3 _sit_tp_cube_normal(vec3 p, vec3 half_extent) {
+    const vec2 e = vec2(0.001, 0.0);
+    float d = _sit_tp_cube_sd_box(p, half_extent);
+    return normalize(vec3(
+        _sit_tp_cube_sd_box(p + e.xyy, half_extent) - d,
+        _sit_tp_cube_sd_box(p + e.yxy, half_extent) - d,
+        _sit_tp_cube_sd_box(p + e.yyx, half_extent) - d));
+}
+
+vec3 sit_tp_cube_ex(vec2 uv, SitTpConfig cfg, SitTpPalette pal, SitTpParamsCube p) {
+    uv = vec2(uv.x, 1.0 - uv.y);
+
+    float aspect = cfg.width / max(cfg.height, 1.0);
+    vec3 cam_pos = vec3(0.0, 5.0, -10.0);
+    vec3 target = vec3(0.0);
+    vec3 world_up = vec3(0.0, 1.0, 0.0);
+    vec3 fwd = normalize(target - cam_pos);
+    vec3 right = normalize(cross(fwd, world_up));
+    vec3 cam_up = cross(right, fwd);
+
+    vec2 ndc = fma(uv, vec2(2.0), vec2(-1.0));
+    float tan_half_fov = tan(radians(22.5));
+    float ray_x = fma(ndc.x, aspect * tan_half_fov, 0.0);
+    float ray_y = fma(ndc.y, tan_half_fov, 0.0);
+    vec3 rd = normalize(fwd + right * ray_x + cam_up * ray_y);
+
+    float edge = max(p.size, 1.0);
+    vec3 half_ext = vec3(edge * 0.5);
+    float ambient = p.ambient;
+    float diffuse_scale = 0.5;
+    vec3 diffuse = sit_tp_vec3_from_rgba(p.diffuse);
+
+    float t = 0.0;
+    const float far_plane = 80.0;
+    vec3 col = pal.bg_dark_gray;
+
+    for (int i = 0; i < 64; ++i) {
+        vec3 pt = fma(rd, vec3(t), cam_pos);
+        float d = _sit_tp_cube_sd_box(pt, half_ext);
+        if (d < 0.01) {
+            vec3 n = _sit_tp_cube_normal(pt, half_ext);
+            vec3 light_dir = normalize(vec3(0.4, 1.0, 0.2));
+            float diff = max(dot(n, light_dir), 0.0);
+            col = diffuse * fma(diffuse_scale, diff, ambient);
+            break;
+        }
+        t += d;
+        if (t > far_plane) {
+            break;
+        }
+    }
+
+    return col;
+}
+
+vec3 sit_tp_cube(vec2 uv, SitTpConfig cfg, SitTpPalette pal) {
+#if defined(SIT_TP_USE_LAYER_SSBO)
+    return sit_tp_cube_ex(uv, cfg, pal, u_sit_tp_layers.cube);
+#else
+    SitTpParamsCube p;
+    p.size = float(max(cfg.grid_size, 1));
+    p.diffuse = vec4(pal.bar_white, 1.0);
+    p.ambient = 0.5;
+    return sit_tp_cube_ex(uv, cfg, pal, p);
+#endif
+}
+
+#endif /* SIT_TP_CUBE_GLSLH */

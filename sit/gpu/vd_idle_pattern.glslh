@@ -1,0 +1,20 @@
+#ifndef VD_IDLE_PATTERN_GLSLH
+#define VD_IDLE_PATTERN_GLSLH
+
+#include "sit/gpu/test_patterns/sit_test_patterns.glslh"
+
+vec3 _sit_vd_idle_pattern_rgb(int fallback_mode, vec2 uv, vec3 solid_rgb)
+{
+    if (fallback_mode == 2) {
+        SitTpConfig cfg = sit_tp_config_from_ubo();
+#if defined(SIT_TP_USE_LAYER_SSBO)
+        SitTpPalette pal = sit_tp_palette_from_ssbo();
+#else
+        SitTpPalette pal = sit_tp_default_palette();
+#endif
+        return sit_tp_sample(uv, cfg, pal);
+    }
+    return solid_rgb;
+}
+
+#endif /* VD_IDLE_PATTERN_GLSLH */

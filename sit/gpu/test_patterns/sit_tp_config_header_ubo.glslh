@@ -1,0 +1,76 @@
+#ifndef SIT_TP_CONFIG_HEADER_UBO_GLSLH
+#define SIT_TP_CONFIG_HEADER_UBO_GLSLH
+
+#include "sit/gpu/test_patterns/sit_tp_config.glslh"
+
+#ifndef SIT_TP_CONFIG_UBO_SET
+#define SIT_TP_CONFIG_UBO_SET 0
+#endif
+
+#ifndef SIT_TP_CONFIG_UBO_BINDING
+#define SIT_TP_CONFIG_UBO_BINDING 0
+#endif
+
+#define SIT_TP_CONFIG_HEADER_UBO_SIZE 160u
+#define SIT_TP_CONFIG_UBO_BLOCK_NAME SitTpConfigBlock
+
+layout(std140
+#if defined(SITUATION_USE_VULKAN)
+    , set = SIT_TP_CONFIG_UBO_SET
+#endif
+    , binding = SIT_TP_CONFIG_UBO_BINDING) uniform SitTpConfigBlock {
+    int   pattern_layers;
+    float width;
+    float height;
+    int   show_overlay_circle;
+    vec4  _header_pad[7];
+    float _header_pad7;
+    float _header_pad8;
+    float noise_frame_seed;
+    int   layer_stack_count;
+    uvec4 layer_stack_packed;
+} u_sit_tp_cfg;
+
+int sit_tp_stack_layer_at(int i) {
+    if (i < 0 || i >= 9) {
+        return 255;
+    }
+    uint w = u_sit_tp_cfg.layer_stack_packed[i / 4];
+    return int((w >> ((i & 3) * 8)) & 0xFFu);
+}
+
+#if defined(SIT_TP_USE_LAYER_SSBO)
+#include "sit/gpu/test_patterns/sit_tp_layer_params_ssbo.glslh"
+#endif
+
+SitTpConfig sit_tp_config_from_ubo(void) {
+    SitTpConfig cfg;
+    cfg.pattern_layers = u_sit_tp_cfg.pattern_layers;
+    cfg.width = u_sit_tp_cfg.width;
+    cfg.height = u_sit_tp_cfg.height;
+    cfg.show_overlay_circle = u_sit_tp_cfg.show_overlay_circle;
+    cfg.noise_frame_seed = u_sit_tp_cfg.noise_frame_seed;
+#if defined(SIT_TP_USE_LAYER_SSBO)
+    cfg.noise_frame_seed = u_sit_tp_layers.snow.noise_frame_seed;
+#endif
+#if defined(SIT_TP_USE_LAYER_SSBO)
+    cfg.checker_size = vec2(u_sit_tp_layers.checker.tile_size_x, u_sit_tp_layers.checker.tile_size_y);
+    cfg.stripe_width = u_sit_tp_layers.convergence.stripe_width;
+    cfg.num_frequencies = u_sit_tp_layers.multiburst.num_frequencies;
+    cfg.grid_size = int(max(u_sit_tp_layers.cube.size, 1.0));
+    for (int i = 0; i < 6; ++i) {
+        cfg.frequencies[i] = u_sit_tp_layers.multiburst.frequencies[i];
+    }
+#else
+    cfg.checker_size = vec2(32.0, 32.0);
+    cfg.stripe_width = 16.0;
+    cfg.num_frequencies = 0;
+    cfg.grid_size = 1;
+    for (int i = 0; i < 6; ++i) {
+        cfg.frequencies[i] = float(i) + 0.5;
+    }
+#endif
+    return cfg;
+}
+
+#endif /* SIT_TP_CONFIG_HEADER_UBO_GLSLH */

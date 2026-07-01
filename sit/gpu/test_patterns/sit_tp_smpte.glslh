@@ -1,0 +1,198 @@
+#ifndef SIT_TP_SMPTE_GLSLH
+#define SIT_TP_SMPTE_GLSLH
+
+#if defined(SIT_TP_SMPTE_VD_SUBSET)
+
+/* VD idle SMPTE subset — pixel-identical to pre-refactor vd.frag / composite.frag (§5.3). */
+
+vec3 _sit_smpte75(int bar) {
+    if (bar == 0) return vec3(0.706);
+    if (bar == 1) return vec3(0.706, 0.706, 0.0);
+    if (bar == 2) return vec3(0.0, 0.706, 0.706);
+    if (bar == 3) return vec3(0.0, 0.706, 0.0);
+    if (bar == 4) return vec3(0.706, 0.0, 0.706);
+    if (bar == 5) return vec3(0.706, 0.0, 0.0);
+    return vec3(0.0, 0.0, 0.706);
+}
+
+vec3 _sit_smpte_castellation(int col) {
+    if (col == 0) return vec3(0.0, 0.0, 0.706);
+    if (col == 1) return vec3(0.063);
+    if (col == 2) return vec3(0.706, 0.0, 0.706);
+    if (col == 3) return vec3(0.063);
+    if (col == 4) return vec3(0.0, 0.706, 0.706);
+    if (col == 5) return vec3(0.063);
+    return vec3(0.706);
+}
+
+vec3 _sit_smpte_bottom(vec2 uv) {
+    float u = clamp(uv.x, 0.0, 1.0);
+    const float pw = 5.0 / 28.0;
+    const float plw = 1.0 / 21.0;
+    if (u < pw) return vec3(0.063, 0.275, 0.416);
+    if (u < 2.0 * pw) return vec3(0.922);
+    if (u < 3.0 * pw) return vec3(0.282, 0.063, 0.463);
+    if (u < 5.0 / 7.0) return vec3(0.063);
+    if (u < 5.0 / 7.0 + plw) return vec3(0.027);
+    if (u < 5.0 / 7.0 + 2.0 * plw) return vec3(0.063);
+    if (u < 5.0 / 7.0 + 3.0 * plw) return vec3(0.094);
+    return vec3(0.063);
+}
+
+vec3 _sit_smpte_color_bars(vec2 uv) {
+    float u = clamp(uv.x, 0.0, 0.999999);
+#if defined(SITUATION_USE_VULKAN)
+    float y = clamp(uv.y, 0.0, 1.0);
+#else
+    float y = clamp(1.0 - uv.y, 0.0, 1.0);
+#endif
+    int col = clamp(int(floor(u * 7.0)), 0, 6);
+    if (y < (2.0 / 3.0)) {
+        return _sit_smpte75(col);
+    }
+    if (y < 0.75) {
+        return _sit_smpte_castellation(col);
+    }
+    return _sit_smpte_bottom(uv);
+}
+
+#else
+
+#include "sit/gpu/test_patterns/sit_tp_config.glslh"
+#include "sit/gpu/test_patterns/sit_tp_colors.glslh"
+#include "sit/gpu/test_patterns/sit_tp_primitives.glslh"
+#include "sit/gpu/test_patterns/sit_tp_layer_params.glslh"
+
+/* Full RGL calibration SMPTE (_RGL_DrawSmpteBars). */
+
+vec3 sit_tp_smpte_bars_on_ex(vec3 base, vec2 uv, SitTpConfig cfg, SitTpPalette pal, SitTpParamsSmpte sp) {
+    vec2 res = vec2(cfg.width, cfg.height);
+    vec2 px = sit_tp_px(uv, res);
+
+    vec4 content = sit_tp_content_area(res, sp.content_margin_x, sp.content_margin_y);
+    float bar_w = content.z / 7.0;
+
+    vec3 col = base;
+
+    float top_h = content.w * 0.45;
+    vec3 top_cols[7] = vec3[7](
+        pal.bar_light_gray, pal.bar_yellow, pal.bar_cyan, pal.bar_green,
+        pal.bar_magenta, pal.bar_red, pal.bar_blue);
+    for (int i = 0; i < 7; ++i) {
+        vec4 r = vec4(content.x + float(i) * bar_w, content.y, bar_w, top_h);
+        col = sit_tp_blend_rect(col, px, r, top_cols[i]);
+    }
+
+    float mid_y = content.y + top_h;
+    float mid_h = content.w * 0.15;
+    vec3 mid_cols[7] = vec3[7](
+        pal.bar_mid_gray, pal.bar_black, pal.bar_black, pal.bar_black,
+        pal.bar_black, pal.bar_black, pal.bar_mid_gray);
+    for (int i = 0; i < 7; ++i) {
+        vec4 r = vec4(content.x + float(i) * bar_w, mid_y, bar_w, mid_h);
+        col = sit_tp_blend_rect(col, px, r, mid_cols[i]);
+    }
+
+    float freq_y = mid_y + mid_h;
+    float freq_h = content.w * 0.20;
+    col = sit_tp_blend_rect(col, px, vec4(content.x, freq_y, content.z, freq_h), pal.bar_white);
+
+    float pluge_w = bar_w / 3.0;
+    float pluge_left = content.x + bar_w * 0.3;
+    float pluge_right = content.x + bar_w * 5.7;
+    vec3 pluge_cols[3] = vec3[3](pal.pluge_minus4, pal.pluge_zero, pal.pluge_plus4);
+    for (int i = 0; i < 3; ++i) {
+        col = sit_tp_blend_rect(col, px, vec4(pluge_left + float(i) * pluge_w, freq_y, pluge_w, freq_h), pluge_cols[i]);
+        col = sit_tp_blend_rect(col, px, vec4(pluge_right + float(i) * pluge_w, freq_y, pluge_w, freq_h), pluge_cols[i]);
+    }
+
+    float burst_w = bar_w * 1.2;
+    float burst_left = content.x + bar_w * 1.8;
+    float burst_right = content.x + bar_w * 4.5;
+    const int NUM_STRIPES = 12;
+    float stripe_spacing = burst_w / float(NUM_STRIPES);
+    for (int i = 0; i < NUM_STRIPES; ++i) {
+        float x_off = float(i) * stripe_spacing;
+        vec3 sc = (i & 1) == 0 ? pal.bar_black : pal.bar_white;
+        col = sit_tp_blend_rect(col, px, vec4(burst_left + x_off, freq_y, stripe_spacing * 0.5, freq_h), sc);
+        col = sit_tp_blend_rect(col, px, vec4(burst_right + x_off, freq_y, stripe_spacing * 0.5, freq_h), sc);
+    }
+
+    col = sit_tp_blend_rect(col, px, vec4(content.x + bar_w * 3.0, freq_y, bar_w * 0.5, freq_h), pal.bar_dark_gray);
+
+    vec4 orange_r = vec4(fma(bar_w, 6.0, content.x), fma(freq_h, 0.1, freq_y), bar_w * 0.8, freq_h * 0.8);
+    col = sit_tp_blend_rect(col, px, orange_r, pal.bar_orange);
+    col = sit_tp_lerp3(col, pal.bar_dark_gray, sit_tp_rect_outline_mask(px, orange_r, 1.0));
+
+    float tri_base_y = freq_y + freq_h;
+    float cx = content.x + content.z * 0.5;
+    float tri = sit_tp_triangle_mask(px,
+        vec2(cx - 10.0, tri_base_y - 10.0),
+        vec2(cx + 10.0, tri_base_y - 10.0),
+        vec2(cx, tri_base_y));
+    col = sit_tp_lerp3(col, pal.bar_black, tri);
+
+    float bot_y = tri_base_y;
+    float bot_h = content.w * 0.20;
+    float bot_w = content.z * 0.715;
+    vec4 top_grad = vec4(content.x, bot_y, bot_w, bot_h * 0.5);
+    vec4 bot_grad = vec4(content.x, bot_y + bot_h * 0.5, bot_w, bot_h * 0.5);
+    vec3 tg = sit_tp_bilinear_gradient(uv, res, top_grad, pal.bar_magenta, pal.bar_black, pal.bar_black, pal.bar_black);
+    vec3 bg = sit_tp_bilinear_gradient(uv, res, bot_grad, pal.bar_black, pal.bar_black, pal.bar_blue, pal.bar_black);
+    if (sit_tp_rect_mask(px, top_grad) > 0.5) col = tg;
+    if (sit_tp_rect_mask(px, bot_grad) > 0.5) col = bg;
+
+    col = sit_tp_blend_rect(col, px, vec4(content.x + bar_w * 5.0, bot_y, bar_w, bot_h), pal.bar_dark_gray);
+    col = sit_tp_blend_rect(col, px, vec4(content.x + bar_w * 6.0, bot_y, bar_w, bot_h), pal.bar_black);
+    return col;
+}
+
+vec3 sit_tp_smpte_bars_on(vec3 base, vec2 uv, SitTpConfig cfg, SitTpPalette pal) {
+#if defined(SIT_TP_USE_LAYER_SSBO)
+    return sit_tp_smpte_bars_on_ex(base, uv, cfg, pal, u_sit_tp_layers.smpte);
+#else
+    SitTpParamsSmpte sp;
+    sp.content_margin_x = 0.1;
+    sp.content_margin_y = 0.1;
+    sp.show_overlay_circle = cfg.show_overlay_circle;
+    sp.overlay_circle_radius = 0.0;
+    return sit_tp_smpte_bars_on_ex(base, uv, cfg, pal, sp);
+#endif
+}
+
+vec3 sit_tp_smpte_bars_ex(vec2 uv, SitTpConfig cfg, SitTpPalette pal, SitTpParamsSmpte sp) {
+    vec2 res = vec2(cfg.width, cfg.height);
+    vec2 px = sit_tp_px(uv, res);
+    const float GRID_A = 100.0 / 255.0;
+
+    vec4 content = sit_tp_content_area(res, sp.content_margin_x, sp.content_margin_y);
+    vec3 col = pal.bg_dark_gray;
+    col = sit_tp_blend_grid(col, uv, res, pal.grid_white, GRID_A);
+    col = sit_tp_smpte_bars_on_ex(col, uv, cfg, pal, sp);
+    col = sit_tp_lerp3(col, pal.bar_white, sit_tp_safe_area_border(uv, res, 0.1, 1.0));
+
+    if (sp.show_overlay_circle != 0) {
+        float radius = sp.overlay_circle_radius > 0.0 ? sp.overlay_circle_radius : content.w * 0.5;
+        float ring = sit_tp_ring(px, res * 0.5, radius, 2.0);
+        col = sit_tp_lerp3(col, pal.bar_white, ring);
+    }
+
+    return col;
+}
+
+vec3 sit_tp_smpte_bars(vec2 uv, SitTpConfig cfg, SitTpPalette pal) {
+#if defined(SIT_TP_USE_LAYER_SSBO)
+    return sit_tp_smpte_bars_ex(uv, cfg, pal, u_sit_tp_layers.smpte);
+#else
+    SitTpParamsSmpte sp;
+    sp.content_margin_x = 0.1;
+    sp.content_margin_y = 0.1;
+    sp.show_overlay_circle = cfg.show_overlay_circle;
+    sp.overlay_circle_radius = 0.0;
+    return sit_tp_smpte_bars_ex(uv, cfg, pal, sp);
+#endif
+}
+
+#endif /* SIT_TP_SMPTE_VD_SUBSET */
+
+#endif /* SIT_TP_SMPTE_GLSLH */

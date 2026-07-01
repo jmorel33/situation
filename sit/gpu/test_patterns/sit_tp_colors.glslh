@@ -1,0 +1,50 @@
+#ifndef SIT_TP_COLORS_GLSLH
+#define SIT_TP_COLORS_GLSLH
+
+#include "sit/gpu/test_patterns/sit_tp_config.glslh"
+
+struct SitTpPalette {
+    vec3 bg_dark_gray;
+    vec3 grid_white;
+    vec3 bar_light_gray;
+    vec3 bar_yellow;
+    vec3 bar_cyan;
+    vec3 bar_green;
+    vec3 bar_magenta;
+    vec3 bar_red;
+    vec3 bar_blue;
+    vec3 bar_black;
+    vec3 bar_white;
+    vec3 bar_mid_gray;
+    vec3 bar_dark_gray;
+    vec3 bar_orange;
+    vec3 pluge_minus4;
+    vec3 pluge_zero;
+    vec3 pluge_plus4;
+    vec3 pluge_plus75;
+};
+
+SitTpPalette sit_tp_default_palette() {
+    SitTpPalette p;
+    p.bg_dark_gray   = vec3(45.0 / 255.0);
+    p.grid_white     = vec3(1.0);
+    p.bar_light_gray = vec3(192.0 / 255.0);
+    p.bar_yellow     = vec3(192.0 / 255.0, 192.0 / 255.0, 0.0);
+    p.bar_cyan       = vec3(0.0, 192.0 / 255.0, 192.0 / 255.0);
+    p.bar_green      = vec3(0.0, 192.0 / 255.0, 0.0);
+    p.bar_magenta    = vec3(192.0 / 255.0, 0.0, 192.0 / 255.0);
+    p.bar_red        = vec3(192.0 / 255.0, 0.0, 0.0);
+    p.bar_blue       = vec3(0.0, 0.0, 192.0 / 255.0);
+    p.bar_black      = vec3(0.0);
+    p.bar_white      = vec3(1.0);
+    p.bar_mid_gray   = vec3(128.0 / 255.0);
+    p.bar_dark_gray  = vec3(64.0 / 255.0);
+    p.bar_orange     = vec3(208.0 / 255.0, 132.0 / 255.0, 45.0 / 255.0);
+    p.pluge_minus4   = vec3(10.0 / 255.0);
+    p.pluge_zero     = vec3(16.0 / 255.0);
+    p.pluge_plus4    = vec3(20.0 / 255.0);
+    p.pluge_plus75   = vec3(30.0 / 255.0);
+    return p;
+}
+
+#endif /* SIT_TP_COLORS_GLSLH */
