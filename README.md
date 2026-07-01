@@ -8,7 +8,7 @@
 
 _(c) 2025-2026 Jacques Morel — MIT Licensed_
 
-Situation is a single-file, cross-platform **C11** library providing unified, low-level access to windowing, graphics (OpenGL 4.6 / Vulkan 1.4), audio, input, filesystem, threading, and timing. Version 2.4.
+Situation is a single-file, cross-platform **C11** library providing unified, low-level access to windowing, graphics (OpenGL 4.6 / Vulkan 1.4), audio, input, filesystem, threading, and timing.
 
 ---
 
