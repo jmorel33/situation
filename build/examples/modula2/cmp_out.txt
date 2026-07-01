@@ -1,0 +1,14 @@
+=== Situation+Modula2 — Raster Bars + Ambient Synth ===
+  V      Toggle VSync
+  F      Toggle borderless windowed
+  Space  Trigger note immediately
+  + / -  Reverb wet up / down
+  ] / [  Delay wet up / down
+  P / O  Delay feedback up / down
+  ESC    Quit
+Audio graph active: ToneSynth -> Echo -> Reverb
+OpenGL
+Shader loaded — entering main loop.
+[STUTTER] dt=296.5ms  core[poll=422700(417400 glfw 2800 reset 1700 joy) upd=0]  render[bp=0 fw=0 ex=0 pr=0]  fps=0
+loop alive (frames ticking)
+loop alive (frames ticking)
