@@ -18,7 +18,8 @@ Situation is a single-file, cross-platform **C11** library providing unified, lo
 | :--- | :--- |
 | [Introduction](doc/introduction.md) | What Situation is, getting started, build configuration, language wrappers, FAQ |
 | [Architecture](doc/architecture.md) | Internal design, threading model, audio graph, GL/VK backend lifecycles |
-| [Compilation Guide](doc/COMPILATION_GUIDE.md) | Full build system reference (library, tests, examples) |
+| [Compilation Guide](doc/COMPILATION_GUIDE.md) | Application build reference (linking, flags, platforms, language wrappers) |
+| [Building the Library](doc/BUILD_SITUATION_GUIDE.md) | Full reference for building situation itself (Makefile, targets, Vulkan SDK, shaderc) |
 | [SDK Reference](doc/situation_sdk.md) | Primary technical reference manual |
 | [API Guide](doc/situation_api.md) | All functions, structs, and enums with usage examples |
 | [What's New](doc/whatsnew.md) | Recent features and roadmap completions |
