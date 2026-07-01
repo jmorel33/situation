@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "note": "Populate p95_ns ceilings after first green run on a reference machine. Tests fail when >2x baseline.",
+  "baselines": {}
+}

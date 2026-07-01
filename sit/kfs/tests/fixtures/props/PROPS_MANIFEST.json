@@ -1,0 +1,139 @@
+﻿{
+    "props":  [
+                  {
+                      "source":  "prairie.jpg",
+                      "id":  "prairie_jpg",
+                      "format":  "jpg",
+                      "epic":  "perf_graphics",
+                      "kfs_type":  "image",
+                      "topic":  "perf_textures",
+                      "sha256":  "e472ae2ebe56e153e2a2be26ef9143a364e8f6c299d3f3770b20ae4031db85e8",
+                      "bytes":  348047,
+                      "tier":  "S",
+                      "file":  "textures/prairie.jpg"
+                  },
+                  {
+                      "source":  "thoc.jpg",
+                      "id":  "thoc_jpg",
+                      "format":  "jpg",
+                      "epic":  "perf_graphics",
+                      "kfs_type":  "image",
+                      "topic":  "perf_textures",
+                      "sha256":  "bdc244953e85d80b878b74830241bc557c770fdfe04a3a8559f07f0a7741dd24",
+                      "bytes":  374278,
+                      "tier":  "S",
+                      "file":  "textures/thoc.jpg"
+                  },
+                  {
+                      "source":  "rosewood_veneer1.png",
+                      "id":  "rosewood_png",
+                      "format":  "png",
+                      "epic":  "perf_graphics",
+                      "kfs_type":  "image",
+                      "topic":  "perf_textures",
+                      "sha256":  "52186e034ed4066cbf5b55832537f7b70668df0c3c27112823897f4cd1d48f20",
+                      "bytes":  2164989,
+                      "tier":  "M",
+                      "file":  "textures/rosewood_veneer1.png"
+                  },
+                  {
+                      "source":  "stanford-bunny.obj",
+                      "id":  "bunny_obj",
+                      "format":  "obj",
+                      "epic":  "perf_geometry",
+                      "kfs_type":  "model",
+                      "topic":  "perf_models",
+                      "sha256":  "1eb35d1e21ce99e5ce911353b6be278990713448dd9e8f5c9387f9de39b32205",
+                      "bytes":  2408417,
+                      "tier":  "M",
+                      "file":  "models/stanford-bunny.obj"
+                  },
+                  {
+                      "source":  "utah_teapot.obj",
+                      "id":  "teapot_obj",
+                      "format":  "obj",
+                      "epic":  "perf_geometry",
+                      "kfs_type":  "model",
+                      "topic":  "perf_models",
+                      "sha256":  "45bd6f962ad4fcf406da8ca2cfc3cc123934595074987298df0db0a74781d4a3",
+                      "bytes":  2591232,
+                      "tier":  "M",
+                      "file":  "models/utah_teapot.obj"
+                  },
+                  {
+                      "source":  "teapot.stl",
+                      "id":  "teapot_stl",
+                      "format":  "stl",
+                      "epic":  "perf_geometry",
+                      "kfs_type":  "model",
+                      "topic":  "perf_models",
+                      "sha256":  "90a309c2e96f7ad7f40162c738ec91d2b7fa9e5ad2e04ee9edf7b91e62382f62",
+                      "bytes":  4385364,
+                      "tier":  "L",
+                      "file":  "models/teapot.stl"
+                  },
+                  {
+                      "source":  "BoomBox.glb",
+                      "id":  "boombox_glb",
+                      "format":  "glb",
+                      "epic":  "perf_geometry",
+                      "kfs_type":  "model",
+                      "topic":  "perf_models",
+                      "sha256":  "f8b918445ebdd006768232205a62f5182d2208ca57f84c6ccc084943c0bc8f15",
+                      "bytes":  10614184,
+                      "tier":  "L",
+                      "file":  "models/BoomBox.glb"
+                  },
+                  {
+                      "source":  "sample.wav",
+                      "id":  "sample_wav",
+                      "format":  "wav",
+                      "epic":  "perf_media",
+                      "kfs_type":  "audio",
+                      "topic":  "perf_audio",
+                      "sha256":  "c6eb4de2851d9d216b83da55cb2263181e6dccceb1d8bfa465f3fe17cb73601b",
+                      "bytes":  10822048,
+                      "tier":  "L",
+                      "file":  "audio/sample.wav"
+                  },
+                  {
+                      "source":  "demon_hunt_sky.vs",
+                      "id":  "demon_vs",
+                      "format":  "glsl",
+                      "epic":  "perf_graphics",
+                      "kfs_type":  "shader",
+                      "topic":  "perf_shaders",
+                      "sha256":  "8e51c1abeab6f37ec3b8ad753aec624955f0726c55dbe4528f4b0717a0ad5196",
+                      "bytes":  271,
+                      "tier":  "S",
+                      "file":  "shaders/demon_hunt_sky.vs"
+                  },
+                  {
+                      "source":  "demon_hunt_sky.fs",
+                      "id":  "demon_fs",
+                      "format":  "glsl",
+                      "epic":  "perf_graphics",
+                      "kfs_type":  "shader",
+                      "topic":  "perf_shaders",
+                      "sha256":  "1caa535668264706c7b16a7eacc5a924f92fe4d99790b64e7e48d353d399f14b",
+                      "bytes":  77041,
+                      "tier":  "S",
+                      "file":  "shaders/demon_hunt_sky.fs"
+                  },
+                  {
+                      "source":  "static/Roboto-Regular.ttf",
+                      "id":  "roboto_ttf",
+                      "format":  "ttf",
+                      "epic":  "perf_media",
+                      "kfs_type":  "font",
+                      "topic":  "perf_fonts",
+                      "sha256":  "15256405ecb0d880678833a582760efad538ab2932318b52c8105b267d159459",
+                      "bytes":  159108,
+                      "tier":  "M",
+                      "file":  "fonts/Roboto-Regular.ttf"
+                  }
+              ],
+    "source_root":  "tests/harness/assets/",
+    "synced_at":  "2026-07-01T00:24:40Z",
+    "version":  1
+}
