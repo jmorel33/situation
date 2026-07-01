@@ -1,0 +1,23 @@
+{
+  "plan": "GAME_LOOP_PERFORMANCE_PLAN Phase 0",
+  "backend": "vulkan",
+  "render_thread": true,
+  "window": "1280x720",
+  "vsync": true,
+  "target_fps": 0,
+  "warmup_frames": 30,
+  "sample_frames": 600,
+  "max_frames_in_flight": 6,
+  "refresh_hz": 59,
+  "frame_time_median_ms": 16.3592,
+  "frame_time_p95_ms": 32.9528,
+  "frame_time_max_ms": 63.0081,
+  "situation_get_fps": 60,
+  "spike_count": 69,
+  "last_phases_ns": {
+    "backpressure": 0,
+    "fence": 0,
+    "execute": 33000,
+    "present": 36600
+  }
+}

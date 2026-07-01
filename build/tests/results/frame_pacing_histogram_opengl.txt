@@ -1,0 +1,1 @@
+{"version":"2.4.403","frame_ms":16.812,"frame_max_ms":339.550,"spikes":2,"render_avg_ns":34078041,"render_max_ns":34768000,"frame_hist":[4,2,0,2,171,451],"phases":{"backpressure":200,"fence":0,"execute":0,"present":60100},"core":{"poll":21400,"update":1000,"glfw_poll":16300,"input_reset":900,"joystick":1500}}

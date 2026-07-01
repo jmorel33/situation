@@ -1,0 +1,23 @@
+{
+  "plan": "GAME_LOOP_PERFORMANCE_PLAN Phase 0",
+  "backend": "opengl",
+  "render_thread": true,
+  "window": "1280x720",
+  "vsync": true,
+  "target_fps": 0,
+  "warmup_frames": 30,
+  "sample_frames": 600,
+  "max_frames_in_flight": 6,
+  "refresh_hz": 59,
+  "frame_time_median_ms": 16.6376,
+  "frame_time_p95_ms": 18.3085,
+  "frame_time_max_ms": 339.5505,
+  "situation_get_fps": 60,
+  "spike_count": 2,
+  "last_phases_ns": {
+    "backpressure": 200,
+    "fence": 0,
+    "execute": 0,
+    "present": 60100
+  }
+}

@@ -1,0 +1,6 @@
+﻿
+[RUN] build\tests\sit_test_opengl.exe --module graphics --filter pattern --headless    
+      Results: build\tests\results\2026-06-24_0151_opengl.txt
+
+
+[SAVED] build\tests\results\2026-06-24_0151_opengl.txt
